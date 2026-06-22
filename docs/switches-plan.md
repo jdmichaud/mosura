@@ -40,11 +40,12 @@ The pipeline, given a `CPUI_BRANCHIND` op:
 
 ## Milestones
 
-- **S1 — table recovery (JumpBasic).** Given the `BRANCHIND`, recognize the
-  `*(base + index*ptrsize)` form on the SSA, read the table bytes from the function's
-  image, and produce `[(case_value, target_addr)]`. Port `JumpBasic::recoverModel` +
-  `sanityCheck` for the dominant form first; reuse/extend the existing constant
-  evaluator from `divrecover` for the index expression. *Foundation — no output yet.*
+- **S1 — table recovery (JumpBasic). ✅ DONE** (`decomp::jumptable`). `recover(fd, ssa,
+  image, indop)` traces the `BRANCHIND` target on the SSA — `target = (base +) sext(*(base
+  + index*esize))`, both absolute and table-relative forms — reads the table out of the
+  image (the datatest chunks), and returns the index `Def` + the case target addresses.
+  Tested: switchind's 11 targets recovered exactly. Foundation — no score movement yet
+  (that is S2+S3).
 - **S2 — CFG edges.** Wire the `BRANCHIND` block to the recovered targets in `cfg.rs`
   (and the guard's default edge), so the case blocks become reachable and decompile.
 - **S3 — switch structuring + emission.** A `Stmt::Switch(expr, Vec<(Vec<case>, body)>)`
