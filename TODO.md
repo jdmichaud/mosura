@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.619 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 18 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.615, good ≥ 17).
+Decompiler corpus: **0.622 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 20 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.62, good ≥ 19).
 
 ## Decompiler stages (D0–D6)
 
@@ -60,6 +60,9 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Done recently (reference)
 
+Loop-body CSE (a loop variable whose new value also appears in a body statement —
+a load that is stored and carried — is emitted once and referenced; threedim 0.65→0.76,
+corpus 0.619→0.622, 18→20 ≥0.70); FLOAT_* operators (build_op → `+`/`<`/`NAN()`…);
 Signed division + `x % C` modulo recovery (`recover_signed_div` + AST modulo idiom +
 multiply association; modulo 0.43→0.46, array-index-bound aggregate flat at 0.619);
 Division-by-constant recovery (`decomp::divrecover`: `calcDivisor` 128-bit port +

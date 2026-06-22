@@ -285,3 +285,24 @@ fn recovers_signed_division_and_modulo() {
     // the signed magic multiplier is gone for those forms
     assert!(!c.contains("0x5555555555555556"), "the magic multiply must be gone, got:\n{c}");
 }
+
+#[test]
+fn loop_body_cse_names_a_carried_value_once() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // threedim's loop loads a value, stores it elsewhere, and carries it to the return.
+    // The loaded value is used in the store AND carried by a loop variable; it must be
+    // emitted once (`var = *(...)`) and referenced, not re-inlined at each use.
+    let path = paths::datatests_dir().join("threedim.xml");
+    let Ok(dt) = datatest::parse_file(&path) else { return };
+    let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+    let lo = [("register".to_string(), 0u64, 4u32), ("register".to_string(), 0u64, 8u32)];
+    let c = f.decompile(&lo).expect("threedim decompile");
+    eprintln!("=== mosura loop-body CSE ===\n{c}");
+
+    // the loaded value is named once and the store references it (a bare var, not a
+    // re-inlined load) — so the big address sub-expression `<< 2` appears just twice
+    // (the load and the store address), not three times.
+    assert!(c.contains("= var_0;\n"), "the store references the carried value, got:\n{c}");
+    assert_eq!(c.matches("<< 2").count(), 2, "the loaded value must not be re-inlined, got:\n{c}");
+}

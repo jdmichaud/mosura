@@ -851,7 +851,7 @@ impl Funcdata {
         // calls whose result is unused (e.g. `printf`) — emit those as statements,
         // ahead of the variable updates. A call whose result is used folds into an
         // update instead; non-stack stores and branchy bodies aren't handled yet.
-        let mut body: Vec<Stmt> = Vec::new();
+        let mut stmts: Vec<Stmt> = Vec::new();
         if while_form {
             for (b, blk) in self.blocks.iter().enumerate() {
                 if b == h || b == exit || !dominates(ssa, h, b) {
@@ -860,12 +860,27 @@ impl Funcdata {
                 if self.ops[blk.end - 1].op.opcode == 5 {
                     return None; // branchy loop body — not handled
                 }
-                body.extend(self.block_stmts(b, ssa, lv, &no_ex, live));
+                stmts.extend(self.block_stmts(b, ssa, lv, &no_ex, live));
             }
         }
+        // loop-body CSE: a loop variable whose new value also appears verbatim in a body
+        // statement (a value that is used *and* carried — e.g. a load that is stored and
+        // returned) is emitted once at the top of the body and referenced, instead of
+        // being re-inlined at each use.
+        let mut hoisted: Vec<Stmt> = Vec::new();
+        let mut tail: Vec<Stmt> = Vec::new();
         for (n, e, _) in order_updates(&updates) {
-            body.push(Stmt::Assign(n.clone(), e.clone()));
+            let used = !matches!(e, Expr::Var(_) | Expr::Const(..)) && stmts.iter().any(|s| stmt_contains_expr(s, e));
+            if used {
+                stmts = stmts.iter().map(|s| subst_in_stmt(s, e, n)).collect();
+                hoisted.push(Stmt::Assign(n.clone(), e.clone()));
+            } else {
+                tail.push(Stmt::Assign(n.clone(), e.clone()));
+            }
         }
+        let mut body = hoisted;
+        body.extend(stmts);
+        body.extend(tail);
         Some(LoopParts { decls, body, cond, ret, while_form })
     }
 
@@ -1037,6 +1052,42 @@ fn order_updates(updates: &[(String, Expr, std::collections::HashSet<String>)]) 
         }
     }
     result
+}
+
+/// Does `target` occur as a sub-expression of `e`?
+fn contains_expr(e: &Expr, target: &Expr) -> bool {
+    if e == target {
+        return true;
+    }
+    match e {
+        Expr::Unary(_, a) | Expr::Deref(a) => contains_expr(a, target),
+        Expr::Binary(_, a, b) => contains_expr(a, target) || contains_expr(b, target),
+        Expr::Ternary(c, t, el) => contains_expr(c, target) || contains_expr(t, target) || contains_expr(el, target),
+        Expr::Call(_, args) | Expr::FnCall(_, args) => args.iter().any(|a| contains_expr(a, target)),
+        _ => false,
+    }
+}
+
+/// Does `target` occur in any expression of statement `s`? (Loop-body CSE.)
+fn stmt_contains_expr(s: &Stmt, target: &Expr) -> bool {
+    match s {
+        Stmt::Expr(e) | Stmt::Assign(_, e) | Stmt::Decl(_, e) | Stmt::Return(e) => contains_expr(e, target),
+        Stmt::Store(p, v) => contains_expr(p, target) || contains_expr(v, target),
+        _ => false,
+    }
+}
+
+/// Replace every occurrence of `target` with `Var(name)` in statement `s`.
+fn subst_in_stmt(s: &Stmt, target: &Expr, name: &str) -> Stmt {
+    let su = |e: &Expr| subst(e, target, name);
+    match s {
+        Stmt::Expr(e) => Stmt::Expr(su(e)),
+        Stmt::Assign(n, e) => Stmt::Assign(n.clone(), su(e)),
+        Stmt::Decl(n, e) => Stmt::Decl(n.clone(), su(e)),
+        Stmt::Return(e) => Stmt::Return(su(e)),
+        Stmt::Store(p, v) => Stmt::Store(su(p), su(v)),
+        other => other.clone(),
+    }
 }
 
 /// Replace every occurrence of `target` in `e` with `Var(name)`.
