@@ -57,11 +57,13 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Recommended order
 
-1. **Switches** (S1–S3, `docs/switches-plan.md`) — the largest untouched lever; clean
-   Ghidra match, high structural value.
-2. Float remainders (F2/F3/F5) + the **D3 varnode-overlap fix** (unlocks float 4-byte
-   returns and the 64-bit DIV overlap — a cross-cutting correctness win).
-3. Type system T1→ (large; modest comparator payoff — lower priority than it looks).
+1. The **D3 varnode-overlap fix** — a cross-cutting correctness win (unlocks float
+   4-byte returns / mixfloatint, the 64-bit DIV `EDX:EAX` overlap, and the `param ^ param`
+   garbage); also the cleanest fix for the spurious stale-RSP switch-case args.
+2. Switch finish: **S4** variants + **switch-in-loop** (switchmulti/switchloop) + recursive
+   disasm at jump targets (the dropped mis-aligned case).
+3. Float remainders (F2 constants, F3 NAN-fold, F5 SSE packing).
+4. Type system T1→ (large; modest comparator payoff — lower priority than it looks).
 
 ## Done recently (reference)
 
