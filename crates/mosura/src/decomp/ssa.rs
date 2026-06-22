@@ -387,7 +387,7 @@ mod tests {
                 blocks[s].pred.push(b);
             }
         }
-        Funcdata { entry: 0, ops: Vec::new(), blocks, switches: Vec::new() }
+        Funcdata { entry: 0, ops: Vec::new(), blocks, switches: Vec::new(), ..Default::default() }
     }
 
     #[test]

@@ -180,12 +180,16 @@ pub struct SwitchInfo {
 }
 
 /// A function's flattened p-code and its control-flow graph.
+#[derive(Default)]
 pub struct Funcdata {
     pub entry: u64,
     pub ops: Vec<FuncOp>,
     pub blocks: Vec<Block>,
     /// Jump tables recovered from `BRANCHIND`s (S2) — drives switch structuring (S3).
     pub switches: Vec<SwitchInfo>,
+    /// Memoized stack alias boundary (a pure function of the ops; computed once on first
+    /// use by `stack_alias_boundary`). `None` slot = not yet computed.
+    pub alias_boundary: std::cell::OnceCell<Option<i64>>,
 }
 
 /// Branch target of op `i` as an op index: a p-code-relative const, or an address.
@@ -314,7 +318,7 @@ impl Funcdata {
         // an instruction start (mosura's linear disasm may mis-align on a case that is
         // not also reached by fall-through; such a case is dropped).
         let mut raw_switches: Vec<(usize, super::ssa::Def, Vec<(u64, usize)>)> = Vec::new();
-        let scratch = Funcdata { entry: base, ops: ops.clone(), blocks: cut_and_wire(&ops, &leaders, &addr_index, &switch_edges), switches: Vec::new() };
+        let scratch = Funcdata { entry: base, ops: ops.clone(), blocks: cut_and_wire(&ops, &leaders, &addr_index, &switch_edges), switches: Vec::new(), ..Default::default() };
         // Only recover switches in loop-free functions: a switch inside a loop produces
         // cyclic case bodies the structurer can't yet handle, and wiring its edges would
         // only break the (partial) loop decompilation. Such functions keep their old CFG.
@@ -352,7 +356,7 @@ impl Funcdata {
             })
             .collect();
 
-        Funcdata { entry: base, ops, blocks, switches }
+        Funcdata { entry: base, ops, blocks, switches, ..Default::default() }
     }
 
     /// A block has a back-edge if any successor begins at or before it (a loop).

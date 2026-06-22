@@ -453,13 +453,24 @@ impl Funcdata {
         }
     }
 
-    /// The stack alias boundary: the lowest (deepest) local frame offset whose address
-    /// is taken — a port of Ghidra `AliasChecker::gatherAdditiveBase`. Walk forward from
-    /// the RBP spacebase through ADD/SUB/COPY chains; any derived value with a
-    /// *non-additive* use (a real pointer use: call arg, store, load, compare) is an
-    /// address taken at its offset. Stack slots at or above the boundary are aliased and
-    /// kept symbolic. `None` if no local address is ever taken.
+    /// The stack alias boundary (memoized — it is a pure function of the ops, so the
+    /// per-function computation runs once).
     fn stack_alias_boundary(&self, ssa: &Ssa) -> Option<i64> {
+        if let Some(&b) = self.alias_boundary.get() {
+            return b;
+        }
+        let b = self.compute_alias_boundary(ssa);
+        let _ = self.alias_boundary.set(b);
+        b
+    }
+
+    /// The lowest (deepest) local frame offset whose address is taken — a port of Ghidra
+    /// `AliasChecker::gatherAdditiveBase`. Walk forward from the RBP spacebase through
+    /// ADD/SUB/COPY chains; any derived value with a *non-additive* use (a real pointer
+    /// use: call arg, store, load, compare) is an address taken at its offset. Stack
+    /// slots at or above the boundary are aliased and kept symbolic. `None` if no local
+    /// address is ever taken.
+    fn compute_alias_boundary(&self, ssa: &Ssa) -> Option<i64> {
         // reverse use map: each def → the ops (with input position) that read it
         let mut uses_of: HashMap<Def, Vec<(usize, usize)>> = HashMap::new();
         for (&(op, pos), &d) in &ssa.uses {
