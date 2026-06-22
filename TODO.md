@@ -34,7 +34,9 @@ for the full rationale and architecture.
   - [x] Build a `Funcdata` from the SLEIGH lifter's raw p-code (`build.rs::raw_funcdata`)
         — produces faithful Ghidra-shaped raw p-code (`output = OPCODE inputs`); graph
         consistency tested on real functions.
-  - [ ] `Action`/`Rule` framework skeleton + one trivial action wired through.
+  - [x] `Action`/`Rule` framework skeleton (`action.rs`): `Action`/`ActionGroup`
+        (+restart=`ActionRestartGroup` fixpoint), `Rule`/`ActionPool` (opcode dispatch to
+        fixpoint), `ActionStart`. Fixpoint loop + rule dispatch tested.
   - [ ] `tests/ir_parity.rs` — structural-exact IR diff vs Ghidra (the new gate).
 - [ ] **P1 — Heritage** (`heritage.cc`): real SSA + `guard`/`refinement`
       (`normalizeReadSize`/`WriteSize`), MULTIEQUAL/INDIRECT placement, addrtied.

@@ -6,6 +6,7 @@
 //! IR. It is being built alongside the `decomp` prototype, which it retires stage by
 //! stage. Status / phases: `TODO.md`.
 
+pub mod action;
 pub mod block;
 pub mod build;
 pub mod funcdata;
@@ -14,6 +15,7 @@ pub mod opcode;
 pub mod space;
 pub mod varnode;
 
+pub use action::{Action, ActionGroup, ActionPool, ActionStart, Rule};
 pub use block::{BlockBasic, BlockId};
 pub use funcdata::Funcdata;
 pub use op::{OpId, PcodeOp, SeqNum};
