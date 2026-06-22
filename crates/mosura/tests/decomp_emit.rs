@@ -245,3 +245,23 @@ fn names_a_multiply_used_value_once() {
     // store (once) — not three times, as it did when the load was re-inlined.
     assert_eq!(c.matches("<< 2").count(), 2, "the load expression must not be duplicated, got:\n{c}");
 }
+
+#[test]
+fn recovers_division_by_constant() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // divopt divides an array of values by small constants; the compiler emits each as
+    // a magic-number multiply (`(x*magic) >> n` with an add-back correction), which
+    // Ghidra's RuleDivOpt family recovers as `x / C`. Read it from the datatest corpus.
+    let path = paths::datatests_dir().join("divopt.xml");
+    let Ok(dt) = datatest::parse_file(&path) else { return };
+    let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+    let lo = [("register".to_string(), 0u64, 4u32), ("register".to_string(), 0u64, 8u32)];
+    let c = f.decompile(&lo).expect("divopt decompile");
+    eprintln!("=== mosura recovered division by a constant ===\n{c}");
+
+    // the divisions are recovered to `/ C` with the exact divisors Ghidra finds...
+    assert!(c.contains("/ 0x51") && c.contains("/ 0x59") && c.contains("/ 99"), "divisors recovered, got:\n{c}");
+    // ...and the magic multiplier no longer appears for the recovered forms
+    assert!(!c.contains("0x948b0fcd6e9e0653"), "the magic multiply must be gone, got:\n{c}");
+}

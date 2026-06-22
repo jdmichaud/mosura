@@ -176,6 +176,14 @@ impl Funcdata {
     fn build_op(&self, i: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         {
             let op = &self.ops[i].op;
+            // division by a constant, recovered from the compiler's magic-number
+            // multiply (Ghidra RuleDivOpt family) → x / C
+            if matches!(opcode_name(op.opcode), "INT_RIGHT" | "INT_SRIGHT") {
+                if let Some(df) = super::divrecover::recover_div(self, ssa, i) {
+                    let sz = op.out.as_ref().map_or(8, |o| o.size);
+                    return bin("/", self.build_expr(df.x, ssa, lv, ex, depth + 1), Expr::Const(df.divisor, sz));
+                }
+            }
             let a = |pos: usize| self.input_expr(i, pos, ssa, lv, ex, depth + 1);
                 match opcode_name(op.opcode) {
                     "COPY" | "INT_ZEXT" | "INT_SEXT" | "SUBPIECE" => a(0),
@@ -304,7 +312,10 @@ impl Funcdata {
             *desc.entry(r).or_default() += 1;
         }
 
-        let mut cand: Vec<usize> = desc.iter().filter(|(_, &c)| c >= 2).map(|(&i, _)| i).collect();
+        // ops consumed by a recovered division render as `x / C`, not as themselves —
+        // never name them (the multiply etc. would otherwise leak out as dead temps)
+        let consumed = super::divrecover::consumed_ops(self, ssa);
+        let mut cand: Vec<usize> = desc.iter().filter(|(&i, &c)| c >= 2 && !consumed.contains(&i)).map(|(&i, _)| i).collect();
         cand.sort_unstable();
         let mut marked: std::collections::HashSet<usize> = std::collections::HashSet::new();
         // pass 1 — too many descendants (baseExplicit, maxref): always explicit

@@ -6,6 +6,7 @@
 pub mod ccompare;
 pub mod cfg;
 pub mod cprint;
+pub mod divrecover;
 pub mod simplify;
 pub mod ssa;
 

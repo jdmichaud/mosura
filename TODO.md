@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.615 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 17 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.61, good ≥ 16).
+Decompiler corpus: **0.619 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 18 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.615, good ≥ 17).
 
 ## Decompiler stages (D0–D6)
 
@@ -27,6 +27,10 @@ don't invent heuristics (see `AGENT.md`).
 - [ ] **Type system** (large) — port `TypeFactory` + `ActionInferTypes`: int1/2/4/8,
       `uint`, `xunknown`/`undefined` widths, type propagation. Biggest single lever
       (mosura is int-everything today).
+- [~] **Division/remainder by constant** — `decomp::divrecover` ports
+      `RuleDivOpt::calcDivisor` + the unsigned add-back form (`RuleDivTermAdd2`); divopt
+      0.59→0.78. Remaining: signed division (modulo/modulo2 use SEXT sign-correction),
+      the `(x>>k)*m` and bare-`x*m`-SUBPIECE forms, and the `x % C` modulo idiom.
 - [ ] **Floats** (large) — no float support yet (floatprint/floatcast/floatconv/
       longdouble/nan/mixfloatint score 0.13–0.52). `FLOAT_*` p-code, float types,
       emulation, printing.
@@ -41,6 +45,8 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Done recently (reference)
 
+Division-by-constant recovery (`decomp::divrecover`: `calcDivisor` 128-bit port +
+unsigned add-back recogniser → `x / C`; divopt 0.59→0.78, corpus 0.615→0.619);
 CSE / explicit-temp naming (Ghidra `ActionMarkExplicit`: a value with >2 descendants,
 or 2 with >2 duplicated terminals, becomes a named temp; spacebase/stack-pointer values
 excluded; straight-line path only so far — `twodim` 0.60→0.76, corpus 0.605→0.615);
