@@ -62,7 +62,7 @@ for the full rationale and architecture.
         clean overlap gap (twodim/threedim fully, elseif reduced), SSA invariants hold.
         REMAINING: write side (`normalizeWriteSize`/PIECE for partial writes, AH-type
         offset+1), cross-offset CONCAT.
-- [~] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules) — in progress
+- [~] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules) — CORE DONE
   - [x] Op-rewrite primitives (`funcdata.rs`): `op_set_opcode`, `op_remove_input`,
         `total_replace`, `mark_dead`.
   - [x] Constant folding (`rules.rs::RuleConstFold` + `eval_const`, mirroring emu's
@@ -70,8 +70,11 @@ for the full rationale and architecture.
         + integration: folds to fixpoint on real functions.
   - [x] `RuleTermOrder` (constant → slot 1), `RuleIdentityEl` (x+0/x*1/x*0),
         `RuleTrivialShift` (x<<0, shift≥width→0). Unit-tested + in the integration pool.
-  - [ ] More rules: `RuleCollectTerms` (a*c1+a*c2), `RuleSub2Add`, SUBPIECE/MULTIEQUAL
-        pull-through, and the long tail (Ghidra has ~100; add as functions need them).
+  - [x] Pipeline assembled (`pipeline.rs`): `ActionHeritage` → `default_rule_pool`;
+        `pipeline::decompile(f)` runs end-to-end, tested.
+  - [ ] Incremental rule tail: `RuleCollectTerms` (a*c1+a*c2 — highest value, needs the
+        additive-tree machinery), `RuleSub2Add`, SUBPIECE/MULTIEQUAL pull-through, +
+        Ghidra's ~95 others. Each is a drop-in; add as concrete functions need them.
   - [ ] Assemble the universal-action pipeline (heritage → pool → …).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
