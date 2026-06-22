@@ -61,10 +61,12 @@ faked. (See the memory's framing correction: port, don't invent heuristics.)
 
 ## Milestones (each faithful, each measured)
 
-- **T0 — Datatype + TypeFactory core.** Port the `Datatype` lattice (start: void,
-  unknown, int/uint by size, bool, ptr, array) + `typeOrder` + a `TypeFactory` that
-  interns them. No output change. Unit-test `typeOrder`/`getExactPiece` against Ghidra
-  values. *Foundation only — won't move the score.*
+- **T0 — Datatype + TypeFactory core. ✅ DONE** (`decomp::types`). The `Datatype`
+  lattice (void, unknown, int/uint by size, bool, float, code, ptr, array, spacebase) +
+  `type_order` (Ghidra `Datatype::compare`/`typeOrder` — sub-meta-type then size then
+  recursive pointee/element) + `get_exact_piece`. Rust value types, so no interning
+  factory — just constructors. Unit-tested against Ghidra's specificity rules. No output
+  change (foundation).
 - **T1 — temp-type seeding + the propagation skeleton.** Port `ActionInferTypes::apply`
   + `propagateOneType`/`propagateTypeEdge` as a fixed-point over mosura's SSA, with a
   *minimal* set of per-op `propagate` rules (COPY/LOAD/STORE/PTRADD/MULTIEQUAL). Produce

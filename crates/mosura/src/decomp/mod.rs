@@ -9,5 +9,6 @@ pub mod cprint;
 pub mod divrecover;
 pub mod simplify;
 pub mod ssa;
+pub mod types;
 
 pub use cfg::Funcdata;
