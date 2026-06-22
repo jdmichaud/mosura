@@ -345,4 +345,6 @@ fn names_stack_slots_instead_of_raw_pointer_arithmetic() {
     // frame-pointer-omitted locals are named (aStack_*), not raw `in_register_20` math
     assert!(c.contains("aStack_"), "stack slots must be named, got:\n{c}");
     assert!(!c.contains("in_register_20") && !c.contains("in_register_28"), "no raw stack-pointer arithmetic, got:\n{c}");
+    // and the named locals are declared at the top of the body, as Ghidra does
+    assert!(c.contains("undefined8 aStack_"), "stack locals must be declared, got:\n{c}");
 }

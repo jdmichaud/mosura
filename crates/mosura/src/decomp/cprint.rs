@@ -581,8 +581,12 @@ impl Funcdata {
             }
         };
         let body = name_stack_stmt(body); // raw RSP/RBP arithmetic → named stack locals
+        // declare the stack locals at the top of the body, as Ghidra does
+        let mut stack_vars = std::collections::BTreeSet::new();
+        collect_stack_vars(&body, &mut stack_vars);
+        let decls: String = stack_vars.iter().map(|n| format!("  undefined8 {n};\n")).collect();
         let rty = if void_ret { "void" } else { "int" };
-        Some(format!("{rty} func({})\n{{\n{}}}", self.params_sig(&ssa), emit_stmt(&body, 1)))
+        Some(format!("{rty} func({})\n{{\n{decls}{}}}", self.params_sig(&ssa), emit_stmt(&body, 1)))
     }
 
     /// Structure a recovered jump table into `switch (index) { case … }` (S3): emit the
@@ -1192,6 +1196,59 @@ fn name_stack_stmt(s: Stmt) -> Stmt {
         Stmt::For(i, c, u, b) => Stmt::For(Box::new(name_stack_stmt(*i)), name_stack(c), Box::new(name_stack_stmt(*u)), Box::new(name_stack_stmt(*b))),
         Stmt::Switch(e, cases, def) => {
             Stmt::Switch(name_stack(e), cases.into_iter().map(|(vals, body)| (vals, name_stack_stmt(body))).collect(), def.map(|d| Box::new(name_stack_stmt(*d))))
+        }
+    }
+}
+
+/// The distinct named stack locals (`aStack_*`) referenced anywhere in a statement —
+/// both in expressions and as assignment targets — so they can be declared.
+fn collect_stack_vars(s: &Stmt, out: &mut std::collections::BTreeSet<String>) {
+    let add_expr = |e: &Expr, out: &mut std::collections::BTreeSet<String>| {
+        out.extend(expr_vars(e).into_iter().filter(|v| v.starts_with("aStack_")));
+    };
+    let add_name = |n: &str, out: &mut std::collections::BTreeSet<String>| {
+        if n.starts_with("aStack_") {
+            out.insert(n.to_string());
+        }
+    };
+    match s {
+        Stmt::Return(e) | Stmt::Expr(e) => add_expr(e, out),
+        Stmt::Decl(n, e) | Stmt::Assign(n, e) => {
+            add_name(n, out);
+            add_expr(e, out);
+        }
+        Stmt::If(c, t, el) => {
+            add_expr(c, out);
+            collect_stack_vars(t, out);
+            if let Some(e) = el {
+                collect_stack_vars(e, out);
+            }
+        }
+        Stmt::Seq(v) => v.iter().for_each(|s| collect_stack_vars(s, out)),
+        Stmt::Store(a, b) => {
+            add_expr(a, out);
+            add_expr(b, out);
+        }
+        Stmt::DoWhile(b, c) => {
+            collect_stack_vars(b, out);
+            add_expr(c, out);
+        }
+        Stmt::While(c, b) => {
+            add_expr(c, out);
+            collect_stack_vars(b, out);
+        }
+        Stmt::For(i, c, u, b) => {
+            collect_stack_vars(i, out);
+            add_expr(c, out);
+            collect_stack_vars(u, out);
+            collect_stack_vars(b, out);
+        }
+        Stmt::Switch(e, cases, def) => {
+            add_expr(e, out);
+            cases.iter().for_each(|(_, b)| collect_stack_vars(b, out));
+            if let Some(d) = def {
+                collect_stack_vars(d, out);
+            }
         }
     }
 }
