@@ -42,9 +42,13 @@ don't invent heuristics (see `AGENT.md`).
       lever the comparator rewards: appears in twodim/threedim/divopt/modulo/offsetarray/
       nestedoffset/… Needs pointer element-size inference (part of the type system) to
       divide the byte offset by the element width. Would compound with all the above.
-- [ ] **Floats** (large) — no float support yet (floatprint/floatcast/floatconv/
-      longdouble/nan/mixfloatint score 0.13–0.52). `FLOAT_*` p-code, float types,
-      emulation, printing.
+- [~] **Floats** (large) — `FLOAT_*` ops now render as C operators + `ABS`/`SQRT`/`NAN`
+      intrinsics (`build_op`); nan 0.33→0.36. But the float datatests are blocked on the
+      hard parts: **XMM register modeling** (float params in XMM0-7 stride 0x40, float
+      return in XMM0 — mosura's int-only param map returns `void` for mixfloatint),
+      **SSE packing** (CONCAT44/SUB16xx for floatcast/floatconv), **globals**
+      (floatprint stores to absolute `ram` addresses), and the unordered-compare /
+      NAN idioms. Each substantial; floats remain a large multi-feature effort.
 - [ ] **Switch / jumptable recovery** (large) — no switch recovery (switchind/switchhide/
       ifswitch score low). Ghidra jumptable analysis (`BRANCHIND` target recovery) +
       switch-statement structuring.

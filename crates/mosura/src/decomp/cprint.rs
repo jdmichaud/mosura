@@ -215,6 +215,24 @@ impl Funcdata {
                     "INT_NEGATE" => Expr::Unary("~", Box::new(a(0))),
                     "INT_2COMP" => Expr::Unary("-", Box::new(a(0))),
                     "BOOL_NEGATE" => Expr::Unary("!", Box::new(a(0))),
+                    // floating-point ops render with the same C operators; the special
+                    // functions (abs/sqrt/nan) are Ghidra's PrintC intrinsic macros
+                    "FLOAT_ADD" => bin("+", a(0), a(1)),
+                    "FLOAT_SUB" => bin("-", a(0), a(1)),
+                    "FLOAT_MULT" => bin("*", a(0), a(1)),
+                    "FLOAT_DIV" => bin("/", a(0), a(1)),
+                    "FLOAT_EQUAL" => bin("==", a(0), a(1)),
+                    "FLOAT_NOTEQUAL" => bin("!=", a(0), a(1)),
+                    "FLOAT_LESS" => bin("<", a(0), a(1)),
+                    "FLOAT_LESSEQUAL" => bin("<=", a(0), a(1)),
+                    "FLOAT_NEG" => Expr::Unary("-", Box::new(a(0))),
+                    "FLOAT_ABS" => Expr::Call("ABS", vec![a(0)]),
+                    "FLOAT_SQRT" => Expr::Call("SQRT", vec![a(0)]),
+                    "FLOAT_NAN" => Expr::Call("NAN", vec![a(0)]),
+                    // conversions: int→float / float→float widen-narrow are casts that
+                    // Ghidra prints, but the cast type is erased by the comparator — keep
+                    // the value transparent for now (the float-width cast comes with XMM).
+                    "FLOAT_INT2FLOAT" | "FLOAT_FLOAT2FLOAT" => a(0),
                     "LOAD" => Expr::Deref(Box::new(a(1))), // ins[1] is the pointer
                     "CALL" | "CALLIND" => {
                         // ins[0] = target address; ins[1..] = argument registers.
