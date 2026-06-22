@@ -174,6 +174,36 @@ struct LoopParts {
     while_form: bool,
 }
 
+/// Read-only context threaded through [`Funcdata::structure_region`].
+struct Region<'a> {
+    ssa: &'a Ssa,
+    lv: &'a LoopVars,
+    loops: &'a HashMap<usize, LoopParts>,
+    live: &'a super::simplify::Liveness,
+    ex: &'a Explicit,
+    pidom: &'a [usize],
+}
+
+/// Is `s` an empty (no-op) statement — an empty `Seq`?
+fn is_empty_stmt(s: &Stmt) -> bool {
+    matches!(s, Stmt::Seq(v) if v.is_empty())
+}
+
+/// Logically negate a branch condition, flipping the relational operator where possible
+/// (so `if (!cond)` reads as `a >= b` rather than `!(a < b)`).
+fn negate_cond(e: Expr) -> Expr {
+    match e {
+        Expr::Binary("==", a, b) => Expr::Binary("!=", a, b),
+        Expr::Binary("!=", a, b) => Expr::Binary("==", a, b),
+        Expr::Binary("<", a, b) => Expr::Binary(">=", a, b),
+        Expr::Binary(">=", a, b) => Expr::Binary("<", a, b),
+        Expr::Binary(">", a, b) => Expr::Binary("<=", a, b),
+        Expr::Binary("<=", a, b) => Expr::Binary(">", a, b),
+        Expr::Unary("!", a) => *a,
+        other => Expr::Unary("!", Box::new(other)),
+    }
+}
+
 const MAX_DEPTH: u32 = 128;
 
 impl Funcdata {
@@ -449,6 +479,89 @@ impl Funcdata {
         }
     }
 
+    /// Structure the region of blocks from `b` up to (but excluding) the follow node
+    /// `stop`, into nested statements — post-dominator-based structuring (Ghidra's
+    /// `BlockGraph`): each block's side effects are emitted, a `CBRANCH` becomes an
+    /// `if`/`else` whose arms are bounded by the branch's post-dominator (so reconverging
+    /// paths are structured once, not duplicated), and control then continues at that
+    /// merge point. `stop == usize::MAX` means "until a function exit".
+    fn structure_region(&self, b: usize, stop: usize, r: &Region, depth: u32) -> Stmt {
+        if depth > MAX_DEPTH || b == stop || b >= self.blocks.len() {
+            return Stmt::Seq(Vec::new());
+        }
+        // a loop header: emit the loop (terminal — loop then return)
+        if let Some(lp) = r.loops.get(&b) {
+            return self.emit_loop(lp);
+        }
+        if self.blocks[b].end == self.blocks[b].start {
+            let next = self.blocks[b].succ.first().copied().unwrap_or(stop);
+            return self.structure_region(next, stop, r, depth + 1);
+        }
+        let blk = &self.blocks[b];
+        let last = blk.end - 1;
+        let mut seq: Vec<Stmt> = self.block_stmts(b, r.ssa, r.lv, r.ex, r.live);
+        match self.ops[last].op.opcode {
+            10 => {
+                let d = self.ret_def(last, r.ssa);
+                seq.push(Stmt::Return(simplify(self.build_expr(d, r.ssa, r.lv, r.ex, 0))));
+            }
+            5 => {
+                let cond = simplify(self.input_expr(last, 1, r.ssa, r.lv, r.ex, 0)); // succ[0] taken when true
+                let follow = r.pidom.get(b).copied().unwrap_or(usize::MAX);
+                let fstop = if follow == usize::MAX { stop } else { follow };
+                let then_s = blk.succ.first().map_or(Stmt::Seq(Vec::new()), |&t| self.structure_region(t, fstop, r, depth + 1));
+                let else_s = blk.succ.get(1).map_or(Stmt::Seq(Vec::new()), |&e| self.structure_region(e, fstop, r, depth + 1));
+                let (te, ee) = (is_empty_stmt(&then_s), is_empty_stmt(&else_s));
+                if te && !ee {
+                    seq.push(Stmt::If(negate_cond(cond), Box::new(else_s), None)); // `if (!cond)` reads better than an empty then
+                } else if ee {
+                    seq.push(Stmt::If(cond, Box::new(then_s), None));
+                } else {
+                    seq.push(Stmt::If(cond, Box::new(then_s), Some(Box::new(else_s))));
+                }
+                if follow != usize::MAX && follow != stop {
+                    let cont = self.structure_region(follow, stop, r, depth + 1);
+                    if !is_empty_stmt(&cont) {
+                        seq.push(cont);
+                    }
+                }
+            }
+            _ => {
+                let next = blk.succ.first().copied().unwrap_or(stop);
+                let cont = self.structure_region(next, stop, r, depth + 1);
+                if !is_empty_stmt(&cont) {
+                    seq.push(cont);
+                }
+            }
+        }
+        if seq.len() == 1 {
+            seq.pop().unwrap()
+        } else {
+            Stmt::Seq(seq)
+        }
+    }
+
+    /// Emit a recovered loop (`LoopParts`) as a `for`/`while`/`do-while` plus the
+    /// post-loop return — shared by the old and post-dominator structurers.
+    fn emit_loop(&self, lp: &LoopParts) -> Stmt {
+        let mut seq: Vec<Stmt> = lp.decls.iter().map(|(n, e)| Stmt::Decl(n.clone(), e.clone())).collect();
+        if lp.while_form {
+            let cond_vars = expr_vars(&lp.cond);
+            let incr = lp.body.iter().rposition(|s| matches!(s, Stmt::Assign(n, _) if cond_vars.contains(n)));
+            match incr {
+                Some(ip) => {
+                    let rest: Vec<Stmt> = lp.body.iter().enumerate().filter(|(k, _)| *k != ip).map(|(_, s)| s.clone()).collect();
+                    seq.push(Stmt::For(Box::new(Stmt::Seq(Vec::new())), lp.cond.clone(), Box::new(lp.body[ip].clone()), Box::new(Stmt::Seq(rest))));
+                }
+                None => seq.push(Stmt::While(lp.cond.clone(), Box::new(Stmt::Seq(lp.body.clone())))),
+            }
+        } else {
+            seq.push(Stmt::DoWhile(Box::new(Stmt::Seq(lp.body.clone())), lp.cond.clone()));
+        }
+        seq.push(Stmt::Return(lp.ret.clone()));
+        Stmt::Seq(seq)
+    }
+
     /// Build the statement structure of block `b` (no-loop, reducible CFG): a
     /// `RETURN` ends a path; a `CBRANCH` becomes `if`/`else` over its two
     /// successors. Assumes the arms terminate (early-return style) — the
@@ -459,29 +572,7 @@ impl Funcdata {
         }
         // a loop header: emit declarations + do-while, then continue at the exit
         if let Some(lp) = loops.get(&b) {
-            let mut seq: Vec<Stmt> = lp.decls.iter().map(|(n, e)| Stmt::Decl(n.clone(), e.clone())).collect();
-            if lp.while_form {
-                // recover a for-loop when a condition variable is incremented at the
-                // end of the body (its update becomes the for-increment)
-                let cond_vars = expr_vars(&lp.cond);
-                let incr = lp.body.iter().rposition(|s| matches!(s, Stmt::Assign(n, _) if cond_vars.contains(n)));
-                match incr {
-                    Some(ip) => {
-                        let rest: Vec<Stmt> = lp.body.iter().enumerate().filter(|(k, _)| *k != ip).map(|(_, s)| s.clone()).collect();
-                        seq.push(Stmt::For(
-                            Box::new(Stmt::Seq(Vec::new())),
-                            lp.cond.clone(),
-                            Box::new(lp.body[ip].clone()),
-                            Box::new(Stmt::Seq(rest)),
-                        ));
-                    }
-                    None => seq.push(Stmt::While(lp.cond.clone(), Box::new(Stmt::Seq(lp.body.clone())))),
-                }
-            } else {
-                seq.push(Stmt::DoWhile(Box::new(Stmt::Seq(lp.body.clone())), lp.cond.clone()));
-            }
-            seq.push(Stmt::Return(lp.ret.clone()));
-            return Stmt::Seq(seq);
+            return self.emit_loop(lp);
         }
         if self.blocks[b].end == self.blocks[b].start {
             return Stmt::Seq(Vec::new());
@@ -576,8 +667,12 @@ impl Funcdata {
                     Stmt::Seq(seq)
                 }
             } else {
-                // multiple returns → structure into if/else
-                self.structure(0, &ssa, &no_lv, &no_loops, 0)
+                // multiple returns → post-dominator structuring into if/else
+                let live = self.dead_code(&ssa);
+                let ex = self.mark_explicit(&ssa, &live);
+                let pidom = self.post_idom();
+                let r = Region { ssa: &ssa, lv: &no_lv, loops: &no_loops, live: &live, ex: &ex, pidom: &pidom };
+                self.structure_region(0, usize::MAX, &r, 0)
             }
         };
         let body = name_stack_stmt(body); // raw RSP/RBP arithmetic → named stack locals
@@ -611,16 +706,10 @@ impl Funcdata {
             by_target.entry(tb).or_default().push(cv);
         }
         let default_block = by_target.iter().max_by_key(|(_, v)| v.len()).map(|(&b, _)| b);
-        // a case body = the target block's side effects (its call) then its terminator
-        let case_body = |b: usize| -> Stmt {
-            let mut s = self.block_stmts(b, ssa, &no_lv, &no_ex, &live);
-            s.push(self.structure(b, ssa, &no_lv, &no_loops, 0));
-            if s.len() == 1 {
-                s.pop().unwrap()
-            } else {
-                Stmt::Seq(s)
-            }
-        };
+        // a case body = the target block's side effects and control flow, structured
+        let pidom = self.post_idom();
+        let r = Region { ssa, lv: &no_lv, loops: &no_loops, live: &live, ex: &no_ex, pidom: &pidom };
+        let case_body = |b: usize| -> Stmt { self.structure_region(b, usize::MAX, &r, 0) };
         let mut cases: Vec<(Vec<u64>, Stmt)> = by_target
             .iter()
             .filter(|(&b, _)| Some(b) != default_block)
@@ -801,7 +890,7 @@ impl Funcdata {
     /// arguments — the latter carries loop variables initialized from a parameter).
     fn params_sig(&self, ssa: &Ssa) -> String {
         let mut params: Vec<usize> = Vec::new();
-        let mut note = |space: &str, off: u64, params: &mut Vec<usize>| {
+        let note = |space: &str, off: u64, params: &mut Vec<usize>| {
             if let Some(name) = x86_param(space, off) {
                 if let Ok(n) = name[6..].parse::<usize>() {
                     if !params.contains(&n) {

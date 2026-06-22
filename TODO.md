@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.746 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+Decompiler corpus: **0.752 avg structural similarity to Ghidra, 51/62 x86-64 datatests
 decompiled, 33 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.74, good ≥ 32).
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.75, good ≥ 32).
 
 ## Decompiler stages (D0–D6)
 
@@ -19,7 +19,8 @@ ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.74, good ≥ 32).
       0.53→0.74, floatprint 0.79→0.90, floatconv ↑). GP overlap (EAX/RAX, 64-bit DIV
       `EDX:EAX`) still exact-size — a wider GP rule perturbs call-arg recovery (net
       negative); needs Ghidra's byte-level coverage to do safely.
-- [x] D4 — control-flow structuring (`?:`, if/else, do-while, while/for with bodies)
+- [x] D4 — control-flow structuring (`?:`, if/else, do-while, while/for; post-dominator
+      `structure_region` for multi-return + switch case bodies)
 - [x] D5 — C emission (PrintC) + structural comparator
 - [~] D6 — datatest parity (measurement harness + several iterations done; ongoing)
 

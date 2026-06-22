@@ -105,6 +105,102 @@ impl Funcdata {
         Dominators { idom, post }
     }
 
+    /// Immediate post-dominator of each block: the nearest block through which every
+    /// path from `b` to a function exit passes (`usize::MAX` if none / unreachable).
+    /// Computed as the dominator tree of the reverse CFG joined at a virtual exit — the
+    /// follow node of an `if` is the post-dominator of its branch block.
+    pub fn post_idom(&self) -> Vec<usize> {
+        let n = self.blocks.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let exit = n; // virtual exit node
+        let fdom = self.dominators();
+        let reach: Vec<bool> = (0..n).map(|b| fdom.post[b] != usize::MAX).collect();
+        let succ_r = |b: usize| -> Vec<usize> {
+            // forward successors of b that are reachable (b's predecessors in the reverse CFG)
+            self.blocks[b].succ.iter().copied().filter(|&s| reach[s]).collect()
+        };
+        let is_sink = |b: usize| reach[b] && !self.blocks[b].succ.iter().any(|&s| reach[s]);
+
+        // reverse-CFG adjacency for the postorder walk: exit -> every sink, b -> forward preds
+        let mut radj = vec![Vec::new(); n + 1];
+        for b in 0..n {
+            if !reach[b] {
+                continue;
+            }
+            if is_sink(b) {
+                radj[exit].push(b);
+            }
+            for &p in &self.blocks[b].pred {
+                if reach[p] {
+                    radj[b].push(p);
+                }
+            }
+        }
+
+        // postorder of the reverse CFG from the virtual exit
+        let mut post = vec![usize::MAX; n + 1];
+        let mut order = Vec::new();
+        let mut visited = vec![false; n + 1];
+        visited[exit] = true;
+        let mut stack = vec![(exit, 0usize)];
+        while let Some(&(b, ci)) = stack.last() {
+            if ci < radj[b].len() {
+                stack.last_mut().unwrap().1 += 1;
+                let s = radj[b][ci];
+                if !visited[s] {
+                    visited[s] = true;
+                    stack.push((s, 0));
+                }
+            } else {
+                post[b] = order.len();
+                order.push(b);
+                stack.pop();
+            }
+        }
+        let rpo: Vec<usize> = order.iter().rev().copied().collect();
+
+        let intersect = |mut a: usize, mut b: usize, idom: &[usize], post: &[usize]| {
+            while a != b {
+                while post[a] < post[b] {
+                    a = idom[a];
+                }
+                while post[b] < post[a] {
+                    b = idom[b];
+                }
+            }
+            a
+        };
+        let mut idom = vec![usize::MAX; n + 1];
+        idom[exit] = exit;
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &b in &rpo {
+                if b == exit {
+                    continue;
+                }
+                // reverse-CFG predecessors of b = forward successors (+ exit if b is a sink)
+                let mut preds = succ_r(b);
+                if is_sink(b) {
+                    preds.push(exit);
+                }
+                let mut new_idom = usize::MAX;
+                for p in preds {
+                    if idom[p] != usize::MAX {
+                        new_idom = if new_idom == usize::MAX { p } else { intersect(p, new_idom, &idom, &post) };
+                    }
+                }
+                if new_idom != usize::MAX && idom[b] != new_idom {
+                    idom[b] = new_idom;
+                    changed = true;
+                }
+            }
+        }
+        (0..n).map(|b| if idom[b] == exit { usize::MAX } else { idom[b] }).collect()
+    }
+
     /// Dominance frontier of every block.
     pub fn dominance_frontier(&self, dom: &Dominators) -> Vec<Vec<usize>> {
         let n = self.blocks.len();
@@ -271,6 +367,7 @@ fn resolve(stack: &RenameStack, space: &str, offset: u64, size: u32) -> Def {
 #[cfg(test)]
 mod tests {
     use super::loc_key;
+    use crate::decomp::cfg::{Block, Funcdata};
 
     #[test]
     fn xmm_registers_merge_across_width_but_gp_stays_exact() {
@@ -281,6 +378,37 @@ mod tests {
         assert_ne!(loc_key("register", 0x0, 4), loc_key("register", 0x0, 8));
         // stack/unique stay exact-size too.
         assert_ne!(loc_key("stack", 0x10, 4), loc_key("stack", 0x10, 8));
+    }
+
+    fn cfg(succ: &[&[usize]]) -> Funcdata {
+        let mut blocks: Vec<Block> = succ.iter().map(|s| Block { start: 0, end: 0, succ: s.to_vec(), pred: Vec::new() }).collect();
+        for b in 0..blocks.len() {
+            for s in blocks[b].succ.clone() {
+                blocks[s].pred.push(b);
+            }
+        }
+        Funcdata { entry: 0, ops: Vec::new(), blocks, switches: Vec::new() }
+    }
+
+    #[test]
+    fn post_idom_of_a_diamond_is_the_merge() {
+        // 0 -> {1,2}; 1,2 -> 3 (exit). The follow node of the branch at 0 is 3.
+        let f = cfg(&[&[1, 2], &[3], &[3], &[]]);
+        let p = f.post_idom();
+        assert_eq!(p[0], 3, "branch block post-dominated by the merge");
+        assert_eq!(p[1], 3);
+        assert_eq!(p[2], 3);
+        assert_eq!(p[3], usize::MAX, "the exit has no post-dominator");
+    }
+
+    #[test]
+    fn post_idom_of_an_if_then_is_the_fallthrough() {
+        // 0 -> {1,2}; 1 -> 2; 2 -> exit. The then-block 1 reconverges at 2.
+        let f = cfg(&[&[1, 2], &[2], &[]]);
+        let p = f.post_idom();
+        assert_eq!(p[0], 2);
+        assert_eq!(p[1], 2);
+        assert_eq!(p[2], usize::MAX);
     }
 }
 
