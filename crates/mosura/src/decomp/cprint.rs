@@ -580,6 +580,7 @@ impl Funcdata {
                 self.structure(0, &ssa, &no_lv, &no_loops, 0)
             }
         };
+        let body = name_stack_stmt(body); // raw RSP/RBP arithmetic → named stack locals
         let rty = if void_ret { "void" } else { "int" };
         Some(format!("{rty} func({})\n{{\n{}}}", self.params_sig(&ssa), emit_stmt(&body, 1)))
     }
@@ -1107,6 +1108,91 @@ fn leaf_count(e: &Expr) -> usize {
         Expr::Binary(_, a, b) => leaf_count(a) + leaf_count(b),
         Expr::Ternary(c, t, el) => leaf_count(c) + leaf_count(t) + leaf_count(el),
         Expr::Call(_, args) | Expr::FnCall(_, args) => args.iter().map(leaf_count).sum::<usize>().max(1),
+    }
+}
+
+/// If `e` is a stack-pointer-relative *address* with a constant displacement
+/// (`in_register_20`/`in_register_28` ± constants), the displacement; else `None`.
+/// `in_register_20` is RSP, `in_register_28` RBP — the live-in stack-pointer values
+/// from which frame-pointer-omitted code addresses its locals.
+fn stack_offset(e: &Expr) -> Option<i64> {
+    let sext = |c: u64, sz: u32| -> i64 {
+        if sz == 0 || sz >= 8 {
+            c as i64
+        } else {
+            let b = sz * 8;
+            ((c << (64 - b)) as i64) >> (64 - b)
+        }
+    };
+    match e {
+        Expr::Var(n) if n == "in_register_20" || n == "in_register_28" => Some(0),
+        Expr::Binary("+", a, b) => match (&**a, &**b) {
+            (_, Expr::Const(c, sz)) => stack_offset(a).map(|k| k + sext(*c, *sz)),
+            (Expr::Const(c, sz), _) => stack_offset(b).map(|k| k + sext(*c, *sz)),
+            _ => None,
+        },
+        Expr::Binary("-", a, b) => match &**b {
+            Expr::Const(c, sz) => stack_offset(a).map(|k| k - sext(*c, *sz)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A C name for the stack slot at displacement `k` (the comparator erases the name to
+/// an identifier, so only the form — a name, not a pointer dereference — matters).
+fn stack_name(k: i64) -> String {
+    if k < 0 {
+        format!("aStack_{:x}", -k)
+    } else {
+        format!("aStack_p{k:x}")
+    }
+}
+
+/// Render stack-pointer arithmetic as named locals (Ghidra's stack variables): a scalar
+/// load `*(rsp + C)` becomes a bare `aStack_C`, an address `rsp + C` becomes `aStack_C`,
+/// and an indexed `*(rsp + C + i)` keeps the deref over a named base — collapsing the
+/// raw `in_register_20` arithmetic mosura would otherwise emit.
+fn name_stack(e: Expr) -> Expr {
+    if let Expr::Deref(inner) = &e {
+        if let Some(k) = stack_offset(inner) {
+            return Expr::Var(stack_name(k)); // scalar stack var — drop the dereference
+        }
+    }
+    if let Some(k) = stack_offset(&e) {
+        return Expr::Var(stack_name(k)); // a stack address used as a value (e.g. an arg)
+    }
+    match e {
+        Expr::Call(n, a) => Expr::Call(n, a.into_iter().map(name_stack).collect()),
+        Expr::FnCall(n, a) => Expr::FnCall(n, a.into_iter().map(name_stack).collect()),
+        Expr::Unary(op, a) => Expr::Unary(op, Box::new(name_stack(*a))),
+        Expr::Binary(op, a, b) => Expr::Binary(op, Box::new(name_stack(*a)), Box::new(name_stack(*b))),
+        Expr::Ternary(c, t, el) => Expr::Ternary(Box::new(name_stack(*c)), Box::new(name_stack(*t)), Box::new(name_stack(*el))),
+        Expr::Deref(p) => Expr::Deref(Box::new(name_stack(*p))),
+        other => other,
+    }
+}
+
+/// Apply [`name_stack`] across a statement tree. A store to a scalar stack slot becomes
+/// a named assignment (`aStack_C = v`) rather than `*(addr) = v`.
+fn name_stack_stmt(s: Stmt) -> Stmt {
+    match s {
+        Stmt::Return(e) => Stmt::Return(name_stack(e)),
+        Stmt::If(c, t, el) => Stmt::If(name_stack(c), Box::new(name_stack_stmt(*t)), el.map(|e| Box::new(name_stack_stmt(*e)))),
+        Stmt::Seq(v) => Stmt::Seq(v.into_iter().map(name_stack_stmt).collect()),
+        Stmt::Decl(n, e) => Stmt::Decl(n, name_stack(e)),
+        Stmt::Assign(n, e) => Stmt::Assign(n, name_stack(e)),
+        Stmt::Expr(e) => Stmt::Expr(name_stack(e)),
+        Stmt::Store(a, v) => match stack_offset(&a) {
+            Some(k) => Stmt::Assign(stack_name(k), name_stack(v)),
+            None => Stmt::Store(name_stack(a), name_stack(v)),
+        },
+        Stmt::DoWhile(b, c) => Stmt::DoWhile(Box::new(name_stack_stmt(*b)), name_stack(c)),
+        Stmt::While(c, b) => Stmt::While(name_stack(c), Box::new(name_stack_stmt(*b))),
+        Stmt::For(i, c, u, b) => Stmt::For(Box::new(name_stack_stmt(*i)), name_stack(c), Box::new(name_stack_stmt(*u)), Box::new(name_stack_stmt(*b))),
+        Stmt::Switch(e, cases, def) => {
+            Stmt::Switch(name_stack(e), cases.into_iter().map(|(vals, body)| (vals, name_stack_stmt(body))).collect(), def.map(|d| Box::new(name_stack_stmt(*d))))
+        }
     }
 }
 

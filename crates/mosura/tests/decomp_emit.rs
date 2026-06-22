@@ -331,3 +331,18 @@ fn recovers_float_params_and_operators() {
     assert!(!c.contains("FLOAT_"), "FLOAT_* ops render as operators, not calls, got:\n{c}");
     assert!(c.contains(" - "), "the float subtraction renders as `-`, got:\n{c}");
 }
+
+#[test]
+fn names_stack_slots_instead_of_raw_pointer_arithmetic() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    let Ok(dt) = datatest::parse_file(&paths::datatests_dir().join("stackreturn.xml")) else { return };
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let f = Funcdata::build_image(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx, &image);
+    let lo = [("register".to_string(), 0u64, 4u32), ("register".to_string(), 0u64, 8u32)];
+    let c = f.decompile(&lo).expect("stackreturn decompile");
+    eprintln!("=== stackreturn ===\n{c}");
+
+    // frame-pointer-omitted locals are named (aStack_*), not raw `in_register_20` math
+    assert!(c.contains("aStack_"), "stack slots must be named, got:\n{c}");
+    assert!(!c.contains("in_register_20") && !c.contains("in_register_28"), "no raw stack-pointer arithmetic, got:\n{c}");
+}
