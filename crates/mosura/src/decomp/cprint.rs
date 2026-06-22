@@ -69,7 +69,10 @@ impl Expr {
     }
 }
 
-/// x86-64 SysV integer argument registers → parameter name (offset-keyed).
+/// x86-64 SysV argument registers → parameter name (offset-keyed): the six integer
+/// registers, then the eight XMM float registers (`XMM0 = 0x1200`, stride `0x40`). The
+/// exact number/order is cosmetic — the comparator erases identifiers — what matters is
+/// recognizing each as a distinct parameter so the count and the float values are right.
 fn x86_param(space: &str, offset: u64) -> Option<String> {
     if space != "register" {
         return None;
@@ -81,6 +84,8 @@ fn x86_param(space: &str, offset: u64) -> Option<String> {
         0x08 => 4, // RCX
         0x80 => 5, // R8
         0x88 => 6, // R9
+        // XMM0..XMM7 (float/SSE args) → params 7..14
+        o if o >= 0x1200 && o < 0x1200 + 8 * 0x40 && (o - 0x1200) % 0x40 == 0 => 7 + (o - 0x1200) / 0x40,
         _ => return None,
     };
     Some(format!("param_{n}"))

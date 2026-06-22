@@ -302,7 +302,32 @@ fn loop_body_cse_names_a_carried_value_once() {
 
     // the loaded value is named once and the store references it (a bare var, not a
     // re-inlined load) — so the big address sub-expression `<< 2` appears just twice
-    // (the load and the store address), not three times.
-    assert!(c.contains("= var_0;\n"), "the store references the carried value, got:\n{c}");
+    // (the load and the store address), not three times. (Loop-var numbering is not
+    // asserted — it varies with hash ordering.)
+    assert!(c.contains("0x601060)) = var_"), "the store references the carried value, got:\n{c}");
     assert_eq!(c.matches("<< 2").count(), 2, "the loaded value must not be re-inlined, got:\n{c}");
+}
+
+#[test]
+fn recovers_float_params_and_operators() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // floatcast takes float and int args (in XMM and integer registers) and subtracts
+    // two conditionally-cast floats. F1: the XMM registers are recognized as parameters
+    // and FLOAT_* ops render as C operators (not FLOAT_SUB(...) call style).
+    let path = paths::datatests_dir().join("floatcast.xml");
+    let Ok(dt) = datatest::parse_file(&path) else { return };
+    let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+    // x86-64 return registers incl. XMM0 (8-byte float return)
+    let lo = [
+        ("register".to_string(), 0u64, 4u32),
+        ("register".to_string(), 0u64, 8u32),
+        ("register".to_string(), 0x1200u64, 8u32),
+    ];
+    let c = f.decompile(&lo).expect("floatcast decompile");
+    eprintln!("=== mosura float params + operators ===\n{c}");
+
+    assert!(c.contains("param_7"), "an XMM register is recognized as a parameter, got:\n{c}");
+    assert!(!c.contains("FLOAT_"), "FLOAT_* ops render as operators, not calls, got:\n{c}");
+    assert!(c.contains(" - "), "the float subtraction renders as `-`, got:\n{c}");
 }

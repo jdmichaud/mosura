@@ -38,12 +38,14 @@ recovered into the output.
 
 ## Milestones (each measurable on a subset)
 
-- **F1 — XMM params + float return.** Extend `x86_param`/`live_out` to the XMM bank
-  (XMM0–7 → params, XMM0 → return) and add `(float8)`/`(float4)` casts for
-  `FLOAT_INT2FLOAT`/`FLOAT2FLOAT`. Gets **mixfloatint** (`return (float8)param_2 +
-  param_1 + …`) most of the way. *First real float win.* (The interleaved param
-  numbering is the hard part — may need the cspec scan; start with float-only and
-  all-int-or-all-float signatures.)
+- **F1 — XMM params + float return. ✅ DONE (params + 8-byte return).** `x86_param` maps
+  XMM0–7 → params (numbering is cosmetic — comparator-erased), `live_out` adds XMM0 at
+  8 bytes. floatcast 0.23→0.51, floatconv 0.27→0.36, mixfloatint 0.38→0.53, floatprint
+  0.14→0.19; corpus 0.622→0.637. NOT done: the 4-byte float return (mixfloatint's body
+  stays `void` — the result is XOR-zeroed at 4 bytes then computed at 8, and mosura's
+  overlap-naive SSA traces the 4-byte read to the zero; XMM0 is kept 8-byte-only to
+  avoid emitting that wrong value — needs the D3 overlap fix). The `(float8)` casts
+  (F1.5) are still transparent.
 - **F2 — float constants.** Print 4/8-byte bit patterns as float literals
   (`FloatFormat`: `0x3fc00000`→`1.5`, `0`→`0.0`, the NaN/inf encodings). Needed by
   floatprint and nan.
