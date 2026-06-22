@@ -9,6 +9,7 @@
 pub mod action;
 pub mod block;
 pub mod build;
+pub mod cfg;
 pub mod funcdata;
 pub mod op;
 pub mod opcode;

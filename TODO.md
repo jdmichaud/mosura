@@ -42,9 +42,16 @@ for the full rationale and architecture.
   - [x] `tests/ir_parity.rs` — the gate plumbing; passes a structural check (mosura's
         loaded Funcdata covers exactly Ghidra's pre-heritage instruction addresses). Grows
         a normalized post-heritage op-graph diff in P1.
-- [ ] **P1 — Heritage** (`heritage.cc`): real SSA + `guard`/`refinement`
-      (`normalizeReadSize`/`WriteSize`), MULTIEQUAL/INDIRECT placement, addrtied.
-      *Subsumes the entire overlap/CONCAT/phi-leak family — they become consequences.*
+- [~] **P1 — Heritage** (`heritage.cc`) — in progress
+  - [~] **CFG construction** (`cfg.rs::build_cfg`): leaders/edges + reachability prune;
+        calls do NOT split blocks (per Ghidra). Block ranges match Ghidra exactly for the
+        flow-aligned functions (x86_64_sem, elseif, twodim, threedim).
+  - [ ] **Flow-following decode** (`followFlow`): condconst/boolless/ifswitch need it —
+        mosura's linear sweep drifts (e.g. condconst's JMP target off by one). Decode only
+        reachable instructions from the entry, following branch targets.
+  - [ ] Dominator tree + dominance frontiers.
+  - [ ] Heritage SSA: LocationMap, MULTIEQUAL/INDIRECT placement, Cytron rename.
+  - [ ] Refinement: `guard`/`normalizeReadSize`/`WriteSize` (subsumes overlap/CONCAT/phi-leaks).
 - [ ] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).

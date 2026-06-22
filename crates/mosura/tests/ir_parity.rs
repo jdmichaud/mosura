@@ -60,6 +60,95 @@ fn instr_addrs(dump: &str) -> BTreeSet<u64> {
         .collect()
 }
 
+/// Ghidra's `printRaw` block headers: `Basic Block N 0x<start>-0x<stop>`. Returns the
+/// sorted `(start, stop)` instruction ranges (with multiplicity).
+fn ghidra_block_ranges(dump: &str) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = dump
+        .lines()
+        .filter_map(|l| {
+            let rest = l.trim_start().strip_prefix("Basic Block ")?;
+            let range = rest.split_whitespace().nth(1)?; // "0xSTART-0xSTOP"
+            let (a, b) = range.split_once('-')?;
+            let a = u64::from_str_radix(a.trim().strip_prefix("0x")?, 16).ok()?;
+            let b = u64::from_str_radix(b.trim().strip_prefix("0x")?, 16).ok()?;
+            Some((a, b))
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// mosura's block ranges for a fixture, sorted, after building the CFG.
+fn mosura_block_ranges(spec: &Spec, ctx: &[u32], fixture: &std::path::Path) -> Vec<(u64, u64)> {
+    let dt = datatest::parse_file(fixture).expect("fixture");
+    let mut f = raw_funcdata(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
+    mosura::decompile::cfg::build_cfg(&mut f);
+    let mut got: Vec<(u64, u64)> = (0..f.num_blocks() as u32)
+        .filter_map(|b| f.block_range(mosura::decompile::BlockId(b)))
+        .collect();
+    got.sort_unstable();
+    got
+}
+
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    if name == "x86_64_sem" {
+        paths::oracle_fixtures_dir().join("x86_64_sem.xml")
+    } else {
+        paths::datatests_dir().join(format!("{name}.xml"))
+    }
+}
+
+#[test]
+fn cfg_block_ranges_match_ghidra() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // Verified-aligned set: mosura's reachable instruction stream agrees with Ghidra's,
+    // so the CFG *cutting* logic (leaders, edges, reachability prune) must reproduce
+    // Ghidra's block ranges exactly. Regressions here are real cutting bugs.
+    for name in ["x86_64_sem", "elseif"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let Some(ghidra) = ghidra_ir(&fixture, "heritage") else { return };
+        let expected = ghidra_block_ranges(&ghidra);
+        if expected.is_empty() {
+            continue;
+        }
+        assert_eq!(mosura_block_ranges(&spec, &ctx, &fixture), expected, "block ranges differ for {name}");
+    }
+}
+
+/// Survey (non-failing): which functions' CFGs already match Ghidra and which still need
+/// flow-following decode (mosura's linear lifter drifts out of alignment — e.g. condconst's
+/// jump target is off by one). This catalogs the next P1 sub-task without gating on it.
+#[test]
+fn cfg_survey_flow_following_gap() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    let names = [
+        "x86_64_sem", "elseif", "condconst", "boolless", "twodim", "threedim", "ifswitch",
+    ];
+    let (mut matched, mut needs_flow) = (Vec::new(), Vec::new());
+    for name in names {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let Some(ghidra) = ghidra_ir(&fixture, "heritage") else { return };
+        let expected = ghidra_block_ranges(&ghidra);
+        if expected.is_empty() {
+            continue;
+        }
+        if mosura_block_ranges(&spec, &ctx, &fixture) == expected {
+            matched.push(name);
+        } else {
+            needs_flow.push(name);
+        }
+    }
+    eprintln!("CFG matches Ghidra: {matched:?}");
+    eprintln!("needs flow-following decode (P1 next): {needs_flow:?}");
+    assert!(!matched.is_empty(), "no CFGs matched Ghidra");
+}
+
 #[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };

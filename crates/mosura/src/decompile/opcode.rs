@@ -136,9 +136,16 @@ impl OpCode {
         }
     }
 
-    /// A branching or return op — terminates a basic block.
-    pub fn is_flow(self) -> bool {
+    /// A branch op (has an explicit target). Calls are *not* branches — they fall through.
+    pub fn is_branch(self) -> bool {
         use OpCode::*;
-        matches!(self, Branch | Cbranch | Branchind | Return | Call | Callind | Callother)
+        matches!(self, Branch | Cbranch | Branchind)
+    }
+
+    /// Ends a basic block. Per Ghidra: branches and returns end a block; **calls do
+    /// not** (a call falls through to the next op in the same block).
+    pub fn terminates_block(self) -> bool {
+        use OpCode::*;
+        matches!(self, Branch | Cbranch | Branchind | Return)
     }
 }

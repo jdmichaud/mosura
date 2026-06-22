@@ -64,8 +64,22 @@ impl Funcdata {
     pub fn blocks(&self) -> &[BlockBasic] {
         &self.blocks
     }
+    pub fn block(&self, id: super::block::BlockId) -> &BlockBasic {
+        &self.blocks[id.0 as usize]
+    }
     pub fn num_blocks(&self) -> usize {
         self.blocks.len()
+    }
+    /// Install the basic-block list (built by `cfg::build_cfg`).
+    pub fn set_blocks(&mut self, blocks: Vec<BlockBasic>) {
+        self.blocks = blocks;
+    }
+    /// The instruction-address range `[first, last]` of a block, from its ops' seqnums.
+    pub fn block_range(&self, id: super::block::BlockId) -> Option<(u64, u64)> {
+        let b = self.block(id);
+        let first = *b.ops.first()?;
+        let last = *b.ops.last()?;
+        Some((self.op(first).seqnum.pc.offset, self.op(last).seqnum.pc.offset))
     }
     /// All op ids in creation order.
     pub fn op_ids(&self) -> impl Iterator<Item = OpId> {
