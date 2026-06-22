@@ -73,10 +73,17 @@ faked. (See the memory's framing correction: port, don't invent heuristics.)
   a `HashMap<Def, Datatype>`. Validate the pointer/array/scalar typing of a handful of
   datatests against Ghidra's declared types (modulo → `int8*`, divopt → scalar — this is
   the regression guard).
-- **T2 — array/pointer indexing emission.** Add `Expr::Index`; when a dereference is
-  through a Varnode typed `TYPE_PTR`-to-element, emit `p[i]` / `p[k/sz]`. Gated by the
-  T1 types so divopt (scalar) stays `*(…)`. Re-measure the 5 array datatests; must not
-  regress divopt. *First score win.*
+- **T2 — array/pointer indexing emission. ⚠️ MEASURED NET-NEGATIVE (prototype, reverted).**
+  Added `Expr::Index` + element-size inference + `*(p+k)→p[k/sz]` and ran the corpus:
+  modulo 0.46→0.54 (+0.08) but **divopt 0.78→0.59 (−0.18)** → aggregate 0.619→0.612
+  (ratchet fails). The other 4 array datatests don't benefit (mosura doesn't decompile
+  loopcomment/pointerrel/varcross; switchind isn't a param array). The cause is
+  fundamental: faithful pointer inference types divopt's param as the pointer it *is*,
+  but Ghidra types it `xunknown8` *scalar* (a quirk of its 128-bit/SSE modeling) and
+  prints `*(uint8 *)(param_1+8)`. The similarity comparator therefore **penalises mosura
+  for being more correct than Ghidra.** So T2 is only worth it *gated by T1 types that
+  reproduce divopt's scalar typing* — which needs the SSE-aware propagation, i.e. most
+  of the subsystem. Array indexing is **not** a near-term win.
 - **T3 — casts.** Port `CastStrategy::castStandard`; emit `*(T *)(…)` / `(T)x` where the
   required type differs from the actual (PrintC's cast points). Broad small gains.
 - **T4 — integer width + signedness.** Replace `uint_params`/int-everything with the
