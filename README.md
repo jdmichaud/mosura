@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="mosura" width="128">
+</p>
+
 # mosura
 
 A command-line reimplementation of **Ghidra's logic** (not its UI) in Rust.

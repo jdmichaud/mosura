@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="mosura">
+  <title>mosura — the moth in the machine</title>
+
+  <!-- backdrop -->
+  <rect width="256" height="256" rx="56" fill="#0f201a"/>
+  <rect x="6" y="6" width="244" height="244" rx="50" fill="none" stroke="#1c3a30" stroke-width="3"/>
+
+  <!-- antennae -->
+  <g fill="none" stroke="#8fe6bd" stroke-width="5" stroke-linecap="round">
+    <path d="M128 84 C 144 62 156 52 170 44"/>
+    <path d="M128 84 C 112 62 100 52 86 44"/>
+  </g>
+  <circle cx="170" cy="44" r="5.5" fill="#8fe6bd"/>
+  <circle cx="86" cy="44" r="5.5" fill="#8fe6bd"/>
+
+  <!-- upper wings -->
+  <path d="M129 99 C 170 78 212 84 224 112 C 231 130 210 146 172 143 C 148 141 132 129 129 116 Z"
+        fill="#1f7a59" stroke="#8fe6bd" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M127 99 C 86 78 44 84 32 112 C 25 130 46 146 84 143 C 108 141 124 129 127 116 Z"
+        fill="#1f7a59" stroke="#8fe6bd" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- lower wings -->
+  <path d="M129 145 C 159 147 189 161 185 190 C 182 210 157 205 143 185 C 133 171 127 158 129 150 Z"
+        fill="#2a9c73" stroke="#8fe6bd" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M127 145 C 97 147 67 161 71 190 C 74 210 99 205 113 185 C 123 171 129 158 127 150 Z"
+        fill="#2a9c73" stroke="#8fe6bd" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- wing eyespots -->
+  <circle cx="184" cy="115" r="10.5" fill="#0f201a" stroke="#cdf6e1" stroke-width="3"/>
+  <circle cx="72"  cy="115" r="10.5" fill="#0f201a" stroke="#cdf6e1" stroke-width="3"/>
+  <circle cx="184" cy="115" r="3.5" fill="#cdf6e1"/>
+  <circle cx="72"  cy="115" r="3.5" fill="#cdf6e1"/>
+
+  <!-- body -->
+  <path d="M128 82 C 119 95 118 124 120 153 C 121 177 124 193 128 201 C 132 193 135 177 136 153 C 138 124 137 95 128 82 Z"
+        fill="#cdf6e1" stroke="#0f201a" stroke-width="2.5"/>
+  <g stroke="#0f201a" stroke-width="2" opacity="0.5" stroke-linecap="round">
+    <line x1="122" y1="116" x2="134" y2="116"/>
+    <line x1="121" y1="134" x2="135" y2="134"/>
+    <line x1="122" y1="152" x2="134" y2="152"/>
+    <line x1="123" y1="170" x2="133" y2="170"/>
+  </g>
+  <circle cx="128" cy="86" r="7" fill="#cdf6e1" stroke="#0f201a" stroke-width="2"/>
+</svg>
