@@ -176,13 +176,24 @@ impl Funcdata {
     fn build_op(&self, i: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         {
             let op = &self.ops[i].op;
-            // division by a constant, recovered from the compiler's magic-number
-            // multiply (Ghidra RuleDivOpt family) → x / C
-            if matches!(opcode_name(op.opcode), "INT_RIGHT" | "INT_SRIGHT") {
-                if let Some(df) = super::divrecover::recover_div(self, ssa, i) {
-                    let sz = op.out.as_ref().map_or(8, |o| o.size);
-                    return bin("/", self.build_expr(df.x, ssa, lv, ex, depth + 1), Expr::Const(df.divisor, sz));
+            // division / remainder by a constant, recovered from the compiler's
+            // magic-number multiply (Ghidra RuleDivOpt family) → x / C, x % C
+            let sz = op.out.as_ref().map_or(8, |o| o.size);
+            let div = |fd: &Self, df: super::divrecover::DivForm, opc: &'static str| {
+                bin(opc, fd.build_expr(df.x, ssa, lv, ex, depth + 1), Expr::Const(df.divisor, sz))
+            };
+            match opcode_name(op.opcode) {
+                "INT_RIGHT" | "INT_SRIGHT" => {
+                    if let Some(df) = super::divrecover::recover_div(self, ssa, i) {
+                        return div(self, df, "/");
+                    }
                 }
+                "INT_SUB" => {
+                    if let Some(df) = super::divrecover::recover_signed_div(self, ssa, i) {
+                        return div(self, df, "/");
+                    }
+                }
+                _ => {}
             }
             let a = |pos: usize| self.input_expr(i, pos, ssa, lv, ex, depth + 1);
                 match opcode_name(op.opcode) {
@@ -1070,6 +1081,31 @@ fn simplify(e: Expr) -> Expr {
         Expr::Ternary(c, t, el) => Expr::Ternary(Box::new(simplify(*c)), Box::new(simplify(*t)), Box::new(simplify(*el))),
         other => other,
     };
+    // fold nested constant multiplies: (x * c1) * c2  =>  x * (c1*c2) — so a
+    // strength-reduced `q * 6` (emitted as `(q*3)*2`) collapses for the modulo idiom
+    if let Expr::Binary("*", a, b) = &e {
+        let assoc = |inner: &Expr, c2: u64, sz: u32| -> Option<Expr> {
+            if let Expr::Binary("*", p, q) = inner {
+                let (x, c1) = match (&**p, &**q) {
+                    (Expr::Const(v, _), _) => (q, *v),
+                    (_, Expr::Const(v, _)) => (p, *v),
+                    _ => return None,
+                };
+                return Some(Expr::Binary("*", x.clone(), Box::new(Expr::Const(c1.wrapping_mul(c2), sz))));
+            }
+            None
+        };
+        if let Expr::Const(v2, sz) = &**b {
+            if let Some(r) = assoc(a, *v2, *sz) {
+                return simplify(r);
+            }
+        }
+        if let Expr::Const(v2, sz) = &**a {
+            if let Some(r) = assoc(b, *v2, *sz) {
+                return simplify(r);
+            }
+        }
+    }
     // arithmetic: strength reduction + additive-constant normalization
     if let Expr::Binary("+", a, b) = &e {
         if a == b {
@@ -1088,6 +1124,26 @@ fn simplify(e: Expr) -> Expr {
             if neg {
                 let mask = if *sz >= 8 { u64::MAX } else { (1u64 << (sz * 8)) - 1 };
                 return Expr::Binary("-", a.clone(), Box::new(Expr::Const(v.wrapping_neg() & mask, *sz)));
+            }
+        }
+    }
+    // remainder idiom: a - (a / c) * c  =>  a % c  (Ghidra RuleModOpt; the division is
+    // recovered by divrecover, the `* c` strength reduction folded by add_mul above)
+    if let Expr::Binary("-", a, m) = &e {
+        if let Expr::Binary("*", p, q) = &**m {
+            // dv is `a / C`, c is the constant `C` (compared by value — widths may differ)
+            let amod = |dv: &Expr, c: &Expr| -> Option<Expr> {
+                if let (Expr::Binary("/", num, den), Expr::Const(cv, _)) = (dv, c) {
+                    if let Expr::Const(dvv, _) = &**den {
+                        if num.as_ref() == &**a && dvv == cv {
+                            return Some(Expr::Binary("%", a.clone(), den.clone()));
+                        }
+                    }
+                }
+                None
+            };
+            if let Some(r) = amod(p, q).or_else(|| amod(q, p)) {
+                return r;
             }
         }
     }

@@ -30,10 +30,13 @@ pub struct DivForm {
 pub fn consumed_ops(fd: &Funcdata, ssa: &Ssa) -> std::collections::HashSet<usize> {
     let mut set = std::collections::HashSet::new();
     for i in 0..fd.ops.len() {
-        if matches!(op_name(fd, i), "INT_RIGHT" | "INT_SRIGHT") {
-            if let Some(df) = recover_div(fd, ssa, i) {
-                set.extend(df.consumed);
-            }
+        let df = match op_name(fd, i) {
+            "INT_RIGHT" | "INT_SRIGHT" => recover_div(fd, ssa, i),
+            "INT_SUB" => recover_signed_div(fd, ssa, i),
+            _ => None,
+        };
+        if let Some(df) = df {
+            set.extend(df.consumed);
         }
     }
     set
@@ -202,6 +205,76 @@ fn as_named(fd: &Funcdata, d: Def, name: &str) -> Option<usize> {
         _ => None,
     }
 }
+
+/// The recognized high-half-of-product `W = SUBPIECE(ext(X) * magic, hb)` — the
+/// mulhi that both the unsigned and signed division forms are built around.
+struct Mulhi {
+    magic: u128,
+    x_base: Def,
+    hb: u64,
+    sext: bool,
+    wop: usize,
+    prod: usize,
+}
+
+/// Recognize `W = SUBPIECE(ext(X) * magic, hb)`: the high `hb` bytes of the (possibly
+/// 128-bit) product of `X` with the magic multiplier.
+fn mulhi_form(fd: &Funcdata, ssa: &Ssa, wdef: Def) -> Option<Mulhi> {
+    let wop = as_named(fd, wdef, "SUBPIECE")?;
+    let hb = const_in(fd, wop, 1)? as u64;
+    let prod = operand(fd, ssa, wop, 0).and_then(|d| as_named(fd, d, "INT_MULT"))?;
+    let (a, b) = (operand(fd, ssa, prod, 0)?, operand(fd, ssa, prod, 1)?);
+    let (ba, ma, sa) = ext_base(fd, ssa, a);
+    let (bb, mb, sb) = ext_base(fd, ssa, b);
+    let (magic, x_base, sext) = match (ma, mb) {
+        (Some(m), None) => (m, bb, sb),
+        (None, Some(m)) => (m, ba, sa),
+        _ => return None,
+    };
+    Some(Mulhi { magic, x_base, hb, sext, wop, prod })
+}
+
+/// The number of bits in op `i`'s input `pos` (the numerand width), default 64.
+fn in_bits(fd: &Funcdata, i: usize, pos: usize) -> u64 {
+    fd.ops[i].op.ins.get(pos).and_then(PArg::as_var).map_or(64, |v| 8 * v.size as u64)
+}
+
+/// Recognize a *signed* division by a constant: `(W >> s) - (X s>> (bits-1))` where
+/// `W = SUBPIECE(sext(X)*magic, hb)`. The trailing term is the sign correction
+/// (`X >> (bits-1)` is 0 or -1). The divisor is `calc_divisor(8*hb + s, magic, bits-1)`
+/// — Ghidra subtracts one from `xsize` for the sign bit (`RuleDivOpt::applyOp`).
+pub fn recover_signed_div(fd: &Funcdata, ssa: &Ssa, root: usize) -> Option<DivForm> {
+    if op_name(fd, root) != "INT_SUB" {
+        return None;
+    }
+    // INT_SUB(A, sign) — the sign term is on input 1
+    let signop = operand(fd, ssa, root, 1).and_then(|d| as_named(fd, d, "INT_SRIGHT"))?;
+    let x_sign = ssa.uses.get(&(signop, 0)).copied()?;
+    let bits = in_bits(fd, signop, 0);
+    if const_amount(fd, ssa, signop, 1)? != (bits - 1) as u128 {
+        return None;
+    }
+    // A = W, or W >> s
+    let adef = operand(fd, ssa, root, 0)?;
+    let (wdef, s, shiftop) = match adef {
+        Def::Op(ai) if matches!(op_name(fd, ai), "INT_RIGHT" | "INT_SRIGHT") => {
+            (operand(fd, ssa, ai, 0)?, const_amount(fd, ssa, ai, 1)? as u64, Some(ai))
+        }
+        _ => (adef, 0, None),
+    };
+    let m = mulhi_form(fd, ssa, wdef)?;
+    if m.x_base != ext_base(fd, ssa, fold_copy(fd, ssa, x_sign)).0 {
+        return None;
+    }
+    let divisor = calc_divisor(8 * m.hb + s, m.magic, (bits - 1) as u32);
+    if divisor == 0 {
+        return None;
+    }
+    let mut consumed = vec![root, signop, m.wop, m.prod];
+    consumed.extend(shiftop);
+    Some(DivForm { x: x_sign, divisor, consumed })
+}
+
 
 /// Recover the divisor of an optimized division: given the multiplicative coefficient
 /// `y` (up to 128 bits) and the total right-shift `n`, return `2^n / (y-1)`, or 0 if

@@ -265,3 +265,23 @@ fn recovers_division_by_constant() {
     // ...and the magic multiplier no longer appears for the recovered forms
     assert!(!c.contains("0x948b0fcd6e9e0653"), "the magic multiply must be gone, got:\n{c}");
 }
+
+#[test]
+fn recovers_signed_division_and_modulo() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // modulo computes `x % C` for signed values: the compiler emits a signed
+    // magic-multiply division (`mulhi(x,magic) - (x >> 63)`) feeding `x - (x/C)*C`.
+    // divrecover recovers the signed division; the modulo idiom folds in simplify.
+    let path = paths::datatests_dir().join("modulo.xml");
+    let Ok(dt) = datatest::parse_file(&path) else { return };
+    let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+    let lo = [("register".to_string(), 0u64, 4u32), ("register".to_string(), 0u64, 8u32)];
+    let c = f.decompile(&lo).expect("modulo decompile");
+    eprintln!("=== mosura recovered signed division + modulo ===\n{c}");
+
+    // remainders recovered to `% C` (including composite divisors via mult association)
+    assert!(c.contains("% 3") && c.contains("% 5") && c.contains("% 6"), "modulo recovered, got:\n{c}");
+    // the signed magic multiplier is gone for those forms
+    assert!(!c.contains("0x5555555555555556"), "the magic multiply must be gone, got:\n{c}");
+}

@@ -28,9 +28,16 @@ don't invent heuristics (see `AGENT.md`).
       `uint`, `xunknown`/`undefined` widths, type propagation. Biggest single lever
       (mosura is int-everything today).
 - [~] **Division/remainder by constant** — `decomp::divrecover` ports
-      `RuleDivOpt::calcDivisor` + the unsigned add-back form (`RuleDivTermAdd2`); divopt
-      0.59→0.78. Remaining: signed division (modulo/modulo2 use SEXT sign-correction),
-      the `(x>>k)*m` and bare-`x*m`-SUBPIECE forms, and the `x % C` modulo idiom.
+      `RuleDivOpt::calcDivisor` + the unsigned add-back (`RuleDivTermAdd2`), **signed**
+      division (SEXT + sign-correction), and the `x % C` modulo idiom (AST rule +
+      multiply association). divopt 0.59→0.78, modulo 0.43→0.46. Remaining: the
+      shift-strength-reduced multiples (÷60/÷100 use `x<<k`), the `(x>>k)*m` /
+      bare-`x*m`-SUBPIECE division forms, and modulo2's signed-mod-by-power-of-2 idiom.
+      **NOTE: modulo's score is now array-indexing-bound** (`*(p+8)` vs `p[1]`).
+- [ ] **Array/pointer indexing** (`p[i]` vs `*(p + i*sz)`) — the highest *structural*
+      lever the comparator rewards: appears in twodim/threedim/divopt/modulo/offsetarray/
+      nestedoffset/… Needs pointer element-size inference (part of the type system) to
+      divide the byte offset by the element width. Would compound with all the above.
 - [ ] **Floats** (large) — no float support yet (floatprint/floatcast/floatconv/
       longdouble/nan/mixfloatint score 0.13–0.52). `FLOAT_*` p-code, float types,
       emulation, printing.
@@ -45,6 +52,8 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Done recently (reference)
 
+Signed division + `x % C` modulo recovery (`recover_signed_div` + AST modulo idiom +
+multiply association; modulo 0.43→0.46, array-index-bound aggregate flat at 0.619);
 Division-by-constant recovery (`decomp::divrecover`: `calcDivisor` 128-bit port +
 unsigned add-back recogniser → `x / C`; divopt 0.59→0.78, corpus 0.615→0.619);
 CSE / explicit-temp naming (Ghidra `ActionMarkExplicit`: a value with >2 descendants,
