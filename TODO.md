@@ -24,10 +24,12 @@ for the full rationale and architecture.
 
 ## Phases (faithful port — detail in `port-plan.md` §4)
 
-- [~] **P0 — Foundation** (in progress)
-  - [ ] Extend `oracle/capture` to dump Ghidra's **per-phase IR** via `decomp_dbg`
-        (post-heritage SSA tree, post-types, post-merge, structured blocks, C).
-  - [~] `Varnode`/`PcodeOp`/`BlockBasic`/`Funcdata` **graph** data model — **core done**
+- [x] **P0 — Foundation** — done (data model, lifter→Funcdata load, Action/Rule
+      framework, per-phase IR oracle, and the IR-parity gate are in place and tested)
+  - [x] `oracle/capture --ir [action]` dumps Ghidra's per-phase IR (`Funcdata::printRaw`)
+        by breaking at a named action — verified pre-heritage (raw p-code) and post-heritage
+        (SSA + MULTIEQUAL, e.g. `EDI * #0x3`).
+  - [x] `Varnode`/`PcodeOp`/`BlockBasic`/`Funcdata` **graph** data model — **core done**
         in `src/decompile/` (`opcode`/`space`/`varnode`/`op`/`block`/`funcdata`): the
         arena+index Varnode graph with Ghidra's flag set, `OpCode` (CPUI_*), `SpaceManager`,
         create/wire methods, `print_raw`. `BlockBasic` is a stub (CFG built in P1/P7).
@@ -37,7 +39,9 @@ for the full rationale and architecture.
   - [x] `Action`/`Rule` framework skeleton (`action.rs`): `Action`/`ActionGroup`
         (+restart=`ActionRestartGroup` fixpoint), `Rule`/`ActionPool` (opcode dispatch to
         fixpoint), `ActionStart`. Fixpoint loop + rule dispatch tested.
-  - [ ] `tests/ir_parity.rs` — structural-exact IR diff vs Ghidra (the new gate).
+  - [x] `tests/ir_parity.rs` — the gate plumbing; passes a structural check (mosura's
+        loaded Funcdata covers exactly Ghidra's pre-heritage instruction addresses). Grows
+        a normalized post-heritage op-graph diff in P1.
 - [ ] **P1 — Heritage** (`heritage.cc`): real SSA + `guard`/`refinement`
       (`normalizeReadSize`/`WriteSize`), MULTIEQUAL/INDIRECT placement, addrtied.
       *Subsumes the entire overlap/CONCAT/phi-leak family — they become consequences.*

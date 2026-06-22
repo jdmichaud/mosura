@@ -85,8 +85,8 @@ string hex_bytes(const uint1 *p, int4 n) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 3 && argc != 4) {
-    cerr << "usage: " << argv[0] << " <sleighdir> <fixture.xml> [--c]" << endl;
+  if (argc < 3 || argc > 5) {
+    cerr << "usage: " << argv[0] << " <sleighdir> <fixture.xml> [--c | --ir [action]]" << endl;
     return 2;
   }
   const string sleighdir(argv[1]);
@@ -135,6 +135,39 @@ int main(int argc, char **argv) {
   const Translate *trans = conf->translate;
   AddrSpace *code = trans->getDefaultCodeSpace();
   const string arch = bin->getAttributeValue("arch");
+
+  // `--ir [action]` mode: run the decompiler pipeline until the start of the named action
+  // (default `heritage`) and dump the intermediate IR (`Funcdata::printRaw`) — the
+  // per-phase oracle for mosura's IR-parity gate (port-plan.md §3). With no action name,
+  // breaks before `heritage` (i.e. the raw, post-followFlow p-code).
+  if (argc >= 4 && string(argv[3]) == "--ir") {
+    const string breakat = (argc >= 5) ? string(argv[4]) : string("heritage");
+    uintb foff = 0;
+    for (const Element *el : bin->getChildren()) {
+      if (el->getName() == "bytechunk") {
+        std::istringstream s(el->getAttributeValue("offset"));
+        s >> std::hex >> foff;
+        break;
+      }
+    }
+    try {
+      Address entry(code, foff);
+      Funcdata *fd = conf->symboltab->getGlobalScope()->addFunction(entry, "func")->getFunction();
+      Action *root = conf->allacts.getCurrent();
+      root->reset(*fd);
+      if (!breakat.empty() && breakat != "-")
+        root->setBreakPoint(Action::break_start, breakat);
+      root->perform(*fd); // runs until the breakpoint (partial, returns <0) or completion
+      fd->printRaw(cout);
+      cout << endl;
+    } catch (LowlevelError &e) {
+      cerr << "ir: " << e.explain << endl;
+      delete conf;
+      return 1;
+    }
+    delete conf;
+    return 0;
+  }
 
   // `--c` mode: decompile the function at the first bytechunk's offset and print
   // Ghidra's C (the reference for the mosura decompiler's structural comparator).
