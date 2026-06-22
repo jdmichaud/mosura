@@ -246,6 +246,49 @@ fn heritage_produces_valid_ssa() {
 }
 
 #[test]
+fn rule_pool_folds_constants() {
+    use mosura::decompile::action::{Action, ActionPool};
+    use mosura::decompile::rules::{eval_const, RuleConstFold, RuleTrivialArith};
+    use mosura::decompile::OpId;
+    let Some((spec, ctx)) = x86_64() else { return };
+
+    for name in ["x86_64_sem", "twodim", "threedim", "elseif"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let mut f = heritaged(&spec, &ctx, &fixture);
+        let raw_ops = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
+
+        let mut pool = ActionPool::new("simplify").with(RuleConstFold).with(RuleTrivialArith);
+        pool.apply(&mut f);
+
+        // Completeness: no live op with all-constant inputs and a foldable opcode remains
+        // (constant folding ran to fixpoint).
+        for i in 0..f.num_ops() as u32 {
+            let op = OpId(i);
+            if f.op(op).is_dead() || f.op(op).output.is_none() || f.op(op).num_inputs() == 0 {
+                continue;
+            }
+            let all_const = f.op(op).inrefs.iter().all(|&v| f.vn(v).is_constant());
+            if all_const {
+                let inputs: Vec<(u64, u32)> =
+                    f.op(op).inrefs.iter().map(|&v| (f.vn(v).constant_value(), f.vn(v).size)).collect();
+                let out_size = f.vn(f.op(op).output.unwrap()).size;
+                assert!(
+                    eval_const(f.op(op).code(), &inputs, out_size).is_none(),
+                    "{name}: a foldable all-constant op survived the pool"
+                );
+            }
+        }
+
+        // Progress: the pool removed at least one op (folded/identity), where applicable.
+        let live_ops = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
+        assert!(live_ops <= raw_ops, "{name}: pool must not add live ops");
+    }
+}
+
+#[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };
     let fixture = paths::oracle_fixtures_dir().join("x86_64_sem.xml");

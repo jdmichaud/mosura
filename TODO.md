@@ -62,7 +62,15 @@ for the full rationale and architecture.
         clean overlap gap (twodim/threedim fully, elseif reduced), SSA invariants hold.
         REMAINING: write side (`normalizeWriteSize`/PIECE for partial writes, AH-type
         offset+1), cross-offset CONCAT.
-- [ ] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules).
+- [~] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules) — in progress
+  - [x] Op-rewrite primitives (`funcdata.rs`): `op_set_opcode`, `op_remove_input`,
+        `total_replace`, `mark_dead`.
+  - [x] Constant folding (`rules.rs::RuleConstFold` + `eval_const`, mirroring emu's
+        parity-validated semantics) + `RuleTrivialArith` (`x OP x` identities). Unit-tested
+        + integration: folds to fixpoint on real functions.
+  - [ ] More core rules: `RuleTermOrder`, `RuleCollectTerms`, `RuleTrivialShift`,
+        `RuleTrivialBool`, `RuleIdentityEl`, copy/SUBPIECE simplification.
+  - [ ] Assemble the universal-action pipeline (heritage → pool → …).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
 - [ ] **P5 — Merge** (`Merge`/`HighVariable`/`Cover` — variable recovery).

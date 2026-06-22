@@ -156,6 +156,39 @@ impl Funcdata {
         v
     }
 
+    /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
+    pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
+        self.ops[op.0 as usize].opcode = opcode;
+    }
+
+    /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
+    pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
+        let vid = self.ops[op.0 as usize].inrefs.remove(slot);
+        if let Some(pos) = self.varnodes[vid.0 as usize].descend.iter().position(|&o| o == op) {
+            self.varnodes[vid.0 as usize].descend.remove(pos);
+        }
+    }
+
+    /// Replace every use of `old` with `new` across all reading ops (Ghidra's
+    /// `totalReplace`), maintaining descendant lists.
+    pub fn total_replace(&mut self, old: VarnodeId, new: VarnodeId) {
+        let users = std::mem::take(&mut self.varnodes[old.0 as usize].descend);
+        for op in users {
+            let inrefs = &mut self.ops[op.0 as usize].inrefs;
+            for v in inrefs.iter_mut() {
+                if *v == old {
+                    *v = new;
+                    self.varnodes[new.0 as usize].descend.push(op);
+                }
+            }
+        }
+    }
+
+    /// Mark `op` dead (pending removal by dead-code elimination).
+    pub fn mark_dead(&mut self, op: OpId) {
+        self.ops[op.0 as usize].flags |= super::op::flags::DEAD;
+    }
+
     /// Give `op` a fresh `unique`-space output of `size`; returns it.
     pub fn new_output_unique(&mut self, op: OpId, size: u32) -> VarnodeId {
         let space = self.spaces.by_name("unique").expect("unique space");
