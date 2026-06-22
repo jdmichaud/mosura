@@ -24,11 +24,14 @@ for the full rationale and architecture.
 
 ## Phases (faithful port — detail in `port-plan.md` §4)
 
-- [ ] **P0 — Foundation**
+- [~] **P0 — Foundation** (in progress)
   - [ ] Extend `oracle/capture` to dump Ghidra's **per-phase IR** via `decomp_dbg`
         (post-heritage SSA tree, post-types, post-merge, structured blocks, C).
-  - [ ] `Varnode`/`PcodeOp`/`BlockBasic`/`Funcdata` **graph** data model (Ghidra-faithful,
-        with flags: input/written/addrtied/mapped/persist/…).
+  - [~] `Varnode`/`PcodeOp`/`BlockBasic`/`Funcdata` **graph** data model — **core done**
+        in `src/decompile/` (`opcode`/`space`/`varnode`/`op`/`block`/`funcdata`): the
+        arena+index Varnode graph with Ghidra's flag set, `OpCode` (CPUI_*), `SpaceManager`,
+        create/wire methods, `print_raw`. `BlockBasic` is a stub (CFG built in P1/P7).
+  - [ ] Build a `Funcdata` from the SLEIGH lifter's raw p-code (the load step).
   - [ ] `Action`/`Rule` framework skeleton + one trivial action wired through.
   - [ ] `tests/ir_parity.rs` — structural-exact IR diff vs Ghidra (the new gate).
 - [ ] **P1 — Heritage** (`heritage.cc`): real SSA + `guard`/`refinement`

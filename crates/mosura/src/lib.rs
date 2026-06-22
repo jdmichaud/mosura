@@ -9,6 +9,7 @@
 pub mod conformance;
 pub mod datatest;
 pub mod decomp;
+pub mod decompile;
 pub mod golden;
 pub mod lang;
 pub mod paths;
