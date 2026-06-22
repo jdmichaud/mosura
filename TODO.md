@@ -14,7 +14,9 @@ ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.68, good ≥ 24).
 - [x] D0 — structured p-code IR + CFG
 - [x] D1 — SSA / heritage (dominators, dominance frontiers, Cytron renaming)
 - [x] D2 — dead code + simplification rules
-- [~] D3 — variable merge + types (pointers + `uint` done; full type system is below)
+- [~] D3 — variable merge + types (pointers + `uint` done; full type system is below).
+      **Varnode-overlap handling NOT done** (sub-reg vs full-reg, e.g. EAX/RAX, XMM 4 vs
+      8 byte) — blocks mixfloatint's 4-byte float return and the 64-bit DIV `EDX:EAX`.
 - [x] D4 — control-flow structuring (`?:`, if/else, do-while, while/for with bodies)
 - [x] D5 — C emission (PrintC) + structural comparator
 - [~] D6 — datatest parity (measurement harness + several iterations done; ongoing)
@@ -24,29 +26,28 @@ ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.68, good ≥ 24).
 Each is a faithful reimplementation of the matching Ghidra subsystem — read the C++,
 don't invent heuristics (see `AGENT.md`).
 
-- [ ] **Type system** (large, multi-session) — port `TypeFactory` + `ActionInferTypes`:
-      the `Datatype` lattice, type propagation, int1/2/4/8 / `uint` widths, pointers,
-      arrays. Biggest single lever (mosura is int-everything today). **Phased plan in
-      [`docs/type-system-plan.md`](docs/type-system-plan.md)** — note the comparator
-      erases type *names*, so the structural payoffs are array indexing (T2) and casts
-      (T3); the array-vs-scalar typing is inference-driven and *must* be ported (a
-      heuristic regresses divopt). First score win is T2, after the T0/T1 foundation.
+- [~] **Type system** (large, multi-session) — port `TypeFactory` + `ActionInferTypes`.
+      **Phased plan + status in [`docs/type-system-plan.md`](docs/type-system-plan.md)**:
+      **T0 ✅ done** (`decomp::types` — the `Datatype` lattice + `type_order`); T1
+      propagation skeleton not started; **T2 array indexing ⛔ prototyped → measured
+      net-negative → reverted** (it types divopt's param as the pointer it is, but
+      Ghidra types it scalar — the comparator penalises being *more correct*; needs T1
+      to gate it); T3 casts / T4 widths / T5 structs not started. NOTE the comparator
+      erases type *names*, so the structural payoff is modest (casts) to negative
+      (array indexing) — smaller than first assumed.
 - [~] **Division/remainder by constant** — `decomp::divrecover` ports
       `RuleDivOpt::calcDivisor` + the unsigned add-back (`RuleDivTermAdd2`), **signed**
       division (SEXT + sign-correction), and the `x % C` modulo idiom (AST rule +
       multiply association). divopt 0.59→0.78, modulo 0.43→0.46. Remaining: the
       shift-strength-reduced multiples (÷60/÷100 use `x<<k`), the `(x>>k)*m` /
       bare-`x*m`-SUBPIECE division forms, and modulo2's signed-mod-by-power-of-2 idiom.
-      **NOTE: modulo's score is now array-indexing-bound** (`*(p+8)` vs `p[1]`).
-- [ ] **Array/pointer indexing** (`p[i]` vs `*(p + i*sz)`) — the highest *structural*
-      lever the comparator rewards: appears in twodim/threedim/divopt/modulo/offsetarray/
-      nestedoffset/… Needs pointer element-size inference (part of the type system) to
-      divide the byte offset by the element width. Would compound with all the above.
-- [~] **Floats** (large) — `FLOAT_*` ops now render as C operators + `ABS`/`SQRT`/`NAN`
-      intrinsics (`build_op`); nan 0.33→0.36. The rest is a multi-feature effort —
-      **phased plan in [`docs/floats-plan.md`](docs/floats-plan.md)**: F1 XMM
-      params/return (the keystone, gets mixfloatint), F2 float constants, F3 NAN-idiom
-      fold, F4 globals, F5 SSE packing.
+      **NOTE: modulo's score is now array-indexing-bound** (`*(p+8)` vs `p[1]`, which is
+      type-system T2 above — gated behind T1, only 5/62 datatests, regresses divopt).
+- [~] **Floats** — **phased plan + status in [`docs/floats-plan.md`](docs/floats-plan.md)**.
+      `FLOAT_*` operators ✅; **F1 ✅** (XMM params + 8-byte float return — floatcast
+      0.23→0.51); **F4 ✅** (global writes — floatprint 0.19→0.79, convert/displayformat
+      →1.00). Remaining: F2 float constants, F3 NAN-comparison fold (`nan` 0.34), F5 SSE
+      packing, and mixfloatint's 4-byte return (needs the D3 overlap fix).
 - [ ] **Switch / jumptable recovery** (large) — no switch recovery (switchind/switchhide/
       ifswitch score low); mosura lifts `BRANCHIND` but drops the switch body. **Phased
       plan in [`docs/switches-plan.md`](docs/switches-plan.md)**: S1 table recovery
@@ -55,14 +56,21 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Recommended order
 
-1. Type system (largest corpus lever, next).
-2. Floats, then switches.
+1. **Switches** (S1–S3, `docs/switches-plan.md`) — the largest untouched lever; clean
+   Ghidra match, high structural value.
+2. Float remainders (F2/F3/F5) + the **D3 varnode-overlap fix** (unlocks float 4-byte
+   returns and the 64-bit DIV overlap — a cross-cutting correctness win).
+3. Type system T1→ (large; modest comparator payoff — lower priority than it looks).
 
 ## Done recently (reference)
 
-Loop-body CSE (a loop variable whose new value also appears in a body statement —
-a load that is stored and carried — is emitted once and referenced; threedim 0.65→0.76,
-corpus 0.619→0.622, 18→20 ≥0.70); FLOAT_* operators (build_op → `+`/`<`/`NAN()`…);
+Floats F4 — global writes (`block_stmts` emits `ram_X = value`; convert/displayformat
+→1.00, floatprint 0.19→0.79, corpus 0.637→0.684, 20→25 ≥0.70); Floats F1 — XMM params +
+8-byte float return (floatcast 0.23→0.51, corpus 0.622→0.637); type-system T0 — the
+`Datatype` lattice (`decomp::types`); loop-body CSE (a loop variable whose new value also
+appears in a body statement — a load that is stored and carried — is emitted once and
+referenced; threedim 0.65→0.76, corpus 0.619→0.622, 18→20 ≥0.70); FLOAT_* operators
+(build_op → `+`/`<`/`NAN()`…);
 Signed division + `x % C` modulo recovery (`recover_signed_div` + AST modulo idiom +
 multiply association; modulo 0.43→0.46, array-index-bound aggregate flat at 0.619);
 Division-by-constant recovery (`decomp::divrecover`: `calcDivisor` 128-bit port +
