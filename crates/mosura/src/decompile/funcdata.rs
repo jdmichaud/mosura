@@ -156,6 +156,46 @@ impl Funcdata {
         v
     }
 
+    /// Repoint input `slot` of `op` at varnode `vid`, maintaining descendant lists
+    /// (Ghidra's `opSetInput`). Used by heritage renaming.
+    pub fn op_set_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
+        let old = self.ops[op.0 as usize].inrefs[slot];
+        if old == vid {
+            return;
+        }
+        if let Some(pos) = self.varnodes[old.0 as usize].descend.iter().position(|&o| o == op) {
+            self.varnodes[old.0 as usize].descend.remove(pos);
+        }
+        self.ops[op.0 as usize].inrefs[slot] = vid;
+        self.varnodes[vid.0 as usize].descend.push(op);
+    }
+
+    /// Create a MULTIEQUAL (phi) for the location `(space, offset, size)` with `npreds`
+    /// placeholder inputs (filled during renaming), give it an output at that location,
+    /// and prepend it to `block`. Returns the op.
+    pub fn new_multiequal(
+        &mut self,
+        block: super::block::BlockId,
+        space: super::space::SpaceId,
+        offset: u64,
+        size: u32,
+        npreds: usize,
+    ) -> OpId {
+        let loc = Address::new(space, offset);
+        let pc = self
+            .blocks[block.0 as usize]
+            .ops
+            .first()
+            .map(|&o| self.op(o).seqnum.pc)
+            .unwrap_or(self.addr);
+        let inputs: Vec<VarnodeId> = (0..npreds).map(|_| self.new_varnode(size, loc)).collect();
+        let id = self.new_op(OpCode::Multiequal, SeqNum { pc, uniq: u32::MAX }, inputs);
+        self.new_output(id, size, loc);
+        self.ops[id.0 as usize].parent = Some(block);
+        self.blocks[block.0 as usize].ops.insert(0, id);
+        id
+    }
+
     // --- printRaw (the IR dump) --------------------------------------------
 
     /// Render one varnode as Ghidra's `printRawNoMarkup` does, structurally: `#value` for

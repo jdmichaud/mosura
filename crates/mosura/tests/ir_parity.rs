@@ -149,6 +149,80 @@ fn cfg_survey_flow_following_gap() {
     assert!(!matched.is_empty(), "no CFGs matched Ghidra");
 }
 
+/// Build a function all the way through heritage (raw load → CFG → dominators → SSA).
+fn heritaged(spec: &Spec, ctx: &[u32], fixture: &std::path::Path) -> mosura::decompile::Funcdata {
+    let dt = datatest::parse_file(fixture).expect("fixture");
+    let mut f = raw_funcdata(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
+    mosura::decompile::cfg::build_cfg(&mut f);
+    let dom = mosura::decompile::dominator::compute(&f);
+    mosura::decompile::heritage::heritage(&mut f, &dom);
+    f
+}
+
+#[test]
+fn heritage_produces_valid_ssa() {
+    use mosura::decompile::{OpCode, OpId};
+    let Some((spec, ctx)) = x86_64() else { return };
+
+    for name in ["x86_64_sem", "elseif", "twodim", "threedim"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let f = heritaged(&spec, &ctx, &fixture);
+
+        // (a) every heritaged read links to a definition or a function input — no free
+        //     varnodes are referenced (branch/call destinations and constants excepted).
+        for b in 0..f.num_blocks() as u32 {
+            for &op in &f.block(mosura::decompile::BlockId(b)).ops {
+                let o = f.op(op);
+                let is_dest_annot = matches!(
+                    o.code(),
+                    OpCode::Branch | OpCode::Cbranch | OpCode::Branchind
+                        | OpCode::Call | OpCode::Callind | OpCode::Callother | OpCode::Return
+                );
+                for (slot, &vid) in o.inrefs.iter().enumerate() {
+                    let vn = f.vn(vid);
+                    if vn.is_constant() || (slot == 0 && is_dest_annot) {
+                        continue;
+                    }
+                    assert!(
+                        vn.is_written() || vn.is_input(),
+                        "{name}: op {op:?} slot {slot} reads an unlinked free varnode"
+                    );
+                }
+            }
+        }
+
+        // (b) single assignment: every written varnode's def actually outputs it.
+        for i in 0..f.num_varnodes() as u32 {
+            let vid = mosura::decompile::VarnodeId(i);
+            if f.vn(vid).is_written() {
+                let def = f.vn(vid).def.expect("written ⇒ has def");
+                assert_eq!(f.op(def).output, Some(vid), "{name}: def/output mismatch");
+            }
+        }
+
+        // (c) phi shape: a single-block function needs no phis; a branchy one does, and
+        //     every MULTIEQUAL has one input per predecessor of its block.
+        let count_phi = |f: &mosura::decompile::Funcdata| {
+            (0..f.num_ops() as u32).filter(|&i| f.op(OpId(i)).code() == OpCode::Multiequal).count()
+        };
+        if f.num_blocks() == 1 {
+            assert_eq!(count_phi(&f), 0, "{name}: single block must have no MULTIEQUAL");
+        }
+        for b in 0..f.num_blocks() as u32 {
+            let blk = mosura::decompile::BlockId(b);
+            let npreds = f.block(blk).in_edges.len();
+            for &op in &f.block(blk).ops {
+                if f.op(op).code() == OpCode::Multiequal {
+                    assert_eq!(f.op(op).num_inputs(), npreds, "{name}: phi arity ≠ #preds");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };

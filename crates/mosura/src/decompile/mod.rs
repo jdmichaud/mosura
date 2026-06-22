@@ -12,6 +12,7 @@ pub mod build;
 pub mod cfg;
 pub mod dominator;
 pub mod funcdata;
+pub mod heritage;
 pub mod op;
 pub mod opcode;
 pub mod space;

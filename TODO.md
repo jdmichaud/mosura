@@ -49,9 +49,14 @@ for the full rationale and architecture.
   - [ ] **Flow-following decode** (`followFlow`): condconst/boolless/ifswitch need it —
         mosura's linear sweep drifts (e.g. condconst's JMP target off by one). Decode only
         reachable instructions from the entry, following branch targets.
-  - [ ] Dominator tree + dominance frontiers.
-  - [ ] Heritage SSA: LocationMap, MULTIEQUAL/INDIRECT placement, Cytron rename.
-  - [ ] Refinement: `guard`/`normalizeReadSize`/`WriteSize` (subsumes overlap/CONCAT/phi-leaks).
+  - [x] Dominator tree + dominance frontiers (`dominator.rs`, Cooper).
+  - [x] **Heritage SSA** (`heritage.rs`): semi-pruned Cytron — global-location detection,
+        MULTIEQUAL placement at dominance frontiers, dominator-tree renaming. Produces
+        valid SSA (reads linked, single-assignment, phi arity = #preds) for the aligned
+        functions; matches Ghidra's def-use structure (verified on x86_64_sem).
+  - [ ] Setup guards (e.g. synthetic `DF=0` at entry; call/store INDIRECTs, input guards).
+  - [ ] Refinement: `guard`/`normalizeReadSize`/`WriteSize` (size-overlap → subsumes
+        overlap/CONCAT/phi-leaks). Until then overlapping-width accesses are independent vars.
 - [ ] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
