@@ -68,8 +68,10 @@ for the full rationale and architecture.
   - [x] Constant folding (`rules.rs::RuleConstFold` + `eval_const`, mirroring emu's
         parity-validated semantics) + `RuleTrivialArith` (`x OP x` identities). Unit-tested
         + integration: folds to fixpoint on real functions.
-  - [ ] More core rules: `RuleTermOrder`, `RuleCollectTerms`, `RuleTrivialShift`,
-        `RuleTrivialBool`, `RuleIdentityEl`, copy/SUBPIECE simplification.
+  - [x] `RuleTermOrder` (constant → slot 1), `RuleIdentityEl` (x+0/x*1/x*0),
+        `RuleTrivialShift` (x<<0, shift≥width→0). Unit-tested + in the integration pool.
+  - [ ] More rules: `RuleCollectTerms` (a*c1+a*c2), `RuleSub2Add`, SUBPIECE/MULTIEQUAL
+        pull-through, and the long tail (Ghidra has ~100; add as functions need them).
   - [ ] Assemble the universal-action pipeline (heritage → pool → …).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).

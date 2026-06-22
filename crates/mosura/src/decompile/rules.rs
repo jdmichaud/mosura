@@ -141,6 +141,115 @@ impl Rule for RuleTrivialArith {
     }
 }
 
+/// Move a constant to the second input of a commutative op (Ghidra's `RuleTermOrder`), so
+/// the identity/collapse rules can assume the constant is in slot 1.
+pub struct RuleTermOrder;
+
+impl Rule for RuleTermOrder {
+    fn name(&self) -> &str {
+        "termorder"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        use OpCode::*;
+        vec![
+            IntEqual, IntNotequal, IntAdd, IntCarry, IntScarry, IntXor, IntAnd, IntOr,
+            IntMult, BoolXor, BoolAnd, BoolOr, FloatEqual, FloatNotequal, FloatAdd, FloatMult,
+        ]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let in0 = data.op(op).input(0).unwrap();
+        let in1 = data.op(op).input(1).unwrap();
+        if data.vn(in0).is_constant() && !data.vn(in1).is_constant() {
+            data.op_swap_input(op, 0, 1);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Identity elements (Ghidra's `RuleIdentityEl`): `x+0`, `x^0`, `x|0` → `x`; `x*1` → `x`;
+/// `x*0` → `0`. Assumes the constant is in slot 1 (`RuleTermOrder`).
+pub struct RuleIdentityEl;
+
+impl Rule for RuleIdentityEl {
+    fn name(&self) -> &str {
+        "identityel"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        use OpCode::*;
+        vec![IntAdd, IntXor, IntOr, BoolXor, BoolOr, IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let val = data.vn(in1).constant_value();
+        let code = data.op(op).code();
+        if val == 0 && code != OpCode::IntMult {
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_remove_input(op, 1);
+            return 1;
+        }
+        if code != OpCode::IntMult {
+            return 0;
+        }
+        match val {
+            1 => {
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 1);
+                1
+            }
+            0 => {
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 0); // keep the constant 0
+                1
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// Shift identities (Ghidra's `RuleTrivialShift`): `x << 0` → `x`; a logical shift by ≥ the
+/// operand width → `0` (an arithmetic right shift by ≥ width is left alone).
+pub struct RuleTrivialShift;
+
+impl Rule for RuleTrivialShift {
+    fn name(&self) -> &str {
+        "trivialshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLeft, OpCode::IntRight, OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let val = data.vn(in1).constant_value();
+        if val != 0 {
+            let in0_size = data.vn(data.op(op).input(0).unwrap()).size;
+            if val < 8 * in0_size as u64 || data.op(op).code() == OpCode::IntSright {
+                return 0;
+            }
+            let zero = data.new_const(in0_size, 0);
+            data.op_set_input(op, 0, zero);
+        }
+        data.op_remove_input(op, 1);
+        data.op_set_opcode(op, OpCode::Copy);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +312,46 @@ mod tests {
         assert_eq!(f.op(op).code(), OpCode::Copy);
         assert_eq!(f.op(op).num_inputs(), 1);
         assert_eq!(f.op(op).input(0), Some(x));
+    }
+
+    #[test]
+    fn termorder_then_identity_collapses_zero_add() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let op = f.new_op(OpCode::IntAdd, seq, vec![zero, x]); // 0 + x (const in slot 0)
+        f.new_output(op, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleTermOrder).with(RuleIdentityEl);
+        pool.apply(&mut f);
+        // 0 + x  →  x + 0  →  COPY x
+        assert_eq!(f.op(op).code(), OpCode::Copy);
+        assert_eq!(f.op(op).input(0), Some(x));
+    }
+
+    #[test]
+    fn mult_zero_and_shift_overflow_go_to_zero() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let z = f.new_const(4, 0);
+        let m = f.new_op(OpCode::IntMult, seq, vec![x, z]); // x * 0
+        f.new_output(m, 4, Address::new(reg, 0));
+        let big = f.new_const(4, 64);
+        let s = f.new_op(OpCode::IntLeft, seq, vec![x, big]); // x << 64
+        f.new_output(s, 4, Address::new(reg, 8));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![m, s], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleIdentityEl).with(RuleTrivialShift);
+        pool.apply(&mut f);
+        for op in [m, s] {
+            assert_eq!(f.op(op).code(), OpCode::Copy);
+            let in0 = f.op(op).input(0).unwrap();
+            assert!(f.vn(in0).is_constant() && f.vn(in0).constant_value() == 0);
+        }
     }
 }

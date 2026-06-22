@@ -161,6 +161,11 @@ impl Funcdata {
         self.ops[op.0 as usize].opcode = opcode;
     }
 
+    /// Swap two input slots of `op` (Ghidra's `opSwapInput`).
+    pub fn op_swap_input(&mut self, op: OpId, i: usize, j: usize) {
+        self.ops[op.0 as usize].inrefs.swap(i, j);
+    }
+
     /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
     pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
         let vid = self.ops[op.0 as usize].inrefs.remove(slot);
