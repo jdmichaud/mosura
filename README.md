@@ -6,9 +6,12 @@
 
 A command-line reimplementation of **Ghidra's logic** (not its UI) in Rust.
 
-Early-stage port. The first target is the **SLEIGH engine** (disassembler + p-code).
-Correctness is guided by a characterization-test baseline that treats Ghidra as a
-golden oracle — see [`docs/testing-baseline.md`](docs/testing-baseline.md).
+A faithful translation of Ghidra's C++ decompiler, validated against Ghidra's own
+intermediate IR stage by stage. The **SLEIGH engine** (disassembler + p-code) is done;
+the decompiler core is being ported on Ghidra's `Action`/`Rule` architecture. Plan:
+[`docs/port-plan.md`](docs/port-plan.md). Correctness is guided by characterization
+testing against Ghidra as the golden oracle — see
+[`docs/testing-baseline.md`](docs/testing-baseline.md).
 
 ## Workspace layout
 

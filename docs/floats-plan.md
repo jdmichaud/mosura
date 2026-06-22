@@ -1,3 +1,5 @@
+> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work.
+
 # Float support — port plan
 
 Recover floating-point code: the 6 float datatests (floatprint, floatcast, floatconv,

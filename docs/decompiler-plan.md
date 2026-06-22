@@ -1,3 +1,5 @@
+> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work.
+
 # Decompiler stage — port plan
 
 Companion to [`testing-baseline.md`](testing-baseline.md). That doc covers stage 1b

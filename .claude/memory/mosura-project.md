@@ -9,6 +9,8 @@ metadata:
 
 **Mosura** is a CLI tool reimplementing Ghidra's *logic* (not UI) in Rust. Workspace `/home/jd/mosura` holds `ghidra/` (reference source, a git checkout of NationalSecurityAgency/ghidra) and `mosura/` (the Rust project, near-empty so far).
 
+> **DIRECTION (2026-06-22, current):** the objective is a **faithful IR-exact port of Ghidra's decompiler** (Ghidra's Varnode-graph data model + `Action`/`Rule` pipeline), validated against Ghidra's per-phase IR — NOT maximizing the token-skeleton similarity score (that was abandoned as a trap: it rewards approximations and punishes faithfulness, and approximations don't compose). Plan: `docs/port-plan.md`; phases in `TODO.md`. The notes below this point are the approximation-era prototype grounding (Ghidra source refs + why each over-fit the similarity metric) — still useful as the symptom catalogue the faithful port (P1 Heritage, P4 Types, P5 Merge, P6 Prototypes) subsumes.
+
 **Versions are pinned to match the live oracle (decided):**
 - The Ghidra MCP server (GhidraMCP headless v4.3.0, port 8089) backs **Ghidra 12.0.3 PUBLIC** at `/home/jd/tools/ghidra_12.0.3_PUBLIC/`.
 - So `ghidra/` was checked out to git tag **`Ghidra_12.0.3_build`** (detached HEAD) so the code we read == the code the oracle runs. Don't bump silently.

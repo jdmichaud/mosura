@@ -1,3 +1,5 @@
+> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work.
+
 # Type system — port plan
 
 A faithful port of Ghidra's data-type subsystem: `TypeFactory` (the type registry),

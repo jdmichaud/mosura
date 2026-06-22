@@ -1,3 +1,5 @@
+> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work.
+
 # Switch / jump-table recovery — port plan
 
 Recover `switch` statements from indirect jumps. The 5 switch datatests (switchind,
