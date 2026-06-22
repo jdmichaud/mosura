@@ -1,0 +1,85 @@
+//! The decompiler pipeline — the assembly of phases into one composable action, the
+//! analogue of Ghidra's `ActionDatabase::universalAction` (`coreaction.cc`). Grows as each
+//! phase lands; currently heritage (P1) + the simplification rule pool (P2).
+
+use super::action::{Action, ActionGroup, ActionPool};
+use super::funcdata::Funcdata;
+use super::rules::{RuleConstFold, RuleIdentityEl, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
+
+/// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
+/// construction Ghidra does in `followFlow`). Runs once — when the blocks aren't built yet.
+pub struct ActionHeritage;
+
+impl Action for ActionHeritage {
+    fn name(&self) -> &str {
+        "heritage"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.num_blocks() != 0 {
+            return 0;
+        }
+        super::cfg::build_cfg(data);
+        let dom = super::dominator::compute(data);
+        super::heritage::heritage(data, &dom);
+        1
+    }
+}
+
+/// The simplification rule pool (Ghidra's `oppool1`) — the core rules ported so far.
+pub fn default_rule_pool() -> ActionPool {
+    ActionPool::new("oppool")
+        .with(RuleTermOrder)
+        .with(RuleConstFold)
+        .with(RuleTrivialArith)
+        .with(RuleIdentityEl)
+        .with(RuleTrivialShift)
+}
+
+/// The universal decompile action: heritage, then simplification.
+pub fn universal_action() -> ActionGroup {
+    ActionGroup::once("decompile").then(ActionHeritage).then(default_rule_pool())
+}
+
+/// Run the pipeline on a raw (post-load) Funcdata in place.
+pub fn decompile(data: &mut Funcdata) {
+    universal_action().apply(data);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decompile::build::raw_funcdata_flow;
+    use crate::decompile::{OpCode, OpId};
+    use crate::sleigh::engine::Spec;
+    use crate::{datatest, paths};
+
+    #[test]
+    fn pipeline_runs_end_to_end() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        if !sla.exists() {
+            return;
+        }
+        let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+        let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+        let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_sem.xml")).unwrap();
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+        decompile(&mut f);
+
+        // heritage ran (blocks built, SSA linked) and the pool ran (no live foldable
+        // all-constant op survives).
+        assert!(f.num_blocks() > 0);
+        for i in 0..f.num_ops() as u32 {
+            let op = OpId(i);
+            if f.op(op).is_dead() || f.op(op).num_inputs() == 0 {
+                continue;
+            }
+            let all_const = f.op(op).inrefs.iter().all(|&v| f.vn(v).is_constant());
+            let foldable = !matches!(
+                f.op(op).code(),
+                OpCode::Load | OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Multiequal
+            );
+            assert!(!(all_const && foldable && f.op(op).output.is_some()), "unfolded constant op survived");
+        }
+    }
+}

@@ -15,6 +15,7 @@ pub mod funcdata;
 pub mod heritage;
 pub mod op;
 pub mod opcode;
+pub mod pipeline;
 pub mod rules;
 pub mod space;
 pub mod varnode;
