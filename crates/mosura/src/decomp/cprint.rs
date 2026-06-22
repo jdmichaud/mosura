@@ -13,6 +13,11 @@ use std::collections::HashMap;
 /// Loop-variable names: phi id → C variable name. Empty for non-loop expressions.
 type LoopVars = HashMap<usize, String>;
 
+/// Explicit-temp names: op index → C variable name. A value Ghidra marks
+/// \e explicit (multiply-used, per `ActionMarkExplicit`) is emitted once as a named
+/// temporary and referenced, rather than re-inlined at each use. Empty disables it.
+type Explicit = HashMap<usize, String>;
+
 /// A recovered C expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -150,7 +155,7 @@ struct LoopParts {
 const MAX_DEPTH: u32 = 128;
 
 impl Funcdata {
-    fn build_expr(&self, d: Def, ssa: &Ssa, lv: &LoopVars, depth: u32) -> Expr {
+    fn build_expr(&self, d: Def, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         if depth > MAX_DEPTH {
             return Expr::Var("...".into());
         }
@@ -158,11 +163,20 @@ impl Funcdata {
             Def::Live => Expr::Var("undefined".into()),
             Def::Phi(p) => match lv.get(&p) {
                 Some(name) => Expr::Var(name.clone()), // a loop variable — stop here
-                None => self.phi_expr(p, ssa, lv, depth),
+                None => self.phi_expr(p, ssa, lv, ex, depth),
             },
-            Def::Op(i) => {
-                let op = &self.ops[i].op;
-                let a = |pos: usize| self.input_expr(i, pos, ssa, lv, depth + 1);
+            // a value marked explicit is referenced by its temp name, not re-inlined
+            Def::Op(i) if ex.contains_key(&i) => Expr::Var(ex[&i].clone()),
+            Def::Op(i) => self.build_op(i, ssa, lv, ex, depth),
+        }
+    }
+
+    /// Build the C expression *defining* op `i` (the explicit-temp check is bypassed
+    /// for this root op, so its own definition expands rather than self-referencing).
+    fn build_op(&self, i: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
+        {
+            let op = &self.ops[i].op;
+            let a = |pos: usize| self.input_expr(i, pos, ssa, lv, ex, depth + 1);
                 match opcode_name(op.opcode) {
                     "COPY" | "INT_ZEXT" | "INT_SEXT" | "SUBPIECE" => a(0),
                     "INT_ADD" => bin("+", a(0), a(1)),
@@ -212,18 +226,120 @@ impl Funcdata {
                         Expr::Call(other, args)
                     }
                 }
-            }
         }
     }
 
-    fn input_expr(&self, i: usize, pos: usize, ssa: &Ssa, lv: &LoopVars, depth: u32) -> Expr {
+    /// Does `build_op` render op `i` by passing input 0 straight through? Such ops
+    /// (`COPY`/`ZEXT`/`SEXT`/`SUBPIECE`) are transparent: two uses reaching the same
+    /// producer through them are the *same* value.
+    fn is_transparent_op(&self, i: usize) -> bool {
+        matches!(opcode_name(self.ops[i].op.opcode), "COPY" | "INT_ZEXT" | "INT_SEXT" | "SUBPIECE")
+    }
+
+    /// Follow transparent ops (input 0) from `d` to the real op producing its value,
+    /// or `None` if it folds to a terminal (parameter / live-in / constant / phi).
+    fn value_op(&self, d: Def, ssa: &Ssa) -> Option<usize> {
+        let mut cur = d;
+        for _ in 0..MAX_DEPTH {
+            match cur {
+                Def::Op(i) if self.is_transparent_op(i) => cur = *ssa.uses.get(&(i, 0))?,
+                Def::Op(i) => return Some(i),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Is op `i` a value worth naming — a real op with a usable output whose
+    /// expression is more than a bare terminal (a parameter/constant is already named)?
+    /// Stack/frame-pointer (\e spacebase) values are never named: Ghidra keeps them
+    /// implicit (`ActionMarkExplicit` skips spacebase varnodes) and usually discards
+    /// the raw pointer arithmetic entirely.
+    fn nameable(&self, i: usize, ssa: &Ssa) -> bool {
+        if self.is_transparent_op(i) || self.ops[i].op.out.is_none() {
+            return false;
+        }
+        let e = self.build_op(i, ssa, &LoopVars::new(), &Explicit::new(), 0);
+        if matches!(e, Expr::Var(_) | Expr::Const(..)) || expr_refs_spacebase(&e) {
+            return false;
+        }
+        true
+    }
+
+    /// Mark values explicit the way Ghidra's `ActionMarkExplicit` does: a value with
+    /// more than `MAX_IMPLIED_REF` descendants, or exactly two whose expression
+    /// duplicates more than `MAX_TERM_DUPLICATION` terminal leaves, is emitted once as
+    /// a named temporary and referenced — instead of being re-inlined at each use.
+    /// Returns op index → temp name. (Ghidra's `Architecture` defaults, `architecture.cc`.)
+    fn mark_explicit(&self, ssa: &Ssa, live: &super::simplify::Liveness) -> Explicit {
+        const MAX_IMPLIED_REF: usize = 2;
+        const MAX_TERM_DUPLICATION: usize = 2;
+
+        // Count folded descendants as *distinct consumers*: attribute each live use
+        // (op input, live phi arg, or return live-out — all in `ssa.uses`) to its real
+        // producer, but count each consuming op/phi once per producer. (A `RETURN`
+        // reads its value through two overlapping live-out slots, `EAX` and `RAX`,
+        // which fold to the same producer — that is one descendant, not two.) Skip
+        // transparent consumers, whose uses are credited to the op they fold into.
+        let mut edges: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+        for (&(op, _pos), &d) in &ssa.uses {
+            if !live.live_ops[op] || self.is_transparent_op(op) {
+                continue;
+            }
+            if let Some(r) = self.value_op(d, ssa) {
+                edges.insert((op, r));
+            }
+        }
+        for (p, ph) in ssa.phis.iter().enumerate() {
+            if live.live_phis[p] {
+                for &a in &ph.args {
+                    if let Some(r) = self.value_op(a, ssa) {
+                        edges.insert((self.ops.len() + p, r)); // phi consumer key, disjoint from op indices
+                    }
+                }
+            }
+        }
+        let mut desc: HashMap<usize, usize> = HashMap::new();
+        for &(_consumer, r) in &edges {
+            *desc.entry(r).or_default() += 1;
+        }
+
+        let mut cand: Vec<usize> = desc.iter().filter(|(_, &c)| c >= 2).map(|(&i, _)| i).collect();
+        cand.sort_unstable();
+        let mut marked: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // pass 1 — too many descendants (baseExplicit, maxref): always explicit
+        for &i in &cand {
+            if desc[&i] > MAX_IMPLIED_REF && self.nameable(i, ssa) {
+                marked.insert(i);
+            }
+        }
+        // pass 2 — exactly-two descendants: explicit only if expanding duplicates too
+        // many terminals (processMultiplier, maxdup), counting pass-1 temps as terminals
+        for &i in &cand {
+            if marked.contains(&i) || desc[&i] != 2 || !self.nameable(i, ssa) {
+                continue;
+            }
+            let prov: Explicit = marked.iter().map(|&j| (j, String::new())).collect();
+            let e = self.build_op(i, ssa, &LoopVars::new(), &prov, 0);
+            if leaf_count(&e) > MAX_TERM_DUPLICATION {
+                marked.insert(i);
+            }
+        }
+
+        // name in program order so temps read top-to-bottom
+        let mut set: Vec<usize> = marked.into_iter().collect();
+        set.sort_unstable();
+        set.iter().enumerate().map(|(k, &i)| (i, format!("var_{k}"))).collect()
+    }
+
+    fn input_expr(&self, i: usize, pos: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         match self.ops[i].op.ins.get(pos) {
             Some(PArg::Var(v)) if v.is_const() => Expr::Const(v.offset, v.size),
             Some(PArg::Var(v)) if heritaged(&v.space) => match ssa.uses.get(&(i, pos)).copied() {
                 Some(Def::Live) | None => {
                     Expr::Var(x86_param(&v.space, v.offset).unwrap_or_else(|| format!("in_{}_{:x}", v.space, v.offset)))
                 }
-                Some(d) => self.build_expr(d, ssa, lv, depth),
+                Some(d) => self.build_expr(d, ssa, lv, ex, depth),
             },
             Some(PArg::Var(v)) => Expr::Var(format!("{}_{:x}", v.space, v.offset)),
             _ => Expr::Var("?".into()),
@@ -233,7 +349,7 @@ impl Funcdata {
     /// Recover a 2-way phi as a `?:` ternary, gated by the `CBRANCH` of the merge's
     /// immediate dominator. Falls back to a named value if the shape isn't a clean
     /// diamond.
-    fn phi_expr(&self, p: usize, ssa: &Ssa, lv: &LoopVars, depth: u32) -> Expr {
+    fn phi_expr(&self, p: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         let ph = &ssa.phis[p];
         let m = ph.block;
         let fallback = || Expr::Var(format!("phi_{p}"));
@@ -249,7 +365,7 @@ impl Funcdata {
             return fallback(); // not a CBRANCH split
         }
         let taken = self.blocks[s].succ.first().copied(); // CBRANCH true target
-        let cond = self.input_expr(last, 1, ssa, lv, depth + 1);
+        let cond = self.input_expr(last, 1, ssa, lv, ex, depth + 1);
 
         // assign each phi argument to the true/false side of the branch
         let (mut t_arg, mut f_arg) = (None, None);
@@ -264,8 +380,8 @@ impl Funcdata {
         match (t_arg, f_arg) {
             (Some(t), Some(e)) => Expr::Ternary(
                 Box::new(cond),
-                Box::new(self.build_expr(t, ssa, lv, depth + 1)),
-                Box::new(self.build_expr(e, ssa, lv, depth + 1)),
+                Box::new(self.build_expr(t, ssa, lv, ex, depth + 1)),
+                Box::new(self.build_expr(e, ssa, lv, ex, depth + 1)),
             ),
             _ => fallback(),
         }
@@ -310,13 +426,14 @@ impl Funcdata {
         }
         let blk = &self.blocks[b];
         let last = blk.end - 1;
+        let no_ex = Explicit::new();
         match self.ops[last].op.opcode {
             10 => {
                 let d = self.ret_def(last, ssa);
-                Stmt::Return(simplify(self.build_expr(d, ssa, lv, 0)))
+                Stmt::Return(simplify(self.build_expr(d, ssa, lv, &no_ex, 0)))
             }
             5 => {
-                let cond = simplify(self.input_expr(last, 1, ssa, lv, 0)); // succ[0] taken when true
+                let cond = simplify(self.input_expr(last, 1, ssa, lv, &no_ex, 0)); // succ[0] taken when true
                 let then_s = blk.succ.first().map_or(Stmt::Seq(Vec::new()), |&t| self.structure(t, ssa, lv, loops, depth + 1));
                 let else_s = blk.succ.get(1).map(|&e| Box::new(self.structure(e, ssa, lv, loops, depth + 1)));
                 Stmt::If(cond, Box::new(then_s), else_s)
@@ -376,9 +493,12 @@ impl Funcdata {
                 let ret = rets[0];
                 let d = self.ret_def(ret, &ssa);
                 let live = self.dead_code(&ssa);
+                // mark multiply-used values explicit (Ghidra ActionMarkExplicit): they
+                // are emitted once as named temporaries by block_stmts and referenced.
+                let ex = self.mark_explicit(&ssa, &live);
                 let mut seq: Vec<Stmt> =
-                    (0..self.blocks.len()).filter(|&b| reach.get(self.blocks[b].start).copied().unwrap_or(false)).flat_map(|b| self.block_stmts(b, &ssa, &no_lv, &live)).collect();
-                seq.push(Stmt::Return(simplify(self.build_expr(d, &ssa, &no_lv, 0))));
+                    (0..self.blocks.len()).filter(|&b| reach.get(self.blocks[b].start).copied().unwrap_or(false)).flat_map(|b| self.block_stmts(b, &ssa, &no_lv, &ex, &live)).collect();
+                seq.push(Stmt::Return(simplify(self.build_expr(d, &ssa, &no_lv, &ex, 0))));
                 if seq.len() == 1 {
                     seq.pop().unwrap()
                 } else {
@@ -438,10 +558,11 @@ impl Funcdata {
         Def::Live
     }
 
-    /// Side-effecting statements of a block, in program order: unused-result calls
+    /// Side-effecting statements of a block, in program order: explicit-temp
+    /// definitions (`var = <expr>` for a multiply-used value), unused-result calls
     /// (`printf(...)`) and real memory stores (`*p = x`). The call's own
     /// return-address push (a `STORE` through `RSP`) is skipped.
-    fn block_stmts(&self, b: usize, ssa: &Ssa, lv: &LoopVars, live: &super::simplify::Liveness) -> Vec<Stmt> {
+    fn block_stmts(&self, b: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, live: &super::simplify::Liveness) -> Vec<Stmt> {
         // a call's result counts as used only if a *live* op or *live* phi consumes it
         let used = |d: Def| {
             ssa.uses.iter().any(|(&(op, _), u)| *u == d && live.live_ops[op])
@@ -449,15 +570,20 @@ impl Funcdata {
         };
         let mut stmts = Vec::new();
         for i in self.blocks[b].start..self.blocks[b].end {
+            // an explicit (multiply-used) value is defined here once, then referenced
+            if let Some(name) = ex.get(&i) {
+                stmts.push(Stmt::Decl(name.clone(), simplify(self.build_op(i, ssa, lv, ex, 0))));
+                continue;
+            }
             match self.ops[i].op.opcode {
                 7 | 8 if !used(Def::Op(i)) => {
-                    stmts.push(Stmt::Expr(simplify(self.build_expr(Def::Op(i), ssa, lv, 0))));
+                    stmts.push(Stmt::Expr(simplify(self.build_expr(Def::Op(i), ssa, lv, ex, 0))));
                 }
                 3 => {
                     let rsp_push = matches!(self.ops[i].op.ins.get(1), Some(PArg::Var(v)) if v.space == "register" && v.offset == 0x20);
                     if !rsp_push {
-                        let ptr = simplify(self.input_expr(i, 1, ssa, lv, 0));
-                        let val = simplify(self.input_expr(i, 2, ssa, lv, 0));
+                        let ptr = simplify(self.input_expr(i, 1, ssa, lv, ex, 0));
+                        let val = simplify(self.input_expr(i, 2, ssa, lv, ex, 0));
                         stmts.push(Stmt::Store(ptr, val));
                     }
                 }
@@ -471,9 +597,10 @@ impl Funcdata {
     fn pointer_params(&self, ssa: &Ssa, live: &super::simplify::Liveness) -> std::collections::HashSet<usize> {
         let mut ptrs = std::collections::HashSet::new();
         let no_lv = LoopVars::new();
+        let no_ex = Explicit::new();
         for (i, fo) in self.ops.iter().enumerate() {
             if live.live_ops[i] && matches!(fo.op.opcode, 2 | 3) {
-                if let Some(n) = ptr_base(&self.input_expr(i, 1, ssa, &no_lv, 0)) {
+                if let Some(n) = ptr_base(&self.input_expr(i, 1, ssa, &no_lv, &no_ex, 0)) {
                     ptrs.insert(n);
                 }
             }
@@ -488,10 +615,11 @@ impl Funcdata {
     fn uint_params(&self, ssa: &Ssa, live: &super::simplify::Liveness) -> std::collections::HashSet<usize> {
         let mut u = std::collections::HashSet::new();
         let no_lv = LoopVars::new();
+        let no_ex = Explicit::new();
         for (i, fo) in self.ops.iter().enumerate() {
             if live.live_ops[i] && matches!(fo.op.opcode, 13 | 15 | 30 | 33 | 35) {
                 for pos in 0..fo.op.ins.len() {
-                    if let Some(n) = ptr_base(&self.input_expr(i, pos, ssa, &no_lv, 0)) {
+                    if let Some(n) = ptr_base(&self.input_expr(i, pos, ssa, &no_lv, &no_ex, 0)) {
                         u.insert(n);
                     }
                 }
@@ -627,14 +755,15 @@ impl Funcdata {
             return None;
         }
         let none = LoopVars::new();
+        let no_ex = Explicit::new();
         let mut decls = Vec::new();
         let mut updates: Vec<(String, Expr, std::collections::HashSet<String>)> = Vec::new();
         for (name, loc, canon) in &vars {
             let init = match ssa.phis[*canon].args[pre] {
                 Def::Live => Expr::Var(x86_param(&loc.0, loc.1).unwrap_or_else(|| format!("in_{}_{:x}", loc.0, loc.1))),
-                d => simplify(self.build_expr(d, ssa, &none, 0)),
+                d => simplify(self.build_expr(d, ssa, &none, &no_ex, 0)),
             };
-            let upd = simplify(self.build_expr(ssa.phis[*canon].args[back], ssa, lv, 0));
+            let upd = simplify(self.build_expr(ssa.phis[*canon].args[back], ssa, lv, &no_ex, 0));
             decls.push((name.clone(), init));
             updates.push((name.clone(), upd.clone(), expr_vars(&upd)));
         }
@@ -647,7 +776,7 @@ impl Funcdata {
             // condition at the top, over pre-update values; continue toward the latch
             let cont = self.blocks[h].succ.iter().copied().find(|&s| self.reaches(s, latch, h))?;
             let exit = self.blocks[h].succ.iter().copied().find(|&s| s != cont)?;
-            let mut c = self.input_expr(last, 1, ssa, lv, 0);
+            let mut c = self.input_expr(last, 1, ssa, lv, &no_ex, 0);
             if self.blocks[h].succ.first() != Some(&cont) {
                 c = Expr::Unary("!", Box::new(c));
             }
@@ -655,7 +784,7 @@ impl Funcdata {
         } else {
             // do-while: condition at the bottom, over post-update values (subst)
             let exit = *self.blocks[h].succ.iter().find(|&&s| s != h)?;
-            let mut c = self.input_expr(last, 1, ssa, lv, 0);
+            let mut c = self.input_expr(last, 1, ssa, lv, &no_ex, 0);
             for (name, upd, _) in &updates {
                 c = subst(&c, upd, name);
             }
@@ -670,7 +799,7 @@ impl Funcdata {
         // the header phi directly
         let ret_op = (self.blocks[exit].start..self.blocks[exit].end).find(|&i| self.ops[i].op.opcode == 10)?;
         let rv = self.ret_def(ret_op, ssa);
-        let mut ret_e = self.build_expr(rv, ssa, lv, 0);
+        let mut ret_e = self.build_expr(rv, ssa, lv, &no_ex, 0);
         if !while_form {
             for (name, upd, _) in &updates {
                 ret_e = subst(&ret_e, upd, name);
@@ -691,7 +820,7 @@ impl Funcdata {
                 if self.ops[blk.end - 1].op.opcode == 5 {
                     return None; // branchy loop body — not handled
                 }
-                body.extend(self.block_stmts(b, ssa, lv, live));
+                body.extend(self.block_stmts(b, ssa, lv, &no_ex, live));
             }
         }
         for (n, e, _) in order_updates(&updates) {
@@ -798,6 +927,26 @@ fn ptr_base(e: &Expr) -> Option<usize> {
         Expr::Var(n) if n.starts_with("param_") => n[6..].parse().ok(),
         Expr::Binary("+", a, b) => ptr_base(a).or_else(|| ptr_base(b)),
         _ => None,
+    }
+}
+
+/// Does an expression read the raw stack/frame pointer (`RSP`=reg 0x20, `RBP`=reg
+/// 0x28) live-in — i.e. is it spacebase-relative? Ghidra never makes such a value an
+/// explicit variable.
+fn expr_refs_spacebase(e: &Expr) -> bool {
+    expr_vars(e).iter().any(|n| n == "in_register_20" || n == "in_register_28")
+}
+
+/// Number of terminal leaves (variables + constants) in an expression — Ghidra's
+/// "term duplication" count for the explicit/implicit decision. A nested explicit
+/// value (rendered as a bare `Var`) counts as a single terminal.
+fn leaf_count(e: &Expr) -> usize {
+    match e {
+        Expr::Const(..) | Expr::Var(_) => 1,
+        Expr::Unary(_, a) | Expr::Deref(a) => leaf_count(a),
+        Expr::Binary(_, a, b) => leaf_count(a) + leaf_count(b),
+        Expr::Ternary(c, t, el) => leaf_count(c) + leaf_count(t) + leaf_count(el),
+        Expr::Call(_, args) | Expr::FnCall(_, args) => args.iter().map(leaf_count).sum::<usize>().max(1),
     }
 }
 

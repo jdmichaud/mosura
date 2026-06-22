@@ -224,3 +224,24 @@ fn recovers_unsigned_param_types() {
     assert!(c.contains("uint param_1") && c.contains("uint param_2"), "unsigned params, got:\n{c}");
     assert!(c.contains("param_1 < param_2"), "the unsigned compare");
 }
+
+#[test]
+fn names_a_multiply_used_value_once() {
+    let Some((spec, ctx)) = x86_64() else { return };
+    // twodim: a[j] = a[i] + 10; return a[i]; — the load of a[i] is used twice (the
+    // store's right-hand side and the return). Ghidra's ActionMarkExplicit names such
+    // a multiply-used value once (a temporary) instead of recomputing it at each use.
+    let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_cse.xml")).unwrap();
+    let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+
+    let lo = [("register".to_string(), 0u64, 4u32), ("register".to_string(), 0u64, 8u32)];
+    let c = f.decompile(&lo).expect("cse decompile");
+    eprintln!("=== mosura named a multiply-used value once ===\n{c}");
+
+    // a temporary is declared and the return references it (not a re-inlined load)
+    assert!(c.contains("int var_0 = *("), "the load is named once, got:\n{c}");
+    assert!(c.contains("return var_0;"), "the return references the temp, got:\n{c}");
+    // the big address sub-expression (`<< 2`) appears for the load (once) and the
+    // store (once) — not three times, as it did when the load was re-inlined.
+    assert_eq!(c.matches("<< 2").count(), 2, "the load expression must not be duplicated, got:\n{c}");
+}

@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.60 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 16 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs`.
+Decompiler corpus: **0.615 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 17 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.61, good ≥ 16).
 
 ## Decompiler stages (D0–D6)
 
@@ -24,9 +24,6 @@ ratchet in `crates/mosura/tests/datatest_score.rs`.
 Each is a faithful reimplementation of the matching Ghidra subsystem — read the C++,
 don't invent heuristics (see `AGENT.md`).
 
-- [ ] **CSE / temp-variable naming** (moderate) — name a multiply-used value instead of
-      recomputing it. `threedim` recomputes a `LOAD` twice; Ghidra names it once. Touches
-      the `build_expr` core; do carefully.
 - [ ] **Type system** (large) — port `TypeFactory` + `ActionInferTypes`: int1/2/4/8,
       `uint`, `xunknown`/`undefined` widths, type propagation. Biggest single lever
       (mosura is int-everything today).
@@ -39,11 +36,13 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Recommended order
 
-1. CSE / temp-variables (moderate, next).
-2. Type system (largest corpus lever).
-3. Floats, then switches.
+1. Type system (largest corpus lever, next).
+2. Floats, then switches.
 
 ## Done recently (reference)
 
+CSE / explicit-temp naming (Ghidra `ActionMarkExplicit`: a value with >2 descendants,
+or 2 with >2 duplicated terminals, becomes a named temp; spacebase/stack-pointer values
+excluded; straight-line path only so far — `twodim` 0.60→0.76, corpus 0.605→0.615);
 PrintC integer-base formatting (hex vs decimal); return-type / void analysis;
 multi-function chunk handling (restrict to entry-reachable blocks); `LOAD` → `*(ptr)`.
