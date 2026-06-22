@@ -424,9 +424,105 @@ impl Funcdata {
         set.iter().enumerate().map(|(k, &i)| (i, format!("var_{k}"))).collect()
     }
 
+    /// The frame offset of the value defined by `d`, as a constant displacement from the
+    /// spacebase — Ghidra `AliasChecker::gatherOffset` (follow COPY/ADD/SUB/PTRSUB,
+    /// summing constants; a non-constant index contributes 0).
+    fn gather_offset(&self, d: Def, ssa: &Ssa, depth: u32) -> i64 {
+        if depth > 64 {
+            return 0;
+        }
+        let Def::Op(i) = d else { return 0 }; // the spacebase live-in is offset 0
+        let op = &self.ops[i].op;
+        // a definition of the frame pointer (RBP, set by the prologue) is the base, offset 0
+        if matches!(&op.out, Some(v) if v.space == "register" && v.offset == 0x28) {
+            return 0;
+        }
+        let g = |pos: usize| -> i64 {
+            if let Some(PArg::Var(v)) = op.ins.get(pos) {
+                if v.is_const() {
+                    return v.offset as i64;
+                }
+            }
+            ssa.uses.get(&(i, pos)).map_or(0, |&dd| self.gather_offset(dd, ssa, depth + 1))
+        };
+        match opcode_name(op.opcode) {
+            "COPY" | "INT_ZEXT" | "INT_SEXT" => g(0),
+            "INT_ADD" | "PTRSUB" => g(0).wrapping_add(g(1)),
+            "INT_SUB" => g(0).wrapping_sub(g(1)),
+            _ => 0,
+        }
+    }
+
+    /// The stack alias boundary: the lowest (deepest) local frame offset whose address
+    /// is taken — a port of Ghidra `AliasChecker::gatherAdditiveBase`. Walk forward from
+    /// the RBP spacebase through ADD/SUB/COPY chains; any derived value with a
+    /// *non-additive* use (a real pointer use: call arg, store, load, compare) is an
+    /// address taken at its offset. Stack slots at or above the boundary are aliased and
+    /// kept symbolic. `None` if no local address is ever taken.
+    fn stack_alias_boundary(&self, ssa: &Ssa) -> Option<i64> {
+        // reverse use map: each def → the ops (with input position) that read it
+        let mut uses_of: HashMap<Def, Vec<(usize, usize)>> = HashMap::new();
+        for (&(op, pos), &d) in &ssa.uses {
+            uses_of.entry(d).or_default().push((op, pos));
+        }
+        let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut work: Vec<i64> = vec![-1]; // -1 = the RBP spacebase (offset 0)
+        let mut bases: Vec<Def> = Vec::new(); // additive bases that have a non-additive use
+        while let Some(b) = work.pop() {
+            if !visited.insert(b) {
+                continue;
+            }
+            let descs: Vec<(usize, usize)> = if b < 0 {
+                // spacebase descendants: every op reading the frame pointer RBP (set by
+                // the prologue, so its reads are the frame base — recover_stack treats it
+                // as offset 0); the defining COPY/ADD chain is followed via gather_offset.
+                let mut v = Vec::new();
+                for (i, fo) in self.ops.iter().enumerate() {
+                    for (pos, a) in fo.op.ins.iter().enumerate() {
+                        if matches!(a, PArg::Var(vn) if vn.space == "register" && vn.offset == 0x28) {
+                            v.push((i, pos));
+                        }
+                    }
+                }
+                v
+            } else {
+                uses_of.get(&Def::Op(b as usize)).cloned().unwrap_or_default()
+            };
+            let mut nonadduse = false;
+            for (o, pos) in descs {
+                match opcode_name(self.ops[o].op.opcode) {
+                    "COPY" => {
+                        nonadduse = true; // a COPY is both a non-additive use and part of the chain
+                        work.push(o as i64);
+                    }
+                    "INT_SUB" if pos == 1 => nonadduse = true, // subtracting the pointer
+                    "INT_ADD" | "INT_SUB" | "PTRADD" | "PTRSUB" | "SEGMENTOP" => work.push(o as i64),
+                    _ => nonadduse = true, // used in a non-additive expression — the address escapes
+                }
+            }
+            if nonadduse && b >= 0 {
+                bases.push(Def::Op(b as usize));
+            }
+        }
+        let mut boundary: Option<i64> = None;
+        for d in bases {
+            let off = self.gather_offset(d, ssa, 0);
+            if off < 0 {
+                // a local (below the frame); params are at positive offsets — skip them
+                boundary = Some(boundary.map_or(off, |b| b.min(off)));
+            }
+        }
+        boundary
+    }
+
     fn input_expr(&self, i: usize, pos: usize, ssa: &Ssa, lv: &LoopVars, ex: &Explicit, depth: u32) -> Expr {
         match self.ops[i].op.ins.get(pos) {
             Some(PArg::Var(v)) if v.is_const() => Expr::Const(v.offset, v.size),
+            // an aliased stack slot reads as its named local (Ghidra keeps it symbolic);
+            // an unaliased slot is inlined — its stored value propagated, below.
+            Some(PArg::Var(v)) if v.space == "stack" && self.stack_alias_boundary(ssa).is_some_and(|b| v.offset as i64 >= b) => {
+                Expr::Var(stack_name(v.offset as i64))
+            }
             Some(PArg::Var(v)) if heritaged(&v.space) => match ssa.uses.get(&(i, pos)).copied() {
                 Some(Def::Live) | None => {
                     Expr::Var(x86_param(&v.space, v.offset).unwrap_or_else(|| format!("in_{}_{:x}", v.space, v.offset)))
@@ -798,6 +894,12 @@ impl Funcdata {
             if let Some(out) = self.ops[i].op.out.clone() {
                 if out.space == "ram" && live.live_ops[i] {
                     stmts.push(Stmt::Assign(format!("ram_{:x}", out.offset), simplify(self.build_op(i, ssa, lv, ex, 0))));
+                    continue;
+                }
+                // a store to an *aliased* stack slot is a named-variable assignment —
+                // `aStack_C = value` (an unaliased slot is inlined instead, not emitted).
+                if out.space == "stack" && self.ops[i].op.opcode == 1 && live.live_ops[i] && self.stack_alias_boundary(ssa).is_some_and(|b| out.offset as i64 >= b) {
+                    stmts.push(Stmt::Assign(stack_name(out.offset as i64), simplify(self.input_expr(i, 0, ssa, lv, ex, 0))));
                     continue;
                 }
             }

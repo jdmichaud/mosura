@@ -84,5 +84,5 @@ fn score_x86_64_datatest_corpus() {
     let good = scored.iter().filter(|&&s| s >= 0.7).count();
     eprintln!("structural similarity vs Ghidra: avg {avg:.3}, >=0.70: {good}/{}", scored.len());
     assert!(avg >= 0.75, "average similarity {avg:.3} regressed");
-    assert!(good >= 32, "only {good} datatests >= 0.70 — regressed");
+    assert!(good >= 33, "only {good} datatests >= 0.70 — regressed");
 }

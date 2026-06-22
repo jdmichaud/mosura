@@ -307,7 +307,7 @@ impl Funcdata {
 }
 
 /// An SSA definition site.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Def {
     /// Defined by `ops[i]`'s output.
     Op(usize),
