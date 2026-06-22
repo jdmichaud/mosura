@@ -59,7 +59,9 @@ fn score_x86_64_datatest_corpus() {
         if dt.chunks.is_empty() {
             continue;
         }
-        let f = Funcdata::build(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        // pass the whole binary image so jump tables (in a separate chunk) recover
+        let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let f = Funcdata::build_image(&spec, &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx, &image);
         // a few datatests stress paths mosura doesn't model yet; don't abort the run
         let Ok(Some(mosura)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.decompile(&lo))) else {
             continue;
@@ -81,6 +83,6 @@ fn score_x86_64_datatest_corpus() {
     let avg = scored.iter().sum::<f64>() / scored.len() as f64;
     let good = scored.iter().filter(|&&s| s >= 0.7).count();
     eprintln!("structural similarity vs Ghidra: avg {avg:.3}, >=0.70: {good}/{}", scored.len());
-    assert!(avg >= 0.68, "average similarity {avg:.3} regressed");
-    assert!(good >= 24, "only {good} datatests >= 0.70 — regressed");
+    assert!(avg >= 0.69, "average similarity {avg:.3} regressed");
+    assert!(good >= 25, "only {good} datatests >= 0.70 — regressed");
 }

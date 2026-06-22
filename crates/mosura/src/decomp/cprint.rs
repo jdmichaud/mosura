@@ -104,6 +104,9 @@ pub enum Stmt {
     DoWhile(Box<Stmt>, Expr),
     While(Expr, Box<Stmt>),
     For(Box<Stmt>, Expr, Box<Stmt>, Box<Stmt>),
+    /// `switch (expr) { case v…: body … default: … }` — the index, the cases (each a
+    /// set of case values + a body), and an optional default body.
+    Switch(Expr, Vec<(Vec<u64>, Stmt)>, Option<Box<Stmt>>),
 }
 
 /// Render a statement inline (for a `for`-loop init/increment), without indent,
@@ -144,6 +147,20 @@ fn emit_stmt(s: &Stmt, indent: usize) -> String {
             emit_stmt(t, indent + 1),
             emit_stmt(e, indent + 1)
         ),
+        Stmt::Switch(idx, cases, default) => {
+            let mut s = format!("{pad}switch ({}) {{\n", idx.render_top());
+            for (values, body) in cases {
+                for v in values {
+                    s += &format!("{pad}case {}:\n", Expr::Const(*v, 4).render());
+                }
+                s += &emit_stmt(body, indent + 1);
+            }
+            if let Some(d) = default {
+                s += &format!("{pad}default:\n{}", emit_stmt(d, indent + 1));
+            }
+            s += &format!("{pad}}}\n");
+            s
+        }
     }
 }
 
@@ -518,7 +535,16 @@ impl Funcdata {
                 }
             }
         }
-        let body = if let Some((h, latch)) = edge {
+        // a recovered jump table → emit `switch (index) { case … }` (S3). Only when the
+        // function is loop-free: a switch inside a loop has cyclic case bodies that the
+        // (acyclic) structurer would expand exponentially.
+        let sw = match edge {
+            None => self.switches.iter().find(|s| ssa.dom.post.get(s.block).copied().unwrap_or(usize::MAX) != usize::MAX),
+            Some(_) => None,
+        };
+        let body = if let Some(sw) = sw {
+            self.decompile_switch(sw, &ssa)
+        } else if let Some((h, latch)) = edge {
             // a self-loop is the do-while case (H == L), otherwise a while
             let live = self.dead_code(&ssa);
             let mut lv = LoopVars::new();
@@ -556,6 +582,59 @@ impl Funcdata {
         };
         let rty = if void_ret { "void" } else { "int" };
         Some(format!("{rty} func({})\n{{\n{}}}", self.params_sig(&ssa), emit_stmt(&body, 1)))
+    }
+
+    /// Structure a recovered jump table into `switch (index) { case … }` (S3): emit the
+    /// prologue (side effects of the blocks before the switch), then a case per distinct
+    /// target block, grouping the case values that share it. The target with the most
+    /// case values is taken as the `default`.
+    fn decompile_switch(&self, sw: &super::cfg::SwitchInfo, ssa: &Ssa) -> Stmt {
+        let no_lv = LoopVars::new();
+        let no_ex = Explicit::new();
+        let no_loops = HashMap::new();
+        let live = self.dead_code(ssa);
+
+        // prologue: side-effecting statements of the blocks dominating the switch
+        let mut seq: Vec<Stmt> = (0..self.blocks.len())
+            .filter(|&b| b != sw.block && dominates(ssa, b, sw.block))
+            .flat_map(|b| self.block_stmts(b, ssa, &no_lv, &no_ex, &live))
+            .collect();
+
+        // group case values by their target block; the most-shared target is the default
+        let mut by_target: HashMap<usize, Vec<u64>> = HashMap::new();
+        for &(cv, tb) in &sw.cases {
+            by_target.entry(tb).or_default().push(cv);
+        }
+        let default_block = by_target.iter().max_by_key(|(_, v)| v.len()).map(|(&b, _)| b);
+        // a case body = the target block's side effects (its call) then its terminator
+        let case_body = |b: usize| -> Stmt {
+            let mut s = self.block_stmts(b, ssa, &no_lv, &no_ex, &live);
+            s.push(self.structure(b, ssa, &no_lv, &no_loops, 0));
+            if s.len() == 1 {
+                s.pop().unwrap()
+            } else {
+                Stmt::Seq(s)
+            }
+        };
+        let mut cases: Vec<(Vec<u64>, Stmt)> = by_target
+            .iter()
+            .filter(|(&b, _)| Some(b) != default_block)
+            .map(|(&b, vals)| {
+                let mut v = vals.clone();
+                v.sort_unstable();
+                (v, case_body(b))
+            })
+            .collect();
+        cases.sort_by_key(|(vals, _)| vals[0]);
+        let default = default_block.map(|b| Box::new(case_body(b)));
+
+        let index = simplify(self.build_expr(sw.index, ssa, &no_lv, &no_ex, 0));
+        seq.push(Stmt::Switch(index, cases, default));
+        if seq.len() == 1 {
+            seq.pop().unwrap()
+        } else {
+            Stmt::Seq(seq)
+        }
     }
 
     /// Is `d` a value not actually *produced* by this function — undefined, a phi of

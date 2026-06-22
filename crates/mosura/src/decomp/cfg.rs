@@ -169,18 +169,129 @@ pub struct Block {
     pub pred: Vec<usize>,
 }
 
+/// A recovered `switch`: the block ending in the `BRANCHIND`, the index value, and the
+/// `(case value, target block)` pairs (only cases whose target resolved to a block —
+/// a target that mosura's linear disassembly mis-aligned on is dropped).
+#[derive(Debug, Clone)]
+pub struct SwitchInfo {
+    pub block: usize,
+    pub index: super::ssa::Def,
+    pub cases: Vec<(u64, usize)>,
+}
+
 /// A function's flattened p-code and its control-flow graph.
 pub struct Funcdata {
     pub entry: u64,
     pub ops: Vec<FuncOp>,
     pub blocks: Vec<Block>,
+    /// Jump tables recovered from `BRANCHIND`s (S2) — drives switch structuring (S3).
+    pub switches: Vec<SwitchInfo>,
+}
+
+/// Branch target of op `i` as an op index: a p-code-relative const, or an address.
+fn branch_target(i: usize, ops: &[FuncOp], addr_index: &HashMap<u64, usize>) -> Option<usize> {
+    match ops[i].op.ins.first().and_then(PArg::as_var) {
+        Some(v) if v.is_const() => Some((i as i64 + v.offset as i64) as usize),
+        Some(v) => addr_index.get(&v.offset).copied(),
+        None => None,
+    }
+}
+
+/// The static block leaders: entry, branch targets, and ops after a control-flow op.
+fn static_leaders(ops: &[FuncOp], addr_index: &HashMap<u64, usize>) -> BTreeSet<usize> {
+    let n = ops.len();
+    let mut leaders: BTreeSet<usize> = BTreeSet::new();
+    if n > 0 {
+        leaders.insert(0);
+    }
+    for i in 0..n {
+        let oc = ops[i].op.opcode;
+        if is_branch(oc) {
+            if let Some(t) = branch_target(i, ops, addr_index) {
+                if t < n {
+                    leaders.insert(t);
+                }
+            }
+        }
+        if ends_block(oc) && i + 1 < n {
+            leaders.insert(i + 1);
+        }
+    }
+    leaders
+}
+
+/// Cut blocks at `leaders` and wire successor/predecessor edges. `switch_edges` maps a
+/// `BRANCHIND` op index to its recovered jump-table target op indices.
+fn cut_and_wire(ops: &[FuncOp], leaders: &BTreeSet<usize>, addr_index: &HashMap<u64, usize>, switch_edges: &HashMap<usize, Vec<usize>>) -> Vec<Block> {
+    let n = ops.len();
+    let starts: Vec<usize> = leaders.iter().copied().collect();
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut block_of: HashMap<usize, usize> = HashMap::new();
+    for (b, &start) in starts.iter().enumerate() {
+        let end = starts.get(b + 1).copied().unwrap_or(n);
+        block_of.insert(start, b);
+        blocks.push(Block { start, end, succ: Vec::new(), pred: Vec::new() });
+    }
+    for b in 0..blocks.len() {
+        let (start, end) = (blocks[b].start, blocks[b].end);
+        if end == start {
+            continue;
+        }
+        let last = end - 1;
+        let mut succ: Vec<usize> = Vec::new();
+        match ops[last].op.opcode {
+            RETURN => {}
+            BRANCHIND => {
+                // jump table: successors are the recovered case targets (deduped)
+                for &t in switch_edges.get(&last).map(Vec::as_slice).unwrap_or(&[]) {
+                    if let Some(&tb) = block_of.get(&t) {
+                        if !succ.contains(&tb) {
+                            succ.push(tb);
+                        }
+                    }
+                }
+            }
+            BRANCH => {
+                if let Some(t) = branch_target(last, ops, addr_index).and_then(|t| block_of.get(&t).copied()) {
+                    succ.push(t);
+                }
+            }
+            CBRANCH => {
+                if let Some(t) = branch_target(last, ops, addr_index).and_then(|t| block_of.get(&t).copied()) {
+                    succ.push(t);
+                }
+                if let Some(&fall) = block_of.get(&end) {
+                    succ.push(fall);
+                }
+            }
+            _ => {
+                if let Some(&fall) = block_of.get(&end) {
+                    succ.push(fall);
+                }
+            }
+        }
+        blocks[b].succ = succ;
+    }
+    for b in 0..blocks.len() {
+        for s in blocks[b].succ.clone() {
+            blocks[s].pred.push(b);
+        }
+    }
+    blocks
 }
 
 impl Funcdata {
     /// Disassemble + lift `bytes`, then build the CFG.
     pub fn build(spec: &Spec, bytes: &[u8], base: u64, context: &[u32]) -> Funcdata {
-        // 1. Flatten all instructions' ops into one stream; remember each
-        //    instruction's first op index (branch targets are addresses).
+        Self::build_image(spec, bytes, base, context, &[])
+    }
+
+    /// Like [`build`](Self::build), but with a view of the whole binary `image` (every
+    /// `(base, bytes)` segment) so jump tables — which live in a separate segment from
+    /// the code — can be recovered (S2): the `BRANCHIND` targets become block leaders
+    /// and the switch edges are wired.
+    pub fn build_image(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], image: &super::jumptable::Image) -> Funcdata {
+        // 1. Flatten all instructions' ops; remember each instruction's first op index.
         let mut ops: Vec<FuncOp> = Vec::new();
         let mut addr_index: HashMap<u64, usize> = HashMap::new();
         for insn in spec.disassemble_ctx(bytes, base, context) {
@@ -191,86 +302,57 @@ impl Funcdata {
         }
         recover_stack(&mut ops); // model RBP-relative locals as a heritaged stack space
         recover_calls(&mut ops); // recognize `push; BRANCH` calls; model the convention
-        let n = ops.len();
 
-        // 2. Block leaders: entry, branch targets, and ops after a control-flow op.
-        let mut leaders: BTreeSet<usize> = BTreeSet::new();
-        if n > 0 {
-            leaders.insert(0);
-        }
-        let target = |i: usize, ops: &[FuncOp]| -> Option<usize> {
-            match ops[i].op.ins.first().and_then(PArg::as_var) {
-                Some(v) if v.is_const() => Some((i as i64 + v.offset as i64) as usize), // p-code-relative
-                Some(v) => addr_index.get(&v.offset).copied(),                          // address
-                None => None,
-            }
-        };
-        for i in 0..n {
-            let oc = ops[i].op.opcode;
-            if is_branch(oc) {
-                if let Some(t) = target(i, &ops) {
-                    if t < n {
-                        leaders.insert(t);
+        // 2. Static block leaders (entry, branch targets, ops after a control-flow op).
+        let mut leaders = static_leaders(&ops, &addr_index);
+        let mut switch_edges: HashMap<usize, Vec<usize>> = HashMap::new(); // BRANCHIND op → target ops
+
+        // 3. Recover jump tables: a scratch CFG/SSA lets the recognizer trace each
+        //    BRANCHIND; the targets become extra leaders, then the blocks are re-cut.
+        let has_indirect = ops.iter().any(|o| o.op.opcode == BRANCHIND);
+        // (branchind op, index, [(case value, target op)]) — only cases whose target is
+        // an instruction start (mosura's linear disasm may mis-align on a case that is
+        // not also reached by fall-through; such a case is dropped).
+        let mut raw_switches: Vec<(usize, super::ssa::Def, Vec<(u64, usize)>)> = Vec::new();
+        let scratch = Funcdata { entry: base, ops: ops.clone(), blocks: cut_and_wire(&ops, &leaders, &addr_index, &switch_edges), switches: Vec::new() };
+        // Only recover switches in loop-free functions: a switch inside a loop produces
+        // cyclic case bodies the structurer can't yet handle, and wiring its edges would
+        // only break the (partial) loop decompilation. Such functions keep their old CFG.
+        if !image.is_empty() && has_indirect && !scratch.has_back_edge() {
+            let ssa = scratch.ssa(&[]);
+            for (i, o) in ops.iter().enumerate() {
+                if o.op.opcode == BRANCHIND {
+                    if let Some(jt) = super::jumptable::recover(&scratch, &ssa, image, i) {
+                        let valid: Vec<(u64, usize)> =
+                            jt.targets.iter().enumerate().filter_map(|(c, a)| addr_index.get(a).map(|&oi| (c as u64, oi))).collect();
+                        let distinct: BTreeSet<usize> = valid.iter().map(|&(_, oi)| oi).collect();
+                        if distinct.len() >= 2 {
+                            for &t in &distinct {
+                                leaders.insert(t);
+                            }
+                            switch_edges.insert(i, distinct.into_iter().collect());
+                            raw_switches.push((i, jt.index, valid));
+                        }
                     }
                 }
             }
-            if ends_block(oc) && i + 1 < n {
-                leaders.insert(i + 1);
-            }
         }
 
-        // 3. Cut blocks at leaders; map each op index to its block id.
-        let starts: Vec<usize> = leaders.iter().copied().collect();
-        let mut blocks: Vec<Block> = Vec::new();
-        let mut block_of: HashMap<usize, usize> = HashMap::new();
-        for (b, &start) in starts.iter().enumerate() {
-            let end = starts.get(b + 1).copied().unwrap_or(n);
-            block_of.insert(start, b);
-            blocks.push(Block { start, end, succ: Vec::new(), pred: Vec::new() });
-        }
+        // 4. Cut blocks (with any jump-table targets as leaders) and wire all edges.
+        let blocks = cut_and_wire(&ops, &leaders, &addr_index, &switch_edges);
 
-        // 4. Edges from each block's terminating op.
-        for b in 0..blocks.len() {
-            let (start, end) = (blocks[b].start, blocks[b].end);
-            if end == start {
-                continue;
-            }
-            let last = end - 1;
-            let oc = ops[last].op.opcode;
-            let mut succ: Vec<usize> = Vec::new();
-            match oc {
-                RETURN | BRANCHIND => {} // no static successor (BRANCHIND: jumptable, later)
-                BRANCH => {
-                    if let Some(t) = target(last, &ops).and_then(|t| block_of.get(&t).copied()) {
-                        succ.push(t);
-                    }
-                }
-                CBRANCH => {
-                    if let Some(t) = target(last, &ops).and_then(|t| block_of.get(&t).copied()) {
-                        succ.push(t);
-                    }
-                    if let Some(&fall) = block_of.get(&end) {
-                        succ.push(fall);
-                    }
-                }
-                _ => {
-                    // fall through (incl. CALL/CALLIND, which return)
-                    if let Some(&fall) = block_of.get(&end) {
-                        succ.push(fall);
-                    }
-                }
-            }
-            blocks[b].succ = succ;
-        }
+        // 5. Resolve each recovered switch's ops → block ids.
+        let block_of_op = |oi: usize| blocks.iter().position(|b| oi >= b.start && oi < b.end);
+        let switches: Vec<SwitchInfo> = raw_switches
+            .into_iter()
+            .filter_map(|(branchind, index, valid)| {
+                let block = block_of_op(branchind)?;
+                let cases: Vec<(u64, usize)> = valid.iter().filter_map(|&(cv, oi)| block_of_op(oi).map(|b| (cv, b))).collect();
+                Some(SwitchInfo { block, index, cases })
+            })
+            .collect();
 
-        // 5. Predecessors.
-        for b in 0..blocks.len() {
-            for s in blocks[b].succ.clone() {
-                blocks[s].pred.push(b);
-            }
-        }
-
-        Funcdata { entry: base, ops, blocks }
+        Funcdata { entry: base, ops, blocks, switches }
     }
 
     /// A block has a back-edge if any successor begins at or before it (a loop).

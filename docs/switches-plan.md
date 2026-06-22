@@ -46,11 +46,17 @@ The pipeline, given a `CPUI_BRANCHIND` op:
   image (the datatest chunks), and returns the index `Def` + the case target addresses.
   Tested: switchind's 11 targets recovered exactly. Foundation — no score movement yet
   (that is S2+S3).
-- **S2 — CFG edges.** Wire the `BRANCHIND` block to the recovered targets in `cfg.rs`
-  (and the guard's default edge), so the case blocks become reachable and decompile.
-- **S3 — switch structuring + emission.** A `Stmt::Switch(expr, Vec<(Vec<case>, body)>)`
-  + `BlockSwitch`-style collapse; emit `switch(x){ case N: … }` with fall-through
-  grouping and `default`. Gets switchind/switchmulti.
+- **S2 — CFG edges. ✅ DONE.** `Funcdata::build_image` takes the whole binary image,
+  recovers jump tables on a scratch SSA, adds the targets as block leaders, and wires the
+  `BRANCHIND`→targets edges (`cut_and_wire`). Only for loop-free functions — a switch in
+  a loop keeps its old CFG (the cyclic case bodies aren't structurable yet).
+- **S3 — switch structuring + emission. ✅ DONE.** `Stmt::Switch` + `decompile_switch`:
+  the prologue, then a case per distinct target block (case values grouped; the most-
+  shared target is the `default`); each case body is its side effects + terminator.
+  ifswitch 0.36→0.88, switchind 0.46→0.62, switchhide ↑; corpus 0.684→0.698, 25→26.
+  KNOWN: case calls carry a spurious stale-RSP arg (Ghidra has none — prototype/arg
+  recovery); a case target mosura's linear disasm mis-aligns on is dropped (e.g.
+  switchind's case 4/5/10 at the 16-byte-aligned 0x100048).
 - **S4 — variants.** `JumpBasic2`/offset tables/`switchhide` (the hidden/guarded forms),
   `ifswitch` (a switch lowered partly to if-chains), `switchloop` (switch in a loop).
 
