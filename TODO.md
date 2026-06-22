@@ -43,15 +43,15 @@ don't invent heuristics (see `AGENT.md`).
       nestedoffset/… Needs pointer element-size inference (part of the type system) to
       divide the byte offset by the element width. Would compound with all the above.
 - [~] **Floats** (large) — `FLOAT_*` ops now render as C operators + `ABS`/`SQRT`/`NAN`
-      intrinsics (`build_op`); nan 0.33→0.36. But the float datatests are blocked on the
-      hard parts: **XMM register modeling** (float params in XMM0-7 stride 0x40, float
-      return in XMM0 — mosura's int-only param map returns `void` for mixfloatint),
-      **SSE packing** (CONCAT44/SUB16xx for floatcast/floatconv), **globals**
-      (floatprint stores to absolute `ram` addresses), and the unordered-compare /
-      NAN idioms. Each substantial; floats remain a large multi-feature effort.
+      intrinsics (`build_op`); nan 0.33→0.36. The rest is a multi-feature effort —
+      **phased plan in [`docs/floats-plan.md`](docs/floats-plan.md)**: F1 XMM
+      params/return (the keystone, gets mixfloatint), F2 float constants, F3 NAN-idiom
+      fold, F4 globals, F5 SSE packing.
 - [ ] **Switch / jumptable recovery** (large) — no switch recovery (switchind/switchhide/
-      ifswitch score low). Ghidra jumptable analysis (`BRANCHIND` target recovery) +
-      switch-statement structuring.
+      ifswitch score low); mosura lifts `BRANCHIND` but drops the switch body. **Phased
+      plan in [`docs/switches-plan.md`](docs/switches-plan.md)**: S1 table recovery
+      (`JumpBasic` + emulation reading the image), S2 CFG edges, S3 switch structuring +
+      emission, S4 variants. Ghidra `jumptable.cc` (~2,861 lines).
 
 ## Recommended order
 
