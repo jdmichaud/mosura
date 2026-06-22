@@ -7,6 +7,7 @@
 //! stage. Status / phases: `TODO.md`.
 
 pub mod block;
+pub mod build;
 pub mod funcdata;
 pub mod op;
 pub mod opcode;

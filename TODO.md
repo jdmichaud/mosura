@@ -31,7 +31,9 @@ for the full rationale and architecture.
         in `src/decompile/` (`opcode`/`space`/`varnode`/`op`/`block`/`funcdata`): the
         arena+index Varnode graph with Ghidra's flag set, `OpCode` (CPUI_*), `SpaceManager`,
         create/wire methods, `print_raw`. `BlockBasic` is a stub (CFG built in P1/P7).
-  - [ ] Build a `Funcdata` from the SLEIGH lifter's raw p-code (the load step).
+  - [x] Build a `Funcdata` from the SLEIGH lifter's raw p-code (`build.rs::raw_funcdata`)
+        — produces faithful Ghidra-shaped raw p-code (`output = OPCODE inputs`); graph
+        consistency tested on real functions.
   - [ ] `Action`/`Rule` framework skeleton + one trivial action wired through.
   - [ ] `tests/ir_parity.rs` — structural-exact IR diff vs Ghidra (the new gate).
 - [ ] **P1 — Heritage** (`heritage.cc`): real SSA + `guard`/`refinement`
