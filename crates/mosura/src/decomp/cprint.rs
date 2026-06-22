@@ -620,6 +620,14 @@ impl Funcdata {
                 stmts.push(Stmt::Decl(name.clone(), simplify(self.build_op(i, ssa, lv, ex, 0))));
                 continue;
             }
+            // a write to a global — an op whose output is an absolute `ram` address
+            // (e.g. `glob = value`) — is a side effect; emit it (F4).
+            if let Some(out) = self.ops[i].op.out.clone() {
+                if out.space == "ram" && live.live_ops[i] {
+                    stmts.push(Stmt::Assign(format!("ram_{:x}", out.offset), simplify(self.build_op(i, ssa, lv, ex, 0))));
+                    continue;
+                }
+            }
             match self.ops[i].op.opcode {
                 7 | 8 if !used(Def::Op(i)) => {
                     stmts.push(Stmt::Expr(simplify(self.build_expr(Def::Op(i), ssa, lv, ex, 0))));

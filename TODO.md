@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.622 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 20 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.62, good ≥ 19).
+Decompiler corpus: **0.684 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 25 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.68, good ≥ 24).
 
 ## Decompiler stages (D0–D6)
 

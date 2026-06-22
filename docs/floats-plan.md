@@ -51,8 +51,11 @@ recovered into the output.
   floatprint and nan.
 - **F3 — unordered-compare / NAN idiom fold.** A `simplify` rule turning
   `!((NAN(a)||NAN(b)||a<b)||(…==…))` → `a < b` etc. Lifts **nan** substantially.
-- **F4 — globals.** Recover stores/loads to absolute `ram` addresses as named globals
-  (`xRam...`/`fRam...`). floatprint is entirely globals; also helps non-float datatests.
+- **F4 — globals. ✅ DONE (writes).** `block_stmts` emits an op whose output is an
+  absolute `ram` address as `ram_X = value;` (DCE already keeps them — `ram` isn't
+  heritaged). HUGE: floatprint 0.19→0.79, convert 0.51→1.00, displayformat 0.40→1.00;
+  corpus 0.637→0.684, 20→25 ≥0.70 — global writes were being dropped across MANY
+  datatests. (Global reads already render as `ram_X` = ID.)
 - **F5 — SSE packing.** `CONCAT44`/`SUB16xx`/`ZEXT816` over 16-byte XMM values for
   floatcast/floatconv (the hardest — these model partial-register / packed access).
 
