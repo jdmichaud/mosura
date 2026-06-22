@@ -57,8 +57,11 @@ for the full rationale and architecture.
         valid SSA (reads linked, single-assignment, phi arity = #preds) for the aligned
         functions; matches Ghidra's def-use structure (verified on x86_64_sem).
   - [ ] Setup guards (e.g. synthetic `DF=0` at entry; call/store INDIRECTs, input guards).
-  - [ ] Refinement: `guard`/`normalizeReadSize`/`WriteSize` (size-overlap → subsumes
-        overlap/CONCAT/phi-leaks). Until then overlapping-width accesses are independent vars.
+  - [~] Refinement: `normalizeReadSize` **done** (`heritage.rs`, read side) — a
+        sub-register read of a wider-written location becomes `SUBPIECE(W,0)`; closes the
+        clean overlap gap (twodim/threedim fully, elseif reduced), SSA invariants hold.
+        REMAINING: write side (`normalizeWriteSize`/PIECE for partial writes, AH-type
+        offset+1), cross-offset CONCAT.
 - [ ] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules).
 - [ ] **P3 — Dead code** (`ActionDeadCode`).
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).

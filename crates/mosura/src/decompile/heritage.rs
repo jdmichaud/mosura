@@ -57,12 +57,74 @@ fn write_loc(f: &Funcdata, op: OpId) -> Option<Loc> {
     Some((vn.loc.space, vn.loc.offset, vn.size))
 }
 
+/// Refinement (read side) — Ghidra's `normalizeReadSize`. Where a location is written at
+/// a single width `S` but also *read* at a smaller width `s` at the same offset (a
+/// sub-register: EAX of a wider RAX def), rewrite each narrow read as `SUBPIECE(W, 0)` of
+/// a full-width read `W`, so every access to the location is uniform width and SSA links
+/// it cleanly. Conservative: only locations whose writes are all one width are touched;
+/// partial writes (the PIECE / write side) and cross-offset overlap (CONCAT) are not yet
+/// handled, so those reads remain independent (an under-linking, never a miswiring).
+fn normalize_read_size(f: &mut Funcdata) {
+    let nb = f.num_blocks();
+    let mut write_sizes: HashMap<(SpaceId, u64), HashSet<u32>> = HashMap::new();
+    let mut read_sizes: HashMap<(SpaceId, u64), HashSet<u32>> = HashMap::new();
+    for b in 0..nb {
+        for op in f.blocks()[b].ops.clone() {
+            for slot in 0..f.op(op).num_inputs() {
+                if let Some((sp, off, sz)) = read_loc(f, op, slot) {
+                    read_sizes.entry((sp, off)).or_default().insert(sz);
+                }
+            }
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                write_sizes.entry((sp, off)).or_default().insert(sz);
+            }
+        }
+    }
+    // canonical width per location: a single write width that is also read narrower
+    let mut canonical: HashMap<(SpaceId, u64), u32> = HashMap::new();
+    for (k, ws) in &write_sizes {
+        if ws.len() == 1 {
+            let s = *ws.iter().next().unwrap();
+            if read_sizes.get(k).is_some_and(|rs| rs.iter().any(|&r| r < s)) {
+                canonical.insert(*k, s);
+            }
+        }
+    }
+    if canonical.is_empty() {
+        return;
+    }
+    for b in 0..nb {
+        let ops = f.blocks()[b].ops.clone();
+        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
+        for op in ops {
+            for slot in 0..f.op(op).num_inputs() {
+                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
+                let Some(&s) = canonical.get(&(sp, off)) else { continue };
+                if sz >= s {
+                    continue;
+                }
+                let seq = f.op(op).seqnum;
+                let w = f.new_varnode(s, super::space::Address::new(sp, off));
+                let zero = f.new_const(4, 0);
+                let sub = f.new_op(OpCode::Subpiece, seq, vec![w, zero]);
+                let subout = f.new_output_unique(sub, sz);
+                f.op_mut(sub).parent = Some(super::block::BlockId(b as u32));
+                f.op_set_input(op, slot, subout);
+                new_ops.push(sub); // splice the SUBPIECE in just before its reader
+            }
+            new_ops.push(op);
+        }
+        f.set_block_ops(super::block::BlockId(b as u32), new_ops);
+    }
+}
+
 /// Build the SSA form for `f` using the dominator info `dom`.
 pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     let nb = f.num_blocks();
     if nb == 0 {
         return;
     }
+    normalize_read_size(f);
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
     //    if some block reads it before defining it).

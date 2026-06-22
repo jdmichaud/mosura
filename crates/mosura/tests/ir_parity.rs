@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use mosura::decompile::build::{raw_funcdata, raw_funcdata_flow};
+use mosura::decompile::build::raw_funcdata_flow;
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
@@ -205,7 +205,27 @@ fn heritage_produces_valid_ssa() {
             }
         }
 
-        // (c) phi shape: a single-block function needs no phis; a branchy one does, and
+        // (c) refinement: for the clean-overlap functions, no sub-register read is left
+        //     mis-linked as a function input (normalizeReadSize turns it into SUBPIECE of
+        //     a wider def). twodim/threedim's single gap each is fully closed.
+        if name == "twodim" || name == "threedim" {
+            use std::collections::{BTreeMap, BTreeSet};
+            let mut written: BTreeMap<(u32, u64), BTreeSet<u32>> = BTreeMap::new();
+            for i in 0..f.num_varnodes() as u32 {
+                let vn = f.vn(mosura::decompile::VarnodeId(i));
+                if vn.is_written() {
+                    written.entry((vn.loc.space.0, vn.loc.offset)).or_default().insert(vn.size);
+                }
+            }
+            let gap = (0..f.num_varnodes() as u32).filter(|&i| {
+                let vn = f.vn(mosura::decompile::VarnodeId(i));
+                vn.is_input()
+                    && written.get(&(vn.loc.space.0, vn.loc.offset)).is_some_and(|s| s.iter().any(|&x| x != vn.size))
+            }).count();
+            assert_eq!(gap, 0, "{name}: read-size refinement should leave no overlap-gap inputs");
+        }
+
+        // (d) phi shape: a single-block function needs no phis; a branchy one does, and
         //     every MULTIEQUAL has one input per predecessor of its block.
         let count_phi = |f: &mosura::decompile::Funcdata| {
             (0..f.num_ops() as u32).filter(|&i| f.op(OpId(i)).code() == OpCode::Multiequal).count()

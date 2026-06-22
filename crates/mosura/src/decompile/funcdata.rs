@@ -156,6 +156,19 @@ impl Funcdata {
         v
     }
 
+    /// Give `op` a fresh `unique`-space output of `size`; returns it.
+    pub fn new_output_unique(&mut self, op: OpId, size: u32) -> VarnodeId {
+        let space = self.spaces.by_name("unique").expect("unique space");
+        let off = self.unique_offset;
+        self.unique_offset += size.max(1) as u64;
+        self.new_output(op, size, Address::new(space, off))
+    }
+
+    /// Replace a block's op list (used by heritage refinement to splice in SUBPIECEs).
+    pub fn set_block_ops(&mut self, block: super::block::BlockId, ops: Vec<OpId>) {
+        self.blocks[block.0 as usize].ops = ops;
+    }
+
     /// Repoint input `slot` of `op` at varnode `vid`, maintaining descendant lists
     /// (Ghidra's `opSetInput`). Used by heritage renaming.
     pub fn op_set_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
