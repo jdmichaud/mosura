@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.684 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 25 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.68, good ≥ 24).
+Decompiler corpus: **0.698 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 26 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.69, good ≥ 25).
 
 ## Decompiler stages (D0–D6)
 
@@ -48,11 +48,12 @@ don't invent heuristics (see `AGENT.md`).
       0.23→0.51); **F4 ✅** (global writes — floatprint 0.19→0.79, convert/displayformat
       →1.00). Remaining: F2 float constants, F3 NAN-comparison fold (`nan` 0.34), F5 SSE
       packing, and mixfloatint's 4-byte return (needs the D3 overlap fix).
-- [ ] **Switch / jumptable recovery** (large) — no switch recovery (switchind/switchhide/
-      ifswitch score low); mosura lifts `BRANCHIND` but drops the switch body. **Phased
-      plan in [`docs/switches-plan.md`](docs/switches-plan.md)**: S1 table recovery
-      (`JumpBasic` + emulation reading the image), S2 CFG edges, S3 switch structuring +
-      emission, S4 variants. Ghidra `jumptable.cc` (~2,861 lines).
+- [~] **Switch / jumptable recovery** — **S1–S3 ✅ DONE** (`decomp::jumptable` + S2 CFG
+      edges in `build_image` + S3 `Stmt::Switch`): ifswitch 0.36→0.88, switchind
+      0.46→0.62. **Plan + status in [`docs/switches-plan.md`](docs/switches-plan.md)**.
+      Remaining: S4 variants, switch-in-loop (switchmulti/switchloop), the spurious
+      stale-RSP case-call arg, and the dropped mis-aligned case (needs recursive disasm
+      at jump targets).
 
 ## Recommended order
 
