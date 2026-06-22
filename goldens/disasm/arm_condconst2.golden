@@ -1,0 +1,24 @@
+# lang=ARM:LE:32:v8:default capture=v1
+4022871a  00b97047  ldrbmi r11,[r0,-r0,lsl #0x12]!
+          pcode: (unique,0x4d00,1) = BOOL_NEGATE (register,0x60,1)
+          pcode: CBRANCH (ram,0x4022871e,4) (unique,0x4d00,1)
+          pcode: (unique,0xf000,4) = INT_LEFT (register,0x20,4) (const,0x12,4)
+          pcode: (register,0x20,4) = INT_SUB (register,0x20,4) (unique,0xf000,4)
+          pcode: (unique,0x9cb00,1) = LOAD (space,ram) (register,0x20,4)
+          pcode: (register,0x4c,4) = INT_ZEXT (unique,0x9cb00,1)
+4022871e  81606120  rsbcs r6,r1,r1, lsl #0x1
+          pcode: (unique,0x4d00,1) = BOOL_NEGATE (register,0x62,1)
+          pcode: CBRANCH (ram,0x40228722,4) (unique,0x4d00,1)
+          pcode: (unique,0x6500,4) = INT_SUB (const,0x20,4) (const,0x1,4)
+          pcode: (unique,0x6600,4) = INT_RIGHT (register,0x24,4) (unique,0x6500,4)
+          pcode: (unique,0x6800,4) = INT_AND (unique,0x6600,4) (const,0x1,4)
+          pcode: (register,0x68,1) = SUBPIECE (unique,0x6800,4) (const,0x0,4)
+          pcode: (unique,0x6b00,4) = INT_LEFT (register,0x24,4) (const,0x1,4)
+          pcode: (register,0x66,1) = INT_LESSEQUAL (register,0x24,4) (unique,0x6b00,4)
+          pcode: (register,0x67,1) = INT_SBORROW (unique,0x6b00,4) (register,0x24,4)
+          pcode: (register,0x38,4) = INT_SUB (unique,0x6b00,4) (register,0x24,4)
+          pcode: (register,0x64,1) = INT_SLESS (register,0x38,4) (const,0x0,4)
+          pcode: (register,0x65,1) = INT_EQUAL (register,0x38,4) (const,0x0,4)
+40228722  ; <decode error: r0x40228722: No corresponding entry in varnode list>
+40228728  ; <decode error: r0x40228728: Unable to resolve constructor>
+40228736  ; <decode error: r0x40228736: Unable to resolve constructor>

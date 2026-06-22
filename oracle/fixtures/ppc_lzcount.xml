@@ -1,0 +1,5 @@
+<binaryimage arch="PowerPC:BE:32:default:default">
+<bytechunk space="ram" offset="0x10020" readonly="true">
+686300037c6300345463d97e4e800020
+</bytechunk>
+</binaryimage>

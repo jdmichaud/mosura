@@ -1,0 +1,11 @@
+<binaryimage arch="MIPS:LE:32:default:default">
+<!--
+    Example of a return instruction occuring through a non-standard register.
+    The decompiler should process initially as a jumptable, but should discover
+    it is actually branching through the return value.  It should convert the
+    indirect jump into a return operation.
+-->
+<bytechunk space="ram" offset="0x10000">
+fa630b620018084000650b9700ef0065
+</bytechunk>
+</binaryimage>

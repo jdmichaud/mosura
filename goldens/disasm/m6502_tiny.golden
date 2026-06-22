@@ -1,0 +1,16 @@
+# lang=6502:LE:16:default:default capture=v1
+00008000  ea  NOP 
+00008001  18  CLC 
+          pcode: (register,0x36,1) = COPY (const,0x0,1)
+00008002  38  SEC 
+          pcode: (register,0x36,1) = COPY (const,0x1,1)
+00008003  a905  LDA #0x5
+          pcode: (unique,0x3500,1) = COPY (const,0x5,1)
+          pcode: (register,0x0,1) = COPY (unique,0x3500,1)
+          pcode: (register,0x35,1) = INT_EQUAL (register,0x0,1) (const,0x0,1)
+          pcode: (register,0x30,1) = INT_SLESS (register,0x0,1) (const,0x0,1)
+00008005  60  RTS 
+          pcode: (register,0x22,2) = INT_ADD (register,0x22,2) (const,0x1,2)
+          pcode: (unique,0xb500,2) = LOAD (space,RAM) (register,0x22,2)
+          pcode: (register,0x22,2) = INT_ADD (register,0x22,2) (const,0x1,2)
+          pcode: RETURN (unique,0xb500,2)

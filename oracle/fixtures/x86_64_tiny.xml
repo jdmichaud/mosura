@@ -1,0 +1,6 @@
+<binaryimage arch="x86:LE:64:default:gcc">
+  <bytechunk space="ram" offset="0x100000" readonly="true">
+    89f0 83e00f c3
+  </bytechunk>
+  <symbol space="ram" offset="0x100000" name="tiny"/>
+</binaryimage>

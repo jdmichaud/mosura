@@ -1,0 +1,9 @@
+# lang=AARCH64:LE:64:v8A:default capture=v1
+00110320  400000b4  cbz x0, 0x110328
+          pcode: (unique,0x31600,1) = INT_EQUAL (register,0x4000,8) (const,0x0,8)
+          pcode: CBRANCH (ram,0x110328,8) (unique,0x31600,1)
+00110324  0b000014  b 0x110350
+          pcode: BRANCH (ram,0x110350,8)
+00110328  c0035fd6  ret 
+          pcode: (register,0x0,8) = COPY (register,0x40f0,8)
+          pcode: RETURN (register,0x0,8)

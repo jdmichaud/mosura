@@ -1,0 +1,15 @@
+<binaryimage arch="MIPS:BE:32:default:default">
+<bytechunk space="ram" offset="0x400000" readonly="true">
+        3c020042d4424318afa40000
+c4414318c440431cafa60008afa7000c
+03e0000846201000
+</bytechunk>
+<bytechunk space="ram" offset="0x410000" readonly="true">
+        3c020042d7a20028afa40000
+c4414320c440432446201000e4414308
+e440430c03e0000846201000
+</bytechunk>
+<bytechunk space="ram" offset="0x424320" readonly="true">
+                401c000000000000
+</bytechunk>
+</binaryimage>

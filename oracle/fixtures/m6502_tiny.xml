@@ -1,0 +1,6 @@
+<binaryimage arch="6502:LE:16:default:default">
+  <bytechunk space="RAM" offset="0x8000" readonly="true">
+    ea 18 38 a9 05 60
+  </bytechunk>
+  <symbol space="RAM" offset="0x8000" name="tiny"/>
+</binaryimage>

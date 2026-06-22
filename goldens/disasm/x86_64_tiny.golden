@@ -1,0 +1,19 @@
+# lang=x86:LE:64:default:gcc capture=v1
+00100000  89f0  MOV EAX,ESI
+          pcode: (register,0x0,4) = COPY (register,0x30,4)
+          pcode: (register,0x0,8) = INT_ZEXT (register,0x0,4)
+00100002  83e00f  AND EAX,0xf
+          pcode: (register,0x200,1) = COPY (const,0x0,1)
+          pcode: (register,0x20b,1) = COPY (const,0x0,1)
+          pcode: (register,0x0,4) = INT_AND (register,0x0,4) (const,0xf,4)
+          pcode: (register,0x0,8) = INT_ZEXT (register,0x0,4)
+          pcode: (register,0x207,1) = INT_SLESS (register,0x0,4) (const,0x0,4)
+          pcode: (register,0x206,1) = INT_EQUAL (register,0x0,4) (const,0x0,4)
+          pcode: (unique,0x58300,4) = INT_AND (register,0x0,4) (const,0xff,4)
+          pcode: (unique,0x58400,1) = POPCOUNT (unique,0x58300,4)
+          pcode: (unique,0x58500,1) = INT_AND (unique,0x58400,1) (const,0x1,1)
+          pcode: (register,0x202,1) = INT_EQUAL (unique,0x58500,1) (const,0x0,1)
+00100005  c3  RET 
+          pcode: (register,0x288,8) = LOAD (space,ram) (register,0x20,8)
+          pcode: (register,0x20,8) = INT_ADD (register,0x20,8) (const,0x8,8)
+          pcode: RETURN (register,0x288,8)

@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/mosura", "crates/xtask"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "mosura"
+
+[workspace.dependencies]
+roxmltree = "0.20"
+regex = "1"
+flate2 = "1"

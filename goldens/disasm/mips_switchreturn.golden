@@ -1,0 +1,13 @@
+# lang=MIPS:LE:32:default:default capture=v1
+00010000  fa630b62  daddi t3, s0, 0x63fa
+          pcode: (register,0x2c,4) = INT_ADD (register,0x40,4) (const,0x63fa,4)
+00010004  00180840  mfc0 t0, EntryLo1
+          pcode: (register,0x20,4) = COPY (register,0x200c,4)
+00010008  00650b97  lhu t3, 0x6500(t8)
+          pcode: (unique,0x200,4) = INT_ADD (register,0x60,4) (const,0x6500,4)
+          pcode: (unique,0x300,4) = COPY (const,0x0,4)
+          pcode: (unique,0x300,4) = COPY (unique,0x200,4)
+          pcode: (unique,0x6600,2) = LOAD (space,ram) (unique,0x300,4)
+          pcode: (register,0x2c,4) = INT_ZEXT (unique,0x6600,2)
+0001000c  00ef0065  daddiu zero, t0, -0x1100
+          pcode: (register,0x0,4) = INT_ADD (register,0x20,4) (const,0xffffef00,4)

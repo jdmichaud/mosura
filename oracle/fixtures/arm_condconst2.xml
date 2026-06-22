@@ -1,0 +1,16 @@
+<binaryimage arch="ARM:LE:32:v8:default">
+<!--
+      Examples of conditional constants being immediately passed to MULTIEQUAL after the branch
+-->
+<bytechunk space="ram" offset="0x4022871a">
+                    00b970478160
+6120fbe7
+</bytechunk>
+<bytechunk space="ram" offset="0x40228728">
+                0b4601b107330360
+7047
+</bytechunk>
+<bytechunk space="ram" offset="0x40228736">
+            087a613818bf01207047
+</bytechunk>
+</binaryimage>

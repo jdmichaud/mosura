@@ -1,0 +1,15 @@
+<binaryimage arch="AARCH64:LE:64:v8A:default">
+<!--
+   Example of a special input register holding pointer to return value
+-->
+<bytechunk space="ram" offset="0x455c14" readonly="true">
+        ff4300d1e10308aae00f00b9
+400180d2200000f9800c80d2200400f9
+e00f80b9200800f91f2003d5ff430091
+c0035fd6
+</bytechunk>
+<bytechunk space="ram" offset="0x455c50" readonly="true">
+fd7bbda9fd030091e8630091eeffff97
+e01740f9fd7bc3a8c0035fd6
+</bytechunk>
+</binaryimage>

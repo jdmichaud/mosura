@@ -1,0 +1,11 @@
+[package]
+name = "mosura"
+version = "0.0.0"
+description = "A Rust reimplementation of Ghidra's logic (CLI). Early-stage; SLEIGH engine first."
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+roxmltree.workspace = true
+regex.workspace = true
+flate2.workspace = true

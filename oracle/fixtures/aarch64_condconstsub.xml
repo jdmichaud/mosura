@@ -1,0 +1,8 @@
+<binaryimage arch="AARCH64:LE:64:v8A:default">
+<!--
+   Example of conditional constant operated on prior to branch
+-->
+<bytechunk space="ram" offset="0x110320" readonly="true">
+400000b40b000014c0035fd6
+</bytechunk>
+</binaryimage>

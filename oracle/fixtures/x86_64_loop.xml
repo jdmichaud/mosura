@@ -1,0 +1,3 @@
+<binaryimage arch="x86:LE:64:default:gcc">
+  <bytechunk space="ram" offset="0x100000" readonly="true">85ff7e2883c701b801000000ba0000000066662e0f1f8400000000000f1f400001c283c00139f875f789d0c3ba00000000ebf6</bytechunk>
+</binaryimage>
