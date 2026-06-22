@@ -24,9 +24,13 @@ ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.615, good ≥ 17).
 Each is a faithful reimplementation of the matching Ghidra subsystem — read the C++,
 don't invent heuristics (see `AGENT.md`).
 
-- [ ] **Type system** (large) — port `TypeFactory` + `ActionInferTypes`: int1/2/4/8,
-      `uint`, `xunknown`/`undefined` widths, type propagation. Biggest single lever
-      (mosura is int-everything today).
+- [ ] **Type system** (large, multi-session) — port `TypeFactory` + `ActionInferTypes`:
+      the `Datatype` lattice, type propagation, int1/2/4/8 / `uint` widths, pointers,
+      arrays. Biggest single lever (mosura is int-everything today). **Phased plan in
+      [`docs/type-system-plan.md`](docs/type-system-plan.md)** — note the comparator
+      erases type *names*, so the structural payoffs are array indexing (T2) and casts
+      (T3); the array-vs-scalar typing is inference-driven and *must* be ported (a
+      heuristic regresses divopt). First score win is T2, after the T0/T1 foundation.
 - [~] **Division/remainder by constant** — `decomp::divrecover` ports
       `RuleDivOpt::calcDivisor` + the unsigned add-back (`RuleDivTermAdd2`), **signed**
       division (SEXT + sign-correction), and the `x % C` modulo idiom (AST rule +
