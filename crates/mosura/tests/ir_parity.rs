@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use mosura::decompile::build::raw_funcdata;
+use mosura::decompile::build::{raw_funcdata, raw_funcdata_flow};
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
@@ -81,7 +81,7 @@ fn ghidra_block_ranges(dump: &str) -> Vec<(u64, u64)> {
 /// mosura's block ranges for a fixture, sorted, after building the CFG.
 fn mosura_block_ranges(spec: &Spec, ctx: &[u32], fixture: &std::path::Path) -> Vec<(u64, u64)> {
     let dt = datatest::parse_file(fixture).expect("fixture");
-    let mut f = raw_funcdata(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
+    let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
     mosura::decompile::cfg::build_cfg(&mut f);
     let mut got: Vec<(u64, u64)> = (0..f.num_blocks() as u32)
         .filter_map(|b| f.block_range(mosura::decompile::BlockId(b)))
@@ -118,11 +118,13 @@ fn cfg_block_ranges_match_ghidra() {
     }
 }
 
-/// Survey (non-failing): which functions' CFGs already match Ghidra and which still need
-/// flow-following decode (mosura's linear lifter drifts out of alignment — e.g. condconst's
-/// jump target is off by one). This catalogs the next P1 sub-task without gating on it.
+/// Survey (non-failing): which functions' CFGs match Ghidra and which still diverge. The
+/// divergences are *instruction-stream* differences (mosura's lifter computes a different
+/// jump target for one condconst instruction; ifswitch's switch case bodies are only
+/// reachable once the jump table is resolved in P7) — not CFG-cutting bugs, so they're
+/// catalogued rather than gated on.
 #[test]
-fn cfg_survey_flow_following_gap() {
+fn cfg_survey_instruction_stream_gap() {
     let Some((spec, ctx)) = x86_64() else { return };
     let names = [
         "x86_64_sem", "elseif", "condconst", "boolless", "twodim", "threedim", "ifswitch",
@@ -145,14 +147,14 @@ fn cfg_survey_flow_following_gap() {
         }
     }
     eprintln!("CFG matches Ghidra: {matched:?}");
-    eprintln!("needs flow-following decode (P1 next): {needs_flow:?}");
+    eprintln!("instruction-stream divergence (lifter target / P7 jump-table): {needs_flow:?}");
     assert!(!matched.is_empty(), "no CFGs matched Ghidra");
 }
 
 /// Build a function all the way through heritage (raw load → CFG → dominators → SSA).
 fn heritaged(spec: &Spec, ctx: &[u32], fixture: &std::path::Path) -> mosura::decompile::Funcdata {
     let dt = datatest::parse_file(fixture).expect("fixture");
-    let mut f = raw_funcdata(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
+    let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
     mosura::decompile::cfg::build_cfg(&mut f);
     let dom = mosura::decompile::dominator::compute(&f);
     mosura::decompile::heritage::heritage(&mut f, &dom);
@@ -230,7 +232,7 @@ fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some(ghidra) = ghidra_ir(&fixture, "heritage") else { return };
 
     let dt = datatest::parse_file(&fixture).expect("fixture");
-    let f = raw_funcdata(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+    let f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
     let mosura = f.print_raw();
 
     let g = instr_addrs(&ghidra);

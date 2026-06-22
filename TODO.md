@@ -46,9 +46,11 @@ for the full rationale and architecture.
   - [~] **CFG construction** (`cfg.rs::build_cfg`): leaders/edges + reachability prune;
         calls do NOT split blocks (per Ghidra). Block ranges match Ghidra exactly for the
         flow-aligned functions (x86_64_sem, elseif, twodim, threedim).
-  - [ ] **Flow-following decode** (`followFlow`): condconst/boolless/ifswitch need it —
-        mosura's linear sweep drifts (e.g. condconst's JMP target off by one). Decode only
-        reachable instructions from the entry, following branch targets.
+  - [x] **Flow-following decode** (`build.rs::raw_funcdata_flow`): worklist from the entry
+        following fall-through + branch targets (calls fall through; indirect targets are
+        P7). Faithful `followFlow`. NOTE the residual condconst/boolless/ifswitch CFG
+        divergences are NOT flow drift — they are a lifter jump-target discrepancy
+        (condconst) and unresolved jump tables (ifswitch, P7), tracked separately.
   - [x] Dominator tree + dominance frontiers (`dominator.rs`, Cooper).
   - [x] **Heritage SSA** (`heritage.rs`): semi-pruned Cytron — global-location detection,
         MULTIEQUAL placement at dominance frontiers, dominator-tree renaming. Produces
