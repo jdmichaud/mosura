@@ -1,12 +1,13 @@
 //! Decompiler D1: SSA scaffolding — dominator tree, dominance frontiers, and phi
 //! (MULTIEQUAL) placement (Cytron et al.; Ghidra `Heritage`).
 //!
-//! SSA is built over *heritaged* spaces (register/unique); const and ram are not
-//! versioned (memory flows through LOAD/STORE). NOTE: overlapping varnodes (e.g.
-//! `EAX`=(register,0x0,4) vs `RAX`=(register,0x0,8)) are treated as distinct
-//! locations — a correct SSA of the p-code-as-written when each location is used at
-//! a consistent size (true for the target functions); general aliasing/coverage is
-//! a later refinement (it matters for D3 variable recovery, not SSA form).
+//! SSA is built over *heritaged* spaces (register/unique/stack); const and ram are not
+//! versioned (memory flows through LOAD/STORE). Locations are keyed by [`loc_key`]:
+//! XMM/SSE registers merge across access width (a 4-byte zero-extending write and an
+//! 8-byte read at the same offset are one SSA location — the float-overlap the SSE code
+//! relies on, e.g. `xorps`/`movss`/`addsd`), while GP registers, unique temps, and stack
+//! slots stay exact-size (the p-code-as-written SSA). Full byte-level coverage/aliasing
+//! (Ghidra `Heritage`) is still a later refinement.
 
 use super::cfg::Funcdata;
 use std::collections::{HashMap, HashSet};
@@ -134,20 +135,24 @@ impl Funcdata {
         let df = self.dominance_frontier(dom);
         let opb = self.op_blocks();
 
-        let mut defsites: HashMap<Loc, Vec<usize>> = HashMap::new();
+        // Defs are grouped by `loc_key`, so overlapping XMM sub-registers (4-vs-8-byte)
+        // share a phi location; the phi's nominal size is the widest def seen there.
+        let mut defsites: HashMap<Loc, (Vec<usize>, u32)> = HashMap::new();
         for (i, fo) in self.ops.iter().enumerate() {
             if let Some(out) = &fo.op.out {
                 if heritaged(&out.space) {
-                    let blocks = defsites.entry((out.space.clone(), out.offset, out.size)).or_default();
-                    if !blocks.contains(&opb[i]) {
-                        blocks.push(opb[i]);
+                    let e = defsites.entry(loc_key(&out.space, out.offset, out.size)).or_insert((Vec::new(), 0));
+                    if !e.0.contains(&opb[i]) {
+                        e.0.push(opb[i]);
                     }
+                    e.1 = e.1.max(out.size);
                 }
             }
         }
 
         let mut result = Vec::new();
-        for (loc, sites) in &defsites {
+        for (key, (sites, size)) in &defsites {
+            let loc: Loc = (key.0.clone(), key.1, *size);
             let mut worklist = sites.clone();
             let mut ever: HashSet<usize> = sites.iter().copied().collect();
             let mut has_phi: HashSet<usize> = HashSet::new();
@@ -197,7 +202,7 @@ impl Funcdata {
         }
 
         let mut uses: HashMap<(usize, usize), Def> = HashMap::new();
-        let mut stack: HashMap<Loc, Vec<Def>> = HashMap::new();
+        let mut stack: RenameStack = HashMap::new();
         if n > 0 {
             rename(0, self, &children, &block_phis, live_out, &mut phis, &mut uses, &mut stack);
         }
@@ -232,6 +237,53 @@ pub struct Ssa {
     pub uses: HashMap<(usize, usize), Def>,
 }
 
+type RenameStack = HashMap<Loc, Vec<(Def, u32)>>;
+
+/// The SSA key for a storage location. XMM/SSE registers (x86-64 register offset
+/// ≥ 0x1200) are merged across access width — same key regardless of size — so an
+/// 8-byte read sees a 4-byte (zero-extending) write and a 4-byte read sees the low half
+/// of an 8-byte write (the float overlap the SSE code relies on). Every other location
+/// stays exact-size: the p-code-as-written SSA, which leaves ordinary GP-register
+/// def-use untouched (a wider rule there perturbs call-argument recovery).
+pub fn loc_key(space: &str, offset: u64, size: u32) -> Loc {
+    if space == "register" && offset >= 0x1200 {
+        (space.to_string(), offset, 0)
+    } else {
+        (space.to_string(), offset, size)
+    }
+}
+
+/// The reaching definition of a read of `size` bytes at `(space, offset)`: the most
+/// recent def at that location wide enough to cover it. On x86-64 a write of ≥4 bytes
+/// zero-extends to fill the whole register, so it covers any read; otherwise the def
+/// must be at least as wide as the read (a 1/2-byte partial write doesn't cover more).
+fn resolve(stack: &RenameStack, space: &str, offset: u64, size: u32) -> Def {
+    if let Some(st) = stack.get(&loc_key(space, offset, size)) {
+        for &(d, dsize) in st.iter().rev() {
+            if dsize >= 4 || dsize >= size {
+                return d;
+            }
+        }
+    }
+    Def::Live
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loc_key;
+
+    #[test]
+    fn xmm_registers_merge_across_width_but_gp_stays_exact() {
+        // XMM (offset >= 0x1200) collapses 4- and 8-byte accesses to one key, so a
+        // 4-byte XOR-zero and an 8-byte FLOAT_ADD at the same offset share an SSA stack.
+        assert_eq!(loc_key("register", 0x1200, 4), loc_key("register", 0x1200, 8));
+        // GP registers keep size in the key (EAX and RAX are distinct SSA locations).
+        assert_ne!(loc_key("register", 0x0, 4), loc_key("register", 0x0, 8));
+        // stack/unique stay exact-size too.
+        assert_ne!(loc_key("stack", 0x10, 4), loc_key("stack", 0x10, 8));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn rename(
     block: usize,
@@ -241,16 +293,16 @@ fn rename(
     live_out: &[Loc],
     phis: &mut [Phi],
     uses: &mut HashMap<(usize, usize), Def>,
-    stack: &mut HashMap<Loc, Vec<Def>>,
+    stack: &mut RenameStack,
 ) {
-    let top = |stack: &HashMap<Loc, Vec<Def>>, loc: &Loc| stack.get(loc).and_then(|s| s.last().copied()).unwrap_or(Def::Live);
     let mut pushed: Vec<Loc> = Vec::new();
 
     // phis define their location
     for &pi in &block_phis[block] {
         let loc = phis[pi].loc.clone();
-        stack.entry(loc.clone()).or_default().push(Def::Phi(pi));
-        pushed.push(loc);
+        let key = loc_key(&loc.0, loc.1, loc.2);
+        stack.entry(key.clone()).or_default().push((Def::Phi(pi), loc.2));
+        pushed.push(key);
     }
     // ops: resolve heritaged uses, then define the output
     for i in f.blocks[block].start..f.blocks[block].end {
@@ -258,22 +310,22 @@ fn rename(
         for (pos, arg) in op.ins.iter().enumerate() {
             if let Some(v) = arg.as_var() {
                 if heritaged(&v.space) {
-                    let d = top(stack, &(v.space.clone(), v.offset, v.size));
+                    let d = resolve(stack, &v.space, v.offset, v.size);
                     uses.insert((i, pos), d);
                 }
             }
         }
         if let Some(out) = &op.out {
             if heritaged(&out.space) {
-                let loc = (out.space.clone(), out.offset, out.size);
-                stack.entry(loc.clone()).or_default().push(Def::Op(i));
-                pushed.push(loc);
+                let key = loc_key(&out.space, out.offset, out.size);
+                stack.entry(key.clone()).or_default().push((Def::Op(i), out.size));
+                pushed.push(key);
             }
         }
         if op.opcode == 10 {
             // RETURN: the live-out locations read their reaching definition here.
             for (k, loc) in live_out.iter().enumerate() {
-                let d = top(stack, loc);
+                let d = resolve(stack, &loc.0, loc.1, loc.2);
                 uses.insert((i, op.ins.len() + k), d);
             }
         }
@@ -282,7 +334,8 @@ fn rename(
     for &s in &f.blocks[block].succ {
         let j = f.blocks[s].pred.iter().position(|&p| p == block).unwrap_or(0);
         for &pi in &block_phis[s] {
-            let d = top(stack, &phis[pi].loc);
+            let loc = &phis[pi].loc;
+            let d = resolve(stack, &loc.0, loc.1, loc.2);
             if j < phis[pi].args.len() {
                 phis[pi].args[j] = d;
             }
@@ -293,8 +346,8 @@ fn rename(
         rename(c, f, children, block_phis, live_out, phis, uses, stack);
     }
     // pop everything defined here
-    for loc in pushed {
-        if let Some(st) = stack.get_mut(&loc) {
+    for key in pushed {
+        if let Some(st) = stack.get_mut(&key) {
             st.pop();
         }
     }

@@ -32,9 +32,9 @@ fn score_x86_64_datatest_corpus() {
     }
     let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
-    // x86-64 SysV return registers: EAX, RAX, and XMM0 (8-byte float returns). XMM0 is
-    // not added at 4 bytes: a float result is often XOR-zeroed (4-byte) then computed
-    // (8-byte), and mosura's overlap-naive SSA would trace the 4-byte read to the zero.
+    // x86-64 SysV return registers: EAX, RAX, and XMM0 (float returns). The
+    // varnode-overlap SSA lets an 8-byte XMM0 read resolve to a 4-byte (zero-extending)
+    // XMM0 write, so a 4-byte live-out slot is unnecessary.
     let lo = [
         ("register".to_string(), 0u64, 4u32),
         ("register".to_string(), 0u64, 8u32),
@@ -83,6 +83,6 @@ fn score_x86_64_datatest_corpus() {
     let avg = scored.iter().sum::<f64>() / scored.len() as f64;
     let good = scored.iter().filter(|&&s| s >= 0.7).count();
     eprintln!("structural similarity vs Ghidra: avg {avg:.3}, >=0.70: {good}/{}", scored.len());
-    assert!(avg >= 0.69, "average similarity {avg:.3} regressed");
-    assert!(good >= 25, "only {good} datatests >= 0.70 — regressed");
+    assert!(avg >= 0.70, "average similarity {avg:.3} regressed");
+    assert!(good >= 26, "only {good} datatests >= 0.70 — regressed");
 }

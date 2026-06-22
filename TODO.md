@@ -5,9 +5,9 @@ What remains for mosura. Per-item implementation notes and gotchas live in
 
 ## Status
 
-Decompiler corpus: **0.698 avg structural similarity to Ghidra, 51/62 x86-64 datatests
-decompiled, 26 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
-ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.69, good ≥ 25).
+Decompiler corpus: **0.704 avg structural similarity to Ghidra, 51/62 x86-64 datatests
+decompiled, 27 ≥ 0.70.** `cargo test` green; **254/254 disasm/p-code parity**; datatest
+ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.70, good ≥ 26).
 
 ## Decompiler stages (D0–D6)
 
@@ -15,8 +15,10 @@ ratchet in `crates/mosura/tests/datatest_score.rs` (avg ≥ 0.69, good ≥ 25).
 - [x] D1 — SSA / heritage (dominators, dominance frontiers, Cytron renaming)
 - [x] D2 — dead code + simplification rules
 - [~] D3 — variable merge + types (pointers + `uint` done; full type system is below).
-      **Varnode-overlap handling NOT done** (sub-reg vs full-reg, e.g. EAX/RAX, XMM 4 vs
-      8 byte) — blocks mixfloatint's 4-byte float return and the 64-bit DIV `EDX:EAX`.
+      **Varnode-overlap: XMM done** (`ssa::loc_key` merges XMM 4-vs-8-byte → mixfloatint
+      0.53→0.74, floatprint 0.79→0.90, floatconv ↑). GP overlap (EAX/RAX, 64-bit DIV
+      `EDX:EAX`) still exact-size — a wider GP rule perturbs call-arg recovery (net
+      negative); needs Ghidra's byte-level coverage to do safely.
 - [x] D4 — control-flow structuring (`?:`, if/else, do-while, while/for with bodies)
 - [x] D5 — C emission (PrintC) + structural comparator
 - [~] D6 — datatest parity (measurement harness + several iterations done; ongoing)
@@ -57,12 +59,11 @@ don't invent heuristics (see `AGENT.md`).
 
 ## Recommended order
 
-1. The **D3 varnode-overlap fix** — a cross-cutting correctness win (unlocks float
-   4-byte returns / mixfloatint, the 64-bit DIV `EDX:EAX` overlap, and the `param ^ param`
-   garbage); also the cleanest fix for the spurious stale-RSP switch-case args.
-2. Switch finish: **S4** variants + **switch-in-loop** (switchmulti/switchloop) + recursive
+1. Switch finish: **S4** variants + **switch-in-loop** (switchmulti/switchloop) + recursive
    disasm at jump targets (the dropped mis-aligned case).
-3. Float remainders (F2 constants, F3 NAN-fold, F5 SSE packing).
+2. Float remainders (F2 constants, F3 NAN-fold, F5 SSE packing).
+3. GP varnode-overlap via Ghidra's byte-level coverage (unlocks the 64-bit DIV `EDX:EAX`)
+   — needs the coverage model so it doesn't perturb call-arg recovery.
 4. Type system T1→ (large; modest comparator payoff — lower priority than it looks).
 
 ## Done recently (reference)

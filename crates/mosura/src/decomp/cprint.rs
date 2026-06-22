@@ -1084,6 +1084,19 @@ fn expr_refs_spacebase(e: &Expr) -> bool {
     expr_vars(e).iter().any(|n| n == "in_register_20" || n == "in_register_28")
 }
 
+/// Does the expression contain a function call (`FnCall`) — a side-effecting term that
+/// must not be cancelled (`f() - f()` is not `0`).
+fn expr_has_call(e: &Expr) -> bool {
+    match e {
+        Expr::FnCall(..) => true,
+        Expr::Const(..) | Expr::Var(_) => false,
+        Expr::Unary(_, a) | Expr::Deref(a) => expr_has_call(a),
+        Expr::Binary(_, a, b) => expr_has_call(a) || expr_has_call(b),
+        Expr::Ternary(c, t, el) => expr_has_call(c) || expr_has_call(t) || expr_has_call(el),
+        Expr::Call(_, args) => args.iter().any(expr_has_call),
+    }
+}
+
 /// Number of terminal leaves (variables + constants) in an expression — Ghidra's
 /// "term duplication" count for the explicit/implicit decision. A nested explicit
 /// value (rendered as a bare `Var`) counts as a single terminal.
@@ -1265,6 +1278,14 @@ fn simplify(e: Expr) -> Expr {
             if let Some(r) = assoc(b, *v2, *sz) {
                 return simplify(r);
             }
+        }
+    }
+    // self-cancelling: x ^ x => 0 and x - x => 0 (Ghidra RuleXorCollapse / identity).
+    // The `xorps reg,reg` float-zero idiom decompiles to `x ^ x`; folding it to 0 turns
+    // `a / (x ^ x)` into `a / 0` — matching Ghidra's `a / 0.0`.
+    if let Expr::Binary("^" | "-", a, b) = &e {
+        if a == b && !expr_has_call(a) {
+            return Expr::Const(0, 4);
         }
     }
     // arithmetic: strength reduction + additive-constant normalization
