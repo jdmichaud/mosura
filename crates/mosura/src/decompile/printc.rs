@@ -179,7 +179,14 @@ impl<'a> PrintC<'a> {
             (format!("{l} {sym} {r}"), prec)
         };
         match o.code() {
-            OpCode::Copy | OpCode::IntZext | OpCode::IntSext | OpCode::Subpiece => self.render_var(a(0)),
+            // ZEXT (the implicit x86 32→64 zero-extension) and SUBPIECE stay transparent;
+            // SEXT is an explicit signed widening that Ghidra prints as a cast
+            OpCode::Copy | OpCode::IntZext | OpCode::Subpiece => self.render_var(a(0)),
+            OpCode::IntSext => {
+                let n = self.f.vn(o.output.unwrap()).size;
+                let in0 = a(0);
+                (format!("(int{n}){}", self.operand(in0, 14, false)), 14)
+            }
             OpCode::IntMult => bin(self, "*", 13),
             OpCode::IntDiv | OpCode::IntSdiv => bin(self, "/", 13),
             OpCode::IntRem | OpCode::IntSrem => bin(self, "%", 13),
