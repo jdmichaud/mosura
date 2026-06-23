@@ -281,7 +281,7 @@ mod tests {
         crate::decompile::pipeline::decompile(&mut f);
         let c = crate::decompile::printc::print_c(&f);
         // heritaging the CALLIND target forwards the stack store to the call site
-        assert!(c.contains("(*0x1006ca)"), "indirect target should resolve to the constant:\n{c}");
+        assert!(c.contains("(*(code *)0x1006ca)"), "indirect target should resolve to the constant:\n{c}");
     }
 
     #[test]

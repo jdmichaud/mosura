@@ -377,10 +377,10 @@ impl<'a> PrintC<'a> {
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {
-                // indirect call through a computed target
+                // indirect call through a computed target — Ghidra casts it to a code pointer
                 let tgt = self.operand(a(0), 16, false);
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
-                (format!("(*{tgt})({})", args.join(", ")), 16)
+                (format!("(*(code *){tgt})({})", args.join(", ")), 16)
             }
             other => (format!("{}(...)", other.name()), 16),
         }
