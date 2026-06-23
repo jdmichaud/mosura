@@ -203,29 +203,38 @@ pub fn raw_funcdata_flow_image(
                 )
             });
         if last == Some(OpCode::Branchind) && has_bound {
-            // table base = the latest constant (in the decoded code so far) that addresses a
-            // data chunk — the `lea` of the jump table
-            let tbl = decoded
-                .values()
-                .chain(std::iter::once(&insn))
-                .flat_map(|i| i.ops.iter())
-                .flat_map(|o| o.ins.iter())
-                .filter_map(|p| match p {
-                    PArg::Var(v) if v.space == "const" && in_chunk(v.offset) && !in_code(v.offset) => Some(v.offset),
-                    _ => None,
-                })
-                .max();
-            if let Some(tbl) = tbl {
-                let mut targets = Vec::new();
+            // The table read from base `tbl`: 4-byte relative entries, while they stay in code.
+            let read_table = |tbl: u64| -> Vec<u64> {
+                let mut t = Vec::new();
                 let mut i = 0u64;
                 while let Some(rel) = read_i32(tbl + i * 4) {
                     let target = tbl.wrapping_add(rel as i64 as u64);
                     if !in_code(target) {
                         break;
                     }
-                    targets.push(target);
+                    t.push(target);
                     i += 1;
                 }
+                t
+            };
+            // table base = the constant (in the decoded code so far) whose relative table
+            // decodes to the most in-code targets — the `lea` of the jump table. Validating by
+            // the decoded entries (rather than requiring a separate data chunk) also finds
+            // tables embedded in the code chunk after the function body.
+            let best = decoded
+                .values()
+                .chain(std::iter::once(&insn))
+                .flat_map(|i| i.ops.iter())
+                .flat_map(|o| o.ins.iter())
+                .filter_map(|p| match p {
+                    PArg::Var(v) if v.space == "const" && in_chunk(v.offset) => Some(v.offset),
+                    _ => None,
+                })
+                .map(|tbl| (read_table(tbl).len(), tbl))
+                .filter(|&(cnt, _)| cnt >= 2)
+                .max();
+            if let Some((_, tbl)) = best {
+                let targets = read_table(tbl);
                 for &t in &targets {
                     worklist.push(t);
                 }
@@ -282,6 +291,16 @@ mod tests {
         let c = crate::decompile::printc::print_c(&f);
         // heritaging the CALLIND target forwards the stack store to the call site
         assert!(c.contains("(*(code *)0x1006ca)"), "indirect target should resolve to the constant:\n{c}");
+    }
+
+    #[test]
+    fn recovers_in_code_jump_table() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("ifswitch.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        // ifswitch's table is embedded in the single code chunk (no separate data chunk)
+        assert!(f.switch_targets.values().any(|t| t.len() >= 10), "in-code table recovered: {:?}", f.switch_targets);
     }
 
     #[test]
