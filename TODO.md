@@ -144,6 +144,13 @@ for the full rationale and architecture.
         swapped/`sborrow(V,0)=>false` variants). Collapses the x86 signed-compare flag idiom
         to a clean signed comparison on every if/loop. Unit-tested. forloop1 condition now
         `uVar1 < param_1` (matches Ghidra). Gauge ~flat (coincidental flag tokens lost).
+  - [x] **Call-argument recovery** (`recover_call_args`/`resolve_call_args`): symmetric to
+        return recovery — wire RDI..R9 candidates to each CALL pre-heritage, post-heritage keep
+        the contiguous `is_realistic` prefix (AncestorRealistic). + `func_0x<addr>(...)` naming,
+        + param detection counts only USED param-register inputs (drops the wired scratch).
+        Unit-tested. good 18→21, avg →0.5567. forloop1 `func_0x00400430(0x400820)` matches.
+        LIMIT: pure param-passthrough args (forwarded untouched, unwritten) not yet recovered
+        (needs directWrite / fuller ParamActive); float (XMM) args are a follow-up.
   - [ ] **Loop-body emission** (exposed by RuleSborrow): forloop bodies render empty — the
         loop-variable increment is consumed only by the phi (marked implicit, never emitted)
         and the body block's call is missing. This is the forloop cluster's real ceiling.

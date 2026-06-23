@@ -154,9 +154,20 @@ impl<'a> PrintC<'a> {
             OpCode::Int2comp => (format!("-{}", self.operand(a(0), 15, false)), 15),
             OpCode::BoolNegate => (format!("!{}", self.operand(a(0), 15, false)), 15),
             OpCode::Load => (format!("*{}", self.operand(a(1), 15, false)), 15),
-            OpCode::Call | OpCode::Callind => {
+            OpCode::Call => {
+                // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
+                let name = match o.input(0) {
+                    Some(t) => format!("func_0x{:08x}", self.f.vn(t).loc.offset),
+                    None => "func".to_string(),
+                };
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
-                (format!("func({})", args.join(", ")), 16)
+                (format!("{name}({})", args.join(", ")), 16)
+            }
+            OpCode::Callind => {
+                // indirect call through a computed target
+                let tgt = self.operand(a(0), 16, false);
+                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                (format!("(*{tgt})({})", args.join(", ")), 16)
             }
             other => (format!("{}(...)", other.name()), 16),
         }
@@ -320,12 +331,17 @@ pub fn print_c(f: &Funcdata) -> String {
     };
     p.ret_val = p.return_value();
 
-    // parameters: input varnodes sitting in a parameter register, in order
+    // parameters: input varnodes sitting in a parameter register that are actually used.
+    // (Unused param-register inputs are scratch — e.g. the call-argument candidates that
+    // return/arg recovery left unconsumed — not real parameters.)
     let mut params: Vec<(u64, VarnodeId)> = Vec::new();
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
         let vn = f.vn(v);
-        if vn.is_input() && param_name(Some(vn.loc.space) == reg_space, vn.loc.offset).is_some() {
+        if vn.is_input()
+            && !vn.descend.is_empty()
+            && param_name(Some(vn.loc.space) == reg_space, vn.loc.offset).is_some()
+        {
             params.push((vn.loc.offset, v));
         }
     }

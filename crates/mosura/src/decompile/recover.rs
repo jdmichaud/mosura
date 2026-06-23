@@ -23,6 +23,9 @@ use super::varnode::VarnodeId;
 const RAX: u64 = 0x0;
 const XMM0: u64 = 0x1200;
 
+/// SysV integer argument registers, in order: RDI, RSI, RDX, RCX, R8, R9.
+const ARG_REGS: [u64; 6] = [0x38, 0x30, 0x10, 0x8, 0x80, 0x88];
+
 /// Does `vn`'s value trace back to a real write the function made (a "solid" definition),
 /// rather than to the unwritten passthrough register? Traverses transparent ops (COPY,
 /// SUBPIECE, extensions) and MULTIEQUALs; any solid producer (arithmetic, LOAD, …) or a
@@ -81,6 +84,44 @@ pub fn resolve_return(f: &mut Funcdata) {
             if Some(slot) != keep {
                 f.op_remove_input(ret, slot);
             }
+        }
+    }
+}
+
+/// Append the candidate integer argument registers (RDI…R9) to every CALL op, so heritage
+/// links them to the value each holds at the call site. Runs pre-heritage. (Mirrors
+/// `recover_return` on the input side — Ghidra's `ActionFuncLink`/`ParamActive` setup.)
+pub fn recover_call_args(f: &mut Funcdata) {
+    let Some(reg) = f.spaces.by_name("register") else { return };
+    let calls: Vec<OpId> =
+        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+    for call in calls {
+        for off in ARG_REGS {
+            let v = f.new_varnode(8, Address::new(reg, off));
+            f.op_append_input(call, v);
+        }
+    }
+}
+
+/// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI)
+/// whose value is realistic (set by the caller). The first candidate that is merely an
+/// unwritten/scratch register ends the argument list. Runs post-heritage.
+pub fn resolve_call_args(f: &mut Funcdata) {
+    let calls: Vec<OpId> =
+        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+    for call in calls {
+        let n = f.op(call).num_inputs();
+        let mut keep = 0; // slots 1..=keep are arguments (contiguous from RDI)
+        for slot in 1..n {
+            let v = f.op(call).input(slot).unwrap();
+            if is_realistic(f, v, &mut HashSet::new()) {
+                keep = slot;
+            } else {
+                break;
+            }
+        }
+        for slot in (keep + 1..n).rev() {
+            f.op_remove_input(call, slot);
         }
     }
 }
@@ -150,5 +191,44 @@ mod tests {
         let (mut f, ret) = ret_with(true, true);
         resolve_return(&mut f);
         assert!(kept_offset(&f, ret, RAX), "a function returns one value; prefer RAX");
+    }
+
+    /// A CALL with candidate inputs `[target, RDI, RSI, RDX, RCX, R8, R9]` where the first
+    /// `written` (in SysV order) are real computed writes and the rest are scratch registers.
+    fn call_with(written: usize) -> (Funcdata, OpId) {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(8, 0x400430);
+        let mut inputs = vec![target];
+        for (i, &off) in ARG_REGS.iter().enumerate() {
+            let v = if i < written {
+                let c = f.new_const(8, 0x10 + i as u64);
+                let op = f.new_op(OpCode::Copy, seq, vec![c]);
+                f.new_output(op, 8, Address::new(reg, off))
+            } else {
+                f.new_input(8, Address::new(reg, off))
+            };
+            inputs.push(v);
+        }
+        let call = f.new_op(OpCode::Call, seq, inputs);
+        f.set_blocks(vec![BlockBasic { ops: vec![call], ..Default::default() }]);
+        (f, call)
+    }
+
+    #[test]
+    fn call_keeps_contiguous_written_args() {
+        let (mut f, call) = call_with(2); // RDI, RSI written; RDX.. scratch
+        resolve_call_args(&mut f);
+        assert_eq!(f.op(call).num_inputs(), 3, "[target, RDI, RSI] — two arguments");
+    }
+
+    #[test]
+    fn call_with_no_set_registers_has_no_args() {
+        let (mut f, call) = call_with(0);
+        resolve_call_args(&mut f);
+        assert_eq!(f.op(call).num_inputs(), 1, "only the call target remains");
     }
 }
