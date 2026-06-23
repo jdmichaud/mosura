@@ -285,7 +285,7 @@ impl Rule for RuleCollectTerms {
         "collectterms"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntAdd]
+        vec![OpCode::IntAdd, OpCode::IntSub]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
         if data.op(op).num_inputs() != 2 {
@@ -296,8 +296,14 @@ impl Rule for RuleCollectTerms {
         if bx != by {
             return 0;
         }
+        // a*cx ± a*cy  →  a*(cx ± cy)
+        let combined = if data.op(op).code() == OpCode::IntSub {
+            cx.wrapping_sub(cy)
+        } else {
+            cx.wrapping_add(cy)
+        };
         let out_size = data.vn(data.op(op).output.unwrap()).size;
-        match cx.wrapping_add(cy) {
+        match combined {
             0 => {
                 let z = data.new_const(out_size, 0);
                 data.op_set_opcode(op, OpCode::Copy);
