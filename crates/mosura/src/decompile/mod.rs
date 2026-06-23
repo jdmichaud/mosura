@@ -20,6 +20,7 @@ pub mod op;
 pub mod opcode;
 pub mod pipeline;
 pub mod recover;
+pub mod divopt;
 pub mod printc;
 pub mod rules;
 pub mod space;
