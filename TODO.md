@@ -76,7 +76,13 @@ for the full rationale and architecture.
         additive-tree machinery), `RuleSub2Add`, SUBPIECE/MULTIEQUAL pull-through, +
         Ghidra's ~95 others. Each is a drop-in; add as concrete functions need them.
   - [ ] Assemble the universal-action pipeline (heritage → pool → …).
-- [ ] **P3 — Dead code** (`ActionDeadCode`).
+- [x] **P3 — Dead code** (`deadcode.rs::ActionDeadCode`) — whole-varnode liveness seeded
+      from side-effecting ops (returns/branches/stores/calls), propagated backward; removes
+      the rule pool's collapsed ops + dead computations. Wired into the pipeline; invariant
+      tested (no dead op survives; every kept op is a sink or its output is consumed/live-out).
+      Mosura's live-op count is within ~2x of Ghidra's post-deadcode IR (the gap is the rule
+      tail). INTERIM: seeds SysV return regs (RAX/XMM0) as live-out roots since the return
+      value isn't wired to RETURN yet — replaced by P6 ActionReturnRecovery / addrtied.
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
 - [ ] **P5 — Merge** (`Merge`/`HighVariable`/`Cover` — variable recovery).
 - [ ] **P6 — Prototypes** (`FuncProto`/`ParamActive`/`AncestorRealistic` — call-arg/return).

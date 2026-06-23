@@ -194,6 +194,23 @@ impl Funcdata {
         self.ops[op.0 as usize].flags |= super::op::flags::DEAD;
     }
 
+    /// Disconnect `op` from the graph (Ghidra's `opDestroy`): drop it from every input's
+    /// descendant list, clear its output's def, and mark it dead. The op stays in the
+    /// arena but is detached and should be removed from its block's op list separately.
+    pub fn op_destroy(&mut self, op: OpId) {
+        let inrefs = std::mem::take(&mut self.ops[op.0 as usize].inrefs);
+        for v in inrefs {
+            if let Some(pos) = self.varnodes[v.0 as usize].descend.iter().position(|&o| o == op) {
+                self.varnodes[v.0 as usize].descend.remove(pos);
+            }
+        }
+        if let Some(out) = self.ops[op.0 as usize].output.take() {
+            self.varnodes[out.0 as usize].def = None;
+            self.varnodes[out.0 as usize].flags &= !flags::WRITTEN;
+        }
+        self.mark_dead(op);
+    }
+
     /// Give `op` a fresh `unique`-space output of `size`; returns it.
     pub fn new_output_unique(&mut self, op: OpId, size: u32) -> VarnodeId {
         let space = self.spaces.by_name("unique").expect("unique space");

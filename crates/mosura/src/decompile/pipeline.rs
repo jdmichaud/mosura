@@ -35,9 +35,12 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleTrivialShift)
 }
 
-/// The universal decompile action: heritage, then simplification.
+/// The universal decompile action: heritage, simplification, then dead-code removal.
 pub fn universal_action() -> ActionGroup {
-    ActionGroup::once("decompile").then(ActionHeritage).then(default_rule_pool())
+    ActionGroup::once("decompile")
+        .then(ActionHeritage)
+        .then(default_rule_pool())
+        .then(super::deadcode::ActionDeadCode)
 }
 
 /// Run the pipeline on a raw (post-load) Funcdata in place.
@@ -65,13 +68,36 @@ mod tests {
         let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
 
         decompile(&mut f);
-
-        // heritage ran (blocks built, SSA linked) and the pool ran (no live foldable
-        // all-constant op survives).
         assert!(f.num_blocks() > 0);
+
+        // every op still in a block is live: a sink, or its output is consumed. (No
+        // collapsed/dead ops survive, no unconsumed computations remain.)
+        for b in 0..f.num_blocks() as u32 {
+            for &op in &f.block(crate::decompile::BlockId(b)).ops {
+                assert!(!f.op(op).is_dead(), "a dead op survived in a block");
+                let is_sink = matches!(
+                    f.op(op).code(),
+                    OpCode::Return | OpCode::Branch | OpCode::Cbranch | OpCode::Branchind
+                        | OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother
+                );
+                if !is_sink {
+                    let out = f.op(op).output.expect("non-sink op has an output");
+                    let vn = f.vn(out);
+                    // consumed by another op, or live-out in a return register (RAX/XMM0)
+                    let reg = f.spaces.by_name("register");
+                    let live_out = Some(vn.loc.space) == reg && matches!(vn.loc.offset, 0x0 | 0x1200);
+                    assert!(
+                        !vn.descend.is_empty() || live_out,
+                        "live op's output must be consumed or live-out"
+                    );
+                }
+            }
+        }
+
+        // and constant folding still ran to fixpoint (no foldable all-const op left)
         for i in 0..f.num_ops() as u32 {
             let op = OpId(i);
-            if f.op(op).is_dead() || f.op(op).num_inputs() == 0 {
+            if f.op(op).is_dead() || f.op(op).num_inputs() == 0 || f.op(op).output.is_none() {
                 continue;
             }
             let all_const = f.op(op).inrefs.iter().all(|&v| f.vn(v).is_constant());
@@ -79,7 +105,7 @@ mod tests {
                 f.op(op).code(),
                 OpCode::Load | OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Multiequal
             );
-            assert!(!(all_const && foldable && f.op(op).output.is_some()), "unfolded constant op survived");
+            assert!(!(all_const && foldable), "unfolded constant op survived");
         }
     }
 }
