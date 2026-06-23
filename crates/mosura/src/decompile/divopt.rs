@@ -11,6 +11,7 @@
 /// is the total right-shift (`subpiece_bytes*8 + shift`), `xsize` is the operand bit-width.
 /// Returns 0 if `magic`/`n` do not correspond to a clean division. Port of
 /// `RuleDivOpt::calcDivisor` with `u128` standing in for Ghidra's `uint8[2]`.
+#[allow(dead_code)] // the verified crux; wired in when findForm + the rewrite land
 pub fn calc_divisor(n: u32, magic: u128, xsize: u32) -> u64 {
     if n > 127 || xsize > 64 || magic <= 1 {
         return 0;
