@@ -355,16 +355,27 @@ fn is_const0(data: &Funcdata, v: VarnodeId) -> bool {
     data.vn(v).is_constant() && data.vn(v).constant_value() == 0
 }
 
+/// Whether two varnodes denote the same value — the same id, or equal-valued constants.
+/// (Constants aren't interned, so distinct constant varnodes can share a value; Ghidra's
+/// `*vn` comparison treats them as equal.)
+fn same_value(data: &Funcdata, a: VarnodeId, b: VarnodeId) -> bool {
+    a == b || {
+        let (va, vb) = (data.vn(a), data.vn(b));
+        va.is_constant() && vb.is_constant() && va.size == vb.size
+            && va.constant_value() == vb.constant_value()
+    }
+}
+
 /// Does `xvn` compute `avn - bvn`? Directly as `INT_SUB(avn, bvn)`, or as `INT_ADD(avn, c)`
 /// with `c` the (constant) negation of `bvn`.
 fn subtract_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
     let Some(def) = data.vn(xvn).def else { return false };
     let o = data.op(def);
-    if o.num_inputs() != 2 || o.input(0) != Some(avn) {
+    if o.num_inputs() != 2 || !same_value(data, o.input(0).unwrap(), avn) {
         return false;
     }
     match o.code() {
-        OpCode::IntSub => o.input(1) == Some(bvn),
+        OpCode::IntSub => same_value(data, o.input(1).unwrap(), bvn),
         OpCode::IntAdd => {
             let Some(c) = o.input(1) else { return false };
             if !data.vn(c).is_constant() || !data.vn(bvn).is_constant() {
@@ -441,6 +452,111 @@ impl Rule for RuleSborrow {
             return 1;
         }
         0
+    }
+}
+
+/// Compare against zero through a subtraction (Ghidra's `RuleEqual2Zero`): `(a - b) == 0`
+/// → `a == b`, and `(a + c) == 0` → `a == -c` for a constant `c` (likewise INT_NOTEQUAL).
+/// Normalises the flag-derived equality so [`RuleLessEqual`] can match it against the less.
+pub struct RuleEqual2Zero;
+
+impl Rule for RuleEqual2Zero {
+    fn name(&self) -> &str {
+        "equal2zero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let (i0, i1) = (data.op(op).input(0).unwrap(), data.op(op).input(1).unwrap());
+        let other = if is_const0(data, i1) {
+            i0
+        } else if is_const0(data, i0) {
+            i1
+        } else {
+            return 0;
+        };
+        let Some(def) = data.vn(other).def else { return 0 };
+        if data.op(def).num_inputs() != 2 {
+            return 0;
+        }
+        let (a, b) = (data.op(def).input(0).unwrap(), data.op(def).input(1).unwrap());
+        match data.op(def).code() {
+            OpCode::IntSub => {
+                data.op_set_all_input(op, &[a, b]);
+                1
+            }
+            OpCode::IntAdd if data.vn(b).is_constant() => {
+                let size = data.vn(b).size;
+                let neg = data.vn(b).constant_value().wrapping_neg();
+                let nc = data.new_const(size, neg);
+                data.op_set_all_input(op, &[a, nc]);
+                1
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// Combine a less-than and an equality into less-than-or-equal (Ghidra's `RuleLessEqual`):
+/// `V < W || V == W` → `V <= W`, and `V < W || V != W` → `V != W`. Handles signed and
+/// unsigned, operands in either order. This collapses the x86 `jle`/`jbe` flag idiom (the
+/// `ZF || (SF != OF)` pair) into a single comparison.
+pub struct RuleLessEqual;
+
+impl Rule for RuleLessEqual {
+    fn name(&self) -> &str {
+        "lessequal"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let i0 = data.op(op).input(0).unwrap();
+        let i1 = data.op(op).input(1).unwrap();
+        let code_of = |v: VarnodeId| data.vn(v).def.map(|d| data.op(d).code());
+        let is_less = |c: Option<OpCode>| matches!(c, Some(OpCode::IntLess | OpCode::IntSless));
+        let is_eq = |c: Option<OpCode>| matches!(c, Some(OpCode::IntEqual | OpCode::IntNotequal));
+        let (less_v, equal_v) = if is_less(code_of(i0)) && is_eq(code_of(i1)) {
+            (i0, i1)
+        } else if is_less(code_of(i1)) && is_eq(code_of(i0)) {
+            (i1, i0)
+        } else {
+            return 0;
+        };
+        let less_op = data.vn(less_v).def.unwrap();
+        let equal_op = data.vn(equal_v).def.unwrap();
+        if data.op(less_op).num_inputs() != 2 || data.op(equal_op).num_inputs() != 2 {
+            return 0;
+        }
+        let (l0, l1) = (data.op(less_op).input(0).unwrap(), data.op(less_op).input(1).unwrap());
+        let (e0, e1) = (data.op(equal_op).input(0).unwrap(), data.op(equal_op).input(1).unwrap());
+        let matches = (same_value(data, l0, e0) && same_value(data, l1, e1))
+            || (same_value(data, l0, e1) && same_value(data, l1, e0));
+        if !matches {
+            return 0;
+        }
+        if data.op(equal_op).code() == OpCode::IntNotequal {
+            // V < W || V != W  =>  V != W
+            let eqout = data.op(equal_op).output.unwrap();
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_set_all_input(op, &[eqout]);
+        } else {
+            let newcode = if data.op(less_op).code() == OpCode::IntSless {
+                OpCode::IntSlessequal
+            } else {
+                OpCode::IntLessequal
+            };
+            data.op_set_opcode(op, newcode);
+            data.op_set_all_input(op, &[l0, l1]);
+        }
+        1
     }
 }
 
@@ -570,6 +686,39 @@ mod tests {
         assert_eq!(f.op(add).input(0), Some(a));
         let c = f.op(add).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
+    }
+
+    #[test]
+    fn lessequal_collapses_jle_idiom() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // ZF: (a - b) == 0   (a distinct zero/constant, as the lifter emits)
+        let sub = f.new_op(OpCode::IntSub, seq, vec![a, b]);
+        let subout = f.new_output(sub, 4, Address::new(uniq, 0x100));
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![subout, zero]);
+        let eqout = f.new_output(eq, 1, Address::new(uniq, 0x200));
+        // SF != OF, already collapsed by RuleSborrow to: a s< b
+        let sl = f.new_op(OpCode::IntSless, seq, vec![a, b]);
+        let slout = f.new_output(sl, 1, Address::new(uniq, 0x300));
+        // jle = ZF || (SF != OF)
+        let or = f.new_op(OpCode::BoolOr, seq, vec![eqout, slout]);
+        f.new_output(or, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sub, eq, sl, or],
+            ..Default::default()
+        }]);
+
+        let mut pool = ActionPool::new("p").with(RuleEqual2Zero).with(RuleLessEqual);
+        pool.apply(&mut f);
+        // (a - b == 0) || (a s< b)  =>  a s<= b
+        assert_eq!(f.op(or).code(), OpCode::IntSlessequal);
+        assert_eq!(f.op(or).input(0), Some(a));
+        assert_eq!(f.op(or).input(1), Some(b));
     }
 
     #[test]

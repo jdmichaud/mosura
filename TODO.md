@@ -164,6 +164,10 @@ for the full rationale and architecture.
         the `i=0` initializer survives; for_parts carries the init varnode (often a folded
         constant). forloop1 →.950, forloop_varused →.886; good →28. Safe (only fires when the
         exact-width def is absent — in-block def chains untouched; no corpus regressions).
+  - [x] **`jle`/`jbe` flag idiom** → `<=` (faithful chain): fixed RuleSborrow's constant
+        comparison (constants aren't interned — compare by value via `same_value`), + ported
+        RuleEqual2Zero (`(a-b)==0 → a==b`) and RuleLessEqual (`V<W || V==W → V<=W`). threedim
+        condition `uVar1 <= 0x1d`; good →30. Unit-tested.
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.
