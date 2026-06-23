@@ -89,7 +89,13 @@ for the full rationale and architecture.
       tail). INTERIM: seeds SysV return regs (RAX/XMM0) as live-out roots since the return
       value isn't wired to RETURN yet — replaced by P6 ActionReturnRecovery / addrtied.
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
-- [ ] **P5 — Merge** (`Merge`/`HighVariable`/`Cover` — variable recovery).
+- [~] **P5 — Merge** (`merge.rs`) — in progress
+  - [x] `HighVariables` union-find + required marker merges (`Merge::mergeMarker`): a
+        MULTIEQUAL/INDIRECT output is one variable with its inputs — threads SSA versions
+        across control flow (loop counters etc.). Unit-tested + integration (phi versions
+        merge, variable count drops on threedim/elseif/twodim).
+  - [ ] `Cover` (liveness ranges) + interference test → merge non-interfering same-storage
+        varnodes (`mergeAddrTied`/`mergeOpcode(COPY)`/speculative); variable naming.
 - [ ] **P6 — Prototypes** (`FuncProto`/`ParamActive`/`AncestorRealistic` — call-arg/return).
 - [ ] **P7 — Structuring** (`BlockGraph::collapse`).
 - [ ] **P8 — PrintC** (`printc.cc`) → C-exact parity.

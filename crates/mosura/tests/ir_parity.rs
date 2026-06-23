@@ -290,6 +290,51 @@ fn rule_pool_folds_constants() {
 }
 
 #[test]
+fn merge_groups_phi_versions_into_variables() {
+    use mosura::decompile::merge::merge;
+    use mosura::decompile::{pipeline, OpCode};
+    let Some((spec, ctx)) = x86_64() else { return };
+
+    for name in ["threedim", "elseif", "twodim"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let dt = datatest::parse_file(&fixture).expect("fixture");
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        pipeline::decompile(&mut f);
+        let mut h = merge(&f);
+
+        let mut had_phi = false;
+        let mut live_vns: BTreeSet<mosura::decompile::VarnodeId> = BTreeSet::new();
+        for b in 0..f.num_blocks() as u32 {
+            for &op in &f.block(mosura::decompile::BlockId(b)).ops {
+                let o = f.op(op);
+                live_vns.extend(o.output);
+                live_vns.extend(o.inrefs.iter().copied());
+                if o.code() == OpCode::Multiequal {
+                    had_phi = true;
+                    let out = o.output.unwrap();
+                    for &inv in &o.inrefs {
+                        if !f.vn(inv).is_constant() {
+                            assert!(h.same(out, inv), "{name}: phi output and input must be one variable");
+                        }
+                    }
+                }
+            }
+        }
+
+        if had_phi {
+            let nonconst: Vec<_> = live_vns.iter().copied().filter(|&v| !f.vn(v).is_constant()).collect();
+            assert!(
+                h.count(nonconst.iter().copied()) < nonconst.len(),
+                "{name}: merging phi versions must reduce the variable count"
+            );
+        }
+    }
+}
+
+#[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };
     let fixture = paths::oracle_fixtures_dir().join("x86_64_sem.xml");

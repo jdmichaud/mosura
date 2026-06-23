@@ -14,6 +14,7 @@ pub mod deadcode;
 pub mod dominator;
 pub mod funcdata;
 pub mod heritage;
+pub mod merge;
 pub mod op;
 pub mod opcode;
 pub mod pipeline;
