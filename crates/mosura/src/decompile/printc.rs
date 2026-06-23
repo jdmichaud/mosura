@@ -308,16 +308,37 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// The condition of an `if`/`while`: the boolean tested by the CBRANCH at the exit of
-    /// the condition block, negated when the body is on the false edge.
+    /// The boolean tested by a condition block — the CBRANCH operand for a basic block, or
+    /// the joined operands of a short-circuit `&&`/`||`.
+    fn render_cond_expr(&mut self, s: &Structured, idx: usize) -> String {
+        let comps = s.blocks[idx].components.clone();
+        match s.blocks[idx].kind {
+            FlowKind::CondAnd => {
+                let (a, b) = (self.render_cond_operand(s, comps[0]), self.render_cond_operand(s, comps[1]));
+                format!("{a} && {b}")
+            }
+            FlowKind::CondOr => {
+                let (a, b) = (self.render_cond_operand(s, comps[0]), self.render_cond_operand(s, comps[1]));
+                format!("{a} || {b}")
+            }
+            _ => exit_basic(s, idx)
+                .and_then(|bid| {
+                    self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
+                })
+                .and_then(|cbr| self.f.op(cbr).input(1))
+                .map(|v| self.render_var(v).0)
+                .unwrap_or_else(|| "1".into()),
+        }
+    }
+
+    /// A short-circuit operand, parenthesized (Ghidra's `(a) && (b)` style).
+    fn render_cond_operand(&mut self, s: &Structured, idx: usize) -> String {
+        format!("({})", self.render_cond_expr(s, idx))
+    }
+
+    /// The condition of an `if`/`while`, negated when the body is on the false edge.
     fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
-        let cond = exit_basic(s, cond_idx)
-            .and_then(|bid| {
-                self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
-            })
-            .and_then(|cbr| self.f.op(cbr).input(1))
-            .map(|v| self.render_var(v).0)
-            .unwrap_or_else(|| "1".into());
+        let cond = self.render_cond_expr(s, cond_idx);
         if negated {
             format!("!({cond})")
         } else {
@@ -332,6 +353,13 @@ impl<'a> PrintC<'a> {
         let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);
         match kind {
             FlowKind::Basic(bid) => self.emit_basic(bid, indent, out),
+            // a short-circuit condition: its operands are inlined by render_condition; emit
+            // only any side-effecting statements they carry (rare)
+            FlowKind::CondAnd | FlowKind::CondOr => {
+                for c in comps {
+                    self.emit_structured(s, c, indent, out);
+                }
+            }
             FlowKind::List => {
                 for c in comps {
                     self.emit_structured(s, c, indent, out);

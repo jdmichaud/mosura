@@ -28,6 +28,10 @@ pub enum FlowKind {
     WhileDo,
     /// `do body while (cond)` — components `[body]`.
     DoWhile,
+    /// Short-circuit `a && b` — components `[a, b]`; still a two-out condition block.
+    CondAnd,
+    /// Short-circuit `a || b` — components `[a, b]`; still a two-out condition block.
+    CondOr,
 }
 
 #[derive(Clone, Debug)]
@@ -87,10 +91,36 @@ impl Structured {
     /// Try every rule on `b`; return whether one fired (and changed the graph).
     fn try_rules(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
         self.rule_cat(b, ins)
+            || self.rule_short_circuit(b, ins)
             || self.rule_proper_if(b, ins)
             || self.rule_if_else(b, ins)
             || self.rule_while_do(b, ins)
             || self.rule_do_while(b, ins)
+    }
+
+    /// `ruleBlockCondition`: two chained condition blocks collapse to a short-circuit
+    /// condition. For `a && b`, `a`'s *true* edge enters `b` and both *false* edges share an
+    /// exit; for `a || b`, `a`'s *false* edge enters `b` and both *true* edges share. The
+    /// result is itself a two-out condition block (structured later by the `if` rules).
+    fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
+        if self.out(b).len() != 2 {
+            return false;
+        }
+        for and in [true, false] {
+            let (cont, shared) = if and { (1, 0) } else { (0, 1) };
+            let bb = self.out(b)[cont]; // the second condition
+            if bb == b || ins[bb].len() != 1 || self.out(bb).len() != 2 {
+                continue;
+            }
+            if self.out(b)[shared] == bb || self.out(b)[shared] != self.out(bb)[shared] {
+                continue;
+            }
+            let out = self.blocks[bb].out_edges.clone();
+            let kind = if and { FlowKind::CondAnd } else { FlowKind::CondOr };
+            self.install(vec![b, bb], kind, out, ins);
+            return true;
+        }
+        false
     }
 
     fn out(&self, b: usize) -> &[usize] {
@@ -293,6 +323,24 @@ mod tests {
         let s = structure(&cfg(4, &[(0, 1), (1, 2), (1, 3), (2, 1)]));
         assert_eq!(active(&s), 1);
         assert!(kinds(&s).contains(&FlowKind::WhileDo));
+    }
+
+    #[test]
+    fn short_circuit_and_merges() {
+        // A=0 out [merge=3(false), B=1(true)]; B=1 out [merge=3(false), then=2(true)]; 2 -> 3
+        //   i.e. if (a && b) then(2); merge=3
+        let s = structure(&cfg(4, &[(0, 3), (0, 1), (1, 3), (1, 2), (2, 3)]));
+        assert_eq!(active(&s), 1);
+        assert!(kinds(&s).contains(&FlowKind::CondAnd), "kinds: {:?}", kinds(&s));
+    }
+
+    #[test]
+    fn short_circuit_or_merges() {
+        // A=0 out [B=1(false), then=2(true)]; B=1 out [merge=3(false), then=2(true)]; 2 -> 3
+        //   i.e. if (a || b) then(2); merge=3
+        let s = structure(&cfg(4, &[(0, 1), (0, 2), (1, 3), (1, 2), (2, 3)]));
+        assert_eq!(active(&s), 1);
+        assert!(kinds(&s).contains(&FlowKind::CondOr), "kinds: {:?}", kinds(&s));
     }
 
     #[test]

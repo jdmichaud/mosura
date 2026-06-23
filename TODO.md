@@ -168,6 +168,16 @@ for the full rationale and architecture.
         comparison (constants aren't interned — compare by value via `same_value`), + ported
         RuleEqual2Zero (`(a-b)==0 → a==b`) and RuleLessEqual (`V<W || V==W → V<=W`). threedim
         condition `uVar1 <= 0x1d`; good →30. Unit-tested.
+  - [~] **Short-circuit `&&`/`||` structuring** (Ghidra COND_AND/COND_OR): `rule_short_circuit`
+        merges two chained condition blocks (a's true→b + shared false ⇒ `a && b`; a's false→b
+        + shared true ⇒ `a || b`) into a two-out condition block; render_condition joins them
+        `(a) && (b)`. Unit-tested; fires on elseif/loopcomment/nan, renders correctly. CORPUS-
+        NEUTRAL for now — those functions are dominated by OTHER gaps (branchless-flag `||`,
+        float-compare simplification, irreducible CFG). A correct foundation that pays off once
+        those are fixed.
+  - [ ] DOMINANT gaps blocking the &&/|| funcs: branchless boolean flags (orcompare's
+        `(a)*2 | (b)<<7 != 0` → `a || b`), double-negation `!(!x)`→`x`, global-var naming
+        (`xRam...`), float-compare/NAN simplification, irreducible-CFG gotos (elseif).
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.
