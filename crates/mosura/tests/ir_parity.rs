@@ -377,6 +377,33 @@ fn merged_variables_have_no_internal_interference() {
 }
 
 #[test]
+fn structuring_collapses_reducible_cfgs() {
+    use mosura::decompile::structure::structure;
+    let Some((spec, ctx)) = x86_64() else { return };
+    let (mut full, mut stalled) = (Vec::new(), Vec::new());
+    for name in ["x86_64_sem", "twodim", "threedim", "elseif", "condconst", "boolless"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let dt = datatest::parse_file(&fixture).expect("fixture");
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        mosura::decompile::cfg::build_cfg(&mut f);
+        let s = structure(&f);
+        let active = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).count();
+        if active == 1 {
+            full.push(name);
+        } else {
+            stalled.push((name, active));
+        }
+    }
+    eprintln!("fully structured: {full:?}");
+    eprintln!("stalled (need goto/switch/irreducible handling): {stalled:?}");
+    assert!(full.contains(&"x86_64_sem"), "a single-block function must structure trivially");
+    assert!(full.len() >= 2, "reducible CFGs should fully structure");
+}
+
+#[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };
     let fixture = paths::oracle_fixtures_dir().join("x86_64_sem.xml");

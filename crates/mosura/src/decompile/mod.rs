@@ -21,6 +21,7 @@ pub mod opcode;
 pub mod pipeline;
 pub mod rules;
 pub mod space;
+pub mod structure;
 pub mod varnode;
 
 pub use action::{Action, ActionGroup, ActionPool, ActionStart, Rule};

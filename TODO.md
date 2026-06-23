@@ -103,7 +103,13 @@ for the full rationale and architecture.
         counts (x86_64_sem 10 SSA→6 vars, twodim 36→13, threedim 57→21, elseif 196→25).
   - [ ] Variable NAMING (deferred to P8 PrintC / a NameVars action — the consumer).
 - [ ] **P6 — Prototypes** (`FuncProto`/`ParamActive`/`AncestorRealistic` — call-arg/return).
-- [ ] **P7 — Structuring** (`BlockGraph::collapse`).
+- [~] **P7 — Structuring** (`structure.rs`) — core collapse done
+  - [x] Structured `FlowBlock` graph + the reducible collapse rules (`ruleBlockCat`=list,
+        `ruleBlockProperIf`, `ruleBlockIfElse`, `ruleBlockWhileDo`, `ruleBlockDoWhile`),
+        ported from `CollapseStructure`. Unit-tested on each shape; fully structures
+        reducible CFGs (x86_64_sem/twodim/threedim/boolless collapse to one block).
+  - [ ] `ruleBlockOr` (short-circuit `&&`/`||`), `ruleBlockGoto` (irreducible → goto),
+        `ruleBlockSwitch`, condition negation. (elseif/condconst stall pending these.)
 - [ ] **P8 — PrintC** (`printc.cc`) → C-exact parity.
 
 Gate at every phase: mosura's IR matches Ghidra's IR on the datatests before moving on.
