@@ -72,6 +72,20 @@ fn type_prefix(t: &Datatype) -> &'static str {
     }
 }
 
+/// The 64-bit name of an x86-64 integer register by offset (for `extraout_*` etc.).
+fn reg64_name(offset: u64) -> Option<&'static str> {
+    Some(match offset {
+        0x0 => "RAX",
+        0x38 => "RDI",
+        0x30 => "RSI",
+        0x10 => "RDX",
+        0x08 => "RCX",
+        0x80 => "R8",
+        0x88 => "R9",
+        _ => return None,
+    })
+}
+
 /// SysV integer parameter registers → `param_N`.
 fn param_name(space_is_reg: bool, offset: u64) -> Option<&'static str> {
     if !space_is_reg {
@@ -130,8 +144,10 @@ impl<'a> PrintC<'a> {
             return true;
         }
         if let Some(def) = vn.def {
-            if self.f.op(def).code() == OpCode::Multiequal {
-                return true; // a phi is a merged variable — always named, never inlined raw
+            // a phi is a merged variable, and an INDIRECT (a value clobbered by a call) is an
+            // opaque `extraout_*` — both are always named, never inlined raw
+            if matches!(self.f.op(def).code(), OpCode::Multiequal | OpCode::Indirect) {
+                return true;
             }
         }
         if vn.descend.len() != 1 {
@@ -156,6 +172,17 @@ impl<'a> PrintC<'a> {
         if Some(vn.loc.space) == self.ram_space {
             let (off, prefix) = (vn.loc.offset, type_prefix(&self.type_of(v)));
             return format!("{prefix}Ram{off:016x}");
+        }
+        // a value left in a caller-saved register by a call (an INDIRECT def) is Ghidra's
+        // `extraout_<reg>`
+        if is_reg {
+            if let Some(def) = vn.def {
+                if self.f.op(def).code() == OpCode::Indirect {
+                    if let Some(r) = reg64_name(vn.loc.offset) {
+                        return format!("extraout_{r}");
+                    }
+                }
+            }
         }
         let id = self.h.high(v);
         if let Some(n) = self.names.get(&id) {

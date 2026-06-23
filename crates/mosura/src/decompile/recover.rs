@@ -105,6 +105,34 @@ pub fn recover_call_args(f: &mut Funcdata) {
     }
 }
 
+/// Model each CALL's clobber of the caller-saved argument registers with an INDIRECT op, so
+/// a *later* call's "argument" that is really a leftover from an earlier call traces to a
+/// clobbered (unrealistic) value and is dropped. Ghidra's `ActionFuncLink` call-effect setup.
+/// Runs post-CFG, pre-heritage; the INDIRECTs splice into each call's block after the call.
+pub fn recover_call_effects(f: &mut Funcdata) {
+    let Some(reg) = f.spaces.by_name("register") else { return };
+    for b in 0..f.num_blocks() as u32 {
+        let bid = super::block::BlockId(b);
+        let ops = f.block(bid).ops.clone();
+        let mut new_ops = Vec::with_capacity(ops.len());
+        for op in ops {
+            new_ops.push(op);
+            if !matches!(f.op(op).code(), OpCode::Call | OpCode::Callind) {
+                continue;
+            }
+            let seq = f.op(op).seqnum;
+            for off in ARG_REGS {
+                let pre = f.new_varnode(8, Address::new(reg, off));
+                let ind = f.new_op(OpCode::Indirect, seq, vec![pre]);
+                f.new_output(ind, 8, Address::new(reg, off));
+                f.op_mut(ind).parent = Some(bid);
+                new_ops.push(ind);
+            }
+        }
+        f.set_block_ops(bid, new_ops);
+    }
+}
+
 /// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI)
 /// whose value is realistic (set by the caller). The first candidate that is merely an
 /// unwritten/scratch register ends the argument list. Runs post-heritage.

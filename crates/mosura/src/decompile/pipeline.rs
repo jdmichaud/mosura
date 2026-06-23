@@ -26,6 +26,8 @@ impl Action for ActionHeritage {
         super::recover::recover_return(data);
         super::recover::recover_call_args(data);
         super::cfg::build_cfg(data);
+        // model each call's clobber of the caller-saved arg registers (needs the blocks)
+        super::recover::recover_call_effects(data);
         let dom = super::dominator::compute(data);
         super::heritage::heritage(data, &dom);
         // keep only the realistic return value / call arguments

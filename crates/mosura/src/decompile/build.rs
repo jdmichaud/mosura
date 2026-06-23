@@ -285,6 +285,18 @@ mod tests {
     }
 
     #[test]
+    fn call_clobber_drops_leftover_args() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("deindirect.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        // the second call doesn't inherit the first call's (now clobbered) arg registers
+        assert!(c.contains("func_0x00100580(0x10088a)"), "leftover args should be dropped:\n{c}");
+    }
+
+    #[test]
     fn recovers_float_return() {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("floatconv.xml")).unwrap();
