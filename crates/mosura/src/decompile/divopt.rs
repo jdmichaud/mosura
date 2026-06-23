@@ -61,9 +61,10 @@ fn cval(f: &Funcdata, v: VarnodeId) -> Option<u64> {
     f.vn(v).is_constant().then(|| f.vn(v).constant_value())
 }
 
-/// Match `mulhi = SUBPIECE(INT_MULT(zext(x) | x, M), off)` — the high half of `x * M`.
-/// Returns `(x, M, high_shift_bits)`.
-fn match_mulhi(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32)> {
+/// Match `mulhi = SUBPIECE(INT_MULT(ext(x) | x, M), off)` — the high half of `x * M`.
+/// Returns `(x, M, high_shift_bits, signed)` where `signed` means the dividend was
+/// sign-extended (a signed division) rather than zero-extended.
+fn match_mulhi(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32, bool)> {
     let sub = f.vn(v).def?;
     if f.op(sub).code() != OpCode::Subpiece {
         return None;
@@ -76,12 +77,12 @@ fn match_mulhi(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32)> {
     let (m0, m1) = (f.op(mult).input(0)?, f.op(mult).input(1)?);
     for (cvn, xvn) in [(m1, m0), (m0, m1)] {
         if let Some(magic) = cval(f, cvn) {
-            // the dividend may be zero-extended into the wide multiply
-            let x = match f.vn(xvn).def {
-                Some(d) if matches!(f.op(d).code(), OpCode::IntZext) => f.op(d).input(0)?,
-                _ => xvn,
+            let (x, signed) = match f.vn(xvn).def {
+                Some(d) if f.op(d).code() == OpCode::IntZext => (f.op(d).input(0)?, false),
+                Some(d) if f.op(d).code() == OpCode::IntSext => (f.op(d).input(0)?, true),
+                _ => (xvn, false),
             };
-            return Some((x, magic, (off as u32) * 8));
+            return Some((x, magic, (off as u32) * 8, signed));
         }
     }
     None
@@ -96,45 +97,126 @@ impl Rule for RuleDivOpt {
         "divopt"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntRight]
+        vec![OpCode::IntRight, OpCode::IntSub]
     }
     fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
-        // op = (add) >> e1
-        let Some(e1) = f.op(op).input(1).and_then(|v| cval(f, v)) else { return 0 };
-        let Some(add) = f.op(op).input(0).map(|v| f.vn(v).def).flatten() else { return 0 };
-        if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
+        match f.op(op).code() {
+            OpCode::IntRight => try_unsigned(op, f),
+            OpCode::IntSub => try_signed(op, f),
+            _ => 0,
+        }
+    }
+}
+
+/// Unsigned add-correction form: `(mulhi + ((x - mulhi) >> e2)) >> e1` ⇒ `x / d`.
+fn try_unsigned(op: OpId, f: &mut Funcdata) -> u32 {
+    let Some(e1) = f.op(op).input(1).and_then(|v| cval(f, v)) else { return 0 };
+    let Some(add) = f.op(op).input(0).and_then(|v| f.vn(v).def) else { return 0 };
+    if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
+        return 0;
+    }
+    let (a, b) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
+    for (mulhi_v, inner_v) in [(a, b), (b, a)] {
+        let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v) else { continue };
+        if signed {
+            continue;
+        }
+        let Some(inner) = f.vn(inner_v).def else { continue };
+        if f.op(inner).code() != OpCode::IntRight {
+            continue;
+        }
+        let Some(e2) = f.op(inner).input(1).and_then(|v| cval(f, v)) else { continue };
+        let Some(sub) = f.op(inner).input(0).and_then(|v| f.vn(v).def) else { continue };
+        if f.op(sub).code() != OpCode::IntSub
+            || f.op(sub).input(0) != Some(x)
+            || f.op(sub).input(1) != Some(mulhi_v)
+        {
+            continue;
+        }
+        let xsize = f.vn(x).size * 8;
+        if h >= 128 || xsize == 0 {
+            continue;
+        }
+        let d = calc_divisor(h + e1 as u32 + e2 as u32, magic as u128 + (1u128 << h), xsize);
+        if d == 0 {
+            continue;
+        }
+        let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
+        f.op_set_opcode(op, OpCode::IntDiv);
+        f.op_set_all_input(op, &[x, dc]);
+        return 1;
+    }
+    0
+}
+
+/// Signed sign-subtraction form: `(mulhi_s >> e) - (x s>> (size-1))` ⇒ `x s/ d`.
+fn try_signed(op: OpId, f: &mut Funcdata) -> u32 {
+    let (a, b) = match (f.op(op).input(0), f.op(op).input(1)) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return 0,
+    };
+    // b = x s>> (size-1) — the sign-bit replication
+    let Some(sgn) = f.vn(b).def else { return 0 };
+    if f.op(sgn).code() != OpCode::IntSright {
+        return 0;
+    }
+    let (Some(xb), Some(shamt)) = (f.op(sgn).input(0), f.op(sgn).input(1).and_then(|v| cval(f, v)))
+    else {
+        return 0;
+    };
+    // a = mulhi_s, optionally shifted right by e
+    let (mulhi_v, e) = match f.vn(a).def {
+        Some(d) if f.op(d).code() == OpCode::IntSright => {
+            (f.op(d).input(0).unwrap(), f.op(d).input(1).and_then(|v| cval(f, v)).unwrap_or(99))
+        }
+        _ => (a, 0),
+    };
+    let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v) else { return 0 };
+    let size = f.vn(x).size;
+    if !signed || x != xb || shamt != (size * 8 - 1) as u64 || h >= 128 {
+        return 0;
+    }
+    let d = calc_divisor(h + e as u32, magic as u128, size * 8 - 1); // signed: magic uncorrected, xsize-1
+    if d == 0 {
+        return 0;
+    }
+    let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
+    f.op_set_opcode(op, OpCode::IntSdiv);
+    f.op_set_all_input(op, &[x, dc]);
+    1
+}
+
+/// Recover modulo from `x - (x / d) * d` ⇒ `x % d` (Ghidra's `RuleModOpt`).
+pub struct RuleModOpt;
+
+impl Rule for RuleModOpt {
+    fn name(&self) -> &str {
+        "modopt"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSub]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        let (Some(x), Some(mul_v)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
+        let Some(mul) = f.vn(mul_v).def else { return 0 };
+        if f.op(mul).code() != OpCode::IntMult || f.op(mul).num_inputs() != 2 {
             return 0;
         }
-        let (a, b) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
-        for (mulhi_v, inner_v) in [(a, b), (b, a)] {
-            let Some((x, magic, h)) = match_mulhi(f, mulhi_v) else { continue };
-            // inner = (x - mulhi) >> e2
-            let Some(inner) = f.vn(inner_v).def else { continue };
-            if f.op(inner).code() != OpCode::IntRight {
+        let (m0, m1) = (f.op(mul).input(0).unwrap(), f.op(mul).input(1).unwrap());
+        for (dv, dc_v) in [(m0, m1), (m1, m0)] {
+            let Some(d) = cval(f, dc_v) else { continue };
+            let Some(div) = f.vn(dv).def else { continue };
+            let code = f.op(div).code();
+            if !matches!(code, OpCode::IntSdiv | OpCode::IntDiv) {
                 continue;
             }
-            let Some(e2) = f.op(inner).input(1).and_then(|v| cval(f, v)) else { continue };
-            let Some(sub) = f.op(inner).input(0).map(|v| f.vn(v).def).flatten() else { continue };
-            if f.op(sub).code() != OpCode::IntSub
-                || f.op(sub).input(0) != Some(x)
-                || f.op(sub).input(1) != Some(mulhi_v)
+            // div = (x / d)
+            if f.op(div).input(0) != Some(x) || f.op(div).input(1).and_then(|v| cval(f, v)) != Some(d)
             {
                 continue;
             }
-            // (x*(M + 2^h)) >> (h + e1 + e2)  =>  x / d
-            let xsize = f.vn(x).size * 8;
-            if h >= 128 || xsize == 0 {
-                continue;
-            }
-            let corrected = magic as u128 + (1u128 << h);
-            let n = h + e1 as u32 + e2 as u32;
-            let d = calc_divisor(n, corrected, xsize);
-            if d == 0 {
-                continue;
-            }
-            let out_size = f.vn(f.op(op).output.unwrap()).size;
-            let dc = f.new_const(out_size, d);
-            f.op_set_opcode(op, OpCode::IntDiv);
+            let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
+            f.op_set_opcode(op, if code == OpCode::IntSdiv { OpCode::IntSrem } else { OpCode::IntRem });
             f.op_set_all_input(op, &[x, dc]);
             return 1;
         }
