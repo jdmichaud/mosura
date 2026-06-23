@@ -12,10 +12,20 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use super::block::BlockId;
 use super::funcdata::Funcdata;
 use super::merge::{merge, HighVariables};
 use super::opcode::OpCode;
+use super::structure::{structure, FlowKind, Structured};
 use super::varnode::VarnodeId;
+
+/// The exit basic block of a structured block (where its terminating CBRANCH lives).
+fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
+    match &s.blocks[idx].kind {
+        FlowKind::Basic(b) => Some(*b),
+        _ => exit_basic(s, *s.blocks[idx].components.last()?),
+    }
+}
 
 /// SysV integer parameter registers → `param_N`.
 fn param_name(space_is_reg: bool, offset: u64) -> Option<&'static str> {
@@ -180,6 +190,68 @@ impl<'a> PrintC<'a> {
         (vn.is_written() && vn.descend.is_empty()).then_some(v)
     }
 
+    /// The condition of an `if`/`while`: the boolean tested by the CBRANCH at the exit of
+    /// the condition block, negated when the body is on the false edge.
+    fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
+        let cond = exit_basic(s, cond_idx)
+            .and_then(|bid| {
+                self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
+            })
+            .and_then(|cbr| self.f.op(cbr).input(1))
+            .map(|v| self.render_var(v).0)
+            .unwrap_or_else(|| "1".into());
+        if negated {
+            format!("!({cond})")
+        } else {
+            cond
+        }
+    }
+
+    /// Emit a structured block (and its children) as C.
+    fn emit_structured(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) {
+        let pad = "  ".repeat(indent);
+        let fb = &s.blocks[idx];
+        let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);
+        match kind {
+            FlowKind::Basic(bid) => self.emit_basic(bid, indent, out),
+            FlowKind::List => {
+                for c in comps {
+                    self.emit_structured(s, c, indent, out);
+                }
+            }
+            FlowKind::If => {
+                self.emit_structured(s, comps[0], indent, out);
+                let cond = self.render_condition(s, comps[0], negated);
+                let _ = writeln!(out, "{pad}if ({cond}) {{");
+                self.emit_structured(s, comps[1], indent + 1, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+            FlowKind::IfElse => {
+                self.emit_structured(s, comps[0], indent, out);
+                let cond = self.render_condition(s, comps[0], negated);
+                let _ = writeln!(out, "{pad}if ({cond}) {{");
+                self.emit_structured(s, comps[1], indent + 1, out);
+                let _ = writeln!(out, "{pad}}}");
+                let _ = writeln!(out, "{pad}else {{");
+                self.emit_structured(s, comps[2], indent + 1, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+            FlowKind::WhileDo => {
+                self.emit_structured(s, comps[0], indent, out);
+                let cond = self.render_condition(s, comps[0], negated);
+                let _ = writeln!(out, "{pad}while ({cond}) {{");
+                self.emit_structured(s, comps[1], indent + 1, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+            FlowKind::DoWhile => {
+                let _ = writeln!(out, "{pad}do {{");
+                self.emit_structured(s, comps[0], indent + 1, out);
+                let cond = self.render_condition(s, comps[0], negated);
+                let _ = writeln!(out, "{pad}}} while ({cond});");
+            }
+        }
+    }
+
     /// Emit one basic block's statements (skipping control-flow and inlined ops).
     fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
@@ -268,12 +340,11 @@ pub fn print_c(f: &Funcdata) -> String {
         .map(|&(_, v)| format!("{} {}", type_name(f.vn(v).size), p.name_of(v)))
         .collect();
 
+    let s = structure(f);
     let mut out = String::new();
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
     out.push_str("{\n");
-    for b in 0..f.num_blocks() as u32 {
-        p.emit_basic(super::block::BlockId(b), 1, &mut out);
-    }
+    p.emit_structured(&s, s.root, 1, &mut out);
     out.push_str("}\n");
     out
 }
@@ -310,5 +381,24 @@ mod tests {
         assert!(c.contains("func("), "has a signature:\n{c}");
         assert_eq!(c.matches('{').count(), c.matches('}').count(), "balanced braces:\n{c}");
         assert!(c.contains("return"), "has a return:\n{c}");
+        // the body exactly matches Ghidra (modulo type names)
+        assert!(c.contains("return param_1 * 3 + -5 + (param_2 >> 2);"), "body:\n{c}");
+    }
+
+    #[test]
+    fn emits_structured_control_flow() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        if !sla.exists() {
+            return;
+        }
+        let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+        let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+        let dt = datatest::parse_file(&paths::datatests_dir().join("threedim.xml")).unwrap();
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        pipeline::decompile(&mut f);
+        let c = print_c(&f);
+        // threedim has a loop — the structurer recovers a while, well-nested
+        assert!(c.contains("while ("), "structured loop expected:\n{c}");
+        assert_eq!(c.matches('{').count(), c.matches('}').count(), "balanced braces:\n{c}");
     }
 }

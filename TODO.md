@@ -110,14 +110,19 @@ for the full rationale and architecture.
         reducible CFGs (x86_64_sem/twodim/threedim/boolless collapse to one block).
   - [ ] `ruleBlockOr` (short-circuit `&&`/`||`), `ruleBlockGoto` (irreducible → goto),
         `ruleBlockSwitch`, condition negation. (elseif/condconst stall pending these.)
-- [~] **P8 — PrintC** (`printc.rs`) — emits real C; linear case done
+- [~] **P8 — PrintC** (`printc.rs`) — emits real structured C
   - [x] Expression rendering (precedence-aware parens, signed constants), variable naming
         (params by SysV reg, HighVariable names), explicit/implicit (single-use inlining),
         function signature, return-value inlining, linear block emission. **Produces C
         whose body exactly matches Ghidra on straight-line functions** (x86_64_sem:
         `return param_1 * 3 + -5 + (param_2 >> 2);`, modulo type names).
-  - [ ] Structured control-flow emission (walk `structure.rs` tree → if/else/while/for),
-        casts, faithful types (P4), the return value via P6 (drop the heuristic).
+  - [x] Structured control-flow emission: walk the `structure.rs` tree → `if`/`else`/
+        `while`/`do-while`, condition from the CBRANCH (negated per the branch). threedim
+        emits a `while` loop; well-nested.
+  - [ ] Bigger gaps to Ghidra quality (NOT structuring): **stack-variable recovery** (the
+        raw RSP/RBP frame ops aren't abstracted to locals — the largest gap), flag-condition
+        simplification (RuleSborrow etc. — the rule tail), casts, P4 types, P6 return/params,
+        gotos for irreducible CFGs.
 
 Gate at every phase: mosura's IR matches Ghidra's IR on the datatests before moving on.
 Retire the corresponding prototype code as each phase lands.

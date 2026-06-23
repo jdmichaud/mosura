@@ -36,6 +36,9 @@ pub struct FlowBlock {
     pub components: Vec<usize>,
     pub out_edges: Vec<usize>,
     pub active: bool,
+    /// For `If`/`IfElse`/`WhileDo`/`DoWhile`: the body/then is reached on the condition's
+    /// *false* edge, so the printed condition must be negated.
+    pub negated: bool,
 }
 
 /// The structured-block forest; `root` is the single block the CFG collapsed to (or the
@@ -67,7 +70,7 @@ impl Structured {
         let compset: HashSet<usize> = components.iter().copied().collect();
         let n = self.blocks.len();
         let preds: Vec<usize> = ins[entry].iter().copied().filter(|p| !compset.contains(p)).collect();
-        self.blocks.push(FlowBlock { kind, components, out_edges, active: true });
+        self.blocks.push(FlowBlock { kind, components, out_edges, active: true, negated: false });
         for p in preds {
             for e in self.blocks[p].out_edges.iter_mut() {
                 if compset.contains(e) {
@@ -133,7 +136,8 @@ impl Structured {
             let clause = self.out(b)[i];
             if ins[clause].len() == 1 && self.out(clause).len() == 1 && self.out(clause)[0] == self.out(b)[1 - i] {
                 let merge = self.out(b)[1 - i];
-                self.install(vec![b, clause], FlowKind::If, vec![merge], ins);
+                let n = self.install(vec![b, clause], FlowKind::If, vec![merge], ins);
+                self.blocks[n].negated = i == 0;
                 return true;
             }
         }
@@ -166,7 +170,8 @@ impl Structured {
             let body = self.out(b)[i];
             if ins[body].len() == 1 && self.out(body).len() == 1 && self.out(body)[0] == b {
                 let exit = self.out(b)[1 - i];
-                self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
+                let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
+                self.blocks[n].negated = i == 0;
                 return true;
             }
         }
@@ -181,7 +186,8 @@ impl Structured {
         for i in 0..2 {
             if self.out(b)[i] == b {
                 let exit = self.out(b)[1 - i];
-                self.install(vec![b], FlowKind::DoWhile, vec![exit], ins);
+                let n = self.install(vec![b], FlowKind::DoWhile, vec![exit], ins);
+                self.blocks[n].negated = i == 0;
                 return true;
             }
         }
@@ -197,6 +203,7 @@ pub fn structure(f: &Funcdata) -> Structured {
             components: Vec::new(),
             out_edges: f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect(),
             active: true,
+            negated: false,
         })
         .collect();
     let mut s = Structured { blocks, root: 0 };
