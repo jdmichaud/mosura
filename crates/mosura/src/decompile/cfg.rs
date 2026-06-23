@@ -121,6 +121,32 @@ pub fn build_cfg(f: &mut Funcdata) {
         blocks[bi].out_edges = outs.into_iter().map(|b| BlockId(b as u32)).collect();
     }
 
+    // Decline switches whose cases cycle back through the dispatch (a switch inside a loop):
+    // like Ghidra ("Too many branches. Treating indirect jump as call"), drop the case edges
+    // so the case blocks become unreachable and are pruned, leaving a plain indirect jump.
+    for bi in 0..nb {
+        let last_idx = blocks[bi].ops.last().unwrap().0 as usize;
+        if f.op(OpId(last_idx as u32)).code() != super::OpCode::Branchind || blocks[bi].out_edges.is_empty() {
+            continue;
+        }
+        let mut seen = vec![false; nb];
+        let mut stack: Vec<usize> = blocks[bi].out_edges.iter().map(|e| e.0 as usize).collect();
+        let mut cycles = false;
+        while let Some(x) = stack.pop() {
+            if x == bi {
+                cycles = true;
+                break;
+            }
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            stack.extend(blocks[x].out_edges.iter().map(|e| e.0 as usize));
+        }
+        if cycles {
+            blocks[bi].out_edges.clear();
+        }
+    }
+
     // Reachability from the entry (block 0): Ghidra's followFlow only traces code
     // reachable from the entry, so trailing/other-function code the linear lifter swept
     // up is dropped here.
@@ -136,6 +162,14 @@ pub fn build_cfg(f: &mut Funcdata) {
             }
         }
     }
+    // Destroy the ops of unreachable blocks (e.g. declined switch cases, trailing code) so
+    // heritage never sees an orphaned def with no parent block.
+    let to_destroy: Vec<OpId> =
+        (0..nb).filter(|&b| !reachable[b]).flat_map(|b| blocks[b].ops.clone()).collect();
+    for op in to_destroy {
+        f.op_destroy(op);
+    }
+
     let mut newid = vec![u32::MAX; nb];
     let mut k = 0u32;
     for (b, &r) in reachable.iter().enumerate() {

@@ -32,6 +32,8 @@ pub enum FlowKind {
     CondAnd,
     /// Short-circuit `a || b` — components `[a, b]`; still a two-out condition block.
     CondOr,
+    /// `switch` — components `[head, case0, case1, …]`; head ends in BRANCHIND.
+    Switch,
 }
 
 #[derive(Clone, Debug)]
@@ -108,9 +110,40 @@ impl Structured {
         n
     }
 
+    /// `ruleBlockSwitch`: a block with ≥3 out-edges is a switch head (a BRANCHIND). Collapse
+    /// it with its single-entry case successors into a `Switch`; the remaining edges (shared
+    /// / default cases, or break targets) are the switch's exits.
+    fn rule_switch(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
+        if self.out(b).len() < 3 {
+            return false;
+        }
+        let mut comps = vec![b];
+        let mut exits: Vec<usize> = Vec::new();
+        for c in self.blocks[b].out_edges.clone() {
+            if c == b {
+                return false;
+            }
+            if ins[c].len() == 1 && self.out(c).len() <= 1 {
+                comps.push(c);
+                exits.extend(self.out(c).iter().copied());
+            } else {
+                exits.push(c);
+            }
+        }
+        if comps.len() < 2 {
+            return false;
+        }
+        exits.retain(|e| !comps.contains(e));
+        exits.sort_unstable();
+        exits.dedup();
+        self.install(comps, FlowKind::Switch, exits, ins);
+        true
+    }
+
     /// Try every rule on `b`; return whether one fired (and changed the graph).
     fn try_rules(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        self.rule_cat(b, ins)
+        self.rule_switch(b, ins)
+            || self.rule_cat(b, ins)
             || self.rule_short_circuit(b, ins)
             || self.rule_proper_if(b, ins)
             || self.rule_if_else(b, ins)

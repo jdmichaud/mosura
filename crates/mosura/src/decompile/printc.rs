@@ -42,6 +42,14 @@ fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     }
 }
 
+/// The entry basic block of a structured block (where a case/label starts).
+fn entry_basic(s: &Structured, idx: usize) -> Option<BlockId> {
+    match &s.blocks[idx].kind {
+        FlowKind::Basic(b) => Some(*b),
+        _ => entry_basic(s, *s.blocks[idx].components.first()?),
+    }
+}
+
 /// Ghidra's C name for an N-byte IEEE float.
 fn float_name(size: u32) -> String {
     match size {
@@ -572,6 +580,27 @@ impl<'a> PrintC<'a> {
                     self.emit_structured(s, c, indent, out);
                 }
             }
+            FlowKind::Switch => {
+                let head = exit_basic(s, comps[0]);
+                let head_pc = head.and_then(|b| {
+                    self.f.block(b).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind).map(|op| self.f.op(op).seqnum.pc.offset)
+                });
+                let idx = head
+                    .and_then(|b| self.switch_index(b))
+                    .map(|v| self.render_var(v).0)
+                    .unwrap_or_else(|| "switchD".to_string());
+                let _ = writeln!(out, "{pad}switch ({idx}) {{");
+                for &case in &comps[1..] {
+                    if let (Some(pc), Some(cb)) = (head_pc, entry_basic(s, case)) {
+                        let addr = self.f.block_range(cb).map(|(a, _)| a).unwrap_or(0);
+                        for v in self.case_labels(pc, addr) {
+                            let _ = writeln!(out, "{pad}case {v}:");
+                        }
+                    }
+                    self.emit_structured(s, case, indent + 1, out);
+                }
+                let _ = writeln!(out, "{pad}}}");
+            }
             FlowKind::List => {
                 for c in comps {
                     self.emit_structured(s, c, indent, out);
@@ -709,6 +738,49 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
+    }
+
+    /// Trace a switch head's BRANCHIND back to the index variable (through the table
+    /// lookup): `RAX = base + ext(load(base + index*scale))` ⇒ `index`.
+    fn switch_index(&self, head: BlockId) -> Option<VarnodeId> {
+        let bi = self.f.block(head).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind)?;
+        let mut v = self.f.op(bi).input(0)?;
+        for _ in 0..10 {
+            let def = self.f.vn(v).def?;
+            let o = self.f.op(def);
+            match o.code() {
+                OpCode::Load => {
+                    let addr = o.input(1)?;
+                    if let Some(ad) = self.f.vn(addr).def {
+                        if self.f.op(ad).code() == OpCode::IntAdd {
+                            for k in 0..self.f.op(ad).num_inputs() {
+                                if let Some(pd) = self.f.op(ad).input(k).and_then(|p| self.f.vn(p).def) {
+                                    if self.f.op(pd).code() == OpCode::IntMult {
+                                        return self.f.op(pd).input(0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Some(addr);
+                }
+                OpCode::IntAdd => {
+                    v = (0..o.num_inputs()).filter_map(|k| o.input(k)).find(|&iv| self.f.vn(iv).def.is_some())?;
+                }
+                OpCode::IntSext | OpCode::IntZext | OpCode::Subpiece | OpCode::Copy => v = o.input(0)?,
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The case values that dispatch to `case_addr`, from the recovered jump table.
+    fn case_labels(&self, head_pc: u64, case_addr: u64) -> Vec<usize> {
+        self.f
+            .switch_targets
+            .get(&head_pc)
+            .map(|ts| ts.iter().enumerate().filter(|(_, &t)| t == case_addr).map(|(i, _)| i).collect())
+            .unwrap_or_default()
     }
 
     /// A label name for a goto target basic block, by its entry address.

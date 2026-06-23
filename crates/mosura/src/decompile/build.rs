@@ -189,7 +189,20 @@ pub fn raw_funcdata_flow_image(
             })
             .collect();
 
-        if last == Some(OpCode::Branchind) {
+        // A real jump table has a bounded index: Ghidra only recovers one when the BRANCHIND
+        // is guarded by a range check (`index < N`). Without it (e.g. an indirect call guarded
+        // by `!= 0`) Ghidra treats the jump as a call — so we decline to recover, too.
+        let has_bound = decoded
+            .values()
+            .chain(std::iter::once(&insn))
+            .flat_map(|i| i.ops.iter())
+            .any(|o| {
+                matches!(
+                    OpCode::from_u32(o.opcode),
+                    Some(OpCode::IntLess) | Some(OpCode::IntLessequal) | Some(OpCode::IntSless) | Some(OpCode::IntSlessequal)
+                )
+            });
+        if last == Some(OpCode::Branchind) && has_bound {
             // table base = the latest constant (in the decoded code so far) that addresses a
             // data chunk — the `lea` of the jump table
             let tbl = decoded
@@ -257,6 +270,18 @@ mod tests {
         assert_eq!(targets.len(), 11);
         let (cb, cl) = (dt.chunks[0].offset, dt.chunks[0].bytes.len() as u64);
         assert!(targets.iter().all(|&t| t >= cb && t < cb + cl));
+    }
+
+    #[test]
+    fn emits_switch_statement() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("switchind.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        assert!(c.contains("switch ("), "expected a switch statement:\n{c}");
+        assert!(c.contains("case 0:") && c.contains("case 10:"), "expected grouped case labels:\n{c}");
     }
 
     /// Build the raw Funcdata for a real function and check the Varnode graph is
