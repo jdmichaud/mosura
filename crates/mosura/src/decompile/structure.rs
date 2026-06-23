@@ -9,7 +9,7 @@
 //! `cfg`). This increment ports the reducible patterns; gotos for irreducible regions,
 //! switches, and short-circuit conditions are later additions.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
@@ -50,9 +50,29 @@ pub struct FlowBlock {
 pub struct Structured {
     pub blocks: Vec<FlowBlock>,
     pub root: usize,
+    /// Edges cut to gotos for an irreducible region: source exit basic block → (target
+    /// entry basic block, negated condition). An unconditional source has no CBRANCH.
+    pub gotos: HashMap<BlockId, (BlockId, bool)>,
+    /// Basic blocks that are goto targets (get a label).
+    pub labels: HashSet<BlockId>,
 }
 
 impl Structured {
+    /// The entry basic block of a structured block (where a goto label would go).
+    fn entry_basic(&self, idx: usize) -> Option<BlockId> {
+        match &self.blocks[idx].kind {
+            FlowKind::Basic(b) => Some(*b),
+            _ => self.entry_basic(*self.blocks[idx].components.first()?),
+        }
+    }
+    /// The exit basic block of a structured block (where its terminating branch lives).
+    fn exit_basic(&self, idx: usize) -> Option<BlockId> {
+        match &self.blocks[idx].kind {
+            FlowKind::Basic(b) => Some(*b),
+            _ => self.exit_basic(*self.blocks[idx].components.last()?),
+        }
+    }
+
     /// Predecessor lists for the currently-active blocks, from their out-edges.
     fn in_edges(&self) -> Vec<Vec<usize>> {
         let mut ins = vec![Vec::new(); self.blocks.len()];
@@ -96,6 +116,25 @@ impl Structured {
             || self.rule_if_else(b, ins)
             || self.rule_while_do(b, ins)
             || self.rule_do_while(b, ins)
+            // after the loop rules: a loop exit is terminal too, so loops must match first
+            || self.rule_if_no_exit(b, ins)
+    }
+
+    /// `ruleBlockIfNoExit`: `if (cond) clause` where the clause is a single-entry block with
+    /// no exit (it returns/halts), so control continues to the other arm afterwards.
+    fn rule_if_no_exit(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
+        if self.out(b).len() != 2 || self.out(b)[0] == b || self.out(b)[1] == b {
+            return false;
+        }
+        for i in 0..2 {
+            let (clause, other) = (self.out(b)[i], self.out(b)[1 - i]);
+            if clause != other && ins[clause].len() == 1 && self.out(clause).is_empty() {
+                let n = self.install(vec![b, clause], FlowKind::If, vec![other], ins);
+                self.blocks[n].negated = i == 0;
+                return true;
+            }
+        }
+        false
     }
 
     /// `ruleBlockCondition`: two chained condition blocks collapse to a short-circuit
@@ -125,6 +164,37 @@ impl Structured {
 
     fn out(&self, b: usize) -> &[usize] {
         &self.blocks[b].out_edges
+    }
+
+    /// `ruleBlockGoto`: last resort for an irreducible region — when no structural rule
+    /// fires, cut one in-edge of a merge block to a goto so structuring can proceed. The cut
+    /// edge `b → t` is recorded (`b`'s exit emits `goto L_t`, `t`'s entry gets a label) and
+    /// removed; `b` (now with one fewer out-edge) and `t` (one fewer in-edge) become
+    /// reducible. Repeated until the graph collapses.
+    fn rule_goto(&mut self) -> bool {
+        let ins = self.in_edges();
+        let active: Vec<usize> = (0..self.blocks.len()).filter(|&b| self.blocks[b].active).collect();
+        for &t in &active {
+            if ins[t].len() < 2 {
+                continue;
+            }
+            for &b in &ins[t] {
+                if b == t {
+                    continue; // a self-loop is a do-while, not a goto
+                }
+                let Some(idx) = self.blocks[b].out_edges.iter().position(|&o| o == t) else {
+                    continue;
+                };
+                let (Some(eb), Some(et)) = (self.exit_basic(b), self.entry_basic(t)) else {
+                    continue;
+                };
+                self.gotos.insert(eb, (et, idx == 0)); // out[0] is the false edge
+                self.labels.insert(et);
+                self.blocks[b].out_edges.remove(idx);
+                return true;
+            }
+        }
+        false
     }
 
     /// `ruleBlockCat`: a chain of single-out → single-in blocks becomes a list.
@@ -236,7 +306,7 @@ pub fn structure(f: &Funcdata) -> Structured {
             negated: false,
         })
         .collect();
-    let mut s = Structured { blocks, root: 0 };
+    let mut s = Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new() };
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
@@ -251,8 +321,8 @@ pub fn structure(f: &Funcdata) -> Structured {
                 break;
             }
         }
-        if !fired {
-            break; // irreducible region — gotos are a later increment
+        if !fired && !s.rule_goto() {
+            break; // truly stuck (no structural rule and no goto edge to cut)
         }
     }
     s.root = (0..s.blocks.len()).find(|&b| s.blocks[b].active).unwrap_or(0);
@@ -341,6 +411,14 @@ mod tests {
         let s = structure(&cfg(4, &[(0, 1), (0, 2), (1, 3), (1, 2), (2, 3)]));
         assert_eq!(active(&s), 1);
         assert!(kinds(&s).contains(&FlowKind::CondOr), "kinds: {:?}", kinds(&s));
+    }
+
+    #[test]
+    fn irreducible_collapses_with_goto() {
+        // 0 -> {1, 2}; 1 -> 2; 2 -> 1  (1 and 2 form an irreducible two-cycle)
+        let s = structure(&cfg(3, &[(0, 1), (0, 2), (1, 2), (2, 1)]));
+        assert_eq!(active(&s), 1, "collapses fully via gotos");
+        assert!(!s.gotos.is_empty(), "recorded a goto edge");
     }
 
     #[test]

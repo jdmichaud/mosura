@@ -96,6 +96,10 @@ struct PrintC<'a> {
     /// Pointer base → element size, for bases accessed uniformly as an array (so the access
     /// renders `base[i]`). Non-uniform bases (struct-like) are absent and stay `*(base+k)`.
     array_elem: HashMap<VarnodeId, u32>,
+    /// Goto edges cut for irreducible regions: source block → (target, negated condition).
+    gotos: HashMap<BlockId, (BlockId, bool)>,
+    /// Basic blocks that are goto targets (emitted with a label).
+    labels: HashSet<BlockId>,
 }
 
 impl PrintC<'_> {
@@ -628,6 +632,9 @@ impl<'a> PrintC<'a> {
     /// Emit one basic block's statements (skipping control-flow and inlined ops).
     fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
+        if self.labels.contains(&b) {
+            let _ = writeln!(out, "{}{}:", "  ".repeat(indent.saturating_sub(1)), self.lab_name(b));
+        }
         for op in self.f.block(b).ops.clone() {
             if self.suppressed.contains(&op) {
                 continue; // emitted in a for-loop header (initializer / iterator)
@@ -681,6 +688,33 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
+        // a goto edge cut from this block for an irreducible region
+        if let Some(&(target, negated)) = self.gotos.get(&b) {
+            let lab = self.lab_name(target);
+            let cbr = self
+                .f
+                .block(b)
+                .ops
+                .iter()
+                .rev()
+                .copied()
+                .find(|&op| self.f.op(op).code() == OpCode::Cbranch);
+            match cbr.and_then(|op| self.f.op(op).input(1)) {
+                Some(cond) => {
+                    let c = if negated { self.render_negated(cond) } else { self.render_var(cond).0 };
+                    let _ = writeln!(out, "{pad}if ({c}) goto {lab};");
+                }
+                None => {
+                    let _ = writeln!(out, "{pad}goto {lab};");
+                }
+            }
+        }
+    }
+
+    /// A label name for a goto target basic block, by its entry address.
+    fn lab_name(&self, b: BlockId) -> String {
+        let addr = self.f.block_range(b).map(|(a, _)| a).unwrap_or(0);
+        format!("LAB_{addr:08x}")
     }
 }
 
@@ -718,6 +752,8 @@ pub fn print_c(f: &Funcdata) -> String {
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         array_elem: HashMap::new(),
+        gotos: HashMap::new(),
+        labels: HashSet::new(),
     };
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
@@ -745,6 +781,8 @@ pub fn print_c(f: &Funcdata) -> String {
         params.iter().map(|&(_, v)| format!("{} {}", p.type_of(v).name(), p.name_of(v))).collect();
 
     let s = structure(f);
+    p.gotos = s.gotos.clone();
+    p.labels = s.labels.clone();
     p.detect_for_loops(&s, s.root);
     let mut out = String::new();
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
