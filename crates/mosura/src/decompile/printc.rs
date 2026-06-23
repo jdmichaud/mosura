@@ -93,6 +93,9 @@ struct PrintC<'a> {
     for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
     /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
     suppressed: HashSet<OpId>,
+    /// Pointer base → element size, for bases accessed uniformly as an array (so the access
+    /// renders `base[i]`). Non-uniform bases (struct-like) are absent and stay `*(base+k)`.
+    array_elem: HashMap<VarnodeId, u32>,
 }
 
 impl PrintC<'_> {
@@ -179,6 +182,91 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// If `off` is `idx * size` (a scaled array index), return `idx`.
+    fn scaled_index(&self, off: VarnodeId, size: u32) -> Option<VarnodeId> {
+        let def = self.f.vn(off).def?;
+        let o = self.f.op(def);
+        if o.code() == OpCode::IntMult && o.num_inputs() == 2 {
+            let c = o.input(1)?;
+            if self.f.vn(c).is_constant() && self.f.vn(c).constant_value() == size as u64 {
+                return o.input(0);
+            }
+        }
+        None
+    }
+
+    /// Decompose a load/store address into `(base, index-fits-an-array-of `size`)`. The base
+    /// is the pointer; the bool is whether the offset is a clean array index (a constant
+    /// multiple of `size`, or a variable scaled by `size`, or zero).
+    fn addr_base(&self, addr: VarnodeId, size: u32) -> (VarnodeId, bool) {
+        if let Some(def) = self.f.vn(addr).def {
+            let o = self.f.op(def);
+            if o.code() == OpCode::IntAdd && o.num_inputs() == 2 {
+                let (base, off) = (o.input(0).unwrap(), o.input(1).unwrap());
+                let ok = (self.f.vn(off).is_constant()
+                    && size > 0
+                    && self.f.vn(off).constant_value() % size as u64 == 0)
+                    || self.scaled_index(off, size).is_some();
+                return (base, ok);
+            }
+        }
+        (addr, true) // direct deref — element 0
+    }
+
+    /// Infer which pointer bases are accessed uniformly as an array (Ghidra's pointee
+    /// inference, from the access pattern): a base qualifies only if every access through it
+    /// uses the same element size and lands on a clean array index. Struct-like bases (mixed
+    /// sizes/offsets) are excluded and keep `*(base + k)`.
+    fn detect_arrays(&self) -> HashMap<VarnodeId, u32> {
+        let mut info: HashMap<VarnodeId, Option<u32>> = HashMap::new();
+        for op in self.f.op_ids() {
+            let o = self.f.op(op);
+            let (addr, size) = match o.code() {
+                OpCode::Load => (o.input(1), o.output.map(|v| self.f.vn(v).size)),
+                OpCode::Store => (o.input(1), o.input(2).map(|v| self.f.vn(v).size)),
+                _ => continue,
+            };
+            let (Some(addr), Some(size)) = (addr, size) else { continue };
+            if size == 0 {
+                continue;
+            }
+            let (base, ok) = self.addr_base(addr, size);
+            if !matches!(self.type_of(base), Datatype::Pointer(..)) {
+                continue;
+            }
+            let e = info.entry(base).or_insert(Some(size));
+            if !(ok && *e == Some(size)) {
+                *e = None; // mixed element size or non-array offset — disqualify
+            }
+        }
+        info.into_iter().filter_map(|(b, s)| s.map(|sz| (b, sz))).collect()
+    }
+
+    /// Render a memory access `*addr` of `size` bytes — `base[i]` for a detected array base
+    /// (non-zero index), else `*addr`.
+    fn render_mem(&mut self, addr: VarnodeId, _size: u32) -> (String, u8) {
+        if let Some(def) = self.f.vn(addr).def {
+            let o = self.f.op(def).clone();
+            if o.code() == OpCode::IntAdd && o.num_inputs() == 2 {
+                let (base, off) = (o.input(0).unwrap(), o.input(1).unwrap());
+                if let Some(&elem) = self.array_elem.get(&base) {
+                    if self.f.vn(off).is_constant() && elem > 0 {
+                        let c = self.f.vn(off).constant_value();
+                        if c != 0 && c % elem as u64 == 0 {
+                            let b = self.operand(base, 16, false);
+                            return (format!("{b}[{}]", c / elem as u64), 16);
+                        }
+                    } else if let Some(idx) = self.scaled_index(off, elem) {
+                        let b = self.operand(base, 16, false);
+                        let i = self.render_var(idx).0;
+                        return (format!("{b}[{i}]"), 16);
+                    }
+                }
+            }
+        }
+        (format!("*{}", self.operand(addr, 15, false)), 15)
+    }
+
     /// Render an op as a C expression with its precedence.
     fn render_op(&mut self, op: super::op::OpId) -> (String, u8) {
         let o = self.f.op(op);
@@ -244,7 +332,10 @@ impl<'a> PrintC<'a> {
                 let in0 = a(0);
                 (format!("(int{n}){}", self.operand(in0, 14, false)), 14)
             }
-            OpCode::Load => (format!("*{}", self.operand(a(1), 15, false)), 15),
+            OpCode::Load => {
+                let (addr, sz) = (a(1), self.f.vn(o.output.unwrap()).size);
+                self.render_mem(addr, sz)
+            }
             OpCode::Call => {
                 // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
                 let name = match o.input(0) {
@@ -535,9 +626,11 @@ impl<'a> PrintC<'a> {
                     }
                 },
                 OpCode::Store => {
-                    let ptr = self.operand(o.input(1).unwrap(), 15, false);
-                    let val = self.render_var(o.input(2).unwrap()).0;
-                    let _ = writeln!(out, "{pad}*{ptr} = {val};");
+                    let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
+                    let sz = self.f.vn(vv).size;
+                    let lhs = self.render_mem(addr, sz).0;
+                    let val = self.render_var(vv).0;
+                    let _ = writeln!(out, "{pad}{lhs} = {val};");
                 }
                 OpCode::Call | OpCode::Callind => {
                     // a call is a statement (it has a side effect); its result inlines at the
@@ -605,7 +698,9 @@ pub fn print_c(f: &Funcdata) -> String {
         types: infer(f),
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
+        array_elem: HashMap::new(),
     };
+    p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
 
     // parameters: input varnodes sitting in a parameter register that are actually used.
