@@ -140,6 +140,13 @@ for the full rationale and architecture.
   - [x] **Shift-add strength reduction** (`as_term` ⊇ `INT_LEFT`, Ghidra `getMultCoeff`):
         `(x<<2)+x → x*5`; cascades to drop the redundant global copies. twodim .717→.829,
         threedim →.738, nestedoffset →.950. Unit-tested.
+  - [x] **RuleSborrow** (faithful port): `sborrow(V,W) != ((V-W) s< 0) => V s< W` (+ `==`/
+        swapped/`sborrow(V,0)=>false` variants). Collapses the x86 signed-compare flag idiom
+        to a clean signed comparison on every if/loop. Unit-tested. forloop1 condition now
+        `uVar1 < param_1` (matches Ghidra). Gauge ~flat (coincidental flag tokens lost).
+  - [ ] **Loop-body emission** (exposed by RuleSborrow): forloop bodies render empty — the
+        loop-variable increment is consumed only by the phi (marked implicit, never emitted)
+        and the body block's call is missing. This is the forloop cluster's real ceiling.
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.

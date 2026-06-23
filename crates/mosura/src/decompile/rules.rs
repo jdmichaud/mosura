@@ -351,6 +351,99 @@ impl Rule for RulePropagateCopy {
     }
 }
 
+fn is_const0(data: &Funcdata, v: VarnodeId) -> bool {
+    data.vn(v).is_constant() && data.vn(v).constant_value() == 0
+}
+
+/// Does `xvn` compute `avn - bvn`? Directly as `INT_SUB(avn, bvn)`, or as `INT_ADD(avn, c)`
+/// with `c` the (constant) negation of `bvn`.
+fn subtract_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
+    let Some(def) = data.vn(xvn).def else { return false };
+    let o = data.op(def);
+    if o.num_inputs() != 2 || o.input(0) != Some(avn) {
+        return false;
+    }
+    match o.code() {
+        OpCode::IntSub => o.input(1) == Some(bvn),
+        OpCode::IntAdd => {
+            let Some(c) = o.input(1) else { return false };
+            if !data.vn(c).is_constant() || !data.vn(bvn).is_constant() {
+                return false;
+            }
+            let size = data.vn(xvn).size;
+            let mask = if size >= 8 { u64::MAX } else { (1u64 << (size * 8)) - 1 };
+            data.vn(c).constant_value().wrapping_add(data.vn(bvn).constant_value()) & mask == 0
+        }
+        _ => false,
+    }
+}
+
+/// Simplify signed comparisons built from `INT_SBORROW` (Ghidra's `RuleSborrow`). The x86
+/// signed-compare flag idiom `sborrow(V,W) != ((V-W) s< 0)` is exactly `V s< W` (and the
+/// `0 s< (V-W)` / `INT_EQUAL` variants give the swapped operands and `s<=`); also
+/// `sborrow(V,0) => false`.
+pub struct RuleSborrow;
+
+impl Rule for RuleSborrow {
+    fn name(&self) -> &str {
+        "sborrow"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSborrow]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let avn = data.op(op).input(0).unwrap();
+        let bvn = data.op(op).input(1).unwrap();
+        if is_const0(data, bvn) {
+            let z = data.new_const(1, 0);
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_set_all_input(op, &[z]);
+            return 1;
+        }
+        let Some(svn) = data.op(op).output else { return 0 };
+        for compop in data.vn(svn).descend.clone() {
+            let cc = data.op(compop).code();
+            if (cc != OpCode::IntEqual && cc != OpCode::IntNotequal) || data.op(compop).num_inputs() != 2 {
+                continue;
+            }
+            let (i0, i1) = (data.op(compop).input(0).unwrap(), data.op(compop).input(1).unwrap());
+            let cvn = if i0 == svn { i1 } else { i0 };
+            let Some(signdef) = data.vn(cvn).def else { continue };
+            if data.op(signdef).code() != OpCode::IntSless || data.op(signdef).num_inputs() != 2 {
+                continue;
+            }
+            let (s0, s1) = (data.op(signdef).input(0).unwrap(), data.op(signdef).input(1).unwrap());
+            let zside = if is_const0(data, s0) {
+                0
+            } else if is_const0(data, s1) {
+                1
+            } else {
+                continue;
+            };
+            let xvn = if zside == 0 { s1 } else { s0 };
+            if !subtract_matches(data, xvn, avn, bvn) {
+                continue;
+            }
+            // NOTEQUAL ⇒ V s< W (avn at 1-zside); EQUAL ⇒ V s<= W (avn at zside)
+            let (newcode, slot_a) = if cc == OpCode::IntNotequal {
+                (OpCode::IntSless, 1 - zside)
+            } else {
+                (OpCode::IntSlessequal, zside)
+            };
+            let mut inputs = [avn; 2];
+            inputs[slot_a] = avn;
+            inputs[1 - slot_a] = bvn;
+            data.op_set_opcode(compop, newcode);
+            data.op_set_all_input(compop, &inputs);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +570,36 @@ mod tests {
         assert_eq!(f.op(add).input(0), Some(a));
         let c = f.op(add).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
+    }
+
+    #[test]
+    fn sborrow_collapses_to_signed_less() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let sb = f.new_op(OpCode::IntSborrow, seq, vec![a, b]); // sborrow(a,b)
+        let sbout = f.new_output(sb, 1, Address::new(uniq, 0x100));
+        let sub = f.new_op(OpCode::IntSub, seq, vec![a, b]); // a - b
+        let subout = f.new_output(sub, 4, Address::new(uniq, 0x200));
+        let zero = f.new_const(4, 0);
+        let sl = f.new_op(OpCode::IntSless, seq, vec![subout, zero]); // (a-b) s< 0
+        let slout = f.new_output(sl, 1, Address::new(uniq, 0x300));
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![sbout, slout]); // sborrow != (a-b s< 0)
+        f.new_output(ne, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sb, sub, sl, ne],
+            ..Default::default()
+        }]);
+
+        let mut pool = ActionPool::new("p").with(RuleSborrow);
+        pool.apply(&mut f);
+        // sborrow(a,b) != ((a-b) s< 0)  →  a s< b
+        assert_eq!(f.op(ne).code(), OpCode::IntSless);
+        assert_eq!(f.op(ne).input(0), Some(a));
+        assert_eq!(f.op(ne).input(1), Some(b));
     }
 
     #[test]

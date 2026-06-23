@@ -5,7 +5,7 @@
 use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
-    RuleCollectTerms, RuleConstFold, RuleIdentityEl, RulePropagateCopy, RuleTermOrder,
+    RuleCollectTerms, RuleConstFold, RuleIdentityEl, RulePropagateCopy, RuleSborrow, RuleTermOrder,
     RuleTrivialArith, RuleTrivialShift,
 };
 
@@ -40,6 +40,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleTrivialArith)
         .with(RuleIdentityEl)
         .with(RuleTrivialShift)
+        .with(RuleSborrow)
         .with(RulePropagateCopy)
 }
 
