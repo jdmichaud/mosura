@@ -14,9 +14,11 @@ use std::fmt::Write as _;
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
+use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::opcode::OpCode;
 use super::structure::{structure, FlowKind, Structured};
+use super::types::Datatype;
 use super::varnode::VarnodeId;
 
 /// The exit basic block of a structured block (where its terminating CBRANCH lives).
@@ -43,18 +45,6 @@ fn param_name(space_is_reg: bool, offset: u64) -> Option<&'static str> {
     })
 }
 
-/// A placeholder type name by size (Ghidra prints `undefinedN` for unknown types; real
-/// types come from P4).
-fn type_name(size: u32) -> String {
-    match size {
-        1 => "undefined1".into(),
-        2 => "undefined2".into(),
-        4 => "undefined4".into(),
-        8 => "undefined8".into(),
-        n => format!("undefined{n}"),
-    }
-}
-
 struct PrintC<'a> {
     f: &'a Funcdata,
     h: HighVariables,
@@ -62,6 +52,13 @@ struct PrintC<'a> {
     reg_space: Option<super::space::SpaceId>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
+    types: HashMap<VarnodeId, Datatype>,
+}
+
+impl PrintC<'_> {
+    fn type_of(&self, v: VarnodeId) -> Datatype {
+        self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
+    }
 }
 
 impl<'a> PrintC<'a> {
@@ -130,7 +127,7 @@ impl<'a> PrintC<'a> {
     fn render_op(&mut self, op: super::op::OpId) -> (String, u8) {
         let o = self.f.op(op);
         let a = |i: usize| o.input(i).unwrap();
-        let mut bin = |s: &mut Self, sym: &str, prec: u8| {
+        let bin = |s: &mut Self, sym: &str, prec: u8| {
             let l = s.operand(a(0), prec, false);
             let r = s.operand(a(1), prec, true);
             (format!("{l} {sym} {r}"), prec)
@@ -317,8 +314,15 @@ fn render_const(val: u64, size: u32) -> String {
 /// Decompile `f` to C text.
 pub fn print_c(f: &Funcdata) -> String {
     let reg_space = f.spaces.by_name("register");
-    let mut p =
-        PrintC { f, h: merge(f), names: HashMap::new(), reg_space, var_counter: 0, ret_val: None };
+    let mut p = PrintC {
+        f,
+        h: merge(f),
+        names: HashMap::new(),
+        reg_space,
+        var_counter: 0,
+        ret_val: None,
+        types: infer(f),
+    };
     p.ret_val = p.return_value();
 
     // parameters: input varnodes sitting in a parameter register, in order
@@ -334,11 +338,9 @@ pub fn print_c(f: &Funcdata) -> String {
     params.dedup_by_key(|&mut (off, _)| off);
 
     let ret = p.return_value();
-    let ret_ty = ret.map_or("void".to_string(), |v| type_name(f.vn(v).size));
-    let plist: Vec<String> = params
-        .iter()
-        .map(|&(_, v)| format!("{} {}", type_name(f.vn(v).size), p.name_of(v)))
-        .collect();
+    let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
+    let plist: Vec<String> =
+        params.iter().map(|&(_, v)| format!("{} {}", p.type_of(v).name(), p.name_of(v))).collect();
 
     let s = structure(f);
     let mut out = String::new();

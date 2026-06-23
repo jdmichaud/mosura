@@ -24,6 +24,8 @@ pub mod rules;
 pub mod space;
 pub mod stackvars;
 pub mod structure;
+pub mod types;
+pub mod infertypes;
 pub mod varnode;
 
 pub use action::{Action, ActionGroup, ActionPool, ActionStart, Rule};

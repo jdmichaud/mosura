@@ -88,7 +88,14 @@ for the full rationale and architecture.
       Mosura's live-op count is within ~2x of Ghidra's post-deadcode IR (the gap is the rule
       tail). INTERIM: seeds SysV return regs (RAX/XMM0) as live-out roots since the return
       value isn't wired to RETURN yet — replaced by P6 ActionReturnRecovery / addrtied.
-- [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
+- [~] **P4 — Types** (`types.rs`+`infertypes.rs`) — foundation done
+  - [x] `Datatype` lattice + metatype-ordered `meet` (Ghidra `TypeFactory`); `infertypes`
+        assigns each varnode a local type from its def/uses (float/bool/pointer/int) and
+        meets them per HighVariable. Wired into PrintC signature + return types.
+  - [ ] Variable DECLARATIONS (faithful but currently exposes the variable-count gap —
+        twodim emits 12 decls vs Ghidra's 1; ENABLE after CSE/global-var recovery brings
+        the count down). Then CASTS (ZEXT/SEXT/SUBPIECE → `(T)x`), pointer pointees,
+        struct/array types, param-size from P6.
 - [~] **P5 — Merge** (`merge.rs`+`cover.rs`) — variable grouping DONE
   - [x] `HighVariables` union-find + required marker merges (`Merge::mergeMarker`): a
         MULTIEQUAL/INDIRECT output is one variable with its inputs — threads SSA versions
