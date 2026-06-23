@@ -285,6 +285,18 @@ mod tests {
     }
 
     #[test]
+    fn recovers_float_return() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("floatconv.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        // the float multiply is returned (XMM0 low lane), not an empty `return;`
+        assert!(c.contains('*') && c.contains("return ("), "float return recovered:\n{c}");
+    }
+
+    #[test]
     fn emits_switch_statement() {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("switchind.xml")).unwrap();

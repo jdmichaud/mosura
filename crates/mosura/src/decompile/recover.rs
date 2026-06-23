@@ -62,8 +62,10 @@ pub fn recover_return(f: &mut Funcdata) {
     let Some(reg) = f.spaces.by_name("register") else { return };
     let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
-        for off in [RAX, XMM0] {
-            let v = f.new_varnode(8, Address::new(reg, off));
+        // RAX/XMM0 at 8 bytes, plus XMM0 at 4 bytes for a `float` return (the low lane of a
+        // zeroed XMM0). resolve keeps the first realistic, so the wider candidates win first.
+        for (off, size) in [(RAX, 8), (XMM0, 8), (XMM0, 4)] {
+            let v = f.new_varnode(size, Address::new(reg, off));
             f.op_append_input(ret, v);
         }
     }
