@@ -606,6 +606,78 @@ impl Rule for RuleMultMult {
     }
 }
 
+/// `RuleBoolNegate`: a negated comparison is the complementary comparison —
+/// `!(a == b)` → `a != b`, `!(a < b)` → `b <= a`, etc. Comparisons are 0/1, so the rewrite
+/// is exact; it un-nests negations the structurer can't reach (inside `BOOL_AND`/`BOOL_OR`).
+pub struct RuleBoolNegate;
+
+impl Rule for RuleBoolNegate {
+    fn name(&self) -> &str {
+        "boolnegate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolNegate]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(cmp) = data.op(op).input(0).and_then(|v| data.vn(v).def) else { return 0 };
+        let (flipped, swap) = match data.op(cmp).code() {
+            OpCode::IntEqual => (OpCode::IntNotequal, false),
+            OpCode::IntNotequal => (OpCode::IntEqual, false),
+            OpCode::IntLess => (OpCode::IntLessequal, true),
+            OpCode::IntLessequal => (OpCode::IntLess, true),
+            OpCode::IntSless => (OpCode::IntSlessequal, true),
+            OpCode::IntSlessequal => (OpCode::IntSless, true),
+            _ => return 0,
+        };
+        let (a, b) = (data.op(cmp).input(0).unwrap(), data.op(cmp).input(1).unwrap());
+        data.op_set_opcode(op, flipped);
+        let ins = if swap { [b, a] } else { [a, b] };
+        data.op_set_all_input(op, &ins);
+        1
+    }
+}
+
+/// Merge `(x != c) && (x ≤ c)` into the strict comparison `x < c` (and the swapped /
+/// signed forms): the disequality removes the equality case from `≤`. A range collapse
+/// Ghidra applies so a span check reads as one comparison rather than a `&&` of two.
+pub struct RuleRangeAnd;
+
+impl Rule for RuleRangeAnd {
+    fn name(&self) -> &str {
+        "rangeand"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (i0, i1) = (data.op(op).input(0), data.op(op).input(1));
+        let (Some(i0), Some(i1)) = (i0, i1) else { return 0 };
+        for (ne_v, le_v) in [(i0, i1), (i1, i0)] {
+            let (Some(ne), Some(le)) = (data.vn(ne_v).def, data.vn(le_v).def) else { continue };
+            if data.op(ne).code() != OpCode::IntNotequal {
+                continue;
+            }
+            let strict = match data.op(le).code() {
+                OpCode::IntLessequal => OpCode::IntLess,
+                OpCode::IntSlessequal => OpCode::IntSless,
+                _ => continue,
+            };
+            let (na, nb) = (data.op(ne).input(0).unwrap(), data.op(ne).input(1).unwrap());
+            let (la, lb) = (data.op(le).input(0).unwrap(), data.op(le).input(1).unwrap());
+            // the `!=` must be on the same pair as the `<=` (either order)
+            let same = (same_value(data, na, la) && same_value(data, nb, lb))
+                || (same_value(data, na, lb) && same_value(data, nb, la));
+            if !same {
+                continue;
+            }
+            data.op_set_opcode(op, strict);
+            data.op_set_all_input(op, &[la, lb]);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +837,47 @@ mod tests {
         assert_eq!(f.op(or).code(), OpCode::IntSlessequal);
         assert_eq!(f.op(or).input(0), Some(a));
         assert_eq!(f.op(or).input(1), Some(b));
+    }
+
+    #[test]
+    fn boolnegate_flips_equal() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let nine = f.new_const(4, 9);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![a, nine]);
+        let eqout = f.new_output(eq, 1, Address::new(uniq, 0x100));
+        let neg = f.new_op(OpCode::BoolNegate, seq, vec![eqout]);
+        f.new_output(neg, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![eq, neg], ..Default::default() }]);
+        ActionPool::new("p").with(RuleBoolNegate).apply(&mut f);
+        // !(a == 9)  =>  a != 9
+        assert_eq!(f.op(neg).code(), OpCode::IntNotequal);
+        assert_eq!(f.op(neg).input(0), Some(a));
+    }
+
+    #[test]
+    fn rangeand_merges_disequality_into_strict() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 9);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![x, c]);
+        let neout = f.new_output(ne, 1, Address::new(uniq, 0x100));
+        let le = f.new_op(OpCode::IntSlessequal, seq, vec![c, x]); // 9 <= x
+        let leout = f.new_output(le, 1, Address::new(uniq, 0x200));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![neout, leout]);
+        f.new_output(and, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![ne, le, and], ..Default::default() }]);
+        ActionPool::new("p").with(RuleRangeAnd).apply(&mut f);
+        // (x != 9) && (9 s<= x)  =>  9 s< x
+        assert_eq!(f.op(and).code(), OpCode::IntSless);
+        assert_eq!(f.op(and).input(0), Some(c));
+        assert_eq!(f.op(and).input(1), Some(x));
     }
 
     #[test]

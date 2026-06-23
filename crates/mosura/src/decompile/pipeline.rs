@@ -6,7 +6,7 @@ use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
     RuleCollectTerms, RuleConstFold, RuleEqual2Zero, RuleIdentityEl, RuleLessEqual,
-    RuleMultMult, RulePropagateCopy, RuleSborrow, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
+    RuleBoolNegate, RuleMultMult, RulePropagateCopy, RuleRangeAnd, RuleSborrow, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
 /// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
@@ -48,6 +48,8 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSborrow)
         .with(RuleEqual2Zero)
         .with(RuleLessEqual)
+        .with(RuleBoolNegate)
+        .with(RuleRangeAnd)
         .with(super::divopt::RuleDivOpt)
         .with(super::divopt::RuleModOpt)
         .with(RulePropagateCopy)
