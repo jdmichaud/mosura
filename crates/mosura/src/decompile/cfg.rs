@@ -31,6 +31,7 @@ pub fn build_cfg(f: &mut Funcdata) {
     if n == 0 {
         return;
     }
+    let switch_targets = f.switch_targets.clone();
 
     // first op index per instruction address (branch targets land on instruction starts)
     let mut addr_index: HashMap<u64, usize> = HashMap::new();
@@ -53,6 +54,14 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
         if oc.terminates_block() && i + 1 < n {
             leaders.insert(i + 1);
+        }
+    }
+    // recovered jump-table case targets are leaders too
+    for targets in switch_targets.values() {
+        for t in targets {
+            if let Some(&idx) = addr_index.get(t) {
+                leaders.insert(idx);
+            }
         }
     }
 
@@ -80,7 +89,22 @@ pub fn build_cfg(f: &mut Funcdata) {
         let fallthrough = (bi + 1 < nb).then_some(bi + 1);
         let mut outs: Vec<usize> = Vec::new();
         match oc {
-            c if c == super::OpCode::Return || c == super::OpCode::Branchind => {}
+            super::OpCode::Return => {}
+            super::OpCode::Branchind => {
+                // switch: edges to the recovered case target blocks (unique, in case order)
+                let pc = f.op(OpId(last_idx as u32)).seqnum.pc.offset;
+                if let Some(targets) = switch_targets.get(&pc) {
+                    let mut seen = BTreeSet::new();
+                    for t in targets {
+                        if let Some(&idx) = addr_index.get(t) {
+                            let b = block_of[idx];
+                            if seen.insert(b) {
+                                outs.push(b);
+                            }
+                        }
+                    }
+                }
+            }
             super::OpCode::Branch => {
                 if let Some(t) = branch_target(f, last_idx, &addr_index) {
                     outs.push(block_of[t]);

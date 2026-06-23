@@ -25,6 +25,8 @@ pub struct Funcdata {
     blocks: Vec<BlockBasic>,
     create_index: u32,
     unique_offset: u64,
+    /// Recovered jump-table case targets, keyed by the BRANCHIND instruction address.
+    pub switch_targets: std::collections::HashMap<u64, Vec<u64>>,
 }
 
 impl Funcdata {
@@ -38,6 +40,7 @@ impl Funcdata {
             blocks: Vec::new(),
             create_index: 0,
             unique_offset: 0x10000,
+            switch_targets: std::collections::HashMap::new(),
         }
     }
 

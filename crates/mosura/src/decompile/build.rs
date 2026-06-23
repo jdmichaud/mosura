@@ -143,6 +143,93 @@ pub fn raw_funcdata_flow(
     build_from_instrs(name, base, decoded.into_values())
 }
 
+/// Like [`raw_funcdata_flow`] but over a multi-chunk memory image, and recovering jump
+/// tables: at a `BRANCHIND`, find the table base (a constant addressing a data chunk in the
+/// preceding code), read its relative 4-byte entries, and follow the case targets. Records
+/// the per-case targets on the Funcdata for the CFG/structurer. The common gcc switch form.
+pub fn raw_funcdata_flow_image(
+    spec: &Spec,
+    name: impl Into<String>,
+    chunks: &[(u64, &[u8])],
+    entry: u64,
+    context: &[u32],
+) -> Funcdata {
+    use std::collections::{BTreeMap, HashMap};
+    // the chunk holding code (the entry), and a reader/classifier over all chunks
+    let (cbase, cbytes) = *chunks.iter().find(|(b, by)| entry >= *b && entry < b + by.len() as u64).unwrap_or(&chunks[0]);
+    let in_code = |a: u64| a >= cbase && a < cbase + cbytes.len() as u64;
+    let in_chunk = |a: u64| chunks.iter().any(|(b, by)| a >= *b && a < b + by.len() as u64);
+    let read_i32 = |a: u64| -> Option<i32> {
+        chunks.iter().find(|(b, by)| a >= *b && a + 4 <= b + by.len() as u64).map(|(b, by)| {
+            let o = (a - b) as usize;
+            i32::from_le_bytes([by[o], by[o + 1], by[o + 2], by[o + 3]])
+        })
+    };
+
+    let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
+    let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut worklist = vec![entry];
+    while let Some(a) = worklist.pop() {
+        if !in_code(a) || decoded.contains_key(&a) {
+            continue;
+        }
+        let off = (a - cbase) as usize;
+        let window = &cbytes[off..(off + 16).min(cbytes.len())];
+        let Some(insn) = spec.disassemble_ctx(window, a, context).into_iter().next() else { continue };
+        let ilen = insn.bytes.len() as u64;
+        let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
+        let falls = !matches!(last, Some(OpCode::Return) | Some(OpCode::Branch) | Some(OpCode::Branchind));
+        let mut succs: Vec<u64> = insn
+            .ops
+            .iter()
+            .filter(|o| matches!(OpCode::from_u32(o.opcode), Some(OpCode::Branch) | Some(OpCode::Cbranch)))
+            .filter_map(|o| match o.ins.first() {
+                Some(PArg::Var(v)) if v.space == "ram" => Some(v.offset),
+                _ => None,
+            })
+            .collect();
+
+        if last == Some(OpCode::Branchind) {
+            // table base = the latest constant (in the decoded code so far) that addresses a
+            // data chunk — the `lea` of the jump table
+            let tbl = decoded
+                .values()
+                .chain(std::iter::once(&insn))
+                .flat_map(|i| i.ops.iter())
+                .flat_map(|o| o.ins.iter())
+                .filter_map(|p| match p {
+                    PArg::Var(v) if v.space == "const" && in_chunk(v.offset) && !in_code(v.offset) => Some(v.offset),
+                    _ => None,
+                })
+                .max();
+            if let Some(tbl) = tbl {
+                let mut targets = Vec::new();
+                let mut i = 0u64;
+                while let Some(rel) = read_i32(tbl + i * 4) {
+                    let target = tbl.wrapping_add(rel as i64 as u64);
+                    if !in_code(target) {
+                        break;
+                    }
+                    targets.push(target);
+                    i += 1;
+                }
+                for &t in &targets {
+                    worklist.push(t);
+                }
+                switch_targets.insert(a, targets);
+            }
+        }
+        if falls && ilen > 0 {
+            succs.push(a + ilen);
+        }
+        decoded.insert(a, insn);
+        worklist.extend(succs);
+    }
+    let mut f = build_from_instrs(name, cbase, decoded.into_values());
+    f.switch_targets = switch_targets;
+    f
+}
+
 #[cfg(test)]
 mod tests {
     use crate::sleigh::engine::Spec;
@@ -157,6 +244,19 @@ mod tests {
         let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).ok()?;
         let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
         Some((spec, ctx))
+    }
+
+    #[test]
+    fn recovers_jump_table() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("switchind.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        // the 11-entry relative jump table is recovered, every target in code
+        let targets = f.switch_targets.values().next().expect("a switch was recovered");
+        assert_eq!(targets.len(), 11);
+        let (cb, cl) = (dt.chunks[0].offset, dt.chunks[0].bytes.len() as u64);
+        assert!(targets.iter().all(|&t| t >= cb && t < cb + cl));
     }
 
     /// Build the raw Funcdata for a real function and check the Varnode graph is
