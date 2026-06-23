@@ -151,9 +151,9 @@ for the full rationale and architecture.
         Unit-tested. good 18→21, avg →0.5567. forloop1 `func_0x00400430(0x400820)` matches.
         LIMIT: pure param-passthrough args (forwarded untouched, unwritten) not yet recovered
         (needs directWrite / fuller ParamActive); float (XMM) args are a follow-up.
-  - [ ] **Loop-body emission** (exposed by RuleSborrow): forloop bodies render empty — the
-        loop-variable increment is consumed only by the phi (marked implicit, never emitted)
-        and the body block's call is missing. This is the forloop cluster's real ceiling.
+  - [x] **Loop-increment emission**: a value whose sole use feeds a MULTIEQUAL is now
+        explicit (materialized as the merged-variable assignment), so loop bodies emit
+        `uVar1 = uVar1 + 1`. forloop1 body matches Ghidra; good 21→24, avg →0.5737.
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.

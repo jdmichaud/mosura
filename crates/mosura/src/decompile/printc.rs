@@ -74,7 +74,12 @@ impl<'a> PrintC<'a> {
         if !vn.is_written() {
             return true;
         }
-        vn.descend.len() != 1 // single-use values inline; everything else is named
+        if vn.descend.len() != 1 {
+            return true; // 0 or >1 uses: named
+        }
+        // single use: inline, unless it feeds a phi — then it must be materialized as an
+        // assignment to the merged variable (the loop increment `i = i + 1`, the init `i = 0`)
+        self.f.op(vn.descend[0]).code() == OpCode::Multiequal
     }
 
     /// The name of `v`'s variable, assigning one on first use.
