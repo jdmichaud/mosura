@@ -182,6 +182,18 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// If `base` is the stack/frame pointer (RSP 0x20 / RBP 0x28) and `off` a constant, this
+    /// is the address of a stack local taken as a value — render `&Stack_<offset>`.
+    fn stack_addr(&self, base: VarnodeId, off: VarnodeId) -> Option<String> {
+        let bvn = self.f.vn(base);
+        let is_fp = Some(bvn.loc.space) == self.reg_space && matches!(bvn.loc.offset, 0x20 | 0x28);
+        if !is_fp || !self.f.vn(off).is_constant() {
+            return None;
+        }
+        let c = self.f.vn(off).constant_value() as i64;
+        Some(format!("&Stack_{:x}", c.unsigned_abs()))
+    }
+
     /// If `off` is `idx * size` (a scaled array index), return `idx`.
     fn scaled_index(&self, off: VarnodeId, size: u32) -> Option<VarnodeId> {
         let def = self.f.vn(off).def?;
@@ -288,7 +300,14 @@ impl<'a> PrintC<'a> {
             OpCode::IntMult => bin(self, "*", 13),
             OpCode::IntDiv | OpCode::IntSdiv => bin(self, "/", 13),
             OpCode::IntRem | OpCode::IntSrem => bin(self, "%", 13),
-            OpCode::IntAdd => bin(self, "+", 12),
+            OpCode::IntAdd => {
+                // a frame-pointer-relative address taken as a value is `&Stack_<offset>`
+                let (i0, i1) = (a(0), a(1));
+                match self.stack_addr(i0, i1) {
+                    Some(s) => (s, 15),
+                    None => bin(self, "+", 12),
+                }
+            }
             OpCode::IntSub => bin(self, "-", 12),
             OpCode::IntLeft => bin(self, "<<", 11),
             OpCode::IntRight | OpCode::IntSright => bin(self, ">>", 11),
