@@ -404,6 +404,22 @@ fn structuring_collapses_reducible_cfgs() {
 }
 
 #[test]
+fn stack_recovery_collapses_the_frame() {
+    use mosura::decompile::{pipeline, printc::print_c, OpId};
+    let Some((spec, ctx)) = x86_64() else { return };
+    let dt = datatest::parse_file(&fixture_path("twodim")).expect("fixture");
+    let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+    pipeline::decompile(&mut f);
+    // The spilled-parameter frame collapses (47 live ops without stack recovery → ~31).
+    let live = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
+    assert!(live <= 36, "stack recovery should collapse the frame (got {live} live ops)");
+    // and the parameters now flow directly into the body
+    let c = print_c(&f);
+    assert!(c.contains("param_1") && c.contains("param_2"), "params should flow through:\n{c}");
+    assert!(!c.contains("+ -20"), "the spilled-param stack slots should be gone:\n{c}");
+}
+
+#[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };
     let fixture = paths::oracle_fixtures_dir().join("x86_64_sem.xml");

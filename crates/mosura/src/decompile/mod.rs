@@ -22,6 +22,7 @@ pub mod pipeline;
 pub mod printc;
 pub mod rules;
 pub mod space;
+pub mod stackvars;
 pub mod structure;
 pub mod varnode;
 

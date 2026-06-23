@@ -119,10 +119,13 @@ for the full rationale and architecture.
   - [x] Structured control-flow emission: walk the `structure.rs` tree → `if`/`else`/
         `while`/`do-while`, condition from the CBRANCH (negated per the branch). threedim
         emits a `while` loop; well-nested.
-  - [ ] Bigger gaps to Ghidra quality (NOT structuring): **stack-variable recovery** (the
-        raw RSP/RBP frame ops aren't abstracted to locals — the largest gap), flag-condition
-        simplification (RuleSborrow etc. — the rule tail), casts, P4 types, P6 return/params,
-        gotos for irreducible CFGs.
+  - [x] **Stack-variable recovery** (`stackvars.rs`): forward symbolic stack-pointer flow
+        (Ghidra's `ActionStackPtrFlow`/spacebase) — `*(RSP/RBP+c)` → `stack[c]`, heritaged
+        like registers, so spilled params link and the frame collapses (twodim 47→31 live
+        ops; params flow directly, matching Ghidra's structure). RSP/RBP unified via entry-RSP.
+  - [ ] Remaining quality: strength reduction (`(x<<2)+x`→`x*5`), global-var recovery, flag
+        conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
+        whole-corpus measurement vs Ghidra `--c` is meaningful.
 
 Gate at every phase: mosura's IR matches Ghidra's IR on the datatests before moving on.
 Retire the corresponding prototype code as each phase lands.

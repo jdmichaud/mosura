@@ -21,6 +21,7 @@ impl Action for ActionHeritage {
         if data.num_blocks() != 0 {
             return 0;
         }
+        super::stackvars::recover_stack(data);
         super::cfg::build_cfg(data);
         let dom = super::dominator::compute(data);
         super::heritage::heritage(data, &dom);
