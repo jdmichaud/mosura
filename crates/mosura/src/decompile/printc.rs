@@ -254,6 +254,25 @@ impl<'a> PrintC<'a> {
                     let val = self.render_var(o.input(2).unwrap()).0;
                     let _ = writeln!(out, "{pad}*{ptr} = {val};");
                 }
+                OpCode::Call | OpCode::Callind => {
+                    // a call is a statement (it has a side effect); its result inlines at the
+                    // single consumer, is named when used more than once, and is dropped when
+                    // unused — but a void call must still be emitted.
+                    let out_vn = o.output;
+                    let uses = out_vn.map(|v| self.f.vn(v).descend.len());
+                    match (out_vn, uses) {
+                        (Some(_), Some(1)) => {} // single-use result: inlined into its consumer
+                        (Some(outv), Some(n)) if n > 1 => {
+                            let lhs = self.name_of(outv);
+                            let rhs = self.render_op(op).0;
+                            let _ = writeln!(out, "{pad}{lhs} = {rhs};");
+                        }
+                        _ => {
+                            let e = self.render_op(op).0;
+                            let _ = writeln!(out, "{pad}{e};");
+                        }
+                    }
+                }
                 _ => {
                     if let Some(outv) = o.output {
                         if self.is_explicit(outv) {
