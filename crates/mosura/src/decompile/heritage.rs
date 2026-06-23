@@ -30,16 +30,12 @@ fn read_loc(f: &Funcdata, op: OpId, slot: usize) -> Option<Loc> {
     if slot == 0
         && matches!(
             o.code(),
-            OpCode::Branch
-                | OpCode::Cbranch
-                | OpCode::Branchind
-                | OpCode::Call
-                | OpCode::Callind
-                | OpCode::Callother
-                | OpCode::Return
+            OpCode::Branch | OpCode::Cbranch | OpCode::Call | OpCode::Callother | OpCode::Return
         )
     {
-        return None; // destination/return-target annotation, not dataflow
+        // A *direct* destination is a constant code address, not dataflow. An *indirect*
+        // target (BRANCHIND/CALLIND slot 0) is a computed value and IS heritaged.
+        return None;
     }
     let vn = f.vn(o.input(slot)?);
     if vn.is_constant() {

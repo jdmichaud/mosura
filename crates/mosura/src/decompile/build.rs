@@ -273,6 +273,18 @@ mod tests {
     }
 
     #[test]
+    fn resolves_indirect_call_target() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("deindirect.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        // heritaging the CALLIND target forwards the stack store to the call site
+        assert!(c.contains("(*0x1006ca)"), "indirect target should resolve to the constant:\n{c}");
+    }
+
+    #[test]
     fn emits_switch_statement() {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("switchind.xml")).unwrap();
