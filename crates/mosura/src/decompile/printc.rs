@@ -560,6 +560,14 @@ impl<'a> PrintC<'a> {
                     let r = self.operand(i1, 9, true);
                     return format!("{l} {sym} {r}");
                 }
+                // !(a < b) => b <= a ; !(a <= b) => b < a (swap operands, flip strictness)
+                OpCode::IntLess | OpCode::IntSless | OpCode::IntLessequal | OpCode::IntSlessequal => {
+                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
+                    let sym = if matches!(code, OpCode::IntLess | OpCode::IntSless) { "<=" } else { "<" };
+                    let l = self.operand(i1, 9, false);
+                    let r = self.operand(i0, 9, true);
+                    return format!("{l} {sym} {r}");
+                }
                 _ => {}
             }
         }
