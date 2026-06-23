@@ -42,6 +42,16 @@ fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     }
 }
 
+/// Ghidra's C name for an N-byte IEEE float.
+fn float_name(size: u32) -> String {
+    match size {
+        4 => "float".to_string(),
+        8 => "double".to_string(),
+        10 | 16 => "longdouble".to_string(),
+        n => format!("float{n}"),
+    }
+}
+
 /// Ghidra's one-letter type prefix for a variable/global name.
 fn type_prefix(t: &Datatype) -> &'static str {
     match t {
@@ -206,6 +216,34 @@ impl<'a> PrintC<'a> {
             OpCode::IntNegate => (format!("~{}", self.operand(a(0), 15, false)), 15),
             OpCode::Int2comp => (format!("-{}", self.operand(a(0), 15, false)), 15),
             OpCode::BoolNegate => (format!("!{}", self.operand(a(0), 15, false)), 15),
+            // floating point: arithmetic and comparisons as operators
+            OpCode::FloatAdd => bin(self, "+", 12),
+            OpCode::FloatSub => bin(self, "-", 12),
+            OpCode::FloatMult => bin(self, "*", 13),
+            OpCode::FloatDiv => bin(self, "/", 13),
+            OpCode::FloatLess => bin(self, "<", 10),
+            OpCode::FloatLessequal => bin(self, "<=", 10),
+            OpCode::FloatEqual => bin(self, "==", 9),
+            OpCode::FloatNotequal => bin(self, "!=", 9),
+            OpCode::FloatNeg => (format!("-{}", self.operand(a(0), 15, false)), 15),
+            // float intrinsics Ghidra prints as named calls
+            OpCode::FloatNan => (format!("NAN({})", self.render_var(a(0)).0), 16),
+            OpCode::FloatAbs => (format!("ABS({})", self.render_var(a(0)).0), 16),
+            OpCode::FloatSqrt => (format!("SQRT({})", self.render_var(a(0)).0), 16),
+            OpCode::FloatCeil => (format!("ceil({})", self.render_var(a(0)).0), 16),
+            OpCode::FloatFloor => (format!("floor({})", self.render_var(a(0)).0), 16),
+            OpCode::FloatRound => (format!("round({})", self.render_var(a(0)).0), 16),
+            // conversions render as casts (to the output float/int width)
+            OpCode::FloatInt2float | OpCode::FloatFloat2float => {
+                let ty = float_name(self.f.vn(o.output.unwrap()).size);
+                let in0 = a(0);
+                (format!("({ty}){}", self.operand(in0, 14, false)), 14)
+            }
+            OpCode::FloatTrunc => {
+                let n = self.f.vn(o.output.unwrap()).size;
+                let in0 = a(0);
+                (format!("(int{n}){}", self.operand(in0, 14, false)), 14)
+            }
             OpCode::Load => (format!("*{}", self.operand(a(1), 15, false)), 15),
             OpCode::Call => {
                 // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
