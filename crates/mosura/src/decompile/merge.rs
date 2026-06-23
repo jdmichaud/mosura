@@ -8,8 +8,12 @@
 //! merged conditionals). Cover-based merging of non-interfering same-storage varnodes, and
 //! naming, are the next increments.
 
+use std::collections::HashMap;
+
+use super::cover::{all_covers, Cover};
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
+use super::space::SpaceId;
 use super::varnode::VarnodeId;
 
 /// A union-find over Varnodes: each class is one HighVariable (one C variable).
@@ -63,9 +67,17 @@ fn mergeable(f: &Funcdata, v: VarnodeId) -> bool {
     !vn.is_constant() && vn.flags & super::varnode::flags::ANNOTATION == 0
 }
 
-/// Build the HighVariables for `f`: the required marker merges (`Merge::mergeMarker`).
+/// Build the HighVariables for `f`: the required marker merges (`Merge::mergeMarker`)
+/// followed by cover-based merging of non-interfering same-storage varnodes.
 pub fn merge(f: &Funcdata) -> HighVariables {
     let mut h = HighVariables::new(f.num_varnodes());
+    merge_markers(f, &mut h);
+    merge_same_storage(f, &mut h);
+    h
+}
+
+/// `Merge::mergeMarker`: a MULTIEQUAL/INDIRECT output is one variable with its inputs.
+fn merge_markers(f: &Funcdata, h: &mut HighVariables) {
     for op in f.op_ids() {
         let o = f.op(op);
         if o.is_dead() || !o.is_marker() {
@@ -85,7 +97,54 @@ pub fn merge(f: &Funcdata) -> HighVariables {
             }
         }
     }
-    h
+}
+
+/// Do any member of class `a` and member of class `b` have overlapping liveness?
+fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeId, Cover>) -> bool {
+    a.iter().any(|x| {
+        b.iter().any(|y| match (covers.get(x), covers.get(y)) {
+            (Some(cx), Some(cy)) => cx.intersects(cy),
+            _ => false,
+        })
+    })
+}
+
+/// `Merge::mergeAddrTied`/`mergeOpcode`: greedily merge HighVariables that share storage
+/// and never live simultaneously, so reused registers/slots become one variable.
+fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
+    let covers = all_covers(f);
+    let mut by_storage: HashMap<(SpaceId, u64), Vec<VarnodeId>> = HashMap::new();
+    for &v in covers.keys() {
+        let vn = f.vn(v);
+        by_storage.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
+    }
+
+    for members in by_storage.into_values() {
+        if members.len() < 2 {
+            continue;
+        }
+        loop {
+            // partition this storage group into current HighVariable classes
+            let mut classes: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+            for &v in &members {
+                classes.entry(h.high(v)).or_default().push(v);
+            }
+            let reps: Vec<u32> = classes.keys().copied().collect();
+            let mut merged = false;
+            'pair: for i in 0..reps.len() {
+                for j in (i + 1)..reps.len() {
+                    if !classes_interfere(&classes[&reps[i]], &classes[&reps[j]], &covers) {
+                        h.union(classes[&reps[i]][0].0, classes[&reps[j]][0].0);
+                        merged = true;
+                        break 'pair;
+                    }
+                }
+            }
+            if !merged {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

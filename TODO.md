@@ -89,13 +89,19 @@ for the full rationale and architecture.
       tail). INTERIM: seeds SysV return regs (RAX/XMM0) as live-out roots since the return
       value isn't wired to RETURN yet — replaced by P6 ActionReturnRecovery / addrtied.
 - [ ] **P4 — Types** (`TypeFactory` + `ActionInferTypes`).
-- [~] **P5 — Merge** (`merge.rs`) — in progress
+- [~] **P5 — Merge** (`merge.rs`+`cover.rs`) — variable grouping DONE
   - [x] `HighVariables` union-find + required marker merges (`Merge::mergeMarker`): a
         MULTIEQUAL/INDIRECT output is one variable with its inputs — threads SSA versions
         across control flow (loop counters etc.). Unit-tested + integration (phi versions
         merge, variable count drops on threedim/elseif/twodim).
-  - [ ] `Cover` (liveness ranges) + interference test → merge non-interfering same-storage
-        varnodes (`mergeAddrTied`/`mergeOpcode(COPY)`/speculative); variable naming.
+  - [x] `Cover` (`cover.rs`): per-varnode liveness ranges, half-position model so a def
+        doesn't interfere with the use it consumes (`x=x+1`); ground-truth unit-tested
+        (disjoint↔no-intersect, overlap↔intersect).
+  - [x] Same-storage merging (`merge_same_storage`): greedily union non-interfering
+        HighVariables at the same storage → reused registers/slots become one variable.
+        Validated: no two versions of one variable are simultaneously live; realistic
+        counts (x86_64_sem 10 SSA→6 vars, twodim 36→13, threedim 57→21, elseif 196→25).
+  - [ ] Variable NAMING (deferred to P8 PrintC / a NameVars action — the consumer).
 - [ ] **P6 — Prototypes** (`FuncProto`/`ParamActive`/`AncestorRealistic` — call-arg/return).
 - [ ] **P7 — Structuring** (`BlockGraph::collapse`).
 - [ ] **P8 — PrintC** (`printc.cc`) → C-exact parity.

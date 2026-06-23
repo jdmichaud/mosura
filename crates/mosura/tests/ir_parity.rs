@@ -335,6 +335,48 @@ fn merge_groups_phi_versions_into_variables() {
 }
 
 #[test]
+fn merged_variables_have_no_internal_interference() {
+    use mosura::decompile::cover::all_covers;
+    use mosura::decompile::merge::merge;
+    use mosura::decompile::{pipeline, VarnodeId};
+    use std::collections::HashMap;
+    let Some((spec, ctx)) = x86_64() else { return };
+
+    for name in ["x86_64_sem", "twodim", "threedim", "elseif"] {
+        let fixture = fixture_path(name);
+        if !fixture.exists() {
+            continue;
+        }
+        let dt = datatest::parse_file(&fixture).expect("fixture");
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        pipeline::decompile(&mut f);
+        let mut h = merge(&f);
+        let covers = all_covers(&f);
+
+        // group covered varnodes by their HighVariable
+        let mut by_hv: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+        for &v in covers.keys() {
+            by_hv.entry(h.high(v)).or_default().push(v);
+        }
+        // correctness: within one variable, no two SSA versions are live at once — that
+        // is exactly the property that lets them share one storage slot. (The cover logic
+        // itself is ground-truth-tested in cover.rs.)
+        for members in by_hv.values() {
+            for i in 0..members.len() {
+                for j in (i + 1)..members.len() {
+                    assert!(
+                        !covers[&members[i]].intersects(&covers[&members[j]]),
+                        "{name}: two SSA versions of one variable are simultaneously live"
+                    );
+                }
+            }
+        }
+        // and merging actually collapsed versions: fewer variables than covered varnodes
+        assert!(by_hv.len() < covers.len(), "{name}: merge should collapse versions");
+    }
+}
+
+#[test]
 fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some((spec, ctx)) = x86_64() else { return };
     let fixture = paths::oracle_fixtures_dir().join("x86_64_sem.xml");
