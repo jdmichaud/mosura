@@ -9,17 +9,30 @@
 //! heuristically (the last write to a return register) until P6 ActionReturnRecovery wires
 //! it to RETURN.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
 use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
+use super::op::OpId;
 use super::opcode::OpCode;
 use super::structure::{structure, FlowKind, Structured};
 use super::types::Datatype;
 use super::varnode::VarnodeId;
+
+/// Collect the basic blocks under a structured block (its loop body, etc.).
+fn basic_blocks_of(s: &Structured, idx: usize, acc: &mut Vec<BlockId>) {
+    match &s.blocks[idx].kind {
+        FlowKind::Basic(b) => acc.push(*b),
+        _ => {
+            for &c in &s.blocks[idx].components {
+                basic_blocks_of(s, c, acc);
+            }
+        }
+    }
+}
 
 /// The exit basic block of a structured block (where its terminating CBRANCH lives).
 fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
@@ -53,6 +66,10 @@ struct PrintC<'a> {
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     types: HashMap<VarnodeId, Datatype>,
+    /// WhileDo structured-block index → (initializer op, iterator op) for `for`-loops.
+    for_loops: HashMap<usize, (Option<OpId>, OpId)>,
+    /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
+    suppressed: HashSet<OpId>,
 }
 
 impl PrintC<'_> {
@@ -73,6 +90,11 @@ impl<'a> PrintC<'a> {
         }
         if !vn.is_written() {
             return true;
+        }
+        if let Some(def) = vn.def {
+            if self.f.op(def).code() == OpCode::Multiequal {
+                return true; // a phi is a merged variable — always named, never inlined raw
+            }
         }
         if vn.descend.len() != 1 {
             return true; // 0 or >1 uses: named
@@ -187,6 +209,94 @@ impl<'a> PrintC<'a> {
             .and_then(|op| self.f.op(op).input(1))
     }
 
+    /// Render an assignment statement body (`lhs = rhs`, no terminator) for an op.
+    fn render_assign(&mut self, op: OpId) -> String {
+        let outv = self.f.op(op).output.unwrap();
+        let lhs = self.name_of(outv);
+        let rhs = self.render_op(op).0;
+        format!("{lhs} = {rhs}")
+    }
+
+    /// Walk back (≤4 levels, Ghidra's `findLoopVariable`) from the condition variable to a
+    /// MULTIEQUAL defined in the loop header `head`.
+    fn find_loop_phi(&self, cond_var: VarnodeId, head: BlockId) -> Option<OpId> {
+        let mut stack = vec![(cond_var, 0u32)];
+        let mut seen: HashSet<OpId> = HashSet::new();
+        while let Some((v, depth)) = stack.pop() {
+            let Some(def) = self.f.vn(v).def else { continue };
+            if !seen.insert(def) {
+                continue;
+            }
+            let o = self.f.op(def);
+            if o.code() == OpCode::Multiequal {
+                if o.parent == Some(head) {
+                    return Some(def);
+                }
+                continue; // don't trace through a phi
+            }
+            if depth >= 4 || matches!(o.code(), OpCode::Call | OpCode::Callind) {
+                continue;
+            }
+            for &inp in &o.inrefs.clone() {
+                stack.push((inp, depth + 1));
+            }
+        }
+        None
+    }
+
+    /// If the WhileDo with header `cond_idx` and body `body_idx` is a `for`-loop, return its
+    /// `(initializer, iterator)` ops (Ghidra `findLoopVariable`/`findInitializer`): the
+    /// condition variable's loop-header phi has one input defined in the body (the iterator)
+    /// and one defined before the loop (the initializer).
+    fn for_parts(&self, s: &Structured, cond_idx: usize, body_idx: usize) -> Option<(Option<OpId>, OpId)> {
+        let head = exit_basic(s, cond_idx)?;
+        let cbranch = self
+            .f
+            .block(head)
+            .ops
+            .iter()
+            .rev()
+            .copied()
+            .find(|&op| self.f.op(op).code() == OpCode::Cbranch)?;
+        let cond_var = self.f.op(cbranch).input(1)?;
+        let phi = self.find_loop_phi(cond_var, head)?;
+
+        let mut body_blocks = Vec::new();
+        basic_blocks_of(s, body_idx, &mut body_blocks);
+
+        let (mut iterate, mut init) = (None, None);
+        for &inp in &self.f.op(phi).inrefs {
+            let Some(def) = self.f.vn(inp).def else { continue };
+            let Some(pb) = self.f.op(def).parent else { continue };
+            if self.f.op(def).is_marker() {
+                continue;
+            }
+            if body_blocks.contains(&pb) {
+                iterate = Some(def);
+            } else if pb != head {
+                init = Some(def); // defined in the pre-loop block
+            }
+        }
+        iterate.map(|it| (init, it))
+    }
+
+    /// Find all `for`-loops in the structure tree and record their header/iterator ops.
+    fn detect_for_loops(&mut self, s: &Structured, idx: usize) {
+        if let FlowKind::WhileDo = s.blocks[idx].kind {
+            let comps = s.blocks[idx].components.clone();
+            if let Some((init, iterate)) = self.for_parts(s, comps[0], comps[1]) {
+                self.for_loops.insert(idx, (init, iterate));
+                if let Some(i) = init {
+                    self.suppressed.insert(i);
+                }
+                self.suppressed.insert(iterate);
+            }
+        }
+        for &c in &s.blocks[idx].components.clone() {
+            self.detect_for_loops(s, c);
+        }
+    }
+
     /// The condition of an `if`/`while`: the boolean tested by the CBRANCH at the exit of
     /// the condition block, negated when the body is on the false edge.
     fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
@@ -235,10 +345,19 @@ impl<'a> PrintC<'a> {
             }
             FlowKind::WhileDo => {
                 self.emit_structured(s, comps[0], indent, out);
-                let cond = self.render_condition(s, comps[0], negated);
-                let _ = writeln!(out, "{pad}while ({cond}) {{");
-                self.emit_structured(s, comps[1], indent + 1, out);
-                let _ = writeln!(out, "{pad}}}");
+                if let Some((init, iterate)) = self.for_loops.get(&idx).copied() {
+                    let init_s = init.map(|op| self.render_assign(op)).unwrap_or_default();
+                    let cond = self.render_condition(s, comps[0], negated);
+                    let iter_s = self.render_assign(iterate);
+                    let _ = writeln!(out, "{pad}for ({init_s}; {cond}; {iter_s}) {{");
+                    self.emit_structured(s, comps[1], indent + 1, out);
+                    let _ = writeln!(out, "{pad}}}");
+                } else {
+                    let cond = self.render_condition(s, comps[0], negated);
+                    let _ = writeln!(out, "{pad}while ({cond}) {{");
+                    self.emit_structured(s, comps[1], indent + 1, out);
+                    let _ = writeln!(out, "{pad}}}");
+                }
             }
             FlowKind::DoWhile => {
                 let _ = writeln!(out, "{pad}do {{");
@@ -253,6 +372,9 @@ impl<'a> PrintC<'a> {
     fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         for op in self.f.block(b).ops.clone() {
+            if self.suppressed.contains(&op) {
+                continue; // emitted in a for-loop header (initializer / iterator)
+            }
             let o = self.f.op(op);
             match o.code() {
                 OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => {}
@@ -333,6 +455,8 @@ pub fn print_c(f: &Funcdata) -> String {
         var_counter: 0,
         ret_val: None,
         types: infer(f),
+        for_loops: HashMap::new(),
+        suppressed: HashSet::new(),
     };
     p.ret_val = p.return_value();
 
@@ -359,6 +483,7 @@ pub fn print_c(f: &Funcdata) -> String {
         params.iter().map(|&(_, v)| format!("{} {}", p.type_of(v).name(), p.name_of(v))).collect();
 
     let s = structure(f);
+    p.detect_for_loops(&s, s.root);
     let mut out = String::new();
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
     out.push_str("{\n");
@@ -415,8 +540,8 @@ mod tests {
         let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
         let c = print_c(&f);
-        // threedim has a loop — the structurer recovers a while, well-nested
-        assert!(c.contains("while ("), "structured loop expected:\n{c}");
+        // threedim has a loop — the structurer recovers a for/while, well-nested
+        assert!(c.contains("while (") || c.contains("for ("), "structured loop expected:\n{c}");
         assert_eq!(c.matches('{').count(), c.matches('}').count(), "balanced braces:\n{c}");
     }
 }

@@ -154,6 +154,13 @@ for the full rationale and architecture.
   - [x] **Loop-increment emission**: a value whose sole use feeds a MULTIEQUAL is now
         explicit (materialized as the merged-variable assignment), so loop bodies emit
         `uVar1 = uVar1 + 1`. forloop1 body matches Ghidra; good 21→24, avg →0.5737.
+  - [x] **For-loop recognition** (`findLoopVariable`/`findInitializer` port): trace the
+        condition var to the loop-header phi; its body-defined input is the iterator (moved to
+        the `for` update), its pre-loop input the initializer. Emits `for (init; cond; iter)`,
+        iterator/init suppressed in their blocks. + phi outputs always named (no raw
+        `MULTIEQUAL(...)`). forloop1 .703→.865, forloop_varused →.836, threedim →.791; good →26.
+        LIMIT: init often empty (`for (; cond; iter)`) — the `i=0` op is absent from mosura's
+        IR (loop var starts as an undef phi input); needs investigating.
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.
