@@ -740,11 +740,32 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// Trace a switch head's BRANCHIND back to the index variable (through the table
-    /// lookup): `RAX = base + ext(load(base + index*scale))` ⇒ `index`.
+    /// The index variable of a switch head: trace the BRANCHIND through the table lookup if
+    /// the lookup survived, else fall back to the dominating bound check `index <(=) count`.
     fn switch_index(&self, head: BlockId) -> Option<VarnodeId> {
         let bi = self.f.block(head).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind)?;
-        let mut v = self.f.op(bi).input(0)?;
+        if let Some(v) = self.trace_table_index(self.f.op(bi).input(0)?) {
+            return Some(v);
+        }
+        // fallback: the range check guarding the switch — `index <= count-1` / `index < count`
+        let pc = self.f.op(bi).seqnum.pc.offset;
+        let num_cases = self.f.switch_targets.get(&pc).map(|t| t.len())?;
+        for i in 0..self.f.num_ops() as u32 {
+            let o = self.f.op(OpId(i));
+            let c = match o.input(1) {
+                Some(b) if self.f.vn(b).is_constant() => self.f.vn(b).constant_value() as usize,
+                _ => continue,
+            };
+            let hit = (o.code() == OpCode::IntLessequal && c + 1 == num_cases) || (o.code() == OpCode::IntLess && c == num_cases);
+            if hit {
+                return o.input(0);
+            }
+        }
+        None
+    }
+
+    /// Trace `RAX = base + ext(load(base + index*scale))` ⇒ `index`, when the lookup survives.
+    fn trace_table_index(&self, mut v: VarnodeId) -> Option<VarnodeId> {
         for _ in 0..10 {
             let def = self.f.vn(v).def?;
             let o = self.f.op(def);
