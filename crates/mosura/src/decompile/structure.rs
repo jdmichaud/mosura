@@ -162,10 +162,31 @@ impl Structured {
         for i in 0..2 {
             let (clause, other) = (self.out(b)[i], self.out(b)[1 - i]);
             if clause != other && ins[clause].len() == 1 && self.out(clause).is_empty() {
+                // don't dissolve a loop header: if the other arm flows back to `b`, this is the
+                // exit test of a loop — leave it for the loop rules (after the body collapses).
+                if self.reaches(other, b) {
+                    continue;
+                }
                 let n = self.install(vec![b, clause], FlowKind::If, vec![other], ins);
                 self.blocks[n].negated = i == 0;
                 return true;
             }
+        }
+        false
+    }
+
+    /// Whether `from` can reach `target` over the current (active) structure graph.
+    fn reaches(&self, from: usize, target: usize) -> bool {
+        let mut seen = vec![false; self.blocks.len()];
+        let mut stack = vec![from];
+        while let Some(x) = stack.pop() {
+            if x == target {
+                return true;
+            }
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            stack.extend_from_slice(self.out(x));
         }
         false
     }

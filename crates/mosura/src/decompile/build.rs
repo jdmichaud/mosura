@@ -285,6 +285,18 @@ mod tests {
     }
 
     #[test]
+    fn loop_header_with_terminal_exit_forms_loop() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("forloop_varused.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        // the loop is recovered, not dissolved into guarded ifs by rule_if_no_exit
+        assert!(c.contains("for (") || c.contains("while ("), "loop should be recovered:\n{c}");
+    }
+
+    #[test]
     fn call_clobber_drops_leftover_args() {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("deindirect.xml")).unwrap();
