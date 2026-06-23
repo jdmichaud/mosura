@@ -251,15 +251,22 @@ impl Rule for RuleTrivialShift {
     }
 }
 
-/// Express `vn` as `(base, coefficient)`: `base * c` for an `INT_MULT` by a constant,
-/// else `(vn, 1)`. (Assumes `RuleTermOrder` put the constant in slot 1.)
+/// Express `vn` as `(base, coefficient)` — Ghidra's `getMultCoeff`: `base * c` for an
+/// `INT_MULT` by a constant, `base * 2^k` for an `INT_LEFT` by a constant (so a shift-add
+/// like `(x<<2)+x` collects to `x*5`), else `(vn, 1)`. Assumes `RuleTermOrder` put the
+/// constant in slot 1.
 fn as_term(data: &Funcdata, vn: VarnodeId) -> (VarnodeId, i64) {
     if let Some(def) = data.vn(vn).def {
         let o = data.op(def);
-        if o.code() == OpCode::IntMult && o.num_inputs() == 2 {
+        if o.num_inputs() == 2 {
             if let Some(c) = o.input(1) {
                 if data.vn(c).is_constant() {
-                    return (o.input(0).unwrap(), data.vn(c).constant_value() as i64);
+                    let cv = data.vn(c).constant_value();
+                    match o.code() {
+                        OpCode::IntMult => return (o.input(0).unwrap(), cv as i64),
+                        OpCode::IntLeft if cv < 63 => return (o.input(0).unwrap(), 1i64 << cv),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -470,6 +477,29 @@ mod tests {
         assert_eq!(f.op(add).input(0), Some(a));
         let c = f.op(add).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
+    }
+
+    #[test]
+    fn shift_add_collects_to_mult() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(8, Address::new(reg, 0x38));
+        let two = f.new_const(8, 2);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let sh = f.new_op(OpCode::IntLeft, seq, vec![a, two]); // a << 2  (== a*4)
+        let shout = f.new_output(sh, 8, Address::new(uniq, 0x100));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![shout, a]); // (a<<2) + a
+        f.new_output(add, 8, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![sh, add], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleTermOrder).with(RuleCollectTerms);
+        pool.apply(&mut f);
+        // (a<<2) + a  →  a*5  (the lea-as-multiply Ghidra recovers)
+        assert_eq!(f.op(add).code(), OpCode::IntMult);
+        assert_eq!(f.op(add).input(0), Some(a));
+        let c = f.op(add).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 5);
     }
 
     #[test]

@@ -137,7 +137,10 @@ for the full rationale and architecture.
         crutch. Unit-tested (float/int/void/multiret). + global persistence (ram writes are
         kept side effects). Corpus 11→16 funcs ≥0.70; twodim .555→.717, threedim →.694,
         floatprint faithful .789.
-  - [ ] Remaining quality: strength reduction (`(x<<2)+x`→`x*5`), global-var recovery, flag
+  - [x] **Shift-add strength reduction** (`as_term` ⊇ `INT_LEFT`, Ghidra `getMultCoeff`):
+        `(x<<2)+x → x*5`; cascades to drop the redundant global copies. twodim .717→.829,
+        threedim →.738, nestedoffset →.950. Unit-tested.
+  - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.
 
