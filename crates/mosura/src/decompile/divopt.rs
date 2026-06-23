@@ -3,15 +3,21 @@
 //! recovers the divisor `d` from the magic constant. Ghidra does the reverse with 128-bit
 //! arithmetic (`uint8[2]`); Rust's native `u128` makes the port direct.
 //!
-//! This module currently provides the divisor computation (`calc_divisor`), unit-tested
-//! against known magic constants. The form matching (`findForm`) and the INT_DIV/INT_SDIV
-//! rewrite are the next increment.
+//! This module provides the divisor computation (`calc_divisor`) plus `RuleDivOpt` for the
+//! unsigned *add-correction* form real compilers emit:
+//! `(mulhi + ((x - mulhi) >> e2)) >> e1` with `mulhi = high(x * M)`, which equals
+//! `(x * (M + 2^h)) >> (h + e1 + e2)` (h = the high-half bit-width) and recovers to `x / d`.
+
+use super::funcdata::Funcdata;
+use super::op::OpId;
+use super::opcode::OpCode;
+use super::action::Rule;
+use super::varnode::VarnodeId;
 
 /// Recover the divisor of `x / d` from the magic constant. `magic` is the multiplier, `n`
 /// is the total right-shift (`subpiece_bytes*8 + shift`), `xsize` is the operand bit-width.
 /// Returns 0 if `magic`/`n` do not correspond to a clean division. Port of
 /// `RuleDivOpt::calcDivisor` with `u128` standing in for Ghidra's `uint8[2]`.
-#[allow(dead_code)] // the verified crux; wired in when findForm + the rewrite land
 pub fn calc_divisor(n: u32, magic: u128, xsize: u32) -> u64 {
     if n > 127 || xsize > 64 || magic <= 1 {
         return 0;
@@ -50,6 +56,92 @@ pub fn calc_divisor(n: u32, magic: u128, xsize: u32) -> u64 {
     q as u64
 }
 
+/// Constant value of `v`, if constant.
+fn cval(f: &Funcdata, v: VarnodeId) -> Option<u64> {
+    f.vn(v).is_constant().then(|| f.vn(v).constant_value())
+}
+
+/// Match `mulhi = SUBPIECE(INT_MULT(zext(x) | x, M), off)` — the high half of `x * M`.
+/// Returns `(x, M, high_shift_bits)`.
+fn match_mulhi(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32)> {
+    let sub = f.vn(v).def?;
+    if f.op(sub).code() != OpCode::Subpiece {
+        return None;
+    }
+    let off = cval(f, f.op(sub).input(1)?)?;
+    let mult = f.vn(f.op(sub).input(0)?).def?;
+    if f.op(mult).code() != OpCode::IntMult {
+        return None;
+    }
+    let (m0, m1) = (f.op(mult).input(0)?, f.op(mult).input(1)?);
+    for (cvn, xvn) in [(m1, m0), (m0, m1)] {
+        if let Some(magic) = cval(f, cvn) {
+            // the dividend may be zero-extended into the wide multiply
+            let x = match f.vn(xvn).def {
+                Some(d) if matches!(f.op(d).code(), OpCode::IntZext) => f.op(d).input(0)?,
+                _ => xvn,
+            };
+            return Some((x, magic, (off as u32) * 8));
+        }
+    }
+    None
+}
+
+/// Recover unsigned division by a constant from the add-correction magic-multiply form
+/// (Ghidra's `RuleDivTermAdd` + `RuleDivOpt`, unsigned path), rewriting it to `x / d`.
+pub struct RuleDivOpt;
+
+impl Rule for RuleDivOpt {
+    fn name(&self) -> &str {
+        "divopt"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        // op = (add) >> e1
+        let Some(e1) = f.op(op).input(1).and_then(|v| cval(f, v)) else { return 0 };
+        let Some(add) = f.op(op).input(0).map(|v| f.vn(v).def).flatten() else { return 0 };
+        if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
+            return 0;
+        }
+        let (a, b) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
+        for (mulhi_v, inner_v) in [(a, b), (b, a)] {
+            let Some((x, magic, h)) = match_mulhi(f, mulhi_v) else { continue };
+            // inner = (x - mulhi) >> e2
+            let Some(inner) = f.vn(inner_v).def else { continue };
+            if f.op(inner).code() != OpCode::IntRight {
+                continue;
+            }
+            let Some(e2) = f.op(inner).input(1).and_then(|v| cval(f, v)) else { continue };
+            let Some(sub) = f.op(inner).input(0).map(|v| f.vn(v).def).flatten() else { continue };
+            if f.op(sub).code() != OpCode::IntSub
+                || f.op(sub).input(0) != Some(x)
+                || f.op(sub).input(1) != Some(mulhi_v)
+            {
+                continue;
+            }
+            // (x*(M + 2^h)) >> (h + e1 + e2)  =>  x / d
+            let xsize = f.vn(x).size * 8;
+            if h >= 128 || xsize == 0 {
+                continue;
+            }
+            let corrected = magic as u128 + (1u128 << h);
+            let n = h + e1 as u32 + e2 as u32;
+            let d = calc_divisor(n, corrected, xsize);
+            if d == 0 {
+                continue;
+            }
+            let out_size = f.vn(f.op(op).output.unwrap()).size;
+            let dc = f.new_const(out_size, d);
+            f.op_set_opcode(op, OpCode::IntDiv);
+            f.op_set_all_input(op, &[x, dc]);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +169,45 @@ mod tests {
     fn rejects_non_divisor_magic() {
         assert_eq!(calc_divisor(33, 0x12345678, 32), 0);
         assert_eq!(calc_divisor(0, 2, 32), 0);
+    }
+
+    #[test]
+    fn recovers_unsigned_add_correction_division() {
+        use crate::decompile::action::{Action, ActionPool};
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        let ze = f.new_op(OpCode::IntZext, seq, vec![x]);
+        let zeo = f.new_output_unique(ze, 16);
+        let magic = f.new_const(16, 0x948b0fcd6e9e0653);
+        let mu = f.new_op(OpCode::IntMult, seq, vec![zeo, magic]);
+        let muo = f.new_output_unique(mu, 16);
+        let off = f.new_const(4, 8);
+        let sp = f.new_op(OpCode::Subpiece, seq, vec![muo, off]);
+        let mulhi = f.new_output_unique(sp, 8);
+        let sb = f.new_op(OpCode::IntSub, seq, vec![x, mulhi]);
+        let sbo = f.new_output_unique(sb, 8);
+        let one = f.new_const(8, 1);
+        let inr = f.new_op(OpCode::IntRight, seq, vec![sbo, one]);
+        let inro = f.new_output_unique(inr, 8);
+        let ad = f.new_op(OpCode::IntAdd, seq, vec![mulhi, inro]);
+        let ado = f.new_output_unique(ad, 8);
+        let six = f.new_const(8, 6);
+        let op = f.new_op(OpCode::IntRight, seq, vec![ado, six]);
+        f.new_output(op, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![ze, mu, sp, sb, inr, ad, op], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleDivOpt);
+        pool.apply(&mut f);
+        // (mulhi + ((x - mulhi) >> 1)) >> 6  with magic 0x948b...  =>  x / 0x51
+        assert_eq!(f.op(op).code(), OpCode::IntDiv);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 0x51);
     }
 }

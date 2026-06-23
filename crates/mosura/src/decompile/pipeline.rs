@@ -47,6 +47,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSborrow)
         .with(RuleEqual2Zero)
         .with(RuleLessEqual)
+        .with(super::divopt::RuleDivOpt)
         .with(RulePropagateCopy)
 }
 
