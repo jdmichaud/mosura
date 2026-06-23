@@ -248,7 +248,7 @@ fn heritage_produces_valid_ssa() {
 #[test]
 fn rule_pool_folds_constants() {
     use mosura::decompile::action::{Action, ActionPool};
-    use mosura::decompile::rules::{eval_const, RuleCollectTerms, RuleConstFold, RuleIdentityEl, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
+    use mosura::decompile::rules::{eval_const, RuleCollectTerms, RuleConstFold, RuleIdentityEl, RulePropagateCopy, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
     use mosura::decompile::OpId;
     let Some((spec, ctx)) = x86_64() else { return };
 
@@ -261,7 +261,7 @@ fn rule_pool_folds_constants() {
         let raw_ops = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
 
         let mut pool = ActionPool::new("simplify").with(RuleTermOrder).with(RuleConstFold).with(RuleCollectTerms)
-            .with(RuleTrivialArith).with(RuleIdentityEl).with(RuleTrivialShift);
+            .with(RuleTrivialArith).with(RuleIdentityEl).with(RuleTrivialShift).with(RulePropagateCopy);
         pool.apply(&mut f);
 
         // Completeness: no live op with all-constant inputs and a foldable opcode remains

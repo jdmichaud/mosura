@@ -75,9 +75,12 @@ for the full rationale and architecture.
         `pipeline::decompile(f)` runs end-to-end, tested.
   - [x] `RuleCollectTerms` (binary): a*c1+a*c2 → a*(c1+c2) (incl. a+a→a*2). Unit-tested
         (a+a*2→a*3); deeper trees collapse pairwise at fixpoint. Full N-ary gather remains.
-  - [ ] Incremental rule tail: copy-propagation, SUBPIECE/MULTIEQUAL pull-through,
-        `RuleSub2Add`, + Ghidra's ~90 others. Each is a drop-in; mosura's post-pipeline
-        op count is ~2x Ghidra's — the gap is this tail (no single rule closes it).
+  - [x] `RulePropagateCopy` (copy propagation): a read of `COPY(x)`'s output reads `x`
+        directly → COPY dies. Unit-tested; closed ~10-25% of the op-count gap.
+  - [ ] Incremental rule tail (Ghidra has 135 total): SUBPIECE pull-through
+        (`RulePullsubMulti`/`RuleSubvarSubpiece`), `RuleSelectCse`, `RuleSub2Add`, the
+        boolean/flag collapses, + ~85 others. Post-pipeline op count is now ~1.7-2x
+        Ghidra's; the remaining gap is this tail.
 - [x] **P3 — Dead code** (`deadcode.rs::ActionDeadCode`) — whole-varnode liveness seeded
       from side-effecting ops (returns/branches/stores/calls), propagated backward; removes
       the rule pool's collapsed ops + dead computations. Wired into the pipeline; invariant

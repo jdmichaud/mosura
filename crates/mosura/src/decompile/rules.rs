@@ -310,6 +310,40 @@ impl Rule for RuleCollectTerms {
     }
 }
 
+/// Copy propagation (Ghidra's `RulePropagateCopy`): if an op reads `vn` where
+/// `vn = COPY(invn)`, read `invn` directly. The COPY's output loses this use and dead-code
+/// removes it. Applied to every op. (Skips propagating a constant *into* a marker so phis
+/// keep their structure; the addrtied/addrforce guards await those flags.)
+pub struct RulePropagateCopy;
+
+impl Rule for RulePropagateCopy {
+    fn name(&self) -> &str {
+        "propagatecopy"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        Vec::new() // every op
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        for i in 0..data.op(op).num_inputs() {
+            let vn = data.op(op).input(i).unwrap();
+            let Some(def) = data.vn(vn).def else { continue };
+            if data.op(def).code() != OpCode::Copy {
+                continue;
+            }
+            let invn = data.op(def).input(0).unwrap();
+            if invn == vn || data.vn(invn).is_free() {
+                continue; // self-copy, or source not heritage-known
+            }
+            if data.op(op).is_marker() && data.vn(invn).is_constant() {
+                continue; // don't fold a constant into a MULTIEQUAL/INDIRECT
+            }
+            data.op_set_input(op, i, invn);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +470,26 @@ mod tests {
         assert_eq!(f.op(add).input(0), Some(a));
         let c = f.op(add).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
+    }
+
+    #[test]
+    fn propagate_copy_threads_through() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x38));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let cp = f.new_op(OpCode::Copy, seq, vec![a]); // c = COPY a
+        let c = f.new_output(cp, 4, Address::new(uniq, 0x100));
+        let b = f.new_input(4, Address::new(reg, 0x30));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![c, b]); // c + b
+        f.new_output(add, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![cp, add], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RulePropagateCopy);
+        pool.apply(&mut f);
+        // the ADD now reads `a` directly; the COPY's output is no longer used
+        assert_eq!(f.op(add).input(0), Some(a));
+        assert!(f.vn(c).descend.is_empty());
     }
 }
