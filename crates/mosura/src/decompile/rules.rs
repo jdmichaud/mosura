@@ -560,6 +560,46 @@ impl Rule for RuleLessEqual {
     }
 }
 
+/// Fold a chained constant multiply: `(x * c1) * c2` → `x * (c1*c2)`. Ghidra normalises
+/// multiplies this way; it also lets `(x/6)*3*2` collapse to `(x/6)*6` so the modulo form
+/// is recognised.
+pub struct RuleMultMult;
+
+impl Rule for RuleMultMult {
+    fn name(&self) -> &str {
+        "multmult"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let (a, b) = (data.op(op).input(0).unwrap(), data.op(op).input(1).unwrap());
+        for (inner_v, c2_v) in [(a, b), (b, a)] {
+            if !data.vn(c2_v).is_constant() {
+                continue;
+            }
+            let c2 = data.vn(c2_v).constant_value();
+            let Some(inner) = data.vn(inner_v).def else { continue };
+            if data.op(inner).code() != OpCode::IntMult || data.op(inner).num_inputs() != 2 {
+                continue;
+            }
+            let (i0, i1) = (data.op(inner).input(0).unwrap(), data.op(inner).input(1).unwrap());
+            for (x, c1_v) in [(i0, i1), (i1, i0)] {
+                if data.vn(c1_v).is_constant() {
+                    let size = data.vn(data.op(op).output.unwrap()).size;
+                    let prod = data.new_const(size, data.vn(c1_v).constant_value().wrapping_mul(c2));
+                    data.op_set_all_input(op, &[x, prod]);
+                    return 1;
+                }
+            }
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
