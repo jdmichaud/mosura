@@ -336,14 +336,48 @@ impl<'a> PrintC<'a> {
         format!("({})", self.render_cond_expr(s, idx))
     }
 
-    /// The condition of an `if`/`while`, negated when the body is on the false edge.
+    /// The condition of an `if`/`while`, negated when the body is on the false edge. The
+    /// negation is pushed into the expression (Ghidra's print-time boolean negation) rather
+    /// than wrapped in `!(...)`: `!(!x)` cancels, `==`/`!=` flip.
     fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
-        let cond = self.render_cond_expr(s, cond_idx);
-        if negated {
-            format!("!({cond})")
-        } else {
-            cond
+        // short-circuit conditions: render the join, negate with !(...) (no De Morgan)
+        if matches!(s.blocks[cond_idx].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+            let cond = self.render_cond_expr(s, cond_idx);
+            return if negated { format!("!({cond})") } else { cond };
         }
+        let cvar = exit_basic(s, cond_idx)
+            .and_then(|bid| {
+                self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
+            })
+            .and_then(|cbr| self.f.op(cbr).input(1));
+        match cvar {
+            Some(v) if negated => self.render_negated(v),
+            Some(v) => self.render_var(v).0,
+            None => if negated { "!(1)".to_string() } else { "1".to_string() },
+        }
+    }
+
+    /// Render the logical negation of boolean `v`, folding double negation and flipping
+    /// equality (Ghidra's print-time negation); falls back to `!(...)`.
+    fn render_negated(&mut self, v: VarnodeId) -> String {
+        if let Some(def) = self.f.vn(v).def {
+            let code = self.f.op(def).code();
+            match code {
+                OpCode::BoolNegate => {
+                    let inner = self.f.op(def).input(0).unwrap();
+                    return self.render_var(inner).0; // !(!x) => x
+                }
+                OpCode::IntEqual | OpCode::IntNotequal => {
+                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
+                    let sym = if code == OpCode::IntEqual { "!=" } else { "==" };
+                    let l = self.operand(i0, 9, false);
+                    let r = self.operand(i1, 9, true);
+                    return format!("{l} {sym} {r}");
+                }
+                _ => {}
+            }
+        }
+        format!("!{}", self.operand(v, 15, false))
     }
 
     /// Emit a structured block (and its children) as C.

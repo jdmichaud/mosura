@@ -176,8 +176,11 @@ for the full rationale and architecture.
         float-compare simplification, irreducible CFG). A correct foundation that pays off once
         those are fixed.
   - [ ] DOMINANT gaps blocking the &&/|| funcs: branchless boolean flags (orcompare's
-        `(a)*2 | (b)<<7 != 0` → `a || b`), double-negation `!(!x)`→`x`, global-var naming
+        `(a)*2 | (b)<<7 != 0` → `a || b`), global-var naming
         (`xRam...`), float-compare/NAN simplification, irreducible-CFG gotos (elseif).
+  - [x] **Print-time boolean negation** (`render_negated`): a false-edge condition pushes
+        the negation into the expression instead of `!(...)` — `!(!x)` cancels to `x`, `==`/`!=`
+        flip. condmulti cond `if (param_1 == 0)`; avg →0.5973, condmulti →.764, dupptr →.881.
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.
