@@ -130,6 +130,13 @@ for the full rationale and architecture.
         (Ghidra's `ActionStackPtrFlow`/spacebase) — `*(RSP/RBP+c)` → `stack[c]`, heritaged
         like registers, so spilled params link and the frame collapses (twodim 47→31 live
         ops; params flow directly, matching Ghidra's structure). RSP/RBP unified via entry-RSP.
+  - [x] **P6 return recovery (faithful)** (`recover.rs`): port of `ActionReturnRecovery` +
+        the core of `AncestorRealistic`. Wire RAX/XMM0 candidates to each RETURN pre-heritage;
+        post-heritage keep only the candidate whose value traces to a REAL write (`is_realistic`)
+        — distinguishes int(RAX)/float(XMM0)/void correctly. Replaces the deadcode seed-all
+        crutch. Unit-tested (float/int/void/multiret). + global persistence (ram writes are
+        kept side effects). Corpus 11→16 funcs ≥0.70; twodim .555→.717, threedim →.694,
+        floatprint faithful .789.
   - [ ] Remaining quality: strength reduction (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.

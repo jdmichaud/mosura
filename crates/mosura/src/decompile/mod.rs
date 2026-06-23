@@ -19,6 +19,7 @@ pub mod merge;
 pub mod op;
 pub mod opcode;
 pub mod pipeline;
+pub mod recover;
 pub mod printc;
 pub mod rules;
 pub mod space;

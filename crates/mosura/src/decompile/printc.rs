@@ -162,29 +162,13 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// The varnode returned by the function: the last write to a return register
-    /// (RAX 0x0 / XMM0 0x1200). Heuristic until P6.
+    /// The function's return value: the value wired into a RETURN by return recovery (its
+    /// second input), or `None` for a void function.
     fn return_value(&self) -> Option<VarnodeId> {
-        let reg = self.reg_space?;
-        let mut best: Option<(u32, VarnodeId)> = None;
-        for i in 0..self.f.num_varnodes() as u32 {
-            let v = VarnodeId(i);
-            let vn = self.f.vn(v);
-            if vn.is_written() && vn.loc.space == reg && matches!(vn.loc.offset, 0x0 | 0x1200) {
-                if best.map_or(true, |(ci, _)| vn.create_index > ci) {
-                    best = Some((vn.create_index, v));
-                }
-            }
-        }
-        best.map(|(_, v)| v)
-    }
-
-    /// Is the return value purely the function result (no other use)? Then it inlines into
-    /// `return` and its assignment statement is suppressed.
-    fn ret_inlined(&self) -> Option<VarnodeId> {
-        let v = self.ret_val?;
-        let vn = self.f.vn(v);
-        (vn.is_written() && vn.descend.is_empty()).then_some(v)
+        self.f
+            .op_ids()
+            .find(|&op| self.f.op(op).code() == OpCode::Return && self.f.op(op).num_inputs() > 1)
+            .and_then(|op| self.f.op(op).input(1))
     }
 
     /// The condition of an `if`/`while`: the boolean tested by the CBRANCH at the exit of
@@ -252,21 +236,16 @@ impl<'a> PrintC<'a> {
     /// Emit one basic block's statements (skipping control-flow and inlined ops).
     fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
-        let ret_inl = self.ret_inlined();
         for op in self.f.block(b).ops.clone() {
             let o = self.f.op(op);
             match o.code() {
                 OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => {}
-                OpCode::Return => match (ret_inl, self.ret_val) {
-                    (Some(v), _) => {
-                        let e = self.render_op(self.f.vn(v).def.unwrap()).0;
+                OpCode::Return => match o.input(1) {
+                    Some(v) => {
+                        let e = self.render_var(v).0; // wired return value (inlined when single-use)
                         let _ = writeln!(out, "{pad}return {e};");
                     }
-                    (None, Some(v)) => {
-                        let e = self.render_var(v).0;
-                        let _ = writeln!(out, "{pad}return {e};");
-                    }
-                    (None, None) => {
+                    None => {
                         let _ = writeln!(out, "{pad}return;");
                     }
                 },
@@ -277,9 +256,6 @@ impl<'a> PrintC<'a> {
                 }
                 _ => {
                     if let Some(outv) = o.output {
-                        if Some(outv) == ret_inl {
-                            continue; // inlined into the return
-                        }
                         if self.is_explicit(outv) {
                             let lhs = self.name_of(outv);
                             let rhs = self.render_op(op).0;

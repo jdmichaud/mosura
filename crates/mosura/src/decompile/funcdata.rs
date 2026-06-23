@@ -166,6 +166,12 @@ impl Funcdata {
         self.ops[op.0 as usize].inrefs.swap(i, j);
     }
 
+    /// Append an input to `op` (Ghidra's `opInsertInput` at the end), wiring descendants.
+    pub fn op_append_input(&mut self, op: OpId, vid: VarnodeId) {
+        self.ops[op.0 as usize].inrefs.push(vid);
+        self.varnodes[vid.0 as usize].descend.push(op);
+    }
+
     /// Replace `op`'s entire input list (Ghidra's `opSetAllInput`), fixing descendants.
     pub fn op_set_all_input(&mut self, op: OpId, inputs: &[VarnodeId]) {
         let old = std::mem::take(&mut self.ops[op.0 as usize].inrefs);

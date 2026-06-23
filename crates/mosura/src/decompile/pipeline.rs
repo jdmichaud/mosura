@@ -22,9 +22,11 @@ impl Action for ActionHeritage {
             return 0;
         }
         super::stackvars::recover_stack(data);
+        super::recover::recover_return(data); // wire return candidates before heritage links them
         super::cfg::build_cfg(data);
         let dom = super::dominator::compute(data);
         super::heritage::heritage(data, &dom);
+        super::recover::resolve_return(data); // keep only the realistic return value
         1
     }
 }

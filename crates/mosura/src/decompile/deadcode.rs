@@ -46,19 +46,19 @@ pub fn dead_code(f: &mut Funcdata) {
         }
     }
 
-    // Interim live-out roots: a function's return value reaches the caller in a
-    // return-convention register, but it is not yet wired as an input to RETURN (that is
-    // ActionReturnRecovery, P6). Until then, treat the SysV return registers — RAX (0x0)
-    // and XMM0 (0x1200) — as consumed at exit so the return computation is kept. (This is
-    // x86-specific and over-keeps intermediate writes; P6 / addrtied liveness replaces it.)
-    if let Some(reg) = f.spaces.by_name("register") {
+    // The return value reaches the caller through the RETURN op (ActionReturnRecovery wired
+    // it as an input), so the RETURN sink above already keeps it — no live-out register seed.
+
+    // Persistent live-out roots: a write to a global (ram) location is a side effect visible
+    // to the caller, so it is kept even when nothing in this function reads it back. This is
+    // Ghidra's `persist`/addrtied liveness for global symbols. (Stack slots are in the stack
+    // space after recovery, and scratch registers/uniques are not persistent.)
+    if let Some(ram) = f.spaces.by_name("ram") {
         for i in 0..f.num_varnodes() as u32 {
             let vn = f.vn(VarnodeId(i));
-            if vn.is_written() && vn.loc.space == reg && matches!(vn.loc.offset, 0x0 | 0x1200) {
-                if !live_vn[i as usize] {
-                    live_vn[i as usize] = true;
-                    worklist.push(VarnodeId(i));
-                }
+            if vn.is_written() && vn.loc.space == ram && !live_vn[i as usize] {
+                live_vn[i as usize] = true;
+                worklist.push(VarnodeId(i));
             }
         }
     }
