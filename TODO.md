@@ -159,8 +159,11 @@ for the full rationale and architecture.
         the `for` update), its pre-loop input the initializer. Emits `for (init; cond; iter)`,
         iterator/init suppressed in their blocks. + phi outputs always named (no raw
         `MULTIEQUAL(...)`). forloop1 .703→.865, forloop_varused →.836, threedim →.791; good →26.
-        LIMIT: init often empty (`for (; cond; iter)`) — the `i=0` op is absent from mosura's
-        IR (loop var starts as an undef phi input); needs investigating.
+        + for-loop INIT now recovered: a targeted heritage fix links a sub-register phi
+        input (`EBX`) to its wider covering reaching def (`RBX` initializer) via SUBPIECE, so
+        the `i=0` initializer survives; for_parts carries the init varnode (often a folded
+        constant). forloop1 →.950, forloop_varused →.886; good →28. Safe (only fires when the
+        exact-width def is absent — in-block def chains untouched; no corpus regressions).
   - [ ] Remaining quality: (`(x<<2)+x`→`x*5`), global-var recovery, flag
         conditions (RuleSborrow + rule tail), casts, P4 types, P6 return/params, gotos. THEN
         whole-corpus measurement vs Ghidra `--c` is meaningful.

@@ -66,8 +66,8 @@ struct PrintC<'a> {
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     types: HashMap<VarnodeId, Datatype>,
-    /// WhileDo structured-block index → (initializer op, iterator op) for `for`-loops.
-    for_loops: HashMap<usize, (Option<OpId>, OpId)>,
+    /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
+    for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
     /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
     suppressed: HashSet<OpId>,
 }
@@ -248,7 +248,12 @@ impl<'a> PrintC<'a> {
     /// `(initializer, iterator)` ops (Ghidra `findLoopVariable`/`findInitializer`): the
     /// condition variable's loop-header phi has one input defined in the body (the iterator)
     /// and one defined before the loop (the initializer).
-    fn for_parts(&self, s: &Structured, cond_idx: usize, body_idx: usize) -> Option<(Option<OpId>, OpId)> {
+    fn for_parts(
+        &self,
+        s: &Structured,
+        cond_idx: usize,
+        body_idx: usize,
+    ) -> Option<(Option<VarnodeId>, OpId, VarnodeId)> {
         let head = exit_basic(s, cond_idx)?;
         let cbranch = self
             .f
@@ -260,36 +265,42 @@ impl<'a> PrintC<'a> {
             .find(|&op| self.f.op(op).code() == OpCode::Cbranch)?;
         let cond_var = self.f.op(cbranch).input(1)?;
         let phi = self.find_loop_phi(cond_var, head)?;
+        let phi_out = self.f.op(phi).output?;
 
         let mut body_blocks = Vec::new();
         basic_blocks_of(s, body_idx, &mut body_blocks);
 
-        let (mut iterate, mut init) = (None, None);
+        // the phi's body-defined input is the iterator; its other input is the initializer
+        // value (often a folded constant, so carry the varnode rather than a defining op)
+        let (mut iterate, mut init_var) = (None, None);
         for &inp in &self.f.op(phi).inrefs {
-            let Some(def) = self.f.vn(inp).def else { continue };
-            let Some(pb) = self.f.op(def).parent else { continue };
-            if self.f.op(def).is_marker() {
-                continue;
-            }
-            if body_blocks.contains(&pb) {
-                iterate = Some(def);
-            } else if pb != head {
-                init = Some(def); // defined in the pre-loop block
+            let in_body = match self.f.vn(inp).def {
+                Some(d) => {
+                    self.f.op(d).parent.is_some_and(|pb| body_blocks.contains(&pb))
+                        && !self.f.op(d).is_marker()
+                }
+                None => false,
+            };
+            if in_body {
+                iterate = self.f.vn(inp).def;
+            } else {
+                init_var = Some(inp);
             }
         }
-        iterate.map(|it| (init, it))
+        iterate.map(|it| (init_var, it, phi_out))
     }
 
-    /// Find all `for`-loops in the structure tree and record their header/iterator ops.
+    /// Find all `for`-loops in the structure tree and record their parts.
     fn detect_for_loops(&mut self, s: &Structured, idx: usize) {
         if let FlowKind::WhileDo = s.blocks[idx].kind {
             let comps = s.blocks[idx].components.clone();
-            if let Some((init, iterate)) = self.for_parts(s, comps[0], comps[1]) {
-                self.for_loops.insert(idx, (init, iterate));
-                if let Some(i) = init {
-                    self.suppressed.insert(i);
-                }
+            if let Some((init_var, iterate, phi_out)) = self.for_parts(s, comps[0], comps[1]) {
+                self.for_loops.insert(idx, (init_var, iterate, phi_out));
                 self.suppressed.insert(iterate);
+                // a non-constant initializer is a real op in the pre-loop block — suppress it
+                if let Some(d) = init_var.and_then(|iv| self.f.vn(iv).def) {
+                    self.suppressed.insert(d);
+                }
             }
         }
         for &c in &s.blocks[idx].components.clone() {
@@ -345,8 +356,18 @@ impl<'a> PrintC<'a> {
             }
             FlowKind::WhileDo => {
                 self.emit_structured(s, comps[0], indent, out);
-                if let Some((init, iterate)) = self.for_loops.get(&idx).copied() {
-                    let init_s = init.map(|op| self.render_assign(op)).unwrap_or_default();
+                if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
+                    let init_s = match init_var {
+                        Some(iv) => {
+                            let lhs = self.name_of(phi_out);
+                            let rhs = match self.f.vn(iv).def {
+                                Some(d) => self.render_op(d).0, // the initializer's expression
+                                None => self.render_var(iv).0,  // a folded constant / input
+                            };
+                            format!("{lhs} = {rhs}")
+                        }
+                        None => String::new(),
+                    };
                     let cond = self.render_condition(s, comps[0], negated);
                     let iter_s = self.render_assign(iterate);
                     let _ = writeln!(out, "{pad}for ({init_s}; {cond}; {iter_s}) {{");

@@ -196,6 +196,47 @@ fn current_def(
         .or_insert_with(|| f.new_input(loc.2, super::space::Address::new(loc.0, loc.1)))
 }
 
+/// Like [`current_def`], but for a phi input flowing out of block `b`: when nothing defines
+/// `loc` at its exact width on this path yet a *wider* def at the same offset is current (a
+/// sub-register reaching def — e.g. a phi for `EBX` whose initializer wrote the full `RBX`),
+/// splice a `SUBPIECE(W, 0)` at the end of block `b` and use it, so the wide initializer is
+/// linked (and kept) rather than dropped. Only fires when the exact width is absent, so the
+/// in-block def chains (where the exact width is on the stack) are untouched.
+fn reaching_phi_input(
+    f: &mut Funcdata,
+    loc: Loc,
+    b: usize,
+    stack: &HashMap<Loc, Vec<VarnodeId>>,
+    inputs: &mut HashMap<Loc, VarnodeId>,
+) -> VarnodeId {
+    if stack.get(&loc).and_then(|s| s.last()).is_some() {
+        return current_def(f, loc, stack, inputs);
+    }
+    let (sp, off, sz) = loc;
+    let cover = stack
+        .iter()
+        .filter(|((s, o, w), v)| *s == sp && *o == off && *w > sz && !v.is_empty())
+        .min_by_key(|((_, _, w), _)| *w)
+        .and_then(|(_, v)| v.last().copied());
+    let Some(w) = cover else {
+        return current_def(f, loc, stack, inputs);
+    };
+    let ops = f.blocks()[b].ops.clone();
+    let Some(&last) = ops.last() else {
+        return current_def(f, loc, stack, inputs);
+    };
+    let seq = f.op(last).seqnum;
+    let zero = f.new_const(4, 0);
+    let sub = f.new_op(OpCode::Subpiece, seq, vec![w, zero]);
+    let subout = f.new_output_unique(sub, sz);
+    f.op_mut(sub).parent = Some(super::block::BlockId(b as u32));
+    let pos = if f.op(last).code().terminates_block() { ops.len() - 1 } else { ops.len() };
+    let mut new_ops = ops;
+    new_ops.insert(pos, sub);
+    f.set_block_ops(super::block::BlockId(b as u32), new_ops);
+    subout
+}
+
 #[allow(clippy::too_many_arguments)]
 fn rename(
     f: &mut Funcdata,
@@ -244,7 +285,7 @@ fn rename(
             .map(|((_, l), &op)| (*l, op))
             .collect();
         for (l, phi) in phi_locs {
-            let def = current_def(f, l, stack, inputs);
+            let def = reaching_phi_input(f, l, b, stack, inputs);
             f.op_set_input(phi, j, def);
         }
     }
