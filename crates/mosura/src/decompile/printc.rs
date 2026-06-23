@@ -42,6 +42,18 @@ fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     }
 }
 
+/// Ghidra's one-letter type prefix for a variable/global name.
+fn type_prefix(t: &Datatype) -> &'static str {
+    match t {
+        Datatype::Int(_) => "i",
+        Datatype::Uint(_) => "u",
+        Datatype::Bool => "b",
+        Datatype::Float(_) => "f",
+        Datatype::Pointer(..) => "p",
+        _ => "x",
+    }
+}
+
 /// SysV integer parameter registers → `param_N`.
 fn param_name(space_is_reg: bool, offset: u64) -> Option<&'static str> {
     if !space_is_reg {
@@ -63,6 +75,7 @@ struct PrintC<'a> {
     h: HighVariables,
     names: HashMap<u32, String>,
     reg_space: Option<super::space::SpaceId>,
+    ram_space: Option<super::space::SpaceId>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     types: HashMap<VarnodeId, Datatype>,
@@ -112,6 +125,12 @@ impl<'a> PrintC<'a> {
             if let Some(p) = param_name(is_reg, vn.loc.offset) {
                 return p.to_string();
             }
+        }
+        // a direct global — a constant-address access in `ram` — is named by its address,
+        // like Ghidra's `<typeprefix>Ram<addr>` (e.g. `iRam0000000000101000`)
+        if Some(vn.loc.space) == self.ram_space {
+            let (off, prefix) = (vn.loc.offset, type_prefix(&self.type_of(v)));
+            return format!("{prefix}Ram{off:016x}");
         }
         let id = self.h.high(v);
         if let Some(n) = self.names.get(&id) {
@@ -535,6 +554,7 @@ pub fn print_c(f: &Funcdata) -> String {
         h: merge(f),
         names: HashMap::new(),
         reg_space,
+        ram_space: f.spaces.by_name("ram"),
         var_counter: 0,
         ret_val: None,
         types: infer(f),
