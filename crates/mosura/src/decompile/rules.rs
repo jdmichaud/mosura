@@ -6,6 +6,7 @@ use super::action::Rule;
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
+use super::varnode::VarnodeId;
 
 fn mask(v: u64, size: u32) -> u64 {
     if size >= 8 {
@@ -250,6 +251,65 @@ impl Rule for RuleTrivialShift {
     }
 }
 
+/// Express `vn` as `(base, coefficient)`: `base * c` for an `INT_MULT` by a constant,
+/// else `(vn, 1)`. (Assumes `RuleTermOrder` put the constant in slot 1.)
+fn as_term(data: &Funcdata, vn: VarnodeId) -> (VarnodeId, i64) {
+    if let Some(def) = data.vn(vn).def {
+        let o = data.op(def);
+        if o.code() == OpCode::IntMult && o.num_inputs() == 2 {
+            if let Some(c) = o.input(1) {
+                if data.vn(c).is_constant() {
+                    return (o.input(0).unwrap(), data.vn(c).constant_value() as i64);
+                }
+            }
+        }
+    }
+    (vn, 1)
+}
+
+/// Collect like additive terms (Ghidra's `RuleCollectTerms`, binary form): `a*c1 + a*c2`
+/// → `a*(c1+c2)` (covering `a + a` → `a*2` and `a*c + a` → `a*(c+1)`). Deeper additive
+/// trees collapse pairwise as the pool iterates to fixpoint. The full N-ary tree gather is
+/// the remaining generalization.
+pub struct RuleCollectTerms;
+
+impl Rule for RuleCollectTerms {
+    fn name(&self) -> &str {
+        "collectterms"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAdd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let (bx, cx) = as_term(data, data.op(op).input(0).unwrap());
+        let (by, cy) = as_term(data, data.op(op).input(1).unwrap());
+        if bx != by {
+            return 0;
+        }
+        let out_size = data.vn(data.op(op).output.unwrap()).size;
+        match cx.wrapping_add(cy) {
+            0 => {
+                let z = data.new_const(out_size, 0);
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_set_all_input(op, &[z]);
+            }
+            1 => {
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_set_all_input(op, &[bx]);
+            }
+            c => {
+                let coef = data.new_const(out_size, c as u64);
+                data.op_set_opcode(op, OpCode::IntMult);
+                data.op_set_all_input(op, &[bx, coef]);
+            }
+        }
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +413,28 @@ mod tests {
             let in0 = f.op(op).input(0).unwrap();
             assert!(f.vn(in0).is_constant() && f.vn(in0).constant_value() == 0);
         }
+    }
+
+    #[test]
+    fn collect_terms_a_plus_a2_is_a3() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(8, Address::new(reg, 0x38));
+        let two = f.new_const(8, 2);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let m = f.new_op(OpCode::IntMult, seq, vec![a, two]); // a * 2
+        let mout = f.new_output(m, 8, Address::new(uniq, 0x100));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![a, mout]); // a + a*2
+        f.new_output(add, 8, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![m, add], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleTermOrder).with(RuleCollectTerms);
+        pool.apply(&mut f);
+        // a + a*2  →  a*3
+        assert_eq!(f.op(add).code(), OpCode::IntMult);
+        assert_eq!(f.op(add).input(0), Some(a));
+        let c = f.op(add).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
     }
 }

@@ -166,6 +166,20 @@ impl Funcdata {
         self.ops[op.0 as usize].inrefs.swap(i, j);
     }
 
+    /// Replace `op`'s entire input list (Ghidra's `opSetAllInput`), fixing descendants.
+    pub fn op_set_all_input(&mut self, op: OpId, inputs: &[VarnodeId]) {
+        let old = std::mem::take(&mut self.ops[op.0 as usize].inrefs);
+        for v in old {
+            if let Some(pos) = self.varnodes[v.0 as usize].descend.iter().position(|&o| o == op) {
+                self.varnodes[v.0 as usize].descend.remove(pos);
+            }
+        }
+        for &v in inputs {
+            self.ops[op.0 as usize].inrefs.push(v);
+            self.varnodes[v.0 as usize].descend.push(op);
+        }
+    }
+
     /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
     pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
         let vid = self.ops[op.0 as usize].inrefs.remove(slot);

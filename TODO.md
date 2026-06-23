@@ -62,7 +62,8 @@ for the full rationale and architecture.
         clean overlap gap (twodim/threedim fully, elseif reduced), SSA invariants hold.
         REMAINING: write side (`normalizeWriteSize`/PIECE for partial writes, AH-type
         offset+1), cross-offset CONCAT.
-- [~] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules) — CORE DONE
+- [x] **P2 — Rule pool** (`ActionPool` + `ruleaction.cc` rules) — CORE DONE
+      (framework + 6 foundational rules + pipeline; long rule tail is incremental)
   - [x] Op-rewrite primitives (`funcdata.rs`): `op_set_opcode`, `op_remove_input`,
         `total_replace`, `mark_dead`.
   - [x] Constant folding (`rules.rs::RuleConstFold` + `eval_const`, mirroring emu's
@@ -72,10 +73,11 @@ for the full rationale and architecture.
         `RuleTrivialShift` (x<<0, shift≥width→0). Unit-tested + in the integration pool.
   - [x] Pipeline assembled (`pipeline.rs`): `ActionHeritage` → `default_rule_pool`;
         `pipeline::decompile(f)` runs end-to-end, tested.
-  - [ ] Incremental rule tail: `RuleCollectTerms` (a*c1+a*c2 — highest value, needs the
-        additive-tree machinery), `RuleSub2Add`, SUBPIECE/MULTIEQUAL pull-through, +
-        Ghidra's ~95 others. Each is a drop-in; add as concrete functions need them.
-  - [ ] Assemble the universal-action pipeline (heritage → pool → …).
+  - [x] `RuleCollectTerms` (binary): a*c1+a*c2 → a*(c1+c2) (incl. a+a→a*2). Unit-tested
+        (a+a*2→a*3); deeper trees collapse pairwise at fixpoint. Full N-ary gather remains.
+  - [ ] Incremental rule tail: copy-propagation, SUBPIECE/MULTIEQUAL pull-through,
+        `RuleSub2Add`, + Ghidra's ~90 others. Each is a drop-in; mosura's post-pipeline
+        op count is ~2x Ghidra's — the gap is this tail (no single rule closes it).
 - [x] **P3 — Dead code** (`deadcode.rs::ActionDeadCode`) — whole-varnode liveness seeded
       from side-effecting ops (returns/branches/stores/calls), propagated backward; removes
       the rule pool's collapsed ops + dead computations. Wired into the pipeline; invariant

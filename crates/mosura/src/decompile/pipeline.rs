@@ -4,7 +4,7 @@
 
 use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
-use super::rules::{RuleConstFold, RuleIdentityEl, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
+use super::rules::{RuleCollectTerms, RuleConstFold, RuleIdentityEl, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
 
 /// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
 /// construction Ghidra does in `followFlow`). Runs once — when the blocks aren't built yet.
@@ -30,6 +30,7 @@ pub fn default_rule_pool() -> ActionPool {
     ActionPool::new("oppool")
         .with(RuleTermOrder)
         .with(RuleConstFold)
+        .with(RuleCollectTerms)
         .with(RuleTrivialArith)
         .with(RuleIdentityEl)
         .with(RuleTrivialShift)
