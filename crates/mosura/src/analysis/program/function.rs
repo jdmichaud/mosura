@@ -62,6 +62,14 @@ impl FunctionManager {
     pub fn function_at(&self, entry: Address) -> Option<&Function> {
         self.functions.iter().find(|f| f.entry == entry)
     }
+
+    /// Set a function's body (Ghidra `Function.setBody`) — the address set of code units
+    /// it owns, computed once disassembly has run.
+    pub fn set_body(&mut self, entry: Address, body: AddressSet) {
+        if let Some(f) = self.functions.iter_mut().find(|f| f.entry == entry) {
+            f.body = body;
+        }
+    }
 }
 
 #[cfg(test)]

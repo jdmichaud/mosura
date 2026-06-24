@@ -143,6 +143,21 @@ impl Program {
             })
             .map(|(a, _)| a.offset)
             .collect();
+        let bodies = self
+            .function_manager
+            .functions()
+            .filter(|f| f.entry_point().space == self.default_space)
+            .filter(|f| !f.body().is_empty())
+            .map(|f| snapshot::FnBody {
+                entry: f.entry_point().offset,
+                ranges: f
+                    .body()
+                    .ranges()
+                    .filter(|r| r.space == self.default_space)
+                    .map(|r| (r.min, r.max))
+                    .collect(),
+            })
+            .collect();
         let mut snap = Snapshot {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
@@ -155,6 +170,7 @@ impl Program {
             symbols,
             refs,
             code_units,
+            bodies,
         };
         snap.normalize();
         snap

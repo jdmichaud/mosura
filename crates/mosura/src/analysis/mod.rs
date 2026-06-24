@@ -102,6 +102,11 @@ pub fn analyze(program: &mut Program) {
     }
     mgr.scheduling().function_defined(&seed);
     mgr.run(program);
+
+    // Compute function bodies once disassembly has converged (Ghidra `Function.getBody`).
+    if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
+        analyzers::compute_function_bodies(&spec, &ctx, program);
+    }
 }
 
 #[cfg(test)]
@@ -168,4 +173,3 @@ mod a5_tests {
         }
     }
 }
-

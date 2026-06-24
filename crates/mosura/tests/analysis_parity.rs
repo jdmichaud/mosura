@@ -134,6 +134,37 @@ fn function_parity() {
     assert!(recall.passed >= 17, "function recall regressed below 17");
 }
 
+/// A4 — function-body parity. For every function mosura *and* Ghidra both have, the body
+/// (the address ranges the function owns, Ghidra `Function.getBody`) must match **exactly**
+/// — a HARD assert, plus a ratchet on how many bodies are validated.
+#[test]
+fn function_body_parity() {
+    use std::collections::BTreeMap;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut validated = 0usize;
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let mine: BTreeMap<u64, Vec<(u64, u64)>> =
+            snap.bodies.iter().map(|b| (b.entry, b.ranges.clone())).collect();
+        let mut matched = 0usize;
+        for b in &golden.bodies {
+            if let Some(mr) = mine.get(&b.entry) {
+                assert_eq!(*mr, b.ranges, "{name}: function {:08x} body differs from Ghidra", b.entry);
+                matched += 1;
+            }
+        }
+        eprintln!("  [{name}] function bodies {matched}/{} exact (the rest are undiscovered functions)", golden.bodies.len());
+        validated += matched;
+    }
+    eprintln!("function-body parity: {validated} exact bodies");
+    // freestanding 3 + basic 14 = 17 bodies validated exactly.
+    assert!(validated >= 17, "function-body validation regressed below 17");
+}
+
 /// A5 — references parity. mosura's analysis must never invent a reference Ghidra
 /// doesn't have (a HARD subset gate over references **from executable code**), and we
 /// ratchet how many of Ghidra's code references it recovers. The missing remainder is

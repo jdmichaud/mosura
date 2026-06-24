@@ -68,6 +68,14 @@ pub struct Ref {
     pub kind: String,
 }
 
+/// A function's body (Ghidra `Function.getBody`): its entry plus the inclusive address
+/// ranges of code units it owns.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FnBody {
+    pub entry: u64,
+    pub ranges: Vec<(u64, u64)>,
+}
+
 /// The converged-program snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -85,6 +93,8 @@ pub struct Snapshot {
     /// Disassembled-instruction start addresses (Ghidra `Listing` code units) — the A4
     /// disassembly output.
     pub code_units: Vec<u64>,
+    /// Function bodies (Ghidra `Function.getBody`).
+    pub bodies: Vec<FnBody>,
 }
 
 impl Snapshot {
@@ -99,6 +109,11 @@ impl Snapshot {
         self.refs.dedup();
         self.code_units.sort_unstable();
         self.code_units.dedup();
+        for b in &mut self.bodies {
+            b.ranges.sort_unstable();
+        }
+        self.bodies.sort();
+        self.bodies.dedup();
     }
 
     /// Render to the canonical v1 text format (sorted). Round-trips with
@@ -128,6 +143,13 @@ impl Snapshot {
         }
         for a in &s.code_units {
             out.push_str(&format!("insn {a:08x}\n"));
+        }
+        for b in &s.bodies {
+            out.push_str(&format!("fnbody {:08x}", b.entry));
+            for (start, end) in &b.ranges {
+                out.push_str(&format!(" {start:08x}:{end:08x}"));
+            }
+            out.push('\n');
         }
         out
     }
@@ -203,6 +225,18 @@ pub fn parse(text: &str) -> Snapshot {
             Some("insn") => {
                 if let Some(a) = it.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
                     snap.code_units.push(a);
+                }
+            }
+            Some("fnbody") => {
+                // `fnbody <entry> s:e s:e ...`.
+                if let Some(entry) = it.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
+                    let ranges = it
+                        .filter_map(|tok| {
+                            let (s, e) = tok.split_once(':')?;
+                            Some((u64::from_str_radix(s, 16).ok()?, u64::from_str_radix(e, 16).ok()?))
+                        })
+                        .collect();
+                    snap.bodies.push(FnBody { entry, ranges });
                 }
             }
             _ => {} // unknown prefix (future section) — ignore

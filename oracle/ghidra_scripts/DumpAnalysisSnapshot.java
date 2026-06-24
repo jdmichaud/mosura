@@ -62,6 +62,19 @@ public class DumpAnalysisSnapshot extends GhidraScript {
                 w.printf("func %08x %s%n", f.getEntryPoint().getOffset(), f.getName());
             }
 
+            // Function bodies: the address ranges each function owns (Ghidra
+            // `Function.getBody`), default-space only. `fnbody <entry> s:e s:e ...`.
+            for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+                if (!f.getEntryPoint().getAddressSpace().equals(defaultSpace)) continue;
+                StringBuilder sb = new StringBuilder();
+                for (ghidra.program.model.address.AddressRange r : f.getBody()) {
+                    if (!r.getMinAddress().getAddressSpace().equals(defaultSpace)) continue;
+                    sb.append(String.format(" %08x:%08x", r.getMinAddress().getOffset(),
+                            r.getMaxAddress().getOffset()));
+                }
+                w.printf("fnbody %08x%s%n", f.getEntryPoint().getOffset(), sb.toString());
+            }
+
             // External entry points (Ghidra getExternalEntryPointIterator), address-sorted.
             ghidra.program.model.symbol.SymbolTable st = currentProgram.getSymbolTable();
             java.util.List<Address> entries = new java.util.ArrayList<>();

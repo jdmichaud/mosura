@@ -163,6 +163,61 @@ impl Analyzer for FunctionCreator {
     }
 }
 
+/// Compute each function's body (Ghidra `Function.getBody`): the address set of code
+/// units reachable from the entry by intra-function flow (fall-through + branch targets,
+/// not calls), not crossing into another function's entry. Run after disassembly.
+pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
+    use std::collections::{BTreeSet, HashSet};
+    let ram = program.default_space;
+    let entries: BTreeSet<u64> =
+        program.function_manager.functions().map(|f| f.entry_point().offset).collect();
+
+    let mut bodies: Vec<(u64, AddressSet)> = Vec::new();
+    for &entry in &entries {
+        let mut body = AddressSet::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut work = vec![entry];
+        while let Some(a) = work.pop() {
+            if !visited.insert(a) {
+                continue;
+            }
+            // Stop at another function's entry — it owns its own code.
+            if a != entry && entries.contains(&a) {
+                continue;
+            }
+            let window = program.memory.read_window(Address::new(ram, a), 16);
+            let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else {
+                continue;
+            };
+            let ilen = insn.bytes.len() as u64;
+            if ilen == 0 {
+                continue;
+            }
+            body.add_range(ram, a, a + ilen - 1); // inclusive [a, a+ilen)
+            let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
+            let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            for op in &insn.ops {
+                if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
+                    if let Some(t) = Disassembler::static_target(op).filter(|&t| t != a) {
+                        work.push(t);
+                    }
+                }
+            }
+            if falls {
+                work.push(a + ilen);
+            }
+        }
+        // External thunks / no-code functions get Ghidra's degenerate one-byte body.
+        if body.is_empty() {
+            body.add_range(ram, entry, entry);
+        }
+        bodies.push((entry, body));
+    }
+    for (entry, body) in bodies {
+        program.function_manager.set_body(Address::new(ram, entry), body);
+    }
+}
+
 /// Constant-propagation reference analyzer (Ghidra `ConstantPropagationAnalyzer`): runs
 /// the [`SymbolicPropogator`](crate::analysis::symbolic) over each function to recover
 /// data references (READ/WRITE/DATA) from resolved memory operands. Runs at REFERENCE
