@@ -581,13 +581,27 @@ impl<'a> PrintC<'a> {
                     let r = self.operand(i1, 9, true);
                     return format!("{l} {sym} {r}");
                 }
-                // !(a < b) => b <= a ; !(a <= b) => b < a (swap operands, flip strictness)
-                OpCode::IntLess | OpCode::IntSless | OpCode::IntLessequal | OpCode::IntSlessequal => {
+                // !(a <= b) => b < a
+                OpCode::IntLessequal | OpCode::IntSlessequal => {
                     let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
-                    let sym = if matches!(code, OpCode::IntLess | OpCode::IntSless) { "<=" } else { "<" };
                     let l = self.operand(i1, 9, false);
                     let r = self.operand(i0, 9, true);
-                    return format!("{l} {sym} {r}");
+                    return format!("{l} < {r}");
+                }
+                // !(a < b) => b <= a; but when a is a constant c, Ghidra keeps the strict form
+                // by incrementing the constant (`b < c+1`), unless c+1 overflows the width
+                OpCode::IntLess | OpCode::IntSless => {
+                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
+                    let vn0 = self.f.vn(i0);
+                    if vn0.is_constant() {
+                        if let Some(cp1) = incr_in_width(vn0.constant_value(), vn0.size, code == OpCode::IntSless) {
+                            let l = self.operand(i1, 9, false);
+                            return format!("{l} < {}", render_const(cp1, vn0.size));
+                        }
+                    }
+                    let l = self.operand(i1, 9, false);
+                    let r = self.operand(i0, 9, true);
+                    return format!("{l} <= {r}");
                 }
                 _ => {}
             }
@@ -851,6 +865,22 @@ impl<'a> PrintC<'a> {
 
 /// Render a constant: small negatives as signed decimal (Ghidra prints `0xff..fb` as `-5`),
 /// otherwise decimal for small values and hex for the rest.
+/// `c + 1` masked to a comparison's width, or `None` if it would overflow the maximum value
+/// for the signedness — so the strict-`<` rewrite `x <= c` ⇒ `x < c+1` stays exact.
+fn incr_in_width(c: u64, size: u32, signed: bool) -> Option<u64> {
+    let bits = (size * 8).clamp(1, 64);
+    let full = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let cm = c & full;
+    let max = if !signed {
+        full
+    } else if bits >= 64 {
+        i64::MAX as u64
+    } else {
+        (1u64 << (bits - 1)) - 1
+    };
+    (cm != max).then(|| (cm + 1) & full)
+}
+
 fn render_const(val: u64, size: u32) -> String {
     let signed = if size == 0 || size >= 8 {
         val as i64
