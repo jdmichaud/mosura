@@ -289,23 +289,29 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
     - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. WAR2/comcom32 exact.
   - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
         defined symbols are processed today — fine for the corpus).
+  - [ ] **Loader-stage references** (audit finding): Ghidra's `-noanalysis` loader marks up ELF
+        header/dynamic structures and emits DATA refs (e.g. `e_entry` field → `_start`) — 4 on
+        freestanding, 36 on basic. mosura's loader emits none; not covered by `loader_detail_parity`
+        (which compares blocks/funcs/entries/symbols, not refs). Needs ELF data-structure markup.
   - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
 - [x] **A3 — Framework** (`priority.rs`/`analyzer.rs`/`manager.rs`). `AnalysisPriority`
       ladder; `Analyzer` trait + `AnalyzerType`; `AutoAnalysisManager`+`Scheduling` — per-
       analyzer `AddressSet` accumulators, fact-routing notifiers (`code_defined`/
       `function_defined`/…), fixpoint run loop. Analyzers notify `Scheduling` directly
       (explicit-channel model). Unit-tested: priority order + re-trigger to fixpoint.
-- [~] **A4 — Disassembly + function discovery** (`analyzers/`) — engine integrated; converged
-      gate pending A5–A7.
+- [x] **A4 — Disassembly + function discovery** (`analyzers/`) — engine + converged gates landed.
   - [x] `Disassembler`: SLEIGH-driven recursive descent (fall-through + branch targets;
         `followFlow`) → `Listing` code units; static call targets → new functions.
   - [x] `FunctionCreator`: function at each executable seed (Ghidra `createEntryFunction`
         `isExecute` check — no data-address functions); idempotent; schedules disassembly.
-  - [x] `analyze(program)` seeds from loader functions+entries, runs to fixpoint. freestanding
-        recursive descent verified (code units cover all functions, no spurious ones).
-  - [ ] Converged gate: snapshot **v3** (code units / function bodies), validated against the
-        converged goldens — meaningful once A5–A7 complete the analysis (A4 alone is partial).
-  - [ ] Indirect branches (jump tables, A6), aggressive/function-pattern discovery.
+  - [x] `analyze(program)` seeds from loader functions+entries, runs to fixpoint.
+  - [x] **Converged gates** (snapshot `insn` section): `disassembly_parity` — code units a HARD
+        subset of Ghidra's (0 misaligned decodes), recall 142/146; `function_parity` — no spurious
+        functions, recall 17/19. (audit fix: A4's core output had been ungated.)
+  - [ ] **Function bodies**: `FunctionManager` functions carry an empty `AddressSet` body; Ghidra
+        computes the body. Not snapshot-gated; needed by A6 (decompiling a function).
+  - [ ] The 4 instructions / 2 functions mosura misses (PLT[0] `0x401020`, GOT-indirect `0x405010`)
+        need PLT-stub disassembly / pointer-following. Indirect branches (jump tables) are A6.
 - [x] **A5 — References + `SymbolicPropogator`** — reference model, flow refs, propagator,
       and the ref-parity oracle landed. **reference parity 29/37, 0 false positives** (mosura
       never invents a reference Ghidra lacks); residual recall is A6 / deeper propagation.
@@ -323,6 +329,10 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] *Recall residual (A6 / future, not A5):* COMPUTED_CALL / INDIRECTION / PARAM (indirect-call +
         parameter analysis), PLT-stub disassembly, GOT pointer-following (memory-content reads),
         register-relative (stack) values, context merge at joins.
+  - [ ] *Faithfulness note (unobservable on the corpus):* Ghidra uses two ref-address thresholds —
+        `minStoreLoadRefAddress`=4 (known/direct) and `minSpeculativeRefAddress`=1024 (speculative
+        constants). mosura uses 4 for resolved load/store and bypasses for literal operands; all
+        corpus addresses are ≫1024 so results are identical, but the speculative threshold isn't modeled.
 - [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
       decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
       parity. **Depends on the decompiler port.**
