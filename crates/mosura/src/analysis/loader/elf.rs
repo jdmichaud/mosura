@@ -190,7 +190,47 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
     let mut program = Program::new(spaces, ram, language_id, compiler_spec_id, image_base, false, 64);
     program.memory = memory;
     recover_symbols(&elf, ram, &externals, ext_start, &mut program);
+    markup_elf_structures(&elf, ram, &mut program);
     Ok(program)
+}
+
+/// Mark up the ELF header + program-header table with the DATA references Ghidra's loader
+/// emits (`ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`): `e_entry` → entry,
+/// `e_phoff` → the program-header table, and each loaded segment's `p_vaddr` → its load
+/// address. The header sits at the image base (where file offset 0 loads).
+fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
+    let endian = elf.endian();
+    let header = elf.elf_header();
+    let base = program.image_base.offset;
+    let mapped = |program: &Program, off: u64| program.memory.contains(Address::new(ram, off));
+    let mut data_ref = |program: &mut Program, from: u64, to: u64| {
+        program.reference_manager.add(Address::new(ram, from), Address::new(ram, to), RefType::Data, -1);
+    };
+
+    // Elf64_Ehdr: e_entry @ 0x18 (a pointer field), e_phoff @ 0x20.
+    let e_entry = header.e_entry(endian);
+    if e_entry != 0 && mapped(program, e_entry) {
+        data_ref(program, base + 0x18, e_entry);
+    }
+    let e_phoff = header.e_phoff(endian);
+    let phentsize = u64::from(header.e_phentsize(endian));
+    let phdr_vaddr = base + e_phoff; // file offset e_phoff loads at base + e_phoff
+    if e_phoff != 0 && mapped(program, phdr_vaddr) {
+        data_ref(program, base + 0x20, phdr_vaddr);
+    }
+
+    // Each program header's p_vaddr (@ 0x10 in Elf64_Phdr) → its load address. Skip
+    // PT_NULL and offset-0 segments (the latter is the file-start LOAD — Ghidra's
+    // `p_offset == 0` skip), and segments whose target isn't loaded.
+    for (i, ph) in elf.elf_program_headers().iter().enumerate() {
+        if ph.p_type(endian) == elf::PT_NULL || ph.p_offset(endian) == 0 {
+            continue;
+        }
+        let pvaddr = ph.p_vaddr(endian);
+        if pvaddr != 0 && mapped(program, pvaddr) {
+            data_ref(program, phdr_vaddr + i as u64 * phentsize + 0x10, pvaddr);
+        }
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
