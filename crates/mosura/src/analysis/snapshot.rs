@@ -42,6 +42,23 @@ pub struct Function {
     pub name: String,
 }
 
+/// An external entry point (Ghidra `SymbolTable.getExternalEntryPointIterator`):
+/// the address plus its primary symbol name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EntryPoint {
+    pub addr: u64,
+    pub name: String,
+}
+
+/// A defined symbol (Ghidra `Symbol`): address, name, and `SymbolType` kind
+/// (`"Function"` / `"Label"` / …, matching Ghidra's `SymbolType` string).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Symbol {
+    pub addr: u64,
+    pub name: String,
+    pub kind: String,
+}
+
 /// The converged-program snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -53,14 +70,18 @@ pub struct Snapshot {
     pub addr_size: u32,
     pub blocks: Vec<Block>,
     pub functions: Vec<Function>,
+    pub entries: Vec<EntryPoint>,
+    pub symbols: Vec<Symbol>,
 }
 
 impl Snapshot {
     /// Sort all sections into the canonical order used by [`Snapshot::render`]
-    /// and golden comparison (blocks by start address, functions by entry).
+    /// and golden comparison, so a comparison is order-independent.
     pub fn normalize(&mut self) {
         self.blocks.sort();
         self.functions.sort();
+        self.entries.sort();
+        self.symbols.sort();
     }
 
     /// Render to the canonical v1 text format (sorted). Round-trips with
@@ -78,6 +99,12 @@ impl Snapshot {
         }
         for f in &s.functions {
             out.push_str(&format!("func {:08x} {}\n", f.entry, f.name));
+        }
+        for e in &s.entries {
+            out.push_str(&format!("entry {:08x} {}\n", e.addr, e.name));
+        }
+        for sym in &s.symbols {
+            out.push_str(&format!("sym {:08x} {} {}\n", sym.addr, sym.name, sym.kind));
         }
         out
     }
@@ -124,6 +151,23 @@ pub fn parse(text: &str) -> Snapshot {
                     snap.functions.push(Function { entry, name });
                 }
             }
+            Some("entry") => {
+                let addr = it.next().and_then(|s| u64::from_str_radix(s, 16).ok());
+                let name = it.collect::<Vec<_>>().join(" ");
+                if let Some(addr) = addr {
+                    snap.entries.push(EntryPoint { addr, name });
+                }
+            }
+            Some("sym") => {
+                // `sym <addr> <name> <kind>`; kind is the final token.
+                let addr = it.next().and_then(|s| u64::from_str_radix(s, 16).ok());
+                let mut rest: Vec<&str> = it.collect();
+                let kind = rest.pop().unwrap_or("").to_string();
+                let name = rest.join(" ");
+                if let Some(addr) = addr {
+                    snap.symbols.push(Symbol { addr, name, kind });
+                }
+            }
             _ => {} // unknown prefix (future section) — ignore
         }
     }
@@ -142,6 +186,11 @@ block 00401000 00401078 .text
 block 00400000 0040011f segment_0.1
 func 00401042 _start
 func 00401000 add
+entry 00401042 _start
+entry 00402000 __bss_start
+sym 00401000 add Function
+sym 00402000 _end Label
+sym 00402000 __bss_start Label
 ";
 
     #[test]
@@ -157,6 +206,14 @@ func 00401000 add
         assert_eq!(s.blocks[1].name, ".text");
         assert_eq!(s.functions[0].name, "add");
         assert_eq!(s.functions[1].name, "_start");
+        // v2 sections: entries by (addr,name), symbols by (addr,name,kind)
+        assert_eq!(s.entries.len(), 2);
+        assert_eq!(s.entries[0].name, "_start");
+        assert_eq!(s.symbols.len(), 3);
+        // same address 0x402000 sorts __bss_start before _end (by name)
+        assert_eq!(s.symbols[1].name, "__bss_start");
+        assert_eq!(s.symbols[2].name, "_end");
+        assert_eq!(s.symbols[0].kind, "Function");
     }
 
     #[test]

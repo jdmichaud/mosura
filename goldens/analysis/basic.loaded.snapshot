@@ -1,0 +1,96 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=basic.elf
+block 00400000 0040034f segment_2.1
+block 00400350 0040036f .note.gnu.property
+block 00400370 00400393 .note.gnu.build-id
+block 00400394 004003af .interp
+block 004003b0 004003cb .gnu.hash
+block 004003d0 0040042f .dynsym
+block 00400430 00400479 .dynstr
+block 0040047a 00400481 .gnu.version
+block 00400488 004004b7 .gnu.version_r
+block 004004b8 004004e7 .rela.dyn
+block 004004e8 004004ff .rela.plt
+block 00401000 00401016 .init
+block 00401020 0040103f .plt
+block 00401040 004011a9 .text
+block 004011ac 004011b4 .fini
+block 00402000 00402007 .rodata
+block 00402008 00402043 .eh_frame_hdr
+block 00402048 0040212b .eh_frame
+block 0040212c 0040214b .note.ABI-tag
+block 00403df8 00403dff .init_array
+block 00403e00 00403e07 .fini_array
+block 00403e08 00403fd7 .dynamic
+block 00403fd8 00403fe7 .got
+block 00403fe8 00404007 .got.plt
+block 00404008 00404017 .data
+block 00404018 0040401f .bss
+block 00405000 00405017 EXTERNAL
+func 00401000 _init
+func 00401040 _start
+func 00401070 _dl_relocate_static_pie
+func 00401080 deregister_tm_clones
+func 004010b0 register_tm_clones
+func 004010f0 __do_global_dtors_aux
+func 00401120 frame_dummy
+func 00401126 add
+func 0040113a sum_to
+func 00401168 main
+func 004011ac _fini
+func 00405000 __libc_start_main
+func 00405008 printf
+entry 00401000 _init
+entry 00401040 _start
+entry 00401070 _dl_relocate_static_pie
+entry 004010f0 __do_global_dtors_aux
+entry 00401120 frame_dummy
+entry 00401168 main
+entry 004011ac _fini
+entry 00402000 _IO_stdin_used
+entry 00404008 data_start
+entry 00404010 __dso_handle
+entry 00404018 completed.0
+entry 00404020 _end
+sym 00403e08 _DYNAMIC Label
+sym 00401000 __DT_INIT Label
+sym 004011ac __DT_FINI Label
+sym 00403df8 __DT_INIT_ARRAY Label
+sym 00403e00 __DT_FINI_ARRAY Label
+sym 004003b0 __DT_GNU_HASH Label
+sym 00400430 __DT_STRTAB Label
+sym 004003d0 __DT_SYMTAB Label
+sym 00403fe8 __DT_PLTGOT Label
+sym 004004e8 __DT_JMPREL Label
+sym 004004b8 __DT_RELA Label
+sym 00400488 __DT_VERNEED Label
+sym 0040047a __DT_VERSYM Label
+sym 00405000 __libc_start_main Function
+sym 00405008 printf Function
+sym 00405010 __gmon_start__ Label
+sym 0040212c __abi_tag Label
+sym 00401080 deregister_tm_clones Function
+sym 004010b0 register_tm_clones Function
+sym 004010f0 __do_global_dtors_aux Function
+sym 00404018 completed.0 Label
+sym 00403e00 __do_global_dtors_aux_fini_array_entry Label
+sym 00401120 frame_dummy Function
+sym 00403df8 __frame_dummy_init_array_entry Label
+sym 00401126 add Function
+sym 0040113a sum_to Function
+sym 00402128 __FRAME_END__ Label
+sym 00402008 __GNU_EH_FRAME_HDR Label
+sym 00403fe8 _GLOBAL_OFFSET_TABLE_ Label
+sym 00404008 data_start Label
+sym 00404018 _edata Label
+sym 004011ac _fini Function
+sym 00404008 __data_start Label
+sym 00404010 __dso_handle Label
+sym 00402000 _IO_stdin_used Label
+sym 00404020 _end Label
+sym 00401070 _dl_relocate_static_pie Function
+sym 00401040 _start Function
+sym 00404018 __bss_start Label
+sym 00401168 main Function
+sym 00404018 __TMC_END__ Label
+sym 00401000 _init Function

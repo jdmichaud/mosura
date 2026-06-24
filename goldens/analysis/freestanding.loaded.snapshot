@@ -6,3 +6,11 @@ block 00401000 00401078 .text
 func 00401000 add
 func 00401014 sum_to
 func 00401042 _start
+entry 00401042 _start
+entry 00402000 __bss_start
+sym 00401000 add Function
+sym 00401014 sum_to Function
+sym 00401042 _start Function
+sym 00402000 __bss_start Label
+sym 00402000 _edata Label
+sym 00402000 _end Label

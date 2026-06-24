@@ -1,59 +1,96 @@
-//! A0 — the auto-analysis parity harness (plan `docs/analysis-port-plan.md` §3).
+//! A0/A2 — the auto-analysis parity harness (plan `docs/analysis-port-plan.md` §3).
 //!
-//! The analog of `tests/disasm_golden.rs` for the analysis port: for each binary
-//! in the real-binary corpus (`oracle/analysis-corpus/*.elf`) it parses the
-//! committed Ghidra snapshot (`goldens/analysis/<name>.snapshot`), runs mosura's
-//! [`analysis::analyze_binary`], and diffs the two **structurally exact**.
+//! Two gates, scored separately (the plan's per-phase model):
+//! - **memory map** (A2 loader): mosura's loader blocks vs the **loader-stage**
+//!   (`-noanalysis`) golden `<name>.loaded.snapshot` — the loader's own output, before
+//!   analysis adds artificial blocks (e.g. PE's `tdb`);
+//! - **functions** (A4): mosura's functions vs the converged `<name>.snapshot`. 0 until
+//!   disassembly/discovery lands.
 //!
-//! mosura has no loader/framework/analyzers yet (A1–A4), so `analyze_binary`
-//! returns `Unimplemented` and every case fails by construction — a clean,
-//! intentional **red baseline**. As A1–A4 land, bump [`EXPECTED_ANALYSIS_PASS`];
-//! the baseline turns from red toward full corpus parity, exactly as the SLEIGH
-//! `EXPECTED_DISASM_PASS` ratchet did.
+//! Mandatory corpus is the committed ELFs; PE (`cnv.exe`) is user-provided and skipped
+//! if absent (its binary isn't redistributable, but its golden is committed).
+
+use std::path::PathBuf;
 
 use mosura::analysis::{self, snapshot};
 use mosura::conformance::Tally;
 use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir};
 
-/// Number of corpus binaries mosura currently reproduces exactly. Ratchets up as
-/// the loader (A2) → framework (A3) → disassembly/functions (A4) land. **0 today**
-/// (no analysis ported). Never lower it for a faithful change.
-const EXPECTED_ANALYSIS_PASS: usize = 0;
+/// Committed ELF corpus (always present).
+const MANDATORY: &[&str] = &["freestanding", "basic"];
 
-/// The corpus, paired with its committed golden. Kept explicit (not a glob) so a
-/// missing/renamed golden is a loud failure rather than a silently skipped case.
-const CORPUS: &[&str] = &["freestanding", "basic"];
+/// (name, binary path, mandatory?) — externals are user-provided, skipped if absent.
+fn corpus() -> Vec<(&'static str, PathBuf, bool)> {
+    let mut v: Vec<(&str, PathBuf, bool)> = MANDATORY
+        .iter()
+        .map(|n| (*n, analysis_corpus_dir().join(format!("{n}.elf")), true))
+        .collect();
+    v.push(("cnv", PathBuf::from("/home/jd/cnv.exe"), false)); // PE, user-provided
+    v.push(("comcom32", PathBuf::from("/home/jd/.local/share/comcom32/comcom32.exe"), false)); // MZ
+    v.push(("war2", PathBuf::from("/home/jd/WAR2.EXE"), false)); // MZ (DOS/4GW stub), user-provided
+    v
+}
 
 #[test]
-fn analysis_parity_red_baseline() {
-    let corpus_dir = analysis_corpus_dir();
-    let goldens_dir = analysis_goldens_dir();
-    let mut tally = Tally::default();
+fn memory_map_parity() {
+    let goldens = analysis_goldens_dir();
+    let mut blocks = Tally::default();
+    let mut evaluated = Vec::new();
 
-    for name in CORPUS {
-        // The golden must exist and parse — that part of the oracle is real today.
-        let golden_path = goldens_dir.join(format!("{name}.snapshot"));
-        let golden_text = std::fs::read_to_string(&golden_path)
-            .unwrap_or_else(|e| panic!("missing golden {}: {e}", golden_path.display()));
-        let golden = snapshot::parse(&golden_text);
-        assert!(
-            !golden.functions.is_empty() && !golden.blocks.is_empty(),
-            "golden {name} parsed empty — snapshot format regression?"
+    for (name, path, mandatory) in corpus() {
+        if !path.exists() {
+            assert!(!mandatory, "mandatory corpus binary missing: {}", path.display());
+            eprintln!("  skip {name}: {} not present", path.display());
+            continue;
+        }
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.loaded.snapshot")))
+                .unwrap_or_else(|e| panic!("loader-stage golden for {name}: {e}")),
         );
-        assert!(golden.render().contains("mosura-analysis-snapshot v1"), "render header");
-
-        // mosura's side: not ported yet → Unimplemented → records a miss.
-        let bin = corpus_dir.join(format!("{name}.elf"));
-        let produced = analysis::analyze_binary(&bin);
-        tally.record(produced.as_ref() == Ok(&golden));
+        let produced = analysis::analyze_binary(&path).unwrap_or_else(|e| panic!("analyze {name}: {e}"));
+        let ok = produced.blocks == golden.blocks;
+        if !ok {
+            eprintln!("  [{name}] memory map differs: {} blocks vs golden {}", produced.blocks.len(), golden.blocks.len());
+        }
+        blocks.record(ok);
+        evaluated.push(name);
     }
 
-    eprintln!("analysis parity: {tally} (expected {EXPECTED_ANALYSIS_PASS})");
-    assert_eq!(
-        tally.passed, EXPECTED_ANALYSIS_PASS,
-        "analysis parity ratchet moved: passed={}, expected={EXPECTED_ANALYSIS_PASS} \
-         (bump EXPECTED_ANALYSIS_PASS when a phase lands; investigate if it dropped)",
-        tally.passed
-    );
-    assert_eq!(tally.total, CORPUS.len(), "every corpus binary must be evaluated");
+    eprintln!("memory-map parity: {blocks} ({:?})", evaluated);
+    assert!(evaluated.contains(&"freestanding") && evaluated.contains(&"basic"), "ELF corpus must run");
+    assert_eq!(blocks.passed, blocks.total, "every evaluated binary's memory map must match its loader-stage golden");
+}
+
+#[test]
+fn loader_detail_parity() {
+    let goldens = analysis_goldens_dir();
+    let mut detail = Tally::default();
+    let mut evaluated = Vec::new();
+    for (name, path, mandatory) in corpus() {
+        if !path.exists() {
+            assert!(!mandatory, "mandatory corpus binary missing: {}", path.display());
+            continue;
+        }
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.loaded.snapshot")))
+                .unwrap_or_else(|e| panic!("loader-stage golden for {name}: {e}")),
+        );
+        let p = analysis::analyze_binary(&path).unwrap_or_else(|e| panic!("analyze {name}: {e}"));
+        let ok = p.functions == golden.functions
+            && p.entries == golden.entries
+            && p.symbols == golden.symbols;
+        if !ok {
+            eprintln!(
+                "  [{name}] detail differs: func {}/{}, entry {}/{}, sym {}/{}",
+                p.functions.len(), golden.functions.len(),
+                p.entries.len(), golden.entries.len(),
+                p.symbols.len(), golden.symbols.len(),
+            );
+        }
+        detail.record(ok);
+        evaluated.push(name);
+    }
+    eprintln!("loader-detail parity: {detail} ({evaluated:?})");
+    assert!(evaluated.contains(&"freestanding") && evaluated.contains(&"basic"), "ELF corpus must run");
+    assert_eq!(detail.passed, detail.total, "every evaluated binary's loader detail must match its golden");
 }

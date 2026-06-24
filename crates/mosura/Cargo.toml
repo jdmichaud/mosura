@@ -9,3 +9,4 @@ license.workspace = true
 roxmltree.workspace = true
 regex.workspace = true
 flate2.workspace = true
+object.workspace = true

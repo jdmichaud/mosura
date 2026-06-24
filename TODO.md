@@ -225,25 +225,71 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
 - **A1–A5 are independent of the decompiler port; A6 gates on it.** Don't sequence A1–A5
   behind the P-phases.
 
-- [~] **A0 — Oracle + corpus** — scaffolding done; oracle backend in transition.
+- [x] **A0 — Oracle + corpus** — done (analyzeHeadless oracle + harness; reproducible).
   - [x] Real-binary corpus (`oracle/analysis-corpus/`): `freestanding.elf` (-nostdlib, clean)
         + `basic.elf` (dynamic, realistic), built by `build.sh`, committed (toolchain-stable).
   - [x] Snapshot schema (`src/analysis/snapshot.rs`): canonical, line-oriented, diff-friendly
         v1 = loaded memory map (`block`) + recovered functions (`func`); lenient parser +
         `render` round-trip; the contract mosura emits in A1–A4. Wired `src/analysis/`.
-  - [x] Committed goldens (`goldens/analysis/{freestanding,basic}.snapshot`) captured from
-        Ghidra 12.0.3 via GhidraMCP (server runs against the pinned build → faithful).
+  - [x] **analyzeHeadless oracle** — `scripts/build-ghidra-dist.sh` builds a runnable Ghidra
+        dist from the clone (the bare clone refuses; handles two env gotchas — UTF-8 locale +
+        oracle-binary `ip` pollution); `oracle/ghidra_scripts/DumpAnalysisSnapshot.java` is the
+        `-postScript` dumper; `scripts/capture-analysis.sh` regenerates all goldens offline.
+        Full chain in `oracle/analysis-capture.md`.
+  - [x] Committed goldens (`goldens/analysis/{freestanding,basic}.snapshot`) from analyzeHeadless
+        (Ghidra 12.0.3). Cross-checked **identical** to a GhidraMCP capture of the same build.
   - [x] `tests/analysis_parity.rs` red-baseline ratchet (`EXPECTED_ANALYSIS_PASS=0`, 0/2 today)
-        + `analysis::analyze_binary` (Unimplemented). Procedure: `oracle/analysis-capture.md`.
-  - [ ] **analyzeHeadless backend** (offline, per-analyzer staging) — pending `gradle buildGhidra`
-        producing a distribution; then a `-postScript` snapshot dumper replaces MCP capture.
-  - [ ] Snapshot v2 sections: `entrypoint` / `sym` / `data` / `ref` + function body ranges
-        (the A4/A5 gating facts beyond entry+name).
-- [ ] **A1 — Program model.** `Program`/`Memory`/`MemoryBlock`/`AddressSet`/`Listing`/
-      `CodeUnit`/`SymbolTable`/`ReferenceManager`/`FunctionManager`, reusing the decompiler's
-      `Address`/`AddrSpace`.
-- [ ] **A2 — ELF loader.** File → memory blocks + relocations + symbols + entry points;
-      gate on memory-map + symbol-table parity.
+        + `analysis::analyze_binary` (Unimplemented).
+  - [ ] (carry to A4/A5) Snapshot v2 sections: `entrypoint` / `sym` / `data` / `ref` + function
+        body ranges; per-analyzer staging via a capture `-preScript`.
+- [x] **A1 — Program model** (`src/analysis/program/`) — the shared mutable DB every analyzer
+      reads/writes, reusing the decompiler's `Address`/`SpaceManager`. Done:
+  - [x] `AddressSet`/`AddressRange` (`address_set.rs`) — inclusive coalesced ranges + the full
+        algebra (`union`/`intersect`/`subtract`/`xor`/`contains`/`num_addresses`), method names
+        mirroring `AddressSetView`; thorough unit tests incl. adjacency + `u64::MAX` boundary.
+  - [x] `Memory`/`MemoryBlock` (`memory.rs`) — named blocks, perms, initialized bytes, byte reads.
+  - [x] `SymbolTable`/`Symbol` (`symbol.rs`), `FunctionManager`/`Function` (`function.rs`).
+  - [x] `Listing`/`CodeUnit` (`listing.rs`) — container + types; **populated by A4**.
+  - [x] `Program` aggregate + `Program::snapshot()` projection to the v1 oracle format; tied to
+        the A0 golden (`snapshot_projection_matches_freestanding_golden_body` reproduces
+        freestanding's body from a hand-built Program).
+  - [ ] `ReferenceManager`/`Reference` — deferred to **A5** (references come with `SymbolicPropogator`).
+- [~] **A2 — loaders** (`src/analysis/loader/`) — memory maps done for ELF + PE; MZ + symbols pending.
+      Containers parsed with the `object` crate; only Ghidra's **block-layout output** is ported.
+      Gate is the **loader-stage** golden (`<name>.loaded.snapshot`, `-noanalysis`) — the loader's own
+      output, before analysis adds artificial blocks (e.g. PE `tdb` = ThreadEnvironmentBlock).
+  - [x] **ELF** (`elf.rs`): allocated sections → named blocks; `PT_LOAD` leftovers → `segment_<phdr>.<n>`
+        (via `AddressSet::subtract`) with `isDiscardableFillerSegment` pruning (≤0xff & all-zero);
+        `EXTERNAL` block (undefined dynsyms, page-aligned after image).
+  - [x] **PE** (`pe.rs`): `Headers` block (Ghidra `getVirtualSize`) + section blocks sized
+        `max(VirtualSize, SizeOfRawData)`, gaps unfilled. `tdb` is analyzer-made, not loader.
+  - [x] **MZ** (`mz.rs`, 16-bit DOS): segments discovered from relocation fixups (`+0x1000`) + the
+        initial/entry segments → `CODE_<i>` blocks to the next segment, `CODE_<i>u` uninit tail,
+        `DATA` (`e_minalloc` paragraphs). Flat-linear addresses (`seg<<4`), `x86:LE:16:Real Mode`.
+        Header + relocations hand-parsed (`object` doesn't decode bare MZ). WAR2.EXE/comcom32 match.
+  - [x] Magic dispatch (`loader::load`: ELF / MZ→PE / MZ→DOS). **Memory-map parity 5/5**
+        (freestanding, basic, cnv PE, comcom32 MZ, WAR2 MZ). PE/MZ binaries are user-provided
+        (not committed) → harness skips if absent; loader-stage goldens committed.
+  - [ ] **LE (Linear Executable) — DEFERRED until Ghidra parity** (beyond-Ghidra; no oracle).
+        WAR2.EXE is a DOS/4GW-bound LE; Ghidra (no LE loader) sees only the 16-bit MZ stub, which
+        mosura now matches. When parity is reached, build a **native `le.rs`** (NOT the ELF32-wrapper
+        workaround), validated against the `warcraft2-re` object ground truth + the LE spec. Full
+        design + WAR2 specifics: [`docs/le-loader-notes.md`](docs/le-loader-notes.md).
+  - [x] **Symbols + entry points** → `SymbolTable`/`entry_points` (snapshot **v2** `sym`/`entry`;
+        validated against the loader-stage golden). Snapshot-v2 schema + `DumpAnalysisSnapshot`
+        dumper + `loader_detail_parity` gate. **Loader detail 5/5** (funcs+entries+symbols exact)
+        across all formats:
+    - [x] **ELF**: `.symtab` (STT_FUNC→Function else Label; globals+`e_entry`→entries); dynamic
+          extras — `.dynsym` imports → EXTERNAL-block slots, `__DT_*` labels from `.dynamic`,
+          init/fini/preinit-array targets → entries, `_DYNAMIC`, idempotent `createSymbol` dedup.
+          freestanding + basic both exact.
+    - [x] **PE** (`recover_pe`): `.pdata` RUNTIME_FUNCTION → `FUN_<addr>` functions (skipping
+          chained-unwind), `AddressOfEntryPoint` → `entry`, `_tls_index` from the TLS directory.
+          cnv exact (1767 funcs).
+    - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. WAR2/comcom32 exact.
+  - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
+        defined symbols are processed today — fine for the corpus).
+  - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
 - [ ] **A3 — Framework.** `AutoAnalysisManager`/`AnalysisScheduler`/`Analyzer`/
       `AnalysisPriority` — the priority worklist + per-analyzer address-set accumulators +
       change-event refeed (plan §2a) — + one trivial analyzer diffed end-to-end.

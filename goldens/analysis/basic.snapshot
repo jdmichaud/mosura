@@ -1,6 +1,5 @@
 # mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
-# oracle=ghidra-12.0.3 via=GhidraMCP source=oracle/analysis-corpus/basic.elf
-# dynamically-linked ELF: CRT + PLT thunks + EXTERNAL block are part of the faithful map
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=basic.elf
 block 00400000 0040034f segment_2.1
 block 00400350 0040036f .note.gnu.property
 block 00400370 00400393 .note.gnu.build-id

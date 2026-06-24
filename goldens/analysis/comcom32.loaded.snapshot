@@ -1,0 +1,6 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:16:Real Mode compiler=default base=00000000 endian=little addrsize=16
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=comcom32.exe
+block 00010000 000103ff CODE_0
+block 00010400 0001066f DATA
+entry 00010054 entry
+sym 00010054 entry Label
