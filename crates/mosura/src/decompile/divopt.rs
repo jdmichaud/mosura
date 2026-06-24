@@ -97,15 +97,158 @@ impl Rule for RuleDivOpt {
         "divopt"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntRight, OpCode::IntSub]
+        vec![OpCode::IntRight, OpCode::IntSright, OpCode::Subpiece, OpCode::IntSub]
     }
     fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
         match f.op(op).code() {
-            OpCode::IntRight => try_unsigned(op, f),
+            // the multiply-by-reciprocal form ending in a shift or SUBPIECE (Ghidra `findForm`)
+            OpCode::IntRight | OpCode::IntSright | OpCode::Subpiece => {
+                let r = find_form_apply(op, f);
+                if r != 0 || f.op(op).code() != OpCode::IntRight {
+                    r
+                } else {
+                    try_unsigned(op, f) // else the add-correction form (RuleDivTermAdd + findForm)
+                }
+            }
             OpCode::IntSub => try_signed(op, f),
             _ => 0,
         }
     }
+}
+
+/// A constant, possibly zero/sign-extended (Ghidra `Varnode::isConstantExtended`) — the
+/// reciprocal multiplier.
+fn is_constant_extended(f: &Funcdata, v: VarnodeId) -> Option<u128> {
+    if f.vn(v).is_constant() {
+        return Some(f.vn(v).constant_value() as u128);
+    }
+    let d = f.vn(v).def?;
+    if matches!(f.op(d).code(), OpCode::IntZext | OpCode::IntSext) {
+        let inner = f.op(d).input(0)?;
+        if f.vn(inner).is_constant() {
+            return Some(f.vn(inner).constant_value() as u128);
+        }
+    }
+    None
+}
+
+/// Ghidra `RuleDivOpt::findForm`: detect the multiply-by-reciprocal division rooted at `op` (a
+/// shift or a SUBPIECE), returning `(x, n, magic, xsize, signed)` where the divisor is
+/// `calc_divisor(n, magic, xsize)` and `signed` selects INT_SDIV vs INT_DIV.
+fn find_form(f: &Funcdata, op: OpId) -> Option<(VarnodeId, u32, u128, u32, bool)> {
+    let root = f.op(op).code();
+    // optional leading shift contributes its amount to n
+    let (mut n, mut cur, shift_signed): (i64, OpId, Option<bool>) = match root {
+        OpCode::IntRight | OpCode::IntSright => {
+            let vn = f.op(op).input(0)?;
+            f.vn(vn).def?; // must be written
+            let n = cval(f, f.op(op).input(1)?)? as i64;
+            (n, f.vn(vn).def?, Some(root == OpCode::IntSright))
+        }
+        OpCode::Subpiece => (0, op, None), // SUBPIECE is the (required) root
+        _ => return None,
+    };
+    // optional SUBPIECE keeping the high bits
+    if f.op(cur).code() == OpCode::Subpiece {
+        let c = cval(f, f.op(cur).input(1)?)? as i64;
+        let invn = f.op(cur).input(0)?;
+        f.vn(invn).def?;
+        let out_size = f.vn(f.op(cur).output?).size as i64;
+        if out_size + c != f.vn(invn).size as i64 {
+            return None; // must keep the high bits
+        }
+        n += 8 * c;
+        cur = f.vn(invn).def?;
+    } else if shift_signed.is_none() {
+        return None; // SUBPIECE root but no SUBPIECE found
+    }
+    if f.op(cur).code() != OpCode::IntMult {
+        return None;
+    }
+    let (mi0, mi1) = (f.op(cur).input(0)?, f.op(cur).input(1)?);
+    let (magic, xvn) = if let Some(m) = is_constant_extended(f, mi0) {
+        (m, mi1)
+    } else if let Some(m) = is_constant_extended(f, mi1) {
+        (m, mi0)
+    } else {
+        return None;
+    };
+    let ext = f.vn(xvn).def?;
+    let extopc = f.op(ext).code();
+    let out_size = f.vn(f.op(op).output?).size;
+    let (xsize, signed, resvn) = match extopc {
+        OpCode::IntSext => {
+            let inner = f.op(ext).input(0)?;
+            let xsize = f.vn(inner).size * 8;
+            let resvn = if f.vn(xvn).size == out_size { xvn } else { inner };
+            (xsize, true, resvn)
+        }
+        OpCode::IntZext => {
+            let inner = f.op(ext).input(0)?;
+            let xsize = f.vn(inner).size * 8; // (approximates Ghidra's getNZMask for clean values)
+            let resvn = if f.vn(xvn).size == out_size { xvn } else { inner };
+            (xsize, false, resvn)
+        }
+        _ => (f.vn(xvn).size * 8, false, xvn), // no extension ⇒ treat as unsigned
+    };
+    // signed mismatch: the extension and shift signedness must agree, else the extension bits
+    // are truncated and the form only holds when no extension bits survive
+    let mismatch =
+        (!signed && shift_signed == Some(true)) || (signed && shift_signed == Some(false));
+    if mismatch && 8 * out_size as i64 - n != xsize as i64 {
+        return None;
+    }
+    Some((resvn, n as u32, magic, xsize, signed))
+}
+
+/// Ghidra `RuleDivOpt::checkFormOverlap`: a SUBPIECE-rooted form is superseded when its output
+/// feeds an INT_RIGHT/INT_SRIGHT that is itself a valid (containing) form — let that one win.
+fn check_form_overlap(f: &Funcdata, op: OpId) -> bool {
+    if f.op(op).code() != OpCode::Subpiece {
+        return false;
+    }
+    let out = match f.op(op).output {
+        Some(o) => o,
+        None => return false,
+    };
+    for super_op in f.vn(out).descend.clone() {
+        if !matches!(f.op(super_op).code(), OpCode::IntRight | OpCode::IntSright) {
+            continue;
+        }
+        match f.op(super_op).input(1) {
+            Some(c) if !f.vn(c).is_constant() => return true, // const may not have propagated yet
+            None => return true,
+            _ => {}
+        }
+        if find_form(f, super_op).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Apply [`find_form`] (Ghidra `RuleDivOpt::applyOp`): rewrite the matched form to `x / d`.
+fn find_form_apply(op: OpId, f: &mut Funcdata) -> u32 {
+    let Some((x, n, magic, xsize, signed)) = find_form(f, op) else { return 0 };
+    if check_form_overlap(f, op) || f.vn(x).is_free() {
+        return 0;
+    }
+    let xsize = if signed { xsize.saturating_sub(1) } else { xsize }; // one less bit for the signbit
+    let out_size = f.vn(f.op(op).output.unwrap()).size;
+    // Ghidra inserts a width extension/truncation when `x` isn't already the output width; that
+    // recovers more divisions but mosura's printer renders the inserted ops where Ghidra absorbs
+    // them — pushing the output *further* from Ghidra's `--c`. So restrict to the matched width.
+    if f.vn(x).size != out_size {
+        return 0;
+    }
+    let d = calc_divisor(n, magic, xsize);
+    if d == 0 {
+        return 0;
+    }
+    let dc = f.new_const(out_size, d);
+    f.op_set_opcode(op, if signed { OpCode::IntSdiv } else { OpCode::IntDiv });
+    f.op_set_all_input(op, &[x, dc]);
+    1
 }
 
 /// Unsigned add-correction form: `(mulhi + ((x - mulhi) >> e2)) >> e1` ⇒ `x / d`.
@@ -505,5 +648,37 @@ mod tests {
         assert_eq!(f.op(op).input(0), Some(x));
         let dc = f.op(op).input(1).unwrap();
         assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
+    }
+
+    #[test]
+    fn recovers_simple_unsigned_division() {
+        use crate::decompile::action::{Action, ActionPool};
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(4, Address::new(reg, 0x38));
+        // (zext(x) * 0xAAAAAAAB) >> 33  ⇒  x / 3  (the simple unsigned form, no add-correction)
+        let ze = f.new_op(OpCode::IntZext, seq, vec![x]);
+        let zeo = f.new_output_unique(ze, 8);
+        let magic = f.new_const(8, 0xAAAAAAAB);
+        let mu = f.new_op(OpCode::IntMult, seq, vec![zeo, magic]);
+        let muo = f.new_output_unique(mu, 8);
+        let off = f.new_const(4, 4); // SUBPIECE byte offset 4 ⇒ >> 32
+        let sp = f.new_op(OpCode::Subpiece, seq, vec![muo, off]);
+        let spo = f.new_output_unique(sp, 4);
+        let sh = f.new_const(4, 1); // >> 1  ⇒  total n = 33
+        let op = f.new_op(OpCode::IntRight, seq, vec![spo, sh]);
+        f.new_output(op, 4, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![ze, mu, sp, op], ..Default::default() }]);
+
+        ActionPool::new("p").with(RuleDivOpt).apply(&mut f);
+        assert_eq!(f.op(op).code(), OpCode::IntDiv);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 3);
     }
 }
