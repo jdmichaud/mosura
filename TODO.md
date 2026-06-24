@@ -289,10 +289,21 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
     - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. WAR2/comcom32 exact.
   - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
         defined symbols are processed today — fine for the corpus).
-  - [ ] **Loader-stage references** (audit finding): Ghidra's `-noanalysis` loader marks up ELF
-        header/dynamic structures and emits DATA refs (e.g. `e_entry` field → `_start`) — 4 on
-        freestanding, 36 on basic. mosura's loader emits none; not covered by `loader_detail_parity`
-        (which compares blocks/funcs/entries/symbols, not refs). Needs ELF data-structure markup.
+  - [ ] **Loader-stage references** (audit finding; the one remaining A0–A5 gap, scoped as a
+        dedicated ELF-data-markup sub-project — *not* rushed). Ghidra's `-noanalysis` loader emits
+        4 refs on freestanding, 36 on basic; mosura's emits none (`loader_detail_parity` compares
+        blocks/funcs/entries/symbols, not refs). Decomposition (basic ref counts):
+    - [ ] **ELF header + program-header markup** (`e_entry`→entry, `p_vaddr`→segment): the bulk;
+          all 4 freestanding refs + several on basic. Needs the `ElfHeader`/`ProgramHeader` field
+          model (which fields are pointer-typed → references).
+    - [ ] **Dynamic-table field refs** (`DT_*` address entries → targets): ~14 on basic. mosura
+          already creates `__DT_*` labels at the targets — add the references from the field.
+    - [ ] **`.init_array`/`.fini_array` markup** (pointer entries → init/fini funcs): ~few.
+    - [ ] **Relocations** (`R_X86_64_GLOB_DAT`/`JUMP_SLOT`): GOT slot → EXTERNAL slot DATA refs
+          (3 on basic). `object` exposes `dynamic_relocations()`; also sets GOT memory values so
+          pointer-following can reach externals (the A6 `__gmon_start__`/PLT cases).
+    - [ ] **PLT disassembly** (the `.plt` is code even at `-noanalysis`): 4 refs.
+    - [ ] Then extend `loader_detail_parity` to gate refs (subset + ratchet).
   - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
 - [x] **A3 — Framework** (`priority.rs`/`analyzer.rs`/`manager.rs`). `AnalysisPriority`
       ladder; `Analyzer` trait + `AnalyzerType`; `AutoAnalysisManager`+`Scheduling` — per-
@@ -305,11 +316,20 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [x] `FunctionCreator`: function at each executable seed (Ghidra `createEntryFunction`
         `isExecute` check — no data-address functions); idempotent; schedules disassembly.
   - [x] `analyze(program)` seeds from loader functions+entries, runs to fixpoint.
-  - [x] **Converged gates** (snapshot `insn` section): `disassembly_parity` — code units a HARD
-        subset of Ghidra's (0 misaligned decodes), recall 142/146; `function_parity` — no spurious
-        functions, recall 17/19. (audit fix: A4's core output had been ungated.)
-  - [ ] **Function bodies**: `FunctionManager` functions carry an empty `AddressSet` body; Ghidra
-        computes the body. Not snapshot-gated; needed by A6 (decompiling a function).
+  - [x] **Converged gates** (snapshot `insn`/`fnbody` sections): `disassembly_parity` — code units a
+        HARD subset of Ghidra's (0 misaligned), recall 142/146; `function_parity` — no spurious
+        functions, recall 17/19; `function_body_parity` — bodies match Ghidra **exactly** (17 validated).
+        (audit fix: A4's core output had been ungated.)
+  - [x] **PE/MZ convergence** (`pe_mz_convergence_parity` + `pe_robustness_cnv`): comcom32 exact
+        (0 spurious, 0 misaligned); war2 bounded (0 spurious, ≤8 misaligned); cnv smoke (opt-in).
+  - [x] **Perf** (audit/perf pass): fixed O(N²) blowups — `Listing` sorted-Vec→HashMap (the big one),
+        `Reference`/`Symbol`/`FunctionManager` per-add sort→HashSet, `SymbolicPropogator` String-key→int
+        + `flow_constants` bounded to function entries. cnv analyze 1043s→142s. Also fixed a real SLEIGH
+        engine panic (`fmt_hex(i64::MIN)` negate-overflow) that crashed PE/MZ disassembly.
+  - [ ] **war2/cnv precision** (later-phase, A6/A7): mosura over-decodes vs Ghidra's data analysis
+        (war2 8 misaligned, cnv 2 spurious funcs + 1097 misaligned) — no data analyzer yet to claim
+        data regions, so flow runs into them. Closes as A6/A7 (data + indirect-flow) land.
+  - [x] **Function bodies** computed (see `function_body_parity`); exact match. (was: empty body gap)
   - [ ] The 4 instructions / 2 functions mosura misses (PLT[0] `0x401020`, GOT-indirect `0x405010`)
         need PLT-stub disassembly / pointer-following. Indirect branches (jump tables) are A6.
 - [x] **A5 — References + `SymbolicPropogator`** — reference model, flow refs, propagator,
