@@ -306,19 +306,20 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] Converged gate: snapshot **v3** (code units / function bodies), validated against the
         converged goldens — meaningful once A5–A7 complete the analysis (A4 alone is partial).
   - [ ] Indirect branches (jump tables, A6), aggressive/function-pattern discovery.
-- [~] **A5 — References + `SymbolicPropogator`** — references model + flow refs done; the
-      abstract interpreter (data refs) is the remaining heavyweight.
+- [~] **A5 — References + `SymbolicPropogator`** — references model + flow refs + propagator
+      core done; full op set + ref-parity gate remain.
   - [x] **ReferenceManager** (`program/reference.rs`): `Reference`/`RefType` (DATA/READ/WRITE +
         flow kinds, Ghidra names); idempotent add + from/to queries; wired into `Program`.
   - [x] **Flow references** created during disassembly (`Disassembler`): call → UNCONDITIONAL_CALL,
         branch → UN/CONDITIONAL_JUMP to the static target. Verified (freestanding _start → add/sum_to).
-  - [ ] **`SymbolicPropogator`** (`program/util/SymbolicPropogator.java` — the `sleigh::emu`
-        sibling, ~3000 lines): a value lattice (constant / register-relative / unknown), a
-        `VarnodeContext` (register/memory state), and `flowConstants` interpreting the ~40-op
-        p-code switch (COPY/INT_ADD/INT_SUB/LOAD/STORE/SUBPIECE/…), calling `makeReference` when a
-        load/store/branch address resolves → DATA/READ/WRITE references. Per-arch
-        `ConstantPropagationAnalyzer` (REFERENCE priority) drives it. A focused, dedicated port.
-  - [ ] Snapshot **v3** `ref` section; gate reference-set parity vs converged goldens.
+  - [x] **`SymbolicPropogator` core** (`analysis/symbolic.rs`): `SymValue` lattice (Const | Unknown)
+        + `VarnodeContext`; `flow_constants` path-sensitive walk interpreting p-code; `makeReference`
+        gated on `memory.contains`. `ram` operand → READ/WRITE, `const`-as-address (`lea`) → DATA,
+        LOAD/STORE pointer resolved via register propagation, constant-folds INT_ADD/SUB/AND/OR/ZEXT/SEXT.
+        `ConstantPropagationAnalyzer` (REFERENCE priority) drives it. Unit + real-binary tested.
+  - [ ] **Full propagator**: the rest of the ~40-op `flowConstants` switch; register-relative (stack)
+        values (`Value.relativeRegister`); memory-content reads (pointer chains); context merge at joins.
+  - [ ] Snapshot **v3** `ref` section; gate reference-set parity vs converged goldens (the A5 gate).
 - [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
       decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
       parity. **Depends on the decompiler port.**
