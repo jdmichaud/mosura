@@ -83,6 +83,16 @@ public class DumpAnalysisSnapshot extends GhidraScript {
                 w.printf("sym %08x %s %s%n", a.getOffset(), s.getName(), s.getSymbolType());
             }
 
+            // Disassembled instructions in the default space (Ghidra `Listing` code units)
+            // — the A4 disassembly output, one `insn <addr>` per instruction.
+            ghidra.program.model.listing.InstructionIterator iit =
+                    currentProgram.getListing().getInstructions(true);
+            while (iit.hasNext()) {
+                Address a = iit.next().getMinAddress();
+                if (!a.getAddressSpace().equals(defaultSpace)) continue;
+                w.printf("insn %08x%n", a.getOffset());
+            }
+
             // References within the default space (memory→memory): the analysis port's
             // flow + data references. Filtered to default-space endpoints (skip stack,
             // register, external, const-space refs) and deduped on (from, to, type).

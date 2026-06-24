@@ -94,6 +94,11 @@ sym 00404018 __bss_start Label
 sym 00401168 main Function
 sym 00404018 __TMC_END__ Label
 sym 00401000 _init Function
+insn 00401020
+insn 00401026
+insn 00401030
+insn 00401036
+insn 0040103b
 ref 00400018 00401040 DATA
 ref 00400020 00400040 DATA
 ref 00400050 00400040 DATA

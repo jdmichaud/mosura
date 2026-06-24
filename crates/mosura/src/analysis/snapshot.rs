@@ -82,6 +82,9 @@ pub struct Snapshot {
     pub entries: Vec<EntryPoint>,
     pub symbols: Vec<Symbol>,
     pub refs: Vec<Ref>,
+    /// Disassembled-instruction start addresses (Ghidra `Listing` code units) — the A4
+    /// disassembly output.
+    pub code_units: Vec<u64>,
 }
 
 impl Snapshot {
@@ -94,6 +97,8 @@ impl Snapshot {
         self.symbols.sort();
         self.refs.sort();
         self.refs.dedup();
+        self.code_units.sort_unstable();
+        self.code_units.dedup();
     }
 
     /// Render to the canonical v1 text format (sorted). Round-trips with
@@ -120,6 +125,9 @@ impl Snapshot {
         }
         for r in &s.refs {
             out.push_str(&format!("ref {:08x} {:08x} {}\n", r.from, r.to, r.kind));
+        }
+        for a in &s.code_units {
+            out.push_str(&format!("insn {a:08x}\n"));
         }
         out
     }
@@ -190,6 +198,11 @@ pub fn parse(text: &str) -> Snapshot {
                 let kind = it.collect::<Vec<_>>().join(" ");
                 if let (Some(from), Some(to)) = (from, to) {
                     snap.refs.push(Ref { from, to, kind });
+                }
+            }
+            Some("insn") => {
+                if let Some(a) = it.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
+                    snap.code_units.push(a);
                 }
             }
             _ => {} // unknown prefix (future section) — ignore

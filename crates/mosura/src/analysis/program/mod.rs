@@ -135,6 +135,14 @@ impl Program {
                 kind: r.ref_type.name().to_string(),
             })
             .collect();
+        let code_units = self
+            .listing
+            .code_units()
+            .filter(|(a, u)| {
+                a.space == self.default_space && matches!(u, listing::CodeUnit::Instruction { .. })
+            })
+            .map(|(a, _)| a.offset)
+            .collect();
         let mut snap = Snapshot {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
@@ -146,6 +154,7 @@ impl Program {
             entries,
             symbols,
             refs,
+            code_units,
         };
         snap.normalize();
         snap

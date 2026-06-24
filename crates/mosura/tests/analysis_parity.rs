@@ -61,6 +61,79 @@ fn memory_map_parity() {
     assert_eq!(blocks.passed, blocks.total, "every evaluated binary's memory map must match its loader-stage golden");
 }
 
+/// A4 — disassembly parity. Every instruction mosura decodes must match a Ghidra
+/// instruction at the same address (HARD subset: no misaligned/spurious decodes), and we
+/// ratchet recall. Missing instructions live in functions mosura doesn't yet reach (PLT
+/// stubs, GOT-indirect).
+#[test]
+fn disassembly_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let mine: BTreeSet<u64> = snap.code_units.iter().copied().collect();
+        let gold: BTreeSet<u64> = golden.code_units.iter().copied().collect();
+        let misaligned: Vec<_> = mine.difference(&gold).collect();
+        assert!(
+            misaligned.is_empty(),
+            "{name}: mosura decoded {} instruction(s) Ghidra didn't (misaligned?): {misaligned:x?}",
+            misaligned.len()
+        );
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] code-unit recall {matched}/{} (0 misaligned)", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("disassembly parity: {recall} (0 misaligned decodes)");
+    // freestanding 40/40 + basic 102/106 = 142 instructions, 0 misaligned.
+    assert!(recall.passed >= 142, "disassembly recall regressed below 142");
+}
+
+/// A4 — converged function-set parity. Every function mosura discovers must be a Ghidra
+/// function (HARD subset: no spurious functions), with a recall ratchet. The missing
+/// remainder is reached only via PLT-stub disassembly / GOT pointer-following.
+#[test]
+fn function_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let mine: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
+        let gold: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
+        let spurious: Vec<_> = mine.difference(&gold).collect();
+        assert!(
+            spurious.is_empty(),
+            "{name}: mosura created {} function(s) Ghidra didn't: {spurious:x?}",
+            spurious.len()
+        );
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] function recall {matched}/{}", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("function parity: {recall}");
+    // freestanding 3/3 + basic 14/16 = 17.
+    assert!(recall.passed >= 17, "function recall regressed below 17");
+}
+
 /// A5 — references parity. mosura's analysis must never invent a reference Ghidra
 /// doesn't have (a HARD subset gate over references **from executable code**), and we
 /// ratchet how many of Ghidra's code references it recovers. The missing remainder is
