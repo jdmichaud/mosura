@@ -91,14 +91,20 @@ pub fn analyze(program: &mut Program) {
         mgr.add_analyzer(Box::new(cp), program);
     }
 
-    // Seed disassembly from the loader's functions + entry points (Ghidra's seeds).
+    // Seed disassembly from the loader's functions + entry points. Entry points are
+    // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
+    // check — a data export like `__bss_start` is not a function); call targets found
+    // during disassembly are *not* gated this way (Ghidra makes a function at every
+    // direct call target, even one pointing into data).
     let mut seed = AddressSet::new();
     for f in program.function_manager.functions() {
         let e = f.entry_point();
         seed.add_range(e.space, e.offset, e.offset);
     }
     for e in &program.entry_points {
-        seed.add_range(e.space, e.offset, e.offset);
+        if program.memory.block_at(*e).is_some_and(|b| b.is_execute()) {
+            seed.add_range(e.space, e.offset, e.offset);
+        }
     }
     mgr.scheduling().function_defined(&seed);
     mgr.run(program);
@@ -173,3 +179,5 @@ mod a5_tests {
         }
     }
 }
+
+

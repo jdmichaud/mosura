@@ -146,9 +146,12 @@ impl Analyzer for FunctionCreator {
         let mut to_disasm = AddressSet::new();
         for r in set.ranges() {
             let addr = Address::new(self.ram, r.min);
-            // Ghidra `createEntryFunction`: only create a function in executable memory —
-            // data entry points (e.g. `__bss_start`) are not functions.
-            if !program.memory.block_at(addr).is_some_and(|b| b.is_execute()) {
+            // Ghidra creates a function at a direct call target as long as it lies in the
+            // program's memory — even uninitialized data (a degenerate, un-disassembled
+            // stub); but not at an unmapped address (e.g. a 16-bit offset below the loaded
+            // segments). It need not be executable. Data *entry points* are filtered out
+            // before seeding (see `analyze`).
+            if !program.memory.contains(addr) {
                 continue;
             }
             let name = format!("FUN_{:08x}", r.min);
