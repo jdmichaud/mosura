@@ -49,10 +49,16 @@ done
 for ext in "cnv:/home/jd/cnv.exe" "comcom32:/home/jd/.local/share/comcom32/comcom32.exe" "war2:/home/jd/WAR2.EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"
   if [ -f "$path" ]; then
-    echo "capturing $name (converged + loader-stage; user-provided) …"
-    capture "$GOLDENS/$name.snapshot" "$path"
+    # cnv's converged snapshot is ~3MB (174k instructions) — too large to commit, so it
+    # is smoke-tested in code rather than golden-gated; capture loader-stage only.
+    if [ "$name" != "cnv" ]; then
+      echo "capturing $name (converged + loader-stage; user-provided) …"
+      capture "$GOLDENS/$name.snapshot" "$path"
+    else
+      echo "capturing $name (loader-stage only; converged too large to commit) …"
+    fi
     capture "$GOLDENS/$name.loaded.snapshot" "$path" -noanalysis
-    echo "  wrote $name.snapshot + $name.loaded.snapshot"
+    echo "  wrote $name goldens"
   else
     echo "skip $name: $path not present"
   fi

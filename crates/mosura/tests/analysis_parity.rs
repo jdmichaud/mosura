@@ -61,6 +61,73 @@ fn memory_map_parity() {
     assert_eq!(blocks.passed, blocks.total, "every evaluated binary's memory map must match its loader-stage golden");
 }
 
+/// PE robustness (cnv, ~1MB / 1808 functions). `#[ignore]`d — full analysis takes ~140s
+/// and cnv's converged golden is too large to commit, so this is opt-in
+/// (`cargo test -- --ignored`). Asserts analysis completes without panic and every
+/// recovered reference targets mapped memory (the no-spurious-reference invariant).
+#[test]
+#[ignore = "slow (~140s); run with --ignored"]
+fn pe_robustness_cnv() {
+    let path = "/home/jd/cnv.exe";
+    if !std::path::Path::new(path).exists() {
+        eprintln!("skip: {path} absent");
+        return;
+    }
+    let program = analysis::analyze_file(std::path::Path::new(path)).unwrap();
+    assert!(program.function_manager.function_count() > 1000, "cnv should recover its functions");
+    for r in program.reference_manager.references() {
+        assert!(program.memory.contains(r.to), "cnv: reference to unmapped {:08x}", r.to.offset);
+    }
+    eprintln!("cnv: {} functions, analysis clean", program.function_manager.function_count());
+}
+
+/// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
+/// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
+/// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
+/// a handful of over-decodes where mosura runs past a function into inter-function padding
+/// that Ghidra's later data analysis (A6/A7) would claim — bounded and tracked here. cnv
+/// (PE) is smoke-tested in [`analysis_robustness`] (its converged golden is too large to
+/// commit). All skip-if-absent (user-provided binaries).
+#[test]
+fn pe_mz_convergence_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    // (name, path, max tolerated misaligned decodes)
+    let cases: &[(&str, &str, usize)] = &[
+        ("comcom32", "/home/jd/.local/share/comcom32/comcom32.exe", 0),
+        ("war2", "/home/jd/WAR2.EXE", 8),
+    ];
+    let mut evaluated = 0;
+    for &(name, path, max_misaligned) in cases {
+        let golden_path = goldens.join(format!("{name}.snapshot"));
+        if !std::path::Path::new(path).exists() || !golden_path.exists() {
+            eprintln!("  skip {name}: binary or golden absent");
+            continue;
+        }
+        let golden = snapshot::parse(&std::fs::read_to_string(&golden_path).unwrap());
+        let snap = analysis::analyze_file(std::path::Path::new(path)).unwrap().snapshot();
+
+        let mf: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
+        let gf: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
+        let spurious_fns: Vec<_> = mf.difference(&gf).collect();
+        assert!(spurious_fns.is_empty(), "{name}: spurious functions vs Ghidra: {spurious_fns:x?}");
+
+        let mi: BTreeSet<u64> = snap.code_units.iter().copied().collect();
+        let gi: BTreeSet<u64> = golden.code_units.iter().copied().collect();
+        let misaligned = mi.difference(&gi).count();
+        assert!(
+            misaligned <= max_misaligned,
+            "{name}: {misaligned} misaligned decodes (max {max_misaligned}) — over-decode regressed"
+        );
+        eprintln!(
+            "  [{name}] funcs {}/{} (0 spurious), insns {}/{} ({misaligned} misaligned ≤ {max_misaligned})",
+            mf.intersection(&gf).count(), gf.len(), mi.intersection(&gi).count(), gi.len()
+        );
+        evaluated += 1;
+    }
+    eprintln!("PE/MZ convergence: {evaluated} binary(ies) evaluated");
+}
+
 /// A4 — disassembly parity. Every instruction mosura decodes must match a Ghidra
 /// instruction at the same address (HARD subset: no misaligned/spurious decodes), and we
 /// ratchet recall. Missing instructions live in functions mosura doesn't yet reach (PLT
