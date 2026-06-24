@@ -290,12 +290,22 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
         defined symbols are processed today — fine for the corpus).
   - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
-- [ ] **A3 — Framework.** `AutoAnalysisManager`/`AnalysisScheduler`/`Analyzer`/
-      `AnalysisPriority` — the priority worklist + per-analyzer address-set accumulators +
-      change-event refeed (plan §2a) — + one trivial analyzer diffed end-to-end.
-- [ ] **A4 — Disassembly + function discovery.** SLEIGH-driven disassembly from entry
-      points + recursive descent + function creation at call targets; gate on code-unit +
-      function-boundary parity.
+- [x] **A3 — Framework** (`priority.rs`/`analyzer.rs`/`manager.rs`). `AnalysisPriority`
+      ladder; `Analyzer` trait + `AnalyzerType`; `AutoAnalysisManager`+`Scheduling` — per-
+      analyzer `AddressSet` accumulators, fact-routing notifiers (`code_defined`/
+      `function_defined`/…), fixpoint run loop. Analyzers notify `Scheduling` directly
+      (explicit-channel model). Unit-tested: priority order + re-trigger to fixpoint.
+- [~] **A4 — Disassembly + function discovery** (`analyzers/`) — engine integrated; converged
+      gate pending A5–A7.
+  - [x] `Disassembler`: SLEIGH-driven recursive descent (fall-through + branch targets;
+        `followFlow`) → `Listing` code units; static call targets → new functions.
+  - [x] `FunctionCreator`: function at each executable seed (Ghidra `createEntryFunction`
+        `isExecute` check — no data-address functions); idempotent; schedules disassembly.
+  - [x] `analyze(program)` seeds from loader functions+entries, runs to fixpoint. freestanding
+        recursive descent verified (code units cover all functions, no spurious ones).
+  - [ ] Converged gate: snapshot **v3** (code units / function bodies), validated against the
+        converged goldens — meaningful once A5–A7 complete the analysis (A4 alone is partial).
+  - [ ] Indirect branches (jump tables, A6), aggressive/function-pattern discovery.
 - [ ] **A5 — References + `SymbolicPropogator`.** The abstract interpreter over p-code
       (plan §2b — the `emu` sibling) + the reference analyzers; gate on reference-set
       parity. The heavyweight phase.
