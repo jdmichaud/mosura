@@ -20,6 +20,7 @@ pub mod manager;
 pub mod priority;
 pub mod program;
 pub mod snapshot;
+pub mod symbolic;
 
 pub use program::Program;
 pub use snapshot::Snapshot;
@@ -77,6 +78,9 @@ pub fn analyze(program: &mut Program) {
         mgr.add_analyzer(Box::new(d), program);
     }
     mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
+    if let Some(cp) = analyzers::ConstantPropagationAnalyzer::for_program(program) {
+        mgr.add_analyzer(Box::new(cp), program);
+    }
 
     // Seed disassembly from the loader's functions + entry points (Ghidra's seeds).
     let mut seed = AddressSet::new();
@@ -127,5 +131,31 @@ mod a4_tests {
             call_targets.contains(&0x0040_1000) && call_targets.contains(&0x0040_1014),
             "expected call refs to add(0x401000) + sum_to(0x401014), got {call_targets:x?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod a5_tests {
+    use super::*;
+
+    /// The SymbolicPropogator recovers data references on a real binary: every data
+    /// reference target lies in mapped memory, and basic's GOT-relative reads are found.
+    #[test]
+    fn basic_recovers_data_references() {
+        use crate::analysis::program::RefType;
+        let data = std::fs::read(crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let mut p = loader::load(&data).unwrap();
+        analyze(&mut p);
+
+        let data_refs: Vec<_> = p
+            .reference_manager
+            .references()
+            .filter(|r| matches!(r.ref_type, RefType::Read | RefType::Write | RefType::Data))
+            .collect();
+        assert!(data_refs.len() >= 5, "expected several data refs, got {}", data_refs.len());
+        // Every recovered reference targets mapped memory (the makeReference gate).
+        for r in &data_refs {
+            assert!(p.memory.contains(r.to), "ref to unmapped {:08x}", r.to.offset);
+        }
     }
 }

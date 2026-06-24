@@ -159,3 +159,45 @@ impl Analyzer for FunctionCreator {
         true
     }
 }
+
+/// Constant-propagation reference analyzer (Ghidra `ConstantPropagationAnalyzer`): runs
+/// the [`SymbolicPropogator`](crate::analysis::symbolic) over each function to recover
+/// data references (READ/WRITE/DATA) from resolved memory operands. Runs at REFERENCE
+/// priority, after disassembly + function creation.
+pub struct ConstantPropagationAnalyzer {
+    spec: Spec,
+    ctx: Vec<u32>,
+    ram: SpaceId,
+    min_ref: u64,
+}
+
+impl ConstantPropagationAnalyzer {
+    pub fn for_program(program: &Program) -> Option<ConstantPropagationAnalyzer> {
+        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        Some(ConstantPropagationAnalyzer { spec, ctx, ram: program.default_space, min_ref: 4 })
+    }
+}
+
+impl Analyzer for ConstantPropagationAnalyzer {
+    fn name(&self) -> &str {
+        "Constant Propagation"
+    }
+    fn analysis_type(&self) -> AnalyzerType {
+        AnalyzerType::Function
+    }
+    fn priority(&self) -> AnalysisPriority {
+        AnalysisPriority::REFERENCE
+    }
+    fn added(&self, program: &mut Program, set: &AddressSet, _sched: &mut Scheduling) -> bool {
+        for r in set.ranges() {
+            crate::analysis::symbolic::flow_constants(
+                &self.spec,
+                &self.ctx,
+                program,
+                Address::new(self.ram, r.min),
+                self.min_ref,
+            );
+        }
+        true
+    }
+}
