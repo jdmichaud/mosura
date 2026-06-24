@@ -56,6 +56,24 @@ fn arg_var(a: &PArg) -> Option<&Varnode> {
     }
 }
 
+/// Read `size` little-endian bytes of initialized memory at `addr` as a constant value
+/// (Ghidra `VarnodeContext.getValue` reading the program image — pointer-following). Any
+/// uninitialized byte makes the value unknown.
+fn read_mem_const(program: &Program, ram: SpaceId, addr: u64, size: u32) -> SymValue {
+    if size == 0 || size > 8 {
+        return SymValue::Unknown;
+    }
+    let bytes = program.memory.read_window(Address::new(ram, addr), size as usize);
+    if bytes.len() != size as usize {
+        return SymValue::Unknown;
+    }
+    let mut v = 0u64;
+    for (i, b) in bytes.iter().enumerate() {
+        v |= (*b as u64) << (i * 8);
+    }
+    SymValue::Const(v)
+}
+
 /// Mask a folded value to its varnode size (sub-register writes don't carry high bits).
 fn mask(v: u64, size: u32) -> u64 {
     if size == 0 || size >= 8 {
@@ -132,9 +150,15 @@ fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, r
     match opcode {
         Some(OpCode::Copy) => {
             // (The const-as-address DATA reference for `lea` is created by the operand
-            // scan above; here we just propagate the value.)
+            // scan above.) Propagate the value — reading the image for a `ram` source so a
+            // loaded pointer flows on (Ghidra `getValue` reads initialized memory).
             if let Some(v) = op.ins.first().and_then(arg_var) {
-                let val = vctx.get(v);
+                let out_size = op.out.as_ref().map_or(v.size, |o| o.size);
+                let val = if v.space == "ram" {
+                    read_mem_const(program, ram, v.offset, out_size)
+                } else {
+                    vctx.get(v)
+                };
                 if let Some(out) = &op.out {
                     vctx.put(out, val);
                 }
@@ -142,13 +166,17 @@ fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, r
         }
         Some(OpCode::Load) => {
             // in[0] = address space, in[1] = pointer.
+            let mut loaded = SymValue::Unknown;
             if let Some(ptr) = op.ins.get(1).and_then(arg_var) {
                 if let SymValue::Const(addr) = vctx.get(ptr) {
                     make_ref(program, here, ram, addr, RefType::Read, MIN_KNOWN_REF);
+                    if let Some(out) = &op.out {
+                        loaded = read_mem_const(program, ram, addr, out.size); // follow the pointer
+                    }
                 }
             }
             if let Some(out) = &op.out {
-                vctx.put(out, SymValue::Unknown); // memory contents not tracked (v1)
+                vctx.put(out, loaded);
             }
         }
         Some(OpCode::Store) => {
@@ -313,5 +341,35 @@ mod tests {
         assert!(has(RefType::Data, 0x40_1027), "lea → DATA ref to 0x401027");
         // the LOAD through rax (resolved to the constant 0x401027) → a READ reference.
         assert!(has(RefType::Read, 0x40_1027), "load via rax → READ ref to 0x401027");
+    }
+
+    #[test]
+    fn follows_a_pointer_through_memory() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return;
+        };
+        // mov rax, [rip+0xf9] ; mov rcx, [rax] ; ret
+        //   [rip+0xf9] = 0x401100 (a pointer slot holding 0x401200); reading it loads
+        //   0x401200 into rax, so the second load must reference 0x401200.
+        let mut img = vec![0u8; 0x1000];
+        img[..0xb].copy_from_slice(&[
+            0x48, 0x8b, 0x05, 0xf9, 0x00, 0x00, 0x00, // mov rax,[rip+0xf9] -> 0x401100
+            0x48, 0x8b, 0x08, // mov rcx,[rax]
+            0xc3, // ret
+        ]);
+        img[0x100..0x108].copy_from_slice(&0x0040_1200u64.to_le_bytes()); // *0x401100 = 0x401200
+
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let mut program =
+            Program::new(spaces, ram, "x86:LE:64:default", "gcc", Address::new(ram, 0x401000), false, 64);
+        program.memory.add_block("text", Address::new(ram, 0x401000), 0x1000, true, false, true, Some(img));
+
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
+        let read_to = |to: u64| {
+            program.reference_manager.references().any(|r| r.ref_type == RefType::Read && r.to.offset == to)
+        };
+        assert!(read_to(0x40_1100), "first load reads the pointer slot 0x401100");
+        assert!(read_to(0x40_1200), "pointer followed: rax = *0x401100 = 0x401200, then read");
     }
 }
