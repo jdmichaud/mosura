@@ -288,15 +288,67 @@ impl<'a> PrintC<'a> {
         // here. Sub-4-byte promotion-forced casts are conservatively skipped.
     }
 
+    /// Whether constant input `slot` should print with an explicit `U` suffix (Ghidra's
+    /// `CastStrategy::markExplicitUnsigned`): the op inherits sign, the constant reads as
+    /// unsigned/undefined and non-negative, and neither the other operand nor the consuming op
+    /// already forces the unsignedness.
+    fn mark_explicit_unsigned(&self, op: OpId, slot: usize) -> bool {
+        let o = self.f.op(op);
+        let code = o.code();
+        if !inherits_sign(code) {
+            return false;
+        }
+        let first_only = inherits_sign_first_only(code);
+        if slot == 1 && first_only {
+            return false;
+        }
+        let v = o.input(slot).unwrap();
+        let vn = self.f.vn(v);
+        if !vn.is_constant() {
+            return false;
+        }
+        // mosura doesn't type constants, so guard the sign here: a constant that reads as a small
+        // negative is signed in Ghidra (typed INT, rendered `-N`) and never prints unsigned.
+        if render_const(vn.constant_value(), vn.size).starts_with('-') {
+            return false;
+        }
+        // the constant's effective (read-facing) type — the type the op forces on it
+        let dt = self.get_input_cast(op, slot).unwrap_or_else(|| self.type_of(v));
+        if !matches!(dt, Datatype::Uint(_) | Datatype::Unknown(_)) {
+            return false;
+        }
+        if o.num_inputs() == 2 && !first_only {
+            let other = o.input(1 - slot).unwrap();
+            let om = self.get_input_cast(op, 1 - slot).unwrap_or_else(|| self.type_of(other));
+            if matches!(om, Datatype::Uint(_) | Datatype::Unknown(_)) {
+                return false; // the other side already forces the unsigned interpretation
+            }
+        }
+        if let Some(out) = o.output {
+            if self.is_explicit(out) {
+                return false;
+            }
+            let desc = &self.f.vn(out).descend;
+            if desc.len() == 1 && !inherits_sign(self.f.op(desc[0]).code()) {
+                return false; // the consuming op would force the type anyway
+            }
+        }
+        true
+    }
+
     /// Render input `slot` of `op`, wrapping it in the cast the op requires ([`get_input_cast`]).
     /// A constant operand is never wrapped — like Ghidra's `castInput`, the literal simply adopts
-    /// the required type (so a signed compare prints `(int4)x < 10`, not `< (int4)10`).
+    /// the required type (so a signed compare prints `(int4)x < 10`, not `< (int4)10`) — but may
+    /// take an explicit `U` suffix ([`mark_explicit_unsigned`]).
     fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
         let v = self.f.op(op).input(slot).unwrap();
         if !self.f.vn(v).is_constant() {
             if let Some(ty) = self.get_input_cast(op, slot) {
                 return format!("({}){}", ty.name(), self.operand(v, 14, false));
             }
+        } else if self.mark_explicit_unsigned(op, slot) {
+            let vn = self.f.vn(v);
+            return render_const_unsigned(vn.constant_value(), vn.size);
         }
         self.operand(v, prec, right)
     }
@@ -1002,6 +1054,35 @@ fn incr_in_width(c: u64, size: u32, signed: bool) -> Option<u64> {
         (1u64 << (bits - 1)) - 1
     };
     (cm != max).then(|| (cm + 1) & full)
+}
+
+/// Ops whose constant operands inherit the operation's signedness (Ghidra's `inherits_sign`):
+/// an untyped/unsigned constant here prints with a `U` suffix unless the other side forces it.
+fn inherits_sign(c: OpCode) -> bool {
+    use OpCode::*;
+    matches!(
+        c,
+        IntEqual | IntNotequal | IntSless | IntSlessequal | IntLess | IntLessequal | IntAdd | IntSub
+            | Int2comp | IntMult | IntDiv | IntSdiv | IntRem | IntSrem | IntNegate | IntXor | IntAnd
+            | IntOr | IntLeft | IntRight | IntSright
+    )
+}
+
+/// Ops where only the first parameter inherits the sign (Ghidra's `inherits_sign_zero`): the
+/// shift amount and the modulus second operand never take a `U`.
+fn inherits_sign_first_only(c: OpCode) -> bool {
+    use OpCode::*;
+    matches!(c, IntLeft | IntRight | IntSright | IntRem | IntSrem)
+}
+
+/// Render a constant with an explicit unsigned `U` suffix (Ghidra's `setUnsignedPrint`).
+fn render_const_unsigned(val: u64, size: u32) -> String {
+    let masked = if size == 0 || size >= 8 { val } else { val & ((1u64 << (8 * size)) - 1) };
+    if masked < 10 {
+        format!("{masked}U")
+    } else {
+        format!("0x{masked:x}U")
+    }
 }
 
 fn render_const(val: u64, size: u32) -> String {
