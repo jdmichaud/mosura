@@ -86,6 +86,23 @@ fn normalize_read_size(f: &mut Funcdata) {
             }
         }
     }
+    // A register carrying the x86-64 self-zero-extension idiom `O:W = ZEXT(O:N)` is, like
+    // Ghidra's full-register heritage range, canonical at `O:W`: writing the 32-bit register
+    // zeroes the upper bits, so `O:W` always reflects the narrow write. Narrow reads then
+    // read `SUBPIECE(O:W)` and the otherwise-parallel sub-register SSA chains unify.
+    // (8/16-bit sub-registers partial-overwrite and lack this idiom, so they are untouched.)
+    for b in 0..nb {
+        for op in f.blocks()[b].ops.clone() {
+            if f.op(op).code() != OpCode::IntZext {
+                continue;
+            }
+            if let (Some((osp, ooff, osz)), Some((isp, ioff, isz))) = (write_loc(f, op), read_loc(f, op, 0)) {
+                if osp == isp && ooff == ioff && osz > isz {
+                    canonical.insert((osp, ooff), osz);
+                }
+            }
+        }
+    }
     if canonical.is_empty() {
         return;
     }
@@ -97,6 +114,13 @@ fn normalize_read_size(f: &mut Funcdata) {
                 let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
                 let Some(&s) = canonical.get(&(sp, off)) else { continue };
                 if sz >= s {
+                    continue;
+                }
+                // keep the self-zero-extension's own input (`O:W = ZEXT(O:N)`): rewriting it
+                // to `SUBPIECE(O:W)` would be circular and drop the narrow value it widens
+                if f.op(op).code() == OpCode::IntZext
+                    && write_loc(f, op).is_some_and(|(wsp, woff, wsz)| wsp == sp && woff == off && wsz == s)
+                {
                     continue;
                 }
                 let seq = f.op(op).seqnum;

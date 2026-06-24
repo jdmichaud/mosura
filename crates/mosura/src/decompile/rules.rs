@@ -566,6 +566,84 @@ impl Rule for RuleLessEqual {
     }
 }
 
+/// `RuleSelectCse` (`ruleaction.cc`): common-subexpression elimination over the duplicated
+/// ops that heritage's read-size normalization (and div-correction) produce — `SUBPIECE` and
+/// `INT_SRIGHT`. Two siblings reading the same varnode with depth-1 functional equality (same
+/// opcode, equal operands) collapse to one, so later rules (signed-compare idioms, `x&x`,
+/// `x^x`) see the *same* varnode instead of two equal-but-distinct copies.
+pub struct RuleSelectCse;
+
+impl Rule for RuleSelectCse {
+    fn name(&self) -> &str {
+        "selectcse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece, OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(vn), Some(out), Some(parent)) =
+            (data.op(op).input(0), data.op(op).output, data.op(op).parent)
+        else {
+            return 0;
+        };
+        let opc = data.op(op).code();
+        for other in data.vn(vn).descend.clone() {
+            if other == op || data.op(other).code() != opc || data.op(other).parent != Some(parent) {
+                continue;
+            }
+            let Some(other_out) = data.op(other).output else { continue };
+            // depth-1 functional equality: same operands (same varnode or same constant value)
+            if data.op(op).num_inputs() != data.op(other).num_inputs() {
+                continue;
+            }
+            let eq = (0..data.op(op).num_inputs())
+                .all(|i| same_value(data, data.op(op).input(i).unwrap(), data.op(other).input(i).unwrap()));
+            if !eq {
+                continue;
+            }
+            // keep the earlier op in the block; repoint the later's uses and destroy it
+            let pos = |o: OpId| data.block(parent).ops.iter().position(|&x| x == o).unwrap_or(usize::MAX);
+            let (keep_out, kill, kill_out) =
+                if pos(op) <= pos(other) { (out, other, other_out) } else { (other_out, op, out) };
+            for u in data.vn(kill_out).descend.clone() {
+                for slot in 0..data.op(u).num_inputs() {
+                    if data.op(u).input(slot) == Some(kill_out) {
+                        data.op_set_input(u, slot, keep_out);
+                    }
+                }
+            }
+            data.op_destroy(kill);
+            return 1;
+        }
+        0
+    }
+}
+
+/// `a & a`, `a | a` → `a`; `a ^ a`, `a - a` → `0` (one varnode). Ghidra's identity folds; with
+/// CSE merging duplicate `SUBPIECE`s, `SUBPIECE(x) ^ SUBPIECE(x)` becomes `s ^ s` → `0`.
+pub struct RuleIdempotent;
+
+impl Rule for RuleIdempotent {
+    fn name(&self) -> &str {
+        "idempotent"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd, OpCode::IntOr, OpCode::BoolAnd, OpCode::BoolOr, OpCode::IntXor, OpCode::IntSub]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 || data.op(op).input(0) != data.op(op).input(1) {
+            return 0;
+        }
+        let a = data.op(op).input(0).unwrap();
+        let out_size = data.vn(data.op(op).output.unwrap()).size;
+        let to_zero = matches!(data.op(op).code(), OpCode::IntXor | OpCode::IntSub);
+        let repl = if to_zero { data.new_const(out_size, 0) } else { a };
+        data.op_set_opcode(op, OpCode::Copy);
+        data.op_set_all_input(op, &[repl]);
+        1
+    }
+}
+
 /// Fold a chained constant multiply: `(x * c1) * c2` → `x * (c1*c2)`. Ghidra normalises
 /// multiplies this way; it also lets `(x/6)*3*2` collapse to `(x/6)*6` so the modulo form
 /// is recognised.
@@ -856,6 +934,33 @@ mod tests {
         // !(a == 9)  =>  a != 9
         assert_eq!(f.op(neg).code(), OpCode::IntNotequal);
         assert_eq!(f.op(neg).input(0), Some(a));
+    }
+
+    #[test]
+    fn selectcse_merges_duplicate_subpieces() {
+        use crate::decompile::{BlockBasic, BlockId};
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let r = f.new_input(8, Address::new(reg, 0x8));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // two distinct SUBPIECE(r, 0):4 — what heritage's read-size normalization produces
+        let z1 = f.new_const(8, 0);
+        let s1 = f.new_op(OpCode::Subpiece, seq, vec![r, z1]);
+        let s1o = f.new_output(s1, 4, Address::new(uniq, 0x100));
+        let z2 = f.new_const(8, 0);
+        let s2 = f.new_op(OpCode::Subpiece, seq, vec![r, z2]);
+        let s2o = f.new_output(s2, 4, Address::new(uniq, 0x200));
+        let x = f.new_op(OpCode::IntXor, seq, vec![s1o, s2o]);
+        f.new_output(x, 4, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![s1, s2, x], ..Default::default() }]);
+        for op in [s1, s2, x] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        ActionPool::new("p").with(RuleSelectCse).with(RuleIdempotent).apply(&mut f);
+        // CSE collapses the duplicate SUBPIECEs, so the xor becomes `s ^ s` → 0
+        assert_eq!(f.op(x).code(), OpCode::Copy);
+        assert!(f.vn(f.op(x).input(0).unwrap()).is_constant());
     }
 
     #[test]

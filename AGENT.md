@@ -22,6 +22,33 @@ tokens and *punishes* faithful algorithms that produce correct-but-different out
 optimizes *away* from Ghidra, and approximations don't compose. Mirror Ghidra's data
 model and `Action`/`Rule` pipeline so faithfulness *is* the metric.
 
+### The decision rule (read this before you revert anything)
+
+The C-similarity (`ccompare`) is a **coarse gauge, never the gate.** It erases names,
+types, and numbers, and it *rewards* a missing/empty rendering over a correct-but-verbose
+one. Do not let it drive decisions. Concretely:
+
+1. **A change that passes `ir_parity` + `disasm_golden` and matches Ghidra's IR is correct.
+   KEEP it — even if the similarity score drops.** Parity is the temperature; ccompare is the
+   thermometer. Don't revert the patient because the thermometer twitched.
+2. **A similarity dip after a *faithful* change almost always means a downstream piece isn't
+   ported yet** (e.g. heritage `normalizeWriteSize` produces `SUBPIECE`/`PIECE` that need
+   Ghidra's sub-piece *rules*, or the for-loop detector to look through them). The fix is to
+   **port that downstream piece too**, not to revert the faithful upstream one. Approximations
+   don't compose; faithful ports *do* — but only once their consumers exist. Land the
+   subsystem, not one orphaned half of it.
+3. **Only revert output that is genuinely WRONG** — output Ghidra would *never* emit, confirmed
+   by reading Ghidra's IR/C via the oracle (`oracle/capture --c`, `decomp_dbg`). Never revert
+   because a noisy token gauge moved.
+4. **Never invent a heuristic** (a "cycle gate," a "multi-exit check," a "trivial-case
+   detector," a size threshold) to paper over a gap. If Ghidra makes a decision, Ghidra has
+   code for it — find it (`jumptable.cc`, `heritage.cc`, `coreaction.cc`, …) and port *that*.
+   A heuristic that happens to match a few corpus functions is the exact anti-pattern above.
+
+If you catch yourself about to `git checkout`/revert a parity-clean change because the
+corpus average dipped, **stop** — re-read this section. The mandate is to convert Ghidra,
+not to climb the gauge.
+
 - Ghidra source (pinned to tag `Ghidra_12.0.3_build`): `../ghidra`
 - Decompiler core to port: `../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp`
   (e.g. `coreaction.cc`, `printc.cc`, `printlanguage.cc`, `funcdata*.cc`, `type.cc`,
