@@ -666,33 +666,33 @@ impl<'a> PrintC<'a> {
                     let inner = self.f.op(def).input(0).unwrap();
                     return self.render_var(inner).0; // !(!x) => x
                 }
+                // operands route through `cast_operand` so a flipped signed compare keeps its
+                // `(int4)` cast (`!(9 s< x)` => `(int4)x < 10`), matching the un-negated path
                 OpCode::IntEqual | OpCode::IntNotequal => {
-                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
                     let sym = if code == OpCode::IntEqual { "!=" } else { "==" };
-                    let l = self.operand(i0, 9, false);
-                    let r = self.operand(i1, 9, true);
+                    let l = self.cast_operand(def, 0, 9, false);
+                    let r = self.cast_operand(def, 1, 9, true);
                     return format!("{l} {sym} {r}");
                 }
                 // !(a <= b) => b < a
                 OpCode::IntLessequal | OpCode::IntSlessequal => {
-                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
-                    let l = self.operand(i1, 9, false);
-                    let r = self.operand(i0, 9, true);
+                    let l = self.cast_operand(def, 1, 9, false);
+                    let r = self.cast_operand(def, 0, 9, true);
                     return format!("{l} < {r}");
                 }
                 // !(a < b) => b <= a; but when a is a constant c, Ghidra keeps the strict form
                 // by incrementing the constant (`b < c+1`), unless c+1 overflows the width
                 OpCode::IntLess | OpCode::IntSless => {
-                    let (i0, i1) = (self.f.op(def).input(0).unwrap(), self.f.op(def).input(1).unwrap());
+                    let i0 = self.f.op(def).input(0).unwrap();
                     let vn0 = self.f.vn(i0);
                     if vn0.is_constant() {
                         if let Some(cp1) = incr_in_width(vn0.constant_value(), vn0.size, code == OpCode::IntSless) {
-                            let l = self.operand(i1, 9, false);
+                            let l = self.cast_operand(def, 1, 9, false);
                             return format!("{l} < {}", render_const(cp1, vn0.size));
                         }
                     }
-                    let l = self.operand(i1, 9, false);
-                    let r = self.operand(i0, 9, true);
+                    let l = self.cast_operand(def, 1, 9, false);
+                    let r = self.cast_operand(def, 0, 9, true);
                     return format!("{l} <= {r}");
                 }
                 _ => {}
