@@ -394,12 +394,16 @@ fn dynamic_entries(elf: &Elf) -> (Option<u64>, Vec<(u64, u64)>) {
 fn markup_dynamic(ram: SpaceId, dyn_addr: Option<u64>, entries: &[(u64, u64)], program: &mut Program) {
     let Some(addr) = dyn_addr else { return };
     program.symbol_table.add_with_primary(Address::new(ram, addr), "_DYNAMIC", SymbolType::Label, false);
-    for &(tag, val) in entries {
+    for (i, &(tag, val)) in entries.iter().enumerate() {
         if val == 0 {
             continue;
         }
         if let Some(dt) = dt_address_name(tag) {
             program.symbol_table.add_with_primary(Address::new(ram, val), &format!("__{dt}"), SymbolType::Label, false);
+            // DATA reference from the entry's address-valued `d_un` field (offset +8 in the
+            // 16-byte Elf64_Dyn) to its target — Ghidra's `Elf64_Dyn` pointer-field markup.
+            let field = addr + i as u64 * 16 + 8;
+            program.reference_manager.add(Address::new(ram, field), Address::new(ram, val), RefType::Data, -1);
         }
     }
 }
