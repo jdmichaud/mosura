@@ -24,6 +24,7 @@ pub mod recover;
 pub mod divopt;
 pub mod printc;
 pub mod rules;
+pub mod scope;
 pub mod space;
 pub mod stackvars;
 pub mod structure;
