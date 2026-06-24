@@ -118,12 +118,20 @@ fn process_op(
     );
 
     // Direct `ram`-space operands are literal addresses: an input is read, an output
-    // is written (Ghidra's COPY `in[0].isAddress()` / STORE-to-address paths).
+    // is written (Ghidra's COPY `in[0].isAddress()` / STORE-to-address paths). A literal
+    // `const` operand whose value is a mapped address is a DATA reference (Ghidra
+    // `evaluateConstant` — e.g. `lea`/`cmp`/`sub` against a global's address).
     if !is_flow {
+        // A `const` that is a mapped address is a DATA reference — but not in a STORE,
+        // whose value operand is often a return address pushed by a `call` (a valid code
+        // address that is not a data reference; Ghidra accounts for it via call semantics).
+        let const_is_data = !matches!(opcode, Some(OpCode::Store));
         for arg in &op.ins {
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
                     make_ref(program, here, ram, v.offset, RefType::Read, true, min_ref);
+                } else if v.space == "const" && const_is_data {
+                    make_ref(program, here, ram, v.offset, RefType::Data, true, min_ref);
                 }
             }
         }
@@ -136,12 +144,9 @@ fn process_op(
 
     match opcode {
         Some(OpCode::Copy) => {
+            // (The const-as-address DATA reference for `lea` is created by the operand
+            // scan above; here we just propagate the value.)
             if let Some(v) = op.ins.first().and_then(arg_var) {
-                // A literal `const` that is a valid address (e.g. `lea` of a global) is a
-                // DATA reference (Ghidra `evaluateConstant`).
-                if v.space == "const" {
-                    make_ref(program, here, ram, v.offset, RefType::Data, true, min_ref);
-                }
                 let val = vctx.get(v);
                 if let Some(out) = &op.out {
                     vctx.put(out, val);
