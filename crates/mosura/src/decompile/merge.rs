@@ -113,28 +113,36 @@ fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeI
 /// and never live simultaneously, so reused registers/slots become one variable.
 fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
     let covers = all_covers(f);
+    // Group by storage with members in varnode (create_index) order — Ghidra processes varnodes in
+    // a deterministic order, so this drives a deterministic merge (a HashMap's iteration order must
+    // never reach the output).
     let mut by_storage: HashMap<(SpaceId, u64), Vec<VarnodeId>> = HashMap::new();
-    for &v in covers.keys() {
-        let vn = f.vn(v);
-        by_storage.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
-    }
-
-    for members in by_storage.into_values() {
-        if members.len() < 2 {
-            continue;
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        if covers.contains_key(&v) {
+            let vn = f.vn(v);
+            by_storage.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
         }
+    }
+    // Process the (independent) storage groups in a deterministic order too.
+    let mut groups: Vec<Vec<VarnodeId>> = by_storage.into_values().filter(|m| m.len() >= 2).collect();
+    groups.sort_by_key(|m| m[0]);
+
+    for members in groups {
         loop {
-            // partition this storage group into current HighVariable classes
+            // partition this storage group into current HighVariable classes, ordered by their
+            // lowest member so the pairwise merge below is deterministic
             let mut classes: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
             for &v in &members {
                 classes.entry(h.high(v)).or_default().push(v);
             }
-            let reps: Vec<u32> = classes.keys().copied().collect();
+            let mut class_list: Vec<Vec<VarnodeId>> = classes.into_values().collect();
+            class_list.sort_by_key(|c| c[0]);
             let mut merged = false;
-            'pair: for i in 0..reps.len() {
-                for j in (i + 1)..reps.len() {
-                    if !classes_interfere(&classes[&reps[i]], &classes[&reps[j]], &covers) {
-                        h.union(classes[&reps[i]][0].0, classes[&reps[j]][0].0);
+            'pair: for i in 0..class_list.len() {
+                for j in (i + 1)..class_list.len() {
+                    if !classes_interfere(&class_list[i], &class_list[j], &covers) {
+                        h.union(class_list[i][0].0, class_list[j][0].0);
                         merged = true;
                         break 'pair;
                     }
