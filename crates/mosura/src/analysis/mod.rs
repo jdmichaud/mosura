@@ -13,7 +13,10 @@
 //! mosura's analyzers will implement, returning [`Unimplemented`] until A1–A4
 //! land. `tests/analysis_parity.rs` holds the red baseline against the goldens.
 
+pub mod analyzer;
 pub mod loader;
+pub mod manager;
+pub mod priority;
 pub mod program;
 pub mod snapshot;
 
