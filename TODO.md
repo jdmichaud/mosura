@@ -299,11 +299,11 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
     - [ ] **Dynamic-table field refs** (`DT_*` address entries → targets): ~14 on basic. mosura
           already creates `__DT_*` labels at the targets — add the references from the field.
     - [ ] **`.init_array`/`.fini_array` markup** (pointer entries → init/fini funcs): ~few.
-    - [ ] **Relocations** (`R_X86_64_GLOB_DAT`/`JUMP_SLOT`): GOT slot → EXTERNAL slot DATA refs
-          (3 on basic). `object` exposes `dynamic_relocations()`; also sets GOT memory values so
-          pointer-following can reach externals (the A6 `__gmon_start__`/PLT cases).
+    - [x] **Relocations** (`R_X86_64_GLOB_DAT`/`JUMP_SLOT`, `apply_external_relocations`): GOT/PLT
+          slot → EXTERNAL slot DATA refs + patched slot bytes (`Memory::write_u64`). basic 3/3 match
+          Ghidra exactly. `loader_reference_parity` gate (HARD subset, 0 spurious + ratchet).
     - [ ] **PLT disassembly** (the `.plt` is code even at `-noanalysis`): 4 refs.
-    - [ ] Then extend `loader_detail_parity` to gate refs (subset + ratchet).
+    - [ ] Addend-only relocations (`R_X86_64_RELATIVE`/`_64`) for the non-external cases.
   - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
 - [x] **A3 — Framework** (`priority.rs`/`analyzer.rs`/`manager.rs`). `AnalysisPriority`
       ladder; `Analyzer` trait + `AnalyzerType`; `AutoAnalysisManager`+`Scheduling` — per-
