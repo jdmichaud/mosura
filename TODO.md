@@ -306,9 +306,19 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] Converged gate: snapshot **v3** (code units / function bodies), validated against the
         converged goldens — meaningful once A5–A7 complete the analysis (A4 alone is partial).
   - [ ] Indirect branches (jump tables, A6), aggressive/function-pattern discovery.
-- [ ] **A5 — References + `SymbolicPropogator`.** The abstract interpreter over p-code
-      (plan §2b — the `emu` sibling) + the reference analyzers; gate on reference-set
-      parity. The heavyweight phase.
+- [~] **A5 — References + `SymbolicPropogator`** — references model + flow refs done; the
+      abstract interpreter (data refs) is the remaining heavyweight.
+  - [x] **ReferenceManager** (`program/reference.rs`): `Reference`/`RefType` (DATA/READ/WRITE +
+        flow kinds, Ghidra names); idempotent add + from/to queries; wired into `Program`.
+  - [x] **Flow references** created during disassembly (`Disassembler`): call → UNCONDITIONAL_CALL,
+        branch → UN/CONDITIONAL_JUMP to the static target. Verified (freestanding _start → add/sum_to).
+  - [ ] **`SymbolicPropogator`** (`program/util/SymbolicPropogator.java` — the `sleigh::emu`
+        sibling, ~3000 lines): a value lattice (constant / register-relative / unknown), a
+        `VarnodeContext` (register/memory state), and `flowConstants` interpreting the ~40-op
+        p-code switch (COPY/INT_ADD/INT_SUB/LOAD/STORE/SUBPIECE/…), calling `makeReference` when a
+        load/store/branch address resolves → DATA/READ/WRITE references. Per-arch
+        `ConstantPropagationAnalyzer` (REFERENCE priority) drives it. A focused, dedicated port.
+  - [ ] Snapshot **v3** `ref` section; gate reference-set parity vs converged goldens.
 - [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
       decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
       parity. **Depends on the decompiler port.**
