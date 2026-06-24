@@ -121,28 +121,57 @@ pub fn build_cfg(f: &mut Funcdata) {
         blocks[bi].out_edges = outs.into_iter().map(|b| BlockId(b as u32)).collect();
     }
 
-    // Decline switches whose cases cycle back through the dispatch (a switch inside a loop):
-    // like Ghidra ("Too many branches. Treating indirect jump as call"), drop the case edges
-    // so the case blocks become unreachable and are pruned, leaving a plain indirect jump.
+    // A switch inside a loop whose loop body has a *single* exit structures cleanly into
+    // `while { switch }` (Ghidra recovers it). One with *multiple* loop exits is the case
+    // Ghidra declines ("Too many branches. Treating indirect jump as call") — it won't
+    // structure, so decline it too: drop the case edges, leaving a plain indirect jump.
     for bi in 0..nb {
         let last_idx = blocks[bi].ops.last().unwrap().0 as usize;
         if f.op(OpId(last_idx as u32)).code() != super::OpCode::Branchind || blocks[bi].out_edges.is_empty() {
             continue;
         }
-        let mut seen = vec![false; nb];
-        let mut stack: Vec<usize> = blocks[bi].out_edges.iter().map(|e| e.0 as usize).collect();
-        let mut cycles = false;
-        while let Some(x) = stack.pop() {
-            if x == bi {
-                cycles = true;
-                break;
+        // the loop through this switch: blocks both reachable from bi and able to reach bi
+        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+        for b in 0..nb {
+            for e in &blocks[b].out_edges {
+                preds[e.0 as usize].push(b);
             }
-            if std::mem::replace(&mut seen[x], true) {
-                continue;
-            }
-            stack.extend(blocks[x].out_edges.iter().map(|e| e.0 as usize));
         }
-        if cycles {
+        let mut reach_bi = vec![false; nb];
+        let mut st = vec![bi];
+        reach_bi[bi] = true;
+        while let Some(x) = st.pop() {
+            for &p in &preds[x] {
+                if !std::mem::replace(&mut reach_bi[p], true) {
+                    st.push(p);
+                }
+            }
+        }
+        let mut from_bi = vec![false; nb];
+        let mut st = vec![bi];
+        from_bi[bi] = true;
+        while let Some(x) = st.pop() {
+            for e in &blocks[x].out_edges {
+                if !std::mem::replace(&mut from_bi[e.0 as usize], true) {
+                    st.push(e.0 as usize);
+                }
+            }
+        }
+        if !reach_bi.iter().enumerate().any(|(b, &r)| r && from_bi[b] && b != bi) {
+            continue; // not a switch-in-loop — a forward switch, always recovered
+        }
+        let in_loop = |b: usize| reach_bi[b] && from_bi[b];
+        let mut exit_targets = BTreeSet::new();
+        for b in 0..nb {
+            if in_loop(b) {
+                for e in &blocks[b].out_edges {
+                    if !in_loop(e.0 as usize) {
+                        exit_targets.insert(e.0 as usize);
+                    }
+                }
+            }
+        }
+        if exit_targets.len() > 1 {
             blocks[bi].out_edges.clear();
         }
     }

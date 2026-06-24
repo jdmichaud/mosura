@@ -1,0 +1,46 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=GhidraMCP source=oracle/analysis-corpus/basic.elf
+# dynamically-linked ELF: CRT + PLT thunks + EXTERNAL block are part of the faithful map
+block 00400000 0040034f segment_2.1
+block 00400350 0040036f .note.gnu.property
+block 00400370 00400393 .note.gnu.build-id
+block 00400394 004003af .interp
+block 004003b0 004003cb .gnu.hash
+block 004003d0 0040042f .dynsym
+block 00400430 00400479 .dynstr
+block 0040047a 00400481 .gnu.version
+block 00400488 004004b7 .gnu.version_r
+block 004004b8 004004e7 .rela.dyn
+block 004004e8 004004ff .rela.plt
+block 00401000 00401016 .init
+block 00401020 0040103f .plt
+block 00401040 004011a9 .text
+block 004011ac 004011b4 .fini
+block 00402000 00402007 .rodata
+block 00402008 00402043 .eh_frame_hdr
+block 00402048 0040212b .eh_frame
+block 0040212c 0040214b .note.ABI-tag
+block 00403df8 00403dff .init_array
+block 00403e00 00403e07 .fini_array
+block 00403e08 00403fd7 .dynamic
+block 00403fd8 00403fe7 .got
+block 00403fe8 00404007 .got.plt
+block 00404008 00404017 .data
+block 00404018 0040401f .bss
+block 00405000 00405017 EXTERNAL
+func 00401000 _init
+func 00401020 FUN_00401020
+func 00401030 printf
+func 00401040 _start
+func 00401070 _dl_relocate_static_pie
+func 00401080 deregister_tm_clones
+func 004010b0 register_tm_clones
+func 004010f0 __do_global_dtors_aux
+func 00401120 frame_dummy
+func 00401126 add
+func 0040113a sum_to
+func 00401168 main
+func 004011ac _fini
+func 00405000 __libc_start_main
+func 00405008 printf
+func 00405010 __gmon_start__

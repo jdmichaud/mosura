@@ -633,6 +633,15 @@ impl<'a> PrintC<'a> {
                         }
                     }
                     self.emit_structured(s, case, indent + 1, out);
+                    // a case that breaks to the switch's merge ends with `break;`; one that
+                    // returns is already terminal
+                    let terminal = exit_basic(s, case)
+                        .and_then(|eb| self.f.block(eb).ops.last().map(|&o| self.f.op(o).code()))
+                        .map(|c| c == OpCode::Return)
+                        .unwrap_or(false);
+                    if !terminal {
+                        let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
+                    }
                 }
                 let _ = writeln!(out, "{pad}}}");
             }

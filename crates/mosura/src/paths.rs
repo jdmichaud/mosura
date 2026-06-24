@@ -42,6 +42,16 @@ pub fn disasm_goldens_dir() -> PathBuf {
     goldens_dir().join("disasm")
 }
 
+/// Captured auto-analysis Program-state snapshots (`*.snapshot`) — the A0 oracle.
+pub fn analysis_goldens_dir() -> PathBuf {
+    goldens_dir().join("analysis")
+}
+
+/// The real-binary corpus the analysis oracle is captured from (`*.elf` + sources).
+pub fn analysis_corpus_dir() -> PathBuf {
+    workspace_root().join("oracle/analysis-corpus")
+}
+
 /// Hand-authored / extracted fixtures for the offline capture tool (`*.xml`).
 pub fn oracle_fixtures_dir() -> PathBuf {
     workspace_root().join("oracle/fixtures")

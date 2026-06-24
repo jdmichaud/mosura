@@ -188,6 +188,53 @@ for the full rationale and architecture.
 Gate at every phase: mosura's IR matches Ghidra's IR on the datatests before moving on.
 Retire the corresponding prototype code as each phase lands.
 
+## Analysis port (second track — `docs/analysis-port-plan.md`)
+
+A **separate, largely orthogonal** subsystem: a faithful port of Ghidra's **auto-analysis**
+(the Java side that takes a binary *file* and decides *what to decompile* — loaders,
+function discovery, references, switch/param recovery). Distinct from the decompiler port
+above (which works on one already-located function). Reference source is Ghidra's Java tree
+(`Features/Base/.../app/plugin/core/analysis`, `Framework/SoftwareModeling/.../program`),
+not `decompile/cpp`. Oracle is `analyzeHeadless` Program-state snapshots, not `decomp_dbg`
+per-action IR. New module tree `src/analysis/`. **Not started.**
+
+- **A1–A5 are independent of the decompiler port; A6 gates on it.** Don't sequence A1–A5
+  behind the P-phases.
+
+- [~] **A0 — Oracle + corpus** — scaffolding done; oracle backend in transition.
+  - [x] Real-binary corpus (`oracle/analysis-corpus/`): `freestanding.elf` (-nostdlib, clean)
+        + `basic.elf` (dynamic, realistic), built by `build.sh`, committed (toolchain-stable).
+  - [x] Snapshot schema (`src/analysis/snapshot.rs`): canonical, line-oriented, diff-friendly
+        v1 = loaded memory map (`block`) + recovered functions (`func`); lenient parser +
+        `render` round-trip; the contract mosura emits in A1–A4. Wired `src/analysis/`.
+  - [x] Committed goldens (`goldens/analysis/{freestanding,basic}.snapshot`) captured from
+        Ghidra 12.0.3 via GhidraMCP (server runs against the pinned build → faithful).
+  - [x] `tests/analysis_parity.rs` red-baseline ratchet (`EXPECTED_ANALYSIS_PASS=0`, 0/2 today)
+        + `analysis::analyze_binary` (Unimplemented). Procedure: `oracle/analysis-capture.md`.
+  - [ ] **analyzeHeadless backend** (offline, per-analyzer staging) — pending `gradle buildGhidra`
+        producing a distribution; then a `-postScript` snapshot dumper replaces MCP capture.
+  - [ ] Snapshot v2 sections: `entrypoint` / `sym` / `data` / `ref` + function body ranges
+        (the A4/A5 gating facts beyond entry+name).
+- [ ] **A1 — Program model.** `Program`/`Memory`/`MemoryBlock`/`AddressSet`/`Listing`/
+      `CodeUnit`/`SymbolTable`/`ReferenceManager`/`FunctionManager`, reusing the decompiler's
+      `Address`/`AddrSpace`.
+- [ ] **A2 — ELF loader.** File → memory blocks + relocations + symbols + entry points;
+      gate on memory-map + symbol-table parity.
+- [ ] **A3 — Framework.** `AutoAnalysisManager`/`AnalysisScheduler`/`Analyzer`/
+      `AnalysisPriority` — the priority worklist + per-analyzer address-set accumulators +
+      change-event refeed (plan §2a) — + one trivial analyzer diffed end-to-end.
+- [ ] **A4 — Disassembly + function discovery.** SLEIGH-driven disassembly from entry
+      points + recursive descent + function creation at call targets; gate on code-unit +
+      function-boundary parity.
+- [ ] **A5 — References + `SymbolicPropogator`.** The abstract interpreter over p-code
+      (plan §2b — the `emu` sibling) + the reference analyzers; gate on reference-set
+      parity. The heavyweight phase.
+- [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
+      decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
+      parity. **Depends on the decompiler port.**
+- [ ] **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
+      strings/data, arch-specific propagation; each gated on Program-state parity.
+
 ## Prototype findings worth carrying forward (from the approximation era)
 
 These were the *symptoms* that motivate the faithful port; all are subsumed by P1–P6.

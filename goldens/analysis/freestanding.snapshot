@@ -1,0 +1,8 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=GhidraMCP source=oracle/analysis-corpus/freestanding.elf
+block 00400000 0040011f segment_0.1
+block 00400120 00400143 .note.gnu.build-id
+block 00401000 00401078 .text
+func 00401000 add
+func 00401014 sum_to
+func 00401042 _start

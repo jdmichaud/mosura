@@ -304,6 +304,19 @@ mod tests {
     }
 
     #[test]
+    fn switch_in_loop_structures() {
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("switchloop.xml")).unwrap();
+        let chunks: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+        let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
+        crate::decompile::pipeline::decompile(&mut f);
+        let c = crate::decompile::printc::print_c(&f);
+        // single-exit switch-in-loop recovers as `while { switch { case …: …; break; } }`
+        assert!(c.contains("while (") && c.contains("switch ("), "switch-in-loop should structure:\n{c}");
+        assert!(c.contains("case ") && c.contains("break;"), "cases with breaks expected:\n{c}");
+    }
+
+    #[test]
     fn loop_header_with_terminal_exit_forms_loop() {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("forloop_varused.xml")).unwrap();

@@ -117,6 +117,20 @@ impl Structured {
         if self.out(b).len() < 3 {
             return false;
         }
+        // Defer until each single-entry case has fully collapsed: a case with internal control
+        // flow (an `if` in its body, >1 exit) must structure first, and a case whose single
+        // exit is its own continuation block (a single-entry "break" tail) must `cat` that tail
+        // in first — otherwise those tails leak as extra switch exits and the dispatch nests
+        // into gotos (the switch-in-loop case).
+        for c in self.blocks[b].out_edges.clone() {
+            if c == b || ins[c].len() != 1 {
+                continue;
+            }
+            let outc: Vec<usize> = self.out(c).to_vec();
+            if outc.len() > 1 || (outc.len() == 1 && outc[0] != b && ins[outc[0]].len() == 1) {
+                return false;
+            }
+        }
         let mut comps = vec![b];
         let mut exits: Vec<usize> = Vec::new();
         for c in self.blocks[b].out_edges.clone() {

@@ -6,6 +6,7 @@
 //! hold a *red baseline* against the Ghidra reference oracle (see
 //! `docs/testing-baseline.md`).
 
+pub mod analysis;
 pub mod conformance;
 pub mod datatest;
 pub mod decomp;
