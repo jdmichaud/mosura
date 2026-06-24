@@ -65,25 +65,19 @@ fn mask(v: u64, size: u32) -> u64 {
     }
 }
 
-/// Record a reference if the target lies in mapped memory (Ghidra's
-/// `evaluateReference`: reject `!memory.contains(address)`; computed — non-direct —
-/// accesses must additionally clear `minStoreLoadOffset`). `direct` is true for an
-/// address that appears literally in the p-code (a `ram`/`const` operand — Ghidra trusts
-/// these), false for one resolved through register propagation.
-fn make_ref(
-    program: &mut Program,
-    from: Address,
-    ram: SpaceId,
-    to_off: u64,
-    ref_type: RefType,
-    direct: bool,
-    min_ref: u64,
-) {
+/// Ghidra `ConstantPropagationAnalyzer` reference-address thresholds (its option
+/// defaults): a known/resolved address must clear `minStoreLoadRefAddress`; a
+/// *speculative* constant-derived address (a bare immediate that might be an address)
+/// must clear the larger `minSpeculativeRefAddress`.
+const MIN_KNOWN_REF: u64 = 4;
+const MIN_SPECULATIVE_REF: u64 = 1024;
+
+/// Record a reference if the target lies in mapped memory at or above `min` (Ghidra's
+/// `evaluateReference`: reject `!memory.contains(address)`, and addresses below the
+/// applicable threshold).
+fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref_type: RefType, min: u64) {
     let to = Address::new(ram, to_off);
-    if !program.memory.contains(to) {
-        return;
-    }
-    if !direct && to_off < min_ref {
+    if to_off < min || !program.memory.contains(to) {
         return;
     }
     program.reference_manager.add(from, to, ref_type, -1);
@@ -91,14 +85,7 @@ fn make_ref(
 
 /// Interpret one p-code op: create references for resolved memory operands and update
 /// the value of the output varnode.
-fn process_op(
-    program: &mut Program,
-    vctx: &mut VarnodeContext,
-    here: Address,
-    ram: SpaceId,
-    op: &PcodeOp,
-    min_ref: u64,
-) {
+fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, ram: SpaceId, op: &PcodeOp) {
     let opcode = OpCode::from_u32(op.opcode);
 
     // Control-flow ops carry their *target* as a `ram` operand — that is a flow edge
@@ -129,15 +116,15 @@ fn process_op(
         for arg in &op.ins {
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
-                    make_ref(program, here, ram, v.offset, RefType::Read, true, min_ref);
+                    make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF);
                 } else if v.space == "const" && const_is_data {
-                    make_ref(program, here, ram, v.offset, RefType::Data, true, min_ref);
+                    make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF);
                 }
             }
         }
         if let Some(out) = &op.out {
             if out.space == "ram" {
-                make_ref(program, here, ram, out.offset, RefType::Write, true, min_ref);
+                make_ref(program, here, ram, out.offset, RefType::Write, MIN_KNOWN_REF);
             }
         }
     }
@@ -157,7 +144,7 @@ fn process_op(
             // in[0] = address space, in[1] = pointer.
             if let Some(ptr) = op.ins.get(1).and_then(arg_var) {
                 if let SymValue::Const(addr) = vctx.get(ptr) {
-                    make_ref(program, here, ram, addr, RefType::Read, false, min_ref);
+                    make_ref(program, here, ram, addr, RefType::Read, MIN_KNOWN_REF);
                 }
             }
             if let Some(out) = &op.out {
@@ -167,7 +154,7 @@ fn process_op(
         Some(OpCode::Store) => {
             if let Some(ptr) = op.ins.get(1).and_then(arg_var) {
                 if let SymValue::Const(addr) = vctx.get(ptr) {
-                    make_ref(program, here, ram, addr, RefType::Write, false, min_ref);
+                    make_ref(program, here, ram, addr, RefType::Write, MIN_KNOWN_REF);
                 }
             }
         }
@@ -216,7 +203,7 @@ fn ram_branch_target(op: &PcodeOp) -> Option<u64> {
 /// Path-sensitive with a visited set (each instruction is interpreted once, first path
 /// wins) — conservative: a reference is only made when the value is a definite constant
 /// on the interpreted path, so it never invents a wrong reference.
-pub fn flow_constants(spec: &Spec, ctx: &[u32], program: &mut Program, start: Address, min_ref: u64) {
+pub fn flow_constants(spec: &Spec, ctx: &[u32], program: &mut Program, start: Address) {
     let ram = start.space;
     let mut visited: HashSet<u64> = HashSet::new();
     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
@@ -238,7 +225,7 @@ pub fn flow_constants(spec: &Spec, ctx: &[u32], program: &mut Program, start: Ad
         let mut falls = true;
         let mut branch_targets: Vec<u64> = Vec::new();
         for op in &insn.ops {
-            process_op(program, &mut vctx, here, ram, op, min_ref);
+            process_op(program, &mut vctx, here, ram, op);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
                     falls = false;
@@ -297,7 +284,7 @@ mod tests {
         };
         // mov rax, [rip+0x10] ; ret   →  reads ram:0x401017 (next=0x401007 + 0x10)
         let (mut program, ram) = program_with_code(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), 4);
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
         let reads: Vec<u64> = program
             .reference_manager
             .references()
@@ -319,7 +306,7 @@ mod tests {
             0x48, 0x8b, 0x08, // mov rcx,[rax]
             0xc3, // ret
         ]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), 4);
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
         let has = |rt: RefType, to: u64| {
             program.reference_manager.references().any(|r| r.ref_type == rt && r.to.offset == to)
         };

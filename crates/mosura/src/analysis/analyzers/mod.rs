@@ -171,13 +171,12 @@ pub struct ConstantPropagationAnalyzer {
     spec: Spec,
     ctx: Vec<u32>,
     ram: SpaceId,
-    min_ref: u64,
 }
 
 impl ConstantPropagationAnalyzer {
     pub fn for_program(program: &Program) -> Option<ConstantPropagationAnalyzer> {
         let (spec, ctx) = crate::lang::load(&program.language_id)?;
-        Some(ConstantPropagationAnalyzer { spec, ctx, ram: program.default_space, min_ref: 4 })
+        Some(ConstantPropagationAnalyzer { spec, ctx, ram: program.default_space })
     }
 }
 
@@ -198,7 +197,6 @@ impl Analyzer for ConstantPropagationAnalyzer {
                 &self.ctx,
                 program,
                 Address::new(self.ram, r.min),
-                self.min_ref,
             );
         }
         true
