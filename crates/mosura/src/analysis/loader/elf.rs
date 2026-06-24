@@ -350,11 +350,36 @@ fn recover_symbols(
         let mut off = 0;
         while off + 8 <= size {
             if let Some(target) = read_u64(&program.memory, Address::new(ram, base + off)) {
+                // Each array slot is a function pointer → a DATA reference (Ghidra's
+                // pointer-array markup); an executable target is also an entry point.
+                if target != 0 && program.memory.contains(Address::new(ram, target)) {
+                    program.reference_manager.add(
+                        Address::new(ram, base + off),
+                        Address::new(ram, target),
+                        RefType::Data,
+                        -1,
+                    );
+                }
                 if program.memory.block_at(Address::new(ram, target)).is_some_and(|b| b.is_execute()) {
                     entry_addrs.insert(target);
                 }
             }
             off += 8;
+        }
+    }
+
+    // DT_PLTGOT's first slot holds &_DYNAMIC (the dynamic-linker convention) — a DATA
+    // reference (Ghidra's GOT pointer markup).
+    if let Some(gotplt) = dt_val(3) {
+        if let Some(target) = read_u64(&program.memory, Address::new(ram, gotplt)) {
+            if target != 0 && program.memory.contains(Address::new(ram, target)) {
+                program.reference_manager.add(
+                    Address::new(ram, gotplt),
+                    Address::new(ram, target),
+                    RefType::Data,
+                    -1,
+                );
+            }
         }
     }
 

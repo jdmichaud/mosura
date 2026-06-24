@@ -161,9 +161,9 @@ fn loader_reference_parity() {
         }
     }
     eprintln!("loader-reference parity: {recall} (0 spurious)");
-    // basic 3 relocation refs (freestanding has no dynamic relocations); the remainder is
-    // the ELF structure-markup sub-project (TODO).
-    assert!(recall.passed >= 3, "loader-reference recall regressed below 3");
+    // freestanding 4/4 (exact) + basic 32/36. The remaining 4 (basic PLT) need loader-stage
+    // PLT disassembly with INDIRECTION typing — A6 indirect-flow territory.
+    assert!(recall.passed >= 36, "loader-reference recall regressed below 36");
 }
 
 /// A4 — disassembly parity. Every instruction mosura decodes must match a Ghidra
