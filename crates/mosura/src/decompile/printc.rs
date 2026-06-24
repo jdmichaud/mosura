@@ -270,6 +270,9 @@ impl<'a> PrintC<'a> {
             OpCode::IntLess | OpCode::IntLessequal => {
                 cast_standard(&Datatype::Uint(sz), &cur, true, false)
             }
+            // SEXT requires a signed input of the *input* width (Ghidra `TypeOpIntSext::
+            // getInputCast`, care_uint_int=true): `(int8)(int4)param` when param is undefined.
+            OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
             OpCode::IntEqual | OpCode::IntNotequal => {
                 // reqtype is the more-specific of the two operand types (Ghidra
                 // `TypeOpEqual::getInputCast`); equality does not care about signedness.
@@ -425,8 +428,9 @@ impl<'a> PrintC<'a> {
             }
             OpCode::IntSext => {
                 let n = self.f.vn(o.output.unwrap()).size;
-                let in0 = a(0);
-                (format!("(int{n}){}", self.operand(in0, 14, false)), 14)
+                // the widening renders `(int{n})`; the input itself may also need a `(int{m})`
+                // cast (e.g. from undefined), giving Ghidra's `(int8)(int4)x`
+                (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14)
             }
             OpCode::IntMult => bin(self, "*", 13),
             OpCode::IntDiv | OpCode::IntSdiv => bin(self, "/", 13),
@@ -1027,6 +1031,21 @@ pub fn print_c(f: &Funcdata) -> String {
     }
     params.sort_by_key(|&(off, _)| param_order(off));
     params.dedup_by_key(|&mut (off, _)| off);
+
+    // Ghidra recovers no type for these parameters, so each parameter *symbol* stays undefined<N>
+    // (`ActionPrototypeTypes` type-locks it to the prototype); the casts seen at uses then come
+    // from the ops that require a type (a signed compare, a SEXT). Mirror that: force the whole
+    // HighVariable of each parameter to undefined so it declares as `undefined<N>` and becomes a
+    // cast source, the way Ghidra's locked param does. (Width recovery — full register vs
+    // sub-register, e.g. `undefined8` here vs Ghidra's `undefined4` — is a separate prototype
+    // concern, not addressed by this typing.)
+    let param_his: HashSet<u32> = params.iter().map(|&(_, v)| p.h.high(v)).collect();
+    let type_keys: Vec<VarnodeId> = p.types.keys().copied().collect();
+    for v in type_keys {
+        if param_his.contains(&p.h.high(v)) {
+            p.types.insert(v, Datatype::Unknown(f.vn(v).size));
+        }
+    }
 
     let ret = p.return_value();
     let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
