@@ -19,6 +19,7 @@ use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
+use super::scope::{category, Scope};
 use super::structure::{structure, FlowKind, Structured};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
@@ -1192,25 +1193,6 @@ fn render_const(val: u64, size: u32) -> String {
 /// Decompile `f` to C text.
 pub fn print_c(f: &Funcdata) -> String {
     let reg_space = f.spaces.by_name("register");
-    let mut p = PrintC {
-        f,
-        h: merge(f),
-        names: HashMap::new(),
-        reg_space,
-        ram_space: f.spaces.by_name("ram"),
-        stack_space: f.spaces.by_name("stack"),
-        var_counter: 0,
-        ret_val: None,
-        types: infer(f),
-        for_loops: HashMap::new(),
-        suppressed: HashSet::new(),
-        array_elem: HashMap::new(),
-        gotos: HashMap::new(),
-        labels: HashSet::new(),
-        decls: Vec::new(),
-    };
-    p.array_elem = p.detect_arrays();
-    p.ret_val = p.return_value();
 
     // parameters: input varnodes sitting in a parameter register that are actually used.
     // (Unused param-register inputs are scratch — e.g. the call-argument candidates that
@@ -1228,6 +1210,42 @@ pub fn print_c(f: &Funcdata) -> String {
     }
     params.sort_by_key(|&(off, _)| param_order(off));
     params.dedup_by_key(|&mut (off, _)| off);
+
+    // The function's local scope: each recovered parameter is a symbol type-locked to its
+    // prototype type — undefined<N> for these stripped binaries (Ghidra `ActionPrototypeTypes`).
+    // The locks flow into `infer`, so a parameter is typed (and declared) undefined even where
+    // inference would make it a pointer; the pointer-ness then surfaces only as casts at the uses
+    // (Ghidra's `*(xunknown8 *)param_1`).
+    let mut scope = Scope::new();
+    let mut locks: HashMap<VarnodeId, Datatype> = HashMap::new();
+    for &(off, v) in &params {
+        let sz = f.vn(v).size;
+        let name = param_name(Some(f.vn(v).loc.space) == reg_space, off).unwrap_or("").to_string();
+        scope.add_symbol_cat(name, Datatype::Unknown(sz), f.vn(v).loc, sz, category::FUNCTION_PARAMETER, 0);
+        if let Some(ty) = scope.type_of(f.vn(v).loc, sz) {
+            locks.insert(v, ty);
+        }
+    }
+
+    let mut p = PrintC {
+        f,
+        h: merge(f),
+        names: HashMap::new(),
+        reg_space,
+        ram_space: f.spaces.by_name("ram"),
+        stack_space: f.spaces.by_name("stack"),
+        var_counter: 0,
+        ret_val: None,
+        types: infer(f, &locks),
+        for_loops: HashMap::new(),
+        suppressed: HashSet::new(),
+        array_elem: HashMap::new(),
+        gotos: HashMap::new(),
+        labels: HashSet::new(),
+        decls: Vec::new(),
+    };
+    p.array_elem = p.detect_arrays();
+    p.ret_val = p.return_value();
 
     let ret = p.return_value();
     // the return type, like a parameter, is a declared symbol with no recovered type → undefined

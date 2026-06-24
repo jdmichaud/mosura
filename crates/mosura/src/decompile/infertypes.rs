@@ -149,14 +149,17 @@ struct TypeInfer<'a> {
     f: &'a Funcdata,
     temp: Vec<Datatype>,
     mark: Vec<bool>,
+    /// Type-locked varnodes (Ghidra `Varnode::typelock`) — e.g. parameters locked to their
+    /// prototype type. A locked varnode keeps its type through `getLocalType`/`propagateTypeEdge`.
+    locks: &'a HashMap<VarnodeId, Datatype>,
 }
 
 impl<'a> TypeInfer<'a> {
-    fn new(f: &'a Funcdata) -> Self {
+    fn new(f: &'a Funcdata, locks: &'a HashMap<VarnodeId, Datatype>) -> Self {
         let temp = (0..f.num_varnodes() as u32)
             .map(|i| Datatype::Unknown(f.vn(VarnodeId(i)).size))
             .collect();
-        TypeInfer { f, temp, mark: vec![false; f.num_varnodes()] }
+        TypeInfer { f, temp, mark: vec![false; f.num_varnodes()], locks }
     }
 
     fn t(&self, v: VarnodeId) -> &Datatype {
@@ -174,8 +177,11 @@ impl<'a> TypeInfer<'a> {
     }
 
     /// Ghidra `Varnode::getLocalType`: the most-specific of the def's output local type and each
-    /// use's input local type.
+    /// use's input local type. A type-locked varnode returns its locked type unchanged.
     fn get_local_type(&self, v: VarnodeId) -> Datatype {
+        if let Some(t) = self.locks.get(&v) {
+            return t.clone(); // Ghidra: `if (isTypeLock()) return type;`
+        }
         let vn = self.f.vn(v);
         let mut ct: Option<Datatype> = vn.def.map(|def| self.output_type_local(def));
         for &op in &vn.descend {
@@ -266,6 +272,9 @@ impl<'a> TypeInfer<'a> {
             }
             ov
         };
+        if self.locks.contains_key(&outvn) {
+            return false; // Ghidra: can't propagate through a typelock
+        }
         // Only propagate a boolean into a value that can hold only 0/1. Ghidra tests the non-zero
         // mask; lacking that here, we approximate with single-byte storage (the bool's own width).
         if matches!(alttype, Datatype::Bool) && self.f.vn(outvn).size > 1 {
@@ -394,8 +403,8 @@ fn propagate_from_pointer(dt: &Datatype, sz: u32) -> Option<Datatype> {
 /// Infer a type for every non-constant varnode: run the local-type seeding and per-varnode
 /// propagation (Ghidra `ActionInferTypes::apply`), then resolve one type per [`merge`]
 /// HighVariable so each emitted C variable is typed consistently across its SSA versions.
-pub fn infer(f: &Funcdata) -> HashMap<VarnodeId, Datatype> {
-    let mut ti = TypeInfer::new(f);
+pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<VarnodeId, Datatype> {
+    let mut ti = TypeInfer::new(f, locks);
     ti.build_localtypes();
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
@@ -406,24 +415,39 @@ pub fn infer(f: &Funcdata) -> HashMap<VarnodeId, Datatype> {
     let committed = ti.write_back();
 
     // Resolve to one type per HighVariable (Ghidra commits per-varnode; the C variable's type is
-    // the meet of its members), then map every non-constant varnode to its variable's type.
+    // the meet of its members), then map every non-constant varnode to its variable's type. A
+    // type-locked member wins for the whole variable (Ghidra's symbol type-lock).
     let mut h = merge(f);
     let nonconst: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
         .map(VarnodeId)
         .filter(|&v| !f.vn(v).is_constant())
         .collect();
 
+    let mut locked_hv: HashMap<u32, Datatype> = HashMap::new();
+    for (&v, t) in locks {
+        if !f.vn(v).is_constant() {
+            locked_hv.insert(h.high(v), t.clone());
+        }
+    }
     let mut hv: HashMap<u32, Datatype> = HashMap::new();
     for &v in &nonconst {
-        let lt = committed[v.0 as usize].clone();
         let id = h.high(v);
+        if locked_hv.contains_key(&id) {
+            continue;
+        }
+        let lt = committed[v.0 as usize].clone();
         hv.entry(id).and_modify(|t| *t = meet(t, &lt)).or_insert(lt);
     }
 
     nonconst
         .into_iter()
         .map(|v| {
-            let t = hv.get(&h.high(v)).cloned().unwrap_or_else(|| committed[v.0 as usize].clone());
+            let id = h.high(v);
+            let t = locked_hv
+                .get(&id)
+                .or_else(|| hv.get(&id))
+                .cloned()
+                .unwrap_or_else(|| committed[v.0 as usize].clone());
             (v, t)
         })
         .collect()
@@ -458,7 +482,7 @@ mod tests {
         let dt = datatest::parse_file(&paths::datatests_dir().join("loopcomment.xml")).unwrap();
         let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
-        let types = infer(&f);
+        let types = infer(&f, &HashMap::new());
         assert!(
             types.values().any(|t| matches!(t, Datatype::Int(_))),
             "a signed comparison should seed a signed int type"
@@ -481,7 +505,8 @@ mod tests {
         let oc = f.new_op(OpCode::Copy, seq, vec![a]);
         let out = f.new_output(oc, 8, Address::new(reg, 0x300));
 
-        let mut ti = TypeInfer::new(&f);
+        let locks = HashMap::new();
+        let mut ti = TypeInfer::new(&f, &locks);
         ti.build_localtypes();
         assert_eq!(ti.t(a), &Datatype::Float(8), "a FLOAT_ADD use makes `a` float locally");
         ti.propagate_one_type(a);
@@ -502,7 +527,8 @@ mod tests {
         let olt = f.new_op(OpCode::IntLess, seq, vec![a, c]);
         let _b = f.new_output(olt, 1, Address::new(reg, 0x200));
 
-        let mut ti = TypeInfer::new(&f);
+        let locks = HashMap::new();
+        let mut ti = TypeInfer::new(&f, &locks);
         ti.build_localtypes();
         assert_eq!(ti.t(a), &Datatype::Uint(4), "INT_LESS seeds an unsigned operand");
     }
