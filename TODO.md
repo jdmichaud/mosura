@@ -289,21 +289,20 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
     - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. WAR2/comcom32 exact.
   - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
         defined symbols are processed today — fine for the corpus).
-  - [ ] **Loader-stage references** (audit finding; the one remaining A0–A5 gap, scoped as a
-        dedicated ELF-data-markup sub-project — *not* rushed). Ghidra's `-noanalysis` loader emits
-        4 refs on freestanding, 36 on basic; mosura's emits none (`loader_detail_parity` compares
-        blocks/funcs/entries/symbols, not refs). Decomposition (basic ref counts):
-    - [ ] **ELF header + program-header markup** (`e_entry`→entry, `p_vaddr`→segment): the bulk;
-          all 4 freestanding refs + several on basic. Needs the `ElfHeader`/`ProgramHeader` field
-          model (which fields are pointer-typed → references).
-    - [ ] **Dynamic-table field refs** (`DT_*` address entries → targets): ~14 on basic. mosura
-          already creates `__DT_*` labels at the targets — add the references from the field.
-    - [ ] **`.init_array`/`.fini_array` markup** (pointer entries → init/fini funcs): ~few.
-    - [x] **Relocations** (`R_X86_64_GLOB_DAT`/`JUMP_SLOT`, `apply_external_relocations`): GOT/PLT
-          slot → EXTERNAL slot DATA refs + patched slot bytes (`Memory::write_u64`). basic 3/3 match
-          Ghidra exactly. `loader_reference_parity` gate (HARD subset, 0 spurious + ratchet).
-    - [ ] **PLT disassembly** (the `.plt` is code even at `-noanalysis`): 4 refs.
-    - [ ] Addend-only relocations (`R_X86_64_RELATIVE`/`_64`) for the non-external cases.
+  - [x] **Loader-stage references** (audit finding) — ELF data-structure markup DONE.
+        `loader_reference_parity` gate: freestanding **4/4 exact**, basic **32/36**, 0 spurious
+        (ratchet 36). Implemented:
+    - [x] **ELF header + program-header markup** (`markup_elf_structures`): `e_entry`→entry,
+          `e_phoff`→phdr table, each loaded segment's `p_vaddr`→load address (Ghidra
+          `markupElfHeader`/`markupProgramHeaders`; skips PT_NULL + offset-0 LOAD).
+    - [x] **Dynamic-table field refs** (`markup_dynamic`): each address-valued `DT_*` `d_un` → target.
+    - [x] **`.init_array`/`.fini_array`** slot → function pointer; **DT_PLTGOT[0]** → `_DYNAMIC`.
+    - [x] **Relocations** (`apply_external_relocations`, `R_X86_64_GLOB_DAT`/`JUMP_SLOT`): GOT/PLT
+          slot → EXTERNAL slot DATA refs + patched bytes (`Memory::write_u64`). basic 3/3 exact.
+    - [ ] **PLT disassembly + `INDIRECTION`** (remaining 4 basic refs): the loader disassembles
+          `.plt` and types `jmp *[GOT]` as INDIRECTION — an **indirect-flow** concept best done
+          faithfully in **A6** (not hacked into the loader). Addend-only relocs (`R_X86_64_RELATIVE`)
+          likewise when those binaries appear.
   - [ ] Generalize language-id mapping beyond x86-64 (16/32-bit, other arches).
 - [x] **A3 — Framework** (`priority.rs`/`analyzer.rs`/`manager.rs`). `AnalysisPriority`
       ladder; `Analyzer` trait + `AnalyzerType`; `AutoAnalysisManager`+`Scheduling` — per-
