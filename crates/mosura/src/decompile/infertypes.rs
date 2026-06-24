@@ -372,8 +372,59 @@ impl<'a> TypeInfer<'a> {
         }
     }
 
-    /// Ghidra `writeBack`: commit each varnode's settled temporary type. With no type-locks to
-    /// honour and an all-`undefined` starting point, the committed type is the temporary type.
+    /// Ghidra `canonicalReturnOp`: the live RETURN whose value input has the most specific type.
+    fn canonical_return(&self, returns: &[OpId]) -> Option<OpId> {
+        let mut best: Option<(OpId, Datatype)> = None;
+        for &r in returns {
+            let vn = self.f.op(r).input(1)?;
+            let ct = self.t(vn).clone();
+            match &best {
+                None => best = Some((r, ct)),
+                Some((_, b)) if type_order(&ct, b) == Ordering::Less => best = Some((r, ct)),
+                _ => {}
+            }
+        }
+        best.map(|(r, _)| r)
+    }
+
+    /// Ghidra `propagateAcrossReturns`: a function returns a single data-type, so the type on the
+    /// most-specific RETURN's value propagates to the value inputs of the other RETURNs.
+    fn propagate_across_returns(&mut self) {
+        let returns: Vec<OpId> = self
+            .f
+            .op_ids()
+            .filter(|&op| {
+                let o = self.f.op(op);
+                !o.is_dead() && o.code() == OpCode::Return && o.num_inputs() > 1
+            })
+            .collect();
+        let Some(canon) = self.canonical_return(&returns) else { return };
+        let base = self.f.op(canon).input(1).unwrap();
+        let ct = self.t(base).clone();
+        let base_size = self.f.vn(base).size;
+        let is_bool = matches!(ct, Datatype::Bool);
+        for r in returns {
+            if r == canon {
+                continue;
+            }
+            let vn = self.f.op(r).input(1).unwrap();
+            if self.f.vn(vn).size != base_size {
+                continue;
+            }
+            // Ghidra: don't propagate bool unless the value is provably 0/1; approximate with width.
+            if is_bool && self.f.vn(vn).size > 1 {
+                continue;
+            }
+            if *self.t(vn) == ct {
+                continue;
+            }
+            self.temp[vn.0 as usize] = ct.clone();
+            self.propagate_one_type(vn);
+        }
+    }
+
+    /// Ghidra `writeBack`: commit each varnode's settled temporary type (type-locks were honoured
+    /// during propagation, and the permanent type starts at `undefined`).
     fn write_back(self) -> Vec<Datatype> {
         self.temp
     }
@@ -412,6 +463,7 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
             ti.propagate_one_type(v);
         }
     }
+    ti.propagate_across_returns();
     let committed = ti.write_back();
 
     // Resolve to one type per HighVariable (Ghidra commits per-varnode; the C variable's type is
