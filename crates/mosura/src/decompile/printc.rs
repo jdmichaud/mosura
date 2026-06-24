@@ -120,6 +120,7 @@ struct PrintC<'a> {
     names: HashMap<u32, String>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
+    stack_space: Option<super::space::SpaceId>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     types: HashMap<VarnodeId, Datatype>,
@@ -243,11 +244,17 @@ impl<'a> PrintC<'a> {
         if let Some(n) = self.names.get(&id) {
             return n.clone();
         }
-        self.var_counter += 1;
-        // Ghidra names a local by its type prefix (`xVar` undefined, `iVar` int, `uVar` uint,
-        // `fVar` float, `pVar` pointer), not a fixed `uVar`.
+        // Ghidra names a local by its type prefix (`xVar`/`iVar`/`uVar`/`fVar`/`pVar`); a local in
+        // the recovered `stack` space is named by its frame offset (`xStack_28`) instead of a
+        // running counter.
         let ty = self.type_of(v);
-        let n = format!("{}Var{}", type_prefix(&ty), self.var_counter);
+        let prefix = type_prefix(&ty);
+        let n = if Some(vn.loc.space) == self.stack_space {
+            format!("{prefix}Stack_{:x}", (vn.loc.offset as i64).unsigned_abs())
+        } else {
+            self.var_counter += 1;
+            format!("{prefix}Var{}", self.var_counter)
+        };
         self.names.insert(id, n.clone());
         self.decls.push((n.clone(), ty)); // a genuine local — declare it at the top of the body
         n
@@ -1187,6 +1194,7 @@ pub fn print_c(f: &Funcdata) -> String {
         names: HashMap::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
+        stack_space: f.spaces.by_name("stack"),
         var_counter: 0,
         ret_val: None,
         types: infer(f),
