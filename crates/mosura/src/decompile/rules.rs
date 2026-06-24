@@ -619,6 +619,61 @@ impl Rule for RuleSelectCse {
     }
 }
 
+/// `RuleSubExtComm` (`ruleaction.cc`): push a `SUBPIECE` through a `ZEXT`/`SEXT`. When the
+/// piece never reaches the extended bits (`out_size + subcut <= invn_size`) it is a piece of
+/// the pre-extension value directly — and when it exactly covers that value it collapses to a
+/// `COPY`. This cancels the `SUBPIECE(ZEXT(reg:4))` round-trips that heritage's sub-register
+/// canonicalization introduces (the bulk of the IR-op gap vs Ghidra).
+pub struct RuleSubExtComm;
+
+impl Rule for RuleSubExtComm {
+    fn name(&self) -> &str {
+        "subextcomm"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(base), Some(cut_v), Some(out)) =
+            (data.op(op).input(0), data.op(op).input(1), data.op(op).output)
+        else {
+            return 0;
+        };
+        let Some(subcut) = data.vn(cut_v).is_constant().then(|| data.vn(cut_v).constant_value()) else {
+            return 0;
+        };
+        let Some(extop) = data.vn(base).def else { return 0 };
+        let ec = data.op(extop).code();
+        if !matches!(ec, OpCode::IntZext | OpCode::IntSext) {
+            return 0;
+        }
+        let Some(invn) = data.op(extop).input(0) else { return 0 };
+        if data.vn(invn).is_constant() {
+            return 0;
+        }
+        let out_size = data.vn(out).size as u64;
+        let in_size = data.vn(invn).size as u64;
+        if out_size + subcut <= in_size {
+            // the piece never touches the extended bits — it's a piece of `invn` directly
+            data.op_set_input(op, 0, invn);
+            if in_size == out_size {
+                data.op_remove_input(op, 1);
+                data.op_set_opcode(op, OpCode::Copy);
+            }
+            return 1;
+        }
+        // reaching into the extension at a nonzero offset needs a fresh SUBPIECE op (Ghidra
+        // splits it); leave those alone. At offset 0 the result is just `ext(invn)`.
+        if subcut != 0 {
+            return 0;
+        }
+        data.op_remove_input(op, 1);
+        data.op_set_opcode(op, ec);
+        data.op_set_input(op, 0, invn);
+        1
+    }
+}
+
 /// `a & a`, `a | a` → `a`; `a ^ a`, `a - a` → `0` (one varnode). Ghidra's identity folds; with
 /// CSE merging duplicate `SUBPIECE`s, `SUBPIECE(x) ^ SUBPIECE(x)` becomes `s ^ s` → `0`.
 pub struct RuleIdempotent;
