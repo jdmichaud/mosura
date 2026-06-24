@@ -128,6 +128,36 @@ impl PrintC<'_> {
     fn type_of(&self, v: VarnodeId) -> Datatype {
         self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
     }
+
+    /// The variable's effective (type) width: the highest byte index any use reads — Ghidra's
+    /// type-width that `ActionInferTypes::propagateOneType` derives from consumed bytes. A
+    /// `SUBPIECE` use reads `[offset, offset+out_size)`; any other use reads the whole varnode.
+    /// A truncating SUBPIECE renders as a cast exactly when this exceeds its output size (the
+    /// value is genuinely wider than the slice), which distinguishes an int8 used at 4 bytes
+    /// (`(int4)x`) from an int4 used at its width (plain `x`).
+    fn effective_width(&self, x: VarnodeId) -> u32 {
+        let full = self.f.vn(x).size;
+        let mut w = 0;
+        for &u in &self.f.vn(x).descend {
+            let o = self.f.op(u);
+            for (slot, &iv) in o.inrefs.iter().enumerate() {
+                if iv != x {
+                    continue;
+                }
+                let top = if o.code() == OpCode::Subpiece && slot == 0 {
+                    let off = o
+                        .input(1)
+                        .and_then(|v| self.f.vn(v).is_constant().then(|| self.f.vn(v).constant_value()))
+                        .unwrap_or(0) as u32;
+                    off + o.output.map(|out| self.f.vn(out).size).unwrap_or(full)
+                } else {
+                    full
+                };
+                w = w.max(top);
+            }
+        }
+        w
+    }
 }
 
 impl<'a> PrintC<'a> {
@@ -328,9 +358,22 @@ impl<'a> PrintC<'a> {
             (format!("{l} {sym} {r}"), prec)
         };
         match o.code() {
-            // ZEXT (the implicit x86 32→64 zero-extension) and SUBPIECE stay transparent;
-            // SEXT is an explicit signed widening that Ghidra prints as a cast
-            OpCode::Copy | OpCode::IntZext | OpCode::Subpiece => self.render_var(a(0)),
+            // COPY and ZEXT (the implicit x86 32→64 zero-extension) stay transparent
+            OpCode::Copy | OpCode::IntZext => self.render_var(a(0)),
+            // SUBPIECE: a truncation at offset 0 of a value wider than the slice is a C cast
+            // (Ghidra's `opSubpiece`/`isSubpieceCast`); when the value's type-width equals the
+            // slice it is the natural read and stays transparent
+            OpCode::Subpiece => {
+                let in0 = a(0);
+                let off = self.f.vn(a(1)).is_constant().then(|| self.f.vn(a(1)).constant_value());
+                let out_size = self.f.vn(o.output.unwrap()).size;
+                if off == Some(0) && self.effective_width(in0) > out_size {
+                    let ty = self.type_of(o.output.unwrap()).name();
+                    (format!("({ty}){}", self.operand(in0, 14, false)), 14)
+                } else {
+                    self.render_var(in0)
+                }
+            }
             OpCode::IntSext => {
                 let n = self.f.vn(o.output.unwrap()).size;
                 let in0 = a(0);
