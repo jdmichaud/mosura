@@ -373,9 +373,11 @@ impl<'a> PrintC<'a> {
         info.into_iter().filter_map(|(b, s)| s.map(|sz| (b, sz))).collect()
     }
 
-    /// Render a memory access `*addr` of `size` bytes — `base[i]` for a detected array base
-    /// (non-zero index), else `*addr`.
-    fn render_mem(&mut self, addr: VarnodeId, _size: u32) -> (String, u8) {
+    /// Render a memory access `*addr` of `size` bytes holding a value of type `vty` — `base[i]`
+    /// for a detected array base (non-zero index), else `*addr`, with a `(vty *)` cast on the
+    /// address when it is not already a pointer to a value of the right size (Ghidra's
+    /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
+    fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
         if let Some(def) = self.f.vn(addr).def {
             let o = self.f.op(def).clone();
             if o.code() == OpCode::IntAdd && o.num_inputs() == 2 {
@@ -395,7 +397,30 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
-        (format!("*{}", self.operand(addr, 15, false)), 15)
+        // A deref of an address that is genuinely a pointer to a value of the right size prints
+        // `*addr`; otherwise Ghidra casts the address to `(vty *)` first. An address produced by
+        // integer arithmetic is int-natured (Ghidra's `arithmeticOutputStandard`) and always
+        // casts, even though type propagation back through the LOAD leaves a pointer temp-type on
+        // it — mosura's `type_of` would otherwise see that pointer and wrongly skip the cast.
+        let arithmetic_addr = self
+            .f
+            .vn(addr)
+            .def
+            .map(|d| {
+                use OpCode::*;
+                matches!(
+                    self.f.op(d).code(),
+                    IntAdd | IntSub | IntMult | IntAnd | IntOr | IntXor | IntLeft | IntRight | IntSright
+                )
+            })
+            .unwrap_or(false);
+        let addr_is_ptr = !arithmetic_addr
+            && matches!(&self.type_of(addr), Datatype::Pointer(_, p) if p.size() == size);
+        if addr_is_ptr {
+            (format!("*{}", self.operand(addr, 15, false)), 15)
+        } else {
+            (format!("*({} *){}", vty.name(), self.operand(addr, 14, false)), 15)
+        }
     }
 
     /// Render an op as a C expression with its precedence.
@@ -488,7 +513,8 @@ impl<'a> PrintC<'a> {
             }
             OpCode::Load => {
                 let (addr, sz) = (a(1), self.f.vn(o.output.unwrap()).size);
-                self.render_mem(addr, sz)
+                let vty = self.type_of(o.output.unwrap());
+                self.render_mem(addr, sz, &vty)
             }
             OpCode::Call => {
                 // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
@@ -831,7 +857,8 @@ impl<'a> PrintC<'a> {
                 OpCode::Store => {
                     let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
                     let sz = self.f.vn(vv).size;
-                    let lhs = self.render_mem(addr, sz).0;
+                    let vty = self.type_of(vv);
+                    let lhs = self.render_mem(addr, sz, &vty).0;
                     let val = self.render_var(vv).0;
                     let _ = writeln!(out, "{pad}{lhs} = {val};");
                 }
