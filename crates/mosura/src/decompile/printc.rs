@@ -13,13 +13,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
+use super::cast::cast_standard;
 use super::funcdata::Funcdata;
 use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::structure::{structure, FlowKind, Structured};
-use super::types::Datatype;
+use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
 /// Collect the basic blocks under a structured block (its loop body, etc.).
@@ -251,6 +252,52 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// The cast an op requires of its input `slot` (Ghidra `TypeOp::getInputCast` → `castStandard`),
+    /// or `None` if the operand's type already satisfies the op. Only the comparisons are wired:
+    /// the signed/unsigned ones force a signedness cast (`care_uint_int`), which is what renders
+    /// Ghidra's `(int4)param_1 < 10`; equality reconciles silently. Other ops (arithmetic, logic)
+    /// use Ghidra's lenient default and effectively never cast in the primitive lattice, so they
+    /// are left transparent here.
+    fn get_input_cast(&self, op: OpId, slot: usize) -> Option<Datatype> {
+        let o = self.f.op(op);
+        let in_vn = o.input(slot)?;
+        let cur = self.type_of(in_vn);
+        let sz = self.f.vn(in_vn).size;
+        match o.code() {
+            OpCode::IntSless | OpCode::IntSlessequal => {
+                cast_standard(&Datatype::Int(sz), &cur, true, true)
+            }
+            OpCode::IntLess | OpCode::IntLessequal => {
+                cast_standard(&Datatype::Uint(sz), &cur, true, false)
+            }
+            OpCode::IntEqual | OpCode::IntNotequal => {
+                // reqtype is the more-specific of the two operand types (Ghidra
+                // `TypeOpEqual::getInputCast`); equality does not care about signedness.
+                let t0 = self.type_of(o.input(0)?);
+                let t1 = self.type_of(o.input(1)?);
+                let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
+                cast_standard(&req, &cur, false, false)
+            }
+            _ => None,
+        }
+        // NOTE: the `checkIntPromotionForCompare` gate (cast.cc) is omitted; it is exactly
+        // NO_PROMOTION (→ defer to castStandard) for operands ≥ 4 bytes, which is every operand
+        // here. Sub-4-byte promotion-forced casts are conservatively skipped.
+    }
+
+    /// Render input `slot` of `op`, wrapping it in the cast the op requires ([`get_input_cast`]).
+    /// A constant operand is never wrapped — like Ghidra's `castInput`, the literal simply adopts
+    /// the required type (so a signed compare prints `(int4)x < 10`, not `< (int4)10`).
+    fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
+        let v = self.f.op(op).input(slot).unwrap();
+        if !self.f.vn(v).is_constant() {
+            if let Some(ty) = self.get_input_cast(op, slot) {
+                return format!("({}){}", ty.name(), self.operand(v, 14, false));
+            }
+        }
+        self.operand(v, prec, right)
+    }
+
     /// If `base` is the stack/frame pointer (RSP 0x20 / RBP 0x28) and `off` a constant, this
     /// is the address of a stack local taken as a value — render `&Stack_<offset>`.
     fn stack_addr(&self, base: VarnodeId, off: VarnodeId) -> Option<String> {
@@ -353,8 +400,10 @@ impl<'a> PrintC<'a> {
         let o = self.f.op(op);
         let a = |i: usize| o.input(i).unwrap();
         let bin = |s: &mut Self, sym: &str, prec: u8| {
-            let l = s.operand(a(0), prec, false);
-            let r = s.operand(a(1), prec, true);
+            // route operands through the cast rule so a signed compare prints `(int4)x` etc.;
+            // ops with no required cast (most) fall through to a plain operand
+            let l = s.cast_operand(op, 0, prec, false);
+            let r = s.cast_operand(op, 1, prec, true);
             (format!("{l} {sym} {r}"), prec)
         };
         match o.code() {
