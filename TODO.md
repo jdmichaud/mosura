@@ -306,20 +306,23 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] Converged gate: snapshot **v3** (code units / function bodies), validated against the
         converged goldens — meaningful once A5–A7 complete the analysis (A4 alone is partial).
   - [ ] Indirect branches (jump tables, A6), aggressive/function-pattern discovery.
-- [~] **A5 — References + `SymbolicPropogator`** — references model + flow refs + propagator
-      core done; full op set + ref-parity gate remain.
+- [x] **A5 — References + `SymbolicPropogator`** — reference model, flow refs, propagator,
+      and the ref-parity oracle landed. **reference parity 29/37, 0 false positives** (mosura
+      never invents a reference Ghidra lacks); residual recall is A6 / deeper propagation.
   - [x] **ReferenceManager** (`program/reference.rs`): `Reference`/`RefType` (DATA/READ/WRITE +
         flow kinds, Ghidra names); idempotent add + from/to queries; wired into `Program`.
-  - [x] **Flow references** created during disassembly (`Disassembler`): call → UNCONDITIONAL_CALL,
-        branch → UN/CONDITIONAL_JUMP to the static target. Verified (freestanding _start → add/sum_to).
-  - [x] **`SymbolicPropogator` core** (`analysis/symbolic.rs`): `SymValue` lattice (Const | Unknown)
-        + `VarnodeContext`; `flow_constants` path-sensitive walk interpreting p-code; `makeReference`
-        gated on `memory.contains`. `ram` operand → READ/WRITE, `const`-as-address (`lea`) → DATA,
-        LOAD/STORE pointer resolved via register propagation, constant-folds INT_ADD/SUB/AND/OR/ZEXT/SEXT.
-        `ConstantPropagationAnalyzer` (REFERENCE priority) drives it. Unit + real-binary tested.
-  - [ ] **Full propagator**: the rest of the ~40-op `flowConstants` switch; register-relative (stack)
-        values (`Value.relativeRegister`); memory-content reads (pointer chains); context merge at joins.
-  - [ ] Snapshot **v3** `ref` section; gate reference-set parity vs converged goldens (the A5 gate).
+  - [x] **Flow references** in the `Disassembler`: call → UNCONDITIONAL_CALL, branch →
+        UN/CONDITIONAL_JUMP; self-target (`hlt` = `BRANCH <self>`) suppressed.
+  - [x] **`SymbolicPropogator`** (`analysis/symbolic.rs`): `SymValue` lattice + `VarnodeContext`;
+        `flow_constants` path-sensitive walk; `makeReference` gated on `memory.contains`. `ram`
+        operand → READ/WRITE; `const`-as-address → DATA (any data op, not STORE); LOAD/STORE pointer
+        resolved via register propagation; constant-folds INT_ADD/SUB/AND/OR/ZEXT/SEXT. Flow-op
+        operands excluded (they are flow edges, not data). `ConstantPropagationAnalyzer` drives it.
+  - [x] **Snapshot v3** `ref` section (`DumpAnalysisSnapshot` + `snapshot.rs` + `Program.snapshot`);
+        `reference_parity` gate — HARD no-false-positive subset assert + recall ratchet (≥29).
+  - [ ] *Recall residual (A6 / future, not A5):* COMPUTED_CALL / INDIRECTION / PARAM (indirect-call +
+        parameter analysis), PLT-stub disassembly, GOT pointer-following (memory-content reads),
+        register-relative (stack) values, context merge at joins.
 - [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
       decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
       parity. **Depends on the decompiler port.**
