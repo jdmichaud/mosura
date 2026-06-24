@@ -127,6 +127,20 @@ impl Memory {
         self.block_at(addr).and_then(|b| b.byte_at(addr))
     }
 
+    /// Write a little-endian `u64` into whichever initialized block covers `addr` (used to
+    /// apply relocations, like Ghidra patching the image). No-op if the address is
+    /// uncovered/uninitialized or the value would overrun the block.
+    pub fn write_u64(&mut self, addr: Address, value: u64) {
+        if let Some(block) = self.blocks.iter_mut().find(|b| b.contains(addr)) {
+            if let Some(bytes) = block.bytes.as_mut() {
+                let off = (addr.offset - block.start.offset) as usize;
+                if off + 8 <= bytes.len() {
+                    bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+    }
+
     /// Find the (default-space) block by name.
     pub fn block_by_name(&self, name: &str) -> Option<&MemoryBlock> {
         self.blocks.iter().find(|b| b.name == name)

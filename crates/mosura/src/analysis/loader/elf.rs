@@ -19,9 +19,12 @@ use std::collections::BTreeSet;
 
 use object::elf;
 use object::read::elf::{ElfFile64, FileHeader, ProgramHeader};
-use object::{Endianness, Object, ObjectSection, ObjectSymbol, SectionFlags, SymbolKind};
+use object::{
+    Endianness, Object, ObjectSection, ObjectSymbol, ObjectSymbolTable, RelocationTarget,
+    SectionFlags, SymbolKind,
+};
 
-use crate::analysis::program::{AddressSet, Memory, Program, SymbolType};
+use crate::analysis::program::{AddressSet, Memory, Program, RefType, SymbolType};
 use crate::decompile::space::{Address, SpaceId, SpaceManager, SpaceKind};
 
 /// Linkage-block alignment for the EXTERNAL block on x86-64 (Ghidra
@@ -190,6 +193,42 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
     Ok(program)
 }
 
+/// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
+/// a port of Ghidra's `ElfRelocationHandler` for the slot relocations (`R_X86_64_GLOB_DAT`,
+/// `R_X86_64_JUMP_SLOT`): set the slot to the symbol's EXTERNAL-block address and record
+/// the DATA reference Ghidra's loader emits. Relocations against non-external symbols (and
+/// addend-only kinds like `R_X86_64_RELATIVE`) are left for the full relocation port.
+fn apply_external_relocations(
+    elf: &Elf,
+    ram: SpaceId,
+    externals: &[(String, SymbolKind)],
+    ext_start: u64,
+    program: &mut Program,
+) {
+    let slot_of: std::collections::HashMap<&str, u64> = externals
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| (name.as_str(), ext_start + i as u64 * 8))
+        .collect();
+    let (Some(dynsyms), Some(relocs)) = (elf.dynamic_symbol_table(), elf.dynamic_relocations())
+    else {
+        return;
+    };
+    for (offset, reloc) in relocs {
+        let RelocationTarget::Symbol(idx) = reloc.target() else { continue };
+        let Ok(sym) = dynsyms.symbol_by_index(idx) else { continue };
+        let Ok(name) = sym.name() else { continue };
+        let Some(&slot) = slot_of.get(name) else { continue };
+        program.memory.write_u64(Address::new(ram, offset), slot);
+        program.reference_manager.add(
+            Address::new(ram, offset),
+            Address::new(ram, slot),
+            RefType::Data,
+            -1,
+        );
+    }
+}
+
 /// Recover symbols, functions, and entry points — a port of Ghidra `ElfProgramBuilder`'s
 /// symbol processing (`markupDynamicTable` + `processSymbolTables`/`evaluateElfSymbol`):
 ///
@@ -220,6 +259,10 @@ fn recover_symbols(
                 program.symbol_table.add_with_primary(addr, name, SymbolType::Label, true);
             }
         }
+        // Apply dynamic relocations against external symbols (Ghidra `ElfRelocationHandler`):
+        // each GOT/PLT slot is pointed at its symbol's EXTERNAL-block address — patch the
+        // slot value and create the DATA reference Ghidra's loader emits.
+        apply_external_relocations(elf, ram, externals, start, program);
     }
 
     let mut entry_addrs: BTreeSet<u64> = BTreeSet::new();

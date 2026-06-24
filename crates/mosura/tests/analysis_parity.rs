@@ -128,6 +128,44 @@ fn pe_mz_convergence_parity() {
     eprintln!("PE/MZ convergence: {evaluated} binary(ies) evaluated");
 }
 
+/// A2 — loader-stage references. mosura's loader must emit no reference Ghidra's
+/// `-noanalysis` loader doesn't (HARD subset), with a recall ratchet. Today mosura emits
+/// the dynamic-relocation references (GOT/PLT slot → EXTERNAL symbol); the rest of
+/// Ghidra's loader-stage refs come from ELF header / program-header / dynamic-table /
+/// init-array data-structure markup (the documented remaining sub-project).
+#[test]
+fn loader_reference_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.loaded.snapshot"))).unwrap(),
+        );
+        // analyze_binary is the load-only (loader-stage) snapshot.
+        let snap = analysis::analyze_binary(&corpus_dir.join(format!("{name}.elf"))).unwrap();
+        let mine: BTreeSet<(u64, u64, String)> =
+            snap.refs.iter().map(|r| (r.from, r.to, r.kind.clone())).collect();
+        let gold: BTreeSet<(u64, u64, String)> =
+            golden.refs.iter().map(|r| (r.from, r.to, r.kind.clone())).collect();
+        let spurious: Vec<_> = mine.difference(&gold).collect();
+        assert!(spurious.is_empty(), "{name}: loader emitted refs Ghidra doesn't: {spurious:x?}");
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] loader-ref recall {matched}/{} (0 spurious)", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("loader-reference parity: {recall} (0 spurious)");
+    // basic 3 relocation refs (freestanding has no dynamic relocations); the remainder is
+    // the ELF structure-markup sub-project (TODO).
+    assert!(recall.passed >= 3, "loader-reference recall regressed below 3");
+}
+
 /// A4 — disassembly parity. Every instruction mosura decodes must match a Ghidra
 /// instruction at the same address (HARD subset: no misaligned/spurious decodes), and we
 /// ratchet recall. Missing instructions live in functions mosura doesn't yet reach (PLT
