@@ -44,10 +44,20 @@ one. Do not let it drive decisions. Concretely:
    detector," a size threshold) to paper over a gap. If Ghidra makes a decision, Ghidra has
    code for it — find it (`jumptable.cc`, `heritage.cc`, `coreaction.cc`, …) and port *that*.
    A heuristic that happens to match a few corpus functions is the exact anti-pattern above.
+5. **GROUND BEFORE YOU CODE — dump the actual IR and Ghidra's actual `--c` first.** The most
+   expensive failure mode is *guessing the mechanism*: building a fix on what you assume the IR
+   contains or what you remember Ghidra emits, then reverting when it doesn't work. Before
+   writing a line: (a) dump mosura's IR for the target function (`f.print_raw()`, or a tiny
+   `examples/` script over its ops) and *read* what's actually there; (b) run
+   `oracle/capture ../ghidra <fixture> --c` and read Ghidra's actual output for that function.
+   One real example beats five clever guesses. A whole session was lost guessing a cast
+   mechanism five times — every premise (cast renderer, copy-prop guard, `normalizeWriteSize`,
+   addrtied) was wrong, and reading the IR *first* would have shown it in minutes.
 
 If you catch yourself about to `git checkout`/revert a parity-clean change because the
 corpus average dipped, **stop** — re-read this section. The mandate is to convert Ghidra,
-not to climb the gauge.
+not to climb the gauge. And if you've reverted the same area twice, **stop guessing and read
+the IR** (rule 5) — the mechanism is not what you think.
 
 - Ghidra source (pinned to tag `Ghidra_12.0.3_build`): `../ghidra`
 - Decompiler core to port: `../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp`
