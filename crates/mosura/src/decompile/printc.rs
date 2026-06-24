@@ -308,6 +308,10 @@ impl<'a> PrintC<'a> {
             // SEXT requires a signed input of the *input* width (Ghidra `TypeOpIntSext::
             // getInputCast`, care_uint_int=true): `(int8)(int4)param` when param is undefined.
             OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
+            // signed/unsigned divide and remainder force their operand's signedness
+            // (Ghidra `TypeOpIntSdiv`/`Srem`/`Div`/`Rem::getInputCast`, care_uint_int=true)
+            OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
+            OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
             OpCode::IntEqual | OpCode::IntNotequal => {
                 // reqtype is the more-specific of the two operand types (Ghidra
                 // `TypeOpEqual::getInputCast`); equality does not care about signedness.

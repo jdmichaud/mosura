@@ -311,6 +311,65 @@ impl Rule for RuleSignMod2nOpt {
     }
 }
 
+/// True if `sh` computes the sign bit of `v` — `v >> (w-1)` (logical or arithmetic right shift).
+fn is_sign_shift(f: &Funcdata, sh: VarnodeId, v: VarnodeId, size: u32) -> bool {
+    let Some(d) = f.vn(sh).def else { return false };
+    matches!(f.op(d).code(), OpCode::IntRight | OpCode::IntSright)
+        && f.op(d).input(0).is_some_and(|x| equiv(f, x, v))
+        && f.op(d).input(1).and_then(|c| cval(f, c)) == Some((8 * size - 1) as u64)
+}
+
+/// Recover signed `x % 2` from the *division* form `x - ((x + (x >> (w-1))) & ~1)` (Ghidra's
+/// `RuleSignMod2nOpt2`, mod-2 special case). The rounded value `(x + signbit) & ~(2^k-1)` is
+/// subtracted from `x`, leaving `x % 2^k`; for k=1 the correction is just the sign bit. (The
+/// general `2^k` case routes the correction through a MULTIEQUAL and is left for later.)
+pub struct RuleSignMod2nOpt2;
+
+impl Rule for RuleSignMod2nOpt2 {
+    fn name(&self) -> &str {
+        "signmod2n2"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSub]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        let (Some(base), Some(and_out)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
+        // and_out = INT_AND(adj, ~(2^k-1))
+        let Some(and) = f.vn(and_out).def else { return 0 };
+        if f.op(and).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let (Some(adj), Some(mask_v)) = (f.op(and).input(0), f.op(and).input(1)) else { return 0 };
+        let Some(maskc) = cval(f, mask_v) else { return 0 };
+        let size = f.vn(base).size;
+        let full = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
+        let npow = (!maskc).wrapping_add(1) & full; // the modulus 2^k
+        if npow.count_ones() != 1 || npow != 2 {
+            return 0; // only the mod-2 add form here
+        }
+        // adj = INT_ADD(V, V >> (w-1)) — the sign-bit correction
+        let Some(adj_def) = f.vn(adj).def else { return 0 };
+        if f.op(adj_def).code() != OpCode::IntAdd || f.op(adj_def).num_inputs() != 2 {
+            return 0;
+        }
+        let (a0, a1) = (f.op(adj_def).input(0).unwrap(), f.op(adj_def).input(1).unwrap());
+        let v = if is_sign_shift(f, a0, a1, size) {
+            a1
+        } else if is_sign_shift(f, a1, a0, size) {
+            a0
+        } else {
+            return 0;
+        };
+        if !equiv(f, v, base) {
+            return 0;
+        }
+        let dc = f.new_const(size, npow);
+        f.op_set_opcode(op, OpCode::IntSrem);
+        f.op_set_all_input(op, &[base, dc]);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +470,37 @@ mod tests {
         f.set_blocks(vec![BlockBasic { ops: vec![corr, add, subp, and, ze, op], ..Default::default() }]);
 
         ActionPool::new("p").with(RuleSignMod2nOpt).apply(&mut f);
+        assert_eq!(f.op(op).code(), OpCode::IntSrem);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
+    }
+
+    #[test]
+    fn recovers_signed_mod_2_division_form() {
+        use crate::decompile::action::{Action, ActionPool};
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        // x - ((x + (x >>u 63)) & -2)  ⇒  x % 2  (the division form)
+        let sh = f.new_const(8, 0x3f);
+        let corr = f.new_op(OpCode::IntRight, seq, vec![x, sh]);
+        let corro = f.new_output_unique(corr, 8);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![corro, x]);
+        let addo = f.new_output_unique(add, 8);
+        let mask = f.new_const(8, (-2i64) as u64);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![addo, mask]);
+        let ando = f.new_output_unique(and, 8);
+        let op = f.new_op(OpCode::IntSub, seq, vec![x, ando]);
+        f.new_output(op, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![corr, add, and, op], ..Default::default() }]);
+
+        ActionPool::new("p").with(RuleSignMod2nOpt2).apply(&mut f);
         assert_eq!(f.op(op).code(), OpCode::IntSrem);
         assert_eq!(f.op(op).input(0), Some(x));
         let dc = f.op(op).input(1).unwrap();
