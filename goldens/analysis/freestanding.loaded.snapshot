@@ -14,3 +14,7 @@ sym 00401042 _start Function
 sym 00402000 __bss_start Label
 sym 00402000 _edata Label
 sym 00402000 _end Label
+ref 00400018 00401042 DATA
+ref 00400020 00400040 DATA
+ref 00400088 00401000 DATA
+ref 004000c0 00400120 DATA

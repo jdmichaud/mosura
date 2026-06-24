@@ -61,6 +61,59 @@ fn memory_map_parity() {
     assert_eq!(blocks.passed, blocks.total, "every evaluated binary's memory map must match its loader-stage golden");
 }
 
+/// A5 — references parity. mosura's analysis must never invent a reference Ghidra
+/// doesn't have (a HARD subset gate over references **from executable code**), and we
+/// ratchet how many of Ghidra's code references it recovers. The missing remainder is
+/// A6-level analysis (computed calls, parameters, indirection) + deeper propagation.
+#[test]
+fn reference_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let program = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap();
+        let snap = program.snapshot();
+
+        // References whose source is executable memory — what disassembly + the
+        // SymbolicPropogator are responsible for (compared on (from, to); Ghidra refines
+        // some types to PARAM/INDIRECTION/CALL via A6 analyzers we haven't ported).
+        let exec: Vec<(u64, u64)> = program
+            .memory
+            .blocks()
+            .filter(|b| b.is_execute())
+            .map(|b| (b.start().offset, b.end().offset))
+            .collect();
+        let in_code = |a: u64| exec.iter().any(|&(s, e)| a >= s && a <= e);
+        let mine: BTreeSet<(u64, u64)> =
+            snap.refs.iter().filter(|r| in_code(r.from)).map(|r| (r.from, r.to)).collect();
+        let gold: BTreeSet<(u64, u64)> =
+            golden.refs.iter().filter(|r| in_code(r.from)).map(|r| (r.from, r.to)).collect();
+
+        let false_positives: Vec<_> = mine.difference(&gold).collect();
+        assert!(
+            false_positives.is_empty(),
+            "{name}: mosura invented {} reference(s) absent from Ghidra: {false_positives:x?}",
+            false_positives.len()
+        );
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] code-ref recall {matched}/{} (0 false positives)", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
+    // Ratchet: freestanding 4/4 + basic 23/33 = 27 recovered today (raise as the
+    // propagator + A6 analyzers land).
+    assert!(recall.passed >= 27, "code-reference recall regressed below 27");
+}
+
 #[test]
 fn loader_detail_parity() {
     let goldens = analysis_goldens_dir();

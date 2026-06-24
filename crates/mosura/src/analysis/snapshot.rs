@@ -59,6 +59,15 @@ pub struct Symbol {
     pub kind: String,
 }
 
+/// A reference (Ghidra `Reference`): `from → to` with a `RefType` kind string
+/// (`"READ"`/`"DATA"`/`"UNCONDITIONAL_CALL"`/…), deduped on `(from, to, kind)`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ref {
+    pub from: u64,
+    pub to: u64,
+    pub kind: String,
+}
+
 /// The converged-program snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -72,6 +81,7 @@ pub struct Snapshot {
     pub functions: Vec<Function>,
     pub entries: Vec<EntryPoint>,
     pub symbols: Vec<Symbol>,
+    pub refs: Vec<Ref>,
 }
 
 impl Snapshot {
@@ -82,6 +92,8 @@ impl Snapshot {
         self.functions.sort();
         self.entries.sort();
         self.symbols.sort();
+        self.refs.sort();
+        self.refs.dedup();
     }
 
     /// Render to the canonical v1 text format (sorted). Round-trips with
@@ -105,6 +117,9 @@ impl Snapshot {
         }
         for sym in &s.symbols {
             out.push_str(&format!("sym {:08x} {} {}\n", sym.addr, sym.name, sym.kind));
+        }
+        for r in &s.refs {
+            out.push_str(&format!("ref {:08x} {:08x} {}\n", r.from, r.to, r.kind));
         }
         out
     }
@@ -166,6 +181,15 @@ pub fn parse(text: &str) -> Snapshot {
                 let name = rest.join(" ");
                 if let Some(addr) = addr {
                     snap.symbols.push(Symbol { addr, name, kind });
+                }
+            }
+            Some("ref") => {
+                // `ref <from> <to> <kind>`.
+                let from = it.next().and_then(|s| u64::from_str_radix(s, 16).ok());
+                let to = it.next().and_then(|s| u64::from_str_radix(s, 16).ok());
+                let kind = it.collect::<Vec<_>>().join(" ");
+                if let (Some(from), Some(to)) = (from, to) {
+                    snap.refs.push(Ref { from, to, kind });
                 }
             }
             _ => {} // unknown prefix (future section) — ignore

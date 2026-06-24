@@ -77,8 +77,11 @@ impl Analyzer for Disassembler {
             for op in &insn.ops {
                 let opcode = OpCode::from_u32(op.opcode);
                 match opcode {
+                    // A target equal to the instruction itself is a halt idiom
+                    // (SLEIGH lifts `hlt` to `BRANCH <self>`), not a real flow edge —
+                    // Ghidra emits no reference for it.
                     Some(OpCode::Branch | OpCode::Cbranch) => {
-                        if let Some(t) = Self::static_target(op) {
+                        if let Some(t) = Self::static_target(op).filter(|&t| t != a) {
                             work.push(t);
                             let rt = if matches!(opcode, Some(OpCode::Cbranch)) {
                                 RefType::ConditionalJump
@@ -89,7 +92,7 @@ impl Analyzer for Disassembler {
                         }
                     }
                     Some(OpCode::Call) => {
-                        if let Some(t) = Self::static_target(op) {
+                        if let Some(t) = Self::static_target(op).filter(|&t| t != a) {
                             call_targets.add_range(ram, t, t);
                             program.reference_manager.add(
                                 addr,

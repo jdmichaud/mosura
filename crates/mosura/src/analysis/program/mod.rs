@@ -125,6 +125,16 @@ impl Program {
                 .to_string(),
             })
             .collect();
+        let refs = self
+            .reference_manager
+            .references()
+            .filter(|r| r.from.space == self.default_space && r.to.space == self.default_space)
+            .map(|r| snapshot::Ref {
+                from: r.from.offset,
+                to: r.to.offset,
+                kind: r.ref_type.name().to_string(),
+            })
+            .collect();
         let mut snap = Snapshot {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
@@ -135,6 +145,7 @@ impl Program {
             functions,
             entries,
             symbols,
+            refs,
         };
         snap.normalize();
         snap

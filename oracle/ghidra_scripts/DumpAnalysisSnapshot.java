@@ -82,6 +82,25 @@ public class DumpAnalysisSnapshot extends GhidraScript {
                 if (!a.getAddressSpace().equals(defaultSpace)) continue;
                 w.printf("sym %08x %s %s%n", a.getOffset(), s.getName(), s.getSymbolType());
             }
+
+            // References within the default space (memory→memory): the analysis port's
+            // flow + data references. Filtered to default-space endpoints (skip stack,
+            // register, external, const-space refs) and deduped on (from, to, type).
+            ghidra.program.model.symbol.ReferenceManager rm = currentProgram.getReferenceManager();
+            java.util.TreeSet<String> refs = new java.util.TreeSet<>();
+            ghidra.program.model.address.AddressIterator rsit =
+                    rm.getReferenceSourceIterator(currentProgram.getMemory(), true);
+            while (rsit.hasNext()) {
+                Address from = rsit.next();
+                if (!from.getAddressSpace().equals(defaultSpace)) continue;
+                for (ghidra.program.model.symbol.Reference r : rm.getReferencesFrom(from)) {
+                    Address to = r.getToAddress();
+                    if (!to.getAddressSpace().equals(defaultSpace)) continue;
+                    refs.add(String.format("ref %08x %08x %s",
+                            from.getOffset(), to.getOffset(), r.getReferenceType().getName()));
+                }
+            }
+            for (String line : refs) w.println(line);
         }
         println("DumpAnalysisSnapshot: wrote " + outPath);
     }

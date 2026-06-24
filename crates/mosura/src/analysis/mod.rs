@@ -66,6 +66,15 @@ pub fn analyze_binary(path: &Path) -> Result<Snapshot, AnalysisError> {
     Ok(program.snapshot())
 }
 
+/// Load a binary and run the full auto-analysis pipeline ([`analyze`]), returning the
+/// converged [`Program`].
+pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
+    let data = std::fs::read(path)?;
+    let mut program = loader::load(&data)?;
+    analyze(&mut program);
+    Ok(program)
+}
+
 /// Run the auto-analysis pipeline over a loaded [`Program`] (A3 framework + A4 analyzers):
 /// recursive-descent disassembly from the loader's functions and entry points, creating
 /// code units and discovering functions at call targets, to a fixpoint.
@@ -159,3 +168,4 @@ mod a5_tests {
         }
     }
 }
+

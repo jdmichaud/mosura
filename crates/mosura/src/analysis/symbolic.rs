@@ -101,18 +101,36 @@ fn process_op(
 ) {
     let opcode = OpCode::from_u32(op.opcode);
 
+    // Control-flow ops carry their *target* as a `ram` operand — that is a flow edge
+    // (handled by the disassembler as a CALL/JUMP reference), not a data access. Only
+    // data ops turn a literal `ram` operand into a data reference.
+    let is_flow = matches!(
+        opcode,
+        Some(
+            OpCode::Branch
+                | OpCode::Cbranch
+                | OpCode::Branchind
+                | OpCode::Call
+                | OpCode::Callind
+                | OpCode::Callother
+                | OpCode::Return
+        )
+    );
+
     // Direct `ram`-space operands are literal addresses: an input is read, an output
     // is written (Ghidra's COPY `in[0].isAddress()` / STORE-to-address paths).
-    for arg in &op.ins {
-        if let PArg::Var(v) = arg {
-            if v.space == "ram" {
-                make_ref(program, here, ram, v.offset, RefType::Read, true, min_ref);
+    if !is_flow {
+        for arg in &op.ins {
+            if let PArg::Var(v) = arg {
+                if v.space == "ram" {
+                    make_ref(program, here, ram, v.offset, RefType::Read, true, min_ref);
+                }
             }
         }
-    }
-    if let Some(out) = &op.out {
-        if out.space == "ram" {
-            make_ref(program, here, ram, out.offset, RefType::Write, true, min_ref);
+        if let Some(out) = &op.out {
+            if out.space == "ram" {
+                make_ref(program, here, ram, out.offset, RefType::Write, true, min_ref);
+            }
         }
     }
 
