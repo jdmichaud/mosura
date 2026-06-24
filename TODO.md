@@ -325,9 +325,14 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         `Reference`/`Symbol`/`FunctionManager` per-add sort→HashSet, `SymbolicPropogator` String-key→int
         + `flow_constants` bounded to function entries. cnv analyze 1043s→142s. Also fixed a real SLEIGH
         engine panic (`fmt_hex(i64::MIN)` negate-overflow) that crashed PE/MZ disassembly.
-  - [ ] **war2/cnv precision** (later-phase, A6/A7): mosura over-decodes vs Ghidra's data analysis
-        (war2 8 misaligned, cnv 2 spurious funcs + 1097 misaligned) — no data analyzer yet to claim
-        data regions, so flow runs into them. Closes as A6/A7 (data + indirect-flow) land.
+  - [x] **Call-target functions** (audit fix): create a function at every in-memory direct-call
+        target (not just executable) — Ghidra's behaviour; comcom32 3/8 → 8/8 exact.
+  - [ ] **war2/cnv precision** (later-phase, A6/A7 — audit-verified, not bugs): over-decode vs
+        Ghidra's data analysis. **Audit-and-fix loop conclusion:** every remaining miss across the
+        corpus is A6 (indirect flow: basic PLT-via-GOT, war2 142 unreached) or A7 (data analysis:
+        cnv 2 spurious funcs + 1097 misaligned — their callers are over-decoded non-Ghidra
+        instructions) or war2-16-bit specifics (12 jump-target/boundary funcs). No fixable-without-
+        A6/A7 bug remains in the corpus.
   - [x] **Function bodies** computed (see `function_body_parity`); exact match. (was: empty body gap)
   - [ ] The 4 instructions / 2 functions mosura misses (PLT[0] `0x401020`, GOT-indirect `0x405010`)
         need PLT-stub disassembly / pointer-following. Indirect branches (jump tables) are A6.
