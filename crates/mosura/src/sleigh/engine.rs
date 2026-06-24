@@ -1404,7 +1404,8 @@ fn fmt_hex(v: i64) -> String {
     if v >= 0 {
         format!("0x{v:x}")
     } else {
-        format!("-0x{:x}", -v)
+        // `-v` overflows for i64::MIN; take the magnitude as unsigned.
+        format!("-0x{:x}", v.unsigned_abs())
     }
 }
 
