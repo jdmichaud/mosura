@@ -224,6 +224,93 @@ impl Rule for RuleModOpt {
     }
 }
 
+/// Depth-1 functional equivalence (Ghidra's `functionalEqualityLevel == 0`): the same
+/// varnode, equal constants, or the same op applied to pairwise-equal operands. The sign
+/// correction is computed once but may reach the add and the subtract as distinct varnodes.
+fn equiv(f: &Funcdata, a: VarnodeId, b: VarnodeId) -> bool {
+    if a == b {
+        return true;
+    }
+    match (f.vn(a).def, f.vn(b).def) {
+        (Some(da), Some(db)) => {
+            f.op(da).code() == f.op(db).code()
+                && f.op(da).num_inputs() == f.op(db).num_inputs()
+                && (0..f.op(da).num_inputs()).all(|i| {
+                    let (ia, ib) = (f.op(da).input(i).unwrap(), f.op(db).input(i).unwrap());
+                    ia == ib
+                        || (f.vn(ia).is_constant()
+                            && f.vn(ib).is_constant()
+                            && f.vn(ia).constant_value() == f.vn(ib).constant_value())
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Recover signed modulo by a power of two: `((x + corr) & (2^k-1)) - corr` ⇒ `x % 2^k`,
+/// where `corr` is the sign-rounding correction added before the mask and subtracted after
+/// (Ghidra's `RuleSignMod2nOpt`). Ghidra matches the correction as `INT_ADD(.., MULT(corr,-1))`;
+/// mosura's pipeline has already folded that to an `INT_SUB`, so we match that shape.
+pub struct RuleSignMod2nOpt;
+
+impl Rule for RuleSignMod2nOpt {
+    fn name(&self) -> &str {
+        "signmod2n"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSub]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        let (Some(m), Some(corr)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
+        // the correction is a sign-bit extraction (a right shift), used on both sides
+        let Some(cdef) = f.vn(corr).def else { return 0 };
+        if !matches!(f.op(cdef).code(), OpCode::IntRight | OpCode::IntSright) {
+            return 0;
+        }
+        // m = ZEXT(and) — the masked value widened back; peel the optional extension
+        let and = match f.vn(m).def {
+            Some(d) if f.op(d).code() == OpCode::IntZext => f.op(d).input(0).and_then(|v| f.vn(v).def),
+            d => d,
+        };
+        let Some(and) = and else { return 0 };
+        if f.op(and).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let (Some(and_in), Some(mask_v)) = (f.op(and).input(0), f.op(and).input(1)) else { return 0 };
+        let Some(mask) = cval(f, mask_v) else { return 0 };
+        if mask == 0 || (mask & (mask + 1)) != 0 {
+            return 0; // mask+1 must be a power of two (the modulus)
+        }
+        // and_in = SUBPIECE(add, 0) (the masked value is computed truncated) or add directly
+        let add = match f.vn(and_in).def {
+            Some(d)
+                if f.op(d).code() == OpCode::Subpiece
+                    && f.op(d).input(1).and_then(|v| cval(f, v)) == Some(0) =>
+            {
+                f.op(d).input(0).and_then(|v| f.vn(v).def)
+            }
+            d => d,
+        };
+        let Some(add) = add else { return 0 };
+        if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
+            return 0;
+        }
+        // the addend equal to the subtracted correction is `corr`; the other is the dividend
+        let (a0, a1) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
+        let x = if equiv(f, a0, corr) {
+            a1
+        } else if equiv(f, a1, corr) {
+            a0
+        } else {
+            return 0;
+        };
+        let dc = f.new_const(f.vn(x).size, mask + 1);
+        f.op_set_opcode(op, OpCode::IntSrem);
+        f.op_set_all_input(op, &[x, dc]);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +378,42 @@ mod tests {
         assert_eq!(f.op(op).input(0), Some(x));
         let dc = f.op(op).input(1).unwrap();
         assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 0x51);
+    }
+
+    #[test]
+    fn recovers_signed_mod_power_of_two() {
+        use crate::decompile::action::{Action, ActionPool};
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        // corr = x >>u 63  (the sign bit as 0/1)
+        let sh = f.new_const(8, 0x3f);
+        let corr = f.new_op(OpCode::IntRight, seq, vec![x, sh]);
+        let corro = f.new_output_unique(corr, 8);
+        // ((x + corr) & 1) - corr   ⇒   x % 2
+        let add = f.new_op(OpCode::IntAdd, seq, vec![x, corro]);
+        let addo = f.new_output_unique(add, 8);
+        let off0 = f.new_const(4, 0);
+        let subp = f.new_op(OpCode::Subpiece, seq, vec![addo, off0]);
+        let subpo = f.new_output_unique(subp, 4);
+        let mask = f.new_const(4, 1);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![subpo, mask]);
+        let ando = f.new_output_unique(and, 4);
+        let ze = f.new_op(OpCode::IntZext, seq, vec![ando]);
+        let zeo = f.new_output_unique(ze, 8);
+        let op = f.new_op(OpCode::IntSub, seq, vec![zeo, corro]);
+        f.new_output(op, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![corr, add, subp, and, ze, op], ..Default::default() }]);
+
+        ActionPool::new("p").with(RuleSignMod2nOpt).apply(&mut f);
+        assert_eq!(f.op(op).code(), OpCode::IntSrem);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
     }
 }

@@ -56,6 +56,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleRangeAnd)
         .with(super::divopt::RuleDivOpt)
         .with(super::divopt::RuleModOpt)
+        .with(super::divopt::RuleSignMod2nOpt)
         .with(RulePropagateCopy)
 }
 
