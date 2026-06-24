@@ -105,6 +105,19 @@ impl Memory {
         self.blocks.iter().find(|b| b.contains(addr))
     }
 
+    /// Read up to `len` consecutive initialized bytes starting at `addr`, stopping at the
+    /// first uncovered/uninitialized byte (a decode window for the disassembler).
+    pub fn read_window(&self, addr: Address, len: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(len);
+        for i in 0..len as u64 {
+            match self.byte_at(Address::new(addr.space, addr.offset + i)) {
+                Some(b) => out.push(b),
+                None => break,
+            }
+        }
+        out
+    }
+
     pub fn contains(&self, addr: Address) -> bool {
         self.block_at(addr).is_some()
     }

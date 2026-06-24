@@ -14,6 +14,7 @@
 //! land. `tests/analysis_parity.rs` holds the red baseline against the goldens.
 
 pub mod analyzer;
+pub mod analyzers;
 pub mod loader;
 pub mod manager;
 pub mod priority;
@@ -54,13 +55,65 @@ impl From<loader::LoadError> for AnalysisError {
 /// Run mosura's auto-analysis over a binary file and produce its converged
 /// [`Snapshot`], to be diffed against the Ghidra golden.
 ///
-/// **A2 today:** the ELF loader builds the [`Program`] memory map; the analyzer
-/// framework (A3) and disassembly + function discovery (A4) are not ported yet, so
-/// the snapshot carries blocks but no functions. The parity harness scores the
-/// memory map and functions separately, so this drives the *blocks* dimension green
-/// while functions stay red until A4.
+/// Returns the **loader-stage** snapshot (memory map + loader functions/entries/symbols),
+/// the state the loader-detail goldens are captured at. The auto-analysis passes
+/// ([`analyze`]) run separately and produce a converged state that A4–A7 will gate against
+/// their own goldens (A4's partial analysis matches no converged golden yet).
 pub fn analyze_binary(path: &Path) -> Result<Snapshot, AnalysisError> {
     let data = std::fs::read(path)?;
     let program = loader::load(&data)?;
     Ok(program.snapshot())
+}
+
+/// Run the auto-analysis pipeline over a loaded [`Program`] (A3 framework + A4 analyzers):
+/// recursive-descent disassembly from the loader's functions and entry points, creating
+/// code units and discovering functions at call targets, to a fixpoint.
+pub fn analyze(program: &mut Program) {
+    use crate::analysis::manager::AutoAnalysisManager;
+    use crate::analysis::program::AddressSet;
+
+    let mut mgr = AutoAnalysisManager::new();
+    if let Some(d) = analyzers::Disassembler::for_program(program) {
+        mgr.add_analyzer(Box::new(d), program);
+    }
+    mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
+
+    // Seed disassembly from the loader's functions + entry points (Ghidra's seeds).
+    let mut seed = AddressSet::new();
+    for f in program.function_manager.functions() {
+        let e = f.entry_point();
+        seed.add_range(e.space, e.offset, e.offset);
+    }
+    for e in &program.entry_points {
+        seed.add_range(e.space, e.offset, e.offset);
+    }
+    mgr.scheduling().function_defined(&seed);
+    mgr.run(program);
+}
+
+#[cfg(test)]
+mod a4_tests {
+    use super::*;
+
+    #[test]
+    fn freestanding_recursive_descent_disassembly() {
+        let data = std::fs::read(crate::paths::analysis_corpus_dir().join("freestanding.elf"))
+            .expect("freestanding.elf");
+        let mut program = loader::load(&data).expect("load");
+        let funcs_before = program.function_manager.function_count();
+        analyze(&mut program);
+
+        // Disassembly happened (code units laid down)…
+        assert!(!program.listing.is_empty(), "no code units produced — SLEIGH tables present?");
+        // …covering every function's entry (recursive descent reached them all).
+        for f in program.function_manager.functions() {
+            assert!(
+                program.listing.code_unit_at(f.entry_point()).is_some(),
+                "no code unit at function {}",
+                f.name()
+            );
+        }
+        // freestanding's 3 functions are all loader-known; none newly discovered.
+        assert_eq!(program.function_manager.function_count(), funcs_before);
+    }
 }
