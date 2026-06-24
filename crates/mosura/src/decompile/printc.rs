@@ -61,6 +61,17 @@ fn float_name(size: u32) -> String {
     }
 }
 
+/// The declared type of a recovered symbol (param, local, return) that has no recovered type
+/// info: an inferred `int`/`uint` is downgraded to `undefined<N>` (Ghidra leaves these
+/// `xunknown<N>` and lets the int-ness surface only as casts at uses); structural evidence
+/// (float, pointer, bool) is kept.
+fn symbol_type(t: Datatype) -> Datatype {
+    match t {
+        Datatype::Int(n) | Datatype::Uint(n) => Datatype::Unknown(n),
+        other => other,
+    }
+}
+
 /// Ghidra's one-letter type prefix for a variable/global name.
 fn type_prefix(t: &Datatype) -> &'static str {
     match t {
@@ -123,11 +134,24 @@ struct PrintC<'a> {
     gotos: HashMap<BlockId, (BlockId, bool)>,
     /// Basic blocks that are goto targets (emitted with a label).
     labels: HashSet<BlockId>,
+    /// Local variable declarations `(name, type)` in first-use order, collected as names are
+    /// assigned, emitted at the top of the function body.
+    decls: Vec<(String, Datatype)>,
 }
 
 impl PrintC<'_> {
     fn type_of(&self, v: VarnodeId) -> Datatype {
-        self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
+        let t = self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size));
+        // A named/declared symbol (param, local, global) with only an integer-shaped inferred type
+        // declares as `undefined<N>` — Ghidra recovers no type for these stripped binaries, so the
+        // int/uint that inference reads off arithmetic uses surfaces only as a cast at those uses,
+        // not as the symbol's type. Inlined intermediate expressions (a SEXT result, an `a + b`)
+        // keep their produced type — only the symbol declarations are downgraded.
+        if self.is_explicit(v) {
+            symbol_type(t)
+        } else {
+            t
+        }
     }
 
     /// The variable's effective (type) width: the highest byte index any use reads — Ghidra's
@@ -220,8 +244,12 @@ impl<'a> PrintC<'a> {
             return n.clone();
         }
         self.var_counter += 1;
-        let n = format!("uVar{}", self.var_counter);
+        // Ghidra names a local by its type prefix (`xVar` undefined, `iVar` int, `uVar` uint,
+        // `fVar` float, `pVar` pointer), not a fixed `uVar`.
+        let ty = self.type_of(v);
+        let n = format!("{}Var{}", type_prefix(&ty), self.var_counter);
         self.names.insert(id, n.clone());
+        self.decls.push((n.clone(), ty)); // a genuine local — declare it at the top of the body
         n
     }
 
@@ -471,7 +499,9 @@ impl<'a> PrintC<'a> {
         if addr_is_ptr {
             (format!("*{}", self.operand(addr, 15, false)), 15)
         } else {
-            (format!("*({} *){}", vty.name(), self.operand(addr, 14, false)), 15)
+            // the access type is a no-info value → declare it undefined (Ghidra `*(xunknown4 *)`)
+            let aty = symbol_type(vty.clone());
+            (format!("*({} *){}", aty.name(), self.operand(addr, 14, false)), 15)
         }
     }
 
@@ -1085,6 +1115,51 @@ fn render_const_unsigned(val: u64, size: u32) -> String {
     }
 }
 
+/// Ghidra's `PrintLanguage::mostNaturalBase` — pick base 10 for "round" numbers (a run of
+/// trailing 0s or 9s in decimal), base 16 otherwise. Decides how a constant above the small-decimal
+/// threshold prints.
+fn most_natural_base(val: u64) -> u32 {
+    if val == 0 {
+        return 10;
+    }
+    let setdig = val % 10;
+    let mut countdec = 0;
+    let mut tmp = val;
+    if setdig == 0 || setdig == 9 {
+        countdec = 1;
+        tmp /= 10;
+        while tmp != 0 && tmp % 10 == setdig {
+            countdec += 1;
+            tmp /= 10;
+        }
+    }
+    match countdec {
+        0 => 16,
+        1 => {
+            if tmp > 1 || setdig == 9 {
+                16
+            } else {
+                10
+            }
+        }
+        2 => {
+            if tmp > 10 {
+                16
+            } else {
+                10
+            }
+        }
+        3 => {
+            if tmp > 100 {
+                16
+            } else {
+                10
+            }
+        }
+        _ => 10,
+    }
+}
+
 fn render_const(val: u64, size: u32) -> String {
     let signed = if size == 0 || size >= 8 {
         val as i64
@@ -1095,7 +1170,8 @@ fn render_const(val: u64, size: u32) -> String {
     if signed < 0 && signed > -0x10000 {
         return format!("{signed}");
     }
-    if val < 10 {
+    // Ghidra `push_integer`: small values (≤10) always decimal, otherwise the most natural base.
+    if val <= 10 || most_natural_base(val) == 10 {
         format!("{val}")
     } else {
         format!("0x{val:x}")
@@ -1119,6 +1195,7 @@ pub fn print_c(f: &Funcdata) -> String {
         array_elem: HashMap::new(),
         gotos: HashMap::new(),
         labels: HashSet::new(),
+        decls: Vec::new(),
     };
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
@@ -1140,23 +1217,9 @@ pub fn print_c(f: &Funcdata) -> String {
     params.sort_by_key(|&(off, _)| param_order(off));
     params.dedup_by_key(|&mut (off, _)| off);
 
-    // Ghidra recovers no type for these parameters, so each parameter *symbol* stays undefined<N>
-    // (`ActionPrototypeTypes` type-locks it to the prototype); the casts seen at uses then come
-    // from the ops that require a type (a signed compare, a SEXT). Mirror that: force the whole
-    // HighVariable of each parameter to undefined so it declares as `undefined<N>` and becomes a
-    // cast source, the way Ghidra's locked param does. (Width recovery — full register vs
-    // sub-register, e.g. `undefined8` here vs Ghidra's `undefined4` — is a separate prototype
-    // concern, not addressed by this typing.)
-    let param_his: HashSet<u32> = params.iter().map(|&(_, v)| p.h.high(v)).collect();
-    let type_keys: Vec<VarnodeId> = p.types.keys().copied().collect();
-    for v in type_keys {
-        if param_his.contains(&p.h.high(v)) {
-            p.types.insert(v, Datatype::Unknown(f.vn(v).size));
-        }
-    }
-
     let ret = p.return_value();
-    let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
+    // the return type, like a parameter, is a declared symbol with no recovered type → undefined
+    let ret_ty = ret.map_or("void".to_string(), |v| symbol_type(p.type_of(v)).name());
     let plist: Vec<String> =
         params.iter().map(|&(_, v)| format!("{} {}", p.type_of(v).name(), p.name_of(v))).collect();
 
@@ -1164,10 +1227,20 @@ pub fn print_c(f: &Funcdata) -> String {
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
     p.detect_for_loops(&s, s.root);
+    // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
+    // signature + declarations + body, as Ghidra does.
+    let mut body = String::new();
+    p.emit_structured(&s, s.root, 1, &mut body);
     let mut out = String::new();
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
     out.push_str("{\n");
-    p.emit_structured(&s, s.root, 1, &mut out);
+    for (name, ty) in &p.decls {
+        let _ = writeln!(out, "  {} {};", ty.name(), name);
+    }
+    if !p.decls.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&body);
     out.push_str("}\n");
     out
 }

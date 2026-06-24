@@ -68,7 +68,8 @@ impl Datatype {
     pub fn name(&self) -> String {
         match self {
             Datatype::Void => "void".into(),
-            Datatype::Unknown(n) => format!("undefined{n}"),
+            // Ghidra's core name for an undefined value of N bytes (`sleigh_arch.cc` core types).
+            Datatype::Unknown(n) => format!("xunknown{n}"),
             Datatype::Int(n) => format!("int{n}"),
             Datatype::Uint(n) => format!("uint{n}"),
             Datatype::Bool => "bool".into(),
@@ -157,7 +158,7 @@ mod tests {
     #[test]
     fn names() {
         assert_eq!(Datatype::Int(4).name(), "int4");
-        assert_eq!(Datatype::Unknown(8).name(), "undefined8");
+        assert_eq!(Datatype::Unknown(8).name(), "xunknown8");
         assert_eq!(Datatype::Pointer(8, Box::new(Datatype::Int(4))).name(), "int4 *");
     }
 }
