@@ -523,51 +523,45 @@ impl<'a> PrintC<'a> {
 
     /// The boolean tested by a condition block — the CBRANCH operand for a basic block, or
     /// the joined operands of a short-circuit `&&`/`||`.
-    fn render_cond_expr(&mut self, s: &Structured, idx: usize) -> String {
+    /// Render a (possibly short-circuit) condition, pushing a pending negation inward via
+    /// De Morgan (Ghidra's print-time negation): `!(a && b)` → `!a || !b`, `!(a || b)` →
+    /// `!a && !b`, recursing so the leading `!` never survives on a compound condition.
+    fn render_cond_expr(&mut self, s: &Structured, idx: usize, neg: bool) -> String {
         let comps = s.blocks[idx].components.clone();
         match s.blocks[idx].kind {
-            FlowKind::CondAnd => {
-                let (a, b) = (self.render_cond_operand(s, comps[0]), self.render_cond_operand(s, comps[1]));
-                format!("{a} && {b}")
+            FlowKind::CondAnd | FlowKind::CondOr => {
+                let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
+                // De Morgan swaps the connective under negation
+                let conn = if is_and == !neg { "&&" } else { "||" };
+                let a = self.render_cond_operand(s, comps[0], neg);
+                let b = self.render_cond_operand(s, comps[1], neg);
+                format!("{a} {conn} {b}")
             }
-            FlowKind::CondOr => {
-                let (a, b) = (self.render_cond_operand(s, comps[0]), self.render_cond_operand(s, comps[1]));
-                format!("{a} || {b}")
+            _ => {
+                let cvar = exit_basic(s, idx)
+                    .and_then(|bid| {
+                        self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
+                    })
+                    .and_then(|cbr| self.f.op(cbr).input(1));
+                match cvar {
+                    Some(v) if neg => self.render_negated(v),
+                    Some(v) => self.render_var(v).0,
+                    None => if neg { "!(1)".into() } else { "1".into() },
+                }
             }
-            _ => exit_basic(s, idx)
-                .and_then(|bid| {
-                    self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
-                })
-                .and_then(|cbr| self.f.op(cbr).input(1))
-                .map(|v| self.render_var(v).0)
-                .unwrap_or_else(|| "1".into()),
         }
     }
 
     /// A short-circuit operand, parenthesized (Ghidra's `(a) && (b)` style).
-    fn render_cond_operand(&mut self, s: &Structured, idx: usize) -> String {
-        format!("({})", self.render_cond_expr(s, idx))
+    fn render_cond_operand(&mut self, s: &Structured, idx: usize, neg: bool) -> String {
+        format!("({})", self.render_cond_expr(s, idx, neg))
     }
 
     /// The condition of an `if`/`while`, negated when the body is on the false edge. The
     /// negation is pushed into the expression (Ghidra's print-time boolean negation) rather
-    /// than wrapped in `!(...)`: `!(!x)` cancels, `==`/`!=` flip.
+    /// than wrapped in `!(...)`: `!(!x)` cancels, `==`/`!=` flip, `&&`/`||` De Morgan.
     fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
-        // short-circuit conditions: render the join, negate with !(...) (no De Morgan)
-        if matches!(s.blocks[cond_idx].kind, FlowKind::CondAnd | FlowKind::CondOr) {
-            let cond = self.render_cond_expr(s, cond_idx);
-            return if negated { format!("!({cond})") } else { cond };
-        }
-        let cvar = exit_basic(s, cond_idx)
-            .and_then(|bid| {
-                self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
-            })
-            .and_then(|cbr| self.f.op(cbr).input(1));
-        match cvar {
-            Some(v) if negated => self.render_negated(v),
-            Some(v) => self.render_var(v).0,
-            None => if negated { "!(1)".to_string() } else { "1".to_string() },
-        }
+        self.render_cond_expr(s, cond_idx, negated)
     }
 
     /// Render the logical negation of boolean `v`, folding double negation and flipping
