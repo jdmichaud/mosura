@@ -19,7 +19,6 @@ use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::scope::{category, Scope};
 use super::structure::{structure, FlowKind, Structured};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
@@ -1211,21 +1210,13 @@ pub fn print_c(f: &Funcdata) -> String {
     params.sort_by_key(|&(off, _)| param_order(off));
     params.dedup_by_key(|&mut (off, _)| off);
 
-    // The function's local scope: each recovered parameter is a symbol type-locked to its
-    // prototype type — undefined<N> for these stripped binaries (Ghidra `ActionPrototypeTypes`).
-    // The locks flow into `infer`, so a parameter is typed (and declared) undefined even where
-    // inference would make it a pointer; the pointer-ness then surfaces only as casts at the uses
-    // (Ghidra's `*(xunknown8 *)param_1`).
-    let mut scope = Scope::new();
-    let mut locks: HashMap<VarnodeId, Datatype> = HashMap::new();
-    for &(off, v) in &params {
-        let sz = f.vn(v).size;
-        let name = param_name(Some(f.vn(v).loc.space) == reg_space, off).unwrap_or("").to_string();
-        scope.add_symbol_cat(name, Datatype::Unknown(sz), f.vn(v).loc, sz, category::FUNCTION_PARAMETER, 0);
-        if let Some(ty) = scope.type_of(f.vn(v).loc, sz) {
-            locks.insert(v, ty);
-        }
-    }
+    // Parameter type-locks: Ghidra's ActionPrototypeTypes recovers a parameter's type from
+    // consistent usage (e.g. `int8 *` for modulo), and only keeps it undefined when usage is
+    // inconsistent (divopt). Forcing all parameters to undefined is unfaithful — it regresses the
+    // pointer-typed cases — so until that recovery is ported (pointee-consistency), no locks are
+    // applied and parameters are typed by inference. The typelock machinery in infer() stands
+    // ready for the recovered locks.
+    let locks: HashMap<VarnodeId, Datatype> = HashMap::new();
 
     let mut p = PrintC {
         f,
