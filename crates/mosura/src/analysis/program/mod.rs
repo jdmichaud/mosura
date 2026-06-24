@@ -15,12 +15,14 @@ pub mod address_set;
 pub mod function;
 pub mod listing;
 pub mod memory;
+pub mod reference;
 pub mod symbol;
 
 pub use address_set::{AddressRange, AddressSet};
 pub use function::{Function, FunctionManager};
 pub use listing::{CodeUnit, Listing};
 pub use memory::{Memory, MemoryBlock};
+pub use reference::{RefType, Reference, ReferenceManager};
 pub use symbol::{Symbol, SymbolTable, SymbolType};
 
 use crate::analysis::snapshot::{self, Snapshot};
@@ -48,6 +50,7 @@ pub struct Program {
     /// External entry points (Ghidra `SymbolTable.addExternalEntryPoint`) — the
     /// addresses analysis seeds disassembly from. Populated by the loader.
     pub entry_points: Vec<Address>,
+    pub reference_manager: ReferenceManager,
 }
 
 impl Program {
@@ -75,6 +78,7 @@ impl Program {
             function_manager: FunctionManager::new(),
             listing: Listing::new(),
             entry_points: Vec::new(),
+            reference_manager: ReferenceManager::new(),
         }
     }
 

@@ -7,7 +7,7 @@
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
 use crate::analysis::manager::Scheduling;
 use crate::analysis::priority::AnalysisPriority;
-use crate::analysis::program::{AddressSet, CodeUnit, Program, SymbolType};
+use crate::analysis::program::{AddressSet, CodeUnit, Program, RefType, SymbolType};
 use crate::decompile::opcode::OpCode;
 use crate::decompile::space::{Address, SpaceId};
 use crate::sleigh::engine::Spec;
@@ -73,16 +73,30 @@ impl Analyzer for Disassembler {
             // branch / indirect jump (Ghidra's flow classification).
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
             let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            // Flow references (Ghidra creates these as the instruction is laid down).
             for op in &insn.ops {
-                match OpCode::from_u32(op.opcode) {
+                let opcode = OpCode::from_u32(op.opcode);
+                match opcode {
                     Some(OpCode::Branch | OpCode::Cbranch) => {
                         if let Some(t) = Self::static_target(op) {
                             work.push(t);
+                            let rt = if matches!(opcode, Some(OpCode::Cbranch)) {
+                                RefType::ConditionalJump
+                            } else {
+                                RefType::UnconditionalJump
+                            };
+                            program.reference_manager.add(addr, Address::new(ram, t), rt, -1);
                         }
                     }
                     Some(OpCode::Call) => {
                         if let Some(t) = Self::static_target(op) {
                             call_targets.add_range(ram, t, t);
+                            program.reference_manager.add(
+                                addr,
+                                Address::new(ram, t),
+                                RefType::UnconditionalCall,
+                                -1,
+                            );
                         }
                     }
                     _ => {}

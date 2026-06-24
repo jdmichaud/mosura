@@ -115,5 +115,17 @@ mod a4_tests {
         }
         // freestanding's 3 functions are all loader-known; none newly discovered.
         assert_eq!(program.function_manager.function_count(), funcs_before);
+
+        // _start calls add + sum_to → two UNCONDITIONAL_CALL references to them.
+        let call_targets: std::collections::BTreeSet<u64> = program
+            .reference_manager
+            .references()
+            .filter(|r| r.ref_type == crate::analysis::program::RefType::UnconditionalCall)
+            .map(|r| r.to.offset)
+            .collect();
+        assert!(
+            call_targets.contains(&0x0040_1000) && call_targets.contains(&0x0040_1014),
+            "expected call refs to add(0x401000) + sum_to(0x401014), got {call_targets:x?}"
+        );
     }
 }
