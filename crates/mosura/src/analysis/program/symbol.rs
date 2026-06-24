@@ -48,22 +48,28 @@ impl Symbol {
 #[derive(Clone, Default, Debug)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
+    /// `(space, offset, name)` dedup set + `(space, offset)` presence set for O(1) `add`
+    /// and `has_symbol_at` — a per-add scan/sort is quadratic at thousands of symbols.
+    /// Iteration order is imposed by the snapshot.
+    seen: std::collections::HashSet<(u32, u64, String)>,
+    addrs: std::collections::HashSet<(u32, u64)>,
 }
 
 impl SymbolTable {
     pub fn new() -> SymbolTable {
-        SymbolTable { symbols: Vec::new() }
+        SymbolTable::default()
     }
 
     pub fn add(&mut self, sym: Symbol) {
         // Ghidra `createSymbol` is idempotent on (address, name): a same-named symbol
         // already at the address (e.g. `_DYNAMIC` from both `.dynamic` markup and the
         // symbol table) is not duplicated.
-        if self.symbols.iter().any(|s| s.address == sym.address && s.name == sym.name) {
+        let key = (sym.address.space.0, sym.address.offset, sym.name.clone());
+        if !self.seen.insert(key) {
             return;
         }
+        self.addrs.insert((sym.address.space.0, sym.address.offset));
         self.symbols.push(sym);
-        self.symbols.sort_by_key(|s| (s.address.space.0, s.address.offset));
     }
 
     /// Convenience for the common case of a single primary symbol.
@@ -78,10 +84,10 @@ impl SymbolTable {
 
     /// Whether any symbol exists at `addr` (Ghidra `getPrimarySymbol(addr) != null`).
     pub fn has_symbol_at(&self, addr: Address) -> bool {
-        self.symbols_at(addr).next().is_some()
+        self.addrs.contains(&(addr.space.0, addr.offset))
     }
 
-    /// All symbols, ordered by `(space, offset)`.
+    /// All symbols (unordered; the snapshot sorts).
     pub fn symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter()
     }
@@ -103,11 +109,14 @@ mod tests {
     const RAM: SpaceId = SpaceId(1);
 
     #[test]
-    fn sorted_and_queryable() {
+    fn dedup_and_queryable() {
         let mut t = SymbolTable::new();
         t.add_symbol(Address::new(RAM, 0x1168), "main", SymbolType::Function);
         t.add_symbol(Address::new(RAM, 0x1000), "_init", SymbolType::Function);
-        let names: Vec<_> = t.symbols().map(|s| s.name()).collect();
+        // Iteration is unordered (the snapshot sorts); sort here to assert membership.
+        let mut syms: Vec<_> = t.symbols().collect();
+        syms.sort_by_key(|s| s.address().offset);
+        let names: Vec<_> = syms.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["_init", "main"]);
         assert_eq!(t.primary_at(Address::new(RAM, 0x1168)).unwrap().name(), "main");
         assert!(t.primary_at(Address::new(RAM, 0x9999)).is_none());

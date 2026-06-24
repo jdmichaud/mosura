@@ -60,26 +60,26 @@ pub struct Reference {
 #[derive(Clone, Default, Debug)]
 pub struct ReferenceManager {
     refs: Vec<Reference>,
+    /// Dedup key set `(from.space, from.off, to.space, to.off, op, type)` for O(1) `add`
+    /// (the program can hold tens of thousands of references — a per-add scan/sort is
+    /// quadratic). Iteration order is imposed by the snapshot, not maintained here.
+    seen: std::collections::HashSet<(u32, u64, u32, u64, i32, i32)>,
 }
 
 impl ReferenceManager {
     pub fn new() -> ReferenceManager {
-        ReferenceManager { refs: Vec::new() }
+        ReferenceManager { refs: Vec::new(), seen: std::collections::HashSet::new() }
     }
 
     /// Add a reference, idempotent on `(from, to, op_index, ref_type)`.
     pub fn add(&mut self, from: Address, to: Address, ref_type: RefType, op_index: i32) {
-        let r = Reference { from, to, ref_type, op_index };
-        if self.refs.contains(&r) {
-            return;
+        let key = (from.space.0, from.offset, to.space.0, to.offset, op_index, ref_type as i32);
+        if self.seen.insert(key) {
+            self.refs.push(Reference { from, to, ref_type, op_index });
         }
-        self.refs.push(r);
-        self.refs.sort_by_key(|r| {
-            (r.from.space.0, r.from.offset, r.to.space.0, r.to.offset, r.op_index, r.ref_type as i32)
-        });
     }
 
-    /// All references, ordered (Ghidra `getReferenceIterator`).
+    /// All references (unordered; the snapshot sorts). Ghidra `getReferenceIterator`.
     pub fn references(&self) -> impl Iterator<Item = &Reference> {
         self.refs.iter()
     }

@@ -26,12 +26,33 @@ enum SymValue {
     Unknown,
 }
 
+/// Cheap, allocation-free key for a varnode's space. The p-code spaces are a tiny fixed
+/// set, so the common ones map to small ids and anything else to an FNV-1a hash of the
+/// name — keeping the [`VarnodeContext`] key `Copy` so per-branch context clones don't
+/// allocate or copy strings (the hot path on large functions).
+fn space_key(name: &str) -> u64 {
+    match name {
+        "const" => 0,
+        "register" => 1,
+        "unique" => 2,
+        "ram" => 3,
+        _ => {
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for b in name.bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h | (1 << 63) // set the top bit so it can't collide with the small ids
+        }
+    }
+}
+
 /// Per-location symbolic state (Ghidra `VarnodeContext`): the value of each register /
-/// temporary, keyed by `(space, offset)`. `const` varnodes carry their value
+/// temporary, keyed by `(space_key, offset)`. `const` varnodes carry their value
 /// intrinsically; `ram` varnodes are addresses, handled by the reference logic.
 #[derive(Clone, Default)]
 struct VarnodeContext {
-    state: HashMap<(String, u64), SymValue>,
+    state: HashMap<(u64, u64), SymValue>,
 }
 
 impl VarnodeContext {
@@ -39,12 +60,12 @@ impl VarnodeContext {
         if vn.space == "const" {
             SymValue::Const(vn.offset)
         } else {
-            self.state.get(&(vn.space.clone(), vn.offset)).copied().unwrap_or(SymValue::Unknown)
+            self.state.get(&(space_key(&vn.space), vn.offset)).copied().unwrap_or(SymValue::Unknown)
         }
     }
     fn put(&mut self, vn: &Varnode, val: SymValue) {
         if vn.space != "const" {
-            self.state.insert((vn.space.clone(), vn.offset), val);
+            self.state.insert((space_key(&vn.space), vn.offset), val);
         }
     }
 }
@@ -231,13 +252,24 @@ fn ram_branch_target(op: &PcodeOp) -> Option<u64> {
 /// Path-sensitive with a visited set (each instruction is interpreted once, first path
 /// wins) — conservative: a reference is only made when the value is a definite constant
 /// on the interpreted path, so it never invents a wrong reference.
-pub fn flow_constants(spec: &Spec, ctx: &[u32], program: &mut Program, start: Address) {
+pub fn flow_constants(
+    spec: &Spec,
+    ctx: &[u32],
+    program: &mut Program,
+    start: Address,
+    entries: &HashSet<u64>,
+) {
     let ram = start.space;
     let mut visited: HashSet<u64> = HashSet::new();
     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
 
     while let Some((a, mut vctx)) = work.pop() {
         if !visited.insert(a) {
+            continue;
+        }
+        // Stay within this function — Ghidra `flowConstants` is bounded by the function's
+        // restrict-set; without this each per-function call would walk the whole program.
+        if a != start.offset && entries.contains(&a) {
             continue;
         }
         let window = program.memory.read_window(Address::new(ram, a), 16);
@@ -270,10 +302,15 @@ pub fn flow_constants(spec: &Spec, ctx: &[u32], program: &mut Program, start: Ad
                 _ => {}
             }
         }
+        // Queue branch targets (each path gets its own context); skip already-interpreted
+        // ones so we don't clone the context needlessly (back-edges of loops). The
+        // fall-through path reuses this context by move — only branches need a clone.
         for t in branch_targets {
-            work.push((t, vctx.clone()));
+            if !visited.contains(&t) {
+                work.push((t, vctx.clone()));
+            }
         }
-        if falls {
+        if falls && !visited.contains(&(a + ilen)) {
             work.push((a + ilen, vctx));
         }
     }
@@ -312,7 +349,7 @@ mod tests {
         };
         // mov rax, [rip+0x10] ; ret   →  reads ram:0x401017 (next=0x401007 + 0x10)
         let (mut program, ram) = program_with_code(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let reads: Vec<u64> = program
             .reference_manager
             .references()
@@ -334,7 +371,7 @@ mod tests {
             0x48, 0x8b, 0x08, // mov rcx,[rax]
             0xc3, // ret
         ]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let has = |rt: RefType, to: u64| {
             program.reference_manager.references().any(|r| r.ref_type == rt && r.to.offset == to)
         };
@@ -365,7 +402,7 @@ mod tests {
             Program::new(spaces, ram, "x86:LE:64:default", "gcc", Address::new(ram, 0x401000), false, 64);
         program.memory.add_block("text", Address::new(ram, 0x401000), 0x1000, true, false, true, Some(img));
 
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000));
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let read_to = |to: u64| {
             program.reference_manager.references().any(|r| r.ref_type == RefType::Read && r.to.offset == to)
         };

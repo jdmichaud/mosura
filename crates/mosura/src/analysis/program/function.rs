@@ -32,21 +32,23 @@ impl Function {
 #[derive(Clone, Default, Debug)]
 pub struct FunctionManager {
     functions: Vec<Function>,
+    /// `(space, offset)` entry set for O(1) existence checks — a per-add scan/sort is
+    /// quadratic at thousands of functions. Iteration order is imposed by the snapshot.
+    entries: std::collections::HashSet<(u32, u64)>,
 }
 
 impl FunctionManager {
     pub fn new() -> FunctionManager {
-        FunctionManager { functions: Vec::new() }
+        FunctionManager::default()
     }
 
     /// Create a function at `entry`, or return false if one already exists there
     /// (Ghidra `createFunction` is idempotent on an existing entry).
     pub fn create_function(&mut self, entry: Address, name: &str, body: AddressSet) -> bool {
-        if self.function_at(entry).is_some() {
+        if !self.entries.insert((entry.space.0, entry.offset)) {
             return false;
         }
         self.functions.push(Function { entry, name: name.to_string(), body });
-        self.functions.sort_by_key(|f| (f.entry.space.0, f.entry.offset));
         true
     }
 
@@ -79,12 +81,15 @@ mod tests {
     const RAM: SpaceId = SpaceId(1);
 
     #[test]
-    fn create_is_idempotent_and_sorted() {
+    fn create_is_idempotent() {
         let mut fm = FunctionManager::new();
         assert!(fm.create_function(Address::new(RAM, 0x1168), "main", AddressSet::new()));
         assert!(fm.create_function(Address::new(RAM, 0x1000), "add", AddressSet::new()));
         assert!(!fm.create_function(Address::new(RAM, 0x1168), "dup", AddressSet::new())); // exists
-        let names: Vec<_> = fm.functions().map(|f| f.name()).collect();
+        // Iteration is unordered (the snapshot sorts); sort here to assert membership.
+        let mut fns: Vec<_> = fm.functions().collect();
+        fns.sort_by_key(|f| f.entry_point().offset);
+        let names: Vec<_> = fns.iter().map(|f| f.name()).collect();
         assert_eq!(names, vec!["add", "main"]);
         assert_eq!(fm.function_count(), 2);
     }

@@ -4,6 +4,8 @@
 //! **Minimal in A1** — the container + types exist so analyzers have somewhere to lay
 //! down code/data, but it is populated by **A4** (disassembly + function discovery).
 
+use std::collections::HashMap;
+
 use crate::decompile::space::Address;
 
 /// A defined code unit at an address (Ghidra `CodeUnit`: `Instruction` or `Data`).
@@ -24,27 +26,31 @@ impl CodeUnit {
 }
 
 /// The defined code units of the program, keyed by start address (Ghidra `Listing`).
+///
+/// Hash-keyed by `(space, offset)` so `define`/`code_unit_at` are O(1): the program can
+/// hold hundreds of thousands of code units, and the disassembler probes `code_unit_at`
+/// once per instruction — a Vec scan/sort made disassembly quadratic. Iteration order is
+/// imposed by the snapshot.
 #[derive(Clone, Default, Debug)]
 pub struct Listing {
-    units: Vec<(Address, CodeUnit)>,
+    units: HashMap<(u32, u64), (Address, CodeUnit)>,
 }
 
 impl Listing {
     pub fn new() -> Listing {
-        Listing { units: Vec::new() }
+        Listing::default()
     }
 
     pub fn define(&mut self, addr: Address, unit: CodeUnit) {
-        self.units.push((addr, unit));
-        self.units.sort_by_key(|(a, _)| (a.space.0, a.offset));
+        self.units.insert((addr.space.0, addr.offset), (addr, unit));
     }
 
     pub fn code_unit_at(&self, addr: Address) -> Option<&CodeUnit> {
-        self.units.iter().find(|(a, _)| *a == addr).map(|(_, u)| u)
+        self.units.get(&(addr.space.0, addr.offset)).map(|(_, u)| u)
     }
 
     pub fn code_units(&self) -> impl Iterator<Item = (Address, &CodeUnit)> {
-        self.units.iter().map(|(a, u)| (*a, u))
+        self.units.values().map(|(a, u)| (*a, u))
     }
 
     pub fn is_empty(&self) -> bool {

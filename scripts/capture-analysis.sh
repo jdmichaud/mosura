@@ -49,9 +49,10 @@ done
 for ext in "cnv:/home/jd/cnv.exe" "comcom32:/home/jd/.local/share/comcom32/comcom32.exe" "war2:/home/jd/WAR2.EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"
   if [ -f "$path" ]; then
-    echo "capturing $name (loader-stage; user-provided) …"
+    echo "capturing $name (converged + loader-stage; user-provided) …"
+    capture "$GOLDENS/$name.snapshot" "$path"
     capture "$GOLDENS/$name.loaded.snapshot" "$path" -noanalysis
-    echo "  wrote $name.loaded.snapshot"
+    echo "  wrote $name.snapshot + $name.loaded.snapshot"
   else
     echo "skip $name: $path not present"
   fi

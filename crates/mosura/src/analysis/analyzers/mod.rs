@@ -246,12 +246,20 @@ impl Analyzer for ConstantPropagationAnalyzer {
         AnalysisPriority::REFERENCE
     }
     fn added(&self, program: &mut Program, set: &AddressSet, _sched: &mut Scheduling) -> bool {
+        // Function entries bound each propagation walk to its own function.
+        let entries: std::collections::HashSet<u64> = program
+            .function_manager
+            .functions()
+            .filter(|f| f.entry_point().space == self.ram)
+            .map(|f| f.entry_point().offset)
+            .collect();
         for r in set.ranges() {
             crate::analysis::symbolic::flow_constants(
                 &self.spec,
                 &self.ctx,
                 program,
                 Address::new(self.ram, r.min),
+                &entries,
             );
         }
         true
