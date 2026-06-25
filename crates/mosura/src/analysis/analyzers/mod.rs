@@ -108,6 +108,22 @@ impl Analyzer for Disassembler {
                             );
                         }
                     }
+                    // Ghidra `SleighInstructionPrototype.getDynamicOperandRefType`: an
+                    // indirect BRANCHIND/CALLIND/RETURN whose flow target is the operand's
+                    // *static* memory address — a `[mem]` operand lifts to a `ram` varnode,
+                    // e.g. a PLT stub's `jmp *[GOT]` → `BRANCHIND (ram,slot)` — gets an
+                    // INDIRECTION reference to that pointer slot. (A register/table target
+                    // has no static `ram` operand here and is recovered by the decompiler
+                    // switch analyzer; the *resolved* target is referenced by the
+                    // SymbolicPropogator with the computed flow type.)
+                    Some(OpCode::Branchind | OpCode::Callind | OpCode::Return) => {
+                        if let Some(t) = Self::static_target(op) {
+                            let to = Address::new(ram, t);
+                            if program.memory.contains(to) {
+                                program.reference_manager.add(addr, to, RefType::Indirection, -1);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }

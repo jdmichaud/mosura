@@ -318,10 +318,11 @@ fn reference_parity() {
         }
     }
     eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
-    // Ratchet: freestanding 4/4 + basic 27/33 = 31 recovered (the 2 COMPUTED_CALL via
-    // the A6 indirect-call resolution just landed; raise as more A6 analyzers land). The
-    // remaining misses are A6 INDIRECTION (PLT/GOT lazy-binding) + PARAM (call args).
-    assert!(recall.passed >= 31, "code-reference recall regressed below 31");
+    // Ratchet: freestanding 4/4 + basic 28/33 = 32 recovered (the code-based INDIRECTION
+    // via getDynamicOperandRefType just landed; raise as more A6 analyzers land). Remaining
+    // misses: PLT[0]'s INDIRECTION (not reached by recursive descent), the .eh_frame_hdr
+    // INDIRECTION (A7 eh_frame analyzer), COMPUTED_CALL_TERMINATOR, and PARAM (call args).
+    assert!(recall.passed >= 32, "code-reference recall regressed below 32");
 }
 
 #[test]
