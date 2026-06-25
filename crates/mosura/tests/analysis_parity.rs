@@ -437,10 +437,11 @@ fn data_unit_parity() {
         }
     }
     eprintln!("data-unit parity: {recall} (0 spurious)");
-    // basic: the 9 .eh_frame_hdr data units (eh_frame_hdr + eh_frame_ptr + fde_count + 6×
-    // fde_table_entry) out of 99 Ghidra defines. freestanding: 0/3 (its 3 are ELF-header
-    // markup). The deferred remainder is ELF-structure + .eh_frame CIE/FDE markup.
-    assert!(recall.passed >= 9, "data-unit recall regressed below 9");
+    // basic 11/99 + freestanding 2/3 = 13: the .eh_frame_hdr units + the ELF-loader markup
+    // (Elf64_Ehdr + Elf64_Phdr[] so far). The deferred remainder is the rest of the ELF
+    // structure markup (.dynsym/.dynstr/.rela/notes/.gnu.hash/.gnu.version) + .eh_frame
+    // CIE/FDE field markup. Raise as the A2 loader-data markup lands more structures.
+    assert!(recall.passed >= 13, "data-unit recall regressed below 13");
 }
 
 #[test]

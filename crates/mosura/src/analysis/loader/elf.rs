@@ -231,6 +231,24 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
             data_ref(program, phdr_vaddr + i as u64 * phentsize + 0x10, pvaddr);
         }
     }
+
+    // Defined-data markup (Ghidra `ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`):
+    // create the `Elf64_Ehdr` struct at the image base and the `Elf64_Phdr[e_phnum]` array at
+    // `e_phoff`, at their loaded addresses, only when the structure lies in loaded memory
+    // (Ghidra's `headerAddr` reachability check). The datatype names + lengths are Ghidra's
+    // fixed Elf64 structures: `Elf64_Ehdr` = 64 bytes, `Elf64_Phdr` = 56 bytes each.
+    const ELF64_EHDR_LEN: u32 = 64;
+    const ELF64_PHDR_LEN: u64 = 56;
+    if mapped(program, base) {
+        program.defined_data.push((Address::new(ram, base), "Elf64_Ehdr".to_string(), ELF64_EHDR_LEN));
+    }
+    let e_phnum = u64::from(header.e_phnum(endian));
+    if e_phoff != 0 && e_phnum != 0 && mapped(program, phdr_vaddr) {
+        let len = (e_phnum * ELF64_PHDR_LEN) as u32;
+        program
+            .defined_data
+            .push((Address::new(ram, phdr_vaddr), format!("Elf64_Phdr[{e_phnum}]"), len));
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
