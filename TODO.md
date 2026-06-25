@@ -357,9 +357,22 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         `minStoreLoadRefAddress`=4 (known/direct) and `minSpeculativeRefAddress`=1024 (speculative
         constants). mosura uses 4 for resolved load/store and bypasses for literal operands; all
         corpus addresses are ≫1024 so results are identical, but the speculative threshold isn't modeled.
-- [ ] **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the
-      decompiler (plan §2c); retire `decomp/jumptable.rs`; gate on jump-table + param
-      parity. **Depends on the decompiler port.**
+- [~] **A6 — Decompiler-driven analyzers** (the tracks converged — merged master's
+      decompiler in; `analysis/decompiler.rs` bridges Program → `Funcdata`).
+  - [x] **Bridge** `decompile_function(program, entry)`: build a `Funcdata` from the Program's
+        memory blocks + run the pipeline, exposing `jump_tables()`/`func_proto()`.
+  - [x] **DecompilerSwitchAnalyzer** (`analyzers/switch.rs`): decompiles functions with an
+        unresolved indirect branch (tracked in `Program.indirect_branches`), emits COMPUTED_JUMP
+        refs from each BRANCHIND to the recovered case targets + schedules them as code. Gated:
+        `switchtab` COMPUTED_JUMP edges match Ghidra exactly (7/7, 0 spurious).
+  - [ ] **Parameter-ID** (the other half): read the decompiler's recovered call args/return and
+        emit PARAM refs (basic: `0x401054→0x401168`, `0x401194→0x402004`). Needs the decompiler's
+        call-argument recovery exposed (akin to `func_proto()` but per call site).
+  - [ ] **Indirect calls** (COMPUTED_CALL / INDIRECTION — basic's PLT/GOT): resolve the indirect
+        call/jump target through the (relocated) GOT and emit the ref.
+  - [ ] *Decompiler-track gap to report:* gcc **-O2 register-guard** switches (`cmp edi,N; ja`)
+        aren't recovered (the -O0 stack-guard form is); the analyzer is ready once the decompiler
+        handles that guard shape.
 - [ ] **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
       strings/data, arch-specific propagation; each gated on Program-state parity.
 
