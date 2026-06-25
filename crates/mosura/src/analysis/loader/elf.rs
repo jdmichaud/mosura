@@ -276,6 +276,49 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
         }
     }
 
+    // .dynamic table (Ghidra `ElfProgramBuilder.markupDynamicTable` → `createData(addr,
+    // dynamicTable.toDataType())`): an `Elf64_Dyn[n]` array at the table's load address.
+    // `n` is the entry count `ElfDynamicTable` parses — it reads 16-byte entries until and
+    // **including** the first `DT_NULL` (tag == 0) and stops — so it does NOT span the whole
+    // section (trailing zero padding is left undefined). 16 bytes per `Elf64_Dyn`.
+    if let Some(dynamic) = elf.section_by_name(".dynamic") {
+        let addr = dynamic.address();
+        if let Ok(data) = dynamic.data() {
+            if mapped(program, addr) && data.len() >= 16 {
+                let mut n = 0u64;
+                for e in data.chunks_exact(16) {
+                    n += 1;
+                    if u64::from_le_bytes(e[0..8].try_into().unwrap()) == 0 {
+                        break; // DT_NULL terminates the table (inclusive — see ElfDynamicTable)
+                    }
+                }
+                program
+                    .defined_data
+                    .push((Address::new(ram, addr), format!("Elf64_Dyn[{n}]"), (n * 16) as u32));
+            }
+        }
+    }
+
+    // GOT / .got.plt pointer markup (Ghidra `ElfDefaultGotPltMarkup.processGOTSections` →
+    // `processGOT`): every initialized memory block whose name begins with `.got` is filled
+    // with `pointer` units — `createPointer` per `pointerSize`-byte slot across the block,
+    // `while (gotSizeRemaining >= pointerSize)`. x86-64 default pointer size = 8.
+    const PTR_LEN: u64 = 8;
+    let got_blocks: Vec<(u64, u64)> = program
+        .memory
+        .blocks()
+        .filter(|b| b.name().starts_with(".got") && b.is_initialized())
+        .map(|b| (b.start().offset, b.end().offset))
+        .collect();
+    for (start, end) in got_blocks {
+        let size = end - start + 1;
+        let mut off = 0;
+        while off + PTR_LEN <= size {
+            program.defined_data.push((Address::new(ram, start + off), "pointer".to_string(), PTR_LEN as u32));
+            off += PTR_LEN;
+        }
+    }
+
     // .gnu.hash table (Ghidra `markupGnuHashTable`; located via `DT_GNU_HASH`, whose address is
     // the `.gnu.hash` section): 4 header `dword`s (nbucket, symbase, bloom_size, bloom_shift),
     // then a `qword[bloom_size]` bloom filter and a `dword[nbucket]` bucket array. The trailing
@@ -361,6 +404,59 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     }
 
     markup_elf_notes(elf, ram, program);
+
+    // Undefined data for sized OBJECT symbols (Ghidra `ElfProgramBuilder.processSymbols` builds
+    // a `dataAllocationMap` of `address -> size` for every `elfSymbol.isObject()` (STT_OBJECT)
+    // with `0 < size < INT_MAX` in mapped memory, then `allocateUndefinedSymbolData` does
+    // `listing.createData(addr, Undefined.getUndefinedDataType(size))` — `undefined<size>` for
+    // 1..=8, `undefined1[size]` for >8). `createData` throws `CodeUnitInsertionException` on a
+    // conflict (caught + ignored); and later structured markup (e.g. the GNU notes, which use
+    // `ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA`) clears+overrides any undefined unit it
+    // collides with. We reproduce that *net* defined-data state by running this last and
+    // skipping any symbol whose range overlaps an already-defined unit (so e.g. `__abi_tag`
+    // yields to `NoteAbiTag`).
+    markup_undefined_symbol_data(elf, ram, program);
+}
+
+/// Port of Ghidra `ElfProgramBuilder.processSymbols` (`dataAllocationMap`) +
+/// `allocateUndefinedSymbolData`: one `undefined<size>` unit per sized STT_OBJECT symbol,
+/// from both the `.symtab` (`Object::symbols`) and `.dynamic` (`Object::dynamic_symbols`)
+/// tables, skipping addresses already covered by structured markup. Runs after all other
+/// markup so the conflict skip mirrors Ghidra's clear-and-override net result (see caller).
+fn markup_undefined_symbol_data(elf: &Elf, ram: SpaceId, program: &mut Program) {
+    // address -> size, deduped across both symbol tables (Ghidra's shared HashMap).
+    let mut alloc: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+    let mut collect = |syms: &mut dyn Iterator<Item = (SymbolKind, u64, u64)>| {
+        for (kind, addr, size) in syms {
+            // `elfSymbol.isObject()` == STT_OBJECT, surfaced by the `object` crate as
+            // `SymbolKind::Data`; size must be `0 < size < INT_MAX` and land in mapped memory.
+            if kind != SymbolKind::Data || size == 0 || size >= i32::MAX as u64 {
+                continue;
+            }
+            if program.memory.contains(Address::new(ram, addr)) {
+                alloc.insert(addr, size);
+            }
+        }
+    };
+    collect(&mut elf.symbols().map(|s| (s.kind(), s.address(), s.size())));
+    collect(&mut elf.dynamic_symbols().map(|s| (s.kind(), s.address(), s.size())));
+
+    for (addr, size) in alloc {
+        // Skip if any already-defined unit overlaps `[addr, addr+size)` (the
+        // `CodeUnitInsertionException` / clear-override net state, see caller).
+        let conflict = program.defined_data.iter().any(|(da, _, dl)| {
+            da.space == ram && addr < da.offset + u64::from(*dl) && da.offset < addr + size
+        });
+        if conflict {
+            continue;
+        }
+        let name = if size <= 8 {
+            format!("undefined{size}") // Undefined1..8DataType.getName()
+        } else {
+            format!("undefined1[{size}]") // ArrayDataType(Undefined1, size)
+        };
+        program.defined_data.push((Address::new(ram, addr), name, size as u32));
+    }
 }
 
 /// ELF note-section markup — a port of Ghidra `StandardElfInfoProducer.markupElfInfo`
@@ -610,6 +706,11 @@ fn recover_symbols(
         let (Some(base), Some(size)) = (dt_val(array_tag), dt_val(size_tag)) else { continue };
         let mut off = 0;
         while off + 8 <= size {
+            // Each array element is laid down as a `pointer` data unit (Ghidra
+            // `ElfProgramBuilder.createDynamicEntryPoints`: `createData(addr, dt)` with
+            // `dt = PointerDataType` since x86-64 non-prelinked binaries take the
+            // `getImageBaseWordAdjustmentOffset() == 0` branch). `elementCount = size / 8`.
+            program.defined_data.push((Address::new(ram, base + off), "pointer".to_string(), 8));
             if let Some(target) = read_u64(&program.memory, Address::new(ram, base + off)) {
                 // Each array slot is a function pointer → a DATA reference (Ghidra's
                 // pointer-array markup); an executable target is also an entry point.
