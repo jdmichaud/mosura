@@ -359,6 +359,139 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
             }
         }
     }
+
+    markup_elf_notes(elf, ram, program);
+}
+
+/// ELF note-section markup — a port of Ghidra `StandardElfInfoProducer.markupElfInfo`
+/// (`Ghidra/Features/Base/.../elf/info/StandardElfInfoProducer.java`), which iterates the
+/// known note sections and, via `ElfInfoItem.markupElfInfoItemSection`, reads each note
+/// (`ElfNote.read`) and marks it up at the section start. Each note's defined-data struct
+/// name + length matches Ghidra's `ElfNote.createNoteStructure` / the subclass
+/// `toStructure`/`markupProgram`:
+///   * `.note.gnu.property` → `NoteGnuProperty_<padNameLen>` header + a
+///     `NoteGnuPropertyElement_<prDatasz>` per property element (`NoteGnuProperty.java`),
+///   * `.note.gnu.build-id` → `GnuBuildId` (`NoteGnuBuildId.java`),
+///   * `.note.ABI-tag` → `NoteAbiTag` (`NoteAbiTag.java`).
+/// `markupPtNoteSegments` (the PT_NOTE fallback) re-marks only *undefined* note addresses,
+/// so on these binaries (each note is its own named section) it is a no-op and is omitted.
+fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
+    // x86-64 default pointer size — `program.getDefaultPointerSize()` for the
+    // property-element inter-element alignment (`readNextNotePropertyElement` align(intSize)).
+    const PTR_SIZE: u64 = 8;
+    let mapped = |program: &Program, off: u64| program.memory.contains(Address::new(ram, off));
+
+    // `ElfNote.read`: parse the generic note header (DWORD namesz, DWORD descsz, DWORD type),
+    // the `namesz`-byte name (ascii up to NUL), then `nameLen += align(4)` (pad the name field
+    // up to a 4-byte boundary — the header is already 4-aligned), then the `descsz`-byte desc
+    // blob. Returns `(padded_name_len, name, desc_len, desc_offset_in_section)`, or `None`
+    // (the IOException paths — bad/short data) so no spurious unit is emitted.
+    fn parse_note(data: &[u8]) -> Option<(u32, String, u32, usize)> {
+        if data.len() < 12 {
+            return None;
+        }
+        let namesz = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let descsz = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        // data[8..12] = vendorType (unused for markup geometry).
+        let name_start = 12usize;
+        let name_end = name_start.checked_add(namesz as usize)?;
+        if name_end > data.len() {
+            return None;
+        }
+        let name_bytes = &data[name_start..name_end];
+        let nul = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+        let name = String::from_utf8_lossy(&name_bytes[..nul]).into_owned();
+        let pad = (4 - (namesz % 4)) % 4; // reader.align(4) from offset 12 + namesz
+        let name_len = namesz + pad;
+        let desc_off = name_start.checked_add(name_len as usize)?;
+        if desc_off.checked_add(descsz as usize)? > data.len() {
+            return None; // readNextByteArray would overrun — bail
+        }
+        Some((name_len, name, descsz, desc_off))
+    }
+
+    // .note.gnu.property (NoteGnuProperty.markupProgram): the `NoteGnuProperty_<nameLen>`
+    // header struct (`createNoteStructure(..., nameLen, 0)` = 12 + nameLen, no desc field)
+    // followed by one `NoteGnuPropertyElement_<prDatasz>` struct per property element
+    // (`getElementDataType` = DWORD prType + DWORD prDatasz + BYTE[prDatasz] = 8 + prDatasz).
+    // The element structs are laid back-to-back from the header's end (markupProgram:
+    // `address = elementData.getMaxAddress().next()`), while the element *list* is parsed from
+    // the desc blob advancing `setPointerIndex(dataStart + prDatasz); align(intSize)`.
+    if let Some(sec) = elf.section_by_name(".note.gnu.property") {
+        let addr = sec.address();
+        if mapped(program, addr) {
+            if let Ok(data) = sec.data() {
+                if let Some((name_len, _name, desc_len, desc_off)) = parse_note(data) {
+                    let hdr_len = 12 + name_len;
+                    program.defined_data.push((
+                        Address::new(ram, addr),
+                        format!("NoteGnuProperty_{name_len}"),
+                        hdr_len,
+                    ));
+                    let desc = &data[desc_off..desc_off + desc_len as usize];
+                    let mut elem_addr = addr + hdr_len as u64;
+                    let mut p = 0usize; // desc-reader pointer (NoteGnuProperty.read)
+                    while p + 8 <= desc.len() {
+                        // prType @ p (4), prDatasz @ p+4 (4)
+                        let pr_datasz =
+                            u32::from_le_bytes(desc[p + 4..p + 8].try_into().unwrap());
+                        let elem_len = 8 + pr_datasz;
+                        program.defined_data.push((
+                            Address::new(ram, elem_addr),
+                            format!("NoteGnuPropertyElement_{pr_datasz}"),
+                            elem_len,
+                        ));
+                        elem_addr += elem_len as u64;
+                        let data_start = p + 8;
+                        let next = data_start + pr_datasz as usize;
+                        p = align_up(next as u64, PTR_SIZE) as usize;
+                    }
+                }
+            }
+        }
+    }
+
+    // .note.gnu.build-id (NoteGnuBuildId): guarded by `isGnu() && descLen != 0`. The
+    // `GnuBuildId` struct = createNoteStructure(..., nameLen, 0) + BYTE[descLen]
+    // = 12 + nameLen + descLen.
+    if let Some(sec) = elf.section_by_name(".note.gnu.build-id") {
+        let addr = sec.address();
+        if mapped(program, addr) {
+            if let Ok(data) = sec.data() {
+                if let Some((name_len, name, desc_len, _)) = parse_note(data) {
+                    if name == "GNU" && desc_len != 0 {
+                        let len = 12 + name_len + desc_len;
+                        program.defined_data.push((
+                            Address::new(ram, addr),
+                            "GnuBuildId".to_string(),
+                            len,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // .note.ABI-tag (NoteAbiTag): guarded by `isGnu() && descLen >= MIN_ABI_TAB_LEN (0x10)`.
+    // The `NoteAbiTag` struct = createNoteStructure(..., nameLen, 0) + DWORD abiType
+    // + DWORD[3] requiredKernelVersion = 12 + nameLen + 4 + 12.
+    if let Some(sec) = elf.section_by_name(".note.ABI-tag") {
+        let addr = sec.address();
+        if mapped(program, addr) {
+            if let Ok(data) = sec.data() {
+                if let Some((name_len, name, desc_len, _)) = parse_note(data) {
+                    if name == "GNU" && desc_len >= 0x10 {
+                        let len = 12 + name_len + 4 + 12;
+                        program.defined_data.push((
+                            Address::new(ram, addr),
+                            "NoteAbiTag".to_string(),
+                            len,
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —

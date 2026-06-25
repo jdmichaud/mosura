@@ -437,11 +437,11 @@ fn data_unit_parity() {
         }
     }
     eprintln!("data-unit parity: {recall} (0 spurious)");
-    // basic 11/99 + freestanding 2/3 = 13: the .eh_frame_hdr units + the ELF-loader markup
-    // (Elf64_Ehdr + Elf64_Phdr[] so far). The deferred remainder is the rest of the ELF
-    // structure markup (.dynsym/.dynstr/.rela/notes/.gnu.hash/.gnu.version) + .eh_frame
-    // CIE/FDE field markup. Raise as the A2 loader-data markup lands more structures.
-    assert!(recall.passed >= 33, "data-unit recall regressed below 33");
+    // basic 35/99 + freestanding 3/3 = 38: the .eh_frame_hdr units + the ELF-loader markup
+    // (Elf64_Ehdr/Phdr/Sym/Rela, .gnu.hash/.gnu.version/.dynstr/.interp, and the ELF notes —
+    // NoteGnuProperty/Element, GnuBuildId, NoteAbiTag). The deferred remainder is the .eh_frame
+    // CIE/FDE field markup. Raise as more markup lands.
+    assert!(recall.passed >= 38, "data-unit recall regressed below 38");
 }
 
 #[test]
