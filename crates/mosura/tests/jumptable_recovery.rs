@@ -45,3 +45,13 @@ fn switchloop_recovers_nine_targets() {
     assert_eq!(faithful[0].len(), 9);
     assert_eq!(faithful, heur);
 }
+
+#[test]
+fn ifswitch_offset_switch_recovers_twentyone_targets() {
+    // An offset switch (index = param_1, cases up to 0x14 in Ghidra ⇒ table indices 0..20).
+    // The faithful guard-range recovery gets 21; the build-time heuristic over-reads one entry
+    // past the guard bound (its 22 is wrong) — so we assert the Ghidra-correct count, not a match.
+    let Some((faithful, _heur)) = tables("ifswitch") else { return };
+    assert_eq!(faithful.len(), 1);
+    assert_eq!(faithful[0].len(), 21, "Ghidra's ifswitch table is indices 0..0x14 = 21 entries");
+}
