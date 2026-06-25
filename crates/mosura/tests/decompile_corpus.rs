@@ -4,7 +4,7 @@
 //! project's "ground against Ghidra's --c, don't chase the C-similarity gauge" rule it prints a
 //! sorted report and asserts only a loose floor (so it can't silently rot), never a ratchet.
 
-use mosura::decomp::ccompare;
+use mosura::ccompare;
 use mosura::decompile::{build, pipeline, printc};
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};

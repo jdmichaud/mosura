@@ -16,11 +16,12 @@ for the full rationale and architecture.
 
 - **SLEIGH engine:** done — bytes → instructions + raw p-code, **254/254 disasm/p-code
   parity** (6 arches). Keep. Never regress.
-- **Decompiler prototype** (`src/decomp/`): an approximation. Corpus **0.756 avg
-  structural similarity, 51/62 x86-64 datatests decompiled, 34 ≥ 0.70**. This is now a
-  **coarse secondary gauge**, kept running while the faithful pipeline is built; **not a
-  gate** (the `datatest_score` ratchet must never again block a faithful change).
-- **Faithful pipeline** (`src/decompile/`, new): not started — P0 below.
+- **Decompiler prototype** (`src/decomp/`): **removed** — a similarity-chasing
+  approximation that didn't compose, fully superseded by the faithful pipeline. Its
+  `datatest_score` gauge is retired; the `ccompare` structural comparator it carried was
+  lifted to `src/ccompare.rs`.
+- **Faithful pipeline** (`src/decompile/`): the decompiler. Corpus **0.76 avg structural
+  similarity, 42/60 x86-64 datatests ≥ 0.70** (`decompile_corpus`) — the active gauge.
 
 ## Phases (faithful port — detail in `port-plan.md` §4)
 

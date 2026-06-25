@@ -1,10 +1,10 @@
 //! A faithful port of Ghidra's decompiler (`Features/Decompiler/src/decompile/cpp`),
 //! mirroring its file/class names. See `docs/port-plan.md`.
 //!
-//! This is the **new** decompiler core, built on Ghidra's Varnode-graph data model and
+//! This is the decompiler core, built on Ghidra's Varnode-graph data model and
 //! (incrementally) its `Action`/`Rule` pipeline, validated against Ghidra's intermediate
-//! IR. It is being built alongside the `decomp` prototype, which it retires stage by
-//! stage. Status / phases: `TODO.md`.
+//! IR. It replaced the original `src/decomp/` prototype, now removed. Status / phases:
+//! `TODO.md`.
 
 pub mod action;
 pub mod alias;

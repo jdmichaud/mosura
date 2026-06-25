@@ -7,9 +7,9 @@
 //! `docs/testing-baseline.md`).
 
 pub mod analysis;
+pub mod ccompare;
 pub mod conformance;
 pub mod datatest;
-pub mod decomp;
 pub mod decompile;
 pub mod golden;
 pub mod lang;
