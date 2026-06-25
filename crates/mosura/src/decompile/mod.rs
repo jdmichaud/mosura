@@ -34,6 +34,7 @@ pub mod stackvars;
 pub mod structure;
 pub mod types;
 pub mod infertypes;
+pub mod varmap;
 pub mod varnode;
 
 pub use action::{Action, ActionGroup, ActionPool, ActionStart, Rule};

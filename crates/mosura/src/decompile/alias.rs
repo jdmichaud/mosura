@@ -93,3 +93,115 @@ pub fn aliased_stack_offsets(f: &Funcdata) -> HashSet<i64> {
 pub fn alias_boundary(f: &Funcdata) -> Option<i64> {
     aliased_stack_offsets(f).into_iter().min()
 }
+
+/// Ghidra `AliasChecker::AddBase`: a pointer Varnode into the stack and a possible index added to it.
+#[derive(Clone, Copy)]
+pub struct AddBase {
+    pub base: VarnodeId,
+    pub index: Option<VarnodeId>,
+}
+
+/// Ghidra `AliasChecker::gatherAdditiveBase` (varmap.cc:741): for every \e sum the entry stack
+/// pointer is involved in (via the additive ops COPY/INT_ADD/INT_SUB/PTRADD/PTRSUB), collect the
+/// root result Varnode of the sum, together with any non-constant index that was added in.  A root
+/// is a Varnode that has at least one \e non-additive use (its stack address escapes there).
+pub fn gather_additive_base(f: &Funcdata) -> Vec<AddBase> {
+    let mut addbase: Vec<AddBase> = Vec::new();
+    let Some(reg) = f.spaces.by_name("register") else { return addbase };
+    let Some(startvn) = (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| {
+        let vn = f.vn(v);
+        vn.is_input() && vn.loc.space == reg && vn.loc.offset == RSP
+    }) else {
+        return addbase;
+    };
+
+    // (varnode, index) work queue; `seen` plays the role of Ghidra's Varnode::setMark.
+    let mut vnqueue: Vec<AddBase> = vec![AddBase { base: startvn, index: None }];
+    let mut seen: HashSet<VarnodeId> = HashSet::from([startvn]);
+    let mut i = 0;
+    while i < vnqueue.len() {
+        let vn = vnqueue[i].base;
+        let mut index = vnqueue[i].index;
+        i += 1;
+        let mut nonadduse = false;
+        for op in f.vn(vn).descend.clone() {
+            let o = f.op(op);
+            let push = |sub: Option<VarnodeId>, idx, q: &mut Vec<AddBase>, seen: &mut HashSet<VarnodeId>| {
+                if let Some(sub) = sub {
+                    if seen.insert(sub) {
+                        q.push(AddBase { base: sub, index: idx });
+                    }
+                }
+            };
+            match o.code() {
+                OpCode::Copy => {
+                    nonadduse = true; // a COPY is both a non-add use and part of the ADD expression
+                    push(o.output, index, &mut vnqueue, &mut seen);
+                }
+                OpCode::IntSub => {
+                    if o.input(1) == Some(vn) {
+                        nonadduse = true; // subtracting the pointer
+                        continue;
+                    }
+                    let othervn = o.input(1).unwrap();
+                    if !f.vn(othervn).is_constant() {
+                        index = Some(othervn);
+                    }
+                    push(o.output, index, &mut vnqueue, &mut seen);
+                }
+                OpCode::IntAdd | OpCode::Ptradd => {
+                    let mut othervn = o.input(1).unwrap();
+                    if othervn == vn {
+                        othervn = o.input(0).unwrap();
+                    }
+                    if !f.vn(othervn).is_constant() {
+                        index = Some(othervn);
+                    }
+                    push(o.output, index, &mut vnqueue, &mut seen);
+                }
+                OpCode::Ptrsub => {
+                    push(o.output, index, &mut vnqueue, &mut seen);
+                }
+                _ => nonadduse = true, // used in a non-additive expression
+            }
+        }
+        if nonadduse {
+            addbase.push(AddBase { base: vn, index });
+        }
+    }
+    addbase
+}
+
+/// Ghidra `AliasChecker::gatherOffset` (varmap.cc:817): treat `vn` as the result of a series of
+/// additive ops and sum the constant terms by walking the def graph backwards.
+pub fn gather_offset(f: &Funcdata, vn: VarnodeId) -> u64 {
+    let mask = |v: u64, size: u32| if size >= 8 { v } else { v & ((1u64 << (8 * size)) - 1) };
+    if f.vn(vn).is_constant() {
+        return f.vn(vn).constant_value();
+    }
+    let Some(def) = f.vn(vn).def else { return 0 };
+    let o = f.op(def);
+    let retval = match o.code() {
+        OpCode::Copy => gather_offset(f, o.input(0).unwrap()),
+        OpCode::Ptrsub | OpCode::IntAdd => {
+            gather_offset(f, o.input(0).unwrap()).wrapping_add(gather_offset(f, o.input(1).unwrap()))
+        }
+        OpCode::IntSub => {
+            gather_offset(f, o.input(0).unwrap()).wrapping_sub(gather_offset(f, o.input(1).unwrap()))
+        }
+        OpCode::Ptradd => {
+            let othervn = o.input(2).unwrap();
+            let base = gather_offset(f, o.input(0).unwrap());
+            let in1 = o.input(1).unwrap();
+            if f.vn(in1).is_constant() {
+                base.wrapping_add(f.vn(in1).constant_value().wrapping_mul(f.vn(othervn).constant_value()))
+            } else if f.vn(othervn).constant_value() == 1 {
+                base.wrapping_add(gather_offset(f, in1))
+            } else {
+                base
+            }
+        }
+        _ => 0,
+    };
+    mask(retval, f.vn(vn).size)
+}
