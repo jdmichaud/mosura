@@ -47,6 +47,19 @@ fn switchloop_recovers_nine_targets() {
 }
 
 #[test]
+fn declines_where_ghidra_declines() {
+    // Ghidra cannot recover switchmulti ("Too many branches" → treats the indirect jump as a call)
+    // and switchreturn has no switch — the faithful recovery must likewise produce no table (the
+    // build heuristic wrongly invents 7 targets for switchmulti).
+    if let Some((faithful, _)) = tables("switchmulti") {
+        assert!(faithful.is_empty(), "switchmulti is an indirect call in Ghidra, not a jump table");
+    }
+    if let Some((faithful, _)) = tables("switchreturn") {
+        assert!(faithful.is_empty(), "switchreturn has no jump table");
+    }
+}
+
+#[test]
 fn ifswitch_offset_switch_recovers_twentyone_targets() {
     // An offset switch (index = param_1, cases up to 0x14 in Ghidra ⇒ table indices 0..20).
     // The faithful guard-range recovery gets 21; the build-time heuristic over-reads one entry
