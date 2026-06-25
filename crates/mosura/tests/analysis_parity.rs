@@ -318,10 +318,10 @@ fn reference_parity() {
         }
     }
     eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
-    // Ratchet: freestanding 4/4 + basic 25/33 = 29 recovered today (raise as the
-    // propagator + A6 analyzers land). The remaining misses are A6 analyses
-    // (COMPUTED_CALL/INDIRECTION/PARAM), PLT stubs, and GOT pointer-following.
-    assert!(recall.passed >= 29, "code-reference recall regressed below 29");
+    // Ratchet: freestanding 4/4 + basic 27/33 = 31 recovered (the 2 COMPUTED_CALL via
+    // the A6 indirect-call resolution just landed; raise as more A6 analyzers land). The
+    // remaining misses are A6 INDIRECTION (PLT/GOT lazy-binding) + PARAM (call args).
+    assert!(recall.passed >= 31, "code-reference recall regressed below 31");
 }
 
 #[test]

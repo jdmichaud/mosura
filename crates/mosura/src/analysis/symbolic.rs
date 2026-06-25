@@ -207,6 +207,16 @@ fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, r
                 }
             }
         }
+        Some(OpCode::Callind) => {
+            // An indirect call whose target resolves to a constant — e.g. `call *[GOT]`,
+            // where the slot was relocated to the external — is a COMPUTED_CALL to that
+            // target (Ghidra's ConstantPropagationAnalyzer resolves the PLT thunk's callee).
+            if let Some(t) = op.ins.first().and_then(arg_var) {
+                if let SymValue::Const(target) = vctx.get(t) {
+                    make_ref(program, here, ram, target, RefType::ComputedCall, MIN_KNOWN_REF);
+                }
+            }
+        }
         // Constant-fold the address arithmetic so register-held addresses propagate.
         Some(OpCode::IntAdd) => fold2(vctx, op, u64::wrapping_add),
         Some(OpCode::IntSub) => fold2(vctx, op, u64::wrapping_sub),
