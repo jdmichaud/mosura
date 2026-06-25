@@ -453,7 +453,10 @@ impl<'a> PrintC<'a> {
                 continue;
             }
             let (base, ok) = self.addr_base(addr, size);
-            if !matches!(self.type_of(base), Datatype::Pointer(..)) {
+            // Ghidra renders `base[i]` only when the base is genuinely *array*-typed; a plain
+            // pointer prints `*(T *)(base + off)`. (Array typing comes from pointer-arithmetic
+            // inference, #2/#10 — not yet produced, so this currently yields the pointer form.)
+            if !matches!(self.type_of(base), Datatype::Array(..)) {
                 continue;
             }
             let e = info.entry(base).or_insert(Some(size));
