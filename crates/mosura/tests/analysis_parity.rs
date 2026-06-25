@@ -353,6 +353,52 @@ fn reference_parity() {
     assert!(recall.passed >= 36, "code-reference recall regressed below 36");
 }
 
+/// A7 Task 2 — `.eh_frame_hdr` reference parity. The GCC exception-frame analyzer emits
+/// references whose source is the `.eh_frame_hdr` *data* section (not executable code, so
+/// they fall outside [`reference_parity`]'s exec-from filter): the FDE-table INDIRECTION
+/// refs to each protected function plus the DATA refs to the FDEs and the eh_frame pointer.
+/// HARD subset (0 spurious) with a recall ratchet, compared on (from, to, kind).
+#[test]
+fn eh_frame_reference_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let program = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap();
+        let snap = program.snapshot();
+        // The `.eh_frame_hdr` block range (skip binaries without one, e.g. freestanding).
+        let Some((lo, hi)) = program
+            .memory
+            .block_by_name(".eh_frame_hdr")
+            .map(|b| (b.start().offset, b.end().offset))
+        else {
+            continue;
+        };
+        let from_ehh = |from: u64| from >= lo && from <= hi;
+        let mine: BTreeSet<(u64, u64, String)> =
+            snap.refs.iter().filter(|r| from_ehh(r.from)).map(|r| (r.from, r.to, r.kind.clone())).collect();
+        let gold: BTreeSet<(u64, u64, String)> =
+            golden.refs.iter().filter(|r| from_ehh(r.from)).map(|r| (r.from, r.to, r.kind.clone())).collect();
+        let spurious: Vec<_> = mine.difference(&gold).collect();
+        assert!(spurious.is_empty(), "{name}: spurious .eh_frame_hdr refs vs Ghidra: {spurious:x?}");
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] .eh_frame_hdr-ref recall {matched}/{} (0 spurious)", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("eh_frame-reference parity: {recall} (0 spurious)");
+    // basic: the eh_frame_ptr DATA ref + 6 FDE-table entries × (INDIRECTION + DATA) = 13.
+    assert!(recall.passed >= 13, "eh_frame-reference recall regressed below 13");
+}
+
 #[test]
 fn loader_detail_parity() {
     let goldens = analysis_goldens_dir();

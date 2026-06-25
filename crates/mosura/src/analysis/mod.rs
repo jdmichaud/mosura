@@ -129,6 +129,11 @@ pub fn analyze(program: &mut Program) {
         analyzers::compute_function_bodies(&spec, &ctx, program);
     }
 
+    // A7 Task 2: GCC exception-frame analysis — the `.eh_frame_hdr` FDE table's INDIRECTION
+    // (function start) + DATA (FDE) references (Ghidra GccExceptionAnalyzer →
+    // EhFrameHeaderSection → FdeTable).
+    analyzers::eh_frame::analyze(program);
+
     // A7 Task 1: shared-return tail calls (Ghidra SharedReturnAnalyzer + SharedReturnAnalysisCmd).
     // Run after disassembly + reference recovery + body computation have converged, which is
     // the state Ghidra's FUNCTION_ANALYZER precondition assumes (functions, flow refs, and
@@ -393,5 +398,37 @@ mod a7_shared_return {
         assert_eq!(typed(0x40_103b, 0x40_1020), vec!["UNCONDITIONAL_CALL"]);
         // The READ inside PLT[0] (`push 0x403ff0(%rip)`) is recovered once the function exists.
         assert_eq!(typed(0x40_1020, 0x40_3ff0), vec!["READ"]);
+    }
+}
+
+#[cfg(test)]
+mod a7_eh_frame {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// A7 Task 2 — the EH-frame analyzer recovers the `.eh_frame_hdr` FDE-table references
+    /// (Ghidra GccExceptionAnalyzer → EhFrameHeaderSection → FdeTable): the 6 INDIRECTION refs
+    /// to the protected functions, exactly matching the golden, with no spurious additions.
+    #[test]
+    fn basic_eh_frame_hdr_indirection_refs() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let snap = p.snapshot();
+        let golden = crate::analysis::snapshot::parse(
+            &std::fs::read_to_string(crate::paths::analysis_goldens_dir().join("basic.snapshot")).unwrap(),
+        );
+        let indir = |s: &crate::analysis::snapshot::Snapshot| -> BTreeSet<(u64, u64)> {
+            // The .eh_frame_hdr table's INDIRECTION refs (the FDE initial_loc → function).
+            s.refs
+                .iter()
+                .filter(|r| r.kind == "INDIRECTION" && (0x40_2008..=0x40_2043).contains(&r.from))
+                .map(|r| (r.from, r.to))
+                .collect()
+        };
+        let (mine, gold) = (indir(&snap), indir(&golden));
+        assert_eq!(mine, gold, ".eh_frame_hdr INDIRECTION refs must match Ghidra exactly");
+        assert_eq!(mine.len(), 6, "6 FDE-table entries");
     }
 }
