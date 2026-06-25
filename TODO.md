@@ -365,9 +365,15 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         unresolved indirect branch (tracked in `Program.indirect_branches`), emits COMPUTED_JUMP
         refs from each BRANCHIND to the recovered case targets + schedules them as code. Gated:
         `switchtab` COMPUTED_JUMP edges match Ghidra exactly (7/7, 0 spurious).
-  - [ ] **Parameter-ID** (the other half): read the decompiler's recovered call args/return and
-        emit PARAM refs (basic: `0x401054→0x401168`, `0x401194→0x402004`). Needs the decompiler's
-        call-argument recovery exposed (akin to `func_proto()` but per call site).
+  - [x] **Parameter-ID → PARAM** (`symbolic.rs` `add_param_references`): NOT decompiler-driven —
+        a port of `SymbolicPropogator.addParamReferences`/`createVariableStorageReference`/
+        `makeVariableStorageReference` (the ConstantPropagationAnalyzer's parameter analysis,
+        `checkParamRefs=true`/`checkPointerParamRefs=false` on x86-64). On a CALL/CALLIND, each
+        SysV-AMD64 integer arg register (RDI,RSI,RDX,RCX,R8,R9; `x86-64-gcc.cspec`) holding a
+        constant mapped address emits a PARAM **from the instruction that last set it**
+        (`getLastSetLocation` → `VarnodeContext.lastSet`). basic: `0x401054→0x401168`,
+        `0x401194→0x402004`, with the speculative DATA dropped (Ghidra `ScalarOperandAnalyzer`
+        skips an already-referenced operand). Gated to the gcc/SysV convention (PE/MZ untouched).
   - [x] **Indirect calls → COMPUTED_CALL**: the SymbolicPropogator resolves a CALLIND whose
         target is a constant (`call *[GOT]`, slot relocated to the external in A5) → COMPUTED_CALL.
         basic's 2 COMPUTED_CALL recovered, matching Ghidra; code-ref recall 29→31, 0 false positives.
@@ -376,10 +382,26 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         flow target is the operand's static `ram` address (a PLT stub's `jmp *[GOT]`) gets an
         INDIRECTION ref to that slot, created at disassembly time. basic's PLT `jmp *[GOT]`
         recovered, recall 31→32, 0 false positives.
-  - [ ] **INDIRECTION (remaining)** + **COMPUTED_CALL_TERMINATOR**: PLT[0]'s INDIRECTION (needs full
-        `.plt` disassembly, not just recursive descent); the 6 `.eh_frame_hdr` INDIRECTION (the A7
-        eh_frame analyzer); the resolved-BRANCHIND tail-call ref (needs the COMPUTED_JUMP-vs-
-        COMPUTED_CALL_TERMINATOR flow-type classification — port Ghidra `convertFlowFlags`).
+  - [x] **Flow-type classification + COMPUTED_CALL_TERMINATOR** (`flowtype.rs`): port of
+        `SleighInstructionPrototype.walkTemplates`/`flowListToFlowType`/`convertFlowFlags` +
+        `FlowOverride.getModifiedFlowType`, derived from the lifted p-code. The SymbolicPropogator
+        types a resolved BRANCHIND target with the instruction's flow type (COMPUTED_JUMP); a new
+        `ExternalJumpAnalyzer` (port of `OperandReferenceAnalyzer.checkForExternalJump`) re-types a
+        JUMP into the EXTERNAL block via the CALL_RETURN override → COMPUTED_CALL_TERMINATOR. basic
+        `0x401030→0x405008 COMPUTED_CALL_TERMINATOR`.
+  - [x] **PLT[0]'s INDIRECTION** via full `.plt` disassembly (`mod.rs` `plt_linear_sweep`): port of
+        `ElfDefaultGotPltMarkup.processPLTSection`/`disassemble` — linearly sweep `.plt` from
+        `start+16` so the lazy-resolve stubs decode. basic `0x401026→0x403ff8 INDIRECTION` +
+        `0x40103b→0x401020`; disassembly 102→106/106, code-ref 31→ all A6 refs recovered.
+  - [ ] **Remaining basic code-ref misses** (NOT A6): the 6 `.eh_frame_hdr` INDIRECTION are **A7**
+        (the eh_frame analyzer, not an A6 bug); `0x401004→0x405010` (GOT-relative weak external) and
+        `0x401020→0x403ff0 READ` (in PLT[0], which Ghidra makes a function via SharedReturnAnalysis —
+        A7) need deeper analysis outside Tasks 1–3.
+  - [~] **war2 switches/COMPUTED_CALL** (Task 4): honestly 0/20 COMPUTED_JUMP + 0/2 COMPUTED_CALL,
+        0 spurious. war2 loads as x86:LE:16:Real Mode (DOS/4GW MZ stub); the switch sources are in
+        protected-mode LE code the 16-bit function discovery never reaches, so they're never
+        disassembled (a code-discovery gap, not a switch-analyzer failure). The pe_mz gate now locks
+        the computed-flow subset invariant (0 spurious) for war2 + comcom32.
   - [x] *Decompiler-track gap reported + FIXED by master* (`4049e5d`, merged): gcc -O2
         register-guard switches now recover (cfg root at the entry, not the lowest-address block);
         switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.

@@ -133,9 +133,33 @@ scratch engine. Still the largest new analysis component, but well-bounded.
 `SwitchAnalysisDecompileConfigurer`, runs `ParallelDecompiler.decompileFunctions(callback,
 functions, monitor)`, and reads the jump table out of each `DecompileResults` (the
 decompiler's `HighFunction`). So it **runs the ported decompiler per function and consumes
-its switch recovery** — it depends on `DecompInterface` + the decompiler. Parameter-ID is
-the same shape for call args/returns. This is what replaced the removed `decomp/jumptable.rs`, and what
-gates A6 on decompiler-port progress.
+its switch recovery** — it depends on `DecompInterface` + the decompiler. This is what
+replaced the removed `decomp/jumptable.rs`, and what gates the switch half of A6 on
+decompiler-port progress.
+
+**A6 status (landed; corpus = basic.elf + war2):**
+
+- **Switch recovery** — `analyzers/switch.rs` (the decompiler-driven analyzer above). 7/7
+  on the `switchtab` fixture, 0 spurious.
+- **Indirect-flow references** — these turned out to be **constant-propagator** concerns,
+  not decompiler-driven, so they live in `symbolic.rs` + a small `flowtype.rs`:
+  - CALLIND/BRANCHIND resolved to a constant → referenced with the instruction's flow type
+    (`SymbolicPropogator.java:944-952`/`994-1015`). Flow type is computed by `flowtype.rs`,
+    a port of `SleighInstructionPrototype.walkTemplates`/`convertFlowFlags` over the lifted
+    p-code. → COMPUTED_CALL (CALLIND) / COMPUTED_JUMP (BRANCHIND).
+  - `ExternalJumpAnalyzer` (`OperandReferenceAnalyzer.checkForExternalJump`): a JUMP into
+    the EXTERNAL block gets the CALL_RETURN flow override (`FlowOverride.getModifiedFlowType`)
+    → COMPUTED_CALL_TERMINATOR (the PLT tail-call).
+  - PLT[0]'s INDIRECTION needs the **whole `.plt`** disassembled: `mod.rs::plt_linear_sweep`
+    ports `ElfDefaultGotPltMarkup.processPLTSection` (a loader-phase step in Ghidra; done in
+    the analysis phase here because mosura's SLEIGH disassembly lives there).
+- **Parameter-ID → PARAM** — **NOT** decompiler-driven (the original plan assumed it was).
+  It is the `ConstantPropagationAnalyzer`'s parameter analysis
+  (`SymbolicPropogator.addParamReferences` → `createVariableStorageReference` →
+  `makeVariableStorageReference`): on a call, each SysV-AMD64 integer arg register holding a
+  constant mapped address emits PARAM from its last-set instruction. Lives in `symbolic.rs`
+  (`add_param_references`, with `VarnodeContext.lastSet` tracking). No decompiler call-arg
+  accessor was needed, so the `docs/a6-param-decompiler-ask.md` brief was unnecessary.
 
 ## 3. Validation — Program-state parity (the oracle, and how it differs)
 
