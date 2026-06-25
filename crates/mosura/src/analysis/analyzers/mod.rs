@@ -5,6 +5,7 @@
 //! entry points and call targets ([`FunctionCreator`]).
 
 pub mod external_jump;
+pub mod shared_return;
 pub mod switch;
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};

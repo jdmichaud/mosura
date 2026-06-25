@@ -49,6 +49,23 @@ impl Listing {
         self.units.get(&(addr.space.0, addr.offset)).map(|(_, u)| u)
     }
 
+    /// The code unit whose `[start, start+length)` range contains `addr` (Ghidra
+    /// `Listing.getCodeUnitContaining`), returning its start address and length. Probes
+    /// backward within the maximum code-unit length (x86 instructions are ≤ 16 bytes; data
+    /// items can be longer, but this is used only for instruction fall-through queries).
+    pub fn code_unit_containing(&self, addr: Address, max_len: u64) -> Option<(Address, u64)> {
+        for back in 0..=max_len {
+            let off = addr.offset.checked_sub(back)?;
+            if let Some((start, unit)) = self.units.get(&(addr.space.0, off)) {
+                let len = u64::from(unit.length());
+                if off + len > addr.offset {
+                    return Some((*start, len));
+                }
+            }
+        }
+        None
+    }
+
     pub fn code_units(&self) -> impl Iterator<Item = (Address, &CodeUnit)> {
         self.units.values().map(|(a, u)| (*a, u))
     }

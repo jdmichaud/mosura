@@ -258,8 +258,11 @@ fn function_parity() {
         }
     }
     eprintln!("function parity: {recall}");
-    // freestanding 3/3 + basic 14/16 = 17.
-    assert!(recall.passed >= 17, "function recall regressed below 17");
+    // freestanding 3/3 + basic 15/16 = 18. basic reached 15 once A7's SharedReturnAnalyzer
+    // recovered FUN_00401020 (PLT[0]) from the resolve-tail `jmp 0x401020` crossing the
+    // printf@plt boundary. The remaining basic miss is __gmon_start__@0x405010 (a weak
+    // external).
+    assert!(recall.passed >= 18, "function recall regressed below 18");
 }
 
 /// A4 — function-body parity. For every function mosura *and* Ghidra both have, the body
@@ -289,8 +292,9 @@ fn function_body_parity() {
         validated += matched;
     }
     eprintln!("function-body parity: {validated} exact bodies");
-    // freestanding 3 + basic 14 = 17 bodies validated exactly.
-    assert!(validated >= 17, "function-body validation regressed below 17");
+    // freestanding 3 + basic 15 = 18 bodies validated exactly (basic +1: FUN_00401020 / PLT[0]
+    // recovered by the A7 SharedReturnAnalyzer, body 00401020:0040102b).
+    assert!(validated >= 18, "function-body validation regressed below 18");
 }
 
 /// A5 — references parity. mosura's analysis must never invent a reference Ghidra
@@ -341,12 +345,12 @@ fn reference_parity() {
         }
     }
     eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
-    // Ratchet: freestanding 4/4 + basic 31/33 = 35 recovered. The A6 indirect-flow work
-    // landed COMPUTED_CALL_TERMINATOR (the PLT tail-call), PLT[0]'s INDIRECTION (via the PLT
-    // linear sweep), and 0x40103b → 0x401020 (the resolve tail's jmp into PLT[0]). Remaining
-    // basic misses: the 2 PARAM refs (constant-propagator parameter analysis — Task 3), and
-    // the 6 .eh_frame_hdr INDIRECTION refs are A7 (eh_frame analyzer), not A6.
-    assert!(recall.passed >= 35, "code-reference recall regressed below 35");
+    // Ratchet: freestanding 4/4 + basic 32/33 = 36 recovered. A7 Task 1 (SharedReturn) added
+    // the `0x401020 → 0x403ff0 READ` inside PLT[0] (recovered once FUN_00401020 exists) and
+    // retyped `0x40103b → 0x401020` to UNCONDITIONAL_CALL (type validated in the
+    // a7_shared_return test). The remaining basic miss is `0x401004 → 0x405010` (the
+    // __gmon_start__ weak-external code-ref — investigated in the A7 close-out).
+    assert!(recall.passed >= 36, "code-reference recall regressed below 36");
 }
 
 #[test]

@@ -65,6 +65,29 @@ impl FunctionManager {
         self.functions.iter().find(|f| f.entry == entry)
     }
 
+    /// The function with the highest entry strictly below `addr` in the same space (Ghidra
+    /// `SharedReturnAnalysisCmd.getFunctionBefore` via `listing.getFunctions(rangeBefore)`).
+    pub fn function_before(&self, addr: Address) -> Option<&Function> {
+        self.functions
+            .iter()
+            .filter(|f| f.entry.space == addr.space && f.entry.offset < addr.offset)
+            .max_by_key(|f| f.entry.offset)
+    }
+
+    /// The function with the lowest entry strictly above `addr` in the same space (Ghidra
+    /// `SharedReturnAnalysisCmd.getFunctionAfter`).
+    pub fn function_after(&self, addr: Address) -> Option<&Function> {
+        self.functions
+            .iter()
+            .filter(|f| f.entry.space == addr.space && f.entry.offset > addr.offset)
+            .min_by_key(|f| f.entry.offset)
+    }
+
+    /// The function whose body contains `addr` (Ghidra `FunctionManager.getFunctionContaining`).
+    pub fn function_containing(&self, addr: Address) -> Option<&Function> {
+        self.functions.iter().find(|f| f.body.contains(addr))
+    }
+
     /// Set a function's body (Ghidra `Function.setBody`) — the address set of code units
     /// it owns, computed once disassembly has run.
     pub fn set_body(&mut self, entry: Address, body: AddressSet) {

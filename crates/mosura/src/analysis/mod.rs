@@ -128,6 +128,63 @@ pub fn analyze(program: &mut Program) {
     if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
         analyzers::compute_function_bodies(&spec, &ctx, program);
     }
+
+    // A7 Task 1: shared-return tail calls (Ghidra SharedReturnAnalyzer + SharedReturnAnalysisCmd).
+    // Run after disassembly + reference recovery + body computation have converged, which is
+    // the state Ghidra's FUNCTION_ANALYZER precondition assumes (functions, flow refs, and
+    // bodies present). In Ghidra the PLT stubs are disassembled during load, so the resolve-
+    // tail jumps already exist when each PLT function is created; mosura disassembles the PLT
+    // in the deferred `plt_linear_sweep`, so the shared-return scan must follow it.
+    shared_return_pass(program);
+}
+
+/// Run the shared-return analysis over the full converged function set (Ghidra
+/// `SharedReturnAnalysisCmd.applyTo` driven by `SharedReturnAnalyzer`). If it creates a new
+/// function (a contiguous-function boundary-crossing tail call, e.g. `basic`'s PLT[0]),
+/// recover that function's references and recompute bodies so the new code is fully analyzed.
+fn shared_return_pass(program: &mut Program) {
+    use crate::analysis::analyzer::Analyzer;
+    use crate::analysis::program::AddressSet;
+    let Some(sr) = analyzers::shared_return::SharedReturnAnalyzer::for_program(program) else {
+        return;
+    };
+    // The "added" set is every current function (the destination functions to examine).
+    let mut all_funcs = AddressSet::new();
+    for f in program.function_manager.functions() {
+        let e = f.entry_point();
+        all_funcs.add_range(e.space, e.offset, e.offset);
+    }
+    let before: std::collections::HashSet<(u32, u64)> = program
+        .function_manager
+        .functions()
+        .map(|f| (f.entry_point().space.0, f.entry_point().offset))
+        .collect();
+    let mut sched = crate::analysis::manager::Scheduling::default();
+    sr.added(program, &all_funcs, &mut sched);
+    // If new functions were created (e.g. PLT[0]), recover the references of *only the new*
+    // functions (the constant propagator emits the READ at `0x401020 → 0x403ff0`) and
+    // recompute bodies. Re-running the propagator over already-analyzed functions would
+    // re-introduce the raw flow references that later analyzers (external-jump) had already
+    // retyped, so the new-function set is isolated here.
+    let new_entries: Vec<crate::decompile::space::Address> = program
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point())
+        .filter(|e| !before.contains(&(e.space.0, e.offset)))
+        .collect();
+    if !new_entries.is_empty() {
+        if let Some(cp) = analyzers::ConstantPropagationAnalyzer::for_program(program) {
+            let mut set = AddressSet::new();
+            for e in &new_entries {
+                set.add_range(e.space, e.offset, e.offset);
+            }
+            let mut s = crate::analysis::manager::Scheduling::default();
+            cp.added(program, &set, &mut s);
+        }
+        if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
+            analyzers::compute_function_bodies(&spec, &ctx, program);
+        }
+    }
 }
 
 /// Ghidra `ElfDefaultGotPltMarkup.processPLTSection` head size — the assumed PLT head
@@ -302,3 +359,39 @@ mod a6_typed_refs {
     }
 }
 
+#[cfg(test)]
+mod a7_shared_return {
+    use super::*;
+
+    /// A7 Task 1 — the SharedReturnAnalyzer recovers PLT[0] as a function and retypes its
+    /// inbound resolve-tail jump as a call (Ghidra SharedReturnAnalysisCmd).
+    #[test]
+    fn basic_shared_return_recovers_plt0() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let ram = p.default_space;
+        use crate::decompile::space::Address;
+
+        // FUN_00401020 (PLT[0]) is now a function — the contiguous-function boundary-crossing
+        // backward jump from the printf@plt resolve tail created it.
+        assert!(
+            p.function_manager.function_at(Address::new(ram, 0x40_1020)).is_some(),
+            "FUN_00401020 (PLT[0]) must be recovered as a function"
+        );
+
+        let typed = |from: u64, to: u64| -> Vec<&'static str> {
+            p.reference_manager
+                .references()
+                .filter(|r| r.from == Address::new(ram, from) && r.to == Address::new(ram, to))
+                .map(|r| r.ref_type.name())
+                .collect()
+        };
+        // The resolve-tail `jmp 0x401020` is retyped JUMP → CALL (CALL_TERMINATOR flow →
+        // UNCONDITIONAL_CALL reference, per RefType.CALL_TERMINATOR's doc).
+        assert_eq!(typed(0x40_103b, 0x40_1020), vec!["UNCONDITIONAL_CALL"]);
+        // The READ inside PLT[0] (`push 0x403ff0(%rip)`) is recovered once the function exists.
+        assert_eq!(typed(0x40_1020, 0x40_3ff0), vec!["READ"]);
+    }
+}

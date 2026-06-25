@@ -142,6 +142,41 @@ pub fn modified_flow_type(original: RefType, ov: FlowOverride) -> RefType {
     }
 }
 
+/// `RefTypeFactory.getDefaultJumpOrCallFlowType` — derive the *reference* type Ghidra
+/// writes for a flow whose instruction flow-type is `flow` (used by the reference fixup in
+/// `InstructionDB.setFlowOverride`, which re-derives the flow reference's type after an
+/// override). Critically, a `CALL_TERMINATOR` *instruction* flow yields an
+/// `UNCONDITIONAL_CALL` *reference* (Ghidra `RefType.CALL_TERMINATOR` doc: "A corresponding
+/// Reference should generally specify UNCONDITIONAL_CALL"), and `COMPUTED_CALL_TERMINATOR`
+/// yields `COMPUTED_CALL`. Returns `None` for a non jump/call flow (the Java `return null`).
+pub fn default_jump_or_call_flow_type(flow: RefType) -> Option<RefType> {
+    if is_conditional(flow) {
+        if is_computed(flow) {
+            if is_call(flow) {
+                return Some(RefType::ConditionalComputedCall);
+            } else if is_jump(flow) {
+                return Some(RefType::ConditionalComputedJump);
+            }
+        } else if is_call(flow) {
+            return Some(RefType::ConditionalCall);
+        } else if is_jump(flow) {
+            return Some(RefType::ConditionalJump);
+        }
+    }
+    if is_computed(flow) {
+        if is_call(flow) {
+            return Some(RefType::ComputedCall);
+        } else if is_jump(flow) {
+            return Some(RefType::ComputedJump);
+        }
+    } else if is_call(flow) {
+        return Some(RefType::UnconditionalCall);
+    } else if is_jump(flow) {
+        return Some(RefType::UnconditionalJump);
+    }
+    None
+}
+
 // RefType predicate helpers mirroring Ghidra's RefType.isJump/isCall/isComputed/etc. over
 // the subset mosura models.
 fn is_jump(r: RefType) -> bool {
