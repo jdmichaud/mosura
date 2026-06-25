@@ -65,14 +65,39 @@ impl ParamEntry {
         Some(addr.offset - self.addressbase)
     }
 
-    /// Ghidra `ParamEntry::getSlot` (fspec.cc:407): the slot index covering `addr`. Exclusion
-    /// entries occupy exactly their `group`; non-exclusion (stack) entries index by alignment.
-    pub fn get_slot(&self, addr: Address) -> u32 {
+    /// Ghidra `ParamEntry::getSlot` (fspec.cc:407): the slot index covering byte `off` of a
+    /// parameter at `addr`. Exclusion entries always occupy their `group`; non-exclusion (stack)
+    /// entries index by alignment.
+    pub fn get_slot(&self, addr: Address, off: u32) -> u32 {
         if self.is_exclusion() {
             self.group
         } else {
-            self.group + ((addr.offset - self.addressbase) / self.alignment as u64) as u32
+            let rel = (addr.offset - self.addressbase) + off as u64;
+            self.group + (rel / self.alignment as u64) as u32
         }
+    }
+
+    /// Ghidra `ParamEntry::getAddrBySlot` (fspec.cc:450) for the exclusion / aligned-area cases:
+    /// the storage address for relative `slot` (0-based within the entry), used to synthesize
+    /// hole-filling trials. Exclusion entries only allocate slot 0.
+    pub fn get_addr_by_slot(&self, slot: u32, sz: u32) -> Option<Address> {
+        if sz < self.minsize {
+            return None;
+        }
+        if self.is_exclusion() {
+            if slot != 0 || sz > self.size {
+                return None;
+            }
+            Some(Address::new(self.space, self.addressbase))
+        } else {
+            Some(Address::new(self.space, self.addressbase + slot as u64 * self.alignment as u64))
+        }
+    }
+
+    /// Ghidra `ParamEntry::groupOverlap` (fspec.cc:157): whether two entries share a group. With
+    /// single-group entries this is group equality.
+    pub fn group_overlap(&self, other: &ParamEntry) -> bool {
+        self.group == other.group
     }
 }
 
@@ -99,6 +124,329 @@ impl ParamList {
     /// `ParamList::possibleParam`).
     pub fn possible_param(&self, loc: Address, size: u32) -> bool {
         self.find_entry(loc, size).is_some()
+    }
+
+    /// Index into [`Self::entry`] of the entry containing `[loc,loc+size)` (the index form of
+    /// `find_entry`, so trials can store a stable handle to their matched entry).
+    fn find_entry_index(&self, loc: Address, size: u32) -> Option<usize> {
+        self.entry.iter().position(|e| e.justified_contain(loc, size).is_some())
+    }
+
+    /// Ghidra `ParamListStandard::selectUnreferenceEntry` (fspec.cc:820): the entry at group
+    /// `grp` best matching `pref_type`, to fill a hole with an `unref` trial.
+    fn select_unreference_entry(&self, grp: u32, pref_type: u8) -> Option<usize> {
+        let mut best: Option<(i32, usize)> = None;
+        for (i, e) in self.entry.iter().enumerate() {
+            if e.group != grp {
+                continue;
+            }
+            let score = if e.type_class == pref_type {
+                2
+            } else if pref_type == type_class::GENERAL {
+                1
+            } else {
+                0
+            };
+            if best.is_none_or(|(bs, _)| score > bs) {
+                best = Some((score, i));
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+
+    // -- fillinMap and its helpers (fspec.cc:849-1313) ------------------------------------------
+
+    /// Ghidra `ParamListStandard::fillinMap` (fspec.cc:1285): from the accumulated trials, decide
+    /// which storage locations are actual parameters — map trials to entries, fill holes, enforce
+    /// exclusion/no-hole rules per resource section, and mark the survivors `used`.
+    pub fn fillin_map(&self, active: &mut ParamActive) {
+        if active.num_trials() == 0 {
+            return;
+        }
+        self.build_trial_map(active);
+        self.force_exclusion_group(active);
+        let starts = self.separate_sections(active);
+        let nsec = starts.len() - 1;
+        for i in 0..nsec {
+            self.force_no_use(active, starts[i], starts[i + 1]);
+        }
+        for i in 0..nsec {
+            self.force_inactive_chain(active, 2, starts[i], starts[i + 1], self.resource_start[i]);
+        }
+        for t in active.trial.iter_mut() {
+            if t.is_active() {
+                t.mark_used();
+            }
+        }
+    }
+
+    /// Ghidra `buildTrialMap` (fspec.cc:849): match each trial to a model entry (unmatched →
+    /// unused), synthesize `unref` trials for holes that precede a used group, and sort.
+    fn build_trial_map(&self, active: &mut ParamActive) {
+        let mut hitlist: Vec<Option<usize>> = Vec::new();
+        let (mut float_count, mut int_count) = (0i32, 0i32);
+        for i in 0..active.num_trials() {
+            let (addr, size, is_active) = {
+                let t = &active.trial[i];
+                (t.addr, t.size, t.is_active())
+            };
+            match self.find_entry_index(addr, size) {
+                None => active.trial[i].mark_no_use(),
+                Some(ei) => {
+                    let grp = self.entry[ei].group;
+                    active.trial[i].set_entry(ei, grp);
+                    if is_active {
+                        if self.entry[ei].type_class == type_class::FLOAT {
+                            float_count += 1;
+                        } else {
+                            int_count += 1;
+                        }
+                    }
+                    while hitlist.len() <= grp as usize {
+                        hitlist.push(None);
+                    }
+                    if hitlist[grp as usize].is_none() {
+                        hitlist[grp as usize] = Some(ei);
+                    }
+                }
+            }
+        }
+        let pref = if float_count > int_count { type_class::FLOAT } else { type_class::GENERAL };
+        for i in 0..hitlist.len() {
+            match hitlist[i] {
+                None => {
+                    if let Some(ei) = self.select_unreference_entry(i as u32, pref) {
+                        let (sz, addr_opt) = {
+                            let e = &self.entry[ei];
+                            let sz = if e.is_exclusion() { e.size } else { e.alignment };
+                            (sz, e.get_addr_by_slot(0, sz))
+                        };
+                        if let Some(addr) = addr_opt {
+                            let ti = active.register_trial(addr, sz);
+                            active.trial[ti].flags |= trial_flags::UNREF;
+                            active.trial[ti].set_entry(ei, self.entry[ei].group);
+                        }
+                    }
+                }
+                Some(ei) if !self.entry[ei].is_exclusion() => self.fill_nonexclusion_holes(active, ei),
+                _ => {}
+            }
+        }
+        active.sort_trials();
+    }
+
+    /// The non-exclusion (stack) branch of `buildTrialMap` (fspec.cc:902): fill gaps between
+    /// occupied slots of a single non-exclusion group with `unref` trials.
+    fn fill_nonexclusion_holes(&self, active: &mut ParamActive, ei: usize) {
+        let (group, align) = (self.entry[ei].group, self.entry[ei].alignment);
+        let mut slotlist: Vec<u8> = Vec::new();
+        for j in 0..active.num_trials() {
+            if active.trial[j].entry != Some(ei) {
+                continue;
+            }
+            let (addr, size) = (active.trial[j].addr, active.trial[j].size);
+            let mut slot = (self.entry[ei].get_slot(addr, 0) - group) as i64;
+            let mut endslot = (self.entry[ei].get_slot(addr, size - 1) - group) as i64;
+            if endslot < slot {
+                std::mem::swap(&mut slot, &mut endslot);
+            }
+            while (slotlist.len() as i64) <= endslot {
+                slotlist.push(0);
+            }
+            for s in slot..=endslot {
+                slotlist[s as usize] = 1;
+            }
+        }
+        for (j, &filled) in slotlist.iter().enumerate() {
+            if filled == 0 {
+                if let Some(addr) = self.entry[ei].get_addr_by_slot(j as u32, align) {
+                    let ti = active.register_trial(addr, align);
+                    active.trial[ti].flags |= trial_flags::UNREF;
+                    active.trial[ti].set_entry(ei, group);
+                }
+            }
+        }
+    }
+
+    /// Ghidra `separateSections` (fspec.cc:946): the index ranges of each resource section, split
+    /// at the `resource_start` group boundaries. Trials must already be group-sorted.
+    fn separate_sections(&self, active: &ParamActive) -> Vec<usize> {
+        let n = active.num_trials();
+        let mut starts = vec![0usize];
+        let mut next_group = self.resource_start[1];
+        let mut next_section = 2usize;
+        for ct in 0..n {
+            let Some(ei) = active.trial[ct].entry else { continue };
+            if self.entry[ei].group >= next_group {
+                next_group = self.resource_start[next_section];
+                next_section += 1;
+                starts.push(ct);
+            }
+        }
+        starts.push(n);
+        starts
+    }
+
+    /// Ghidra `markGroupNoUse` (fspec.cc:974): mark every trial sharing `active_trial`'s group
+    /// (except it) as definitely-not-used.
+    fn mark_group_no_use(&self, active: &mut ParamActive, active_trial: usize, trial_start: usize) {
+        let n = active.num_trials();
+        let active_group = self.entry[active.trial[active_trial].entry.unwrap()].group;
+        for i in trial_start..n {
+            if i == active_trial || active.trial[i].is_definitely_not_used() {
+                continue;
+            }
+            if self.entry[active.trial[i].entry.unwrap()].group != active_group {
+                break;
+            }
+            active.trial[i].mark_no_use();
+        }
+    }
+
+    /// Ghidra `markBestInactive` (fspec.cc:997): among several inactive trials in one exclusion
+    /// group, keep the best-scoring and mark the rest not-used.
+    fn mark_best_inactive(&self, active: &mut ParamActive, group: u32, group_start: usize, pref_type: u8) {
+        let n = active.num_trials();
+        let mut best: Option<(i32, usize)> = None;
+        for i in group_start..n {
+            if active.trial[i].is_definitely_not_used() {
+                continue;
+            }
+            let e = &self.entry[active.trial[i].entry.unwrap()];
+            if e.group != group {
+                break;
+            }
+            let mut score = 0;
+            if active.trial[i].flags & trial_flags::ANCESTOR_REALISTIC != 0 {
+                score += 5;
+                if active.trial[i].flags & trial_flags::ANCESTOR_SOLID != 0 {
+                    score += 5;
+                }
+            }
+            if e.type_class == pref_type {
+                score += 1;
+            }
+            if best.is_none_or(|(bs, _)| score > bs) {
+                best = Some((score, i));
+            }
+        }
+        if let Some((_, bi)) = best {
+            self.mark_group_no_use(active, bi, group_start);
+        }
+    }
+
+    /// Ghidra `forceExclusionGroup` (fspec.cc:1032): at most one active trial survives per
+    /// exclusion group; among multiple inactive, keep the best.
+    fn force_exclusion_group(&self, active: &mut ParamActive) {
+        let n = active.num_trials();
+        let mut cur_group: i64 = -1;
+        let mut group_start = 0usize;
+        let mut inactive_count = 0;
+        for i in 0..n {
+            let (dnu, entry_opt) = (active.trial[i].is_definitely_not_used(), active.trial[i].entry);
+            let Some(ei) = entry_opt else { continue };
+            if dnu || !self.entry[ei].is_exclusion() {
+                continue;
+            }
+            let grp = self.entry[ei].group as i64;
+            if grp != cur_group {
+                if inactive_count > 1 {
+                    self.mark_best_inactive(active, cur_group as u32, group_start, type_class::GENERAL);
+                }
+                cur_group = grp;
+                group_start = i;
+                inactive_count = 0;
+            }
+            if active.trial[i].is_active() {
+                self.mark_group_no_use(active, i, group_start);
+            } else {
+                inactive_count += 1;
+            }
+        }
+        if inactive_count > 1 {
+            self.mark_best_inactive(active, cur_group as u32, group_start, type_class::GENERAL);
+        }
+    }
+
+    /// Ghidra `forceNoUse` (fspec.cc:1069): once a whole group is definitely-not-used, force
+    /// every later trial in the section inactive ("no holes after a gap").
+    fn force_no_use(&self, active: &mut ParamActive, start: usize, stop: usize) {
+        let mut seendefnouse = false;
+        let mut curgroup: i64 = -1;
+        let mut alldefnouse = false;
+        for i in start..stop {
+            let Some(ei) = active.trial[i].entry else { continue };
+            let grp = self.entry[ei].group as i64;
+            let exclusion = self.entry[ei].is_exclusion();
+            let dnu = active.trial[i].is_definitely_not_used();
+            if grp <= curgroup && exclusion {
+                if !dnu {
+                    alldefnouse = false;
+                }
+            } else {
+                if alldefnouse {
+                    seendefnouse = true;
+                }
+                alldefnouse = dnu;
+                curgroup = grp;
+            }
+            if seendefnouse {
+                active.trial[i].mark_inactive();
+            }
+        }
+    }
+
+    /// Ghidra `forceInactiveChain` (fspec.cc:1111): a chain of inactive slots longer than
+    /// `maxchain` forces later slots inactive; isolated inactive slots before it become active
+    /// (hole-filling between actives). Called per resource section.
+    fn force_inactive_chain(&self, active: &mut ParamActive, maxchain: i64, start: usize, stop: usize, groupstart: u32) {
+        let is_subcall = active.is_recover_subcall;
+        let mut seenchain = false;
+        let mut chainlength: i64 = 0;
+        let mut max: i64 = -1;
+        for i in start..stop {
+            if active.trial[i].is_definitely_not_used() {
+                continue;
+            }
+            if !active.trial[i].is_active() {
+                let (addr, size, ei, is_unref) = {
+                    let t = &active.trial[i];
+                    (t.addr, t.size, t.entry.unwrap(), t.is_unref())
+                };
+                // Ghidra restricts this to stack (IPTR_SPACEBASE) params; only reached during
+                // sub-call recovery, which isn't wired yet (is_recover_subcall == false here).
+                if is_unref && is_subcall {
+                    seenchain = true;
+                }
+                let slotgroup = self.entry[ei].get_slot(addr, size - 1) as i64;
+                if i == start {
+                    chainlength += slotgroup - groupstart as i64 + 1;
+                } else {
+                    let pt = &active.trial[i - 1];
+                    let prev_slotgroup =
+                        self.entry[pt.entry.unwrap()].get_slot(pt.addr, pt.size - 1) as i64;
+                    chainlength += slotgroup - prev_slotgroup;
+                }
+                if chainlength > maxchain {
+                    seenchain = true;
+                }
+            } else {
+                chainlength = 0;
+                if !seenchain {
+                    max = i as i64;
+                }
+            }
+            if seenchain {
+                active.trial[i].mark_inactive();
+            }
+        }
+        if max >= start as i64 {
+            for i in start..=(max as usize) {
+                if !active.trial[i].is_definitely_not_used() && !active.trial[i].is_active() {
+                    active.trial[i].mark_active();
+                }
+            }
+        }
     }
 }
 
@@ -153,7 +501,10 @@ pub fn sysv_input(spaces: &SpaceManager) -> Option<ParamList> {
         minsize: 1,
         alignment: 8,
     });
-    Some(ParamList { entry, resource_start: vec![0, 8, 14], is_output: false })
+    // resource_start: float section starts group 0, general section starts group 8; the trailing
+    // value is the sentinel `numgroup` (highest group 14 + 1) so the stack stays in the general
+    // section and `separate_sections` never splits past it (Ghidra fspec.cc:1240/1502).
+    Some(ParamList { entry, resource_start: vec![0, 8, 15], is_output: false })
 }
 
 /// The System V AMD64 output (return) resource list: `XMM0/XMM1` (float) and `RAX/RDX`
@@ -209,6 +560,14 @@ impl ParamTrial {
     pub fn is_unref(&self) -> bool {
         self.flags & trial_flags::UNREF != 0
     }
+    pub fn is_definitely_not_used(&self) -> bool {
+        self.flags & trial_flags::DEFNOUSE != 0
+    }
+    /// Record the matched entry (index into [`ParamList::entry`]) and its group (the sort key).
+    fn set_entry(&mut self, idx: usize, group: u32) {
+        self.entry = Some(idx);
+        self.slot = group;
+    }
     pub fn mark_active(&mut self) {
         self.flags |= trial_flags::ACTIVE | trial_flags::CHECKED;
     }
@@ -230,21 +589,32 @@ impl ParamTrial {
 #[derive(Clone, Debug, Default)]
 pub struct ParamActive {
     pub trial: Vec<ParamTrial>,
+    /// The register space (so `register_trial` can auto-mark register trials killedbycall).
+    reg_space: Option<SpaceId>,
+    /// True when recovering a sub-function CALL's parameters (vs. this function's own inputs);
+    /// gates the stack-reuse special case in `force_inactive_chain`.
+    pub is_recover_subcall: bool,
 }
 
 impl ParamActive {
-    pub fn new() -> ParamActive {
-        ParamActive::default()
+    pub fn new(reg_space: Option<SpaceId>) -> ParamActive {
+        ParamActive { trial: Vec::new(), reg_space, is_recover_subcall: false }
     }
 
-    /// Ghidra `ParamActive::registerTrial` (fspec.cc:1963): add a trial. A *register* trial is
-    /// auto-marked `killedbycall` (a call would overwrite it); a stack trial is not.
-    pub fn register_trial(&mut self, addr: Address, size: u32, reg_space: Option<SpaceId>) {
+    pub fn num_trials(&self) -> usize {
+        self.trial.len()
+    }
+
+    /// Ghidra `ParamActive::registerTrial` (fspec.cc:1963): add a trial, returning its index. A
+    /// *register* trial is auto-marked `killedbycall` (a call would overwrite it); a stack trial
+    /// is not.
+    pub fn register_trial(&mut self, addr: Address, size: u32) -> usize {
         let mut t = ParamTrial::new(addr, size);
-        if Some(addr.space) == reg_space {
+        if Some(addr.space) == self.reg_space {
             t.flags |= trial_flags::KILLEDBYCALL;
         }
         self.trial.push(t);
+        self.trial.len() - 1
     }
 
     /// Ghidra `ParamActive::sortTrials`: order trials into formal-parameter order — by matched
@@ -297,7 +667,7 @@ mod tests {
         assert_eq!(e.group, 14);
         assert_eq!(e.alignment, 8);
         // and the next slot indexes by alignment.
-        assert_eq!(e.get_slot(Address::new(stack, 16)), 15);
+        assert_eq!(e.get_slot(Address::new(stack, 16), 0), 15);
     }
 
     #[test]
@@ -323,10 +693,50 @@ mod tests {
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
         let stack = spaces.by_name("stack").unwrap();
-        let mut active = ParamActive::new();
-        active.register_trial(Address::new(reg, RDI), 8, Some(reg));
-        active.register_trial(Address::new(stack, 8), 8, Some(reg));
+        let mut active = ParamActive::new(Some(reg));
+        active.register_trial(Address::new(reg, RDI), 8);
+        active.register_trial(Address::new(stack, 8), 8);
         assert_ne!(active.trial[0].flags & trial_flags::KILLEDBYCALL, 0, "register trial killed by call");
         assert_eq!(active.trial[1].flags & trial_flags::KILLEDBYCALL, 0, "stack trial not killed by call");
+    }
+
+    /// Run `fillin_map` over a set of active register trials and return the offsets recovered as
+    /// real (used) parameters, sorted.
+    fn recover_params(offs: &[u64]) -> Vec<u64> {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let pl = sysv_input(&spaces).unwrap();
+        let mut active = ParamActive::new(Some(reg));
+        for &off in offs {
+            let i = active.register_trial(Address::new(reg, off), 8);
+            active.trial[i].mark_active();
+        }
+        pl.fillin_map(&mut active);
+        let mut used: Vec<u64> =
+            active.trial.iter().filter(|t| t.is_used()).map(|t| t.addr.offset).collect();
+        used.sort_unstable();
+        used
+    }
+
+    #[test]
+    fn contiguous_int_params_all_used() {
+        assert_eq!(recover_params(&[RDI, RSI]), vec![RSI, RDI]); // 0x30, 0x38
+        assert_eq!(recover_params(&[RDI]), vec![RDI]);
+        // float and integer sections are independent — both survive.
+        assert_eq!(recover_params(&[RDI, XMM_BASE]), vec![RDI, XMM_BASE]);
+    }
+
+    #[test]
+    fn interior_hole_is_filled() {
+        // RDI + RDX used, RSI never referenced: Ghidra fills the hole (RSI becomes a param) so the
+        // parameter list has no gap.
+        assert_eq!(recover_params(&[RDI, RDX]), vec![RDX, RSI, RDI]); // 0x10, 0x30, 0x38
+    }
+
+    #[test]
+    fn distant_lone_param_is_dropped() {
+        // RDI used and R9 used with the whole RSI..R8 run absent: the inactive chain exceeds
+        // maxchain=2, so R9 is dropped and only RDI remains.
+        assert_eq!(recover_params(&[RDI, R9]), vec![RDI]);
     }
 }
