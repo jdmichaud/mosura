@@ -343,6 +343,22 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
             }
         }
     }
+
+    // .interp (Ghidra `markupInterpreter`, `PT_INTERP`): the program interpreter path as a
+    // single `TerminatedCString` (auto-length to the null terminator).
+    if let Some(interp) = elf.section_by_name(".interp") {
+        let addr = interp.address();
+        if let Ok(data) = interp.data() {
+            if mapped(program, addr) && !data.is_empty() {
+                let len = data.iter().position(|&b| b == 0).map_or(data.len(), |p| p + 1);
+                program.defined_data.push((
+                    Address::new(ram, addr),
+                    "TerminatedCString".to_string(),
+                    len as u32,
+                ));
+            }
+        }
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
