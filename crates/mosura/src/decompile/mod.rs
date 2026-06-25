@@ -14,6 +14,7 @@ pub mod cfg;
 pub mod cover;
 pub mod deadcode;
 pub mod dominator;
+pub mod fspec;
 pub mod funcdata;
 pub mod heritage;
 pub mod merge;
