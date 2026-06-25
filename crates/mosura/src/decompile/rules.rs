@@ -251,6 +251,50 @@ impl Rule for RuleTrivialShift {
     }
 }
 
+/// `RuleShift2Mult` (Ghidra): `V << c` → `V * 2^c`, but only when the shift is involved in an
+/// arithmetic expression (its operand's def, or one of its uses, is INT_ADD/INT_SUB/INT_MULT) — so
+/// a left-shift that is really a scaled multiply joins the surrounding arithmetic and combines:
+/// `(q * 0xf) << 2` → `q * 0xf * 4` → (RuleMultMult) `q * 0x3c`, which `RuleModOpt` can then fold.
+/// A shift by ≥ 32 is left alone (anything that big is unlikely to be an arithmetic multiply).
+pub struct RuleShift2Mult;
+
+impl Rule for RuleShift2Mult {
+    fn name(&self) -> &str {
+        "shift2mult"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLeft]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let val = data.vn(in1).constant_value();
+        if val >= 32 {
+            return 0; // arbitrary (Ghidra): bigger is probably not an arithmetic multiply
+        }
+        // Involved in arithmetic? the shifted operand's def, or any use of the result.
+        let is_arith = |c: OpCode| matches!(c, OpCode::IntAdd | OpCode::IntSub | OpCode::IntMult);
+        let in0 = data.op(op).input(0).unwrap();
+        let input_arith = data.vn(in0).def.is_some_and(|d| is_arith(data.op(d).code()));
+        let out = data.op(op).output;
+        let desc_arith =
+            out.is_some_and(|o| data.vn(o).descend.iter().any(|&d| is_arith(data.op(d).code())));
+        if !input_arith && !desc_arith {
+            return 0;
+        }
+        let out_size = data.vn(out.unwrap()).size;
+        let nc = data.new_const(out_size, 1u64 << val);
+        data.op_set_input(op, 1, nc);
+        data.op_set_opcode(op, OpCode::IntMult);
+        1
+    }
+}
+
 /// Express `vn` as `(base, coefficient)` — Ghidra's `getMultCoeff`: `base * c` for an
 /// `INT_MULT` by a constant, `base * 2^k` for an `INT_LEFT` by a constant (so a shift-add
 /// like `(x<<2)+x` collects to `x*5`), else `(vn, 1)`. Assumes `RuleTermOrder` put the
