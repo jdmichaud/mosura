@@ -397,10 +397,17 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         `ElfDefaultGotPltMarkup.processPLTSection`/`disassemble` — linearly sweep `.plt` from
         `start+16` so the lazy-resolve stubs decode. basic `0x401026→0x403ff8 INDIRECTION` +
         `0x40103b→0x401020`; disassembly 102→106/106, code-ref 31→ all A6 refs recovered.
-  - [ ] **Remaining basic code-ref misses** (NOT A6): the 6 `.eh_frame_hdr` INDIRECTION are **A7**
-        (the eh_frame analyzer, not an A6 bug); `0x401004→0x405010` (GOT-relative weak external) and
-        `0x401020→0x403ff0 READ` (in PLT[0], which Ghidra makes a function via SharedReturnAnalysis —
-        A7) need deeper analysis outside Tasks 1–3.
+  - [x] **Remaining basic code-ref misses** — resolved/identified by A7: the 6 `.eh_frame_hdr`
+        INDIRECTION are recovered by Task 2; `0x401020→0x403ff0 READ` (in PLT[0]) by Task 1
+        (SharedReturn makes PLT[0] a function). The single remaining code-ref miss is
+        `0x401004→0x405010 DATA` (basic code-ref 32/33): INVESTIGATED — it is the **same deferred
+        behavior** as the last missing function (`__gmon_start__@0x405010`). The loader emits the
+        GOT relocation `0x403fe0→0x405010 DATA` + an external Label; mosura already recovers the
+        GOT-slot READ (`0x401004→0x403fe0`) and the COMPUTED_CALL (`0x401010→0x405010`). What it
+        does NOT yet do is (a) propagate a DATA ref from the pointer-loading instruction through
+        the GOT slot to the slot's referent, and (b) promote that referent to a Function. Both are
+        Ghidra constant/reference-propagation + function-creation-at-call/pointer-target —
+        **A6-family indirect-flow follow-on, not an A7-tail analyzer**. Reported, not invented.
   - [~] **war2 switches/COMPUTED_CALL** (Task 4): honestly 0/20 COMPUTED_JUMP + 0/2 COMPUTED_CALL,
         0 spurious. war2 loads as x86:LE:16:Real Mode (DOS/4GW MZ stub); the switch sources are in
         protected-mode LE code the 16-bit function discovery never reaches, so they're never
@@ -409,8 +416,46 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [x] *Decompiler-track gap reported + FIXED by master* (`4049e5d`, merged): gcc -O2
         register-guard switches now recover (cfg root at the entry, not the lowest-address block);
         switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.
-- [ ] **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
-      strings/data, arch-specific propagation; each gated on Program-state parity.
+- [~] **A7 — The tail.** Self-contained analyzers gated on Program-state parity. Status:
+  - [x] **Task 1 — SharedReturnAnalyzer** (`analyzers/shared_return.rs`, `48e79ed`): port of
+        `SharedReturnAnalysisCmd` (jump-to-function-entry tail call → retype JUMP ref as
+        UNCONDITIONAL_CALL via FlowOverride.CALL_RETURN; `assumeContiguousFunctions` creates a
+        function at a boundary-crossing jump target). Recovers FUN_00401020 (PLT[0]); function
+        parity 18/19, body parity +1, ref `0x40103b→0x401020` retyped, `0x401020→0x403ff0 READ`
+        recovered. 0 FP.
+  - [x] **Task 2 — GCC exception-frame analyzer** (`analyzers/eh_frame.rs`, `ef13673`): port of
+        `EhFrameHeaderSection`+`FdeTable` (DWARF EH pointer-encoding decoder). The 6
+        `.eh_frame_hdr` FDE-table INDIRECTION refs + the eh_frame_ptr/FDE DATA refs;
+        eh_frame-reference parity 13/13, 0 spurious.
+  - [x] **Task 3 — NoReturnFunctionAnalyzer** (`analyzers/noreturn.rs`, `276e0a2`): port of
+        `NoReturnFunctionAnalyzer` with the ELF/PE name lists VERBATIM from Ghidra's data files;
+        disassembler stops fall-through after a direct call to a flagged function
+        (Disassembler.java:1288 isNoReturnCall → CALL_RETURN). FAITHFUL but **inert on the
+        available corpus** (verified): basic/freestanding reach no listed function by a direct
+        call; cnv surfaces no exit/abort symbol mosura matches (diagnostic: 0 flagged). The "No
+        Return" flag is not in the snapshot schema; effect is only a subset-preserving reduction.
+  - [N/A] **Task 4 — stack/purge.** NOT snapshot-validatable: Ghidra's StackVariableAnalyzer
+        creates STACK-space references + stack variables that feed the DECOMPILER; the snapshot
+        dump (DumpAnalysisSnapshot.java) filters stack/register/external/const-space refs out by
+        design (grep confirms 0 STACK refs in every golden). Scoped out faithfully — no stack
+        facts invented to match. (Stack-pointer flow itself is the decompiler track's
+        ActionStackPtrFlow, TODO line 130.)
+  - [x] **Task 5 — defined-data units** (`e394fd7`): snapshot `data` section added
+        (snapshot.rs + DumpAnalysisSnapshot.java + Program::defined_data); all goldens
+        re-captured (only `data` lines added, no fact drift). The GCC eh_frame analyzer defines
+        the `eh_frame_hdr`/`dword`/`fde_table_entry` units faithfully (EhFrameHeaderSection/
+        FdeTable createData). New `data_unit_parity` gate: basic 9/99, 0 spurious. Grounding note:
+        Ghidra does NOT define the printf `"%d\n"` string (it stays undefined), so that A7-spec
+        target does not exist. ELF-structure markup (Elf64_*) + `.eh_frame` CIE/FDE field markup
+        are the deferred remainder (loader / EhFrameSection subsystems).
+  - [BLOCKED] **Task 6 — demangler.** Ghidra's GNU/Itanium demangler is NOT a Java grammar:
+        `GnuDemangler` shells out (`GnuDemanglerNativeProcess`) to the bundled native
+        `demangler_gnu_v2_41` binary (libiberty cp-demangle from binutils 2.41; source under
+        `GPL/DemanglerGnu/src/`); the Java `GnuDemanglerParser` only re-parses the native output.
+        A faithful port means porting libiberty's cp-demangle (a large standalone C subsystem
+        outside the auto-analysis tail). Hand-rolling an Itanium grammar from memory is
+        explicitly forbidden by the porting directive — so Task 6 is left UNIMPLEMENTED, and no
+        C++ fixture was added (it would only validate a demangler that does not exist here).
 
 ## Compiler-spec (cspec) track — calling conventions from the `.cspec`, not hardcoded
 

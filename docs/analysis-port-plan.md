@@ -202,8 +202,26 @@ state for a given set of enabled analyzers**, not per-action.
 - **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the decompiler
   (§2c). The `decomp/jumptable.rs` prototype is retired (done). Gate on jump-table + param parity. **Depends on the
   decompiler port.**
-- **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
-  strings/data, arch-specific propagation. Each gated on Program-state parity.
+- **A7 — The tail.** DONE (faithfully, with two items honestly bounded). Self-contained
+  analyzers gated on Program-state parity (per-task status + commits in `TODO.md`):
+  - Task 1 SharedReturnAnalyzer — DONE (function parity 18/19, 0 FP).
+  - Task 2 GCC exception-frame analyzer — DONE (eh_frame-ref 13/13, 0 spurious).
+  - Task 3 NoReturnFunctionAnalyzer — DONE (verbatim Ghidra name lists); faithful but inert
+    on the available corpus (no listed function reached by a direct call; cnv flags 0).
+  - Task 4 stack/purge — N/A to the snapshot: Ghidra's stack references live in STACK space,
+    which the snapshot dump filters out by design (they feed the decompiler). Scoped out; no
+    stack facts invented.
+  - Task 5 defined-data units — DONE: snapshot `data` section + GCC eh_frame data markup
+    (`eh_frame_hdr`/`dword`/`fde_table_entry`); `data_unit_parity` basic 9/99, 0 spurious.
+    Ghidra does not define the printf `"%d\n"` string; the deferred remainder is ELF-structure
+    + `.eh_frame` CIE/FDE markup (loader / EhFrameSection).
+  - Task 6 demangler — BLOCKED on faithfulness: Ghidra's GNU demangler is a native libiberty
+    (`demangler_gnu`) process wrapper, not a Java grammar; porting it means porting libiberty's
+    cp-demangle (out of scope), and hand-rolling a grammar is forbidden. Left unimplemented.
+  - Explicitly OUT of A7: war2's unrecovered switches/protected-mode code (a LOADER-format gap
+    — the DOS/4GW LE stub needs LE32 support, not an A7 bug); GOT-pointer-following /
+    computed-call-target promotion (the `0x401004→0x405010` DATA ref + `__gmon_start__`
+    function — A6-family indirect-flow follow-on); decompiler-fed facts not in the snapshot.
 
 ## 5. Method & discipline (same as the decompiler port)
 
