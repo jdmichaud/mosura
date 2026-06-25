@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use object::elf;
-use object::read::elf::{ElfFile64, FileHeader, ProgramHeader};
+use object::read::elf::{ElfFile64, FileHeader, ProgramHeader, SectionHeader};
 use object::{
     Endianness, Object, ObjectSection, ObjectSymbol, ObjectSymbolTable, RelocationTarget,
     SectionFlags, SymbolKind,
@@ -248,6 +248,32 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
         program
             .defined_data
             .push((Address::new(ram, phdr_vaddr), format!("Elf64_Phdr[{e_phnum}]"), len));
+    }
+
+    // Section-table defined-data markup (Ghidra `ElfProgramBuilder` symbol/relocation-table
+    // markup): a symbol table (`SHT_SYMTAB`/`SHT_DYNSYM`) → an `Elf64_Sym[n]` array, a RELA
+    // relocation table (`SHT_RELA`) → an `Elf64_Rela[n]` array, at the section's loaded
+    // `sh_addr` (driven by `sh_type`, as Ghidra does — not section names). 24-byte entries.
+    const ELF64_SYM_LEN: u64 = 24;
+    const ELF64_RELA_LEN: u64 = 24;
+    for section in elf.sections() {
+        let sh = section.elf_section_header();
+        let (sh_type, sh_addr, sh_size) = (sh.sh_type(endian), sh.sh_addr(endian), sh.sh_size(endian));
+        if sh_addr == 0 || sh_size == 0 || !mapped(program, sh_addr) {
+            continue;
+        }
+        let unit = match sh_type {
+            elf::SHT_SYMTAB | elf::SHT_DYNSYM => {
+                Some((format!("Elf64_Sym[{}]", sh_size / ELF64_SYM_LEN), sh_size as u32))
+            }
+            elf::SHT_RELA => {
+                Some((format!("Elf64_Rela[{}]", sh_size / ELF64_RELA_LEN), sh_size as u32))
+            }
+            _ => None,
+        };
+        if let Some((ty, len)) = unit {
+            program.defined_data.push((Address::new(ram, sh_addr), ty, len));
+        }
     }
 }
 

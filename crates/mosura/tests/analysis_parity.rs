@@ -441,7 +441,7 @@ fn data_unit_parity() {
     // (Elf64_Ehdr + Elf64_Phdr[] so far). The deferred remainder is the rest of the ELF
     // structure markup (.dynsym/.dynstr/.rela/notes/.gnu.hash/.gnu.version) + .eh_frame
     // CIE/FDE field markup. Raise as the A2 loader-data markup lands more structures.
-    assert!(recall.passed >= 13, "data-unit recall regressed below 13");
+    assert!(recall.passed >= 16, "data-unit recall regressed below 16");
 }
 
 #[test]
