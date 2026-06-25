@@ -84,6 +84,12 @@ pub fn analyze(program: &mut Program) {
     use crate::analysis::manager::AutoAnalysisManager;
     use crate::analysis::program::AddressSet;
 
+    // A7 Task 3: flag the known non-returning library functions (exit/abort/longjmp/…) by
+    // name before disassembly, so a direct call to one stops linear fall-through (Ghidra
+    // NoReturnFunctionAnalyzer, FORMAT_ANALYSIS — before disassembly). Faithful name lists
+    // from Ghidra's data/ElfFunctionsThatDoNotReturn + PEFunctionsThatDoNotReturn.
+    analyzers::noreturn::analyze(program);
+
     let mut mgr = AutoAnalysisManager::new();
     if let Some(d) = analyzers::Disassembler::for_program(program) {
         mgr.add_analyzer(Box::new(d), program);
@@ -430,5 +436,25 @@ mod a7_eh_frame {
         let (mine, gold) = (indir(&snap), indir(&golden));
         assert_eq!(mine, gold, ".eh_frame_hdr INDIRECTION refs must match Ghidra exactly");
         assert_eq!(mine.len(), 6, "6 FDE-table entries");
+    }
+}
+
+#[cfg(test)]
+mod a7_diag_noreturn {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn cnv_noreturn_count() {
+        let path = std::path::Path::new("/home/jd/cnv.exe");
+        if !path.exists() { eprintln!("no cnv"); return; }
+        let p = analyze_file(path).unwrap();
+        eprintln!("cnv noreturn-flagged: {}", p.noreturn_functions.len());
+        eprintln!("cnv functions: {}", p.function_manager.function_count());
+        // sanity: every flagged address is in mapped memory
+        use crate::decompile::space::Address;
+        let ram = p.default_space;
+        for (s,o) in &p.noreturn_functions {
+            assert!(p.memory.contains(Address::new(crate::decompile::space::SpaceId(*s), *o)) || *s != ram.0);
+        }
     }
 }

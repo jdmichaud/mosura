@@ -6,6 +6,7 @@
 
 pub mod eh_frame;
 pub mod external_jump;
+pub mod noreturn;
 pub mod shared_return;
 pub mod switch;
 
@@ -77,10 +78,23 @@ impl Analyzer for Disassembler {
             // Control falls through unless the instruction ends in a return / unconditional
             // branch / indirect jump (Ghidra's flow classification).
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-            let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            let mut falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
             // Record indirect branches as switch candidates for the A6 switch analyzer.
             if matches!(last, Some(OpCode::Branchind)) {
                 program.indirect_branches.insert(a);
+            }
+            // A call to a function flagged "No Return" (Ghidra NoReturnFunctionAnalyzer) does
+            // not fall through — stop linear decode of the bytes after the call (Ghidra's
+            // followFlow consults Function.isNoReturn). Direct `call <target>` only; an
+            // indirect call's target isn't known here.
+            if let Some(OpCode::Call) = last {
+                if let Some(t) = insn.ops.iter().rev().find_map(|o| {
+                    matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call)).then(|| Self::static_target(o)).flatten()
+                }) {
+                    if program.is_noreturn(Address::new(ram, t)) {
+                        falls = false;
+                    }
+                }
             }
             // Flow references (Ghidra creates these as the instruction is laid down).
             for op in &insn.ops {

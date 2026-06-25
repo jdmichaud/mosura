@@ -55,6 +55,11 @@ pub struct Program {
     /// decompiler-driven switch analyzer (A6) decompiles to recover jump tables; recorded
     /// by the disassembler so the analyzer only decompiles functions that need it.
     pub indirect_branches: std::collections::HashSet<u64>,
+    /// Addresses flagged "No Return" (Ghidra `Function.setNoReturn(true)`) by the
+    /// non-returning-function analyzer — the function entry itself and any PLT thunk that
+    /// resolves to it. A direct call to one of these does not fall through (the disassembler
+    /// stops linear decode after the call). `(space, offset)` keys.
+    pub noreturn_functions: std::collections::HashSet<(u32, u64)>,
 }
 
 impl Program {
@@ -84,7 +89,13 @@ impl Program {
             entry_points: Vec::new(),
             reference_manager: ReferenceManager::new(),
             indirect_branches: std::collections::HashSet::new(),
+            noreturn_functions: std::collections::HashSet::new(),
         }
+    }
+
+    /// Whether the function at `addr` is flagged "No Return" (Ghidra `Function.isNoReturn`).
+    pub fn is_noreturn(&self, addr: Address) -> bool {
+        self.noreturn_functions.contains(&(addr.space.0, addr.offset))
     }
 
     /// Project the converged program into the v1 analysis [`Snapshot`] (the oracle
