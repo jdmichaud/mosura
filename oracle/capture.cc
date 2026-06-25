@@ -9,6 +9,16 @@
 // Links against Ghidra's decompiler library (libdecomp_dbg.a). No external Ghidra
 // install is used: the SLEIGH specs come from the pinned source tree via <sleighdir>.
 //
+// IMPORTANT — ABI: this file MUST be compiled with the SAME preprocessor switches
+// the linked libdecomp_dbg.a was built with, namely `-DCPUI_DEBUG -D__TERMINAL__`
+// (Ghidra's Makefile `COMMANDLINE_DEBUG`; CPUI_DEBUG is the master debug switch that
+// turns on OPACTION_DEBUG etc.). Those switches add instance members to core classes
+// (Funcdata/PcodeOp/Action/Architecture...), so omitting them gives capture a SMALLER
+// struct layout than the library's — a silent ABI mismatch that does not crash but
+// reads/writes the wrong field offsets and corrupts decompilation (e.g. divopt's
+// parameter inference: capture emitted `xunknown8 param_1` where canonical Ghidra
+// `decomp_dbg` emits `uint8 *param_1`). The build is in scripts/setup-oracle.sh.
+//
 //   usage: capture <sleighdir> <fixture.xml>
 //
 #include "libdecomp.hh"

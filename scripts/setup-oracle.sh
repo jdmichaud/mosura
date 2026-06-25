@@ -93,9 +93,16 @@ build_capture() {
   # mosura's own offline disasm/p-code capture tool, linked against the Ghidra
   # decompiler library. --whole-archive ensures the self-registering "xml"
   # architecture capability is pulled in.
+  #
+  # CRITICAL: compile with the SAME switches libdecomp_dbg.a is built with
+  # (Ghidra Makefile COMMANDLINE_DEBUG = -DCPUI_DEBUG -D__TERMINAL__). These add
+  # instance members to core classes, so a mismatch is a silent ABI/struct-layout
+  # corruption (no crash) that makes capture's decompilation diverge from canonical
+  # Ghidra (decomp_dbg) — e.g. it mis-typed divopt's pointer parameter. See the
+  # header comment in oracle/capture.cc.
   log "building offline capture tool (oracle/capture)"
   make -C "$CPP_DIR" -j"$JOBS" libdecomp_dbg.a >/dev/null
-  g++ -std=c++11 -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture" "$MOSURA_DIR/oracle/capture.cc" \
+  g++ -std=c++11 -DCPUI_DEBUG -D__TERMINAL__ -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture" "$MOSURA_DIR/oracle/capture.cc" \
     -Wl,--whole-archive "$CPP_DIR/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
   [ -x "$MOSURA_DIR/oracle/capture" ] || die "capture tool did not build"
 }
