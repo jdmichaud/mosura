@@ -51,6 +51,10 @@ pub struct Program {
     /// addresses analysis seeds disassembly from. Populated by the loader.
     pub entry_points: Vec<Address>,
     pub reference_manager: ReferenceManager,
+    /// Offsets of disassembled indirect branches (`BRANCHIND`) — switch candidates the
+    /// decompiler-driven switch analyzer (A6) decompiles to recover jump tables; recorded
+    /// by the disassembler so the analyzer only decompiles functions that need it.
+    pub indirect_branches: std::collections::HashSet<u64>,
 }
 
 impl Program {
@@ -79,6 +83,7 @@ impl Program {
             listing: Listing::new(),
             entry_points: Vec::new(),
             reference_manager: ReferenceManager::new(),
+            indirect_branches: std::collections::HashSet::new(),
         }
     }
 

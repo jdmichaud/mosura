@@ -4,6 +4,8 @@
 //! disassembly driving the SLEIGH engine ([`Disassembler`]) and function creation at
 //! entry points and call targets ([`FunctionCreator`]).
 
+pub mod switch;
+
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
 use crate::analysis::manager::Scheduling;
 use crate::analysis::priority::AnalysisPriority;
@@ -73,6 +75,10 @@ impl Analyzer for Disassembler {
             // branch / indirect jump (Ghidra's flow classification).
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
             let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            // Record indirect branches as switch candidates for the A6 switch analyzer.
+            if matches!(last, Some(OpCode::Branchind)) {
+                program.indirect_branches.insert(a);
+            }
             // Flow references (Ghidra creates these as the instruction is laid down).
             for op in &insn.ops {
                 let opcode = OpCode::from_u32(op.opcode);

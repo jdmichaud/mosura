@@ -91,6 +91,8 @@ pub fn analyze(program: &mut Program) {
     if let Some(cp) = analyzers::ConstantPropagationAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(cp), program);
     }
+    // A6: decompiler-driven switch recovery (COMPUTED_JUMP refs from recovered jump tables).
+    mgr.add_analyzer(Box::new(analyzers::switch::DecompilerSwitchAnalyzer::new(program)), program);
 
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
@@ -152,6 +154,33 @@ mod a4_tests {
             call_targets.contains(&0x0040_1000) && call_targets.contains(&0x0040_1014),
             "expected call refs to add(0x401000) + sum_to(0x401014), got {call_targets:x?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod a6_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// A6: the decompiler-driven switch analyzer recovers `switchtab`'s jump table and
+    /// emits exactly Ghidra's COMPUTED_JUMP edges (BRANCHIND → the 7 case targets).
+    #[test]
+    fn switch_analyzer_matches_ghidra_computed_jumps() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("switchtab.elf")).unwrap();
+        let snap = p.snapshot();
+        let golden = crate::analysis::snapshot::parse(
+            &std::fs::read_to_string(crate::paths::analysis_goldens_dir().join("switchtab.snapshot"))
+                .unwrap(),
+        );
+        let cj = |s: &crate::analysis::snapshot::Snapshot| -> BTreeSet<(u64, u64)> {
+            s.refs.iter().filter(|r| r.kind == "COMPUTED_JUMP").map(|r| (r.from, r.to)).collect()
+        };
+        let (mine, gold) = (cj(&snap), cj(&golden));
+        assert_eq!(mine, gold, "switch COMPUTED_JUMP edges must match Ghidra exactly");
+        assert_eq!(mine.len(), 7, "7 case targets");
     }
 }
 
