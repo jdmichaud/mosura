@@ -18,6 +18,10 @@ pub enum Datatype {
     Float(u32),
     /// Pointer of N bytes to a pointee.
     Pointer(u32, Box<Datatype>),
+    /// Array of `count` elements of the given type (Ghidra `TypeArray`).
+    Array(Box<Datatype>, u64),
+    /// Structure: total size + `(byte offset, field type)` components (Ghidra `TypeStruct`).
+    Struct(u32, Vec<(u64, Datatype)>),
 }
 
 impl Datatype {
@@ -27,6 +31,8 @@ impl Datatype {
             Datatype::Bool => 1,
             Datatype::Unknown(n) | Datatype::Int(n) | Datatype::Uint(n) | Datatype::Float(n) => *n,
             Datatype::Pointer(n, _) => *n,
+            Datatype::Array(elem, count) => elem.size() * *count as u32,
+            Datatype::Struct(n, _) => *n,
         }
     }
 
@@ -40,6 +46,9 @@ impl Datatype {
             Datatype::Bool => 3,
             Datatype::Float(_) => 4,
             Datatype::Pointer(..) => 5,
+            // aggregates are more specific than a pointer (Ghidra TYPE_ARRAY/STRUCT < TYPE_PTR)
+            Datatype::Array(..) => 6,
+            Datatype::Struct(..) => 7,
         }
     }
 
@@ -49,6 +58,8 @@ impl Datatype {
     /// `uint` (16) is deemed slightly more specific than `int` (17), as in Ghidra.
     pub fn submeta(&self) -> u8 {
         match self {
+            Datatype::Struct(..) => 2,  // SUB_STRUCT
+            Datatype::Array(..) => 3,   // SUB_ARRAY
             Datatype::Pointer(..) => 6, // SUB_PTR
             Datatype::Float(_) => 8,    // SUB_FLOAT
             Datatype::Bool => 10,       // SUB_BOOL
@@ -75,6 +86,8 @@ impl Datatype {
             Datatype::Bool => "bool".into(),
             Datatype::Float(n) => format!("float{n}"),
             Datatype::Pointer(_, to) => format!("{} *", to.name()),
+            Datatype::Array(elem, count) => format!("{}[{}]", elem.name(), count),
+            Datatype::Struct(n, _) => format!("struct_{n}"),
         }
     }
 }
