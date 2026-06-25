@@ -199,8 +199,10 @@ fn disassembly_parity() {
         }
     }
     eprintln!("disassembly parity: {recall} (0 misaligned decodes)");
-    // freestanding 40/40 + basic 102/106 = 142 instructions, 0 misaligned.
-    assert!(recall.passed >= 142, "disassembly recall regressed below 142");
+    // freestanding 40/40 + basic 106/106 = 146 instructions, 0 misaligned. basic reached
+    // 106/106 once the A6 PLT linear sweep (ElfDefaultGotPltMarkup.processPLTSection) decodes
+    // the lazy-resolve stubs (PLT[0] + each entry's `push; jmp PLT[0]` tail).
+    assert!(recall.passed >= 146, "disassembly recall regressed below 146");
 }
 
 /// A4 — converged function-set parity. Every function mosura discovers must be a Ghidra
@@ -318,11 +320,12 @@ fn reference_parity() {
         }
     }
     eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
-    // Ratchet: freestanding 4/4 + basic 28/33 = 32 recovered (the code-based INDIRECTION
-    // via getDynamicOperandRefType just landed; raise as more A6 analyzers land). Remaining
-    // misses: PLT[0]'s INDIRECTION (not reached by recursive descent), the .eh_frame_hdr
-    // INDIRECTION (A7 eh_frame analyzer), COMPUTED_CALL_TERMINATOR, and PARAM (call args).
-    assert!(recall.passed >= 32, "code-reference recall regressed below 32");
+    // Ratchet: freestanding 4/4 + basic 31/33 = 35 recovered. The A6 indirect-flow work
+    // landed COMPUTED_CALL_TERMINATOR (the PLT tail-call), PLT[0]'s INDIRECTION (via the PLT
+    // linear sweep), and 0x40103b → 0x401020 (the resolve tail's jmp into PLT[0]). Remaining
+    // basic misses: the 2 PARAM refs (constant-propagator parameter analysis — Task 3), and
+    // the 6 .eh_frame_hdr INDIRECTION refs are A7 (eh_frame analyzer), not A6.
+    assert!(recall.passed >= 35, "code-reference recall regressed below 35");
 }
 
 #[test]

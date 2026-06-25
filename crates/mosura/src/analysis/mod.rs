@@ -116,9 +116,60 @@ pub fn analyze(program: &mut Program) {
     mgr.scheduling().function_defined(&seed);
     mgr.run(program);
 
+    // ELF GOT/PLT markup (Ghidra `ElfDefaultGotPltMarkup.processLinkageTable`, invoked by
+    // `ElfProgramBuilder.processGotPlt` during load): linearly disassemble the whole `.plt`
+    // section so the lazy-resolve stubs — unreachable by normal flow after relocation (e.g.
+    // PLT[0] and each entry's `push; jmp PLT[0]` tail) — get decoded. Done here rather than
+    // in the loader because mosura's SLEIGH-driven disassembly lives in the analysis phase;
+    // the closure (re-seeding each gap, following flow) matches Ghidra's `disassemble` loop.
+    plt_linear_sweep(&mut mgr, program);
+
     // Compute function bodies once disassembly has converged (Ghidra `Function.getBody`).
     if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
         analyzers::compute_function_bodies(&spec, &ctx, program);
+    }
+}
+
+/// Ghidra `ElfDefaultGotPltMarkup.processPLTSection` head size — the assumed PLT head
+/// (`PLT[0]`, the lazy-resolver stub) skipped by the linear sweep; it is reached only via
+/// the flow from each entry's resolve tail (`push; jmp PLT[0]`), so its internal padding
+/// never gets seeded. (x86; ARM/AARCH64 use 0, but mosura's ELF path is x86-64.)
+const ASSUMED_PLT_HEAD_SIZE: u64 = 16;
+
+/// Linearly disassemble the `.plt` section (Ghidra `ElfDefaultGotPltMarkup.disassemble`,
+/// from `processPLTSection`): seed at `pltBlock.start + 16` (skipping the head) and, while
+/// any address in the range is undecoded, seed disassembly at the lowest gap and run to a
+/// fixpoint (flow-following), then advance past what was decoded — exactly Ghidra's
+/// `while (!set.isEmpty()) { disassemble(set.getMinAddress()); set.delete(disset); }`. The
+/// head (`PLT[0]`) is decoded only by the flow reaching it from a resolve tail, so its
+/// padding is never seeded directly (Ghidra leaves it undefined too).
+fn plt_linear_sweep(mgr: &mut crate::analysis::manager::AutoAnalysisManager, program: &mut Program) {
+    use crate::analysis::program::AddressSet;
+    use crate::decompile::space::Address;
+    let ram = program.default_space;
+    let Some((block_start, end)) =
+        program.memory.blocks().find(|b| b.name() == ".plt").map(|b| (b.start().offset, b.end().offset))
+    else {
+        return; // no .plt section (e.g. statically linked / non-ELF)
+    };
+    let start = block_start + ASSUMED_PLT_HEAD_SIZE;
+    // Bounded by the number of code units the range can hold.
+    let mut a = start;
+    while a <= end {
+        if program.listing.code_unit_at(Address::new(ram, a)).is_some() {
+            // Skip the already-decoded instruction.
+            let len = program.listing.code_unit_at(Address::new(ram, a)).map(|c| c.length()).unwrap_or(1);
+            a += u64::from(len.max(1));
+            continue;
+        }
+        // Seed this gap and let the flow disassembler (+ follow-on analyzers) run.
+        let mut s = AddressSet::new();
+        s.add_range(ram, a, a);
+        mgr.scheduling().code_defined(&s);
+        mgr.run(program);
+        // Advance: if the gap decoded, step past it; otherwise move on by one byte.
+        let len = program.listing.code_unit_at(Address::new(ram, a)).map(|c| c.length()).unwrap_or(0);
+        a += u64::from(len.max(1));
     }
 }
 
@@ -230,5 +281,19 @@ mod a6_probe {
             .map(|r| (r.from.offset, r.to.offset, r.ref_type.name())).collect();
         refs.sort();
         for (f,t,k) in refs { eprintln!("ref {f:08x} {t:08x} {k}"); }
+    }
+}
+
+#[cfg(test)]
+mod a6_probe2 {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn dump_basic_funcs() {
+        if crate::lang::load("x86:LE:64:default").is_none() { return; }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let mut fns: Vec<u64> = p.function_manager.functions().map(|f| f.entry_point().offset).collect();
+        fns.sort();
+        for f in fns { eprintln!("func {f:08x}"); }
     }
 }
