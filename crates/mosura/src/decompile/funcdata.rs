@@ -64,6 +64,14 @@ impl Funcdata {
     pub fn num_varnodes(&self) -> usize {
         self.varnodes.len()
     }
+
+    /// The recovered function prototype — the ordered input parameters and the return storage
+    /// (Ghidra `Funcdata::getFuncProto`). Recovered from the heritaged graph via the calling
+    /// convention's trial machinery ([`super::fspec`]); call after decompilation. This is the
+    /// faithful surface the analysis track's parameter-ID (A6) reads back.
+    pub fn func_proto(&self) -> super::fspec::FuncProto {
+        super::fspec::recover_func_proto(self)
+    }
     pub fn blocks(&self) -> &[BlockBasic] {
         &self.blocks
     }
