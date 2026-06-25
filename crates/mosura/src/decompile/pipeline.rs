@@ -79,10 +79,36 @@ pub fn default_rule_pool() -> ActionPool {
 }
 
 /// The universal decompile action: heritage, simplification, then dead-code removal.
+/// Ghidra `ActionInferTypes`: recover and commit a data-type onto every varnode, so the
+/// pointer-arithmetic rules can read pointer types during the pipeline.
+pub struct ActionInferTypes;
+
+impl Action for ActionInferTypes {
+    fn name(&self) -> &str {
+        "infertypes"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // No recovered type-locks yet (see printc), so inference types every varnode.
+        super::infertypes::infer_types(data, &std::collections::HashMap::new());
+        1
+    }
+}
+
+/// The pointer-arithmetic rule pool (Ghidra runs `RulePtrArith` in the main rule group, gated on
+/// type recovery). Run after `ActionInferTypes` so the base pointers are typed.
+pub fn ptrarith_pool() -> ActionPool {
+    ActionPool::new("ptrarith").with(super::ptrarith::RulePtrArith)
+}
+
+/// The universal decompile action: heritage, simplification, dead-code removal, then type recovery
+/// and the pointer-arithmetic rewrite (PTRADD/PTRSUB) followed by a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
     ActionGroup::once("decompile")
         .then(ActionHeritage)
         .then(default_rule_pool())
+        .then(super::deadcode::ActionDeadCode)
+        .then(ActionInferTypes)
+        .then(ptrarith_pool())
         .then(super::deadcode::ActionDeadCode)
 }
 

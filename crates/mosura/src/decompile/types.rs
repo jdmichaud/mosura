@@ -75,6 +75,49 @@ impl Datatype {
         Datatype::Unknown(size)
     }
 
+    /// Ghidra `TYPE_PTR` test.
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, Datatype::Pointer(..))
+    }
+
+    /// Ghidra `TypePointer::getPtrTo` — the pointed-at type.
+    pub fn ptr_to(&self) -> Option<&Datatype> {
+        if let Datatype::Pointer(_, p) = self {
+            Some(p)
+        } else {
+            None
+        }
+    }
+
+    /// Ghidra `Datatype::getAlignSize` — the type's size rounded up to its alignment. mosura
+    /// models no padding/alignment beyond the byte size, so this is just [`size`](Self::size).
+    pub fn align_size(&self) -> u32 {
+        self.size()
+    }
+
+    /// Ghidra `Datatype::getSubType(off, newoff)`: descend one level to the sub-component that
+    /// contains byte `off`, returning it with the residual offset into it. Arrays drill to the
+    /// element; structs to the field; scalars have no sub-component (`None`).
+    pub fn get_subtype(&self, off: i64) -> Option<(Datatype, i64)> {
+        match self {
+            Datatype::Array(elem, _) => {
+                if off >= self.size() as i64 {
+                    return None; // Ghidra TypeArray::getSubType: out of bounds → base (none)
+                }
+                let es = elem.align_size() as i64;
+                Some(((**elem).clone(), if es != 0 { off % es } else { 0 }))
+            }
+            Datatype::Struct(_, fields) => fields
+                .iter()
+                .find(|(foff, fty)| {
+                    let fo = *foff as i64;
+                    fo <= off && off < fo + fty.size() as i64
+                })
+                .map(|(foff, fty)| (fty.clone(), off - *foff as i64)),
+            _ => None,
+        }
+    }
+
     /// The C name (used in declarations and casts).
     pub fn name(&self) -> String {
         match self {

@@ -757,10 +757,11 @@ mod tests {
         let Some((spec, ctx)) = x86_64() else { return };
         let dt = datatest::parse_file(&paths::datatests_dir().join("modulo.xml")).unwrap();
         let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        // The pipeline now runs ActionInferTypes (writeback) itself, so recovery is already started
+        // and types are committed once decompilation finishes.
         pipeline::decompile(&mut f);
-        assert!(!f.has_type_recovery_started());
-        infer_types(&mut f, &HashMap::new());
         assert!(f.has_type_recovery_started());
+        infer_types(&mut f, &HashMap::new()); // idempotent re-commit
         let any_ptr = (0..f.num_varnodes() as u32)
             .any(|i| matches!(f.vn(crate::decompile::VarnodeId(i)).get_type(), Datatype::Pointer(..)));
         assert!(any_ptr, "a recovered pointer type should be committed onto a varnode");

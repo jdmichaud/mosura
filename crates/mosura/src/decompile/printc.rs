@@ -205,6 +205,12 @@ impl<'a> PrintC<'a> {
             if matches!(self.f.op(def).code(), OpCode::Multiequal | OpCode::Indirect) {
                 return true;
             }
+            // PTRADD/PTRSUB are address sub-expressions Ghidra recomputes inline at every use (an
+            // `arr[i]` / `p->field` is re-rendered, never spilled to a pointer temp), so they stay
+            // implied even with multiple uses — unless one of those uses is a phi.
+            if matches!(self.f.op(def).code(), OpCode::Ptradd | OpCode::Ptrsub) {
+                return vn.descend.iter().any(|&u| self.f.op(u).code() == OpCode::Multiequal);
+            }
         }
         if vn.descend.len() != 1 {
             return true; // 0 or >1 uses: named
@@ -474,6 +480,17 @@ impl<'a> PrintC<'a> {
     fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
         if let Some(def) = self.f.vn(addr).def {
             let o = self.f.op(def).clone();
+            // A LOAD/STORE through a PTRADD/PTRSUB is array/field access (Ghidra `opLoad`/`opStore`
+            // → `checkArrayDeref` → the subscript/member token absorbs the dereference).
+            if o.code() == OpCode::Ptradd {
+                let (base, index) = (o.input(0).unwrap(), o.input(1).unwrap());
+                let b = self.operand(base, 16, false);
+                let i = self.render_var(index).0;
+                return (format!("{b}[{i}]"), 16);
+            }
+            if o.code() == OpCode::Ptrsub {
+                return (self.render_ptrsub(def, true), 16);
+            }
             if o.code() == OpCode::IntAdd && o.num_inputs() == 2 {
                 let (base, off) = (o.input(0).unwrap(), o.input(1).unwrap());
                 if let Some(&elem) = self.array_elem.get(&base) {
@@ -516,6 +533,21 @@ impl<'a> PrintC<'a> {
             // the access type is a no-info value → declare it undefined (Ghidra `*(xunknown4 *)`)
             let aty = symbol_type(vty.clone());
             (format!("*({} *){}", aty.name(), self.operand(addr, 14, false)), 15)
+        }
+    }
+
+    /// Render a `PTRSUB(base, off)` as a member/element access (Ghidra `opPtrsub`). The result has
+    /// no leading `&`/`*`: the deref (LOAD/STORE) context uses it as the field value (`base->f`),
+    /// the value context prepends `&` (`&base->f`). Pointer-to-struct ⇒ `base->field_0x<off>`
+    /// (Ghidra's default recovered field name); pointer-to-array ⇒ element 0.
+    fn render_ptrsub(&mut self, op: OpId, _deref: bool) -> String {
+        let base = self.f.op(op).input(0).unwrap();
+        let off = self.f.op(op).input(1).map(|v| self.f.vn(v).constant_value()).unwrap_or(0);
+        let b = self.operand(base, 16, false);
+        match self.type_of(base).ptr_to() {
+            Some(Datatype::Array(..)) => format!("{b}[0]"),
+            Some(_) => format!("{b}->field_0x{off:x}"),
+            None => format!("*{b}"),
         }
     }
 
@@ -612,6 +644,16 @@ impl<'a> PrintC<'a> {
                 let vty = self.type_of(o.output.unwrap());
                 self.render_mem(addr, sz, &vty)
             }
+            // PTRADD/PTRSUB used as a value (not a LOAD/STORE pointer): C pointer arithmetic
+            // scales by the element implicitly, so `base + index` (Ghidra `opPtradd` non-value
+            // case → `binary_plus`); PTRSUB takes the address of the sub-component.
+            OpCode::Ptradd => {
+                let (base, index) = (a(0), a(1));
+                let l = self.operand(base, 12, false);
+                let r = self.operand(index, 12, true);
+                (format!("{l} + {r}"), 12)
+            }
+            OpCode::Ptrsub => (format!("&{}", self.render_ptrsub(op, false)), 15),
             OpCode::Call => {
                 // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
                 let name = match o.input(0) {

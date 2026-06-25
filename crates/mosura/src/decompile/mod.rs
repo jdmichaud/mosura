@@ -26,6 +26,7 @@ pub mod pipeline;
 pub mod recover;
 pub mod divopt;
 pub mod printc;
+pub mod ptrarith;
 pub mod rules;
 pub mod scope;
 pub mod space;
