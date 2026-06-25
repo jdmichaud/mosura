@@ -275,6 +275,35 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
             program.defined_data.push((Address::new(ram, sh_addr), ty, len));
         }
     }
+
+    // .gnu.hash table (Ghidra `markupGnuHashTable`; located via `DT_GNU_HASH`, whose address is
+    // the `.gnu.hash` section): 4 header `dword`s (nbucket, symbase, bloom_size, bloom_shift),
+    // then a `qword[bloom_size]` bloom filter and a `dword[nbucket]` bucket array. The trailing
+    // chain array is left undefined (Ghidra only comments it).
+    if let Some(gh) = elf.section_by_name(".gnu.hash") {
+        let addr = gh.address();
+        if let Ok(data) = gh.data() {
+            if data.len() >= 16 && mapped(program, addr) {
+                let rd = |o: usize| u64::from(u32::from_le_bytes(data[o..o + 4].try_into().unwrap()));
+                let (nbucket, bloom_size) = (rd(0), rd(8));
+                for i in 0..4u64 {
+                    program.defined_data.push((Address::new(ram, addr + i * 4), "dword".to_string(), 4));
+                }
+                let bloom = addr + 16;
+                program.defined_data.push((
+                    Address::new(ram, bloom),
+                    format!("qword[{bloom_size}]"),
+                    (bloom_size * 8) as u32,
+                ));
+                let buckets = bloom + bloom_size * 8;
+                program.defined_data.push((
+                    Address::new(ram, buckets),
+                    format!("dword[{nbucket}]"),
+                    (nbucket * 4) as u32,
+                ));
+            }
+        }
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
