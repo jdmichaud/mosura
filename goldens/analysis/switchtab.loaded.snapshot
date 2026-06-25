@@ -1,0 +1,29 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=switchtab.elf
+block 00400000 0040018f segment_0.1
+block 00400190 004001b3 .note.gnu.build-id
+block 00401000 004010a7 .text
+block 00402000 0040201b .rodata
+block 0040301c 00403023 .data
+func 00401000 classify
+func 00401075 _start
+fnbody 00401000 00401000:00401000
+fnbody 00401075 00401075:00401075
+entry 00401075 _start
+entry 0040301c sel
+entry 00403020 arg
+entry 00403024 __bss_start
+entry 00403028 _end
+sym 00401000 classify Function
+sym 00403020 arg Label
+sym 00401075 _start Function
+sym 0040301c sel Label
+sym 00403024 __bss_start Label
+sym 00403024 _edata Label
+sym 00403028 _end Label
+ref 00400018 00401075 DATA
+ref 00400020 00400040 DATA
+ref 00400088 00401000 DATA
+ref 004000c0 00402000 DATA
+ref 004000f8 0040301c DATA
+ref 00400130 00400190 DATA

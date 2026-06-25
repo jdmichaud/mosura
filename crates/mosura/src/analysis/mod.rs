@@ -15,6 +15,7 @@
 
 pub mod analyzer;
 pub mod analyzers;
+pub mod decompiler;
 pub mod loader;
 pub mod manager;
 pub mod priority;
