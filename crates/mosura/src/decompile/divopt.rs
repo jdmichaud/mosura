@@ -293,7 +293,30 @@ fn try_unsigned(op: OpId, f: &mut Funcdata) -> u32 {
     0
 }
 
-/// Signed sign-subtraction form: `(mulhi_s >> e) - (x s>> (size-1))` ⇒ `x s/ d`.
+/// The signed high-multiply correction `mulhi + x`: when the signed reciprocal `M` has its top
+/// bit set, the 64-bit-truncated magic stored in the code is `M - 2^64`, and the high half of
+/// `sext(x)*that` is short by exactly `x` — so the compiler adds `x` back. The recovered divisor
+/// uses the *stored* magic, identical to the non-add signed form; the `+ x` is a high-multiply
+/// fixup, not a change of coefficient. Returns `(x, magic, h, signed)` when `v` is
+/// `mulhi(sext(x)*magic) + x` with the same `x`.
+fn add_correction(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32, bool)> {
+    let add = f.vn(v).def?;
+    if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
+        return None;
+    }
+    let (p, q) = (f.op(add).input(0)?, f.op(add).input(1)?);
+    for (w, other) in [(p, q), (q, p)] {
+        if let Some((x, magic, h, signed)) = match_mulhi(f, w) {
+            if other == x && signed {
+                return Some((x, magic, h, signed));
+            }
+        }
+    }
+    None
+}
+
+/// Signed sign-subtraction form: `(mulhi_s >> e) - (x s>> (size-1))` ⇒ `x s/ d`, where `mulhi_s`
+/// may be the bare high-multiply or carry the `+ x` high-multiply correction.
 fn try_signed(op: OpId, f: &mut Funcdata) -> u32 {
     let (a, b) = match (f.op(op).input(0), f.op(op).input(1)) {
         (Some(a), Some(b)) => (a, b),
@@ -315,7 +338,11 @@ fn try_signed(op: OpId, f: &mut Funcdata) -> u32 {
         }
         _ => (a, 0),
     };
-    let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v) else { return 0 };
+    // mulhi_v is the bare high-multiply, or the signed high-multiply correction `mulhi + x`
+    let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v).or_else(|| add_correction(f, mulhi_v))
+    else {
+        return 0;
+    };
     let size = f.vn(x).size;
     if !signed || x != xb || shamt != (size * 8 - 1) as u64 || h >= 128 {
         return 0;
