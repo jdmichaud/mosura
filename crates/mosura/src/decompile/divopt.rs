@@ -177,12 +177,13 @@ fn find_form(f: &Funcdata, op: OpId) -> Option<(VarnodeId, u32, u128, u32, bool)
     let extopc = f.op(ext).code();
     let out_size = f.vn(f.op(op).output?).size;
     let (xsize, signed, resvn) = match extopc {
-        OpCode::IntSext => {
-            let inner = f.op(ext).input(0)?;
-            let xsize = f.vn(inner).size * 8;
-            let resvn = if f.vn(xvn).size == out_size { xvn } else { inner };
-            (xsize, true, resvn)
-        }
+        // Signed magic division is `(mulhi >> e) - (x s>> 63)`: the high-multiply shift alone is
+        // NOT `x s/ d` (it is off by one for negative x; the sign-bit subtraction supplies the
+        // correction, which Ghidra folds in via `moveSignBitExtraction`). Until that is ported
+        // (the full signed chain, RuleDivOpt's signed path), recovering the inner shift here would
+        // emit an incorrect `INT_SDIV` and strand the `- (x s>> 63)` term — so defer the signed
+        // form to the dedicated signed handler, which matches the whole INT_SUB shape.
+        OpCode::IntSext => return None,
         OpCode::IntZext => {
             let inner = f.op(ext).input(0)?;
             let xsize = f.vn(inner).size * 8; // (approximates Ghidra's getNZMask for clean values)
