@@ -301,3 +301,4 @@ mod a6_typed_refs {
         assert_eq!(typed(0x40_1194, 0x40_2004), vec!["PARAM"]);
     }
 }
+

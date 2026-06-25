@@ -119,6 +119,27 @@ fn pe_mz_convergence_parity() {
             misaligned <= max_misaligned,
             "{name}: {misaligned} misaligned decodes (max {max_misaligned}) — over-decode regressed"
         );
+
+        // A6 computed-flow subset invariant: every COMPUTED_JUMP / COMPUTED_CALL mosura
+        // recovers (decompiler switch analyzer + symbolic indirect-call resolution) must be
+        // one Ghidra also has — 0 spurious, on a real PE/MZ. war2 (16-bit real-mode DOS/4GW
+        // stub) currently recovers 0 of its 20 COMPUTED_JUMP / 2 COMPUTED_CALL: those switch
+        // sources sit in protected-mode LE code that mosura's 16-bit function discovery does
+        // not reach, so the switch instructions are never disassembled (not a switch-analyzer
+        // failure). The gate locks the clean-subset property; recall here is honestly 0.
+        for kind in ["COMPUTED_JUMP", "COMPUTED_CALL"] {
+            let mine: BTreeSet<(u64, u64)> =
+                snap.refs.iter().filter(|r| r.kind == kind).map(|r| (r.from, r.to)).collect();
+            let gold: BTreeSet<(u64, u64)> =
+                golden.refs.iter().filter(|r| r.kind == kind).map(|r| (r.from, r.to)).collect();
+            let spurious: Vec<_> = mine.difference(&gold).collect();
+            assert!(spurious.is_empty(), "{name}: spurious {kind} vs Ghidra: {spurious:x?}");
+            eprintln!(
+                "  [{name}] {kind} {}/{} (0 spurious)",
+                mine.intersection(&gold).count(),
+                gold.len()
+            );
+        }
         eprintln!(
             "  [{name}] funcs {}/{} (0 spurious), insns {}/{} ({misaligned} misaligned ≤ {max_misaligned})",
             mf.intersection(&gf).count(), gf.len(), mi.intersection(&gi).count(), gi.len()
