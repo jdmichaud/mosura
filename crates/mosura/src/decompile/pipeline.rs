@@ -26,8 +26,23 @@ impl Action for ActionHeritage {
         super::recover::recover_return(data);
         super::recover::recover_call_args(data);
         super::cfg::build_cfg(data);
-        // model each call's clobber of the caller-saved arg registers (needs the blocks)
-        super::recover::recover_call_effects(data);
+        // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards), then run
+        // Ghidra's AliasChecker on the resulting graph to find which stack slots are aliased — their
+        // address escapes to a call. This decides which slots `recover_call_effects` guards, so a
+        // non-aliased local (a spilled loop variable) is never guarded and its loop SSA is left
+        // intact — without a calling-convention register scan.
+        let boundary = {
+            let mut probe = data.clone();
+            let pdom = super::dominator::compute(&probe);
+            super::heritage::heritage(&mut probe, &pdom);
+            super::recover::resolve_return(&mut probe);
+            super::recover::resolve_call_args(&mut probe);
+            default_rule_pool().apply(&mut probe);
+            super::deadcode::ActionDeadCode.apply(&mut probe);
+            super::alias::alias_boundary(&probe)
+        };
+        // model each call's clobber of the caller-saved arg registers + the aliased stack locals
+        super::recover::recover_call_effects(data, boundary);
         let dom = super::dominator::compute(data);
         super::heritage::heritage(data, &dom);
         // keep only the realistic return value / call arguments

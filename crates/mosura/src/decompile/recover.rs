@@ -105,12 +105,36 @@ pub fn recover_call_args(f: &mut Funcdata) {
     }
 }
 
-/// Model each CALL's clobber of the caller-saved argument registers with an INDIRECT op, so
-/// a *later* call's "argument" that is really a leftover from an earlier call traces to a
-/// clobbered (unrealistic) value and is dropped. Ghidra's `ActionFuncLink` call-effect setup.
+/// Model each CALL's clobber of the caller-saved argument registers *and* the function's aliased
+/// stack locals with INDIRECT ops — a port of Ghidra's `Heritage::guardCalls` (heritage.cc:1443).
+/// For the registers it makes a later call's "argument" that is really a leftover from an earlier
+/// call trace to a clobbered (unrealistic) value, so it is dropped. For the stack it is load-bearing
+/// for correctness: a call with an unknown prototype may modify any stack slot a passed pointer can
+/// reach, so without the INDIRECT a call-modified local constant-folds to its pre-call value
+/// (collapsing conditions such as switchhide's switch index).
+///
+/// `alias_boundary` (from [`super::alias::alias_boundary`], computed by a probe heritage) is the
+/// shallowest escaped stack offset; the callee can reach every slot at or above it (Ghidra
+/// `AliasChecker::hasLocalAlias`: `offset >= aliasBoundary`), so only those are guarded. A
+/// non-aliased local (a spilled loop variable touched only by direct load/store) is left untouched,
+/// so its loop SSA is undisturbed. `None` ⇒ nothing escapes ⇒ no stack slot is guarded.
 /// Runs post-CFG, pre-heritage; the INDIRECTs splice into each call's block after the call.
-pub fn recover_call_effects(f: &mut Funcdata) {
+pub fn recover_call_effects(f: &mut Funcdata, alias_boundary: Option<i64>) {
     let Some(reg) = f.spaces.by_name("register") else { return };
+    let stack = f.spaces.by_name("stack");
+    let mut stack_slots: Vec<(u64, _)> = Vec::new();
+    if let (Some(stk), Some(boundary)) = (stack, alias_boundary) {
+        let mut seen = HashSet::new();
+        for i in 0..f.num_varnodes() as u32 {
+            let vn = f.vn(VarnodeId(i));
+            if vn.loc.space == stk
+                && (vn.loc.offset as i64) >= boundary
+                && seen.insert((vn.loc.offset, vn.size))
+            {
+                stack_slots.push((vn.loc.offset, vn.size));
+            }
+        }
+    }
     for b in 0..f.num_blocks() as u32 {
         let bid = super::block::BlockId(b);
         let ops = f.block(bid).ops.clone();
@@ -127,6 +151,15 @@ pub fn recover_call_effects(f: &mut Funcdata) {
                 f.new_output(ind, 8, Address::new(reg, off));
                 f.op_mut(ind).parent = Some(bid);
                 new_ops.push(ind);
+            }
+            if let Some(stk) = stack {
+                for &(off, size) in &stack_slots {
+                    let pre = f.new_varnode(size, Address::new(stk, off));
+                    let ind = f.new_op(OpCode::Indirect, seq, vec![pre]);
+                    f.new_output(ind, size, Address::new(stk, off));
+                    f.op_mut(ind).parent = Some(bid);
+                    new_ops.push(ind);
+                }
             }
         }
         f.set_block_ops(bid, new_ops);

@@ -14,6 +14,7 @@ use super::space::{Address, SpaceKind, SpaceManager};
 use super::varnode::{flags, Varnode, VarnodeId};
 
 /// One function being decompiled.
+#[derive(Clone)]
 pub struct Funcdata {
     pub name: String,
     /// Entry address.

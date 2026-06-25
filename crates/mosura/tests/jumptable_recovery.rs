@@ -60,6 +60,17 @@ fn declines_where_ghidra_declines() {
 }
 
 #[test]
+fn switchhide_recovers_via_alias_guarded_local() {
+    // switchhide's index is a stack local set through a pointer passed to a call. It recovers only
+    // once that local is guarded — which requires the AliasChecker to mark it aliased (its address
+    // escapes to the call) and guardCalls to keep its value across the call. 16-entry table.
+    let Some((faithful, heur)) = tables("switchhide") else { return };
+    assert_eq!(faithful.len(), 1, "switchhide's switch must recover (needs the alias-guarded local)");
+    assert_eq!(faithful[0].len(), 16);
+    assert_eq!(faithful, heur);
+}
+
+#[test]
 fn ifswitch_offset_switch_recovers_twentyone_targets() {
     // An offset switch (index = param_1, cases up to 0x14 in Ghidra ⇒ table indices 0..20).
     // The faithful guard-range recovery gets 21; the build-time heuristic over-reads one entry
