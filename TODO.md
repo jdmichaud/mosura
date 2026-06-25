@@ -371,10 +371,15 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [x] **Indirect calls → COMPUTED_CALL**: the SymbolicPropogator resolves a CALLIND whose
         target is a constant (`call *[GOT]`, slot relocated to the external in A5) → COMPUTED_CALL.
         basic's 2 COMPUTED_CALL recovered, matching Ghidra; code-ref recall 29→31, 0 false positives.
-  - [ ] **INDIRECTION** (basic's PLT/GOT lazy-binding): the indirect *jump* through a GOT slot →
-        INDIRECTION (to the slot) + COMPUTED_JUMP/COMPUTED_CALL_TERMINATOR (to the resolved value).
-        Intricate (PLT resolver-stub + lazy-binding GOT semantics, multi-type classification) — do
-        carefully against the basic golden, not rushed.
+  - [x] **INDIRECTION** (code-based): faithful port of Ghidra
+        `SleighInstructionPrototype.getDynamicOperandRefType` — a BRANCHIND/CALLIND/RETURN whose
+        flow target is the operand's static `ram` address (a PLT stub's `jmp *[GOT]`) gets an
+        INDIRECTION ref to that slot, created at disassembly time. basic's PLT `jmp *[GOT]`
+        recovered, recall 31→32, 0 false positives.
+  - [ ] **INDIRECTION (remaining)** + **COMPUTED_CALL_TERMINATOR**: PLT[0]'s INDIRECTION (needs full
+        `.plt` disassembly, not just recursive descent); the 6 `.eh_frame_hdr` INDIRECTION (the A7
+        eh_frame analyzer); the resolved-BRANCHIND tail-call ref (needs the COMPUTED_JUMP-vs-
+        COMPUTED_CALL_TERMINATOR flow-type classification — port Ghidra `convertFlowFlags`).
   - [x] *Decompiler-track gap reported + FIXED by master* (`4049e5d`, merged): gcc -O2
         register-guard switches now recover (cfg root at the entry, not the lowest-address block);
         switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.
