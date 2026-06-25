@@ -16,6 +16,7 @@
 pub mod analyzer;
 pub mod analyzers;
 pub mod decompiler;
+pub mod flowtype;
 pub mod loader;
 pub mod manager;
 pub mod priority;
@@ -93,6 +94,9 @@ pub fn analyze(program: &mut Program) {
     }
     // A6: decompiler-driven switch recovery (COMPUTED_JUMP refs from recovered jump tables).
     mgr.add_analyzer(Box::new(analyzers::switch::DecompilerSwitchAnalyzer::new(program)), program);
+    // A6: external-jump flow override — a PLT tail-call `jmp *[GOT]` into the EXTERNAL block
+    // becomes COMPUTED_CALL_TERMINATOR (Ghidra OperandReferenceAnalyzer.checkForExternalJump).
+    mgr.add_analyzer(Box::new(analyzers::external_jump::ExternalJumpAnalyzer::new()), program);
 
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
@@ -212,3 +216,19 @@ mod a5_tests {
 
 
 
+
+#[cfg(test)]
+mod a6_probe {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn dump_basic_refs() {
+        if crate::lang::load("x86:LE:64:default").is_none() { return; }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let mut refs: Vec<_> = p.reference_manager.references()
+            .filter(|r| r.from.offset >= 0x401020 && r.from.offset < 0x4011b0)
+            .map(|r| (r.from.offset, r.to.offset, r.ref_type.name())).collect();
+        refs.sort();
+        for (f,t,k) in refs { eprintln!("ref {f:08x} {t:08x} {k}"); }
+    }
+}

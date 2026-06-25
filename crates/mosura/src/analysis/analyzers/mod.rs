@@ -4,6 +4,7 @@
 //! disassembly driving the SLEIGH engine ([`Disassembler`]) and function creation at
 //! entry points and call targets ([`FunctionCreator`]).
 
+pub mod external_jump;
 pub mod switch;
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};

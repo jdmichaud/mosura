@@ -123,8 +123,16 @@ fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref
 }
 
 /// Interpret one p-code op: create references for resolved memory operands and update
-/// the value of the output varnode.
-fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, ram: SpaceId, op: &PcodeOp) {
+/// the value of the output varnode. `insn_flow` is the containing instruction's flow type
+/// (Ghidra `instruction.getFlowType()`), used to type an indirect-flow target reference.
+fn process_op(
+    program: &mut Program,
+    vctx: &mut VarnodeContext,
+    here: Address,
+    ram: SpaceId,
+    op: &PcodeOp,
+    insn_flow: Option<RefType>,
+) {
     let opcode = OpCode::from_u32(op.opcode);
 
     // Control-flow ops carry their *target* as a `ram` operand — that is a flow edge
@@ -207,13 +215,31 @@ fn process_op(program: &mut Program, vctx: &mut VarnodeContext, here: Address, r
                 }
             }
         }
-        Some(OpCode::Callind) => {
-            // An indirect call whose target resolves to a constant — e.g. `call *[GOT]`,
-            // where the slot was relocated to the external — is a COMPUTED_CALL to that
-            // target (Ghidra's ConstantPropagationAnalyzer resolves the PLT thunk's callee).
+        Some(OpCode::Callind | OpCode::Branchind) => {
+            // An indirect call/branch whose target resolves to a constant — e.g. a PLT
+            // thunk's `call *[GOT]` / `jmp *[GOT]`, where the slot was relocated to the
+            // external — is referenced with the instruction's flow type, faithful to
+            // SymbolicPropogator.java:944-952 (BRANCHIND) / 994-1015 (CALLIND), both of
+            // which call `makeReference(..., instruction.getFlowType(), ...)`. A CALLIND's
+            // base flow type is COMPUTED_CALL; a BRANCHIND's is COMPUTED_JUMP (a tail-call
+            // PLT jmp is later re-typed to COMPUTED_CALL_TERMINATOR by the shared-return
+            // override). A register/table BRANCHIND (a switch) doesn't resolve to a single
+            // constant here and is handled by the decompiler switch analyzer.
             if let Some(t) = op.ins.first().and_then(arg_var) {
-                if let SymValue::Const(target) = vctx.get(t) {
-                    make_ref(program, here, ram, target, RefType::ComputedCall, MIN_KNOWN_REF);
+                // The target value: a `ram` operand is the pointer slot itself (a `jmp
+                // *[mem]` lifts to `BRANCHIND (ram,slot)`) — read the slot from the image
+                // (Ghidra `VarnodeContext.getValue` reads memory for an address varnode);
+                // any other operand uses the tracked symbolic value (e.g. CALLIND through a
+                // register loaded by a preceding COPY).
+                let val = if t.space == "ram" {
+                    read_mem_const(program, ram, t.offset, t.size)
+                } else {
+                    vctx.get(t)
+                };
+                if let SymValue::Const(target) = val {
+                    if let Some(rt) = insn_flow {
+                        make_ref(program, here, ram, target, rt, MIN_KNOWN_REF);
+                    }
                 }
             }
         }
@@ -292,10 +318,16 @@ pub fn flow_constants(
         }
         let here = Address::new(ram, a);
 
+        // The instruction's flow type (Ghidra `instruction.getFlowType()`), used to type a
+        // resolved indirect-flow target. The shared-return flow override has not been
+        // applied yet (that analyzer runs after constant propagation), so this is the base
+        // type — a tail-call PLT `jmp *[GOT]` is COMPUTED_JUMP here, re-typed later.
+        let insn_flow = crate::analysis::flowtype::flow_type(&insn.ops);
+
         let mut falls = true;
         let mut branch_targets: Vec<u64> = Vec::new();
         for op in &insn.ops {
-            process_op(program, &mut vctx, here, ram, op);
+            process_op(program, &mut vctx, here, ram, op, insn_flow);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
                     falls = false;
@@ -349,6 +381,25 @@ mod tests {
             Some(img),
         );
         (program, ram)
+    }
+
+    #[test]
+    #[ignore]
+    fn probe_indirect_call() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else { return; };
+        // call *0x2f77(%rip) @ 0x40105b ; jmp *0x2fca(%rip) @ 0x401030
+        for (label, base, bytes) in [
+            ("call_ind_mem@0x40105b", 0x40105bu64, vec![0xffu8, 0x15, 0x77, 0x2f, 0x00, 0x00]),
+            ("jmp_ind_mem@0x401030", 0x401030u64, vec![0xffu8, 0x25, 0xca, 0x2f, 0x00, 0x00]),
+        ] {
+            eprintln!("=== {label}");
+            for insn in spec.disassemble_ctx(&bytes, base, &ctx) {
+                for op in &insn.ops {
+                    eprintln!("    op {:?} out={:?} ins={:?}", OpCode::from_u32(op.opcode), op.out, op.ins);
+                }
+                break;
+            }
+        }
     }
 
     #[test]

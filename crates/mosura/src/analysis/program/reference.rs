@@ -16,10 +16,17 @@ pub enum RefType {
     UnconditionalJump,
     ConditionalJump,
     ComputedJump,
+    ConditionalComputedJump,
     UnconditionalCall,
     ConditionalCall,
     ComputedCall,
+    ConditionalComputedCall,
+    CallTerminator,
+    ComputedCallTerminator,
     Indirection,
+    /// Ghidra `RefType.PARAM` (`__UNKNOWNPARAM`): a constant/pointer argument passed to a
+    /// call, recovered by the constant propagator's parameter analysis.
+    Param,
 }
 
 impl RefType {
@@ -31,17 +38,41 @@ impl RefType {
             RefType::UnconditionalJump => "UNCONDITIONAL_JUMP",
             RefType::ConditionalJump => "CONDITIONAL_JUMP",
             RefType::ComputedJump => "COMPUTED_JUMP",
+            RefType::ConditionalComputedJump => "CONDITIONAL_COMPUTED_JUMP",
             RefType::UnconditionalCall => "UNCONDITIONAL_CALL",
             RefType::ConditionalCall => "CONDITIONAL_CALL",
             RefType::ComputedCall => "COMPUTED_CALL",
+            RefType::ConditionalComputedCall => "CONDITIONAL_COMPUTED_CALL",
+            RefType::CallTerminator => "CALL_TERMINATOR",
+            RefType::ComputedCallTerminator => "COMPUTED_CALL_TERMINATOR",
             RefType::Indirection => "INDIRECTION",
+            RefType::Param => "PARAM",
         }
     }
     pub fn is_call(self) -> bool {
-        matches!(self, RefType::UnconditionalCall | RefType::ConditionalCall | RefType::ComputedCall)
+        matches!(
+            self,
+            RefType::UnconditionalCall
+                | RefType::ConditionalCall
+                | RefType::ComputedCall
+                | RefType::ConditionalComputedCall
+                | RefType::CallTerminator
+                | RefType::ComputedCallTerminator
+        )
     }
     pub fn is_flow(self) -> bool {
-        !matches!(self, RefType::Data | RefType::Read | RefType::Write)
+        !matches!(self, RefType::Data | RefType::Read | RefType::Write | RefType::Param)
+    }
+    /// Ghidra `RefType.isJump()` — a jump-class flow (the family `OperandReferenceAnalyzer`
+    /// re-types on an external jump).
+    pub fn is_jump_like(self) -> bool {
+        matches!(
+            self,
+            RefType::UnconditionalJump
+                | RefType::ConditionalJump
+                | RefType::ComputedJump
+                | RefType::ConditionalComputedJump
+        )
     }
 }
 
@@ -76,6 +107,24 @@ impl ReferenceManager {
         let key = (from.space.0, from.offset, to.space.0, to.offset, op_index, ref_type as i32);
         if self.seen.insert(key) {
             self.refs.push(Reference { from, to, ref_type, op_index });
+        }
+    }
+
+    /// Change the type of the reference `from → to` (the effect of a flow override, which
+    /// re-types the existing flow reference rather than adding a new one — Ghidra
+    /// `Instruction.setFlowOverride` triggers reference fixup). No-op if no such reference
+    /// exists. The dedup key set is updated so the re-typed reference round-trips.
+    pub fn retype(&mut self, from: Address, to: Address, new_type: RefType) {
+        for r in &mut self.refs {
+            if r.from == from && r.to == to && r.ref_type != new_type {
+                let old_key =
+                    (from.space.0, from.offset, to.space.0, to.offset, r.op_index, r.ref_type as i32);
+                let new_key =
+                    (from.space.0, from.offset, to.space.0, to.offset, r.op_index, new_type as i32);
+                self.seen.remove(&old_key);
+                self.seen.insert(new_key);
+                r.ref_type = new_type;
+            }
         }
     }
 

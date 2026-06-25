@@ -105,6 +105,13 @@ impl Memory {
         self.blocks.iter().find(|b| b.contains(addr))
     }
 
+    /// True if `addr` lies in the artificial `EXTERNAL` block — a port of Ghidra
+    /// `Memory.isExternalBlockAddress` (which tests `MemoryBlock.EXTERNAL_BLOCK_NAME`,
+    /// the string `"EXTERNAL"`).
+    pub fn is_external_block_address(&self, addr: Address) -> bool {
+        self.block_at(addr).is_some_and(|b| b.name() == "EXTERNAL")
+    }
+
     /// Read up to `len` consecutive initialized bytes starting at `addr`, stopping at the
     /// first uncovered/uninitialized byte (a decode window for the disassembler).
     pub fn read_window(&self, addr: Address, len: usize) -> Vec<u8> {
