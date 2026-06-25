@@ -37,6 +37,38 @@ pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+/// Resolve `(language id, compiler spec id)` to its `.cspec` file path, by reading the
+/// processor `.ldefs` `<language>`/`<compiler>` entries (Ghidra `LanguageDescription` +
+/// `CompilerSpecDescription`). Used by the analysis cspec loader to load the calling
+/// conventions. Returns `None` if no matching `<compiler>` is declared.
+pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
+    let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
+    let procs = paths::ghidra_src().join("Ghidra/Processors");
+    for proc in fs::read_dir(&procs).ok()?.flatten() {
+        let langs = proc.path().join("data/languages");
+        let Ok(rd) = fs::read_dir(&langs) else { continue };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("ldefs") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&p) else { continue };
+            let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
+            for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
+                if l.attribute("id") != Some(id4.as_str()) {
+                    continue;
+                }
+                for c in l.children().filter(|n| n.tag_name().name() == "compiler") {
+                    if c.attribute("id") == Some(compiler_spec_id) {
+                        return Some(langs.join(c.attribute("spec")?));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The `<context_set>` defaults from a `.pspec` (name → value).
 pub fn pspec_context_sets(pspec: &Path) -> Vec<(String, u64)> {
     let Ok(text) = fs::read_to_string(pspec) else { return Vec::new() };

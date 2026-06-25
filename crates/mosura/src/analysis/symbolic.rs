@@ -150,25 +150,23 @@ fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref
 /// prototype recovery. Stack-storage resources are excluded, matching Ghidra
 /// `addParamReferences`' `var.isStackStorage()` skip.
 ///
-/// mosura models only the System V AMD64 convention (the `gcc` compiler spec's default).
-/// A different compiler spec supplies its own convention from its `.cspec` (the cspec
-/// loader is not yet ported), so it yields no registers here — never applying the wrong
-/// convention's storage, which would invent references on e.g. a MS-x64 PE.
-fn integer_arg_registers(program: &Program) -> Vec<u64> {
-    if program.compiler_spec_id != "gcc" {
-        return Vec::new(); // only the System V (gcc) default convention is modeled
-    }
+/// The default calling convention's integer-argument registers, loaded from the program's
+/// `.cspec` (Ghidra `getDefaultCallingConvention` + `ParamListStandard::assignMap`), for ANY
+/// compiler spec — SysV `RDI,RSI,RDX,RCX,R8,R9` for `gcc`, MS-x64 `RCX,RDX,R8,R9` for
+/// `windows`, and an empty list for a stack-only convention (e.g. x86-16 `default`, so a
+/// 16-bit binary invents no references). See [`crate::analysis::cspec`].
+fn integer_arg_registers(spec: &Spec, program: &Program) -> Vec<u64> {
     let spaces = crate::decompile::space::SpaceManager::standard();
-    let (Some(reg), Some(conv)) =
-        (spaces.by_name("register"), crate::decompile::fspec::sysv_input(&spaces))
-    else {
-        return Vec::new();
+    let Some(reg) = spaces.by_name("register") else { return Vec::new() };
+    let Some(list) = crate::analysis::cspec::default_input_paramlist(
+        spec,
+        &program.language_id,
+        &program.compiler_spec_id,
+        &spaces,
+    ) else {
+        return Vec::new(); // no cspec / no default prototype → model no convention
     };
-    conv.entry
-        .iter()
-        .filter(|e| e.type_class == crate::decompile::fspec::type_class::GENERAL && e.space == reg)
-        .map(|e| e.addressbase)
-        .collect()
+    crate::analysis::cspec::integer_arg_registers(&list, reg)
 }
 
 /// Recover PARAM references at a call site — a port of `SymbolicPropogator.addParamReferences`
@@ -401,8 +399,9 @@ pub fn flow_constants(
 ) {
     let ram = start.space;
     // The default calling convention's integer-argument registers (Ghidra
-    // `getDefaultCallingConvention` + `getArgLocation`), resolved once for the function.
-    let arg_regs = integer_arg_registers(program);
+    // `getDefaultCallingConvention` + `getArgLocation`), loaded from the `.cspec` once for
+    // the function.
+    let arg_regs = integer_arg_registers(spec, program);
     let mut visited: HashSet<u64> = HashSet::new();
     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
 

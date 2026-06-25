@@ -15,6 +15,7 @@
 
 pub mod analyzer;
 pub mod analyzers;
+pub mod cspec;
 pub mod decompiler;
 pub mod flowtype;
 pub mod loader;

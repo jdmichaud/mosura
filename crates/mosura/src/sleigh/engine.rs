@@ -476,6 +476,25 @@ impl Spec {
     fn symbol_name(&self, id: u32) -> &str {
         self.symbol_names.get(id as usize).map(String::as_str).unwrap_or("?")
     }
+
+    /// The offset of a named register varnode in the `register` space (e.g. `RDI` → 0x38),
+    /// or `None` if no such register symbol exists. Read-only accessor used by the analysis
+    /// `.cspec` loader to resolve a `<pentry><register name=.../></pentry>` storage entry to
+    /// a concrete `(register-space, offset)` address — the register layout is defined by the
+    /// processor `.sla`, so this reads the authoritative offsets rather than hardcoding them.
+    pub fn register_offset(&self, name: &str) -> Option<u64> {
+        // A varnode symbol's `space` field is the space's `.index` (the .sla space id), not
+        // its position in `self.spaces`.
+        let reg_space = self.spaces.iter().find(|s| s.name == "register")?.index;
+        self.symbols.iter().enumerate().find_map(|(id, sym)| match sym {
+            Some(Symbol::Varnode { space, offset, .. })
+                if *space == reg_space && self.symbol_name(id as u32) == name =>
+            {
+                Some(*offset)
+            }
+            _ => None,
+        })
+    }
     fn operand(&self, id: u32) -> Option<&OperandSym> {
         match self.symbol(id) {
             Some(Symbol::Operand(o)) => Some(o),
