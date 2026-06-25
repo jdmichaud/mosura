@@ -12,7 +12,10 @@
 //! This module is the convention model + trial containers; the dataflow filter
 //! (`AncestorRealistic`) and the driving actions live alongside it as they are ported.
 
+use super::funcdata::Funcdata;
+use super::opcode::OpCode;
 use super::space::{Address, SpaceId, SpaceManager};
+use super::varnode::VarnodeId;
 
 /// Ghidra `type_class` (fspec.hh): the resource section a parameter draws from. System V keeps
 /// the float and integer registers in separate sections so a used XMM and a used integer
@@ -626,10 +629,76 @@ impl ParamActive {
     }
 }
 
+// ---- Recovered prototype + drivers ------------------------------------------------------------
+
+/// One recovered parameter or return slot: its storage and size. (Types are recovered separately
+/// by the type-inference pass; a storage slot defaults to `undefined<size>`.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtoSlot {
+    pub addr: Address,
+    pub size: u32,
+}
+
+/// Ghidra `FuncProto` (fspec.hh:1343) — the recovered function prototype, reduced to the storage
+/// surface A6's parameter-ID consumes: the ordered input parameters and the return storage.
+#[derive(Clone, Debug, Default)]
+pub struct FuncProto {
+    pub params: Vec<ProtoSlot>,
+    /// Return storage; `None` is a void return.
+    pub output: Option<ProtoSlot>,
+}
+
+/// Ghidra `ActionInputPrototype` (coreaction.cc:4707): recover the function's input parameters
+/// from its input varnodes — a trial per input varnode whose storage is a possible parameter,
+/// marked active when the varnode is used (`!hasNoDescend()`), resolved by the convention's
+/// `fillin_map`. A used-but-never-written input register (a pure pass-through parameter) is kept,
+/// which the older realism heuristic dropped.
+pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
+    let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
+    let Some(pl) = sysv_input(&f.spaces) else { return Vec::new() };
+    let mut active = ParamActive::new(Some(reg));
+    for i in 0..f.num_varnodes() as u32 {
+        let vn = f.vn(VarnodeId(i));
+        if !vn.is_input() {
+            continue;
+        }
+        let size = vn.size as u32;
+        if !pl.possible_param(vn.loc, size) {
+            continue;
+        }
+        let ti = active.register_trial(vn.loc, size);
+        if !vn.descend.is_empty() {
+            active.trial[ti].mark_active();
+        }
+    }
+    pl.fillin_map(&mut active);
+    active.trial.iter().filter(|t| t.is_used()).map(|t| ProtoSlot { addr: t.addr, size: t.size }).collect()
+}
+
+/// Ghidra `ActionOutputPrototype` (coreaction.cc:4765): the return storage, read from the
+/// realistic return value that return-recovery (`recover::resolve_return`) left on the RETURN ops.
+/// `None` when every RETURN is void.
+pub fn recover_output(f: &Funcdata) -> Option<ProtoSlot> {
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.code() == OpCode::Return && o.num_inputs() > 1 {
+            let v = o.input(1)?;
+            return Some(ProtoSlot { addr: f.vn(v).loc, size: f.vn(v).size as u32 });
+        }
+    }
+    None
+}
+
+/// Ghidra `Funcdata::getFuncProto`: the recovered prototype (input params + return storage).
+pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
+    FuncProto { params: recover_input_params(f), output: recover_output(f) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decompile::space::SpaceManager;
+    use crate::decompile::{OpCode, SeqNum};
 
     #[test]
     fn sysv_input_maps_registers_to_groups() {
@@ -738,5 +807,59 @@ mod tests {
         // RDI used and R9 used with the whole RSI..R8 run absent: the inactive chain exceeds
         // maxchain=2, so R9 is dropped and only RDI remains.
         assert_eq!(recover_params(&[RDI, R9]), vec![RDI]);
+    }
+
+    /// A function with input varnodes at the given register offsets, each optionally given a use
+    /// (a descendant op) so it counts as an active parameter.
+    fn func_with_inputs(specs: &[(u64, bool)]) -> Funcdata {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        for &(off, used) in specs {
+            let v = f.new_input(8, Address::new(reg, off));
+            if used {
+                let c = f.new_const(8, 1);
+                f.new_op(OpCode::IntAdd, seq, vec![v, c]);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn recovers_used_input_params_in_order() {
+        // RDI and RSI used → two params, in formal (group) order RDI then RSI.
+        let f = func_with_inputs(&[(RDI, true), (RSI, true)]);
+        let p = recover_input_params(&f);
+        assert_eq!(p.iter().map(|s| s.addr.offset).collect::<Vec<_>>(), vec![RDI, RSI]);
+    }
+
+    #[test]
+    fn pure_passthrough_param_is_recovered() {
+        // An input register read (used) but never written is still a parameter — the case the
+        // realism heuristic dropped (it required a real write).
+        let f = func_with_inputs(&[(RDI, true)]);
+        assert_eq!(recover_input_params(&f).len(), 1);
+    }
+
+    #[test]
+    fn unused_trailing_input_is_not_a_param() {
+        let f = func_with_inputs(&[(RDI, true), (RSI, false)]);
+        let p = recover_input_params(&f);
+        assert_eq!(p.iter().map(|s| s.addr.offset).collect::<Vec<_>>(), vec![RDI]);
+    }
+
+    #[test]
+    fn recovers_return_storage() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let retaddr = f.new_input(8, Address::new(reg, 0x20));
+        let rax = f.new_input(8, Address::new(reg, RAX));
+        f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
+        assert_eq!(recover_output(&f).unwrap().addr.offset, RAX);
     }
 }
