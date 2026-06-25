@@ -448,14 +448,20 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         Ghidra does NOT define the printf `"%d\n"` string (it stays undefined), so that A7-spec
         target does not exist. ELF-structure markup (Elf64_*) + `.eh_frame` CIE/FDE field markup
         are the deferred remainder (loader / EhFrameSection subsystems).
-  - [BLOCKED] **Task 6 — demangler.** Ghidra's GNU/Itanium demangler is NOT a Java grammar:
-        `GnuDemangler` shells out (`GnuDemanglerNativeProcess`) to the bundled native
-        `demangler_gnu_v2_41` binary (libiberty cp-demangle from binutils 2.41; source under
-        `GPL/DemanglerGnu/src/`); the Java `GnuDemanglerParser` only re-parses the native output.
-        A faithful port means porting libiberty's cp-demangle (a large standalone C subsystem
-        outside the auto-analysis tail). Hand-rolling an Itanium grammar from memory is
-        explicitly forbidden by the porting directive — so Task 6 is left UNIMPLEMENTED, and no
-        C++ fixture was added (it would only validate a demangler that does not exist here).
+  - [ ] **Task 6 — demangler** (its own track; not a tail analyzer). Ghidra's GNU/Itanium
+        demangler is NOT a Java grammar: `GnuDemangler` shells out (`GnuDemanglerNativeProcess`)
+        to the bundled native `demangler_gnu_v2_41` binary (libiberty cp-demangle, binutils 2.41;
+        source under `GPL/DemanglerGnu/src/`); the Java side only re-parses the native output.
+        DECISION (wrap, don't port): wrap the pure-Rust **`cpp_demangle`** crate (the libiberty
+        cp-demangle equivalent). Rationale — mosura is **Apache-2.0** and libiberty is **GPL**, so
+        porting/static-linking it would force a relicense; mosura's build is pure-Rust (no C
+        toolchain). `cpp_demangle` is Apache-2.0/MIT, pure Rust, and from gimli-rs (same org as the
+        `object` crate already in the tree — its `demangle` feature wraps cpp_demangle, so possibly
+        no new direct dep). Add a small C++ fixture + golden and **validate the demangled `sym`
+        names against Ghidra**; cpp_demangle implements the ABI independently, so reconcile any
+        formatting deltas against the golden (FFI-libiberty fallback is NOT acceptable — GPL vs
+        Apache-2.0). Hand-rolling an Itanium grammar remains forbidden. (rustc-demangle /
+        msvc-demangler cover the Rust / MSVC schemes when needed.)
 
 ## Compiler-spec (cspec) track — calling conventions from the `.cspec`, not hardcoded
 
