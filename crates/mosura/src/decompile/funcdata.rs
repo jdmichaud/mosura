@@ -27,6 +27,9 @@ pub struct Funcdata {
     unique_offset: u64,
     /// Recovered jump-table case targets, keyed by the BRANCHIND instruction address.
     pub switch_targets: std::collections::HashMap<u64, Vec<u64>>,
+    /// The function's loaded memory (address, bytes) chunks — code + data — so jump-table
+    /// recovery can read switch tables (Ghidra's LoadImage). Empty for hand-built test functions.
+    pub image: Vec<(u64, Vec<u8>)>,
 }
 
 impl Funcdata {
@@ -41,7 +44,23 @@ impl Funcdata {
             create_index: 0,
             unique_offset: 0x10000,
             switch_targets: std::collections::HashMap::new(),
+            image: Vec::new(),
         }
+    }
+
+    /// Read `size` bytes (little-endian) from the loaded image at `addr`, if present.
+    pub fn read_image(&self, addr: u64, size: u32) -> Option<u64> {
+        for (base, bytes) in &self.image {
+            if addr >= *base && addr + size as u64 <= *base + bytes.len() as u64 {
+                let off = (addr - *base) as usize;
+                let mut v = 0u64;
+                for i in 0..size as usize {
+                    v |= (bytes[off + i] as u64) << (8 * i);
+                }
+                return Some(v);
+            }
+        }
+        None
     }
 
     // --- accessors ---------------------------------------------------------
@@ -63,6 +82,14 @@ impl Funcdata {
     }
     pub fn num_varnodes(&self) -> usize {
         self.varnodes.len()
+    }
+
+    /// The recovered jump tables — each `BRANCHIND`'s table address and ordered case targets
+    /// (Ghidra `Funcdata::numJumpTables`/`getJumpTable`). Recovered faithfully from the heritaged
+    /// graph ([`super::jumptable`]); call after decompilation. The read-back surface the analysis
+    /// track's switch analyzer (A6) consumes.
+    pub fn jump_tables(&self) -> Vec<super::jumptable::JumpTable> {
+        super::jumptable::recover(self)
     }
 
     /// The recovered function prototype — the ordered input parameters and the return storage

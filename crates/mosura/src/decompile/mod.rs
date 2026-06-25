@@ -17,6 +17,7 @@ pub mod dominator;
 pub mod fspec;
 pub mod funcdata;
 pub mod heritage;
+pub mod jumptable;
 pub mod merge;
 pub mod op;
 pub mod opcode;

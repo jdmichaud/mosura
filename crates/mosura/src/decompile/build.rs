@@ -249,6 +249,7 @@ pub fn raw_funcdata_flow_image(
     }
     let mut f = build_from_instrs(name, cbase, decoded.into_values());
     f.switch_targets = switch_targets;
+    f.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
     f
 }
 
