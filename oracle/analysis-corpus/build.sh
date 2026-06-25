@@ -16,9 +16,10 @@ gcc -nostdlib -static -no-pie -O0 -ffreestanding -fno-asynchronous-unwind-tables
 # Realistic dynamically-linked ELF: exercises CRT + PLT thunks + the EXTERNAL block.
 gcc -O0 -fno-pie -no-pie -o basic.elf src/basic.c
 
-# Dense switch -> jump table (BRANCHIND), -O0 so the index spills to a stack slot with a
-# stack-slot guard (the form Ghidra's decompiler recovers). Validates the A6 switch analyzer.
-gcc -nostdlib -static -no-pie -O0 -ffreestanding -fno-asynchronous-unwind-tables \
+# Dense switch -> jump table (BRANCHIND), -O2: the index lives in a register with a
+# register guard (cmp edi,N; ja .cold below entry) — the realistic optimized form. Validates
+# the A6 decompiler-driven switch analyzer.
+gcc -nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables \
     -o switchtab.elf src/switchtab.c
 
 echo "built:"
