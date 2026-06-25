@@ -368,11 +368,16 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [ ] **Parameter-ID** (the other half): read the decompiler's recovered call args/return and
         emit PARAM refs (basic: `0x401054→0x401168`, `0x401194→0x402004`). Needs the decompiler's
         call-argument recovery exposed (akin to `func_proto()` but per call site).
-  - [ ] **Indirect calls** (COMPUTED_CALL / INDIRECTION — basic's PLT/GOT): resolve the indirect
-        call/jump target through the (relocated) GOT and emit the ref.
-  - [ ] *Decompiler-track gap to report:* gcc **-O2 register-guard** switches (`cmp edi,N; ja`)
-        aren't recovered (the -O0 stack-guard form is); the analyzer is ready once the decompiler
-        handles that guard shape.
+  - [x] **Indirect calls → COMPUTED_CALL**: the SymbolicPropogator resolves a CALLIND whose
+        target is a constant (`call *[GOT]`, slot relocated to the external in A5) → COMPUTED_CALL.
+        basic's 2 COMPUTED_CALL recovered, matching Ghidra; code-ref recall 29→31, 0 false positives.
+  - [ ] **INDIRECTION** (basic's PLT/GOT lazy-binding): the indirect *jump* through a GOT slot →
+        INDIRECTION (to the slot) + COMPUTED_JUMP/COMPUTED_CALL_TERMINATOR (to the resolved value).
+        Intricate (PLT resolver-stub + lazy-binding GOT semantics, multi-type classification) — do
+        carefully against the basic golden, not rushed.
+  - [x] *Decompiler-track gap reported + FIXED by master* (`4049e5d`, merged): gcc -O2
+        register-guard switches now recover (cfg root at the entry, not the lowest-address block);
+        switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.
 - [ ] **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
       strings/data, arch-specific propagation; each gated on Program-state parity.
 
