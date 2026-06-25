@@ -304,6 +304,45 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
             }
         }
     }
+
+    // .gnu.version (Ghidra `processGnuVersion`, `DT_VERSYM`): one `word` (Elf_Versym, 2 bytes)
+    // per dynamic symbol — `maxCnt = min(tableBytes/2, dynsymCount)`.
+    if let Some(gv) = elf.section_by_name(".gnu.version") {
+        let addr = gv.address();
+        let dynsym_count = elf.section_by_name(".dynsym").map_or(0, |s| s.size() / ELF64_SYM_LEN);
+        let count = (gv.size() / 2).min(dynsym_count);
+        if count > 0 && mapped(program, addr) {
+            for i in 0..count {
+                program.defined_data.push((Address::new(ram, addr + i * 2), "word".to_string(), 2));
+            }
+        }
+    }
+
+    // .dynstr (Ghidra `markupStringTable`, `DT_STRTAB`): starting just past the leading null,
+    // each null-terminated string → a `string-utf8` unit (length includes the terminator),
+    // laid back-to-back across the table.
+    if let Some(ds) = elf.section_by_name(".dynstr") {
+        let addr = ds.address();
+        if let Ok(data) = ds.data() {
+            if mapped(program, addr) && data.len() > 1 {
+                let mut off = 1usize; // Ghidra skips the leading null (`address.addNoWrap(1)`)
+                while off < data.len() {
+                    let start = off;
+                    while off < data.len() && data[off] != 0 {
+                        off += 1;
+                    }
+                    if off < data.len() {
+                        off += 1; // include the terminator
+                    }
+                    program.defined_data.push((
+                        Address::new(ram, addr + start as u64),
+                        "string-utf8".to_string(),
+                        (off - start) as u32,
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Apply dynamic relocations that bind a GOT/PLT slot to an undefined (external) symbol —
