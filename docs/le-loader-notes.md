@@ -1,11 +1,20 @@
-# LE (Linear Executable) loader — deferred design notes
+# LE (Linear Executable) loader — design notes
 
-**Status: deferred.** Ghidra has no LE/LX loader, so there is no Ghidra oracle for it.
-Per the project direction (reach **parity with Ghidra first**, then exceed it), LE is *not*
-in scope now — mosura loads the formats Ghidra loads (ELF/PE/MZ, done) and the focus is the
-auto-analysis pipeline. This file records the findings so LE can be picked up quickly once
-parity is reached. It is the first loader mosura would build **beyond** Ghidra's
-capabilities, and it should be done **natively**, not via the ELF-wrapper workaround.
+**Status: loader implemented** (`crates/mosura/src/analysis/loader/le.rs`), validated
+against the ground truth below by `le_war2_objects` in `tests/analysis_parity.rs` (the two
+objects + the entry, parsed from the real file bytes). Ghidra has no LE/LX loader, so there
+is no Ghidra oracle — this is the first loader mosura builds **beyond** Ghidra, done
+**natively** (not via the ELF-wrapper workaround), grounded in the LE/LX spec + the
+warcraft2-re RE result recorded here.
+
+**What remains (NOT done):** the LE loader is *not* wired into WAR2.EXE's default analysis
+dispatch — the bound exe still loads as the 16-bit MZ stub there, because the committed
+war2 goldens are Ghidra's MZ-stub interpretation and the war2 Ghidra-parity gates depend on
+that path (re-pointing them at the LE objects has no Ghidra oracle to validate against).
+A *standalone* LE (valid `e_lfanew` → `LE`) IS dispatched to the native loader. Reaching the
+20 protected-mode switches further needs the 32-bit (`x86:LE:32:default`) analysis pipeline
+run over the LE objects + a switch-table golden from the RE ground truth. See the loader
+file's header for the precise scope boundary.
 
 ## Why native, not an ELF32 wrapper
 

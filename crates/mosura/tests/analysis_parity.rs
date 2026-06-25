@@ -264,6 +264,53 @@ fn demangler_parity() {
     assert_eq!(mine_sym, gold_sym, "cppsym: symbols must match Ghidra exactly");
 }
 
+/// Task 4 — native LE (Linear Executable) loader. WAR2.EXE is a DOS/4GW-bound LE; Ghidra
+/// has no LE loader, so there is no Ghidra golden — this validates `loader::le` against the
+/// warcraft2-re reverse-engineering ground truth recorded in `docs/le-loader-notes.md`: the
+/// two objects (virtual base / size / perms) + the absolute entry. Skipped if WAR2.EXE is
+/// absent (user-provided). This loader is NOT wired into war2's default dispatch (the bound
+/// exe stays on the MZ path for the Ghidra-parity gates) — it is exercised directly here.
+#[test]
+fn le_war2_objects() {
+    use mosura::analysis::loader;
+    use mosura::analysis::program::SymbolType;
+    let path = std::path::Path::new("/home/jd/WAR2.EXE");
+    if !path.exists() {
+        eprintln!("skip le_war2_objects: WAR2.EXE not present");
+        return;
+    }
+    let data = std::fs::read(path).unwrap();
+    // Bound DOS/4GW exe: e_lfanew is deliberately invalid, so the LE is found by scanning,
+    // not the standalone-dispatch path.
+    let le_off = loader::detect_le(&data).expect("embedded LE header detected");
+    assert_eq!(le_off, 0x37CF4, "LE header at the RE-confirmed file offset");
+
+    let prog = loader::load_le(&data).expect("LE load");
+    assert_eq!(prog.language_id, "x86:LE:32:default");
+    assert_eq!(prog.image_base.offset, 0x10000, "image base = first object's virtual base");
+
+    // The two objects (warcraft2-re ground truth): obj1 code _TEXT, obj2 data _DATA.
+    let blocks: Vec<_> = prog.memory.blocks().collect();
+    assert_eq!(blocks.len(), 2, "WAR2 LE has exactly two objects");
+    let code = blocks.iter().find(|b| b.is_execute()).expect("a code object");
+    assert_eq!(code.start().offset, 0x10000);
+    assert_eq!(code.end().offset, 0x10000 + 0x6c4a0 - 1, "code object virtual size 0x6C4A0");
+    assert!(code.is_read() && !code.is_write() && code.is_execute(), "code object R+X");
+    let dataobj = blocks.iter().find(|b| !b.is_execute()).expect("a data object");
+    assert_eq!(dataobj.start().offset, 0x80000);
+    assert_eq!(dataobj.end().offset, 0x80000 + 0x2b300 - 1, "data object virtual size 0x2B300");
+    assert!(dataobj.is_read() && dataobj.is_write() && !dataobj.is_execute(), "data object R+W");
+
+    // Entry = obj1 base + init-EIP = 0x10000 + 0x501F8 = 0x601F8 (Watcom _cstart_ thunk,
+    // first bytes `EB 76` jumping over an inline banner string — verified file bytes).
+    let entry = prog.entry_points.iter().find(|a| a.offset == 0x601f8).expect("entry 0x601F8");
+    assert_eq!(prog.symbol_table.primary_at(*entry).map(|s| s.symbol_type()), Some(SymbolType::Function));
+    let eb = prog.memory.byte_at(*entry);
+    let eb2 = prog.memory.byte_at(mosura::decompile::space::Address::new(entry.space, 0x601f9));
+    assert_eq!((eb, eb2), (Some(0xeb), Some(0x76)), "entry begins with the EB 76 jump thunk");
+    eprintln!("  [war2] LE loader: 2 objects + entry 0x601F8 match warcraft2-re ground truth");
+}
+
 /// A4 — converged function-set parity. Every function mosura discovers must be a Ghidra
 /// function (HARD subset: no spurious functions), with a recall ratchet. The missing
 /// remainder is reached only via PLT-stub disassembly / GOT pointer-following.
