@@ -17,12 +17,15 @@
 //! signedness between its operands. The type a varnode ends up with is therefore an independent
 //! property of the dataflow, the way Ghidra's `Datatype` is independent of the `Varnode`.
 //!
+//! INT_ADD pointer arithmetic is ported for the primitive lattice ([`TypeInfer::propagate_add_in2out`]
+//! ← `TypeOpIntAdd::propagateAddIn2Out`/`propagateAddPointer`, [`down_chain`] ← `TypePointer::downChain`):
+//! a pointer relays through `ptr + i*elemsize` / `ptr + k*elemsize` to the same element pointer.
+//!
 //! Faithfully deferred (Ghidra has them; this port does not yet, pending the aggregate lattice
 //! and the cast subsystem): `propagateAcrossReturns`, `propagateSpacebaseRef`/`propagateRef`,
-//! SUBPIECE/PIECE propagation into composite (struct/array/union) types, and INT_ADD/PTRADD/
-//! PTRSUB pointer arithmetic (`propagateAddIn2Out`/`downChain`/`TypePointerRel`). None of these
-//! apply to the primitive lattice modelled here, so omitting them yields *fewer* refinements,
-//! never wrong ones.
+//! SUBPIECE/PIECE propagation into composite (struct/array/union) types, the PTRADD/PTRSUB ops,
+//! and the `TypePointerRel` struct-container case of `downChain`. None of these apply to the
+//! primitive lattice modelled here, so omitting them yields *fewer* refinements, never wrong ones.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -333,6 +336,21 @@ impl<'a> TypeInfer<'a> {
             }
             Load => self.propagate_load_store(op, invn, outvn, inslot, outslot, alttype, false),
             Store => self.propagate_load_store(op, invn, outvn, inslot, outslot, alttype, true),
+            // A pointer flows through an `add a constant/index` to its result (Ghidra
+            // `TypeOpIntAdd::propagateType`): `ptr + i*elemsize` and `ptr + k*elemsize` stay the
+            // same element pointer. A non-pointer INT_ADD carries no type (the INT/UINT constant-
+            // index refinement is faithfully deferred, as before).
+            IntAdd => {
+                let _ = outvn;
+                if !matches!(alttype, Datatype::Pointer(..)) {
+                    return None;
+                }
+                // pointers must propagate input <-> output, and never output -> input
+                if (inslot != -1 && outslot != -1) || inslot == -1 {
+                    return None;
+                }
+                self.propagate_add_in2out(alttype, op, inslot)
+            }
             _ => None,
         }
     }
@@ -369,6 +387,74 @@ impl<'a> TypeInfer<'a> {
             Some(propagate_to_pointer(alttype, self.f.vn(outvn).size))
         } else {
             propagate_from_pointer(alttype, self.f.vn(outvn).size)
+        }
+    }
+
+    /// Ghidra `TypeOpIntAdd::propagateAddPointer`: classify an `add a constant/index` edge where
+    /// the input (slot `slot`) is a pointer to a `sz`-byte element. Returns Ghidra's command code
+    /// and the constant offset (when commands 0/1):
+    ///   0 = add of zero · 1 = add of a constant `off` · 2 = does not propagate · 3 = propagate
+    /// the pointer untransformed (an index `i*sz`). Only INT_ADD is modelled (mosura has no
+    /// PTRADD/PTRSUB ops yet).
+    fn propagate_add_pointer(&self, op: OpId, slot: i32, sz: u32) -> (i32, u64) {
+        let other = self.f.op(op).input((1 - slot) as usize).unwrap();
+        let ovn = self.f.vn(other);
+        if !ovn.is_constant() {
+            if let Some(def) = ovn.def {
+                if self.f.op(def).code() == OpCode::IntMult {
+                    if let Some(cv) = self.f.op(def).input(1) {
+                        if self.f.vn(cv).is_constant() {
+                            let mult = self.f.vn(cv).constant_value();
+                            let mask = u64::MAX >> (64 - self.f.vn(cv).size * 8);
+                            if mult == mask {
+                                return (2, 0); // multiply by -1 → pointer difference
+                            }
+                            if sz != 0 && mult % sz as u64 != 0 {
+                                return (2, 0);
+                            }
+                        }
+                    }
+                    return (3, 0); // index scaled by a multiple of the element size
+                }
+            }
+            if sz == 1 {
+                return (3, 0);
+            }
+            return (2, 0);
+        }
+        // constant other-operand: a pointer + pointer is a difference, not an add
+        if matches!(self.t(other), Datatype::Pointer(..)) {
+            return (2, 0);
+        }
+        let off = ovn.constant_value();
+        (if off == 0 { 0 } else { 1 }, off)
+    }
+
+    /// Ghidra `TypeOpIntAdd::propagateAddIn2Out`: transform a pointer flowing across an ADD into
+    /// the pointer for its result. For the primitive lattice this is the pointer itself (offset 0
+    /// or an `i*elemsize` index) or, when a constant offset lands on an element boundary, the same
+    /// element pointer via the array-wrap in [`down_chain`]. The struct-container case
+    /// (`TypePointerRel`) is faithfully deferred.
+    fn propagate_add_in2out(&self, alttype: &Datatype, op: OpId, inslot: i32) -> Option<Datatype> {
+        let Datatype::Pointer(_, pointee) = alttype else { return None };
+        let sz = pointee.size();
+        let (command, off) = self.propagate_add_pointer(op, inslot, sz);
+        if command == 2 {
+            return None;
+        }
+        let mut pointer = Some(alttype.clone());
+        if command != 3 {
+            let mut type_offset = off;
+            while let Some(p) = pointer.as_ref() {
+                pointer = down_chain(p, &mut type_offset, true);
+                if type_offset == 0 {
+                    break;
+                }
+            }
+        }
+        match pointer {
+            None => (command == 0).then(|| alttype.clone()),
+            some => some,
         }
     }
 
@@ -449,6 +535,35 @@ fn propagate_from_pointer(dt: &Datatype, sz: u32) -> Option<Datatype> {
         }
     }
     None
+}
+
+/// Ghidra `TypePointer::downChain`: step a pointer `ptr` one level toward the sub-object at byte
+/// `*off`, updating `*off` to the residual offset within it. For the primitive lattice the cases
+/// are: an `off` that is a non-zero multiple of the element size wraps back to the array element
+/// (returns the same pointer with `*off = 0`); a pointer to an `Array` indexes into the element
+/// type; any other in-bounds offset into a scalar has no sub-component (returns `None`). The
+/// struct/enum/spacebase descents are faithfully deferred. `allow_wrap` is false only for PTRSUB,
+/// which mosura does not emit.
+fn down_chain(ptr: &Datatype, off: &mut u64, allow_wrap: bool) -> Option<Datatype> {
+    let Datatype::Pointer(psize, pointee) = ptr else { return None };
+    let ptrto_size = pointee.size() as u64;
+    if *off >= ptrto_size {
+        if ptrto_size != 0 {
+            if !allow_wrap {
+                return None;
+            }
+            *off %= ptrto_size;
+            if *off == 0 {
+                return Some(ptr.clone()); // wrapped to an element boundary: down one level
+            }
+        }
+    }
+    if let Datatype::Array(elem, _) = &**pointee {
+        let esize = elem.size() as u64;
+        *off = if esize != 0 { *off % esize } else { 0 };
+        return Some(Datatype::Pointer(*psize, elem.clone()));
+    }
+    None // a scalar pointee has no addressable sub-component
 }
 
 /// Infer a type for every non-constant varnode: run the local-type seeding and per-varnode
@@ -563,6 +678,37 @@ mod tests {
         assert_eq!(ti.t(a), &Datatype::Float(8), "a FLOAT_ADD use makes `a` float locally");
         ti.propagate_one_type(a);
         assert_eq!(ti.t(out), &Datatype::Float(8), "float relays across the COPY to out");
+    }
+
+    #[test]
+    fn pointer_relays_through_an_indexed_add() {
+        // p:int4* read by `p + i*4` (an INT_MULT-scaled index) keeps the int4* type on the sum —
+        // Ghidra `propagateAddPointer` command 3, the array-element relay. Without the scaled
+        // index (`p + 5`, an unaligned constant) the pointer must NOT propagate.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let p = f.new_varnode(8, Address::new(reg, 0x100));
+        let i = f.new_varnode(8, Address::new(reg, 0x108));
+        let four = f.new_const(8, 4);
+        let om = f.new_op(OpCode::IntMult, seq, vec![i, four]);
+        let idx = f.new_output(om, 8, Address::new(reg, 0x110));
+        let oadd = f.new_op(OpCode::IntAdd, seq, vec![p, idx]);
+        let _sum = f.new_output(oadd, 8, Address::new(reg, 0x118));
+
+        let locks = HashMap::new();
+        let mut ti = TypeInfer::new(&f, &locks);
+        ti.build_localtypes();
+        ti.temp[p.0 as usize] = Datatype::Pointer(8, Box::new(Datatype::Int(4)));
+        ti.propagate_one_type(p);
+        let sum = f.op(oadd).output.unwrap();
+        assert_eq!(
+            ti.t(sum),
+            &Datatype::Pointer(8, Box::new(Datatype::Int(4))),
+            "a scaled-index add keeps the element pointer type"
+        );
     }
 
     #[test]
