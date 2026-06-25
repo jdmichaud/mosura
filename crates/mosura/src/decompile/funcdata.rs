@@ -31,6 +31,9 @@ pub struct Funcdata {
     /// The function's loaded memory (address, bytes) chunks — code + data — so jump-table
     /// recovery can read switch tables (Ghidra's LoadImage). Empty for hand-built test functions.
     pub image: Vec<(u64, Vec<u8>)>,
+    /// Ghidra `Funcdata::hasTypeRecoveryStarted`: set once `ActionInferTypes` has committed
+    /// data-types onto varnodes, gating the pointer-arithmetic rules.
+    typerecovery_started: bool,
 }
 
 impl Funcdata {
@@ -46,7 +49,17 @@ impl Funcdata {
             unique_offset: 0x10000,
             switch_targets: std::collections::HashMap::new(),
             image: Vec::new(),
+            typerecovery_started: false,
         }
+    }
+
+    /// Ghidra `Funcdata::hasTypeRecoveryStarted`: whether data-type recovery has committed types.
+    pub fn has_type_recovery_started(&self) -> bool {
+        self.typerecovery_started
+    }
+    /// Mark type recovery as begun (Ghidra sets this in `ActionInferTypes`).
+    pub fn set_type_recovery_started(&mut self) {
+        self.typerecovery_started = true;
     }
 
     /// Read `size` bytes (little-endian) from the loaded image at `addr`, if present.
@@ -196,9 +209,54 @@ impl Funcdata {
         v
     }
 
+    /// Splice `newop` into `follow`'s basic block immediately before it (Ghidra's
+    /// `opInsertBefore`): adopt `follow`'s parent block and insert just ahead of it in the
+    /// block's op list.
+    pub fn op_insert_before(&mut self, newop: OpId, follow: OpId) {
+        let parent = self.ops[follow.0 as usize].parent;
+        self.ops[newop.0 as usize].parent = parent;
+        if let Some(b) = parent {
+            let ops = &mut self.blocks[b.0 as usize].ops;
+            let pos = ops.iter().position(|&o| o == follow).unwrap_or(ops.len());
+            ops.insert(pos, newop);
+        }
+    }
+
+    /// Create a new op with a fresh `unique`-space output, inserted just before `follow`
+    /// (Ghidra's `newOpBefore`). The output is sized like the first input, as Ghidra does.
+    /// Used by pointer-arithmetic transforms (`RulePtrArith`) to build PTRADD/PTRSUB trees.
+    pub fn new_op_before(&mut self, follow: OpId, opcode: OpCode, inputs: Vec<VarnodeId>) -> OpId {
+        let pc = self.ops[follow.0 as usize].seqnum.pc;
+        let uniq = self.ops.len() as u32;
+        let out_size = self.varnodes[inputs[0].0 as usize].size;
+        let id = self.new_op(opcode, SeqNum { pc, uniq }, inputs);
+        self.new_output_unique(id, out_size);
+        self.op_insert_before(id, follow);
+        id
+    }
+
     /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
     pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
         self.ops[op.0 as usize].opcode = opcode;
+    }
+
+    /// Re-point `op` to produce the existing varnode `vid` (Ghidra's `opSetOutput`): drop
+    /// `op`'s current output, detach `vid` from its old producer, then wire `vid.def = op`.
+    /// Used by `RulePtrArith::buildTree` to hand the original ADD's output to the new tail op.
+    pub fn op_set_output(&mut self, op: OpId, vid: VarnodeId) {
+        if self.ops[op.0 as usize].output == Some(vid) {
+            return;
+        }
+        if let Some(old) = self.ops[op.0 as usize].output.take() {
+            self.varnodes[old.0 as usize].def = None;
+            self.varnodes[old.0 as usize].flags &= !flags::WRITTEN;
+        }
+        if let Some(olddef) = self.varnodes[vid.0 as usize].def.take() {
+            self.ops[olddef.0 as usize].output = None;
+        }
+        self.varnodes[vid.0 as usize].def = Some(op);
+        self.varnodes[vid.0 as usize].flags |= flags::WRITTEN | flags::INSERT;
+        self.ops[op.0 as usize].output = Some(vid);
     }
 
     /// Swap two input slots of `op` (Ghidra's `opSwapInput`).

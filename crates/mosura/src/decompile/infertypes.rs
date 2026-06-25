@@ -22,10 +22,11 @@
 //! a pointer relays through `ptr + i*elemsize` / `ptr + k*elemsize` to the same element pointer.
 //!
 //! Faithfully deferred (Ghidra has them; this port does not yet, pending the aggregate lattice
-//! and the cast subsystem): `propagateAcrossReturns`, `propagateSpacebaseRef`/`propagateRef`,
-//! SUBPIECE/PIECE propagation into composite (struct/array/union) types, the PTRADD/PTRSUB ops,
-//! and the `TypePointerRel` struct-container case of `downChain`. None of these apply to the
-//! primitive lattice modelled here, so omitting them yields *fewer* refinements, never wrong ones.
+//! and the cast subsystem): `propagateSpacebaseRef`/`propagateRef`, SUBPIECE/PIECE propagation
+//! into composite (struct/array/union) types, and the `TypePointerRel` struct-container case of
+//! `downChain`. None of these apply to the primitive lattice modelled here, so omitting them
+//! yields *fewer* refinements, never wrong ones. PTRADD/PTRSUB propagation IS ported (they relay
+//! the base pointer to the output via `propagateAddIn2Out`, as in Ghidra `TypeOpPtradd`/`Ptrsub`).
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -351,6 +352,31 @@ impl<'a> TypeInfer<'a> {
                 }
                 self.propagate_add_in2out(alttype, op, inslot)
             }
+            // PTRADD/PTRSUB relay their base pointer to the output exactly as INT_ADD does
+            // (Ghidra `TypeOpPtradd`/`TypeOpPtrsub::propagateType`, both via
+            // `TypeOpIntAdd::propagateAddIn2Out`). PTRADD's element-size operand (slot 2) carries
+            // no type. Neither propagates a pointer output back to an input.
+            Ptradd => {
+                if inslot == 2 || outslot == 2 {
+                    return None;
+                }
+                if !matches!(alttype, Datatype::Pointer(..)) {
+                    return None;
+                }
+                if (inslot != -1 && outslot != -1) || inslot == -1 {
+                    return None;
+                }
+                self.propagate_add_in2out(alttype, op, inslot)
+            }
+            Ptrsub => {
+                if !matches!(alttype, Datatype::Pointer(..)) {
+                    return None;
+                }
+                if (inslot != -1 && outslot != -1) || inslot == -1 {
+                    return None;
+                }
+                self.propagate_add_in2out(alttype, op, inslot)
+            }
             _ => None,
         }
     }
@@ -620,6 +646,18 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
         .collect()
 }
 
+/// Ghidra `ActionInferTypes::apply`: recover a data-type for every varnode and *commit* it onto
+/// the varnode (`Varnode::updateType`, Ghidra's `writeBack`), so later actions — notably
+/// `RulePtrArith` — can read `Varnode::get_type`/`type_read_facing`. Marks type recovery started.
+/// This is the in-pipeline counterpart of the print-time [`infer`]; both share one engine.
+pub fn infer_types(f: &mut Funcdata, locks: &HashMap<VarnodeId, Datatype>) {
+    let map = infer(f, locks);
+    for (v, t) in map {
+        f.vn_mut(v).update_type(t);
+    }
+    f.set_type_recovery_started();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +747,23 @@ mod tests {
             &Datatype::Pointer(8, Box::new(Datatype::Int(4))),
             "a scaled-index add keeps the element pointer type"
         );
+    }
+
+    #[test]
+    fn infer_types_commits_types_onto_varnodes() {
+        // ActionInferTypes writeback: recovered types land on the varnodes (`get_type`) and the
+        // recovery flag flips, so RulePtrArith can read pointer types during the pipeline. modulo
+        // types param_2/3/4 as element pointers, so a committed pointer type must appear.
+        let Some((spec, ctx)) = x86_64() else { return };
+        let dt = datatest::parse_file(&paths::datatests_dir().join("modulo.xml")).unwrap();
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        pipeline::decompile(&mut f);
+        assert!(!f.has_type_recovery_started());
+        infer_types(&mut f, &HashMap::new());
+        assert!(f.has_type_recovery_started());
+        let any_ptr = (0..f.num_varnodes() as u32)
+            .any(|i| matches!(f.vn(crate::decompile::VarnodeId(i)).get_type(), Datatype::Pointer(..)));
+        assert!(any_ptr, "a recovered pointer type should be committed onto a varnode");
     }
 
     #[test]
