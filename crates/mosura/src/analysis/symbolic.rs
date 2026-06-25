@@ -140,13 +140,36 @@ fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref
     program.reference_manager.add(from, to, ref_type, -1);
 }
 
-/// System V AMD64 default-convention integer argument registers, in order
-/// (`x86-64-gcc.cspec` `<default_proto><input>`: RDI, RSI, RDX, RCX, R8, R9), as
-/// `register`-space offsets in the x86-64 SLEIGH model. `conv.getArgLocation(pi, …,
-/// pointerSizedDT, …)` returns these for an integer/pointer-typed argument; the float
-/// (XMM) pentries are not selected for a pointer-sized type. Offsets verified by lifting
-/// `mov $imm,<reg>`: RDI=56, RSI=48, RDX=16, RCX=8, R8=128, R9=136.
-const SYSV_INT_ARG_REGS: [u64; 6] = [56, 48, 16, 8, 128, 136];
+/// The integer/pointer argument storage **registers** of the program's default calling
+/// convention, in argument order — a port of Ghidra
+/// `program.getCompilerSpec().getDefaultCallingConvention()` followed by
+/// `PrototypeModel.getArgLocation(i, null, pointerSizedDT, …)` for successive pointer-sized
+/// args. The registers are read out of the convention's `ParamList` resources
+/// ([`fspec::sysv_input`]) — its GENERAL-class register entries, in resource order — rather
+/// than a hardcoded list, so there is one source of truth shared with the decompiler's
+/// prototype recovery. Stack-storage resources are excluded, matching Ghidra
+/// `addParamReferences`' `var.isStackStorage()` skip.
+///
+/// mosura models only the System V AMD64 convention (the `gcc` compiler spec's default).
+/// A different compiler spec supplies its own convention from its `.cspec` (the cspec
+/// loader is not yet ported), so it yields no registers here — never applying the wrong
+/// convention's storage, which would invent references on e.g. a MS-x64 PE.
+fn integer_arg_registers(program: &Program) -> Vec<u64> {
+    if program.compiler_spec_id != "gcc" {
+        return Vec::new(); // only the System V (gcc) default convention is modeled
+    }
+    let spaces = crate::decompile::space::SpaceManager::standard();
+    let (Some(reg), Some(conv)) =
+        (spaces.by_name("register"), crate::decompile::fspec::sysv_input(&spaces))
+    else {
+        return Vec::new();
+    };
+    conv.entry
+        .iter()
+        .filter(|e| e.type_class == crate::decompile::fspec::type_class::GENERAL && e.space == reg)
+        .map(|e| e.addressbase)
+        .collect()
+}
 
 /// Recover PARAM references at a call site — a port of `SymbolicPropogator.addParamReferences`
 /// → `createVariableStorageReference` → `makeVariableStorageReference` (the constant
@@ -154,28 +177,23 @@ const SYSV_INT_ARG_REGS: [u64; 6] = [56, 48, 16, 8, 128, 136];
 /// `checkParamRefs = true`, `checkPointerParamRefs = false`).
 ///
 /// For the corpus the called externals have no recovered signature, so Ghidra takes the
-/// "no defined params" branch: loop the first 8 argument locations, skip stack storage,
-/// and for each register holding a constant value emit a reference **from the instruction
-/// that last set that register** (`getLastSetLocation`) to the value. With `callOffset != 0`
-/// (a real call) the type is PARAM, else DATA (`makeVariableStorageReference`); the value
-/// must not equal the call target (`val == callOffset` is skipped) and clears the
-/// `minStoreLoadOffset` threshold via the shared `make_ref` gate.
+/// "no defined params" branch: loop the argument locations (`getArgLocation`), skip stack
+/// storage, and for each register holding a constant value emit a reference **from the
+/// instruction that last set that register** (`getLastSetLocation`) to the value. With
+/// `callOffset != 0` (a real call) the type is PARAM, else DATA
+/// (`makeVariableStorageReference`); the value must not equal the call target
+/// (`val == callOffset` is skipped) and clears the `minStoreLoadOffset` threshold via the
+/// shared `make_ref` gate. `arg_regs` is the convention's integer-argument register order
+/// (see [`integer_arg_registers`]); an empty slice (an unmodeled convention) recovers none.
 fn add_param_references(
     program: &mut Program,
     vctx: &VarnodeContext,
     ram: SpaceId,
     here: Address,
     call_offset: u64,
+    arg_regs: &[u64],
 ) {
-    // Ghidra reads `program.getCompilerSpec().getDefaultCallingConvention()`. The hardcoded
-    // register list is the System V AMD64 default ([`SYSV_INT_ARG_REGS`]); only apply it
-    // when the program uses that convention (the `gcc` cspec). Other conventions (e.g. MS
-    // x64 on a PE: RCX/RDX/R8/R9) have a different arg register set, so applying SysV regs
-    // would be unfaithful and could invent references — bail out instead.
-    if program.compiler_spec_id != "gcc" {
-        return;
-    }
-    for &reg_off in &SYSV_INT_ARG_REGS {
+    for &reg_off in arg_regs {
         let SymValue::Const(val) = vctx.get(&Varnode { space: "register".into(), offset: reg_off, size: 8 })
         else {
             // `createVariableStorageReference`: stop at the first register with no value
@@ -382,6 +400,9 @@ pub fn flow_constants(
     entries: &HashSet<u64>,
 ) {
     let ram = start.space;
+    // The default calling convention's integer-argument registers (Ghidra
+    // `getDefaultCallingConvention` + `getArgLocation`), resolved once for the function.
+    let arg_regs = integer_arg_registers(program);
     let mut visited: HashSet<u64> = HashSet::new();
     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
 
@@ -421,14 +442,14 @@ pub fn flow_constants(
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Call) => {
                     let call_off = op.ins.first().and_then(arg_var).filter(|v| v.space == "ram").map(|v| v.offset).unwrap_or(0);
-                    add_param_references(program, &vctx, ram, here, call_off);
+                    add_param_references(program, &vctx, ram, here, call_off, &arg_regs);
                 }
                 Some(OpCode::Callind) => {
                     let call_off = op.ins.first().and_then(arg_var).map(|t| match vctx.get(t) {
                         SymValue::Const(c) => c,
                         SymValue::Unknown => 0,
                     }).unwrap_or(0);
-                    add_param_references(program, &vctx, ram, here, call_off);
+                    add_param_references(program, &vctx, ram, here, call_off, &arg_regs);
                 }
                 _ => {}
             }
