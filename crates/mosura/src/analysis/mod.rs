@@ -438,10 +438,15 @@ mod a7_eh_frame {
         assert_eq!(mine.len(), 6, "6 FDE-table entries");
     }
 
-    /// A7 Task 5 — the EH-frame analyzer also defines the data units Ghidra's
-    /// `EhFrameHeaderSection`/`FdeTable` create: the `eh_frame_hdr` struct (4 bytes), the
-    /// encoded `eh_frame_ptr` + `fde_count` (`dword`), and a `fde_table_entry` (8 bytes) per
-    /// FDE-table row. Verified against the Ghidra oracle (`getDefinedData`) for basic.elf.
+    /// A7 Task 5 — the EH-frame analyzer defines the data units Ghidra's
+    /// `EhFrameHeaderSection`/`FdeTable` create (the `eh_frame_hdr` struct, the encoded
+    /// `eh_frame_ptr` + `fde_count` `dword`s, a `fde_table_entry` per FDE-table row) **and**
+    /// the field-level `.eh_frame` CIE/FDE markup (`Cie.create`/`FrameDescriptionEntry.create`:
+    /// length/id `dword`s, version `byte`, augmentation `string`, code/data-align
+    /// `uleb128`/`sleb128`, RA `byte`, aug-data-length `uleb128`, FDE-encoding `dwfenc`, the
+    /// CFI `byte[]`s, the FDE pc_begin/pc_range, and the end-of-frame `dword`). Verified
+    /// against the Ghidra oracle (`getDefinedData`) for basic.elf, scoped to the two EH-frame
+    /// blocks (`0x402008..=0x402128`) — the rest of `defined_data` is loader markup.
     #[test]
     fn basic_eh_frame_defines_data_units() {
         if crate::lang::load("x86:LE:64:default").is_none() {
@@ -452,18 +457,72 @@ mod a7_eh_frame {
             .defined_data
             .iter()
             .map(|(a, ty, len)| (a.offset, ty.clone(), *len))
+            .filter(|(a, _, _)| (0x40_2008..=0x40_2128).contains(a))
             .collect();
         mine.sort();
         let expect: Vec<(u64, String, u32)> = vec![
-            (0x40_2008, "eh_frame_hdr".into(), 4),
-            (0x40_200c, "dword".into(), 4),
-            (0x40_2010, "dword".into(), 4),
-            (0x40_2014, "fde_table_entry".into(), 8),
-            (0x40_201c, "fde_table_entry".into(), 8),
-            (0x40_2024, "fde_table_entry".into(), 8),
-            (0x40_202c, "fde_table_entry".into(), 8),
-            (0x40_2034, "fde_table_entry".into(), 8),
-            (0x40_203c, "fde_table_entry".into(), 8),
+            (0x402008, "eh_frame_hdr".into(), 4),
+            (0x40200c, "dword".into(), 4),
+            (0x402010, "dword".into(), 4),
+            (0x402014, "fde_table_entry".into(), 8),
+            (0x40201c, "fde_table_entry".into(), 8),
+            (0x402024, "fde_table_entry".into(), 8),
+            (0x40202c, "fde_table_entry".into(), 8),
+            (0x402034, "fde_table_entry".into(), 8),
+            (0x40203c, "fde_table_entry".into(), 8),
+            (0x402048, "dword".into(), 4),
+            (0x40204c, "dword".into(), 4),
+            (0x402050, "byte".into(), 1),
+            (0x402051, "string".into(), 3),
+            (0x402054, "uleb128".into(), 1),
+            (0x402055, "sleb128".into(), 1),
+            (0x402056, "byte".into(), 1),
+            (0x402057, "uleb128".into(), 1),
+            (0x402058, "dwfenc".into(), 1),
+            (0x402059, "byte[7]".into(), 7),
+            (0x402060, "dword".into(), 4),
+            (0x402064, "dword".into(), 4),
+            (0x402068, "dword".into(), 4),
+            (0x40206c, "qword".into(), 8),
+            (0x402074, "dword".into(), 4),
+            (0x402078, "dword".into(), 4),
+            (0x40207c, "byte".into(), 1),
+            (0x40207d, "string".into(), 3),
+            (0x402080, "uleb128".into(), 1),
+            (0x402081, "sleb128".into(), 1),
+            (0x402082, "byte".into(), 1),
+            (0x402083, "uleb128".into(), 1),
+            (0x402084, "dwfenc".into(), 1),
+            (0x402085, "byte[7]".into(), 7),
+            (0x40208c, "dword".into(), 4),
+            (0x402090, "dword".into(), 4),
+            (0x402094, "dword".into(), 4),
+            (0x402098, "qword".into(), 8),
+            (0x4020a0, "dword".into(), 4),
+            (0x4020a4, "dword".into(), 4),
+            (0x4020a8, "dword".into(), 4),
+            (0x4020ac, "dword".into(), 4),
+            (0x4020b0, "uleb128".into(), 1),
+            (0x4020b1, "byte[23]".into(), 23),
+            (0x4020c8, "dword".into(), 4),
+            (0x4020cc, "dword".into(), 4),
+            (0x4020d0, "dword".into(), 4),
+            (0x4020d4, "dword".into(), 4),
+            (0x4020d8, "uleb128".into(), 1),
+            (0x4020d9, "byte[15]".into(), 15),
+            (0x4020e8, "dword".into(), 4),
+            (0x4020ec, "dword".into(), 4),
+            (0x4020f0, "dword".into(), 4),
+            (0x4020f4, "dword".into(), 4),
+            (0x4020f8, "uleb128".into(), 1),
+            (0x4020f9, "byte[15]".into(), 15),
+            (0x402108, "dword".into(), 4),
+            (0x40210c, "dword".into(), 4),
+            (0x402110, "dword".into(), 4),
+            (0x402114, "dword".into(), 4),
+            (0x402118, "uleb128".into(), 1),
+            (0x402119, "byte[15]".into(), 15),
+            (0x402128, "dword".into(), 4),
         ];
         assert_eq!(mine, expect, "eh_frame data units must match the Ghidra oracle");
     }

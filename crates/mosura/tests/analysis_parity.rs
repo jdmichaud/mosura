@@ -437,11 +437,12 @@ fn data_unit_parity() {
         }
     }
     eprintln!("data-unit parity: {recall} (0 spurious)");
-    // basic 35/99 + freestanding 3/3 = 38: the .eh_frame_hdr units + the ELF-loader markup
-    // (Elf64_Ehdr/Phdr/Sym/Rela, .gnu.hash/.gnu.version/.dynstr/.interp, and the ELF notes —
-    // NoteGnuProperty/Element, GnuBuildId, NoteAbiTag). The deferred remainder is the .eh_frame
-    // CIE/FDE field markup. Raise as more markup lands.
-    assert!(recall.passed >= 38, "data-unit recall regressed below 38");
+    // basic 88/99 + freestanding 3/3 = 91: the .eh_frame_hdr units + the ELF-loader markup
+    // (Elf64_Ehdr/Phdr/Sym/Rela, .gnu.hash/.gnu.version/.dynstr/.interp, the ELF notes —
+    // NoteGnuProperty/Element, GnuBuildId, NoteAbiTag) + the .eh_frame CIE/FDE field markup.
+    // The deferred remainder (basic) is the .dynamic / GOT pointer markup (Elf64_Dyn[],
+    // pointer/undefined units in .data.rel.ro). Raise as more markup lands.
+    assert!(recall.passed >= 91, "data-unit recall regressed below 91");
 }
 
 #[test]
