@@ -369,11 +369,15 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         a port of `SymbolicPropogator.addParamReferences`/`createVariableStorageReference`/
         `makeVariableStorageReference` (the ConstantPropagationAnalyzer's parameter analysis,
         `checkParamRefs=true`/`checkPointerParamRefs=false` on x86-64). On a CALL/CALLIND, each
-        SysV-AMD64 integer arg register (RDI,RSI,RDX,RCX,R8,R9; `x86-64-gcc.cspec`) holding a
-        constant mapped address emits a PARAM **from the instruction that last set it**
-        (`getLastSetLocation` → `VarnodeContext.lastSet`). basic: `0x401054→0x401168`,
-        `0x401194→0x402004`, with the speculative DATA dropped (Ghidra `ScalarOperandAnalyzer`
-        skips an already-referenced operand). Gated to the gcc/SysV convention (PE/MZ untouched).
+        integer argument register holding a constant mapped address emits a PARAM **from the
+        instruction that last set it** (`getLastSetLocation` → `VarnodeContext.lastSet`). The arg
+        registers are resolved from the default convention's `ParamList` (`integer_arg_registers`
+        → `fspec::sysv_input`, the same model the decompiler uses) — Ghidra's
+        `getDefaultCallingConvention` + `getArgLocation`, **not a hardcoded list**. basic:
+        `0x401054→0x401168`, `0x401194→0x402004`, with the speculative DATA dropped (Ghidra
+        `ScalarOperandAnalyzer` skips an already-referenced operand). The convention *selection*
+        still gates on the compiler spec (only System V / gcc is modeled until the cspec track
+        lands — see below); PE/MZ get no SysV registers, so 0 false positives.
   - [x] **Indirect calls → COMPUTED_CALL**: the SymbolicPropogator resolves a CALLIND whose
         target is a constant (`call *[GOT]`, slot relocated to the external in A5) → COMPUTED_CALL.
         basic's 2 COMPUTED_CALL recovered, matching Ghidra; code-ref recall 29→31, 0 false positives.
@@ -407,6 +411,37 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.
 - [ ] **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
       strings/data, arch-specific propagation; each gated on Program-state parity.
+
+## Compiler-spec (cspec) track — calling conventions from the `.cspec`, not hardcoded
+
+A **cross-cutting** track shared by the decompiler and analysis ports. Today both fake the
+calling convention: the decompiler's `fspec::sysv_input`/`sysv_output` build the System V
+AMD64 `ParamList` in code, and the analysis param-ID selects it by gating on
+`compiler_spec_id == "gcc"`. Ghidra instead loads the convention from the processor's
+`.cspec` XML (e.g. `x86-64-gcc.cspec`, `x86-64-windows.cspec`). Porting that removes every
+hardcoded convention and unlocks non-SysV targets (MS-x64 on the PE corpus, `thiscall`, ARM
+AAPCS, …). Reference source: Ghidra `Framework/SoftwareModeling/.../program/model/lang/`
+(`BasicCompilerSpec`, `PrototypeModel`, `ParamListStandard`) + the `.cspec` files under each
+`Ghidra/Processors/<arch>/data/languages/`.
+
+- [ ] **C0 — `.cspec` loader.** Locate + parse the language's `.cspec` (alongside the `.sla`
+      already loaded by `lang::load`): the `<compiler_spec>` → `<default_proto>` and named
+      `<prototype>` elements, each with `<input>`/`<output>` `<pentry>` resources (register
+      and stack-param storage, type classes, alignment). Build `fspec::ParamList`/`ProtoModel`
+      from the parsed pentries — **replacing** the hand-built `sysv_input`/`sysv_output`.
+      (Coordinate with the decompiler track: `fspec.rs` is on `master`.)
+- [ ] **C1 — `getDefaultCallingConvention` + `getArgLocation`/`assignMap`.** Port
+      `CompilerSpec.getDefaultCallingConvention()` (the convention named by `<default_proto>`)
+      and the forward arg→storage assignment `PrototypeModel.getArgLocation` →
+      `ParamListStandard.assignMap`/`assignAddress` (the per-group `status[]` resource
+      consumption — faithful, replacing the analysis track's GENERAL-register-walk
+      approximation in `integer_arg_registers`).
+- [ ] **C2 — wire both consumers onto it.** Decompiler `recover_func_proto` selects its
+      `ParamList` via the loaded cspec instead of calling `sysv_input` directly; analysis
+      param-ID drops the `gcc` gate and uses `getDefaultCallingConvention().getArgLocation(...)`
+      for any convention. Then PE/MS-x64 (RCX/RDX/R8/R9) parameter analysis works — add a
+      gated check that the PE corpus (comcom32/cnv) recovers its convention's PARAM refs as a
+      clean subset of Ghidra.
 
 ## Prototype findings worth carrying forward (from the approximation era)
 
