@@ -113,15 +113,18 @@ fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeI
 /// and never live simultaneously, so reused registers/slots become one variable.
 fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
     let covers = all_covers(f);
-    // Group by storage with members in varnode (create_index) order — Ghidra processes varnodes in
-    // a deterministic order, so this drives a deterministic merge (a HashMap's iteration order must
-    // never reach the output).
-    let mut by_storage: HashMap<(SpaceId, u64), Vec<VarnodeId>> = HashMap::new();
+    // Group by storage *and size* with members in varnode (create_index) order — Ghidra processes
+    // varnodes in a deterministic order, so this drives a deterministic merge (a HashMap's
+    // iteration order must never reach the output). A Ghidra HighVariable has a single size: a
+    // differently-sized varnode sharing an address (e.g. scratch reuse of a parameter register as a
+    // 4-byte temporary) is a *distinct* variable, accessed via SUBPIECE — never merged in. Keying
+    // on size keeps an 8-byte pointer parameter from being dragged to a 4-byte scratch's `int4`.
+    let mut by_storage: HashMap<(SpaceId, u64, u32), Vec<VarnodeId>> = HashMap::new();
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
         if covers.contains_key(&v) {
             let vn = f.vn(v);
-            by_storage.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
+            by_storage.entry((vn.loc.space, vn.loc.offset, vn.size)).or_default().push(v);
         }
     }
     // Process the (independent) storage groups in a deterministic order too.
