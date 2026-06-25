@@ -481,12 +481,20 @@ impl<'a> PrintC<'a> {
         if let Some(def) = self.f.vn(addr).def {
             let o = self.f.op(def).clone();
             // A LOAD/STORE through a PTRADD/PTRSUB is array/field access (Ghidra `opLoad`/`opStore`
-            // → `checkArrayDeref` → the subscript/member token absorbs the dereference).
+            // → `checkArrayDeref` → the subscript/member token absorbs the dereference) — but only
+            // when the access width matches the element. A sub/over-element access (e.g. a 1-byte
+            // store through an `xunknown8 *`) keeps the pointer form with a cast, which Ghidra gets
+            // from the `force_pointer` mod / the ActionSetCasts CAST on the LOAD/STORE pointer.
             if o.code() == OpCode::Ptradd {
-                let (base, index) = (o.input(0).unwrap(), o.input(1).unwrap());
-                let b = self.operand(base, 16, false);
-                let i = self.render_var(index).0;
-                return (format!("{b}[{i}]"), 16);
+                let elemsize = o.input(2).map(|v| self.f.vn(v).constant_value()).unwrap_or(0);
+                if elemsize == size as u64 {
+                    let (base, index) = (o.input(0).unwrap(), o.input(1).unwrap());
+                    let b = self.operand(base, 16, false);
+                    let i = self.render_var(index).0;
+                    return (format!("{b}[{i}]"), 16);
+                }
+                let aty = symbol_type(vty.clone());
+                return (format!("*({} *){}", aty.name(), self.operand(addr, 14, false)), 15);
             }
             if o.code() == OpCode::Ptrsub {
                 return (self.render_ptrsub(def, true), 16);
