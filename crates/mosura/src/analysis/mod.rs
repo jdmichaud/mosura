@@ -437,6 +437,36 @@ mod a7_eh_frame {
         assert_eq!(mine, gold, ".eh_frame_hdr INDIRECTION refs must match Ghidra exactly");
         assert_eq!(mine.len(), 6, "6 FDE-table entries");
     }
+
+    /// A7 Task 5 — the EH-frame analyzer also defines the data units Ghidra's
+    /// `EhFrameHeaderSection`/`FdeTable` create: the `eh_frame_hdr` struct (4 bytes), the
+    /// encoded `eh_frame_ptr` + `fde_count` (`dword`), and a `fde_table_entry` (8 bytes) per
+    /// FDE-table row. Verified against the Ghidra oracle (`getDefinedData`) for basic.elf.
+    #[test]
+    fn basic_eh_frame_defines_data_units() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return;
+        }
+        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
+        let mut mine: Vec<(u64, String, u32)> = p
+            .defined_data
+            .iter()
+            .map(|(a, ty, len)| (a.offset, ty.clone(), *len))
+            .collect();
+        mine.sort();
+        let expect: Vec<(u64, String, u32)> = vec![
+            (0x40_2008, "eh_frame_hdr".into(), 4),
+            (0x40_200c, "dword".into(), 4),
+            (0x40_2010, "dword".into(), 4),
+            (0x40_2014, "fde_table_entry".into(), 8),
+            (0x40_201c, "fde_table_entry".into(), 8),
+            (0x40_2024, "fde_table_entry".into(), 8),
+            (0x40_202c, "fde_table_entry".into(), 8),
+            (0x40_2034, "fde_table_entry".into(), 8),
+            (0x40_203c, "fde_table_entry".into(), 8),
+        ];
+        assert_eq!(mine, expect, "eh_frame data units must match the Ghidra oracle");
+    }
 }
 
 #[cfg(test)]

@@ -124,6 +124,21 @@ public class DumpAnalysisSnapshot extends GhidraScript {
                 }
             }
             for (String line : refs) w.println(line);
+
+            // Defined data units in the default space (Ghidra `Listing.getDefinedData`) — the
+            // data-markup analysis output (string/struct/scalar items). One
+            // `data <addr> <datatype-name> <byte-length>` per unit. Ghidra datatype names
+            // carry no spaces (e.g. `dword`, `eh_frame_hdr`, `fde_table_entry`,
+            // `Elf64_Phdr[14]`, `string-utf8`).
+            ghidra.program.model.listing.DataIterator dit =
+                    currentProgram.getListing().getDefinedData(true);
+            while (dit.hasNext()) {
+                ghidra.program.model.listing.Data d = dit.next();
+                Address a = d.getAddress();
+                if (!a.getAddressSpace().equals(defaultSpace)) continue;
+                w.printf("data %08x %s %d%n",
+                        a.getOffset(), d.getDataType().getName(), d.getLength());
+            }
         }
         println("DumpAnalysisSnapshot: wrote " + outPath);
     }

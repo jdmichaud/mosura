@@ -60,6 +60,12 @@ pub struct Program {
     /// resolves to it. A direct call to one of these does not fall through (the disassembler
     /// stops linear decode after the call). `(space, offset)` keys.
     pub noreturn_functions: std::collections::HashSet<(u32, u64)>,
+    /// Defined data units (Ghidra `Listing.getDefinedData`): `(address, datatype-name,
+    /// byte-length)`. Populated by the data-markup analyzers (A7 Task 5) — e.g. the GCC
+    /// exception-frame analyzer's `eh_frame_hdr` / `fde_table_entry` structures. The
+    /// snapshot's `data` section is projected from this; the datatype names are Ghidra's
+    /// (`DWordDataType.getName()` etc.), so a comparison is a clean subset of the oracle.
+    pub defined_data: Vec<(Address, String, u32)>,
 }
 
 impl Program {
@@ -90,6 +96,7 @@ impl Program {
             reference_manager: ReferenceManager::new(),
             indirect_branches: std::collections::HashSet::new(),
             noreturn_functions: std::collections::HashSet::new(),
+            defined_data: Vec::new(),
         }
     }
 
@@ -174,6 +181,16 @@ impl Program {
                     .collect(),
             })
             .collect();
+        let data = self
+            .defined_data
+            .iter()
+            .filter(|(a, _, _)| a.space == self.default_space)
+            .map(|(a, ty, len)| snapshot::Data {
+                addr: a.offset,
+                type_name: ty.clone(),
+                len: *len,
+            })
+            .collect();
         let mut snap = Snapshot {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
@@ -187,6 +204,7 @@ impl Program {
             refs,
             code_units,
             bodies,
+            data,
         };
         snap.normalize();
         snap

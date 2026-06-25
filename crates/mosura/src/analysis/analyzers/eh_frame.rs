@@ -13,6 +13,15 @@
 //!     **INDIRECTION** ref — `FdeTable` hardcodes `RefType.INDIRECTION` for the code pointer)
 //!     and `data_loc` (emitting a **DATA** ref).
 //!
+//! Besides the references, Ghidra also **defines data units** as it walks the header
+//! (`CreateDataCmd` / `StructureDataType.create`): the `eh_frame_hdr` struct
+//! (`ExceptionHandlerFrameHeader`, 4 bytes), the encoded `eh_frame_ptr` and `fde_count`
+//! fields (each `DwarfEHDecoder.getDataType` → `word`/`dword`/`qword`), and the
+//! `fde_table_entry` struct (`FdeTable`, `2 * field_size` bytes) for each table row. We
+//! record these into `Program::defined_data` so the snapshot's `data` section reproduces
+//! them — a faithful subset of Ghidra's defined-data set (the remaining ELF-structure and
+//! `.eh_frame` CIE/FDE markup is loader / `EhFrameSection` territory, deferred).
+//!
 //! The DWARF encoding byte splits into a *format* (low nibble — the stored size/signedness)
 //! and an *application mode* (bits 0x70 — how to turn the stored value into an address:
 //! `pcrel`/`datarel`/`texrel`/`funcrel`/`absptr`), with bit 0x80 = indirect (dereference the
@@ -112,6 +121,20 @@ impl Decoder {
     fn is_signed(&self) -> bool {
         matches!(self.format, Format::Sdata2 | Format::Sdata4 | Format::Sdata8)
     }
+
+    /// The Ghidra datatype NAME for a field of this encoding (`DwarfEHDecoder.getDataType`):
+    /// the udata/sdata 2/4/8 decoders return `WORD_DATA_TYPE`/`DWORD_DATA_TYPE`/
+    /// `QWORD_DATA_TYPE` (names `word`/`dword`/`qword`); the absptr decoder switches on the
+    /// pointer size and returns the same word/dword/qword by length. Keyed off the decode
+    /// size so both paths agree. `None` for omit/unsupported (no data unit created).
+    fn datatype_name(&self, ptr_size: u32) -> Option<&'static str> {
+        Some(match self.decode_size(ptr_size)? {
+            2 => "word",
+            4 => "dword",
+            8 => "qword",
+            _ => return None,
+        })
+    }
 }
 
 /// Read a little-endian `size`-byte unsigned value from program memory, or `None` if any
@@ -175,14 +198,34 @@ fn resolve(
 }
 
 /// Run the `.eh_frame_hdr` FDE-table analysis over `program`, adding the INDIRECTION /
-/// DATA references Ghidra's `EhFrameHeaderSection` + `FdeTable` create. No-op if there is
-/// no `.eh_frame_hdr` block (the analyzer's `canAnalyze` gate) or the header cannot be
-/// decoded.
+/// DATA references Ghidra's `EhFrameHeaderSection` + `FdeTable` create, and the
+/// `eh_frame_hdr` / `word`/`dword`/`qword` / `fde_table_entry` data units it defines. No-op
+/// if there is no `.eh_frame_hdr` block (the analyzer's `canAnalyze` gate) or the header
+/// cannot be decoded.
 pub fn analyze(program: &mut Program) {
+    let (refs, data_units) = collect(program);
+    // Ghidra's addMemoryReference uses operand index 0 for these data references.
+    for (f, t, k) in refs {
+        program.reference_manager.add(f, t, k, 0);
+    }
+    for d in data_units {
+        program.defined_data.push(d);
+    }
+}
+
+/// The pure decoding pass: walk the `.eh_frame_hdr` and return the `(references,
+/// data_units)` Ghidra creates, without mutating the program (so the multiple
+/// early-exit paths flush in one place). `data_units` are `(address, datatype-name,
+/// byte-length)`.
+#[allow(clippy::type_complexity)]
+fn collect(
+    program: &Program,
+) -> (Vec<(Address, Address, RefType)>, Vec<(Address, String, u32)>) {
+    let none = || (Vec::new(), Vec::new());
     // canAnalyze: gcc / default compiler spec.
     let cs = program.compiler_spec_id.to_ascii_lowercase();
     if cs != "gcc" && cs != "default" {
-        return;
+        return none();
     }
     let ram = program.default_space;
     let ptr_size = program.addr_size_bits / 8;
@@ -192,16 +235,16 @@ pub fn analyze(program: &mut Program) {
         .block_by_name(EH_FRAME_HDR_BLOCK)
         .map(|b| (b.start().offset, b.end().offset))
     else {
-        return;
+        return none();
     };
     let text_start = program.memory.block_by_name(".text").map(|b| b.start().offset);
 
     // EhFrameHeaderSection.analyzeSection: read the 4-byte header.
     let at = |off: u64| Address::new(ram, off);
-    let Some(version) = program.memory.byte_at(at(hdr_start)) else { return };
+    let Some(version) = program.memory.byte_at(at(hdr_start)) else { return none() };
     if version != 1 {
         // gcc emits version 1; bail rather than guess on an unfamiliar header.
-        return;
+        return none();
     }
     let frame_ptr_enc = program.memory.byte_at(at(hdr_start + 1));
     let fde_count_enc = program.memory.byte_at(at(hdr_start + 2));
@@ -209,18 +252,28 @@ pub fn analyze(program: &mut Program) {
     let (Some(frame_ptr_enc), Some(fde_count_enc), Some(table_enc)) =
         (frame_ptr_enc, fde_count_enc, table_enc)
     else {
-        return;
+        return none();
     };
 
-    // Refs to add (collected; applied after decoding to keep the borrow simple).
+    // Refs + data units to add (collected; applied by `analyze` to keep the borrow simple).
     let mut refs: Vec<(Address, Address, RefType)> = Vec::new();
+    let mut data: Vec<(Address, String, u32)> = Vec::new();
+
+    // ExceptionHandlerFrameHeader.create: the `eh_frame_hdr` struct — a ByteDataType
+    // (version) + 3 DwarfEncodingModeDataType (1 byte each) = 4 bytes.
+    data.push((at(hdr_start), "eh_frame_hdr".to_string(), 4));
 
     // header length = 4 bytes (version + 3 encoding bytes).
     let mut cur = hdr_start + 4;
 
-    // processEncodedFramePointer: the encoded eh_frame_ptr → a DATA ref.
+    // processEncodedFramePointer: the encoded eh_frame_ptr → a DATA ref + a data unit.
     let fp_decoder = Decoder::from_mode(frame_ptr_enc);
-    let Some((fp_val, fp_len)) = do_decode(program, &fp_decoder, at(cur), ptr_size) else { return };
+    let Some((fp_val, fp_len)) = do_decode(program, &fp_decoder, at(cur), ptr_size) else {
+        return (refs, data);
+    };
+    if let Some(name) = fp_decoder.datatype_name(ptr_size) {
+        data.push((at(cur), name.to_string(), fp_len as u32));
+    }
     if let Some(target) =
         resolve(program, &fp_decoder, fp_val, at(cur), hdr_start, text_start, ptr_size)
     {
@@ -231,34 +284,33 @@ pub fn analyze(program: &mut Program) {
     }
     cur += fp_len as u64;
 
-    // markupEncodedFdeCount + getFdeTableCount: the encoded FDE count.
+    // markupEncodedFdeCount + getFdeTableCount: the encoded FDE count → a data unit.
     let count_decoder = Decoder::from_mode(fde_count_enc);
     let Some((fde_count, count_len)) = do_decode(program, &count_decoder, at(cur), ptr_size) else {
-        return;
+        return (refs, data);
     };
+    if let Some(name) = count_decoder.datatype_name(ptr_size) {
+        data.push((at(cur), name.to_string(), count_len as u32));
+    }
     cur += count_len as u64;
     if fde_count == 0 {
-        for (f, t, k) in refs {
-            program.reference_manager.add(f, t, k, 0);
-        }
-        return;
+        return (refs, data);
     }
 
     // createFdeTable / FdeTable.create: each entry is two encoded values (initial_loc,
     // data_loc) with the table encoding. The fde_table_entry struct is 2 * decode_size.
     let table_decoder = Decoder::from_mode(table_enc);
     let Some(entry_field_size) = table_decoder.decode_size(ptr_size) else {
-        for (f, t, k) in refs {
-            program.reference_manager.add(f, t, k, 0);
-        }
-        return;
+        return (refs, data);
     };
     let entry_size = (entry_field_size * 2) as u64;
 
     let mut produced: u64 = 0;
     while cur < hdr_end && produced < fde_count {
-        // initial_loc → INDIRECTION (code pointer).
+        // The fde_table_entry struct (FdeTable.create) — 2 * field_size bytes.
         let loc_field = at(cur);
+        data.push((loc_field, "fde_table_entry".to_string(), entry_size as u32));
+        // initial_loc → INDIRECTION (code pointer).
         let Some((loc_val, _)) = do_decode(program, &table_decoder, loc_field, ptr_size) else {
             break;
         };
@@ -287,8 +339,5 @@ pub fn analyze(program: &mut Program) {
         cur += entry_size;
     }
 
-    // Ghidra's addMemoryReference uses operand index 0 for these data references.
-    for (f, t, k) in refs {
-        program.reference_manager.add(f, t, k, 0);
-    }
+    (refs, data)
 }

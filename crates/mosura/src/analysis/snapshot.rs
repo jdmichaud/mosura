@@ -76,6 +76,16 @@ pub struct FnBody {
     pub ranges: Vec<(u64, u64)>,
 }
 
+/// A defined data unit (Ghidra `Data` from `Listing.getDefinedData`): its address, the
+/// data-type name (`Data.getDataType().getName()`, e.g. `dword`/`eh_frame_hdr`/
+/// `fde_table_entry`/`Elf64_Ehdr`), and byte length (`Data.getLength()`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Data {
+    pub addr: u64,
+    pub type_name: String,
+    pub len: u32,
+}
+
 /// The converged-program snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -95,6 +105,8 @@ pub struct Snapshot {
     pub code_units: Vec<u64>,
     /// Function bodies (Ghidra `Function.getBody`).
     pub bodies: Vec<FnBody>,
+    /// Defined data units (Ghidra `Listing.getDefinedData`).
+    pub data: Vec<Data>,
 }
 
 impl Snapshot {
@@ -114,6 +126,8 @@ impl Snapshot {
         }
         self.bodies.sort();
         self.bodies.dedup();
+        self.data.sort();
+        self.data.dedup();
     }
 
     /// Render to the canonical v1 text format (sorted). Round-trips with
@@ -150,6 +164,9 @@ impl Snapshot {
                 out.push_str(&format!(" {start:08x}:{end:08x}"));
             }
             out.push('\n');
+        }
+        for d in &s.data {
+            out.push_str(&format!("data {:08x} {} {}\n", d.addr, d.type_name, d.len));
         }
         out
     }
@@ -227,6 +244,17 @@ pub fn parse(text: &str) -> Snapshot {
                     snap.code_units.push(a);
                 }
             }
+            Some("data") => {
+                // `data <addr> <type-name> <len>`; len is the final token, type-name the
+                // middle (Ghidra datatype names carry no spaces, but join defensively).
+                let addr = it.next().and_then(|s| u64::from_str_radix(s, 16).ok());
+                let mut rest: Vec<&str> = it.collect();
+                let len = rest.pop().and_then(|s| s.parse::<u32>().ok());
+                let type_name = rest.join(" ");
+                if let (Some(addr), Some(len)) = (addr, len) {
+                    snap.data.push(Data { addr, type_name, len });
+                }
+            }
             Some("fnbody") => {
                 // `fnbody <entry> s:e s:e ...`.
                 if let Some(entry) = it.next().and_then(|s| u64::from_str_radix(s, 16).ok()) {
@@ -298,5 +326,18 @@ sym 00402000 __bss_start Label
         // a future section prefix must not break a v1 parser
         let s = parse("# v1 lang=x\nfunc 00401000 f\nref 00401000 00402000 CALL\n");
         assert_eq!(s.functions.len(), 1);
+    }
+
+    #[test]
+    fn parses_and_round_trips_data_units() {
+        let s = parse(
+            "# v1 lang=x\ndata 00402008 eh_frame_hdr 4\ndata 00402014 fde_table_entry 8\n",
+        );
+        assert_eq!(s.data.len(), 2);
+        assert_eq!(s.data[0].type_name, "eh_frame_hdr");
+        assert_eq!(s.data[0].len, 4);
+        assert_eq!(s.data[1].addr, 0x0040_2014);
+        // round-trips through render
+        assert_eq!(parse(&s.render()), s);
     }
 }

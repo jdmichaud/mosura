@@ -399,6 +399,50 @@ fn eh_frame_reference_parity() {
     assert!(recall.passed >= 13, "eh_frame-reference recall regressed below 13");
 }
 
+/// A7 Task 5 — defined-data-unit parity. mosura's data-markup analysis must never define a
+/// data unit Ghidra doesn't (a HARD subset gate over `Listing.getDefinedData`, compared on
+/// `(addr, type-name, len)`), with a recall ratchet. Today mosura defines only the GCC
+/// exception-frame data units (`eh_frame_hdr`, the encoded `eh_frame_ptr`/`fde_count`
+/// `dword`s, and `fde_table_entry[]`); the rest of Ghidra's defined data — ELF-structure
+/// markup (`Elf64_Ehdr`/`Phdr`/`Sym`/`Rela`/`Dyn`, dynamic `string-utf8` entries) and the
+/// `.eh_frame` CIE/FDE field markup — comes from the loader / `EhFrameSection`, deferred.
+#[test]
+fn data_unit_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let mut recall = Tally::default();
+    for name in MANDATORY {
+        let golden = snapshot::parse(
+            &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
+        );
+        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let mine: BTreeSet<(u64, String, u32)> =
+            snap.data.iter().map(|d| (d.addr, d.type_name.clone(), d.len)).collect();
+        let gold: BTreeSet<(u64, String, u32)> =
+            golden.data.iter().map(|d| (d.addr, d.type_name.clone(), d.len)).collect();
+        let spurious: Vec<_> = mine.difference(&gold).collect();
+        assert!(
+            spurious.is_empty(),
+            "{name}: mosura defined {} data unit(s) absent from Ghidra: {spurious:?}",
+            spurious.len()
+        );
+        let matched = mine.intersection(&gold).count();
+        eprintln!("  [{name}] data-unit recall {matched}/{} (0 spurious)", gold.len());
+        for _ in 0..matched {
+            recall.record(true);
+        }
+        for _ in 0..(gold.len() - matched) {
+            recall.record(false);
+        }
+    }
+    eprintln!("data-unit parity: {recall} (0 spurious)");
+    // basic: the 9 .eh_frame_hdr data units (eh_frame_hdr + eh_frame_ptr + fde_count + 6×
+    // fde_table_entry) out of 99 Ghidra defines. freestanding: 0/3 (its 3 are ELF-header
+    // markup). The deferred remainder is ELF-structure + .eh_frame CIE/FDE markup.
+    assert!(recall.passed >= 9, "data-unit recall regressed below 9");
+}
+
 #[test]
 fn loader_detail_parity() {
     let goldens = analysis_goldens_dir();
