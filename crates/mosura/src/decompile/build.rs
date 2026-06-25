@@ -202,7 +202,7 @@ pub fn raw_funcdata_flow_image(
         if !has_indirect {
             break;
         }
-        let mut partial = build_from_instrs(name.clone(), cbase, decoded.values().cloned());
+        let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned());
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         super::pipeline::decompile(&mut partial);
         let mut added = false;
@@ -219,7 +219,7 @@ pub fn raw_funcdata_flow_image(
             break;
         }
     }
-    let mut f = build_from_instrs(name, cbase, decoded.into_values());
+    let mut f = build_from_instrs(name, entry, decoded.into_values());
     f.switch_targets = switch_targets;
     f.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
     f

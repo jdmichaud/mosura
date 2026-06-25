@@ -179,9 +179,16 @@ pub fn build_cfg(f: &mut Funcdata) {
     // Reachability from the entry (block 0): Ghidra's followFlow only traces code
     // reachable from the entry, so trailing/other-function code the linear lifter swept
     // up is dropped here.
+    // Root at the block holding the function's entry address — not block 0, which is merely the
+    // lowest-address block. gcc emits `.cold` fragments *below* the entry, so the entry block need
+    // not be first; Ghidra's followFlow traces from the entry point, not the lowest address.
+    let entry_off = f.addr.offset;
+    let entry_block = (0..nb)
+        .find(|&b| blocks[b].ops.first().is_some_and(|&op| f.op(op).seqnum.pc.offset == entry_off))
+        .unwrap_or(0);
     let mut reachable = vec![false; nb];
-    let mut stack = vec![0usize];
-    reachable[0] = true;
+    let mut stack = vec![entry_block];
+    reachable[entry_block] = true;
     while let Some(b) = stack.pop() {
         for o in blocks[b].out_edges.clone() {
             let o = o.0 as usize;
@@ -199,19 +206,20 @@ pub fn build_cfg(f: &mut Funcdata) {
         f.op_destroy(op);
     }
 
-    let mut newid = vec![u32::MAX; nb];
-    let mut k = 0u32;
-    for (b, &r) in reachable.iter().enumerate() {
-        if r {
-            newid[b] = k;
-            k += 1;
-        }
+    // Renumber reachable blocks with the entry block first, so it becomes block 0 — the dominator
+    // and heritage root. (Address order otherwise; for an entry that is already the lowest address
+    // this is a no-op.)
+    let mut order: Vec<usize> = Vec::with_capacity(nb);
+    if reachable[entry_block] {
+        order.push(entry_block);
     }
-    let mut pruned: Vec<BlockBasic> = Vec::with_capacity(k as usize);
-    for b in 0..nb {
-        if !reachable[b] {
-            continue;
-        }
+    order.extend((0..nb).filter(|&b| reachable[b] && b != entry_block));
+    let mut newid = vec![u32::MAX; nb];
+    for (new, &b) in order.iter().enumerate() {
+        newid[b] = new as u32;
+    }
+    let mut pruned: Vec<BlockBasic> = Vec::with_capacity(order.len());
+    for &b in &order {
         let mut blk = std::mem::take(&mut blocks[b]);
         blk.out_edges = blk
             .out_edges

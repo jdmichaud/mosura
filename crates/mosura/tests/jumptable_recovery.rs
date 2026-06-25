@@ -79,3 +79,30 @@ fn ifswitch_offset_switch_recovers_twentyone_targets() {
     assert_eq!(faithful.len(), 1);
     assert_eq!(faithful[0].len(), 21, "Ghidra's ifswitch table is indices 0..0x14 = 21 entries");
 }
+
+#[test]
+fn switch_o2_register_guard_with_cold_block_below_entry() {
+    // gcc -O2 relative jump table (oracle/fixtures/x86_64_switch_o2.xml): the switch index lives in
+    // a register (edi), the guard is `cmp $6,%edi; ja .cold`, and gcc places `classify.cold` at
+    // 0x401000 — *below* the entry 0x401010, so the entry is not the lowest-address block.
+    // Reachability must root at the entry, else the whole body (incl. the BRANCHIND) is pruned and
+    // recovery declines. Ghidra recovers 7 COMPUTED_JUMP targets from 0x401029.
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_switch_o2.xml")).unwrap();
+    let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let mut f = raw_funcdata_flow_image(&spec, "classify", &img, 0x401010, &ctx);
+    pipeline::decompile(&mut f);
+    let jts = f.jump_tables();
+    assert_eq!(jts.len(), 1, "the -O2 register-guard switch must recover");
+    assert_eq!(jts[0].op_addr, 0x401029);
+    assert_eq!(
+        jts[0].targets,
+        vec![0x401030, 0x401040, 0x401050, 0x401058, 0x401060, 0x401068, 0x401070],
+        "7 COMPUTED_JUMP targets, matching Ghidra analyzeHeadless"
+    );
+}

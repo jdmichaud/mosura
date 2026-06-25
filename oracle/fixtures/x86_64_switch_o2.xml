@@ -1,0 +1,10 @@
+<binaryimage arch="x86:LE:64:default:gcc">
+  <!-- gcc -O2 dense 7-case switch (a relative jump table). The switch index is a register
+       (edi), the guard is `cmp $6,%edi; ja .cold`, and gcc places `classify.cold` at 0x401000,
+       *below* the entry 0x401010 (so the entry is NOT the lowest-address block). Entry: 0x401010.
+       0x401010 cmp edi,6 / 0x401013 ja 0x401000 / 0x401019 lea 0xfe0(rip),rdx (=0x402000) /
+       0x401020 mov edi,edi / 0x401022 movslq (rdx,rdi,4),rax / 0x401026 add rdx,rax / 0x401029 jmp rax -->
+  <bytechunk space="ram" offset="0x401000" readonly="true">c3cccccccccccccccccccccccccccccc83ff060f87e7ffffff488d15e00f000089ff486304ba4801d0ffe0ccccccccccc3ccccccccccccccccccccccccccccccc3ccccccccccccccccccccccccccccccc3ccccccccccccccc3ccccccccccccccc3ccccccccccccccc3ccccccccccccccc3</bytechunk>
+  <!-- relative jump table at 0x402000: int32 (target - 0x402000) for indices 0..6 -->
+  <bytechunk space="ram" offset="0x402000" readonly="true">30f0ffff40f0ffff50f0ffff58f0ffff60f0ffff68f0ffff70f0ffff</bytechunk>
+</binaryimage>
