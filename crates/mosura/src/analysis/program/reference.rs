@@ -128,6 +128,22 @@ impl ReferenceManager {
         }
     }
 
+    /// Remove every reference `from → to` of `ref_type` (any op index). Used when the
+    /// parameter analysis claims an operand: Ghidra's `ScalarOperandAnalyzer` skips an
+    /// operand that already carries a reference, so a speculative DATA ref must not coexist
+    /// with the PARAM the constant propagator created at the same site.
+    pub fn remove(&mut self, from: Address, to: Address, ref_type: RefType) {
+        self.refs.retain(|r| !(r.from == from && r.to == to && r.ref_type == ref_type));
+        self.seen.retain(|k| {
+            !(k.0 == from.space.0 && k.1 == from.offset && k.2 == to.space.0 && k.3 == to.offset && k.5 == ref_type as i32)
+        });
+    }
+
+    /// True if any reference `from → to` exists (any type/op index).
+    pub fn has_ref(&self, from: Address, to: Address) -> bool {
+        self.refs.iter().any(|r| r.from == from && r.to == to)
+    }
+
     /// All references (unordered; the snapshot sorts). Ghidra `getReferenceIterator`.
     pub fn references(&self) -> impl Iterator<Item = &Reference> {
         self.refs.iter()

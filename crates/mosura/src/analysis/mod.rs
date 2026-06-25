@@ -269,31 +269,35 @@ mod a5_tests {
 
 
 #[cfg(test)]
-mod a6_probe {
+mod a6_typed_refs {
     use super::*;
-    #[test]
-    #[ignore]
-    fn dump_basic_refs() {
-        if crate::lang::load("x86:LE:64:default").is_none() { return; }
-        let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
-        let mut refs: Vec<_> = p.reference_manager.references()
-            .filter(|r| r.from.offset >= 0x401020 && r.from.offset < 0x4011b0)
-            .map(|r| (r.from.offset, r.to.offset, r.ref_type.name())).collect();
-        refs.sort();
-        for (f,t,k) in refs { eprintln!("ref {f:08x} {t:08x} {k}"); }
-    }
-}
 
-#[cfg(test)]
-mod a6_probe2 {
-    use super::*;
+    /// A6 indirect-flow + parameter analysis emit Ghidra's *exact* reference types on
+    /// basic, not just the (from,to) pairs the recall gate checks: the PLT tail-call's
+    /// COMPUTED_CALL_TERMINATOR, PLT[0]'s INDIRECTION, and the two pointer-argument PARAMs
+    /// (with no stray DATA at the param-set instructions).
     #[test]
-    #[ignore]
-    fn dump_basic_funcs() {
-        if crate::lang::load("x86:LE:64:default").is_none() { return; }
+    fn basic_indirect_flow_and_param_types_match_ghidra() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
-        let mut fns: Vec<u64> = p.function_manager.functions().map(|f| f.entry_point().offset).collect();
-        fns.sort();
-        for f in fns { eprintln!("func {f:08x}"); }
+        let typed = |from: u64, to: u64| -> Vec<&'static str> {
+            let ram = p.default_space;
+            use crate::decompile::space::Address;
+            p.reference_manager
+                .references()
+                .filter(|r| r.from == Address::new(ram, from) && r.to == Address::new(ram, to))
+                .map(|r| r.ref_type.name())
+                .collect()
+        };
+        // Task 1: the PLT `jmp *[GOT]` resolving to the external printf is a tail call.
+        assert_eq!(typed(0x40_1030, 0x40_5008), vec!["COMPUTED_CALL_TERMINATOR"]);
+        // Task 2: PLT[0]'s `jmp *[GOT]` to the resolver slot is an INDIRECTION.
+        assert_eq!(typed(0x40_1026, 0x40_3ff8), vec!["INDIRECTION"]);
+        // Task 3: pointer arguments at the two call sites are PARAM — and only PARAM (the
+        // speculative DATA ref the scalar analyzer would skip is dropped).
+        assert_eq!(typed(0x40_1054, 0x40_1168), vec!["PARAM"]);
+        assert_eq!(typed(0x40_1194, 0x40_2004), vec!["PARAM"]);
     }
 }

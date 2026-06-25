@@ -50,9 +50,14 @@ fn space_key(name: &str) -> u64 {
 /// Per-location symbolic state (Ghidra `VarnodeContext`): the value of each register /
 /// temporary, keyed by `(space_key, offset)`. `const` varnodes carry their value
 /// intrinsically; `ram` varnodes are addresses, handled by the reference logic.
+///
+/// `last_set` records, per varnode, the instruction address that last wrote it (Ghidra
+/// `VarnodeContext.lastSet` via `addSetVarnodeToLastSetLocations`) — the from-address of a
+/// recovered PARAM reference.
 #[derive(Clone, Default)]
 struct VarnodeContext {
     state: HashMap<(u64, u64), SymValue>,
+    last_set: HashMap<(u64, u64), u64>,
 }
 
 impl VarnodeContext {
@@ -67,6 +72,19 @@ impl VarnodeContext {
         if vn.space != "const" {
             self.state.insert((space_key(&vn.space), vn.offset), val);
         }
+    }
+    /// Like [`put`], also recording `at` as the last-set location of this varnode (Ghidra
+    /// `propogateValue` → `addSetVarnodeToLastSetLocations`).
+    fn put_at(&mut self, vn: &Varnode, val: SymValue, at: u64) {
+        if vn.space != "const" {
+            let key = (space_key(&vn.space), vn.offset);
+            self.state.insert(key, val);
+            self.last_set.insert(key, at);
+        }
+    }
+    /// The instruction address that last set `(space, offset)`, if known.
+    fn last_set_of(&self, space: &str, offset: u64) -> Option<u64> {
+        self.last_set.get(&(space_key(space), offset)).copied()
     }
 }
 
@@ -120,6 +138,74 @@ fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref
         return;
     }
     program.reference_manager.add(from, to, ref_type, -1);
+}
+
+/// System V AMD64 default-convention integer argument registers, in order
+/// (`x86-64-gcc.cspec` `<default_proto><input>`: RDI, RSI, RDX, RCX, R8, R9), as
+/// `register`-space offsets in the x86-64 SLEIGH model. `conv.getArgLocation(pi, …,
+/// pointerSizedDT, …)` returns these for an integer/pointer-typed argument; the float
+/// (XMM) pentries are not selected for a pointer-sized type. Offsets verified by lifting
+/// `mov $imm,<reg>`: RDI=56, RSI=48, RDX=16, RCX=8, R8=128, R9=136.
+const SYSV_INT_ARG_REGS: [u64; 6] = [56, 48, 16, 8, 128, 136];
+
+/// Recover PARAM references at a call site — a port of `SymbolicPropogator.addParamReferences`
+/// → `createVariableStorageReference` → `makeVariableStorageReference` (the constant
+/// propagator's parameter analysis, enabled for non-segmented spaces; x86-64 has
+/// `checkParamRefs = true`, `checkPointerParamRefs = false`).
+///
+/// For the corpus the called externals have no recovered signature, so Ghidra takes the
+/// "no defined params" branch: loop the first 8 argument locations, skip stack storage,
+/// and for each register holding a constant value emit a reference **from the instruction
+/// that last set that register** (`getLastSetLocation`) to the value. With `callOffset != 0`
+/// (a real call) the type is PARAM, else DATA (`makeVariableStorageReference`); the value
+/// must not equal the call target (`val == callOffset` is skipped) and clears the
+/// `minStoreLoadOffset` threshold via the shared `make_ref` gate.
+fn add_param_references(
+    program: &mut Program,
+    vctx: &VarnodeContext,
+    ram: SpaceId,
+    here: Address,
+    call_offset: u64,
+) {
+    // Ghidra reads `program.getCompilerSpec().getDefaultCallingConvention()`. The hardcoded
+    // register list is the System V AMD64 default ([`SYSV_INT_ARG_REGS`]); only apply it
+    // when the program uses that convention (the `gcc` cspec). Other conventions (e.g. MS
+    // x64 on a PE: RCX/RDX/R8/R9) have a different arg register set, so applying SysV regs
+    // would be unfaithful and could invent references — bail out instead.
+    if program.compiler_spec_id != "gcc" {
+        return;
+    }
+    for &reg_off in &SYSV_INT_ARG_REGS {
+        let SymValue::Const(val) = vctx.get(&Varnode { space: "register".into(), offset: reg_off, size: 8 })
+        else {
+            // `createVariableStorageReference`: stop at the first register with no value
+            // is not how Ghidra's no-signature loop works — it continues — but a
+            // non-constant register simply yields no reference, so just skip it.
+            continue;
+        };
+        // `makeVariableStorageReference`: skip when the value is the call target itself.
+        if val == call_offset {
+            continue;
+        }
+        // The from-address is where the register was last set (`getLastSetLocation`); if
+        // unknown, Ghidra falls back to the instruction's max address — but without a
+        // tracked set location we have no faithful from-address, so skip.
+        let Some(from_off) = vctx.last_set_of("register", reg_off) else { continue };
+        let from = Address::new(ram, from_off);
+        let to = Address::new(ram, val);
+        // The target must be a mapped address ≥ the known-ref threshold
+        // (`evaluateReference` minStoreLoadOffset = 4); guard before mutating.
+        if val < MIN_KNOWN_REF || !program.memory.contains(to) {
+            continue;
+        }
+        // Ghidra's ScalarOperandAnalyzer skips an operand that already carries a reference,
+        // so the speculative DATA ref the constant propagator made for the immediate at the
+        // set instruction must not coexist with this PARAM — drop it (the param analysis
+        // claims the operand). Then add the PARAM (callOffset != 0 → PARAM).
+        program.reference_manager.remove(from, to, RefType::Data);
+        program.reference_manager.add(from, to, RefType::Param, -1);
+    }
+    let _ = here;
 }
 
 /// Interpret one p-code op: create references for resolved memory operands and update
@@ -189,7 +275,7 @@ fn process_op(
                     vctx.get(v)
                 };
                 if let Some(out) = &op.out {
-                    vctx.put(out, val);
+                    vctx.put_at(out, val, here.offset);
                 }
             }
         }
@@ -205,7 +291,7 @@ fn process_op(
                 }
             }
             if let Some(out) = &op.out {
-                vctx.put(out, loaded);
+                vctx.put_at(out, loaded, here.offset);
             }
         }
         Some(OpCode::Store) => {
@@ -244,28 +330,28 @@ fn process_op(
             }
         }
         // Constant-fold the address arithmetic so register-held addresses propagate.
-        Some(OpCode::IntAdd) => fold2(vctx, op, u64::wrapping_add),
-        Some(OpCode::IntSub) => fold2(vctx, op, u64::wrapping_sub),
-        Some(OpCode::IntAnd) => fold2(vctx, op, |a, b| a & b),
-        Some(OpCode::IntOr) => fold2(vctx, op, |a, b| a | b),
+        Some(OpCode::IntAdd) => fold2(vctx, op, here.offset, u64::wrapping_add),
+        Some(OpCode::IntSub) => fold2(vctx, op, here.offset, u64::wrapping_sub),
+        Some(OpCode::IntAnd) => fold2(vctx, op, here.offset, |a, b| a & b),
+        Some(OpCode::IntOr) => fold2(vctx, op, here.offset, |a, b| a | b),
         Some(OpCode::IntZext | OpCode::IntSext) => {
             // Pass the (masked) value through a widening copy.
             let v = op.ins.first().and_then(arg_var).map(|v| vctx.get(v)).unwrap_or(SymValue::Unknown);
             if let Some(out) = &op.out {
-                vctx.put(out, v);
+                vctx.put_at(out, v, here.offset);
             }
         }
         _ => {
             // Any other op makes its output unknown (conservative).
             if let Some(out) = &op.out {
-                vctx.put(out, SymValue::Unknown);
+                vctx.put_at(out, SymValue::Unknown, here.offset);
             }
         }
     }
 }
 
 /// Constant-fold a binary op when both inputs are constants; otherwise unknown.
-fn fold2(vctx: &mut VarnodeContext, op: &PcodeOp, f: impl Fn(u64, u64) -> u64) {
+fn fold2(vctx: &mut VarnodeContext, op: &PcodeOp, at: u64, f: impl Fn(u64, u64) -> u64) {
     let Some(out) = &op.out else { return };
     let a = op.ins.first().and_then(arg_var).map(|v| vctx.get(v));
     let b = op.ins.get(1).and_then(arg_var).map(|v| vctx.get(v));
@@ -273,7 +359,7 @@ fn fold2(vctx: &mut VarnodeContext, op: &PcodeOp, f: impl Fn(u64, u64) -> u64) {
         (Some(SymValue::Const(x)), Some(SymValue::Const(y))) => SymValue::Const(mask(f(x, y), out.size)),
         _ => SymValue::Unknown,
     };
-    vctx.put(out, val);
+    vctx.put_at(out, val, at);
 }
 
 fn ram_branch_target(op: &PcodeOp) -> Option<u64> {
@@ -327,6 +413,25 @@ pub fn flow_constants(
         let mut falls = true;
         let mut branch_targets: Vec<u64> = Vec::new();
         for op in &insn.ops {
+            // On a call, recover PARAM references for the argument registers from the
+            // register state *before* the call clobbers anything (Ghidra applies
+            // `addParamReferences` via `handleFunctionSideEffects` while processing the CALL
+            // pcode). The call target offset (`callOffset`): a direct CALL's `ram` operand,
+            // or a CALLIND's resolved-constant target.
+            match OpCode::from_u32(op.opcode) {
+                Some(OpCode::Call) => {
+                    let call_off = op.ins.first().and_then(arg_var).filter(|v| v.space == "ram").map(|v| v.offset).unwrap_or(0);
+                    add_param_references(program, &vctx, ram, here, call_off);
+                }
+                Some(OpCode::Callind) => {
+                    let call_off = op.ins.first().and_then(arg_var).map(|t| match vctx.get(t) {
+                        SymValue::Const(c) => c,
+                        SymValue::Unknown => 0,
+                    }).unwrap_or(0);
+                    add_param_references(program, &vctx, ram, here, call_off);
+                }
+                _ => {}
+            }
             process_op(program, &mut vctx, here, ram, op, insn_flow);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
@@ -384,25 +489,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn probe_indirect_call() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else { return; };
-        // call *0x2f77(%rip) @ 0x40105b ; jmp *0x2fca(%rip) @ 0x401030
-        for (label, base, bytes) in [
-            ("call_ind_mem@0x40105b", 0x40105bu64, vec![0xffu8, 0x15, 0x77, 0x2f, 0x00, 0x00]),
-            ("jmp_ind_mem@0x401030", 0x401030u64, vec![0xffu8, 0x25, 0xca, 0x2f, 0x00, 0x00]),
-        ] {
-            eprintln!("=== {label}");
-            for insn in spec.disassemble_ctx(&bytes, base, &ctx) {
-                for op in &insn.ops {
-                    eprintln!("    op {:?} out={:?} ins={:?}", OpCode::from_u32(op.opcode), op.out, op.ins);
-                }
-                break;
-            }
-        }
-    }
-
-    #[test]
     fn rip_relative_load_makes_read_reference() {
         let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
             eprintln!("skip: SLEIGH tables unavailable");
@@ -418,6 +504,40 @@ mod tests {
             .map(|r| r.to.offset)
             .collect();
         assert!(reads.contains(&0x40_1017), "expected READ ref to 0x401017, got {reads:x?}");
+    }
+
+    #[test]
+    fn pointer_argument_makes_param_reference() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return;
+        };
+        // mov rdi, 0x401800 ; call 0x401700   →  PARAM from the mov (0x401000) to 0x401800
+        // (RDI = first integer arg; the value is a mapped address, the call is real).
+        //   48 c7 c7 00 18 40 00  mov rdi, 0x401800   (7 bytes, at 0x401000)
+        //   e8 f3 06 00 00        call 0x401700       (5 bytes, at 0x401007; rel32=0x6f3)
+        let (mut program, ram) = program_with_code(&[
+            0x48, 0xc7, 0xc7, 0x00, 0x18, 0x40, 0x00, // mov rdi, 0x401800
+            0xe8, 0xf4, 0x06, 0x00, 0x00, // call 0x401800-... compute below
+        ]);
+        // Recompute the call target precisely: next ip after call = 0x40100c, + rel32.
+        // We don't depend on the call target for PARAM (only that it's a real call), so any
+        // mapped target works; flow_constants reads RDI's value (0x401800) at the call.
+        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        let params: Vec<(u64, u64)> = program
+            .reference_manager
+            .references()
+            .filter(|r| r.ref_type == RefType::Param)
+            .map(|r| (r.from.offset, r.to.offset))
+            .collect();
+        assert!(
+            params.contains(&(0x40_1000, 0x40_1800)),
+            "expected PARAM 0x401000 -> 0x401800 (RDI set at the mov), got {params:x?}"
+        );
+        // And no DATA ref coexists at the same site (the scalar analyzer would skip it).
+        let data_at = program.reference_manager.references().any(|r| {
+            r.ref_type == RefType::Data && r.from.offset == 0x40_1000 && r.to.offset == 0x40_1800
+        });
+        assert!(!data_at, "the speculative DATA ref must be dropped when PARAM is created");
     }
 
     #[test]
