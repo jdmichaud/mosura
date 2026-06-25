@@ -100,6 +100,28 @@ impl SymbolTable {
     pub fn primary_at(&self, addr: Address) -> Option<&Symbol> {
         self.symbols_at(addr).find(|s| s.primary).or_else(|| self.symbols_at(addr).next())
     }
+
+    /// Rename the primary symbol at `addr` to `new_name`, returning its old name (the
+    /// demangler's `SetLabelPrimaryCmd` step — the demangled name becomes the primary
+    /// symbol). Keeps the `(space, offset, name)` dedup index consistent. The old name is
+    /// *not* removed from the table by this call — the caller re-adds it as a non-primary
+    /// label (Ghidra retains the original mangled name as a secondary label).
+    pub fn rename_primary(&mut self, addr: Address, new_name: &str) -> Option<String> {
+        let key = (addr.space.0, addr.offset);
+        let idx = self
+            .symbols
+            .iter()
+            .position(|s| (s.address.space.0, s.address.offset) == key && s.primary)
+            .or_else(|| self.symbols.iter().position(|s| (s.address.space.0, s.address.offset) == key))?;
+        let old = self.symbols[idx].name.clone();
+        if old == new_name {
+            return Some(old);
+        }
+        self.seen.remove(&(key.0, key.1, old.clone()));
+        self.seen.insert((key.0, key.1, new_name.to_string()));
+        self.symbols[idx].name = new_name.to_string();
+        Some(old)
+    }
 }
 
 #[cfg(test)]

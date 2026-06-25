@@ -14,6 +14,12 @@ flate2 = "1"
 # ELF/PE/Mach-O parsing for the analysis loaders (A2). Read-only; we reproduce
 # Ghidra's block-layout logic ourselves — `object` just decodes the container.
 object = { version = "0.36", default-features = false, features = ["read_core", "elf", "pe", "std"] }
+# Pure-Rust Itanium (GNU/C++) demangler, Apache-2.0/MIT, from gimli-rs (same org as
+# `object`). Wrapped by the analysis demangler step (A7 Task 6) — the libiberty
+# cp-demangle Ghidra shells out to is GPL, so we cannot port/link it into Apache-2.0
+# mosura. We only consume its demangled string; the name-extraction mirrors Ghidra's
+# GnuDemanglerParser re-parsing the native output (no hand-rolled mangling grammar).
+cpp_demangle = "0.4"
 
 # Loop-iteration speed: the test binaries relink on every lib change, and full
 # debuginfo dominates GNU ld's link time. Line tables keep panic backtraces

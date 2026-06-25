@@ -22,5 +22,10 @@ gcc -O0 -fno-pie -no-pie -o basic.elf src/basic.c
 gcc -nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables \
     -o switchtab.elf src/switchtab.c
 
+# Freestanding C++ (no libstdc++/CRT): namespaced + overloaded + const-method functions
+# whose *mangled* names land in .symtab. Validates the A7 GNU/Itanium demangler analyzer.
+g++ -nostdlib -static -no-pie -O0 -ffreestanding -fno-asynchronous-unwind-tables \
+    -fno-exceptions -fno-rtti -o cppsym.elf src/cppsym.cpp
+
 echo "built:"
-for f in freestanding.elf basic.elf switchtab.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+for f in freestanding.elf basic.elf switchtab.elf cppsym.elf; do printf '  %-18s ' "$f"; file -b "$f"; done

@@ -95,6 +95,14 @@ impl FunctionManager {
             f.body = body;
         }
     }
+
+    /// Rename the function at `entry` (Ghidra `Function.setName`) — used by the demangler
+    /// to apply the demangled name to the function symbol.
+    pub fn set_name(&mut self, entry: Address, name: &str) {
+        if let Some(f) = self.functions.iter_mut().find(|f| f.entry == entry) {
+            f.name = name.to_string();
+        }
+    }
 }
 
 #[cfg(test)]

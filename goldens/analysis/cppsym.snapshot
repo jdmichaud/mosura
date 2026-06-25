@@ -1,0 +1,111 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=cppsym.elf
+block 00400000 00400157 segment_0.1
+block 00400158 0040017b .note.gnu.build-id
+block 00401000 004010c4 .text
+block 00402000 00402007 .rodata
+func 00401000 area
+func 00401013 area
+func 00401027 compute
+func 00401049 _start
+func 004010ae perimeter
+fnbody 00401000 00401000:00401012
+fnbody 00401013 00401013:00401026
+fnbody 00401027 00401027:00401048
+fnbody 00401049 00401049:004010ad
+fnbody 004010ae 004010ae:004010c4
+entry 00401000 area
+entry 00401013 area
+entry 00401027 compute
+entry 00401049 _start
+entry 004010ae perimeter
+entry 00403000 __bss_start
+sym 004010ae perimeter Function
+sym 00401027 compute Function
+sym 00401049 _start Function
+sym 00401000 area Function
+sym 00403000 __bss_start Label
+sym 00403000 _edata Label
+sym 00403000 _end Label
+sym 00401013 area Function
+sym 00401000 _ZN8geometry4areaEii Label
+sym 00401013 _ZN8geometry4areaEd Label
+sym 00401027 _Z7computeP5Shapei Label
+sym 004010ae _ZNK5Shape9perimeterEi Label
+insn 00401000
+insn 00401001
+insn 00401004
+insn 00401007
+insn 0040100a
+insn 0040100d
+insn 00401011
+insn 00401012
+insn 00401013
+insn 00401014
+insn 00401017
+insn 0040101c
+insn 00401021
+insn 00401025
+insn 00401026
+insn 00401027
+insn 00401028
+insn 0040102b
+insn 0040102f
+insn 00401033
+insn 00401036
+insn 00401039
+insn 0040103d
+insn 0040103f
+insn 00401042
+insn 00401047
+insn 00401048
+insn 00401049
+insn 0040104a
+insn 0040104d
+insn 00401051
+insn 00401056
+insn 0040105b
+insn 00401060
+insn 00401063
+insn 0040106a
+insn 0040106f
+insn 00401074
+insn 00401079
+insn 0040107d
+insn 00401082
+insn 00401086
+insn 00401089
+insn 0040108c
+insn 00401090
+insn 00401092
+insn 00401095
+insn 0040109a
+insn 0040109d
+insn 004010a2
+insn 004010a5
+insn 004010a8
+insn 004010ab
+insn 004010ad
+insn 004010ae
+insn 004010af
+insn 004010b2
+insn 004010b6
+insn 004010b9
+insn 004010bd
+insn 004010bf
+insn 004010c3
+insn 004010c4
+ref 00400018 00401049 DATA
+ref 00400020 00400040 DATA
+ref 00400088 00401000 DATA
+ref 004000c0 00402000 DATA
+ref 004000f8 00400158 DATA
+ref 00401042 004010ae UNCONDITIONAL_CALL
+ref 0040105b 00401000 UNCONDITIONAL_CALL
+ref 00401063 00402000 READ
+ref 0040106f 00401013 UNCONDITIONAL_CALL
+ref 00401095 00401027 UNCONDITIONAL_CALL
+data 00400000 Elf64_Ehdr 64
+data 00400040 Elf64_Phdr[5] 280
+data 00400158 GnuBuildId 36
+data 00402000 undefined8 8

@@ -1,0 +1,38 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=cppsym.elf
+block 00400000 00400157 segment_0.1
+block 00400158 0040017b .note.gnu.build-id
+block 00401000 004010c4 .text
+block 00402000 00402007 .rodata
+func 00401000 _ZN8geometry4areaEii
+func 00401013 _ZN8geometry4areaEd
+func 00401027 _Z7computeP5Shapei
+func 00401049 _start
+func 004010ae _ZNK5Shape9perimeterEi
+fnbody 00401000 00401000:00401000
+fnbody 00401013 00401013:00401013
+fnbody 00401027 00401027:00401027
+fnbody 00401049 00401049:00401049
+fnbody 004010ae 004010ae:004010ae
+entry 00401000 _ZN8geometry4areaEii
+entry 00401013 _ZN8geometry4areaEd
+entry 00401027 _Z7computeP5Shapei
+entry 00401049 _start
+entry 004010ae _ZNK5Shape9perimeterEi
+entry 00403000 __bss_start
+sym 004010ae _ZNK5Shape9perimeterEi Function
+sym 00401027 _Z7computeP5Shapei Function
+sym 00401049 _start Function
+sym 00401000 _ZN8geometry4areaEii Function
+sym 00403000 __bss_start Label
+sym 00403000 _edata Label
+sym 00403000 _end Label
+sym 00401013 _ZN8geometry4areaEd Function
+ref 00400018 00401049 DATA
+ref 00400020 00400040 DATA
+ref 00400088 00401000 DATA
+ref 004000c0 00402000 DATA
+ref 004000f8 00400158 DATA
+data 00400000 Elf64_Ehdr 64
+data 00400040 Elf64_Phdr[5] 280
+data 00400158 GnuBuildId 36

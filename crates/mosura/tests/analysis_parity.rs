@@ -226,6 +226,44 @@ fn disassembly_parity() {
     assert!(recall.passed >= 146, "disassembly recall regressed below 146");
 }
 
+/// A7 Task 6 — GNU/Itanium C++ demangler parity. On the `cppsym` fixture (namespaced +
+/// overloaded + const-method functions whose mangled names land in `.symtab`), mosura's
+/// demangler analyzer must reproduce Ghidra's applied names exactly: each function symbol
+/// renamed to the demangled **simple** name (`getName()`), the original mangled name kept
+/// as a secondary label. Compared as `func (entry,name)` and `sym (addr,name,kind)` sets —
+/// a HARD subset (0 spurious) with full recall on the demangled names.
+#[test]
+fn demangler_parity() {
+    use std::collections::BTreeSet;
+    let goldens = analysis_goldens_dir();
+    let corpus_dir = analysis_corpus_dir();
+    let golden =
+        snapshot::parse(&std::fs::read_to_string(goldens.join("cppsym.snapshot")).unwrap());
+    let snap = analysis::analyze_file(&corpus_dir.join("cppsym.elf")).unwrap().snapshot();
+
+    // Function names (the demangled simple name is applied to the function).
+    let mine_fn: BTreeSet<(u64, String)> =
+        snap.functions.iter().map(|f| (f.entry, f.name.clone())).collect();
+    let gold_fn: BTreeSet<(u64, String)> =
+        golden.functions.iter().map(|f| (f.entry, f.name.clone())).collect();
+    let spurious_fn: Vec<_> = mine_fn.difference(&gold_fn).collect();
+    assert!(spurious_fn.is_empty(), "cppsym: spurious func names vs Ghidra: {spurious_fn:?}");
+    assert_eq!(mine_fn, gold_fn, "cppsym: function names must match Ghidra exactly");
+
+    // Symbols: the demangled simple name (Function) + the retained mangled name (Label).
+    let mine_sym: BTreeSet<(u64, String, String)> =
+        snap.symbols.iter().map(|s| (s.addr, s.name.clone(), s.kind.clone())).collect();
+    let gold_sym: BTreeSet<(u64, String, String)> =
+        golden.symbols.iter().map(|s| (s.addr, s.name.clone(), s.kind.clone())).collect();
+    let spurious_sym: Vec<_> = mine_sym.difference(&gold_sym).collect();
+    assert!(spurious_sym.is_empty(), "cppsym: spurious symbols vs Ghidra: {spurious_sym:?}");
+    let matched = mine_sym.intersection(&gold_sym).count();
+    eprintln!("  [cppsym] demangler sym recall {matched}/{} (0 spurious)", gold_sym.len());
+    // Every Ghidra symbol must be reproduced (the 4 demangled Functions + 4 mangled Labels +
+    // the .bss data labels) — full demangler parity on the fixture.
+    assert_eq!(mine_sym, gold_sym, "cppsym: symbols must match Ghidra exactly");
+}
+
 /// A4 — converged function-set parity. Every function mosura discovers must be a Ghidra
 /// function (HARD subset: no spurious functions), with a recall ratchet. The missing
 /// remainder is reached only via PLT-stub disassembly / GOT pointer-following.

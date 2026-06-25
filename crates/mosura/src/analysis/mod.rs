@@ -147,6 +147,12 @@ pub fn analyze(program: &mut Program) {
     // tail jumps already exist when each PLT function is created; mosura disassembles the PLT
     // in the deferred `plt_linear_sweep`, so the shared-return scan must follow it.
     shared_return_pass(program);
+
+    // A7 Task 6: GNU/Itanium C++ demangler (Ghidra GnuDemanglerAnalyzer, a BYTE_ANALYZER at
+    // ~DATA_TYPE_PROPAGATION priority — i.e. late). Applies the demangled name to each
+    // mangled symbol, keeping the mangled name as a secondary label. Runs last, once the
+    // symbol set is final.
+    analyzers::demangler::analyze(program);
 }
 
 /// Run the shared-return analysis over the full converged function set (Ghidra

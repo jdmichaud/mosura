@@ -4,6 +4,7 @@
 //! disassembly driving the SLEIGH engine ([`Disassembler`]) and function creation at
 //! entry points and call targets ([`FunctionCreator`]).
 
+pub mod demangler;
 pub mod eh_frame;
 pub mod external_jump;
 pub mod noreturn;
