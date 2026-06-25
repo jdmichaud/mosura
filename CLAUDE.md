@@ -8,3 +8,6 @@ decompiler), validated against Ghidra as a golden oracle.
 - **What's left to do** → [`TODO.md`](TODO.md).
 
 Detailed per-feature implementation notes live in `.claude/memory/mosura-project.md`.
+
+** THIS IS A PORT OF GHIDRA. DO NOT MAKE UP SOME CODE. ONLY PORT GHIDRA's CODE **
+
