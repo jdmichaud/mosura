@@ -7,6 +7,7 @@
 
 use super::op::OpId;
 use super::space::Address;
+use super::types::Datatype;
 
 /// A handle to a [`Varnode`] — an index into the `Funcdata` varnode arena.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -64,6 +65,11 @@ pub struct Varnode {
     pub def: Option<OpId>,
     /// The ops that read this varnode (Ghidra's descendant list).
     pub descend: Vec<OpId>,
+    /// Ghidra's `Varnode::type` — the data-type this value carries. `None` until type inference
+    /// commits it (Ghidra leaves it at the factory's `undefined` until then). The cast subsystem
+    /// ([`super::actionsetcasts`]) reads and updates this directly, so casts run off persistent
+    /// per-varnode types rather than a recomputed-at-print table.
+    pub ty: Option<Datatype>,
 }
 
 impl Varnode {
@@ -88,5 +94,32 @@ impl Varnode {
     /// The literal value of a constant varnode.
     pub fn constant_value(&self) -> u64 {
         self.loc.offset
+    }
+    pub fn is_implied(&self) -> bool {
+        self.flags & flags::IMPLIED != 0
+    }
+    pub fn is_explicit(&self) -> bool {
+        self.flags & flags::EXPLICIT != 0
+    }
+    pub fn is_typelock(&self) -> bool {
+        self.flags & flags::TYPELOCK != 0
+    }
+    /// Ghidra `Varnode::setImplied` — this value is folded into the expression that uses it.
+    pub fn set_implied(&mut self) {
+        self.flags |= flags::IMPLIED;
+        self.flags &= !flags::EXPLICIT;
+    }
+    /// Ghidra `Varnode::getType` — the committed data-type, or `undefined<size>` if none set yet.
+    pub fn get_type(&self) -> Datatype {
+        self.ty.clone().unwrap_or_else(|| Datatype::default_for(self.size))
+    }
+    /// Ghidra `Varnode::updateType(ct)`: install `ct` unless equal or the varnode is type-locked.
+    /// Returns whether the type changed.
+    pub fn update_type(&mut self, ct: Datatype) -> bool {
+        if self.ty.as_ref() == Some(&ct) || self.is_typelock() {
+            return false;
+        }
+        self.ty = Some(ct);
+        true
     }
 }

@@ -138,6 +138,7 @@ impl Funcdata {
             create_index,
             def: None,
             descend: Vec::new(),
+            ty: None,
         });
         id
     }
