@@ -76,9 +76,8 @@ the IR** (rule 5) — the mechanism is not what you think.
   **Done, keep, never regress.**
 - `crates/mosura/src/decompile/` — **the faithful port (new work)**: Ghidra's data model
   + `Action`/`Rule` pipeline, mirroring `decompile/cpp` file/class names. See `port-plan.md`.
-- `crates/mosura/src/decomp/` — the **prototype** decompiler (`cfg`/`ssa`/`simplify`/
-  `cprint`/`jumptable`/`divrecover`/`ccompare`). An approximation; kept running as a coarse
-  gauge, retired stage-by-stage as the faithful pipeline supersedes it. Don't extend it.
+- `crates/mosura/src/ccompare.rs` — structural C-similarity comparator (string in, score
+  out), used by `decompile_corpus`. (The old `src/decomp/` prototype decompiler was removed.)
 - `oracle/capture.cc` — offline oracle tool, built by `scripts/setup-oracle.sh`.
 - `goldens/` — committed disasm / p-code goldens.
 
@@ -112,12 +111,10 @@ Every change is verified; never ship semantically-wrong output.
   Ghidra's IR at each pipeline stage (post-heritage SSA tree, post-types, post-merge,
   structured blocks, C), **structurally exact**. A phase isn't done until its IR-parity
   is green on the datatests. This is the real port metric; faithfulness *is* the score.
-- `tests/datatest_score.rs` — the token-skeleton structural-similarity score over the
-  x86-64 datatests. **Demoted to a coarse secondary gauge of overall progress — never a
-  gate.** It must not be allowed to block a faithful change (that was the trap). Don't
-  ratchet it as a hard threshold anymore; read it as a rough trend.
-- `tests/decomp_emit.rs` — exact-output tests for function classes the prototype handles
-  (kept while the prototype runs).
+- `tests/decompile_corpus.rs` — the faithful pipeline's structural-similarity score (via
+  `ccompare`) against Ghidra's C over the x86-64 datatests. **A coarse progress gauge,
+  never a hard gate** — it must not block a faithful change (the trap the old
+  `datatest_score` ratchet fell into).
 
 Loop for porting a phase: read the Ghidra source for that component → translate it
 faithfully into `src/decompile/` (mirroring Ghidra's file/class names) → diff mosura's

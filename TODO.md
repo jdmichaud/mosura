@@ -260,4 +260,4 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 ## Superseded docs (history)
 
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
-the approximation-era feature work. Kept for reference; the live plan is `port-plan.md`.
+the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.

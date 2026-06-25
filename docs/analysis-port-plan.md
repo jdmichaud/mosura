@@ -36,8 +36,8 @@ Ghidra — but the reference source and the oracle are different (see §3).
   redefining them.
 - **Rebuild (the work):** the Program database, loaders, the analyzer framework, and the
   analyzers themselves — none of which exist today (fixtures fake the Program).
-- The prototype `src/decomp/jumptable.rs` is a partial slice of switch recovery; it is
-  retired by A6 (the decompiler-driven switch analyzer), not extended.
+- The prototype `src/decomp/jumptable.rs` has been removed; switch recovery is now the
+  faithful `decompile/jumptable.rs` (`JumpBasic`), which the A6 analyzer consumes.
 
 ## 2. The architecture to port (dependency order)
 
@@ -134,7 +134,7 @@ scratch engine. Still the largest new analysis component, but well-bounded.
 functions, monitor)`, and reads the jump table out of each `DecompileResults` (the
 decompiler's `HighFunction`). So it **runs the ported decompiler per function and consumes
 its switch recovery** — it depends on `DecompInterface` + the decompiler. Parameter-ID is
-the same shape for call args/returns. This is what retires `decomp/jumptable.rs`, and what
+the same shape for call args/returns. This is what replaced the removed `decomp/jumptable.rs`, and what
 gates A6 on decompiler-port progress.
 
 ## 3. Validation — Program-state parity (the oracle, and how it differs)
@@ -176,7 +176,7 @@ state for a given set of enabled analyzers**, not per-action.
 - **A5 — References + `SymbolicPropogator`.** Port the abstract interpreter (§2b) + the
   reference analyzers. Gate on reference-set parity. The largest phase.
 - **A6 — Decompiler-driven analyzers.** Switch recovery + parameter-ID via the decompiler
-  (§2c). Retire `decomp/jumptable.rs`. Gate on jump-table + param parity. **Depends on the
+  (§2c). The `decomp/jumptable.rs` prototype is retired (done). Gate on jump-table + param parity. **Depends on the
   decompiler port.**
 - **A7 — The tail.** Non-returning functions, shared-return, stack/purge, demanglers,
   strings/data, arch-specific propagation. Each gated on Program-state parity.
@@ -193,7 +193,7 @@ state for a given set of enabled analyzers**, not per-action.
 
 ## 6. Layout & relationship to the decompiler port
 
-- New module tree **`src/analysis/`** (a sibling of `sleigh/`, `decomp/`, `decompile/`),
+- New module tree **`src/analysis/`** (a sibling of `sleigh/` and `decompile/`),
   same crate — the coupling makes a separate crate/repo pure friction (A1 reuses the
   decompiler's `Address`; A4 drives `sleigh`; A6 calls `decompile::pipeline`). Proposed
   submodules: `analysis/{program,loader,scheduler,manager,priority,analyzer}` +

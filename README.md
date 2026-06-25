@@ -144,20 +144,15 @@ working p-code interpreter. Built bottom-up:
   generic engine features: **MIPS/SPARC delay slots** (`SleighBuilder::delaySlot`),
   the full float/extract op-name table, const-offset masking, and chunk-boundary
   loader semantics. ARM conditional execution and big-endian already worked.
-- 🟡 **Decompiler: bytes → typed C, eleven function classes, scored against Ghidra.**
-  (`decomp::`, plan in [`docs/decompiler-plan.md`](docs/decompiler-plan.md)) — Ghidra's
-  action pipeline, ported bottom-up: **D0** structured IR + CFG, **D1** full SSA (CHK
-  dominators, dominance frontiers, Cytron renaming), **D2** dead code + simplification
-  identities, **D3** stack-variable recovery + initial types (pointers, `uint`), **D4**
-  control-flow structuring (`?:`, `if`/`else`, do-while, guarded while, **`for`/`while`**
-  loops with statement bodies), and **D5** C emission + a structural comparator. It
-  decompiles straight-line code, conditionals, loops, **function calls** (convention +
-  argument recovery), **`-O0` stack frames**, **pointer stores** (`*p = x`), and
-  **`void`** functions — e.g. `for(i=0;i<n;i++) s+=i;` and `int f(int *p,int x){*p=x;…}`
-  recover near-exactly. **D6**: against the real x86-64 decompiler datatests, mosura
-  decompiles **47/62**, averaging **0.56** structural similarity to Ghidra's own C
-  (`tests/datatest_score.rs`, scored via `oracle/capture --c`). Remaining toward the
-  datatest 599: floats, switch recovery, structs/globals, nested control flow.
+- 🟡 **Decompiler: bytes → C, scored against Ghidra.** A faithful port of Ghidra's
+  decompiler (`decompile::`, plan in [`docs/port-plan.md`](docs/port-plan.md)) — its
+  Varnode-graph data model + `Action`/`Rule` pipeline, built bottom-up and validated
+  against Ghidra's per-stage IR: SSA heritage, dead-code + simplification rules, stack and
+  return/argument recovery, jump-table (`JumpBasic`) recovery + switch structuring,
+  division/modulo recovery, and C emission. Against the real x86-64 decompiler datatests it
+  averages **0.76** structural similarity to Ghidra's own C, **42/60 ≥ 0.70**
+  (`tests/decompile_corpus.rs`, scored via `oracle/capture --c`). Remaining toward the
+  datatest 599: floats, aggregate types, richer type inference, nested control flow.
 - ⏳ Also queued: the `pcodetest` C suite (needs per-arch cross-compilers); SSE/AVX.
 
 ## Moving to another machine

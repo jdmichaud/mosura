@@ -36,10 +36,9 @@ worse, and the pieces compose because it is the same architecture.
   `scripts/setup-oracle.sh`, `goldens/`).
 - **Rebuild (the work):** everything after raw p-code — the decompiler core — around
   Ghidra's model.
-- The current `src/decomp/` (`cfg`/`ssa`/`simplify`/`cprint`/`jumptable`/`divrecover`) is
-  a **prototype approximation**. It stays running (so the corpus stays measurable) and is
-  **retired piece-by-piece** as the faithful pipeline supersedes each stage. New work goes
-  in a new module tree (`src/decompile/`, mirroring Ghidra's file layout).
+- The original `src/decomp/` prototype (a similarity-chasing approximation) has been
+  **removed** — the faithful pipeline fully superseded it. All decompiler work now lives in
+  `src/decompile/`, mirroring Ghidra's file layout.
 
 ## 2. The architecture to port (dependency order)
 

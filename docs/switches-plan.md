@@ -1,4 +1,4 @@
-> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work.
+> **Superseded** by [`port-plan.md`](port-plan.md) (the faithful-port plan). Kept for history — this describes the approximation-era feature work; the `src/decomp/` prototype it refers to has since been removed.
 
 # Switch / jump-table recovery — port plan
 
