@@ -156,7 +156,13 @@ pub fn recover_call_effects(f: &mut Funcdata, alias_boundary: Option<i64>) {
                 for &(off, size) in &stack_slots {
                     let pre = f.new_varnode(size, Address::new(stk, off));
                     let ind = f.new_op(OpCode::Indirect, seq, vec![pre]);
-                    f.new_output(ind, size, Address::new(stk, off));
+                    let out = f.new_output(ind, size, Address::new(stk, off));
+                    // Ghidra `Heritage::guardCalls`: the guarded range here is an aliased *mapped*
+                    // stack local (`holdind = (fl & addrtied) != 0` is true for these slots), so the
+                    // across-call INDIRECT output is `setAddrForce`d. addrforce makes it auto-live, so
+                    // dead-code keeps the INDIRECT chain and — propagating its consume backward — the
+                    // write-only spill store that feeds it survives as a real `xStack_NN = …` variable.
+                    f.vn_mut(out).set_addr_force();
                     f.op_mut(ind).parent = Some(bid);
                     new_ops.push(ind);
                 }

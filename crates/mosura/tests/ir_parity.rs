@@ -249,7 +249,7 @@ fn heritage_produces_valid_ssa() {
 fn rule_pool_folds_constants() {
     use mosura::decompile::action::{Action, ActionPool};
     use mosura::decompile::rules::{eval_const, RuleCollectTerms, RuleConstFold, RuleIdentityEl, RulePropagateCopy, RuleTermOrder, RuleTrivialArith, RuleTrivialShift};
-    use mosura::decompile::OpId;
+    use mosura::decompile::{OpCode, OpId};
     let Some((spec, ctx)) = x86_64() else { return };
 
     for name in ["x86_64_sem", "twodim", "threedim", "elseif"] {
@@ -264,11 +264,16 @@ fn rule_pool_folds_constants() {
             .with(RuleTrivialArith).with(RuleIdentityEl).with(RuleTrivialShift).with(RulePropagateCopy);
         pool.apply(&mut f);
 
-        // Completeness: no live op with all-constant inputs and a foldable opcode remains
-        // (constant folding ran to fixpoint).
+        // Completeness: no live *non-COPY* op with all-constant inputs and a foldable opcode
+        // remains (constant folding ran to fixpoint). Ghidra's `RuleCollapseConstants` collapses
+        // each such op to `out = COPY const` and leaves that COPY for RulePropagateCopy/dead-code,
+        // so a surviving `COPY const` is the collapsed result, not an unfolded op.
         for i in 0..f.num_ops() as u32 {
             let op = OpId(i);
             if f.op(op).is_dead() || f.op(op).output.is_none() || f.op(op).num_inputs() == 0 {
+                continue;
+            }
+            if f.op(op).code() == OpCode::Copy {
                 continue;
             }
             let all_const = f.op(op).inrefs.iter().all(|&v| f.vn(v).is_constant());

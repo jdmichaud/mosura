@@ -63,6 +63,20 @@ pub fn dead_code(f: &mut Funcdata) {
         }
     }
 
+    // Auto-live roots (Ghidra `Varnode::isAutoLive` = addrforce | autolive_hold): a varnode forced
+    // into its storage is exempt from removal even when nothing reads it. `Heritage::guardCalls`
+    // sets addrforce on the INDIRECT that carries an aliased *mapped* stack local across a call;
+    // seeding it here keeps that INDIRECT chain, and the backward consume preserves the write-only
+    // spill store feeding it — the precise gate that distinguishes a real local from the
+    // return-address / call-mechanism pushes (which are below the alias boundary, never guarded).
+    for i in 0..f.num_varnodes() as u32 {
+        let vn = f.vn(VarnodeId(i));
+        if vn.is_written() && vn.is_auto_live() && !live_vn[i as usize] {
+            live_vn[i as usize] = true;
+            worklist.push(VarnodeId(i));
+        }
+    }
+
     // propagate backward: a consumed varnode keeps its def op, whose inputs are consumed
     while let Some(vn) = worklist.pop() {
         let Some(def) = f.vn(vn).def else { continue };

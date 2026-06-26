@@ -88,6 +88,19 @@ impl Varnode {
     pub fn is_addrtied(&self) -> bool {
         self.flags & flags::ADDRTIED != 0
     }
+    /// Ghidra `Varnode::isAddrForce` — this value is forced into a particular storage location.
+    pub fn is_addr_force(&self) -> bool {
+        self.flags & flags::ADDRFORCE != 0
+    }
+    /// Ghidra `Varnode::isAutoLive` — exempt from dead-code removal because the value is forced
+    /// into its storage (`addrforce`) or a temporary hold is in place (`autolive_hold`).
+    pub fn is_auto_live(&self) -> bool {
+        self.flags & (flags::ADDRFORCE | flags::AUTOLIVE_HOLD) != 0
+    }
+    /// Ghidra `Varnode::setAddrForce` — mark this value as forcing into its storage location.
+    pub fn set_addr_force(&mut self) {
+        self.flags |= flags::ADDRFORCE;
+    }
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }

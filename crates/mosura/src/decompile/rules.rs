@@ -65,9 +65,14 @@ pub fn eval_const(opcode: OpCode, inputs: &[(u64, u32)], out_size: u32) -> Optio
     Some(mask(res, out_size))
 }
 
-/// Fold an op whose inputs are all constants into its constant value, propagating it to
-/// the op's uses. (Ghidra computes the same constants via per-op `OpBehavior::evaluate`;
-/// the resulting IR is identical.)
+/// Collapse an op whose inputs are all constants — a port of Ghidra's `RuleCollapseConstants`
+/// (`ruleaction.cc`). The op is rewritten *in place* as `out = COPY <collapsed const>` (link the
+/// new constant as input 0, drop the rest, change the opcode to COPY), rather than replacing every
+/// use of `out`. RulePropagateCopy then propagates the COPY everywhere it is allowed; its marker
+/// guard deliberately leaves the COPY in place where a constant must not be folded into a
+/// MULTIEQUAL/INDIRECT. That is what lets an addrtied stack store survive as a renderable
+/// `xStack_NN = const` feeding the across-call INDIRECT (instead of the constant vanishing into it).
+/// (Ghidra computes the same value via per-op `OpBehavior::evaluate`; the IR is identical.)
 pub struct RuleConstFold;
 
 impl Rule for RuleConstFold {
@@ -79,6 +84,11 @@ impl Rule for RuleConstFold {
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
         let code = data.op(op).code();
+        // A COPY of a constant is already in the collapsed `out = COPY const` form (Ghidra leaves it
+        // for RulePropagateCopy/dead-code); re-collapsing it would loop, so skip it.
+        if code == OpCode::Copy {
+            return 0;
+        }
         let Some(out) = data.op(op).output else { return 0 };
         let inrefs = data.op(op).inrefs.clone();
         if inrefs.is_empty() {
@@ -94,9 +104,14 @@ impl Rule for RuleConstFold {
         }
         let out_size = data.vn(out).size;
         let Some(val) = eval_const(code, &inputs, out_size) else { return 0 };
+        // Rewrite in place as `out = COPY const` (Ghidra `RuleCollapseConstants`): unlink the old
+        // constant inputs, link the collapsed constant as input 0, become a COPY.
         let c = data.new_const(out_size, val);
-        data.total_replace(out, c);
-        data.mark_dead(op);
+        for slot in (1..inrefs.len()).rev() {
+            data.op_remove_input(op, slot);
+        }
+        data.op_set_input(op, 0, c);
+        data.op_set_opcode(op, OpCode::Copy);
         1
     }
 }
@@ -879,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn const_fold_rule_propagates() {
+    fn const_fold_collapses_in_place_then_propagates() {
         let (mut f, ram) = fd();
         // out = INT_AND #2 #0x1f ; user = INT_ADD out #1
         let c2 = f.new_const(4, 2);
@@ -892,13 +907,20 @@ mod tests {
         f.new_output(add, 4, Address::new(f.spaces.by_name("register").unwrap(), 8));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![and, add], ..Default::default() }]);
 
-        let mut pool = ActionPool::new("p").with(RuleConstFold);
-        pool.apply(&mut f);
+        // Ghidra `RuleCollapseConstants`: the AND is rewritten in place as `out = COPY #2` (not
+        // propagated). The ADD still reads `out`; propagation is RulePropagateCopy's job.
+        ActionPool::new("p").with(RuleConstFold).apply(&mut f);
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        let and_in0 = f.op(and).input(0).unwrap();
+        assert!(f.vn(and_in0).is_constant() && f.vn(and_in0).constant_value() == 2);
+        assert_eq!(f.op(add).input(0), Some(out), "ADD still reads the COPY output, not the constant");
 
-        // the AND folded to #2 and propagated: ADD now reads the constant 2, AND is dead
-        assert!(f.op(and).is_dead());
+        // With RulePropagateCopy the constant reaches the ADD and the now-unused COPY output dies.
+        ActionPool::new("p").with(RulePropagateCopy).apply(&mut f);
         let add_in0 = f.op(add).input(0).unwrap();
         assert!(f.vn(add_in0).is_constant() && f.vn(add_in0).constant_value() == 2);
+        assert!(f.vn(out).descend.is_empty(), "COPY output no longer used after propagation");
     }
 
     #[test]
