@@ -7,14 +7,33 @@ is no Ghidra oracle — this is the first loader mosura builds **beyond** Ghidra
 **natively** (not via the ELF-wrapper workaround), grounded in the LE/LX spec + the
 warcraft2-re RE result recorded here.
 
-**What remains (NOT done):** the LE loader is *not* wired into WAR2.EXE's default analysis
-dispatch — the bound exe still loads as the 16-bit MZ stub there, because the committed
-war2 goldens are Ghidra's MZ-stub interpretation and the war2 Ghidra-parity gates depend on
-that path (re-pointing them at the LE objects has no Ghidra oracle to validate against).
-A *standalone* LE (valid `e_lfanew` → `LE`) IS dispatched to the native loader. Reaching the
-20 protected-mode switches further needs the 32-bit (`x86:LE:32:default`) analysis pipeline
-run over the LE objects + a switch-table golden from the RE ground truth. See the loader
-file's header for the precise scope boundary.
+## Standing decision: default = Ghidra, opt-in = LE loader (the two-oracle policy)
+
+The bound-exe dilemma — Ghidra has no LE oracle, so loading the real LE objects has nothing
+Ghidra to validate against — is resolved by a **two-behaviour CLI policy** (agreed):
+
+- **Default behaviour = match Ghidra.** A bound DOS/4GW exe (e.g. WAR2.EXE) loads as the
+  16-bit MZ stub, exactly as Ghidra does. The committed war2 goldens and the Ghidra-parity
+  gates stay on this path — the "validated against Ghidra" guarantee is **unchanged** for the
+  default. The CLI emits a **warning** that the file has bound LE content the default view
+  does not cover, and names the opt-in flag.
+- **Opt-in behaviour (`--le` or similar) = the native LE loader.** The user consciously steps
+  off the Ghidra path to load the real 32-bit game image. **"Optional" ≠ "unvalidated":** this
+  path is validated against the **`warcraft2-re` reverse-engineering ground truth** (its proper
+  oracle, since Ghidra has none), holding the same faithful / 0-spurious bar — just against a
+  different reference.
+
+So the rule is: **default validated against Ghidra; `--le` validated against the RE ground
+truth.** This is also the standing precedent for any future format Ghidra cannot open: default
+to Ghidra parity, offer a documented extension behind a flag, validated against its own oracle.
+
+**What remains (NOT done):** the flag + warning land **with the CLI** (analysis is a library
+API today; no CLI yet) — meanwhile the LE path is exposed as a library option and tested
+separately. The native LE loader (`le.rs`) and its object/entry parsing are done + validated
+(`le_war2_objects`). The remaining opt-in work: run the 32-bit (`x86:LE:32:default`) analysis
+pipeline over the LE objects, and add an RE-derived switch-table golden to validate the 20
+protected-mode COMPUTED_JUMP as a clean subset. The default MZ path + its Ghidra gates are
+untouched by all of this. See the loader file's header for the precise scope boundary.
 
 ## Why native, not an ELF32 wrapper
 
