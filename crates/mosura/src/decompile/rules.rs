@@ -870,6 +870,35 @@ impl Rule for RuleRangeAnd {
     }
 }
 
+/// Ghidra `RuleSub2Add` (`ruleaction.cc:4012`, the "analysis" group): eliminate INT_SUB —
+/// `V - W  =>  V + W * -1`. `getOpList` is `{INT_SUB}` and it fires *unconditionally* on every
+/// subtraction (not scoped to a pointer base). The canonical additive form lets the
+/// pointer-arithmetic / division rules reason about a single shape; the cleanup pool
+/// (`RuleMultNegOne`/`Rule2Comp2Sub`/`RuleAddUnsigned`) turns the non-pointer results back into
+/// `V - W` so the printer renders subtractions. A frame `RSP - c` becomes `INT_ADD(RSP, -c)`, which
+/// the printer recognises as a stack-local address (`&Stack_c`).
+pub struct RuleSub2Add;
+
+impl Rule for RuleSub2Add {
+    fn name(&self) -> &str {
+        "sub2add"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSub]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(1).unwrap(); // the value being subtracted (W)
+        let size = data.vn(vn).size;
+        // newop = INT_MULT(W, calc_mask(size)) — i.e. W * -1 — inserted just before op.
+        let negone = data.new_const(size, mask(!0, size));
+        let newop = data.new_op_before(op, OpCode::IntMult, vec![vn, negone]);
+        let newvn = data.op(newop).output.unwrap();
+        data.op_set_input(op, 1, newvn); // replace W's reference with the product
+        data.op_set_opcode(op, OpCode::IntAdd);
+        1
+    }
+}
+
 /// Ghidra `RuleMultNegOne` (`ruleaction.cc`): `a * -1  =>  -a` (an `INT_2COMP`). The cleanup
 /// counterpart of `RuleSub2Add` for the non-constant case: a subtraction `V - W` canonicalised to
 /// `V + W*-1` has its `W*-1` reduced to `INT_2COMP(W)` here, which `Rule2Comp2Sub` then folds into
@@ -1281,6 +1310,36 @@ mod tests {
         // the ADD now reads `a` directly; the COPY's output is no longer used
         assert_eq!(f.op(add).input(0), Some(a));
         assert!(f.vn(c).descend.is_empty());
+    }
+
+    #[test]
+    fn sub2add_canonicalises_then_cleanup_round_trips() {
+        // RuleSub2Add turns `V - W` into `V + (W * -1)`; the cleanup pool then restores `V - W`.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x30));
+        let w = f.new_input(4, Address::new(reg, 0x38));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let sub = f.new_op(OpCode::IntSub, seq, vec![v, w]); // V - W
+        f.new_output(sub, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![sub], ..Default::default() }]);
+
+        ActionPool::new("p").with(RuleSub2Add).apply(&mut f);
+        // V + (W * -1): the op is now INT_ADD; input 1 is W * -1
+        assert_eq!(f.op(sub).code(), OpCode::IntAdd);
+        assert_eq!(f.op(sub).input(0), Some(v));
+        let prod = f.op(sub).input(1).unwrap();
+        let mul = f.vn(prod).def.unwrap();
+        assert_eq!(f.op(mul).code(), OpCode::IntMult);
+        assert_eq!(f.op(mul).input(0), Some(w));
+        let c = f.op(mul).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xffffffff);
+
+        // cleanup restores the subtraction
+        ActionPool::new("c").with(RuleMultNegOne).with(Rule2Comp2Sub).apply(&mut f);
+        assert_eq!(f.op(sub).code(), OpCode::IntSub);
+        assert_eq!(f.op(sub).input(0), Some(v));
+        assert_eq!(f.op(sub).input(1), Some(w));
     }
 
     #[test]

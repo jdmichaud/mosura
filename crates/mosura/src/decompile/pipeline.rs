@@ -99,8 +99,18 @@ impl Action for ActionInferTypes {
 
 /// The pointer-arithmetic rule pool (Ghidra runs `RulePtrArith` in the main rule group, gated on
 /// type recovery). Run after `ActionInferTypes` so the base pointers are typed.
+///
+/// `RuleSub2Add` runs here (rather than in `default_rule_pool`) so the INT_SUB-rooted modulo/divopt
+/// rules match the original subtraction form first; it canonicalises `V - W` to `V + W*-1` so
+/// `RulePtrArith` sees a single additive shape. `RuleConstFold` then collapses a constant `W*-1` to
+/// `-c` (leaving a COPY, per RuleCollapseConstants) and `RulePropagateCopy` threads it onward, so
+/// the negated constant actually reaches the INT_ADD before pointer arithmetic / cleanup runs.
 pub fn ptrarith_pool() -> ActionPool {
-    ActionPool::new("ptrarith").with(super::ptrarith::RulePtrArith)
+    ActionPool::new("ptrarith")
+        .with(super::rules::RuleSub2Add)
+        .with(RuleConstFold)
+        .with(RulePropagateCopy)
+        .with(super::ptrarith::RulePtrArith)
 }
 
 /// Ghidra's cleanup rule pool (`actcleanup`, `coreaction.cc`) — the tail group that runs after all
