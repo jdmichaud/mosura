@@ -5,8 +5,10 @@
 use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
-    RuleCollectTerms, RuleConstFold, RuleEqual2Zero, RuleIdentityEl, RuleLessEqual,
-    RuleBoolNegate, RuleIdempotent, RuleSubExtComm, RuleMultMult, RulePropagateCopy, RuleRangeAnd, RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
+    Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
+    RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleIdempotent, RuleMultNegOne, RuleSubExtComm,
+    RuleMultMult, RulePropagateCopy, RuleRangeAnd, RuleSborrow, RuleSelectCse, RuleShift2Mult,
+    RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
 /// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
@@ -101,8 +103,19 @@ pub fn ptrarith_pool() -> ActionPool {
     ActionPool::new("ptrarith").with(super::ptrarith::RulePtrArith)
 }
 
+/// Ghidra's cleanup rule pool (`actcleanup`, `coreaction.cc`) — the tail group that runs after all
+/// analysis/type recovery. We port the subtraction-reconstruction subset, which is the printable
+/// counterpart of `RuleSub2Add`: it turns the canonical `V + W*-1` / `V + 0xff..` additive forms
+/// back into `V - W` / `V - c` so the printer renders subtractions, not negative addends.
+pub fn cleanup_pool() -> ActionPool {
+    ActionPool::new("cleanup")
+        .with(RuleMultNegOne)
+        .with(RuleAddUnsigned)
+        .with(Rule2Comp2Sub)
+}
+
 /// The universal decompile action: heritage, simplification, dead-code removal, then type recovery
-/// and the pointer-arithmetic rewrite (PTRADD/PTRSUB) followed by a final dead-code sweep.
+/// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
     ActionGroup::once("decompile")
         .then(ActionHeritage)
@@ -110,6 +123,7 @@ pub fn universal_action() -> ActionGroup {
         .then(super::deadcode::ActionDeadCode)
         .then(ActionInferTypes)
         .then(ptrarith_pool())
+        .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
 }
 

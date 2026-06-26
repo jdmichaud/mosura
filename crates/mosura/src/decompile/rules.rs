@@ -870,6 +870,109 @@ impl Rule for RuleRangeAnd {
     }
 }
 
+/// Ghidra `RuleMultNegOne` (`ruleaction.cc`): `a * -1  =>  -a` (an `INT_2COMP`). The cleanup
+/// counterpart of `RuleSub2Add` for the non-constant case: a subtraction `V - W` canonicalised to
+/// `V + W*-1` has its `W*-1` reduced to `INT_2COMP(W)` here, which `Rule2Comp2Sub` then folds into
+/// `V - W`.
+pub struct RuleMultNegOne;
+
+impl Rule for RuleMultNegOne {
+    fn name(&self) -> &str {
+        "multnegone"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(constvn) = data.op(op).input(1) else { return 0 };
+        let cvn = data.vn(constvn);
+        if !cvn.is_constant() || cvn.constant_value() != mask(!0, cvn.size) {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::Int2comp);
+        data.op_remove_input(op, 1);
+        1
+    }
+}
+
+/// Ghidra `RuleAddUnsigned` (`ruleaction.cc`): a cleanup that converts `V + 0xff...` to
+/// `V - 0x00...` when the additive constant reads as an unsigned integer whose top quarter of bits
+/// are all ones (i.e. it is "really" a small negative). mosura does not type bare constants (they
+/// stay `undefined<N>`, never `TYPE_UINT`), so this is dormant on the current lattice — ported
+/// faithfully so it activates once constant typing lands. (The equate-symbol and enum guards in
+/// Ghidra do not apply: mosura models neither.)
+pub struct RuleAddUnsigned;
+
+impl Rule for RuleAddUnsigned {
+    fn name(&self) -> &str {
+        "addunsigned"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAdd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(constvn) = data.op(op).input(1) else { return 0 };
+        let cvn = data.vn(constvn);
+        if !cvn.is_constant() {
+            return 0;
+        }
+        // getTypeReadFacing(op): the committed type of the constant. Only a plain unsigned integer
+        // qualifies (Ghidra also excludes char-printing types, which mosura never assigns here).
+        if !matches!(cvn.get_type(), super::types::Datatype::Uint(_)) {
+            return 0;
+        }
+        let size = cvn.size;
+        let val = cvn.constant_value();
+        let m = mask(!0, size);
+        let sa = size * 6; // 1/4 less than the full bit-size
+        let quarter = (m >> sa) << sa;
+        if (val & quarter) != quarter {
+            return 0; // the first quarter of bits must all be 1's
+        }
+        let negated = val.wrapping_neg() & m;
+        data.op_set_opcode(op, OpCode::IntSub);
+        let cnew = data.new_const(size, negated);
+        data.op_set_input(op, 1, cnew);
+        1
+    }
+}
+
+/// Ghidra `Rule2Comp2Sub` (`ruleaction.cc`): `V + -W  =>  V - W`. Folds an `INT_2COMP` feeding an
+/// `INT_ADD` into a single `INT_SUB`, completing the round-trip of a non-constant subtraction that
+/// `RuleSub2Add`/`RuleMultNegOne` canonicalised.
+pub struct Rule2Comp2Sub;
+
+impl Rule for Rule2Comp2Sub {
+    fn name(&self) -> &str {
+        "twocomp2sub"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Int2comp]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        // loneDescend: the single op that reads the 2COMP output (none if 0 or >1 uses).
+        let descend = &data.vn(out).descend;
+        if descend.len() != 1 {
+            return 0;
+        }
+        let addop = descend[0];
+        if data.op(addop).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let w = data.op(op).input(0).unwrap(); // the value being negated
+        if data.op(addop).input(0) == Some(out) {
+            // the 2COMP result is in slot 0 — move the other addend down to slot 0
+            let other = data.op(addop).input(1).unwrap();
+            data.op_set_input(addop, 0, other);
+        }
+        data.op_set_input(addop, 1, w);
+        data.op_set_opcode(addop, OpCode::IntSub);
+        data.op_destroy(op); // completely remove the 2COMP
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,5 +1281,31 @@ mod tests {
         // the ADD now reads `a` directly; the COPY's output is no longer used
         assert_eq!(f.op(add).input(0), Some(a));
         assert!(f.vn(c).descend.is_empty());
+    }
+
+    #[test]
+    fn multnegone_then_2comp2sub_reconstructs_subtraction() {
+        // `V + (W * -1)` — the canonical form RuleSub2Add leaves for a non-constant subtraction —
+        // is reduced to `INT_2COMP(W)` then folded into `V - W`.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x30));
+        let w = f.new_input(4, Address::new(reg, 0x38));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let neg1 = f.new_const(4, 0xffffffff);
+        let mul = f.new_op(OpCode::IntMult, seq, vec![w, neg1]); // W * -1
+        let mout = f.new_output(mul, 4, Address::new(uniq, 0x100));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![v, mout]); // V + (W*-1)
+        f.new_output(add, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![mul, add], ..Default::default() }]);
+
+        let mut pool = ActionPool::new("p").with(RuleMultNegOne).with(Rule2Comp2Sub);
+        pool.apply(&mut f);
+        // V - W: the INT_MULT became INT_2COMP and was absorbed into the now-INT_SUB
+        assert_eq!(f.op(add).code(), OpCode::IntSub);
+        assert_eq!(f.op(add).input(0), Some(v));
+        assert_eq!(f.op(add).input(1), Some(w));
+        assert!(f.op(mul).is_dead());
     }
 }
