@@ -138,6 +138,14 @@ struct PrintC<'a> {
     /// Local variable declarations `(name, type)` in first-use order, collected as names are
     /// assigned, emitted at the top of the function body.
     decls: Vec<(String, Datatype)>,
+    /// Per-varnode: is this a register value written into an addrtied stack slot across a call (the
+    /// input of an INDIRECT whose output is the slot)? Such a value is *explicit* — Ghidra renders
+    /// the write to the addrtied variable even though the value is computed in a register merged
+    /// into the slot (the memory-increment `iStack_NN = iStack_NN + 1`).
+    slot_write: Vec<bool>,
+    /// HighVariable representative → the frame offset of its `stack` member, so every member of the
+    /// HighVariable (including merged register versions) is named `xStack_NN` by that offset.
+    high_stack_off: HashMap<u32, u64>,
 }
 
 impl PrintC<'_> {
@@ -192,6 +200,13 @@ impl<'a> PrintC<'a> {
         let vn = self.f.vn(v);
         if vn.is_constant() {
             return false;
+        }
+        // A register value written into an addrtied stack slot across a call — Ghidra materializes
+        // the write to the addrtied variable, so the producing op renders as `xStack_NN = …` at its
+        // natural position, even when the value is computed in a register merged into the slot (the
+        // memory-increment `iStack_NN = iStack_NN + 1`).
+        if self.slot_write[v.0 as usize] {
+            return true;
         }
         if vn.is_input() {
             return true;
@@ -267,8 +282,15 @@ impl<'a> PrintC<'a> {
         // running counter.
         let ty = self.type_of(v);
         let prefix = type_prefix(&ty);
-        let n = if Some(vn.loc.space) == self.stack_space {
-            format!("{prefix}Stack_{:x}", (vn.loc.offset as i64).unsigned_abs())
+        // Name by the frame offset when this varnode is (or is merged with) a `stack` slot, so a
+        // register version merged into the slot shares the slot's `xStack_NN` name.
+        let stack_off = self
+            .high_stack_off
+            .get(&id)
+            .copied()
+            .or_else(|| (Some(vn.loc.space) == self.stack_space).then_some(vn.loc.offset));
+        let n = if let Some(off) = stack_off {
+            format!("{prefix}Stack_{:x}", (off as i64).unsigned_abs())
         } else {
             self.var_counter += 1;
             format!("{prefix}Var{}", self.var_counter)
@@ -1283,9 +1305,38 @@ pub fn print_c(f: &Funcdata) -> String {
     // ready for the recovered locks.
     let locks: HashMap<VarnodeId, Datatype> = HashMap::new();
 
+    // Pre-compute the addrtied-HighVariable info. `slot_write` marks a register value that is written
+    // into an addrtied stack slot across a call — it is the input of an INDIRECT whose output is the
+    // slot (the memory-increment `iStack_NN = iStack_NN + 1` whose value lives in a register). Such a
+    // value is *explicit* and named like the slot, the way Ghidra renders the write to an addrtied
+    // variable. This is the precise across-call-slot-write pattern, not every member of a stack
+    // HighVariable (which would spill intermediate register arithmetic into stray statements).
+    // `high_stack_off` names the merged HighVariable by its stack frame offset.
+    let mut h = merge(f);
+    let mut high_stack_off: HashMap<u32, u64> = HashMap::new();
+    let mut slot_write = vec![false; f.num_varnodes()];
+    if let Some(stk) = f.spaces.by_name("stack") {
+        for i in 0..f.num_varnodes() as u32 {
+            let v = VarnodeId(i);
+            if f.vn(v).loc.space == stk {
+                high_stack_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
+            }
+        }
+        for op in f.op_ids() {
+            if f.op(op).code() == OpCode::Indirect {
+                if let (Some(out), Some(inp)) = (f.op(op).output, f.op(op).input(0)) {
+                    if f.vn(out).loc.space == stk && f.vn(inp).loc.space != stk {
+                        slot_write[inp.0 as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    
+
     let mut p = PrintC {
         f,
-        h: merge(f),
+        h,
         names: HashMap::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
@@ -1299,6 +1350,8 @@ pub fn print_c(f: &Funcdata) -> String {
         gotos: HashMap::new(),
         labels: HashSet::new(),
         decls: Vec::new(),
+        slot_write,
+        high_stack_off,
     };
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
