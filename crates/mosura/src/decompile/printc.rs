@@ -227,8 +227,13 @@ impl<'a> PrintC<'a> {
         }
         if let Some(def) = vn.def {
             // a phi is a merged variable, and an INDIRECT (a value clobbered by a call) is an
-            // opaque `extraout_*` — both are always named, never inlined raw
-            if matches!(self.f.op(def).code(), OpCode::Multiequal | OpCode::Indirect) {
+            // opaque `extraout_*` — both are always named, never inlined raw. A CALL's return value
+            // is likewise always named (Ghidra `ActionMarkExplicit::baseExplicit`, coreaction.cc:3015
+            // `def->isCall()` ⇒ explicit) — a call result is `xVar = func(…)`, not folded into its use.
+            if matches!(
+                self.f.op(def).code(),
+                OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind
+            ) {
                 return true;
             }
             // PTRADD/PTRSUB are address sub-expressions Ghidra recomputes inline at every use (an
@@ -1125,14 +1130,14 @@ impl<'a> PrintC<'a> {
                     let _ = writeln!(out, "{pad}{lhs} = {val};");
                 }
                 OpCode::Call | OpCode::Callind => {
-                    // a call is a statement (it has a side effect); its result inlines at the
-                    // single consumer, is named when used more than once, and is dropped when
-                    // unused — but a void call must still be emitted.
+                    // a call is a statement (it has a side effect). Its return value is always a
+                    // named variable (Ghidra `baseExplicit`: a CALL output is explicit) — emit
+                    // `xVar = func(…)` whenever the result is used; a void/unused call is a bare
+                    // `func(…);`.
                     let out_vn = o.output;
                     let uses = out_vn.map(|v| self.f.vn(v).descend.len());
                     match (out_vn, uses) {
-                        (Some(_), Some(1)) => {} // single-use result: inlined into its consumer
-                        (Some(outv), Some(n)) if n > 1 => {
+                        (Some(outv), Some(n)) if n >= 1 => {
                             let lhs = self.name_of(outv);
                             let rhs = self.render_op(op).0;
                             let _ = writeln!(out, "{pad}{lhs} = {rhs};");
