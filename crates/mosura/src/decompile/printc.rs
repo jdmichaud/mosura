@@ -149,6 +149,10 @@ struct PrintC<'a> {
     /// Signed frame offset → type prefix of the `stack` slot living there, so an address-of-local
     /// `&<prefix>Stack_NN` carries the slot's prefix (`&iStack_28`); defaults to `x` (xunknown).
     stack_prefix: HashMap<i64, &'static str>,
+    /// Varnodes forced explicit (named, not inlined) regardless of use count — the recovered
+    /// stack-array base varnodes, so a single-use base still renders by its array name (`axStack_98`)
+    /// instead of via its address-computation (`&xStack_98`).
+    force_explicit: HashSet<VarnodeId>,
 }
 
 impl PrintC<'_> {
@@ -203,6 +207,10 @@ impl<'a> PrintC<'a> {
         let vn = self.f.vn(v);
         if vn.is_constant() {
             return false;
+        }
+        // a recovered stack-array base is always named (even single-use) so it renders `axStack_98`
+        if self.force_explicit.contains(&v) {
+            return true;
         }
         // A register value written into an addrtied stack slot across a call — Ghidra materializes
         // the write to the addrtied variable, so the producing op renders as `xStack_NN = …` at its
@@ -523,6 +531,62 @@ impl<'a> PrintC<'a> {
             }
         }
         info.into_iter().filter_map(|(b, s)| s.map(|sz| (b, sz))).collect()
+    }
+
+    /// Item C — anchor frame addresses on the recovered ScopeLocal stack symbols
+    /// (`varmap::recover_scope`). A varnode that is the address of the START of a recovered ARRAY
+    /// symbol (an INT_ADD on the stack pointer) is named by the array (`axStack_NN`), declared, has
+    /// its address-computation assignment suppressed, and its element size registered. The array
+    /// then decays to a pointer at a call (`func(axStack_NN)`) and an indexed access renders
+    /// `axStack_NN[i]`, the way Ghidra renders a recovered stack array.
+    fn anchor_stack_arrays(&mut self) {
+        let syms = super::varmap::recover_scope(self.f);
+        // the offsets of direct `stack`-space varnodes — a slot accessed as a scalar value, not
+        // through a base+index. When one falls inside a recovered array we cannot cleanly render the
+        // array (Ghidra would unify the scalar into `arr[0]`, which we do not model yet), so skip it.
+        let scalar_offs: Vec<i64> = match self.stack_space {
+            Some(stk) => (0..self.f.num_varnodes() as u32)
+                .map(VarnodeId)
+                .filter(|&v| self.f.vn(v).loc.space == stk)
+                .map(|v| self.f.vn(v).loc.offset as i64)
+                .collect(),
+            None => Vec::new(),
+        };
+        for sym in &syms {
+            let Datatype::Array(elem, _) = &sym.ty else { continue };
+            let elem_sz = elem.align_size();
+            if elem_sz == 0 {
+                continue;
+            }
+            let range = sym.start..(sym.start + sym.size as i64);
+            if scalar_offs.iter().any(|o| range.contains(o)) {
+                continue; // a direct scalar access overlaps this array — leave it un-anchored
+            }
+            let aname =
+                format!("a{}Stack_{:x}", type_prefix(&symbol_type((**elem).clone())), sym.start.unsigned_abs());
+            let mut matched = false;
+            for i in 0..self.f.num_varnodes() as u32 {
+                let v = VarnodeId(i);
+                let Some(def) = self.f.vn(v).def else { continue };
+                let o = self.f.op(def);
+                if o.code() != OpCode::IntAdd || o.num_inputs() != 2 {
+                    continue;
+                }
+                let (b, off) = (o.input(0).unwrap(), o.input(1).unwrap());
+                if self.stack_addr_off(b, off) != Some(sym.start) {
+                    continue;
+                }
+                let id = self.h.high(v);
+                self.names.entry(id).or_insert_with(|| aname.clone());
+                self.array_elem.insert(v, elem_sz);
+                self.suppressed.insert(def); // the array address is implicit, not an assignment
+                self.force_explicit.insert(v); // render the array name even if the base is single-use
+                matched = true;
+            }
+            if matched {
+                self.decls.push((aname.clone(), sym.ty.clone()));
+            }
+        }
     }
 
     /// Render a memory access `*addr` of `size` bytes holding a value of type `vty` — `base[i]`
@@ -1378,8 +1442,10 @@ pub fn print_c(f: &Funcdata) -> String {
         slot_write,
         high_stack_off,
         stack_prefix,
+        force_explicit: HashSet::new(),
     };
     p.array_elem = p.detect_arrays();
+    p.anchor_stack_arrays();
     p.ret_val = p.return_value();
 
     let ret = p.return_value();
@@ -1400,7 +1466,16 @@ pub fn print_c(f: &Funcdata) -> String {
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
     out.push_str("{\n");
     for (name, ty) in &p.decls {
-        let _ = writeln!(out, "  {} {};", ty.name(), name);
+        match ty {
+            // a recovered stack array declares the element type then the subscript: `T name [N];`
+            // (Ghidra `xunknown4 axStack_98 [36]`) — the element type is downgraded like any symbol.
+            Datatype::Array(elem, count) => {
+                let _ = writeln!(out, "  {} {} [{}];", symbol_type((**elem).clone()).name(), name, count);
+            }
+            _ => {
+                let _ = writeln!(out, "  {} {};", ty.name(), name);
+            }
+        }
     }
     if !p.decls.is_empty() {
         out.push('\n');
