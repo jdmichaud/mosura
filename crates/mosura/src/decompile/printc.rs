@@ -146,6 +146,9 @@ struct PrintC<'a> {
     /// HighVariable representative → the frame offset of its `stack` member, so every member of the
     /// HighVariable (including merged register versions) is named `xStack_NN` by that offset.
     high_stack_off: HashMap<u32, u64>,
+    /// Signed frame offset → type prefix of the `stack` slot living there, so an address-of-local
+    /// `&<prefix>Stack_NN` carries the slot's prefix (`&iStack_28`); defaults to `x` (xunknown).
+    stack_prefix: HashMap<i64, &'static str>,
 }
 
 impl PrintC<'_> {
@@ -432,16 +435,31 @@ impl<'a> PrintC<'a> {
         self.operand(v, prec, right)
     }
 
-    /// If `base` is the stack/frame pointer (RSP 0x20 / RBP 0x28) and `off` a constant, this
-    /// is the address of a stack local taken as a value — render `&Stack_<offset>`.
-    fn stack_addr(&self, base: VarnodeId, off: VarnodeId) -> Option<String> {
+    /// The signed frame offset if `(base, off)` is a stack-pointer-relative address (the stack/frame
+    /// pointer RSP 0x20 / RBP 0x28 plus a constant). Shared by `stack_addr` (rendering) and
+    /// `is_explicit` (an address-of-local is recomputed inline at every use, like a PTRSUB).
+    fn stack_addr_off(&self, base: VarnodeId, off: VarnodeId) -> Option<i64> {
         let bvn = self.f.vn(base);
         let is_fp = Some(bvn.loc.space) == self.reg_space && matches!(bvn.loc.offset, 0x20 | 0x28);
         if !is_fp || !self.f.vn(off).is_constant() {
             return None;
         }
-        let c = self.f.vn(off).constant_value() as i64;
-        Some(format!("&Stack_{:x}", c.unsigned_abs()))
+        Some(self.f.vn(off).constant_value() as i64)
+    }
+
+    /// If `base` is the stack/frame pointer and `off` a constant, this is the address of a stack
+    /// local taken as a value — render `&<prefix>Stack_<offset>` (Ghidra names a stack local by its
+    /// frame offset, with a type prefix; the address is an `&` of that name).
+    fn stack_addr(&self, base: VarnodeId, off: VarnodeId) -> Option<String> {
+        let c = self.stack_addr_off(base, off)?;
+        Some(format!("&{}", self.stack_slot_name(c)))
+    }
+
+    /// Ghidra names a stack local `<prefix>Stack_<offset>` by its frame offset and the type of the
+    /// slot there. The prefix comes from a `stack` slot at this offset when one exists, else `x`.
+    fn stack_slot_name(&self, off: i64) -> String {
+        let prefix = self.stack_prefix.get(&off).copied().unwrap_or("x");
+        format!("{prefix}Stack_{:x}", off.unsigned_abs())
     }
 
     /// If `off` is `idx * size` (a scaled array index), return `idx`.
@@ -1312,14 +1330,21 @@ pub fn print_c(f: &Funcdata) -> String {
     // variable. This is the precise across-call-slot-write pattern, not every member of a stack
     // HighVariable (which would spill intermediate register arithmetic into stray statements).
     // `high_stack_off` names the merged HighVariable by its stack frame offset.
+    let types = infer(f, &locks);
     let mut h = merge(f);
     let mut high_stack_off: HashMap<u32, u64> = HashMap::new();
     let mut slot_write = vec![false; f.num_varnodes()];
+    // The type prefix of each `stack` slot, keyed by its signed frame offset, so an address-of-local
+    // `&<prefix>Stack_NN` carries the slot's prefix (Ghidra `&iStack_28`).
+    let mut stack_prefix: HashMap<i64, &'static str> = HashMap::new();
     if let Some(stk) = f.spaces.by_name("stack") {
         for i in 0..f.num_varnodes() as u32 {
             let v = VarnodeId(i);
             if f.vn(v).loc.space == stk {
                 high_stack_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
+                if let Some(t) = types.get(&v) {
+                    stack_prefix.entry(f.vn(v).loc.offset as i64).or_insert(type_prefix(t));
+                }
             }
         }
         for op in f.op_ids() {
@@ -1343,7 +1368,7 @@ pub fn print_c(f: &Funcdata) -> String {
         stack_space: f.spaces.by_name("stack"),
         var_counter: 0,
         ret_val: None,
-        types: infer(f, &locks),
+        types,
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         array_elem: HashMap::new(),
@@ -1352,6 +1377,7 @@ pub fn print_c(f: &Funcdata) -> String {
         decls: Vec::new(),
         slot_write,
         high_stack_off,
+        stack_prefix,
     };
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
