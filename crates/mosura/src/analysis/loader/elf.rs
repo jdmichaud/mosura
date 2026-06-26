@@ -12,8 +12,10 @@
 //!   placed after the image on a linkage-alignment boundary (Ghidra
 //!   `allocateLinkageBlock`/`createExternalBlock`).
 //!
-//! A1/A2 scope: x86-64 little-endian ELF (the corpus). Other arches map their
-//! language id later.
+//! Arch scope: little-endian ELF for x86-64 and AArch64 (the corpus). The ELF
+//! container markup (`Elf64_Ehdr`/`Phdr`/`Sym`/`Rela`/…) is arch-neutral; only the
+//! `e_machine → (language id, compiler-spec id)` map distinguishes them. Big-endian
+//! and other arches map in later (see `docs/multi-arch-plan.md`).
 
 use std::collections::BTreeSet;
 
@@ -64,16 +66,27 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
     let endian = elf.endian();
     let header = elf.elf_header();
 
-    // --- language / compiler (x86-64 LE only for now) ---
+    // --- language / compiler (e_machine → Ghidra language + compiler-spec id) ---
+    // The big-endian analysis read paths are not yet threaded (see docs/multi-arch-plan.md),
+    // so a BE ELF is rejected regardless of arch; AArch64-LE is fine. The compiler-spec id is
+    // the one Ghidra's per-arch `.opinion` declares for an ELF (`compilerSpecID=...`) and
+    // `.ldefs` resolves: x86-64 → "gcc", AArch64 → "default" (AARCH64.opinion uses
+    // `compilerSpecID="default"`, AARCH64.ldefs declares `<compiler id="default"
+    // spec="AARCH64.cspec">`).
     let machine = header.e_machine(endian);
     let big_endian = matches!(endian, Endianness::Big);
-    if machine != elf::EM_X86_64 || big_endian {
+    let arch = (!big_endian)
+        .then(|| match machine {
+            elf::EM_X86_64 => Some(("x86:LE:64:default", "gcc")),
+            elf::EM_AARCH64 => Some(("AARCH64:LE:64:v8A", "default")),
+            _ => None,
+        })
+        .flatten();
+    let Some((language_id, compiler_spec_id)) = arch else {
         return Err(LoadError::Unsupported(format!(
-            "e_machine={machine} big_endian={big_endian} (A2 supports x86-64 LE)"
+            "e_machine={machine} big_endian={big_endian} (supported: x86-64 LE, AArch64 LE)"
         )));
-    }
-    let language_id = "x86:LE:64:default";
-    let compiler_spec_id = "gcc";
+    };
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
@@ -662,6 +675,7 @@ fn recover_symbols(
         apply_external_relocations(elf, ram, externals, start, program);
     }
 
+    let machine = elf.elf_header().e_machine(elf.endian());
     let mut entry_addrs: BTreeSet<u64> = BTreeSet::new();
     let e_entry = elf.entry();
     if e_entry != 0 {
@@ -670,6 +684,11 @@ fn recover_symbols(
     for sym in elf.symbols() {
         let Ok(name) = sym.name() else { continue };
         if name.is_empty() || sym.is_undefined() {
+            continue;
+        }
+        // Per-arch ELF symbol filtering (Ghidra `ElfExtension.evaluateElfSymbol`): AArch64
+        // drops the ARM mapping symbols, so they are not retained as program symbols.
+        if is_dropped_elf_symbol(machine, name) {
             continue;
         }
         let kind = sym.kind();
@@ -748,6 +767,17 @@ fn recover_symbols(
     for a in entry_addrs {
         program.entry_points.push(Address::new(ram, a));
     }
+}
+
+/// Per-arch ELF symbol filtering — a port of Ghidra `ElfExtension.evaluateElfSymbol`
+/// returning `null` (drop the symbol). Today only AArch64 (`AARCH64_ElfExtension`,
+/// `e_machine == EM_AARCH64`) drops symbols: the ARM mapping symbols `$x`/`$x.*` (A64
+/// code) and `$d`/`$d.*` (data) are *not* retained in the program ("do not retain … due
+/// to potential function/thunk naming interference … excessive duplicate symbols"). The
+/// base `evaluateElfSymbol` keeps every symbol, so other arches (x86-64) are unaffected.
+fn is_dropped_elf_symbol(machine: u16, name: &str) -> bool {
+    machine == elf::EM_AARCH64
+        && (name == "$x" || name.starts_with("$x.") || name == "$d" || name.starts_with("$d."))
 }
 
 /// Read a little-endian `u64` from initialized program memory at `addr`.

@@ -266,7 +266,14 @@ fn process_op(
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
                     make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF);
-                } else if v.space == "const" && const_is_data {
+                } else if v.space == "const" && const_is_data && v.offset != here.offset {
+                    // A `const` equal to the instruction's own address is the SLEIGH
+                    // `inst_start` program-counter marker, not a data address — it flows into
+                    // PC-relative arithmetic (e.g. AArch64 `bl` computes the link register as
+                    // `X30 = INT_ADD(inst_start, 4)`). Ghidra's `SymbolicPropogator` never
+                    // makes a reference here: `INT_ADD` (SymbolicPropogator.java:1251) only
+                    // folds the value, and references are emitted only by COPY/LOAD/STORE/
+                    // BRANCHIND/CALL/ZEXT/SEXT. So the PC marker is never a data reference.
                     make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF);
                 }
             }

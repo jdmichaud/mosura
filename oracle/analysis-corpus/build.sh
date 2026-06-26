@@ -27,5 +27,12 @@ gcc -nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables
 g++ -nostdlib -static -no-pie -O0 -ffreestanding -fno-asynchronous-unwind-tables \
     -fno-exceptions -fno-rtti -o cppsym.elf src/cppsym.cpp
 
+# Freestanding AArch64 (ARM64) ELF — mosura's first non-x86 fixture. Same freestanding
+# recipe as freestanding.elf but for AARCH64:LE:64:v8A: converged state is just our own
+# functions, so the function-listing pipeline gets a clean golden (no PLT/GOT). Built with
+# the cross gcc; Ghidra auto-detects AArch64 from e_machine (EM_AARCH64=183).
+aarch64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
+    -fno-unwind-tables -fno-asynchronous-unwind-tables -o aarch64.elf src/aarch64.c
+
 echo "built:"
-for f in freestanding.elf basic.elf switchtab.elf cppsym.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf; do printf '  %-18s ' "$f"; file -b "$f"; done

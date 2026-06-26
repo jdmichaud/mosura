@@ -1,0 +1,72 @@
+# mosura-analysis-snapshot v1 lang=AARCH64:LE:64:v8A compiler=default base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=aarch64.elf
+block 00400000 004000e7 segment_0.1
+block 004000e8 0040010b .note.gnu.build-id
+block 0040010c 004001a7 .text
+func 0040010c add
+func 0040012c sum_to
+func 00400178 _start
+fnbody 0040010c 0040010c:0040012b
+fnbody 0040012c 0040012c:00400177
+fnbody 00400178 00400178:004001a7
+entry 00400178 _start
+entry 004101a8 _bss_end__
+sym 0040010c add Function
+sym 0040012c sum_to Function
+sym 004101a8 _bss_end__ Label
+sym 004101a8 __bss_start__ Label
+sym 004101a8 __bss_end__ Label
+sym 00400178 _start Function
+sym 004101a8 __bss_start Label
+sym 004101a8 __end__ Label
+sym 004101a8 _edata Label
+sym 004101a8 _end Label
+insn 0040010c
+insn 00400110
+insn 00400114
+insn 00400118
+insn 0040011c
+insn 00400120
+insn 00400124
+insn 00400128
+insn 0040012c
+insn 00400130
+insn 00400134
+insn 00400138
+insn 0040013c
+insn 00400140
+insn 00400144
+insn 00400148
+insn 0040014c
+insn 00400150
+insn 00400154
+insn 00400158
+insn 0040015c
+insn 00400160
+insn 00400164
+insn 00400168
+insn 0040016c
+insn 00400170
+insn 00400174
+insn 00400178
+insn 0040017c
+insn 00400180
+insn 00400184
+insn 00400188
+insn 0040018c
+insn 00400190
+insn 00400194
+insn 00400198
+insn 0040019c
+insn 004001a0
+insn 004001a4
+ref 00400018 00400178 DATA
+ref 00400020 00400040 DATA
+ref 00400088 004000e8 DATA
+ref 0040013c 0040015c UNCONDITIONAL_JUMP
+ref 00400168 00400140 CONDITIONAL_JUMP
+ref 00400188 0040010c UNCONDITIONAL_CALL
+ref 00400194 0040012c UNCONDITIONAL_CALL
+data 00400000 Elf64_Ehdr 64
+data 00400040 Elf64_Phdr[3] 168
+data 004000e8 GnuBuildId 36

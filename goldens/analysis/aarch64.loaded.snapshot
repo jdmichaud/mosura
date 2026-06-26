@@ -1,0 +1,29 @@
+# mosura-analysis-snapshot v1 lang=AARCH64:LE:64:v8A compiler=default base=00400000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=aarch64.elf
+block 00400000 004000e7 segment_0.1
+block 004000e8 0040010b .note.gnu.build-id
+block 0040010c 004001a7 .text
+func 0040010c add
+func 0040012c sum_to
+func 00400178 _start
+fnbody 0040010c 0040010c:0040010c
+fnbody 0040012c 0040012c:0040012c
+fnbody 00400178 00400178:00400178
+entry 00400178 _start
+entry 004101a8 _bss_end__
+sym 0040010c add Function
+sym 0040012c sum_to Function
+sym 004101a8 _bss_end__ Label
+sym 004101a8 __bss_start__ Label
+sym 004101a8 __bss_end__ Label
+sym 00400178 _start Function
+sym 004101a8 __bss_start Label
+sym 004101a8 __end__ Label
+sym 004101a8 _edata Label
+sym 004101a8 _end Label
+ref 00400018 00400178 DATA
+ref 00400020 00400040 DATA
+ref 00400088 004000e8 DATA
+data 00400000 Elf64_Ehdr 64
+data 00400040 Elf64_Phdr[3] 168
+data 004000e8 GnuBuildId 36
