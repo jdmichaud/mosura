@@ -110,6 +110,7 @@ pub fn ptrarith_pool() -> ActionPool {
         .with(super::rules::RuleSub2Add)
         .with(RuleConstFold)
         .with(RulePropagateCopy)
+        .with(super::rules::RuleAddMultCollapse)
         .with(super::ptrarith::RulePtrArith)
 }
 

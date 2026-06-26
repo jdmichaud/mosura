@@ -899,6 +899,106 @@ impl Rule for RuleSub2Add {
     }
 }
 
+/// Ghidra `RuleAddMultCollapse` (`ruleaction.cc`, the "analysis" group): collapse constants in an
+/// additive or multiplicative expression. Forms:
+///  - `((V + c) + d)  =>  V + (c+d)`
+///  - `((V * c) * d)  =>  V * (c*d)`
+///  - `((stackbase + c1) + othervn) + c0  =>  (stackbase + (c0+c1)) + othervn`
+///
+/// The simple form flattens a chained stack-frame base — `(RSP + -8) + -0x70 => RSP + -0x78` — so a
+/// multi-level frame escape resolves to a single offset. (The equate/symbol bookkeeping in Ghidra
+/// does not apply: mosura models no equate symbols. The spacebase form needs an `isSpacebase()`
+/// input, which mosura does not yet flag, so it is dormant — ported for faithfulness.)
+pub struct RuleAddMultCollapse;
+
+impl Rule for RuleAddMultCollapse {
+    fn name(&self) -> &str {
+        "addmultcollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAdd, OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let opc = data.op(op).code();
+        // The pool dispatches on a snapshot opcode; an earlier rule may have already rewritten this
+        // op (e.g. RuleConstFold → COPY). Re-check the live shape before touching inputs.
+        if !matches!(opc, OpCode::IntAdd | OpCode::IntMult) || data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        // The constant is in c0 (input 1, after RuleTermOrder); the other input is `sub`.
+        let c0 = data.op(op).input(1).unwrap();
+        if !data.vn(c0).is_constant() {
+            return 0;
+        }
+        let sub = data.op(op).input(0).unwrap();
+        if !data.vn(sub).is_written() {
+            return 0;
+        }
+        let subop = data.vn(sub).def.unwrap();
+        if data.op(subop).code() != opc {
+            return 0; // must be the exact same operation one level down
+        }
+        let c1 = data.op(subop).input(1).unwrap();
+        if !data.vn(c1).is_constant() {
+            // ((stackbase + c1) + othervn) + c0  =>  (stackbase + (c0+c1)) + othervn — collapse two
+            // constant offsets even with an extra term AND a multiply-used intermediate sum.
+            if opc != OpCode::IntAdd {
+                return 0;
+            }
+            for i in 0..2 {
+                let othervn = data.op(subop).input(i).unwrap();
+                if data.vn(othervn).is_constant() || data.vn(othervn).is_free() {
+                    continue;
+                }
+                let sub2 = data.op(subop).input(1 - i).unwrap();
+                if !data.vn(sub2).is_written() {
+                    continue;
+                }
+                let baseop = data.vn(sub2).def.unwrap();
+                if data.op(baseop).code() != OpCode::IntAdd {
+                    continue;
+                }
+                let c1b = data.op(baseop).input(1).unwrap();
+                if !data.vn(c1b).is_constant() {
+                    continue;
+                }
+                let basevn = data.op(baseop).input(0).unwrap();
+                // only for a base pointer (this adds a new add op, so guard it tightly)
+                if !data.vn(basevn).is_spacebase() || !data.vn(basevn).is_input() {
+                    continue;
+                }
+                let size = data.vn(c0).size;
+                let val = mask(
+                    data.vn(c0).constant_value().wrapping_add(data.vn(c1b).constant_value()),
+                    size,
+                );
+                let newvn = data.new_const(size, val);
+                let newop = data.new_op_before(op, OpCode::IntAdd, vec![basevn, newvn]);
+                let newout = data.op(newop).output.unwrap();
+                data.op_set_input(op, 0, newout);
+                data.op_set_input(op, 1, othervn);
+                return 1;
+            }
+            return 0;
+        }
+        let sub2 = data.op(subop).input(0).unwrap();
+        if data.vn(sub2).is_free() {
+            return 0;
+        }
+        let size = data.vn(c0).size;
+        let (v0, v1) = (data.vn(c0).constant_value(), data.vn(c1).constant_value());
+        let val = match opc {
+            OpCode::IntAdd => v0.wrapping_add(v1),
+            OpCode::IntMult => v0.wrapping_mul(v1),
+            _ => return 0,
+        };
+        let newvn = data.new_const(size, mask(val, size));
+        data.op_set_input(op, 1, newvn); // c0 => c0+c1 (or c0*c1)
+        data.op_set_input(op, 0, sub2); // sub => sub2
+        1
+    }
+}
+
 /// Ghidra `RuleMultNegOne` (`ruleaction.cc`): `a * -1  =>  -a` (an `INT_2COMP`). The cleanup
 /// counterpart of `RuleSub2Add` for the non-constant case: a subtraction `V - W` canonicalised to
 /// `V + W*-1` has its `W*-1` reduced to `INT_2COMP(W)` here, which `Rule2Comp2Sub` then folds into
@@ -1310,6 +1410,31 @@ mod tests {
         // the ADD now reads `a` directly; the COPY's output is no longer used
         assert_eq!(f.op(add).input(0), Some(a));
         assert!(f.vn(c).descend.is_empty());
+    }
+
+    #[test]
+    fn addmultcollapse_flattens_nested_constant_add() {
+        // `(V + c) + d  =>  V + (c+d)` — the chained stack-frame base collapse.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let v = f.new_input(8, Address::new(reg, 0x20));
+        let c = f.new_const(8, 0xfffffffffffffff8); // -8
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let inner = f.new_op(OpCode::IntAdd, seq, vec![v, c]); // V + -8
+        let iout = f.new_output(inner, 8, Address::new(uniq, 0x100));
+        let d = f.new_const(8, 0xffffffffffffff70); // -0x90
+        let outer = f.new_op(OpCode::IntAdd, seq, vec![iout, d]); // (V + -8) + -0x90
+        f.new_output(outer, 8, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![inner, outer], ..Default::default() }]);
+
+        ActionPool::new("p").with(RuleAddMultCollapse).apply(&mut f);
+        // V + -0x98: the two constant offsets are summed and the intermediate add is bypassed
+        assert_eq!(f.op(outer).code(), OpCode::IntAdd);
+        assert_eq!(f.op(outer).input(0), Some(v));
+        let c2 = f.op(outer).input(1).unwrap();
+        assert!(f.vn(c2).is_constant());
+        assert_eq!(f.vn(c2).constant_value(), 0xffffffffffffff68); // -8 + -0x90 = -0x98
     }
 
     #[test]
