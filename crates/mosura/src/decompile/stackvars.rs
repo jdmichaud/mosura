@@ -50,6 +50,74 @@ fn symbolic_value(f: &Funcdata, o: &super::op::PcodeOp, sval: &HashMap<Loc, i64>
     }
 }
 
+/// Remove the call-mechanism return-address push — the faithful effect of Ghidra's
+/// `ActionStackPtrFlow` (`coreaction.cc`) for a CALL site. The x86 `call` SLEIGH emits
+/// `RSP = RSP - 8; STORE RSP, <next-insn>; CALL`, and the callee's `ret` pops those 8 bytes, so
+/// RSP is net-unchanged across the call (the default prototype marks the stack pointer
+/// `unaffected`). mosura does not trace into the callee, so without this the push survives as a
+/// bogus return-address stack slot that (a) shifts every later frame offset by 8 and (b) drags the
+/// alias boundary down onto itself, spuriously guarding the slot. Drop the push and the
+/// return-address store so RSP is restored across the call.
+///
+/// Runs pre-heritage on the flat op list: the matched ops are marked dead (recover_stack and the
+/// CFG builder skip dead ops), so the stack-offset tracking never sees the -8 and later RSP reads
+/// resolve to the pre-call value.
+pub fn normalize_call_stack(f: &mut Funcdata) {
+    let Some(reg) = f.spaces.by_name("register") else { return };
+    let is_rsp = |v: &VarnodeId, f: &Funcdata| {
+        let vn = f.vn(*v);
+        vn.loc.space == reg && vn.loc.offset == RSP
+    };
+    let calls: Vec<_> = f
+        .op_ids()
+        .filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
+    for call in calls {
+        let pc = f.op(call).seqnum.pc;
+        let idx = call.0 as usize;
+        // Scan backward over the ops emitted by the same `call` instruction for its push/store.
+        let mut store = None;
+        let mut push = None;
+        let mut i = idx;
+        while i > 0 {
+            i -= 1;
+            let op = super::op::OpId(i as u32);
+            if f.op(op).seqnum.pc != pc {
+                break; // left this instruction's micro-ops
+            }
+            match f.op(op).code() {
+                // the return-address store: STORE [RSP], <constant return address>
+                OpCode::Store
+                    if store.is_none()
+                        && f.op(op).input(1).is_some_and(|a| is_rsp(&a, f))
+                        && f.op(op).input(2).is_some_and(|v| f.vn(v).is_constant()) =>
+                {
+                    store = Some(op);
+                }
+                // the push: RSP = RSP - <const>
+                OpCode::IntSub
+                    if push.is_none()
+                        && f.op(op).output.is_some_and(|o| is_rsp(&o, f))
+                        && f.op(op).input(0).is_some_and(|a| is_rsp(&a, f))
+                        && f.op(op).input(1).is_some_and(|c| f.vn(c).is_constant()) =>
+                {
+                    push = Some(op);
+                }
+                _ => {}
+            }
+        }
+        if let (Some(store), Some(push)) = (store, push) {
+            // Neutralize the push to an identity COPY (RSP unchanged across the call) and drop the
+            // return-address store. Later reads of RSP propagate through the COPY to the pre-call
+            // value; the store has no output, so destroying it orphans nothing.
+            let base = f.op(push).input(0).unwrap();
+            f.op_set_opcode(push, OpCode::Copy);
+            f.op_set_all_input(push, &[base]);
+            f.op_destroy(store);
+        }
+    }
+}
+
 /// Rewrite stack-pointer-relative LOAD/STORE into `stack`-space accesses.
 pub fn recover_stack(f: &mut Funcdata) {
     let (Some(reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
@@ -59,6 +127,9 @@ pub fn recover_stack(f: &mut Funcdata) {
     sval.insert((reg, RSP), 0); // entry stack pointer is offset 0
 
     for op in f.op_ids().collect::<Vec<_>>() {
+        if f.op(op).is_dead() {
+            continue; // skip ops removed by normalize_call_stack
+        }
         let o = f.op(op).clone();
         match o.code() {
             OpCode::Store => {

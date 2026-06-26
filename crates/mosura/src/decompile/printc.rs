@@ -215,9 +215,21 @@ impl<'a> PrintC<'a> {
         if vn.descend.len() != 1 {
             return true; // 0 or >1 uses: named
         }
-        // single use: inline, unless it feeds a phi — then it must be materialized as an
-        // assignment to the merged variable (the loop increment `i = i + 1`, the init `i = 0`)
-        self.f.op(vn.descend[0]).code() == OpCode::Multiequal
+        // single use: inline, unless it feeds a marker that stands for the *same* variable, in
+        // which case it must be materialized as an assignment to that variable:
+        //  - a phi (the loop increment `i = i + 1`, the init `i = 0`); or
+        //  - an across-call INDIRECT carrying the same addrtied stack slot — the value is the write
+        //    to that slot (`xStack_NN = …`); Ghidra renders the store, the INDIRECT is invisible.
+        let user = vn.descend[0];
+        match self.f.op(user).code() {
+            OpCode::Multiequal => true,
+            OpCode::Indirect => self
+                .f
+                .op(user)
+                .output
+                .is_some_and(|uout| self.f.vn(uout).loc == vn.loc && self.f.vn(uout).size == vn.size),
+            _ => false,
+        }
     }
 
     /// The name of `v`'s variable, assigning one on first use.

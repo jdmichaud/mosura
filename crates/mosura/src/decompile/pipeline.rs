@@ -21,6 +21,7 @@ impl Action for ActionHeritage {
         if data.num_blocks() != 0 {
             return 0;
         }
+        super::stackvars::normalize_call_stack(data);
         super::stackvars::recover_stack(data);
         // wire return/argument candidates before heritage links them to reaching defs
         super::recover::recover_return(data);

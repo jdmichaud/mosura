@@ -79,7 +79,9 @@ pub fn build_cfg(f: &mut Funcdata) {
     let mut blocks: Vec<BlockBasic> = vec![BlockBasic::default(); nb];
     for (bi, &start) in leader_vec.iter().enumerate() {
         let end = leader_vec.get(bi + 1).copied().unwrap_or(n);
-        blocks[bi].ops = (start..end).map(|i| OpId(i as u32)).collect();
+        // Skip ops already removed pre-CFG (e.g. the call return-address push that
+        // `normalize_call_stack` drops); they are never block leaders.
+        blocks[bi].ops = (start..end).map(|i| OpId(i as u32)).filter(|&op| !f.op(op).is_dead()).collect();
     }
 
     // out edges, by the block's last op
