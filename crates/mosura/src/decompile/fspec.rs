@@ -524,6 +524,87 @@ pub fn sysv_output(spaces: &SpaceManager) -> Option<ParamList> {
     Some(ParamList { entry, resource_start: vec![0, 2, 4], is_output: true })
 }
 
+// ---- Side-effects (EffectRecord / ProtoModel.effectlist) --------------------------------------
+
+/// Ghidra `EffectRecord` effect types (fspec.hh:393): the side-effect a sub-function has on a
+/// storage range, seen from the caller across a call to it.
+pub mod effect {
+    /// The sub-function does not change the value at all (a callee-saved register).
+    pub const UNAFFECTED: u8 = 1;
+    /// The memory is changed, unrelated to its original value (a caller-saved/clobbered register).
+    pub const KILLEDBYCALL: u8 = 2;
+    /// The memory holds the return address.
+    pub const RETURN_ADDRESS: u8 = 3;
+    /// No EffectRecord covers the range — the effect is unknown (value may flow through).
+    pub const UNKNOWN_EFFECT: u8 = 4;
+}
+
+/// Ghidra `EffectRecord` (fspec.hh:391): the indirect effect a sub-function has on one memory
+/// range. The range is given in the caller's address space (registers, or the stack-relative
+/// return-address slot).
+#[derive(Clone, Copy, Debug)]
+pub struct EffectRecord {
+    pub space: SpaceId,
+    pub offset: u64,
+    pub size: u32,
+    pub effect: u8,
+}
+
+/// The System V AMD64 effect list — Ghidra's `ProtoModel::effectlist` for the `__stdcall`
+/// prototype of `x86-64-gcc.cspec`. Each input-parameter register is `killedbycall`
+/// (`ParamListStandard::parsePentry`, fspec.cc:1247) — `RDI,RSI,RDX,RCX,R8,R9` and `XMM0..7` —
+/// joined with the explicit `<killedbycall>` set (`RAX,RDX,XMM0`) and the output registers
+/// (`RAX,RDX,XMM0,XMM1`); the `<unaffected>` callee-saved registers (`RBX,RSP,RBP,R12..R15`) are
+/// `unaffected`; the stack slot at offset 0 holds the `return_address`. `R10/R11` and the flags
+/// are absent ⇒ `unknown_effect`.
+pub fn sysv_effect_list(spaces: &SpaceManager) -> Vec<EffectRecord> {
+    let Some(reg) = spaces.by_name("register") else { return Vec::new() };
+    let mut list = Vec::new();
+    let mut kill = |off: u64| list.push(EffectRecord { space: reg, offset: off, size: 8, effect: effect::KILLEDBYCALL });
+    // killedbycall: the volatile integer registers (params + RAX) ...
+    for off in [RAX, RCX, RDX, RSI, RDI, R8, R9] {
+        kill(off);
+    }
+    // ... and the float registers XMM0..7 (which also cover the XMM0/XMM1 outputs).
+    for i in 0..8u64 {
+        kill(XMM_BASE + i * XMM_STRIDE);
+    }
+    // unaffected: the callee-saved registers RBX, RSP, RBP, R12..R15.
+    for off in [0x18u64, 0x20, 0x28, 0xa0, 0xa8, 0xb0, 0xb8] {
+        list.push(EffectRecord { space: reg, offset: off, size: 8, effect: effect::UNAFFECTED });
+    }
+    if let Some(stack) = spaces.by_name("stack") {
+        list.push(EffectRecord { space: stack, offset: 0, size: 8, effect: effect::RETURN_ADDRESS });
+    }
+    list.sort_by(|a, b| a.space.0.cmp(&b.space.0).then(a.offset.cmp(&b.offset)));
+    list
+}
+
+/// Ghidra `ProtoModel::lookupEffect` (fspec.cc:2472): the effect type covering `[addr,addr+size)`
+/// — the first record at or before `addr` whose range fully contains it, else `unknown_effect`.
+/// (Constants / unique-space ranges are local to the function and always `unaffected`.)
+pub fn lookup_effect(efflist: &[EffectRecord], addr: Address, size: u32) -> u8 {
+    // `efflist` is sorted by (space, offset); find the last record at or before `addr`.
+    let mut hit: Option<&EffectRecord> = None;
+    for e in efflist {
+        if e.space.0 < addr.space.0 || (e.space.0 == addr.space.0 && e.offset <= addr.offset) {
+            hit = Some(e);
+        } else {
+            break;
+        }
+    }
+    let Some(e) = hit else { return effect::UNKNOWN_EFFECT };
+    if e.space != addr.space {
+        return effect::UNKNOWN_EFFECT;
+    }
+    let end = addr.offset.saturating_add(size as u64);
+    if addr.offset >= e.offset && end <= e.offset + e.size as u64 {
+        e.effect
+    } else {
+        effect::UNKNOWN_EFFECT
+    }
+}
+
 // ---- Trials -----------------------------------------------------------------------------------
 
 /// Ghidra `ParamTrial` flag bits (fspec.hh:212). The subset the faithful recovery needs.
@@ -755,6 +836,28 @@ mod tests {
         let pl = sysv_output(&spaces).unwrap();
         assert_eq!(pl.find_entry(Address::new(reg, RAX), 8).unwrap().0.group, 2);
         assert_eq!(pl.find_entry(Address::new(reg, XMM_BASE), 8).unwrap().0.group, 0);
+    }
+
+    #[test]
+    fn sysv_effects_classify_registers() {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let efflist = sysv_effect_list(&spaces);
+        // caller-saved (killedbycall): RAX, RCX, RDX, RSI, RDI, XMM0 — clobbered across a call.
+        for off in [RAX, RCX, RDX, RSI, RDI, XMM_BASE] {
+            assert_eq!(lookup_effect(&efflist, Address::new(reg, off), 8), effect::KILLEDBYCALL, "off {off:#x}");
+        }
+        // a narrow sub-register read (EAX) is still within RAX's killedbycall record.
+        assert_eq!(lookup_effect(&efflist, Address::new(reg, RAX), 4), effect::KILLEDBYCALL);
+        // callee-saved (unaffected): RBX (0x18), RSP (0x20), RBP (0x28), R12 (0xa0).
+        for off in [0x18u64, 0x20, 0x28, 0xa0] {
+            assert_eq!(lookup_effect(&efflist, Address::new(reg, off), 8), effect::UNAFFECTED, "off {off:#x}");
+        }
+        // R10 (0x90) is neither a parameter nor explicitly listed ⇒ unknown.
+        assert_eq!(lookup_effect(&efflist, Address::new(reg, 0x90), 8), effect::UNKNOWN_EFFECT);
+        // the stack slot at offset 0 holds the return address.
+        assert_eq!(lookup_effect(&efflist, Address::new(stack, 0), 8), effect::RETURN_ADDRESS);
     }
 
     #[test]

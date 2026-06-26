@@ -104,6 +104,23 @@ impl Varnode {
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
+    /// Ghidra `Varnode::isIndirectCreation` — this value is created out of nothing by an INDIRECT
+    /// modeling a call's `killedbycall` clobber (it has no realistic ancestor).
+    pub fn is_indirect_creation(&self) -> bool {
+        self.flags & flags::INDIRECT_CREATION != 0
+    }
+    /// Ghidra `Varnode::setIndirectCreation` — mark this INDIRECT output a created (clobbered) value.
+    pub fn set_indirect_creation(&mut self) {
+        self.flags |= flags::INDIRECT_CREATION;
+    }
+    /// Ghidra `Varnode::isReturnAddress` — this INDIRECT output carries the call's return address.
+    pub fn is_return_address(&self) -> bool {
+        self.flags & flags::RETURN_ADDRESS != 0
+    }
+    /// Ghidra `Varnode::setReturnAddress`.
+    pub fn set_return_address(&mut self) {
+        self.flags |= flags::RETURN_ADDRESS;
+    }
     /// The literal value of a constant varnode.
     pub fn constant_value(&self) -> u64 {
         self.loc.offset

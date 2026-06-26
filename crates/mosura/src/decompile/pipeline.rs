@@ -81,6 +81,21 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RulePropagateCopy)
 }
 
+/// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
+/// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
+/// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
+pub struct ActionActiveReturn;
+
+impl Action for ActionActiveReturn {
+    fn name(&self) -> &str {
+        "activereturn"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        super::recover::resolve_call_output(data);
+        1
+    }
+}
+
 /// The universal decompile action: heritage, simplification, then dead-code removal.
 /// Ghidra `ActionInferTypes`: recover and commit a data-type onto every varnode, so the
 /// pointer-arithmetic rules can read pointer types during the pipeline.
@@ -132,6 +147,7 @@ pub fn universal_action() -> ActionGroup {
         .then(ActionHeritage)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
+        .then(ActionActiveReturn)
         .then(ActionInferTypes)
         .then(ptrarith_pool())
         .then(cleanup_pool())
