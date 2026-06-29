@@ -54,11 +54,16 @@ impl LocationMap {
     /// iterator dance against the per-space `BTreeMap` (a left-overlapping new range that starts
     /// *before* an existing one is, faithfully, NOT merged — Ghidra's `++iter` skips it).
     pub fn add(&mut self, space: SpaceId, off: u64, size: u32, pass: i32) -> i32 {
+        use std::ops::Bound::{Excluded, Unbounded};
         let map = self.themap.entry(space).or_default();
         let mut addr = off;
         let mut size = size as u64;
         let mut pass = pass;
         let mut intersect = 0i32;
+        // First range strictly after key `k` (avoids `k+1` overflowing at the top of the space).
+        let after = |map: &BTreeMap<u64, SizePass>, k: u64| {
+            map.range((Excluded(k), Unbounded)).next().map(|(kk, _)| *kk)
+        };
 
         // Predecessor candidate: greatest range start strictly less than `addr` (C++
         // `lower_bound(addr)` then `--`); if there is none, the first range at/after `addr`.
@@ -67,18 +72,19 @@ impl LocationMap {
             None => map.range(addr..).next().map(|(k, _)| *k),
         };
         // If that candidate does not actually contain `addr`, step forward (C++ `++iter`).
+        // Containment uses wrapping subtraction, mirroring `Address::overlap`'s `wrapOffset`
+        // (`address.cc:153`) so negative spacebase offsets (stored as large unsigned) work.
         if let Some(k) = start {
-            let ks = map[&k].size as u64;
-            if !(k <= addr && addr < k + ks) {
-                start = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+            if addr.wrapping_sub(k) >= map[&k].size as u64 {
+                start = after(map, k);
             }
         }
         // `addr` falls inside the candidate range: wholly contained ⇒ done; else absorb it and
         // extend `[addr, addr+size)` back to its start, then keep merging forward.
         if let Some(k) = start {
             let ks = map[&k].size as u64;
-            if k <= addr && addr < k + ks {
-                let off_in = addr - k;
+            let off_in = addr.wrapping_sub(k);
+            if off_in < ks {
                 if off_in + size <= ks {
                     return if map[&k].pass < pass { 2 } else { 0 };
                 }
@@ -89,23 +95,24 @@ impl LocationMap {
                     pass = map[&k].pass;
                 }
                 map.remove(&k);
-                start = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+                start = after(map, k);
             }
         }
         // Absorb every following range the (possibly extended) `[addr, addr+size)` overlaps.
         let mut cur = start;
         while let Some(k) = cur {
-            if k >= addr && k < addr + size {
+            let rel = k.wrapping_sub(addr);
+            if rel < size {
                 let ks = map[&k].size as u64;
-                if (k - addr) + ks > size {
-                    size = (k - addr) + ks;
+                if rel + ks > size {
+                    size = rel + ks;
                 }
                 if map[&k].pass < pass {
                     intersect = 1;
                     pass = map[&k].pass;
                 }
                 map.remove(&k);
-                cur = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+                cur = after(map, k);
             } else {
                 break;
             }
@@ -119,7 +126,7 @@ impl LocationMap {
     pub fn find_pass(&self, space: SpaceId, off: u64) -> i32 {
         let Some(map) = self.themap.get(&space) else { return -1 };
         match map.range(..=off).next_back() {
-            Some((&k, sp)) if off < k + sp.size as u64 => sp.pass,
+            Some((&k, sp)) if off.wrapping_sub(k) < sp.size as u64 => sp.pass,
             _ => -1,
         }
     }
@@ -626,26 +633,61 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
     }
 }
 
-/// True once every heritaged space has been brought into SSA form (Ghidra: all spaces have a
-/// positive `numHeritagePasses`). The driver loop stops here.
-pub fn heritage_complete(f: &Funcdata) -> bool {
-    (0..f.spaces.num_spaces() as u32).all(|i| {
-        let sp = SpaceId(i);
-        !f.spaces.get(sp).is_heritaged() || f.heritage_done.contains(&sp)
-    })
+/// Gather the candidate heritage locations for the pass at `pass`: every distinct read/write
+/// `(space, offset, size)` whose space is heritaged and whose delay has been reached, mapped to
+/// whether the location is read through a still-free (un-heritaged) Varnode. That flag is Ghidra's
+/// signal (`heritage.cc:2711`, `!isHeritageKnown() && !hasNoDescend()`) that an already-heritaged
+/// location must be RE-heritaged because a later simplification freed a read of it. mosura iterates
+/// ops (not the address-sorted Varnode list), which naturally excludes Ghidra's orphan-free skips.
+fn gather_candidates(f: &Funcdata, pass: i32) -> HashMap<Loc, bool> {
+    let infos = build_info_list(&f.spaces);
+    let eligible = |sp: SpaceId| {
+        let info = &infos[sp.0 as usize];
+        info.is_heritaged() && info.delay <= pass
+    };
+    let mut cand: HashMap<Loc, bool> = HashMap::new();
+    for b in 0..f.num_blocks() {
+        let ops = f.blocks()[b].ops.clone();
+        for op in ops {
+            for slot in 0..f.op(op).num_inputs() {
+                if let Some(l) = read_loc(f, op, slot) {
+                    if eligible(l.0) {
+                        let free = !f.vn(f.op(op).input(slot).unwrap()).is_heritage_known();
+                        *cand.entry(l).or_insert(false) |= free;
+                    }
+                }
+            }
+            if let Some(l) = write_loc(f, op) {
+                if eligible(l.0) {
+                    cand.entry(l).or_insert(false);
+                }
+            }
+        }
+    }
+    cand
 }
 
-/// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is
-/// one pass). Heritages the spaces newly eligible at the current `f.heritage_pass` (those whose
-/// `delay <= pass` and not yet in `f.heritage_done`), advancing the pass counter. Registers
-/// (delay 0) heritage before `ram`/`stack` (delay 1), so a later pass's reads link to defs an
-/// earlier pass discovered. Returns the number of spaces heritaged this call (0 when the pass
-/// has nothing newly eligible).
+/// True while some heritaged location still needs to enter SSA form: a location not yet recorded in
+/// `globaldisjoint` (never heritaged), or one read through a freed Varnode (heritaged before, but a
+/// later simplification re-introduced a free read of it). The driver loop stops once neither holds —
+/// the termination implicit in Ghidra's heritage loop (`heritage.cc:2702`, which finds no new work).
+pub fn heritage_complete(f: &Funcdata) -> bool {
+    !gather_candidates(f, f.heritage_pass)
+        .iter()
+        .any(|(l, &has_free)| f.globaldisjoint.find_pass(l.0, l.1) == -1 || has_free)
+}
+
+/// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is one
+/// pass). Brings into SSA form the per-LOCATION cover newly eligible at the current `f.heritage_pass`:
+/// each candidate location is classified by `globaldisjoint.add` and added to the cover when it is
+/// new (intersect 0/1) or when an already-heritaged location is read through a freed Varnode
+/// (intersect 2 with a free read — Ghidra's re-heritage path, `heritage.cc:2711`). Registers
+/// (delay 0) heritage before `ram`/`stack` (delay 1). Returns the number of locations heritaged.
 ///
 /// State persists on `f` across calls, so the outer mainloop can interleave param recovery /
 /// simplification between passes (that interleaving is the payoff). Run back-to-back via
-/// [`heritage`] the passes reproduce the full single-pass SSA — spaces are independent in SSA,
-/// so splitting the rename walk by delay group is output-identical.
+/// [`heritage`] the passes reproduce the full single-pass SSA — a location heritaged in an earlier
+/// pass is recorded in `globaldisjoint` and skipped, so the per-location split is output-identical.
 pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     if f.num_blocks() == 0 {
         return 0;
@@ -657,20 +699,24 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         refine_overlaps(f, dom);
         normalize_read_size(f);
     }
-    // Spaces newly eligible this pass: heritaged, delay reached, not yet processed.
-    let active: HashSet<SpaceId> = build_info_list(&f.spaces)
-        .iter()
-        .filter(|i| i.delay <= pass)
-        .filter_map(|i| i.space)
-        .filter(|sp| !f.heritage_done.contains(sp))
-        .collect();
+    // The per-location cover heritaged this pass — Ghidra's `disjoint` task list, built from
+    // `globaldisjoint.add`. Process candidates in address order (as Ghidra's `beginLoc` does) so the
+    // disjoint cover is deterministic.
+    let mut candidates: Vec<(Loc, bool)> = gather_candidates(f, pass).into_iter().collect();
+    candidates.sort_by_key(|&((sp, off, sz), _)| (sp.0, off, sz));
+    let mut cover: HashSet<Loc> = HashSet::new();
+    for (loc, has_free) in candidates {
+        let intersect = f.globaldisjoint.add(loc.0, loc.1, loc.2, pass);
+        if intersect != 2 || has_free {
+            cover.insert(loc);
+        }
+    }
     f.heritage_pass += 1;
-    if active.is_empty() {
+    if cover.is_empty() {
         return 0;
     }
-    heritage_spaces(f, dom, &active);
-    f.heritage_done.extend(active.iter().copied());
-    active.len() as u32
+    heritage_spaces(f, dom, &cover);
+    cover.len() as u32
 }
 
 /// Build the SSA form for `f` to completion in one call — the convenience driver for the alias
@@ -686,16 +732,16 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     }
 }
 
-/// Heritage the locations in `active` (one delay group) into SSA form — the per-pass body of
-/// [`heritage`]. Locations in spaces outside `active` are ignored: their reads are left free
-/// for a later pass, and their writes/phis don't define anything here. Because SSA locations in
-/// different spaces never interact (a read at a slot belongs to exactly one space), running
-/// this once per space group reconstructs the same SSA as one combined walk.
-fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, active: &HashSet<SpaceId>) {
+/// Heritage the locations in `cover` (the disjoint cover of this pass) into SSA form — the per-pass
+/// body of [`heritage`]. Locations outside `cover` are ignored: their reads are left free for a
+/// later pass, or were already linked by an earlier one. Because distinct SSA locations never
+/// interact (a read belongs to exactly one `(space, offset, size)`), heritaging only the cover
+/// reconstructs the same SSA as one combined walk over them.
+fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
     let nb = f.num_blocks();
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
-    //    if some block reads it before defining it), restricted to the active spaces.
+    //    if some block reads it before defining it), restricted to this pass's cover.
     let mut globals: HashSet<Loc> = HashSet::new();
     let mut defblocks: HashMap<Loc, HashSet<usize>> = HashMap::new();
     for b in 0..nb {
@@ -704,13 +750,13 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, active: &HashSet<SpaceId>
         for op in ops {
             for slot in 0..f.op(op).num_inputs() {
                 if let Some(l) = read_loc(f, op, slot) {
-                    if active.contains(&l.0) && !killed.contains(&l) {
+                    if cover.contains(&l) && !killed.contains(&l) {
                         globals.insert(l);
                     }
                 }
             }
             if let Some(l) = write_loc(f, op) {
-                if active.contains(&l.0) {
+                if cover.contains(&l) {
                     killed.insert(l);
                     defblocks.entry(l).or_default().insert(b);
                 }
@@ -747,7 +793,7 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, active: &HashSet<SpaceId>
     }
     let mut stack: HashMap<Loc, Vec<VarnodeId>> = HashMap::new();
     let mut inputs: HashMap<Loc, VarnodeId> = HashMap::new();
-    rename(f, 0, dom, &children, &phis, &mut stack, &mut inputs, active);
+    rename(f, 0, dom, &children, &phis, &mut stack, &mut inputs, cover);
 }
 
 /// The reaching definition for `loc`: the top of its rename stack, or a (cached) function
@@ -816,7 +862,7 @@ fn rename(
     phis: &HashMap<(usize, Loc), OpId>,
     stack: &mut HashMap<Loc, Vec<VarnodeId>>,
     inputs: &mut HashMap<Loc, VarnodeId>,
-    active: &HashSet<SpaceId>,
+    cover: &HashSet<Loc>,
 ) {
     let mut pushed: Vec<Loc> = Vec::new();
     let ops = f.blocks()[b].ops.clone();
@@ -824,10 +870,10 @@ fn rename(
     for op in ops {
         if f.op(op).code() == OpCode::Multiequal {
             // a phi: its output is the new current def; inputs are filled from preds below.
-            // Phis for spaces not active this pass (e.g. register phis seen again while the
+            // Phis for locations not in this pass's cover (e.g. register phis seen again while the
             // stack pass walks) were already wired by their own pass — leave them be.
             if let Some(l) = write_loc(f, op) {
-                if active.contains(&l.0) {
+                if cover.contains(&l) {
                     let out = f.op(op).output.unwrap();
                     stack.entry(l).or_default().push(out);
                     pushed.push(l);
@@ -835,11 +881,11 @@ fn rename(
             }
             continue;
         }
-        // rename reads in the active spaces; reads in other spaces stay free (a later pass
-        // links them) or were already linked (an earlier pass).
+        // rename reads in this pass's cover; reads outside it stay free (a later pass links them)
+        // or were already linked (an earlier pass).
         for slot in 0..f.op(op).num_inputs() {
             if let Some(l) = read_loc(f, op, slot) {
-                if active.contains(&l.0) {
+                if cover.contains(&l) {
                     let def = current_def(f, l, stack, inputs);
                     f.op_set_input(op, slot, def);
                 }
@@ -847,7 +893,7 @@ fn rename(
         }
         // the output becomes the new current def
         if let Some(l) = write_loc(f, op) {
-            if active.contains(&l.0) {
+            if cover.contains(&l) {
                 let out = f.op(op).output.unwrap();
                 stack.entry(l).or_default().push(out);
                 pushed.push(l);
@@ -871,7 +917,7 @@ fn rename(
     }
 
     for c in &children[b] {
-        rename(f, *c, dom, children, phis, stack, inputs, active);
+        rename(f, *c, dom, children, phis, stack, inputs, cover);
     }
 
     for l in pushed {

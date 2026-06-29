@@ -46,9 +46,11 @@ pub struct Funcdata {
     /// heritage before `ram`/`stack` (delay 1). Persists across `ActionHeritage` calls so the
     /// mainloop can interleave param recovery between passes.
     pub heritage_pass: i32,
-    /// The spaces already brought into SSA form (Ghidra's `globaldisjoint`, by space): a later
-    /// pass heritages only the spaces not yet here, leaving the rest free.
-    pub heritage_done: std::collections::HashSet<super::space::SpaceId>,
+    /// Ghidra `Heritage::globaldisjoint` (`heritage.cc`): the per-`(addr,size)` record of which
+    /// locations have been brought into SSA form and in which pass. A later pass heritages only the
+    /// locations not yet covered (or freed since by simplification), leaving the rest of the space
+    /// intact — finer-grained than the old per-space "done" set.
+    pub globaldisjoint: super::heritage::LocationMap,
     /// Ghidra `Funcdata::activeoutput` (the function's return-value trials): the [`ParamActive`]
     /// recovering which return register actually holds a returned value. Set up + committed by
     /// `recover::resolve_return`; `None` until first invoked and again after it commits
@@ -78,7 +80,7 @@ impl Funcdata {
             image: Vec::new(),
             typerecovery_started: false,
             heritage_pass: 0,
-            heritage_done: std::collections::HashSet::new(),
+            globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             active_inputs: std::collections::HashMap::new(),
         }
