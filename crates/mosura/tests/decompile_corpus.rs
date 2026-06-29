@@ -81,3 +81,31 @@ fn decompile_track_corpus_report() {
 
     assert!(decompiled >= 40, "decompile track only handled {decompiled} datatests — regressed");
 }
+
+/// Regression for the `refineInput`/`guardInput` heritage fix (`heritage.cc:1836`/`:1952`): an XMM
+/// float parameter read 8 bytes wide (`XMM0_Qa`) sits in a register range that a later `movaps`
+/// return-setup writes in 4-byte lanes. `refine_overlaps` must keep this *input-like* read (no
+/// dominating lane write) whole, so it links as one parameter — not `refineRead`'s
+/// `CONCAT(input_hi, input_lo)` of two free pieces that nothing rejoins. Before the fix mixfloatint's
+/// float param rendered as `CONCAT44(...)`; after it is a single clean register read.
+#[test]
+fn mixfloatint_float_param_stays_whole() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("mixfloatint.xml");
+    let dt = datatest::parse_file(&path).expect("parse mixfloatint");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    assert!(
+        !c.contains("CONCAT"),
+        "mixfloatint's whole XMM float param was CONCAT-split (refineInput regression):\n{c}"
+    );
+}

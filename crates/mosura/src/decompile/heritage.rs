@@ -202,7 +202,7 @@ fn split_by_refinement(base: u64, part: &[u32], off: u64, sz: u32) -> Vec<(u64, 
 /// and the largest *write* in the range is smaller than the range), so ordinary aligned
 /// sub-register access (EAX of RAX, where the wide write covers the range) is untouched and most
 /// functions see no change.
-pub fn refine_overlaps(f: &mut Funcdata) {
+pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
     let Some(reg) = f.spaces.by_name("register") else { return };
     // The vector (XMM/YMM/ZMM) register file begins at register offset 0x1200; everything below it
     // (GP/flags/segment/x87) is scalar. Lane refinement is needed only for these *laned* registers
@@ -213,24 +213,27 @@ pub fn refine_overlaps(f: &mut Funcdata) {
     let is_laned = |off: u64| off >= XMM_BASE;
     // 1. Collect every laned-register access (free reads as (op,slot); writes as op outputs).
     struct Acc {
-        op: OpId,
         is_write: bool,
         off: u64,
         size: u32,
+        // Block index and intra-block op position, so a read can be tested for a *dominating* write
+        // to its range (Ghidra's `read` vs `input` split in `Heritage::collect`, `heritage.cc:340`).
+        blk: usize,
+        pos: usize,
     }
     let mut acc: Vec<Acc> = Vec::new();
     for b in 0..f.num_blocks() {
-        for op in f.blocks()[b].ops.clone() {
+        for (pos, op) in f.blocks()[b].ops.clone().into_iter().enumerate() {
             for slot in 0..f.op(op).num_inputs() {
                 if let Some((sp, off, sz)) = read_loc(f, op, slot) {
                     if sp == reg && is_laned(off) {
-                        acc.push(Acc { op, is_write: false, off, size: sz });
+                        acc.push(Acc { is_write: false, off, size: sz, blk: b, pos });
                     }
                 }
             }
             if let Some((sp, off, sz)) = write_loc(f, op) {
                 if sp == reg && is_laned(off) {
-                    acc.push(Acc { op, is_write: true, off, size: sz });
+                    acc.push(Acc { is_write: true, off, size: sz, blk: b, pos });
                 }
             }
         }
@@ -322,7 +325,7 @@ pub fn refine_overlaps(f: &mut Funcdata) {
         let ops = f.blocks()[b].ops.clone();
         let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
         let bid = super::block::BlockId(b as u32);
-        for op in ops {
+        for (pos, op) in ops.iter().copied().enumerate() {
             let seq = f.op(op).seqnum;
             for slot in 0..f.op(op).num_inputs() {
                 let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
@@ -335,6 +338,28 @@ pub fn refine_overlaps(f: &mut Funcdata) {
                     Mode::Refine(part) => {
                         let pieces = split_by_refinement(base, part, off, sz);
                         if pieces.is_empty() {
+                            continue;
+                        }
+                        // refineInput vs refineRead (`heritage.cc`: `refineInput@1836`/`guardInput@1952`
+                        // vs `refineRead@1772`). `Heritage::collect` (`heritage.cc:340`) classifies a
+                        // free Varnode with no reaching definition into `inputvars`, not `readvars`:
+                        // it is a function input. `refineInput`/`guardInput` keep such an input *whole*
+                        // (deriving lanes as SUBPIECEs only where separately read) instead of
+                        // `refineRead`'s CONCAT of independent piece-reads. A read with no *dominating*
+                        // write to its byte range has no reaching def, so it is input-like; in mosura's
+                        // exact-(space,offset,size) SSA the realization is simply to leave the wide read
+                        // intact, so it links as a single `param_N` rather than `CONCAT(input_hi,
+                        // input_lo)` of two free pieces that nothing rejoins. Only a read fed by a
+                        // dominating lane write (e.g. a return read over lane writes) is CONCAT-split so
+                        // each piece links to its writer.
+                        let has_dom_write = acc.iter().any(|w| {
+                            w.is_write
+                                && w.off < off + sz as u64
+                                && off < w.off + w.size as u64
+                                && dom.dominates(w.blk, b)
+                                && (w.blk != b || w.pos < pos)
+                        });
+                        if !has_dom_write {
                             continue;
                         }
                         // refineRead + concatPieces (little-endian): pieces are in address order, so
@@ -449,7 +474,7 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     if nb == 0 {
         return;
     }
-    refine_overlaps(f);
+    refine_overlaps(f, dom);
     normalize_read_size(f);
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
