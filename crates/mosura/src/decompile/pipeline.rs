@@ -8,7 +8,7 @@ use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleIdempotent, RuleMultiCollapse,
     RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty, RuleDumptyHump,
-    RulePropagateCopy, RuleRangeAnd,
+    RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool,
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
@@ -104,6 +104,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleEqual2Zero)
         .with(RuleLessEqual)
         .with(RuleBoolNegate)
+        .with(RuleLogic2Bool)
         .with(RuleRangeAnd)
         .with(super::divopt::RuleDivOpt)
         .with(super::divopt::RuleModOpt)

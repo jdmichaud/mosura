@@ -950,6 +950,88 @@ impl Rule for RuleBoolNegate {
     }
 }
 
+/// Ghidra `PcodeOp::booloutput` — the opcodes whose output is a 1-bit boolean value (the `TypeOp`
+/// constructors that set `PcodeOp::booloutput`, typeop.cc): the integer/float comparisons, the
+/// carry/borrow flag ops, and the `BOOL_*` / `FLOAT_NAN` ops.
+fn is_booloutput(opc: OpCode) -> bool {
+    use OpCode::*;
+    matches!(
+        opc,
+        IntEqual
+            | IntNotequal
+            | IntLess
+            | IntLessequal
+            | IntSless
+            | IntSlessequal
+            | IntCarry
+            | IntScarry
+            | IntSborrow
+            | BoolNegate
+            | BoolXor
+            | BoolAnd
+            | BoolOr
+            | FloatEqual
+            | FloatNotequal
+            | FloatLess
+            | FloatLessequal
+            | FloatNan
+    )
+}
+
+/// Ghidra `Varnode::isBooleanValue` (varnode.cc:942) + `PcodeOp::isCalculatedBool` (op.hh:211): a
+/// written Varnode holds a boolean iff its defining op produces a 1-bit boolean output. Ghidra's
+/// `isCalculatedBool` is `(calculated_bool | booloutput) != 0`; mosura does not track the dynamic
+/// `calculated_bool` flag, so we test the static `booloutput` opcode set ([`is_booloutput`]). For an
+/// unwritten Varnode Ghidra returns true only for a typelocked 1-byte `bool` input when type
+/// recovery is on (`useAnnotation`); the simplification pool runs before type recovery starts, so we
+/// mirror the `false` result there.
+fn is_boolean_value(data: &Funcdata, vn: VarnodeId) -> bool {
+    let v = data.vn(vn);
+    if !v.is_written() {
+        return false;
+    }
+    is_booloutput(data.op(v.def.unwrap()).code())
+}
+
+/// Ghidra `RuleLogic2Bool` (ruleaction.cc:3118): convert a logical (bitwise) operator on boolean
+/// inputs to the boolean operator — `V & W => V && W`, `V | W => V || W`, `V ^ W => V != W` (BOOL_XOR).
+/// Both inputs must be booleans ([`is_boolean_value`]); a constant `0`/`1` on the second input also
+/// counts (a larger constant rules it out). The rewrite is exact (booleans are 0/1) and lets the
+/// structurer and downstream bool rules see `||`/`&&` instead of the bit-smeared flag web.
+pub struct RuleLogic2Bool;
+
+impl Rule for RuleLogic2Bool {
+    fn name(&self) -> &str {
+        "logic2bool"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd, OpCode::IntOr, OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(in0), Some(in1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !is_boolean_value(data, in0) {
+            return 0;
+        }
+        if data.vn(in1).is_constant() {
+            if data.vn(in1).constant_value() > 1 {
+                return 0;
+            }
+        } else if !is_boolean_value(data, in1) {
+            return 0;
+        }
+        let bool_opc = match data.op(op).code() {
+            OpCode::IntAnd => OpCode::BoolAnd,
+            OpCode::IntOr => OpCode::BoolOr,
+            OpCode::IntXor => OpCode::BoolXor,
+            _ => return 0,
+        };
+        data.op_set_opcode(op, bool_opc);
+        1
+    }
+}
+
 /// Merge `(x != c) && (x ≤ c)` into the strict comparison `x < c` (and the swapped /
 /// signed forms): the disequality removes the equality case from `≤`. A range collapse
 /// Ghidra applies so a span check reads as one comparison rather than a `&&` of two.
@@ -1741,6 +1823,43 @@ mod tests {
         // !(a == 9)  =>  a != 9
         assert_eq!(f.op(neg).code(), OpCode::IntNotequal);
         assert_eq!(f.op(neg).input(0), Some(a));
+    }
+
+    #[test]
+    fn logic2bool_converts_int_or_of_booleans() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let nine = f.new_const(4, 9);
+        let ten = f.new_const(4, 10);
+        // two comparisons (booloutput) feed an INT_OR — nan's `(a==9) | (b==10)` flag web
+        let c1 = f.new_op(OpCode::IntEqual, seq, vec![a, nine]);
+        let c1o = f.new_output(c1, 1, Address::new(uniq, 0x100));
+        let c2 = f.new_op(OpCode::IntEqual, seq, vec![b, ten]);
+        let c2o = f.new_output(c2, 1, Address::new(uniq, 0x200));
+        let or = f.new_op(OpCode::IntOr, seq, vec![c1o, c2o]);
+        f.new_output(or, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![c1, c2, or], ..Default::default() }]);
+        ActionPool::new("p").with(RuleLogic2Bool).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::BoolOr, "INT_OR of two comparisons becomes BOOL_OR");
+    }
+
+    #[test]
+    fn logic2bool_leaves_nonboolean_int_or() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // INT_OR of two plain register reads (not booleans) must not be rewritten.
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let or = f.new_op(OpCode::IntOr, seq, vec![a, b]);
+        f.new_output(or, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![or], ..Default::default() }]);
+        ActionPool::new("p").with(RuleLogic2Bool).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::IntOr, "INT_OR of non-booleans is unchanged");
     }
 
     #[test]
