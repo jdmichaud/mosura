@@ -155,9 +155,13 @@ pub fn raw_funcdata_flow_image(
     context: &[u32],
 ) -> Funcdata {
     use std::collections::{BTreeMap, HashMap};
-    // the chunk holding code (the entry)
-    let (cbase, cbytes) = *chunks.iter().find(|(b, by)| entry >= *b && entry < b + by.len() as u64).unwrap_or(&chunks[0]);
-    let in_code = |a: u64| a >= cbase && a < cbase + cbytes.len() as u64;
+    // Resolve an address to whichever loaded chunk holds it. Flow may cross between chunks: a
+    // tail-call `jmp` from one function into another (longdouble's `pass` -> `writeLongDouble`,
+    // in a separate chunk) is intra-image flow Ghidra's `FlowInfo` follows because its
+    // `LoadImage` can supply bytes for the target. Restricting flow to only the entry's chunk
+    // dropped that edge, leaving the tail-called body unreached (and dead-code-eliminated).
+    let chunk_of = |a: u64| chunks.iter().find(|(b, by)| a >= *b && a < b + by.len() as u64).copied();
+    let in_code = |a: u64| chunk_of(a).is_some();
 
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
@@ -172,9 +176,10 @@ pub fn raw_funcdata_flow_image(
     // heuristic — the case targets now come from the faithful recovery, not a pattern guess.
     loop {
         while let Some(a) = worklist.pop() {
-            if !in_code(a) || decoded.contains_key(&a) {
+            if decoded.contains_key(&a) {
                 continue;
             }
+            let Some((cbase, cbytes)) = chunk_of(a) else { continue };
             let off = (a - cbase) as usize;
             let window = &cbytes[off..(off + 16).min(cbytes.len())];
             let Some(insn) = spec.disassemble_ctx(window, a, context).into_iter().next() else { continue };

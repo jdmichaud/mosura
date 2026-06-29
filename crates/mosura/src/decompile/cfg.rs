@@ -7,21 +7,25 @@
 //! `BRANCH`→target, `CBRANCH`→[fallthrough, target], `RETURN`/`BRANCHIND`→(none yet;
 //! indirect jumps are resolved in P7), otherwise fall through to the next block.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::block::{BlockBasic, BlockId};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 
 /// Resolve a branch op's static target to an op index: a constant input is a p-code
-/// relative offset (within the instruction); otherwise it's a code address.
-fn branch_target(f: &Funcdata, i: usize, addr_index: &HashMap<u64, usize>) -> Option<usize> {
+/// relative offset (within the instruction); otherwise it's a code address. A code
+/// address that has no op of its own (its instruction emitted zero p-code — e.g. a
+/// tail-`jmp` into a function entry's `endbr64`) resolves to the first op at-or-after it,
+/// the way Ghidra's instruction-addressed CFG begins the target block at that instruction
+/// and lets the leading no-op instructions shift the first op forward.
+fn branch_target(f: &Funcdata, i: usize, addr_index: &BTreeMap<u64, usize>) -> Option<usize> {
     let in0 = f.op(OpId(i as u32)).input(0)?;
     let vn = f.vn(in0);
     if vn.is_constant() {
         Some((i as i64 + vn.constant_value() as i64) as usize)
     } else {
-        addr_index.get(&vn.loc.offset).copied()
+        addr_index.range(vn.loc.offset..).next().map(|(_, &idx)| idx)
     }
 }
 
@@ -35,7 +39,7 @@ pub fn build_cfg(f: &mut Funcdata) {
     let switch_defaults = f.switch_defaults.clone();
 
     // first op index per instruction address (branch targets land on instruction starts)
-    let mut addr_index: HashMap<u64, usize> = HashMap::new();
+    let mut addr_index: BTreeMap<u64, usize> = BTreeMap::new();
     for i in 0..n {
         let pc = f.op(OpId(i as u32)).seqnum.pc.offset;
         addr_index.entry(pc).or_insert(i);
