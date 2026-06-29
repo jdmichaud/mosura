@@ -11,7 +11,7 @@
 //! is Ghidra's heritage *refinement* and is a later P1 sub-task; until then overlapping
 //! accesses are independent variables (an under-linking, not a miswiring).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::dominator::Dominators;
 use super::funcdata::Funcdata;
@@ -22,6 +22,113 @@ use super::varnode::VarnodeId;
 
 /// An SSA location key: `(space, offset, size)`.
 type Loc = (SpaceId, u64, u32);
+
+/// Ghidra `LocationMap` (`heritage.hh:38`): a fine-grained record of which `(addr, size)` ranges
+/// have been brought into SSA form and in which heritage pass. This is Ghidra's `globaldisjoint`;
+/// it replaces a per-*space* "done" flag so an individual location can be (re-)heritaged in a later
+/// pass while the rest of its space is left intact. Keyed per space; within a space the recorded
+/// ranges are kept disjoint — an [`add`](LocationMap::add) overlapping existing ranges unions them.
+#[derive(Clone, Debug, Default)]
+pub struct LocationMap {
+    /// Per-space map from a range's start offset to its [`SizePass`].
+    themap: HashMap<SpaceId, BTreeMap<u64, SizePass>>,
+}
+
+/// Ghidra `LocationMap::SizePass` (`heritage.hh:41`): the extent and heritage-pass of a range.
+#[derive(Clone, Copy, Debug)]
+struct SizePass {
+    size: u32,
+    pass: i32,
+}
+
+impl LocationMap {
+    /// Ghidra `LocationMap::add` (`heritage.cc:33`): mark `[off, off+size)` in `space` as heritaged
+    /// at `pass`, unioning it with any overlapping ranges already present. Returns the *intersect*
+    /// code describing the overlap with PRE-EXISTING (earlier-pass) ranges:
+    ///   - `0` — the range is new, or only meets ranges from the same pass;
+    ///   - `1` — it partially overlaps a range from an earlier pass;
+    ///   - `2` — it is wholly contained in a range from an earlier pass (already heritaged).
+    ///
+    /// `Address::overlap(0, base, sz)` (`address.cc:153`) is `this - base` when `base <= this <
+    /// base+sz` (same space) else `-1`; the predecessor walk and forward merge mirror the C++
+    /// iterator dance against the per-space `BTreeMap` (a left-overlapping new range that starts
+    /// *before* an existing one is, faithfully, NOT merged — Ghidra's `++iter` skips it).
+    pub fn add(&mut self, space: SpaceId, off: u64, size: u32, pass: i32) -> i32 {
+        let map = self.themap.entry(space).or_default();
+        let mut addr = off;
+        let mut size = size as u64;
+        let mut pass = pass;
+        let mut intersect = 0i32;
+
+        // Predecessor candidate: greatest range start strictly less than `addr` (C++
+        // `lower_bound(addr)` then `--`); if there is none, the first range at/after `addr`.
+        let mut start = match map.range(..addr).next_back().map(|(k, _)| *k) {
+            Some(p) => Some(p),
+            None => map.range(addr..).next().map(|(k, _)| *k),
+        };
+        // If that candidate does not actually contain `addr`, step forward (C++ `++iter`).
+        if let Some(k) = start {
+            let ks = map[&k].size as u64;
+            if !(k <= addr && addr < k + ks) {
+                start = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+            }
+        }
+        // `addr` falls inside the candidate range: wholly contained ⇒ done; else absorb it and
+        // extend `[addr, addr+size)` back to its start, then keep merging forward.
+        if let Some(k) = start {
+            let ks = map[&k].size as u64;
+            if k <= addr && addr < k + ks {
+                let off_in = addr - k;
+                if off_in + size <= ks {
+                    return if map[&k].pass < pass { 2 } else { 0 };
+                }
+                addr = k;
+                size = off_in + size;
+                if map[&k].pass < pass {
+                    intersect = 1;
+                    pass = map[&k].pass;
+                }
+                map.remove(&k);
+                start = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+            }
+        }
+        // Absorb every following range the (possibly extended) `[addr, addr+size)` overlaps.
+        let mut cur = start;
+        while let Some(k) = cur {
+            if k >= addr && k < addr + size {
+                let ks = map[&k].size as u64;
+                if (k - addr) + ks > size {
+                    size = (k - addr) + ks;
+                }
+                if map[&k].pass < pass {
+                    intersect = 1;
+                    pass = map[&k].pass;
+                }
+                map.remove(&k);
+                cur = map.range((k + 1)..).next().map(|(kk, _)| *kk);
+            } else {
+                break;
+            }
+        }
+        map.insert(addr, SizePass { size: size as u32, pass });
+        intersect
+    }
+
+    /// Ghidra `LocationMap::findPass` (`heritage.cc:90`): the pass when the range covering `off` in
+    /// `space` was heritaged, or `-1` if `off` is not yet heritaged.
+    pub fn find_pass(&self, space: SpaceId, off: u64) -> i32 {
+        let Some(map) = self.themap.get(&space) else { return -1 };
+        match map.range(..=off).next_back() {
+            Some((&k, sp)) if off < k + sp.size as u64 => sp.pass,
+            _ => -1,
+        }
+    }
+
+    /// Ghidra `LocationMap::clear`: reset to empty.
+    pub fn clear(&mut self) {
+        self.themap.clear();
+    }
+}
 
 /// Per-space heritage bookkeeping (Ghidra's `HeritageInfo`, `heritage.cc:179`). Heritage is
 /// an *iterating* process in Ghidra: `heritage()` is called once per pass, and a space only
@@ -800,5 +907,50 @@ mod tests {
                 "{name} call placeholders",
             );
         }
+    }
+
+    /// `LocationMap::add` reports the Ghidra intersect codes and unions overlapping ranges, while
+    /// `find_pass` recovers the pass a covered address was heritaged in.
+    #[test]
+    fn location_map_intersect_codes() {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut m = LocationMap::default();
+
+        // A brand-new range ⇒ intersect 0; unheritaged elsewhere ⇒ find_pass -1.
+        assert_eq!(m.add(reg, 0x10, 8, 0), 0, "new range");
+        assert_eq!(m.find_pass(reg, 0x10), 0);
+        assert_eq!(m.find_pass(reg, 0x14), 0, "interior address is covered");
+        assert_eq!(m.find_pass(reg, 0x18), -1, "just past the range is uncovered");
+        assert_eq!(m.find_pass(ram, 0x10), -1, "other space uncovered");
+
+        // Same offset, a LATER pass, wholly contained ⇒ intersect 2 (already heritaged earlier).
+        assert_eq!(m.add(reg, 0x10, 8, 1), 2, "contained in an older-pass range");
+        // A sub-range from a later pass is also contained ⇒ 2.
+        assert_eq!(m.add(reg, 0x12, 2, 1), 2, "sub-range contained in older range");
+        // Same range re-added at the SAME pass ⇒ 0 (only meets same-pass coverage).
+        assert_eq!(m.add(reg, 0x10, 8, 0), 0, "same-pass re-add");
+
+        // A later-pass range that extends PAST an older range partially overlaps ⇒ 1.
+        assert_eq!(m.add(reg, 0x14, 8, 2), 1, "partial overlap with older range");
+        // The union now covers [0x10, 0x1c); the merged entry keeps the older pass.
+        assert_eq!(m.find_pass(reg, 0x1b), 0, "merged range covers the extension, oldest pass wins");
+    }
+
+    /// A second range disjoint from the first is recorded independently (intersect 0), and a new
+    /// range bridging two older ones reports the older overlap.
+    #[test]
+    fn location_map_disjoint_and_bridge() {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let mut m = LocationMap::default();
+        assert_eq!(m.add(reg, 0x0, 4, 0), 0);
+        assert_eq!(m.add(reg, 0x10, 4, 0), 0, "disjoint new range");
+        assert_eq!(m.find_pass(reg, 0x0), 0);
+        assert_eq!(m.find_pass(reg, 0x10), 0);
+        assert_eq!(m.find_pass(reg, 0x8), -1, "gap between ranges is uncovered");
+        // A later-pass range starting inside the first and reaching into the gap ⇒ partial (1).
+        assert_eq!(m.add(reg, 0x2, 6, 1), 1, "overlaps the older [0,4) on the left");
     }
 }
