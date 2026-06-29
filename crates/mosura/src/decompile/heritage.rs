@@ -520,6 +520,19 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
 }
 
 /// Build the SSA form for `f` using the dominator info `dom`.
+///
+/// Heritage iterates over address spaces in *delay* order (Ghidra's `Heritage::heritage` pass
+/// loop, `heritage.cc:2663`/`2687`): the register space (delay 0) is heritaged before the
+/// `ram`/`stack` spaces (delay 1), so that a later pass's reads link to defs (e.g. a recovered
+/// stack-pointer offset) discovered in an earlier pass. `globaldisjoint` records which spaces
+/// are already in SSA form so each pass only heritages the newly-eligible ones, leaving the
+/// rest free (Ghidra's `globaldisjoint` LocationMap).
+///
+/// This runs the passes back-to-back to completion in a single call, so the result is the same
+/// full SSA the single-pass construction produced — spaces are independent in SSA, so splitting
+/// the rename walk by space group is output-identical. The *payoff* of iterating (interleaving
+/// register heritage with param recovery, then heritaging the stack) belongs to the outer
+/// mainloop, which re-invokes heritage between those actions.
 pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     let nb = f.num_blocks();
     if nb == 0 {
@@ -528,8 +541,35 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     refine_overlaps(f, dom);
     normalize_read_size(f);
 
+    let infos = build_info_list(&f.spaces);
+    let max_delay = infos.iter().filter(|i| i.is_heritaged()).map(|i| i.delay).max().unwrap_or(0);
+    let mut globaldisjoint: HashSet<SpaceId> = HashSet::new();
+    for pass in 0..=max_delay {
+        // Spaces newly eligible this pass: heritaged, delay reached, not yet processed.
+        let active: HashSet<SpaceId> = infos
+            .iter()
+            .filter(|i| i.delay <= pass)
+            .filter_map(|i| i.space)
+            .filter(|sp| !globaldisjoint.contains(sp))
+            .collect();
+        if active.is_empty() {
+            continue;
+        }
+        heritage_spaces(f, dom, &active);
+        globaldisjoint.extend(active);
+    }
+}
+
+/// Heritage the locations in `active` (one delay group) into SSA form — the per-pass body of
+/// [`heritage`]. Locations in spaces outside `active` are ignored: their reads are left free
+/// for a later pass, and their writes/phis don't define anything here. Because SSA locations in
+/// different spaces never interact (a read at a slot belongs to exactly one space), running
+/// this once per space group reconstructs the same SSA as one combined walk.
+fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, active: &HashSet<SpaceId>) {
+    let nb = f.num_blocks();
+
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
-    //    if some block reads it before defining it).
+    //    if some block reads it before defining it), restricted to the active spaces.
     let mut globals: HashSet<Loc> = HashSet::new();
     let mut defblocks: HashMap<Loc, HashSet<usize>> = HashMap::new();
     for b in 0..nb {
@@ -538,14 +578,16 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
         for op in ops {
             for slot in 0..f.op(op).num_inputs() {
                 if let Some(l) = read_loc(f, op, slot) {
-                    if !killed.contains(&l) {
+                    if active.contains(&l.0) && !killed.contains(&l) {
                         globals.insert(l);
                     }
                 }
             }
             if let Some(l) = write_loc(f, op) {
-                killed.insert(l);
-                defblocks.entry(l).or_default().insert(b);
+                if active.contains(&l.0) {
+                    killed.insert(l);
+                    defblocks.entry(l).or_default().insert(b);
+                }
             }
         }
     }
@@ -579,7 +621,7 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     }
     let mut stack: HashMap<Loc, Vec<VarnodeId>> = HashMap::new();
     let mut inputs: HashMap<Loc, VarnodeId> = HashMap::new();
-    rename(f, 0, dom, &children, &phis, &mut stack, &mut inputs);
+    rename(f, 0, dom, &children, &phis, &mut stack, &mut inputs, active);
 }
 
 /// The reaching definition for `loc`: the top of its rename stack, or a (cached) function
@@ -648,32 +690,42 @@ fn rename(
     phis: &HashMap<(usize, Loc), OpId>,
     stack: &mut HashMap<Loc, Vec<VarnodeId>>,
     inputs: &mut HashMap<Loc, VarnodeId>,
+    active: &HashSet<SpaceId>,
 ) {
     let mut pushed: Vec<Loc> = Vec::new();
     let ops = f.blocks()[b].ops.clone();
 
     for op in ops {
         if f.op(op).code() == OpCode::Multiequal {
-            // a phi: its output is the new current def; inputs are filled from preds below
+            // a phi: its output is the new current def; inputs are filled from preds below.
+            // Phis for spaces not active this pass (e.g. register phis seen again while the
+            // stack pass walks) were already wired by their own pass — leave them be.
             if let Some(l) = write_loc(f, op) {
-                let out = f.op(op).output.unwrap();
-                stack.entry(l).or_default().push(out);
-                pushed.push(l);
+                if active.contains(&l.0) {
+                    let out = f.op(op).output.unwrap();
+                    stack.entry(l).or_default().push(out);
+                    pushed.push(l);
+                }
             }
             continue;
         }
-        // rename reads
+        // rename reads in the active spaces; reads in other spaces stay free (a later pass
+        // links them) or were already linked (an earlier pass).
         for slot in 0..f.op(op).num_inputs() {
             if let Some(l) = read_loc(f, op, slot) {
-                let def = current_def(f, l, stack, inputs);
-                f.op_set_input(op, slot, def);
+                if active.contains(&l.0) {
+                    let def = current_def(f, l, stack, inputs);
+                    f.op_set_input(op, slot, def);
+                }
             }
         }
         // the output becomes the new current def
         if let Some(l) = write_loc(f, op) {
-            let out = f.op(op).output.unwrap();
-            stack.entry(l).or_default().push(out);
-            pushed.push(l);
+            if active.contains(&l.0) {
+                let out = f.op(op).output.unwrap();
+                stack.entry(l).or_default().push(out);
+                pushed.push(l);
+            }
         }
     }
 
@@ -693,7 +745,7 @@ fn rename(
     }
 
     for c in &children[b] {
-        rename(f, *c, dom, children, phis, stack, inputs);
+        rename(f, *c, dom, children, phis, stack, inputs, active);
     }
 
     for l in pushed {
