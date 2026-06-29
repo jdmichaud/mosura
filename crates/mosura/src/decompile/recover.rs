@@ -14,6 +14,7 @@
 
 use std::collections::HashSet;
 
+use super::fspec::{trial_flags, ParamActive};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -91,9 +92,95 @@ fn is_const_padded_piece(f: &Funcdata, vn: VarnodeId) -> bool {
     f.op(def).input(0).is_some_and(|hi| f.vn(hi).is_constant())
 }
 
-/// Keep only the realistic return-value candidate on each RETURN (preferring RAX over XMM0
-/// when both are realistic, as a function returns one value). Runs post-heritage.
+/// Maximum number of evaluation passes before the trial decisions are committed structurally — a
+/// port of Ghidra's `ParamActive::maxpass` (set from `getMaxInputDelay`, fspec.cc:5335). `0` means
+/// the single pass available in today's (non-iterating) pipeline commits immediately, so the
+/// recovery stays byte-identical to the old greedy prune; the mainloop flip raises this so the
+/// commit DEFERS until heritage + simplification have stabilized across passes.
+const RETURN_MAXPASS: i32 = 0;
+const CALL_MAXPASS: i32 = 0;
+
+/// Keep only the realistic return-value candidate on each RETURN (preferring RAX over XMM0 when both
+/// are realistic, as a function returns one value) — a port of Ghidra's `ActionReturnRecovery`
+/// (coreaction.cc:1907). The recovery is two-phase and DEFERRED through a persistent [`ParamActive`]
+/// ([`Funcdata::active_output`]): each invocation evaluates the candidate trials
+/// ([`check_output_trial_use`]) but the structural rewrite ([`build_return_output`]) only runs once
+/// the trials are *fully checked* (`numpasses > maxpass`), so a premature decision on an unstable
+/// early-pass graph can't irreversibly drop a real return. Runs post-heritage.
 pub fn resolve_return(f: &mut Funcdata) {
+    setup_active_output(f);
+    check_output_trial_use(f);
+    if f.active_output.as_ref().is_some_and(|a| a.is_fully_checked()) {
+        build_return_output(f);
+        f.active_output = None; // Ghidra `Funcdata::clearActiveOutput`
+    }
+}
+
+/// Ghidra `Funcdata::initActiveOutput` (coreaction.cc:4651): create the output trial container once,
+/// a trial per candidate return slot. All RETURN ops carry the identical candidate layout that
+/// [`recover_return`] appended, so the trials (and their `op_slot`s) are gathered from the first.
+fn setup_active_output(f: &mut Funcdata) {
+    if f.active_output.is_some() {
+        return;
+    }
+    let reg = f.spaces.by_name("register");
+    let mut active = ParamActive::new(reg);
+    active.set_max_pass(RETURN_MAXPASS);
+    if let Some(ret) = f.op_ids().find(|&op| f.op(op).code() == OpCode::Return) {
+        let n = f.op(ret).num_inputs();
+        for slot in 1..n {
+            if let Some(v) = f.op(ret).input(slot) {
+                let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+                let ti = active.register_trial(loc, size);
+                active.trial[ti].op_slot = slot as u32;
+            }
+        }
+    }
+    f.active_output = Some(active);
+}
+
+/// Ghidra `ActionReturnRecovery::apply` evaluation loop (coreaction.cc:1916): mark every not-yet-
+/// checked trial whose candidate is a realistic return value at some RETURN (the `AncestorRealistic`
+/// essence, here [`is_realistic`]) as active; an unrealistic candidate is left unchecked so a later
+/// pass can reconsider it as the dataflow refines. Then advance the pass counter and, once
+/// `numpasses > maxpass`, mark the container fully checked (which gates the commit).
+fn check_output_trial_use(f: &mut Funcdata) {
+    let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
+    let ntrials = f.active_output.as_ref().map_or(0, |a| a.num_trials());
+    let mut verdicts: Vec<usize> = Vec::new(); // indices of trials found realistic this pass
+    for ti in 0..ntrials {
+        let (checked, slot) = {
+            let t = &f.active_output.as_ref().unwrap().trial[ti];
+            (t.flags & trial_flags::CHECKED != 0, t.op_slot as usize)
+        };
+        if checked {
+            continue;
+        }
+        let realistic = rets.iter().any(|&ret| {
+            f.op(ret)
+                .input(slot)
+                .is_some_and(|v| is_realistic(f, v, &mut HashSet::new()) && !is_const_padded_piece(f, v))
+        });
+        if realistic {
+            verdicts.push(ti);
+        }
+    }
+    let active = f.active_output.as_mut().unwrap();
+    for ti in verdicts {
+        active.trial[ti].mark_active();
+    }
+    active.finish_pass();
+    if active.get_num_passes() > active.get_max_pass() {
+        active.mark_fully_checked();
+    }
+}
+
+/// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837) reduced to mosura's single-
+/// return-value case: keep, on each RETURN, the first realistic non-constant-padded candidate
+/// (RAX before XMM0, by slot order) and remove the rest. Gated behind the fully-checked trials, so
+/// it commits the prune only once the decision is stable. (The per-RETURN realism check — rather
+/// than the shared trial flags — preserves the exact survivors of the old greedy prune.)
+fn build_return_output(f: &mut Funcdata) {
     let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
         let n = f.op(ret).num_inputs();
@@ -228,24 +315,119 @@ pub fn recover_call_effects(f: &mut Funcdata, alias_boundary: Option<i64>) {
     }
 }
 
-/// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI)
-/// whose value is realistic (set by the caller). The first candidate that is merely an
-/// unwritten/scratch register ends the argument list. Runs post-heritage.
+/// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI) whose
+/// value is realistic (set by the caller); the first scratch register ends the argument list. A port
+/// of Ghidra's `ActionActiveParam` (coreaction.cc:1725) / `FuncCallSpecs::checkInputTrialUse`
+/// (fspec.cc:5585), DEFERRED through a per-CALL persistent [`ParamActive`]
+/// ([`Funcdata::active_inputs`]): each invocation evaluates and *frees* (rather than removes)
+/// definitely-dead candidate slots ([`check_input_trial_use`]), but the structural prune
+/// ([`build_input_from_trials`]) only commits once the trials are fully checked (`numpasses >
+/// maxpass`). So an unstable early-pass graph can't irreversibly drop a real argument. Runs
+/// post-heritage.
 pub fn resolve_call_args(f: &mut Funcdata) {
     let calls: Vec<OpId> =
         f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
     for call in calls {
-        let n = f.op(call).num_inputs();
-        let mut keep = 0; // slots 1..=keep are arguments (contiguous from RDI)
-        for slot in 1..n {
-            let v = f.op(call).input(slot).unwrap();
-            if is_realistic(f, v, &mut HashSet::new()) {
-                keep = slot;
-            } else {
-                break;
+        setup_active_input(f, call);
+        check_input_trial_use(f, call);
+        if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
+            build_input_from_trials(f, call);
+            f.active_inputs.remove(&call); // Ghidra `FuncCallSpecs::clearActiveInput`
+        }
+    }
+}
+
+/// Ghidra `FuncCallSpecs::initActiveInput` (fspec.cc:5331) + the candidate-trial registration
+/// heritage does in `guardCalls` (heritage.cc:1481): create the per-CALL trial container once, a
+/// trial per candidate argument slot (the registers [`recover_call_args`] appended).
+fn setup_active_input(f: &mut Funcdata, call: OpId) {
+    if f.active_inputs.contains_key(&call) {
+        return;
+    }
+    let reg = f.spaces.by_name("register");
+    let mut active = ParamActive::new(reg);
+    active.is_recover_subcall = true;
+    active.set_max_pass(CALL_MAXPASS);
+    let n = f.op(call).num_inputs();
+    for slot in 1..n {
+        if let Some(v) = f.op(call).input(slot) {
+            let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+            let ti = active.register_trial(loc, size);
+            active.trial[ti].op_slot = slot as u32;
+        }
+    }
+    f.active_inputs.insert(call, active);
+}
+
+/// Ghidra `FuncCallSpecs::checkInputTrialUse` (fspec.cc:5585): mark each not-yet-checked trial
+/// active (its candidate is a realistic, caller-set value — the [`is_realistic`] essence of
+/// `AncestorRealistic`) or definitely-not-used. A definitely-not-used candidate has its dataflow
+/// *freed* — the input slot is set to a constant 0 (fspec.cc:5650-5651) — rather than removed, so
+/// the slot count stays stable across passes; the structural removal is deferred to
+/// [`build_input_from_trials`]. Then advance the pass counter and gate fully-checked.
+fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
+    let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
+    // (trial index, op slot, realistic) for every trial unchecked at entry, evaluated on the current
+    // (pre-free) dataflow so no trial's verdict depends on another's freeing.
+    let mut verdicts: Vec<(usize, usize, bool)> = Vec::new();
+    for ti in 0..ntrials {
+        let (checked, slot) = {
+            let t = &f.active_inputs[&call].trial[ti];
+            (t.flags & trial_flags::CHECKED != 0, t.op_slot as usize)
+        };
+        if checked {
+            continue;
+        }
+        let realistic = f.op(call).input(slot).is_some_and(|v| is_realistic(f, v, &mut HashSet::new()));
+        verdicts.push((ti, slot, realistic));
+    }
+    // Free the dataflow of the definitely-not-used slots (Ghidra opSetInput(op, newConstant(sz,0))).
+    for &(_, slot, realistic) in &verdicts {
+        if realistic {
+            continue;
+        }
+        if let Some(v) = f.op(call).input(slot) {
+            if !f.vn(v).is_constant() {
+                let size = f.vn(v).size as u32;
+                let zero = f.new_const(size, 0);
+                f.op_set_input(call, slot, zero);
             }
         }
-        for slot in (keep + 1..n).rev() {
+    }
+    let active = f.active_inputs.get_mut(&call).unwrap();
+    for (ti, _, realistic) in verdicts {
+        if realistic {
+            active.trial[ti].mark_active();
+        } else {
+            active.trial[ti].mark_no_use();
+        }
+    }
+    active.finish_pass();
+    if active.get_num_passes() > active.get_max_pass() {
+        active.mark_fully_checked();
+    }
+}
+
+/// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685) reduced to mosura's case: keep the
+/// leading run of active trials (the realistic prefix from the first argument register) and remove
+/// the rest. Walking trials in `op_slot` order, the first inactive trial ends the argument list —
+/// Ghidra's `forceInactiveChain`/`forceNoUse` "no holes after a gap" rule for this convention. Gated
+/// behind fully-checked trials so the prune commits only once the decision is stable.
+fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
+    let mut trials: Vec<(usize, bool)> =
+        f.active_inputs[&call].trial.iter().map(|t| (t.op_slot as usize, t.is_active())).collect();
+    trials.sort_by_key(|&(slot, _)| slot);
+    let mut keep_max = 0usize; // op slots 1..=keep_max are arguments
+    for &(slot, is_active) in &trials {
+        if is_active && slot == keep_max + 1 {
+            keep_max = slot;
+        } else {
+            break;
+        }
+    }
+    let n = f.op(call).num_inputs();
+    for slot in (1..n).rev() {
+        if slot > keep_max {
             f.op_remove_input(call, slot);
         }
     }
@@ -454,5 +636,54 @@ mod tests {
         let (mut f, call, _ind) = call_then_rax_creation(false);
         resolve_call_output(&mut f);
         assert!(f.op(call).output.is_none(), "an unused clobber is not a return value");
+    }
+
+    /// Pre-seed a trial container over an op's candidate slots (1..) with a raised `maxpass`, to
+    /// emulate the mainloop-flip configuration where the structural commit is deferred.
+    fn seed_active(f: &mut Funcdata, op: OpId, maxpass: i32) -> ParamActive {
+        let reg = f.spaces.by_name("register");
+        let mut active = ParamActive::new(reg);
+        active.set_max_pass(maxpass);
+        let n = f.op(op).num_inputs();
+        for slot in 1..n {
+            let v = f.op(op).input(slot).unwrap();
+            let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+            let ti = active.register_trial(loc, size);
+            active.trial[ti].op_slot = slot as u32;
+        }
+        active
+    }
+
+    #[test]
+    fn return_recovery_defers_until_fully_checked() {
+        // With maxpass raised (the flip configuration), one resolve pass evaluates the trials but
+        // keeps every candidate — the structural commit lands only once numpasses > maxpass.
+        let (mut f, ret) = ret_with(true, false); // RAX written (realistic), XMM0 not
+        f.active_output = Some(seed_active(&mut f, ret, 1));
+
+        resolve_return(&mut f); // pass 1: numpasses 0->1, not > 1 ⇒ no commit
+        assert_eq!(f.op(ret).num_inputs(), 3, "deferred: all candidates retained after one pass");
+        assert!(f.active_output.is_some(), "trials persist until fully checked");
+
+        resolve_return(&mut f); // pass 2: numpasses 1->2, > 1 ⇒ commit
+        assert!(kept_offset(&f, ret, RAX), "committed: RAX kept once the deferral resolves");
+        assert!(f.active_output.is_none(), "active_output cleared on commit (clearActiveOutput)");
+    }
+
+    #[test]
+    fn call_arg_recovery_defers_until_fully_checked() {
+        // The per-CALL trials defer identically: the prune commits only after the trials are fully
+        // checked, so an unstable early pass can't irreversibly drop a real argument.
+        let (mut f, call) = call_with(2); // RDI, RSI written; RDX.. scratch
+        let active = seed_active(&mut f, call, 1);
+        f.active_inputs.insert(call, active);
+
+        resolve_call_args(&mut f); // pass 1: dead slots freed to const 0, but none removed
+        assert_eq!(f.op(call).num_inputs(), 7, "deferred: all candidate slots retained after one pass");
+        assert!(f.active_inputs.contains_key(&call), "per-call trials persist until fully checked");
+
+        resolve_call_args(&mut f); // pass 2: fully checked ⇒ commit the prune
+        assert_eq!(f.op(call).num_inputs(), 3, "committed: [target, RDI, RSI] once the deferral resolves");
+        assert!(!f.active_inputs.contains_key(&call), "active_inputs entry cleared on commit");
     }
 }
