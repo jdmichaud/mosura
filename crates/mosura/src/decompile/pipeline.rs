@@ -8,7 +8,7 @@ use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleIdempotent, RuleMultiCollapse,
     RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty, RuleDumptyHump,
-    RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool,
+    RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool, RuleOrMask,
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
@@ -105,6 +105,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleLessEqual)
         .with(RuleBoolNegate)
         .with(RuleLogic2Bool)
+        .with(RuleOrMask)
         .with(RuleRangeAnd)
         .with(super::divopt::RuleDivOpt)
         .with(super::divopt::RuleModOpt)
@@ -181,6 +182,12 @@ pub fn universal_action() -> ActionGroup {
         // group, the foundation for folding the rest of the pipeline into the loop next.
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
+        .then(default_rule_pool())
+        .then(super::deadcode::ActionDeadCode)
+        // Fold any CBRANCH whose condition simplified to a constant, then prune the unreachable
+        // target (Ghidra ActionDeterminedBranch). A second simplify+dead-code sweep cleans up the
+        // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
+        .then(super::determinedbranch::ActionDeterminedBranch)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)

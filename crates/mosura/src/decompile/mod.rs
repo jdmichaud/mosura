@@ -14,6 +14,7 @@ pub mod cast;
 pub mod cfg;
 pub mod cover;
 pub mod deadcode;
+pub mod determinedbranch;
 pub mod dominator;
 pub mod fspec;
 pub mod funcdata;

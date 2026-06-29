@@ -160,6 +160,11 @@ impl Funcdata {
     pub fn block(&self, id: super::block::BlockId) -> &BlockBasic {
         &self.blocks[id.0 as usize]
     }
+    /// Mutable access to a basic block (edges / op list), used by CFG-simplification
+    /// (`determinedbranch`) when removing branches and unreachable blocks.
+    pub fn block_mut(&mut self, id: super::block::BlockId) -> &mut BlockBasic {
+        &mut self.blocks[id.0 as usize]
+    }
     pub fn num_blocks(&self) -> usize {
         self.blocks.len()
     }

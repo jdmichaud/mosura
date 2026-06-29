@@ -1032,6 +1032,39 @@ impl Rule for RuleLogic2Bool {
     }
 }
 
+/// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
+/// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
+/// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
+/// → `-1`, which also drops the dead `extraout_R8`.)
+pub struct RuleOrMask;
+
+impl Rule for RuleOrMask {
+    fn name(&self) -> &str {
+        "ormask"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        let size = data.vn(out).size;
+        if size as usize > 8 {
+            return 0; // matches Ghidra's `size > sizeof(uintb)` guard
+        }
+        let Some(c) = data.op(op).input(1) else { return 0 };
+        if !data.vn(c).is_constant() {
+            return 0;
+        }
+        let allones = mask(u64::MAX, size);
+        if mask(data.vn(c).constant_value(), size) != allones {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::Copy);
+        data.op_set_all_input(op, &[c]);
+        1
+    }
+}
+
 /// Merge `(x != c) && (x ≤ c)` into the strict comparison `x < c` (and the swapped /
 /// signed forms): the disequality removes the equality case from `≤`. A range collapse
 /// Ghidra applies so a span check reads as one comparison rather than a `&&` of two.
@@ -1860,6 +1893,35 @@ mod tests {
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![or], ..Default::default() }]);
         ActionPool::new("p").with(RuleLogic2Bool).apply(&mut f);
         assert_eq!(f.op(or).code(), OpCode::IntOr, "INT_OR of non-booleans is unchanged");
+    }
+
+    #[test]
+    fn ormask_collapses_or_with_allones() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(8, Address::new(reg, 0x10));
+        let allones = f.new_const(8, u64::MAX); // -1
+        let or = f.new_op(OpCode::IntOr, seq, vec![a, allones]);
+        f.new_output(or, 8, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![or], ..Default::default() }]);
+        ActionPool::new("p").with(RuleOrMask).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::Copy, "V | -1 collapses to COPY -1");
+        assert_eq!(f.op(or).input(0), Some(allones));
+    }
+
+    #[test]
+    fn ormask_leaves_partial_mask() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(8, Address::new(reg, 0x10));
+        let partial = f.new_const(8, 0xff); // not every bit set
+        let or = f.new_op(OpCode::IntOr, seq, vec![a, partial]);
+        f.new_output(or, 8, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![or], ..Default::default() }]);
+        ActionPool::new("p").with(RuleOrMask).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::IntOr, "a partial mask does not collapse the OR");
     }
 
     #[test]
