@@ -19,6 +19,7 @@ use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
+use super::space::Address;
 use super::structure::{structure, FlowKind, Structured};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
@@ -98,22 +99,6 @@ fn reg64_name(offset: u64) -> Option<&'static str> {
     })
 }
 
-/// SysV integer parameter registers → `param_N`.
-fn param_name(space_is_reg: bool, offset: u64) -> Option<&'static str> {
-    if !space_is_reg {
-        return None;
-    }
-    Some(match offset {
-        0x38 => "param_1", // RDI
-        0x30 => "param_2", // RSI
-        0x10 => "param_3", // RDX
-        0x08 => "param_4", // RCX
-        0x80 => "param_5", // R8
-        0x88 => "param_6", // R9
-        _ => return None,
-    })
-}
-
 struct PrintC<'a> {
     f: &'a Funcdata,
     h: HighVariables,
@@ -153,6 +138,11 @@ struct PrintC<'a> {
     /// stack-array base varnodes, so a single-use base still renders by its array name (`axStack_98`)
     /// instead of via its address-computation (`&xStack_98`).
     force_explicit: HashSet<VarnodeId>,
+    /// Recovered-parameter storage → 1-based parameter index, from the faithful prototype recovery
+    /// (`fspec::recover_input_params`, Ghidra `ActionInputPrototype`/`fillinMap`). An input Varnode
+    /// at one of these locations names `param_N`. This is XMM-aware (a `float8` in `XMM0` is a real
+    /// parameter), unlike the old GP-only register table, and carries the convention's ordering.
+    param_index: HashMap<Address, u32>,
 }
 
 impl PrintC<'_> {
@@ -268,8 +258,8 @@ impl<'a> PrintC<'a> {
         let vn = self.f.vn(v);
         let is_reg = Some(vn.loc.space) == self.reg_space;
         if vn.is_input() {
-            if let Some(p) = param_name(is_reg, vn.loc.offset) {
-                return p.to_string();
+            if let Some(&n) = self.param_index.get(&vn.loc) {
+                return format!("param_{n}");
             }
         }
         // a direct global — a constant-address access in `ram` — is named by its address,
@@ -1404,22 +1394,45 @@ fn render_const(val: u64, size: u32) -> String {
 pub fn print_c(f: &Funcdata) -> String {
     let reg_space = f.spaces.by_name("register");
 
-    // parameters: input varnodes sitting in a parameter register that are actually used.
-    // (Unused param-register inputs are scratch — e.g. the call-argument candidates that
-    // return/arg recovery left unconsumed — not real parameters.)
-    let mut params: Vec<(u64, VarnodeId)> = Vec::new();
-    for i in 0..f.num_varnodes() as u32 {
-        let v = VarnodeId(i);
-        let vn = f.vn(v);
-        if vn.is_input()
-            && !vn.descend.is_empty()
-            && param_name(Some(vn.loc.space) == reg_space, vn.loc.offset).is_some()
-        {
-            params.push((vn.loc.offset, v));
+    // Parameters: the recovered function prototype (Ghidra `ActionInputPrototype` →
+    // `FuncProto::deriveInputMap` → `ParamListStandard::fillinMap`, ported as
+    // `fspec::recover_input_params`). This walks the calling convention's resource list — the float
+    // registers `XMM0..7` then the integer registers `RDI..R9` then the stack overflow area — and
+    // keeps the storage locations the convention deems used, *in convention order*. Slot `i` is
+    // `param_{i+1}`. Replaces the former GP-only register table, which ignored XMM float parameters
+    // and so mis-numbered the integer parameters that follow them.
+    //
+    // A slot is rendered only when backed by a *used* input Varnode (one with descendants). The
+    // unreferenced "hole" slots that `fillinMap` synthesizes ahead of a used resource have no
+    // backing Varnode at print time — Ghidra's `ActionInputPrototype` materializes them with
+    // `newVarnode`/`setInputVarnode`, but this print-time recovery does not — so they are skipped,
+    // keeping spurious leading params out of the signature when the body never reads them. The
+    // param *number* stays the slot's convention position, so a lone used `RDX` still prints
+    // `param_3`.
+    let proto = super::fspec::recover_func_proto(f);
+    let find_used_input = |addr: Address, size: u32| -> Option<VarnodeId> {
+        let mut fallback = None;
+        for i in 0..f.num_varnodes() as u32 {
+            let v = VarnodeId(i);
+            let vn = f.vn(v);
+            if vn.is_input() && !vn.descend.is_empty() && vn.loc == addr {
+                if vn.size as u32 == size {
+                    return Some(v);
+                }
+                fallback.get_or_insert(v);
+            }
+        }
+        fallback
+    };
+    let mut param_index: HashMap<Address, u32> = HashMap::new();
+    let mut sig_params: Vec<(u32, VarnodeId)> = Vec::new();
+    for (i, slot) in proto.params.iter().enumerate() {
+        if let Some(v) = find_used_input(slot.addr, slot.size) {
+            let n = i as u32 + 1;
+            param_index.insert(slot.addr, n);
+            sig_params.push((n, v));
         }
     }
-    params.sort_by_key(|&(off, _)| param_order(off));
-    params.dedup_by_key(|&mut (off, _)| off);
 
     // Parameter type-locks: Ghidra's ActionPrototypeTypes recovers a parameter's type from
     // consistent usage (e.g. `int8 *` for modulo), and only keeps it undefined when usage is
@@ -1485,6 +1498,7 @@ pub fn print_c(f: &Funcdata) -> String {
         high_stack_off,
         stack_prefix,
         force_explicit: HashSet::new(),
+        param_index,
     };
     p.array_elem = p.detect_arrays();
     p.anchor_stack_arrays();
@@ -1493,8 +1507,9 @@ pub fn print_c(f: &Funcdata) -> String {
     let ret = p.return_value();
     // the return type, like a parameter, is a declared symbol with no recovered type → undefined
     let ret_ty = ret.map_or("void".to_string(), |v| symbol_type(p.type_of(v)).name());
+    // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> =
-        params.iter().map(|&(_, v)| format!("{} {}", p.type_of(v).name(), p.name_of(v))).collect();
+        sig_params.iter().map(|&(n, v)| format!("{} param_{}", p.type_of(v).name(), n)).collect();
 
     let s = structure(f);
     p.gotos = s.gotos.clone();
@@ -1525,13 +1540,6 @@ pub fn print_c(f: &Funcdata) -> String {
     out.push_str(&body);
     out.push_str("}\n");
     out
-}
-
-fn param_order(offset: u64) -> u32 {
-    match offset {
-        0x38 => 1, 0x30 => 2, 0x10 => 3, 0x08 => 4, 0x80 => 5, 0x88 => 6,
-        _ => 99,
-    }
 }
 
 #[cfg(test)]
