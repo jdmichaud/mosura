@@ -240,6 +240,36 @@ impl Funcdata {
         self.ops[op.0 as usize].opcode = opcode;
     }
 
+    /// Remove `op` from its parent block's op list without touching its data-flow connections
+    /// (Ghidra's `opUninsert`). Used by `RuleMultiCollapse`'s functional-equality path, which
+    /// rewrites a MULTIEQUAL into a plain op and must re-position it (via [`op_insert_begin`])
+    /// out of the leading-MULTIEQUAL region.
+    pub fn op_uninsert(&mut self, op: OpId) {
+        if let Some(b) = self.ops[op.0 as usize].parent {
+            let ops = &mut self.blocks[b.0 as usize].ops;
+            if let Some(pos) = ops.iter().position(|&o| o == op) {
+                ops.remove(pos);
+            }
+        }
+    }
+
+    /// Insert `op` as the first op in `block`, except that all leading MULTIEQUALs stay ahead of
+    /// it (Ghidra's `opInsertBegin`). `op` adopts `block` as its parent.
+    pub fn op_insert_begin(&mut self, op: OpId, block: super::block::BlockId) {
+        self.ops[op.0 as usize].parent = Some(block);
+        let is_multi = self.ops[op.0 as usize].opcode == OpCode::Multiequal;
+        let mut pos = 0;
+        if !is_multi {
+            let blk_ops = &self.blocks[block.0 as usize].ops;
+            while pos < blk_ops.len()
+                && self.ops[blk_ops[pos].0 as usize].opcode == OpCode::Multiequal
+            {
+                pos += 1;
+            }
+        }
+        self.blocks[block.0 as usize].ops.insert(pos, op);
+    }
+
     /// Re-point `op` to produce the existing varnode `vid` (Ghidra's `opSetOutput`): drop
     /// `op`'s current output, detach `vid` from its old producer, then wire `vid.def = op`.
     /// Used by `RulePtrArith::buildTree` to hand the original ADD's output to the new tail op.

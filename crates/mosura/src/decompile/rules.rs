@@ -3,6 +3,7 @@
 //! slot in the same way Ghidra's pool grows.
 
 use super::action::Rule;
+use super::block::BlockId;
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -1102,6 +1103,339 @@ impl Rule for Rule2Comp2Sub {
     }
 }
 
+/// Ghidra's commutative p-code opcodes (`TypeOp` ctors that set `PcodeOp::commutative`). The
+/// functional-equality matcher uses this to try the swapped operand ordering.
+fn is_commutative(opc: OpCode) -> bool {
+    use OpCode::*;
+    matches!(
+        opc,
+        IntEqual | IntNotequal | IntAdd | IntCarry | IntScarry | IntXor | IntAnd | IntOr | IntMult
+            | BoolXor | BoolAnd | BoolOr | FloatEqual | FloatNotequal | FloatAdd | FloatMult
+    )
+}
+
+/// Ghidra `functionalEqualityLevel0` (expression.cc): the one-level comparison.
+///   - `0`  ⇒ `vn1` and `vn2` must hold the same value,
+///   - `-1` ⇒ they definitely don't, and
+///   - `1`  ⇒ same-value-ness depends on the ops writing them.
+fn functional_equality_level0(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> i32 {
+    if vn1 == vn2 {
+        return 0;
+    }
+    let a = data.vn(vn1);
+    let b = data.vn(vn2);
+    if a.size != b.size {
+        return -1;
+    }
+    if a.is_constant() {
+        if b.is_constant() {
+            return if a.constant_value() == b.constant_value() { 0 } else { -1 };
+        }
+        return -1;
+    }
+    if a.is_free() || b.is_free() {
+        return -1;
+    }
+    1
+}
+
+/// Ghidra `functionalEqualityLevel` (expression.cc): try to determine whether `vn1` and `vn2`
+/// hold the same value. Returns `0` (do), `-1` (don't / can't tell), or `>0` (contingent on
+/// further varnode pairs). Both call sites here (and Ghidra's) only test the `== 0` case, so —
+/// unlike Ghidra — we don't thread the contingent pairs back out; the recursion structure that
+/// decides whether `0` is reachable is reproduced exactly.
+fn functional_equality_level(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> i32 {
+    let testval = functional_equality_level0(data, vn1, vn2);
+    if testval != 1 {
+        return testval;
+    }
+    if !data.vn(vn1).is_written() || !data.vn(vn2).is_written() {
+        return -1; // Did not find at least one level of match
+    }
+    let op1 = data.vn(vn1).def.unwrap();
+    let op2 = data.vn(vn2).def.unwrap();
+    let opc = data.op(op1).code();
+    if opc != data.op(op2).code() {
+        return -1;
+    }
+    let mut num = data.op(op1).num_inputs();
+    if num != data.op(op2).num_inputs() {
+        return -1;
+    }
+    if data.op(op1).is_marker() {
+        return -1;
+    }
+    if data.op(op2).is_call() {
+        return -1;
+    }
+    if opc == OpCode::Load {
+        // Assume two loads produce the same result only if address + instruction match.
+        if data.op(op1).seqnum.pc != data.op(op2).seqnum.pc {
+            return -1;
+        }
+    }
+    if num >= 3 {
+        if opc != OpCode::Ptradd {
+            return -1;
+        }
+        let e1 = data.op(op1).input(2).unwrap();
+        let e2 = data.op(op2).input(2).unwrap();
+        if data.vn(e1).constant_value() != data.vn(e2).constant_value() {
+            return -1; // elsize constant must be equal
+        }
+        num = 2; // otherwise treat as having 2 inputs
+    }
+    let r1: Vec<VarnodeId> = (0..num).map(|i| data.op(op1).input(i).unwrap()).collect();
+    let r2: Vec<VarnodeId> = (0..num).map(|i| data.op(op2).input(i).unwrap()).collect();
+
+    let testval = functional_equality_level0(data, r1[0], r2[0]);
+    if testval == 0 {
+        // A match locks in this comparison ordering.
+        if num == 1 {
+            return 0;
+        }
+        let t = functional_equality_level0(data, r1[1], r2[1]);
+        if t == 0 {
+            return 0;
+        }
+        if t < 0 {
+            return -1;
+        }
+        return 1; // match contingent on the second pair (res1[0]=res1[1], res2[0]=res2[1])
+    }
+    if num == 1 {
+        return testval;
+    }
+    let testval2 = functional_equality_level0(data, r1[1], r2[1]);
+    if testval2 == 0 {
+        return testval; // locks in this ordering
+    }
+    let unmatchsize = if testval == 1 && testval2 == 1 { 2 } else { -1 };
+    if !is_commutative(opc) {
+        return unmatchsize;
+    }
+    // unmatchsize is 2 or -1 here on a commutative operator; try flipping.
+    let comm1 = functional_equality_level0(data, r1[0], r2[1]);
+    let comm2 = functional_equality_level0(data, r1[1], r2[0]);
+    if comm1 == 0 && comm2 == 0 {
+        return 0;
+    }
+    if comm1 < 0 || comm2 < 0 {
+        return unmatchsize;
+    }
+    if comm1 == 0 {
+        return 1; // leftover unmatch is res1[1]/res2[0]
+    }
+    if comm2 == 0 {
+        return 1; // leftover unmatch is res1[0]/res2[1]
+    }
+    2 // both contingent (callers only test == 0, so the preferred ordering is immaterial)
+}
+
+/// Ghidra `functionalEquality` (expression.cc): are `vn1` and `vn2` provably the same value?
+fn functional_equality(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> bool {
+    functional_equality_level(data, vn1, vn2) == 0
+}
+
+/// Ghidra `BlockBasic::earliestUse`: the earliest op in `block` that reads `vid`. We order ops by
+/// their position in the block's op list (mosura's faithful analogue of Ghidra's `SeqNum` order).
+fn earliest_use(data: &Funcdata, vid: VarnodeId, block: BlockId) -> Option<OpId> {
+    let blk_ops = &data.block(block).ops;
+    let mut best: Option<(usize, OpId)> = None;
+    for &user in &data.vn(vid).descend {
+        if data.op(user).parent != Some(block) {
+            continue;
+        }
+        let Some(pos) = blk_ops.iter().position(|&o| o == user) else { continue };
+        if best.is_none_or(|(bp, _)| pos < bp) {
+            best = Some((pos, user));
+        }
+    }
+    best.map(|(_, o)| o)
+}
+
+/// Ghidra `Funcdata::cseFindInBlock`: find an op in `block` (other than `op`, at or before
+/// `earliest`) that reads `vid` and whose output is functionally equal to `op`'s output — i.e.
+/// `op`'s computation already exists there. Block-list position stands in for `SeqNum` order.
+fn cse_find_in_block(
+    data: &Funcdata,
+    op: OpId,
+    vid: VarnodeId,
+    block: BlockId,
+    earliest: Option<OpId>,
+) -> Option<OpId> {
+    let blk_ops = &data.block(block).ops;
+    let earliest_pos = earliest.and_then(|e| blk_ops.iter().position(|&o| o == e));
+    let outvn1 = data.op(op).output?;
+    for &res in &data.vn(vid).descend {
+        if res == op {
+            continue;
+        }
+        if data.op(res).parent != Some(block) {
+            continue;
+        }
+        let Some(res_pos) = blk_ops.iter().position(|&o| o == res) else { continue };
+        if let Some(ep) = earliest_pos {
+            if ep < res_pos {
+                continue; // must occur earlier than (or at) earliest
+            }
+        }
+        let Some(outvn2) = data.op(res).output else { continue };
+        if functional_equality_level(data, outvn1, outvn2) == 0 {
+            return Some(res);
+        }
+    }
+    None
+}
+
+/// Ghidra `RuleMultiCollapse` (ruleaction.cc): collapse a MULTIEQUAL whose inputs all trace to the
+/// same value. A varnode that recurs in a loop (the phi reaching itself) is skipped — treated as
+/// equal to every other branch. Inputs may match by *absolute* equality (same varnode) or by
+/// *functional* equality (a `functionalEquality` computation, e.g. two `COPY const`); nested
+/// MULTIEQUAL branches get one last chance by expanding their inputs into the match list. On the
+/// functional-equality path, each collapsed op is rewritten to recompute the matched expression
+/// (reusing an existing in-block copy when one dominates, via `cseFindInBlock`).
+pub struct RuleMultiCollapse;
+
+impl Rule for RuleMultiCollapse {
+    fn name(&self) -> &str {
+        "multicollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Multiequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let num0 = data.op(op).num_inputs();
+        // Everything must be heritaged before collapse.
+        for i in 0..num0 {
+            let inp = data.op(op).input(i).unwrap();
+            if !data.vn(inp).is_heritage_known() {
+                return 0;
+            }
+        }
+
+        let mut func_eq = false; // start assuming absolute equality of branches
+        let mut nofunc = false; // functional equalities initially allowed
+        let mut defcopyr: Option<VarnodeId> = None;
+        let mut matchlist: Vec<VarnodeId> =
+            (0..num0).map(|i| data.op(op).input(i).unwrap()).collect();
+
+        // Find the base branch to match: the first input not written by a MULTIEQUAL.
+        let is_multi_written = |data: &Funcdata, v: VarnodeId| -> bool {
+            let vn = data.vn(v);
+            vn.is_written() && vn.def.is_some_and(|d| data.op(d).code() == OpCode::Multiequal)
+        };
+        for &copyr in &matchlist {
+            if !is_multi_written(data, copyr) {
+                defcopyr = Some(copyr);
+                break;
+            }
+        }
+
+        let mut success = true;
+        let outvn = data.op(op).output.unwrap();
+        data.vn_mut(outvn).set_mark();
+        let mut skiplist: Vec<VarnodeId> = vec![outvn];
+        let mut j = 0;
+        while j < matchlist.len() {
+            let copyr = matchlist[j];
+            j += 1;
+            if data.vn(copyr).is_mark() {
+                continue; // a varnode we've seen — a loop recurrence; treat as equal, skip it
+            }
+            match defcopyr {
+                None => {
+                    // This is now the defining branch; all others must match it.
+                    defcopyr = Some(copyr);
+                    let vn = data.vn(copyr);
+                    if vn.is_written() {
+                        if vn.def.is_some_and(|d| data.op(d).code() == OpCode::Multiequal) {
+                            nofunc = true; // MULTIEQUAL cannot match by functional equality
+                        }
+                    } else {
+                        nofunc = true; // unwritten cannot match by functional equality
+                    }
+                }
+                Some(dc) if dc == copyr => continue, // a matching branch
+                Some(dc) if !nofunc && functional_equality(data, dc, copyr) => {
+                    func_eq = true; // now matching by functional equality
+                    continue;
+                }
+                Some(_) if is_multi_written(data, copyr) => {
+                    // The non-matching branch is a MULTIEQUAL — give it one last chance and add
+                    // its inputs to the list of things to match.
+                    let newop = data.vn(copyr).def.unwrap();
+                    skiplist.push(copyr);
+                    data.vn_mut(copyr).set_mark();
+                    let nin = data.op(newop).num_inputs();
+                    for i in 0..nin {
+                        matchlist.push(data.op(newop).input(i).unwrap());
+                    }
+                }
+                Some(_) => {
+                    success = false; // a non-matching branch
+                    break;
+                }
+            }
+        }
+
+        // `defcopyr` is always set for a real MULTIEQUAL (≥1 non-self input); guard the
+        // pathological all-self-loop case rather than unwrap-panic.
+        if let (true, Some(defc)) = (success, defcopyr) {
+            for &copyr in &skiplist {
+                data.vn_mut(copyr).clear_mark();
+                let cur_op = data.vn(copyr).def.unwrap(); // Ghidra: op = copyr->getDef()
+                if func_eq {
+                    // Functional equality: recompute the matched expression at this location.
+                    let parent = data.op(cur_op).parent.unwrap();
+                    let earliest = earliest_use(data, copyr, parent);
+                    let newop = data.vn(defc).def.unwrap(); // copy newop (defcopyr's def)
+                    let nin = data.op(newop).num_inputs();
+                    let mut substitute: Option<OpId> = None;
+                    for i in 0..nin {
+                        let invn = data.op(newop).input(i).unwrap();
+                        if !data.vn(invn).is_constant() {
+                            // Has newop already been copied in this block?
+                            substitute = cse_find_in_block(data, newop, invn, parent, earliest);
+                            break;
+                        }
+                    }
+                    if let Some(sub) = substitute {
+                        // Already copied — reuse that copy's output.
+                        let sub_out = data.op(sub).output.unwrap();
+                        data.total_replace(copyr, sub_out);
+                        data.op_destroy(cur_op);
+                    } else {
+                        // Otherwise create a copy by rewriting cur_op into newop's computation.
+                        let needsreinsert = data.op(cur_op).code() == OpCode::Multiequal;
+                        let parms: Vec<VarnodeId> =
+                            (0..nin).map(|i| data.op(newop).input(i).unwrap()).collect();
+                        data.op_set_all_input(cur_op, &parms);
+                        let newcode = data.op(newop).code();
+                        data.op_set_opcode(cur_op, newcode);
+                        if needsreinsert {
+                            // No longer a MULTIEQUAL — move it out of the leading-MULTIEQUAL region.
+                            let bl = data.op(cur_op).parent.unwrap();
+                            data.op_uninsert(cur_op);
+                            data.op_insert_begin(cur_op, bl);
+                        }
+                    }
+                } else {
+                    // Absolute equality: replace all refs to copyr with defcopyr.
+                    data.total_replace(copyr, defc);
+                    data.op_destroy(cur_op);
+                }
+            }
+            return 1;
+        }
+
+        for &copyr in &skiplist {
+            data.vn_mut(copyr).clear_mark();
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1491,5 +1825,107 @@ mod tests {
         assert_eq!(f.op(add).input(0), Some(v));
         assert_eq!(f.op(add).input(1), Some(w));
         assert!(f.op(mul).is_dead());
+    }
+
+    // --- RuleMultiCollapse ------------------------------------------------
+
+    /// Two identical branches: `out = MULTIEQUAL(a, a)` collapses to `a` (absolute equality).
+    #[test]
+    fn multicollapse_absolute_equality() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let op = f.new_op(OpCode::Multiequal, seq, vec![a, a]);
+        let out = f.new_output(op, 4, Address::new(reg, 0x20));
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 1 }, vec![out]);
+        f.new_output(user, 4, Address::new(reg, 0x28));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op, user], ..Default::default() }]);
+
+        assert_eq!(RuleMultiCollapse.apply_op(op, &mut f), 1);
+        assert!(f.op(op).is_dead(), "the MULTIEQUAL is destroyed");
+        assert_eq!(f.op(user).input(0), Some(a), "the use now reads a directly");
+    }
+
+    /// A value that recurs unchanged in a loop — `out = MULTIEQUAL(a, out)` — collapses to `a`:
+    /// the self-referential branch is skipped as a recurrence, leaving only `a`.
+    #[test]
+    fn multicollapse_loop_recurrence() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let op = f.new_op(OpCode::Multiequal, seq, vec![a, a]); // 2nd input fixed up below
+        let out = f.new_output(op, 4, Address::new(reg, 0x20));
+        f.op_set_input(op, 1, out); // the phi reaches itself (loop back-edge)
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 1 }, vec![out]);
+        f.new_output(user, 4, Address::new(reg, 0x28));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op, user], ..Default::default() }]);
+
+        assert_eq!(RuleMultiCollapse.apply_op(op, &mut f), 1);
+        assert!(f.op(op).is_dead());
+        assert_eq!(f.op(user).input(0), Some(a));
+    }
+
+    /// CORRECTNESS GUARD: distinct values must NOT be merged. `MULTIEQUAL(a, b)` with two
+    /// different inputs returns 0 (no change) and the MULTIEQUAL survives.
+    #[test]
+    fn multicollapse_keeps_distinct_values() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let op = f.new_op(OpCode::Multiequal, seq, vec![a, b]);
+        let out = f.new_output(op, 4, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op], ..Default::default() }]);
+
+        assert_eq!(RuleMultiCollapse.apply_op(op, &mut f), 0, "distinct branches do not collapse");
+        assert!(!f.op(op).is_dead());
+        assert_eq!(f.op(op).code(), OpCode::Multiequal);
+        assert_eq!(f.op(op).input(0), Some(a));
+        assert_eq!(f.op(op).input(1), Some(b));
+        assert!(!f.vn(out).is_mark(), "the traversal mark is cleared on the failure path");
+    }
+
+    /// Functional equality: two branches that each `COPY` the same constant collapse, with the
+    /// MULTIEQUAL rewritten in place into that `COPY const` (the recompute path, no `cseFindInBlock`
+    /// hit because the operand is constant).
+    #[test]
+    fn multicollapse_functional_equality_copy_const() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let off = 0x20;
+        // Two separate `COPY #5` ops feeding the phi from two predecessor blocks.
+        let c5a = f.new_const(4, 5);
+        let copy_a = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 1 }, vec![c5a]);
+        let va = f.new_output(copy_a, 4, Address::new(reg, off));
+        let c5b = f.new_const(4, 5);
+        let copy_b = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 2 }, vec![c5b]);
+        let vb = f.new_output(copy_b, 4, Address::new(reg, off));
+        // Three blocks: the two defs, then the merge holding the MULTIEQUAL.
+        f.set_blocks(vec![
+            crate::decompile::BlockBasic { ops: vec![copy_a], ..Default::default() },
+            crate::decompile::BlockBasic { ops: vec![copy_b], ..Default::default() },
+            crate::decompile::BlockBasic::default(),
+        ]);
+        let merge = crate::decompile::BlockId(2);
+        let op = f.new_multiequal(merge, reg, off, 4, 2);
+        f.op_set_input(op, 0, va);
+        f.op_set_input(op, 1, vb);
+        let out = f.op(op).output.unwrap();
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 3 }, vec![out]);
+        f.new_output(user, 4, Address::new(reg, 0x30));
+        f.op_insert_begin(user, merge);
+
+        assert_eq!(RuleMultiCollapse.apply_op(op, &mut f), 1);
+        // The MULTIEQUAL became `out = COPY #5` (alive, recomputed), and the use still reads it.
+        assert!(!f.op(op).is_dead());
+        assert_eq!(f.op(op).code(), OpCode::Copy);
+        let in0 = f.op(op).input(0).unwrap();
+        assert!(f.vn(in0).is_constant() && f.vn(in0).constant_value() == 5);
+        assert_eq!(f.op(user).input(0), Some(out), "use still reads the collapsed value");
+        // and it now sits after the (now absent) leading MULTIEQUALs, i.e. ahead of the user.
+        assert!(f.block(merge).ops.contains(&op));
     }
 }

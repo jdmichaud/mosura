@@ -63,4 +63,8 @@ impl PcodeOp {
     pub fn is_marker(&self) -> bool {
         matches!(self.opcode, OpCode::Multiequal | OpCode::Indirect)
     }
+    /// Ghidra `PcodeOp::isCall` — a CALL/CALLIND/CALLOTHER.
+    pub fn is_call(&self) -> bool {
+        matches!(self.opcode, OpCode::Call | OpCode::Callind | OpCode::Callother)
+    }
 }

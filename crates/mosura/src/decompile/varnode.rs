@@ -85,6 +85,22 @@ impl Varnode {
     pub fn is_free(&self) -> bool {
         self.flags & (flags::INSERT | flags::CONSTANT) == 0
     }
+    /// Ghidra `Varnode::isHeritageKnown` — the value sits in the SSA tree (`insert`), or is a
+    /// constant/annotation. Used by `RuleMultiCollapse` to refuse a MULTIEQUAL whose inputs are
+    /// not yet heritaged.
+    pub fn is_heritage_known(&self) -> bool {
+        self.flags & (flags::INSERT | flags::CONSTANT | flags::ANNOTATION) != 0
+    }
+    /// Ghidra `Varnode::isMark` / the `mark` traversal bit.
+    pub fn is_mark(&self) -> bool {
+        self.flags & flags::MARK != 0
+    }
+    pub fn set_mark(&mut self) {
+        self.flags |= flags::MARK;
+    }
+    pub fn clear_mark(&mut self) {
+        self.flags &= !flags::MARK;
+    }
     pub fn is_addrtied(&self) -> bool {
         self.flags & flags::ADDRTIED != 0
     }
