@@ -32,7 +32,7 @@ impl Dominators {
 }
 
 /// Postorder of the CFG from the entry (block 0), over out-edges.
-fn postorder(f: &Funcdata) -> Vec<usize> {
+pub fn postorder(f: &Funcdata) -> Vec<usize> {
     let nb = f.num_blocks();
     let mut order = Vec::with_capacity(nb);
     let mut visited = vec![false; nb];

@@ -31,11 +31,13 @@ impl Action for ActionHeritage {
         if data.num_blocks() == 0 {
             // First call: one-time setup, then heritage the register group (pass 0).
             super::stackvars::normalize_call_stack(data);
+            // Build the CFG before stack recovery so recover_stack can propagate the stack pointer
+            // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
+            super::cfg::build_cfg(data);
             super::stackvars::recover_stack(data);
             // wire return/argument candidates before heritage links them to reaching defs
             super::recover::recover_return(data);
             super::recover::recover_call_args(data);
-            super::cfg::build_cfg(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
             // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are
             // aliased — their address escapes to a call. This decides which slots

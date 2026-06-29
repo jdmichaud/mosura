@@ -119,56 +119,86 @@ pub fn normalize_call_stack(f: &mut Funcdata) {
 }
 
 /// Rewrite stack-pointer-relative LOAD/STORE into `stack`-space accesses.
+///
+/// PROTOTYPE (#19): CFG-aware — each block's entry stack state is a processed predecessor's exit
+/// state (the pre-heritage analog of the SSA MULTIEQUAL phi-join Ghidra's StackSolver relies on),
+/// so the stack pointer no longer drifts across independent blocks the flat op order interleaves.
 pub fn recover_stack(f: &mut Funcdata) {
     let (Some(reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
         return;
     };
-    let mut sval: HashMap<Loc, i64> = HashMap::new();
-    sval.insert((reg, RSP), 0); // entry stack pointer is offset 0
+    let nblk = f.num_blocks();
+    if nblk == 0 {
+        return;
+    }
+    let entry_sval = HashMap::from([((reg, RSP), 0i64)]);
+    let mut sval_out: Vec<Option<HashMap<Loc, i64>>> = vec![None; nblk];
 
-    for op in f.op_ids().collect::<Vec<_>>() {
-        if f.op(op).is_dead() {
-            continue; // skip ops removed by normalize_call_stack
-        }
-        let o = f.op(op).clone();
-        match o.code() {
-            OpCode::Store => {
-                if let (Some(addr), Some(val)) = (o.input(1), o.input(2)) {
-                    if let Some(&c) = sval.get(&loc_of(f, addr)) {
-                        let size = f.vn(val).size;
-                        f.op_set_all_input(op, &[val]);
-                        f.op_set_opcode(op, OpCode::Copy);
-                        f.new_output(op, size, Address::new(stack, c as u64));
-                        continue;
+    // Process blocks in reverse postorder so each block's forward-edge predecessors are processed
+    // before it (the loop back-edge predecessor is processed after the header, which already has the
+    // loop-invariant stack pointer from the pre-header). Any block unreachable from the entry is
+    // visited last with the entry seed.
+    let mut order: Vec<usize> = super::dominator::postorder(f);
+    order.reverse();
+    let mut in_order = vec![false; nblk];
+    for &b in &order {
+        in_order[b] = true;
+    }
+    order.extend((0..nblk).filter(|&b| !in_order[b]));
+
+    for b in order {
+        let bid = super::block::BlockId(b as u32);
+        // Entry state: a processed predecessor's exit state; the entry block (no preds) seeds RSP=0.
+        let mut sval: HashMap<Loc, i64> = {
+            let preds: Vec<usize> = f.block(bid).in_edges.iter().map(|e| e.0 as usize).collect();
+            preds.iter().find_map(|&p| sval_out[p].clone()).unwrap_or_else(|| entry_sval.clone())
+        };
+        let ops = f.block(bid).ops.clone();
+        for op in ops {
+            if f.op(op).is_dead() {
+                continue;
+            }
+            let o = f.op(op).clone();
+            match o.code() {
+                OpCode::Store => {
+                    if let (Some(addr), Some(val)) = (o.input(1), o.input(2)) {
+                        if let Some(&c) = sval.get(&loc_of(f, addr)) {
+                            let size = f.vn(val).size;
+                            f.op_set_all_input(op, &[val]);
+                            f.op_set_opcode(op, OpCode::Copy);
+                            f.new_output(op, size, Address::new(stack, c as u64));
+                            continue;
+                        }
+                    }
+                }
+                OpCode::Load => {
+                    if let (Some(addr), Some(out)) = (o.input(1), o.output) {
+                        if let Some(&c) = sval.get(&loc_of(f, addr)) {
+                            let size = f.vn(out).size;
+                            let sv = f.new_varnode(size, Address::new(stack, c as u64));
+                            f.op_set_all_input(op, &[sv]);
+                            f.op_set_opcode(op, OpCode::Copy);
+                            // the loaded value is data, not a stack address
+                            sval.remove(&loc_of(f, out));
+                            continue;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // propagate the stack-offset value through the op's output
+            if let Some(out) = o.output {
+                let outloc = loc_of(f, out);
+                match symbolic_value(f, &o, &sval) {
+                    Some(v) => {
+                        sval.insert(outloc, v);
+                    }
+                    None => {
+                        sval.remove(&outloc);
                     }
                 }
             }
-            OpCode::Load => {
-                if let (Some(addr), Some(out)) = (o.input(1), o.output) {
-                    if let Some(&c) = sval.get(&loc_of(f, addr)) {
-                        let size = f.vn(out).size;
-                        let sv = f.new_varnode(size, Address::new(stack, c as u64));
-                        f.op_set_all_input(op, &[sv]);
-                        f.op_set_opcode(op, OpCode::Copy);
-                        // the loaded value is data, not a stack address
-                        sval.remove(&loc_of(f, out));
-                        continue;
-                    }
-                }
-            }
-            _ => {}
         }
-        // propagate the stack-offset value through the op's output
-        if let Some(out) = o.output {
-            let outloc = loc_of(f, out);
-            match symbolic_value(f, &o, &sval) {
-                Some(v) => {
-                    sval.insert(outloc, v);
-                }
-                None => {
-                    sval.remove(&outloc);
-                }
-            }
-        }
+        sval_out[b] = Some(sval);
     }
 }
