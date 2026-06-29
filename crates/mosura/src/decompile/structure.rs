@@ -13,6 +13,67 @@ use std::collections::{HashMap, HashSet};
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
+use super::op::OpId;
+use super::opcode::OpCode;
+use super::varnode::VarnodeId;
+
+/// The lone op that reads `vn`, or `None` if it has zero or multiple readers (Ghidra's
+/// `Varnode::loneDescend`).
+fn lone_descend(f: &Funcdata, vn: VarnodeId) -> Option<OpId> {
+    let d = &f.vn(vn).descend;
+    (d.len() == 1).then(|| d[0])
+}
+
+/// Faithful port of `Funcdata::opFlipInPlaceTest` (funcdata_op.cc:1221): trace a boolean
+/// value to decide whether flipping it (negating the predicate + swapping the branch arms)
+/// puts the condition in Ghidra's normal form. Returns 0 if the flip normalizes, 1 if it is
+/// ambivalent, 2 if it cannot. `op` is the CBRANCH (Ghidra recurses to its `getIn(1)`'s def);
+/// the normal form prefers `==` over `!=`, a constant on the left of `<`, and a non-constant
+/// on the right of `<=`. This is the decision behind `ActionNormalizeBranches`
+/// (blockaction.cc:2117); mosura applies it at the structurer + print-time negation
+/// (`printc::render_negated`, the `get_booleanflip`/`replaceLessequal` port) rather than as
+/// an IR rewrite — a justified architectural subset, result-verified against `oracle --c`.
+fn op_flip_in_place_test(f: &Funcdata, op: OpId) -> i32 {
+    match f.op(op).code() {
+        OpCode::Cbranch => {
+            let Some(vn) = f.op(op).input(1) else { return 2 };
+            if lone_descend(f, vn) != Some(op) || !f.vn(vn).is_written() {
+                return 2;
+            }
+            op_flip_in_place_test(f, f.vn(vn).def.unwrap())
+        }
+        OpCode::IntEqual | OpCode::FloatEqual => 1,
+        OpCode::BoolNegate | OpCode::IntNotequal | OpCode::FloatNotequal => 0,
+        OpCode::IntSless | OpCode::IntLess => {
+            let in0 = f.op(op).input(0).unwrap();
+            if f.vn(in0).is_constant() { 0 } else { 1 }
+        }
+        OpCode::IntSlessequal | OpCode::IntLessequal => {
+            let in1 = f.op(op).input(1).unwrap();
+            if f.vn(in1).is_constant() { 1 } else { 0 }
+        }
+        OpCode::BoolOr | OpCode::BoolAnd => {
+            let in0 = f.op(op).input(0).unwrap();
+            if lone_descend(f, in0) != Some(op) || !f.vn(in0).is_written() {
+                return 2;
+            }
+            let subtest1 = op_flip_in_place_test(f, f.vn(in0).def.unwrap());
+            if subtest1 == 2 {
+                return 2;
+            }
+            let in1 = f.op(op).input(1).unwrap();
+            if lone_descend(f, in1) != Some(op) || !f.vn(in1).is_written() {
+                return 2;
+            }
+            let subtest2 = op_flip_in_place_test(f, f.vn(in1).def.unwrap());
+            if subtest2 == 2 {
+                return 2;
+            }
+            subtest1 // the front of an AND/OR governs whether the whole normalizes
+        }
+        _ => 2,
+    }
+}
 
 /// A node in the structuring graph: a leaf basic block or a structured composite.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +118,10 @@ pub struct Structured {
     pub gotos: HashMap<BlockId, (BlockId, bool)>,
     /// Basic blocks that are goto targets (get a label).
     pub labels: HashSet<BlockId>,
+    /// Per basic block (indexed by `BlockId`): whether its terminating CBRANCH condition is in
+    /// non-normal form so an `if`/`else` over it should flip to the positive form (Ghidra's
+    /// `opFlipInPlaceTest == 0`). Precomputed from `Funcdata` since the structurer holds no `f`.
+    flip: Vec<bool>,
 }
 
 impl Structured {
@@ -312,6 +377,18 @@ impl Structured {
         false
     }
 
+    /// Whether the `if`/`else` over condition block `b` should be rendered in Ghidra's positive
+    /// normal form (`opFlipInPlaceTest == 0`): swap the then/else arms and negate the printed
+    /// condition. A compound (short-circuit) condition is left as-is — its normal form needs the
+    /// `BOOL_AND`/`BOOL_OR` recursion over the structural operands (a faithful subset, the simple
+    /// CBRANCH case covers the corpus's if/else conditions).
+    fn if_else_flip(&self, b: usize) -> bool {
+        if matches!(self.blocks[b].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+            return false;
+        }
+        self.exit_basic(b).is_some_and(|bid| self.flip.get(bid.0 as usize).copied().unwrap_or(false))
+    }
+
     /// `ruleBlockIfElse`: both arms reconverge to one block.
     fn rule_if_else(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
         if self.out(b).len() != 2 {
@@ -325,7 +402,13 @@ impl Structured {
         if merge == b || merge != self.out(fc)[0] {
             return false;
         }
-        self.install(vec![b, tc, fc], FlowKind::IfElse, vec![merge], ins);
+        // Ghidra `ActionNormalizeBranches`: render the positive form when the condition is
+        // non-normal — swap the then/else arms and negate (printc::render_negated). The taken
+        // edge `tc` is the un-negated then; flipping makes the fall-through `fc` the then.
+        let flip = self.if_else_flip(b);
+        let (then_c, else_c) = if flip { (fc, tc) } else { (tc, fc) };
+        let n = self.install(vec![b, then_c, else_c], FlowKind::IfElse, vec![merge], ins);
+        self.blocks[n].negated = flip;
         true
     }
 
@@ -374,7 +457,19 @@ pub fn structure(f: &Funcdata) -> Structured {
             negated: false,
         })
         .collect();
-    let mut s = Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new() };
+    // Precompute the normal-form flip decision per basic block from its terminating CBRANCH
+    // (Ghidra's `opFlipInPlaceTest`); `rule_if_else` consults it to choose the positive form.
+    let flip: Vec<bool> = (0..f.num_blocks())
+        .map(|b| {
+            let bid = BlockId(b as u32);
+            f.block(bid)
+                .ops
+                .last()
+                .copied()
+                .is_some_and(|op| f.op(op).code() == OpCode::Cbranch && op_flip_in_place_test(f, op) == 0)
+        })
+        .collect();
+    let mut s = Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), flip };
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();

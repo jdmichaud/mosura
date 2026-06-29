@@ -109,3 +109,31 @@ fn mixfloatint_float_param_stays_whole() {
         "mixfloatint's whole XMM float param was CONCAT-split (refineInput regression):\n{c}"
     );
 }
+
+/// Regression for the condition-flip normalization (Ghidra `ActionNormalizeBranches` /
+/// `opFlipInPlaceTest`, funcdata_op.cc:1221): an `if`/`else` whose CBRANCH condition is in
+/// non-normal form (here `INT_NOTEQUAL(param_2, 100)`) is rendered in the positive form —
+/// `if (param_2 == 100) { then } else { else }` — not the raw `if (param_2 != 100) { else }
+/// else { then }`. The structurer swaps the arms and `printc::render_negated` flips the
+/// predicate. Matches `oracle/capture --c` for indproto.
+#[test]
+fn indproto_if_else_uses_positive_condition() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("indproto.xml");
+    let dt = datatest::parse_file(&path).expect("parse indproto");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    assert!(
+        c.contains("if (param_2 == 100)") && !c.contains("!= 100"),
+        "indproto's if/else condition was not normalized to positive form (flipInPlaceExecute regression):\n{c}"
+    );
+}
