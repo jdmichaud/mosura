@@ -1026,6 +1026,14 @@ impl<'a> PrintC<'a> {
                 // collapsed into it (e.g. the entry block once its bounds guard is folded away);
                 // the BRANCHIND and the inlined index computation are skipped by `emit_basic`.
                 self.emit_structured(s, comps[0], indent, out);
+                // the entry addresses of the case blocks, so a recovered target can be matched to
+                // the case block it enters (Ghidra `getIndexByBlock`) even when the block start
+                // shifted past the target (leading case instructions optimized away)
+                let case_addrs: Vec<u64> = comps[1..]
+                    .iter()
+                    .filter_map(|&c| entry_basic(s, c))
+                    .filter_map(|cb| self.f.block_range(cb).map(|(a, _)| a))
+                    .collect();
                 let _ = writeln!(out, "{pad}switch ({idx}) {{");
                 for &case in &comps[1..] {
                     if let (Some(pc), Some(cb)) = (head_pc, entry_basic(s, case)) {
@@ -1035,7 +1043,7 @@ impl<'a> PrintC<'a> {
                         if self.f.switch_defaults.get(&pc) == Some(&addr) {
                             let _ = writeln!(out, "{pad}default:");
                         } else {
-                            for v in self.case_labels(pc, addr) {
+                            for v in self.case_labels(pc, addr, &case_addrs) {
                                 let _ = writeln!(out, "{pad}case {v}:");
                             }
                         }
@@ -1248,13 +1256,23 @@ impl<'a> PrintC<'a> {
         None
     }
 
-    /// The case values that dispatch to `case_addr`, from the recovered jump table.
-    fn case_labels(&self, head_pc: u64, case_addr: u64) -> Vec<usize> {
-        self.f
-            .switch_targets
-            .get(&head_pc)
-            .map(|ts| ts.iter().enumerate().filter(|(_, &t)| t == case_addr).map(|(i, _)| i).collect())
-            .unwrap_or_default()
+    /// The case values that dispatch to the case block at `case_addr` (Ghidra
+    /// `getLabelByIndex(getIndexByBlock(block,j))`). Each recovered target is attributed to the
+    /// case block it enters — the first case block at or after the target address, since a case
+    /// block can start a few bytes past its recovered target (leading instructions get CSE'd /
+    /// hoisted out). For the canonical 0-based switch the index is the label; this is exact for a
+    /// dense table and recovers the labels a strict `target == block-start` match dropped after a
+    /// block shift.
+    fn case_labels(&self, head_pc: u64, case_addr: u64, case_addrs: &[u64]) -> Vec<usize> {
+        let Some(targets) = self.f.switch_targets.get(&head_pc) else { return Vec::new() };
+        targets
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &t)| {
+                let owner = case_addrs.iter().copied().filter(|&a| a >= t).min()?;
+                (owner == case_addr).then_some(i)
+            })
+            .collect()
     }
 
     /// A label name for a goto target basic block, by its entry address.
