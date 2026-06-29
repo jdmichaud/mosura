@@ -701,7 +701,14 @@ impl Spec {
                     0 => h.space,
                     1 => h.offset,
                     2 => h.size,
-                    3 => h.offset.wrapping_add(*plus),
+                    // v_offset_plus: a varnode truncation `vn[lo,sz]` (e.g. SLEIGH
+                    // `XmmReg[32,32]`). `plus` is the packed truncation Ghidra builds in
+                    // `VarnodeTpl::adjustTruncation` — low 16 bits = byte offset (endian
+                    // adjusted), high bits = the original byte offset for the constant case.
+                    // `ConstTpl::fix` (semantics.cc): a non-constant handle bumps the offset
+                    // by the low 16 bits; a constant is right-shifted by 8*(plus>>16) bytes.
+                    3 if h.space != 0 => h.offset.wrapping_add(*plus & 0xffff),
+                    3 => h.offset >> (8 * (*plus >> 16)),
                     _ => return None,
                 })
             }
