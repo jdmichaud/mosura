@@ -12,8 +12,15 @@ use super::rules::{
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
-/// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
-/// construction Ghidra does in `followFlow`). Runs once — when the blocks aren't built yet.
+/// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
+/// `ActionHeritage`, plus the CFG construction Ghidra does in `followFlow`). The first call
+/// (blocks not yet built) does the one-time setup — stack recovery, CFG construction, the alias
+/// probe, call-effect modelling — then heritages the register group (delay 0). Each later call
+/// heritages the next delay group (`ram`/`stack`, delay 1) until every space is in SSA form.
+///
+/// Wrapped in a restart group (see [`universal_action`]) so it re-runs to completion. Driving it
+/// one pass per call is the foundation for the iterating mainloop, which will run param recovery
+/// and simplification between the register and stack passes.
 pub struct ActionHeritage;
 
 impl Action for ActionHeritage {
@@ -21,35 +28,55 @@ impl Action for ActionHeritage {
         "heritage"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        if data.num_blocks() != 0 {
+        if data.num_blocks() == 0 {
+            // First call: one-time setup, then heritage the register group (pass 0).
+            super::stackvars::normalize_call_stack(data);
+            super::stackvars::recover_stack(data);
+            // wire return/argument candidates before heritage links them to reaching defs
+            super::recover::recover_return(data);
+            super::recover::recover_call_args(data);
+            super::cfg::build_cfg(data);
+            // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
+            // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are
+            // aliased — their address escapes to a call. This decides which slots
+            // `recover_call_effects` guards, so a non-aliased local (a spilled loop variable) is
+            // never guarded and its loop SSA is left intact — without a calling-convention scan.
+            let boundary = {
+                let mut probe = data.clone();
+                let pdom = super::dominator::compute(&probe);
+                super::heritage::heritage(&mut probe, &pdom);
+                super::recover::resolve_return(&mut probe);
+                super::recover::resolve_call_args(&mut probe);
+                default_rule_pool().apply(&mut probe);
+                super::deadcode::ActionDeadCode.apply(&mut probe);
+                super::alias::alias_boundary(&probe)
+            };
+            // model each call's clobber of the caller-saved arg registers + aliased stack locals
+            super::recover::recover_call_effects(data, boundary);
+            let dom = super::dominator::compute(data);
+            super::heritage::heritage_pass(data, &dom);
+            return 1;
+        }
+        // Later calls: heritage the next delay group, until all spaces are in SSA form.
+        if super::heritage::heritage_complete(data) {
             return 0;
         }
-        super::stackvars::normalize_call_stack(data);
-        super::stackvars::recover_stack(data);
-        // wire return/argument candidates before heritage links them to reaching defs
-        super::recover::recover_return(data);
-        super::recover::recover_call_args(data);
-        super::cfg::build_cfg(data);
-        // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards), then run
-        // Ghidra's AliasChecker on the resulting graph to find which stack slots are aliased — their
-        // address escapes to a call. This decides which slots `recover_call_effects` guards, so a
-        // non-aliased local (a spilled loop variable) is never guarded and its loop SSA is left
-        // intact — without a calling-convention register scan.
-        let boundary = {
-            let mut probe = data.clone();
-            let pdom = super::dominator::compute(&probe);
-            super::heritage::heritage(&mut probe, &pdom);
-            super::recover::resolve_return(&mut probe);
-            super::recover::resolve_call_args(&mut probe);
-            default_rule_pool().apply(&mut probe);
-            super::deadcode::ActionDeadCode.apply(&mut probe);
-            super::alias::alias_boundary(&probe)
-        };
-        // model each call's clobber of the caller-saved arg registers + the aliased stack locals
-        super::recover::recover_call_effects(data, boundary);
         let dom = super::dominator::compute(data);
-        super::heritage::heritage(data, &dom);
-        // keep only the realistic return value / call arguments
+        super::heritage::heritage_pass(data, &dom);
+        1
+    }
+}
+
+/// Keep only the realistic return value / call arguments (Ghidra's `ActionActiveParam` /
+/// `ActionReturnRecovery`). Runs after heritage has linked the call/return varnodes to their
+/// reaching defs; split out of `ActionHeritage` so it runs once heritage is complete.
+pub struct ActionResolveCalls;
+
+impl Action for ActionResolveCalls {
+    fn name(&self) -> &str {
+        "resolvecalls"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
         super::recover::resolve_return(data);
         super::recover::resolve_call_args(data);
         1
@@ -148,7 +175,11 @@ pub fn cleanup_pool() -> ActionPool {
 /// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
     ActionGroup::once("decompile")
-        .then(ActionHeritage)
+        // Iterating heritage: re-run ActionHeritage to completion (register pass, then stack
+        // pass). Ghidra's mainloop is a single restart group; here heritage is its own restart
+        // group, the foundation for folding the rest of the pipeline into the loop next.
+        .then(ActionGroup::restart("heritage").then(ActionHeritage))
+        .then(ActionResolveCalls)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)

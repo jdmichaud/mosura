@@ -519,44 +519,63 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
     }
 }
 
-/// Build the SSA form for `f` using the dominator info `dom`.
+/// True once every heritaged space has been brought into SSA form (Ghidra: all spaces have a
+/// positive `numHeritagePasses`). The driver loop stops here.
+pub fn heritage_complete(f: &Funcdata) -> bool {
+    (0..f.spaces.num_spaces() as u32).all(|i| {
+        let sp = SpaceId(i);
+        !f.spaces.get(sp).is_heritaged() || f.heritage_done.contains(&sp)
+    })
+}
+
+/// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is
+/// one pass). Heritages the spaces newly eligible at the current `f.heritage_pass` (those whose
+/// `delay <= pass` and not yet in `f.heritage_done`), advancing the pass counter. Registers
+/// (delay 0) heritage before `ram`/`stack` (delay 1), so a later pass's reads link to defs an
+/// earlier pass discovered. Returns the number of spaces heritaged this call (0 when the pass
+/// has nothing newly eligible).
 ///
-/// Heritage iterates over address spaces in *delay* order (Ghidra's `Heritage::heritage` pass
-/// loop, `heritage.cc:2663`/`2687`): the register space (delay 0) is heritaged before the
-/// `ram`/`stack` spaces (delay 1), so that a later pass's reads link to defs (e.g. a recovered
-/// stack-pointer offset) discovered in an earlier pass. `globaldisjoint` records which spaces
-/// are already in SSA form so each pass only heritages the newly-eligible ones, leaving the
-/// rest free (Ghidra's `globaldisjoint` LocationMap).
-///
-/// This runs the passes back-to-back to completion in a single call, so the result is the same
-/// full SSA the single-pass construction produced — spaces are independent in SSA, so splitting
-/// the rename walk by space group is output-identical. The *payoff* of iterating (interleaving
-/// register heritage with param recovery, then heritaging the stack) belongs to the outer
-/// mainloop, which re-invokes heritage between those actions.
+/// State persists on `f` across calls, so the outer mainloop can interleave param recovery /
+/// simplification between passes (that interleaving is the payoff). Run back-to-back via
+/// [`heritage`] the passes reproduce the full single-pass SSA — spaces are independent in SSA,
+/// so splitting the rename walk by delay group is output-identical.
+pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
+    if f.num_blocks() == 0 {
+        return 0;
+    }
+    let pass = f.heritage_pass;
+    if pass == 0 {
+        // Pass-0 setup, like Ghidra's `splitmanage.split()` / refinement at `pass == 0`: the
+        // cross-width refinement that makes overlapping sub-register accesses uniform width.
+        refine_overlaps(f, dom);
+        normalize_read_size(f);
+    }
+    // Spaces newly eligible this pass: heritaged, delay reached, not yet processed.
+    let active: HashSet<SpaceId> = build_info_list(&f.spaces)
+        .iter()
+        .filter(|i| i.delay <= pass)
+        .filter_map(|i| i.space)
+        .filter(|sp| !f.heritage_done.contains(sp))
+        .collect();
+    f.heritage_pass += 1;
+    if active.is_empty() {
+        return 0;
+    }
+    heritage_spaces(f, dom, &active);
+    f.heritage_done.extend(active.iter().copied());
+    active.len() as u32
+}
+
+/// Build the SSA form for `f` to completion in one call — the convenience driver for the alias
+/// probe and unit tests. Drives [`heritage_pass`] over every delay group back-to-back; the
+/// iterating mainloop instead re-invokes `heritage_pass` one pass at a time so other actions run
+/// between passes.
 pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
-    let nb = f.num_blocks();
-    if nb == 0 {
+    if f.num_blocks() == 0 {
         return;
     }
-    refine_overlaps(f, dom);
-    normalize_read_size(f);
-
-    let infos = build_info_list(&f.spaces);
-    let max_delay = infos.iter().filter(|i| i.is_heritaged()).map(|i| i.delay).max().unwrap_or(0);
-    let mut globaldisjoint: HashSet<SpaceId> = HashSet::new();
-    for pass in 0..=max_delay {
-        // Spaces newly eligible this pass: heritaged, delay reached, not yet processed.
-        let active: HashSet<SpaceId> = infos
-            .iter()
-            .filter(|i| i.delay <= pass)
-            .filter_map(|i| i.space)
-            .filter(|sp| !globaldisjoint.contains(sp))
-            .collect();
-        if active.is_empty() {
-            continue;
-        }
-        heritage_spaces(f, dom, &active);
-        globaldisjoint.extend(active);
+    while !heritage_complete(f) {
+        heritage_pass(f, dom);
     }
 }
 

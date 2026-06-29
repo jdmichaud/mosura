@@ -41,6 +41,14 @@ pub struct Funcdata {
     /// Ghidra `Funcdata::hasTypeRecoveryStarted`: set once `ActionInferTypes` has committed
     /// data-types onto varnodes, gating the pointer-arithmetic rules.
     typerecovery_started: bool,
+    /// Iterating-heritage state (Ghidra's `Heritage` member, `heritage.cc`): the next heritage
+    /// pass index. A space enters SSA construction once `pass >= delay`, so registers (delay 0)
+    /// heritage before `ram`/`stack` (delay 1). Persists across `ActionHeritage` calls so the
+    /// mainloop can interleave param recovery between passes.
+    pub heritage_pass: i32,
+    /// The spaces already brought into SSA form (Ghidra's `globaldisjoint`, by space): a later
+    /// pass heritages only the spaces not yet here, leaving the rest free.
+    pub heritage_done: std::collections::HashSet<super::space::SpaceId>,
 }
 
 impl Funcdata {
@@ -59,6 +67,8 @@ impl Funcdata {
             jumptables: Vec::new(),
             image: Vec::new(),
             typerecovery_started: false,
+            heritage_pass: 0,
+            heritage_done: std::collections::HashSet::new(),
         }
     }
 
