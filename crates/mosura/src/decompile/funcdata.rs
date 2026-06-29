@@ -218,8 +218,14 @@ impl Funcdata {
     }
 
     /// Give `op` a fresh output varnode at `loc` of `size`; returns it. Sets the
-    /// varnode's `def` and the `WRITTEN`/`INSERT` flags.
+    /// varnode's `def` and the `WRITTEN`/`INSERT` flags. If `op` already had an output,
+    /// that varnode is detached (its `def`/`WRITTEN` cleared) — re-pointing a write, as
+    /// Ghidra's `opSetOutput` does, so no varnode is left claiming a stale `def`.
     pub fn new_output(&mut self, op: OpId, size: u32, loc: Address) -> VarnodeId {
+        if let Some(old) = self.ops[op.0 as usize].output.take() {
+            self.varnodes[old.0 as usize].def = None;
+            self.varnodes[old.0 as usize].flags &= !flags::WRITTEN;
+        }
         let v = self.alloc_varnode(size, loc, flags::WRITTEN | flags::INSERT);
         self.varnodes[v.0 as usize].def = Some(op);
         self.ops[op.0 as usize].output = Some(v);
