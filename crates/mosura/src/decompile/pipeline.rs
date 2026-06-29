@@ -30,7 +30,6 @@ impl Action for ActionHeritage {
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         if data.num_blocks() == 0 {
             // First call: one-time setup, then heritage the register group (pass 0).
-            super::stackvars::normalize_call_stack(data);
             // Build the CFG before stack recovery so recover_stack can propagate the stack pointer
             // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
             super::cfg::build_cfg(data);

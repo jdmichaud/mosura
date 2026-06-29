@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 
 use super::funcdata::Funcdata;
+use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceId};
 use super::varnode::VarnodeId;
@@ -50,22 +51,22 @@ fn symbolic_value(f: &Funcdata, o: &super::op::PcodeOp, sval: &HashMap<Loc, i64>
     }
 }
 
-/// Remove the call-mechanism return-address push — the faithful effect of Ghidra's
-/// `ActionStackPtrFlow` (`coreaction.cc`) for a CALL site. The x86 `call` SLEIGH emits
-/// `RSP = RSP - 8; STORE RSP, <next-insn>; CALL`, and the callee's `ret` pops those 8 bytes, so
-/// RSP is net-unchanged across the call (the default prototype marks the stack pointer
-/// `unaffected`). mosura does not trace into the callee, so without this the push survives as a
-/// bogus return-address stack slot that (a) shifts every later frame offset by 8 and (b) drags the
-/// alias boundary down onto itself, spuriously guarding the slot. Drop the push and the
-/// return-address store so RSP is restored across the call.
+/// Detect each CALL's return-address push — the x86 `call` SLEIGH emits
+/// `RSP = RSP - N; STORE RSP, <next-insn>; CALL`. Returns, for every call that has both the push
+/// (`RSP = RSP - N`) and the constant return-address store, the push op and the push amount `N`.
 ///
-/// Runs pre-heritage on the flat op list: the matched ops are marked dead (recover_stack and the
-/// CFG builder skip dead ops), so the stack-offset tracking never sees the -8 and later RSP reads
-/// resolve to the pre-call value.
-pub fn normalize_call_stack(f: &mut Funcdata) {
-    let Some(reg) = f.spaces.by_name("register") else { return };
-    let is_rsp = |v: &VarnodeId, f: &Funcdata| {
-        let vn = f.vn(*v);
+/// [`recover_stack`] uses this to model the call mechanism faithfully (the spirit of Ghidra's
+/// `ActionStackPtrFlow`, `coreaction.cc`): it keeps the return-address store — Ghidra keeps it, and
+/// it survives as `xStack_NN = <retaddr>` when the pushed slot is an aliased mapped local
+/// (`wayoffarray`), or is removed by dead-code otherwise — but neutralizes the push to an identity
+/// COPY *after* converting the store, so the store lands at the real pushed slot while RSP is
+/// net-unchanged across the call (the callee's `ret` pops those `N` bytes; the default prototype
+/// marks the stack pointer `unaffected`).
+fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, i64)> {
+    let mut out = HashMap::new();
+    let Some(reg) = f.spaces.by_name("register") else { return out };
+    let is_rsp = |v: VarnodeId, f: &Funcdata| {
+        let vn = f.vn(v);
         vn.loc.space == reg && vn.loc.offset == RSP
     };
     let calls: Vec<_> = f
@@ -74,55 +75,50 @@ pub fn normalize_call_stack(f: &mut Funcdata) {
         .collect();
     for call in calls {
         let pc = f.op(call).seqnum.pc;
-        let idx = call.0 as usize;
         // Scan backward over the ops emitted by the same `call` instruction for its push/store.
-        let mut store = None;
-        let mut push = None;
-        let mut i = idx;
+        let mut store_found = false;
+        let mut push: Option<(OpId, i64)> = None;
+        let mut i = call.0 as usize;
         while i > 0 {
             i -= 1;
-            let op = super::op::OpId(i as u32);
+            let op = OpId(i as u32);
             if f.op(op).seqnum.pc != pc {
                 break; // left this instruction's micro-ops
             }
             match f.op(op).code() {
                 // the return-address store: STORE [RSP], <constant return address>
                 OpCode::Store
-                    if store.is_none()
-                        && f.op(op).input(1).is_some_and(|a| is_rsp(&a, f))
+                    if !store_found
+                        && f.op(op).input(1).is_some_and(|a| is_rsp(a, f))
                         && f.op(op).input(2).is_some_and(|v| f.vn(v).is_constant()) =>
                 {
-                    store = Some(op);
+                    store_found = true;
                 }
                 // the push: RSP = RSP - <const>
                 OpCode::IntSub
                     if push.is_none()
-                        && f.op(op).output.is_some_and(|o| is_rsp(&o, f))
-                        && f.op(op).input(0).is_some_and(|a| is_rsp(&a, f))
+                        && f.op(op).output.is_some_and(|o| is_rsp(o, f))
+                        && f.op(op).input(0).is_some_and(|a| is_rsp(a, f))
                         && f.op(op).input(1).is_some_and(|c| f.vn(c).is_constant()) =>
                 {
-                    push = Some(op);
+                    let amt = f.vn(f.op(op).input(1).unwrap()).constant_value() as i64;
+                    push = Some((op, amt));
                 }
                 _ => {}
             }
         }
-        if let (Some(store), Some(push)) = (store, push) {
-            // Neutralize the push to an identity COPY (RSP unchanged across the call) and drop the
-            // return-address store. Later reads of RSP propagate through the COPY to the pre-call
-            // value; the store has no output, so destroying it orphans nothing.
-            let base = f.op(push).input(0).unwrap();
-            f.op_set_opcode(push, OpCode::Copy);
-            f.op_set_all_input(push, &[base]);
-            f.op_destroy(store);
+        if let (true, Some(p)) = (store_found, push) {
+            out.insert(call, p);
         }
     }
+    out
 }
 
-/// Rewrite stack-pointer-relative LOAD/STORE into `stack`-space accesses.
-///
-/// PROTOTYPE (#19): CFG-aware — each block's entry stack state is a processed predecessor's exit
-/// state (the pre-heritage analog of the SSA MULTIEQUAL phi-join Ghidra's StackSolver relies on),
-/// so the stack pointer no longer drifts across independent blocks the flat op order interleaves.
+/// Rewrite stack-pointer-relative LOAD/STORE into `stack`-space accesses, propagating the stack
+/// pointer over the CFG: each block's entry stack state is a processed predecessor's exit state (the
+/// pre-heritage analog of the SSA MULTIEQUAL phi-join Ghidra's `StackSolver` relies on), so the
+/// stack pointer no longer drifts across independent blocks the flat op order interleaves. The call
+/// mechanism's return-address push is modelled per [`call_push_restores`].
 pub fn recover_stack(f: &mut Funcdata) {
     let (Some(reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
         return;
@@ -131,6 +127,7 @@ pub fn recover_stack(f: &mut Funcdata) {
     if nblk == 0 {
         return;
     }
+    let call_restores = call_push_restores(f);
     let entry_sval = HashMap::from([((reg, RSP), 0i64)]);
     let mut sval_out: Vec<Option<HashMap<Loc, i64>>> = vec![None; nblk];
 
@@ -181,6 +178,21 @@ pub fn recover_stack(f: &mut Funcdata) {
                             // the loaded value is data, not a stack address
                             sval.remove(&loc_of(f, out));
                             continue;
+                        }
+                    }
+                }
+                OpCode::Call | OpCode::Callind => {
+                    // The return-address store (one of the ops above, already converted to its
+                    // `stack`-space slot) is kept; now neutralize the push to an identity COPY so RSP
+                    // is net-unchanged across the call, and add the push amount back to the tracked
+                    // RSP (modelling the callee's `ret` pop). Done here, after the store conversion,
+                    // so the store lands at the real pushed slot rather than the pre-push one.
+                    if let Some(&(push, amt)) = call_restores.get(&op) {
+                        let base = f.op(push).input(0).unwrap();
+                        f.op_set_opcode(push, OpCode::Copy);
+                        f.op_set_all_input(push, &[base]);
+                        if let Some(v) = sval.get_mut(&(reg, RSP)) {
+                            *v += amt;
                         }
                     }
                 }
