@@ -58,8 +58,20 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
         // solid, so a `PIECE(0, unwritten)` / `PIECE(unwritten, unwritten)` is NOT a real return
         // (else a void function or a 4-byte return gains a spurious 8-byte one).
         OpCode::Piece => f.op(def).input(1).is_some_and(|i| is_realistic(f, i, seen)),
-        // INDIRECT through a call creates a value out of nothing — not a real return
-        OpCode::Indirect => false,
+        // INDIRECT — Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2045).
+        // An *indirect creation* models a call clobber: mosura's `recover_call_effects` builds these
+        // with an indirect-zero (`#0:8`) input, which Ghidra reports as `pop_failkill` (killedbycall —
+        // no value flows out), so the candidate is NOT a real value. But a *passthrough* INDIRECT
+        // (the across-call stack-slot guard, `newIndirectOp`) carries a value THROUGH the call:
+        // Ghidra enters the node and keeps traversing input(0), the value flowing across — and a
+        // return-address storage location is invalid (`pop_fail`).
+        OpCode::Indirect => {
+            if f.vn(vn).is_indirect_creation() || f.vn(vn).is_return_address() {
+                false
+            } else {
+                f.op(def).input(0).is_some_and(|i| is_realistic(f, i, seen))
+            }
+        }
         // arithmetic / LOAD / etc. — a real computed value
         _ => true,
     }
@@ -589,6 +601,58 @@ mod tests {
         let (mut f, call) = call_with(0);
         resolve_call_args(&mut f);
         assert_eq!(f.op(call).num_inputs(), 1, "only the call target remains");
+    }
+
+    /// A CALL `[target, RDI, RSI]` where RDI is a realistic write and RSI flows through an INDIRECT.
+    /// `creation` selects whether that INDIRECT is an indirect *creation* (a killedbycall clobber) or
+    /// a *passthrough* (the across-call stack-slot guard, `newIndirectOp`).
+    fn call_arg_through_indirect(creation: bool) -> (Funcdata, OpId) {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(8, 0x400430);
+        // RDI: a realistic computed write, so the argument prefix starts active.
+        let c0 = f.new_const(8, 0x10);
+        let cp0 = f.new_op(OpCode::Copy, seq, vec![c0]);
+        let rdi = f.new_output(cp0, 8, Address::new(reg, ARG_REGS[0]));
+        // RSI: a value reaching the call through an INDIRECT. For a passthrough, input(0) is the real
+        // value flowing across the call; for a creation, the indirect-zero `#0` placeholder.
+        let ind_in = if creation { f.new_const(8, 0) } else { f.new_const(8, 0x99) };
+        let ind = f.new_op(OpCode::Indirect, seq, vec![ind_in]);
+        let rsi = f.new_output(ind, 8, Address::new(reg, ARG_REGS[1]));
+        if creation {
+            f.vn_mut(rsi).set_indirect_creation();
+        }
+        let call = f.new_op(OpCode::Call, seq, vec![target, rdi, rsi]);
+        f.set_blocks(vec![BlockBasic { ops: vec![cp0, ind, call], ..Default::default() }]);
+        for &op in &[cp0, ind, call] {
+            f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
+        }
+        (f, call)
+    }
+
+    /// Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2052): flow THROUGH a
+    /// call (a passthrough INDIRECT — the across-call stack-slot guard) is entered and its input(0)
+    /// traversed, so a call argument reaching the call through one is a real argument. This is
+    /// loopcomment's dropped 2nd arg: the value loaded from an aliased stack local, guarded across an
+    /// earlier call by a passthrough INDIRECT. Fails if INDIRECT is treated as wholesale unrealistic.
+    #[test]
+    fn arg_through_passthrough_indirect_is_realistic() {
+        let (mut f, call) = call_arg_through_indirect(false);
+        resolve_call_args(&mut f);
+        assert_eq!(f.op(call).num_inputs(), 3, "[target, RDI, RSI] — RSI flows through a passthrough INDIRECT");
+    }
+
+    /// The complementary case: an indirect *creation* (killedbycall clobber, indirect-zero input) is
+    /// a value out of nothing — Ghidra's `pop_failkill` — so the candidate is dropped (no holes after
+    /// the realistic prefix). Guards the creation branch the passthrough fix must not disturb.
+    #[test]
+    fn arg_through_indirect_creation_is_dropped() {
+        let (mut f, call) = call_arg_through_indirect(true);
+        resolve_call_args(&mut f);
+        assert_eq!(f.op(call).num_inputs(), 2, "[target, RDI] — the RSI clobber is not a real argument");
     }
 
     /// A CALL followed by an RAX indirect-creation clobber; `used` decides whether the clobber's
