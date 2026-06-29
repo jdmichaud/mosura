@@ -33,11 +33,41 @@ pub struct Space {
     pub addr_size: u32,
     /// Bytes per addressable unit (1 for byte-addressable spaces).
     pub wordsize: u32,
+    /// Number of heritage passes to delay before this space first enters SSA construction
+    /// (Ghidra's `AddrSpace::getDelay`). Registers heritage at pass 0; `ram`/`stack` wait a
+    /// pass so the stack pointer's reaching def is known first. See [`heritage_delay`].
+    pub delay: i32,
+    /// Number of passes before dead-code removal is allowed on this space (Ghidra's
+    /// `AddrSpace::getDeadcodeDelay`); defaults equal to `delay`.
+    pub deadcodedelay: i32,
 }
 
 impl Space {
     pub fn is_constant(&self) -> bool {
         self.kind == SpaceKind::Constant
+    }
+
+    /// Whether dataflow is traced through this space (Ghidra's `AddrSpace::isHeritaged`).
+    /// On by default; the constant and annotation spaces turn it off (`space.cc`).
+    pub fn is_heritaged(&self) -> bool {
+        matches!(self.kind, SpaceKind::Processor | SpaceKind::Internal | SpaceKind::Spacebase)
+    }
+}
+
+/// The faithful heritage delay for a space, from Ghidra's space construction. The SLEIGH
+/// compiler gives every space `delay = (type == register_space) ? 0 : 1`
+/// (`slgh_compile.cc:2708`), and the constant/unique spaces are built with delay 0
+/// (`space.cc` `ConstantSpace`/`UniqueSpace`). The stack spacebase is built with
+/// `register_delay + 1` (`architecture.cc:565`), which is 1 since registers delay 0.
+/// `deadcodedelay` equals `delay` in all these cases.
+fn heritage_delay(kind: SpaceKind, name: &str) -> i32 {
+    match kind {
+        // ConstantSpace/UniqueSpace are constructed with delay 0; annotation spaces too.
+        SpaceKind::Constant | SpaceKind::Internal | SpaceKind::Special => 0,
+        // register_space → 0, every other processor space (ram) → 1.
+        SpaceKind::Processor => i32::from(name != "register"),
+        // stack = register_delay + 1 = 1.
+        SpaceKind::Spacebase => 1,
     }
 }
 
@@ -68,13 +98,27 @@ impl SpaceManager {
             return id;
         }
         let id = SpaceId(self.spaces.len() as u32);
-        self.spaces.push(Space { id, name: name.to_string(), kind, addr_size, wordsize });
+        let delay = heritage_delay(kind, name);
+        self.spaces.push(Space {
+            id,
+            name: name.to_string(),
+            kind,
+            addr_size,
+            wordsize,
+            delay,
+            deadcodedelay: delay,
+        });
         self.by_name.insert(name.to_string(), id);
         id
     }
 
     pub fn get(&self, id: SpaceId) -> &Space {
         &self.spaces[id.0 as usize]
+    }
+
+    /// Number of registered spaces (Ghidra's `AddrSpaceManager::numSpaces`).
+    pub fn num_spaces(&self) -> usize {
+        self.spaces.len()
     }
 
     pub fn by_name(&self, name: &str) -> Option<SpaceId> {
@@ -98,5 +142,30 @@ pub struct Address {
 impl Address {
     pub fn new(space: SpaceId, offset: u64) -> Address {
         Address { space, offset }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The standard x86-64 space set carries Ghidra's faithful heritage delays: registers
+    /// (and the const/unique spaces) at pass 0, `ram`/`stack` at pass 1, so heritage
+    /// processes registers before the stack. `deadcodedelay` mirrors `delay`.
+    #[test]
+    fn standard_space_delays_match_ghidra() {
+        let m = SpaceManager::standard();
+        for (name, delay, heritaged) in [
+            ("const", 0, false),
+            ("register", 0, true),
+            ("ram", 1, true),
+            ("unique", 0, true),
+            ("stack", 1, true),
+        ] {
+            let s = m.get(m.by_name(name).unwrap());
+            assert_eq!(s.delay, delay, "{name} delay");
+            assert_eq!(s.deadcodedelay, delay, "{name} deadcodedelay");
+            assert_eq!(s.is_heritaged(), heritaged, "{name} heritaged");
+        }
     }
 }

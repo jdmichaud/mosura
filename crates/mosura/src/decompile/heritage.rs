@@ -23,6 +23,57 @@ use super::varnode::VarnodeId;
 /// An SSA location key: `(space, offset, size)`.
 type Loc = (SpaceId, u64, u32);
 
+/// Per-space heritage bookkeeping (Ghidra's `HeritageInfo`, `heritage.cc:179`). Heritage is
+/// an *iterating* process in Ghidra: `heritage()` is called once per pass, and a space only
+/// enters SSA construction once `pass >= delay` (`heritage.cc:2687`). This struct carries the
+/// per-space state across those passes — the delays, how much dead code has been removed, and
+/// (for the stack spacebase) whether call placeholders are present.
+///
+/// This is the scaffolding for the multi-pass rewrite; the current single-pass [`heritage`]
+/// does not yet consult it. Built by [`build_info_list`].
+#[derive(Clone, Debug)]
+pub struct HeritageInfo {
+    /// The space this info tracks, or `None` if the space is not heritaged (Ghidra nulls the
+    /// `space` field for non-heritaged spaces but keeps their delays — `heritage.cc:188`).
+    pub space: Option<SpaceId>,
+    /// Passes to wait before first heritaging this space (`AddrSpace::getDelay`).
+    pub delay: i32,
+    /// Passes to wait before dead-code removal is allowed (`AddrSpace::getDeadcodeDelay`).
+    pub deadcodedelay: i32,
+    /// How many times dead code has been removed from this space (drives the re-heritage
+    /// warning + `bumpDeadcodeDelay`).
+    pub deadremoved: i32,
+    /// True for the stack spacebase: it carries call placeholders that must be cleared each
+    /// pass (`hasCallPlaceholders`, set when `type == IPTR_SPACEBASE`).
+    pub has_call_placeholders: bool,
+}
+
+impl HeritageInfo {
+    /// Build the info for one space (Ghidra's `HeritageInfo::HeritageInfo`, `heritage.cc:179`).
+    fn new(spaces: &super::space::SpaceManager, id: SpaceId) -> HeritageInfo {
+        let s = spaces.get(id);
+        let heritaged = s.is_heritaged();
+        HeritageInfo {
+            space: heritaged.then_some(id),
+            delay: s.delay,
+            deadcodedelay: s.deadcodedelay,
+            deadremoved: 0,
+            has_call_placeholders: heritaged && s.kind == super::space::SpaceKind::Spacebase,
+        }
+    }
+
+    /// Whether this space participates in heritage (`HeritageInfo::isHeritaged`).
+    pub fn is_heritaged(&self) -> bool {
+        self.space.is_some()
+    }
+}
+
+/// Build the per-space heritage info list (Ghidra's `Heritage::buildInfoList`,
+/// `heritage.cc:2650`): one [`HeritageInfo`] per registered space, in space-index order.
+pub fn build_info_list(spaces: &super::space::SpaceManager) -> Vec<HeritageInfo> {
+    (0..spaces.num_spaces()).map(|i| HeritageInfo::new(spaces, SpaceId(i as u32))).collect()
+}
+
 /// The location an input slot reads, or `None` if it is not heritaged (a constant, a
 /// branch/call destination address, or a space annotation).
 fn read_loc(f: &Funcdata, op: OpId, slot: usize) -> Option<Loc> {
@@ -647,5 +698,36 @@ fn rename(
 
     for l in pushed {
         stack.get_mut(&l).unwrap().pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::space::{SpaceKind, SpaceManager};
+
+    /// `build_info_list` produces one faithful [`HeritageInfo`] per space: registers at
+    /// delay 0, `ram`/`stack` at delay 1, the const space non-heritaged, and the stack
+    /// spacebase carrying call placeholders. This is the per-space ordering the multi-pass
+    /// heritage rewrite will consult (`heritage.cc:2687`).
+    #[test]
+    fn info_list_carries_faithful_delays() {
+        let spaces = SpaceManager::standard();
+        let infos = build_info_list(&spaces);
+        assert_eq!(infos.len(), spaces.num_spaces());
+        for (name, delay, heritaged) in
+            [("const", 0, false), ("register", 0, true), ("ram", 1, true), ("stack", 1, true)]
+        {
+            let id = spaces.by_name(name).unwrap();
+            let info = &infos[id.0 as usize];
+            assert_eq!(info.delay, delay, "{name} delay");
+            assert_eq!(info.deadcodedelay, delay, "{name} deadcodedelay");
+            assert_eq!(info.is_heritaged(), heritaged, "{name} heritaged");
+            assert_eq!(
+                info.has_call_placeholders,
+                spaces.get(id).kind == SpaceKind::Spacebase,
+                "{name} call placeholders",
+            );
+        }
     }
 }
