@@ -1021,12 +1021,23 @@ impl<'a> PrintC<'a> {
                     .and_then(|b| self.switch_index(b))
                     .map(|v| self.render_var(v).0)
                     .unwrap_or_else(|| "switchD".to_string());
+                // emit the switch-head block's statements first (Ghidra `emitBlockSwitch`:
+                // `getSwitchBlock()->emit` with `no_branch`) — the head may carry statements that
+                // collapsed into it (e.g. the entry block once its bounds guard is folded away);
+                // the BRANCHIND and the inlined index computation are skipped by `emit_basic`.
+                self.emit_structured(s, comps[0], indent, out);
                 let _ = writeln!(out, "{pad}switch ({idx}) {{");
                 for &case in &comps[1..] {
                     if let (Some(pc), Some(cb)) = (head_pc, entry_basic(s, case)) {
                         let addr = self.f.block_range(cb).map(|(a, _)| a).unwrap_or(0);
-                        for v in self.case_labels(pc, addr) {
-                            let _ = writeln!(out, "{pad}case {v}:");
+                        // the folded-in out-of-range target prints as `default:` (Ghidra
+                        // `BlockSwitch` CaseOrder.isdefault), never a case value
+                        if self.f.switch_defaults.get(&pc) == Some(&addr) {
+                            let _ = writeln!(out, "{pad}default:");
+                        } else {
+                            for v in self.case_labels(pc, addr) {
+                                let _ = writeln!(out, "{pad}case {v}:");
+                            }
                         }
                     }
                     self.emit_structured(s, case, indent + 1, out);

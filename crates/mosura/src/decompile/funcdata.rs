@@ -28,6 +28,13 @@ pub struct Funcdata {
     unique_offset: u64,
     /// Recovered jump-table case targets, keyed by the BRANCHIND instruction address.
     pub switch_targets: std::collections::HashMap<u64, Vec<u64>>,
+    /// The `default` case address per switch (BRANCHIND instruction address → default target),
+    /// recovered by folding the out-of-range guard (Ghidra `JumpTable::defaultBlock`). Only the
+    /// switches whose guard was folded in appear here.
+    pub switch_defaults: std::collections::HashMap<u64, u64>,
+    /// Cached jump-table recovery (Ghidra `Funcdata::jumpvec`): the tables recovered once at build
+    /// time, before the guard is folded away. Empty until [`Self::jump_tables`] is populated.
+    pub jumptables: Vec<super::jumptable::JumpTable>,
     /// The function's loaded memory (address, bytes) chunks — code + data — so jump-table
     /// recovery can read switch tables (Ghidra's LoadImage). Empty for hand-built test functions.
     pub image: Vec<(u64, Vec<u8>)>,
@@ -48,6 +55,8 @@ impl Funcdata {
             create_index: 0,
             unique_offset: 0x10000,
             switch_targets: std::collections::HashMap::new(),
+            switch_defaults: std::collections::HashMap::new(),
+            jumptables: Vec::new(),
             image: Vec::new(),
             typerecovery_started: false,
         }
@@ -102,7 +111,15 @@ impl Funcdata {
     /// (Ghidra `Funcdata::numJumpTables`/`getJumpTable`). Recovered faithfully from the heritaged
     /// graph ([`super::jumptable`]); call after decompilation. The read-back surface the analysis
     /// track's switch analyzer (A6) consumes.
+    ///
+    /// Returns the cached `jumptables` if it was populated at build time (Ghidra recovers once into
+    /// `jumpvec`), since folding the out-of-range guard into the switch (`cfg::build_cfg`) destroys
+    /// the guard the range-recovery would re-derive from. Falls back to on-demand recovery for
+    /// funcdata that never cached (e.g. the analysis track's own graphs).
     pub fn jump_tables(&self) -> Vec<super::jumptable::JumpTable> {
+        if !self.jumptables.is_empty() {
+            return self.jumptables.clone();
+        }
         super::jumptable::recover(self)
     }
 

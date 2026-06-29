@@ -162,6 +162,8 @@ pub fn raw_funcdata_flow_image(
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut switch_defaults: HashMap<u64, u64> = HashMap::new();
+    let mut recovered_tables: Vec<super::jumptable::JumpTable> = Vec::new();
     let mut worklist = vec![entry];
     // Multistage flow recovery — Ghidra `FlowInfo::recoverJumpTables` / `generateOps`: follow flow,
     // then faithfully recover any indirect-branch jump tables on a simplified partial function (the
@@ -205,22 +207,29 @@ pub fn raw_funcdata_flow_image(
         let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned());
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         super::pipeline::decompile(&mut partial);
+        let tables = partial.jump_tables();
         let mut added = false;
-        for jt in partial.jump_tables() {
+        for jt in &tables {
             for &t in &jt.targets {
                 if in_code(t) && !decoded.contains_key(&t) {
                     worklist.push(t);
                     added = true;
                 }
             }
-            switch_targets.insert(jt.op_addr, jt.targets);
+            if let Some(d) = jt.default {
+                switch_defaults.insert(jt.op_addr, d);
+            }
+            switch_targets.insert(jt.op_addr, jt.targets.clone());
         }
+        recovered_tables = tables; // keep the last (stable) recovery for the cache
         if !added {
             break;
         }
     }
     let mut f = build_from_instrs(name, entry, decoded.into_values());
     f.switch_targets = switch_targets;
+    f.switch_defaults = switch_defaults;
+    f.jumptables = recovered_tables;
     f.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
     f
 }

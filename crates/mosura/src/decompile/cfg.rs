@@ -32,6 +32,7 @@ pub fn build_cfg(f: &mut Funcdata) {
         return;
     }
     let switch_targets = f.switch_targets.clone();
+    let switch_defaults = f.switch_defaults.clone();
 
     // first op index per instruction address (branch targets land on instruction starts)
     let mut addr_index: HashMap<u64, usize> = HashMap::new();
@@ -121,6 +122,48 @@ pub fn build_cfg(f: &mut Funcdata) {
             _ => outs.extend(fallthrough),
         }
         blocks[bi].out_edges = outs.into_iter().map(|b| BlockId(b as u32)).collect();
+    }
+
+    // Fold the out-of-range guard into each switch (Ghidra `JumpBasic::foldInOneGuard` +
+    // `Funcdata::pushBranch`). The compiled `if (x < N) goto switch; else goto default` leaves the
+    // bounds-check as a separate CBRANCH block; Ghidra rewrites it so the `default` target becomes
+    // an out-edge of the BRANCHIND itself (rendered `default:` inside the switch) and the guard
+    // block flows unconditionally into the switch. We mirror that: add the default edge to the
+    // switch head, drop the guard's branch to the default, and destroy the now-unconditional
+    // CBRANCH (its comparison becomes dead code).
+    for (&pc, &default_addr) in &switch_defaults {
+        let Some(&didx) = addr_index.get(&default_addr) else { continue };
+        let db = block_of[didx];
+        // the switch head: the block whose terminating BRANCHIND is at `pc`
+        let Some(ind_bi) = (0..nb).find(|&bi| {
+            let last = blocks[bi].ops.last().map(|o| o.0 as usize);
+            last.is_some_and(|l| {
+                f.op(OpId(l as u32)).code() == super::OpCode::Branchind
+                    && f.op(OpId(l as u32)).seqnum.pc.offset == pc
+            })
+        }) else {
+            continue;
+        };
+        if db == ind_bi || !blocks[ind_bi].out_edges.iter().any(|e| e.0 as usize == db) {
+            // add the default as the switch's last out-edge (Ghidra `addBlockToSwitch`)
+            blocks[ind_bi].out_edges.push(BlockId(db as u32));
+        }
+        // rewrite each guard that branched into this switch and to the default (`pushBranch`)
+        for gb in 0..nb {
+            if gb == ind_bi {
+                continue;
+            }
+            let Some(&last) = blocks[gb].ops.last() else { continue };
+            if f.op(last).code() != super::OpCode::Cbranch {
+                continue;
+            }
+            let outs: Vec<usize> = blocks[gb].out_edges.iter().map(|e| e.0 as usize).collect();
+            if outs.len() == 2 && outs.contains(&ind_bi) && outs.contains(&db) {
+                blocks[gb].out_edges = vec![BlockId(ind_bi as u32)];
+                blocks[gb].ops.retain(|&o| o != last);
+                f.op_destroy(last);
+            }
+        }
     }
 
     // A switch inside a loop whose loop body has a *single* exit structures cleanly into

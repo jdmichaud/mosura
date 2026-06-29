@@ -27,6 +27,10 @@ pub struct JumpTable {
     /// The ordered case-target addresses (index → target), as produced by emulating each switch
     /// value through the address calculation.
     pub targets: Vec<u64>,
+    /// The address of the `default` case, if the out-of-range guard's target was folded into the
+    /// switch (Ghidra `JumpTable::defaultBlock`, set by `JumpBasic::foldInOneGuard`). `None` when
+    /// no guard branches directly into the switch.
+    pub default: Option<u64>,
 }
 
 /// Recover every jump table in `f` (Ghidra `Funcdata::recoverJumpTables` over each BRANCHIND).
@@ -63,7 +67,50 @@ fn recover_one(f: &Funcdata, indop: OpId) -> Option<JumpTable> {
         }
         targets.push(t);
     }
-    Some(JumpTable { op_addr: f.op(indop).seqnum.pc.offset, targets })
+    let default = find_default(f, indop, &path);
+    Some(JumpTable { op_addr: f.op(indop).seqnum.pc.offset, targets, default })
+}
+
+/// Ghidra `JumpBasic::foldInOneGuard` geometry: a bounds guard whose in-range edge branches
+/// directly into the switch block has its *other* (out-of-range) edge target as the `default`
+/// case. Find that guard among the switch block's predecessors and return the default address.
+fn find_default(f: &Funcdata, indop: OpId, path: &HashSet<VarnodeId>) -> Option<u64> {
+    let ind_block = f.op(indop).parent?;
+    for &pred in &f.block(ind_block).in_edges {
+        let blk = f.block(pred);
+        if blk.out_edges.len() != 2 {
+            continue; // guard must be a 2-way CBRANCH (`cbranchblock->sizeOut() != 2`)
+        }
+        let Some(&last) = blk.ops.last() else { continue };
+        if f.op(last).code() != OpCode::Cbranch {
+            continue;
+        }
+        // Require a real bounds guard: the compared value (after value-movement) is the switch
+        // path variable. An equality test or unrelated CBRANCH preceding the switch is not folded.
+        let Some(cond) = f.op(last).input(1) else { continue };
+        let Some(cdef) = f.vn(cond).def else { continue };
+        if !matches!(
+            f.op(cdef).code(),
+            OpCode::IntLess | OpCode::IntLessequal | OpCode::IntSless | OpCode::IntSlessequal
+        ) {
+            continue;
+        }
+        let (Some(a), Some(b)) = (f.op(cdef).input(0), f.op(cdef).input(1)) else { continue };
+        let raw = if f.vn(b).is_constant() {
+            a
+        } else if f.vn(a).is_constant() {
+            b
+        } else {
+            continue;
+        };
+        if !path.contains(&normalize(f, raw)) {
+            continue;
+        }
+        // `guardtarget = cbranchblock->getOut(1-indpath)`: the edge that does not enter the switch.
+        let other = blk.out_edges.iter().copied().find(|&o| o != ind_block)?;
+        return f.block(other).ops.first().map(|&op| f.op(op).seqnum.pc.offset);
+    }
+    None
 }
 
 /// Whether `addr` lies within some loaded chunk (a backstop sanity check on recovered targets).
