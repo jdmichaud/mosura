@@ -48,7 +48,7 @@ pub fn eval_const(opcode: OpCode, inputs: &[(u64, u32)], out_size: u32) -> Optio
         Int2comp => a(0).wrapping_neg(),
         IntZext => a(0),
         IntSext => sa(0),
-        Subpiece => a(0) >> (a(1) * 8),
+        Subpiece => a(0).checked_shr(a(1).saturating_mul(8) as u32).unwrap_or(0),
         IntEqual => (a(0) == a(1)) as u64,
         IntNotequal => (a(0) != a(1)) as u64,
         IntLess => (a(0) < a(1)) as u64,
@@ -730,6 +730,126 @@ impl Rule for RuleSubExtComm {
         data.op_remove_input(op, 1);
         data.op_set_opcode(op, ec);
         data.op_set_input(op, 0, invn);
+        1
+    }
+}
+
+/// `RuleHumptyDumpty` (`ruleaction.cc:5214`): simplify break-and-rejoin —
+/// `concat(sub(V,c), sub(V,0)) => V`, and the partial variant `concat(sub(V,c), sub(V,d)) =>
+/// sub(V,d)`. This rejoins the SUBPIECE pieces that heritage refinement (`refine_overlaps`) splits
+/// an overlapping SIMD/sub-register write into — the high `PIECE` input is `sub(V,c)`, the low is
+/// `sub(V,d)`, and when they tile `V` exactly the whole thing collapses back to `V`.
+pub struct RuleHumptyDumpty;
+
+impl Rule for RuleHumptyDumpty {
+    fn name(&self) -> &str {
+        "humptydumpty"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // PIECE in0 is the most-significant ("put together") part, in1 the least.
+        let (Some(vn1), Some(vn2)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        let (Some(sub1), Some(sub2)) = (data.vn(vn1).def, data.vn(vn2).def) else {
+            return 0;
+        };
+        if data.op(sub1).code() != OpCode::Subpiece || data.op(sub2).code() != OpCode::Subpiece {
+            return 0;
+        }
+        let (Some(root), Some(root2)) = (data.op(sub1).input(0), data.op(sub2).input(0)) else {
+            return 0;
+        };
+        if root != root2 {
+            return 0; // pieces of the same whole
+        }
+        let (Some(pos1v), Some(pos2v)) = (data.op(sub1).input(1), data.op(sub2).input(1)) else {
+            return 0;
+        };
+        if !data.vn(pos1v).is_constant() || !data.vn(pos2v).is_constant() {
+            return 0;
+        }
+        let pos1 = data.vn(pos1v).constant_value();
+        let pos2 = data.vn(pos2v).constant_value();
+        let size1 = data.vn(vn1).size as u64;
+        let size2 = data.vn(vn2).size as u64;
+        if pos1 != pos2 + size2 {
+            return 0; // pieces do not match up
+        }
+        if pos2 == 0 && size1 + size2 == data.vn(root).size as u64 {
+            // pieced together the whole thing → COPY(root)
+            data.op_remove_input(op, 1);
+            data.op_set_input(op, 0, root);
+            data.op_set_opcode(op, OpCode::Copy);
+        } else {
+            // pieced together a larger part of the whole → SUBPIECE(root, pos2)
+            let pos2_size = data.vn(pos2v).size;
+            data.op_set_input(op, 0, root);
+            let c = data.new_const(pos2_size, pos2);
+            data.op_set_input(op, 1, c);
+            data.op_set_opcode(op, OpCode::Subpiece);
+        }
+        1
+    }
+}
+
+/// `RuleDumptyHump` (`ruleaction.cc:5265`): simplify join-then-break — `sub(concat(V,W), c)` draws
+/// from whichever piece the slice falls in: `sub(concat(V,W), 0) => W`, `sub(concat(V,W), |W|) => V`,
+/// or `sub(V, c)` for an interior slice. This is what cleans up a SUBPIECE (or a cast, a low slice)
+/// taken of a PIECE that heritage refinement built — e.g. `(uint4)CONCAT(hi, value) => value` for a
+/// SIMD scalar move through a vector register.
+pub struct RuleDumptyHump;
+
+impl Rule for RuleDumptyHump {
+    fn name(&self) -> &str {
+        "dumptyhump"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(base) = data.op(op).input(0) else { return 0 };
+        let Some(pieceop) = data.vn(base).def else { return 0 };
+        if data.op(pieceop).code() != OpCode::Piece {
+            return 0;
+        }
+        let Some(offv) = data.op(op).input(1) else { return 0 };
+        if !data.vn(offv).is_constant() {
+            return 0;
+        }
+        let mut offset = data.vn(offv).constant_value();
+        let outsize = data.vn(data.op(op).output.unwrap()).size as u64;
+        // PIECE in0 = high part, in1 = low part.
+        let (Some(vn1), Some(vn2)) = (data.op(pieceop).input(0), data.op(pieceop).input(1)) else {
+            return 0;
+        };
+        let v2size = data.vn(vn2).size as u64;
+        let vn = if offset < v2size {
+            // the slice draws from the low piece
+            if offset + outsize > v2size {
+                return 0; // ... and also from the high piece — can't simplify
+            }
+            vn2
+        } else {
+            offset -= v2size; // offset relative to the high piece
+            vn1
+        };
+        if data.vn(vn).is_free() && !data.vn(vn).is_constant() {
+            return 0;
+        }
+        if offset == 0 && outsize == data.vn(vn).size as u64 {
+            // eliminate SUBPIECE and PIECE altogether → COPY(vn)
+            data.op_remove_input(op, 1);
+            data.op_set_input(op, 0, vn);
+            data.op_set_opcode(op, OpCode::Copy);
+        } else {
+            // eliminate the PIECE, adjust the SUBPIECE offset → SUBPIECE(vn, offset)
+            data.op_set_input(op, 0, vn);
+            let c = data.new_const(4, offset);
+            data.op_set_input(op, 1, c);
+        }
         1
     }
 }

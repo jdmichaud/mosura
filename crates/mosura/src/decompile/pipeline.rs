@@ -7,8 +7,9 @@ use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleIdempotent, RuleMultiCollapse,
-    RuleMultNegOne, RuleSubExtComm, RuleMultMult, RulePropagateCopy, RuleRangeAnd, RuleSborrow,
-    RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
+    RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty, RuleDumptyHump,
+    RulePropagateCopy, RuleRangeAnd,
+    RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
 /// Build the CFG, dominators and SSA form (Ghidra's `ActionHeritage`, plus the CFG
@@ -61,6 +62,8 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleTermOrder)
         .with(RuleSelectCse)
         .with(RuleSubExtComm)
+        .with(RuleHumptyDumpty)
+        .with(RuleDumptyHump)
         .with(RuleIdempotent)
         .with(RuleConstFold)
         .with(RuleCollectTerms)

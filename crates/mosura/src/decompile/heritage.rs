@@ -138,12 +138,318 @@ fn normalize_read_size(f: &mut Funcdata) {
     }
 }
 
+/// `Heritage::remove13Refinement` (`heritage.cc:1857`): a 4-byte span split 1+3 or 3+1 is almost
+/// always artificial, so merge it back to a single 4-byte piece.
+fn remove13_refinement(refine: &mut [u32]) {
+    if refine.is_empty() {
+        return;
+    }
+    let mut pos = 0usize;
+    let mut lastsize = refine[0] as usize;
+    pos += lastsize;
+    while pos < refine.len() {
+        let cursize = refine[pos] as usize;
+        if cursize == 0 {
+            break;
+        }
+        if (lastsize == 1 && cursize == 3) || (lastsize == 3 && cursize == 1) {
+            refine[pos - lastsize] = 4;
+            lastsize = 4;
+            pos += cursize;
+        } else {
+            lastsize = cursize;
+            pos += lastsize;
+        }
+    }
+}
+
+/// `Heritage::splitByRefinement` (`heritage.cc:1733`): the partition pieces (in address order)
+/// covering `[off, off+sz)` of a range based at `base`, or empty if the access already fits one
+/// piece. `part[i]` is the size of the piece starting `i` bytes into the range.
+fn split_by_refinement(base: u64, part: &[u32], off: u64, sz: u32) -> Vec<(u64, u32)> {
+    let mut pieces = Vec::new();
+    let mut cur = off;
+    let first = part[(cur - base) as usize];
+    if sz <= first {
+        return pieces; // already refined — a single piece covers it
+    }
+    let mut rem = sz;
+    pieces.push((cur, first));
+    rem -= first;
+    cur += first as u64;
+    while rem > 0 {
+        let mut c = part[(cur - base) as usize];
+        if c > rem {
+            c = rem; // final piece
+        }
+        pieces.push((cur, c));
+        rem -= c;
+        cur += c as u64;
+    }
+    pieces
+}
+
+/// Ghidra heritage *refinement* (`heritage.cc`: `refinement`/`buildRefinement`/`splitByRefinement`/
+/// `refineRead`/`refineWrite`/`concatPieces`/`splitPieces`). A pre-SSA pass run over the register
+/// space: in a range that no single *write* covers — so SSA cannot link it as one variable, e.g. a
+/// SIMD register written in 4-byte `movaps` lanes but read as an 8-byte float — split every
+/// overlapping access onto a common byte partition so each piece links cleanly. A free read wider
+/// than its piece becomes a `PIECE` (CONCAT) of piece reads; a write wider than its piece becomes
+/// the source of `SUBPIECE`s, one per piece. [`super::rules::RuleHumptyDumpty`] later rejoins
+/// `CONCAT(SUB(V,hi), SUB(V,lo))` back to `V`.
+///
+/// Fires only where Ghidra's guard holds (`placeMultiequals`, `heritage.cc:2610`: range `size > 4`
+/// and the largest *write* in the range is smaller than the range), so ordinary aligned
+/// sub-register access (EAX of RAX, where the wide write covers the range) is untouched and most
+/// functions see no change.
+pub fn refine_overlaps(f: &mut Funcdata) {
+    let Some(reg) = f.spaces.by_name("register") else { return };
+    // The vector (XMM/YMM/ZMM) register file begins at register offset 0x1200; everything below it
+    // (GP/flags/segment/x87) is scalar. Lane refinement is needed only for these *laned* registers
+    // (Ghidra's `LanedRegister`/`ActionLaneDivide` model) — `movaps`/`xorps` write them in 4-byte
+    // lanes while floats read 8 bytes. Restricting to them keeps the existing `normalize_read_size`
+    // path (and the whole scalar SSA) untouched, so the change is a no-op outside SIMD code.
+    const XMM_BASE: u64 = 0x1200;
+    let is_laned = |off: u64| off >= XMM_BASE;
+    // 1. Collect every laned-register access (free reads as (op,slot); writes as op outputs).
+    struct Acc {
+        op: OpId,
+        is_write: bool,
+        off: u64,
+        size: u32,
+    }
+    let mut acc: Vec<Acc> = Vec::new();
+    for b in 0..f.num_blocks() {
+        for op in f.blocks()[b].ops.clone() {
+            for slot in 0..f.op(op).num_inputs() {
+                if let Some((sp, off, sz)) = read_loc(f, op, slot) {
+                    if sp == reg && is_laned(off) {
+                        acc.push(Acc { op, is_write: false, off, size: sz });
+                    }
+                }
+            }
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if sp == reg && is_laned(off) {
+                    acc.push(Acc { op, is_write: true, off, size: sz });
+                }
+            }
+        }
+    }
+    if acc.is_empty() {
+        return;
+    }
+    // 2. Union overlapping [off, off+size) intervals into the disjoint cover (Ghidra
+    //    `LocationMap::add`): two accesses share a range iff their byte intervals overlap (a merely
+    //    adjacent access starts a new range).
+    let mut ivs: Vec<(u64, u64)> = acc.iter().map(|a| (a.off, a.off + a.size as u64)).collect();
+    ivs.sort_unstable();
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for (s, e) in ivs {
+        match ranges.last_mut() {
+            Some(last) if s < last.1 => {
+                if e > last.1 {
+                    last.1 = e;
+                }
+            }
+            _ => ranges.push((s, e)),
+        }
+    }
+    // 3. Per range, classify: `Refine` (a partition — no single write covers it, Ghidra's
+    //    `placeMultiequals` guard `size > 4 && max_write < size`), or `Normalize` (a single write
+    //    of the whole range exists, so sub-reads at any offset are `SUBPIECE`s of it — Ghidra's
+    //    `guard`/`normalizeReadSize` keyed to the *range* base, which links a high-lane read like
+    //    `XMM_Qa[4,4]` to the 8-byte write it sub-reads). `mixed_at_base` flags a base offset
+    //    written at more than one width, the case the offset-keyed `normalize_read_size` skips.
+    enum Mode {
+        Refine(Vec<u32>),
+        Normalize { size: u32, mixed_at_base: bool },
+        Skip,
+    }
+    let modes: Vec<Mode> = ranges
+        .iter()
+        .map(|&(base, end)| {
+            let size = (end - base) as usize;
+            let writes_at_base: std::collections::HashSet<u32> = acc
+                .iter()
+                .filter(|a| a.is_write && a.off == base)
+                .map(|a| a.size)
+                .collect();
+            let max_write = acc
+                .iter()
+                .filter(|a| a.is_write && a.off >= base && a.off + a.size as u64 <= end)
+                .map(|a| a.size as usize)
+                .max()
+                .unwrap_or(0);
+            if size > 4 && max_write < size {
+                // buildRefinement: mark each access's start and end boundary.
+                let mut refine = vec![0u32; size + 1];
+                for a in acc.iter().filter(|a| a.off >= base && a.off + a.size as u64 <= end) {
+                    refine[(a.off - base) as usize] = 1;
+                    refine[(a.off - base) as usize + a.size as usize] = 1;
+                }
+                // Convert boundary marks to piece sizes; bail if there is no internal boundary.
+                let mut lastpos = 0usize;
+                for curpos in 1..size {
+                    if refine[curpos] != 0 {
+                        refine[lastpos] = (curpos - lastpos) as u32;
+                        lastpos = curpos;
+                    }
+                }
+                if lastpos != 0 {
+                    refine[lastpos] = (size - lastpos) as u32;
+                    refine.truncate(size); // drop the fencepost
+                    remove13_refinement(&mut refine);
+                    return Mode::Refine(refine);
+                }
+            }
+            // A range a single write fully covers: sub-reads/writes are normalized to the whole
+            // (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). `mixed_at_base` flags a
+            // base written at more than one width (the SIMD lane-clear+narrow-write shape), the case
+            // the offset-keyed `normalize_read_size` skips.
+            if size > 1 && max_write == size {
+                return Mode::Normalize { size: size as u32, mixed_at_base: writes_at_base.len() > 1 };
+            }
+            Mode::Skip
+        })
+        .collect();
+    if modes.iter().all(|m| matches!(m, Mode::Skip)) {
+        return;
+    }
+    let range_of = |off: u64| ranges.iter().position(|&(b, e)| off >= b && off < e);
+    // 4. Rewrite each block: a CONCAT before a split read, SUBPIECEs after a split write, or a
+    //    SUBPIECE before a sub-read of a fully-covered range.
+    for b in 0..f.num_blocks() {
+        let ops = f.blocks()[b].ops.clone();
+        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
+        let bid = super::block::BlockId(b as u32);
+        for op in ops {
+            let seq = f.op(op).seqnum;
+            for slot in 0..f.op(op).num_inputs() {
+                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
+                if sp != reg {
+                    continue;
+                }
+                let Some(ri) = range_of(off) else { continue };
+                let base = ranges[ri].0;
+                match &modes[ri] {
+                    Mode::Refine(part) => {
+                        let pieces = split_by_refinement(base, part, off, sz);
+                        if pieces.is_empty() {
+                            continue;
+                        }
+                        // refineRead + concatPieces (little-endian): pieces are in address order, so
+                        // each next (higher) piece is the more-significant PIECE input.
+                        let pvns: Vec<VarnodeId> = pieces
+                            .iter()
+                            .map(|&(po, ps)| f.new_varnode(ps, super::space::Address::new(reg, po)))
+                            .collect();
+                        let mut preexist = pvns[0];
+                        for (i, &vn) in pvns.iter().enumerate().skip(1) {
+                            let pieceop = f.new_op(OpCode::Piece, seq, vec![vn, preexist]);
+                            f.op_mut(pieceop).parent = Some(bid);
+                            let outsz = if i == pvns.len() - 1 {
+                                sz
+                            } else {
+                                f.vn(preexist).size + f.vn(vn).size
+                            };
+                            preexist = f.new_output_unique(pieceop, outsz);
+                            new_ops.push(pieceop);
+                        }
+                        f.op_set_input(op, slot, preexist);
+                    }
+                    &Mode::Normalize { size, mixed_at_base } => {
+                        // normalizeReadSize: a read narrower than the covering range becomes a
+                        // SUBPIECE of the whole. The offset-keyed `normalize_read_size` already
+                        // handles a single-width base read; do the cases it can't — a high-lane
+                        // read (`off > base`) or a base read whose location is written at mixed
+                        // widths. Skip a ZEXT/SEXT whose own output *is* the whole range (its
+                        // input read would become a circular SUBPIECE of its own result).
+                        if sz >= size || (off == base && !mixed_at_base) {
+                            continue;
+                        }
+                        if matches!(f.op(op).code(), OpCode::IntZext | OpCode::IntSext)
+                            && write_loc(f, op) == Some((reg, base, size))
+                        {
+                            continue;
+                        }
+                        let whole = f.new_varnode(size, super::space::Address::new(reg, base));
+                        let cst = f.new_const(4, off - base);
+                        let subop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
+                        f.op_mut(subop).parent = Some(bid);
+                        let subout = f.new_output_unique(subop, sz);
+                        new_ops.push(subop);
+                        f.op_set_input(op, slot, subout);
+                    }
+                    Mode::Skip => {}
+                }
+            }
+            // Writes: a refined write splits into SUBPIECEs after the op; a partial write into a
+            // covered (`Normalize`) range is widened by `normalizeWriteSize` so it reads back the
+            // surrounding bytes and PIECEs the new whole. `after` ops are spliced after the op.
+            let mut after: Vec<OpId> = Vec::new();
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if sp == reg {
+                    if let Some(ri) = range_of(off) {
+                        let base = ranges[ri].0;
+                        match &modes[ri] {
+                            Mode::Refine(part) => {
+                                let pieces = split_by_refinement(base, part, off, sz);
+                                if !pieces.is_empty() {
+                                    // refineWrite + splitPieces (little-endian): the op writes a
+                                    // temp, each piece is a SUBPIECE of it at its byte offset.
+                                    let temp = f.new_output_unique(op, sz);
+                                    for &(po, ps) in &pieces {
+                                        let cst = f.new_const(4, po - off);
+                                        let subop = f.new_op(OpCode::Subpiece, seq, vec![temp, cst]);
+                                        f.op_mut(subop).parent = Some(bid);
+                                        f.new_output(subop, ps, super::space::Address::new(reg, po));
+                                        after.push(subop);
+                                    }
+                                }
+                            }
+                            &Mode::Normalize { size, mixed_at_base } => {
+                                // normalizeWriteSize (off == base / overlap 0 case): a partial write
+                                // low in a covered range becomes `PIECE(SUB(old_whole, sz), value)`,
+                                // pulling the high bytes from the value previously in the range.
+                                // Gated on a mixed-width base (the SIMD partial-overwrite shape) so
+                                // ordinary sub-register writes are untouched.
+                                let mostsig = size - sz;
+                                if mixed_at_base && off == base && mostsig > 0 {
+                                    let smalltemp = f.new_output_unique(op, sz);
+                                    // read the old whole-range value and take its high bytes
+                                    let bigread =
+                                        f.new_varnode(size, super::space::Address::new(reg, base));
+                                    let cst = f.new_const(4, sz as u64);
+                                    let subop = f.new_op(OpCode::Subpiece, seq, vec![bigread, cst]);
+                                    f.op_mut(subop).parent = Some(bid);
+                                    let mostvn = f.new_output_unique(subop, mostsig);
+                                    new_ops.push(subop); // before the write
+                                    // PIECE(high old bytes, written low bytes) → the new whole write
+                                    let pieceop = f.new_op(OpCode::Piece, seq, vec![mostvn, smalltemp]);
+                                    f.op_mut(pieceop).parent = Some(bid);
+                                    f.new_output(pieceop, size, super::space::Address::new(reg, base));
+                                    after.push(pieceop);
+                                }
+                            }
+                            Mode::Skip => {}
+                        }
+                    }
+                }
+            }
+            new_ops.push(op);
+            new_ops.extend(after);
+        }
+        f.set_block_ops(bid, new_ops);
+    }
+}
+
 /// Build the SSA form for `f` using the dominator info `dom`.
 pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     let nb = f.num_blocks();
     if nb == 0 {
         return;
     }
+    refine_overlaps(f);
     normalize_read_size(f);
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global

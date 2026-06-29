@@ -348,8 +348,10 @@ mod tests {
         let mut f = super::raw_funcdata_flow_image(&spec, "func", &chunks, dt.chunks[0].offset, &ctx);
         crate::decompile::pipeline::decompile(&mut f);
         let c = crate::decompile::printc::print_c(&f);
-        // the float multiply is returned (XMM0 low lane), not an empty `return;`
-        assert!(c.contains('*') && c.contains("return ("), "float return recovered:\n{c}");
+        // the float multiply is returned (XMM0 low lane), not an empty `return;`. After heritage
+        // refinement the 16-byte XMM is rebuilt as `CONCAT(0, mul)` (Ghidra's `axVar1._0_8_`), so
+        // assert the multiply is present and the function is not void rather than a literal prefix.
+        assert!(c.contains('*') && !c.contains("return;"), "float return recovered:\n{c}");
     }
 
     #[test]

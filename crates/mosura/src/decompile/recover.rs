@@ -49,9 +49,17 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
         }
         // a join is realistic if any incoming value is
         OpCode::Multiequal => f.op(def).inrefs.clone().iter().any(|&i| is_realistic(f, i, seen)),
+        // a CONCAT — heritage refinement (`refine_overlaps`) splits a free wide read into a `PIECE`
+        // of its lanes, so an unwritten passthrough register becomes `PIECE(hi, lo)`. The returned
+        // value lives in the least-significant lane (little-endian); the high lane is just fill (a
+        // zero-extend or a leftover). Ghidra's `AncestorRealistic::enterNode` (`funcdata_varnode.cc`)
+        // descends the offset-0 PIECE through its low piece (slot 1) rather than treating the join as
+        // solid, so a `PIECE(0, unwritten)` / `PIECE(unwritten, unwritten)` is NOT a real return
+        // (else a void function or a 4-byte return gains a spurious 8-byte one).
+        OpCode::Piece => f.op(def).input(1).is_some_and(|i| is_realistic(f, i, seen)),
         // INDIRECT through a call creates a value out of nothing — not a real return
         OpCode::Indirect => false,
-        // arithmetic / LOAD / PIECE / etc. — a real computed value
+        // arithmetic / LOAD / etc. — a real computed value
         _ => true,
     }
 }
@@ -71,16 +79,29 @@ pub fn recover_return(f: &mut Funcdata) {
     }
 }
 
+/// True when `vn` is an 8-byte value built as `PIECE(constant_high, low)` — a narrow value sitting
+/// in a zeroed (or otherwise constant-padded) wide register. The genuine return is the low part, so
+/// the wide candidate should defer to the narrower one (Ghidra's output prototype recovers the
+/// minimal covering storage — a `float` return is `XMM0:4`, not the zero-extended `XMM0:8`).
+fn is_const_padded_piece(f: &Funcdata, vn: VarnodeId) -> bool {
+    let Some(def) = f.vn(vn).def else { return false };
+    if f.op(def).code() != OpCode::Piece {
+        return false;
+    }
+    f.op(def).input(0).is_some_and(|hi| f.vn(hi).is_constant())
+}
+
 /// Keep only the realistic return-value candidate on each RETURN (preferring RAX over XMM0
 /// when both are realistic, as a function returns one value). Runs post-heritage.
 pub fn resolve_return(f: &mut Funcdata) {
     let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
         let n = f.op(ret).num_inputs();
-        // slot 0 is the return address; slots 1.. are the candidate return registers
+        // slot 0 is the return address; slots 1.. are the candidate return registers. Skip a wide
+        // candidate that is just a constant-padded narrow value so the narrow candidate wins.
         let keep = (1..n).find(|&slot| {
             let v = f.op(ret).input(slot).unwrap();
-            is_realistic(f, v, &mut HashSet::new())
+            is_realistic(f, v, &mut HashSet::new()) && !is_const_padded_piece(f, v)
         });
         for slot in (1..n).rev() {
             if Some(slot) != keep {

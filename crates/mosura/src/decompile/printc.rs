@@ -798,6 +798,14 @@ impl<'a> PrintC<'a> {
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
                 (format!("(*(code *){tgt})({})", args.join(", ")), 16)
             }
+            // PIECE (CONCAT) — heritage refinement / Ghidra's `guard` rejoin two pieces; printed
+            // functionally as `CONCAT<s0><s1>(hi, lo)` (`TypeOpPiece::getOperatorName`, `typeop.cc`).
+            OpCode::Piece => {
+                let (s0, s1) = (self.f.vn(a(0)).size, self.f.vn(a(1)).size);
+                let hi = self.render_var(a(0)).0;
+                let lo = self.render_var(a(1)).0;
+                (format!("CONCAT{s0}{s1}({hi},{lo})"), 16)
+            }
             other => (format!("{}(...)", other.name()), 16),
         }
     }
