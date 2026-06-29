@@ -49,6 +49,16 @@ pub struct Funcdata {
     /// The spaces already brought into SSA form (Ghidra's `globaldisjoint`, by space): a later
     /// pass heritages only the spaces not yet here, leaving the rest free.
     pub heritage_done: std::collections::HashSet<super::space::SpaceId>,
+    /// Ghidra `Funcdata::activeoutput` (the function's return-value trials): the [`ParamActive`]
+    /// recovering which return register actually holds a returned value. Set up + committed by
+    /// `recover::resolve_return`; `None` until first invoked and again after it commits
+    /// (`clearActiveOutput`). Persisting it lets the trial decision DEFER across heritage passes.
+    pub active_output: Option<super::fspec::ParamActive>,
+    /// Ghidra `FuncCallSpecs::activeinput`, one per CALL (keyed by the CALL op): the [`ParamActive`]
+    /// recovering that sub-function's argument registers. Set up + committed by
+    /// `recover::resolve_call_args`; an entry is removed once its trials commit
+    /// (`clearActiveInput`). Persisting it lets the prune DEFER instead of committing greedily.
+    pub active_inputs: std::collections::HashMap<OpId, super::fspec::ParamActive>,
 }
 
 impl Funcdata {
@@ -69,6 +79,8 @@ impl Funcdata {
             typerecovery_started: false,
             heritage_pass: 0,
             heritage_done: std::collections::HashSet::new(),
+            active_output: None,
+            active_inputs: std::collections::HashMap::new(),
         }
     }
 

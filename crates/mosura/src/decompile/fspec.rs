@@ -626,6 +626,11 @@ pub struct ParamTrial {
     pub size: u32,
     /// Formal slot for ordering (filled by `fillin_map`); the matched entry's group.
     pub slot: u32,
+    /// The CALL/RETURN input-varnode index this trial corresponds to — Ghidra's `ParamTrial::slot`
+    /// (fspec.hh:229, assigned by `ParamActive::registerTrial` from `slotbase`). Set by the
+    /// call/return trial recovery in `recover.rs`; the `recover_input_params` path (which maps input
+    /// varnodes, not op slots) leaves it 0 and orders by `slot`/group instead.
+    pub op_slot: u32,
     /// Index of the matched [`ParamEntry`] in the list, once `find_entry` succeeds.
     pub entry: Option<usize>,
     pub flags: u32,
@@ -633,7 +638,7 @@ pub struct ParamTrial {
 
 impl ParamTrial {
     pub fn new(addr: Address, size: u32) -> ParamTrial {
-        ParamTrial { addr, size, slot: 0, entry: None, flags: 0 }
+        ParamTrial { addr, size, slot: 0, op_slot: 0, entry: None, flags: 0 }
     }
     pub fn is_active(&self) -> bool {
         self.flags & trial_flags::ACTIVE != 0
@@ -678,15 +683,48 @@ pub struct ParamActive {
     /// True when recovering a sub-function CALL's parameters (vs. this function's own inputs);
     /// gates the stack-reuse special case in `force_inactive_chain`.
     pub is_recover_subcall: bool,
+    /// Ghidra `ParamActive::numpasses` (fspec.hh:289): how many evaluation passes have completed.
+    numpasses: i32,
+    /// Ghidra `ParamActive::maxpass` (fspec.hh:290): passes to make before assuming all trials are
+    /// seen. The structural commit (`build_*_from_trials`) is deferred until `numpasses > maxpass`,
+    /// so trials accumulate across heritage/simplification passes instead of being pruned greedily.
+    maxpass: i32,
+    /// Ghidra `ParamActive::isfullychecked` (fspec.hh:291): all trials examined, no new ones expected.
+    isfullychecked: bool,
 }
 
 impl ParamActive {
     pub fn new(reg_space: Option<SpaceId>) -> ParamActive {
-        ParamActive { trial: Vec::new(), reg_space, is_recover_subcall: false }
+        ParamActive { trial: Vec::new(), reg_space, is_recover_subcall: false, numpasses: 0, maxpass: 0, isfullychecked: false }
     }
 
     pub fn num_trials(&self) -> usize {
         self.trial.len()
+    }
+
+    /// Ghidra `ParamActive::getNumPasses` (fspec.hh:312).
+    pub fn get_num_passes(&self) -> i32 {
+        self.numpasses
+    }
+    /// Ghidra `ParamActive::getMaxPass` (fspec.hh:313).
+    pub fn get_max_pass(&self) -> i32 {
+        self.maxpass
+    }
+    /// Ghidra `ParamActive::setMaxPass` (fspec.hh:314).
+    pub fn set_max_pass(&mut self, val: i32) {
+        self.maxpass = val;
+    }
+    /// Ghidra `ParamActive::finishPass` (fspec.hh:315): record that an evaluation pass completed.
+    pub fn finish_pass(&mut self) {
+        self.numpasses += 1;
+    }
+    /// Ghidra `ParamActive::isFullyChecked` (fspec.hh:308).
+    pub fn is_fully_checked(&self) -> bool {
+        self.isfullychecked
+    }
+    /// Ghidra `ParamActive::markFullyChecked` (fspec.hh:309).
+    pub fn mark_fully_checked(&mut self) {
+        self.isfullychecked = true;
     }
 
     /// Ghidra `ParamActive::registerTrial` (fspec.cc:1963): add a trial, returning its index. A
