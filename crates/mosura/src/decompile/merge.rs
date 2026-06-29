@@ -141,10 +141,24 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
             }
             let mut class_list: Vec<Vec<VarnodeId>> = classes.into_values().collect();
             class_list.sort_by_key(|c| c[0]);
+            // The interference test must compare the WHOLE HighVariable each storage member belongs
+            // to, not just the same-storage members — Ghidra's `HighVariable::updateInternalCover`
+            // (variable.cc) unions the covers of *all* member Varnodes, so merging two same-storage
+            // values transitively merges their whole HighVariables and interferes if any pair of
+            // members does. (pointercmp: the bound `param_1+0x18` shares RAX with the iterator's
+            // init value, whose HighVariable also holds the stack-slot phi that is live across the
+            // compare — checking only the RAX members missed that overlap and unified them into the
+            // bogus `pStack_10 < pStack_10`.)
+            let full = full_members_by_rep(f, h, &covers);
+            let empty: Vec<VarnodeId> = Vec::new();
             let mut merged = false;
             'pair: for i in 0..class_list.len() {
                 for j in (i + 1)..class_list.len() {
-                    if !classes_interfere(&class_list[i], &class_list[j], &covers) {
+                    let rep_i = h.high(class_list[i][0]);
+                    let rep_j = h.high(class_list[j][0]);
+                    let fi = full.get(&rep_i).unwrap_or(&empty);
+                    let fj = full.get(&rep_j).unwrap_or(&empty);
+                    if !classes_interfere(fi, fj, &covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
                         merged = true;
                         break 'pair;
@@ -158,11 +172,29 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
     }
 }
 
+/// Map each current HighVariable representative to *all* its member Varnodes that have a cover —
+/// the membership over which interference is tested (Ghidra's `HighVariable::inst`).
+fn full_members_by_rep(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    covers: &HashMap<VarnodeId, Cover>,
+) -> HashMap<u32, Vec<VarnodeId>> {
+    let mut full: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        if covers.contains_key(&v) {
+            let rep = h.high(v);
+            full.entry(rep).or_default().push(v);
+        }
+    }
+    full
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decompile::space::{Address, SpaceManager};
-    use crate::decompile::{BlockBasic, Funcdata, OpCode, SeqNum};
+    use crate::decompile::{BlockBasic, BlockId, Funcdata, OpCode, SeqNum};
 
     #[test]
     fn multiequal_merges_its_versions() {
@@ -189,5 +221,68 @@ mod tests {
         // …but the constant is its own thing.
         assert!(!h.same(xp, zero));
         assert_eq!(h.count([xp, x1, x2]), 1);
+    }
+
+    /// Regression for the cover/interference bug (pointercmp): a register value (the loop bound)
+    /// that shares storage with the iterator's *init* value must not be merged into the iterator
+    /// when the iterator's whole HighVariable — which includes the loop-carried phi that is live
+    /// across the compare — interferes with the bound, even though the bound and the init value
+    /// alone never overlap. Same-storage interference must be tested over the full HighVariable.
+    #[test]
+    fn same_storage_merge_respects_full_highvariable_cover() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let uniq = spaces.by_name("unique").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let param = f.new_input(8, Address::new(reg, 0x38));
+
+        // block 0 (entry): vinit = param + 8  -> RAX(reg 0); then branch to the loop header.
+        let c8 = f.new_const(8, 8);
+        let o_init = f.new_op(OpCode::IntAdd, s(0), vec![param, c8]);
+        let vinit = f.new_output(o_init, 8, Address::new(reg, 0));
+        let br0 = f.new_op(OpCode::Branch, s(1), vec![]);
+
+        // The loop-carried phi lives at a *stack-like* slot (distinct storage from RAX).
+        let phi = f.new_op(OpCode::Multiequal, SeqNum { pc: Address::new(ram, 2), uniq: u32::MAX }, vec![vinit, vinit]);
+        let vphi = f.new_output(phi, 8, Address::new(reg, 0x100));
+
+        // block 1 (loop body): vinc = PTRADD(vphi, 1, 1) -> unique; back-edge to the header.
+        let c1a = f.new_const(8, 1);
+        let c1b = f.new_const(8, 1);
+        let o_inc = f.new_op(OpCode::Ptradd, s(3), vec![vphi, c1a, c1b]);
+        let vinc = f.new_output(o_inc, 8, Address::new(uniq, 0x500));
+        f.op_set_input(phi, 1, vinc); // phi = MULTIEQUAL(vinit, vinc)
+
+        // block 2 (header): vbound = param + 0x18 -> RAX(reg 0); cmp = vphi < vbound; cbranch.
+        let c18 = f.new_const(8, 0x18);
+        let o_bound = f.new_op(OpCode::IntAdd, s(4), vec![param, c18]);
+        let vbound = f.new_output(o_bound, 8, Address::new(reg, 0));
+        let cmp = f.new_op(OpCode::IntLess, s(5), vec![vphi, vbound]);
+        let _b = f.new_output(cmp, 1, Address::new(reg, 0x200));
+        let cbr = f.new_op(OpCode::Cbranch, s(6), vec![]);
+
+        // block 3 (exit): return, carrying vbound (so it stays live past the compare).
+        let ret = f.new_op(OpCode::Return, s(7), vec![vbound]);
+
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![o_init, br0], in_edges: vec![], out_edges: vec![BlockId(2)] },
+            BlockBasic { ops: vec![o_inc], in_edges: vec![BlockId(2)], out_edges: vec![BlockId(2)] },
+            BlockBasic {
+                ops: vec![phi, o_bound, cmp, cbr],
+                in_edges: vec![BlockId(0), BlockId(1)],
+                out_edges: vec![BlockId(1), BlockId(3)],
+            },
+            BlockBasic { ops: vec![ret], in_edges: vec![BlockId(2)], out_edges: vec![] },
+        ]);
+
+        let mut h = merge(&f);
+        // the iterator's versions are one HighVariable (the phi merge)…
+        assert!(h.same(vphi, vinit) && h.same(vphi, vinc));
+        // …and the bound, though it reuses RAX like vinit, is a DISTINCT variable: vphi is live at
+        // the compare where vbound is also live, so the whole HighVariables interfere.
+        assert!(!h.same(vinit, vbound), "bound must not merge into the iterator (full-cover interference)");
+        assert!(!h.same(vphi, vbound));
     }
 }
