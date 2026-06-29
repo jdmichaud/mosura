@@ -226,6 +226,24 @@ pub fn raw_funcdata_flow_image(
             break;
         }
     }
+    // Ghidra `FlowInfo::truncateIndirectJump` (flow.cc:727, via recoverJumpTables:1445): a BRANCHIND
+    // whose jump table could not be recovered ("Too many branches") is treated as an indirect call.
+    // Any BRANCHIND still without recovered targets after the multistage loop is such a decline —
+    // turn it into a CALLIND and append an artificial return (`artificialHalt`, flow.cc:592: a
+    // RETURN of a placeholder constant). The call-arg/return/effect recovery then models it like any
+    // indirect call, and the appended RETURN carries the call's result (RAX) out of the function.
+    for (&addr, insn) in decoded.iter_mut() {
+        let Some(last) = insn.ops.last() else { continue };
+        if OpCode::from_u32(last.opcode) != Some(OpCode::Branchind) || switch_targets.contains_key(&addr) {
+            continue;
+        }
+        insn.ops.last_mut().unwrap().opcode = OpCode::Callind as u32;
+        insn.ops.push(crate::sleigh::pcode::PcodeOp {
+            opcode: OpCode::Return as u32,
+            out: None,
+            ins: vec![PArg::Var(crate::sleigh::pcode::Varnode { space: "const".into(), offset: 1, size: 4 })],
+        });
+    }
     let mut f = build_from_instrs(name, entry, decoded.into_values());
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
