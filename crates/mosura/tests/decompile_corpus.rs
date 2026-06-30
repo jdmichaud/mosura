@@ -197,3 +197,37 @@ fn pointerrel_negated_condition_stays_compact() {
         "pointerrel's non-normalizing condition was wrongly De-Morgan-distributed:\n{c}"
     );
 }
+
+/// Regression for the bit-packing CONCAT recovery (Ghidra `RuleShiftPiece` ruleaction.cc:3753 +
+/// `RuleAndZext` ruleaction.cc:1696). piecestruct assembles two struct fields from shifted bytes:
+/// `(zext(hi) << 8*|lo|) | zext(lo)`. RuleShiftPiece folds each level to a PIECE (printed CONCAT),
+/// and RuleAndZext first drops the `movsx`+`& 0xff` byte idiom so the bare byte is exposed. Matches
+/// `oracle/capture --c`: `CONCAT22(param_2,param_1)` and
+/// `CONCAT31(CONCAT21(CONCAT11(param_6,param_5),param_4),param_3)`.
+#[test]
+fn piecestruct_folds_shifts_to_concat() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("piecestruct.xml");
+    let dt = datatest::parse_file(&path).expect("parse piecestruct");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    assert!(
+        c.contains("CONCAT22(param_2,param_1)")
+            && c.contains("CONCAT31(CONCAT21(CONCAT11(param_6,param_5),param_4),param_3)"),
+        "piecestruct did not fold the shift-OR bit-packing into CONCAT (RuleShiftPiece/RuleAndZext regression):\n{c}"
+    );
+    // the raw `<< 0x10 |` / `<< 8 |` packing must be fully gone
+    assert!(
+        !c.contains("<< 0x10 |") && !c.contains("<< 8 |"),
+        "piecestruct still shows the raw shift-OR packing:\n{c}"
+    );
+}

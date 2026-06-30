@@ -8,8 +8,8 @@ use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
-    RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool, RuleOrMask,
-    RuleShiftCompare, RuleZextEliminate,
+    RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
+    RuleLogic2Bool, RuleOrMask, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
@@ -93,6 +93,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubExtComm)
         .with(RuleHumptyDumpty)
         .with(RuleDumptyHump)
+        .with(RuleShiftPiece)
         .with(RuleIdempotent)
         .with(RuleConstFold)
         .with(RuleCollectTerms)
@@ -107,6 +108,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleLessEqual)
         .with(RuleBoolNegate)
         .with(RuleLogic2Bool)
+        .with(RuleAndZext)
         .with(RuleOrCompare)
         .with(RuleShiftCompare)
         .with(RuleZextEliminate)

@@ -1337,6 +1337,188 @@ impl Rule for RuleBooleanNegate {
     }
 }
 
+/// Ghidra `RuleShiftPiece` (ruleaction.cc:3753): convert a "shift and add" into a PIECE (CONCAT).
+///   `(ext(V) << 8*|W|) {INT_OR|INT_XOR|INT_ADD} ext(W)  =>  CONCAT(V, W)`
+/// where the high operand is zero/sign-extended and shifted left by exactly the low operand's bit
+/// width. If the extension is wider than the concatenation, the PIECE is re-extended (ZEXT/SEXT).
+/// Also folds the CDQ:IDIV self-sign-extension form
+///   `(zext(SUB(big,0) s>> (|low|*8-1)) << |low|*8) + zext(SUB(big,0))  =>  sext(SUB(big,0))`.
+/// This collapses bit-packed struct assembly (piecestruct's `(a<<0x10)|b` → `CONCAT22(a,b)`).
+pub struct RuleShiftPiece;
+
+impl Rule for RuleShiftPiece {
+    fn name(&self) -> &str {
+        "shiftpiece"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr, OpCode::IntXor, OpCode::IntAdd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(a0), Some(a1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(a0).is_written() || !data.vn(a1).is_written() {
+            return 0;
+        }
+        let mut shiftop = data.vn(a0).def.unwrap();
+        let mut zextloop = data.vn(a1).def.unwrap();
+        // The INT_LEFT input is the high piece; if it is the other operand, swap.
+        if data.op(shiftop).code() != OpCode::IntLeft {
+            if data.op(zextloop).code() != OpCode::IntLeft {
+                return 0;
+            }
+            std::mem::swap(&mut shiftop, &mut zextloop);
+        }
+        let Some(sav) = data.op(shiftop).input(1) else { return 0 };
+        if !data.vn(sav).is_constant() {
+            return 0;
+        }
+        let hiv = data.op(shiftop).input(0).unwrap();
+        if !data.vn(hiv).is_written() {
+            return 0;
+        }
+        let zexthiop = data.vn(hiv).def.unwrap();
+        let hicode = data.op(zexthiop).code();
+        if hicode != OpCode::IntZext && hicode != OpCode::IntSext {
+            return 0;
+        }
+        let vn1 = data.op(zexthiop).input(0).unwrap(); // pre-extension high value
+        if data.vn(vn1).is_constant() {
+            if data.vn(vn1).size < 8 {
+                return 0; // let ZEXT of a small constant collapse naturally
+            }
+        } else if data.vn(vn1).is_free() {
+            return 0;
+        }
+        let sa = data.vn(sav).constant_value() as u32;
+        let vn1_size = data.vn(vn1).size;
+        let concatsize = sa + 8 * vn1_size;
+        let out = data.op(op).output.unwrap();
+        let out_size = data.vn(out).size;
+        if out_size * 8 < concatsize {
+            return 0;
+        }
+        if data.op(zextloop).code() != OpCode::IntZext {
+            // CDQ:IDIV special case: the high piece is the sign-extension `SUB(big,0) s>> (sz*8-1)`
+            // of the low piece, so the whole expression is a sign-extension of the low part.
+            if !data.vn(vn1).is_written() {
+                return 0;
+            }
+            let rshift = data.vn(vn1).def.unwrap();
+            if data.op(rshift).code() != OpCode::IntSright {
+                return 0;
+            }
+            let Some(rsav) = data.op(rshift).input(1) else { return 0 };
+            if !data.vn(rsav).is_constant() {
+                return 0;
+            }
+            let vn2 = data.op(rshift).input(0).unwrap();
+            if !data.vn(vn2).is_written() {
+                return 0;
+            }
+            let subop = data.vn(vn2).def.unwrap();
+            if data.op(subop).code() != OpCode::Subpiece {
+                return 0; // SUBPIECE connects the high and low parts
+            }
+            let Some(subc) = data.op(subop).input(1) else { return 0 };
+            if !(data.vn(subc).is_constant() && data.vn(subc).constant_value() == 0) {
+                return 0; // must be the low part
+            }
+            let bigvn = data.op(zextloop).output.unwrap();
+            if data.op(subop).input(0) != Some(bigvn) {
+                return 0; // verify the link through SUBPIECE with the low part
+            }
+            let rsa = data.vn(rsav).constant_value() as u32;
+            let vn2_size = data.vn(vn2).size;
+            if rsa != vn2_size * 8 - 1 {
+                return 0; // arithmetic shift must copy the sign bit through the whole high part
+            }
+            if (data.vn(bigvn).get_nzmask() >> sa) != 0 {
+                return 0; // the original most significant bytes must be zero
+            }
+            if sa != 8 * vn2_size {
+                return 0;
+            }
+            data.op_set_opcode(op, OpCode::IntSext);
+            data.op_set_input(op, 0, vn2);
+            data.op_remove_input(op, 1);
+            return 1;
+        }
+        let vn2 = data.op(zextloop).input(0).unwrap(); // low value
+        if data.vn(vn2).is_free() {
+            return 0;
+        }
+        let vn2_size = data.vn(vn2).size;
+        if sa != 8 * vn2_size {
+            return 0;
+        }
+        if concatsize == out_size * 8 {
+            data.op_set_opcode(op, OpCode::Piece);
+            data.op_set_input(op, 0, vn1);
+            data.op_set_input(op, 1, vn2);
+        } else {
+            // Extension is wider than the concatenation: build the PIECE, then re-extend it.
+            let pc = data.op(op).seqnum.pc;
+            let uniq = data.num_ops() as u32;
+            let newop = data.new_op(OpCode::Piece, SeqNum { pc, uniq }, vec![vn1, vn2]);
+            let newout = data.new_output_unique(newop, concatsize / 8);
+            data.op_insert_before(newop, op);
+            data.op_set_opcode(op, hicode);
+            data.op_remove_input(op, 1);
+            data.op_set_input(op, 0, newout);
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleAndZext` (ruleaction.cc:1696): convert `INT_AND` to `INT_ZEXT` where the mask keeps
+/// exactly the low bytes of a sign-extension or concatenation:
+///   - `sext(X) & mask  =>  zext(X)`   (mask == all-ones over `|X|` bytes)
+///   - `concat(Y, X) & mask  =>  zext(X)`
+/// This drops the `movsx`+`and` idiom for a packed byte (`(int)char_val & 0xff => (uint)char_val`),
+/// exposing the bare extension that [`RuleShiftPiece`] needs to fold the byte into a CONCAT.
+pub struct RuleAndZext;
+
+impl Rule for RuleAndZext {
+    fn name(&self) -> &str {
+        "andzext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(i0), Some(cvn1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(cvn1).is_constant() {
+            return 0;
+        }
+        if !data.vn(i0).is_written() {
+            return 0;
+        }
+        let otherop = data.vn(i0).def.unwrap();
+        let rootvn = match data.op(otherop).code() {
+            OpCode::IntSext => data.op(otherop).input(0).unwrap(),
+            OpCode::Piece => data.op(otherop).input(1).unwrap(), // little-endian low part
+            _ => return 0,
+        };
+        let mask = super::nzmask::calc_mask(data.vn(rootvn).size);
+        if mask != data.vn(cvn1).constant_value() {
+            return 0;
+        }
+        if data.vn(rootvn).is_free() {
+            return 0;
+        }
+        if data.vn(rootvn).size > 8 {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::IntZext);
+        data.op_remove_input(op, 1);
+        data.op_set_input(op, 0, rootvn);
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
