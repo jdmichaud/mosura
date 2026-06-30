@@ -21,6 +21,7 @@ pub mod funcdata;
 pub mod heritage;
 pub mod jumptable;
 pub mod merge;
+pub mod nzmask;
 pub mod op;
 pub mod opcode;
 pub mod pipeline;

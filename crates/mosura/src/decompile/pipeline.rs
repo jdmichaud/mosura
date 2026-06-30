@@ -174,6 +174,23 @@ pub fn cleanup_pool() -> ActionPool {
         .with(Rule2Comp2Sub)
 }
 
+/// Ghidra `ActionNonzeroMask` (`coreaction.cc:5507`, group "analysis"): recompute every Varnode's
+/// non-zero mask ([`super::nzmask::calc_nzmask`]). Ghidra runs it in the main rule loop so the
+/// masks stay fresh as the graph is rewritten; here it runs before each rule pool. Nothing consumes
+/// the masks yet (the dependent rules — RuleShiftCompare etc. — land next), so it is output-neutral.
+pub struct ActionNonzeroMask;
+
+impl Action for ActionNonzeroMask {
+    fn name(&self) -> &str {
+        "nonzeromask"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let dom = super::dominator::compute(data);
+        super::nzmask::calc_nzmask(data, &dom);
+        1
+    }
+}
+
 /// The universal decompile action: heritage, simplification, dead-code removal, then type recovery
 /// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
@@ -183,12 +200,14 @@ pub fn universal_action() -> ActionGroup {
         // group, the foundation for folding the rest of the pipeline into the loop next.
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
+        .then(ActionNonzeroMask)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         // Fold any CBRANCH whose condition simplified to a constant, then prune the unreachable
         // target (Ghidra ActionDeterminedBranch). A second simplify+dead-code sweep cleans up the
         // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
         .then(super::determinedbranch::ActionDeterminedBranch)
+        .then(ActionNonzeroMask)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)

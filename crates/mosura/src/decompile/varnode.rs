@@ -70,6 +70,10 @@ pub struct Varnode {
     /// ([`super::actionsetcasts`]) reads and updates this directly, so casts run off persistent
     /// per-varnode types rather than a recomputed-at-print table.
     pub ty: Option<Datatype>,
+    /// Ghidra's `Varnode::nzm` — the mask of bits that may be non-zero (every cleared bit is
+    /// provably 0). Computed by [`super::nzmask::calc_nzmask`]; defaults to the full mask (the
+    /// conservative over-approximation) until then.
+    pub nzm: u64,
 }
 
 impl Varnode {
@@ -140,6 +144,10 @@ impl Varnode {
     /// The literal value of a constant varnode.
     pub fn constant_value(&self) -> u64 {
         self.loc.offset
+    }
+    /// Ghidra `Varnode::getNZMask` — the mask of bits that may be non-zero (see [`Varnode::nzm`]).
+    pub fn get_nzmask(&self) -> u64 {
+        self.nzm
     }
     pub fn is_implied(&self) -> bool {
         self.flags & flags::IMPLIED != 0

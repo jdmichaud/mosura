@@ -190,6 +190,11 @@ impl Funcdata {
         let id = VarnodeId(self.varnodes.len() as u32);
         let create_index = self.create_index;
         self.create_index += 1;
+        let nzm = if vflags & flags::CONSTANT != 0 {
+            loc.offset & super::nzmask::calc_mask(size)
+        } else {
+            super::nzmask::calc_mask(size)
+        };
         self.varnodes.push(Varnode {
             loc,
             size,
@@ -198,6 +203,7 @@ impl Funcdata {
             def: None,
             descend: Vec::new(),
             ty: None,
+            nzm,
         });
         id
     }
