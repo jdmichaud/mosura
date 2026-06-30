@@ -6,9 +6,10 @@ use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
-    RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleIdempotent, RuleMultiCollapse,
-    RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty, RuleDumptyHump,
-    RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool, RuleOrMask,
+    RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
+    RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
+    RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd, RuleLogic2Bool, RuleOrMask,
+    RuleShiftCompare, RuleZextEliminate,
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
 };
 
@@ -106,6 +107,10 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleLessEqual)
         .with(RuleBoolNegate)
         .with(RuleLogic2Bool)
+        .with(RuleOrCompare)
+        .with(RuleShiftCompare)
+        .with(RuleZextEliminate)
+        .with(RuleBooleanNegate)
         .with(RuleOrMask)
         .with(RuleRangeAnd)
         .with(super::divopt::RuleDivOpt)
@@ -207,6 +212,15 @@ pub fn universal_action() -> ActionGroup {
         // target (Ghidra ActionDeterminedBranch). A second simplify+dead-code sweep cleans up the
         // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
         .then(super::determinedbranch::ActionDeterminedBranch)
+        .then(ActionNonzeroMask)
+        .then(default_rule_pool())
+        .then(super::deadcode::ActionDeadCode)
+        // A third simplify+dead-code sweep, continuing the hand-unrolled approximation of Ghidra's
+        // `rule_repeatapply` mainloop (which repeats pool+deadcode to fixpoint). It is a no-op for
+        // functions already converged; it matters when a rule needs a *prior* dead op cleared
+        // before it can fire — e.g. the orcompare boolean chain, where RuleOrCompare/RuleShiftCompare
+        // settle in the second sweep and only then does dead-code drop the multiply, exposing the
+        // `loneDescend` that lets RuleZextEliminate/RuleBooleanNegate recover the `||`.
         .then(ActionNonzeroMask)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)

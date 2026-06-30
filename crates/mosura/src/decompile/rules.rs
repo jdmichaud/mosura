@@ -5,7 +5,7 @@
 use super::action::Rule;
 use super::block::BlockId;
 use super::funcdata::Funcdata;
-use super::op::OpId;
+use super::op::{OpId, SeqNum};
 use super::opcode::OpCode;
 use super::varnode::VarnodeId;
 
@@ -1028,6 +1028,311 @@ impl Rule for RuleLogic2Bool {
             _ => return 0,
         };
         data.op_set_opcode(op, bool_opc);
+        1
+    }
+}
+
+/// Ghidra `Varnode::loneDescend` (varnode.cc): the single op reading `vn`, or `None` if it has
+/// zero or more than one reader. (Descendant lists are kept exact by the op-mutation helpers, so a
+/// rewritten-away or removed reader no longer counts.)
+fn lone_descend(data: &Funcdata, vn: VarnodeId) -> Option<OpId> {
+    let d = &data.vn(vn).descend;
+    (d.len() == 1).then(|| d[0])
+}
+
+/// Ghidra `RuleOrCompare` (ruleaction.cc:10785): simplify an `INT_OR` that feeds only
+/// comparisons against constant 0.
+///   - `(V | W) == 0`  =>  `(V == 0) && (W == 0)`
+///   - `(V | W) != 0`  =>  `(V != 0) || (W != 0)`
+///
+/// Fires only when every use of the OR output is an `==`/`!=` whose second input is the constant 0,
+/// and both `V` and `W` are in SSA form (not free). Each such compare is rewritten into a
+/// BOOL_AND / BOOL_OR of the two per-operand compares. This breaks a bit-packed
+/// `(a*2 | b<<7) != 0` flag-smear into the independent comparisons — the foundation for recovering
+/// `a || b` (with [`RuleShiftCompare`], [`RuleZextEliminate`], [`RuleBooleanNegate`]).
+pub struct RuleOrCompare;
+
+impl Rule for RuleOrCompare {
+    fn name(&self) -> &str {
+        "orcompare"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let descend = data.vn(outvn).descend.clone();
+        // hasCompares: at least one use, and every use is `==`/`!=` against constant 0
+        if descend.is_empty() {
+            return 0;
+        }
+        for &comp in &descend {
+            let opc = data.op(comp).code();
+            if opc != OpCode::IntEqual && opc != OpCode::IntNotequal {
+                return 0;
+            }
+            let Some(c) = data.op(comp).input(1) else { return 0 };
+            if !is_const0(data, c) {
+                return 0;
+            }
+        }
+        let (Some(v), Some(w)) = (data.op(op).input(0), data.op(op).input(1)) else { return 0 };
+        // make sure V and W are in SSA form
+        if data.vn(v).is_free() || data.vn(w).is_free() {
+            return 0;
+        }
+        let (vsize, wsize) = (data.vn(v).size, data.vn(w).size);
+        for comp in descend {
+            let opc = data.op(comp).code();
+            let pc = data.op(comp).seqnum.pc;
+            let zero_v = data.new_const(vsize, 0);
+            let zero_w = data.new_const(wsize, 0);
+            let uniq = data.num_ops() as u32;
+            let eq_v = data.new_op(opc, SeqNum { pc, uniq }, vec![v, zero_v]);
+            let eq_v_out = data.new_output_unique(eq_v, 1);
+            let uniq = data.num_ops() as u32;
+            let eq_w = data.new_op(opc, SeqNum { pc, uniq }, vec![w, zero_w]);
+            let eq_w_out = data.new_output_unique(eq_w, 1);
+            // make sure the comparisons' output is already defined (inserted before the compare)
+            data.op_insert_before(eq_v, comp);
+            data.op_insert_before(eq_w, comp);
+            // INT_EQUAL becomes BOOL_AND; INT_NOTEQUAL becomes BOOL_OR
+            let conn = if opc == OpCode::IntEqual { OpCode::BoolAnd } else { OpCode::BoolOr };
+            data.op_set_opcode(comp, conn);
+            data.op_set_all_input(comp, &[eq_v_out, eq_w_out]);
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleShiftCompare` (ruleaction.cc:2044): strip a shift/scale from a comparison when it
+/// loses no information.
+///   - `V >> c == d`  =>  `V == (d << c)` (and likewise `V / 2^k`)
+///   - `V << c == d`  =>  `V == (d >> c)`, or — if the left-shift would lose high bits — an
+///     `(V & mask) == (d >> c)` (and likewise `V * 2^k`)
+///
+/// Works on both `INT_EQUAL` and `INT_NOTEQUAL`. The non-zero mask of the shifted value
+/// ([`Varnode::get_nzmask`]) is what proves no information is lost. This collapses the
+/// `(a==10)*2 == 0` / `(b==0x14)<<7 == 0` forms that `RuleOrCompare` leaves behind into bare
+/// `(a==10) == 0` / `(b==0x14) == 0` compares.
+pub struct RuleShiftCompare;
+
+impl Rule for RuleShiftCompare {
+    fn name(&self) -> &str {
+        "shiftcompare"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(shiftvn), Some(constvn)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(constvn).is_constant() {
+            return 0;
+        }
+        if !data.vn(shiftvn).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(shiftvn).def.unwrap();
+        let opc = data.op(shiftop).code();
+        let Some(savn) = data.op(shiftop).input(1) else { return 0 };
+        let (isleft, sa): (bool, u32) = match opc {
+            OpCode::IntLeft => {
+                if !data.vn(savn).is_constant() {
+                    return 0;
+                }
+                (true, data.vn(savn).constant_value() as u32)
+            }
+            OpCode::IntRight => {
+                if !data.vn(savn).is_constant() {
+                    return 0;
+                }
+                // A right shift is a likely shift out of a bitfield, which we want to keep — only
+                // apply when we know we will eliminate the shifted variable.
+                if lone_descend(data, shiftvn) != Some(op) {
+                    return 0;
+                }
+                (false, data.vn(savn).constant_value() as u32)
+            }
+            OpCode::IntMult => {
+                if !data.vn(savn).is_constant() {
+                    return 0;
+                }
+                let val = data.vn(savn).constant_value();
+                let s = val.trailing_zeros();
+                if (val >> s) != 1 {
+                    return 0; // not multiplying by a power of 2
+                }
+                (true, s)
+            }
+            OpCode::IntDiv => {
+                if !data.vn(savn).is_constant() {
+                    return 0;
+                }
+                let val = data.vn(savn).constant_value();
+                let s = val.trailing_zeros();
+                if (val >> s) != 1 {
+                    return 0; // not dividing by a power of 2
+                }
+                if lone_descend(data, shiftvn) != Some(op) {
+                    return 0;
+                }
+                (false, s)
+            }
+            _ => return 0,
+        };
+        if sa == 0 {
+            return 0;
+        }
+        let mainvn = data.op(shiftop).input(0).unwrap();
+        if data.vn(mainvn).is_free() {
+            return 0;
+        }
+        if data.vn(mainvn).size > 8 {
+            return 0; // uintb is 64-bit (Ghidra's `sizeof(uintb)` guard)
+        }
+        let constval = data.vn(constvn).constant_value();
+        let nzmask = data.vn(mainvn).get_nzmask();
+        let shiftsize = data.vn(shiftvn).size;
+        let constsize = data.vn(constvn).size;
+        let smask = super::nzmask::calc_mask(shiftsize);
+        let newconst: u64;
+        if isleft {
+            newconst = constval >> sa;
+            if (newconst << sa) != constval {
+                return 0; // information lost in constval
+            }
+            let tmp = (nzmask << sa) & smask;
+            if (tmp >> sa) != nzmask {
+                // information is lost in main: replace the LEFT with an AND mask. This must be the
+                // lone use of the shift.
+                if lone_descend(data, shiftvn) != Some(op) {
+                    return 0;
+                }
+                let sa2 = 8 * shiftsize - sa;
+                let m = 1u64.checked_shl(sa2).unwrap_or(0).wrapping_sub(1);
+                let newmask = data.new_const(constsize, m);
+                let pc = data.op(op).seqnum.pc;
+                let uniq = data.num_ops() as u32;
+                let newop = data.new_op(OpCode::IntAnd, SeqNum { pc, uniq }, vec![mainvn, newmask]);
+                let newtmp = data.new_output_unique(newop, constsize);
+                data.op_insert_before(newop, shiftop);
+                let nc = data.new_const(constsize, newconst);
+                data.op_set_input(op, 0, newtmp);
+                data.op_set_input(op, 1, nc);
+                return 1;
+            }
+        } else {
+            if ((nzmask >> sa) << sa) != nzmask {
+                return 0; // information is lost in main
+            }
+            newconst = (constval << sa) & smask;
+            if (newconst >> sa) != constval {
+                return 0; // information is lost in constval
+            }
+        }
+        let nc = data.new_const(constsize, newconst);
+        data.op_set_input(op, 0, mainvn);
+        data.op_set_input(op, 1, nc);
+        1
+    }
+}
+
+/// Ghidra `RuleZextEliminate` (ruleaction.cc:2471): eliminate an `INT_ZEXT` in a comparison when
+/// the constant operand loses no non-zero bits.
+///   - `zext(V) == c`  =>  `V == c`   (and `!=`, `<`, `<=`)
+///
+/// The zero-extension must be the lone use of the comparison's input. This drops the
+/// `zext(a==10) == 0` widening that `RuleShiftCompare` exposes, leaving `(a==10) == 0`.
+pub struct RuleZextEliminate;
+
+impl Rule for RuleZextEliminate {
+    fn name(&self) -> &str {
+        "zexteliminate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal, OpCode::IntLess, OpCode::IntLessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(in0), Some(in1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        let is_zext = |d: &Funcdata, v: VarnodeId| {
+            d.vn(v).is_written() && d.op(d.vn(v).def.unwrap()).code() == OpCode::IntZext
+        };
+        // vn1 is the ZEXTed input, vn2 the other; prefer slot 1 (Ghidra checks getIn(1) first).
+        let (vn1, vn2, zextslot, otherslot) = if is_zext(data, in1) {
+            (in1, in0, 1usize, 0usize)
+        } else if is_zext(data, in0) {
+            (in0, in1, 0usize, 1usize)
+        } else {
+            return 0;
+        };
+        if !data.vn(vn2).is_constant() {
+            return 0;
+        }
+        let zext = data.vn(vn1).def.unwrap();
+        let zin = data.op(zext).input(0).unwrap();
+        if !data.vn(zin).is_heritage_known() {
+            return 0;
+        }
+        if lone_descend(data, vn1) != Some(op) {
+            return 0; // extension must not be used for anything else
+        }
+        let smallsize = data.vn(zin).size;
+        let val = data.vn(vn2).constant_value();
+        // is the zero extension unnecessary? (the constant fits in the small width)
+        if smallsize < 8 && (val >> (8 * smallsize)) != 0 {
+            return 0;
+        }
+        let newvn = data.new_const(smallsize, val);
+        data.op_set_input(op, zextslot, zin);
+        data.op_set_input(op, otherslot, newvn);
+        1
+    }
+}
+
+/// Ghidra `RuleBooleanNegate` (ruleaction.cc:2937): simplify a comparison of a boolean value with
+/// `false`/`true`.
+///   - `V == false`  =>  `!V`        `V == true`   =>  `V`
+///   - `V != false`  =>  `V`         `V != true`   =>  `!V`
+///
+/// The compared value must be a boolean ([`is_boolean_value`]) and the constant must be 0 or 1. The
+/// op is rewritten in place as a BOOL_NEGATE or COPY. This collapses the `(a==10) == 0` form (left
+/// by [`RuleZextEliminate`]) into `!(a==10)` — which [`RuleBoolNegate`] then renders as the
+/// complementary `a != 10`, so a De-Morgan'd `BOOL_AND` prints as `a || b`.
+pub struct RuleBooleanNegate;
+
+impl Rule for RuleBooleanNegate {
+    fn name(&self) -> &str {
+        "booleannegate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntNotequal, OpCode::IntEqual]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let opc = data.op(op).code();
+        let (Some(subbool), Some(constvn)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(constvn).is_constant() {
+            return 0;
+        }
+        let val = data.vn(constvn).constant_value();
+        if val != 0 && val != 1 {
+            return 0;
+        }
+        let mut negate = opc == OpCode::IntNotequal;
+        if val == 0 {
+            negate = !negate;
+        }
+        if !is_boolean_value(data, subbool) {
+            return 0;
+        }
+        data.op_remove_input(op, 1); // remove the constant
+        data.op_set_input(op, 0, subbool); // keep the original boolean parameter
+        data.op_set_opcode(op, if negate { OpCode::BoolNegate } else { OpCode::Copy });
         1
     }
 }

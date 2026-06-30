@@ -990,10 +990,43 @@ impl<'a> PrintC<'a> {
                     let r = self.cast_operand(def, 0, 9, true);
                     return format!("{l} <= {r}");
                 }
+                // De Morgan: `!(a && b)` => `!a || !b`, `!(a || b)` => `!a && !b`, pushing the
+                // negation into each operand. This is the print-time analogue of Ghidra's
+                // `ActionNormalizeBranches` (blockaction.cc:2117), which flips a CBRANCH condition
+                // in place — but ONLY when `opFlipInPlaceTest` reports the flip *normalizes* (return
+                // 0), i.e. every operand is a lone-descended, flippable boolean. We apply the same
+                // gate: distribute only when normalizing, otherwise keep the compact `!(...)`. So
+                // `BOOL_AND(a!=10, b!=0x14)` prints as `a==10 || b==0x14` (orcompare), while a
+                // condition that reuses a shared sub-boolean stays `!(...)` (pointerrel).
+                OpCode::BoolAnd | OpCode::BoolOr if op_flip_normalizes(self.f, def) == 0 => {
+                    let conn = if code == OpCode::BoolAnd { "||" } else { "&&" };
+                    let l = self.f.op(def).input(0).unwrap();
+                    let r = self.f.op(def).input(1).unwrap();
+                    let ls = self.render_negated_demorgan(l);
+                    let rs = self.render_negated_demorgan(r);
+                    return format!("{ls} {conn} {rs}");
+                }
                 _ => {}
             }
         }
         format!("!{}", self.operand(v, 15, false))
+    }
+
+    /// A De-Morgan operand for [`render_negated`]: the negation of `v`, parenthesized only when it
+    /// is itself a compound boolean (`BOOL_AND`/`BOOL_OR`) so the nested connective keeps its
+    /// grouping. Simple comparisons (the common case) print bare — `a == 10 || b == 0x14`.
+    fn render_negated_demorgan(&mut self, v: VarnodeId) -> String {
+        let s = self.render_negated(v);
+        let compound = self
+            .f
+            .vn(v)
+            .def
+            .is_some_and(|d| matches!(self.f.op(d).code(), OpCode::BoolAnd | OpCode::BoolOr));
+        if compound {
+            format!("({s})")
+        } else {
+            s
+        }
     }
 
     /// Emit a structured block (and its children) as C.
@@ -1282,6 +1315,60 @@ impl<'a> PrintC<'a> {
 
 /// Render a constant: small negatives as signed decimal (Ghidra prints `0xff..fb` as `-5`),
 /// otherwise decimal for small values and hex for the rest.
+/// Faithful port of Ghidra's `Funcdata::opFlipInPlaceTest` (funcdata_op.cc:1221): trace a boolean
+/// to the set of ops that would need flipping to negate it, and report whether the flip
+/// *normalizes*. Returns 0 if it normalizes (a net win — flip), 1 if ambivalent, 2 if it does not
+/// normalize (leave alone). We use it as the gate for print-time De Morgan distribution in
+/// [`PrintC::render_negated`] (the analogue of `ActionNormalizeBranches`); a BOOL_AND/BOOL_OR is
+/// distributed only when this returns 0. A non-lone-descended or non-flippable operand (e.g. a
+/// shared sub-boolean, or a FLOAT_LESS that has no in-place complement) yields 2.
+fn op_flip_normalizes(f: &Funcdata, op: OpId) -> i32 {
+    let lone = |vn: VarnodeId| -> bool {
+        let d = &f.vn(vn).descend;
+        d.len() == 1 && d[0] == op
+    };
+    match f.op(op).code() {
+        OpCode::IntEqual | OpCode::FloatEqual => 1,
+        OpCode::BoolNegate | OpCode::IntNotequal | OpCode::FloatNotequal => 0,
+        OpCode::IntSless | OpCode::IntLess => {
+            let vn = f.op(op).input(0).unwrap();
+            if !f.vn(vn).is_constant() {
+                1
+            } else {
+                0
+            }
+        }
+        OpCode::IntSlessequal | OpCode::IntLessequal => {
+            let vn = f.op(op).input(1).unwrap();
+            if f.vn(vn).is_constant() {
+                1
+            } else {
+                0
+            }
+        }
+        OpCode::BoolOr | OpCode::BoolAnd => {
+            let vn0 = f.op(op).input(0).unwrap();
+            if !lone(vn0) || !f.vn(vn0).is_written() {
+                return 2;
+            }
+            let subtest1 = op_flip_normalizes(f, f.vn(vn0).def.unwrap());
+            if subtest1 == 2 {
+                return 2;
+            }
+            let vn1 = f.op(op).input(1).unwrap();
+            if !lone(vn1) || !f.vn(vn1).is_written() {
+                return 2;
+            }
+            let subtest2 = op_flip_normalizes(f, f.vn(vn1).def.unwrap());
+            if subtest2 == 2 {
+                return 2;
+            }
+            subtest1 // the front of AND/OR must be normalizing
+        }
+        _ => 2,
+    }
+}
+
 /// `c + 1` masked to a comparison's width, or `None` if it would overflow the maximum value
 /// for the signedness — so the strict-`<` rewrite `x <= c` ⇒ `x < c+1` stays exact.
 fn incr_in_width(c: u64, size: u32, signed: bool) -> Option<u64> {

@@ -137,3 +137,63 @@ fn indproto_if_else_uses_positive_condition() {
         "indproto's if/else condition was not normalized to positive form (flipInPlaceExecute regression):\n{c}"
     );
 }
+
+/// Regression for the branchless-boolean `||` recovery (Ghidra `RuleOrCompare` /
+/// `RuleShiftCompare` / `RuleZextEliminate` / `RuleBooleanNegate`, ruleaction.cc:10785/2044/2471/
+/// 2937). orcompare's `if (a == 10 | b == 0x14)` is compiled branchlessly as a bit-packed
+/// `(a==10)*2 | (b==0x14)<<7`; the rule chain peels the shifts/zexts/bit-pack back to the two
+/// independent compares, and the `opFlipInPlaceTest`-gated De Morgan render (see
+/// [`mosura::decompile::printc`]) prints the positive `a == 10 || b == 0x14`. Matches
+/// `oracle/capture --c`.
+#[test]
+fn orcompare_recovers_logical_or() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("orcompare.xml");
+    let dt = datatest::parse_file(&path).expect("parse orcompare");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    assert!(
+        c.contains("if (param_1 == 10 || param_2 == 0x14)"),
+        "orcompare did not recover the `||` condition (RuleOrCompare chain regression):\n{c}"
+    );
+    // the bit-packed flag-smear must be fully gone (no `<<`, `* 2`, or `| ...) != 0`)
+    assert!(
+        !c.contains("<< 7") && !c.contains(") * 2 |") && !c.contains(") != 0)"),
+        "orcompare still shows the bit-packed flag form:\n{c}"
+    );
+}
+
+/// Companion guard for the De Morgan gate: the distribution is applied only when Ghidra's
+/// `opFlipInPlaceTest` reports the flip *normalizes*. pointerrel's float `>=` condition reuses a
+/// shared NAN sub-boolean (so a flip would NOT normalize), so it must stay the compact `!(...)`
+/// form — not the expanded `(!NAN && !NAN) && ...` that an ungated De Morgan would produce.
+#[test]
+fn pointerrel_negated_condition_stays_compact() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("pointerrel.xml");
+    let dt = datatest::parse_file(&path).expect("parse pointerrel");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    assert!(
+        c.contains("if (!(bVar1 ||"),
+        "pointerrel's non-normalizing condition was wrongly De-Morgan-distributed:\n{c}"
+    );
+}
