@@ -354,6 +354,93 @@ fn split_by_refinement(base: u64, part: &[u32], off: u64, sz: u32) -> Vec<(u64, 
     pieces
 }
 
+/// Faithful port of `Heritage::normalizeWriteSize` (`heritage.cc:416`). A written Varnode narrower
+/// than the heritaged range `[base, base+size)` is widened into a write of the whole range so phi
+/// placement and renaming see uniform-width accesses. The bytes of the range above (`mostsig`) and
+/// below (`overlap`) the write are pulled from a fresh read of the range's *previous* value via
+/// `SUBPIECE`, then `PIECE`d back together with the narrow write. `RuleDumptyHump` /
+/// `RuleHumptyDumpty` later collapse the introduced `PIECE`/`SUBPIECE` where they tile cleanly (so a
+/// `sete dl` write rejoined into `RDX` and immediately sub-read back simplifies to the byte itself).
+///
+/// mosura adaptation: Ghidra keeps the original narrow Varnode as the op's output and sets its
+/// write-mask; mosura instead retargets the op to a `unique` temp of its own size, so the narrow
+/// sub-register location is never heritaged on its own — only the rejoined whole-range Varnode is.
+/// All intermediates are `unique`; only the final whole-range result lives at the register address.
+///
+/// The CALL `newIndirectCreation` branch (`heritage.cc:434`/`455`, when the narrow write's def is a
+/// CALL with an indirect effect on the missing piece) is not ported: mosura has no indirect-creation
+/// infrastructure and no fixture writes a register sub-piece directly from a call into a guarded
+/// range. The pieces are taken from the plain `SUBPIECE`-of-old-value path (Ghidra's `else`).
+#[allow(clippy::too_many_arguments)]
+fn normalize_write_size(
+    f: &mut Funcdata,
+    op: OpId,
+    reg: SpaceId,
+    base: u64,
+    off: u64,
+    sz: u32,
+    size: u32,
+    bid: super::block::BlockId,
+    seq: super::op::SeqNum,
+    before: &mut Vec<OpId>,
+    after: &mut Vec<OpId>,
+) -> VarnodeId {
+    use super::space::Address;
+    let overlap = (off - base) as u32; // bytes of the range below the write (Ghidra `overlap`)
+    let mostsig = size - overlap - sz; // bytes of the range above the write (Ghidra `mostsigsize`)
+
+    // op now writes a unique temp of its own size (Ghidra's write-masked `vn`).
+    let vn = f.new_output_unique(op, sz);
+
+    // High piece (`mostsigsize != 0`, heritage.cc:428): SUBPIECE the old whole-range value's high
+    // bytes (`big = newVarnode(size, addr)`; offset `overlap + vn->getSize()`).
+    let mostvn = if mostsig > 0 {
+        let big = f.new_varnode(size, Address::new(reg, base));
+        let cst = f.new_const(4, (overlap + sz) as u64);
+        let subop = f.new_op(OpCode::Subpiece, seq, vec![big, cst]);
+        f.op_mut(subop).parent = Some(bid);
+        let v = f.new_output_unique(subop, mostsig);
+        before.push(subop); // SUBPIECE inserted before the write
+        Some(v)
+    } else {
+        None
+    };
+
+    // Low piece (`overlap != 0`, heritage.cc:449): SUBPIECE the old value's low bytes, then PIECE
+    // the narrow write above it (little-endian: the write is the most-significant input).
+    let midvn = if overlap > 0 {
+        let big = f.new_varnode(size, Address::new(reg, base));
+        let cst = f.new_const(4, 0);
+        let subop = f.new_op(OpCode::Subpiece, seq, vec![big, cst]);
+        f.op_mut(subop).parent = Some(bid);
+        let leastvn = f.new_output_unique(subop, overlap);
+        before.push(subop);
+        let pieceop = f.new_op(OpCode::Piece, seq, vec![vn, leastvn]);
+        f.op_mut(pieceop).parent = Some(bid);
+        // The middle piece is the final whole-range write iff there is no high piece (covers `size`).
+        let mid = if mostsig == 0 {
+            f.new_output(pieceop, overlap + sz, Address::new(reg, base))
+        } else {
+            f.new_output_unique(pieceop, overlap + sz)
+        };
+        after.push(pieceop); // PIECE inserted after the write
+        mid
+    } else {
+        vn
+    };
+
+    // Final rejoin (`mostsigsize != 0`, heritage.cc:483): PIECE the high piece above the middle.
+    if let Some(mostvn) = mostvn {
+        let pieceop = f.new_op(OpCode::Piece, seq, vec![mostvn, midvn]);
+        f.op_mut(pieceop).parent = Some(bid);
+        let bigout = f.new_output(pieceop, size, Address::new(reg, base));
+        after.push(pieceop);
+        bigout
+    } else {
+        midvn
+    }
+}
+
 /// Ghidra heritage *refinement* (`heritage.cc`: `refinement`/`buildRefinement`/`splitByRefinement`/
 /// `refineRead`/`refineWrite`/`concatPieces`/`splitPieces`). A pre-SSA pass run over the register
 /// space: in a range that no single *write* covers — so SSA cannot link it as one variable, e.g. a
@@ -598,27 +685,16 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                                 }
                             }
                             &Mode::Normalize { size, mixed_at_base } => {
-                                // normalizeWriteSize (off == base / overlap 0 case): a partial write
-                                // low in a covered range becomes `PIECE(SUB(old_whole, sz), value)`,
-                                // pulling the high bytes from the value previously in the range.
-                                // Gated on a mixed-width base (the SIMD partial-overwrite shape) so
-                                // ordinary sub-register writes are untouched.
-                                let mostsig = size - sz;
-                                if mixed_at_base && off == base && mostsig > 0 {
-                                    let smalltemp = f.new_output_unique(op, sz);
-                                    // read the old whole-range value and take its high bytes
-                                    let bigread =
-                                        f.new_varnode(size, super::space::Address::new(reg, base));
-                                    let cst = f.new_const(4, sz as u64);
-                                    let subop = f.new_op(OpCode::Subpiece, seq, vec![bigread, cst]);
-                                    f.op_mut(subop).parent = Some(bid);
-                                    let mostvn = f.new_output_unique(subop, mostsig);
-                                    new_ops.push(subop); // before the write
-                                    // PIECE(high old bytes, written low bytes) → the new whole write
-                                    let pieceop = f.new_op(OpCode::Piece, seq, vec![mostvn, smalltemp]);
-                                    f.op_mut(pieceop).parent = Some(bid);
-                                    f.new_output(pieceop, size, super::space::Address::new(reg, base));
-                                    after.push(pieceop);
+                                // Faithful `normalizeWriteSize`: widen a write narrower than the
+                                // covering range. Still gated to the SIMD partial-overwrite shape (a
+                                // base written at mixed widths) and the low write (`off == base`,
+                                // overlap 0); Stage 3 relaxes this to guard()'s uniform condition for
+                                // GP sub-registers, where the overlap branch comes into play.
+                                if mixed_at_base && off == base && size > sz {
+                                    normalize_write_size(
+                                        f, op, reg, base, off, sz, size, bid, seq, &mut new_ops,
+                                        &mut after,
+                                    );
                                 }
                             }
                             Mode::Skip => {}
