@@ -478,13 +478,13 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
         for (pos, op) in f.blocks()[b].ops.clone().into_iter().enumerate() {
             for slot in 0..f.op(op).num_inputs() {
                 if let Some((sp, off, sz)) = read_loc(f, op, slot) {
-                    if sp == reg && is_laned(off) {
+                    if sp == reg {
                         acc.push(Acc { is_write: false, off, size: sz, blk: b, pos });
                     }
                 }
             }
             if let Some((sp, off, sz)) = write_loc(f, op) {
-                if sp == reg && is_laned(off) {
+                if sp == reg {
                     acc.push(Acc { is_write: true, off, size: sz, blk: b, pos });
                 }
             }
@@ -510,33 +510,33 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
         }
     }
     // 3. Per range, classify: `Refine` (a partition — no single write covers it, Ghidra's
-    //    `placeMultiequals` guard `size > 4 && max_write < size`), or `Normalize` (a single write
-    //    of the whole range exists, so sub-reads at any offset are `SUBPIECE`s of it — Ghidra's
-    //    `guard`/`normalizeReadSize` keyed to the *range* base, which links a high-lane read like
-    //    `XMM_Qa[4,4]` to the 8-byte write it sub-reads). `mixed_at_base` flags a base offset
-    //    written at more than one width, the case the offset-keyed `normalize_read_size` skips.
+    //    `placeMultiequals` guard `size > 4 && max_write < size`, kept laned-only), or `Normalize`
+    //    (a single write of the whole range covers it, so Ghidra's `guard` normalizes every narrow
+    //    read to a `SUBPIECE` of the whole and every narrow write to a `normalizeWriteSize` `PIECE`
+    //    into the whole). On GP registers `Normalize` is the faithful uniform `guard()`; on laned
+    //    (XMM) registers it keeps the pre-existing tuned subset (`mixed_at_base` + the self-extension
+    //    skip), the justified adaptation that the broad guard() would otherwise over-collapse.
     enum Mode {
         Refine(Vec<u32>),
-        Normalize { size: u32, mixed_at_base: bool },
+        Normalize { size: u32 },
         Skip,
     }
     let modes: Vec<Mode> = ranges
         .iter()
         .map(|&(base, end)| {
             let size = (end - base) as usize;
-            let writes_at_base: std::collections::HashSet<u32> = acc
-                .iter()
-                .filter(|a| a.is_write && a.off == base)
-                .map(|a| a.size)
-                .collect();
             let max_write = acc
                 .iter()
                 .filter(|a| a.is_write && a.off >= base && a.off + a.size as u64 <= end)
                 .map(|a| a.size as usize)
                 .max()
                 .unwrap_or(0);
-            if size > 4 && max_write < size {
-                // buildRefinement: mark each access's start and end boundary.
+            if is_laned(base) && size > 4 && max_write < size {
+                // buildRefinement: mark each access's start and end boundary. Ghidra's `refinement`
+                // (heritage.cc:2611) runs on every range that no single write covers; mosura keeps
+                // the *partition* (CONCAT/SUBPIECE split) scoped to laned/XMM registers — the
+                // justified subset — because the broad GP partition is what explodes the rule pool.
+                // A GP range no single write covers falls through to `Skip` (left un-refined).
                 let mut refine = vec![0u32; size + 1];
                 for a in acc.iter().filter(|a| a.off >= base && a.off + a.size as u64 <= end) {
                     refine[(a.off - base) as usize] = 1;
@@ -557,12 +557,12 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                     return Mode::Refine(refine);
                 }
             }
-            // A range a single write fully covers: sub-reads/writes are normalized to the whole
-            // (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). `mixed_at_base` flags a
-            // base written at more than one width (the SIMD lane-clear+narrow-write shape), the case
-            // the offset-keyed `normalize_read_size` skips.
+            // A range a single write fully covers: every sub-read/sub-write is normalized to the
+            // whole (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). `mixed_at_base` flags
+            // a base written at more than one width (the SIMD lane-clear+narrow-write shape) and is
+            // consulted only on the laned path to preserve its tuned subset.
             if size > 1 && max_write == size {
-                return Mode::Normalize { size: size as u32, mixed_at_base: writes_at_base.len() > 1 };
+                return Mode::Normalize { size: size as u32 };
             }
             Mode::Skip
         })
@@ -634,19 +634,18 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                         }
                         f.op_set_input(op, slot, preexist);
                     }
-                    &Mode::Normalize { size, mixed_at_base } => {
-                        // normalizeReadSize: a read narrower than the covering range becomes a
-                        // SUBPIECE of the whole. The offset-keyed `normalize_read_size` already
-                        // handles a single-width base read; do the cases it can't — a high-lane
-                        // read (`off > base`) or a base read whose location is written at mixed
-                        // widths. Skip a ZEXT/SEXT whose own output *is* the whole range (its
-                        // input read would become a circular SUBPIECE of its own result).
-                        if sz >= size || (off == base && !mixed_at_base) {
-                            continue;
-                        }
-                        if matches!(f.op(op).code(), OpCode::IntZext | OpCode::IntSext)
-                            && write_loc(f, op) == Some((reg, base, size))
-                        {
+                    &Mode::Normalize { size } => {
+                        // normalizeReadSize (heritage.cc:382): every read narrower than the covering
+                        // range becomes a SUBPIECE of the whole, so it links to the single covering
+                        // write (and to `normalizeWriteSize`'s widened narrow writes). This is the
+                        // faithful guard() read half — it subsumes the offset-keyed
+                        // `normalize_read_size` hack for every location it covers (the reads it
+                        // rewrites are no longer narrow register reads, so that pass skips them).
+                        // Ghidra applies this to EVERY free narrow read including the input of a
+                        // self-zero/sign-extension `RDX:8 = ZEXT48(EDX:4)`: the `EDX:4` read becomes
+                        // `SUBPIECE(RDX:8_prev, 0)`, linking to the *previous* whole-range write (the
+                        // widened narrow writes), not this op's own output — not circular post-SSA.
+                        if sz >= size {
                             continue;
                         }
                         let whole = f.new_varnode(size, super::space::Address::new(reg, base));
@@ -684,13 +683,15 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                                     }
                                 }
                             }
-                            &Mode::Normalize { size, mixed_at_base } => {
-                                // Faithful `normalizeWriteSize`: widen a write narrower than the
-                                // covering range. Still gated to the SIMD partial-overwrite shape (a
-                                // base written at mixed widths) and the low write (`off == base`,
-                                // overlap 0); Stage 3 relaxes this to guard()'s uniform condition for
-                                // GP sub-registers, where the overlap branch comes into play.
-                                if mixed_at_base && off == base && size > sz {
+                            &Mode::Normalize { size } => {
+                                // Faithful `normalizeWriteSize` (heritage.cc:1179): every write
+                                // narrower than the covering range is widened to a whole-range write,
+                                // pulling the surrounding bytes from the range's previous value. This
+                                // is guard()'s uniform write half — it keeps a narrow write (e.g.
+                                // `sete dl`) linked through the whole-range varnode instead of
+                                // orphaning it, and `RuleDumptyHump` collapses the introduced
+                                // PIECE/SUBPIECE where they tile back together.
+                                if size > sz {
                                     normalize_write_size(
                                         f, op, reg, base, off, sz, size, bid, seq, &mut new_ops,
                                         &mut after,
