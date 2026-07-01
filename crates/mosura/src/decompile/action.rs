@@ -10,6 +10,61 @@ use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
 
+/// Rule-application trace (the mosura side of the Ghidra `OPACTION_DEBUG` diff, Task #2). Off by
+/// default and completely inert unless the `MOSURA_TRACE` environment variable is set, so normal
+/// decompilation (and the corpus) is byte-identical. When enabled, [`ActionPool::apply`] emits, for
+/// every rule that changes an op, a block mirroring Ghidra's `debugModPrint` format so one differ
+/// can parse both traces keyed on (rule name, op address, opcode):
+/// ```text
+/// DEBUG <n>: <rulename>
+/// <op before>
+///    <op after>
+/// ```
+mod trace {
+    use super::Funcdata;
+    use super::OpId;
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    thread_local! {
+        /// Set around the alias-probe rule-pool run (on a cloned Funcdata) so its firings do not
+        /// double the trace — only the real pipeline's rule applications are recorded.
+        static SUPPRESS: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether `MOSURA_TRACE` is set (cached once) and we are not inside a suppressed scope.
+    pub fn enabled() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        let on = *ON.get_or_init(|| std::env::var_os("MOSURA_TRACE").is_some());
+        on && !SUPPRESS.with(|s| s.get())
+    }
+
+    /// Run `f` with the trace suppressed (used for the alias-probe pool on a cloned function).
+    pub fn suppressed<R>(f: impl FnOnce() -> R) -> R {
+        SUPPRESS.with(|s| {
+            let prev = s.replace(true);
+            let r = f();
+            s.set(prev);
+            r
+        })
+    }
+
+    /// Emit one before/after block for a rule that just modified `op`.
+    pub fn emit(rulename: &str, op: OpId, data: &Funcdata, before: &str) {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        println!("DEBUG {n}: {rulename}\n{before}\n   {}", data.op_str(op));
+    }
+}
+
+/// Run `f` (an alias-probe rule-pool pass on a cloned function) with the `MOSURA_TRACE` output
+/// suppressed, so the probe's rule firings do not double the real pipeline's trace.
+pub fn with_suppressed_trace<R>(f: impl FnOnce() -> R) -> R {
+    trace::suppressed(f)
+}
+
 /// One transformation pass over a function. `apply` does the work and returns the number
 /// of transformations made (0 ⇒ nothing changed). Composed by [`ActionGroup`].
 pub trait Action {
@@ -119,6 +174,7 @@ impl Action for ActionPool {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let mut total = 0;
+        let tracing = trace::enabled();
         loop {
             let mut round = 0;
             let ids: Vec<OpId> = data.op_ids().collect();
@@ -132,7 +188,14 @@ impl Action for ActionPool {
                     if !list.is_empty() && !list.contains(&oc) {
                         continue;
                     }
-                    round += r.apply_op(id, data);
+                    let before = tracing.then(|| data.op_str(id));
+                    let changed = r.apply_op(id, data);
+                    round += changed;
+                    if let Some(before) = before {
+                        if changed > 0 {
+                            trace::emit(r.name(), id, data, &before);
+                        }
+                    }
                     if data.op(id).is_dead() {
                         break; // op consumed by a rule; stop applying rules to it
                     }

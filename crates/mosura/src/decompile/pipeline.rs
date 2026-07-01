@@ -50,7 +50,9 @@ impl Action for ActionHeritage {
                 super::heritage::heritage(&mut probe, &pdom);
                 super::recover::resolve_return(&mut probe);
                 super::recover::resolve_call_args(&mut probe);
-                default_rule_pool().apply(&mut probe);
+                // Suppress the MOSURA_TRACE trace here: this rule pool runs on a throwaway clone
+                // for alias analysis, so its firings would double the real pipeline's trace.
+                super::action::with_suppressed_trace(|| default_rule_pool().apply(&mut probe));
                 super::deadcode::ActionDeadCode.apply(&mut probe);
                 super::alias::alias_boundary(&probe)
             };

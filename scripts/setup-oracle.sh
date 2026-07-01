@@ -107,6 +107,21 @@ build_capture() {
   [ -x "$MOSURA_DIR/oracle/capture" ] || die "capture tool did not build"
 }
 
+build_capture_trace() {
+  # The rule-application trace tool (Task #2 "killer feature"): emits Ghidra's OPACTION_DEBUG
+  # "DEBUG <n>: <RuleName>" before/after trace for a fixture, to diff against mosura's own trace
+  # (MOSURA_TRACE=1) via scripts/trace-diff.py.
+  #
+  # No separate library: types.h does `#ifdef CPUI_DEBUG #define OPACTION_DEBUG`, so the trace
+  # machinery is ALREADY in the same libdecomp_dbg.a that oracle/capture links. This is a distinct
+  # binary compiled with the IDENTICAL switches (-DCPUI_DEBUG -D__TERMINAL__) so the oracle's
+  # capture tool stays 100% untouched and the ABI matches the library (the d5ae08d lesson).
+  log "building rule-application trace tool (oracle/capture_trace)"
+  g++ -std=c++11 -DCPUI_DEBUG -D__TERMINAL__ -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture_trace" "$MOSURA_DIR/oracle/capture_trace.cc" \
+    -Wl,--whole-archive "$CPP_DIR/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
+  [ -x "$MOSURA_DIR/oracle/capture_trace" ] || die "capture_trace tool did not build"
+}
+
 tidy_ghidra_excludes() {
   # Keep the reference checkout's `git status` clean on any machine: the build
   # drops binaries/object dirs into the cpp dir that Ghidra's .gitignore doesn't
@@ -138,6 +153,7 @@ export SLEIGH_OPT="$CPP_DIR/sleigh_opt"
 export DECOMP_DBG="$CPP_DIR/decomp_dbg"
 export DECOMP_TEST_DBG="$CPP_DIR/decomp_test_dbg"
 export CAPTURE="$MOSURA_DIR/oracle/capture"
+export CAPTURE_TRACE="$MOSURA_DIR/oracle/capture_trace"
 export DATATESTS="$DATATESTS"
 EOF
   log "wrote build/oracle.env"
@@ -159,6 +175,7 @@ check_ghidra_src
 if [ "$VERIFY_ONLY" -eq 1 ]; then verify; exit $?; fi
 build_tools
 build_capture
+build_capture_trace
 if [ "$SKIP_SPECS" -eq 0 ]; then compile_specs; else log "skipping spec compile (--skip-specs)"; fi
 write_env
 verify

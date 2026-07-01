@@ -508,4 +508,25 @@ impl Funcdata {
         }
         s
     }
+
+    /// Render a single op as one line (`0x<addr>:<uniq>: out = OPCODE inputs`), the per-op form
+    /// of [`print_raw`](Self::print_raw). Used by the rule-application trace (`MOSURA_TRACE`) to
+    /// capture an op's before/after state; a dead op renders as `**` (Ghidra's `printDebug`).
+    pub fn op_str(&self, id: OpId) -> String {
+        let op = self.op(id);
+        let mut s = String::new();
+        let _ = write!(s, "0x{:x}:{}: ", op.seqnum.pc.offset, op.seqnum.uniq);
+        if op.is_dead() {
+            s.push_str("**");
+            return s;
+        }
+        if let Some(out) = op.output {
+            let _ = write!(s, "{} = ", self.vn_str(out));
+        }
+        let _ = write!(s, "{}", op.opcode.name());
+        for &inp in &op.inrefs {
+            let _ = write!(s, " {}", self.vn_str(inp));
+        }
+        s
+    }
 }

@@ -8,6 +8,8 @@ Cargo.lock.bak
 
 # offline capture tool (binary built by setup-oracle.sh; source is tracked)
 /oracle/capture
+# rule-application trace tool (binary built by setup-oracle.sh; source is tracked)
+/oracle/capture_trace
 /oracle/*.o
 
 # Generated test goldens are committed deliberately; nothing here.
