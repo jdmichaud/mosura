@@ -173,8 +173,16 @@ impl Action for ActionPool {
         &self.name
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        use std::collections::HashMap;
         let mut total = 0;
         let tracing = trace::enabled();
+        // `perop[opc]` = the indices of rules registered for opcode `opc`, in registration
+        // (= priority) order — Ghidra's `ActionPool::addRule` appending each rule to
+        // `perop[opcode]` (action.cc:740). Computed lazily per distinct opcode: a rule with an
+        // empty oplist is universal (Ghidra `Rule::getOpList` default = every CPUI opcode), so it
+        // is included in every opcode's list, still in priority order. Rebuilt per `apply` call
+        // (cheap: ~40 rules × the opcodes that actually occur).
+        let mut perop: HashMap<OpCode, Vec<usize>> = HashMap::new();
         loop {
             let mut round = 0;
             let ids: Vec<OpId> = data.op_ids().collect();
@@ -182,22 +190,46 @@ impl Action for ActionPool {
                 if data.op(id).is_dead() {
                     continue;
                 }
-                let oc = data.op(id).code();
-                for r in &mut self.rules {
-                    let list = r.oplist();
-                    if !list.is_empty() && !list.contains(&oc) {
-                        continue;
+                // Ghidra `ActionPool::processOp` (action.cc:822): try the op's rules in priority
+                // order; when a firing changes the opcode, restart at index 0 on the *new* opcode's
+                // list (a higher-priority rule always gets first crack at the rewritten op) — the
+                // confluence that a flat fixpoint lacks. Tracks the live opcode; stops if the op dies.
+                let mut opc = data.op(id).code();
+                let mut rule_index = 0usize;
+                loop {
+                    let list = perop.entry(opc).or_insert_with(|| {
+                        self.rules
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, r)| {
+                                let l = r.oplist();
+                                l.is_empty() || l.contains(&opc)
+                            })
+                            .map(|(i, _)| i)
+                            .collect()
+                    });
+                    if rule_index >= list.len() {
+                        break;
                     }
+                    let r_idx = list[rule_index];
+                    rule_index += 1;
                     let before = tracing.then(|| data.op_str(id));
-                    let changed = r.apply_op(id, data);
+                    let changed = self.rules[r_idx].apply_op(id, data);
                     round += changed;
-                    if let Some(before) = before {
-                        if changed > 0 {
-                            trace::emit(r.name(), id, data, &before);
+                    if changed > 0 {
+                        if let Some(before) = before {
+                            trace::emit(self.rules[r_idx].name(), id, data, &before);
+                        }
+                        if data.op(id).is_dead() {
+                            break; // op consumed by a rule; stop applying rules to it
                         }
                     }
-                    if data.op(id).is_dead() {
-                        break; // op consumed by a rule; stop applying rules to it
+                    // On an opcode change (Ghidra: whether or not the rule reported a change),
+                    // restart from the top of the new opcode's priority list.
+                    let new_opc = data.op(id).code();
+                    if new_opc != opc {
+                        opc = new_opc;
+                        rule_index = 0;
                     }
                 }
             }
