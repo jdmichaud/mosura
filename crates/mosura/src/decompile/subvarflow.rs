@@ -15,16 +15,14 @@
 //! (`def`, `output`, `input`) are `Option<usize>` indices. Constants and new outputs live in
 //! `rvnodes` too but are not in `varmap` (matching Ghidra's separate `newvarlist`).
 //!
-//! STAGE 1 (this file): the subgraph machinery + `do_replacement`. The forward/backward tracers
-//! ([`SubvariableFlow::trace_forward`] etc.) are Stage-2 stubs that return `false`, so `do_trace`
-//! cannot yet succeed and no rule is wired to this subsystem — it is entirely inert (corpus-neutral)
-//! until Stage 2/3.
-
-// Stage 1 lands the subgraph machinery; the forward/backward tracers (Stage 2) and the driving
-// rules (Stage 3) are the callers of createOp/createNewOut/the PatchRecord variants/etc. Until they
-// land, those items are only exercised by unit tests, so the non-test build sees them as unused.
-// Remove this allow when Stage 2 wires the tracers.
-#![allow(dead_code)]
+//! STAGE 2 (this file): the subgraph machinery + `do_replacement` (Stage 1) plus the forward/backward
+//! opcode tracers ([`SubvariableFlow::trace_forward`]/[`SubvariableFlow::trace_backward`]) for the
+//! CORE opcodes (COPY, INT_AND/OR/XOR/NEGATE, INT_ZEXT/SEXT, SUBPIECE, PIECE, INT_LEFT/RIGHT/SRIGHT,
+//! MULTIEQUAL, INT_EQUAL/NOTEQUAL). The CALL/RETURN/BRANCHIND(switch)/FLOAT_INT2FLOAT pulls, the
+//! remaining arithmetic arms (INT_ADD/MULT/DIV/REM), and the sign-extension tracers
+//! ([`SubvariableFlow::trace_forward_sext`]/[`SubvariableFlow::trace_backward_sext`]) remain
+//! Stage-4 work and abort the trace. No driving rule is wired yet (Stage 3), so `do_trace` is only
+//! reachable from tests — the subsystem is corpus-neutral.
 
 use std::collections::HashMap;
 
@@ -59,7 +57,10 @@ struct ReplaceOp {
     replacement: Option<OpId>,
     /// Opcode of the new op.
     opc: OpCode,
-    /// Number of parameters in the new op.
+    /// Number of parameters in the new op. Ghidra pre-sizes `newOp` with this (`subflow.cc:1459`);
+    /// mosura's `do_replacement` instead sets inputs from [`input`](Self::input), so it is only kept
+    /// for parity with Ghidra's `ReplaceOp`.
+    #[allow(dead_code)]
     numparams: i32,
     /// Output variable node index.
     output: Option<usize>,
@@ -80,7 +81,9 @@ enum PatchType {
     Extension,
     /// Convert an operator output to the logical value.
     Push,
-    /// Zero-extend the logical value into a FLOAT_INT2FLOAT operator.
+    /// Zero-extend the logical value into a FLOAT_INT2FLOAT operator. Produced only by the deferred
+    /// `tryInt2FloatPull` (Stage 4); `do_replacement` already handles it.
+    #[allow(dead_code)]
     Int2Float,
 }
 
@@ -455,16 +458,601 @@ impl<'a> SubvariableFlow<'a> {
         self.trace_forward(rvn)
     }
 
-    // --- Stage 2 tracers (stubs) ------------------------------------------------------------
-    // The forward/backward opcode tracing lands in Stage 2; until then these abort the trace, so
-    // `do_trace` always returns false and the subsystem makes no change.
+    // --- Stage 2 helpers used by the tracers -----------------------------------------------
 
-    fn trace_forward(&mut self, _rvn: usize) -> bool {
-        false
+    /// Ghidra `SubvariableFlow::doesOrSet` (`subflow.cc:26`): slot of the constant if the INT_OR
+    /// sets all bits in `mask`, else -1.
+    fn does_or_set(&self, orop: OpId, mask: u64) -> i32 {
+        let in1 = self.fd.op(orop).input(1).unwrap();
+        let index: i32 = if self.fd.vn(in1).is_constant() { 1 } else { 0 };
+        let inx = self.fd.op(orop).input(index as usize).unwrap();
+        if !self.fd.vn(inx).is_constant() {
+            return -1;
+        }
+        let orval = self.fd.vn(inx).constant_value();
+        if (mask & !orval) == 0 {
+            return index;
+        }
+        -1
     }
-    fn trace_backward(&mut self, _rvn: usize) -> bool {
-        false
+
+    /// Ghidra `SubvariableFlow::doesAndClear` (`subflow.cc:43`): slot of the constant if the INT_AND
+    /// clears all bits in `mask`, else -1.
+    fn does_and_clear(&self, andop: OpId, mask: u64) -> i32 {
+        let in1 = self.fd.op(andop).input(1).unwrap();
+        let index: i32 = if self.fd.vn(in1).is_constant() { 1 } else { 0 };
+        let inx = self.fd.op(andop).input(index as usize).unwrap();
+        if !self.fd.vn(inx).is_constant() {
+            return -1;
+        }
+        let andval = self.fd.vn(inx).constant_value();
+        if (mask & andval) == 0 {
+            return index;
+        }
+        -1
     }
+
+    /// Ghidra `SubvariableFlow::addNewConstant` (`subflow.cc:1108`): a fresh constant node (not tied
+    /// to any original Varnode) as input `slot` of `rop`.
+    fn add_new_constant(&mut self, rop: Option<usize>, slot: usize, val: u64) -> usize {
+        let idx = self.rvnodes.len();
+        self.rvnodes.push(ReplaceVarnode { vn: None, replacement: None, mask: 0, val, def: None });
+        if let Some(rop) = rop {
+            while self.rops[rop].input.len() <= slot {
+                self.rops[rop].input.push(None);
+            }
+            self.rops[rop].input[slot] = Some(idx);
+        }
+        idx
+    }
+
+    /// Ghidra `SubvariableFlow::addPush` (`subflow.cc:1151`): mark an op that produces (but does not
+    /// manipulate) the logical value. Pushed to the *front* of the patch list.
+    fn add_push(&mut self, push_op: OpId, rvn: usize) {
+        self.patchlist.insert(
+            0,
+            PatchRecord { ty: PatchType::Push, patch_op: push_op, in1: Some(rvn), in2: None, slot: 0 },
+        );
+    }
+
+    /// Ghidra `SubvariableFlow::addTerminalPatch` (`subflow.cc:1167`): op naturally copies the logical
+    /// value out; it becomes a COPY. A true terminal modification.
+    fn add_terminal_patch(&mut self, pullop: OpId, rvn: usize) {
+        self.patchlist.push(PatchRecord { ty: PatchType::Copy, patch_op: pullop, in1: Some(rvn), in2: None, slot: 0 });
+        self.pullcount += 1;
+    }
+
+    /// Ghidra `SubvariableFlow::addTerminalPatchSameOp` (`subflow.cc:1185`): op naturally pulls the
+    /// logical value; the opcode stays, only input `slot` changes. A true terminal modification.
+    fn add_terminal_patch_same_op(&mut self, pullop: OpId, rvn: usize, slot: i32) {
+        self.patchlist.push(PatchRecord { ty: PatchType::Parameter, patch_op: pullop, in1: Some(rvn), in2: None, slot });
+        self.pullcount += 1;
+    }
+
+    /// Ghidra `SubvariableFlow::addExtensionPatch` (`subflow.cc:1221`): op pads the logical value with
+    /// zero bits, shifted left by `sa` (bits); `sa == -1` means shift by the mask's least-set bit.
+    /// Not a true modification (the output keeps the expanded size).
+    fn add_extension_patch(&mut self, rvn: usize, pushop: OpId, sa: i32) {
+        let sa = if sa == -1 { leastsigbit_set(self.rvnodes[rvn].mask) } else { sa };
+        self.patchlist.push(PatchRecord { ty: PatchType::Extension, patch_op: pushop, in1: Some(rvn), in2: None, slot: sa });
+    }
+
+    /// Ghidra `SubvariableFlow::addComparePatch` (`subflow.cc:1241`): the two logical values flow into
+    /// a comparison done on the wider containers. A true terminal modification.
+    fn add_compare_patch(&mut self, in1: usize, in2: usize, op: OpId) {
+        self.patchlist.push(PatchRecord { ty: PatchType::Compare, patch_op: op, in1: Some(in1), in2: Some(in2), slot: 0 });
+        self.pullcount += 1;
+    }
+
+    /// Ghidra `SubvariableFlow::createCompareBridge` (`subflow.cc:1056`): extend the subgraph through a
+    /// comparison, adding the other side as a logical value and a compare patch.
+    fn create_compare_bridge(&mut self, op: OpId, inrvn: usize, slot: usize, othervn: VarnodeId) -> bool {
+        let inmask = self.rvnodes[inrvn].mask;
+        let Some((rep, inworklist)) = self.set_replacement(othervn, inmask) else { return false };
+        if slot == 0 {
+            self.add_compare_patch(inrvn, rep, op);
+        } else {
+            self.add_compare_patch(rep, inrvn, op);
+        }
+        if inworklist {
+            self.worklist.push(rep);
+        }
+        true
+    }
+
+    // --- Stage 2 tracers (core opcodes) ----------------------------------------------------
+
+    /// Ghidra `SubvariableFlow::traceForward` (`subflow.cc:373`): trace the logical value through its
+    /// descendant ops one level, extending the subgraph. Returns false to abort the whole transform.
+    /// The CALL/CALLIND/RETURN/BRANCHIND/FLOAT_INT2FLOAT pulls and the INT_MULT/ADD/DIV/REM/LESS/
+    /// bool/CBRANCH arms are Stage-4 work: they fall to the `default` abort.
+    fn trace_forward(&mut self, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
+        let mask = self.rvnodes[rvn].mask;
+        let mut dcount = 0i32;
+        let mut hcount = 0i32;
+
+        let descend = self.fd.vn(vn).descend.clone();
+        for op in descend {
+            let out_opt = self.fd.op(op).output;
+            if let Some(o) = out_opt {
+                if self.fd.vn(o).is_mark() && !self.fd.op(op).is_call() {
+                    continue;
+                }
+            }
+            dcount += 1; // Count this descendant
+            let slot = self.fd.op(op).inrefs.iter().position(|&v| v == vn).unwrap();
+            let opc = self.fd.op(op).code();
+            match opc {
+                OpCode::Copy | OpCode::Multiequal | OpCode::IntNegate | OpCode::IntXor => {
+                    let outvn = out_opt.expect("op has output");
+                    let n = self.fd.op(op).num_inputs() as i32;
+                    let rop = self.create_op_down(opc, n, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntOr => {
+                    if self.does_or_set(op, mask) != -1 {
+                        continue; // Subvar set to 1s, truncate flow
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let rop = self.create_op_down(OpCode::IntOr, 2, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntAnd => {
+                    let outvn = out_opt.expect("op has output");
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if self.fd.vn(in1).is_constant() && self.fd.vn(in1).constant_value() == mask {
+                        if self.fd.vn(outvn).size == self.flowsize && (mask & 1) != 0 {
+                            self.add_terminal_patch(op, rvn);
+                            hcount += 1;
+                            continue;
+                        }
+                        // Is the small variable getting zero padded into something fully consumed?
+                        let out_consume = self.fd.vn(outvn).get_consume();
+                        if !self.aggressive && (out_consume & mask) != out_consume {
+                            self.add_extension_patch(rvn, op, -1);
+                            hcount += 1;
+                            continue;
+                        }
+                    }
+                    if self.does_and_clear(op, mask) != -1 {
+                        continue; // Subvar set to zero, truncate flow
+                    }
+                    let rop = self.create_op_down(OpCode::IntAnd, 2, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntZext | OpCode::IntSext => {
+                    let outvn = out_opt.expect("op has output");
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntLeft => {
+                    let outvn = out_opt.expect("op has output");
+                    if slot == 1 {
+                        // Logical flow is into the shift amount.
+                        if (mask & 1) == 0 {
+                            return false;
+                        }
+                        if self.bitsize < 8 {
+                            return false;
+                        }
+                        self.add_terminal_patch_same_op(op, rvn, slot as i32);
+                        hcount += 1;
+                        continue;
+                    }
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.fd.vn(in1).is_constant() {
+                        return false; // Dynamic shift
+                    }
+                    let sa = self.fd.vn(in1).constant_value() as i64;
+                    if sa >= 64 {
+                        return false; // Beyond precision of mask
+                    }
+                    let out_size = self.fd.vn(outvn).size;
+                    let newmask = (mask << (sa as u32)) & calc_mask(out_size);
+                    if newmask == 0 {
+                        continue; // Subvar cleared, truncate flow
+                    }
+                    if mask != (newmask >> (sa as u32)) {
+                        return false; // subvar is clipped
+                    }
+                    let out_consume = self.fd.vn(outvn).get_consume();
+                    if (mask & 1) != 0
+                        && (sa + self.bitsize as i64) == 8 * out_size as i64
+                        && (out_consume & !newmask) != 0
+                    {
+                        self.add_extension_patch(rvn, op, sa as i32);
+                        hcount += 1;
+                        continue;
+                    }
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), newmask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntRight | OpCode::IntSright => {
+                    let outvn = out_opt.expect("op has output");
+                    if slot == 1 {
+                        // Logical flow is into the shift amount.
+                        if (mask & 1) == 0 {
+                            return false;
+                        }
+                        if self.bitsize < 8 {
+                            return false;
+                        }
+                        self.add_terminal_patch_same_op(op, rvn, slot as i32);
+                        hcount += 1;
+                        continue;
+                    }
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.fd.vn(in1).is_constant() {
+                        return false;
+                    }
+                    let sa = self.fd.vn(in1).constant_value() as i64;
+                    let newmask = if sa >= 64 { 0 } else { mask >> (sa as u32) };
+                    if newmask == 0 {
+                        if opc == OpCode::IntRight {
+                            continue; // subvar does not pass thru, truncate flow
+                        }
+                        return false;
+                    }
+                    if mask != (newmask << (sa as u32)) {
+                        return false;
+                    }
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    let in0_nz = self.fd.vn(in0).get_nzmask();
+                    let out_size = self.fd.vn(outvn).size;
+                    if out_size == self.flowsize && (newmask & 1) == 1 && in0_nz == mask {
+                        self.add_terminal_patch(op, rvn);
+                        hcount += 1;
+                        continue;
+                    }
+                    let out_consume = self.fd.vn(outvn).get_consume();
+                    if (newmask & 1) == 1
+                        && (sa + self.bitsize as i64) == 8 * out_size as i64
+                        && (out_consume & !newmask) != 0
+                    {
+                        self.add_extension_patch(rvn, op, 0);
+                        hcount += 1;
+                        continue;
+                    }
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), newmask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Subpiece => {
+                    let outvn = out_opt.expect("op has output");
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    let sa = self.fd.vn(in1).constant_value() as i64 * 8;
+                    if sa >= 64 {
+                        continue;
+                    }
+                    let out_size = self.fd.vn(outvn).size;
+                    let newmask = (mask >> (sa as u32)) & calc_mask(out_size);
+                    if newmask == 0 {
+                        continue; // subvar is set to zero, truncate flow
+                    }
+                    if mask != (newmask << (sa as u32)) {
+                        // Some kind of truncation of the logical value.
+                        if (self.flowsize as i64) > (sa / 8 + out_size as i64) && (mask & 1) != 0 {
+                            // Only a piece of the logical value remains.
+                            self.add_terminal_patch_same_op(op, rvn, 0);
+                            hcount += 1;
+                            continue;
+                        }
+                        return false;
+                    }
+                    if (newmask & 1) != 0 && out_size == self.flowsize {
+                        self.add_terminal_patch(op, rvn);
+                        hcount += 1;
+                        continue;
+                    }
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), newmask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Piece => {
+                    let outvn = out_opt.expect("op has output");
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    let newmask = if vn == in0 {
+                        let in1 = self.fd.op(op).input(1).unwrap();
+                        let sh = (8 * self.fd.vn(in1).size) as u32;
+                        if sh >= 64 { 0 } else { mask << sh }
+                    } else {
+                        mask
+                    };
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), newmask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntNotequal | OpCode::IntEqual => {
+                    let othervn = self.fd.op(op).input(1 - slot).unwrap(); // OTHER side of comparison
+                    if self.bitsize != 1 {
+                        let vn_nz = self.fd.vn(vn).get_nzmask();
+                        if !self.aggressive && (vn_nz | mask) != mask {
+                            return false; // Everything but logical variable must be zero
+                        }
+                        if self.fd.vn(othervn).is_constant() {
+                            if (mask | self.fd.vn(othervn).constant_value()) != mask {
+                                return false; // Not comparing to just bits of the logical variable
+                            }
+                        } else {
+                            let oth_nz = self.fd.vn(othervn).get_nzmask();
+                            if !self.aggressive && (mask | oth_nz) != mask {
+                                return false; // unused bits of otherside must be zero
+                            }
+                        }
+                        if !self.create_compare_bridge(op, rvn, slot, othervn) {
+                            return false;
+                        }
+                    } else {
+                        // Movement of boolean variables.
+                        if !self.fd.vn(othervn).is_constant() {
+                            return false;
+                        }
+                        let newmask = self.fd.vn(vn).get_nzmask();
+                        if newmask != mask {
+                            return false;
+                        }
+                        let othoff = self.fd.vn(othervn).constant_value();
+                        let mut booldir = if othoff == 0 {
+                            true
+                        } else if othoff == newmask {
+                            false
+                        } else {
+                            return false;
+                        };
+                        if opc == OpCode::IntEqual {
+                            booldir = !booldir;
+                        }
+                        if booldir {
+                            self.add_terminal_patch(op, rvn);
+                        } else {
+                            let rop = self.create_op_down(OpCode::BoolNegate, 1, op, rvn, 0);
+                            let outidx = self.create_new_out(rop, 1);
+                            self.add_terminal_patch(op, outidx);
+                        }
+                    }
+                    hcount += 1;
+                }
+                // Stage-4 arms — CALL/CALLIND/RETURN/BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/
+                // DIV/REM, INT_LESS/LESSEQUAL, bool ops, CBRANCH: abort the trace (Ghidra `default`).
+                _ => return false,
+            }
+        }
+        if dcount != hcount {
+            // Must account for all descendants of an input.
+            if self.fd.vn(vn).is_input() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Ghidra `SubvariableFlow::traceBackward` (`subflow.cc:665`): trace the logical value backward
+    /// through its defining op one level. Returns true if traced (or `vn` is an input), false to
+    /// abort. INT_ADD/SRIGHT/MULT/DIV/REM and CALL/CALLIND(push) are Stage-4 work: they abort.
+    fn trace_backward(&mut self, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
+        let mask = self.rvnodes[rvn].mask;
+        let Some(op) = self.fd.vn(vn).def else {
+            return true; // If vn is input
+        };
+        let opc = self.fd.op(op).code();
+        match opc {
+            OpCode::Copy | OpCode::Multiequal | OpCode::IntNegate | OpCode::IntXor => {
+                let n = self.fd.op(op).num_inputs() as i32;
+                let rop = self.create_op(opc, n, rvn);
+                for i in 0..n as usize {
+                    let ini = self.fd.op(op).input(i).unwrap();
+                    if !self.create_link(Some(rop), mask, i as i32, ini) {
+                        return false;
+                    }
+                }
+                true
+            }
+            OpCode::IntAnd => {
+                let sa = self.does_and_clear(op, mask);
+                if sa != -1 {
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    let cvn = self.fd.op(op).input(sa as usize).unwrap();
+                    self.add_constant(Some(rop), mask, 0, cvn);
+                } else {
+                    let rop = self.create_op(OpCode::IntAnd, 2, rvn);
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.create_link(Some(rop), mask, 0, in0) {
+                        return false;
+                    }
+                    if !self.create_link(Some(rop), mask, 1, in1) {
+                        return false;
+                    }
+                }
+                true
+            }
+            OpCode::IntOr => {
+                let sa = self.does_or_set(op, mask);
+                if sa != -1 {
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    let cvn = self.fd.op(op).input(sa as usize).unwrap();
+                    self.add_constant(Some(rop), mask, 0, cvn);
+                } else {
+                    let rop = self.create_op(OpCode::IntOr, 2, rvn);
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.create_link(Some(rop), mask, 0, in0) {
+                        return false;
+                    }
+                    if !self.create_link(Some(rop), mask, 1, in1) {
+                        return false;
+                    }
+                }
+                true
+            }
+            OpCode::IntZext | OpCode::IntSext => {
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in0_size = self.fd.vn(in0).size;
+                if (mask & calc_mask(in0_size)) != mask {
+                    if (mask & 1) != 0 && self.flowsize > in0_size {
+                        self.add_push(op, rvn);
+                        return true;
+                    }
+                    return false; // Check if subvariable comes through extension
+                }
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                if !self.create_link(Some(rop), mask, 0, in0) {
+                    return false;
+                }
+                true
+            }
+            OpCode::IntLeft => {
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.fd.vn(in1).is_constant() {
+                    return false; // Dynamic shift
+                }
+                let sa = self.fd.vn(in1).constant_value() as i64;
+                let newmask = if sa >= 64 { 0 } else { mask >> (sa as u32) };
+                if newmask == 0 {
+                    // Subvariable filled with shifted zero.
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    self.add_new_constant(Some(rop), 0, 0);
+                    return true;
+                }
+                if (newmask << (sa as u32)) == mask {
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    if !self.create_link(Some(rop), newmask, 0, in0) {
+                        return false;
+                    }
+                    return true;
+                }
+                if (mask & 1) == 0 {
+                    return false; // Can't assume zeroes are shifted into least sig bits
+                }
+                let rop = self.create_op(OpCode::IntLeft, 2, rvn);
+                let in0 = self.fd.op(op).input(0).unwrap();
+                if !self.create_link(Some(rop), mask, 0, in0) {
+                    return false;
+                }
+                let in1sz = self.fd.vn(in1).size;
+                self.add_constant(Some(rop), calc_mask(in1sz), 1, in1); // Preserve the shift amount
+                true
+            }
+            OpCode::IntRight => {
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.fd.vn(in1).is_constant() {
+                    return false; // Dynamic shift
+                }
+                let sa = self.fd.vn(in1).constant_value() as i64;
+                if sa >= 64 {
+                    return false; // Beyond precision of mask
+                }
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in0_size = self.fd.vn(in0).size;
+                let newmask = (mask << (sa as u32)) & calc_mask(in0_size);
+                if newmask == 0 {
+                    // Subvariable filled with shifted zero.
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    self.add_new_constant(Some(rop), 0, 0);
+                    return true;
+                }
+                if (newmask >> (sa as u32)) != mask {
+                    return false; // subvariable is truncated by shift
+                }
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                if !self.create_link(Some(rop), newmask, 0, in0) {
+                    return false;
+                }
+                true
+            }
+            OpCode::Subpiece => {
+                let in1 = self.fd.op(op).input(1).unwrap();
+                let sa = self.fd.vn(in1).constant_value() as i64 * 8;
+                let newmask = if sa >= 64 { 0 } else { mask << (sa as u32) };
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                let in0 = self.fd.op(op).input(0).unwrap();
+                if !self.create_link(Some(rop), newmask, 0, in0) {
+                    return false;
+                }
+                true
+            }
+            OpCode::Piece => {
+                let in1 = self.fd.op(op).input(1).unwrap();
+                let in1_size = self.fd.vn(in1).size;
+                if (mask & calc_mask(in1_size)) == mask {
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    if !self.create_link(Some(rop), mask, 0, in1) {
+                        return false;
+                    }
+                    return true;
+                }
+                let sa = (in1_size * 8) as i64;
+                let newmask = if sa >= 64 { 0 } else { mask >> (sa as u32) };
+                let back = if sa >= 64 { 0 } else { newmask << (sa as u32) };
+                if back == mask {
+                    let rop = self.create_op(OpCode::Copy, 1, rvn);
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    if !self.create_link(Some(rop), newmask, 0, in0) {
+                        return false;
+                    }
+                    return true;
+                }
+                false
+            }
+            OpCode::IntEqual
+            | OpCode::IntNotequal
+            | OpCode::IntSless
+            | OpCode::IntSlessequal
+            | OpCode::IntLess
+            | OpCode::IntLessequal
+            | OpCode::IntCarry
+            | OpCode::IntScarry
+            | OpCode::IntSborrow
+            | OpCode::BoolNegate
+            | OpCode::BoolXor
+            | OpCode::BoolAnd
+            | OpCode::BoolOr
+            | OpCode::FloatEqual
+            | OpCode::FloatNotequal
+            | OpCode::FloatLessequal
+            | OpCode::FloatNan => {
+                // Mask won't be 1, because setReplacement takes care of it.
+                if (mask & 1) == 1 {
+                    return false; // Not normal variable flow
+                }
+                // Variable is filled with zero.
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                self.add_new_constant(Some(rop), 0, 0);
+                true
+            }
+            // Stage-4 arms — INT_ADD/SRIGHT/MULT/DIV/REM and CALL/CALLIND(push): abort the trace.
+            _ => false,
+        }
+    }
+
+    // --- Stage 4 stubs ---------------------------------------------------------------------
+    // The sign-extension tracers (subflow.cc traceForwardSext:867 / traceBackwardSext) land with
+    // RuleSubvarSext in Stage 4; until then they abort, so a `sextrestrictions` trace never succeeds.
+
     fn trace_forward_sext(&mut self, _rvn: usize) -> bool {
         false
     }
@@ -829,5 +1417,366 @@ mod tests {
         assert_eq!(f.op(op).num_inputs(), 1);
         let zin = f.op(op).input(0).unwrap();
         assert_eq!(f.vn(zin).size, 1);
+    }
+
+    // --- Stage 2 tracer tests --------------------------------------------------------------
+    // Each drives `trace_backward`/`trace_forward` on a hand-built graph and inspects the shadow
+    // subgraph (rops/patchlist/varmap) it produces, mirroring one arm of subflow.cc.
+
+    #[test]
+    fn trace_backward_copy_and_multiequal() {
+        // z = COPY(y): shadow COPY, y linked with the same mask.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        let opz = f.new_op(OpCode::Copy, seq, vec![y]);
+        let z = f.new_output(opz, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, z, 0xff, false, false, false);
+        let zrvn = *s.varmap.get(&z).unwrap();
+        assert!(s.trace_backward(zrvn));
+        assert_eq!(s.rops.len(), 1);
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let yrvn = *s.varmap.get(&y).expect("input linked backward");
+        assert_eq!(s.rvnodes[yrvn].mask, 0xff);
+        drop(s);
+
+        // m = MULTIEQUAL(p, q): shadow MULTIEQUAL, both inputs linked.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let p = f.new_input(4, Address::new(reg, 0x10));
+        let q = f.new_input(4, Address::new(reg, 0x14));
+        let opm = f.new_op(OpCode::Multiequal, seq, vec![p, q]);
+        let m = f.new_output(opm, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, m, 0xff, false, false, false);
+        let mrvn = *s.varmap.get(&m).unwrap();
+        assert!(s.trace_backward(mrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Multiequal);
+        assert!(s.varmap.contains_key(&p) && s.varmap.contains_key(&q));
+    }
+
+    #[test]
+    fn trace_backward_and_normal_vs_clear() {
+        // Normal AND (const does not clear the mask): shadow INT_AND over both inputs.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xf0f0);
+        let opy = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::IntAnd);
+        assert!(s.varmap.contains_key(&a));
+        drop(s);
+
+        // Clearing AND (const zeroes the mask): shadow COPY of a masked-to-zero constant.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff00);
+        let opy = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let cin = s.rops[0].input[0].expect("constant input");
+        assert_eq!(s.rvnodes[cin].val, 0); // 0xff & 0xff00 == 0
+    }
+
+    #[test]
+    fn trace_backward_or_set() {
+        // OR whose const sets all of the mask: shadow COPY of the constant (value == mask).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff);
+        let opy = f.new_op(OpCode::IntOr, seq, vec![a, c]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let cin = s.rops[0].input[0].expect("constant input");
+        assert_eq!(s.rvnodes[cin].val, 0xff);
+    }
+
+    #[test]
+    fn trace_backward_zext_copy_vs_push() {
+        // Logical value fits within the pre-extension size: shadow COPY, link the narrow input.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let b = f.new_input(1, Address::new(reg, 0x10));
+        let opy = f.new_op(OpCode::IntZext, seq, vec![b]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        assert!(s.varmap.contains_key(&b));
+        drop(s);
+
+        // Logical value straddles the extension boundary: a push_patch at the front of the list.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let b = f.new_input(2, Address::new(reg, 0x10));
+        let opy = f.new_op(OpCode::IntZext, seq, vec![b]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        // mask 0x1ffff → 17-bit logical value (flowsize 3) wider than b's 2 bytes.
+        let mut s = SubvariableFlow::new(&mut f, y, 0x1ffff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.patchlist.len(), 1);
+        assert_eq!(s.patchlist[0].ty, PatchType::Push);
+    }
+
+    #[test]
+    fn trace_backward_subpiece_shifts_mask_up() {
+        // y = SUBPIECE(w, 1): tracing y's low byte pulls w's mask 0xff << 8.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let w0 = f.new_input(4, Address::new(reg, 0x08));
+        let opw = f.new_op(OpCode::Copy, seq, vec![w0]);
+        let w = f.new_output(opw, 4, Address::new(reg, 0x10)); // written, so mask 0xff00 is allowed
+        let c1 = f.new_const(4, 1);
+        let opy = f.new_op(OpCode::Subpiece, seq, vec![w, c1]);
+        let y = f.new_output(opy, 1, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let wrvn = *s.varmap.get(&w).expect("w linked");
+        assert_eq!(s.rvnodes[wrvn].mask, 0xff00);
+    }
+
+    #[test]
+    fn trace_backward_piece_low_part() {
+        // y = PIECE(hi, lo): tracing a low byte follows the low input, mask unchanged.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let hi = f.new_input(2, Address::new(reg, 0x10));
+        let lo = f.new_input(2, Address::new(reg, 0x14));
+        let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let lorvn = *s.varmap.get(&lo).expect("low part linked");
+        assert_eq!(s.rvnodes[lorvn].mask, 0xff);
+    }
+
+    #[test]
+    fn trace_backward_left_and_right_shift() {
+        // y = a << 8: tracing mask 0xff00 pulls a's mask 0xff via a plain COPY.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c8 = f.new_const(4, 8);
+        let opy = f.new_op(OpCode::IntLeft, seq, vec![a, c8]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff00, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let arvn = *s.varmap.get(&a).expect("a linked");
+        assert_eq!(s.rvnodes[arvn].mask, 0xff);
+        drop(s);
+
+        // y = a >> 8: tracing mask 0xff pulls a's mask 0xff00 (written a, unaligned mask).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a0 = f.new_input(4, Address::new(reg, 0x08));
+        let opa = f.new_op(OpCode::Copy, seq, vec![a0]);
+        let a = f.new_output(opa, 4, Address::new(reg, 0x10));
+        let c8 = f.new_const(4, 8);
+        let opy = f.new_op(OpCode::IntRight, seq, vec![a, c8]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_backward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        let arvn = *s.varmap.get(&a).expect("a linked");
+        assert_eq!(s.rvnodes[arvn].mask, 0xff00);
+    }
+
+    #[test]
+    fn trace_forward_subpiece_terminal() {
+        // y --SUBPIECE 0--> p (1 byte == flowsize): a terminal copy_patch.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        let z0 = f.new_const(4, 0);
+        let op1 = f.new_op(OpCode::Subpiece, seq, vec![y, z0]);
+        let _p = f.new_output(op1, 1, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_forward(yrvn));
+        assert_eq!(s.patchlist.len(), 1);
+        assert_eq!(s.patchlist[0].ty, PatchType::Copy);
+        assert_eq!(s.pullcount, 1);
+    }
+
+    #[test]
+    fn trace_forward_and_terminal_and_extension() {
+        // y --AND 0xff--> out (1 byte == flowsize, mask justified): terminal copy_patch.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff);
+        let op = f.new_op(OpCode::IntAnd, seq, vec![y, c]);
+        let _out = f.new_output(op, 1, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_forward(yrvn));
+        assert_eq!(s.patchlist[0].ty, PatchType::Copy);
+        drop(s);
+
+        // y --AND 0xff--> out (4 bytes, consumes beyond the mask): a zero-padding extension_patch.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff);
+        let op = f.new_op(OpCode::IntAnd, seq, vec![y, c]);
+        let out = f.new_output(op, 4, Address::new(reg, 0x18));
+        f.vn_mut(out).consume = 0xffff; // consumed beyond the logical byte
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_forward(yrvn));
+        assert_eq!(s.patchlist[0].ty, PatchType::Extension);
+        assert_eq!(s.patchlist[0].slot, 0); // leastsigbit_set(0xff)
+        assert_eq!(s.pullcount, 0); // extension is not a true modification
+    }
+
+    #[test]
+    fn trace_forward_zext_becomes_copy() {
+        // y --ZEXT--> out: shadow COPY into the widened output node.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        let op = f.new_op(OpCode::IntZext, seq, vec![y]);
+        let out = f.new_output(op, 8, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_forward(yrvn));
+        assert_eq!(s.rops[0].opc, OpCode::Copy);
+        assert!(s.varmap.contains_key(&out));
+    }
+
+    #[test]
+    fn trace_forward_equal_compare_bridge() {
+        // y == const(0x12): a compare_patch bridging both sides (bitsize != 1).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let y = f.new_input(4, Address::new(reg, 0x10));
+        f.vn_mut(y).nzm = 0xff; // logical value confined to the mask
+        let other = f.new_const(4, 0x12);
+        let op = f.new_op(OpCode::IntEqual, seq, vec![y, other]);
+        let _b = f.new_output(op, 1, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        let yrvn = *s.varmap.get(&y).unwrap();
+        assert!(s.trace_forward(yrvn));
+        assert_eq!(s.patchlist[0].ty, PatchType::Compare);
+        assert_eq!(s.pullcount, 1);
+    }
+
+    #[test]
+    fn trace_forward_piece_high_and_low() {
+        // Tracing the low input of a PIECE keeps the mask (fresh graph per part: the direct trace_*
+        // calls don't clear the `mark` bits that do_trace would).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let hi = f.new_input(2, Address::new(reg, 0x10));
+        let lo = f.new_input(2, Address::new(reg, 0x14));
+        let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, lo, 0xff, false, false, false);
+        let lorvn = *s.varmap.get(&lo).unwrap();
+        assert!(s.trace_forward(lorvn));
+        let yrvn = *s.varmap.get(&y).expect("output linked");
+        assert_eq!(s.rvnodes[yrvn].mask, 0xff); // low part, unchanged
+
+        // Tracing the high input shifts the mask up by 8*size(lo).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let hi = f.new_input(2, Address::new(reg, 0x10));
+        let lo = f.new_input(2, Address::new(reg, 0x14));
+        let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
+        let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, hi, 0xff, false, false, false);
+        let hirvn = *s.varmap.get(&hi).unwrap();
+        assert!(s.trace_forward(hirvn));
+        let yrvn = *s.varmap.get(&y).expect("output linked");
+        assert_eq!(s.rvnodes[yrvn].mask, 0xff << 16);
+    }
+
+    #[test]
+    fn deferred_arithmetic_arms_abort() {
+        // INT_ADD is Stage-4: backward aborts (fresh graph per part — direct trace_* leaves marks).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x14));
+        let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let sum = f.new_output(op, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, sum, 0xff, false, false, false);
+        let srvn = *s.varmap.get(&sum).unwrap();
+        assert!(!s.trace_backward(srvn)); // INT_ADD not among the core backward arms
+
+        // Forward through the ADD from an input also aborts.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x14));
+        let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let _sum = f.new_output(op, 4, Address::new(reg, 0x18));
+        let mut s = SubvariableFlow::new(&mut f, a, 0xff, false, false, false);
+        let arvn = *s.varmap.get(&a).unwrap();
+        assert!(!s.trace_forward(arvn));
+    }
+
+    #[test]
+    fn do_trace_and_replace_dissolves_and_subpiece() {
+        // End-to-end: p = SUBPIECE((a & 0xff), 0) seeded like RuleSubvarSubpiece would.
+        // do_trace builds the subgraph; do_replacement turns SUBPIECE into a COPY of a 1-byte AND.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff);
+        let op0 = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
+        let y = f.new_output(op0, 4, Address::new(reg, 0x20));
+        let z0 = f.new_const(4, 0);
+        let op1 = f.new_op(OpCode::Subpiece, seq, vec![y, z0]);
+        let p = f.new_output(op1, 1, Address::new(reg, 0x28));
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x30));
+        let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, p]);
+        f.set_blocks(vec![BlockBasic { ops: vec![op0, op1, store], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+
+        // Seed root = y with mask calc_mask(1) << 0 == 0xff (the SUBPIECE's logical value).
+        let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
+        assert!(s.do_trace());
+        // Exactly one shadow op — the narrow AND (the forward pass skips it via the mark check).
+        assert_eq!(s.rops.len(), 1);
+        assert_eq!(s.rops[0].opc, OpCode::IntAnd);
+        assert_eq!(s.patchlist.len(), 1);
+        assert_eq!(s.patchlist[0].ty, PatchType::Copy);
+        s.do_replacement();
+        drop(s);
+
+        // SUBPIECE is now a COPY of a fresh 1-byte value.
+        assert_eq!(f.op(op1).code(), OpCode::Copy);
+        assert_eq!(f.op(op1).num_inputs(), 1);
+        let cin = f.op(op1).input(0).unwrap();
+        assert_eq!(f.vn(cin).size, 1);
+        // A narrow 1-byte INT_AND was materialized (paralleling the original).
+        let narrow = (0..f.num_ops() as u32)
+            .map(OpId)
+            .find(|&o| !f.op(o).is_dead() && f.op(o).code() == OpCode::IntAnd && o != op0)
+            .expect("narrow AND created");
+        let ao = f.op(narrow).output.unwrap();
+        assert_eq!(f.vn(ao).size, 1);
     }
 }
