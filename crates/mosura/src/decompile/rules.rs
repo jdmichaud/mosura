@@ -1471,6 +1471,56 @@ impl Rule for RuleShiftPiece {
     }
 }
 
+/// Ghidra `RuleAndMask` (ruleaction.cc:302): collapse an unnecessary `INT_AND`.
+///   - `V & W  =>  0`  when `nzm(V) & nzm(W) == 0` (the AND can produce no nonzero bit)
+///   - `V & c  =>  V`  when the constant `c` covers every nonzero bit of `V` (`nzm(V) & c == nzm(V)`)
+/// Uses the non-zero mask to prove the mask is a no-op (e.g. `(uint)char_val & 0xff => char_val`).
+/// (Ghidra's third arm — `nzm & getConsume() == 0` — needs per-bit consume tracking, which mosura's
+/// whole-varnode dead-code analysis does not model, so it is omitted; that arm only ever removes
+/// *more*.)
+pub struct RuleAndMask;
+
+impl Rule for RuleAndMask {
+    fn name(&self) -> &str {
+        "andmask"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // Re-check the live shape: the pool dispatches on a cached opcode that an earlier rule this
+        // pass may have rewritten away from INT_AND.
+        if data.op(op).code() != OpCode::IntAnd || data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let Some(out) = data.op(op).output else { return 0 };
+        let size = data.vn(out).size;
+        if size > 8 {
+            return 0; // uintb is 64-bit
+        }
+        let (i0, i1) = (data.op(op).input(0).unwrap(), data.op(op).input(1).unwrap());
+        let mask1 = data.vn(i0).get_nzmask();
+        let andmask = if mask1 == 0 { 0 } else { mask1 & data.vn(i1).get_nzmask() };
+        let vn = if andmask == 0 {
+            data.new_const(size, 0)
+        } else if andmask == mask1 {
+            if !data.vn(i1).is_constant() {
+                return 0;
+            }
+            i0 // the AND keeps every nonzero bit of input(0)
+        } else {
+            return 0;
+        };
+        if !data.vn(vn).is_heritage_known() {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::Copy);
+        data.op_remove_input(op, 1);
+        data.op_set_input(op, 0, vn);
+        1
+    }
+}
+
 /// Ghidra `RuleAndZext` (ruleaction.cc:1696): convert `INT_AND` to `INT_ZEXT` where the mask keeps
 /// exactly the low bytes of a sign-extension or concatenation:
 ///   - `sext(X) & mask  =>  zext(X)`   (mask == all-ones over `|X|` bytes)
@@ -1516,6 +1566,219 @@ impl Rule for RuleAndZext {
         data.op_remove_input(op, 1);
         data.op_set_input(op, 0, rootvn);
         1
+    }
+}
+
+/// Ghidra `RuleSlessToLess` (ruleaction.cc:2530): convert a signed comparison to an unsigned one when
+/// both operands are provably non-negative — `V s< W  =>  V < W` (and `s<=` → `<=`). The non-zero
+/// mask proves the sign bit is clear on each operand, so the signed and unsigned orderings agree.
+pub struct RuleSlessToLess;
+
+impl Rule for RuleSlessToLess {
+    fn name(&self) -> &str {
+        "slesstoless"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSless, OpCode::IntSlessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // An earlier rule this pass may have rewritten `op` while the pool's cached opcode stayed
+        // INT_SLESS/INT_SLESSEQUAL (the pool dispatches on the stale code). Re-check the live shape.
+        let new_op = match data.op(op).code() {
+            OpCode::IntSless => OpCode::IntLess,
+            OpCode::IntSlessequal => OpCode::IntLessequal,
+            _ => return 0,
+        };
+        let vn = data.op(op).input(0).unwrap();
+        let sz = data.vn(vn).size;
+        if super::nzmask::signbit_negative(data.vn(vn).get_nzmask(), sz) {
+            return 0;
+        }
+        let vn1 = data.op(op).input(1).unwrap();
+        if super::nzmask::signbit_negative(data.vn(vn1).get_nzmask(), sz) {
+            return 0;
+        }
+        data.op_set_opcode(op, new_op);
+        1
+    }
+}
+
+/// Ghidra `RulePopcountBoolXor::getBooleanResult` (ruleaction.cc:10399): follow the boolean bit at
+/// `bit_pos` back through the shift/extend/concat/mask operations that combined it, returning the
+/// single boolean Varnode that produces it. Returns `(None, const_res)`, where `const_res` is 0/1 if
+/// the bit resolves to a constant and `-1` when no unique boolean Varnode can be isolated.
+fn popcount_boolean_result(
+    data: &Funcdata,
+    mut vn: VarnodeId,
+    mut bit_pos: i32,
+) -> (Option<VarnodeId>, i32) {
+    let mut mask: u64 = 1u64.checked_shl(bit_pos as u32).unwrap_or(0);
+    loop {
+        if data.vn(vn).is_constant() {
+            let const_res =
+                (data.vn(vn).constant_value().checked_shr(bit_pos as u32).unwrap_or(0) & 1) as i32;
+            return (None, const_res);
+        }
+        if !data.vn(vn).is_written() {
+            return (None, -1);
+        }
+        if bit_pos == 0 && data.vn(vn).size == 1 && data.vn(vn).get_nzmask() == mask {
+            return (Some(vn), -1);
+        }
+        let def = data.vn(vn).def.unwrap();
+        match data.op(def).code() {
+            OpCode::IntAnd => {
+                let i1 = data.op(def).input(1).unwrap();
+                if !data.vn(i1).is_constant() {
+                    return (None, -1);
+                }
+                vn = data.op(def).input(0).unwrap();
+            }
+            OpCode::IntXor | OpCode::IntOr => {
+                let vn0 = data.op(def).input(0).unwrap();
+                let vn1 = data.op(def).input(1).unwrap();
+                if data.vn(vn0).get_nzmask() & mask != 0 {
+                    if data.vn(vn1).get_nzmask() & mask != 0 {
+                        return (None, -1); // no unique path to the bit
+                    }
+                    vn = vn0;
+                } else if data.vn(vn1).get_nzmask() & mask != 0 {
+                    vn = vn1;
+                } else {
+                    return (None, -1);
+                }
+            }
+            OpCode::IntZext | OpCode::IntSext => {
+                vn = data.op(def).input(0).unwrap();
+                if bit_pos >= data.vn(vn).size as i32 * 8 {
+                    return (None, -1);
+                }
+            }
+            OpCode::Subpiece => {
+                let sa = data.vn(data.op(def).input(1).unwrap()).constant_value() as i32 * 8;
+                bit_pos += sa;
+                mask = mask.checked_shl(sa as u32).unwrap_or(0);
+                vn = data.op(def).input(0).unwrap();
+            }
+            OpCode::Piece => {
+                let vn0 = data.op(def).input(0).unwrap(); // high half
+                let vn1 = data.op(def).input(1).unwrap(); // low half
+                let sa = data.vn(vn1).size as i32 * 8;
+                if bit_pos >= sa {
+                    vn = vn0;
+                    bit_pos -= sa;
+                    mask = mask.checked_shr(sa as u32).unwrap_or(0);
+                } else {
+                    vn = vn1;
+                }
+            }
+            OpCode::IntLeft => {
+                let vn1 = data.op(def).input(1).unwrap();
+                if !data.vn(vn1).is_constant() {
+                    return (None, -1);
+                }
+                let sa = data.vn(vn1).constant_value() as i32;
+                if sa > bit_pos {
+                    return (None, -1);
+                }
+                bit_pos -= sa;
+                mask = mask.checked_shr(sa as u32).unwrap_or(0);
+                vn = data.op(def).input(0).unwrap();
+            }
+            OpCode::IntRight | OpCode::IntSright => {
+                let vn1 = data.op(def).input(1).unwrap();
+                if !data.vn(vn1).is_constant() {
+                    return (None, -1);
+                }
+                let sa = data.vn(vn1).constant_value() as i32;
+                vn = data.op(def).input(0).unwrap();
+                bit_pos += sa;
+                if bit_pos >= data.vn(vn).size as i32 * 8 {
+                    return (None, -1);
+                }
+                mask = mask.checked_shl(sa as u32).unwrap_or(0);
+            }
+            _ => return (None, -1),
+        }
+    }
+}
+
+/// Ghidra `RulePopcountBoolXor` (ruleaction.cc:10273): reduce a POPCOUNT parity check over shifted
+/// booleans to the boolean(s) themselves:
+///   - `popcount(b1 << #pos) & 1              =>  b1`
+///   - `popcount((b1 << #pos1) | (b2 << #pos2)) & 1  =>  b1 ^ b2`
+/// The `& 1` masks the low bit (parity), and the non-zero mask of the POPCOUNT input has one or two
+/// set bits, each traced back to a boolean by [`popcount_boolean_result`].
+pub struct RulePopcountBoolXor;
+
+impl Rule for RulePopcountBoolXor {
+    fn name(&self) -> &str {
+        "popcountboolxor"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Popcount]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // Guard against an earlier rule this pass having rewritten `op` (the pool dispatches on the
+        // cached opcode, which may be a stale CPUI_POPCOUNT).
+        if data.op(op).code() != OpCode::Popcount {
+            return 0;
+        }
+        let Some(out) = data.op(op).output else { return 0 };
+        for base_op in data.vn(out).descend.clone() {
+            if data.op(base_op).code() != OpCode::IntAnd {
+                continue;
+            }
+            let Some(tmp_vn) = data.op(base_op).input(1) else { continue };
+            if !data.vn(tmp_vn).is_constant() {
+                continue;
+            }
+            if data.vn(tmp_vn).constant_value() != 1 {
+                continue; // masking 1 bit means we are checking parity of the POPCOUNT input
+            }
+            if data.vn(tmp_vn).size != 1 {
+                continue; // must be boolean-sized output
+            }
+            let in_vn = data.op(op).input(0).unwrap();
+            if !data.vn(in_vn).is_written() {
+                return 0;
+            }
+            let nzm = data.vn(in_vn).get_nzmask();
+            let count = nzm.count_ones();
+            if count == 1 {
+                let least_pos = super::nzmask::leastsigbit_set(nzm);
+                let (b1, _) = popcount_boolean_result(data, in_vn, least_pos);
+                let Some(b1) = b1 else { continue };
+                // Recognized  popcount( b1 << #pos ) & 1  →  COPY(b1)
+                data.op_set_opcode(base_op, OpCode::Copy);
+                data.op_remove_input(base_op, 1);
+                data.op_set_input(base_op, 0, b1);
+                return 1;
+            }
+            if count == 2 {
+                let pos0 = super::nzmask::leastsigbit_set(nzm);
+                let pos1 = super::nzmask::mostsigbit_set(nzm);
+                let (b1, const_res0) = popcount_boolean_result(data, in_vn, pos0);
+                if b1.is_none() && const_res0 != 1 {
+                    continue;
+                }
+                let (b2, const_res1) = popcount_boolean_result(data, in_vn, pos1);
+                if b2.is_none() && const_res1 != 1 {
+                    continue;
+                }
+                if b1.is_none() && b2.is_none() {
+                    continue;
+                }
+                let b1 = b1.unwrap_or_else(|| data.new_const(1, 1));
+                let b2 = b2.unwrap_or_else(|| data.new_const(1, 1));
+                // Recognized  popcount( b1 << #pos1 | b2 << #pos2 ) & 1  →  b1 ^ b2
+                data.op_set_opcode(base_op, OpCode::IntXor);
+                data.op_set_input(base_op, 0, b1);
+                data.op_set_input(base_op, 1, b2);
+                return 1;
+            }
+        }
+        0
     }
 }
 
@@ -2715,5 +2978,143 @@ mod tests {
         assert_eq!(f.op(user).input(0), Some(out), "use still reads the collapsed value");
         // and it now sits after the (now absent) leading MULTIEQUALs, i.e. ahead of the user.
         assert!(f.block(merge).ops.contains(&op));
+    }
+
+    // --- RuleSlessToLess (ruleaction.cc:2530) ---------------------------------
+
+    #[test]
+    fn sless_to_less_when_both_operands_nonnegative() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // ta = a & 0x7f ; tb = b & 0x7f  → both provably non-negative (nzm has the sign bit clear).
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let m1 = f.new_const(4, 0x7f);
+        let and_a = f.new_op(OpCode::IntAnd, seq, vec![a, m1]);
+        let ta = f.new_output_unique(and_a, 4);
+        let m2 = f.new_const(4, 0x7f);
+        let and_b = f.new_op(OpCode::IntAnd, seq, vec![b, m2]);
+        let tb = f.new_output_unique(and_b, 4);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![ta, tb]);
+        f.new_output_unique(sless, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and_a, and_b, sless],
+            ..Default::default()
+        }]);
+
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        assert_eq!(f.vn(ta).get_nzmask(), 0x7f, "masked value proves the sign bit is clear");
+
+        ActionPool::new("p").with(RuleSlessToLess).apply(&mut f);
+        // Ghidra RuleSlessToLess: both operands non-negative ⇒ INT_SLESS → INT_LESS.
+        assert_eq!(f.op(sless).code(), OpCode::IntLess);
+    }
+
+    #[test]
+    fn sless_to_less_declines_when_sign_bit_possible() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // Plain 4-byte inputs: nzm is the full mask, so the sign bit may be set → rule must not fire.
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let sless = f.new_op(OpCode::IntSless, seq, vec![a, b]);
+        f.new_output_unique(sless, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sless],
+            ..Default::default()
+        }]);
+
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleSlessToLess).apply(&mut f);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless, "sign bit may be set ⇒ stays signed");
+    }
+
+    // --- RulePopcountBoolXor (ruleaction.cc:10273) ----------------------------
+
+    #[test]
+    fn popcount_bool_xor_single_bit_to_copy() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // b1 = (a == b)  → boolean, nzm 1
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![a, b]);
+        let b1 = f.new_output_unique(eq, 1);
+        // s = zext(b1) << 6   → a single set bit at position 6
+        let z = f.new_op(OpCode::IntZext, seq, vec![b1]);
+        let zo = f.new_output_unique(z, 8);
+        let sh6 = f.new_const(4, 6);
+        let sh = f.new_op(OpCode::IntLeft, seq, vec![zo, sh6]);
+        let so = f.new_output_unique(sh, 8);
+        // p = popcount(s) ; and = p & 1   (parity check of the one shifted boolean)
+        let pc = f.new_op(OpCode::Popcount, seq, vec![so]);
+        let po = f.new_output_unique(pc, 1);
+        let one = f.new_const(1, 1);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![po, one]);
+        f.new_output_unique(and, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![eq, z, sh, pc, and],
+            ..Default::default()
+        }]);
+
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        assert_eq!(f.vn(so).get_nzmask(), 0x40, "single boolean bit at position 6");
+
+        ActionPool::new("p").with(RulePopcountBoolXor).apply(&mut f);
+        // Ghidra RulePopcountBoolXor: popcount(b1 << 6) & 1  →  COPY(b1).
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        assert_eq!(f.op(and).input(0), Some(b1));
+    }
+
+    #[test]
+    fn popcount_bool_xor_two_bits_to_xor() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let c = f.new_input(4, Address::new(reg, 0x20));
+        let d = f.new_input(4, Address::new(reg, 0x28));
+        // b1 = (a == b) ; b2 = (c == d)
+        let eq1 = f.new_op(OpCode::IntEqual, seq, vec![a, b]);
+        let b1 = f.new_output_unique(eq1, 1);
+        let eq2 = f.new_op(OpCode::IntEqual, seq, vec![c, d]);
+        let b2 = f.new_output_unique(eq2, 1);
+        // o = (zext(b1) << 6) | (zext(b2) << 2)  → set bits at positions 6 and 2
+        let z1 = f.new_op(OpCode::IntZext, seq, vec![b1]);
+        let z1o = f.new_output_unique(z1, 8);
+        let z2 = f.new_op(OpCode::IntZext, seq, vec![b2]);
+        let z2o = f.new_output_unique(z2, 8);
+        let sh6 = f.new_const(4, 6);
+        let s1 = f.new_op(OpCode::IntLeft, seq, vec![z1o, sh6]);
+        let s1o = f.new_output_unique(s1, 8);
+        let sh2 = f.new_const(4, 2);
+        let s2 = f.new_op(OpCode::IntLeft, seq, vec![z2o, sh2]);
+        let s2o = f.new_output_unique(s2, 8);
+        let or = f.new_op(OpCode::IntOr, seq, vec![s1o, s2o]);
+        let oo = f.new_output_unique(or, 8);
+        // p = popcount(o) ; and = p & 1
+        let pc = f.new_op(OpCode::Popcount, seq, vec![oo]);
+        let po = f.new_output_unique(pc, 1);
+        let one = f.new_const(1, 1);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![po, one]);
+        f.new_output_unique(and, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![eq1, eq2, z1, z2, s1, s2, or, pc, and],
+            ..Default::default()
+        }]);
+
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        assert_eq!(f.vn(oo).get_nzmask(), 0x44, "two boolean bits at positions 2 and 6");
+
+        ActionPool::new("p").with(RulePopcountBoolXor).apply(&mut f);
+        // Ghidra RulePopcountBoolXor: popcount((b1 << 6) | (b2 << 2)) & 1  →  b1 ^ b2.
+        assert_eq!(f.op(and).code(), OpCode::IntXor);
+        let ins = [f.op(and).input(0).unwrap(), f.op(and).input(1).unwrap()];
+        assert!(ins.contains(&b1) && ins.contains(&b2), "XOR of the two booleans");
     }
 }

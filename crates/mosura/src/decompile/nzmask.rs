@@ -57,7 +57,7 @@ fn coveringmask(mut val: u64) -> u64 {
 }
 
 /// Ghidra `mostsigbit_set` (`address.cc:735`): position of the most-significant set bit, or `-1`.
-fn mostsigbit_set(val: u64) -> i32 {
+pub(crate) fn mostsigbit_set(val: u64) -> i32 {
     if val == 0 {
         -1
     } else {
@@ -66,12 +66,23 @@ fn mostsigbit_set(val: u64) -> i32 {
 }
 
 /// Ghidra `leastsigbit_set` (`address.cc:714`): position of the least-significant set bit, or `-1`.
-fn leastsigbit_set(val: u64) -> i32 {
+pub(crate) fn leastsigbit_set(val: u64) -> i32 {
     if val == 0 {
         -1
     } else {
         val.trailing_zeros() as i32
     }
+}
+
+/// Ghidra `signbit_negative(val, size)` (`address.cc:641`): true if the sign bit (`0x80 << 8*(size-1)`)
+/// of a `size`-byte value is set. mosura is `u64`-only, so a `size > 8` value has no representable sign
+/// bit and this reports false (the documented extended-precision collapse).
+pub(crate) fn signbit_negative(val: u64, size: u32) -> bool {
+    if size == 0 {
+        return false;
+    }
+    let mask = 0x80u64.checked_shl(8 * (size - 1)).unwrap_or(0);
+    (val & mask) != 0
 }
 
 /// Ghidra `sign_extend(in, sizein, sizeout)` (`address.cc:666`): sign-extend the mask of a
