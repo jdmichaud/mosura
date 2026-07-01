@@ -2007,6 +2007,261 @@ impl Rule for RuleNotDistribute {
     }
 }
 
+/// Ghidra `RuleAndCompare` (ruleaction.cc:1745): push an INT_AND mask through an INT_ZEXT/SUBPIECE
+/// inside a compare-against-zero, widening the AND to the base value:
+///   - `zext(V) & c == 0   =>  V & (c & mask) == 0`
+///   - `sub(V, k) & d == 0  =>  V & (d << k*8) == 0`
+/// Works for INT_EQUAL and INT_NOTEQUAL.
+///
+/// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
+/// shows mosura fires it where Ghidra does not (e.g. 3× on forloop_varused vs Ghidra's 0×, regressing
+/// it 0.984→0.970). mosura's flat rule pool lacks Ghidra's per-op rule-priority ordering (`perop`
+/// lists in ActionPool), so this fires on transient forms Ghidra's ordering rewrites differently.
+/// Wire it once the pool honors Ghidra's rule priority (see the Task #3 handoff).
+pub struct RuleAndCompare;
+
+impl Rule for RuleAndCompare {
+    fn name(&self) -> &str {
+        "andcompare"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let code = data.op(op).code();
+        if code != OpCode::IntEqual && code != OpCode::IntNotequal {
+            return 0;
+        }
+        let cmpc = data.op(op).input(1).unwrap();
+        if !data.vn(cmpc).is_constant() || data.vn(cmpc).constant_value() != 0 {
+            return 0;
+        }
+        let andvn = data.op(op).input(0).unwrap();
+        if !data.vn(andvn).is_written() {
+            return 0;
+        }
+        let andop = data.vn(andvn).def.unwrap();
+        if data.op(andop).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let andc = data.op(andop).input(1).unwrap();
+        if !data.vn(andc).is_constant() {
+            return 0;
+        }
+        let subvn = data.op(andop).input(0).unwrap();
+        if !data.vn(subvn).is_written() {
+            return 0;
+        }
+        let subop = data.vn(subvn).def.unwrap();
+        let base_const = data.vn(andc).constant_value();
+        let (basevn, andconst) = match data.op(subop).code() {
+            OpCode::Subpiece => {
+                let bv = data.op(subop).input(0).unwrap();
+                if data.vn(bv).size > 8 {
+                    return 0;
+                }
+                let off = data.vn(data.op(subop).input(1).unwrap()).constant_value();
+                (bv, base_const.checked_shl((off * 8) as u32).unwrap_or(0))
+            }
+            OpCode::IntZext => {
+                let bv = data.op(subop).input(0).unwrap();
+                (bv, base_const & super::nzmask::calc_mask(data.vn(bv).size))
+            }
+            _ => return 0,
+        };
+        if base_const == super::nzmask::calc_mask(data.vn(andvn).size) {
+            return 0; // degenerate AND
+        }
+        if data.vn(basevn).is_free() {
+            return 0;
+        }
+        let bsize = data.vn(basevn).size;
+        let constvn = data.new_const(bsize, andconst);
+        // New wider AND(basevn, constvn), then compare it against 0.
+        let newop = data.new_op_before(andop, OpCode::IntAnd, vec![basevn, constvn]);
+        let newout = data.op(newop).output.unwrap();
+        let zero = data.new_const(bsize, 0);
+        data.op_set_input(op, 0, newout);
+        data.op_set_input(op, 1, zero);
+        1
+    }
+}
+
+/// Ghidra `RuleZextShiftZext` (ruleaction.cc:4865): fold redundant INT_ZEXT —
+///   - `zext(zext(V))       =>  zext(V)`
+///   - `zext(zext(V) << c)  =>  zext(V) << c`   (widen once, at the outer width, when `c` keeps all bits)
+pub struct RuleZextShiftZext;
+
+impl Rule for RuleZextShiftZext {
+    fn name(&self) -> &str {
+        "zextshiftzext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntZext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntZext {
+            return 0;
+        }
+        let invn = data.op(op).input(0).unwrap();
+        if !data.vn(invn).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(invn).def.unwrap();
+        if data.op(shiftop).code() == OpCode::IntZext {
+            // ZEXT(ZEXT(a))  =>  ZEXT(a)  — only when the inner zext is used solely here.
+            let vn = data.op(shiftop).input(0).unwrap();
+            if data.vn(vn).is_free() || lone_descend(data, invn) != Some(op) {
+                return 0;
+            }
+            data.op_set_input(op, 0, vn);
+            return 1;
+        }
+        if data.op(shiftop).code() != OpCode::IntLeft {
+            return 0;
+        }
+        let shsa = data.op(shiftop).input(1).unwrap();
+        if !data.vn(shsa).is_constant() {
+            return 0;
+        }
+        let shin0 = data.op(shiftop).input(0).unwrap();
+        if !data.vn(shin0).is_written() {
+            return 0;
+        }
+        let zext2op = data.vn(shin0).def.unwrap();
+        if data.op(zext2op).code() != OpCode::IntZext {
+            return 0;
+        }
+        let rootvn = data.op(zext2op).input(0).unwrap();
+        if data.vn(rootvn).is_free() {
+            return 0;
+        }
+        let sa = data.vn(shsa).constant_value();
+        let z2out = data.op(zext2op).output.unwrap();
+        if sa > 8 * (data.vn(z2out).size as u64 - data.vn(rootvn).size as u64) {
+            return 0; // shift might lose bits off the top
+        }
+        let outsize = data.vn(data.op(op).output.unwrap()).size;
+        // newzext = ZEXT(rootvn) at the outer width; op becomes  newzext << sa.
+        let newop = data.new_op_before_sized(op, OpCode::IntZext, vec![rootvn], outsize);
+        let newout = data.op(newop).output.unwrap();
+        data.op_set_opcode(op, OpCode::IntLeft);
+        data.op_set_input(op, 0, newout);
+        let sac = data.new_const(4, sa);
+        data.op_append_input(op, sac);
+        1
+    }
+}
+
+/// Ghidra `RuleSubZext` (ruleaction.cc:5039): simplify INT_ZEXT of a truncation —
+///   - `zext( sub(V, 0) )      =>  V & mask`
+///   - `zext( sub(V, k) )      =>  (V >> k*8) & mask`
+///   - `zext( sub(V, k) >> d )  =>  (V >> (k*8+d)) & mask`
+/// where the truncate-then-extend returns to `V`'s original width (`|sub base| == |zext out|`).
+///
+/// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
+/// shows mosura over-fires it (36× on piecestruct vs Ghidra's 26×) and rewrites `zext(byte)` forms
+/// that [`RuleShiftPiece`] needs to fold into CONCAT — breaking the byte-packing recovery
+/// (piecestruct 0.889→0.840). mosura's flat pool lacks Ghidra's per-op rule-priority ordering, so
+/// SubZext "wins" on ops where Ghidra's ShiftPiece fires first. Wire it once the pool honors Ghidra's
+/// rule priority (Task #3 handoff).
+pub struct RuleSubZext;
+
+impl Rule for RuleSubZext {
+    fn name(&self) -> &str {
+        "subzext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntZext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntZext {
+            return 0;
+        }
+        let subvn = data.op(op).input(0).unwrap();
+        if !data.vn(subvn).is_written() {
+            return 0;
+        }
+        let subop = data.vn(subvn).def.unwrap();
+        let outsize = data.vn(data.op(op).output.unwrap()).size;
+        match data.op(subop).code() {
+            OpCode::Subpiece => {
+                let basevn = data.op(subop).input(0).unwrap();
+                if data.vn(basevn).is_free() {
+                    return 0;
+                }
+                if data.vn(basevn).size != outsize || data.vn(basevn).size > 8 {
+                    return 0; // truncating then extending to a different width
+                }
+                let basesize = data.vn(basevn).size;
+                let subc = data.op(subop).input(1).unwrap();
+                if data.vn(subc).constant_value() != 0 {
+                    // Truncating from the middle: turn the SUBPIECE into a shift of the full value.
+                    if lone_descend(data, subvn) != Some(op) {
+                        return 0;
+                    }
+                    let newvn = data.new_unique(basesize);
+                    let right_val = data.vn(subc).constant_value() * 8;
+                    let rc = data.new_const(data.vn(subc).size, right_val);
+                    data.op_set_input(op, 0, newvn);
+                    data.op_set_opcode(subop, OpCode::IntRight);
+                    data.op_set_input(subop, 1, rc);
+                    data.op_set_output(subop, newvn);
+                } else {
+                    data.op_set_input(op, 0, basevn); // bypass the truncation entirely
+                }
+                let mask = super::nzmask::calc_mask(data.vn(subvn).size);
+                let constvn = data.new_const(basesize, mask);
+                data.op_set_opcode(op, OpCode::IntAnd);
+                data.op_append_input(op, constvn);
+                1
+            }
+            OpCode::IntRight => {
+                let shiftop = subop;
+                let shc = data.op(shiftop).input(1).unwrap();
+                if !data.vn(shc).is_constant() {
+                    return 0;
+                }
+                let midvn = data.op(shiftop).input(0).unwrap();
+                if !data.vn(midvn).is_written() {
+                    return 0;
+                }
+                let subop2 = data.vn(midvn).def.unwrap();
+                if data.op(subop2).code() != OpCode::Subpiece {
+                    return 0;
+                }
+                let basevn = data.op(subop2).input(0).unwrap();
+                if data.vn(basevn).is_free() {
+                    return 0;
+                }
+                if data.vn(basevn).size != outsize || data.vn(basevn).size > 8 {
+                    return 0;
+                }
+                if lone_descend(data, midvn) != Some(shiftop) || lone_descend(data, subvn) != Some(op)
+                {
+                    return 0;
+                }
+                let basesize = data.vn(basevn).size;
+                let mut val = super::nzmask::calc_mask(data.vn(midvn).size);
+                let sa = data.vn(shc).constant_value();
+                val = val.checked_shr(sa as u32).unwrap_or(0);
+                let total = sa + data.vn(data.op(subop2).input(1).unwrap()).constant_value() * 8;
+                let newvn = data.new_unique(basesize);
+                let tc = data.new_const(data.vn(shc).size, total);
+                data.op_set_input(op, 0, newvn);
+                data.op_set_input(shiftop, 0, basevn); // shift the full value
+                data.op_set_input(shiftop, 1, tc); // by the combined amount
+                data.op_set_output(shiftop, newvn);
+                let constvn = data.new_const(basesize, val);
+                data.op_set_opcode(op, OpCode::IntAnd);
+                data.op_append_input(op, constvn);
+                1
+            }
+            _ => 0,
+        }
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -3454,5 +3709,143 @@ mod tests {
         assert_eq!(f.op(d1).code(), OpCode::BoolNegate);
         assert_eq!(f.op(d0).input(0), Some(v));
         assert_eq!(f.op(d1).input(0), Some(w));
+    }
+
+    // --- RuleZextShiftZext (ruleaction.cc:4865) — wired -----------------------
+
+    #[test]
+    fn zext_shift_zext_collapses_double_zext() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // zext(zext(V:2 -> 4) -> 8)  =>  zext(V:2 -> 8)
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let z1 = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let z1o = f.new_output_unique(z1, 4);
+        let z2 = f.new_op(OpCode::IntZext, seq, vec![z1o]);
+        f.new_output_unique(z2, 8);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![z1, z2],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleZextShiftZext).apply(&mut f);
+        assert_eq!(f.op(z2).code(), OpCode::IntZext);
+        assert_eq!(f.op(z2).input(0), Some(v));
+    }
+
+    #[test]
+    fn zext_shift_zext_pulls_shift_outside() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // zext( zext(V:1 -> 4) << 8 )  =>  zext(V:1 -> 8) << 8   (8 <= 8*(4-1), keeps bits)
+        let v = f.new_input(1, Address::new(reg, 0x10));
+        let z1 = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let z1o = f.new_output_unique(z1, 4);
+        let sh = f.new_const(4, 8);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![z1o, sh]);
+        let shlo = f.new_output_unique(shl, 4);
+        let z2 = f.new_op(OpCode::IntZext, seq, vec![shlo]);
+        f.new_output_unique(z2, 8);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![z1, shl, z2],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleZextShiftZext).apply(&mut f);
+        // z2 is now  ZEXT(v):8 << 8
+        assert_eq!(f.op(z2).code(), OpCode::IntLeft);
+        let nz = f.op(z2).input(0).unwrap();
+        let nzdef = f.vn(nz).def.unwrap();
+        assert_eq!(f.op(nzdef).code(), OpCode::IntZext);
+        assert_eq!(f.op(nzdef).input(0), Some(v));
+        assert_eq!(f.vn(nz).size, 8);
+        let c = f.op(z2).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 8);
+    }
+
+    // --- RuleAndCompare (ruleaction.cc:1745) — ported + held ------------------
+
+    #[test]
+    fn and_compare_widens_mask_through_zext() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (zext(V:2 -> 4) & 0x1ff) == 0   =>   (V & 0x1ff) == 0
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zo = f.new_output_unique(z, 4);
+        let c = f.new_const(4, 0x1ff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![zo, c]);
+        let ando = f.new_output_unique(and, 4);
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![ando, zero]);
+        f.new_output_unique(eq, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![z, and, eq],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleAndCompare.apply_op(eq, &mut f), 1);
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual);
+        let a0 = f.op(eq).input(0).unwrap();
+        let d = f.vn(a0).def.unwrap();
+        assert_eq!(f.op(d).code(), OpCode::IntAnd);
+        assert_eq!(f.op(d).input(0), Some(v));
+        let dc = f.op(d).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 0x1ff && f.vn(dc).size == 2);
+        let z1 = f.op(eq).input(1).unwrap();
+        assert!(f.vn(z1).is_constant() && f.vn(z1).constant_value() == 0);
+    }
+
+    // --- RuleSubZext (ruleaction.cc:5039) — ported + held ---------------------
+
+    #[test]
+    fn sub_zext_low_truncation_becomes_and_mask() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // zext( sub(V:4, 0):2 -> 4 )  =>  V & 0xffff
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let off0 = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, off0]);
+        let subo = f.new_output_unique(sub, 2);
+        let z = f.new_op(OpCode::IntZext, seq, vec![subo]);
+        f.new_output_unique(z, 4);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sub, z],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleSubZext.apply_op(z, &mut f), 1);
+        assert_eq!(f.op(z).code(), OpCode::IntAnd);
+        assert_eq!(f.op(z).input(0), Some(v));
+        let m = f.op(z).input(1).unwrap();
+        assert!(f.vn(m).is_constant() && f.vn(m).constant_value() == 0xffff);
+    }
+
+    #[test]
+    fn sub_zext_mid_truncation_becomes_shift_and_mask() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // zext( sub(V:4, 2):2 -> 4 )  =>  (V >> 16) & 0xffff
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let off2 = f.new_const(4, 2);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, off2]);
+        let subo = f.new_output_unique(sub, 2);
+        let z = f.new_op(OpCode::IntZext, seq, vec![subo]);
+        f.new_output_unique(z, 4);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sub, z],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleSubZext.apply_op(z, &mut f), 1);
+        assert_eq!(f.op(z).code(), OpCode::IntAnd);
+        let sh = f.op(z).input(0).unwrap();
+        let shd = f.vn(sh).def.unwrap();
+        assert_eq!(f.op(shd).code(), OpCode::IntRight);
+        assert_eq!(f.op(shd).input(0), Some(v));
+        let sa = f.op(shd).input(1).unwrap();
+        assert!(f.vn(sa).is_constant() && f.vn(sa).constant_value() == 16);
+        let m = f.op(z).input(1).unwrap();
+        assert!(f.vn(m).is_constant() && f.vn(m).constant_value() == 0xffff);
     }
 }

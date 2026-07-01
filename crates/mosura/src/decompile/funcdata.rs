@@ -293,6 +293,23 @@ impl Funcdata {
         id
     }
 
+    /// Like [`new_op_before`](Self::new_op_before) but with an explicit output size, for ops whose
+    /// output width differs from `inputs[0]` (e.g. an INT_ZEXT that widens its input).
+    pub fn new_op_before_sized(
+        &mut self,
+        follow: OpId,
+        opcode: OpCode,
+        inputs: Vec<VarnodeId>,
+        out_size: u32,
+    ) -> OpId {
+        let pc = self.ops[follow.0 as usize].seqnum.pc;
+        let uniq = self.ops.len() as u32;
+        let id = self.new_op(opcode, SeqNum { pc, uniq }, inputs);
+        self.new_output_unique(id, out_size);
+        self.op_insert_before(id, follow);
+        id
+    }
+
     /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
     pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
         self.ops[op.0 as usize].opcode = opcode;
