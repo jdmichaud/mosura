@@ -185,7 +185,16 @@ impl Action for ActionPool {
         let mut perop: HashMap<OpCode, Vec<usize>> = HashMap::new();
         loop {
             let mut round = 0;
-            let ids: Vec<OpId> = data.op_ids().collect();
+            // Ghidra `ActionPool::apply` (action.cc:877) iterates `data.beginOpAll()..endOpAll()`,
+            // i.e. the `optree` keyed by `SeqNum` — ops in (space index, address offset, uniq) order,
+            // not op-creation order. `uniq` orders ops sharing a pc: original ops by their per-instr
+            // p-code index, ops created mid-simplification by a monotonic counter (Funcdata::new_op*
+            // sets `uniq = ops.len()`), so a rewritten op is visited in its address neighbourhood.
+            let mut ids: Vec<OpId> = data.op_ids().collect();
+            ids.sort_by_key(|&id| {
+                let s = data.op(id).seqnum;
+                (s.pc.space.0, s.pc.offset, s.uniq)
+            });
             for id in ids {
                 if data.op(id).is_dead() {
                     continue;
