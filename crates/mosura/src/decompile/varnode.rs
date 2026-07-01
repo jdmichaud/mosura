@@ -74,6 +74,11 @@ pub struct Varnode {
     /// provably 0). Computed by [`super::nzmask::calc_nzmask`]; defaults to the full mask (the
     /// conservative over-approximation) until then.
     pub nzm: u64,
+    /// Ghidra's `Varnode::consume` — the mask of bits actually *used* downstream (the backward
+    /// dual of [`nzm`](Self::nzm)). Computed by [`super::consume::calc_consume`]; defaults to 0
+    /// (Ghidra clears consume at the start of every `ActionDeadCode`). Read by the SubVariableFlow
+    /// driving rules to prove a wide value is only used through a narrow logical sub-value.
+    pub consume: u64,
 }
 
 impl Varnode {
@@ -148,6 +153,10 @@ impl Varnode {
     /// Ghidra `Varnode::getNZMask` — the mask of bits that may be non-zero (see [`Varnode::nzm`]).
     pub fn get_nzmask(&self) -> u64 {
         self.nzm
+    }
+    /// Ghidra `Varnode::getConsume` — the mask of bits used downstream (see [`Varnode::consume`]).
+    pub fn get_consume(&self) -> u64 {
+        self.consume
     }
     pub fn is_implied(&self) -> bool {
         self.flags & flags::IMPLIED != 0

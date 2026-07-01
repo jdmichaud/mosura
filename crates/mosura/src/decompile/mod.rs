@@ -12,6 +12,7 @@ pub mod block;
 pub mod build;
 pub mod cast;
 pub mod cfg;
+pub mod consume;
 pub mod cover;
 pub mod deadcode;
 pub mod determinedbranch;

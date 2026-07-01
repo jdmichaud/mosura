@@ -28,7 +28,7 @@ pub fn calc_mask(size: u32) -> u64 {
 
 /// Ghidra `pcode_left` (`address.hh:514`): `val << sa`, but 0 once the shift clears the whole word
 /// (C++ left-shift by `>= 64` is undefined; Rust would panic).
-fn pcode_left(val: u64, sa: u32) -> u64 {
+pub(crate) fn pcode_left(val: u64, sa: u32) -> u64 {
     if sa >= 64 {
         0
     } else {
@@ -37,7 +37,7 @@ fn pcode_left(val: u64, sa: u32) -> u64 {
 }
 
 /// Ghidra `pcode_right` (`address.hh:505`): `val >> sa`, 0 once the shift clears the whole word.
-fn pcode_right(val: u64, sa: u32) -> u64 {
+pub(crate) fn pcode_right(val: u64, sa: u32) -> u64 {
     if sa >= 64 {
         0
     } else {
@@ -47,13 +47,27 @@ fn pcode_right(val: u64, sa: u32) -> u64 {
 
 /// Ghidra `coveringmask` (`address.cc:800`): smear every set bit down, so the result is a
 /// contiguous run of ones from the most-significant set bit of `val` down to bit 0.
-fn coveringmask(mut val: u64) -> u64 {
+pub(crate) fn coveringmask(mut val: u64) -> u64 {
     let mut sz = 1;
     while sz < 64 {
         val |= val >> sz;
         sz <<= 1;
     }
     val
+}
+
+/// Ghidra `minimalmask` (`address.hh:525`): the smallest of the byte/uint2/uint4/uint8 masks that
+/// still covers `val`.
+pub(crate) fn minimalmask(val: u64) -> u64 {
+    if val > 0xffff_ffff {
+        u64::MAX
+    } else if val > 0xffff {
+        0xffff_ffff
+    } else if val > 0xff {
+        0xffff
+    } else {
+        0xff
+    }
 }
 
 /// Ghidra `mostsigbit_set` (`address.cc:735`): position of the most-significant set bit, or `-1`.

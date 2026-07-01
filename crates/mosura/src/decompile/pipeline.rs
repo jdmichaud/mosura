@@ -219,6 +219,23 @@ impl Action for ActionNonzeroMask {
     }
 }
 
+/// The consume-analysis half of Ghidra `ActionDeadCode` (`coreaction.cc:3925`), split out as its
+/// own action ([`super::consume::calc_consume`]) so `Varnode::consume` is fresh when the rule pool
+/// runs — mirroring how [`ActionNonzeroMask`] is factored out of the rule that reads `nzm`. It
+/// reads `nzm` (comparison/int2float/call-parameter transfers), so it runs *after* the mask pass.
+/// Nothing consumes the field yet (the SubVariableFlow rules land next), so it is output-neutral.
+pub struct ActionConsume;
+
+impl Action for ActionConsume {
+    fn name(&self) -> &str {
+        "consume"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        super::consume::calc_consume(data);
+        1
+    }
+}
+
 /// The universal decompile action: heritage, simplification, dead-code removal, then type recovery
 /// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
@@ -229,6 +246,7 @@ pub fn universal_action() -> ActionGroup {
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
         .then(ActionNonzeroMask)
+        .then(ActionConsume)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         // Fold any CBRANCH whose condition simplified to a constant, then prune the unreachable
@@ -236,6 +254,7 @@ pub fn universal_action() -> ActionGroup {
         // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
         .then(super::determinedbranch::ActionDeterminedBranch)
         .then(ActionNonzeroMask)
+        .then(ActionConsume)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         // A third simplify+dead-code sweep, continuing the hand-unrolled approximation of Ghidra's
@@ -245,6 +264,7 @@ pub fn universal_action() -> ActionGroup {
         // settle in the second sweep and only then does dead-code drop the multiply, exposing the
         // `loneDescend` that lets RuleZextEliminate/RuleBooleanNegate recover the `||`.
         .then(ActionNonzeroMask)
+        .then(ActionConsume)
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)

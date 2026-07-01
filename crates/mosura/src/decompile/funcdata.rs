@@ -204,6 +204,7 @@ impl Funcdata {
             descend: Vec::new(),
             ty: None,
             nzm,
+            consume: 0,
         });
         id
     }
