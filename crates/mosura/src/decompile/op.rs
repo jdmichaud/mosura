@@ -67,4 +67,30 @@ impl PcodeOp {
     pub fn is_call(&self) -> bool {
         matches!(self.opcode, OpCode::Call | OpCode::Callind | OpCode::Callother)
     }
+    /// Ghidra `PcodeOp::isBoolOutput` — the op's output is a 1-bit boolean (the `booloutput`
+    /// opflag). This is the same opcode set nzmask treats as boolean-result (`op_nzmask_local`).
+    pub fn is_bool_output(&self) -> bool {
+        use OpCode::*;
+        matches!(
+            self.opcode,
+            IntEqual
+                | IntNotequal
+                | IntSless
+                | IntSlessequal
+                | IntLess
+                | IntLessequal
+                | IntCarry
+                | IntScarry
+                | IntSborrow
+                | BoolNegate
+                | BoolXor
+                | BoolAnd
+                | BoolOr
+                | FloatEqual
+                | FloatNotequal
+                | FloatLess
+                | FloatLessequal
+                | FloatNan
+        )
+    }
 }

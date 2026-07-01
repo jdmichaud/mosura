@@ -129,6 +129,11 @@ impl Varnode {
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
+    /// Ghidra `Varnode::isPersist` — the value is persistent (a global/`persist` location visible
+    /// beyond this function). Used by SubVariableFlow's sign-extension restriction path.
+    pub fn is_persist(&self) -> bool {
+        self.flags & flags::PERSIST != 0
+    }
     /// Ghidra `Varnode::isIndirectCreation` — this value is created out of nothing by an INDIRECT
     /// modeling a call's `killedbycall` clobber (it has no realistic ancestor).
     pub fn is_indirect_creation(&self) -> bool {

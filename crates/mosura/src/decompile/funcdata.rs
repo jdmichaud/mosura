@@ -281,6 +281,38 @@ impl Funcdata {
         }
     }
 
+    /// Splice `newop` into `prev`'s basic block immediately after it (Ghidra's `opInsertAfter`):
+    /// adopt `prev`'s parent block and insert just past it in the block's op list.
+    pub fn op_insert_after(&mut self, newop: OpId, prev: OpId) {
+        let parent = self.ops[prev.0 as usize].parent;
+        self.ops[newop.0 as usize].parent = parent;
+        if let Some(b) = parent {
+            let ops = &mut self.blocks[b.0 as usize].ops;
+            let pos = ops.iter().position(|&o| o == prev).map(|p| p + 1).unwrap_or(ops.len());
+            ops.insert(pos, newop);
+        }
+    }
+
+    /// Mark an existing free varnode as a function input (Ghidra's `setInputVarnode`, reduced to
+    /// mosura's case): clear any `written`/`def` and set `INPUT | INSERT`. Returns the varnode.
+    pub fn set_input_varnode(&mut self, vid: VarnodeId) -> VarnodeId {
+        let v = &mut self.varnodes[vid.0 as usize];
+        v.def = None;
+        v.flags &= !flags::WRITTEN;
+        v.flags |= flags::INPUT | flags::INSERT;
+        vid
+    }
+
+    /// Detach a varnode from the graph (Ghidra's `deleteVarnode`). mosura keeps the arena slot
+    /// index-stable, so this orphans the varnode: clear its `def` and `INPUT | INSERT` so nothing
+    /// downstream treats it as a live value. The caller must have already moved all of its uses
+    /// (via [`total_replace`](Self::total_replace)).
+    pub fn delete_varnode(&mut self, vid: VarnodeId) {
+        let v = &mut self.varnodes[vid.0 as usize];
+        v.def = None;
+        v.flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN);
+    }
+
     /// Create a new op with a fresh `unique`-space output, inserted just before `follow`
     /// (Ghidra's `newOpBefore`). The output is sized like the first input, as Ghidra does.
     /// Used by pointer-arithmetic transforms (`RulePtrArith`) to build PTRADD/PTRSUB trees.

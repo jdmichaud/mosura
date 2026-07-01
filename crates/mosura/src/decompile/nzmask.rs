@@ -102,7 +102,7 @@ pub(crate) fn signbit_negative(val: u64, size: u32) -> bool {
 /// Ghidra `sign_extend(in, sizein, sizeout)` (`address.cc:666`): sign-extend the mask of a
 /// `sizein`-byte value to `sizeout` bytes. If the input's sign bit may be set, the new high bits
 /// are unknown (all ones).
-fn sign_extend_mask(inmask: u64, sizein: u32, sizeout: u32) -> u64 {
+pub(crate) fn sign_extend_mask(inmask: u64, sizein: u32, sizeout: u32) -> u64 {
     let sizein = sizein.min(8) as i32;
     let sizeout = sizeout.min(8) as i32;
     if sizeout <= sizein {

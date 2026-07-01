@@ -27,6 +27,7 @@ pub mod op;
 pub mod opcode;
 pub mod pipeline;
 pub mod recover;
+pub mod subvarflow;
 pub mod divopt;
 pub mod printc;
 pub mod ptrarith;
