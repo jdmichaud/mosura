@@ -2294,6 +2294,140 @@ impl Rule for RulePiece2Zext {
     }
 }
 
+/// Ghidra `RuleLessEqual2Zero` (ruleaction.cc:5601): simplify INT_LESSEQUAL against an extremal
+/// constant (0 or all-ones), which an unsigned `<=` makes trivially true or an equality:
+///   - `0 <= V     =>  true`      - `V <= 0     =>  V == 0`
+///   - `mask <= V  =>  mask == V`  - `V <= mask  =>  true`
+pub struct RuleLessEqual2Zero;
+
+impl Rule for RuleLessEqual2Zero {
+    fn name(&self) -> &str {
+        "lessequal2zero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntLessequal {
+            return 0;
+        }
+        let lvn = data.op(op).input(0).unwrap();
+        let rvn = data.op(op).input(1).unwrap();
+        if data.vn(lvn).is_constant() {
+            let lv = data.vn(lvn).constant_value();
+            if lv == 0 {
+                data.op_set_opcode(op, OpCode::Copy); // 0 <= V is always true
+                data.op_remove_input(op, 1);
+                let one = data.new_const(1, 1);
+                data.op_set_input(op, 0, one);
+                return 1;
+            } else if lv == super::nzmask::calc_mask(data.vn(lvn).size) {
+                data.op_set_opcode(op, OpCode::IntEqual); // only -1 satisfies mask <= V
+                return 1;
+            }
+        } else if data.vn(rvn).is_constant() {
+            let rv = data.vn(rvn).constant_value();
+            if rv == 0 {
+                data.op_set_opcode(op, OpCode::IntEqual); // only 0 satisfies V <= 0
+                return 1;
+            } else if rv == super::nzmask::calc_mask(data.vn(rvn).size) {
+                data.op_set_opcode(op, OpCode::Copy); // V <= mask is always true
+                data.op_remove_input(op, 1);
+                let one = data.new_const(1, 1);
+                data.op_set_input(op, 0, one);
+                return 1;
+            }
+        }
+        0
+    }
+}
+
+/// Ghidra `RuleShiftBitops` (ruleaction.cc:490): when a shift/truncate/multiply discards all the
+/// non-zero bits of one side of an inner logical/arithmetic op, drop that side:
+///   - `(V & 0xf000) << 4  =>  #0 << 4`    (AND/MULT: the surviving side is 0 → whole thing 0)
+///   - `(V + 0xf000) << 4  =>  V << 4`     (ADD/XOR/OR: the discarded addend contributes nothing)
+/// The outer op is INT_LEFT/INT_RIGHT/SUBPIECE/INT_MULT (by a power of two).
+pub struct RuleShiftBitops;
+
+impl Rule for RuleShiftBitops {
+    fn name(&self) -> &str {
+        "shiftbitops"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLeft, OpCode::IntRight, OpCode::Subpiece, OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let code = data.op(op).code();
+        // The pool dispatches on a cached opcode a prior rule may have rewritten (e.g. INT_MULT→COPY);
+        // re-check the live opcode is one of our binary target ops before reading input(1).
+        if !matches!(
+            code,
+            OpCode::IntLeft | OpCode::IntRight | OpCode::Subpiece | OpCode::IntMult
+        ) {
+            return 0;
+        }
+        let constvn = data.op(op).input(1).unwrap();
+        if !data.vn(constvn).is_constant() {
+            return 0;
+        }
+        let vn = data.op(op).input(0).unwrap();
+        if !data.vn(vn).is_written() || data.vn(vn).size > 8 {
+            return 0;
+        }
+        let cval = data.vn(constvn).constant_value();
+        let (sa, leftshift) = match code {
+            OpCode::IntLeft => (cval as u32, true),
+            OpCode::IntRight => (cval as u32, false),
+            OpCode::Subpiece => (cval as u32 * 8, false),
+            OpCode::IntMult => {
+                let s = super::nzmask::leastsigbit_set(cval);
+                if s == -1 {
+                    return 0;
+                }
+                (s as u32, true)
+            }
+            _ => return 0,
+        };
+        let bitop = data.vn(vn).def.unwrap();
+        match data.op(bitop).code() {
+            OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor => {}
+            OpCode::IntMult | OpCode::IntAdd if leftshift => {}
+            _ => return 0,
+        }
+        let outmask = super::nzmask::calc_mask(data.vn(data.op(op).output.unwrap()).size);
+        let ninput = data.op(bitop).num_inputs();
+        let mut found = None;
+        for i in 0..ninput {
+            let nzm0 = data.vn(data.op(bitop).input(i).unwrap()).get_nzmask();
+            let nzm = if leftshift {
+                nzm0.checked_shl(sa).unwrap_or(0)
+            } else {
+                nzm0.checked_shr(sa).unwrap_or(0)
+            };
+            if (nzm & outmask) == 0 {
+                found = Some(i);
+                break;
+            }
+        }
+        let Some(i) = found else { return 0 };
+        match data.op(bitop).code() {
+            OpCode::IntMult | OpCode::IntAnd => {
+                let zero = data.new_const(data.vn(vn).size, 0); // result is zero
+                data.op_set_input(op, 0, zero);
+            }
+            OpCode::IntAdd | OpCode::IntXor | OpCode::IntOr => {
+                let other = data.op(bitop).input(1 - i).unwrap();
+                if !data.vn(other).is_heritage_known() {
+                    return 0;
+                }
+                data.op_set_input(op, 0, other);
+            }
+            _ => return 0,
+        }
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -3901,5 +4035,96 @@ mod tests {
         assert_eq!(f.op(piece).code(), OpCode::IntZext);
         assert_eq!(f.op(piece).num_inputs(), 1);
         assert_eq!(f.op(piece).input(0), Some(w));
+    }
+
+    // --- RuleLessEqual2Zero (ruleaction.cc:5601) — wired ----------------------
+
+    #[test]
+    fn lessequal2zero_v_le_zero_is_equal() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // V <= 0  =>  V == 0
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let le = f.new_op(OpCode::IntLessequal, seq, vec![v, zero]);
+        f.new_output_unique(le, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![le],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleLessEqual2Zero).apply(&mut f);
+        assert_eq!(f.op(le).code(), OpCode::IntEqual);
+        assert_eq!(f.op(le).input(0), Some(v));
+    }
+
+    #[test]
+    fn lessequal2zero_zero_le_v_is_true() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // 0 <= V  =>  true  (COPY #1)
+        let zero = f.new_const(4, 0);
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let le = f.new_op(OpCode::IntLessequal, seq, vec![zero, v]);
+        f.new_output_unique(le, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![le],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleLessEqual2Zero).apply(&mut f);
+        assert_eq!(f.op(le).code(), OpCode::Copy);
+        assert_eq!(f.op(le).num_inputs(), 1);
+        let c = f.op(le).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 1);
+    }
+
+    // --- RuleShiftBitops (ruleaction.cc:490) — wired --------------------------
+
+    #[test]
+    fn shift_bitops_and_shifted_away_becomes_zero() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (V & 0xf000) << 4  in 2 bytes: 0xf000<<4 clears → result 0 → op input(0) = #0
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let m = f.new_const(2, 0xf000);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, m]);
+        let ando = f.new_output_unique(and, 2);
+        let sh4 = f.new_const(4, 4);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![ando, sh4]);
+        f.new_output_unique(shl, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and, shl],
+            ..Default::default()
+        }]);
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleShiftBitops).apply(&mut f);
+        assert_eq!(f.op(shl).code(), OpCode::IntLeft);
+        let in0 = f.op(shl).input(0).unwrap();
+        assert!(f.vn(in0).is_constant() && f.vn(in0).constant_value() == 0);
+    }
+
+    #[test]
+    fn shift_bitops_add_drops_shifted_out_addend() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (V + 0xf000) << 4  in 2 bytes: the 0xf000 addend shifts out → V << 4
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let c = f.new_const(2, 0xf000);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![v, c]);
+        let addo = f.new_output_unique(add, 2);
+        let sh4 = f.new_const(4, 4);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![addo, sh4]);
+        f.new_output_unique(shl, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![add, shl],
+            ..Default::default()
+        }]);
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleShiftBitops).apply(&mut f);
+        assert_eq!(f.op(shl).code(), OpCode::IntLeft);
+        assert_eq!(f.op(shl).input(0), Some(v));
     }
 }
