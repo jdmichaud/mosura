@@ -2428,6 +2428,152 @@ impl Rule for RuleShiftBitops {
     }
 }
 
+/// Ghidra `RuleHumptyOr` (ruleaction.cc:5332): recombine masked pieces OR'd together —
+/// `(V & W) | (V & X)  =>  V & (W|X)`, and when `W|X` covers every bit of `V`, `=> V`.
+pub struct RuleHumptyOr;
+
+impl Rule for RuleHumptyOr {
+    fn name(&self) -> &str {
+        "humptyor"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntOr {
+            return 0;
+        }
+        let vn1 = data.op(op).input(0).unwrap();
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn1).is_written() || !data.vn(vn2).is_written() {
+            return 0;
+        }
+        let and1 = data.vn(vn1).def.unwrap();
+        let and2 = data.vn(vn2).def.unwrap();
+        if data.op(and1).code() != OpCode::IntAnd || data.op(and2).code() != OpCode::IntAnd {
+            return 0;
+        }
+        // a is the operand common to both ANDs; b, c are the respective other operands.
+        let mut a = data.op(and1).input(0).unwrap();
+        let mut b = data.op(and1).input(1).unwrap();
+        let mut c = data.op(and2).input(0).unwrap();
+        let d = data.op(and2).input(1).unwrap();
+        if a == c {
+            c = d;
+        } else if a == d {
+            // c already the non-matching operand of and2
+        } else if b == c {
+            b = a;
+            a = c;
+            c = d;
+        } else if b == d {
+            b = a;
+            a = d;
+        } else {
+            return 0;
+        }
+        if data.vn(b).is_constant() && data.vn(c).is_constant() {
+            let totalbits = data.vn(b).constant_value() | data.vn(c).constant_value();
+            if totalbits == super::nzmask::calc_mask(data.vn(a).size) {
+                data.op_set_opcode(op, OpCode::Copy); // every bit of `a` is covered
+                data.op_remove_input(op, 1);
+                data.op_set_input(op, 0, a);
+            } else {
+                data.op_set_opcode(op, OpCode::IntAnd);
+                let nc = data.new_const(data.vn(a).size, totalbits);
+                data.op_set_input(op, 0, a);
+                data.op_set_input(op, 1, nc);
+            }
+        } else {
+            if !data.vn(b).is_heritage_known() || !data.vn(c).is_heritage_known() {
+                return 0;
+            }
+            let amask = data.vn(a).get_nzmask();
+            // RuleAndDistribute would reverse us if either side shares no bits with `a`.
+            if (data.vn(b).get_nzmask() & amask) == 0 || (data.vn(c).get_nzmask() & amask) == 0 {
+                return 0;
+            }
+            let new_or = data.new_op_before(op, OpCode::IntOr, vec![b, c]);
+            let or_vn = data.op(new_or).output.unwrap();
+            data.op_set_input(op, 0, a);
+            data.op_set_input(op, 1, or_vn);
+            data.op_set_opcode(op, OpCode::IntAnd);
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleAndPiece` (ruleaction.cc:1640): when an INT_AND masks a PIECE and one half of the
+/// PIECE is entirely masked off, collapse it — `V & concat(W,X)  =>  zext(X)` (high part masked off)
+/// or `V & concat(W,X)  =>  V & concat(#0,X)` (low part masked off), by the non-zero masks.
+pub struct RuleAndPiece;
+
+impl Rule for RuleAndPiece {
+    fn name(&self) -> &str {
+        "andpiece"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let size = data.vn(data.op(op).output.unwrap()).size;
+        let full = super::nzmask::calc_mask(size);
+        let mut chosen: Option<(usize, OpCode, VarnodeId, VarnodeId)> = None; // (i, opc, high, low)
+        for i in 0..2 {
+            let piecevn = data.op(op).input(i).unwrap();
+            if !data.vn(piecevn).is_written() {
+                continue;
+            }
+            let pieceop = data.vn(piecevn).def.unwrap();
+            if data.op(pieceop).code() != OpCode::Piece {
+                continue;
+            }
+            let othervn = data.op(op).input(1 - i).unwrap();
+            let othermask = data.vn(othervn).get_nzmask();
+            if othermask == full || othermask == 0 {
+                continue; // full: no-op; zero: RuleAndMask handles it
+            }
+            let highvn = data.op(pieceop).input(0).unwrap();
+            let lowvn = data.op(pieceop).input(1).unwrap();
+            if !data.vn(highvn).is_heritage_known() || !data.vn(lowvn).is_heritage_known() {
+                continue;
+            }
+            let maskhigh = data.vn(highvn).get_nzmask();
+            let masklow = data.vn(lowvn).get_nzmask();
+            let lowbits = data.vn(lowvn).size * 8;
+            if (maskhigh & othermask.checked_shr(lowbits).unwrap_or(0)) == 0 {
+                if maskhigh == 0 && data.vn(highvn).is_constant() {
+                    continue; // RulePiece2Zext handles this
+                }
+                chosen = Some((i, OpCode::IntZext, highvn, lowvn));
+                break;
+            } else if (masklow & othermask) == 0 {
+                if data.vn(lowvn).is_constant() {
+                    continue; // nothing to do
+                }
+                chosen = Some((i, OpCode::Piece, highvn, lowvn));
+                break;
+            }
+        }
+        let Some((i, opc, highvn, lowvn)) = chosen else { return 0 };
+        let newvn = if opc == OpCode::IntZext {
+            // PIECE(high, low) & mask  =>  ZEXT(low)  (high part is masked off)
+            let newop = data.new_op_before_sized(op, OpCode::IntZext, vec![lowvn], size);
+            data.op(newop).output.unwrap()
+        } else {
+            // low part masked off: PIECE(high, low)  =>  PIECE(high, #0)
+            let zero = data.new_const(data.vn(lowvn).size, 0);
+            let newop = data.new_op_before_sized(op, OpCode::Piece, vec![highvn, zero], size);
+            data.op(newop).output.unwrap()
+        };
+        data.op_set_input(op, i, newvn);
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -4126,5 +4272,86 @@ mod tests {
         ActionPool::new("p").with(RuleShiftBitops).apply(&mut f);
         assert_eq!(f.op(shl).code(), OpCode::IntLeft);
         assert_eq!(f.op(shl).input(0), Some(v));
+    }
+
+    // --- RuleHumptyOr (ruleaction.cc:5332) — wired ----------------------------
+
+    #[test]
+    fn humpty_or_full_cover_becomes_copy() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (V & 0xff00) | (V & 0x00ff)  =>  V
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let m1 = f.new_const(2, 0xff00);
+        let and1 = f.new_op(OpCode::IntAnd, seq, vec![v, m1]);
+        let a1o = f.new_output_unique(and1, 2);
+        let m2 = f.new_const(2, 0x00ff);
+        let and2 = f.new_op(OpCode::IntAnd, seq, vec![v, m2]);
+        let a2o = f.new_output_unique(and2, 2);
+        let or = f.new_op(OpCode::IntOr, seq, vec![a1o, a2o]);
+        f.new_output_unique(or, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and1, and2, or],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleHumptyOr).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::Copy);
+        assert_eq!(f.op(or).input(0), Some(v));
+    }
+
+    #[test]
+    fn humpty_or_partial_cover_becomes_and() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (V & 0xf000) | (V & 0x000f)  =>  V & 0xf00f
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let m1 = f.new_const(2, 0xf000);
+        let and1 = f.new_op(OpCode::IntAnd, seq, vec![v, m1]);
+        let a1o = f.new_output_unique(and1, 2);
+        let m2 = f.new_const(2, 0x000f);
+        let and2 = f.new_op(OpCode::IntAnd, seq, vec![v, m2]);
+        let a2o = f.new_output_unique(and2, 2);
+        let or = f.new_op(OpCode::IntOr, seq, vec![a1o, a2o]);
+        f.new_output_unique(or, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and1, and2, or],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleHumptyOr).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::IntAnd);
+        assert_eq!(f.op(or).input(0), Some(v));
+        let c = f.op(or).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xf00f);
+    }
+
+    // --- RuleAndPiece (ruleaction.cc:1640) — wired ----------------------------
+
+    #[test]
+    fn and_piece_high_masked_becomes_zext() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // concat(W:1, X:1) & 0xff : the 0xff masks off the high byte => AND(zext(X), 0xff)
+        let high = f.new_input(1, Address::new(reg, 0x10));
+        let low = f.new_input(1, Address::new(reg, 0x18));
+        let piece = f.new_op(OpCode::Piece, seq, vec![high, low]);
+        let pc = f.new_output_unique(piece, 2);
+        let mask = f.new_const(2, 0xff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![pc, mask]);
+        f.new_output_unique(and, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![piece, and],
+            ..Default::default()
+        }]);
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleAndPiece).apply(&mut f);
+        // the PIECE input of the AND is now a ZEXT(low)
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
+        let in0 = f.op(and).input(0).unwrap();
+        let d = f.vn(in0).def.unwrap();
+        assert_eq!(f.op(d).code(), OpCode::IntZext);
+        assert_eq!(f.op(d).input(0), Some(low));
     }
 }
