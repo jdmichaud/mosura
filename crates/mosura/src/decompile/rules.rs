@@ -2594,8 +2594,10 @@ impl Rule for RuleAndPiece {
 /// fires anddistribute/humptyor 0× on piecestruct): Ghidra never reaches this form because its
 /// SubVariableFlow dissolves the byte-packing first; and even if it arose, Ghidra's fresh nzmasks let
 /// the higher-priority [`RuleAndMask`] collapse the intermediate `X & 0xff` identity. mosura's
-/// freshly-created OR varnode carries a stale full nzmask, so AndMask can't break the cycle. Wire this
-/// once nzmask is refreshed mid-pool (**Task #10**). Do NOT wire it alongside RuleHumptyOr before then.
+/// freshly-created OR varnode carries a stale full nzmask, so AndMask can't break the cycle. PRIMARY
+/// blocker = **Task #9** (SubVariableFlow — makes the cycle form never arise, the same fix as SubZext /
+/// Piece2Zext); **Task #10** (nzmask refreshed mid-pool) is a secondary safety-net that would let
+/// AndMask break the cycle if the form ever did arise. Do NOT wire it alongside RuleHumptyOr before then.
 pub struct RuleAndDistribute;
 
 impl Rule for RuleAndDistribute {
