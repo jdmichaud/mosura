@@ -2262,6 +2262,38 @@ impl Rule for RuleSubZext {
     }
 }
 
+/// Ghidra `RulePiece2Zext` (ruleaction.cc:219): concatenation with a zero high part is a zero
+/// extension — `concat(#0, W)  =>  zext(W)`.
+///
+/// Faithful port (unit-tested). NET-POSITIVE but **not yet pool-wired pending a lead call**: the
+/// trace diff shows it CONVERGES on floatcast (mosura 4× = Ghidra 4×, floatcast 0.796→0.840) and
+/// helps nan/varcross, but OVER-fires by one on floatconv (mosura 2× vs Ghidra 1×, floatconv
+/// 0.578→0.512) — the same per-op rule-priority gap as [`RuleSubZext`] (Task #7). Net corpus
+/// ≈+0.0001. Wire it either once the pool honors Ghidra's rule priority, or now if the net-positive
+/// with the floatconv dip is acceptable.
+pub struct RulePiece2Zext;
+
+impl Rule for RulePiece2Zext {
+    fn name(&self) -> &str {
+        "piece2zext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::Piece {
+            return 0;
+        }
+        let cvn = data.op(op).input(0).unwrap(); // most-significant half
+        if !data.vn(cvn).is_constant() || data.vn(cvn).constant_value() != 0 {
+            return 0;
+        }
+        data.op_remove_input(op, 0);
+        data.op_set_opcode(op, OpCode::IntZext);
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -3847,5 +3879,27 @@ mod tests {
         assert!(f.vn(sa).is_constant() && f.vn(sa).constant_value() == 16);
         let m = f.op(z).input(1).unwrap();
         assert!(f.vn(m).is_constant() && f.vn(m).constant_value() == 0xffff);
+    }
+
+    // --- RulePiece2Zext (ruleaction.cc:219) — ported, wiring pending (see doc comment) --
+
+    #[test]
+    fn piece2zext_zero_high_becomes_zext() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // concat(#0:2, W:2) : 4  =>  zext(W)
+        let w = f.new_input(2, Address::new(reg, 0x10));
+        let hi0 = f.new_const(2, 0);
+        let piece = f.new_op(OpCode::Piece, seq, vec![hi0, w]);
+        f.new_output_unique(piece, 4);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![piece],
+            ..Default::default()
+        }]);
+        assert_eq!(RulePiece2Zext.apply_op(piece, &mut f), 1);
+        assert_eq!(f.op(piece).code(), OpCode::IntZext);
+        assert_eq!(f.op(piece).num_inputs(), 1);
+        assert_eq!(f.op(piece).input(0), Some(w));
     }
 }
