@@ -20,8 +20,31 @@ for the full rationale and architecture.
   approximation that didn't compose, fully superseded by the faithful pipeline. Its
   `datatest_score` gauge is retired; the `ccompare` structural comparator it carried was
   lifted to `src/ccompare.rs`.
-- **Faithful pipeline** (`src/decompile/`): the decompiler. Corpus **0.76 avg structural
-  similarity, 42/60 x86-64 datatests ≥ 0.70** (`decompile_corpus`) — the active gauge.
+- **Faithful pipeline** (`src/decompile/`): the decompiler. Corpus **0.8649 avg structural
+  similarity, 54/60 x86-64 datatests ≥ 0.70** (`decompile_corpus`) — a diagnostic, NOT the
+  target (see "Direction"). HEAD `9111b49`, 178 tests green.
+
+  **Recent faithful subsystems landed** (this era; detail in `.claude/memory/`, handoff in
+  `MEMORY.md` + `direction-faithful-port.md`): uniform `guard()` write+read normalization
+  (heritage) → orcompare; `getNZMask`/`ActionNonzeroMask` (forward non-zero-mask analysis,
+  42 rule sites); **Ghidra ActionPool per-op rule priority** (perop[opcode] + restart-on-
+  opcode-change + SeqNum op order — mosura's flat pool was an unfaithful approximation);
+  the **mosura↔Ghidra rule-application trace-diff tool** (`scripts/trace-diff.sh` +
+  `oracle/capture_trace`, gated on `MOSURA_TRACE`/CPUI_DEBUG-OPACTION_DEBUG) — proves which
+  Ghidra rules mosura fires/misses instead of guessing from IR; ~16 ruleaction.cc rules
+  ported (many corpus-neutral IR-fidelity, unexercised ones unit-tested).
+
+  **KEY PRINCIPLE** (`port-all-faithful-rules`): port EVERY faithful Ghidra rule; never
+  "decline" one for being corpus-neutral. Unexercised ports get a synthetic-op-graph unit
+  test, not a decline. The only legit "not yet" is a rule BLOCKED on a missing subsystem.
+
+  **In flight:** Task #9 — port `SubVariableFlow` (`subflow.cc`), the worklist data-flow
+  transform that dissolves byte-packing into narrow PIECE/CONCAT/zext. Unblocks 3 held rules
+  (SubZext, Piece2Zext, AndDistribute). **Stage 0 (bit-level `consume` analysis, the backward
+  dual of nzmask) LANDED byte-neutral (`9111b49`)**; Stage 1 (SubvariableFlow core structs)
+  in progress. Plan: `.claude/memory/task9-subvariableflow-plan.md`. 5 held rules await their
+  measured blockers: SubZext/Piece2Zext→#9, AndDistribute→#9(+#10 nzmask-freshness),
+  AndCompare→#8 (sub2add-in-mainloop), NotDistribute→#4 (nan flag-simplification).
 
 ## Phases (faithful port — detail in `port-plan.md` §4)
 
