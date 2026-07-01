@@ -1971,8 +1971,10 @@ impl Rule for RuleHighOrderAnd {
 /// diff shows mosura fires it 7× on `nan` where Ghidra fires it only 3×, because mosura's ucomisd
 /// flag-tangle is still unsimplified upstream (the known `nan` gap) so its boolean graph has more
 /// `!(BOOL_AND/OR)` sites than Ghidra's — over-applying De Morgan there diverges from Ghidra's C
-/// (nan 0.378→0.308). Wire it once the `nan` flag-simplification (Task #4) makes the two graphs
-/// match; the rule itself is correct.
+/// (nan 0.378→0.308). Wire it once the `nan` flag-simplification (**Task #4**) makes the two graphs
+/// match; the rule itself is correct. (Confirmed by measurement after Ghidra's per-op rule priority
+/// landed [Task #7, `c88ff35`]: the over-fire is unchanged at 7×-vs-3×, so priority was never the
+/// blocker — this is an upstream graph-shape divergence, Task #4.)
 pub struct RuleNotDistribute;
 
 impl Rule for RuleNotDistribute {
@@ -2015,9 +2017,11 @@ impl Rule for RuleNotDistribute {
 ///
 /// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
 /// shows mosura fires it where Ghidra does not (e.g. 3× on forloop_varused vs Ghidra's 0×, regressing
-/// it 0.984→0.970). mosura's flat rule pool lacks Ghidra's per-op rule-priority ordering (`perop`
-/// lists in ActionPool), so this fires on transient forms Ghidra's ordering rewrites differently.
-/// Wire it once the pool honors Ghidra's rule priority (see the Task #3 handoff).
+/// it 0.984→0.970). Ghidra's per-op rule priority landed (**Task #7**, `c88ff35`) and the over-fire is
+/// UNCHANGED — so priority was not the blocker. The real cause (trace-diff Ghidra-only list): Ghidra
+/// fires `addmultcollapse`/`sub2add` in its MAIN rule loop, while mosura runs them in a separate
+/// `ptrarith_pool`, so mosura's intermediate graph reaches an `(V&mask)==0` shape Ghidra never has.
+/// Wire it once those rules run in the main loop (**Task #8**).
 pub struct RuleAndCompare;
 
 impl Rule for RuleAndCompare {
@@ -2160,11 +2164,13 @@ impl Rule for RuleZextShiftZext {
 /// where the truncate-then-extend returns to `V`'s original width (`|sub base| == |zext out|`).
 ///
 /// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
-/// shows mosura over-fires it (36× on piecestruct vs Ghidra's 26×) and rewrites `zext(byte)` forms
-/// that [`RuleShiftPiece`] needs to fold into CONCAT — breaking the byte-packing recovery
-/// (piecestruct 0.889→0.840). mosura's flat pool lacks Ghidra's per-op rule-priority ordering, so
-/// SubZext "wins" on ops where Ghidra's ShiftPiece fires first. Wire it once the pool honors Ghidra's
-/// rule priority (Task #3 handoff).
+/// shows mosura over-fires it on piecestruct and rewrites `zext(byte)` forms that [`RuleShiftPiece`]
+/// needs to fold into CONCAT — broadly regressing the corpus (piecestruct itself 0.889→0.736). With
+/// Ghidra's per-op rule priority now in place (**Task #7**, `c88ff35`) it still over-fires 31×-vs-26×,
+/// so priority was not the blocker. Root cause (Ghidra's own trace on piecestruct): Ghidra fires
+/// subzext 26× *alongside* subvar 20× + piece2zext 19× + andmask 27× — its SubVariableFlow subsystem
+/// consumes the extra IntZext forms mosura's SubZext hits. Wire it once SubVariableFlow lands
+/// (**Task #9**).
 pub struct RuleSubZext;
 
 impl Rule for RuleSubZext {
@@ -2265,12 +2271,13 @@ impl Rule for RuleSubZext {
 /// Ghidra `RulePiece2Zext` (ruleaction.cc:219): concatenation with a zero high part is a zero
 /// extension — `concat(#0, W)  =>  zext(W)`.
 ///
-/// Faithful port (unit-tested). NET-POSITIVE but **not yet pool-wired pending a lead call**: the
-/// trace diff shows it CONVERGES on floatcast (mosura 4× = Ghidra 4×, floatcast 0.796→0.840) and
+/// Faithful port (unit-tested), **not wired into [`default_rule_pool`]** (lead ruled it stays held):
+/// the trace diff shows it CONVERGES on floatcast (mosura 4× = Ghidra 4×, floatcast 0.796→0.840) and
 /// helps nan/varcross, but OVER-fires by one on floatconv (mosura 2× vs Ghidra 1×, floatconv
-/// 0.578→0.512) — the same per-op rule-priority gap as [`RuleSubZext`] (Task #7). Net corpus
-/// ≈+0.0001. Wire it either once the pool honors Ghidra's rule priority, or now if the net-positive
-/// with the floatconv dip is acceptable.
+/// 0.578→0.512) for a net corpus of only ≈+0.0001. Ghidra's per-op rule priority landed (**Task #7**,
+/// `c88ff35`) and the floatconv over-fire is UNCHANGED — so priority was not the blocker; it is the
+/// same SubVariableFlow gap as [`RuleSubZext`]. Wire it once that lands (**Task #9**). Not wired for
+/// the marginal net gain — that would be gauge-chasing with a real floatconv regression.
 pub struct RulePiece2Zext;
 
 impl Rule for RulePiece2Zext {
@@ -2578,10 +2585,17 @@ impl Rule for RuleAndPiece {
 /// simplifies — `(A|B) & C  =>  (A&C) | (B&C)`, gated on the non-zero masks so a term cancels or
 /// becomes trivial.
 ///
-/// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** — it is the mirror image
-/// of [`RuleHumptyOr`] and mosura's flat fixpoint pool ping-pongs between the two (the corpus hangs).
-/// Ghidra avoids this via its per-op rule-priority ordering, which makes the rewrite system confluent;
-/// wire this once that lands (Task #7). Do NOT wire it alongside RuleHumptyOr before then.
+/// Faithful port (unit-tested; guards verified byte-for-byte against ruleaction.cc), but **not wired
+/// into [`default_rule_pool`]** — it is the mirror image of [`RuleHumptyOr`] and the pool HANGS: a
+/// real inverse cycle `humptyor → termorder → anddistribute → humptyor` on the byte-mask form
+/// `(X&k1)|(X&k2)`. Ghidra's per-op rule priority landed (**Task #7**, `c88ff35`) and it STILL hangs,
+/// so priority is not the fix (the two rules are on different opcodes — INT_OR vs INT_AND — so
+/// priority never orders them against each other). Root cause (verified via Ghidra's own trace, which
+/// fires anddistribute/humptyor 0× on piecestruct): Ghidra never reaches this form because its
+/// SubVariableFlow dissolves the byte-packing first; and even if it arose, Ghidra's fresh nzmasks let
+/// the higher-priority [`RuleAndMask`] collapse the intermediate `X & 0xff` identity. mosura's
+/// freshly-created OR varnode carries a stale full nzmask, so AndMask can't break the cycle. Wire this
+/// once nzmask is refreshed mid-pool (**Task #10**). Do NOT wire it alongside RuleHumptyOr before then.
 pub struct RuleAndDistribute;
 
 impl Rule for RuleAndDistribute {
