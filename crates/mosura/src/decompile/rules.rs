@@ -2574,6 +2574,78 @@ impl Rule for RuleAndPiece {
     }
 }
 
+/// Ghidra `RuleAndDistribute` (ruleaction.cc:1254): distribute an INT_AND through an INT_OR when it
+/// simplifies — `(A|B) & C  =>  (A&C) | (B&C)`, gated on the non-zero masks so a term cancels or
+/// becomes trivial.
+///
+/// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** — it is the mirror image
+/// of [`RuleHumptyOr`] and mosura's flat fixpoint pool ping-pongs between the two (the corpus hangs).
+/// Ghidra avoids this via its per-op rule-priority ordering, which makes the rewrite system confluent;
+/// wire this once that lands (Task #7). Do NOT wire it alongside RuleHumptyOr before then.
+pub struct RuleAndDistribute;
+
+impl Rule for RuleAndDistribute {
+    fn name(&self) -> &str {
+        "anddistribute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let size = data.vn(data.op(op).output.unwrap()).size;
+        if size > 8 {
+            return 0;
+        }
+        let fullmask = super::nzmask::calc_mask(size);
+        let mut chosen: Option<(usize, VarnodeId, VarnodeId, VarnodeId)> = None; // (i, o0, o1, other)
+        for i in 0..2 {
+            let othervn = data.op(op).input(1 - i).unwrap();
+            if !data.vn(othervn).is_heritage_known() {
+                continue;
+            }
+            let orvn = data.op(op).input(i).unwrap();
+            let Some(orop) = data.vn(orvn).def else { continue };
+            if data.op(orop).code() != OpCode::IntOr {
+                continue;
+            }
+            let o0 = data.op(orop).input(0).unwrap();
+            let o1 = data.op(orop).input(1).unwrap();
+            if !data.vn(o0).is_heritage_known() || !data.vn(o1).is_heritage_known() {
+                continue;
+            }
+            let othermask = data.vn(othervn).get_nzmask();
+            if othermask == 0 || othermask == fullmask {
+                continue;
+            }
+            let ormask1 = data.vn(o0).get_nzmask();
+            let ormask2 = data.vn(o1).get_nzmask();
+            // Distribute only when it makes a term cancel (mask disjoint) or, for a constant mask,
+            // become trivial (mask covers the term). Otherwise distributing gains nothing.
+            let beneficial = (ormask1 & othermask) == 0
+                || (ormask2 & othermask) == 0
+                || (data.vn(othervn).is_constant()
+                    && ((ormask1 & othermask) == ormask1 || (ormask2 & othermask) == ormask2));
+            if beneficial {
+                chosen = Some((i, o0, o1, othervn));
+                break;
+            }
+        }
+        let Some((_i, o0, o1, othervn)) = chosen else { return 0 };
+        let and1 = data.new_op_before(op, OpCode::IntAnd, vec![o0, othervn]);
+        let v1 = data.op(and1).output.unwrap();
+        let and2 = data.new_op_before(op, OpCode::IntAnd, vec![o1, othervn]);
+        let v2 = data.op(and2).output.unwrap();
+        // Ghidra replaces both inputs (slots 0 and 1) regardless of which held the OR.
+        data.op_set_input(op, 0, v1);
+        data.op_set_input(op, 1, v2);
+        data.op_set_opcode(op, OpCode::IntOr);
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -4353,5 +4425,35 @@ mod tests {
         let d = f.vn(in0).def.unwrap();
         assert_eq!(f.op(d).code(), OpCode::IntZext);
         assert_eq!(f.op(d).input(0), Some(low));
+    }
+
+    // --- RuleAndDistribute (ruleaction.cc:1254) — ported + held (see doc comment) --
+
+    #[test]
+    fn and_distribute_when_term_cancels() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (0xff00 | B) & 0x00ff  =>  (0xff00 & 0x00ff) | (B & 0x00ff)   [first term's mask cancels]
+        let a = f.new_const(2, 0xff00);
+        let b = f.new_input(2, Address::new(reg, 0x10));
+        let or = f.new_op(OpCode::IntOr, seq, vec![a, b]);
+        let oro = f.new_output_unique(or, 2);
+        let c = f.new_const(2, 0x00ff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![oro, c]);
+        f.new_output_unique(and, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![or, and],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleAndDistribute.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::IntOr);
+        let (i0, i1) = (f.op(and).input(0).unwrap(), f.op(and).input(1).unwrap());
+        let d0 = f.vn(i0).def.unwrap();
+        let d1 = f.vn(i1).def.unwrap();
+        assert_eq!(f.op(d0).code(), OpCode::IntAnd);
+        assert_eq!(f.op(d1).code(), OpCode::IntAnd);
+        assert_eq!(f.op(d0).input(0), Some(a)); // A & C
+        assert_eq!(f.op(d1).input(0), Some(b)); // B & C
     }
 }
