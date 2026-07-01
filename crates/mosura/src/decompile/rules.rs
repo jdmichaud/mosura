@@ -1782,6 +1782,231 @@ impl Rule for RulePopcountBoolXor {
     }
 }
 
+/// Ghidra `RuleOrCollapse` (ruleaction.cc:384): `V | c  =>  c` when every bit not set in the
+/// constant `c` is also provably 0 in `V` (`nzm(V) | c == c`) — the OR turns on no bit that `c`
+/// does not already have, so the result is just `c`.
+pub struct RuleOrCollapse;
+
+impl Rule for RuleOrCollapse {
+    fn name(&self) -> &str {
+        "orcollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntOr {
+            return 0;
+        }
+        let Some(out) = data.op(op).output else { return 0 };
+        if data.vn(out).size > 8 {
+            return 0; // matches Ghidra's `size > sizeof(uintb)` guard
+        }
+        let Some(cvn) = data.op(op).input(1) else { return 0 };
+        if !data.vn(cvn).is_constant() {
+            return 0;
+        }
+        let mask = data.vn(data.op(op).input(0).unwrap()).get_nzmask();
+        let val = data.vn(cvn).constant_value();
+        if (mask | val) != val {
+            return 0; // input(0) could turn on other bits
+        }
+        data.op_set_opcode(op, OpCode::Copy);
+        data.op_remove_input(op, 0); // keep the constant
+        1
+    }
+}
+
+/// Ghidra `RuleXorCollapse` (ruleaction.cc:4050): eliminate an INT_XOR inside an equality compare —
+///   - `(V ^ W) == 0   =>  V == W`      (move the term to the other side)
+///   - `(V ^ c) == d   =>  V == (c ^ d)`
+/// Works for INT_EQUAL and INT_NOTEQUAL.
+pub struct RuleXorCollapse;
+
+impl Rule for RuleXorCollapse {
+    fn name(&self) -> &str {
+        "xorcollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let code = data.op(op).code();
+        if code != OpCode::IntEqual && code != OpCode::IntNotequal {
+            return 0;
+        }
+        let cvn = data.op(op).input(1).unwrap();
+        if !data.vn(cvn).is_constant() {
+            return 0;
+        }
+        let xin = data.op(op).input(0).unwrap();
+        let Some(xorop) = data.vn(xin).def else { return 0 };
+        if data.op(xorop).code() != OpCode::IntXor {
+            return 0;
+        }
+        if lone_descend(data, xin).is_none() {
+            return 0; // the XOR output must have exactly one use
+        }
+        let coeff1 = data.vn(cvn).constant_value();
+        let xorvn = data.op(xorop).input(1).unwrap();
+        let xor0 = data.op(xorop).input(0).unwrap();
+        if data.vn(xor0).is_free() {
+            return 0; // this will be propagated
+        }
+        if !data.vn(xorvn).is_constant() {
+            if coeff1 != 0 || data.vn(xorvn).is_free() {
+                return 0;
+            }
+            data.op_set_input(op, 1, xorvn); // move the term to the other side
+            data.op_set_input(op, 0, xor0);
+            return 1;
+        }
+        let coeff2 = data.vn(xorvn).constant_value();
+        if coeff2 == 0 {
+            return 0;
+        }
+        let constvn = data.new_const(data.vn(cvn).size, coeff1 ^ coeff2);
+        data.op_set_input(op, 1, constvn);
+        data.op_set_input(op, 0, xor0);
+        1
+    }
+}
+
+/// Ghidra `RuleHighOrderAnd` (ruleaction.cc:1196): simplify an INT_AND with a high-order mask
+/// (`0xff..00`) applied to an aligned INT_ADD — `(V + c) & 0xfff0  =>  V + (c & 0xfff0)` when `V` is
+/// already zero in the masked-off low bits (`nzm(V) & mask == nzm(V)`). Also the nested aligned form
+/// `((V + c) + W) & 0xfff0  =>  (V + (c & 0xfff0)) + W`.
+pub struct RuleHighOrderAnd;
+
+impl Rule for RuleHighOrderAnd {
+    fn name(&self) -> &str {
+        "highorderand"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let cvn1 = data.op(op).input(1).unwrap();
+        if !data.vn(cvn1).is_constant() {
+            return 0;
+        }
+        let in0 = data.op(op).input(0).unwrap();
+        if !data.vn(in0).is_written() {
+            return 0;
+        }
+        let addop = data.vn(in0).def.unwrap();
+        if data.op(addop).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let mut val = data.vn(cvn1).constant_value();
+        let size = data.vn(cvn1).size;
+        // Mask must have the form 0b11..0..0 (a run of high bits set, low bits clear).
+        if (val.wrapping_sub(1) | val) != super::nzmask::calc_mask(size) {
+            return 0;
+        }
+        let cvn2 = data.op(addop).input(1).unwrap();
+        if data.vn(cvn2).is_constant() {
+            let xalign = data.op(addop).input(0).unwrap();
+            if data.vn(xalign).is_free() {
+                return 0;
+            }
+            let mask1 = data.vn(xalign).get_nzmask();
+            if (mask1 & val) != mask1 {
+                return 0; // input(0) must be unaffected by the AND
+            }
+            data.op_set_opcode(op, OpCode::IntAdd);
+            data.op_set_input(op, 0, xalign);
+            val &= data.vn(cvn2).constant_value();
+            let c = data.new_const(size, val);
+            data.op_set_input(op, 1, c);
+            return 1;
+        }
+        // Nested form: the AND's INT_ADD combines an already-aligned term with another INT_ADD.
+        let addout = data.op(addop).output.unwrap();
+        if lone_descend(data, addout) != Some(op) {
+            return 0;
+        }
+        for i in 0..2 {
+            let zerovn = data.op(addop).input(i).unwrap();
+            if (data.vn(zerovn).get_nzmask() & val) != data.vn(zerovn).get_nzmask() {
+                continue; // zerovn must be unaffected by the AND
+            }
+            let nonzerovn = data.op(addop).input(1 - i).unwrap();
+            if !data.vn(nonzerovn).is_written() {
+                continue;
+            }
+            let addop2 = data.vn(nonzerovn).def.unwrap();
+            if data.op(addop2).code() != OpCode::IntAdd {
+                continue;
+            }
+            if lone_descend(data, nonzerovn) != Some(addop) {
+                continue;
+            }
+            let cvn2 = data.op(addop2).input(1).unwrap();
+            if !data.vn(cvn2).is_constant() {
+                continue;
+            }
+            let xalign = data.op(addop2).input(0).unwrap();
+            if (data.vn(xalign).get_nzmask() & val) != data.vn(xalign).get_nzmask() {
+                continue;
+            }
+            val &= data.vn(cvn2).constant_value();
+            let c = data.new_const(size, val);
+            data.op_set_input(addop2, 1, c);
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, OpCode::Copy);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `RuleNotDistribute` (ruleaction.cc:1147): distribute a BOOL_NEGATE over a short-circuit
+/// boolean — De Morgan: `!(V && W)  =>  !V || !W` and `!(V || W)  =>  !V && !W`.
+///
+/// Faithful port (see the unit test), but **not wired into [`default_rule_pool`]** yet: the trace
+/// diff shows mosura fires it 7× on `nan` where Ghidra fires it only 3×, because mosura's ucomisd
+/// flag-tangle is still unsimplified upstream (the known `nan` gap) so its boolean graph has more
+/// `!(BOOL_AND/OR)` sites than Ghidra's — over-applying De Morgan there diverges from Ghidra's C
+/// (nan 0.378→0.308). Wire it once the `nan` flag-simplification (Task #4) makes the two graphs
+/// match; the rule itself is correct.
+pub struct RuleNotDistribute;
+
+impl Rule for RuleNotDistribute {
+    fn name(&self) -> &str {
+        "notdistribute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolNegate]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).code() != OpCode::BoolNegate {
+            return 0;
+        }
+        let inv = data.op(op).input(0).unwrap();
+        let Some(compop) = data.vn(inv).def else { return 0 };
+        let opc = match data.op(compop).code() {
+            OpCode::BoolAnd => OpCode::BoolOr,
+            OpCode::BoolOr => OpCode::BoolAnd,
+            _ => return 0,
+        };
+        // BOOL_AND/BOOL_OR operands are boolean (size 1), so new_op_before's input(0)-derived
+        // output size is 1 (Ghidra's newUniqueOut(1,...)).
+        let (c0, c1) = (data.op(compop).input(0).unwrap(), data.op(compop).input(1).unwrap());
+        let neg1 = data.new_op_before(op, OpCode::BoolNegate, vec![c0]);
+        let out1 = data.op(neg1).output.unwrap();
+        let neg2 = data.new_op_before(op, OpCode::BoolNegate, vec![c1]);
+        let out2 = data.op(neg2).output.unwrap();
+        data.op_set_opcode(op, opc);
+        data.op_set_input(op, 0, out1);
+        data.op_append_input(op, out2);
+        1
+    }
+}
+
 /// Ghidra `RuleOrMask` (ruleaction.cc:284): `V | mask  =>  mask` when the constant operand has every
 /// bit of the output set. An OR can only set bits, so an all-ones constant determines the result
 /// regardless of `V`; the op collapses to a COPY of the constant. (switchmulti's `extraout_R8 | -1`
@@ -3116,5 +3341,118 @@ mod tests {
         assert_eq!(f.op(and).code(), OpCode::IntXor);
         let ins = [f.op(and).input(0).unwrap(), f.op(and).input(1).unwrap()];
         assert!(ins.contains(&b1) && ins.contains(&b2), "XOR of the two booleans");
+    }
+
+    // --- RuleOrCollapse (ruleaction.cc:384) -----------------------------------
+
+    #[test]
+    fn or_collapse_when_operand_bits_subset_of_const() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // t = a & 0x0f  (nzm 0x0f) ; t | 0x0f  →  0x0f  (OR turns on no new bit)
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let m = f.new_const(4, 0x0f);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![a, m]);
+        let t = f.new_output_unique(and, 4);
+        let c = f.new_const(4, 0x0f);
+        let or = f.new_op(OpCode::IntOr, seq, vec![t, c]);
+        f.new_output_unique(or, 4);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and, or],
+            ..Default::default()
+        }]);
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleOrCollapse).apply(&mut f);
+        assert_eq!(f.op(or).code(), OpCode::Copy);
+        assert_eq!(f.op(or).num_inputs(), 1);
+        let in0 = f.op(or).input(0).unwrap();
+        assert!(f.vn(in0).is_constant() && f.vn(in0).constant_value() == 0x0f);
+    }
+
+    // --- RuleXorCollapse (ruleaction.cc:4050) ---------------------------------
+
+    #[test]
+    fn xor_collapse_folds_const_into_compare() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (v ^ 5) == 3   →   v == (5 ^ 3 = 6)
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 0x5);
+        let xor = f.new_op(OpCode::IntXor, seq, vec![v, c5]);
+        let t = f.new_output_unique(xor, 4);
+        let d3 = f.new_const(4, 0x3);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![t, d3]);
+        f.new_output_unique(eq, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![xor, eq],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleXorCollapse).apply(&mut f);
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual);
+        assert_eq!(f.op(eq).input(0), Some(v));
+        let d = f.op(eq).input(1).unwrap();
+        assert!(f.vn(d).is_constant() && f.vn(d).constant_value() == 0x6);
+    }
+
+    // --- RuleHighOrderAnd (ruleaction.cc:1196) --------------------------------
+
+    #[test]
+    fn high_order_and_pushes_mask_into_add_const() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // xalign = b & 0xf0  (nzm 0xf0, low 4 bits clear → unaffected by & 0xfff0)
+        let b = f.new_input(2, Address::new(reg, 0x10));
+        let m = f.new_const(2, 0xf0);
+        let anda = f.new_op(OpCode::IntAnd, seq, vec![b, m]);
+        let xalign = f.new_output_unique(anda, 2);
+        let c2 = f.new_const(2, 0x1234);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![xalign, c2]);
+        let addout = f.new_output_unique(add, 2);
+        let mask = f.new_const(2, 0xfff0);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![addout, mask]);
+        f.new_output_unique(and, 2);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![anda, add, and],
+            ..Default::default()
+        }]);
+        crate::decompile::pipeline::ActionNonzeroMask.apply(&mut f);
+        ActionPool::new("p").with(RuleHighOrderAnd).apply(&mut f);
+        // (xalign + 0x1234) & 0xfff0  →  xalign + (0x1234 & 0xfff0 = 0x1230)
+        assert_eq!(f.op(and).code(), OpCode::IntAdd);
+        assert_eq!(f.op(and).input(0), Some(xalign));
+        let c = f.op(and).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0x1230);
+    }
+
+    // --- RuleNotDistribute (ruleaction.cc:1147) — ported + held (see the rule's doc comment) --
+
+    #[test]
+    fn not_distribute_de_morgan() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // neg = !(v && w)   →   !v || !w
+        let v = f.new_input(1, Address::new(reg, 0x10));
+        let w = f.new_input(1, Address::new(reg, 0x18));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![v, w]);
+        let andout = f.new_output_unique(and, 1);
+        let neg = f.new_op(OpCode::BoolNegate, seq, vec![andout]);
+        f.new_output_unique(neg, 1);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and, neg],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleNotDistribute.apply_op(neg, &mut f), 1);
+        assert_eq!(f.op(neg).code(), OpCode::BoolOr);
+        let (i0, i1) = (f.op(neg).input(0).unwrap(), f.op(neg).input(1).unwrap());
+        let d0 = f.vn(i0).def.unwrap();
+        let d1 = f.vn(i1).def.unwrap();
+        assert_eq!(f.op(d0).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(d1).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(d0).input(0), Some(v));
+        assert_eq!(f.op(d1).input(0), Some(w));
     }
 }
