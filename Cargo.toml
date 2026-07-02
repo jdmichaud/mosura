@@ -11,3 +11,10 @@ repository = "mosura"
 roxmltree = "0.20"
 regex = "1"
 flate2 = "1"
+
+# Loop-iteration speed: the test binaries relink on every lib change, and full
+# debuginfo dominates GNU ld's link time. Line tables keep panic backtraces
+# (file:line) — set `debug = 2` locally when a debugger session needs full info.
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
