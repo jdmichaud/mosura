@@ -652,6 +652,14 @@ impl Rule for RuleSelectCse {
                 continue;
             }
             let Some(other_out) = data.op(other).output else { continue };
+            // Ghidra `PcodeOp::isCseMatch` (op.cc): outputs must be the same size. Two SUBPIECEs
+            // reading the same varnode at the same offset but truncating to different widths (an
+            // x86 AL vs EAX sub-register read) are NOT the same value and must not be merged —
+            // merging one into the other yields a size-inconsistent op. (mosura's other CSE path,
+            // `cse_find_in_block` via `functional_equality_level0`, already guards on size.)
+            if data.vn(out).size != data.vn(other_out).size {
+                continue;
+            }
             // depth-1 functional equality: same operands (same varnode or same constant value)
             if data.op(op).num_inputs() != data.op(other).num_inputs() {
                 continue;
