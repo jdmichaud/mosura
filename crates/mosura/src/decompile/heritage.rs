@@ -856,11 +856,22 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
         }
     }
 
-    // 2. Place MULTIEQUALs at iterated dominance frontiers of each global's def-blocks.
+    // 2. Place MULTIEQUALs at iterated dominance frontiers of each global's def-blocks. Iterate the
+    //    global locations in address order to match Ghidra: `Heritage::placeMultiequals`
+    //    (heritage.cc:2599) walks the address-ordered `disjoint` cover, creating each MULTIEQUAL as
+    //    it goes, and the `VarnodeLocSet` comparator `VarnodeCompareLocDef` (varnode.cc:34) orders
+    //    by `getAddr()` (space, offset) then `getSize()`. Sorting `globals` by (space, offset, size)
+    //    reproduces that order, replacing the randomized-per-process HashSet iteration (a non-Ghidra
+    //    approximation). Output is invariant either way — this is an ordering-fidelity alignment.
+    let mut globals_sorted: Vec<Loc> = globals.iter().copied().collect();
+    globals_sorted.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
     let mut phis: HashMap<(usize, Loc), OpId> = HashMap::new();
-    for &l in &globals {
+    for &l in &globals_sorted {
         let Some(defs) = defblocks.get(&l) else { continue };
+        // Sorted def-block worklist so the per-location frontier walk is likewise deterministic; the
+        // phi *set* is fixpoint-invariant, only the creation order (op numbering) is pinned here.
         let mut worklist: Vec<usize> = defs.iter().copied().collect();
+        worklist.sort_unstable();
         let mut placed: HashSet<usize> = HashSet::new();
         while let Some(x) = worklist.pop() {
             for &d in &dom.frontier[x] {
