@@ -3309,6 +3309,44 @@ impl Rule for RuleMultiCollapse {
     }
 }
 
+/// Ghidra `RulePositiveDiv` (ruleaction.cc:7799; getOpList 7792): signed division of positive
+/// values is unsigned division. If the sign bit of both the numerator and denominator of a signed
+/// division (or remainder) is known-zero — proven via the non-zero mask ([`Varnode::get_nzmask`]) —
+/// convert `INT_SDIV`/`INT_SREM` to the unsigned `INT_DIV`/`INT_REM`.
+pub struct RulePositiveDiv;
+
+impl Rule for RulePositiveDiv {
+    fn name(&self) -> &str {
+        "positivediv"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSdiv, OpCode::IntSrem]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        let mut sa = data.vn(out).size;
+        if sa > 8 {
+            return 0; // Ghidra: sa > sizeof(uintb)
+        }
+        sa = sa * 8 - 1;
+        let in0 = data.op(op).input(0).unwrap();
+        if ((data.vn(in0).get_nzmask() >> sa) & 1) != 0 {
+            return 0; // Input 0 may be negative
+        }
+        let in1 = data.op(op).input(1).unwrap();
+        if ((data.vn(in1).get_nzmask() >> sa) & 1) != 0 {
+            return 0; // Input 1 may be negative
+        }
+        let opc = if data.op(op).code() == OpCode::IntSdiv {
+            OpCode::IntDiv
+        } else {
+            OpCode::IntRem
+        };
+        data.op_set_opcode(op, opc);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4479,5 +4517,55 @@ mod tests {
         assert_eq!(f.op(d1).code(), OpCode::IntAnd);
         assert_eq!(f.op(d0).input(0), Some(a)); // A & C
         assert_eq!(f.op(d1).input(0), Some(b)); // B & C
+    }
+
+    // --- RulePositiveDiv (ruleaction.cc:7799) ---
+
+    #[test]
+    fn positive_div_of_nonnegative_becomes_unsigned() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // num = x & 0x7fffffff  (sign bit provably 0 via nz mask) ; den = 3 (positive const)
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let m = f.new_const(4, 0x7fffffff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![x, m]);
+        let num = f.new_output_unique(and, 4);
+        let three = f.new_const(4, 3);
+        let sdiv = f.new_op(OpCode::IntSdiv, seq, vec![num, three]);
+        f.new_output(sdiv, 4, Address::new(reg, 0));
+        let srem = f.new_op(OpCode::IntSrem, seq, vec![num, three]);
+        f.new_output(srem, 4, Address::new(reg, 8));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and, sdiv, srem],
+            ..Default::default()
+        }]);
+        let dom = crate::decompile::dominator::compute(&f);
+        crate::decompile::nzmask::calc_nzmask(&mut f, &dom);
+        // Both operands provably non-negative  =>  SDIV→DIV, SREM→REM.
+        assert_eq!(RulePositiveDiv.apply_op(sdiv, &mut f), 1);
+        assert_eq!(f.op(sdiv).code(), OpCode::IntDiv);
+        assert_eq!(RulePositiveDiv.apply_op(srem, &mut f), 1);
+        assert_eq!(f.op(srem).code(), OpCode::IntRem);
+    }
+
+    #[test]
+    fn positive_div_skips_possibly_negative() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // Raw 4-byte input has a full nz mask (sign bit may be set)  =>  rule must not fire.
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let three = f.new_const(4, 3);
+        let sdiv = f.new_op(OpCode::IntSdiv, seq, vec![x, three]);
+        f.new_output(sdiv, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sdiv],
+            ..Default::default()
+        }]);
+        let dom = crate::decompile::dominator::compute(&f);
+        crate::decompile::nzmask::calc_nzmask(&mut f, &dom);
+        assert_eq!(RulePositiveDiv.apply_op(sdiv, &mut f), 0);
+        assert_eq!(f.op(sdiv).code(), OpCode::IntSdiv);
     }
 }

@@ -13,7 +13,7 @@ use super::rules::{
     RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
-    RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece,
+    RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -133,6 +133,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleHumptyDumpty) // (77)
         .with(RuleDumptyHump) // (78)
         .with(RuleHumptyOr) // (79)
+        .with(RulePositiveDiv) // (82)
         .with(super::divopt::RuleDivOpt) // (85)
         .with(super::divopt::RuleModOpt) // (91)
         .with(super::divopt::RuleSignMod2nOpt) // (92)
