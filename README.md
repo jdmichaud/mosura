@@ -93,6 +93,28 @@ cargo xtask baseline  # regenerate disasm/p-code goldens from oracle/fixtures/
 As the SLEIGH engine lands, the ratchet constants (`EXPECTED_DATATEST_PASS`,
 `EXPECTED_DISASM_PASS`) get bumped — the baseline turns from red toward 599/599.
 
+## Performance instrumentation
+
+The pipeline carries wall-clock accounting that is completely inert unless the
+`MOSURA_PERF` environment variable is set (decompiler output is never affected).
+History and optimization notes: [`docs/perf-log.md`](docs/perf-log.md).
+
+```sh
+# per-fixture build/decompile/print timing over the x86-64 datatests, worst first
+cargo run -q --example perf_corpus
+
+# one fixture, plus per-action / per-rule / per-print-substep totals on stderr
+MOSURA_PERF=1 cargo run -q --example perf_corpus modulo
+```
+
+Two caches keep test iterations fast, both transparent:
+
+- `build/oracle-cache/` — `oracle/capture` stdout, keyed on the capture binary,
+  fixture bytes, and args; self-invalidates when any of them change (`rm -rf` to
+  force a re-capture).
+- `mosura::speccache::get(path)` — per-process parsed-`.sla` cache used by the
+  tests (a debug-build parse costs ~0.5–1s).
+
 ## Port status
 
 The SLEIGH runtime port (stage 1b) is byte-exact on x86-64 **and** AARCH64, with a
