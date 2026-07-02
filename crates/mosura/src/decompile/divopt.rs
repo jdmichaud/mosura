@@ -116,18 +116,56 @@ impl Rule for RuleDivOpt {
     }
 }
 
-/// A constant, possibly zero/sign-extended (Ghidra `Varnode::isConstantExtended`) — the
-/// reciprocal multiplier.
+/// Ghidra `Varnode::isConstantExtended` (varnode.cc:799): a constant, possibly zero/sign-extended or
+/// assembled by a `PIECE` of two constants, returned as its full (up to 128-bit) value — the
+/// reciprocal multiplier. mosura carries Ghidra's `uint8[2]` as one `u128` (`val[0]` = low 64,
+/// `val[1]` = high 64).
 fn is_constant_extended(f: &Funcdata, v: VarnodeId) -> Option<u128> {
     if f.vn(v).is_constant() {
         return Some(f.vn(v).constant_value() as u128);
     }
+    let size = f.vn(v).size;
+    if size <= 8 || size > 16 {
+        return None; // must be written; currently only up to 128-bit values
+    }
     let d = f.vn(v).def?;
-    if matches!(f.op(d).code(), OpCode::IntZext | OpCode::IntSext) {
-        let inner = f.op(d).input(0)?;
-        if f.vn(inner).is_constant() {
-            return Some(f.vn(inner).constant_value() as u128);
+    let pack = |lo: u64, hi: u64| Some(((hi as u128) << 64) | lo as u128);
+    match f.op(d).code() {
+        OpCode::IntZext => {
+            let vn0 = f.op(d).input(0)?;
+            if f.vn(vn0).is_constant() {
+                return pack(f.vn(vn0).constant_value(), 0);
+            }
         }
+        OpCode::IntSext => {
+            let vn0 = f.op(d).input(0)?;
+            if f.vn(vn0).is_constant() {
+                let insize = f.vn(vn0).size;
+                let mut val0 = f.vn(vn0).constant_value();
+                if insize < 8 {
+                    let sh = 64 - 8 * insize; // sign-extend within the 64-bit word
+                    val0 = (((val0 << sh) as i64) >> sh) as u64;
+                }
+                let val1 = if (val0 >> 63) & 1 != 0 { u64::MAX } else { 0 };
+                return pack(val0, val1);
+            }
+        }
+        OpCode::Piece => {
+            let vnlo = f.op(d).input(1)?; // Low part of piece
+            let vnhi = f.op(d).input(0)?; // High part
+            if f.vn(vnlo).is_constant() && f.vn(vnhi).is_constant() {
+                let mut val0 = f.vn(vnlo).constant_value();
+                let mut val1 = f.vn(vnhi).constant_value();
+                let losize = f.vn(vnlo).size;
+                if losize == 8 {
+                    return pack(val0, val1);
+                }
+                val0 |= val1 << (8 * losize);
+                val1 >>= 8 * (8 - losize);
+                return pack(val0, val1);
+            }
+        }
+        _ => {}
     }
     None
 }
@@ -541,6 +579,235 @@ impl Rule for RuleSignMod2nOpt2 {
     }
 }
 
+/// Ghidra `RuleDivTermAdd::findSubshift` (ruleaction.cc:7910): match `sub(V,#c)` or `sub(V,#c)>>n`,
+/// requiring the SUBPIECE to keep the high bytes. Returns `(subop, n + c*8, shiftopc)` where
+/// `shiftopc` is `Some(shift)` if a right-shift was involved and `None` (Ghidra's `CPUI_MAX`) when
+/// the root itself was the SUBPIECE.
+fn find_subshift(f: &Funcdata, op: OpId) -> Option<(OpId, u64, Option<OpCode>)> {
+    let root = f.op(op).code();
+    let (subop, mut n, shiftopc): (OpId, u64, Option<OpCode>) = if root != OpCode::Subpiece {
+        // Must be a right shift with the SUBPIECE as its written input.
+        let vn = f.op(op).input(0)?;
+        if !f.vn(vn).is_written() {
+            return None;
+        }
+        let subop = f.vn(vn).def?;
+        if f.op(subop).code() != OpCode::Subpiece {
+            return None;
+        }
+        (subop, cval(f, f.op(op).input(1)?)?, Some(root))
+    } else {
+        (op, 0, None)
+    };
+    let c = cval(f, f.op(subop).input(1)?)?;
+    let out_size = f.vn(f.op(subop).output?).size as u64;
+    let in_size = f.vn(f.op(subop).input(0)?).size as u64;
+    if out_size + c != in_size {
+        return None; // SUBPIECE is not keeping the high part
+    }
+    n += 8 * c;
+    Some((subop, n, shiftopc))
+}
+
+/// Ghidra `RuleDivTermAdd` (ruleaction.cc:7830; getOpList 7792): reassemble the trailing `+ V`
+/// correction of an optimized division:
+///   - `sub(ext(V)*c, b) >> d  +  V   =>   sub( (ext(V)*(c + 2^n))>>n, 0 )`   (n = d + b*8)
+/// folding the add-term back into the multiplier (the left-shift signedness, if any, must match the
+/// extension signedness) so [`RuleDivOpt`] can then recover `V / k`.
+pub struct RuleDivTermAdd;
+
+impl Rule for RuleDivTermAdd {
+    fn name(&self) -> &str {
+        "divtermadd"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece, OpCode::IntRight, OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        let Some((subop, n, shiftopc)) = find_subshift(f, op) else {
+            return 0;
+        };
+        if n > 127 {
+            return 0; // Up to 128-bits
+        }
+        let Some(multvn) = f.op(subop).input(0) else { return 0 };
+        if !f.vn(multvn).is_written() {
+            return 0;
+        }
+        let Some(multop) = f.vn(multvn).def else { return 0 };
+        if f.op(multop).code() != OpCode::IntMult {
+            return 0;
+        }
+        let Some(mult_in1) = f.op(multop).input(1) else { return 0 };
+        let Some(mult_const) = is_constant_extended(f, mult_in1) else { return 0 };
+
+        let Some(extvn) = f.op(multop).input(0) else { return 0 };
+        if !f.vn(extvn).is_written() {
+            return 0;
+        }
+        let Some(extop) = f.vn(extvn).def else { return 0 };
+        let opc = f.op(extop).code();
+        let root = f.op(op).code();
+        if opc == OpCode::IntZext {
+            if root == OpCode::IntSright {
+                return 0;
+            }
+        } else if opc == OpCode::IntSext && root == OpCode::IntRight {
+            return 0;
+        }
+
+        // multConst += 2^n  (Ghidra's set_u128/leftshift128/add128, native u128; n <= 127 here).
+        let mult_const = mult_const.wrapping_add(1u128 << (n as u32));
+        let Some(x) = f.op(extop).input(0) else { return 0 };
+        let extsize = f.vn(extvn).size;
+
+        let Some(out) = f.op(op).output else { return 0 };
+        let descs: Vec<OpId> = f.vn(out).descend.clone();
+        for addop in descs {
+            if f.op(addop).code() != OpCode::IntAdd {
+                continue;
+            }
+            if f.op(addop).input(0) != Some(x) && f.op(addop).input(1) != Some(x) {
+                continue;
+            }
+            // Construct the new constant, multiply, and shift.
+            let new_const_vn = f.new_extended_constant(extsize, mult_const, op);
+            let newmultop =
+                f.new_op_before_sized(op, OpCode::IntMult, vec![extvn, new_const_vn], extsize);
+            let newmultvn = f.op(newmultop).output.unwrap();
+            let sopc = shiftopc.unwrap_or(OpCode::IntRight); // CPUI_MAX -> INT_RIGHT
+            let nconst = f.new_const(4, n);
+            let newshiftop = f.new_op_before_sized(op, sopc, vec![newmultvn, nconst], extsize);
+            let newshiftvn = f.op(newshiftop).output.unwrap();
+            // Rewrite the add into a truncating SUBPIECE of the reassembled shift.
+            let zero = f.new_const(4, 0);
+            f.op_set_opcode(addop, OpCode::Subpiece);
+            f.op_set_input(addop, 0, newshiftvn);
+            f.op_set_input(addop, 1, zero);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `RuleDivTermAdd2` (ruleaction.cc:7951): simplify a second optimized-division form. With
+/// `W = sub(zext(V)*c, d)`:
+///   - `W + ((V - W) >> 1)   =>   sub( (zext(V)*(c + 2^n))>>(n+1), 0 )`   (n = d*8)
+/// all extensions and right-shifts unsigned, `n` equal to the SUBPIECE truncation.
+pub struct RuleDivTermAdd2;
+
+impl Rule for RuleDivTermAdd2 {
+    fn name(&self) -> &str {
+        "divtermadd2"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight]
+    }
+    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
+        let Some(in1) = f.op(op).input(1) else { return 0 };
+        if cval(f, in1) != Some(1) {
+            return 0; // must be `>> 1`
+        }
+        let Some(in0) = f.op(op).input(0) else { return 0 };
+        if !f.vn(in0).is_written() {
+            return 0;
+        }
+        let subop = f.vn(in0).def.unwrap();
+        if f.op(subop).code() != OpCode::IntAdd {
+            return 0;
+        }
+        // One INT_ADD operand is `W * -1`; the other is x.
+        let mut found: Option<(VarnodeId, VarnodeId)> = None; // (compvn = W*-1, x)
+        for i in 0..2usize {
+            let Some(compvn) = f.op(subop).input(i) else { continue };
+            if !f.vn(compvn).is_written() {
+                continue;
+            }
+            let compop = f.vn(compvn).def.unwrap();
+            if f.op(compop).code() != OpCode::IntMult {
+                continue;
+            }
+            let Some(invn) = f.op(compop).input(1) else { continue };
+            if !f.vn(invn).is_constant() {
+                continue;
+            }
+            if f.vn(invn).constant_value() == super::nzmask::calc_mask(f.vn(invn).size) {
+                let x = f.op(subop).input(1 - i).unwrap();
+                found = Some((compvn, x));
+                break;
+            }
+        }
+        let Some((compvn, x)) = found else { return 0 };
+
+        // z = W = the value multiplied by -1.
+        let z = f.op(f.vn(compvn).def.unwrap()).input(0).unwrap();
+        if !f.vn(z).is_written() {
+            return 0;
+        }
+        let subpieceop = f.vn(z).def.unwrap();
+        if f.op(subpieceop).code() != OpCode::Subpiece {
+            return 0;
+        }
+        let Some(suboff) = cval(f, f.op(subpieceop).input(1).unwrap()) else { return 0 };
+        let n = suboff * 8;
+        let in0size = f.vn(f.op(subpieceop).input(0).unwrap()).size as u64;
+        let zsize = f.vn(z).size as u64;
+        if n != 8 * (in0size - zsize) {
+            return 0;
+        }
+        let multvn = f.op(subpieceop).input(0).unwrap();
+        if !f.vn(multvn).is_written() {
+            return 0;
+        }
+        let multop = f.vn(multvn).def.unwrap();
+        if f.op(multop).code() != OpCode::IntMult {
+            return 0;
+        }
+        let Some(mult_const) = is_constant_extended(f, f.op(multop).input(1).unwrap()) else {
+            return 0;
+        };
+        let zextvn = f.op(multop).input(0).unwrap();
+        if !f.vn(zextvn).is_written() {
+            return 0;
+        }
+        let zextop = f.vn(zextvn).def.unwrap();
+        if f.op(zextop).code() != OpCode::IntZext {
+            return 0;
+        }
+        if f.op(zextop).input(0) != Some(x) {
+            return 0;
+        }
+
+        let zextsize = f.vn(zextvn).size;
+        let Some(out) = f.op(op).output else { return 0 };
+        let descs: Vec<OpId> = f.vn(out).descend.clone();
+        for addop in descs {
+            if f.op(addop).code() != OpCode::IntAdd {
+                continue;
+            }
+            if f.op(addop).input(0) != Some(z) && f.op(addop).input(1) != Some(z) {
+                continue;
+            }
+            // multConst += 2^n
+            let new_const = mult_const.wrapping_add(1u128.checked_shl(n as u32).unwrap_or(0));
+            let new_const_vn = f.new_extended_constant(zextsize, new_const, op);
+            let newmultop =
+                f.new_op_before_sized(op, OpCode::IntMult, vec![zextvn, new_const_vn], zextsize);
+            let newmultvn = f.op(newmultop).output.unwrap();
+            let nconst = f.new_const(4, n + 1);
+            let newshiftop =
+                f.new_op_before_sized(op, OpCode::IntRight, vec![newmultvn, nconst], zextsize);
+            let newshiftvn = f.op(newshiftop).output.unwrap();
+            let zero = f.new_const(4, 0);
+            f.op_set_opcode(addop, OpCode::Subpiece);
+            f.op_set_input(addop, 0, newshiftvn);
+            f.op_set_input(addop, 1, zero);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +975,103 @@ mod tests {
         assert_eq!(f.op(op).input(0), Some(x));
         let dc = f.op(op).input(1).unwrap();
         assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 3);
+    }
+
+    #[test]
+    fn divtermadd_reassembles_add_correction() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // root = SUBPIECE(zext(V)*magic, 8)  [keeps the high 8 bytes; n = 8*8 = 64]; V is 8 bytes.
+        let v = f.new_input(8, Address::new(reg, 0x38));
+        let ze = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zeo = f.new_output_unique(ze, 16);
+        let magic = f.new_const(16, 0xAAAAAAAB);
+        let mu = f.new_op(OpCode::IntMult, seq, vec![zeo, magic]);
+        let muo = f.new_output_unique(mu, 16);
+        let off = f.new_const(4, 8);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![muo, off]);
+        let subo = f.new_output_unique(sub, 8);
+        // add-correction term:  sub_out + V
+        let add = f.new_op(OpCode::IntAdd, seq, vec![subo, v]);
+        f.new_output(add, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![ze, mu, sub, add], ..Default::default() }]);
+
+        assert_eq!(RuleDivTermAdd.apply_op(sub, &mut f), 1);
+        // add rewritten to SUBPIECE( (zext(V)*(magic+2^64)) >> 64, 0 ).
+        assert_eq!(f.op(add).code(), OpCode::Subpiece);
+        let z = f.op(add).input(1).unwrap();
+        assert!(f.vn(z).is_constant() && f.vn(z).constant_value() == 0);
+        let shift = f.vn(f.op(add).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(shift).code(), OpCode::IntRight);
+        let shamt = f.op(shift).input(1).unwrap();
+        assert!(f.vn(shamt).is_constant() && f.vn(shamt).constant_value() == 64);
+        let newmult = f.vn(f.op(shift).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(newmult).code(), OpCode::IntMult);
+        assert_eq!(f.op(newmult).input(0), Some(zeo)); // reuses zext(V)
+        // The new 128-bit constant magic+2^64 is materialized as PIECE(hi=1, lo=magic).
+        let nc = f.vn(f.op(newmult).input(1).unwrap()).def.unwrap();
+        assert_eq!(f.op(nc).code(), OpCode::Piece);
+        let hi = f.op(nc).input(0).unwrap();
+        let lo = f.op(nc).input(1).unwrap();
+        assert!(f.vn(hi).is_constant() && f.vn(hi).constant_value() == 1);
+        assert!(f.vn(lo).is_constant() && f.vn(lo).constant_value() == 0xAAAAAAAB);
+    }
+
+    #[test]
+    fn divtermadd2_reassembles_shift_correction() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // W = SUBPIECE(zext(V)*magic, 8)  (V 8 bytes, mult 16 bytes; n = 8*(16-8) = 64).
+        let v = f.new_input(8, Address::new(reg, 0x38));
+        let ze = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zeo = f.new_output_unique(ze, 16);
+        let magic = f.new_const(16, 0xAAAAAAAB);
+        let mu = f.new_op(OpCode::IntMult, seq, vec![zeo, magic]);
+        let muo = f.new_output_unique(mu, 16);
+        let off = f.new_const(4, 8);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![muo, off]);
+        let w = f.new_output_unique(sub, 8);
+        // V - W  =  V + (W * -1)
+        let negone = f.new_const(8, 0xFFFF_FFFF_FFFF_FFFF);
+        let neg = f.new_op(OpCode::IntMult, seq, vec![w, negone]);
+        let nego = f.new_output_unique(neg, 8);
+        let diff = f.new_op(OpCode::IntAdd, seq, vec![v, nego]);
+        let diffo = f.new_output_unique(diff, 8);
+        // op = (V - W) >> 1   [rule root]
+        let one = f.new_const(8, 1);
+        let op = f.new_op(OpCode::IntRight, seq, vec![diffo, one]);
+        let opo = f.new_output_unique(op, 8);
+        // final:  W + ((V - W) >> 1)
+        let fin = f.new_op(OpCode::IntAdd, seq, vec![w, opo]);
+        f.new_output(fin, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic {
+            ops: vec![ze, mu, sub, neg, diff, op, fin],
+            ..Default::default()
+        }]);
+
+        assert_eq!(RuleDivTermAdd2.apply_op(op, &mut f), 1);
+        // fin rewritten to SUBPIECE( (zext(V)*(magic+2^64)) >> 65, 0 ).
+        assert_eq!(f.op(fin).code(), OpCode::Subpiece);
+        let z0 = f.op(fin).input(1).unwrap();
+        assert!(f.vn(z0).is_constant() && f.vn(z0).constant_value() == 0);
+        let shift = f.vn(f.op(fin).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(shift).code(), OpCode::IntRight);
+        let shamt = f.op(shift).input(1).unwrap();
+        assert!(f.vn(shamt).is_constant() && f.vn(shamt).constant_value() == 65); // n + 1
+        let newmult = f.vn(f.op(shift).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(newmult).code(), OpCode::IntMult);
+        assert_eq!(f.op(newmult).input(0), Some(zeo));
     }
 }

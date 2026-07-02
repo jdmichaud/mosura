@@ -136,6 +136,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleDumptyHump) // (78)
         .with(RuleHumptyOr) // (79)
         .with(RulePositiveDiv) // (82)
+        .with(super::divopt::RuleDivTermAdd2) // (84)
         .with(super::divopt::RuleDivOpt) // (85)
         .with(super::divopt::RuleModOpt) // (91)
         .with(super::divopt::RuleSignMod2nOpt) // (92)

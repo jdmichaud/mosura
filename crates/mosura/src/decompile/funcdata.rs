@@ -343,6 +343,28 @@ impl Funcdata {
         id
     }
 
+    /// Ghidra `Funcdata::newExtendedConstant` (funcdata_varnode.cc:462): materialize a constant of
+    /// `size` bytes holding the (up to 128-bit) value `val`, inserted just before `op`. Up to 8
+    /// bytes it is a plain constant; wider, it is built as an `INT_ZEXT` of the low 8 bytes (when
+    /// the high half is zero) or a `PIECE` of the two 8-byte halves (most significant first). mosura
+    /// carries the value in a `u128` (Ghidra's `uint8[2]`: `val[0]` = low, `val[1]` = high).
+    pub fn new_extended_constant(&mut self, size: u32, val: u128, op: OpId) -> VarnodeId {
+        if size <= 8 {
+            return self.new_const(size, val as u64);
+        }
+        let lo = val as u64;
+        let hi = (val >> 64) as u64;
+        let newop = if hi == 0 {
+            let clo = self.new_const(8, lo);
+            self.new_op_before_sized(op, OpCode::IntZext, vec![clo], size)
+        } else {
+            let chi = self.new_const(8, hi); // Most significant piece
+            let clo = self.new_const(8, lo); // Least significant piece
+            self.new_op_before_sized(op, OpCode::Piece, vec![chi, clo], size)
+        };
+        self.ops[newop.0 as usize].output.unwrap()
+    }
+
     /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
     pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
         self.ops[op.0 as usize].opcode = opcode;
