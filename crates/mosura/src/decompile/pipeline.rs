@@ -14,6 +14,7 @@ use super::rules::{
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
+    RuleAndCommute,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -113,6 +114,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleOrCollapse) // (20)
         .with(RuleShiftBitops) // (22)
         .with(RuleHighOrderAnd) // (25)
+        .with(RuleAndCommute) // (27)
         .with(RuleAndPiece) // (28)
         .with(RuleAndZext) // (29)
         .with(RuleShiftCompare) // (36)

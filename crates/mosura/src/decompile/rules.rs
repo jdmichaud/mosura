@@ -3347,6 +3347,134 @@ impl Rule for RulePositiveDiv {
     }
 }
 
+/// Ghidra `RuleAndCommute` (ruleaction.cc:1532; doc at 1520): commute `INT_AND` with `INT_LEFT` /
+/// `INT_RIGHT`: `(V << c) & d  =>  (V & (d >> c)) << c` (and the right-shift dual). This makes sense
+/// when `c` is constant and the shift has no other use, or when the mask is likely to cancel with a
+/// specific `INT_OR` / `PIECE` feeding the shift. The constant-mask guard on the `INT_LEFT` fast
+/// path is required: without it (Ghidra's comment at 1577) the commute would loop forever.
+pub struct RuleAndCommute;
+
+impl Rule for RuleAndCommute {
+    fn name(&self) -> &str {
+        "andcommute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        let size = data.vn(out).size;
+        if size > 8 {
+            return 0; // FIXME: uintb should be arbitrary precision (Ghidra's `size > sizeof(uintb)`)
+        }
+        let fullmask = super::nzmask::calc_mask(size);
+
+        // Ghidra breaks out of the 2-iteration loop with (opc, savn, othervn, orvn) captured; if it
+        // falls through both operands (`i == 2`) it returns 0.
+        let mut matched: Option<(OpCode, VarnodeId, VarnodeId, VarnodeId)> = None;
+        for i in 0..2usize {
+            let shiftvn = data.op(op).input(i).unwrap();
+            let Some(shiftop) = data.vn(shiftvn).def else { continue };
+            let opc = data.op(shiftop).code();
+            if opc != OpCode::IntLeft && opc != OpCode::IntRight {
+                continue;
+            }
+            let savn = data.op(shiftop).input(1).unwrap();
+            if !data.vn(savn).is_constant() {
+                continue;
+            }
+            let sa = data.vn(savn).constant_value() as u32;
+
+            let othervn = data.op(op).input(1 - i).unwrap();
+            if !data.vn(othervn).is_heritage_known() {
+                continue;
+            }
+            let mut othermask = data.vn(othervn).get_nzmask();
+            // Check if the AND is only zeroing bits which are already zeroed by the shift, in which
+            // case `andmask` takes care of it; otherwise compute the mask as it will be after the
+            // commute.
+            if opc == OpCode::IntRight {
+                if (fullmask >> sa) == othermask {
+                    continue;
+                }
+                othermask <<= sa;
+            } else {
+                // NOTE: ported verbatim — Ghidra's source is `((fullmask<<sa)&&fullmask)` with a
+                // logical `&&` (an apparent Ghidra typo for bitwise `&`); kept faithful.
+                if ((((fullmask << sa) != 0) && (fullmask != 0)) as u64) == othermask {
+                    continue;
+                }
+                othermask >>= sa;
+            }
+            if othermask == 0 {
+                continue; // Handled by andmask
+            }
+            if othermask == fullmask {
+                continue;
+            }
+
+            let orvn = data.op(shiftop).input(0).unwrap();
+            if opc == OpCode::IntLeft && data.vn(othervn).is_constant() {
+                // `(v & #c) << #sa` is preferred to `(v << #sa) & #(c << sa)` because the mask is
+                // right-justified. NOTE: the constant-mask check above is what stops an infinite
+                // transform loop. If the shift has no other use, always commute.
+                if lone_descend(data, shiftvn) == Some(op) {
+                    matched = Some((opc, savn, othervn, orvn));
+                    break;
+                }
+            }
+
+            if !data.vn(orvn).is_written() {
+                continue;
+            }
+            let orop = data.vn(orvn).def.unwrap();
+            let orcode = data.op(orop).code();
+            // Ghidra breaks (commutes) as soon as any operand's non-zero bits cancel against
+            // `othermask`; the individual `break`s combine into this single predicate (all reads,
+            // no side effects, so evaluating them all is equivalent to Ghidra's short-circuit).
+            let commute = if orcode == OpCode::IntOr {
+                let a0 = data.op(orop).input(0).unwrap();
+                let a1 = data.op(orop).input(1).unwrap();
+                let ormask1 = data.vn(a0).get_nzmask();
+                let ormask2 = data.vn(a1).get_nzmask();
+                (ormask1 & othermask) == 0
+                    || (ormask2 & othermask) == 0
+                    || (data.vn(othervn).is_constant()
+                        && ((ormask1 & othermask) == ormask1 || (ormask2 & othermask) == ormask2))
+            } else if orcode == OpCode::Piece {
+                let lowvn = data.op(orop).input(1).unwrap(); // Low part of piece
+                let highvn = data.op(orop).input(0).unwrap(); // High part
+                let ormask1 = data.vn(lowvn).get_nzmask();
+                let lowsize = data.vn(lowvn).size;
+                let ormask2 = data.vn(highvn).get_nzmask() << (lowsize * 8);
+                (ormask1 & othermask) == 0 || (ormask2 & othermask) == 0
+            } else {
+                continue;
+            };
+            if commute {
+                matched = Some((opc, savn, othervn, orvn));
+                break;
+            }
+            // OR/PIECE present but nothing cancels — Ghidra falls through to the next operand.
+        }
+
+        let Some((opc, savn, othervn, orvn)) = matched else {
+            return 0;
+        };
+
+        // Do the commute.
+        let opp = if opc == OpCode::IntLeft { OpCode::IntRight } else { OpCode::IntLeft };
+        let newop1 = data.new_op_before_sized(op, opp, vec![othervn, savn], size);
+        let newvn1 = data.op(newop1).output.unwrap();
+        let newop2 = data.new_op_before_sized(op, OpCode::IntAnd, vec![orvn, newvn1], size);
+        let newvn2 = data.op(newop2).output.unwrap();
+        data.op_set_input(op, 0, newvn2);
+        data.op_set_input(op, 1, savn);
+        data.op_set_opcode(op, opc);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4567,5 +4695,58 @@ mod tests {
         crate::decompile::nzmask::calc_nzmask(&mut f, &dom);
         assert_eq!(RulePositiveDiv.apply_op(sdiv, &mut f), 0);
         assert_eq!(f.op(sdiv).code(), OpCode::IntSdiv);
+    }
+
+    // --- RuleAndCommute (ruleaction.cc:1532) ---
+
+    #[test]
+    fn and_commute_left_const_lonedescend() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // (V << 8) & 0xff00   =>   (V & (0xff00 >> 8)) << 8   [the INT_LEFT const fast path]
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let sa = f.new_const(4, 8);
+        let sh = f.new_op(OpCode::IntLeft, seq, vec![v, sa]);
+        let shvn = f.new_output_unique(sh, 2);
+        let mask = f.new_const(2, 0xff00);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![shvn, mask]);
+        f.new_output(and, 2, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sh, and],
+            ..Default::default()
+        }]);
+
+        assert_eq!(RuleAndCommute.apply_op(and, &mut f), 1);
+        // The AND op is now the outer INT_LEFT by the same shift amount.
+        assert_eq!(f.op(and).code(), OpCode::IntLeft);
+        let outer_sa = f.op(and).input(1).unwrap();
+        assert!(f.vn(outer_sa).is_constant() && f.vn(outer_sa).constant_value() == 8);
+        // Its shifted value is `V & (0xff00 >> 8)`.
+        let inner_and = f.vn(f.op(and).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(inner_and).code(), OpCode::IntAnd);
+        assert_eq!(f.op(inner_and).input(0), Some(v));
+        let inner_shift = f.vn(f.op(inner_and).input(1).unwrap()).def.unwrap();
+        assert_eq!(f.op(inner_shift).code(), OpCode::IntRight);
+        let masked_const = f.op(inner_shift).input(0).unwrap();
+        assert!(f.vn(masked_const).is_constant() && f.vn(masked_const).constant_value() == 0xff00);
+    }
+
+    #[test]
+    fn and_commute_skips_plain_and() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // Neither operand is a shift  =>  rule must not fire.
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, w]);
+        f.new_output(and, 4, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![and],
+            ..Default::default()
+        }]);
+        assert_eq!(RuleAndCommute.apply_op(and, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
     }
 }
