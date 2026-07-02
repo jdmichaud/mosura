@@ -4,7 +4,6 @@
 //! raw p-code) against the Ghidra oracle. Corpus: byte-chunks from the 3 AARCH64
 //! decompiler datatests (plan §4 Tier A). Skips if the AARCH64 `.sla` is absent.
 
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, golden, paths};
 use std::collections::HashMap;
 
@@ -33,7 +32,7 @@ fn aarch64_disasm_pcode_coverage() {
         eprintln!("skip: {} not found", sla.display());
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).expect("AARCH64 spec");
+    let spec = mosura::speccache::get(&sla).expect("AARCH64 spec");
     let sets = pspec_context(&langdir.join("AARCH64.pspec"));
     let set_refs: Vec<(&str, u64)> = sets.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let context = spec.context_from_sets(&set_refs);

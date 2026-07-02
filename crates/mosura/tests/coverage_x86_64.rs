@@ -4,7 +4,6 @@
 //! correctly across diverse instructions/addressing modes — not just a few
 //! hand-picked ones. Skips if the x86-64 `.sla` isn't present.
 
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, golden, paths};
 use std::collections::HashMap;
 
@@ -23,7 +22,7 @@ fn x86_64_disasm_coverage() {
         eprintln!("skip: {} not found", sla.display());
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).expect("x86-64 spec");
+    let spec = mosura::speccache::get(&sla).expect("x86-64 spec");
     let context = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
 
     let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_cov.xml")).expect("fixture");

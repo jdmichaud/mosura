@@ -8,7 +8,6 @@
 
 use mosura::decompile::build::raw_funcdata_flow_image;
 use mosura::decompile::pipeline;
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
 /// Decompile a datatest and return (faithfully-recovered tables, build-time heuristic targets).
@@ -17,7 +16,7 @@ fn tables(name: &str) -> Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)> {
     if !sla.exists() {
         return None;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::datatests_dir().join(format!("{name}.xml"))).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
@@ -91,7 +90,7 @@ fn switch_o2_register_guard_with_cold_block_below_entry() {
     if !sla.exists() {
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_switch_o2.xml")).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();

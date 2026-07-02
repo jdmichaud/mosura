@@ -6,7 +6,6 @@
 
 use mosura::ccompare;
 use mosura::decompile::{build, pipeline, printc};
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
 fn ghidra_c(fx: &std::path::Path) -> Option<String> {
@@ -21,7 +20,7 @@ fn decompile_track_corpus_report() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
 
     let mut entries: Vec<_> = std::fs::read_dir(paths::datatests_dir())
@@ -89,7 +88,7 @@ fn mixfloatint_float_param_stays_whole() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join("mixfloatint.xml");
     let dt = datatest::parse_file(&path).expect("parse mixfloatint");
@@ -117,7 +116,7 @@ fn indproto_if_else_uses_positive_condition() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join("indproto.xml");
     let dt = datatest::parse_file(&path).expect("parse indproto");
@@ -146,7 +145,7 @@ fn orcompare_recovers_logical_or() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join("orcompare.xml");
     let dt = datatest::parse_file(&path).expect("parse orcompare");
@@ -177,7 +176,7 @@ fn pointerrel_negated_condition_stays_compact() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join("pointerrel.xml");
     let dt = datatest::parse_file(&path).expect("parse pointerrel");
@@ -205,7 +204,7 @@ fn piecestruct_folds_shifts_to_concat() {
         eprintln!("skip: x86-64.sla not found");
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join("piecestruct.xml");
     let dt = datatest::parse_file(&path).expect("parse piecestruct");

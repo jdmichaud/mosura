@@ -6,7 +6,7 @@
 //! EDI/ESI (x86-64 SysV), result in EAX. The expected value is the C semantics,
 //! computed in Rust — so the p-code interpreter is checked against ground truth.
 
-use mosura::sleigh::{emu, engine::Spec};
+use mosura::sleigh::emu;
 use mosura::{datatest, paths};
 
 // x86-64 register varnode offsets (Ghidra `register` space).
@@ -21,7 +21,7 @@ fn x86_64_pcode_computes_correct_result() {
         eprintln!("skip: {} not found", sla.display());
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).expect("x86-64 spec");
+    let spec = mosura::speccache::get(&sla).expect("x86-64 spec");
     let context = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
 
     let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_sem.xml")).expect("fixture");
@@ -53,7 +53,7 @@ fn x86_64_pcode_executes_a_loop() {
         eprintln!("skip: {} not found", sla.display());
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).expect("x86-64 spec");
+    let spec = mosura::speccache::get(&sla).expect("x86-64 spec");
     let context = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
 
     let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_loop.xml")).expect("fixture");

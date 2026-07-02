@@ -6,7 +6,6 @@
 
 use mosura::decompile::build::raw_funcdata_flow_image;
 use mosura::decompile::pipeline;
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
 /// Decompile a datatest function and return its recovered (param-offsets, return-offset).
@@ -15,7 +14,7 @@ fn proto_of(name: &str) -> Option<(Vec<u64>, Option<u64>)> {
     if !sla.exists() {
         return None; // no SLEIGH spec available — skip (matches the corpus gate's behaviour)
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    let spec = mosura::speccache::get(&sla).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::datatests_dir().join(format!("{name}.xml"))).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();

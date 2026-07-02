@@ -15,13 +15,13 @@ use mosura::decompile::build::raw_funcdata_flow;
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
-fn x86_64() -> Option<(Spec, Vec<u32>)> {
+fn x86_64() -> Option<(&'static Spec, Vec<u32>)> {
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());
         return None;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).ok()?;
+    let spec = mosura::speccache::get(&sla)?;
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     Some((spec, ctx))
 }

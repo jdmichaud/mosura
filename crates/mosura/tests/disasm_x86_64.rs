@@ -4,7 +4,6 @@
 //! far the decode gets — operand resolution is still to come.
 
 use mosura::paths;
-use mosura::sleigh::engine::Spec;
 
 fn x86_64_langdir() -> std::path::PathBuf {
     paths::ghidra_src().join("Ghidra/Processors/x86/data/languages")
@@ -33,7 +32,7 @@ fn x86_64_context_and_decode() {
         eprintln!("skip: {} not found (run scripts/setup-oracle.sh)", sla.display());
         return;
     }
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).expect("build x86-64 spec");
+    let spec = mosura::speccache::get(&sla).expect("build x86-64 spec");
 
     let sets = pspec_context(&x86_64_langdir().join("x86-64.pspec"));
     eprintln!("pspec context sets: {sets:?}");
