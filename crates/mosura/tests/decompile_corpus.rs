@@ -8,15 +8,9 @@ use mosura::ccompare;
 use mosura::decompile::{build, pipeline, printc};
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
-use std::process::Command;
 
 fn ghidra_c(fx: &std::path::Path) -> Option<String> {
-    let capture = paths::workspace_root().join("oracle/capture");
-    if !capture.exists() {
-        return None;
-    }
-    let out = Command::new(capture).arg(paths::ghidra_src()).arg(fx).arg("--c").output().ok()?;
-    let c = String::from_utf8_lossy(&out.stdout).to_string();
+    let c = mosura::oraclecache::capture(fx, &["--c"])?;
     (!c.trim().is_empty()).then_some(c)
 }
 

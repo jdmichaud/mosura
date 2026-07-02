@@ -67,16 +67,35 @@ pub fn normalize(c: &str) -> Vec<String> {
 }
 
 /// Length of the longest common subsequence of two token slices.
-fn lcs(a: &[String], b: &[String]) -> usize {
+fn lcs<'t>(a: &'t [String], b: &'t [String]) -> usize {
+    // Intern the tokens so the O(|a|·|b|) inner loop compares integer ids, not strings, and
+    // peel the common prefix/suffix (each contributes to the LCS directly) — both preserve
+    // the exact LCS length.
+    let mut ids: std::collections::HashMap<&'t str, u32> = std::collections::HashMap::new();
+    let mut intern = |s: &'t String| -> u32 {
+        let next = ids.len() as u32;
+        *ids.entry(s.as_str()).or_insert(next)
+    };
+    let a: Vec<u32> = a.iter().map(&mut intern).collect();
+    let b: Vec<u32> = b.iter().map(&mut intern).collect();
+    let mut lo = 0usize;
+    while lo < a.len() && lo < b.len() && a[lo] == b[lo] {
+        lo += 1;
+    }
+    let mut hi = 0usize;
+    while hi < a.len() - lo && hi < b.len() - lo && a[a.len() - 1 - hi] == b[b.len() - 1 - hi] {
+        hi += 1;
+    }
+    let (a, b) = (&a[lo..a.len() - hi], &b[lo..b.len() - hi]);
     let mut prev = vec![0usize; b.len() + 1];
     let mut cur = vec![0usize; b.len() + 1];
-    for x in a {
-        for (j, y) in b.iter().enumerate() {
+    for &x in a {
+        for (j, &y) in b.iter().enumerate() {
             cur[j + 1] = if x == y { prev[j] + 1 } else { cur[j].max(prev[j + 1]) };
         }
         std::mem::swap(&mut prev, &mut cur);
     }
-    prev[b.len()]
+    lo + hi + prev[b.len()]
 }
 
 /// Structural similarity of two C functions in `[0, 1]`: `2·LCS / (|a| + |b|)` over

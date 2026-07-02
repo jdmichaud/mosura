@@ -13,6 +13,7 @@ pub mod datatest;
 pub mod decompile;
 pub mod golden;
 pub mod lang;
+pub mod oraclecache;
 pub mod paths;
 pub mod sleigh;
 

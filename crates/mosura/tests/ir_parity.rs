@@ -10,7 +10,6 @@
 //! Skips when the x86-64 `.sla` or the `oracle/capture` binary isn't present.
 
 use std::collections::BTreeSet;
-use std::process::Command;
 
 use mosura::decompile::build::raw_funcdata_flow;
 use mosura::sleigh::engine::Spec;
@@ -27,21 +26,14 @@ fn x86_64() -> Option<(Spec, Vec<u32>)> {
     Some((spec, ctx))
 }
 
-/// Run `oracle/capture <ghidra> <fixture> --ir <action>` and return Ghidra's IR dump.
+/// Run `oracle/capture <ghidra> <fixture> --ir <action>` (through the disk cache under
+/// `build/oracle-cache/`) and return Ghidra's IR dump.
 fn ghidra_ir(fixture: &std::path::Path, action: &str) -> Option<String> {
-    let capture = paths::workspace_root().join("oracle/capture");
-    if !capture.exists() {
-        eprintln!("skip: {} not built", capture.display());
-        return None;
+    let r = mosura::oraclecache::capture(fixture, &["--ir", action]);
+    if r.is_none() {
+        eprintln!("skip: oracle/capture not built");
     }
-    let out = Command::new(capture)
-        .arg(paths::ghidra_src())
-        .arg(fixture)
-        .arg("--ir")
-        .arg(action)
-        .output()
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    r
 }
 
 /// The set of instruction addresses appearing in a `printRaw`-style dump — lines of the
