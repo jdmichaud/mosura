@@ -724,8 +724,7 @@ fn gather_candidates(f: &Funcdata, pass: i32) -> HashMap<Loc, bool> {
     };
     let mut cand: HashMap<Loc, bool> = HashMap::new();
     for b in 0..f.num_blocks() {
-        let ops = f.blocks()[b].ops.clone();
-        for op in ops {
+        for &op in &f.blocks()[b].ops {
             for slot in 0..f.op(op).num_inputs() {
                 if let Some(l) = read_loc(f, op, slot) {
                     if eligible(l.0) {
@@ -773,13 +772,25 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     if pass == 0 {
         // Pass-0 setup, like Ghidra's `splitmanage.split()` / refinement at `pass == 0`: the
         // cross-width refinement that makes overlapping sub-register accesses uniform width.
+        let t0 = std::time::Instant::now();
         refine_overlaps(f, dom);
+        if super::action::perf::enabled() {
+            super::action::perf::record("heritage", "refine_overlaps", t0.elapsed());
+        }
+        let t0 = std::time::Instant::now();
         normalize_read_size(f);
+        if super::action::perf::enabled() {
+            super::action::perf::record("heritage", "normalize_read_size", t0.elapsed());
+        }
     }
     // The per-location cover heritaged this pass — Ghidra's `disjoint` task list, built from
     // `globaldisjoint.add`. Process candidates in address order (as Ghidra's `beginLoc` does) so the
     // disjoint cover is deterministic.
+    let t0 = std::time::Instant::now();
     let mut candidates: Vec<(Loc, bool)> = gather_candidates(f, pass).into_iter().collect();
+    if super::action::perf::enabled() {
+        super::action::perf::record("heritage", "gather_candidates", t0.elapsed());
+    }
     candidates.sort_by_key(|&((sp, off, sz), _)| (sp.0, off, sz));
     let mut cover: HashSet<Loc> = HashSet::new();
     for (loc, has_free) in candidates {
@@ -792,7 +803,11 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     if cover.is_empty() {
         return 0;
     }
+    let t0 = std::time::Instant::now();
     heritage_spaces(f, dom, &cover);
+    if super::action::perf::enabled() {
+        super::action::perf::record("heritage", "heritage_spaces", t0.elapsed());
+    }
     cover.len() as u32
 }
 
@@ -822,9 +837,9 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
     let mut globals: HashSet<Loc> = HashSet::new();
     let mut defblocks: HashMap<Loc, HashSet<usize>> = HashMap::new();
     for b in 0..nb {
-        let ops = f.blocks()[b].ops.clone();
         let mut killed: HashSet<Loc> = HashSet::new();
-        for op in ops {
+        for i in 0..f.blocks()[b].ops.len() {
+            let op = f.blocks()[b].ops[i];
             for slot in 0..f.op(op).num_inputs() {
                 if let Some(l) = read_loc(f, op, slot) {
                     if cover.contains(&l) && !killed.contains(&l) {
@@ -862,6 +877,16 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
     }
 
     // 3. Rename: dominator-tree walk maintaining a per-location stack of current defs.
+    // Index the phis by block up front (rename wired them by scanning the whole map per CFG
+    // edge), ordered by location so the wiring order — and any SUBPIECE splice it creates —
+    // is deterministic rather than HashMap-iteration order.
+    let mut phis_by_block: HashMap<usize, Vec<(Loc, OpId)>> = HashMap::new();
+    for (&(b, l), &op) in &phis {
+        phis_by_block.entry(b).or_default().push((l, op));
+    }
+    for list in phis_by_block.values_mut() {
+        list.sort_by_key(|&((sp, off, sz), _)| (sp.0, off, sz));
+    }
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); nb];
     for c in 0..nb {
         if dom.idom[c] != c {
@@ -870,7 +895,7 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
     }
     let mut stack: HashMap<Loc, Vec<VarnodeId>> = HashMap::new();
     let mut inputs: HashMap<Loc, VarnodeId> = HashMap::new();
-    rename(f, 0, dom, &children, &phis, &mut stack, &mut inputs, cover);
+    rename(f, 0, dom, &children, &phis_by_block, &mut stack, &mut inputs, cover);
 }
 
 /// The reaching definition for `loc`: the top of its rename stack, or a (cached) function
@@ -936,7 +961,7 @@ fn rename(
     b: usize,
     dom: &Dominators,
     children: &[Vec<usize>],
-    phis: &HashMap<(usize, Loc), OpId>,
+    phis: &HashMap<usize, Vec<(Loc, OpId)>>,
     stack: &mut HashMap<Loc, Vec<VarnodeId>>,
     inputs: &mut HashMap<Loc, VarnodeId>,
     cover: &HashSet<Loc>,
@@ -982,11 +1007,7 @@ fn rename(
     let succs: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
     for s in succs {
         let j = f.blocks()[s].in_edges.iter().position(|e| e.0 as usize == b).unwrap();
-        let phi_locs: Vec<(Loc, OpId)> = phis
-            .iter()
-            .filter(|((blk, _), _)| *blk == s)
-            .map(|((_, l), &op)| (*l, op))
-            .collect();
+        let phi_locs: Vec<(Loc, OpId)> = phis.get(&s).cloned().unwrap_or_default();
         for (l, phi) in phi_locs {
             let def = reaching_phi_input(f, l, b, stack, inputs);
             f.op_set_input(phi, j, def);
