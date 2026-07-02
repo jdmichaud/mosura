@@ -65,6 +65,49 @@ pub fn with_suppressed_trace<R>(f: impl FnOnce() -> R) -> R {
     trace::suppressed(f)
 }
 
+/// Wall-clock accounting for the pipeline (perf work). Off by default and completely inert
+/// unless the `MOSURA_PERF` environment variable is set; when on, [`ActionGroup::apply`]
+/// accumulates time per child action and [`ActionPool::apply`] per rule, and [`perf::dump`]
+/// prints the totals to stderr. Never touches decompiler output.
+pub mod perf {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    thread_local! {
+        static ACCUM: RefCell<HashMap<(&'static str, String), (Duration, u64)>> =
+            RefCell::new(HashMap::new());
+    }
+
+    /// Whether `MOSURA_PERF` is set (cached once).
+    pub fn enabled() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("MOSURA_PERF").is_some())
+    }
+
+    /// Add `dur` under (`kind`, `name`) — kind is "action" or "rule".
+    pub fn record(kind: &'static str, name: &str, dur: Duration) {
+        ACCUM.with(|a| {
+            let mut a = a.borrow_mut();
+            let e = a.entry((kind, name.to_string())).or_insert((Duration::ZERO, 0));
+            e.0 += dur;
+            e.1 += 1;
+        });
+    }
+
+    /// Print accumulated totals (sorted by time, worst first) to stderr and clear them.
+    pub fn dump() {
+        ACCUM.with(|a| {
+            let mut rows: Vec<_> = a.borrow_mut().drain().collect();
+            rows.sort_by(|x, y| y.1 .0.cmp(&x.1 .0));
+            for ((kind, name), (dur, calls)) in rows {
+                eprintln!("{:>10.3}ms  {:>8} calls  {kind:6} {name}", dur.as_secs_f64() * 1e3, calls);
+            }
+        });
+    }
+}
+
 /// One transformation pass over a function. `apply` does the work and returns the number
 /// of transformations made (0 ⇒ nothing changed). Composed by [`ActionGroup`].
 pub trait Action {
@@ -115,10 +158,17 @@ impl Action for ActionGroup {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let mut total = 0;
+        let timing = perf::enabled();
         loop {
             let mut round = 0;
             for a in &mut self.list {
-                round += a.apply(data);
+                if timing {
+                    let t0 = std::time::Instant::now();
+                    round += a.apply(data);
+                    perf::record("action", a.name(), t0.elapsed());
+                } else {
+                    round += a.apply(data);
+                }
             }
             total += round;
             if !self.restart || round == 0 {
@@ -176,6 +226,7 @@ impl Action for ActionPool {
         use std::collections::HashMap;
         let mut total = 0;
         let tracing = trace::enabled();
+        let timing = perf::enabled();
         // `perop[opc]` = the indices of rules registered for opcode `opc`, in registration
         // (= priority) order — Ghidra's `ActionPool::addRule` appending each rule to
         // `perop[opcode]` (action.cc:740). Computed lazily per distinct opcode: a rule with an
@@ -223,7 +274,14 @@ impl Action for ActionPool {
                     let r_idx = list[rule_index];
                     rule_index += 1;
                     let before = tracing.then(|| data.op_str(id));
-                    let changed = self.rules[r_idx].apply_op(id, data);
+                    let changed = if timing {
+                        let t0 = std::time::Instant::now();
+                        let changed = self.rules[r_idx].apply_op(id, data);
+                        perf::record("rule", self.rules[r_idx].name(), t0.elapsed());
+                        changed
+                    } else {
+                        self.rules[r_idx].apply_op(id, data)
+                    };
                     round += changed;
                     if changed > 0 {
                         if let Some(before) = before {

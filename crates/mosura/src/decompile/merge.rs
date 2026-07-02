@@ -131,6 +131,19 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
     let mut groups: Vec<Vec<VarnodeId>> = by_storage.into_values().filter(|m| m.len() >= 2).collect();
     groups.sort_by_key(|m| m[0]);
 
+    // The interference test must compare the WHOLE HighVariable each storage member belongs
+    // to, not just the same-storage members — Ghidra's `HighVariable::updateInternalCover`
+    // (variable.cc) unions the covers of *all* member Varnodes, so merging two same-storage
+    // values transitively merges their whole HighVariables and interferes if any pair of
+    // members does. (pointercmp: the bound `param_1+0x18` shares RAX with the iterator's
+    // init value, whose HighVariable also holds the stack-slot phi that is live across the
+    // compare — checking only the RAX members missed that overlap and unified them into the
+    // bogus `pStack_10 < pStack_10`.)
+    //
+    // `full` (rep → all cover-bearing members) is maintained incrementally across unions —
+    // only the two unioned classes change, and `classes_interfere` is an order-insensitive
+    // any-pair test, so splicing their member lists is decision-identical to the full rescan.
+    let mut full = full_members_by_rep(f, h, &covers);
     for members in groups {
         loop {
             // partition this storage group into current HighVariable classes, ordered by their
@@ -141,15 +154,6 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
             }
             let mut class_list: Vec<Vec<VarnodeId>> = classes.into_values().collect();
             class_list.sort_by_key(|c| c[0]);
-            // The interference test must compare the WHOLE HighVariable each storage member belongs
-            // to, not just the same-storage members — Ghidra's `HighVariable::updateInternalCover`
-            // (variable.cc) unions the covers of *all* member Varnodes, so merging two same-storage
-            // values transitively merges their whole HighVariables and interferes if any pair of
-            // members does. (pointercmp: the bound `param_1+0x18` shares RAX with the iterator's
-            // init value, whose HighVariable also holds the stack-slot phi that is live across the
-            // compare — checking only the RAX members missed that overlap and unified them into the
-            // bogus `pStack_10 < pStack_10`.)
-            let full = full_members_by_rep(f, h, &covers);
             let empty: Vec<VarnodeId> = Vec::new();
             let mut merged = false;
             'pair: for i in 0..class_list.len() {
@@ -160,6 +164,9 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
                     let fj = full.get(&rep_j).unwrap_or(&empty);
                     if !classes_interfere(fi, fj, &covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
+                        let mut m = full.remove(&rep_i).unwrap_or_default();
+                        m.extend(full.remove(&rep_j).unwrap_or_default());
+                        full.insert(h.high(class_list[i][0]), m);
                         merged = true;
                         break 'pair;
                     }

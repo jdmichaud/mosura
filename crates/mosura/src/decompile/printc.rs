@@ -1536,8 +1536,16 @@ pub fn print_c(f: &Funcdata) -> String {
     // variable. This is the precise across-call-slot-write pattern, not every member of a stack
     // HighVariable (which would spill intermediate register arithmetic into stray statements).
     // `high_stack_off` names the merged HighVariable by its stack frame offset.
+    let t0 = std::time::Instant::now();
     let types = infer(f, &locks);
+    if super::action::perf::enabled() {
+        super::action::perf::record("print", "infer", t0.elapsed());
+    }
+    let t0 = std::time::Instant::now();
     let mut h = merge(f);
+    if super::action::perf::enabled() {
+        super::action::perf::record("print", "merge", t0.elapsed());
+    }
     let mut high_stack_off: HashMap<u32, u64> = HashMap::new();
     let mut slot_write = vec![false; f.num_varnodes()];
     // The type prefix of each `stack` slot, keyed by its signed frame offset, so an address-of-local
@@ -1587,9 +1595,13 @@ pub fn print_c(f: &Funcdata) -> String {
         force_explicit: HashSet::new(),
         param_index,
     };
+    let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
     p.anchor_stack_arrays();
     p.ret_val = p.return_value();
+    if super::action::perf::enabled() {
+        super::action::perf::record("print", "detect_arrays+anchor", t0.elapsed());
+    }
 
     let ret = p.return_value();
     // the return type, like a parameter, is a declared symbol with no recovered type → undefined
@@ -1598,14 +1610,22 @@ pub fn print_c(f: &Funcdata) -> String {
     let plist: Vec<String> =
         sig_params.iter().map(|&(n, v)| format!("{} param_{}", p.type_of(v).name(), n)).collect();
 
+    let t0 = std::time::Instant::now();
     let s = structure(f);
+    if super::action::perf::enabled() {
+        super::action::perf::record("print", "structure", t0.elapsed());
+    }
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
     p.detect_for_loops(&s, s.root);
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
     // signature + declarations + body, as Ghidra does.
+    let t0 = std::time::Instant::now();
     let mut body = String::new();
     p.emit_structured(&s, s.root, 1, &mut body);
+    if super::action::perf::enabled() {
+        super::action::perf::record("print", "emit", t0.elapsed());
+    }
     let mut out = String::new();
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
     out.push_str("{\n");
