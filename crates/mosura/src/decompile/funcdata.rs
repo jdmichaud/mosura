@@ -365,6 +365,24 @@ impl Funcdata {
         self.ops[newop.0 as usize].output.unwrap()
     }
 
+    /// Ghidra `Funcdata::newIndirectOp` (funcdata_op.cc:683): model that `indeffect` (a CALL/STORE)
+    /// may modify the storage range `(loc, size)` — create `out:size@loc = INDIRECT(before:size@loc)`
+    /// inserted just before `indeffect`, returning the new op. `before` is a fresh free varnode at
+    /// the range (heritage links it to the reaching def); `out` is the post-effect value.
+    ///
+    /// mosura's INDIRECT is a 1-input model: Ghidra's `input(1) = newVarnodeIop(indeffect)` (the
+    /// `iop` annotation referencing the causing op) is omitted here, as mosura omits the `iop`
+    /// everywhere (a dead-code-removal detail; see `consume.rs`).
+    pub fn new_indirect_op(&mut self, indeffect: OpId, loc: Address, size: u32) -> OpId {
+        let before = self.new_varnode(size, loc);
+        let pc = self.ops[indeffect.0 as usize].seqnum.pc;
+        let uniq = self.ops.len() as u32;
+        let op = self.new_op(OpCode::Indirect, SeqNum { pc, uniq }, vec![before]);
+        self.new_output(op, size, loc);
+        self.op_insert_before(op, indeffect);
+        op
+    }
+
     /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
     pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
         self.ops[op.0 as usize].opcode = opcode;
@@ -600,5 +618,36 @@ impl Funcdata {
             let _ = write!(s, " {}", self.vn_str(inp));
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decompile::space::{Address, SpaceManager};
+
+    #[test]
+    fn new_indirect_op_models_effect_on_range() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0x10), uniq: 0 };
+        let target = f.new_const(8, 0x100);
+        let call = f.new_op(OpCode::Call, seq, vec![target]);
+        // model that the call may modify the 8-byte range at register offset 0 (RAX)
+        let loc = Address::new(reg, 0);
+        let ind = f.new_indirect_op(call, loc, 8);
+        // out:8@loc = INDIRECT(before:8@loc) — 1-input mosura form (no iop)
+        assert_eq!(f.op(ind).code(), OpCode::Indirect);
+        assert_eq!(f.op(ind).num_inputs(), 1);
+        let out = f.op(ind).output.unwrap();
+        assert_eq!(f.vn(out).size, 8);
+        assert_eq!(f.vn(out).loc, loc);
+        assert_eq!(f.vn(out).def, Some(ind));
+        let before = f.op(ind).input(0).unwrap();
+        assert_eq!(f.vn(before).size, 8);
+        assert_eq!(f.vn(before).loc, loc);
+        assert!(f.vn(before).is_free()); // heritage links it to the reaching def
     }
 }
