@@ -1614,7 +1614,10 @@ pub fn print_c(f: &Funcdata) -> String {
         super::action::perf::record("print", "emit", t0.elapsed());
     }
     let mut out = String::new();
-    let _ = writeln!(out, "{ret_ty} {}({})", f.name, plist.join(", "));
+    // An empty parameter list renders `(void)`, not `()` — Ghidra `PrintC::emitPrototypeInputs`
+    // (printc.cc:2227): when `numParams() == 0` it prints the `void` keyword.
+    let params = if plist.is_empty() { "void".to_string() } else { plist.join(", ") };
+    let _ = writeln!(out, "{ret_ty} {}({})", f.name, params);
     out.push_str("{\n");
     for (name, ty) in &p.decls {
         match ty {
