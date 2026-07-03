@@ -59,7 +59,7 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
         // (else a void function or a 4-byte return gains a spurious 8-byte one).
         OpCode::Piece => f.op(def).input(1).is_some_and(|i| is_realistic(f, i, seen)),
         // INDIRECT — Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2045).
-        // An *indirect creation* models a call clobber: mosura's `recover_call_effects` builds these
+        // An *indirect creation* models a call clobber: heritage's `guard_calls` builds these
         // with an indirect-zero (`#0:8`) input, which Ghidra reports as `pop_failkill` (killedbycall —
         // no value flows out), so the candidate is NOT a real value. But a *passthrough* INDIRECT
         // (the across-call stack-slot guard, `newIndirectOp`) carries a value THROUGH the call:
@@ -225,108 +225,6 @@ pub fn recover_call_args(f: &mut Funcdata) {
     }
 }
 
-/// Model each CALL's effect on the registers and the function's aliased stack locals with INDIRECT
-/// ops — a port of Ghidra's `Heritage::guardCalls` (heritage.cc:1443) driven by the calling
-/// convention's `EffectRecord` list ([`super::fspec::sysv_effect_list`] / `lookup_effect`,
-/// fspec.cc:2472, the `FuncProto::hasEffect` query).
-///
-/// For each register location appearing in the function, the convention's effect decides the
-/// guard, exactly as `guardCalls` branches on `fc->hasEffect(transAddr,size)`:
-///   - `killedbycall` (the caller-saved volatile registers `RAX,RCX,RDX,RSI,RDI,R8,R9,XMM0..7`) ⇒
-///     an *indirect creation* (`Funcdata::newIndirectCreation`): a value out of nothing, with no
-///     realistic ancestor. This is the RAX clobber — a `mov eax,0` set up before a varargs/printf
-///     call no longer survives to the RETURN, and a later call's leftover-register "argument" is
-///     not mistaken for a parameter.
-///   - `unaffected` (callee-saved `RBX,RSP,RBP,R12..R15`) ⇒ no guard; the value flows across.
-///   - `unknown_effect` (`R10/R11`, flags) ⇒ left unguarded here (Ghidra's `newIndirectOp` pass-
-///     through path for registers is not yet needed by the corpus).
-///
-/// For the stack it is load-bearing for correctness (this is the `unknown_effect`/flow-through case
-/// `guardCalls` handles with `newIndirectOp`): a call with an unknown prototype may modify any stack
-/// slot a passed pointer can reach, so without the INDIRECT a call-modified local constant-folds to
-/// its pre-call value (collapsing conditions such as switchhide's switch index).
-///
-/// `alias_boundary` (from [`super::alias::alias_boundary`], computed by a probe heritage) is the
-/// shallowest escaped stack offset; the callee can reach every slot at or above it (Ghidra
-/// `AliasChecker::hasLocalAlias`: `offset >= aliasBoundary`), so only those are guarded. A
-/// non-aliased local (a spilled loop variable touched only by direct load/store) is left untouched,
-/// so its loop SSA is undisturbed. `None` ⇒ nothing escapes ⇒ no stack slot is guarded.
-/// Runs post-CFG, pre-heritage; the INDIRECTs splice into each call's block after the call.
-pub fn recover_call_effects(f: &mut Funcdata, alias_boundary: Option<i64>) {
-    let Some(reg) = f.spaces.by_name("register") else { return };
-    let stack = f.spaces.by_name("stack");
-    let efflist = super::fspec::sysv_effect_list(&f.spaces);
-
-    // The register locations to consider guarding: the distinct offsets that appear in the
-    // function's varnodes (Ghidra guards a range only once it is heritaged / in the dataflow).
-    let mut reg_offsets: Vec<u64> = Vec::new();
-    let mut seen_reg = HashSet::new();
-    let mut stack_slots: Vec<(u64, _)> = Vec::new();
-    let mut seen_stk = HashSet::new();
-    for i in 0..f.num_varnodes() as u32 {
-        let vn = f.vn(VarnodeId(i));
-        if vn.loc.space == reg && seen_reg.insert(vn.loc.offset) {
-            reg_offsets.push(vn.loc.offset);
-        }
-        if let (Some(stk), Some(boundary)) = (stack, alias_boundary) {
-            if vn.loc.space == stk
-                && (vn.loc.offset as i64) >= boundary
-                && seen_stk.insert((vn.loc.offset, vn.size))
-            {
-                stack_slots.push((vn.loc.offset, vn.size));
-            }
-        }
-    }
-    // Guard the caller-saved (killedbycall) registers — at the convention's full-register width,
-    // which `normalize_read_size` reconciles with any narrow sub-register reads (e.g. EAX of RAX).
-    let killed: Vec<u64> = reg_offsets
-        .into_iter()
-        .filter(|&off| {
-            super::fspec::lookup_effect(&efflist, Address::new(reg, off), 8)
-                == super::fspec::effect::KILLEDBYCALL
-        })
-        .collect();
-
-    for b in 0..f.num_blocks() as u32 {
-        let bid = super::block::BlockId(b);
-        let ops = f.block(bid).ops.clone();
-        let mut new_ops = Vec::with_capacity(ops.len());
-        for op in ops {
-            new_ops.push(op);
-            if !matches!(f.op(op).code(), OpCode::Call | OpCode::Callind) {
-                continue;
-            }
-            let seq = f.op(op).seqnum;
-            for &off in &killed {
-                // Ghidra `newIndirectCreation`: input(0) is an indirect-zero constant (no prior
-                // value flows in), and the output is a created value with no realistic ancestor.
-                let zero = f.new_const(8, 0);
-                let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
-                let out = f.new_output(ind, 8, Address::new(reg, off));
-                f.vn_mut(out).set_indirect_creation();
-                f.op_mut(ind).parent = Some(bid);
-                new_ops.push(ind);
-            }
-            if let Some(stk) = stack {
-                for &(off, size) in &stack_slots {
-                    let pre = f.new_varnode(size, Address::new(stk, off));
-                    let ind = f.new_op(OpCode::Indirect, seq, vec![pre]);
-                    let out = f.new_output(ind, size, Address::new(stk, off));
-                    // Ghidra `Heritage::guardCalls`: the guarded range here is an aliased *mapped*
-                    // stack local (`holdind = (fl & addrtied) != 0` is true for these slots), so the
-                    // across-call INDIRECT output is `setAddrForce`d. addrforce makes it auto-live, so
-                    // dead-code keeps the INDIRECT chain and — propagating its consume backward — the
-                    // write-only spill store that feeds it survives as a real `xStack_NN = …` variable.
-                    f.vn_mut(out).set_addr_force();
-                    f.op_mut(ind).parent = Some(bid);
-                    new_ops.push(ind);
-                }
-            }
-        }
-        f.set_block_ops(bid, new_ops);
-    }
-}
-
 /// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI) whose
 /// value is realistic (set by the caller); the first scratch register ends the argument list. A port
 /// of Ghidra's `ActionActiveParam` (coreaction.cc:1725) / `FuncCallSpecs::checkInputTrialUse`
@@ -450,7 +348,7 @@ const OUT_REGS: [u64; 2] = [RAX, XMM0];
 
 /// Recover each call's return value — a port of Ghidra's `ActionActiveReturn` /
 /// `FuncCallSpecs::checkOutputTrialUse` + `buildOutputFromTrials` (fspec.cc:5661/5770). After
-/// [`recover_call_effects`] models a call's `killedbycall` output registers as indirect-creations
+/// heritage's `guard_calls` models a call's `killedbycall` output registers as indirect-creations
 /// and dead-code removes the unused ones, an output register (RAX, else XMM0) whose creation
 /// *survived* (its value is read) is, by Ghidra's `checkOutputTrialUse`, the call's active return
 /// value: its INDIRECT-creation output is moved to be the CALL's own output (`opSetOutput`) and the

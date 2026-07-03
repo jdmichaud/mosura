@@ -1,7 +1,7 @@
 //! Stack-aliasing analysis — a port of Ghidra's `AliasChecker` (`varmap.cc`).
 //!
 //! Decides which stack slots are *aliased* — a pointer to them escapes — so that heritage's
-//! conservative call-guards ([`super::recover::recover_call_effects`]) are applied only to those.
+//! conservative call-guards (`guard_calls`) are applied only to those.
 //! A non-aliased local (a spilled loop variable touched only by direct constant-offset load/store)
 //! is left untouched, so its loop SSA is undisturbed; an aliased local (one whose address is taken
 //! and passed to a call, so the callee can modify it through the pointer) is guarded.

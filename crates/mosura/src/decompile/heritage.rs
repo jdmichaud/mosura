@@ -796,6 +796,98 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
     }
 }
 
+/// Ghidra `Heritage::guardCalls` (heritage.cc:1443). For the heritaged range `(spc, off, size)`,
+/// model each CALL's effect on it with an INDIRECT, driven by the calling convention's `EffectRecord`
+/// list ([`super::fspec::lookup_effect`], the `FuncProto::hasEffect` query, heritage.cc:1467):
+///   - `killedbycall` (caller-saved volatile registers `RAX,RCX,RDX,RSI,RDI,R8,R9,XMM0..7`) ⇒ an
+///     indirect *creation* (`newIndirectCreation`, heritage.cc:1521): a value out of nothing with no
+///     realistic ancestor — the RAX/... clobber. mosura's 1-input form (input(0) = indirect-zero `#0`).
+///   - `unknown_effect`/`return_address` ⇒ a *passthrough* INDIRECT (`newIndirectOp`,
+///     heritage.cc:1511): the range's value flows across the call. Used for the aliased stack locals
+///     — a call with an unknown prototype may modify any slot a passed pointer can reach, so the
+///     local does not constant-fold to its pre-call value (collapsing e.g. switchhide's switch index).
+///   - `unaffected` (callee-saved) ⇒ no guard; the value flows across untouched.
+///
+/// Ghidra runs this inside `guard()` (heritage.cc:1192) with `addIndirects = newAddresses()`, so it
+/// fires only for ranges NEW this pass — driven here by [`heritage_spaces`]' `new_addrs`. Each INDIRECT
+/// output joins the range's writes (picked up by the def-block scan) so phi placement accounts for the
+/// modification. INDIRECTs are spliced right after the call (matching mosura's established call-guard
+/// placement, which [`super::recover::resolve_call_output`] consumes).
+///
+/// The stack side is gated by [`Funcdata::alias_boundary`] (Ghidra's `AliasChecker`): only slots at or
+/// above the shallowest escaped offset are reachable by the callee, so a non-aliased local (a spilled
+/// loop variable) is left untouched and its loop SSA is undisturbed. The output/input trial branches
+/// (`characterizeAsOutput`/`characterizeAsInputParam`, heritage.cc:1468-1509) need FuncProto/ParamActive
+/// prototype recovery (P6) and are a documented gap, like guardStores' `usesSpacebasePtr` (#19).
+fn guard_calls(f: &mut Funcdata, range: Loc) {
+    if !f.call_guards_active {
+        return;
+    }
+    let (spc, off, size) = range;
+    let Some(reg) = f.spaces.by_name("register") else { return };
+    let stack = f.spaces.by_name("stack");
+
+    // Ghidra `fc->hasEffect(transAddr,size)`: the effect a call has on this range. Registers query
+    // the SysV EffectRecord list; a stack local at/above the alias boundary is `unknown_effect` (a
+    // passthrough guard), everything else in the stack is left unguarded here.
+    use super::fspec::effect;
+    let effecttype = if spc == reg {
+        let efflist = super::fspec::sysv_effect_list(&f.spaces);
+        super::fspec::lookup_effect(&efflist, super::space::Address::new(reg, off), size)
+    } else if Some(spc) == stack && f.alias_boundary.is_some_and(|b| (off as i64) >= b) {
+        effect::UNKNOWN_EFFECT
+    } else {
+        return;
+    };
+    if effecttype == effect::UNAFFECTED {
+        return;
+    }
+    // holdind = (fl & addrtied): a mapped (addr-tied) range keeps its passthrough INDIRECT auto-live
+    // via setAddrForce, so dead-code preserves the across-call chain and the spill store feeding it.
+    // mosura's mapped stack locals are addr-tied; register passthroughs are not.
+    let holdind = Some(spc) == stack;
+
+    let calls: Vec<OpId> = (0..f.num_blocks() as u32)
+        .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
+        .filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
+    let addr = super::space::Address::new(spc, off);
+    for call in calls {
+        // Skip a call whose own output already IS this range (Ghidra heritage.cc:1453 isAssignment).
+        if f.op(call).output.is_some_and(|o| f.vn(o).loc == addr && f.vn(o).size == size) {
+            continue;
+        }
+        let Some(bid) = f.op(call).parent else { continue };
+        if effecttype == effect::KILLEDBYCALL {
+            // newIndirectCreation (mosura 1-input): out@range = INDIRECT(#0), spliced after the call,
+            // output marked indirect-creation (no realistic ancestor / the clobber).
+            let seq = f.op(call).seqnum;
+            let zero = f.new_const(size, 0);
+            let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
+            let out = f.new_output(ind, size, addr);
+            f.vn_mut(out).set_indirect_creation();
+            f.op_mut(ind).parent = Some(bid);
+            f.op_insert_after(ind, call);
+        } else if effecttype == effect::UNKNOWN_EFFECT || effecttype == effect::RETURN_ADDRESS {
+            // newIndirectOp (passthrough): out@range = INDIRECT(before@range), the value flowing
+            // across. new_indirect_op splices before the call; move it to just after to match the
+            // established placement resolve_call_output consumes.
+            let seq = f.op(call).seqnum;
+            let before = f.new_varnode(size, addr);
+            let ind = f.new_op(OpCode::Indirect, seq, vec![before]);
+            let out = f.new_output(ind, size, addr);
+            f.op_mut(ind).parent = Some(bid);
+            f.op_insert_after(ind, call);
+            if holdind {
+                f.vn_mut(out).set_addr_force();
+            }
+            if effecttype == effect::RETURN_ADDRESS {
+                f.vn_mut(out).set_return_address();
+            }
+        }
+    }
+}
+
 /// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is one
 /// pass). Brings into SSA form the per-LOCATION cover newly eligible at the current `f.heritage_pass`:
 /// each candidate location is classified by `globaldisjoint.add` and added to the cover when it is
@@ -884,15 +976,16 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
 fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new_addrs: &HashSet<Loc>) {
     let nb = f.num_blocks();
 
-    // 0. Guard STORE ops (Ghidra `Heritage::guardStores`, heritage.cc:1538, reached via
-    //    `guard()`/`placeMultiequals` when `addIndirects = newAddresses()`). For each range with
-    //    addresses new this pass, insert an INDIRECT before every aliasing STORE so the possible
-    //    modification becomes an SSA def. The new outputs are picked up as writes by the def-block
-    //    scan below (Ghidra appends them to `placeMultiequals`' `write` list before `calcMultiequals`).
-    //    Sorted so op numbering is deterministic when several ranges guard the same STORE.
+    // 0. Guard CALL and STORE ops (Ghidra `guard()` with `addIndirects = newAddresses()`,
+    //    heritage.cc:1192-1195). For each range with addresses new this pass, `guard_calls` inserts
+    //    an INDIRECT per call that clobbers/passes-through it and `guard_stores` one per aliasing
+    //    STORE, so the possible modification becomes an SSA def. The new outputs are picked up as
+    //    writes by the def-block scan below (Ghidra appends them to `placeMultiequals`' `write` list
+    //    before `calcMultiequals`). Ranges sorted so op numbering is deterministic.
     let mut guarded: Vec<Loc> = new_addrs.iter().copied().collect();
     guarded.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
     for l in guarded {
+        guard_calls(f, l);
         guard_stores(f, l);
     }
 
@@ -1219,6 +1312,69 @@ mod tests {
             1,
             "unique range adds no INDIRECT (highPtrPossible gate)",
         );
+    }
+
+    /// `guard_calls` (Ghidra `Heritage::guardCalls`, heritage.cc:1443) models each call's effect on a
+    /// heritaged range: a `killedbycall` register becomes an indirect *creation* (`#0` input, an
+    /// indirect-creation output — the clobber), an aliased stack slot (offset >= the alias boundary)
+    /// a *passthrough* (free before-value, addr-forced output), a callee-saved register nothing, and
+    /// the whole pass is inert unless `call_guards_active` (Ghidra guards only in the true heritage).
+    #[test]
+    fn guard_calls_models_call_effects() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(8, 0x400430);
+        let call = f.new_op(OpCode::Call, seq, vec![target]);
+        f.set_blocks(vec![BlockBasic { ops: vec![call], ..Default::default() }]);
+        f.op_mut(call).parent = Some(BlockId(0));
+
+        const RAX: u64 = 0x0; // killedbycall (caller-saved)
+        const RBX: u64 = 0x18; // unaffected (callee-saved)
+        let indirects = |f: &Funcdata| -> Vec<OpId> {
+            f.blocks()[0].ops.iter().copied().filter(|&op| f.op(op).code() == OpCode::Indirect).collect()
+        };
+
+        // Off until enabled.
+        guard_calls(&mut f, (reg, RAX, 8));
+        assert!(indirects(&f).is_empty(), "no guard while call_guards_active is false");
+        f.call_guards_active = true;
+        f.alias_boundary = Some(-16);
+
+        // killedbycall RAX ⇒ indirect creation: `#0` const input, indirect-creation output at range.
+        guard_calls(&mut f, (reg, RAX, 8));
+        let inds = indirects(&f);
+        assert_eq!(inds.len(), 1, "one creation for the killedbycall register");
+        let out = f.op(inds[0]).output.unwrap();
+        assert!(f.vn(out).is_indirect_creation(), "output marked indirect-creation");
+        assert_eq!((f.vn(out).loc.space, f.vn(out).loc.offset, f.vn(out).size), (reg, RAX, 8));
+        assert!(f.vn(f.op(inds[0]).input(0).unwrap()).is_constant(), "creation input is the indirect-zero const");
+        let pos = |op: OpId| f.blocks()[0].ops.iter().position(|&o| o == op).unwrap();
+        assert_eq!(pos(inds[0]), pos(call) + 1, "creation spliced right after the call");
+
+        // unaffected (callee-saved) register ⇒ no guard.
+        guard_calls(&mut f, (reg, RBX, 8));
+        assert_eq!(indirects(&f).len(), 1, "callee-saved register is not guarded");
+
+        // aliased stack slot (offset -8 >= boundary -16) ⇒ passthrough: free before-value, addr-forced.
+        guard_calls(&mut f, (stack, (-8i64) as u64, 8));
+        let inds = indirects(&f);
+        assert_eq!(inds.len(), 2, "passthrough for the aliased stack slot");
+        let pass = *inds.iter().find(|&&op| f.op(op).output.is_some_and(|o| f.vn(o).loc.space == stack)).unwrap();
+        assert!(f.vn(f.op(pass).output.unwrap()).is_addr_force(), "passthrough output addr-forced (mapped local, holdind)");
+        let before = f.op(pass).input(0).unwrap();
+        assert!(!f.vn(before).is_constant() && f.vn(before).loc.space == stack, "passthrough before-value is a free stack read");
+
+        // a stack slot below the boundary (offset -32 < -16) ⇒ not aliased ⇒ no guard.
+        guard_calls(&mut f, (stack, (-32i64) as u64, 8));
+        assert_eq!(indirects(&f).len(), 2, "non-aliased stack slot is left untouched");
     }
 
     /// A second range disjoint from the first is recorded independently (intersect 0), and a new

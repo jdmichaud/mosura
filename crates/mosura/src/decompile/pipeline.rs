@@ -44,9 +44,9 @@ impl Action for ActionHeritage {
             super::recover::recover_call_args(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
             // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are
-            // aliased — their address escapes to a call. This decides which slots
-            // `recover_call_effects` guards, so a non-aliased local (a spilled loop variable) is
-            // never guarded and its loop SSA is left intact — without a calling-convention scan.
+            // aliased — their address escapes to a call. This decides which slots heritage's
+            // `guard_calls` guards, so a non-aliased local (a spilled loop variable) is never
+            // guarded and its loop SSA is left intact — without a calling-convention scan.
             let boundary = {
                 let mut probe = data.clone();
                 let pdom = super::dominator::compute(&probe);
@@ -59,8 +59,12 @@ impl Action for ActionHeritage {
                 super::deadcode::ActionDeadCode.apply(&mut probe);
                 super::alias::alias_boundary(&probe)
             };
-            // model each call's clobber of the caller-saved arg registers + aliased stack locals
-            super::recover::recover_call_effects(data, boundary);
+            // Enable heritage's per-range call-effect guarding (Ghidra `Heritage::guardCalls`),
+            // threading the alias boundary. The probe clone above heritaged with guarding OFF (the
+            // default), so its boundary was computed on a graph free of the call INDIRECTs — as
+            // Ghidra runs guardCalls only in the true heritage, not the AliasChecker probe.
+            data.alias_boundary = boundary;
+            data.call_guards_active = true;
             let dom = super::dominator::compute(data);
             super::heritage::heritage_pass(data, &dom);
             return 1;

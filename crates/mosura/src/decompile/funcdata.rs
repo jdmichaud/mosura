@@ -61,6 +61,15 @@ pub struct Funcdata {
     /// `recover::resolve_call_args`; an entry is removed once its trials commit
     /// (`clearActiveInput`). Persisting it lets the prune DEFER instead of committing greedily.
     pub active_inputs: std::collections::HashMap<OpId, super::fspec::ParamActive>,
+    /// Master gate for heritage call-effect guarding (Ghidra runs `Heritage::guardCalls` only in the
+    /// true heritage). The pipeline sets it before the real heritage; the AliasChecker probe clone
+    /// leaves it `false`, so `alias_boundary` is computed on a graph without the call INDIRECTs.
+    pub call_guards_active: bool,
+    /// Ghidra `AliasChecker` boundary threaded into heritage's call guarding: the shallowest escaped
+    /// stack offset — a call with an unknown prototype may modify every stack slot at/above it
+    /// (`AliasChecker::hasLocalAlias`, `offset >= aliasBoundary`). `None` ⇒ nothing escapes ⇒ no
+    /// stack slot is guarded. Set from the alias probe before the real heritage.
+    pub alias_boundary: Option<i64>,
 }
 
 impl Funcdata {
@@ -83,6 +92,8 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             active_inputs: std::collections::HashMap::new(),
+            call_guards_active: false,
+            alias_boundary: None,
         }
     }
 
