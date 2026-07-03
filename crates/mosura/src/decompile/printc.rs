@@ -62,17 +62,6 @@ fn float_name(size: u32) -> String {
     }
 }
 
-/// The declared type of a recovered symbol (param, local, return) that has no recovered type
-/// info: an inferred `int`/`uint` is downgraded to `undefined<N>` (Ghidra leaves these
-/// `xunknown<N>` and lets the int-ness surface only as casts at uses); structural evidence
-/// (float, pointer, bool) is kept.
-fn symbol_type(t: Datatype) -> Datatype {
-    match t {
-        Datatype::Int(n) | Datatype::Uint(n) => Datatype::Unknown(n),
-        other => other,
-    }
-}
-
 /// Ghidra's one-letter type prefix for a variable/global name.
 fn type_prefix(t: &Datatype) -> &'static str {
     match t {
@@ -147,17 +136,13 @@ struct PrintC<'a> {
 
 impl PrintC<'_> {
     fn type_of(&self, v: VarnodeId) -> Datatype {
-        let t = self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size));
-        // A named/declared symbol (param, local, global) with only an integer-shaped inferred type
-        // declares as `undefined<N>` — Ghidra recovers no type for these stripped binaries, so the
-        // int/uint that inference reads off arithmetic uses surfaces only as a cast at those uses,
-        // not as the symbol's type. Inlined intermediate expressions (a SEXT result, an `a + b`)
-        // keep their produced type — only the symbol declarations are downgraded.
-        if self.is_explicit(v) {
-            symbol_type(t)
-        } else {
-            t
-        }
+        // A varnode's type is its inferred HighVariable type — the same value Ghidra's prototype
+        // recovery reads (`FuncProto::updateInputTypes`/`updateOutputTypes`, fspec.cc:4076/4159:
+        // `vn->getHigh()->getType()`) and the C printer declares for the symbol. Ghidra applies no
+        // downgrade to `undefined` for stripped binaries — an int/uint that inference recovers stays
+        // int/uint (naming a variable `iVar`/`uVar`, and avoiding the spurious `(int4)` cast that a
+        // `undefined`-typed symbol would need when widened). Absent inference gives `undefined<N>`.
+        self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
     }
 
     /// The variable's effective (type) width: the highest byte index any use reads — Ghidra's
@@ -558,7 +543,7 @@ impl<'a> PrintC<'a> {
                 continue; // a direct scalar access overlaps this array — leave it un-anchored
             }
             let aname =
-                format!("a{}Stack_{:x}", type_prefix(&symbol_type((**elem).clone())), sym.start.unsigned_abs());
+                format!("a{}Stack_{:x}", type_prefix(elem), sym.start.unsigned_abs());
             let mut matched = false;
             for i in 0..self.f.num_varnodes() as u32 {
                 let v = VarnodeId(i);
@@ -604,8 +589,7 @@ impl<'a> PrintC<'a> {
                     let i = self.render_var(index).0;
                     return (format!("{b}[{i}]"), 16);
                 }
-                let aty = symbol_type(vty.clone());
-                return (format!("*({} *){}", aty.name(), self.operand(addr, 14, false)), 15);
+                return (format!("*({} *){}", vty.name(), self.operand(addr, 14, false)), 15);
             }
             if o.code() == OpCode::Ptrsub {
                 return (self.render_ptrsub(def, true), 16);
@@ -649,9 +633,9 @@ impl<'a> PrintC<'a> {
         if addr_is_ptr {
             (format!("*{}", self.operand(addr, 15, false)), 15)
         } else {
-            // the access type is a no-info value → declare it undefined (Ghidra `*(xunknown4 *)`)
-            let aty = symbol_type(vty.clone());
-            (format!("*({} *){}", aty.name(), self.operand(addr, 14, false)), 15)
+            // cast the address to the access type (Ghidra `*(int4 *)`, or `*(xunknown4 *)` when
+            // inference recovered no type for the access).
+            (format!("*({} *){}", vty.name(), self.operand(addr, 14, false)), 15)
         }
     }
 
@@ -1604,8 +1588,11 @@ pub fn print_c(f: &Funcdata) -> String {
     }
 
     let ret = p.return_value();
-    // the return type, like a parameter, is a declared symbol with no recovered type → undefined
-    let ret_ty = ret.map_or("void".to_string(), |v| symbol_type(p.type_of(v)).name());
+    // Return type: the returned Varnode's inferred HighVariable type — Ghidra's
+    // `ActionOutputPrototype` → `FuncProto::updateOutputTypes` (fspec.cc:4159), which sets the output
+    // type to `triallist[0]->getHigh()->getType()` when the prototype is not output-locked (the
+    // stripped-binary case). No downgrade to `undefined`; `void` when there is no returned value.
+    let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> =
         sig_params.iter().map(|&(n, v)| format!("{} param_{}", p.type_of(v).name(), n)).collect();
@@ -1632,9 +1619,9 @@ pub fn print_c(f: &Funcdata) -> String {
     for (name, ty) in &p.decls {
         match ty {
             // a recovered stack array declares the element type then the subscript: `T name [N];`
-            // (Ghidra `xunknown4 axStack_98 [36]`) — the element type is downgraded like any symbol.
+            // (Ghidra `xunknown4 axStack_98 [36]`) — the element type is its inferred type.
             Datatype::Array(elem, count) => {
-                let _ = writeln!(out, "  {} {} [{}];", symbol_type((**elem).clone()).name(), name, count);
+                let _ = writeln!(out, "  {} {} [{}];", elem.name(), name, count);
             }
             _ => {
                 let _ = writeln!(out, "  {} {};", ty.name(), name);
