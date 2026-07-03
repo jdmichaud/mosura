@@ -109,9 +109,15 @@ struct PrintC<'a> {
     gotos: HashMap<BlockId, (BlockId, bool)>,
     /// Basic blocks that are goto targets (emitted with a label).
     labels: HashSet<BlockId>,
-    /// Local variable declarations `(name, type)` in first-use order, collected as names are
-    /// assigned, emitted at the top of the function body.
-    decls: Vec<(String, Datatype)>,
+    /// Local variable declarations `(name, type, stack_offset)`, collected as names are assigned and
+    /// emitted at the top of the body in Ghidra's declaration order. Ghidra `emitScopeVarDecls`
+    /// (printc.cc:2265) walks the ScopeLocal symbol map, which is keyed by storage Address, so stack
+    /// locals declare in ascending-address order (most-negative frame offset first). `stack_offset`
+    /// is the signed frame offset for a `stack` local, `None` for a register/temp local; the emit
+    /// sort orders stack locals by it. (No corpus fixture mixes register and stack locals in one
+    /// decl block, so register-vs-stack precedence is unexercised; register temps keep first-use
+    /// order via the stable sort.)
+    decls: Vec<(String, Datatype, Option<i64>)>,
     /// Per-varnode: is this a register value written into an addrtied stack slot across a call (the
     /// input of an INDIRECT whose output is the slot)? Such a value is *explicit* — Ghidra renders
     /// the write to the addrtied variable even though the value is computed in a register merged
@@ -287,7 +293,8 @@ impl<'a> PrintC<'a> {
             format!("{prefix}Var{}", self.var_counter)
         };
         self.names.insert(id, n.clone());
-        self.decls.push((n.clone(), ty)); // a genuine local — declare it at the top of the body
+        // a genuine local — declared at the body top, keyed by stack offset for the decl-order sort
+        self.decls.push((n.clone(), ty, stack_off.map(|o| o as i64)));
         n
     }
 
@@ -564,7 +571,7 @@ impl<'a> PrintC<'a> {
                 matched = true;
             }
             if matched {
-                self.decls.push((aname.clone(), sym.ty.clone()));
+                self.decls.push((aname.clone(), sym.ty.clone(), Some(sym.start)));
             }
         }
     }
@@ -1619,7 +1626,16 @@ pub fn print_c(f: &Funcdata) -> String {
     let params = if plist.is_empty() { "void".to_string() } else { plist.join(", ") };
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, params);
     out.push_str("{\n");
-    for (name, ty) in &p.decls {
+    // Ghidra emits local declarations in storage-Address order (`emitScopeVarDecls`); for stack
+    // locals that is ascending frame address — most-negative offset first. A stable sort orders the
+    // stack locals by offset and leaves register/temp locals (no offset) in first-use order.
+    p.decls.sort_by(|a, b| match (a.2, b.2) {
+        (Some(oa), Some(ob)) => oa.cmp(&ob),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    for (name, ty, _) in &p.decls {
         match ty {
             // a recovered stack array declares the element type then the subscript: `T name [N];`
             // (Ghidra `xunknown4 axStack_98 [36]`) — the element type is its inferred type.
