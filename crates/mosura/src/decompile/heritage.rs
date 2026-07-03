@@ -753,6 +753,49 @@ pub fn heritage_complete(f: &Funcdata) -> bool {
         .any(|(l, &has_free)| f.globaldisjoint.find_pass(l.0, l.1) == -1 || has_free)
 }
 
+/// Ghidra `Heritage::guardStores` (heritage.cc:1538). A STORE through a computed pointer may modify
+/// any location its target space aliases, so for the heritaged range `(space, off, size)` insert an
+/// INDIRECT before every such STORE — prepopulating data-flow across it — whose output then joins
+/// the range's writes (here: collected by [`heritage_spaces`]' def-block scan) so MULTIEQUAL
+/// placement accounts for the possible modification.
+///
+/// A STORE aliases the range when its destination space (its `in(0)` space-const, decoded like
+/// Ghidra's `getSpaceFromConst`) equals the range's space (`spc == storeSpace`). Ghidra's other
+/// disjunct — a store into the range space's *container* that `usesSpacebasePtr()` (a
+/// spacebase-relative store aliasing a stack range) — cannot fire here: that op flag is set only by
+/// the LoadGuard / `discoverIndexedStackPointers` subsystem (heritage.cc:915/932), which mosura
+/// lacks (Task #19). With no op ever marked spacebase-ptr, `usesSpacebasePtr()` is definitionally
+/// false, so the disjunct is a no-op; it re-enables faithfully once #19 lands.
+///
+/// Gated by `highPtrPossible` (heritage.cc:1194): the `unique`/internal space admits no high
+/// pointer, and mosura's x86-64 spec declares no `<nohighptr>` range, so every other space qualifies.
+fn guard_stores(f: &mut Funcdata, range: Loc) {
+    let (spc, off, size) = range;
+    // highPtrPossible: no pointer can target the internal (`unique`) space.
+    if f.spaces.get(spc).kind == super::space::SpaceKind::Internal {
+        return;
+    }
+    // Collect matching STOREs under an immutable borrow, then insert INDIRECTs (mutable) —
+    // Ghidra iterates `beginOp(CPUI_STORE)`; mosura has no per-opcode index, so scan block ops.
+    let mut stores: Vec<OpId> = Vec::new();
+    for b in 0..f.num_blocks() {
+        for op in f.blocks()[b].ops.clone() {
+            if f.op(op).is_dead() || f.op(op).code() != OpCode::Store {
+                continue;
+            }
+            // STORE in(0) is a constant whose offset encodes the destination `SpaceId`
+            // (built in `build.rs`, Ghidra's `AddrSpace*` encoded as a constant on LOAD/STORE in0).
+            let Some(in0) = f.op(op).input(0) else { continue };
+            if SpaceId(f.vn(in0).loc.offset as u32) == spc {
+                stores.push(op);
+            }
+        }
+    }
+    for op in stores {
+        f.new_indirect_op(op, super::space::Address::new(spc, off), size);
+    }
+}
+
 /// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is one
 /// pass). Brings into SSA form the per-LOCATION cover newly eligible at the current `f.heritage_pass`:
 /// each candidate location is classified by `globaldisjoint.add` and added to the cover when it is
@@ -793,9 +836,18 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     }
     candidates.sort_by_key(|&((sp, off, sz), _)| (sp.0, off, sz));
     let mut cover: HashSet<Loc> = HashSet::new();
+    // Locations with addresses *new* to this pass — Ghidra's `MemRange::newAddresses()`, which
+    // gates `guard()`'s `addIndirects` (`placeMultiequals`, heritage.cc:2629). A location wholly
+    // contained in an earlier pass (`intersect == 2`) re-enters the cover only via a freed read
+    // (re-heritage); its INDIRECT guards were placed on the first pass and must NOT be re-added
+    // (heritage.cc:1187: "multiple INDIRECT guards for the same address confuses renaming").
+    let mut new_addrs: HashSet<Loc> = HashSet::new();
     for (loc, has_free) in candidates {
         let intersect = f.globaldisjoint.add(loc.0, loc.1, loc.2, pass);
-        if intersect != 2 || has_free {
+        if intersect != 2 {
+            cover.insert(loc);
+            new_addrs.insert(loc);
+        } else if has_free {
             cover.insert(loc);
         }
     }
@@ -804,7 +856,7 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         return 0;
     }
     let t0 = std::time::Instant::now();
-    heritage_spaces(f, dom, &cover);
+    heritage_spaces(f, dom, &cover, &new_addrs);
     if super::action::perf::enabled() {
         super::action::perf::record("heritage", "heritage_spaces", t0.elapsed());
     }
@@ -829,8 +881,20 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
 /// later pass, or were already linked by an earlier one. Because distinct SSA locations never
 /// interact (a read belongs to exactly one `(space, offset, size)`), heritaging only the cover
 /// reconstructs the same SSA as one combined walk over them.
-fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>) {
+fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new_addrs: &HashSet<Loc>) {
     let nb = f.num_blocks();
+
+    // 0. Guard STORE ops (Ghidra `Heritage::guardStores`, heritage.cc:1538, reached via
+    //    `guard()`/`placeMultiequals` when `addIndirects = newAddresses()`). For each range with
+    //    addresses new this pass, insert an INDIRECT before every aliasing STORE so the possible
+    //    modification becomes an SSA def. The new outputs are picked up as writes by the def-block
+    //    scan below (Ghidra appends them to `placeMultiequals`' `write` list before `calcMultiequals`).
+    //    Sorted so op numbering is deterministic when several ranges guard the same STORE.
+    let mut guarded: Vec<Loc> = new_addrs.iter().copied().collect();
+    guarded.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
+    for l in guarded {
+        guard_stores(f, l);
+    }
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
     //    if some block reads it before defining it), restricted to this pass's cover.
@@ -1091,6 +1155,70 @@ mod tests {
         assert_eq!(m.add(reg, 0x14, 8, 2), 1, "partial overlap with older range");
         // The union now covers [0x10, 0x1c); the merged entry keeps the older pass.
         assert_eq!(m.find_pass(reg, 0x1b), 0, "merged range covers the extension, oldest pass wins");
+    }
+
+    /// `guard_stores` (Ghidra `Heritage::guardStores`, heritage.cc:1538) inserts an INDIRECT before
+    /// every STORE whose destination space equals the heritaged range's space, and only those: a
+    /// `ram` range guards the `ram` STORE (not the `stack` STORE), the INDIRECT's output lands at
+    /// the range with a free before-value input, and the `highPtrPossible` gate suppresses guards on
+    /// the `unique` space. No corpus fixture reads a global across an aliasing indirect store in a
+    /// way that survives dead-code removal, so this constructs the firing input directly.
+    #[test]
+    fn guard_stores_indirects_aliasing_stores() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let uniq = spaces.by_name("unique").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // STORE(space=ram, ptr, val) and STORE(space=stack, ptr, val): in(0) is the space-const.
+        let ram_sid = f.new_const(8, ram.0 as u64);
+        let ram_ptr = f.new_input(8, Address::new(reg, 0x10));
+        let ram_val = f.new_input(4, Address::new(reg, 0x18));
+        let store_ram = f.new_op(OpCode::Store, seq, vec![ram_sid, ram_ptr, ram_val]);
+        let stk_sid = f.new_const(8, stack.0 as u64);
+        let stk_ptr = f.new_input(8, Address::new(reg, 0x20));
+        let stk_val = f.new_input(4, Address::new(reg, 0x28));
+        let store_stk = f.new_op(OpCode::Store, seq, vec![stk_sid, stk_ptr, stk_val]);
+
+        f.set_blocks(vec![BlockBasic { ops: vec![store_ram, store_stk], ..Default::default() }]);
+        for &op in &[store_ram, store_stk] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+
+        // A `ram` range guards only the `ram` STORE, with an INDIRECT spliced right before it.
+        let range = (ram, 0x4000u64, 4u32);
+        guard_stores(&mut f, range);
+        let ind: Vec<OpId> = f.blocks()[0]
+            .ops
+            .iter()
+            .copied()
+            .filter(|&op| f.op(op).code() == OpCode::Indirect)
+            .collect();
+        assert_eq!(ind.len(), 1, "exactly one INDIRECT (ram STORE only; stack STORE not guarded)");
+        let indop = ind[0];
+        let out = f.op(indop).output.expect("INDIRECT has an output");
+        assert_eq!((f.vn(out).loc.space, f.vn(out).loc.offset, f.vn(out).size), range, "output at range");
+        let before = f.op(indop).input(0).expect("INDIRECT before-value input");
+        assert!(!f.vn(before).is_constant(), "before-value is a free varnode, not a constant");
+        assert_eq!((f.vn(before).loc.space, f.vn(before).loc.offset, f.vn(before).size), range);
+        let ops = &f.blocks()[0].ops;
+        assert_eq!(ops.iter().position(|&o| o == indop).unwrap() + 1,
+            ops.iter().position(|&o| o == store_ram).unwrap(), "INDIRECT is immediately before the STORE");
+
+        // highPtrPossible: no pointer can target the `unique` space, so it is never guarded.
+        guard_stores(&mut f, (uniq, 0, 4));
+        assert_eq!(
+            f.blocks()[0].ops.iter().filter(|&&op| f.op(op).code() == OpCode::Indirect).count(),
+            1,
+            "unique range adds no INDIRECT (highPtrPossible gate)",
+        );
     }
 
     /// A second range disjoint from the first is recorded independently (intersect 0), and a new
