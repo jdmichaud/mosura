@@ -27,3 +27,11 @@ never protects the approximation. (This does not touch faithful cross-language t
 that preserve Ghidra's behavior — those ARE the port; only code that diverges from what
 Ghidra actually does is in question.)
 
+New code is ALWAYS a faithful port — never a hypothesis to test-and-revert. Before writing
+any code, ground it READ-ONLY until you have verified the premise: that this is Ghidra's
+ACTUAL mechanism for the goal and that it truly produces this result in our pipeline. Do not
+implement on a guess and measure-then-revert. Reverting is reserved for PRE-EXISTING
+non-Ghidra adaptations (the cleanup above); code written now must be faithful enough that it
+never needs reverting. **A revert of newly-written code is a process failure — stop and
+investigate why non-faithful code was generated (it means "only port Ghidra" was broken).**
+
