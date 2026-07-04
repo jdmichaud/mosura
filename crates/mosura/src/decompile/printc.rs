@@ -292,6 +292,12 @@ impl<'a> PrintC<'a> {
     fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
         let vn = self.f.vn(v);
         if vn.is_constant() {
+            // A float-typed constant prints as a C float literal (Ghidra `pushConstant` →
+            // `push_float`, printc.cc): `0.0`, `1.5`, `INFINITY`/`NAN` — not the raw integer bits.
+            // Constant typing (ActionInferTypes now types constants) supplies the float type.
+            if let Datatype::Float(sz) = self.type_of(v) {
+                return (super::float::push_float(vn.constant_value(), sz), 16);
+            }
             return (render_const(vn.constant_value(), vn.size), 16);
         }
         if self.is_explicit(v) {

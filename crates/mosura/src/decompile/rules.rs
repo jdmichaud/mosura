@@ -61,6 +61,36 @@ pub fn eval_const(opcode: OpCode, inputs: &[(u64, u32)], out_size: u32) -> Optio
         BoolXor => (a(0) & 1) ^ (a(1) & 1),
         Popcount => a(0).count_ones() as u64,
         Lzcount => a(0).leading_zeros() as u64,
+        // Floating-point ops fold via IEEE arithmetic on the host `f64` (Ghidra's per-op
+        // `OpBehaviorFloat*::evaluate`, which likewise round-trips through the host float): decode
+        // each operand at its own width, compute, re-encode at the output width. `0.0 / 0.0` folds
+        // to a NaN pattern, exactly as Ghidra collapses the division to a constant.
+        FloatAdd | FloatSub | FloatMult | FloatDiv | FloatNeg | FloatAbs | FloatSqrt
+        | FloatFloat2float | FloatInt2float | FloatTrunc | FloatEqual | FloatNotequal | FloatLess
+        | FloatLessequal | FloatNan => {
+            let insz = |i: usize| inputs.get(i).map_or(1, |&(_, s)| s);
+            let raw = |i: usize| inputs.get(i).map_or(0, |&(v, _)| v);
+            let fin = |i: usize| super::float::to_host(raw(i), insz(i));
+            let enc = |h: f64| super::float::encode(h, out_size);
+            match opcode {
+                FloatAdd => enc(fin(0) + fin(1)),
+                FloatSub => enc(fin(0) - fin(1)),
+                FloatMult => enc(fin(0) * fin(1)),
+                FloatDiv => enc(fin(0) / fin(1)),
+                FloatNeg => enc(-fin(0)),
+                FloatAbs => enc(fin(0).abs()),
+                FloatSqrt => enc(fin(0).sqrt()),
+                FloatFloat2float => enc(fin(0)),
+                FloatInt2float => enc(sa(0) as i64 as f64),
+                FloatTrunc => fin(0) as i64 as u64,
+                FloatEqual => (fin(0) == fin(1)) as u64,
+                FloatNotequal => (fin(0) != fin(1)) as u64,
+                FloatLess => (fin(0) < fin(1)) as u64,
+                FloatLessequal => (fin(0) <= fin(1)) as u64,
+                FloatNan => fin(0).is_nan() as u64,
+                _ => unreachable!(),
+            }
+        }
         _ => return None, // LOAD/STORE/branches/calls/markers: not const-foldable
     };
     Some(mask(res, out_size))
