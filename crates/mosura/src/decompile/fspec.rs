@@ -25,6 +25,22 @@ pub mod type_class {
     pub const FLOAT: u8 = 1; // TYPECLASS_FLOAT — XMM registers
 }
 
+/// Ghidra `ParamEntry` containment codes (fspec.hh:99): how a storage range relates to a
+/// convention's parameter/return entries. Drives `guardReturns`/`guardInput` (a range that *is* an
+/// entry registers a trial; one that `contained_by` an entry — a wide write covering a narrower
+/// output register — is truncated with a SUBPIECE).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Containment {
+    /// Range neither contains nor is contained by any entry.
+    NoContainment,
+    /// An entry contains the range, but not as its least-significant bytes.
+    ContainsUnjustified,
+    /// An entry contains the range as its least-significant bytes.
+    ContainsJustified,
+    /// No entry contains the range, but the range contains at least one entry.
+    ContainedBy,
+}
+
 /// Ghidra `ParamEntry` (fspec.hh:84): one storage resource for a parameter or return value.
 /// A register entry has `alignment == 0` — an *exclusion* entry that holds exactly one
 /// parameter; the stack entry has `alignment != 0` — a non-exclusion area of many aligned slots.
@@ -66,6 +82,18 @@ impl ParamEntry {
         }
         // little-endian: justify to the least-significant bytes, i.e. offset from the base.
         Some(addr.offset - self.addressbase)
+    }
+
+    /// Ghidra `ParamEntry::containedBy` (fspec.cc): is this entry fully contained within the range
+    /// `[addr, addr+sz)`? (A range wider than the entry that swallows it — e.g. a `RAX:8` write
+    /// covering the `EAX:4` output entry.)
+    pub fn contained_by(&self, addr: Address, sz: u32) -> bool {
+        if self.space != addr.space || self.addressbase < addr.offset {
+            return false;
+        }
+        let entryoff = self.addressbase + self.size as u64 - 1;
+        let rangeoff = addr.offset + sz as u64 - 1;
+        entryoff <= rangeoff
     }
 
     /// Ghidra `ParamEntry::getSlot` (fspec.cc:407): the slot index covering byte `off` of a
@@ -127,6 +155,36 @@ impl ParamList {
     /// `ParamList::possibleParam`).
     pub fn possible_param(&self, loc: Address, size: u32) -> bool {
         self.find_entry(loc, size).is_some()
+    }
+
+    /// Ghidra `ParamListStandard::characterizeAsParam` (fspec.cc:682): classify how `[loc,loc+size)`
+    /// relates to this list's entries — is it one of them (`Contains*`), does it swallow one
+    /// (`ContainedBy`), or neither. Reached via `FuncProto::characterizeAsOutput` (unlocked → the
+    /// output model, fspec.cc:4336) to decide, for each heritaged write, whether it is a return
+    /// value and at what width. mosura scans the linear entry list directly (Ghidra uses a
+    /// per-space `ParamEntryResolver` index; the two-pass structure there is just that index's
+    /// optimization).
+    pub fn characterize_as_param(&self, loc: Address, size: u32) -> Containment {
+        let mut res_contains = false;
+        let mut res_contained_by = false;
+        for e in &self.entry {
+            if let Some(off) = e.justified_contain(loc, size) {
+                if off == 0 {
+                    return Containment::ContainsJustified;
+                }
+                res_contains = true;
+            }
+            if e.is_exclusion() && e.contained_by(loc, size) {
+                res_contained_by = true;
+            }
+        }
+        if res_contains {
+            Containment::ContainsUnjustified
+        } else if res_contained_by {
+            Containment::ContainedBy
+        } else {
+            Containment::NoContainment
+        }
     }
 
     /// Index into [`Self::entry`] of the entry containing `[loc,loc+size)` (the index form of
@@ -843,6 +901,20 @@ mod tests {
 
         // R9 → group 13 (last integer register).
         assert_eq!(pl.find_entry(Address::new(reg, R9), 8).unwrap().0.group, 13);
+    }
+
+    #[test]
+    fn characterize_as_output_classifies_return_registers() {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let out = sysv_output(&spaces).unwrap();
+        // RAX:8 is exactly the integer return entry; EAX (its low 4) is justified within it.
+        assert_eq!(out.characterize_as_param(Address::new(reg, RAX), 8), Containment::ContainsJustified);
+        assert_eq!(out.characterize_as_param(Address::new(reg, RAX), 4), Containment::ContainsJustified);
+        // RDX:8 is the second integer return entry.
+        assert_eq!(out.characterize_as_param(Address::new(reg, RDX), 8), Containment::ContainsJustified);
+        // RCX is volatile but not a return location.
+        assert_eq!(out.characterize_as_param(Address::new(reg, RCX), 8), Containment::NoContainment);
     }
 
     #[test]
