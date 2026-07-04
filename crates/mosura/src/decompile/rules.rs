@@ -427,6 +427,14 @@ impl Rule for RulePropagateCopy {
         Vec::new() // every op
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // Ghidra `RulePropagateCopy::applyOp` (ruleaction.cc:3933): `if (op->isReturnCopy()) return 0;`.
+        // `TypeOpReturn` sets `return_copy` as a default opflag (typeop.cc:878), so every CPUI_RETURN
+        // op is a "return copy" — copies are never propagated into a RETURN's inputs, keeping the
+        // returned register in place. (mosura has no globals-holding markReturnCopy COPY yet — the
+        // heritage.cc:1686 case — so `isReturnCopy` ≡ the RETURN op here.)
+        if data.op(op).code() == OpCode::Return {
+            return 0;
+        }
         for i in 0..data.op(op).num_inputs() {
             let vn = data.op(op).input(i).unwrap();
             let Some(def) = data.vn(vn).def else { continue };
