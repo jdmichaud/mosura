@@ -232,7 +232,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleConditionalMove | MISSING |
 | RuleOrPredicate | MISSING |
 | RuleFuncPtrEncoding | MISSING |
-| RuleSubfloatConvert | MISSING |
+| RuleSubfloatConvert | BLOCKED(SubfloatFlow subsystem — subflow.cc) |
 | RuleFloatCast | PORTED (rules.rs; byte-neutral, unit-tested — inert on corpus: the stacked FLOAT2FLOAT/INT2FLOAT pattern it targets doesn't survive to actprop; floatcast fixture's imperfection is upstream float sizing, not this rule) |
 | RuleIgnoreNan | PORTED |
 | RuleUnsigned2Float | MISSING |
@@ -248,6 +248,15 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 
 **mosura-only pool rules (no Ghidra oppool1 counterpart, slotted next to siblings):** RuleMultMult,
 RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs comments).
+
+**RuleSubfloatConvert** is BLOCKED, not a mechanical tail rule: it is a thin dispatcher (`subflow.cc:3489`)
+into `SubfloatFlow : public TransformManager` (subflow.cc). That needs (a) the generic `TransformManager`/
+`TransformVar` transform framework — which mosura lacks; its `SubvariableFlow` (subvarflow.rs) is a
+bespoke integer-subvalue port, not the reusable base SubfloatFlow extends — and (b) `FloatFormat`-driven
+precision tracing (maxPrecision/exceedsPrecision/traceForward/traceBackward/doTrace/apply). This is the
+float-precision-narrowing subsystem (Task #11 float / a TransformManager port), not the rule tail. It is
+`FLOAT_FLOAT2FLOAT`'s real handler; RuleFloatCast (also on FLOAT_FLOAT2FLOAT) is the small in-place
+sibling and IS ported.
 
 ---
 
