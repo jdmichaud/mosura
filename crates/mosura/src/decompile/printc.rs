@@ -1460,7 +1460,15 @@ fn render_const(val: u64, size: u32) -> String {
         ((val << sh) as i64) >> sh
     };
     if signed < 0 && signed > -0x10000 {
-        return format!("{signed}");
+        // Ghidra `push_integer` prints a signed negative as `-` + the *magnitude* rendered in its
+        // own most-natural base (printc.cc:1288: `print_negsign`, then the same ≤10-decimal /
+        // `mostNaturalBase` choice applied to the magnitude) — so `-0x10`, not `-16`.
+        let mag = signed.unsigned_abs();
+        return if mag <= 10 || most_natural_base(mag) == 10 {
+            format!("-{mag}")
+        } else {
+            format!("-0x{mag:x}")
+        };
     }
     // Ghidra `push_integer`: small values (≤10) always decimal, otherwise the most natural base.
     if val <= 10 || most_natural_base(val) == 10 {
