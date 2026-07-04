@@ -14,7 +14,7 @@ use super::rules::{
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
-    RuleAndCommute, RuleFloatRange, RuleIgnoreNan,
+    RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
 };
 
@@ -168,6 +168,7 @@ pub fn default_rule_pool() -> ActionPool {
         // no longer eats the subvar `EAX = COPY(u)` at the RETURN (5a8ac03 ports isReturnCopy), so the
         // narrowed return lands at the register EAX and recover.rs records it faithfully.
         .with(RuleSubvarZext) // (116)
+        .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
 }
 

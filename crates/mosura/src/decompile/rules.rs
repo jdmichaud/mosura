@@ -1348,6 +1348,68 @@ impl Rule for RuleFloatRange {
     }
 }
 
+/// Ghidra `RuleFloatCast` (`ruleaction.cc`, oppool1 @5634 "floatprecision"): replace
+/// `(casttosmall)(casttobig)V` with the identity or a single cast. Matches a `FLOAT_FLOAT2FLOAT`
+/// or `FLOAT_TRUNC` whose input is itself defined by a `FLOAT_FLOAT2FLOAT` or `FLOAT_INT2FLOAT`,
+/// and rewrites the op in place to consume the inner cast's source directly, dropping the
+/// redundant intermediate conversion.
+pub struct RuleFloatCast;
+
+impl Rule for RuleFloatCast {
+    fn name(&self) -> &str {
+        "floatcast"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::FloatFloat2float, OpCode::FloatTrunc]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn1 = data.op(op).input(0).unwrap();
+        if !data.vn(vn1).is_written() {
+            return 0;
+        }
+        let castop = data.vn(vn1).def.unwrap();
+        let opc2 = data.op(castop).code();
+        if opc2 != OpCode::FloatFloat2float && opc2 != OpCode::FloatInt2float {
+            return 0;
+        }
+        let opc1 = data.op(op).code();
+        let vn2 = data.op(castop).input(0).unwrap();
+        let insize1 = data.vn(vn1).size;
+        let insize2 = data.vn(vn2).size;
+        let outsize = data.vn(data.op(op).output.unwrap()).size;
+
+        if data.vn(vn2).is_free() {
+            return 0; // Don't propagate free
+        }
+
+        if opc2 == OpCode::FloatFloat2float && opc1 == OpCode::FloatFloat2float {
+            if insize1 > outsize {
+                // op is superfluous
+                data.op_set_input(op, 0, vn2);
+                if outsize == insize2 {
+                    data.op_set_opcode(op, OpCode::Copy); // We really have the identity
+                }
+                return 1;
+            } else if insize2 < insize1 {
+                // Convert two increases -> one combined increase
+                data.op_set_input(op, 0, vn2);
+                return 1;
+            }
+        } else if opc2 == OpCode::FloatInt2float && opc1 == OpCode::FloatFloat2float {
+            // Convert integer straight into final float size
+            data.op_set_input(op, 0, vn2);
+            data.op_set_opcode(op, OpCode::FloatInt2float);
+            return 1;
+        } else if opc2 == OpCode::FloatFloat2float && opc1 == OpCode::FloatTrunc {
+            // Convert float straight into final integer
+            data.op_set_input(op, 0, vn2);
+            return 1;
+        }
+
+        0
+    }
+}
+
 /// The input slot at which `vn` is read by `op` (Ghidra `PcodeOp::getSlot`).
 fn slot_of(data: &Funcdata, op: OpId, vn: VarnodeId) -> usize {
     data.op(op).inrefs.iter().position(|&v| v == vn).unwrap_or(0)
@@ -5620,5 +5682,64 @@ mod tests {
         let has_negc = f.vn(n0).is_constant() && f.vn(n0).constant_value() == negc
             || f.vn(n1).is_constant() && f.vn(n1).constant_value() == negc;
         assert!(has_a && has_negc, "compare is `a` vs `-5`");
+    }
+
+    #[test]
+    fn float_cast_collapses_stacked_casts() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // (float)(double)x, exact narrow back to the source size → identity COPY of x.
+        let x4 = f.new_input(4, Address::new(r, 0x10));
+        let up = f.new_op(OpCode::FloatFloat2float, seq, vec![x4]);
+        let up8 = f.new_output(up, 8, Address::new(r, 0x20));
+        let down = f.new_op(OpCode::FloatFloat2float, seq, vec![up8]);
+        let _d4 = f.new_output(down, 4, Address::new(r, 0x28));
+        assert_eq!(RuleFloatCast.apply_op(down, &mut f), 1);
+        assert_eq!(f.op(down).code(), OpCode::Copy);
+        assert_eq!(f.op(down).input(0).unwrap(), x4);
+
+        // Superfluous narrow but NOT back to the source size → stays FLOAT2FLOAT, skips the middle
+        // cast (insize1 > outsize, outsize != insize2). 10-byte x87 long double → 8 here.
+        let y4 = f.new_input(4, Address::new(r, 0x30));
+        let up10 = f.new_op(OpCode::FloatFloat2float, seq, vec![y4]);
+        let up10o = f.new_output(up10, 10, Address::new(r, 0x40));
+        let down8 = f.new_op(OpCode::FloatFloat2float, seq, vec![up10o]);
+        let _d8 = f.new_output(down8, 8, Address::new(r, 0x50));
+        assert_eq!(RuleFloatCast.apply_op(down8, &mut f), 1);
+        assert_eq!(f.op(down8).code(), OpCode::FloatFloat2float);
+        assert_eq!(f.op(down8).input(0).unwrap(), y4);
+
+        // (float)(double)(int)n → int straight into the final float size: op becomes INT2FLOAT of n.
+        let n4 = f.new_input(4, Address::new(r, 0x60));
+        let i2f = f.new_op(OpCode::FloatInt2float, seq, vec![n4]);
+        let i2f8 = f.new_output(i2f, 8, Address::new(r, 0x68));
+        let narrow = f.new_op(OpCode::FloatFloat2float, seq, vec![i2f8]);
+        let _nf4 = f.new_output(narrow, 4, Address::new(r, 0x70));
+        assert_eq!(RuleFloatCast.apply_op(narrow, &mut f), 1);
+        assert_eq!(f.op(narrow).code(), OpCode::FloatInt2float);
+        assert_eq!(f.op(narrow).input(0).unwrap(), n4);
+
+        // trunc((double)z) → float straight into the final integer: op stays TRUNC of the small float.
+        let z4 = f.new_input(4, Address::new(r, 0x80));
+        let zup = f.new_op(OpCode::FloatFloat2float, seq, vec![z4]);
+        let zup8 = f.new_output(zup, 8, Address::new(r, 0x88));
+        let trunc = f.new_op(OpCode::FloatTrunc, seq, vec![zup8]);
+        let _t4 = f.new_output(trunc, 4, Address::new(r, 0x90));
+        assert_eq!(RuleFloatCast.apply_op(trunc, &mut f), 1);
+        assert_eq!(f.op(trunc).code(), OpCode::FloatTrunc);
+        assert_eq!(f.op(trunc).input(0).unwrap(), z4);
+
+        // Input not defined by a float cast (FLOAT_ADD) → no match.
+        let a = f.new_input(8, Address::new(r, 0xa0));
+        let b = f.new_input(8, Address::new(r, 0xa8));
+        let add = f.new_op(OpCode::FloatAdd, seq, vec![a, b]);
+        let add8 = f.new_output(add, 8, Address::new(r, 0xb0));
+        let nomatch = f.new_op(OpCode::FloatFloat2float, seq, vec![add8]);
+        let _nm4 = f.new_output(nomatch, 4, Address::new(r, 0xb8));
+        assert_eq!(RuleFloatCast.apply_op(nomatch, &mut f), 0);
+        assert_eq!(f.op(nomatch).code(), OpCode::FloatFloat2float);
     }
 }
