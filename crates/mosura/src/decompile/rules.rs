@@ -2613,6 +2613,237 @@ impl Rule for RulePiece2Zext {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SubVariableFlow driving rules — Ghidra `subflow.cc:1547-1721`. Each spots a
+// seed (a wide Varnode from which only a narrow logical sub-value is used),
+// builds a `SubvariableFlow`, then `do_trace()` + `do_replacement()` to shrink
+// the flow. `aggressive` is always false — mosura has no `Varnode::isPtrFlow`.
+// (RuleSubvarSext deferred — its sign-extension tracer is still a Stage-4 stub.)
+// ---------------------------------------------------------------------------
+
+/// Ghidra `RuleSubvarAnd` (subflow.cc:1553): `V & c` where the AND output is consumed exactly by the
+/// constant mask `c` and the low bit is live — the AND is pulling a narrow field out of `V`.
+pub struct RuleSubvarAnd;
+
+impl Rule for RuleSubvarAnd {
+    fn name(&self) -> &str {
+        "subvar_and"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let vn = data.op(op).input(0).unwrap();
+        let outvn = data.op(op).output.unwrap();
+        let consume = data.vn(outvn).get_consume();
+        if consume != data.vn(in1).constant_value() {
+            return 0;
+        }
+        if (consume & 1) == 0 {
+            return 0;
+        }
+        let cmask: u64 = if consume == 1 {
+            1
+        } else {
+            let mut cm = super::nzmask::calc_mask(data.vn(vn).size) >> 8;
+            while cm != 0 {
+                if cm == consume {
+                    break;
+                }
+                cm >>= 8;
+            }
+            cm
+        };
+        if cmask == 0 {
+            return 0;
+        }
+        if data.vn(outvn).descend.is_empty() {
+            return 0;
+        }
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, cmask, false, false, false);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
+/// Ghidra `RuleSubvarSubpiece` (subflow.cc:1590): a SUBPIECE truncation whose full input is only ever
+/// consumed within the truncated field — seed the flow with `mask = calc_mask(outsize) << 8*sa`.
+pub struct RuleSubvarSubpiece;
+
+impl Rule for RuleSubvarSubpiece {
+    fn name(&self) -> &str {
+        "subvar_subpiece"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        let outvn = data.op(op).output.unwrap();
+        let flowsize = data.vn(outvn).size;
+        let sa_c = data.vn(data.op(op).input(1).unwrap()).constant_value();
+        if flowsize as u64 + sa_c > 8 {
+            return 0; // mask must fit in u64 precision (Ghidra: > sizeof(uintb))
+        }
+        let sa = sa_c as u32;
+        let mask = super::nzmask::calc_mask(flowsize) << (8 * sa);
+        let aggressive = false; // Ghidra: outvn->isPtrFlow(); mosura has no isPtrFlow
+        if !aggressive {
+            if (data.vn(vn).get_consume() & mask) != data.vn(vn).get_consume() {
+                return 0;
+            }
+            if data.vn(outvn).descend.is_empty() {
+                return 0;
+            }
+        }
+        // Vector-register inputs truncated to the used lanes — let the flow handle the 8-byte case.
+        let big = flowsize >= 8 && data.vn(vn).is_input() && lone_descend(data, vn) == Some(op);
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, aggressive, false, big);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
+/// Ghidra `RuleSubvarCompZero` (subflow.cc:1628): a single-bit equality test `(V & bit) == 0` — trace
+/// the one live bit out of `V` (guarded so it looks like a status-flag bit, not a wide field).
+pub struct RuleSubvarCompZero;
+
+impl Rule for RuleSubvarCompZero {
+    fn name(&self) -> &str {
+        "subvar_compzero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntNotequal, OpCode::IntEqual]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let vn = data.op(op).input(0).unwrap();
+        let mask = data.vn(vn).get_nzmask();
+        let bitnum = super::nzmask::leastsigbit_set(mask);
+        if bitnum == -1 {
+            return 0;
+        }
+        if (mask >> (bitnum as u32)) != 1 {
+            return 0; // only one bit active
+        }
+        let off = data.vn(in1).constant_value();
+        if off != mask && off != 0 {
+            return 0; // the active bit must be the one being tested
+        }
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).descend.is_empty() {
+            return 0;
+        }
+        // Basic check that the stream the bit is pulled from is not fully consumed (status-reg heuristic).
+        if data.vn(vn).is_written() {
+            let andop = data.vn(vn).def.unwrap();
+            let Some(vn0) = data.op(andop).input(0) else {
+                return 0;
+            };
+            match data.op(andop).code() {
+                OpCode::IntAnd | OpCode::IntOr | OpCode::IntRight => {
+                    if data.vn(vn0).is_constant() {
+                        return 0;
+                    }
+                    let mask0 = data.vn(vn0).get_consume() & data.vn(vn0).get_nzmask();
+                    let wholemask = super::nzmask::calc_mask(data.vn(vn0).size) & mask0;
+                    if (wholemask & 0xff) == 0xff {
+                        return 0;
+                    }
+                    if (wholemask & 0xff00) == 0xff00 {
+                        return 0;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, false, false, false);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
+/// Ghidra `RuleSubvarShift` (subflow.cc:1686): a single bit pulled from a 1-byte value by `V >> sa` —
+/// trace that bit out of `V`.
+pub struct RuleSubvarShift;
+
+impl Rule for RuleSubvarShift {
+    fn name(&self) -> &str {
+        "subvar_shift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        if data.vn(vn).size != 1 {
+            return 0;
+        }
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let sa = data.vn(in1).constant_value() as u32;
+        let mask = data.vn(vn).get_nzmask();
+        let shifted = mask.checked_shr(sa).unwrap_or(0);
+        if shifted != 1 {
+            return 0; // pulling out a single bit
+        }
+        let mask = shifted.checked_shl(sa).unwrap_or(0);
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).descend.is_empty() {
+            return 0;
+        }
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, false, false, false);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
+/// Ghidra `RuleSubvarZext` (subflow.cc:1710): the output of `INT_ZEXT(v)` is a narrow value padded to
+/// a wide register — trace the logical `v`-width value forward. This is the rule that narrows a
+/// zero-extension-padded return (`RAX:8 = ZEXT(v:4)` → `return v:4`, via `try_return_pull`).
+pub struct RuleSubvarZext;
+
+impl Rule for RuleSubvarZext {
+    fn name(&self) -> &str {
+        "subvar_zext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntZext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).output.unwrap();
+        let invn = data.op(op).input(0).unwrap();
+        let mask = super::nzmask::calc_mask(data.vn(invn).size);
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, false, false, false);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
 /// Ghidra `RuleLessEqual2Zero` (ruleaction.cc:5601): simplify INT_LESSEQUAL against an extremal
 /// constant (0 or all-ones), which an unsigned `<=` makes trivially true or an equality:
 ///   - `0 <= V     =>  true`      - `V <= 0     =>  V == 0`
@@ -3790,6 +4021,102 @@ mod tests {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         (Funcdata::new("t", Address::new(ram, 0), spaces), Address::new(ram, 0))
+    }
+
+    #[test]
+    fn subvar_zext_rule_narrows_a_zext_fed_return() {
+        // RuleSubvarZext on `RAX:8 = ZEXT(u:4)` feeding a RETURN narrows the return to the 4-byte
+        // logical value (via SubvariableFlow::try_return_pull) — the twodim-class int4 return fix.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let retaddr = f.new_input(8, Address::new(reg, 0x288));
+        let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
+        for op in f.block(BlockId(0)).ops.clone() {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        assert_eq!(RuleSubvarZext.apply_op(op_z, &mut f), 1);
+        assert_eq!(f.vn(f.op(ret).input(1).unwrap()).size, 4);
+    }
+
+    #[test]
+    fn subvar_subpiece_rule_dissolves_a_truncation() {
+        // p:1 = SUBPIECE(y:4 = a & 0xff, 0), used narrowly (STORE). RuleSubvarSubpiece seeds the flow
+        // on y with mask 0xff; the SUBPIECE becomes a COPY of the 1-byte logical value.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c = f.new_const(4, 0xff);
+        let op0 = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
+        let y = f.new_output(op0, 4, Address::new(reg, 0x20));
+        let z0 = f.new_const(4, 0);
+        let op1 = f.new_op(OpCode::Subpiece, seq, vec![y, z0]);
+        let p = f.new_output(op1, 1, Address::new(reg, 0x28));
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x30));
+        let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, p]);
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op0, op1, store], ..Default::default() }]);
+        for op in f.block(BlockId(0)).ops.clone() {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        assert_eq!(RuleSubvarSubpiece.apply_op(op1, &mut f), 1);
+        assert_eq!(f.op(op1).code(), OpCode::Copy);
+    }
+
+    // The firing path of the remaining 3 driving rules is covered end-to-end by the 20 SubvariableFlow
+    // trace unit tests + the corpus; here we pin each rule's seed guard (the part unique to the wrapper).
+
+    #[test]
+    fn subvar_and_rule_needs_a_constant_mask() {
+        // RuleSubvarAnd seeds only on `V & c` (constant mask); a non-constant second operand → no-op.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18)); // non-constant
+        let op = f.new_op(OpCode::IntAnd, seq, vec![a, b]);
+        f.new_output(op, 4, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op], ..Default::default() }]);
+        assert_eq!(RuleSubvarAnd.apply_op(op, &mut f), 0);
+    }
+
+    #[test]
+    fn subvar_compzero_rule_needs_a_single_bit() {
+        // RuleSubvarCompZero seeds only when the tested value has a single live bit; a full 4-byte
+        // value (nzmask many bits) → no-op.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let z = f.new_const(4, 0);
+        let op = f.new_op(OpCode::IntEqual, seq, vec![v, z]);
+        f.new_output(op, 1, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op], ..Default::default() }]);
+        assert_eq!(RuleSubvarCompZero.apply_op(op, &mut f), 0);
+    }
+
+    #[test]
+    fn subvar_shift_rule_needs_a_byte_source() {
+        // RuleSubvarShift seeds only when the shifted value is exactly 1 byte; a 4-byte shift → no-op.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let sa = f.new_const(4, 2);
+        let op = f.new_op(OpCode::IntRight, seq, vec![v, sa]);
+        f.new_output(op, 4, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![op], ..Default::default() }]);
+        assert_eq!(RuleSubvarShift.apply_op(op, &mut f), 0);
     }
 
     #[test]

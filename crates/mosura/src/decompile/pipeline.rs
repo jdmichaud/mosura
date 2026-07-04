@@ -15,6 +15,7 @@ use super::rules::{
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleIgnoreNan,
+    RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -150,6 +151,18 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleFloatRange) // (102)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
+        // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —
+        // sign-extension tracer still stubbed. RuleAndDistribute (5537) stays OUT (RuleHumptyOr
+        // ping-pong hang). SubZext/Piece2Zext stay HELD (RuleShiftPiece low-piece `&mask` divergence).
+        .with(RuleSubvarAnd) // (110)
+        .with(RuleSubvarSubpiece) // (111)
+        .with(RuleSubvarCompZero) // (114)
+        .with(RuleSubvarShift) // (115)
+        // RuleSubvarZext (116) HELD — its return-narrowing (via try_return_pull) moves returns toward
+        // Ghidra's width (x86_64_sem uint8->xunknown4 vs Ghidra int4), but mosura's use_same_address
+        // (subvarflow.rs:363) mints a UNIQUE for the narrowed addrtied RAX where Ghidra lands it at the
+        // register EAX, so recover.rs records the return storage as a unique (breaks proto_recovery
+        // twodim/modulo). Wire once that's fixed.
         .with(RuleIgnoreNan) // (124) floatprecision group
 }
 

@@ -1829,4 +1829,64 @@ mod tests {
         let ao = f.op(narrow).output.unwrap();
         assert_eq!(f.vn(ao).size, 1);
     }
+
+    #[test]
+    fn subvar_zext_narrows_a_zext_fed_return() {
+        // RAX:8 = ZEXT(u:4); RETURN(retaddr, RAX:8). RuleSubvarZext seeds the flow on the ZEXT
+        // output; try_return_pull lets the RETURN take the 4-byte logical value → int4-width return.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let retaddr = f.new_input(8, Address::new(reg, 0x288));
+        let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+
+        // Seed as RuleSubvarZext does: root = ZEXT output, mask = calc_mask(input size) = 0xffffffff.
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(s.do_trace());
+        s.do_replacement();
+        drop(s);
+        // The RETURN's value input (slot 1) is now the 4-byte logical value, not the 8-byte ZEXT.
+        let v = f.op(ret).input(1).unwrap();
+        assert_eq!(f.vn(v).size, 4);
+    }
+
+    #[test]
+    fn try_return_pull_refuses_when_upper_bytes_consumed() {
+        // If bits outside the logical mask are consumed (the full 8-byte register is used), the
+        // return must NOT be truncated (Ghidra subflow.cc:243-245). do_trace aborts, RETURN unchanged.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let retaddr = f.new_input(8, Address::new(reg, 0x288));
+        let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+        f.vn_mut(rax).consume = u64::MAX; // upper 4 bytes consumed → outside mask 0xffffffff
+
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(!s.do_trace()); // try_return_pull refuses; trace aborts
+        assert_eq!(f.vn(f.op(ret).input(1).unwrap()).size, 8); // RETURN value unchanged
+    }
+
+    #[test]
+    fn try_return_pull_refuses_return_address_slot() {
+        // A value flowing into slot 0 is the return-address container, not a return value — refuse
+        // (Ghidra subflow.cc:241). do_trace aborts.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let ret = f.new_op(OpCode::Return, seq, vec![rax]); // rax at slot 0
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(!s.do_trace());
+    }
 }
