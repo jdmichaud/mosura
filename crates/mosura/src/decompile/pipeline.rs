@@ -13,6 +13,7 @@ use super::rules::{
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
+    RuleZextCommute, RuleConcatLeftShift,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
@@ -140,8 +141,12 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubExtComm) // (65)
         .with(RuleConcatCommute) // (67)
         .with(RuleConcatZext) // (68)
+        .with(RuleZextCommute) // (69)
         .with(RuleZextShiftZext) // (70)
         .with(RuleShiftAnd) // (71)
+        // RuleConcatZero (72) is defined in rules.rs but held UNWIRED pending team-lead gate: it is a
+        // corpus MOVER (folds nan's CONCAT44(0,0) => 0, ccompare 0.5385->0.5600). Wire on approval.
+        .with(RuleConcatLeftShift) // (73)
         .with(RuleHumptyDumpty) // (77)
         .with(RuleDumptyHump) // (78)
         .with(RuleHumptyOr) // (79)

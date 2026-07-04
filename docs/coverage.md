@@ -179,11 +179,11 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSubCommute | MISSING |
 | RuleConcatCommute | PORTED (rules.rs; unit-tested — commute PIECE with AND/OR/XOR-const; MOVER: fires 11×/5 fixtures, 4 byte-identical, switchloop 0.7658→0.7680 toward Ghidra; surfaces an `xunknown1` cast on the rule-created PIECE input — separate type-inference gap, debt-tracked) |
 | RuleConcatZext | PORTED (rules.rs; byte-neutral, unit-tested — pull zext out of concat: concat(zext(V),W)=>zext(concat(V,W)); inert on corpus) |
-| RuleZextCommute | MISSING |
+| RuleZextCommute | PORTED (rules.rs; byte-neutral, unit-tested — commute zext/right-shift: zext(V)>>W=>zext(V>>W); inert on corpus) |
 | RuleZextShiftZext | PORTED |
 | RuleShiftAnd | PORTED (rules.rs; byte-neutral, unit-tested — shift/mult over redundant AND-mask drop, nzmask-gated; inert on corpus: mosura collapses the masked AND upstream before it reaches actprop) |
-| RuleConcatZero | MISSING |
-| RuleConcatLeftShift | MISSING |
+| RuleConcatZero | HELD(defined+unit-tested in rules.rs, UNWIRED pending team-lead gate — MOVER: folds nan CONCAT44(0,0)=>0, ccompare 0.5385->0.5600) |
+| RuleConcatLeftShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,zext(W)<<c)=>concat(concat(V,W),0); inert on corpus) |
 | RuleSubZext | HELD(preempts RuleSubvarZext return-narrowing on the truncation-return family; Task #8) |
 | RuleSubCancel | MISSING |
 | RuleShiftSub | MISSING |
@@ -385,8 +385,8 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~59 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext), 6 HELD (NotDistribute, AndDistribute,
-  AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
+- **oppool1**: ~61 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift), 7 HELD (NotDistribute, AndDistribute,
+  AndCompare, SubZext, Piece2Zext, DivTermAdd, ConcatZero=gated-mover), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode

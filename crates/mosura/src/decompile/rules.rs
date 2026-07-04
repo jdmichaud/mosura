@@ -4450,6 +4450,140 @@ impl Rule for RuleConcatZext {
     }
 }
 
+/// Ghidra `RuleZextCommute` (`ruleaction.cc`, oppool1 @5580 "analysis"): commute INT_ZEXT with
+/// INT_RIGHT — `zext(V) >> W  =>  zext(V >> W)`. The shift moves onto the unextended value (the
+/// high zeros of the zext carry no information for a logical right shift), then a single ZEXT.
+pub struct RuleZextCommute;
+
+impl Rule for RuleZextCommute {
+    fn name(&self) -> &str {
+        "zextcommute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let zextvn = data.op(op).input(0).unwrap();
+        if !data.vn(zextvn).is_written() {
+            return 0;
+        }
+        let zextop = data.vn(zextvn).def.unwrap();
+        if data.op(zextop).code() != OpCode::IntZext {
+            return 0;
+        }
+        let zextin = data.op(zextop).input(0).unwrap();
+        if data.vn(zextin).is_free() {
+            return 0;
+        }
+        let savn = data.op(op).input(1).unwrap();
+        if !data.vn(savn).is_constant() && data.vn(savn).is_free() {
+            return 0;
+        }
+        // New (earlier) shift of the unextended value, then this op becomes the ZEXT of it.
+        let sz = data.vn(zextin).size;
+        let newop = data.new_op_before_sized(op, OpCode::IntRight, vec![zextin, savn], sz);
+        let newout = data.op(newop).output.unwrap();
+        data.op_remove_input(op, 1);
+        data.op_set_input(op, 0, newout);
+        data.op_set_opcode(op, OpCode::IntZext);
+        1
+    }
+}
+
+/// Ghidra `RuleConcatZero` (`ruleaction.cc`, oppool1 @5595 "analysis"): simplify concatenation with
+/// zero — `concat(V, 0)  =>  zext(V) << c`, where `c = 8 * |0-operand|` bits.
+pub struct RuleConcatZero;
+
+impl Rule for RuleConcatZero {
+    fn name(&self) -> &str {
+        "concatzero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let lo = data.op(op).input(1).unwrap();
+        if !data.vn(lo).is_constant() {
+            return 0;
+        }
+        if data.vn(lo).constant_value() != 0 {
+            return 0;
+        }
+        let sa = (8 * data.vn(lo).size) as u64;
+        let highvn = data.op(op).input(0).unwrap();
+        let outsz = data.vn(data.op(op).output.unwrap()).size;
+        // New ZEXT of the high part, then this op becomes the left shift.
+        let newop = data.new_op_before_sized(op, OpCode::IntZext, vec![highvn], outsz);
+        let outvn = data.op(newop).output.unwrap();
+        let c = data.new_const(4, sa);
+        data.op_set_opcode(op, OpCode::IntLeft);
+        data.op_set_input(op, 0, outvn);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
+/// Ghidra `RuleConcatLeftShift` (`ruleaction.cc`, oppool1 @5596 "analysis"): simplify concatenation
+/// of an extended, byte-aligned, top-justified value —
+/// `concat(V, zext(W) << c)  =>  concat( concat(V,W), 0)` — when `zext(W) << c` places W exactly at
+/// the most-significant boundary (`c/8 + |W| == |zext(W)|`).
+pub struct RuleConcatLeftShift;
+
+impl Rule for RuleConcatLeftShift {
+    fn name(&self) -> &str {
+        "concatleftshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn2).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(vn2).def.unwrap();
+        if data.op(shiftop).code() != OpCode::IntLeft {
+            return 0;
+        }
+        let shiftamt = data.op(shiftop).input(1).unwrap();
+        if !data.vn(shiftamt).is_constant() {
+            return 0; // Must be a constant shift
+        }
+        let mut sa = data.vn(shiftamt).constant_value();
+        if (sa & 7) != 0 {
+            return 0; // Not a multiple of 8
+        }
+        let tmpvn = data.op(shiftop).input(0).unwrap();
+        if !data.vn(tmpvn).is_written() {
+            return 0;
+        }
+        let zextop = data.vn(tmpvn).def.unwrap();
+        if data.op(zextop).code() != OpCode::IntZext {
+            return 0;
+        }
+        let b = data.op(zextop).input(0).unwrap();
+        if data.vn(b).is_free() {
+            return 0;
+        }
+        let vn1 = data.op(op).input(0).unwrap();
+        if data.vn(vn1).is_free() {
+            return 0;
+        }
+        sa /= 8; // bits to bytes
+        if sa + data.vn(b).size as u64 != data.vn(tmpvn).size as u64 {
+            return 0; // Must shift to most sig boundary
+        }
+        let newout_sz = data.vn(vn1).size + data.vn(b).size;
+        let newop = data.new_op_before_sized(op, OpCode::Piece, vec![vn1, b], newout_sz);
+        let newout = data.op(newop).output.unwrap();
+        let outsz = data.vn(data.op(op).output.unwrap()).size;
+        let c = data.new_const(outsz - newout_sz, 0);
+        data.op_set_input(op, 0, newout);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6081,5 +6215,85 @@ mod tests {
         let _po2 = f.new_output(pc2, 6, Address::new(r, 0x40));
         assert_eq!(RuleConcatZext.apply_op(pc2, &mut f), 0);
         assert_eq!(f.op(pc2).code(), OpCode::Piece);
+    }
+
+    #[test]
+    fn zext_commute_moves_shift_under_zext() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // zext(V) >> 8  =>  zext(V >> 8).
+        let vv = f.new_input(2, Address::new(r, 0x10));
+        let ze = f.new_op(OpCode::IntZext, seq, vec![vv]);
+        let zeo = f.new_output(ze, 4, Address::new(r, 0x18));
+        let c8 = f.new_const(4, 8);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![zeo, c8]);
+        let _o = f.new_output(shr, 4, Address::new(r, 0x20));
+        assert_eq!(RuleZextCommute.apply_op(shr, &mut f), 1);
+        assert_eq!(f.op(shr).code(), OpCode::IntZext);
+        assert_eq!(f.op(shr).inrefs.len(), 1);
+        let inner = f.op(shr).input(0).unwrap();
+        let idef = f.vn(inner).def.unwrap();
+        assert_eq!(f.op(idef).code(), OpCode::IntRight);
+        assert_eq!(f.op(idef).input(0).unwrap(), vv);
+        assert_eq!(f.vn(inner).size, 2); // shift is on the unextended width
+    }
+
+    #[test]
+    fn concat_zero_becomes_zext_shift() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // concat(V, 0) => zext(V) << 16  (the zero operand is 2 bytes = 16 bits).
+        let vv = f.new_input(2, Address::new(r, 0x10));
+        let z = f.new_const(2, 0);
+        let pc = f.new_op(OpCode::Piece, seq, vec![vv, z]);
+        let _po = f.new_output(pc, 4, Address::new(r, 0x18));
+        assert_eq!(RuleConcatZero.apply_op(pc, &mut f), 1);
+        assert_eq!(f.op(pc).code(), OpCode::IntLeft);
+        let sh = f.op(pc).input(1).unwrap();
+        assert!(f.vn(sh).is_constant() && f.vn(sh).constant_value() == 16);
+        let zx = f.op(pc).input(0).unwrap();
+        assert_eq!(f.op(f.vn(zx).def.unwrap()).code(), OpCode::IntZext);
+
+        // No fire: low part not the zero constant.
+        let a = f.new_input(2, Address::new(r, 0x30));
+        let b = f.new_const(2, 5);
+        let pc2 = f.new_op(OpCode::Piece, seq, vec![a, b]);
+        let _po2 = f.new_output(pc2, 4, Address::new(r, 0x38));
+        assert_eq!(RuleConcatZero.apply_op(pc2, &mut f), 0);
+    }
+
+    #[test]
+    fn concat_left_shift_refactors_to_nested_concat() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // concat(V, zext(W) << 16) => concat(concat(V,W), 0), when zext(W)<<16 top-justifies W.
+        let vv = f.new_input(2, Address::new(r, 0x10)); // V
+        let ww = f.new_input(2, Address::new(r, 0x18)); // W
+        let ze = f.new_op(OpCode::IntZext, seq, vec![ww]);
+        let zeo = f.new_output(ze, 4, Address::new(r, 0x20)); // zext(W), 4 bytes
+        let c16 = f.new_const(4, 16); // 16 bits = 2 bytes; 2 + |W|(2) == 4 = |zext(W)|
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![zeo, c16]);
+        let shlo = f.new_output(shl, 4, Address::new(r, 0x28));
+        let pc = f.new_op(OpCode::Piece, seq, vec![vv, shlo]);
+        let _po = f.new_output(pc, 6, Address::new(r, 0x30));
+        assert_eq!(RuleConcatLeftShift.apply_op(pc, &mut f), 1);
+        assert_eq!(f.op(pc).code(), OpCode::Piece);
+        let inner = f.op(pc).input(0).unwrap();
+        let idef = f.vn(inner).def.unwrap();
+        assert_eq!(f.op(idef).code(), OpCode::Piece);
+        assert_eq!(f.op(idef).input(0).unwrap(), vv);
+        assert_eq!(f.op(idef).input(1).unwrap(), ww);
+        assert_eq!(f.vn(inner).size, 4); // |V|+|W|
+        let lo = f.op(pc).input(1).unwrap();
+        assert!(f.vn(lo).is_constant() && f.vn(lo).constant_value() == 0 && f.vn(lo).size == 2);
     }
 }
