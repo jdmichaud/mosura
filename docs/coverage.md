@@ -144,7 +144,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDoubleSub | PORTED (rules.rs; unit-tested — sub(sub(V,c),d)=>sub(V,c+d); MOVER, lead-approved: sole corpus mover is switchloop 0.7680->0.7787 toward Ghidra, floatcast/floatprint byte-identical) |
 | RuleDoubleShift | PORTED (rules.rs; byte-neutral, unit-tested — combine/cancel chained shifts; inert on corpus) |
 | RuleDoubleArithShift | PORTED (rules.rs; byte-neutral, unit-tested — (x s>> c) s>> d => x s>> saturate(c+d); inert on corpus) |
-| RuleConcatShift | MISSING |
+| RuleConcatShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,W)>>c => ext(V) when the shift discards W; inert on corpus) |
 | RuleLeftRight | MISSING |
 | RuleShiftCompare | PORTED |
 | RuleShift2Mult | PORTED |
@@ -385,7 +385,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~65 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift), 6 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~66 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift), 6 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).

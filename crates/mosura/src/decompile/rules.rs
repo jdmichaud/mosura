@@ -4762,6 +4762,65 @@ impl Rule for RuleDoubleArithShift {
     }
 }
 
+/// Ghidra `RuleConcatShift` (`ruleaction.cc`, oppool1 @5545 "analysis"): a right shift that discards
+/// the least-significant component of a concatenation cancels it — `concat(V,W) >> c  =>  ext(V)`,
+/// zero-extension for INT_RIGHT and sign-extension for INT_SRIGHT. Any residual shift beyond `|W|`
+/// is re-applied to the extended most-significant part.
+pub struct RuleConcatShift;
+
+impl Rule for RuleConcatShift {
+    fn name(&self) -> &str {
+        "concatshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight, OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let shiftin = data.op(op).input(0).unwrap();
+        if !data.vn(shiftin).is_written() {
+            return 0;
+        }
+        let concat = data.vn(shiftin).def.unwrap();
+        if data.op(concat).code() != OpCode::Piece {
+            return 0;
+        }
+        let mut sa = data.vn(in1).constant_value() as i64;
+        let leastsize = data.vn(data.op(concat).input(1).unwrap()).size as i64 * 8;
+        if sa < leastsize {
+            return 0; // Does the shift throw away the least significant part?
+        }
+        let mainin = data.op(concat).input(0).unwrap();
+        if data.vn(mainin).is_free() {
+            return 0;
+        }
+        sa -= leastsize;
+        let extcode = if data.op(op).code() == OpCode::IntRight {
+            OpCode::IntZext
+        } else {
+            OpCode::IntSext
+        };
+        if sa == 0 {
+            // Exact cancellation: the shift becomes a plain extension of the most-significant part.
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, extcode);
+            data.op_set_input(op, 0, mainin);
+        } else {
+            // Extend the most-significant part, then apply the residual shift.
+            let sz = data.vn(shiftin).size;
+            let extop = data.new_op_before_sized(op, extcode, vec![mainin], sz);
+            let newvn = data.op(extop).output.unwrap();
+            data.op_set_input(op, 0, newvn);
+            let c = data.new_const(data.vn(in1).size, sa as u64);
+            data.op_set_input(op, 1, c);
+        }
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6571,5 +6630,64 @@ mod tests {
         let _s2o = f.new_output(s2, 4, Address::new(r, 0x40));
         assert_eq!(RuleDoubleArithShift.apply_op(s2, &mut f), 1);
         assert_eq!(f.vn(f.op(s2).input(1).unwrap()).constant_value(), 31);
+    }
+
+    #[test]
+    fn concat_shift_cancels_least_part() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // Exact cancel: concat(V, W) >> 16 => zext(V)  (|W| = 2 bytes = 16 bits).
+        let v = f.new_input(2, Address::new(r, 0x10));
+        let w = f.new_input(2, Address::new(r, 0x18));
+        let pc = f.new_op(OpCode::Piece, seq, vec![v, w]);
+        let pco = f.new_output(pc, 4, Address::new(r, 0x20));
+        let c16 = f.new_const(4, 16);
+        let sh = f.new_op(OpCode::IntRight, seq, vec![pco, c16]);
+        let _o = f.new_output(sh, 4, Address::new(r, 0x28));
+        assert_eq!(RuleConcatShift.apply_op(sh, &mut f), 1);
+        assert_eq!(f.op(sh).code(), OpCode::IntZext);
+        assert_eq!(f.op(sh).inrefs.len(), 1);
+        assert_eq!(f.op(sh).input(0).unwrap(), v);
+
+        // Residual: concat(V, W) >> 24 => zext(V) >> 8.
+        let v2 = f.new_input(2, Address::new(r, 0x30));
+        let w2 = f.new_input(2, Address::new(r, 0x38));
+        let pc2 = f.new_op(OpCode::Piece, seq, vec![v2, w2]);
+        let pc2o = f.new_output(pc2, 4, Address::new(r, 0x40));
+        let c24 = f.new_const(4, 24);
+        let sh2 = f.new_op(OpCode::IntRight, seq, vec![pc2o, c24]);
+        let _o2 = f.new_output(sh2, 4, Address::new(r, 0x48));
+        assert_eq!(RuleConcatShift.apply_op(sh2, &mut f), 1);
+        assert_eq!(f.op(sh2).code(), OpCode::IntRight);
+        assert_eq!(f.vn(f.op(sh2).input(1).unwrap()).constant_value(), 8);
+        let ext = f.op(sh2).input(0).unwrap();
+        assert_eq!(f.op(f.vn(ext).def.unwrap()).code(), OpCode::IntZext);
+        assert_eq!(f.op(f.vn(ext).def.unwrap()).input(0).unwrap(), v2);
+
+        // Signed shift extends via SEXT: concat(V, W) s>> 16 => sext(V).
+        let v3 = f.new_input(2, Address::new(r, 0x50));
+        let w3 = f.new_input(2, Address::new(r, 0x58));
+        let pc3 = f.new_op(OpCode::Piece, seq, vec![v3, w3]);
+        let pc3o = f.new_output(pc3, 4, Address::new(r, 0x60));
+        let c16b = f.new_const(4, 16);
+        let sh3 = f.new_op(OpCode::IntSright, seq, vec![pc3o, c16b]);
+        let _o3 = f.new_output(sh3, 4, Address::new(r, 0x68));
+        assert_eq!(RuleConcatShift.apply_op(sh3, &mut f), 1);
+        assert_eq!(f.op(sh3).code(), OpCode::IntSext);
+        assert_eq!(f.op(sh3).input(0).unwrap(), v3);
+
+        // No fire: shift smaller than the least part (8 < 16) keeps some of W.
+        let v4 = f.new_input(2, Address::new(r, 0x70));
+        let w4 = f.new_input(2, Address::new(r, 0x78));
+        let pc4 = f.new_op(OpCode::Piece, seq, vec![v4, w4]);
+        let pc4o = f.new_output(pc4, 4, Address::new(r, 0x80));
+        let c8 = f.new_const(4, 8);
+        let sh4 = f.new_op(OpCode::IntRight, seq, vec![pc4o, c8]);
+        let _o4 = f.new_output(sh4, 4, Address::new(r, 0x88));
+        assert_eq!(RuleConcatShift.apply_op(sh4, &mut f), 0);
+        assert_eq!(f.op(sh4).code(), OpCode::IntRight);
     }
 }
