@@ -1088,6 +1088,102 @@ fn lone_descend(data: &Funcdata, vn: VarnodeId) -> Option<OpId> {
 /// BOOL_AND / BOOL_OR of the two per-operand compares. This breaks a bit-packed
 /// `(a*2 | b<<7) != 0` flag-smear into the independent comparisons — the foundation for recovering
 /// `a || b` (with [`RuleShiftCompare`], [`RuleZextEliminate`], [`RuleBooleanNegate`]).
+/// Ghidra `RuleFloatRange` (`ruleaction.cc`): collapse two floating-point comparisons of the same
+/// operands, combined by a boolean op, into one comparison — `(a < b) || (a == b)` → `a <= b`, and
+/// `(a <= b) && (a != b)` → `a < b`. This is what turns the `ucomisd` flag idiom (mosura lifts it
+/// to a `BOOL_OR`/`BOOL_AND` of separate `FLOAT_LESS`/`FLOAT_EQUAL`/`FLOAT_NOTEQUAL` compares) into
+/// a single `<=`/`<`, as Ghidra prints.
+pub struct RuleFloatRange;
+
+impl Rule for RuleFloatRange {
+    fn name(&self) -> &str {
+        "floatrange"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolAnd, OpCode::BoolOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn1 = data.op(op).input(0).unwrap();
+        if !data.vn(vn1).is_written() {
+            return 0;
+        }
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn2).is_written() {
+            return 0;
+        }
+        // cmp1 must be the LESS/LESSEQUAL operator; cmp2 is the "other". Swap if it started reversed.
+        let mut cmp1 = data.vn(vn1).def.unwrap();
+        let mut cmp2 = data.vn(vn2).def.unwrap();
+        let mut opccmp1 = data.op(cmp1).code();
+        if opccmp1 != OpCode::FloatLess && opccmp1 != OpCode::FloatLessequal {
+            cmp1 = data.vn(vn2).def.unwrap();
+            cmp2 = data.vn(vn1).def.unwrap();
+            opccmp1 = data.op(cmp1).code();
+        }
+        let opc_op = data.op(op).code();
+        let resultopc = match opccmp1 {
+            OpCode::FloatLess
+                if data.op(cmp2).code() == OpCode::FloatEqual && opc_op == OpCode::BoolOr =>
+            {
+                OpCode::FloatLessequal
+            }
+            OpCode::FloatLessequal
+                if data.op(cmp2).code() == OpCode::FloatNotequal && opc_op == OpCode::BoolAnd =>
+            {
+                OpCode::FloatLess
+            }
+            _ => return 0,
+        };
+
+        // Make sure both operators are comparing the same two things.
+        let mut slot1 = 0usize;
+        let mut nvn1 = data.op(cmp1).input(0).unwrap();
+        if data.vn(nvn1).is_constant() {
+            slot1 = 1;
+            nvn1 = data.op(cmp1).input(1).unwrap();
+            if data.vn(nvn1).is_constant() {
+                return 0;
+            }
+        }
+        if data.vn(nvn1).is_free() {
+            return 0;
+        }
+        let cvn1 = data.op(cmp1).input(1 - slot1).unwrap();
+        let slot2 = if nvn1 == data.op(cmp2).input(0).unwrap() {
+            0
+        } else if nvn1 == data.op(cmp2).input(1).unwrap() {
+            1
+        } else {
+            return 0;
+        };
+        let matchvn = data.op(cmp2).input(1 - slot2).unwrap();
+        if data.vn(cvn1).is_constant() {
+            if !data.vn(matchvn).is_constant() {
+                return 0;
+            }
+            if data.vn(matchvn).constant_value() != data.vn(cvn1).constant_value() {
+                return 0;
+            }
+        } else if cvn1 != matchvn {
+            return 0;
+        } else if data.vn(cvn1).is_free() {
+            return 0;
+        }
+
+        // Collapse the two comparisons into one.
+        data.op_set_opcode(op, resultopc);
+        data.op_set_input(op, slot1, nvn1);
+        if data.vn(cvn1).is_constant() {
+            let (sz, val) = (data.vn(cvn1).size, data.vn(cvn1).constant_value());
+            let c = data.new_const(sz, val);
+            data.op_set_input(op, 1 - slot1, c);
+        } else {
+            data.op_set_input(op, 1 - slot1, cvn1);
+        }
+        1
+    }
+}
+
 pub struct RuleOrCompare;
 
 impl Rule for RuleOrCompare {
