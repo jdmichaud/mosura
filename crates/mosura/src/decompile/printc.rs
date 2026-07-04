@@ -52,16 +52,6 @@ fn entry_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     }
 }
 
-/// Ghidra's C name for an N-byte IEEE float.
-fn float_name(size: u32) -> String {
-    match size {
-        4 => "float".to_string(),
-        8 => "double".to_string(),
-        10 | 16 => "longdouble".to_string(),
-        n => format!("float{n}"),
-    }
-}
-
 /// Ghidra's one-letter type prefix for a variable/global name.
 fn type_prefix(t: &Datatype) -> &'static str {
     match t {
@@ -740,9 +730,11 @@ impl<'a> PrintC<'a> {
             OpCode::FloatCeil => (format!("ceil({})", self.render_var(a(0)).0), 16),
             OpCode::FloatFloor => (format!("floor({})", self.render_var(a(0)).0), 16),
             OpCode::FloatRound => (format!("round({})", self.render_var(a(0)).0), 16),
-            // conversions render as casts (to the output float/int width)
+            // conversions render as a cast to the output float type (Ghidra `opFloatInt2Float`/
+            // `opFloatFloat2Float` → a type cast named by `Datatype::name()`, i.e. `float4`/`float8`/
+            // `float10` — the same core float names the declarations use, not C's `float`/`double`).
             OpCode::FloatInt2float | OpCode::FloatFloat2float => {
-                let ty = float_name(self.f.vn(o.output.unwrap()).size);
+                let ty = Datatype::Float(self.f.vn(o.output.unwrap()).size).name();
                 let in0 = a(0);
                 (format!("({ty}){}", self.operand(in0, 14, false)), 14)
             }
