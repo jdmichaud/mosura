@@ -4584,6 +4584,184 @@ impl Rule for RuleConcatLeftShift {
     }
 }
 
+/// Ghidra `RuleDoubleSub` (`ruleaction.cc`, oppool1 @5542 "analysis"): collapse chained SUBPIECE —
+/// `sub( sub(V,c), d)  =>  sub(V, c+d)` — skipping the intermediate truncation.
+pub struct RuleDoubleSub;
+
+impl Rule for RuleDoubleSub {
+    fn name(&self) -> &str {
+        "doublesub"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let op2 = data.vn(vn).def.unwrap();
+        if data.op(op2).code() != OpCode::Subpiece {
+            return 0;
+        }
+        // SUBPIECE's truncation offset (input 1) is always a constant.
+        let offset1 = data.vn(data.op(op).input(1).unwrap()).constant_value();
+        let offset2 = data.vn(data.op(op2).input(1).unwrap()).constant_value();
+        let base = data.op(op2).input(0).unwrap();
+        data.op_set_input(op, 0, base); // Skip middleman
+        let c = data.new_const(4, offset1 + offset2);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
+/// Ghidra `RuleDoubleShift` (`ruleaction.cc`, oppool1 @5543 "analysis"): combine or cancel chained
+/// INT_LEFT/INT_RIGHT (INT_MULT by a power of two counts as a left shift). Same direction combines
+/// the shift amounts (`(V<<c)<<d => V<<(c+d)`, or COPY 0 if it shifts the whole word out); equal
+/// opposite shifts become a mask (`(V<<c)>>c => V & mask`).
+pub struct RuleDoubleShift;
+
+impl Rule for RuleDoubleShift {
+    fn name(&self) -> &str {
+        "doubleshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLeft, OpCode::IntRight, OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        let secvn = data.op(op).input(0).unwrap();
+        if !data.vn(secvn).is_written() {
+            return 0;
+        }
+        let secop = data.vn(secvn).def.unwrap();
+        let mut opc2 = data.op(secop).code();
+        if opc2 != OpCode::IntLeft && opc2 != OpCode::IntRight && opc2 != OpCode::IntMult {
+            return 0;
+        }
+        let secop_in1 = data.op(secop).input(1).unwrap();
+        if !data.vn(secop_in1).is_constant() {
+            return 0;
+        }
+        let mut opc1 = data.op(op).code();
+        let size = data.vn(secvn).size;
+        let secop_in0 = data.op(secop).input(0).unwrap();
+        if !data.vn(secop_in0).is_heritage_known() {
+            return 0;
+        }
+
+        let sa1: i32;
+        if opc1 == OpCode::IntMult {
+            let val = data.vn(in1).constant_value();
+            let lsb = super::nzmask::leastsigbit_set(val);
+            if val.wrapping_shr(lsb as u32) != 1 {
+                return 0; // Not multiplying by a power of 2
+            }
+            sa1 = lsb;
+            opc1 = OpCode::IntLeft;
+        } else {
+            sa1 = data.vn(in1).constant_value() as i32;
+        }
+        let sa2: i32;
+        if opc2 == OpCode::IntMult {
+            let val = data.vn(secop_in1).constant_value();
+            let lsb = super::nzmask::leastsigbit_set(val);
+            if val.wrapping_shr(lsb as u32) != 1 {
+                return 0; // Not multiplying by a power of 2
+            }
+            sa2 = lsb;
+            opc2 = OpCode::IntLeft;
+        } else {
+            sa2 = data.vn(secop_in1).constant_value() as i32;
+        }
+
+        if opc1 == opc2 {
+            if sa1 + sa2 < 8 * size as i32 {
+                let c = data.new_const(4, (sa1 + sa2) as u32 as u64);
+                data.op_set_opcode(op, opc1);
+                data.op_set_input(op, 0, secop_in0);
+                data.op_set_input(op, 1, c);
+            } else {
+                let c = data.new_const(size, 0);
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_set_input(op, 0, c);
+                data.op_remove_input(op, 1);
+            }
+        } else if sa1 == sa2 && size <= 8 {
+            // The u64 mask shift matches Ghidra's x86-64 masked-count shift (see RuleAndCommute).
+            let mut mask = super::nzmask::calc_mask(size);
+            if opc1 == OpCode::IntLeft {
+                // A left shift is likely a multiply; don't collapse to AND if the intermediate is reused.
+                if lone_descend(data, secvn).is_none() {
+                    return 0;
+                }
+                mask = mask.wrapping_shl(sa1 as u32) & mask;
+            } else {
+                mask = mask.wrapping_shr(sa1 as u32) & mask;
+            }
+            let c = data.new_const(size, mask);
+            data.op_set_opcode(op, OpCode::IntAnd);
+            data.op_set_input(op, 0, secop_in0);
+            data.op_set_input(op, 1, c);
+        } else {
+            return 0;
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleDoubleArithShift` (`ruleaction.cc`, oppool1 @5544 "analysis"): combine two sequential
+/// signed right shifts — `(x s>> c) s>> d  =>  x s>> saturate(c + d)` — saturating the total shift at
+/// the point the sign bit has filled the whole result (division optimization produces these chains).
+pub struct RuleDoubleArithShift;
+
+impl Rule for RuleDoubleArithShift {
+    fn name(&self) -> &str {
+        "doublearithshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_d = data.op(op).input(1).unwrap();
+        if !data.vn(const_d).is_constant() {
+            return 0;
+        }
+        let shiftin = data.op(op).input(0).unwrap();
+        if !data.vn(shiftin).is_written() {
+            return 0;
+        }
+        let shift2op = data.vn(shiftin).def.unwrap();
+        if data.op(shift2op).code() != OpCode::IntSright {
+            return 0;
+        }
+        let const_c = data.op(shift2op).input(1).unwrap();
+        if !data.vn(const_c).is_constant() {
+            return 0;
+        }
+        let in_vn = data.op(shift2op).input(0).unwrap();
+        if data.vn(in_vn).is_free() {
+            return 0;
+        }
+        let max = data.vn(data.op(op).output.unwrap()).size as i32 * 8 - 1; // Maximum possible shift.
+        let mut sa =
+            data.vn(const_c).constant_value() as i32 + data.vn(const_d).constant_value() as i32;
+        if sa <= 0 {
+            return 0; // Something is wrong
+        }
+        if sa > max {
+            sa = max; // Shift amount has saturated
+        }
+        data.op_set_input(op, 0, in_vn);
+        let c = data.new_const(4, sa as u64);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6295,5 +6473,103 @@ mod tests {
         assert_eq!(f.vn(inner).size, 4); // |V|+|W|
         let lo = f.op(pc).input(1).unwrap();
         assert!(f.vn(lo).is_constant() && f.vn(lo).constant_value() == 0 && f.vn(lo).size == 2);
+    }
+
+    #[test]
+    fn double_sub_collapses_chained_subpiece() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // sub(sub(V, 2), 1) => sub(V, 3).
+        let v = f.new_input(8, Address::new(r, 0x10));
+        let c2 = f.new_const(4, 2);
+        let inner = f.new_op(OpCode::Subpiece, seq, vec![v, c2]);
+        let innero = f.new_output(inner, 4, Address::new(r, 0x18));
+        let c1 = f.new_const(4, 1);
+        let outer = f.new_op(OpCode::Subpiece, seq, vec![innero, c1]);
+        let _o = f.new_output(outer, 2, Address::new(r, 0x20));
+        assert_eq!(RuleDoubleSub.apply_op(outer, &mut f), 1);
+        assert_eq!(f.op(outer).input(0).unwrap(), v);
+        let off = f.op(outer).input(1).unwrap();
+        assert!(f.vn(off).is_constant() && f.vn(off).constant_value() == 3);
+    }
+
+    #[test]
+    fn double_shift_combines_cancels_saturates() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // Same direction: (V << 2) << 3 => V << 5.
+        let v = f.new_input(4, Address::new(r, 0x10));
+        let c2 = f.new_const(4, 2);
+        let inner = f.new_op(OpCode::IntLeft, seq, vec![v, c2]);
+        let innero = f.new_output(inner, 4, Address::new(r, 0x18));
+        let c3 = f.new_const(4, 3);
+        let outer = f.new_op(OpCode::IntLeft, seq, vec![innero, c3]);
+        let _o = f.new_output(outer, 4, Address::new(r, 0x20));
+        assert_eq!(RuleDoubleShift.apply_op(outer, &mut f), 1);
+        assert_eq!(f.op(outer).code(), OpCode::IntLeft);
+        assert_eq!(f.op(outer).input(0).unwrap(), v);
+        assert_eq!(f.vn(f.op(outer).input(1).unwrap()).constant_value(), 5);
+
+        // Opposite equal shifts: (V << 3) >> 3 => V & 0x1fffffff.
+        let v2 = f.new_input(4, Address::new(r, 0x30));
+        let c3b = f.new_const(4, 3);
+        let l = f.new_op(OpCode::IntLeft, seq, vec![v2, c3b]);
+        let lo = f.new_output(l, 4, Address::new(r, 0x38));
+        let c3c = f.new_const(4, 3);
+        let rgt = f.new_op(OpCode::IntRight, seq, vec![lo, c3c]);
+        let _ro = f.new_output(rgt, 4, Address::new(r, 0x40));
+        assert_eq!(RuleDoubleShift.apply_op(rgt, &mut f), 1);
+        assert_eq!(f.op(rgt).code(), OpCode::IntAnd);
+        assert_eq!(f.op(rgt).input(0).unwrap(), v2);
+        assert_eq!(f.vn(f.op(rgt).input(1).unwrap()).constant_value(), 0x1fff_ffff);
+
+        // Same direction shifting the whole word out: (V << 20) << 20 => COPY 0.
+        let v3 = f.new_input(4, Address::new(r, 0x50));
+        let c20 = f.new_const(4, 20);
+        let s1 = f.new_op(OpCode::IntLeft, seq, vec![v3, c20]);
+        let s1o = f.new_output(s1, 4, Address::new(r, 0x58));
+        let c20b = f.new_const(4, 20);
+        let s2 = f.new_op(OpCode::IntLeft, seq, vec![s1o, c20b]);
+        let _s2o = f.new_output(s2, 4, Address::new(r, 0x60));
+        assert_eq!(RuleDoubleShift.apply_op(s2, &mut f), 1);
+        assert_eq!(f.op(s2).code(), OpCode::Copy);
+        assert_eq!(f.vn(f.op(s2).input(0).unwrap()).constant_value(), 0);
+    }
+
+    #[test]
+    fn double_arith_shift_saturates_signed() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // (x s>> 2) s>> 3 => x s>> 5.
+        let x = f.new_input(4, Address::new(r, 0x10));
+        let c2 = f.new_const(4, 2);
+        let inner = f.new_op(OpCode::IntSright, seq, vec![x, c2]);
+        let innero = f.new_output(inner, 4, Address::new(r, 0x18));
+        let c3 = f.new_const(4, 3);
+        let outer = f.new_op(OpCode::IntSright, seq, vec![innero, c3]);
+        let _o = f.new_output(outer, 4, Address::new(r, 0x20));
+        assert_eq!(RuleDoubleArithShift.apply_op(outer, &mut f), 1);
+        assert_eq!(f.op(outer).input(0).unwrap(), x);
+        assert_eq!(f.vn(f.op(outer).input(1).unwrap()).constant_value(), 5);
+
+        // Saturates at |out|*8 - 1 = 31 for a 4-byte result: (x s>> 20) s>> 20 => x s>> 31.
+        let y = f.new_input(4, Address::new(r, 0x30));
+        let c20 = f.new_const(4, 20);
+        let s1 = f.new_op(OpCode::IntSright, seq, vec![y, c20]);
+        let s1o = f.new_output(s1, 4, Address::new(r, 0x38));
+        let c20b = f.new_const(4, 20);
+        let s2 = f.new_op(OpCode::IntSright, seq, vec![s1o, c20b]);
+        let _s2o = f.new_output(s2, 4, Address::new(r, 0x40));
+        assert_eq!(RuleDoubleArithShift.apply_op(s2, &mut f), 1);
+        assert_eq!(f.vn(f.op(s2).input(1).unwrap()).constant_value(), 31);
     }
 }

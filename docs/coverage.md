@@ -141,9 +141,9 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleAndPiece | PORTED |
 | RuleAndZext | PORTED |
 | RuleAndCompare | HELD(defined, unwired) |
-| RuleDoubleSub | MISSING |
-| RuleDoubleShift | MISSING |
-| RuleDoubleArithShift | MISSING |
+| RuleDoubleSub | HELD(defined+unit-tested in rules.rs, UNWIRED pending team-lead gate — MOVER: collapses switchloop chained SUBPIECE, drops a redundant temp, ccompare 0.7680->0.7787; floatcast/floatprint unchanged) |
+| RuleDoubleShift | PORTED (rules.rs; byte-neutral, unit-tested — combine/cancel chained shifts; inert on corpus) |
+| RuleDoubleArithShift | PORTED (rules.rs; byte-neutral, unit-tested — (x s>> c) s>> d => x s>> saturate(c+d); inert on corpus) |
 | RuleConcatShift | MISSING |
 | RuleLeftRight | MISSING |
 | RuleShiftCompare | PORTED |
@@ -385,8 +385,8 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~62 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero), 6 HELD (NotDistribute, AndDistribute,
-  AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
+- **oppool1**: ~64 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleShift, RuleDoubleArithShift), 7 HELD (NotDistribute, AndDistribute,
+  AndCompare, SubZext, Piece2Zext, DivTermAdd, DoubleSub=gated-mover), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode

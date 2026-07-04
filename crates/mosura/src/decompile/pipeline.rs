@@ -14,6 +14,7 @@ use super::rules::{
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
     RuleZextCommute, RuleConcatZero, RuleConcatLeftShift,
+    RuleDoubleShift, RuleDoubleArithShift,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
@@ -125,6 +126,11 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleAndCommute) // (27)
         .with(RuleAndPiece) // (28)
         .with(RuleAndZext) // (29)
+        // RuleDoubleSub (31) is defined in rules.rs but held UNWIRED pending team-lead gate: it is a
+        // corpus MOVER (collapses switchloop's chained SUBPIECE, dropping a redundant temp; ccompare
+        // 0.7680->0.7787; floatcast/floatprint unchanged). Wire on approval.
+        .with(RuleDoubleShift) // (32)
+        .with(RuleDoubleArithShift) // (33)
         .with(RuleShiftCompare) // (36)
         .with(RuleShift2Mult) // (37)
         .with(RuleShiftPiece) // (38)
