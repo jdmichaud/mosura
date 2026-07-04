@@ -3744,6 +3744,15 @@ impl Rule for RuleMultiCollapse {
         for &copyr in &matchlist {
             if !is_multi_written(data, copyr) {
                 defcopyr = Some(copyr);
+                // An unwritten (constant/free) base branch cannot be recomputed by functional
+                // equality, so mark `nofunc` — the same guard the None-branch applies below — or the
+                // `func_eq` collapse path would dereference its (nonexistent) def. Ghidra reaches the
+                // first loop only for a written non-MULTIEQUAL base; a constant base arises once
+                // `consume::never_consumed` folds a MULTIEQUAL input to 0 and the now-dead marker has
+                // not yet been swept (Ghidra removes it in the same combined ActionDeadCode pass).
+                if !data.vn(copyr).is_written() {
+                    nofunc = true;
+                }
                 break;
             }
         }
@@ -3936,18 +3945,23 @@ impl Rule for RuleAndCommute {
             // Check if the AND is only zeroing bits which are already zeroed by the shift, in which
             // case `andmask` takes care of it; otherwise compute the mask as it will be after the
             // commute.
+            // `sa` is a constant shift amount that may exceed the value width (e.g. a degenerate
+            // `#0x0 >> #0xffffffff` a prior fold left behind). Ghidra shifts a `uintb` by `(int4)sa`
+            // with raw C++ `>>`/`<<`; on the x86-64 oracle that masks the count mod 64, so mosura uses
+            // `wrapping_shr`/`wrapping_shl` (identical to `>>`/`<<` for `sa < 64`) to match rather than
+            // panic on the Rust debug shift-overflow check.
             if opc == OpCode::IntRight {
-                if (fullmask >> sa) == othermask {
+                if fullmask.wrapping_shr(sa) == othermask {
                     continue;
                 }
-                othermask <<= sa;
+                othermask = othermask.wrapping_shl(sa);
             } else {
                 // NOTE: ported verbatim — Ghidra's source is `((fullmask<<sa)&&fullmask)` with a
                 // logical `&&` (an apparent Ghidra typo for bitwise `&`); kept faithful.
-                if ((((fullmask << sa) != 0) && (fullmask != 0)) as u64) == othermask {
+                if ((((fullmask.wrapping_shl(sa)) != 0) && (fullmask != 0)) as u64) == othermask {
                     continue;
                 }
-                othermask >>= sa;
+                othermask = othermask.wrapping_shr(sa);
             }
             if othermask == 0 {
                 continue; // Handled by andmask

@@ -12,10 +12,14 @@
 //! The SubVariableFlow driving rules read `consume` to prove a wide Varnode is only used through a
 //! narrow logical sub-value (`(vn.getConsume() & ~mask) != 0` gates `setReplacement`, etc.).
 //!
-//! This is the consume *analysis* only: it fills `Varnode::consume`. mosura's dead-code
-//! *elimination* ([`super::deadcode`]) stays whole-varnode (all-or-nothing); the bit-refinement of
-//! elimination (`neverConsumed`, the vacuous-consume sweep) is a later addition and is not wired
-//! here, so this pass is output-neutral until the subvar rules consume the field.
+//! After the fixpoint, [`calc_consume`] runs the `neverConsumed` arm of Ghidra's
+//! `ActionDeadCode::apply` final sweep (`coreaction.cc:4046`): a Varnode the backward sweep
+//! *reached* (vacuous) but whose consumed bits are all zero carries a provably-unused value, so
+//! [`never_consumed`] replaces its reads with a constant 0 and destroys its def. This is the
+//! bit-level fold that collapses the x86-64 sub-register widened-write round-trip — the CONCAT/PIECE
+//! upper (`SUBPIECE(prev_whole,4)`), never consumed, becomes `#0x0`, so `PIECE(0,lo)` reduces to a
+//! clean `ZEXT(lo)` before the rule pool. The *other* sweep arm — destroying Varnodes never reached
+//! at all — stays in mosura's whole-varnode [`super::deadcode`] pass (all-or-nothing removal).
 //!
 //! Like [`super::nzmask`], mosura is `u64`-only, so Ghidra's extended-precision
 //! (`size > sizeof(uintb)`) branches collapse to their reachable `u64` counterpart — a faithful
@@ -96,17 +100,38 @@ fn consume_transfer(f: &Funcdata, vn: VarnodeId, outc: u64) -> Vec<(u64, Varnode
         }
         OpCode::Subpiece => {
             let sz = in_val(1); // truncation amount in bytes
-            // (Ghidra's `in(0).size > sizeof(uintb)` top-bit special case is the extended-precision
-            // branch, omitted in the u64-only subset.)
-            let a = if sz >= 8 { 0 } else { pcode_left(outc, sz as u32 * 8) };
+            let mut a = if sz >= 8 { 0 } else { pcode_left(outc, sz as u32 * 8) };
+            // Ghidra `CPUI_SUBPIECE` extended-precision case: if the consumed mask came out 0 only
+            // because the u64 field can't cover the whole (>8-byte) source, yet the output still
+            // consumes bits, set the highest bit to signal "some upper bits are consumed" — otherwise
+            // a 128-bit product read only through its high `SUBPIECE` (the div-by-mult idiom) would
+            // wrongly propagate consume 0 to the multiply.
+            if a == 0 && outc != 0 && in_size(0) > 8 {
+                a = 1u64 << 63;
+            }
             let b = if outc == 0 { 0 } else { full };
             pushes.push((a, in_vn(0)));
             pushes.push((b, in_vn(1)));
         }
         OpCode::Piece => {
-            let sa = 8 * in_size(1); // bits of the least-significant piece
-            let a = pcode_right(outc, sa);
-            let b = outc ^ pcode_left(a, sa);
+            let sa = 8 * in_size(1); // bits of the least-significant (low) piece
+            let (a, b);
+            if vnsize > 8 {
+                // Ghidra `CPUI_PIECE` extended-precision case: the concatenation is wider than the
+                // u64 consume field, so bits above the field are assumed consumed. This keeps the
+                // high piece of a 16-byte `CONCAT88` (feeding e.g. a 16-byte STORE) marked consumed
+                // rather than folded to 0.
+                if in_size(1) >= 8 {
+                    a = full; // whole high piece lies at/above the field boundary
+                    b = outc;
+                } else {
+                    a = pcode_right(outc, sa) ^ pcode_left(full, 8 * (8 - in_size(1)));
+                    b = outc ^ pcode_left(a, sa);
+                }
+            } else {
+                a = pcode_right(outc, sa);
+                b = outc ^ pcode_left(a, sa);
+            }
             pushes.push((a, in_vn(0)));
             pushes.push((b, in_vn(1)));
         }
@@ -246,9 +271,38 @@ fn gather_consumed_return(f: &Funcdata) -> u64 {
     consume
 }
 
+/// Ghidra `ActionDeadCode::neverConsumed` (`coreaction.cc:3809`): `vn`'s value is provably unused —
+/// the backward sweep reached it (it is vacuously consumed) yet its `consume` mask is 0 — so replace
+/// every read of it with a constant 0 and destroy its defining op. Ghidra makes a fresh constant per
+/// read (`newConstant`) and does not worry about feeding a marker, because an unconsumed input to a
+/// marker means the marker's output is unconsumed too and about to be removed. Ghidra's
+/// `size > sizeof(uintb)` precision guard is the extended branch (mosura is u64-only → `size > 8`).
+fn never_consumed(f: &mut Funcdata, vn: VarnodeId) -> bool {
+    if f.vn(vn).size > 8 {
+        return false; // Not enough precision to really tell
+    }
+    let size = f.vn(vn).size;
+    // Replace vn with 0 wherever it is read (a fresh constant per slot, mirroring Ghidra).
+    for op in f.vn(vn).descend.clone() {
+        for slot in 0..f.op(op).num_inputs() {
+            if f.op(op).input(slot) == Some(vn) {
+                let zero = f.new_const(size, 0);
+                f.op_set_input(op, slot, zero);
+            }
+        }
+    }
+    // Otherwise completely remove the defining op. (Ghidra `opUnsetOutput`s a CALL def instead;
+    // mosura has no such primitive and the sweep below never selects a CALL output, so only the
+    // non-call `opDestroy` arm is reachable here.)
+    if let Some(def) = f.vn(vn).def {
+        f.op_destroy(def);
+    }
+    true
+}
+
 /// Ghidra `ActionDeadCode::apply` seeding + `markConsumedParameters` (`coreaction.cc:3925`, `3840`):
 /// compute every Varnode's `consume` mask. Seeds from the sinks and call parameters, then propagates
-/// backward to a fixpoint.
+/// backward to a fixpoint, then runs the `neverConsumed` sweep (`coreaction.cc:4046`).
 pub fn calc_consume(f: &mut Funcdata) {
     let nvn = f.num_varnodes();
     for i in 0..nvn as u32 {
@@ -348,6 +402,22 @@ pub fn calc_consume(f: &mut Funcdata) {
         }
     }
 
+    // Persistent global live-out. Ghidra keeps a direct write to a `persist`/global location alive by
+    // marking it `addrforce` (→ `isAutoLive`), so `ActionDeadCode` seeds it fully-consumed; its value
+    // (and the backward chain feeding it) is therefore never `neverConsumed`-folded to 0. mosura only
+    // flags globals `persist` after type recovery, so — exactly as `deadcode::dead_code`'s persistent
+    // live-out roots do — it uses the `ram` space as the proxy: a written `ram` Varnode is a global
+    // side effect, live to the caller. Seeding it fully-consumed keeps the two liveness views in step
+    // (else the whole-varnode `dead_code` would keep the store while the bit-level sweep zeroes it).
+    if let Some(ram) = f.spaces.by_name("ram") {
+        for i in 0..nvn as u32 {
+            let vn = VarnodeId(i);
+            if f.vn(vn).is_written() && f.vn(vn).loc.space == ram {
+                seeds.push((u64::MAX, vn));
+            }
+        }
+    }
+
     // Apply the seeds, then propagate backward to a fixpoint.
     let mut worklist: Vec<VarnodeId> = Vec::new();
     let mut in_list = vec![false; nvn];
@@ -361,6 +431,29 @@ pub fn calc_consume(f: &mut Funcdata) {
         for (val, tgt) in consume_transfer(f, vn, outc) {
             push_consumed(f, val, tgt, &mut worklist, &mut in_list, &mut vacuous);
         }
+    }
+
+    // Ghidra `ActionDeadCode::apply` final sweep (`coreaction.cc:4032-4052`), the `neverConsumed`
+    // arm: for each written Varnode in a dead-code space (`doesDeadcode`/`deadRemovalAllowed`, i.e.
+    // heritaged here — const/annotation spaces excluded) that was reached by the backward sweep
+    // (`isConsumeVacuous`) but consumes no bits (`getConsume()==0`), fold it to 0. `nvn` predates the
+    // fresh constants `never_consumed` mints, so collect targets first, then rewrite. A CALL def is
+    // skipped (Ghidra `opUnsetOutput`s it — mosura lacks that primitive; such outputs do not arise).
+    let mut targets: Vec<VarnodeId> = Vec::new();
+    for i in 0..nvn {
+        let vn = VarnodeId(i as u32);
+        let v = f.vn(vn);
+        if v.is_written()
+            && vacuous[i]
+            && v.consume == 0
+            && f.spaces.get(v.loc.space).is_heritaged()
+            && v.def.map(|d| !f.op(d).is_call()).unwrap_or(false)
+        {
+            targets.push(vn);
+        }
+    }
+    for vn in targets {
+        never_consumed(f, vn);
     }
 }
 
@@ -485,5 +578,48 @@ mod tests {
         assert_eq!(f.vn(shl_out).consume, 0xff00);
         // Backward through `<< 8`: consume(x) = 0xff00 >> 8 = 0xff.
         assert_eq!(f.vn(x).consume, 0xff);
+    }
+
+    #[test]
+    fn never_consumed_folds_an_unconsumed_widened_write_upper() {
+        // Ghidra `ActionDeadCode::neverConsumed`: a PIECE's high input that is written but never
+        // consumed (the sub-register widened-write round-trip) is folded to constant 0 and its def
+        // destroyed — the fold that lets `PIECE(0,lo)` reduce to a clean ZEXT before the pool.
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let uniq = spaces.by_name("unique").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        let whole_in = f.new_input(8, Address::new(reg, 0x0)); // e.g. incoming RAX
+        let c4 = f.new_const(8, 4);
+        // hi = SUBPIECE(whole_in, 4): the upper 4 bytes — written, but never consumed below.
+        let hi = f.new_op(OpCode::Subpiece, seq, vec![whole_in, c4]);
+        let hi_out = f.new_output(hi, 4, Address::new(uniq, 0x100));
+        let lo = f.new_input(4, Address::new(reg, 0x40)); // the logical value
+        // piece = PIECE(hi_out, lo): the widened write reconstructing 8 bytes from upper + value.
+        let piece = f.new_op(OpCode::Piece, seq, vec![hi_out, lo]);
+        let piece_out = f.new_output(piece, 8, Address::new(uniq, 0x108));
+        let c0 = f.new_const(8, 0);
+        // low = SUBPIECE(piece, 0): only the low 4 bytes are ever read.
+        let low = f.new_op(OpCode::Subpiece, seq, vec![piece_out, c0]);
+        let low_out = f.new_output(low, 4, Address::new(uniq, 0x110));
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x30));
+        let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, low_out]);
+
+        f.set_blocks(vec![BlockBasic { ops: vec![hi, piece, low, store], ..Default::default() }]);
+        run(&mut f);
+
+        // The upper SUBPIECE was never consumed → folded to constant 0, its def destroyed.
+        assert!(!f.vn(hi_out).is_written(), "the unconsumed upper's def is destroyed");
+        let new_hi = f.op(piece).input(0).unwrap();
+        assert!(
+            f.vn(new_hi).is_constant() && f.vn(new_hi).constant_value() == 0,
+            "the PIECE high input is folded to constant 0",
+        );
+        // The low value stays fully consumed (extended-precision PIECE transfer keeps it whole).
+        assert_eq!(f.vn(lo).consume, 0xffffffff);
     }
 }
