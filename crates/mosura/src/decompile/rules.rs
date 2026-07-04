@@ -4409,6 +4409,47 @@ impl Rule for RuleConcatCommute {
     }
 }
 
+/// Ghidra `RuleConcatZext` (`ruleaction.cc`, oppool1 @5579 "analysis"): pull a zero-extension out of
+/// a concatenation — `concat(zext(V), W)  =>  zext(concat(V,W))`. The concat of the *unextended* V
+/// with W is built first (a smaller PIECE), then the original op becomes the single ZEXT of it.
+pub struct RuleConcatZext;
+
+impl Rule for RuleConcatZext {
+    fn name(&self) -> &str {
+        "concatzext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let mut hi = data.op(op).input(0).unwrap();
+        if !data.vn(hi).is_written() {
+            return 0;
+        }
+        let zextop = data.vn(hi).def.unwrap();
+        if data.op(zextop).code() != OpCode::IntZext {
+            return 0;
+        }
+        hi = data.op(zextop).input(0).unwrap();
+        let lo = data.op(op).input(1).unwrap();
+        if data.vn(hi).is_free() {
+            return 0;
+        }
+        if data.vn(lo).is_free() {
+            return 0;
+        }
+        // Create the earlier concat(hi, lo) out of the unextended hi and lo...
+        let sz = data.vn(hi).size + data.vn(lo).size;
+        let newconcat = data.new_op_before_sized(op, OpCode::Piece, vec![hi, lo], sz);
+        let newvn = data.op(newconcat).output.unwrap();
+        // ...then change the original op into a ZEXT of it.
+        data.op_remove_input(op, 1);
+        data.op_set_input(op, 0, newvn);
+        data.op_set_opcode(op, OpCode::IntZext);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6006,5 +6047,39 @@ mod tests {
         let cst2 = f.op(pc2).input(1).unwrap();
         // low byte (W) fully kept = 0xff; high byte (V) keeps low nibble = 0x0f << 8 = 0xf00.
         assert!(f.vn(cst2).is_constant() && f.vn(cst2).constant_value() == 0x0fff);
+    }
+
+    #[test]
+    fn concat_zext_pulls_zext_out() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // concat(zext(V), W)  =>  zext(concat(V,W)).
+        let vv = f.new_input(2, Address::new(r, 0x10));
+        let ww = f.new_input(2, Address::new(r, 0x18));
+        let ze = f.new_op(OpCode::IntZext, seq, vec![vv]);
+        let zeo = f.new_output(ze, 4, Address::new(r, 0x20));
+        let pc = f.new_op(OpCode::Piece, seq, vec![zeo, ww]);
+        let _po = f.new_output(pc, 6, Address::new(r, 0x28));
+        assert_eq!(RuleConcatZext.apply_op(pc, &mut f), 1);
+        assert_eq!(f.op(pc).code(), OpCode::IntZext);
+        assert_eq!(f.op(pc).inrefs.len(), 1);
+        let inner = f.op(pc).input(0).unwrap();
+        let idef = f.vn(inner).def.unwrap();
+        assert_eq!(f.op(idef).code(), OpCode::Piece);
+        assert_eq!(f.op(idef).input(0).unwrap(), vv);
+        assert_eq!(f.op(idef).input(1).unwrap(), ww);
+        // the inner concat is the unextended width |V|+|W| = 4, not the 6-byte output.
+        assert_eq!(f.vn(inner).size, 4);
+
+        // No fire: high input not defined by a ZEXT.
+        let a = f.new_input(4, Address::new(r, 0x30));
+        let b = f.new_input(2, Address::new(r, 0x38));
+        let pc2 = f.new_op(OpCode::Piece, seq, vec![a, b]);
+        let _po2 = f.new_output(pc2, 6, Address::new(r, 0x40));
+        assert_eq!(RuleConcatZext.apply_op(pc2, &mut f), 0);
+        assert_eq!(f.op(pc2).code(), OpCode::Piece);
     }
 }
