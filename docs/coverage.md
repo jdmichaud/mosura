@@ -277,11 +277,21 @@ RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs c
 | RulePtrsubCharConstant | MISSING |
 | RuleExtensionPush | MISSING |
 | RulePieceStructure | MISSING |
-| RuleSplitCopy | MISSING |
-| RuleSplitLoad | MISSING |
-| RuleSplitStore | MISSING (concatsplit fixture: mosura emits one 16-byte store where Ghidra splits) |
+| RuleSplitCopy | BLOCKED(SplitDatatype subsystem — subflow.cc) |
+| RuleSplitLoad | BLOCKED(SplitDatatype subsystem — subflow.cc) |
+| RuleSplitStore | BLOCKED(SplitDatatype subsystem — subflow.cc; concatsplit fixture: mosura emits one 16-byte store where Ghidra splits) |
 | RuleStringCopy | MISSING (constsequence) |
 | RuleStringStore | MISSING (constsequence) |
+
+**RuleSplitCopy/RuleSplitLoad/RuleSplitStore** are not standalone cleanup rules: each is a thin
+dispatcher (`subflow.cc`, not `ruleaction.cc`) into the `SplitDatatype` class. The gate
+`SplitDatatype::getValueDatatype` (subflow.cc:2910) needs `getTypeReadFacing`, `TypePointerRel`/
+`isPointerRel`, `TypeFactory::getExactPiece` (which produces `TypePartialStruct`/`TYPE_PARTIALSTRUCT`)
+and `getTypeArray`; the split itself uses the full 23-method `SplitDatatype`
+(getComponent/categorizeDatatype/testDatatypeCompatibility/buildInSubpieces/buildOutConcats/
+RootPointer::find…). mosura has none of `SplitDatatype`/`TypePartialStruct`/`getExactPiece`, so this
+is composite-type (Task #1) machinery, not the mechanical rule tail — BLOCKED like the oppool2
+LOAD/STORE spacebase set.
 
 ---
 
@@ -372,11 +382,13 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
   rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
   — spacebase-placeholder dep).
-- **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 12 MISSING (SplitStore etc.).
+- **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store —
+  SplitDatatype/TypePartialStruct dep), 9 MISSING (DumptyHumpLate etc.).
 
-**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleSplitStore (concatsplit),
-RuleFloatCast (floatcast), RuleConcatZext/RuleShiftAnd family. (RuleEarlyRemoval — 78× — and RuleScarry
-now PORTED byte-neutral; RuleLoadVarnode/StoreVarnode reclassified BLOCKED on the spacebase model.)
+**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleFloatCast (floatcast),
+RuleConcatZext/RuleShiftAnd family. (RuleEarlyRemoval — 78× — and RuleScarry now PORTED byte-neutral;
+RuleLoadVarnode/StoreVarnode and the RuleSplit* family reclassified BLOCKED on the spacebase /
+SplitDatatype subsystems respectively.)
 
 **Sub-case gaps within PORTED functions** (the class this matrix is meant to catch — e.g. the
 extended-precision consume branches found in Task #8): audit each PORTED rule/action for omitted
