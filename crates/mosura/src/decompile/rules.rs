@@ -4243,6 +4243,85 @@ impl Rule for RuleAndCommute {
     }
 }
 
+/// Ghidra `RuleShiftAnd` (`ruleaction.cc`, oppool1 @5582 "analysis"): a left/right shift — or a
+/// power-of-two `INT_MULT`, treated as a left shift — applied to `(V & mask)` drops the AND to a
+/// COPY when, after the same shift is applied to `mask` and to V's non-zero mask, the surviving
+/// mask bits already cover every possibly-nonzero bit of V (`(mask & nzm) == nzm`). The AND was
+/// redundant given V's non-zero mask, so `V & mask` becomes just `V`.
+pub struct RuleShiftAnd;
+
+impl Rule for RuleShiftAnd {
+    fn name(&self) -> &str {
+        "shiftand"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight, OpCode::IntLeft, OpCode::IntMult]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let cvn = data.op(op).input(1).unwrap();
+        if !data.vn(cvn).is_constant() {
+            return 0;
+        }
+        let shiftin = data.op(op).input(0).unwrap();
+        if !data.vn(shiftin).is_written() {
+            return 0;
+        }
+        let andop = data.vn(shiftin).def.unwrap();
+        if data.op(andop).code() != OpCode::IntAnd {
+            return 0;
+        }
+        if lone_descend(data, shiftin) != Some(op) {
+            return 0;
+        }
+        let maskvn = data.op(andop).input(1).unwrap();
+        if !data.vn(maskvn).is_constant() {
+            return 0;
+        }
+        let mut mask = data.vn(maskvn).constant_value();
+        let invn = data.op(andop).input(0).unwrap();
+        if data.vn(invn).is_free() {
+            return 0;
+        }
+
+        let mut opc = data.op(op).code();
+        // For a shift the count is the constant directly; for INT_MULT only a power-of-two constant
+        // is really a shift (Ghidra `leastsigbit_set` == the sole set bit).
+        let sa: u32;
+        if opc == OpCode::IntRight || opc == OpCode::IntLeft {
+            sa = data.vn(cvn).constant_value() as u32;
+        } else {
+            let lsb = super::nzmask::leastsigbit_set(data.vn(cvn).constant_value());
+            if lsb <= 0 {
+                return 0;
+            }
+            if (1u64 << (lsb as u32)) != data.vn(cvn).constant_value() {
+                return 0;
+            }
+            sa = lsb as u32;
+            opc = OpCode::IntLeft; // Treat INT_MULT as INT_LEFT
+        }
+
+        let mut nzm = data.vn(invn).get_nzmask();
+        let fullmask = super::nzmask::calc_mask(data.vn(invn).size);
+        // Ghidra shifts `uintb` masks with raw C++ `>>`/`<<`; on the x86-64 oracle that masks the
+        // count mod 64, so `wrapping_shr`/`wrapping_shl` matches (see [`RuleAndCommute`]).
+        if opc == OpCode::IntRight {
+            nzm = nzm.wrapping_shr(sa);
+            mask = mask.wrapping_shr(sa);
+        } else {
+            nzm = nzm.wrapping_shl(sa) & fullmask;
+            mask = mask.wrapping_shl(sa) & fullmask;
+        }
+        if (mask & nzm) != nzm {
+            return 0;
+        }
+        // AND effectively does nothing, so change it to a COPY.
+        data.op_set_opcode(andop, OpCode::Copy);
+        data.op_remove_input(andop, 1);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5741,5 +5820,64 @@ mod tests {
         let _nm4 = f.new_output(nomatch, 4, Address::new(r, 0xb8));
         assert_eq!(RuleFloatCast.apply_op(nomatch, &mut f), 0);
         assert_eq!(f.op(nomatch).code(), OpCode::FloatFloat2float);
+    }
+
+    #[test]
+    fn shift_and_drops_redundant_mask() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // (v & 0xff00) >> 8, with v's non-zero bits confined to 0xff00: after the shift the mask
+        // (0xff) covers all of v's possibly-nonzero bits (0xff), so the AND is redundant → COPY.
+        let v = f.new_input(4, Address::new(r, 0x10));
+        f.vn_mut(v).nzm = 0xff00;
+        let m = f.new_const(4, 0xff00);
+        let c8 = f.new_const(4, 8);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, m]);
+        let ando = f.new_output(and, 4, Address::new(r, 0x18));
+        let sh = f.new_op(OpCode::IntRight, seq, vec![ando, c8]);
+        let _o = f.new_output(sh, 4, Address::new(r, 0x20));
+        assert_eq!(RuleShiftAnd.apply_op(sh, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).inrefs.len(), 1);
+
+        // INT_MULT by a power of two (16) is treated as a left shift by 4; nzm 0x0f, mask 0x0f →
+        // after `<< 4` mask 0xf0 covers nzm 0xf0 → redundant AND → COPY.
+        let v2 = f.new_input(4, Address::new(r, 0x30));
+        f.vn_mut(v2).nzm = 0x0f;
+        let m2 = f.new_const(4, 0x0f);
+        let c16 = f.new_const(4, 16);
+        let and2 = f.new_op(OpCode::IntAnd, seq, vec![v2, m2]);
+        let and2o = f.new_output(and2, 4, Address::new(r, 0x38));
+        let mul = f.new_op(OpCode::IntMult, seq, vec![and2o, c16]);
+        let _o2 = f.new_output(mul, 4, Address::new(r, 0x40));
+        assert_eq!(RuleShiftAnd.apply_op(mul, &mut f), 1);
+        assert_eq!(f.op(and2).code(), OpCode::Copy);
+
+        // No fire: mask 0x0f does NOT cover the bits v can set (nzm 0xff) after `<< 4`.
+        let v3 = f.new_input(4, Address::new(r, 0x50));
+        f.vn_mut(v3).nzm = 0xff;
+        let m3 = f.new_const(4, 0x0f);
+        let c4 = f.new_const(4, 4);
+        let and3 = f.new_op(OpCode::IntAnd, seq, vec![v3, m3]);
+        let and3o = f.new_output(and3, 4, Address::new(r, 0x58));
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![and3o, c4]);
+        let _o3 = f.new_output(shl, 4, Address::new(r, 0x60));
+        assert_eq!(RuleShiftAnd.apply_op(shl, &mut f), 0);
+        assert_eq!(f.op(and3).code(), OpCode::IntAnd);
+
+        // No fire: INT_MULT by a non-power-of-two (3) is not a shift.
+        let v4 = f.new_input(4, Address::new(r, 0x70));
+        f.vn_mut(v4).nzm = 0x0f;
+        let m4 = f.new_const(4, 0x0f);
+        let c3 = f.new_const(4, 3);
+        let and4 = f.new_op(OpCode::IntAnd, seq, vec![v4, m4]);
+        let and4o = f.new_output(and4, 4, Address::new(r, 0x78));
+        let mul3 = f.new_op(OpCode::IntMult, seq, vec![and4o, c3]);
+        let _o4 = f.new_output(mul3, 4, Address::new(r, 0x80));
+        assert_eq!(RuleShiftAnd.apply_op(mul3, &mut f), 0);
+        assert_eq!(f.op(and4).code(), OpCode::IntAnd);
     }
 }

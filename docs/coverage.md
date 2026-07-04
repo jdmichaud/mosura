@@ -181,7 +181,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleConcatZext | MISSING |
 | RuleZextCommute | MISSING |
 | RuleZextShiftZext | PORTED |
-| RuleShiftAnd | MISSING |
+| RuleShiftAnd | PORTED (rules.rs; byte-neutral, unit-tested — shift/mult over redundant AND-mask drop, nzmask-gated; inert on corpus: mosura collapses the masked AND upstream before it reaches actprop) |
 | RuleConcatZero | MISSING |
 | RuleConcatLeftShift | MISSING |
 | RuleSubZext | HELD(preempts RuleSubvarZext return-narrowing on the truncation-return family; Task #8) |
@@ -376,7 +376,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~56 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast), 6 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~57 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd), 6 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
@@ -385,8 +385,8 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 - **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store —
   SplitDatatype/TypePartialStruct dep), 9 MISSING (DumptyHumpLate etc.).
 
-**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleConcatZext/RuleShiftAnd
-family. (RuleEarlyRemoval — 78× —, RuleScarry, and RuleFloatCast now PORTED byte-neutral;
+**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleConcatZext/RuleConcatZero
+family. (RuleEarlyRemoval — 78× —, RuleScarry, RuleFloatCast, and RuleShiftAnd now PORTED byte-neutral;
 RuleLoadVarnode/StoreVarnode and the RuleSplit* family reclassified BLOCKED on the spacebase /
 SplitDatatype subsystems respectively.)
 

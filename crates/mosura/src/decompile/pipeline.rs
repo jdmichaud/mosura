@@ -9,7 +9,7 @@ use super::rules::{
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
-    RuleLogic2Bool, RuleOrMask, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
+    RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
@@ -139,6 +139,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleLogic2Bool) // (64)
         .with(RuleSubExtComm) // (65)
         .with(RuleZextShiftZext) // (70)
+        .with(RuleShiftAnd) // (71)
         .with(RuleHumptyDumpty) // (77)
         .with(RuleDumptyHump) // (78)
         .with(RuleHumptyOr) // (79)
