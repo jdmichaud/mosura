@@ -177,7 +177,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleLogic2Bool | PORTED |
 | RuleSubExtComm | PORTED |
 | RuleSubCommute | MISSING |
-| RuleConcatCommute | MISSING |
+| RuleConcatCommute | PORTED (rules.rs; unit-tested — commute PIECE with AND/OR/XOR-const; MOVER: fires 11×/5 fixtures, 4 byte-identical, switchloop 0.7658→0.7680 toward Ghidra; surfaces an `xunknown1` cast on the rule-created PIECE input — separate type-inference gap, debt-tracked) |
 | RuleConcatZext | MISSING |
 | RuleZextCommute | MISSING |
 | RuleZextShiftZext | PORTED |
@@ -376,7 +376,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~57 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd), 6 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~58 PORTED (incl. RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RuleConcatCommute), 6 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).

@@ -4322,6 +4322,93 @@ impl Rule for RuleShiftAnd {
     }
 }
 
+/// Ghidra `RuleConcatCommute` (`ruleaction.cc`, oppool1 @5578 "analysis"): commute a PIECE with a
+/// bitwise `INT_AND`/`INT_OR`/`INT_XOR` on one of its inputs, pulling the concatenation inside so a
+/// later rule can act on the whole value:
+///   - `concat(V & c, W)  =>  concat(V,W) & (c<<8|W| | mask(|W|))`
+///   - `concat(V, W | c)  =>  concat(V,W) | c`
+/// The mask/offset bookkeeping keeps the low `lo` (or high `hi`) lane untouched by the widened op.
+pub struct RuleConcatCommute;
+
+impl Rule for RuleConcatCommute {
+    fn name(&self) -> &str {
+        "concatcommute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        let outsz = data.vn(out).size;
+        if outsz > 8 {
+            return 0; // FIXME: precision problem for constants (Ghidra's `outsz > sizeof(uintb)`)
+        }
+        for i in 0..2usize {
+            let vn = data.op(op).input(i).unwrap();
+            if !data.vn(vn).is_written() {
+                continue;
+            }
+            let logicop = data.vn(vn).def.unwrap();
+            let opc = data.op(logicop).code();
+            // Gate on the opcode BEFORE reading getIn(1): only INT_OR/XOR/AND are guaranteed binary.
+            if opc != OpCode::IntOr && opc != OpCode::IntXor && opc != OpCode::IntAnd {
+                continue;
+            }
+            let cvn = data.op(logicop).input(1).unwrap();
+            let hi;
+            let lo;
+            let val: u64;
+            if opc == OpCode::IntOr || opc == OpCode::IntXor {
+                if !data.vn(cvn).is_constant() {
+                    continue;
+                }
+                let mut v = data.vn(cvn).constant_value();
+                if i == 0 {
+                    hi = data.op(logicop).input(0).unwrap();
+                    lo = data.op(op).input(1).unwrap();
+                    v <<= 8 * data.vn(lo).size;
+                } else {
+                    hi = data.op(op).input(0).unwrap();
+                    lo = data.op(logicop).input(0).unwrap();
+                }
+                val = v;
+            } else {
+                // opc == OpCode::IntAnd
+                if !data.vn(cvn).is_constant() {
+                    continue;
+                }
+                let mut v = data.vn(cvn).constant_value();
+                if i == 0 {
+                    hi = data.op(logicop).input(0).unwrap();
+                    lo = data.op(op).input(1).unwrap();
+                    v <<= 8 * data.vn(lo).size;
+                    v |= super::nzmask::calc_mask(data.vn(lo).size);
+                } else {
+                    hi = data.op(op).input(0).unwrap();
+                    lo = data.op(logicop).input(0).unwrap();
+                    v |= super::nzmask::calc_mask(data.vn(hi).size) << (8 * data.vn(lo).size);
+                }
+                val = v;
+            }
+            if data.vn(hi).is_free() {
+                continue;
+            }
+            if data.vn(lo).is_free() {
+                continue;
+            }
+            // Create the earlier concat(hi, lo), then rewrite this op into the bitwise op over it.
+            let newconcat = data.new_op_before_sized(op, OpCode::Piece, vec![hi, lo], outsz);
+            let newvn = data.op(newconcat).output.unwrap();
+            let c = data.new_const(outsz, val);
+            data.op_set_opcode(op, opc);
+            data.op_set_input(op, 0, newvn);
+            data.op_set_input(op, 1, c);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5879,5 +5966,45 @@ mod tests {
         let _o4 = f.new_output(mul3, 4, Address::new(r, 0x80));
         assert_eq!(RuleShiftAnd.apply_op(mul3, &mut f), 0);
         assert_eq!(f.op(and4).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn concat_commute_pulls_concat_inside() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // concat(V, W | c)  =>  concat(V,W) | c   (i==1 branch, no shift of the constant).
+        let vv = f.new_input(2, Address::new(r, 0x10));
+        let ww = f.new_input(2, Address::new(r, 0x18));
+        let c = f.new_const(2, 0x0055);
+        let orop = f.new_op(OpCode::IntOr, seq, vec![ww, c]);
+        let oro = f.new_output(orop, 2, Address::new(r, 0x20));
+        let pc = f.new_op(OpCode::Piece, seq, vec![vv, oro]);
+        let _po = f.new_output(pc, 4, Address::new(r, 0x28));
+        assert_eq!(RuleConcatCommute.apply_op(pc, &mut f), 1);
+        assert_eq!(f.op(pc).code(), OpCode::IntOr);
+        let inner = f.op(pc).input(0).unwrap();
+        let idef = f.vn(inner).def.unwrap();
+        assert_eq!(f.op(idef).code(), OpCode::Piece);
+        assert_eq!(f.op(idef).input(0).unwrap(), vv);
+        assert_eq!(f.op(idef).input(1).unwrap(), ww);
+        let cst = f.op(pc).input(1).unwrap();
+        assert!(f.vn(cst).is_constant() && f.vn(cst).constant_value() == 0x0055);
+
+        // concat(V & c, W)  =>  concat(V,W) & ((c << 8|W|) | mask(|W|))   (i==0 branch).
+        let v2 = f.new_input(1, Address::new(r, 0x30));
+        let w2 = f.new_input(1, Address::new(r, 0x38));
+        let c2 = f.new_const(1, 0x0f);
+        let andop = f.new_op(OpCode::IntAnd, seq, vec![v2, c2]);
+        let ando = f.new_output(andop, 1, Address::new(r, 0x40));
+        let pc2 = f.new_op(OpCode::Piece, seq, vec![ando, w2]);
+        let _po2 = f.new_output(pc2, 2, Address::new(r, 0x48));
+        assert_eq!(RuleConcatCommute.apply_op(pc2, &mut f), 1);
+        assert_eq!(f.op(pc2).code(), OpCode::IntAnd);
+        let cst2 = f.op(pc2).input(1).unwrap();
+        // low byte (W) fully kept = 0xff; high byte (V) keeps low nibble = 0x0f << 8 = 0xf00.
+        assert!(f.vn(cst2).is_constant() && f.vn(cst2).constant_value() == 0x0fff);
     }
 }
