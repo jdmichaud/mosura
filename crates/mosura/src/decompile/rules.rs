@@ -188,6 +188,52 @@ impl Rule for RuleTrivialArith {
     }
 }
 
+/// Ghidra `RuleEarlyRemoval` (`ruleaction.cc:25`, oppool1's first rule): destroy any non-call op
+/// whose output is dead — no readers, not auto-live — right inside the rule pool. This is Ghidra's
+/// per-op early dead-code removal; keeping the graph clean mid-pool (rather than only at the heavier
+/// `ActionDeadCode` sweeps) changes which later rules fire (a `loneDescend`/`hasNoDescend` check sees
+/// the pruned graph). Applies to every opcode (empty oplist).
+pub struct RuleEarlyRemoval;
+
+impl Rule for RuleEarlyRemoval {
+    fn name(&self) -> &str {
+        "earlyremoval"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        Vec::new() // every op
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).is_call() {
+            return 0; // functions are automatically consumed
+        }
+        // Ghidra also guards `op->isIndirectSource()`; mosura's INDIRECTs are 1-input with no iop
+        // back-reference (Task #10), so no op is an indirect source — the guard is vacuous here.
+        let Some(out) = data.op(op).output else {
+            return 0; // no output (side-effecting op: STORE/BRANCH/RETURN) — keep
+        };
+        // Ghidra's `isPersist` guard here is commented out because its persist globals stay alive
+        // through descendants (block-end copies). mosura instead keeps a written `ram` global alive
+        // as a live-out root in `deadcode::dead_code` (not via SSA descendants), so the guard is
+        // load-bearing here: without it the pool early-removes a global store that is dead in SSA but
+        // a real side effect. mosura flags globals `persist` only after type recovery, so use the
+        // `ram`-space proxy — exactly `dead_code`'s persistent live-out predicate.
+        if data.spaces.by_name("ram") == Some(data.vn(out).loc.space) {
+            return 0;
+        }
+        if !data.vn(out).descend.is_empty() {
+            return 0; // output still has readers
+        }
+        if data.vn(out).is_auto_live() {
+            return 0; // addrforce / autolive_hold — exempt
+        }
+        // Ghidra: `if doesDeadcode(spc) && !deadRemovalAllowedSeen(spc) return 0`. mosura heritages
+        // every dead-code space to completion before the pool runs, so dead removal is always allowed
+        // by pool time; the guard never blocks, so it reduces to an unconditional destroy here.
+        data.op_destroy(op);
+        1
+    }
+}
+
 /// Move a constant to the second input of a commutative op (Ghidra's `RuleTermOrder`), so
 /// the identity/collapse rules can assume the constant is in slot 1.
 pub struct RuleTermOrder;
@@ -5401,5 +5447,39 @@ mod tests {
         }]);
         assert_eq!(RuleAndCommute.apply_op(and, &mut f), 0);
         assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn early_removal_destroys_a_dead_output_keeps_live_and_global() {
+        // RuleEarlyRemoval: an op whose unique output has no readers is destroyed; one whose output
+        // is read is kept; a written `ram` global is kept (the persist live-out guard).
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x14));
+
+        // dead: unique output with no descendants → removed.
+        let dead = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let _dead_out = f.new_output(dead, 4, Address::new(uniq, 0x100));
+        assert_eq!(RuleEarlyRemoval.apply_op(dead, &mut f), 1);
+        assert!(f.op(dead).is_dead());
+
+        // live: output read by a STORE sink → kept.
+        let live = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let live_out = f.new_output(live, 4, Address::new(uniq, 0x108));
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x30));
+        let _store = f.new_op(OpCode::Store, seq, vec![sid, ptr, live_out]);
+        assert_eq!(RuleEarlyRemoval.apply_op(live, &mut f), 0);
+        assert!(!f.op(live).is_dead());
+
+        // ram global: written to a global (ram) address, no SSA reader → kept by the persist guard.
+        let glob = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let _glob_out = f.new_output(glob, 4, Address::new(ram, 0x601030));
+        assert_eq!(RuleEarlyRemoval.apply_op(glob, &mut f), 0);
+        assert!(!f.op(glob).is_dead());
     }
 }

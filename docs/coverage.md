@@ -111,7 +111,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 
 | # | Ghidra rule | mosura |
 |---|---|---|
-| RuleEarlyRemoval | MISSING — 78× on namespace trace (Task #13) |
+| RuleEarlyRemoval | PORTED (rules.rs; byte-neutral, 78× on namespace) — + ram-persist guard (Ghidra's commented isPersist, load-bearing under mosura's ram-root global liveness) |
 | RuleTermOrder | PORTED |
 | RuleSelectCse | PORTED (+ isCseMatch output-size guard `8dd6d80`) |
 | RuleCollectTerms | PORTED |
@@ -366,15 +366,16 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~53 PORTED, 6 HELD (NotDistribute, AndDistribute, AndCompare, SubZext, Piece2Zext,
-  DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow), ~68 MISSING, 1 non-faithful
-  (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical rule tail (Phase 1b).
+- **oppool1**: ~54 PORTED (incl. RuleEarlyRemoval), 6 HELD (NotDistribute, AndDistribute, AndCompare,
+  SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow), ~67
+  MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
+  rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 3 MISSING (PushPtr, LoadVarnode, StoreVarnode).
 - **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 12 MISSING (SplitStore etc.).
 
-**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleEarlyRemoval (78×),
-RuleLoadVarnode/RuleStoreVarnode, RuleSplitStore (concatsplit), RuleFloatCast (floatcast),
-RuleScarry, RuleConcatZext/RuleShiftAnd family.
+**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleLoadVarnode/RuleStoreVarnode,
+RuleSplitStore (concatsplit), RuleFloatCast (floatcast), RuleScarry, RuleConcatZext/RuleShiftAnd
+family. (RuleEarlyRemoval — 78× on namespace — now PORTED, byte-neutral.)
 
 **Sub-case gaps within PORTED functions** (the class this matrix is meant to catch — e.g. the
 extended-precision consume branches found in Task #8): audit each PORTED rule/action for omitted

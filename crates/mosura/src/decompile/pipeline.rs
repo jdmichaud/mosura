@@ -5,7 +5,7 @@
 use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
-    Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleConstFold, RuleEqual2Zero,
+    Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
@@ -104,6 +104,7 @@ impl Action for ActionResolveCalls {
 /// (RuleMultMult, RuleIdempotent, RuleRangeAnd) are slotted next to their closest Ghidra sibling.
 pub fn default_rule_pool() -> ActionPool {
     ActionPool::new("oppool")
+        .with(RuleEarlyRemoval) // (1)
         .with(RuleTermOrder) // (2)
         .with(RuleSelectCse) // (3)
         .with(RuleCollectTerms) // (4)
