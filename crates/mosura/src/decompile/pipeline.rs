@@ -14,7 +14,7 @@ use super::rules::{
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
-    RuleAndCommute, RuleFloatRange,
+    RuleAndCommute, RuleFloatRange, RuleIgnoreNan,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -150,6 +150,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleFloatRange) // (102)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
+        .with(RuleIgnoreNan) // (124) floatprecision group
 }
 
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`

@@ -1184,6 +1184,177 @@ impl Rule for RuleFloatRange {
     }
 }
 
+/// The input slot at which `vn` is read by `op` (Ghidra `PcodeOp::getSlot`).
+fn slot_of(data: &Funcdata, op: OpId, vn: VarnodeId) -> usize {
+    data.op(op).inrefs.iter().position(|&v| v == vn).unwrap_or(0)
+}
+
+/// Ghidra `TypeOp::isFloatingPointOp` — the p-code ops whose `TypeOp` is a floating-point one.
+fn is_float_op(opc: OpCode) -> bool {
+    use OpCode::*;
+    matches!(
+        opc,
+        FloatEqual | FloatNotequal | FloatLess | FloatLessequal | FloatNan | FloatAdd | FloatSub
+            | FloatMult | FloatDiv | FloatNeg | FloatAbs | FloatSqrt | FloatInt2float
+            | FloatFloat2float | FloatTrunc | FloatCeil | FloatFloor | FloatRound
+    )
+}
+
+/// Ghidra `RuleIgnoreNan::checkBackForCompare`: does the boolean `root` come from a floating-point
+/// comparison of `float_var` (directly, or one level down a BOOL_AND/OR, through an optional
+/// BOOL_NEGATE)?
+fn check_back_for_compare(float_var: VarnodeId, root: VarnodeId, data: &Funcdata) -> bool {
+    if !data.vn(root).is_written() {
+        return false;
+    }
+    let mut def1 = data.vn(root).def.unwrap();
+    if !data.op(def1).is_bool_output() {
+        return false;
+    }
+    if data.op(def1).code() == OpCode::BoolNegate {
+        let vn = data.op(def1).input(0).unwrap();
+        if !data.vn(vn).is_written() {
+            return false;
+        }
+        def1 = data.vn(vn).def.unwrap();
+    }
+    if is_float_op(data.op(def1).code()) {
+        if data.op(def1).num_inputs() != 2 {
+            return false;
+        }
+        return functional_equality(data, float_var, data.op(def1).input(0).unwrap())
+            || functional_equality(data, float_var, data.op(def1).input(1).unwrap());
+    }
+    let opc = data.op(def1).code();
+    if opc != OpCode::BoolAnd && opc != OpCode::BoolOr {
+        return false;
+    }
+    for i in 0..2 {
+        let vn = data.op(def1).input(i).unwrap();
+        if !data.vn(vn).is_written() {
+            continue;
+        }
+        let def2 = data.vn(vn).def.unwrap();
+        if !data.op(def2).is_bool_output() || !is_float_op(data.op(def2).code()) {
+            continue;
+        }
+        if data.op(def2).num_inputs() != 2 {
+            continue;
+        }
+        if functional_equality(data, float_var, data.op(def2).input(0).unwrap())
+            || functional_equality(data, float_var, data.op(def2).input(1).unwrap())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ghidra `RuleIgnoreNan::isAnotherNan`: is `vn` (possibly through a BOOL_NEGATE) another
+/// `FLOAT_NAN`, so the NaN-check chain continues one level deeper?
+fn is_another_nan(vn: VarnodeId, data: &Funcdata) -> bool {
+    if !data.vn(vn).is_written() {
+        return false;
+    }
+    let mut op = data.vn(vn).def.unwrap();
+    if data.op(op).code() == OpCode::BoolNegate {
+        let vn2 = data.op(op).input(0).unwrap();
+        if !data.vn(vn2).is_written() {
+            return false;
+        }
+        op = data.vn(vn2).def.unwrap();
+    }
+    data.op(op).code() == OpCode::FloatNan
+}
+
+/// Ghidra `RuleIgnoreNan::testForComparison`: at a boolean use `op` of the NaN result, if the other
+/// operand is a comparison of `float_var` the NaN check is redundant — rewrite `op` to drop it
+/// (BOOL_OR/AND → a COPY of the comparison; INT_EQUAL/NOTEQUAL → fold the NaN slot to a constant).
+/// Returns the output to keep descending through when the other operand is itself another NaN check.
+/// The `CPUI_CBRANCH` case (a NaN guard spread across two branches) is deferred.
+fn test_for_comparison(
+    float_var: VarnodeId,
+    op: OpId,
+    slot: usize,
+    match_code: OpCode,
+    count: &mut i32,
+    data: &mut Funcdata,
+) -> Option<VarnodeId> {
+    let opc = data.op(op).code();
+    if opc == match_code {
+        let vn = data.op(op).input(1 - slot).unwrap();
+        if check_back_for_compare(float_var, vn, data) {
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_remove_input(op, 1);
+            data.op_set_input(op, 0, vn);
+            *count += 1;
+        } else if is_another_nan(vn, data) {
+            return data.op(op).output;
+        }
+    } else if opc == OpCode::IntEqual || opc == OpCode::IntNotequal {
+        let vn = data.op(op).input(1 - slot).unwrap();
+        if check_back_for_compare(float_var, vn, data) {
+            let val = if match_code == OpCode::BoolOr { 0 } else { 1 };
+            let c = data.new_const(1, val);
+            data.op_set_input(op, slot, c);
+            *count += 1;
+        }
+    }
+    // (Ghidra's CPUI_CBRANCH branch — a NaN guard split across two CBRANCHes — is deferred.)
+    None
+}
+
+/// Ghidra `RuleIgnoreNan` (`ruleaction.cc`, oppool1 @5635 "floatprecision"): a `NAN(x)` check OR'd
+/// (or, negated, AND'd) with a comparison of the same `x` is redundant — the ordered comparison
+/// already handles the unordered/NaN case — so drop the NaN check. This dissolves the `ucomisd`
+/// NaN-guard idiom, letting [`RuleFloatRange`] then collapse the bare ordered compares.
+pub struct RuleIgnoreNan;
+
+impl Rule for RuleIgnoreNan {
+    fn name(&self) -> &str {
+        "ignorenan"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::FloatNan]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // (mosura has no `nan_ignore_all` architecture flag — that always-false branch is skipped.)
+        let float_var = data.op(op).input(0).unwrap();
+        if data.vn(float_var).is_free() {
+            return 0;
+        }
+        let out1 = data.op(op).output.unwrap();
+        let mut count = 0;
+        // Snapshot each descend list before mutating — a rewrite changes the live descend edges.
+        for bool_read1 in data.vn(out1).descend.clone() {
+            let (match_code, out2) = if data.op(bool_read1).code() == OpCode::BoolNegate {
+                (OpCode::BoolAnd, data.op(bool_read1).output)
+            } else {
+                let slot = slot_of(data, bool_read1, out1);
+                let o2 = test_for_comparison(float_var, bool_read1, slot, OpCode::BoolOr, &mut count, data);
+                (OpCode::BoolOr, o2)
+            };
+            let Some(out2) = out2 else { continue };
+            for bool_read2 in data.vn(out2).descend.clone() {
+                let slot = slot_of(data, bool_read2, out2);
+                let Some(out3) = test_for_comparison(float_var, bool_read2, slot, match_code, &mut count, data)
+                else {
+                    continue;
+                };
+                for bool_read3 in data.vn(out3).descend.clone() {
+                    let slot = slot_of(data, bool_read3, out3);
+                    test_for_comparison(float_var, bool_read3, slot, match_code, &mut count, data);
+                }
+            }
+        }
+        if count > 0 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 pub struct RuleOrCompare;
 
 impl Rule for RuleOrCompare {

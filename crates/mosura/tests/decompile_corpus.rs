@@ -165,10 +165,13 @@ fn orcompare_recovers_logical_or() {
     );
 }
 
-/// Companion guard for the De Morgan gate: the distribution is applied only when Ghidra's
-/// `opFlipInPlaceTest` reports the flip *normalizes*. pointerrel's float `>=` condition reuses a
-/// shared NAN sub-boolean (so a flip would NOT normalize), so it must stay the compact `!(...)`
-/// form — not the expanded `(!NAN && !NAN) && ...` that an ungated De Morgan would produce.
+/// Guard for the float NaN-guard collapse (Ghidra `RuleIgnoreNan` + `RuleFloatRange`,
+/// ruleaction.cc): pointerrel's `ucomisd`-derived condition is `!(NAN(a)||NAN(b) || a<=b)`. The
+/// two rules dissolve the redundant NaN checks and collapse the ordered compares into the single
+/// `!(fStack_18 <= fRam...)` — a compact negated float comparison, not the De-Morgan-expanded
+/// `(!NAN && !NAN) && ...` an ungated distribution would produce. (The residual vs Ghidra's
+/// `fRam... < fStack_18` is only the `opFlipInPlaceTest` flip of `!(a<=b)` → `b<a`, a separate
+/// normalization.)
 #[test]
 fn pointerrel_negated_condition_stays_compact() {
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
@@ -186,8 +189,8 @@ fn pointerrel_negated_condition_stays_compact() {
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
-        c.contains("if (!(bVar1 ||"),
-        "pointerrel's non-normalizing condition was wrongly De-Morgan-distributed:\n{c}"
+        c.contains("if (!(fStack_18 <= fRam00000000001008b8))") && !c.contains("NAN"),
+        "pointerrel's NaN-guarded condition did not collapse to the compact float compare:\n{c}"
     );
 }
 
