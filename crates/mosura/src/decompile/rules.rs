@@ -539,6 +539,21 @@ fn subtract_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: Varnod
     }
 }
 
+/// Does `xvn` compute `avn + bvn`? Directly as `INT_ADD(avn, bvn)` in either operand order — the
+/// additive-sum counterpart of [`subtract_matches`] used by [`RuleScarry`]. (Ghidra uses the general
+/// `AddExpression::gatherTwoTermsAdd`/`gatherTwoTermsRoot` equivalence; this is the direct-def subset,
+/// matching mosura's simplified `subtract_matches`.)
+fn add_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
+    let Some(def) = data.vn(xvn).def else { return false };
+    let o = data.op(def);
+    if o.code() != OpCode::IntAdd || o.num_inputs() != 2 {
+        return false;
+    }
+    let (i0, i1) = (o.input(0).unwrap(), o.input(1).unwrap());
+    (same_value(data, i0, avn) && same_value(data, i1, bvn))
+        || (same_value(data, i0, bvn) && same_value(data, i1, avn))
+}
+
 /// Simplify signed comparisons built from `INT_SBORROW` (Ghidra's `RuleSborrow`). The x86
 /// signed-compare flag idiom `sborrow(V,W) != ((V-W) s< 0)` is exactly `V s< W` (and the
 /// `0 s< (V-W)` / `INT_EQUAL` variants give the swapped operands and `s<=`); also
@@ -598,6 +613,94 @@ impl Rule for RuleSborrow {
             inputs[slot_a] = avn;
             inputs[1 - slot_a] = bvn;
             data.op_set_opcode(compop, newcode);
+            data.op_set_all_input(compop, &inputs);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Simplify signed comparisons built from `INT_SCARRY` (Ghidra's `RuleScarry`) — the additive
+/// sibling of [`RuleSborrow`]. Trivial `scarry(V,0) => false`. Otherwise, when one operand is a
+/// constant `c`, the flag idiom comparing `scarry(V,c)` against the sign of `V + c`
+/// (`INT_SLESS` vs 0) is a signed compare of `V` against `-c`: `INT_NOTEQUAL => V s< -c`,
+/// `INT_EQUAL => V s<= -c` (with the `0 s< (V+c)` variant giving the swapped operands). The rule
+/// requires a constant operand and skips the integer minimum (whose negation is a no-op).
+pub struct RuleScarry;
+
+impl Rule for RuleScarry {
+    fn name(&self) -> &str {
+        "scarry"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntScarry]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let mut avn = data.op(op).input(0).unwrap();
+        let mut bvn = data.op(op).input(1).unwrap();
+        // Trivial: either operand is const 0 → the sum never carries.
+        if is_const0(data, avn) || is_const0(data, bvn) {
+            let z = data.new_const(1, 0);
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_set_all_input(op, &[z]);
+            return 1;
+        }
+        // One side must be constant; swap so `bvn` holds it. Skip the integer minimum — negating it
+        // is a no-op, so the `-c` rewrite would be wrong.
+        if !data.vn(bvn).is_constant() {
+            if !data.vn(avn).is_constant() {
+                return 0;
+            }
+            std::mem::swap(&mut avn, &mut bvn);
+            let size = data.vn(bvn).size;
+            let mask = if size >= 8 { u64::MAX } else { (1u64 << (size * 8)) - 1 };
+            let intmin = mask ^ (mask >> 1);
+            if intmin == data.vn(bvn).constant_value() {
+                return 0;
+            }
+        }
+        let Some(svn) = data.op(op).output else { return 0 };
+        for compop in data.vn(svn).descend.clone() {
+            let cc = data.op(compop).code();
+            if (cc != OpCode::IntEqual && cc != OpCode::IntNotequal) || data.op(compop).num_inputs() != 2 {
+                continue;
+            }
+            let (i0, i1) = (data.op(compop).input(0).unwrap(), data.op(compop).input(1).unwrap());
+            let cvn = if i0 == svn { i1 } else { i0 };
+            let Some(signdef) = data.vn(cvn).def else { continue };
+            if data.op(signdef).code() != OpCode::IntSless || data.op(signdef).num_inputs() != 2 {
+                continue;
+            }
+            let (s0, s1) = (data.op(signdef).input(0).unwrap(), data.op(signdef).input(1).unwrap());
+            let zside = if is_const0(data, s0) {
+                0
+            } else if is_const0(data, s1) {
+                1
+            } else {
+                continue;
+            };
+            let xvn = if zside == 0 { s1 } else { s0 };
+            if !add_matches(data, xvn, avn, bvn) {
+                continue;
+            }
+            let size = data.vn(bvn).size;
+            let mask = if size >= 8 { u64::MAX } else { (1u64 << (size * 8)) - 1 };
+            let newval = data.vn(bvn).constant_value().wrapping_neg() & mask;
+            let newc = data.new_const(size, newval);
+            let mut inputs = [avn; 2];
+            // NOTEQUAL ⇒ V s< -c (avn at 1-zside); EQUAL ⇒ V s<= -c (avn at zside).
+            if cc == OpCode::IntNotequal {
+                data.op_set_opcode(compop, OpCode::IntSless);
+                inputs[1 - zside] = avn;
+                inputs[zside] = newc;
+            } else {
+                data.op_set_opcode(compop, OpCode::IntSlessequal);
+                inputs[zside] = avn;
+                inputs[1 - zside] = newc;
+            }
             data.op_set_all_input(compop, &inputs);
             return 1;
         }
@@ -5481,5 +5584,41 @@ mod tests {
         let _glob_out = f.new_output(glob, 4, Address::new(ram, 0x601030));
         assert_eq!(RuleEarlyRemoval.apply_op(glob, &mut f), 0);
         assert!(!f.op(glob).is_dead());
+    }
+
+    #[test]
+    fn scarry_trivial_and_comparison_rewrite() {
+        // Trivial: SCARRY(a, 0) → COPY 0.
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let c0 = f.new_const(4, 0);
+        let triv = f.new_op(OpCode::IntScarry, seq, vec![a, c0]);
+        let _to = f.new_output(triv, 1, Address::new(reg, 0x200));
+        assert_eq!(RuleScarry.apply_op(triv, &mut f), 1);
+        assert_eq!(f.op(triv).code(), OpCode::Copy);
+
+        // Comparison: `scarry(a, 5) != (0 s< (a + 5))` → a signed compare of `a` against `-5`.
+        let c5 = f.new_const(4, 5);
+        let sc = f.new_op(OpCode::IntScarry, seq, vec![a, c5]);
+        let sc_out = f.new_output(sc, 1, Address::new(reg, 0x208));
+        let sum = f.new_op(OpCode::IntAdd, seq, vec![a, c5]);
+        let sum_out = f.new_output(sum, 4, Address::new(reg, 0x20c));
+        let z = f.new_const(4, 0);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![z, sum_out]); // 0 s< (a+5)
+        let sless_out = f.new_output(sless, 1, Address::new(reg, 0x210));
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![sc_out, sless_out]);
+        let _ne_out = f.new_output(ne, 1, Address::new(reg, 0x218));
+        assert_eq!(RuleScarry.apply_op(sc, &mut f), 1);
+        // The compare is rewritten to INT_SLESS between `a` and the constant `-5` (0xfffffffb).
+        assert_eq!(f.op(ne).code(), OpCode::IntSless);
+        let (n0, n1) = (f.op(ne).input(0).unwrap(), f.op(ne).input(1).unwrap());
+        let has_a = n0 == a || n1 == a;
+        let negc = 5u64.wrapping_neg() & 0xffff_ffff;
+        let has_negc = f.vn(n0).is_constant() && f.vn(n0).constant_value() == negc
+            || f.vn(n1).is_constant() && f.vn(n1).constant_value() == negc;
+        assert!(has_a && has_negc, "compare is `a` vs `-5`");
     }
 }

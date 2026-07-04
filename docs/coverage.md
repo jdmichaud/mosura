@@ -119,7 +119,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePullsubIndirect | MISSING |
 | RulePushMulti | MISSING (nodejoin) |
 | RuleSborrow | PORTED |
-| RuleScarry | MISSING |
+| RuleScarry | PORTED (rules.rs; byte-neutral, unit-tested — ADD sibling of RuleSborrow via add_matches) |
 | RuleIntLessEqual | MISSING |
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | MISSING |
@@ -258,8 +258,8 @@ RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs c
 | RulePushPtr | MISSING |
 | RuleStructOffset0 | PARTIAL (ptrarith.rs / infertypes struct-offset-0) |
 | RulePtrArith | PORTED (ptrarith.rs, ptrarith_pool) |
-| RuleLoadVarnode | MISSING (stack LOAD→varnode; trace shows 3× on namespace) |
-| RuleStoreVarnode | MISSING (stack STORE→varnode; 2× on namespace) |
+| RuleLoadVarnode | BLOCKED(mosura resolves LOAD addresses pre-pool via stackvars; a faithful pool-rule port needs the spacebase-placeholder model — checkSpacebase/resolveSpacebaseRelative/isSpacebasePlaceholder) |
+| RuleStoreVarnode | BLOCKED(same spacebase-placeholder dep as RuleLoadVarnode) |
 
 ---
 
@@ -366,16 +366,17 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~54 PORTED (incl. RuleEarlyRemoval), 6 HELD (NotDistribute, AndDistribute, AndCompare,
-  SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow), ~67
-  MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
+- **oppool1**: ~55 PORTED (incl. RuleEarlyRemoval, RuleScarry), 6 HELD (NotDistribute, AndDistribute,
+  AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
+  ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
-- **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 3 MISSING (PushPtr, LoadVarnode, StoreVarnode).
+- **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
+  — spacebase-placeholder dep).
 - **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 12 MISSING (SplitStore etc.).
 
-**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleLoadVarnode/RuleStoreVarnode,
-RuleSplitStore (concatsplit), RuleFloatCast (floatcast), RuleScarry, RuleConcatZext/RuleShiftAnd
-family. (RuleEarlyRemoval — 78× on namespace — now PORTED, byte-neutral.)
+**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleSplitStore (concatsplit),
+RuleFloatCast (floatcast), RuleConcatZext/RuleShiftAnd family. (RuleEarlyRemoval — 78× — and RuleScarry
+now PORTED byte-neutral; RuleLoadVarnode/StoreVarnode reclassified BLOCKED on the spacebase model.)
 
 **Sub-case gaps within PORTED functions** (the class this matrix is meant to catch — e.g. the
 extended-precision consume branches found in Task #8): audit each PORTED rule/action for omitted

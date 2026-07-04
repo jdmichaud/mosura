@@ -10,7 +10,7 @@ use super::rules::{
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
     RuleLogic2Bool, RuleOrMask, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
-    RuleSborrow, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
+    RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
@@ -110,6 +110,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleCollectTerms) // (4)
         .with(RuleMultMult) // mosura extra — term collection over MULT, next to CollectTerms
         .with(RuleSborrow) // (8)
+        .with(RuleScarry) // (9)
         .with(RuleTrivialArith) // (11)
         .with(RuleTrivialShift) // (13)
         .with(RuleIdentityEl) // (16)
