@@ -2900,10 +2900,10 @@ impl Rule for RuleMultNegOne {
 
 /// Ghidra `RuleAddUnsigned` (`ruleaction.cc`): a cleanup that converts `V + 0xff...` to
 /// `V - 0x00...` when the additive constant reads as an unsigned integer whose top quarter of bits
-/// are all ones (i.e. it is "really" a small negative). mosura does not type bare constants (they
-/// stay `undefined<N>`, never `TYPE_UINT`), so this is dormant on the current lattice — ported
-/// faithfully so it activates once constant typing lands. (The equate-symbol and enum guards in
-/// Ghidra do not apply: mosura models neither.)
+/// are all ones (i.e. it is "really" a small negative). Now that `ActionInferTypes` commits a type
+/// onto constant varnodes, a constant read in unsigned context reads as `TYPE_UINT` and this rule
+/// fires as in Ghidra. (The equate-symbol and enum guards in Ghidra do not apply: mosura models
+/// neither.)
 pub struct RuleAddUnsigned;
 
 impl Rule for RuleAddUnsigned {

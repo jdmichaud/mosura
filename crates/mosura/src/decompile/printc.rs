@@ -384,12 +384,14 @@ impl<'a> PrintC<'a> {
         if !vn.is_constant() {
             return false;
         }
-        // mosura doesn't type constants, so guard the sign here: a constant that reads as a small
-        // negative is signed in Ghidra (typed INT, rendered `-N`) and never prints unsigned.
+        // A constant that renders as a small negative is signed in Ghidra (typed INT, rendered
+        // `-N`) and never prints unsigned — guard the sign directly at the print, independent of
+        // whatever unsigned type inference may have left on a negative literal.
         if render_const(vn.constant_value(), vn.size).starts_with('-') {
             return false;
         }
-        // the constant's effective (read-facing) type — the type the op forces on it
+        // the constant's effective (read-facing) type — the type the op forces on it, else its
+        // inferred type (constants now carry one, Ghidra `getHighTypeReadFacing`)
         let dt = self.get_input_cast(op, slot).unwrap_or_else(|| self.type_of(v));
         if !matches!(dt, Datatype::Uint(_) | Datatype::Unknown(_)) {
             return false;
