@@ -529,6 +529,49 @@ impl<'a> SubvariableFlow<'a> {
         self.pullcount += 1;
     }
 
+    /// Ghidra `SubvariableFlow::tryReturnPull` (`subflow.cc:238`): the logical value flows into a
+    /// RETURN. If the return value isn't output-locked, add a parameter patch letting the RETURN take
+    /// the smaller logical value — first propagating the logical size to every other RETURN so the
+    /// function keeps a single return type. mosura adaptations: `FuncProto` has no output-lock model,
+    /// so the `isOutputLocked` gate (subflow.cc:242) is always false here and is omitted; and there is
+    /// no halt-type model, so every RETURN is treated as real (Ghidra skips artificial halts).
+    fn try_return_pull(&mut self, op: OpId, rvn: usize, slot: usize) -> bool {
+        if slot == 0 {
+            return false; // slot 0 is the return-address container, not a value
+        }
+        let mask = self.rvnodes[rvn].mask;
+        if !self.aggressive {
+            let vn = self.rvnodes[rvn].vn.expect("real varnode");
+            if (self.fd.vn(vn).get_consume() & !mask) != 0 {
+                return false; // something outside the mask is consumed — don't truncate
+            }
+        }
+        if !self.returns_traversed {
+            // Truncating a return means every RETURN must carry the same logical size, so there is a
+            // single return value type. Propagate the replacement to each RETURN's value in this slot.
+            let rets: Vec<OpId> =
+                self.fd.op_ids().filter(|&o| self.fd.op(o).code() == OpCode::Return).collect();
+            for retop in rets {
+                let Some(retvn) = self.fd.op(retop).input(slot) else {
+                    continue; // this RETURN carries no value in this slot
+                };
+                let is_const = self.fd.vn(retvn).is_constant();
+                let Some((rep, inworklist)) = self.set_replacement(retvn, mask) else {
+                    return false;
+                };
+                if inworklist {
+                    self.worklist.push(rep);
+                } else if is_const && retop != op {
+                    // The trace won't revisit this RETURN, so generate its patch now.
+                    self.add_terminal_patch_same_op(retop, rep, slot as i32);
+                }
+            }
+            self.returns_traversed = true;
+        }
+        self.add_terminal_patch_same_op(op, rvn, slot as i32);
+        true
+    }
+
     /// Ghidra `SubvariableFlow::addExtensionPatch` (`subflow.cc:1221`): op pads the logical value with
     /// zero bits, shifted left by `sa` (bits); `sa == -1` means shift by the mask's least-set bit.
     /// Not a true modification (the output keeps the expanded size).
@@ -834,7 +877,14 @@ impl<'a> SubvariableFlow<'a> {
                     }
                     hcount += 1;
                 }
-                // Stage-4 arms — CALL/CALLIND/RETURN/BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/
+                // RETURN: pull the logical value out of the return (Ghidra traceForward, subflow.cc:624).
+                OpCode::Return => {
+                    if !self.try_return_pull(op, rvn, slot) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                // Stage-4 arms — CALL/CALLIND/BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/
                 // DIV/REM, INT_LESS/LESSEQUAL, bool ops, CBRANCH: abort the trace (Ghidra `default`).
                 _ => return false,
             }
