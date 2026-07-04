@@ -6,6 +6,8 @@ decompiler), validated against Ghidra as a golden oracle.
 - **How to work on this project** → [`AGENT.md`](AGENT.md): the porting principle, the
   oracle, the verification/quality bar, layout, and conventions.
 - **What's left to do** → [`TODO.md`](TODO.md).
+- **The plan to 100%** → [`docs/roadmap-100.md`](docs/roadmap-100.md): multi-arch, staged
+  x86-64-first; the four done-properties; phases 0–4.
 
 Detailed per-feature implementation notes live in `.claude/memory/mosura-project.md`.
 
@@ -30,7 +32,14 @@ Ghidra actually does is in question.)
 New code is ALWAYS a faithful port — never a hypothesis to test-and-revert. Before writing
 any code, ground it READ-ONLY until you have verified the premise: that this is Ghidra's
 ACTUAL mechanism for the goal and that it truly produces this result in our pipeline. Do not
-implement on a guess and measure-then-revert. Reverting is reserved for PRE-EXISTING
+implement on a guess and measure-then-revert.
+
+**Instrument first, hypothesize second.** When the question is "which Ghidra mechanism
+produces X?", do NOT chain source-reading guesses — ask Ghidra directly: run the rule-trace
+diff (`scripts/trace-diff.sh <fixture>`, `oracle/capture_trace --trace`) and/or oracle IR
+dumps so the firing evidence NAMES the mechanism, then read the source to understand what
+was named. Empirics before theories: one trace beats a chain of plausible-but-wrong premise
+checks. Reverting is reserved for PRE-EXISTING
 non-Ghidra adaptations (the cleanup above); code written now must be faithful enough that it
 never needs reverting. **A revert of newly-written code is a process failure — stop and
 investigate why non-faithful code was generated (it means "only port Ghidra" was broken).**
