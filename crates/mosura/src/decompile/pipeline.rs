@@ -15,7 +15,7 @@ use super::rules::{
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleIgnoreNan,
-    RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift,
+    RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -153,16 +153,19 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleOrCompare) // (109)
         // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —
         // sign-extension tracer still stubbed. RuleAndDistribute (5537) stays OUT (RuleHumptyOr
-        // ping-pong hang). SubZext/Piece2Zext stay HELD (RuleShiftPiece low-piece `&mask` divergence).
+        // ping-pong hang). SubZext/Piece2Zext stay HELD until re-measured after RuleSubvarZext narrows
+        // returns: their earlier regressors were all the wide-return divergence (they reconstruct the
+        // upper-RAX packing an 8-byte RETURN consumes), which int4 returns should clear.
         .with(RuleSubvarAnd) // (110)
         .with(RuleSubvarSubpiece) // (111)
         .with(RuleSubvarCompZero) // (114)
         .with(RuleSubvarShift) // (115)
-        // RuleSubvarZext (116) HELD — its return-narrowing (via try_return_pull) moves returns toward
-        // Ghidra's width (x86_64_sem uint8->xunknown4 vs Ghidra int4), but mosura's use_same_address
-        // (subvarflow.rs:363) mints a UNIQUE for the narrowed addrtied RAX where Ghidra lands it at the
-        // register EAX, so recover.rs records the return storage as a unique (breaks proto_recovery
-        // twodim/modulo). Wire once that's fixed.
+        // RuleSubvarZext (116): narrows a zext-fed value to its logical width; its RETURN pull
+        // (try_return_pull, subflow.cc:238) narrows int8 returns to int4 (twodim uint8->uint4,
+        // namespace int4 == Ghidra). The old return-storage-as-unique bug is closed: RulePropagateCopy
+        // no longer eats the subvar `EAX = COPY(u)` at the RETURN (5a8ac03 ports isReturnCopy), so the
+        // narrowed return lands at the register EAX and recover.rs records it faithfully.
+        .with(RuleSubvarZext) // (116)
         .with(RuleIgnoreNan) // (124) floatprecision group
 }
 

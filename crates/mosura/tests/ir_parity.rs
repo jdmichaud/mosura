@@ -335,7 +335,7 @@ fn merge_groups_phi_versions_into_variables() {
 fn merged_variables_have_no_internal_interference() {
     use mosura::decompile::cover::all_covers;
     use mosura::decompile::merge::merge;
-    use mosura::decompile::{pipeline, VarnodeId};
+    use mosura::decompile::{pipeline, OpCode, VarnodeId};
     use std::collections::HashMap;
     let Some((spec, ctx)) = x86_64() else { return };
 
@@ -368,8 +368,22 @@ fn merged_variables_have_no_internal_interference() {
                 }
             }
         }
-        // and merging actually collapsed versions: fewer variables than covered varnodes
-        assert!(by_hv.len() < covers.len(), "{name}: merge should collapse versions");
+        // and merging actually collapsed versions: fewer variables than covered varnodes — but
+        // only where there are redundant versions to collapse. A straight-line function whose SSA
+        // SubVariableFlow has already reduced to minimal form has nothing to merge: with
+        // RuleSubvarZext narrowing x86_64_sem's return to int4 (matching Ghidra `return EAX`),
+        // by_hv == covers == 11, every covered varnode its own variable. Gate the collapse check on
+        // the function having a phi (mergeable versions), mirroring the `if had_phi` guard on the
+        // phi-merge test above; the interference invariant stays unconditional.
+        let had_phi = (0..f.num_blocks() as u32).any(|b| {
+            f.block(mosura::decompile::BlockId(b))
+                .ops
+                .iter()
+                .any(|&op| f.op(op).code() == OpCode::Multiequal)
+        });
+        if had_phi {
+            assert!(by_hv.len() < covers.len(), "{name}: merge should collapse versions");
+        }
     }
 }
 
