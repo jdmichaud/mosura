@@ -960,6 +960,9 @@ impl Rule for RuleMultMult {
 /// `RuleBoolNegate`: a negated comparison is the complementary comparison —
 /// `!(a == b)` → `a != b`, `!(a < b)` → `b <= a`, etc. Comparisons are 0/1, so the rewrite
 /// is exact; it un-nests negations the structurer can't reach (inside `BOOL_AND`/`BOOL_OR`).
+/// Ghidra's `RuleBoolNegate` supports the signed and floating-point comparison variants too — the
+/// float ones flip the `ucomisd`-derived `!(a <= b)` into `b < a` (matching Ghidra) once
+/// `RuleIgnoreNan`/`RuleFloatRange` have collapsed the NaN-guarded web.
 pub struct RuleBoolNegate;
 
 impl Rule for RuleBoolNegate {
@@ -978,6 +981,10 @@ impl Rule for RuleBoolNegate {
             OpCode::IntLessequal => (OpCode::IntLess, true),
             OpCode::IntSless => (OpCode::IntSlessequal, true),
             OpCode::IntSlessequal => (OpCode::IntSless, true),
+            OpCode::FloatEqual => (OpCode::FloatNotequal, false),
+            OpCode::FloatNotequal => (OpCode::FloatEqual, false),
+            OpCode::FloatLess => (OpCode::FloatLessequal, true),
+            OpCode::FloatLessequal => (OpCode::FloatLess, true),
             _ => return 0,
         };
         let (a, b) = (data.op(cmp).input(0).unwrap(), data.op(cmp).input(1).unwrap());
