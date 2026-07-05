@@ -15,6 +15,7 @@ use super::rules::{
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
     RuleZextCommute, RuleConcatZero, RuleConcatLeftShift,
     RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero,
+    RuleOrConsume,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
@@ -121,6 +122,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleOrMask) // (17)
         .with(RuleAndMask) // (18)
         .with(RuleRangeAnd) // mosura extra — AND with a range mask, next to AndMask
+        .with(RuleOrConsume) // (19)
         .with(RuleOrCollapse) // (20)
         .with(RuleShiftBitops) // (22)
         .with(RuleHighOrderAnd) // (25)

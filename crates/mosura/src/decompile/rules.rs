@@ -4951,6 +4951,41 @@ impl Rule for RuleLess2Zero {
     }
 }
 
+/// Ghidra `RuleOrConsume` (`ruleaction.cc`, oppool1 @5530 "analysis"): drop an OR/XOR input whose
+/// non-zero bits are all unconsumed downstream — `A | B => B` (or `A`) when `nzm(other) & consume(out)
+/// == 0`. The op becomes a COPY of the surviving input.
+pub struct RuleOrConsume;
+
+impl Rule for RuleOrConsume {
+    fn name(&self) -> &str {
+        "orconsume"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntOr, OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let size = data.vn(outvn).size;
+        if size > 8 {
+            return 0; // FIXME: uintb should be arbitrary precision (Ghidra's `size > sizeof(uintb)`)
+        }
+        let consume = data.vn(outvn).get_consume();
+        let in0 = data.op(op).input(0).unwrap();
+        let in1 = data.op(op).input(1).unwrap();
+        if (consume & data.vn(in0).get_nzmask()) == 0 {
+            data.op_remove_input(op, 0);
+            data.op_set_opcode(op, OpCode::Copy);
+            1
+        } else if (consume & data.vn(in1).get_nzmask()) == 0 {
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, OpCode::Copy);
+            1
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6947,5 +6982,49 @@ mod tests {
         let o = less(&mut f, None, Some(5));
         assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 0);
         assert_eq!(f.op(o).code(), OpCode::IntLess);
+    }
+
+    #[test]
+    fn or_consume_drops_unconsumed_input() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // A|B where A's bits (0xff000000) are never consumed (out consume = 0xff) => COPY B.
+        let a = f.new_input(4, Address::new(r, 0x10));
+        f.vn_mut(a).nzm = 0xff00_0000;
+        let b = f.new_input(4, Address::new(r, 0x18));
+        f.vn_mut(b).nzm = 0x0000_00ff;
+        let o = f.new_op(OpCode::IntOr, seq, vec![a, b]);
+        let out = f.new_output(o, 4, Address::new(r, 0x20));
+        f.vn_mut(out).consume = 0x0000_00ff;
+        assert_eq!(RuleOrConsume.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert_eq!(f.op(o).inrefs.len(), 1);
+        assert_eq!(f.op(o).input(0).unwrap(), b);
+
+        // Symmetric: B's bits unconsumed => COPY A (drops input 1).
+        let a2 = f.new_input(4, Address::new(r, 0x30));
+        f.vn_mut(a2).nzm = 0x0000_00ff;
+        let b2 = f.new_input(4, Address::new(r, 0x38));
+        f.vn_mut(b2).nzm = 0xff00_0000;
+        let o2 = f.new_op(OpCode::IntOr, seq, vec![a2, b2]);
+        let out2 = f.new_output(o2, 4, Address::new(r, 0x40));
+        f.vn_mut(out2).consume = 0x0000_00ff;
+        assert_eq!(RuleOrConsume.apply_op(o2, &mut f), 1);
+        assert_eq!(f.op(o2).code(), OpCode::Copy);
+        assert_eq!(f.op(o2).input(0).unwrap(), a2);
+
+        // No fire: both inputs have consumed bits.
+        let a3 = f.new_input(4, Address::new(r, 0x50));
+        f.vn_mut(a3).nzm = 0x0000_000f;
+        let b3 = f.new_input(4, Address::new(r, 0x58));
+        f.vn_mut(b3).nzm = 0x0000_00f0;
+        let o3 = f.new_op(OpCode::IntOr, seq, vec![a3, b3]);
+        let out3 = f.new_output(o3, 4, Address::new(r, 0x60));
+        f.vn_mut(out3).consume = 0x0000_00ff;
+        assert_eq!(RuleOrConsume.apply_op(o3, &mut f), 0);
+        assert_eq!(f.op(o3).code(), OpCode::IntOr);
     }
 }
