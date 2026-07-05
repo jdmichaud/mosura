@@ -1360,6 +1360,63 @@ impl Rule for RuleBoolZext {
     }
 }
 
+/// Ghidra `RuleZextSless` (ruleaction.cc:2564): `zext(V) s< c  =>  V < c` (and the SLESSEQUAL and
+/// reversed-operand `c s< zext(V)` forms). Registered on INT_SLESS / INT_SLESSEQUAL: one operand is a
+/// zero-extension and the other a constant whose sign bit (within the pre-extension width) is clear,
+/// so the extension is unnecessary and the signed compare is equivalent to the unsigned one on the
+/// narrow value.
+pub struct RuleZextSless;
+
+impl Rule for RuleZextSless {
+    fn name(&self) -> &str {
+        "zextsless"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSless, OpCode::IntSlessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(in0), Some(in1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        // Find which operand is the INT_ZEXT (prefer slot 0, else slot 1)
+        let (zext_vn, other_vn, zextslot, otherslot) = if data.vn(in1).is_written()
+            && data.op(data.vn(in1).def.unwrap()).code() == OpCode::IntZext
+        {
+            (in1, in0, 1usize, 0usize)
+        } else if data.vn(in0).is_written()
+            && data.op(data.vn(in0).def.unwrap()).code() == OpCode::IntZext
+        {
+            (in0, in1, 0usize, 1usize)
+        } else {
+            return 0;
+        };
+        if !data.vn(other_vn).is_constant() {
+            return 0;
+        }
+        let zext = data.vn(zext_vn).def.unwrap();
+        let small_vn = data.op(zext).input(0).unwrap();
+        if !data.vn(small_vn).is_heritage_known() {
+            return 0;
+        }
+        let smallsize = data.vn(small_vn).size;
+        let val = data.vn(other_vn).constant_value();
+        // The zero extension must be unnecessary: the sign bit of the narrow value must be 0.
+        if (val >> (8 * smallsize - 1)) != 0 {
+            return 0;
+        }
+        let newvn = data.new_const(smallsize, val);
+        data.op_set_input(op, zextslot, small_vn);
+        data.op_set_input(op, otherslot, newvn);
+        let newopc = if data.op(op).code() == OpCode::IntSless {
+            OpCode::IntLess
+        } else {
+            OpCode::IntLessequal
+        };
+        data.op_set_opcode(op, newopc);
+        1
+    }
+}
+
 /// Ghidra `Varnode::loneDescend` (varnode.cc): the single op reading `vn`, or `None` if it has
 /// zero or more than one reader. (Descendant lists are kept exact by the op-mutation helpers, so a
 /// rewritten-away or removed reader no longer counts.)
@@ -7749,5 +7806,46 @@ mod tests {
         let divout = f.op(div).output.unwrap();
         assert_eq!(f.vn(divout).size, 4);
         assert_eq!(f.op(sub).input(0), Some(divout));
+    }
+
+    // ---- RuleZextSless (#58) -------------------------------------------------------------------
+
+    #[test]
+    fn zextsless_drops_unnecessary_zext_on_signed_compare() {
+        // zext(V:4):8 s< 0x10  =>  V:4 < 0x10  (sign bit of 0x10 within 4 bytes is clear).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(z, 8, Address::new(reg, 0x18));
+        let c = f.new_const(8, 0x10);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![zv, c]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![z, sless]);
+
+        assert_eq!(RuleZextSless.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntLess);
+        assert_eq!(f.op(sless).input(0), Some(v));
+        let nc = f.op(sless).input(1).unwrap();
+        assert!(f.vn(nc).is_constant() && f.vn(nc).constant_value() == 0x10 && f.vn(nc).size == 4);
+    }
+
+    #[test]
+    fn zextsless_rejects_when_narrow_sign_bit_set() {
+        // zext(V:1):4 s< 0x80 — 0x80's bit 7 (the narrow sign bit) is set, so the zext is load-bearing.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(1, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(z, 4, Address::new(reg, 0x18));
+        let c = f.new_const(4, 0x80);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![zv, c]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![z, sless]);
+
+        assert_eq!(RuleZextSless.apply_op(sless, &mut f), 0);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
     }
 }

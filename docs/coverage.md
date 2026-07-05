@@ -168,7 +168,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePropagateCopy | PORTED (+ isReturnCopy RETURN guard `5a8ac03`) |
 | RuleZextEliminate | PORTED |
 | RuleSlessToLess | PORTED |
-| RuleZextSless | MISSING |
+| RuleZextSless | PORTED (rules.rs; byte-neutral, unit-tested — `zext(V) s< c => V < c` (+ SLESSEQUAL / reversed-operand), when c's narrow sign bit is clear so the zext is unnecessary; inert on corpus: no surviving signed-compare-of-zext-vs-const idiom in the fixtures) |
 | RuleBitUndistribute | MISSING |
 | RuleBooleanUndistribute | MISSING |
 | RuleBooleanDedup | MISSING |
