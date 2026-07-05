@@ -5398,6 +5398,380 @@ impl Rule for RuleBxor2NotEqual {
     }
 }
 
+/// The LESSEQUAL variant of a LESS opcode (Ghidra's `(OpCode)(lessform+1)` — the p-code enum places
+/// each `_LESSEQUAL` immediately after its `_LESS`). Only LESS/SLESS/FLOAT_LESS reach here.
+fn lessequal_form(lessform: OpCode) -> OpCode {
+    match lessform {
+        OpCode::IntLess => OpCode::IntLessequal,
+        OpCode::IntSless => OpCode::IntSlessequal,
+        OpCode::FloatLess => OpCode::FloatLessequal,
+        other => other,
+    }
+}
+
+/// Ghidra `RuleThreeWayCompare::testCompareEquivalence` (ruleaction.cc:9942): given the putative LESS
+/// and LESSEQUAL ops of a three-way, verify their operands match (a LESSEQUAL may have been converted
+/// to a LESS against an off-by-one constant). Returns 0 (correct), 1 (correct but swap the roles), or
+/// -1 (not a match).
+fn three_way_test_compare_equivalence(data: &Funcdata, lessop: OpId, lessequalop: OpId) -> i32 {
+    let less_code = data.op(lessop).code();
+    let le_code = data.op(lessequalop).code();
+    let mut two_less_than;
+    match less_code {
+        OpCode::IntLess => {
+            if le_code == OpCode::IntLessequal {
+                two_less_than = false;
+            } else if le_code == OpCode::IntLess {
+                two_less_than = true;
+            } else {
+                return -1;
+            }
+        }
+        OpCode::IntSless => {
+            if le_code == OpCode::IntSlessequal {
+                two_less_than = false;
+            } else if le_code == OpCode::IntSless {
+                two_less_than = true;
+            } else {
+                return -1;
+            }
+        }
+        OpCode::FloatLess => {
+            if le_code == OpCode::FloatLessequal {
+                two_less_than = false;
+            } else {
+                return -1; // No partial form for floating-point comparison
+            }
+        }
+        _ => return -1,
+    }
+    let a1 = data.op(lessop).input(0).unwrap();
+    let a2 = data.op(lessequalop).input(0).unwrap();
+    let b1 = data.op(lessop).input(1).unwrap();
+    let b2 = data.op(lessequalop).input(1).unwrap();
+    let mut res = 0;
+    if a1 != a2 {
+        // Make sure a1 and a2 are equivalent
+        if !data.vn(a1).is_constant() || !data.vn(a2).is_constant() {
+            return -1;
+        }
+        let (o1, o2) = (data.vn(a1).constant_value(), data.vn(a2).constant_value());
+        if o1 != o2 && two_less_than {
+            if o2.wrapping_add(1) == o1 {
+                two_less_than = false; // -lessequalop- is LESSTHAN, equivalent to LESSEQUAL
+            } else if o1.wrapping_add(1) == o2 {
+                two_less_than = false; // -lessop- is LESSTHAN, equivalent to LESSEQUAL
+                res = 1; // we need to swap
+            } else {
+                return -1;
+            }
+        }
+    }
+    if b1 != b2 {
+        // Make sure b1 and b2 are equivalent
+        if !data.vn(b1).is_constant() || !data.vn(b2).is_constant() {
+            return -1;
+        }
+        let (o1, o2) = (data.vn(b1).constant_value(), data.vn(b2).constant_value());
+        if o1 != o2 && two_less_than {
+            if o1.wrapping_add(1) == o2 {
+                two_less_than = false;
+            } else if o2.wrapping_add(1) == o1 {
+                two_less_than = false;
+                res = 1; // we need to swap
+            }
+        } else {
+            return -1;
+        }
+    }
+    if two_less_than {
+        return -1; // Did not compensate for two LESSTHANs with differing constants
+    }
+    res
+}
+
+/// Ghidra `RuleThreeWayCompare::detectThreeWay` (ruleaction.cc:10017): match a three-way calculation
+/// `zext(V < W) + zext(V <= W) - 1` (in one of three add/const permutations) rooted at `op` (an
+/// INT_ADD). Returns `(lessop, is_partial)` where `lessop` is the LESS op, or `None`. `is_partial` is
+/// set when only the `zext + zext` (no `- 1`) prefix was found.
+fn three_way_detect(data: &Funcdata, op: OpId) -> Option<(OpId, bool)> {
+    let mut is_partial = false;
+    let vn2 = data.op(op).input(1).unwrap();
+    let zext1: OpId;
+    let zext2: OpId;
+    if data.vn(vn2).is_constant() {
+        // Form 1 :  (z + z) - 1
+        let mask = super::nzmask::calc_mask(data.vn(vn2).size);
+        if mask != data.vn(vn2).constant_value() {
+            return None; // Match the -1
+        }
+        let vn1 = data.op(op).input(0).unwrap();
+        if !data.vn(vn1).is_written() {
+            return None;
+        }
+        let addop = data.vn(vn1).def.unwrap();
+        if data.op(addop).code() != OpCode::IntAdd {
+            return None; // Match the add
+        }
+        let t0 = data.op(addop).input(0).unwrap();
+        if !data.vn(t0).is_written() {
+            return None;
+        }
+        zext1 = data.vn(t0).def.unwrap();
+        if data.op(zext1).code() != OpCode::IntZext {
+            return None; // Match the first zext
+        }
+        let t1 = data.op(addop).input(1).unwrap();
+        if !data.vn(t1).is_written() {
+            return None;
+        }
+        zext2 = data.vn(t1).def.unwrap();
+        if data.op(zext2).code() != OpCode::IntZext {
+            return None; // Match the second zext
+        }
+    } else if data.vn(vn2).is_written() {
+        let tmpop = data.vn(vn2).def.unwrap();
+        let tmpcode = data.op(tmpop).code();
+        if tmpcode == OpCode::IntZext {
+            // Form 2 : (z - 1) + z
+            zext2 = tmpop; // Second zext is already matched
+            let vn1 = data.op(op).input(0).unwrap();
+            if !data.vn(vn1).is_written() {
+                return None;
+            }
+            let addop = data.vn(vn1).def.unwrap();
+            if data.op(addop).code() != OpCode::IntAdd {
+                // Partial form:  (z + z)
+                zext1 = addop;
+                if data.op(zext1).code() != OpCode::IntZext {
+                    return None; // Match the first zext
+                }
+                is_partial = true;
+            } else {
+                let t1 = data.op(addop).input(1).unwrap();
+                if !data.vn(t1).is_constant() {
+                    return None;
+                }
+                let mask = super::nzmask::calc_mask(data.vn(t1).size);
+                if mask != data.vn(t1).constant_value() {
+                    return None; // Match the -1
+                }
+                let t0 = data.op(addop).input(0).unwrap();
+                if !data.vn(t0).is_written() {
+                    return None;
+                }
+                zext1 = data.vn(t0).def.unwrap();
+                if data.op(zext1).code() != OpCode::IntZext {
+                    return None; // Match the first zext
+                }
+            }
+        } else if tmpcode == OpCode::IntAdd {
+            // Form 3 : z + (z - 1)
+            let addop = tmpop; // Matched the add
+            let vn1 = data.op(op).input(0).unwrap();
+            if !data.vn(vn1).is_written() {
+                return None;
+            }
+            zext1 = data.vn(vn1).def.unwrap();
+            if data.op(zext1).code() != OpCode::IntZext {
+                return None; // Match the first zext
+            }
+            let t1 = data.op(addop).input(1).unwrap();
+            if !data.vn(t1).is_constant() {
+                return None;
+            }
+            let mask = super::nzmask::calc_mask(data.vn(t1).size);
+            if mask != data.vn(t1).constant_value() {
+                return None; // Match the -1
+            }
+            let t0 = data.op(addop).input(0).unwrap();
+            if !data.vn(t0).is_written() {
+                return None;
+            }
+            zext2 = data.vn(t0).def.unwrap();
+            if data.op(zext2).code() != OpCode::IntZext {
+                return None; // Match the second zext
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    let v1 = data.op(zext1).input(0).unwrap();
+    if !data.vn(v1).is_written() {
+        return None;
+    }
+    let v2 = data.op(zext2).input(0).unwrap();
+    if !data.vn(v2).is_written() {
+        return None;
+    }
+    let mut lessop = data.vn(v1).def.unwrap();
+    let mut lessequalop = data.vn(v2).def.unwrap();
+    let opc = data.op(lessop).code();
+    if opc != OpCode::IntLess && opc != OpCode::IntSless && opc != OpCode::FloatLess {
+        // Make sure first zext is the less-than
+        std::mem::swap(&mut lessop, &mut lessequalop);
+    }
+    let form = three_way_test_compare_equivalence(data, lessop, lessequalop);
+    if form < 0 {
+        return None;
+    }
+    if form == 1 {
+        std::mem::swap(&mut lessop, &mut lessequalop);
+    }
+    Some((lessop, is_partial))
+}
+
+/// Ghidra `RuleThreeWayCompare` (ruleaction.cc:10128): simplify a secondary comparison of a
+/// \e three-way value `X = zext(V < W) + zext(V <= W) - 1` (which is -1/0/1 for less/equal/greater)
+/// against a small constant back into a single direct comparison of `V` and `W`. The `form` integer
+/// packs (const value, partial-ness, const operand position, base compare op) and selects the
+/// resulting op/operand order via the 24-case table.
+pub struct RuleThreeWayCompare;
+
+impl Rule for RuleThreeWayCompare {
+    fn name(&self) -> &str {
+        "threewaycomp"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![
+            OpCode::IntSless,
+            OpCode::IntSlessequal,
+            OpCode::IntEqual,
+            OpCode::IntNotequal,
+        ]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let mut const_slot = 0usize;
+        let mut tmpvn = data.op(op).input(const_slot).unwrap();
+        if !data.vn(tmpvn).is_constant() {
+            // One of the two inputs must be a constant
+            const_slot = 1;
+            tmpvn = data.op(op).input(const_slot).unwrap();
+            if !data.vn(tmpvn).is_constant() {
+                return 0;
+            }
+        }
+        // Encode const value (-1, 0, 1, 2) as (0, 1, 2, 3)
+        let val = data.vn(tmpvn).constant_value();
+        let mut form: i32 = if val <= 2 {
+            val as i32 + 1
+        } else if val == super::nzmask::calc_mask(data.vn(tmpvn).size) {
+            0
+        } else {
+            return 0;
+        };
+
+        let other = data.op(op).input(1 - const_slot).unwrap();
+        if !data.vn(other).is_written() {
+            return 0;
+        }
+        let otherdef = data.vn(other).def.unwrap();
+        if data.op(otherdef).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let Some((lessop, is_partial)) = three_way_detect(data, otherdef) else {
+            return 0;
+        };
+        if is_partial {
+            // Only found a partial three-way
+            if form == 0 {
+                return 0; // -1 const value is now out of range
+            }
+            form -= 1; // Subtract 1 from both sides to complete the three-way form
+        }
+        form <<= 1;
+        if const_slot == 1 {
+            form += 1; // Encode const position as next bit
+        }
+        let lessform = data.op(lessop).code(); // INT_LESS, INT_SLESS, or FLOAT_LESS
+        form <<= 2;
+        match data.op(op).code() {
+            OpCode::IntSlessequal => form += 1,
+            OpCode::IntEqual => form += 2,
+            OpCode::IntNotequal => form += 3,
+            _ => {} // INT_SLESS => +0
+        }
+
+        // First param to LESSTHAN is the second param of the cmp3way function, and vice versa
+        let bvn = data.op(lessop).input(0).unwrap();
+        let avn = data.op(lessop).input(1).unwrap();
+        if !data.vn(avn).is_constant() && data.vn(avn).is_free() {
+            return 0;
+        }
+        if !data.vn(bvn).is_constant() && data.vn(bvn).is_free() {
+            return 0;
+        }
+        match form {
+            1 | 21 => {
+                // -1 s<= threeway  /  threeway s<= 1  =>  always true
+                data.op_set_opcode(op, OpCode::IntEqual);
+                let z0 = data.new_const(1, 0);
+                data.op_set_input(op, 0, z0);
+                let z1 = data.new_const(1, 0);
+                data.op_set_input(op, 1, z1);
+            }
+            4 | 16 => {
+                // threeway s< -1  /  1 s< threeway  =>  always false
+                data.op_set_opcode(op, OpCode::IntNotequal);
+                let z0 = data.new_const(1, 0);
+                data.op_set_input(op, 0, z0);
+                let z1 = data.new_const(1, 0);
+                data.op_set_input(op, 1, z1);
+            }
+            2 | 5 | 6 | 12 => {
+                // a < b
+                data.op_set_opcode(op, lessform);
+                data.op_set_input(op, 0, avn);
+                data.op_set_input(op, 1, bvn);
+            }
+            13 | 19 | 20 | 23 => {
+                // a <= b
+                data.op_set_opcode(op, lessequal_form(lessform));
+                data.op_set_input(op, 0, avn);
+                data.op_set_input(op, 1, bvn);
+            }
+            8 | 17 | 18 | 22 => {
+                // a > b
+                data.op_set_opcode(op, lessform);
+                data.op_set_input(op, 0, bvn);
+                data.op_set_input(op, 1, avn);
+            }
+            0 | 3 | 7 | 9 => {
+                // a >= b
+                data.op_set_opcode(op, lessequal_form(lessform));
+                data.op_set_input(op, 0, bvn);
+                data.op_set_input(op, 1, avn);
+            }
+            10 | 14 => {
+                // a == b
+                let eqform = if lessform == OpCode::FloatLess {
+                    OpCode::FloatEqual
+                } else {
+                    OpCode::IntEqual
+                };
+                data.op_set_opcode(op, eqform);
+                data.op_set_input(op, 0, avn);
+                data.op_set_input(op, 1, bvn);
+            }
+            11 | 15 => {
+                // a != b
+                let neform = if lessform == OpCode::FloatLess {
+                    OpCode::FloatNotequal
+                } else {
+                    OpCode::IntNotequal
+                };
+                data.op_set_opcode(op, neform);
+                data.op_set_input(op, 0, avn);
+                data.op_set_input(op, 1, bvn);
+            }
+            _ => return 0,
+        }
+        1
+    }
+}
+
 /// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
 /// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
 /// `V < -1(max) => V != -1`.
@@ -8635,6 +9009,89 @@ mod tests {
         assert_eq!(f.op(bx).code(), OpCode::IntNotequal);
         assert_eq!(f.op(bx).input(0), Some(a));
         assert_eq!(f.op(bx).input(1), Some(b));
+    }
+
+    // ---- RuleThreeWayCompare (#50) -------------------------------------------------------------
+
+    /// Build a Form-1 three-way `(zext(V s< W) + zext(V s<= W)) - 1` and return
+    /// `(threeway_vn, V, W, ops)`. `threeway` is -1/0/1 for V less/equal/greater than W.
+    fn build_threeway(
+        f: &mut Funcdata,
+        ram: Address,
+        base: u64,
+    ) -> (VarnodeId, VarnodeId, VarnodeId, Vec<OpId>) {
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, base));
+        let w = f.new_input(4, Address::new(reg, base + 8));
+        let less = f.new_op(OpCode::IntSless, seq, vec![v, w]);
+        let lessv = f.new_output(less, 1, Address::new(reg, base + 0x10));
+        let le = f.new_op(OpCode::IntSlessequal, seq, vec![v, w]);
+        let lev = f.new_output(le, 1, Address::new(reg, base + 0x18));
+        let z1 = f.new_op(OpCode::IntZext, seq, vec![lessv]);
+        let z1v = f.new_output(z1, 4, Address::new(reg, base + 0x20));
+        let z2 = f.new_op(OpCode::IntZext, seq, vec![lev]);
+        let z2v = f.new_output(z2, 4, Address::new(reg, base + 0x28));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![z1v, z2v]);
+        let addv = f.new_output(add, 4, Address::new(reg, base + 0x30));
+        let negone = f.new_const(4, 0xffff_ffff);
+        let addm1 = f.new_op(OpCode::IntAdd, seq, vec![addv, negone]);
+        let threeway = f.new_output(addm1, 4, Address::new(reg, base + 0x38));
+        (threeway, v, w, vec![less, le, z1, z2, add, addm1])
+    }
+
+    #[test]
+    fn threeway_sless_one_becomes_lessequal() {
+        // threeway s< 1  =>  W s<= V   (i.e. NOT(V<W), a >= comparison; form 20)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let (threeway, v, w, mut ops) = build_threeway(&mut f, ram, 0x10);
+        let one = f.new_const(4, 1);
+        let cmp = f.new_op(OpCode::IntSless, seq, vec![threeway, one]);
+        f.new_output(cmp, 1, Address::new(reg, 0x100));
+        ops.push(cmp);
+        parent_all(&mut f, ops);
+
+        assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 1);
+        assert_eq!(f.op(cmp).code(), OpCode::IntSlessequal);
+        assert_eq!(f.op(cmp).input(0), Some(w));
+        assert_eq!(f.op(cmp).input(1), Some(v));
+    }
+
+    #[test]
+    fn threeway_equal_zero_becomes_equal() {
+        // threeway == 0  =>  W == V   (i.e. V == W; form 14)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let (threeway, v, w, mut ops) = build_threeway(&mut f, ram, 0x10);
+        let zero = f.new_const(4, 0);
+        let cmp = f.new_op(OpCode::IntEqual, seq, vec![threeway, zero]);
+        f.new_output(cmp, 1, Address::new(reg, 0x100));
+        ops.push(cmp);
+        parent_all(&mut f, ops);
+
+        assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 1);
+        assert_eq!(f.op(cmp).code(), OpCode::IntEqual);
+        assert_eq!(f.op(cmp).input(0), Some(w));
+        assert_eq!(f.op(cmp).input(1), Some(v));
+    }
+
+    #[test]
+    fn threeway_no_fire_on_plain_compare() {
+        // V s< 1 where V is a plain input (not a three-way sum) — no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let one = f.new_const(4, 1);
+        let cmp = f.new_op(OpCode::IntSless, seq, vec![v, one]);
+        f.new_output(cmp, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![cmp]);
+
+        assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 0);
+        assert_eq!(f.op(cmp).code(), OpCode::IntSless);
     }
 
     // ---- RuleAndOrLump (#21) / RuleRightShiftAnd (#23) -----------------------------------------

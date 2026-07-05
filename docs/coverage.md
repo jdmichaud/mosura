@@ -160,7 +160,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSLess2Zero | PORTED (rules.rs; byte-neutral, 7 unit tests — INT_SLESS vs 0/-1, peel a sign-only op: SUBPIECE-of-top-piece / `~V` / `V & 0x8..` / `CONCAT(V,W)` / `getHiBit(add\|or\|xor)`=>EQUAL/NOTEQUAL / `bool << (8*sz-1)`=>`!bool`; 0 firings on corpus, byte-IDENTICAL — the sign-only-op-against-0/-1 idiom doesn't survive to actprop in the fixtures) |
 | RuleEqual2Zero | PORTED |
 | RuleEqual2Constant | PORTED (rules.rs; byte-neutral, unit-tested — fold const through arith operand of INT_EQUAL/NOTEQUAL when V only used in similar compares; inert on corpus) |
-| RuleThreeWayCompare | MISSING |
+| RuleThreeWayCompare | PORTED (rules.rs; byte-neutral, 3 unit tests — detect a three-way `zext(V<W)+zext(V<=W)-1` (3 add/const permutations + partial form, via detectThreeWay/testCompareEquivalence helpers) and fold a secondary compare of it vs a small constant back to a direct `V`/`W` compare (24-case form table); 0 firings on corpus — the C++ spaceship idiom doesn't occur in the fixtures) |
 | RuleXorCollapse | PORTED |
 | RuleAddMultCollapse | PORTED (ptrarith_pool) |
 | RuleCollapseConstants | PORTED (= RuleConstFold) |
