@@ -5320,6 +5320,84 @@ impl Rule for RuleTrivialBool {
     }
 }
 
+/// Ghidra `Rule2Comp2Mult` (ruleaction.cc:3967): rewrite arithmetic negation as multiplication by
+/// -1 — `-V => V * -1` — so the term-collection / multiply rules can treat it uniformly. The
+/// cleanup pool's [`RuleMultNegOne`] restores `-V` for printing (the two live in separate pools, so
+/// they never ping-pong).
+pub struct Rule2Comp2Mult;
+
+impl Rule for Rule2Comp2Mult {
+    fn name(&self) -> &str {
+        "2comp2mult"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Int2comp]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        data.op_set_opcode(op, OpCode::IntMult);
+        let size = data.vn(data.op(op).input(0).unwrap()).size;
+        let negone = data.new_const(size, super::nzmask::calc_mask(size));
+        data.op_insert_input(op, 1, negone);
+        1
+    }
+}
+
+/// Ghidra `RuleCarryElim` (ruleaction.cc:3988): rewrite `INT_CARRY(V, c)` against a constant as a
+/// comparison — `carry(V, c) => (-c) <= V` — with the special case `carry(V, 0) => false`.
+pub struct RuleCarryElim;
+
+impl Rule for RuleCarryElim {
+    fn name(&self) -> &str {
+        "carryelim"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntCarry]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn2).is_constant() {
+            return 0;
+        }
+        let vn1 = data.op(op).input(0).unwrap();
+        if data.vn(vn1).is_free() {
+            return 0;
+        }
+        let off = data.vn(vn2).constant_value();
+        if off == 0 {
+            // carry(V, 0) is always false
+            data.op_remove_input(op, 1);
+            let f = data.new_const(1, 0);
+            data.op_set_input(op, 0, f);
+            data.op_set_opcode(op, OpCode::Copy);
+            return 1;
+        }
+        // Take the twos-complement of the constant: -c
+        let off = off.wrapping_neg() & super::nzmask::calc_mask(data.vn(vn2).size);
+        data.op_set_opcode(op, OpCode::IntLessequal);
+        data.op_set_input(op, 1, vn1); // Move V to second position
+        let c = data.new_const(data.vn(vn1).size, off);
+        data.op_set_input(op, 0, c); // Put -c in first position
+        1
+    }
+}
+
+/// Ghidra `RuleBxor2NotEqual` (ruleaction.cc:269): `V ^^ W => V != W` — a boolean XOR is boolean
+/// inequality. A pure opcode swap.
+pub struct RuleBxor2NotEqual;
+
+impl Rule for RuleBxor2NotEqual {
+    fn name(&self) -> &str {
+        "bxor2notequal"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        data.op_set_opcode(op, OpCode::IntNotequal);
+        1
+    }
+}
+
 /// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
 /// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
 /// `V < -1(max) => V != -1`.
@@ -8464,6 +8542,99 @@ mod tests {
 
         assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 0);
         assert_eq!(f.op(sless).code(), OpCode::IntSless);
+    }
+
+    // ---- Rule2Comp2Mult (#41) / RuleCarryElim (#43) / RuleBxor2NotEqual (#44) -------------------
+
+    #[test]
+    fn twocomp2mult_rewrites_negate_as_mult_negone() {
+        // -V  =>  V * -1
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let neg = f.new_op(OpCode::Int2comp, seq, vec![v]);
+        f.new_output(neg, 4, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![neg]);
+
+        assert_eq!(Rule2Comp2Mult.apply_op(neg, &mut f), 1);
+        assert_eq!(f.op(neg).code(), OpCode::IntMult);
+        assert_eq!(f.op(neg).num_inputs(), 2);
+        assert_eq!(f.op(neg).input(0), Some(v));
+        let c = f.op(neg).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xffff_ffff && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn carryelim_nonzero_becomes_lessequal() {
+        // carry(V, 5)  =>  (-5) <= V   (-5 == 0xfffffffb in 4 bytes)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let carry = f.new_op(OpCode::IntCarry, seq, vec![v, c5]);
+        f.new_output(carry, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![carry]);
+
+        assert_eq!(RuleCarryElim.apply_op(carry, &mut f), 1);
+        assert_eq!(f.op(carry).code(), OpCode::IntLessequal);
+        assert_eq!(f.op(carry).input(1), Some(v));
+        let c = f.op(carry).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xffff_fffb && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn carryelim_zero_becomes_false() {
+        // carry(V, 0)  =>  false  (COPY of a 1-byte 0)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c0 = f.new_const(4, 0);
+        let carry = f.new_op(OpCode::IntCarry, seq, vec![v, c0]);
+        f.new_output(carry, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![carry]);
+
+        assert_eq!(RuleCarryElim.apply_op(carry, &mut f), 1);
+        assert_eq!(f.op(carry).code(), OpCode::Copy);
+        assert_eq!(f.op(carry).num_inputs(), 1);
+        let c = f.op(carry).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0 && f.vn(c).size == 1);
+    }
+
+    #[test]
+    fn carryelim_no_fire_on_nonconstant() {
+        // carry(V, W) with W non-constant — no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let carry = f.new_op(OpCode::IntCarry, seq, vec![v, w]);
+        f.new_output(carry, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![carry]);
+
+        assert_eq!(RuleCarryElim.apply_op(carry, &mut f), 0);
+        assert_eq!(f.op(carry).code(), OpCode::IntCarry);
+    }
+
+    #[test]
+    fn bxor2notequal_rewrites_bool_xor() {
+        // V ^^ W  =>  V != W
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let bx = f.new_op(OpCode::BoolXor, seq, vec![a, b]);
+        f.new_output(bx, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![bx]);
+
+        assert_eq!(RuleBxor2NotEqual.apply_op(bx, &mut f), 1);
+        assert_eq!(f.op(bx).code(), OpCode::IntNotequal);
+        assert_eq!(f.op(bx).input(0), Some(a));
+        assert_eq!(f.op(bx).input(1), Some(b));
     }
 
     // ---- RuleAndOrLump (#21) / RuleRightShiftAnd (#23) -----------------------------------------

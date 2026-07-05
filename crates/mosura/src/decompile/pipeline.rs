@@ -15,7 +15,7 @@ use super::rules::{
     RuleOrCollapse, RuleAndOrLump, RuleRightShiftAnd, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
     RuleZextCommute, RuleConcatZero, RuleConcatLeftShift, RuleSubCancel, RuleShiftSub, RuleSubCommute,
     RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero,
-    RuleSLess2Zero, RuleOrConsume, RuleEqual2Constant,
+    RuleSLess2Zero, Rule2Comp2Mult, RuleCarryElim, RuleBxor2NotEqual, RuleOrConsume, RuleEqual2Constant,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
@@ -139,6 +139,9 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleShift2Mult) // (37)
         .with(RuleShiftPiece) // (38)
         .with(RuleMultiCollapse) // (39)
+        .with(Rule2Comp2Mult) // (41)
+        .with(RuleCarryElim) // (43)
+        .with(RuleBxor2NotEqual) // (44)
         .with(RuleLess2Zero) // (45)
         .with(RuleLessEqual2Zero) // (46)
         .with(RuleSLess2Zero) // (47)

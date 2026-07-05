@@ -545,6 +545,13 @@ impl Funcdata {
         self.varnodes[vid.0 as usize].descend.push(op);
     }
 
+    /// Insert `vid` as a new input of `op` at position `slot` (Ghidra's `opInsertInput`),
+    /// shifting later inputs up and adding `op` to `vid`'s descendant list.
+    pub fn op_insert_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
+        self.ops[op.0 as usize].inrefs.insert(slot, vid);
+        self.varnodes[vid.0 as usize].descend.push(op);
+    }
+
     /// Create a MULTIEQUAL (phi) for the location `(space, offset, size)` with `npreds`
     /// placeholder inputs (filled during renaming), give it an output at that location,
     /// and prepend it to `block`. Returns the op.

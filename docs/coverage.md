@@ -151,10 +151,10 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleShiftPiece | PORTED |
 | RuleMultiCollapse | PORTED (+ nofunc const-base guard `68a059e`) |
 | RuleIndirectCollapse | MISSING |
-| Rule2Comp2Mult | MISSING |
+| Rule2Comp2Mult | PORTED (rules.rs; byte-neutral, unit-tested — `-V => V * -1` canonicalization in the main pool so mult/term rules act on it uniformly; cleanup-pool `RuleMultNegOne` restores `-V` (separate pools, no ping-pong); 0 firings on corpus — no surviving INT_2COMP reaches actprop — byte-IDENTICAL. Added `op_insert_input` helper) |
 | RuleSub2Add | PORTED (ptrarith_pool, not main — deliberate: switch/jumptable cascade, Task #9) |
-| RuleCarryElim | MISSING |
-| RuleBxor2NotEqual | MISSING |
+| RuleCarryElim | PORTED (rules.rs; byte-neutral, unit-tested — `carry(V, c) => (-c) <= V`, special case `carry(V, 0) => false`; fires 19x on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
+| RuleBxor2NotEqual | PORTED (rules.rs; byte-neutral, unit-tested — `V ^^ W => V != W` (BOOL_XOR is boolean inequality); inert on corpus) |
 | RuleLess2Zero | PORTED (rules.rs; unit-tested — INT_LESS vs extremal 0/max constants; fires 9× on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleLessEqual2Zero | PORTED |
 | RuleSLess2Zero | PORTED (rules.rs; byte-neutral, 7 unit tests — INT_SLESS vs 0/-1, peel a sign-only op: SUBPIECE-of-top-piece / `~V` / `V & 0x8..` / `CONCAT(V,W)` / `getHiBit(add\|or\|xor)`=>EQUAL/NOTEQUAL / `bool << (8*sz-1)`=>`!bool`; 0 firings on corpus, byte-IDENTICAL — the sign-only-op-against-0/-1 idiom doesn't survive to actprop in the fixtures) |
