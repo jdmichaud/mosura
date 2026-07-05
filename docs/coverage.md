@@ -172,7 +172,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleBitUndistribute | MISSING |
 | RuleBooleanUndistribute | MISSING |
 | RuleBooleanDedup | MISSING |
-| RuleBoolZext | MISSING |
+| RuleBoolZext | PORTED (rules.rs; byte-neutral, unit-tested — simplify `zext(V)*-1` extended booleans: `+1`=>`zext(!V)`, `==-1`=>`V==true`, `&`/`|`/`^`=>`zext(V&&W)*-1`; inert on corpus: the all-ones-smeared boolean idiom doesn't survive to actprop in the fixtures) |
 | RuleBooleanNegate | PORTED |
 | RuleLogic2Bool | PORTED |
 | RuleSubExtComm | PORTED |
@@ -396,10 +396,10 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~70 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume, RuleEqual2Constant), 7 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~71 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume, RuleEqual2Constant, RuleBoolZext), 7 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 6 BLOCKED (SubvarSext,
   RulePtrFlow=isPtrFlow, and the sign-div cluster SignForm2/SignDiv2/SignNearMult/SignMod2Opt on
-  RuleDivOpt de-fusion Task #9), ~62 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras.
+  RuleDivOpt de-fusion Task #9), ~61 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras.
   The MISSING set is the mechanical rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
   — spacebase-placeholder dep).

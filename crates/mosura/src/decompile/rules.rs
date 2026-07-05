@@ -1234,6 +1234,132 @@ impl Rule for RuleLogic2Bool {
     }
 }
 
+/// Ghidra `RuleBoolZext` (ruleaction.cc:2995): simplify boolean expressions built as `zext(V) * -1`
+/// — an extended boolean smeared to all-ones.
+///   - `(zext(V) * -1) + 1               =>  zext( !V )`
+///   - `(zext(V) * -1) == -1`/`!= -1`    =>  `V == true`/`V != true`  (and `== 0`/`!= 0` => `V == false`/`!= false`)
+///   - `(zext(V) * -1) & (zext(W) * -1)  =>  zext(V && W) * -1`
+///   - `(zext(V) * -1) | (zext(W) * -1)  =>  zext(V || W) * -1`
+///   - `(zext(V) * -1) ^ (zext(W) * -1)  =>  zext(V ^^ W) * -1`
+///
+/// Registered on `INT_ZEXT`: `V` (and `W`) must be booleans ([`is_boolean_value`]) and the multiplier
+/// the all-ones mask ([`super::nzmask::calc_mask`]). The logical cases pull the bit-smeared flag
+/// arithmetic back to bare `!`/`&&`/`||` on the underlying booleans.
+pub struct RuleBoolZext;
+
+impl Rule for RuleBoolZext {
+    fn name(&self) -> &str {
+        "boolzext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntZext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(bool_vn1) = data.op(op).input(0) else { return 0 };
+        if !is_boolean_value(data, bool_vn1) {
+            return 0;
+        }
+        let Some(zext_out) = data.op(op).output else { return 0 };
+        // The extended boolean must be Multiplied by -1 (the all-ones mask)
+        let Some(multop1) = lone_descend(data, zext_out) else { return 0 };
+        if data.op(multop1).code() != OpCode::IntMult {
+            return 0;
+        }
+        let Some(m1c) = data.op(multop1).input(1) else { return 0 };
+        if !data.vn(m1c).is_constant() {
+            return 0;
+        }
+        let coeff = data.vn(m1c).constant_value();
+        if coeff != super::nzmask::calc_mask(data.vn(m1c).size) {
+            return 0;
+        }
+        let mult_out = data.op(multop1).output.unwrap();
+        let size = data.vn(mult_out).size;
+
+        // The operation consuming the extended boolean
+        let Some(actionop) = lone_descend(data, mult_out) else { return 0 };
+        let opc = match data.op(actionop).code() {
+            OpCode::IntAdd => {
+                // (zext(V) * -1) + 1  =>  zext( !V )
+                let Some(addc) = data.op(actionop).input(1) else { return 0 };
+                if !data.vn(addc).is_constant() {
+                    return 0;
+                }
+                if data.vn(addc).constant_value() != 1 {
+                    return 0;
+                }
+                let neg = data.new_op_before_sized(op, OpCode::BoolNegate, vec![bool_vn1], 1);
+                let neg_out = data.op(neg).output.unwrap();
+                data.op_set_input(op, 0, neg_out); // the ZEXT now extends !V
+                data.op_remove_input(actionop, 1); // eliminate the INT_ADD's +1
+                data.op_set_opcode(actionop, OpCode::Copy);
+                data.op_set_input(actionop, 0, zext_out); // COPY propagates past the INT_MULT
+                return 1;
+            }
+            OpCode::IntEqual | OpCode::IntNotequal => {
+                // compare of extended boolean to 0/-1  =>  compare of bare boolean to 0/1
+                let Some(cmpc) = data.op(actionop).input(1) else { return 0 };
+                if !data.vn(cmpc).is_constant() {
+                    return 0;
+                }
+                let val = data.vn(cmpc).constant_value();
+                let val = if val == coeff {
+                    1
+                } else if val != 0 {
+                    return 0; // not comparing with 0 or -1
+                } else {
+                    0
+                };
+                let one = data.new_const(1, val);
+                data.op_set_input(actionop, 0, bool_vn1);
+                data.op_set_input(actionop, 1, one);
+                return 1;
+            }
+            OpCode::IntAnd => OpCode::BoolAnd,
+            OpCode::IntOr => OpCode::BoolOr,
+            OpCode::IntXor => OpCode::BoolXor,
+            _ => return 0,
+        };
+
+        // Logical op with an extended boolean: the other operand must also be zext(W) * -1
+        let (Some(in0), Some(in1)) = (data.op(actionop).input(0), data.op(actionop).input(1)) else {
+            return 0;
+        };
+        let other = if data.vn(in0).def == Some(multop1) { in1 } else { in0 };
+        let Some(multop2) = data.vn(other).def else { return 0 };
+        if data.op(multop2).code() != OpCode::IntMult {
+            return 0;
+        }
+        let Some(m2c) = data.op(multop2).input(1) else { return 0 };
+        if !data.vn(m2c).is_constant() {
+            return 0;
+        }
+        if data.vn(m2c).constant_value() != super::nzmask::calc_mask(size) {
+            return 0;
+        }
+        let Some(m2_in0) = data.op(multop2).input(0) else { return 0 };
+        let Some(zextop2) = data.vn(m2_in0).def else { return 0 };
+        if data.op(zextop2).code() != OpCode::IntZext {
+            return 0;
+        }
+        let Some(bool_vn2) = data.op(zextop2).input(0) else { return 0 };
+        if !is_boolean_value(data, bool_vn2) {
+            return 0;
+        }
+
+        // Do the boolean calculation on the unextended booleans, then re-extend and re-scale by -1
+        let newop = data.new_op_before_sized(actionop, opc, vec![bool_vn1, bool_vn2], 1);
+        let newres = data.op(newop).output.unwrap();
+        let newzext = data.new_op_before_sized(actionop, OpCode::IntZext, vec![newres], size);
+        let newzout = data.op(newzext).output.unwrap();
+        data.op_set_opcode(actionop, OpCode::IntMult);
+        data.op_set_input(actionop, 0, newzout);
+        let cc = data.new_const(size, super::nzmask::calc_mask(size));
+        data.op_set_input(actionop, 1, cc);
+        1
+    }
+}
+
 /// Ghidra `Varnode::loneDescend` (varnode.cc): the single op reading `vn`, or `None` if it has
 /// zero or more than one reader. (Descendant lists are kept exact by the op-mutation helpers, so a
 /// rewritten-away or removed reader no longer counts.)
@@ -7156,5 +7282,117 @@ mod tests {
         let _oo = f.new_output(other, 4, Address::new(r, 0x88));
         assert_eq!(RuleEqual2Constant.apply_op(eq4, &mut f), 0);
         assert_eq!(f.op(eq4).input(0).unwrap(), add4o);
+    }
+
+    // ---- RuleBoolZext (#62) --------------------------------------------------------------------
+    // Builds a `zext(V) * -1` extended-boolean and drives each of the three action forms.
+
+    /// Wire up `zext(V) * -1` where `V` is a real boolean (INT_EQUAL output). Returns
+    /// `(zext_op, mult_out_vn, V)` with all ops parented into block 0 alongside `extra`.
+    fn ext_bool(
+        f: &mut Funcdata,
+        v_addr: u64,
+    ) -> (OpId, VarnodeId, VarnodeId) {
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, v_addr));
+        let b = f.new_input(4, Address::new(reg, v_addr + 4));
+        let cmp = f.new_op(OpCode::IntEqual, seq, vec![a, b]);
+        let v = f.new_output(cmp, 1, Address::new(reg, v_addr + 8));
+        let zop = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(zop, 4, Address::new(reg, v_addr + 0x10));
+        let negone = f.new_const(4, 0xffff_ffff);
+        let mop = f.new_op(OpCode::IntMult, seq, vec![zv, negone]);
+        let mout = f.new_output(mop, 4, Address::new(reg, v_addr + 0x18));
+        (zop, mout, v)
+    }
+
+    fn parent_all(f: &mut Funcdata, ops: Vec<OpId>) {
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: ops.clone(), ..Default::default() }]);
+        for op in ops {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+    }
+
+    #[test]
+    fn boolzext_add_one_becomes_zext_negate() {
+        // (zext(V) * -1) + 1  =>  zext(!V) : the ADD collapses to a COPY of zext(!V), the ZEXT feeds !V.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let (zop, mout, v) = ext_bool(&mut f, 0x10);
+        let one = f.new_const(4, 1);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![mout, one]);
+        f.new_output(add, 4, Address::new(reg, 0x100));
+        let mop = f.vn(mout).def.unwrap();
+        let cmp = f.vn(v).def.unwrap();
+        parent_all(&mut f, vec![cmp, zop, mop, add]);
+
+        let zext_out = f.op(zop).output.unwrap();
+        assert_eq!(RuleBoolZext.apply_op(zop, &mut f), 1);
+        // ADD is now COPY(zext_out)
+        assert_eq!(f.op(add).code(), OpCode::Copy);
+        assert_eq!(f.op(add).num_inputs(), 1);
+        assert_eq!(f.op(add).input(0), Some(zext_out));
+        // ZEXT now extends a BOOL_NEGATE of V
+        let neg_out = f.op(zop).input(0).unwrap();
+        let neg = f.vn(neg_out).def.unwrap();
+        assert_eq!(f.op(neg).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(neg).input(0), Some(v));
+    }
+
+    #[test]
+    fn boolzext_compare_neg_one_becomes_compare_true() {
+        // (zext(V) * -1) == -1  =>  V == 1
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let (zop, mout, v) = ext_bool(&mut f, 0x10);
+        let negone = f.new_const(4, 0xffff_ffff);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![mout, negone]);
+        f.new_output(eq, 1, Address::new(reg, 0x100));
+        let mop = f.vn(mout).def.unwrap();
+        let cmp = f.vn(v).def.unwrap();
+        parent_all(&mut f, vec![cmp, zop, mop, eq]);
+
+        assert_eq!(RuleBoolZext.apply_op(zop, &mut f), 1);
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual);
+        assert_eq!(f.op(eq).input(0), Some(v));
+        let c = f.op(eq).input(1).unwrap();
+        assert!(f.vn(c).is_constant());
+        assert_eq!(f.vn(c).constant_value(), 1);
+        assert_eq!(f.vn(c).size, 1);
+    }
+
+    #[test]
+    fn boolzext_and_of_two_becomes_zext_booland() {
+        // (zext(V) * -1) & (zext(W) * -1)  =>  zext(V && W) * -1
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let (zopv, moutv, v) = ext_bool(&mut f, 0x10);
+        let (zopw, moutw, w) = ext_bool(&mut f, 0x40);
+        let andop = f.new_op(OpCode::IntAnd, seq, vec![moutv, moutw]);
+        f.new_output(andop, 4, Address::new(reg, 0x100));
+        let mopv = f.vn(moutv).def.unwrap();
+        let mopw = f.vn(moutw).def.unwrap();
+        let cmpv = f.vn(v).def.unwrap();
+        let cmpw = f.vn(w).def.unwrap();
+        parent_all(&mut f, vec![cmpv, zopv, mopv, cmpw, zopw, mopw, andop]);
+
+        assert_eq!(RuleBoolZext.apply_op(zopv, &mut f), 1);
+        // andop is now INT_MULT(zext(V && W), -1)
+        assert_eq!(f.op(andop).code(), OpCode::IntMult);
+        let mc = f.op(andop).input(1).unwrap();
+        assert!(f.vn(mc).is_constant() && f.vn(mc).constant_value() == 0xffff_ffff);
+        let zin = f.op(andop).input(0).unwrap();
+        let zext = f.vn(zin).def.unwrap();
+        assert_eq!(f.op(zext).code(), OpCode::IntZext);
+        let band_out = f.op(zext).input(0).unwrap();
+        let band = f.vn(band_out).def.unwrap();
+        assert_eq!(f.op(band).code(), OpCode::BoolAnd);
+        assert_eq!(f.op(band).input(0), Some(v));
+        assert_eq!(f.op(band).input(1), Some(w));
     }
 }
