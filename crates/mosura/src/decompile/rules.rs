@@ -4905,6 +4905,52 @@ impl Rule for RuleTrivialBool {
     }
 }
 
+/// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
+/// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
+/// `V < -1(max) => V != -1`.
+pub struct RuleLess2Zero;
+
+impl Rule for RuleLess2Zero {
+    fn name(&self) -> &str {
+        "less2zero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLess]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let lvn = data.op(op).input(0).unwrap();
+        let rvn = data.op(op).input(1).unwrap();
+        if data.vn(lvn).is_constant() {
+            if data.vn(lvn).constant_value() == 0 {
+                // All values except 0 are greater -> NOT_EQUAL
+                data.op_set_opcode(op, OpCode::IntNotequal);
+                return 1;
+            } else if data.vn(lvn).constant_value() == super::nzmask::calc_mask(data.vn(lvn).size) {
+                // max < V is always false
+                let z = data.new_const(1, 0);
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 1);
+                data.op_set_input(op, 0, z);
+                return 1;
+            }
+        } else if data.vn(rvn).is_constant() {
+            if data.vn(rvn).constant_value() == 0 {
+                // V < 0 is always false
+                let z = data.new_const(1, 0);
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 1);
+                data.op_set_input(op, 0, z);
+                return 1;
+            } else if data.vn(rvn).constant_value() == super::nzmask::calc_mask(data.vn(rvn).size) {
+                // All values except max are less -> NOT_EQUAL
+                data.op_set_opcode(op, OpCode::IntNotequal);
+                return 1;
+            }
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6850,5 +6896,56 @@ mod tests {
         assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
         assert_eq!(f.op(o).code(), OpCode::Copy);
         assert_eq!(f.op(o).input(0).unwrap(), v);
+    }
+
+    #[test]
+    fn less2zero_folds_extremal_constants() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let mut a = 0x10u64;
+        let mut less = |f: &mut Funcdata, l: Option<u64>, rr: Option<u64>| -> OpId {
+            let lv = match l {
+                Some(k) => f.new_const(4, k),
+                None => f.new_input(4, Address::new(r, a)),
+            };
+            let rv = match rr {
+                Some(k) => f.new_const(4, k),
+                None => f.new_input(4, Address::new(r, a + 8)),
+            };
+            let o = f.new_op(OpCode::IntLess, seq, vec![lv, rv]);
+            f.new_output(o, 1, Address::new(r, a + 0x10));
+            a += 0x20;
+            o
+        };
+        let max = 0xffff_ffffu64;
+
+        // 0 < V  =>  0 != V
+        let o = less(&mut f, Some(0), None);
+        assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::IntNotequal);
+
+        // max < V  =>  false
+        let o = less(&mut f, Some(max), None);
+        assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert!(f.vn(f.op(o).input(0).unwrap()).is_constant() && f.vn(f.op(o).input(0).unwrap()).constant_value() == 0);
+
+        // V < 0  =>  false
+        let o = less(&mut f, None, Some(0));
+        assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert!(f.vn(f.op(o).input(0).unwrap()).is_constant() && f.vn(f.op(o).input(0).unwrap()).constant_value() == 0);
+
+        // V < max  =>  V != max
+        let o = less(&mut f, None, Some(max));
+        assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::IntNotequal);
+
+        // V < 5  =>  no fire
+        let o = less(&mut f, None, Some(5));
+        assert_eq!(RuleLess2Zero.apply_op(o, &mut f), 0);
+        assert_eq!(f.op(o).code(), OpCode::IntLess);
     }
 }

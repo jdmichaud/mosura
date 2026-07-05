@@ -155,7 +155,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSub2Add | PORTED (ptrarith_pool, not main — deliberate: switch/jumptable cascade, Task #9) |
 | RuleCarryElim | MISSING |
 | RuleBxor2NotEqual | MISSING |
-| RuleLess2Zero | MISSING |
+| RuleLess2Zero | PORTED (rules.rs; unit-tested — INT_LESS vs extremal 0/max constants; fires 9× on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleLessEqual2Zero | PORTED |
 | RuleSLess2Zero | MISSING |
 | RuleEqual2Zero | PORTED |
@@ -385,7 +385,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~67 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool), 7 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~67 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero), 7 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
