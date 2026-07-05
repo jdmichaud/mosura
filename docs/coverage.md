@@ -197,14 +197,14 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDivTermAdd2 | PORTED |
 | RuleDivOpt | PORTED (NON-FAITHFUL: fused recognizer; de-fusion is Task #9/#20) |
 | RuleSignForm | HELD(defined+unit-tested in rules.rs, UNWIRED — faithful, but mosura's FUSED RuleDivOpt fails to re-collapse the s>> form it normalizes to, regressing switchloop 0.7787->0.7709 `(int8)iVar5`->`iVar5>>0x1f` vs Ghidra's `(int4)param_1/10`; same class as RuleDivTermAdd; wire after RuleDivOpt de-fusion Task #9/#20. NB: modulo fires 4x but byte-identical — no modulo regression) |
-| RuleSignForm2 | MISSING |
-| RuleSignDiv2 | MISSING |
+| RuleSignForm2 | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
+| RuleSignDiv2 | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
 | RuleDivChain | MISSING |
-| RuleSignNearMult | MISSING |
+| RuleSignNearMult | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
 | RuleModOpt | PORTED |
 | RuleSignMod2nOpt | PORTED |
 | RuleSignMod2nOpt2 | PORTED |
-| RuleSignMod2Opt | MISSING |
+| RuleSignMod2Opt | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
 | RuleSwitchSingle | MISSING |
 | RuleCondNegate | MISSING |
 | RuleBoolNegate | PORTED |
@@ -248,6 +248,17 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 
 **mosura-only pool rules (no Ghidra oppool1 counterpart, slotted next to siblings):** RuleMultMult,
 RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs comments).
+
+**Sign-div cluster BLOCKED on RuleDivOpt de-fusion (Task #9).** The signed-division normalizers/
+recognizers registered around RuleDivOpt — RuleSignForm2, RuleSignDiv2, RuleSignNearMult, RuleSignMod2Opt
+(and RuleSignForm, ported+HELD as the proof case) — all race mosura's FUSED non-faithful RuleDivOpt (#85),
+which recognizes the whole signed-div idiom in one step rather than composing from these faithful pieces.
+RuleSignForm demonstrated it: wiring it regressed switchloop (0.7787->0.7709) because the fused recognizer
+can't re-collapse the `s>>` form the normalization exposes (Ghidra reaches `(int4)param_1 / 10`). Porting
+these held-now is dead code that can't be validated until de-fusion; they belong to the de-fusion effort
+itself (Task #9/#20), where they'd compose and be verified. Kept visible here as BLOCKED, not declined.
+RuleDivTermAdd is the same class (HELD). (RuleSignShift #14 is a general sign-bit normalization, not in
+this cluster — left MISSING, separable.)
 
 **RuleSubfloatConvert** is BLOCKED, not a mechanical tail rule: it is a thin dispatcher (`subflow.cc:3489`)
 into `SubfloatFlow : public TransformManager` (subflow.cc). That needs (a) the generic `TransformManager`/
@@ -386,9 +397,10 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 ## Summary (rule pools — the exact core)
 
 - **oppool1**: ~69 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume), 7 HELD (NotDistribute, AndDistribute,
-  AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
-  ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
-  rule tail (Phase 1b, in progress).
+  AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 6 BLOCKED (SubvarSext,
+  RulePtrFlow=isPtrFlow, and the sign-div cluster SignForm2/SignDiv2/SignNearMult/SignMod2Opt on
+  RuleDivOpt de-fusion Task #9), ~62 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras.
+  The MISSING set is the mechanical rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
   — spacebase-placeholder dep).
 - **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store —
