@@ -157,7 +157,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleBxor2NotEqual | MISSING |
 | RuleLess2Zero | PORTED (rules.rs; unit-tested — INT_LESS vs extremal 0/max constants; fires 9× on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleLessEqual2Zero | PORTED |
-| RuleSLess2Zero | MISSING |
+| RuleSLess2Zero | PORTED (rules.rs; byte-neutral, 7 unit tests — INT_SLESS vs 0/-1, peel a sign-only op: SUBPIECE-of-top-piece / `~V` / `V & 0x8..` / `CONCAT(V,W)` / `getHiBit(add\|or\|xor)`=>EQUAL/NOTEQUAL / `bool << (8*sz-1)`=>`!bool`; 0 firings on corpus, byte-IDENTICAL — the sign-only-op-against-0/-1 idiom doesn't survive to actprop in the fixtures) |
 | RuleEqual2Zero | PORTED |
 | RuleEqual2Constant | PORTED (rules.rs; byte-neutral, unit-tested — fold const through arith operand of INT_EQUAL/NOTEQUAL when V only used in similar compares; inert on corpus) |
 | RuleThreeWayCompare | MISSING |

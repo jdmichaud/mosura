@@ -5366,6 +5366,240 @@ impl Rule for RuleLess2Zero {
     }
 }
 
+/// Ghidra `RuleSLess2Zero::getHiBit` (ruleaction.cc:5641): if `op` (INT_ADD/INT_OR/INT_XOR) pieces
+/// together two Varnodes only one of which can set the high (sign) bit, return that Varnode.
+fn get_hi_bit(data: &Funcdata, op: OpId) -> Option<VarnodeId> {
+    let opc = data.op(op).code();
+    if opc != OpCode::IntAdd && opc != OpCode::IntOr && opc != OpCode::IntXor {
+        return None;
+    }
+    let vn1 = data.op(op).input(0)?;
+    let vn2 = data.op(op).input(1)?;
+    let full = super::nzmask::calc_mask(data.vn(vn1).size);
+    let mask = full ^ (full >> 1); // Only the high bit is set
+    let nzmask1 = data.vn(vn1).get_nzmask();
+    if nzmask1 != mask && (nzmask1 & mask) != 0 {
+        return None; // vn1 sets the high bit AND some other bit
+    }
+    let nzmask2 = data.vn(vn2).get_nzmask();
+    if nzmask2 != mask && (nzmask2 & mask) != 0 {
+        return None;
+    }
+    if nzmask1 == mask {
+        return Some(vn1);
+    }
+    if nzmask2 == mask {
+        return Some(vn2);
+    }
+    None
+}
+
+/// Ghidra `RuleSLess2Zero` (ruleaction.cc:5693): simplify INT_SLESS against 0 or -1 by peeling off an
+/// operation that only affects the sign bit. Each form has a mirror against the other extremum:
+///   - `-1 s< SUB(V,#hi)  =>  -1 s< V`      /  `SUB(V,#hi) s< 0  =>  V s< 0`   (SUBPIECE of the top piece)
+///   - `-1 s< ~V          =>  V s< 0`       /  `~V s< 0          =>  -1 s< V`
+///   - `-1 s< (V & 0x8..) =>  -1 s< V`      /  `(V & 0x8..) s< 0 =>  V s< 0`   (mask keeps only the sign bit)
+///   - `-1 s< CONCAT(V,W) =>  -1 s< V`      /  `CONCAT(V,W) s< 0 =>  V s< 0`   (V is the most-significant piece)
+///   - `-1 s< (hi ^ lo)   =>  0 == hi`      /  `(hi ^ lo) s< 0   =>  hi != 0`  (via [`get_hi_bit`])
+///   - `-1 s< (bool << 8*sz-1)  =>  !bool`
+///
+/// NB (same divergence as [`RuleSubCancel`]): mosura's `is_free` treats a constant as *not* free
+/// (Ghidra's `isFree` treats it as free), so the `avn->isFree()` bail-outs behave identically for the
+/// only reachable case (a genuinely undefined feed varnode) — a constant `avn` would already have been
+/// const-folded before reaching a sign-only op here.
+pub struct RuleSLess2Zero;
+
+impl Rule for RuleSLess2Zero {
+    fn name(&self) -> &str {
+        "sless2zero"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSless]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let lvn = data.op(op).input(0).unwrap();
+        let rvn = data.op(op).input(1).unwrap();
+
+        if data.vn(lvn).is_constant() {
+            if !data.vn(rvn).is_written() {
+                return 0;
+            }
+            if data.vn(lvn).constant_value() != super::nzmask::calc_mask(data.vn(lvn).size) {
+                return 0; // lvn is a constant, but not -1
+            }
+            // We have  -1 s< rvn
+            let feed_op = data.vn(rvn).def.unwrap();
+            let feed_code = data.op(feed_op).code();
+            if let Some(hibit) = get_hi_bit(data, feed_op) {
+                // -1 s< (hi ^ lo)  =>  0 == hi
+                if data.vn(hibit).is_constant() {
+                    let c = data.new_const(data.vn(hibit).size, data.vn(hibit).constant_value());
+                    data.op_set_input(op, 1, c);
+                } else {
+                    data.op_set_input(op, 1, hibit);
+                }
+                data.op_set_opcode(op, OpCode::IntEqual);
+                let z = data.new_const(data.vn(hibit).size, 0);
+                data.op_set_input(op, 0, z);
+                return 1;
+            } else if feed_code == OpCode::Subpiece {
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() || data.vn(avn).size > 8 {
+                    return 0; // Don't create a comparison bigger than 8 bytes
+                }
+                let hi_off = data.vn(data.op(feed_op).input(1).unwrap()).constant_value();
+                if data.vn(rvn).size as u64 + hi_off == data.vn(avn).size as u64 {
+                    // -1 s< SUB(avn,#hi)  =>  -1 s< avn
+                    data.op_set_input(op, 1, avn);
+                    let c = data.new_const(
+                        data.vn(avn).size,
+                        super::nzmask::calc_mask(data.vn(avn).size),
+                    );
+                    data.op_set_input(op, 0, c);
+                    return 1;
+                }
+            } else if feed_code == OpCode::IntNegate {
+                // -1 s< ~avn  =>  avn s< 0
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() {
+                    return 0;
+                }
+                data.op_set_input(op, 0, avn);
+                let z = data.new_const(data.vn(avn).size, 0);
+                data.op_set_input(op, 1, z);
+                return 1;
+            } else if feed_code == OpCode::IntAnd {
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() || lone_descend(data, rvn).is_none() {
+                    return 0;
+                }
+                let mask_vn = data.op(feed_op).input(1).unwrap();
+                if data.vn(mask_vn).is_constant() {
+                    // Fetch the sign bit of the mask
+                    let mask = data
+                        .vn(mask_vn)
+                        .constant_value()
+                        .checked_shr(8 * data.vn(avn).size as u32 - 1)
+                        .unwrap_or(0);
+                    if (mask & 1) != 0 {
+                        // -1 s< (avn & 0x8..)  =>  -1 s< avn
+                        data.op_set_input(op, 1, avn);
+                        return 1;
+                    }
+                }
+            } else if feed_code == OpCode::Piece {
+                // -1 s< CONCAT(V,W)  =>  -1 s< V   (V = most-significant piece)
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() {
+                    return 0;
+                }
+                data.op_set_input(op, 1, avn);
+                let c = data.new_const(
+                    data.vn(avn).size,
+                    super::nzmask::calc_mask(data.vn(avn).size),
+                );
+                data.op_set_input(op, 0, c);
+                return 1;
+            } else if feed_code == OpCode::IntLeft {
+                let coeff = data.op(feed_op).input(1).unwrap();
+                if !data.vn(coeff).is_constant()
+                    || data.vn(coeff).constant_value() != data.vn(lvn).size as u64 * 8 - 1
+                {
+                    return 0;
+                }
+                let avn = data.op(feed_op).input(0).unwrap();
+                if !data.vn(avn).is_written()
+                    || !data.op(data.vn(avn).def.unwrap()).is_bool_output()
+                {
+                    return 0;
+                }
+                // -1 s< (bool << #8*sz-1)  =>  !bool
+                data.op_set_opcode(op, OpCode::BoolNegate);
+                data.op_remove_input(op, 1);
+                data.op_set_input(op, 0, avn);
+                return 1;
+            }
+        } else if data.vn(rvn).is_constant() {
+            if !data.vn(lvn).is_written() {
+                return 0;
+            }
+            if data.vn(rvn).constant_value() != 0 {
+                return 0;
+            }
+            // We have  lvn s< 0
+            let feed_op = data.vn(lvn).def.unwrap();
+            let feed_code = data.op(feed_op).code();
+            if let Some(hibit) = get_hi_bit(data, feed_op) {
+                // (hi ^ lo) s< 0  =>  hi != 0
+                if data.vn(hibit).is_constant() {
+                    let c = data.new_const(data.vn(hibit).size, data.vn(hibit).constant_value());
+                    data.op_set_input(op, 0, c);
+                } else {
+                    data.op_set_input(op, 0, hibit);
+                }
+                data.op_set_opcode(op, OpCode::IntNotequal);
+                return 1;
+            } else if feed_code == OpCode::Subpiece {
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() || data.vn(avn).size > 8 {
+                    return 0; // Don't create a comparison greater than 8 bytes
+                }
+                let hi_off = data.vn(data.op(feed_op).input(1).unwrap()).constant_value();
+                if data.vn(lvn).size as u64 + hi_off == data.vn(avn).size as u64 {
+                    // SUB(avn,#hi) s< 0  =>  avn s< 0
+                    data.op_set_input(op, 0, avn);
+                    let z = data.new_const(data.vn(avn).size, 0);
+                    data.op_set_input(op, 1, z);
+                    return 1;
+                }
+            } else if feed_code == OpCode::IntNegate {
+                // ~avn s< 0  =>  -1 s< avn
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() {
+                    return 0;
+                }
+                data.op_set_input(op, 1, avn);
+                let c = data.new_const(
+                    data.vn(avn).size,
+                    super::nzmask::calc_mask(data.vn(avn).size),
+                );
+                data.op_set_input(op, 0, c);
+                return 1;
+            } else if feed_code == OpCode::IntAnd {
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() || lone_descend(data, lvn).is_none() {
+                    return 0;
+                }
+                let mask_vn = data.op(feed_op).input(1).unwrap();
+                if data.vn(mask_vn).is_constant() {
+                    // Fetch the sign bit of the mask
+                    let mask = data
+                        .vn(mask_vn)
+                        .constant_value()
+                        .checked_shr(8 * data.vn(avn).size as u32 - 1)
+                        .unwrap_or(0);
+                    if (mask & 1) != 0 {
+                        // (avn & 0x8..) s< 0  =>  avn s< 0
+                        data.op_set_input(op, 0, avn);
+                        return 1;
+                    }
+                }
+            } else if feed_code == OpCode::Piece {
+                // CONCAT(V,W) s< 0  =>  V s< 0   (V = most-significant piece)
+                let avn = data.op(feed_op).input(0).unwrap();
+                if data.vn(avn).is_free() {
+                    return 0;
+                }
+                data.op_set_input(op, 0, avn);
+                let z = data.new_const(data.vn(avn).size, 0);
+                data.op_set_input(op, 1, z);
+                return 1;
+            }
+        }
+        0
+    }
+}
+
 /// Ghidra `RuleOrConsume` (`ruleaction.cc`, oppool1 @5530 "analysis"): drop an OR/XOR input whose
 /// non-zero bits are all unconsumed downstream — `A | B => B` (or `A`) when `nzm(other) & consume(out)
 /// == 0`. The op becomes a COPY of the surviving input.
@@ -8078,6 +8312,157 @@ mod tests {
         parent_all(&mut f, vec![z, sless]);
 
         assert_eq!(RuleZextSless.apply_op(sless, &mut f), 0);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleSLess2Zero (#47) ------------------------------------------------------------------
+
+    #[test]
+    fn sless2zero_negate_becomes_sless_zero() {
+        // -1 s< ~V  =>  V s< 0
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let neg = f.new_op(OpCode::IntNegate, seq, vec![v]);
+        let negv = f.new_output(neg, 4, Address::new(reg, 0x18));
+        let negone = f.new_const(4, 0xffff_ffff);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![negone, negv]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![neg, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
+        assert_eq!(f.op(sless).input(0), Some(v));
+        let c = f.op(sless).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0 && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn sless2zero_subpiece_top_becomes_sless_zero() {
+        // SUB(V:8, #4):4 s< 0  =>  V:8 s< 0   (the SUBPIECE extracts the sign-bearing top piece)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let off = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, off]);
+        let subv = f.new_output(sub, 4, Address::new(reg, 0x18));
+        let zero = f.new_const(4, 0);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![subv, zero]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![sub, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
+        assert_eq!(f.op(sless).input(0), Some(v));
+        let c = f.op(sless).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0 && f.vn(c).size == 8);
+    }
+
+    #[test]
+    fn sless2zero_and_signbit_becomes_sless_zero() {
+        // (V & 0x80000000) s< 0  =>  V s< 0   (mask keeps only the sign bit; AND is lone-descended)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0x8000_0000);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let andv = f.new_output(and, 4, Address::new(reg, 0x18));
+        let zero = f.new_const(4, 0);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![andv, zero]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![and, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
+        assert_eq!(f.op(sless).input(0), Some(v));
+    }
+
+    #[test]
+    fn sless2zero_concat_becomes_sless_of_top_piece() {
+        // -1 s< CONCAT(V:4, W:4)  =>  -1 s< V   (V is the most-significant piece)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let vv = f.new_input(4, Address::new(reg, 0x10));
+        let ww = f.new_input(4, Address::new(reg, 0x18));
+        let piece = f.new_op(OpCode::Piece, seq, vec![vv, ww]);
+        let pv = f.new_output(piece, 8, Address::new(reg, 0x20));
+        let negone = f.new_const(8, 0xffff_ffff_ffff_ffff);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![negone, pv]);
+        f.new_output(sless, 1, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![piece, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntSless);
+        assert_eq!(f.op(sless).input(1), Some(vv));
+        let c = f.op(sless).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xffff_ffff && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn sless2zero_bool_shift_becomes_bool_negate() {
+        // -1 s< (bool << 7)  =>  !bool   (1-byte boolean smeared to its sign bit)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let cmp = f.new_op(OpCode::IntEqual, seq, vec![a, b]);
+        let bv = f.new_output(cmp, 1, Address::new(reg, 0x12));
+        let c7 = f.new_const(4, 7);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![bv, c7]);
+        let shlv = f.new_output(shl, 1, Address::new(reg, 0x18));
+        let negone = f.new_const(1, 0xff);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![negone, shlv]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![cmp, shl, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(sless).num_inputs(), 1);
+        assert_eq!(f.op(sless).input(0), Some(bv));
+    }
+
+    #[test]
+    fn sless2zero_hibit_xor_becomes_notequal() {
+        // (hi ^ lo) s< 0  =>  hi != 0, where only `hi` can set the sign bit (getHiBit).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let hi = f.new_input(4, Address::new(reg, 0x10));
+        f.vn_mut(hi).nzm = 0x8000_0000; // only the sign bit
+        let lo = f.new_input(4, Address::new(reg, 0x18));
+        f.vn_mut(lo).nzm = 0x7fff_ffff; // everything but the sign bit
+        let xor = f.new_op(OpCode::IntXor, seq, vec![hi, lo]);
+        let sum = f.new_output(xor, 4, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![sum, zero]);
+        f.new_output(sless, 1, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![xor, sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 1);
+        assert_eq!(f.op(sless).code(), OpCode::IntNotequal);
+        assert_eq!(f.op(sless).input(0), Some(hi));
+        let c = f.op(sless).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0);
+    }
+
+    #[test]
+    fn sless2zero_no_fire_on_plain_input() {
+        // V s< 0 where V is a plain (unwritten) input — nothing to peel, no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let sless = f.new_op(OpCode::IntSless, seq, vec![v, zero]);
+        f.new_output(sless, 1, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![sless]);
+
+        assert_eq!(RuleSLess2Zero.apply_op(sless, &mut f), 0);
         assert_eq!(f.op(sless).code(), OpCode::IntSless);
     }
 
