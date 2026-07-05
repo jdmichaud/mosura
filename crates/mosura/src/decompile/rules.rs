@@ -1515,6 +1515,140 @@ impl Rule for RuleRightShiftAnd {
     }
 }
 
+/// Ghidra `RuleSubCancel` (ruleaction.cc:5119): simplify a SUBPIECE whose input is an INT_ZEXT,
+/// INT_SEXT, or masking INT_AND that the truncation partially or wholly cancels:
+///   - `sub(zext(V),0)` / `sub(sext(V),0)` => `V` (COPY, total), `sub(V)` (narrower SUBPIECE), or a
+///     narrower `zext(V)`/`sext(V)` when the SUBPIECE lands between the pre-extension and output width
+///   - `sub(V & 0xffff, 0)` => `sub(V)` when the mask equals the output's full mask
+///   - `sub(zext(V),c)` => `0` when `c` skips past the whole original value
+///
+/// NB: mosura's `is_free` treats a constant as *not* free (Ghidra's `isFree` treats it as free), so
+/// the offset-0 free branch is only entered for genuinely undefined varnodes here; the big-constant
+/// (`insize > 8`) sub-case is structurally preserved but unreachable in mosura (a `zext(const)` is
+/// folded upstream before reaching this rule).
+pub struct RuleSubCancel;
+
+impl Rule for RuleSubCancel {
+    fn name(&self) -> &str {
+        "subcancel"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(base) = data.op(op).input(0) else { return 0 };
+        if !data.vn(base).is_written() {
+            return 0;
+        }
+        let extop = data.vn(base).def.unwrap();
+        let mut opc = data.op(extop).code();
+        if opc != OpCode::IntZext && opc != OpCode::IntSext && opc != OpCode::IntAnd {
+            return 0;
+        }
+        let offset = data.vn(data.op(op).input(1).unwrap()).constant_value();
+        let outsize = data.vn(data.op(op).output.unwrap()).size;
+
+        if opc == OpCode::IntAnd {
+            let Some(cvn) = data.op(extop).input(1) else { return 0 };
+            if offset == 0
+                && data.vn(cvn).is_constant()
+                && data.vn(cvn).constant_value() == super::nzmask::calc_mask(outsize)
+            {
+                let thruvn = data.op(extop).input(0).unwrap();
+                if !data.vn(thruvn).is_free() {
+                    data.op_set_input(op, 0, thruvn);
+                    return 1;
+                }
+            }
+            return 0;
+        }
+
+        let insize = data.vn(base).size;
+        let far = data.op(extop).input(0).unwrap();
+        let farinsize = data.vn(far).size;
+        let mut thruvn = far;
+        if offset == 0 {
+            // SUBPIECE of least-significant part — something still comes through
+            if data.vn(thruvn).is_free() {
+                if data.vn(thruvn).is_constant() && insize > 8 && outsize == farinsize {
+                    // Constant too big to represent, total elimination — remake the constant
+                    opc = OpCode::Copy;
+                    thruvn = data.new_const(data.vn(thruvn).size, data.vn(thruvn).constant_value());
+                } else {
+                    return 0; // original is constant or undefined — don't proceed
+                }
+            } else if outsize == farinsize {
+                opc = OpCode::Copy; // Total elimination of the extension
+            } else if outsize < farinsize {
+                opc = OpCode::Subpiece;
+            }
+            // else outsize > farinsize: the (narrowed) extension still applies — opc stays ZEXT/SEXT
+        } else if opc == OpCode::IntZext && (farinsize as u64) <= offset {
+            // Output contains nothing of the original input — nothing but zero comes through
+            opc = OpCode::Copy;
+            thruvn = data.new_const(outsize, 0);
+        } else {
+            return 0;
+        }
+
+        data.op_set_opcode(op, opc);
+        data.op_set_input(op, 0, thruvn);
+        if opc != OpCode::Subpiece {
+            data.op_remove_input(op, 1); // ZEXT / SEXT / COPY has only 1 input
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleShiftSub` (ruleaction.cc:5191): a SUBPIECE of a byte-granular left shift is itself a
+/// SUBPIECE at a shifted offset — `sub(V << 8*k, c) => sub(V, c-k)` — when the window `[c-k, c-k+out)`
+/// falls entirely within `V` (a natural truncation). The shift must be a multiple of 8 bits.
+pub struct RuleShiftSub;
+
+impl Rule for RuleShiftSub {
+    fn name(&self) -> &str {
+        "shiftsub"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(base) = data.op(op).input(0) else { return 0 };
+        if !data.vn(base).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(base).def.unwrap();
+        if data.op(shiftop).code() != OpCode::IntLeft {
+            return 0;
+        }
+        let Some(sa_vn) = data.op(shiftop).input(1) else { return 0 };
+        if !data.vn(sa_vn).is_constant() {
+            return 0;
+        }
+        let n = data.vn(sa_vn).constant_value();
+        if (n & 7) != 0 {
+            return 0; // Must shift by a multiple of 8 bits
+        }
+        let cvn = data.op(op).input(1).unwrap();
+        let c = data.vn(cvn).constant_value();
+        let vn = data.op(shiftop).input(0).unwrap();
+        if data.vn(vn).is_free() {
+            return 0;
+        }
+        let insize = data.vn(vn).size as i64;
+        let outsize = data.vn(data.op(op).output.unwrap()).size as i64;
+        let c = c as i64 - (n / 8) as i64;
+        if c < 0 || c + outsize > insize {
+            return 0; // Not a natural truncation
+        }
+        let csize = data.vn(cvn).size;
+        data.op_set_input(op, 0, vn);
+        let newc = data.new_const(csize, c as u64);
+        data.op_set_input(op, 1, newc);
+        1
+    }
+}
+
 /// Ghidra `Varnode::loneDescend` (varnode.cc): the single op reading `vn`, or `None` if it has
 /// zero or more than one reader. (Descendant lists are kept exact by the op-mutation helpers, so a
 /// rewritten-away or removed reader no longer counts.)
@@ -8025,5 +8159,125 @@ mod tests {
 
         assert_eq!(RuleRightShiftAnd.apply_op(shr, &mut f), 0);
         assert_eq!(f.op(shr).input(0), Some(av));
+    }
+
+    // ---- RuleSubCancel (#75) / RuleShiftSub (#76) ----------------------------------------------
+
+    #[test]
+    fn subcancel_total_elimination_of_zext() {
+        // sub(zext(V:4):8, 0):4  =>  COPY(V)   (outsize == farinsize)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(z, 8, Address::new(reg, 0x18));
+        let off = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![zv, off]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![z, sub]);
+
+        assert_eq!(RuleSubCancel.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Copy);
+        assert_eq!(f.op(sub).num_inputs(), 1);
+        assert_eq!(f.op(sub).input(0), Some(v));
+    }
+
+    #[test]
+    fn subcancel_partial_extension_stays_zext() {
+        // sub(zext(V:2):8, 0):4  =>  zext(V):4   (farinsize 2 < outsize 4 < insize 8)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(z, 8, Address::new(reg, 0x18));
+        let off = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![zv, off]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![z, sub]);
+
+        assert_eq!(RuleSubCancel.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntZext);
+        assert_eq!(f.op(sub).num_inputs(), 1);
+        assert_eq!(f.op(sub).input(0), Some(v));
+    }
+
+    #[test]
+    fn subcancel_zext_high_offset_is_zero() {
+        // sub(zext(V:2):8, 4):2  =>  COPY(0)   (offset 4 >= farinsize 2)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(2, Address::new(reg, 0x10));
+        let z = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zv = f.new_output(z, 8, Address::new(reg, 0x18));
+        let off = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![zv, off]);
+        f.new_output(sub, 2, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![z, sub]);
+
+        assert_eq!(RuleSubCancel.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Copy);
+        let c = f.op(sub).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0);
+    }
+
+    #[test]
+    fn subcancel_and_mask_drops_to_subpiece() {
+        // sub(V:8 & 0xffffffff, 0):4  =>  sub(V, 0)  (mask == full mask of outsize 4)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let mask = f.new_const(8, 0xffffffff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let av = f.new_output(and, 8, Address::new(reg, 0x18));
+        let off = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![av, off]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![and, sub]);
+
+        assert_eq!(RuleSubCancel.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(sub).input(0), Some(v));
+    }
+
+    #[test]
+    fn shiftsub_folds_byte_shift_into_offset() {
+        // sub(V:8 << 0x10, 4):2  =>  sub(V, 4 - 2):2  = sub(V, 2)   (shift 16 bits = 2 bytes)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let n = f.new_const(4, 0x10);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![v, n]);
+        let sv = f.new_output(shl, 8, Address::new(reg, 0x18));
+        let off = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![sv, off]);
+        f.new_output(sub, 2, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![shl, sub]);
+
+        assert_eq!(RuleShiftSub.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).input(0), Some(v));
+        assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 2);
+    }
+
+    #[test]
+    fn shiftsub_rejects_unnatural_truncation() {
+        // sub(V:4 << 0x10, 0):4 — window [0-2, 0-2+4) = [-2, 2) escapes V (c-k < 0) → no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let n = f.new_const(4, 0x10);
+        let shl = f.new_op(OpCode::IntLeft, seq, vec![v, n]);
+        let sv = f.new_output(shl, 4, Address::new(reg, 0x18));
+        let off = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![sv, off]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![shl, sub]);
+
+        assert_eq!(RuleShiftSub.apply_op(sub, &mut f), 0);
     }
 }

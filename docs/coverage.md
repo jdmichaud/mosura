@@ -185,8 +185,8 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleConcatZero | PORTED (rules.rs; unit-tested — concat(V,0)=>zext(V)<<c; MOVER, lead-approved: sole corpus mover is nan CONCAT44(0,0)=>0, ccompare 0.5385->0.5600 toward Ghidra) |
 | RuleConcatLeftShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,zext(W)<<c)=>concat(concat(V,W),0); inert on corpus) |
 | RuleSubZext | HELD(preempts RuleSubvarZext return-narrowing on the truncation-return family; Task #8) |
-| RuleSubCancel | MISSING |
-| RuleShiftSub | MISSING |
+| RuleSubCancel | PORTED (rules.rs; byte-neutral, unit-tested — SUBPIECE cancels a ZEXT/SEXT/AND: `sub(zext(V),0)`=>V/sub(V)/narrower zext, `sub(V&fullmask,0)`=>sub(V), `sub(zext(V),c>=farin)`=>0; fires 5x but rendered C byte-IDENTICAL, absorbed downstream. mosura's is_free treats constants as non-free, so the big-constant offset-0 sub-case is structurally preserved but unreachable) |
+| RuleShiftSub | PORTED (rules.rs; byte-neutral, unit-tested — `sub(V << 8k, c) => sub(V, c-k)` for a byte-granular left shift when the window stays within V; inert on corpus) |
 | RuleHumptyDumpty | PORTED |
 | RuleDumptyHump | PORTED |
 | RuleHumptyOr | PORTED |
