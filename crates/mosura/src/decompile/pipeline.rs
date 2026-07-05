@@ -157,6 +157,10 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RulePositiveDiv) // (82)
         .with(super::divopt::RuleDivTermAdd2) // (84)
         .with(super::divopt::RuleDivOpt) // (85)
+        // RuleSignForm (86) is defined in rules.rs but HELD UNWIRED: it is faithful, but mosura's
+        // FUSED non-faithful RuleDivOpt (85) fails to re-collapse the `s>>` form it normalizes to, so
+        // it regresses switchloop (0.7787->0.7709: `(int8)iVar5` -> `iVar5 >> 0x1f`, away from Ghidra's
+        // `(int4)param_1 / 10`). Same class as RuleDivTermAdd. Wire after RuleDivOpt is de-fused (#9/#20).
         .with(super::divopt::RuleModOpt) // (91)
         .with(super::divopt::RuleSignMod2nOpt) // (92)
         .with(super::divopt::RuleSignMod2nOpt2) // (93)

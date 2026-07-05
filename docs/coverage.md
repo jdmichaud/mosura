@@ -196,7 +196,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDivTermAdd | HELD(regresses modulo — fused RuleDivOpt races it; Task #9) |
 | RuleDivTermAdd2 | PORTED |
 | RuleDivOpt | PORTED (NON-FAITHFUL: fused recognizer; de-fusion is Task #9/#20) |
-| RuleSignForm | MISSING |
+| RuleSignForm | HELD(defined+unit-tested in rules.rs, UNWIRED — faithful, but mosura's FUSED RuleDivOpt fails to re-collapse the s>> form it normalizes to, regressing switchloop 0.7787->0.7709 `(int8)iVar5`->`iVar5>>0x1f` vs Ghidra's `(int4)param_1/10`; same class as RuleDivTermAdd; wire after RuleDivOpt de-fusion Task #9/#20. NB: modulo fires 4x but byte-identical — no modulo regression) |
 | RuleSignForm2 | MISSING |
 | RuleSignDiv2 | MISSING |
 | RuleDivChain | MISSING |
@@ -385,8 +385,8 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~66 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift), 6 HELD (NotDistribute, AndDistribute,
-  AndCompare, SubZext, Piece2Zext, DivTermAdd), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
+- **oppool1**: ~66 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift), 7 HELD (NotDistribute, AndDistribute,
+  AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode

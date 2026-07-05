@@ -4821,6 +4821,44 @@ impl Rule for RuleConcatShift {
     }
 }
 
+/// Ghidra `RuleSignForm` (`ruleaction.cc`, oppool1 @5597 "analysis"): normalize a sign extraction —
+/// `sub(sext(V), c)  =>  V s>> (8*|V|-1)` — when the SUBPIECE takes a byte at or above V's width (so
+/// it is extracting the replicated sign bit of the extension).
+pub struct RuleSignForm;
+
+impl Rule for RuleSignForm {
+    fn name(&self) -> &str {
+        "signform"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let sextout = data.op(op).input(0).unwrap();
+        if !data.vn(sextout).is_written() {
+            return 0;
+        }
+        let sextop = data.vn(sextout).def.unwrap();
+        if data.op(sextop).code() != OpCode::IntSext {
+            return 0;
+        }
+        let a = data.op(sextop).input(0).unwrap();
+        let c = data.vn(data.op(op).input(1).unwrap()).constant_value(); // SUBPIECE byte offset
+        if (c as i64) < data.vn(a).size as i64 {
+            return 0;
+        }
+        if data.vn(a).is_free() {
+            return 0;
+        }
+        data.op_set_input(op, 0, a);
+        let n = (8 * data.vn(a).size - 1) as u64;
+        let cn = data.new_const(4, n);
+        data.op_set_input(op, 1, cn);
+        data.op_set_opcode(op, OpCode::IntSright);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6689,5 +6727,35 @@ mod tests {
         let _o4 = f.new_output(sh4, 4, Address::new(r, 0x88));
         assert_eq!(RuleConcatShift.apply_op(sh4, &mut f), 0);
         assert_eq!(f.op(sh4).code(), OpCode::IntRight);
+    }
+
+    #[test]
+    fn sign_form_normalizes_sext_subpiece() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // sub(sext(V), 4) => V s>> 31  (V is 4 bytes; the SUBPIECE takes the sign-extension bytes).
+        let v = f.new_input(4, Address::new(r, 0x10));
+        let sx = f.new_op(OpCode::IntSext, seq, vec![v]);
+        let sxo = f.new_output(sx, 8, Address::new(r, 0x18));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![sxo, c4]);
+        let _o = f.new_output(sub, 4, Address::new(r, 0x20));
+        assert_eq!(RuleSignForm.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntSright);
+        assert_eq!(f.op(sub).input(0).unwrap(), v);
+        assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 31);
+
+        // No fire: SUBPIECE offset below V's width still lands inside V, not the sign extension.
+        let v2 = f.new_input(4, Address::new(r, 0x30));
+        let sx2 = f.new_op(OpCode::IntSext, seq, vec![v2]);
+        let sx2o = f.new_output(sx2, 8, Address::new(r, 0x38));
+        let c2 = f.new_const(4, 2);
+        let sub2 = f.new_op(OpCode::Subpiece, seq, vec![sx2o, c2]);
+        let _o2 = f.new_output(sub2, 4, Address::new(r, 0x40));
+        assert_eq!(RuleSignForm.apply_op(sub2, &mut f), 0);
+        assert_eq!(f.op(sub2).code(), OpCode::Subpiece);
     }
 }
