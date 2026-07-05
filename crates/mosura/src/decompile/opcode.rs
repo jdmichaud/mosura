@@ -149,3 +149,25 @@ impl OpCode {
         matches!(self, Branch | Cbranch | Branchind | Return)
     }
 }
+
+/// Ghidra `get_booleanflip` (opcodes.cc:94): every comparison operation has a complementary form
+/// that produces the opposite output on the same inputs. Returns `(complement, reorder)` where
+/// `reorder` is true if the complementary operation involves reordering the input parameters, or
+/// `None` if not given a comparison operation (Ghidra returns `CPUI_MAX`).
+pub(crate) fn get_booleanflip(opc: OpCode) -> Option<(OpCode, bool)> {
+    use OpCode::*;
+    match opc {
+        IntEqual => Some((IntNotequal, false)),
+        IntNotequal => Some((IntEqual, false)),
+        IntSless => Some((IntSlessequal, true)),
+        IntSlessequal => Some((IntSless, true)),
+        IntLess => Some((IntLessequal, true)),
+        IntLessequal => Some((IntLess, true)),
+        BoolNegate => Some((Copy, false)),
+        FloatEqual => Some((FloatNotequal, false)),
+        FloatNotequal => Some((FloatEqual, false)),
+        FloatLess => Some((FloatLessequal, true)),
+        FloatLessequal => Some((FloatLess, true)),
+        _ => None,
+    }
+}

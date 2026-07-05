@@ -5856,6 +5856,290 @@ impl Rule for RuleBitUndistribute {
     }
 }
 
+/// Ghidra `RuleBooleanUndistribute::isMatch` (ruleaction.cc:2698): test if the two given Varnodes
+/// are matching boolean expressions. If the expressions are complementary, `true` is still
+/// returned, but `right_flip` is flipped.
+fn boolean_undistribute_is_match(
+    data: &Funcdata,
+    left_vn: VarnodeId,
+    right_vn: VarnodeId,
+    right_flip: &mut bool,
+) -> bool {
+    use super::expression::BooleanMatch;
+    let val = super::expression::evaluate(data, left_vn, right_vn, 1);
+    if val == BooleanMatch::Same {
+        return true;
+    }
+    if val == BooleanMatch::Complementary {
+        *right_flip = !*right_flip;
+        return true;
+    }
+    false
+}
+
+/// Ghidra `RuleBooleanUndistribute` (ruleaction.cc:2677): undo distributed BOOL_AND through
+/// INT_NOTEQUAL —
+///  - `A && B != A && C  =>   A && (B != C)`
+///  - `A || B == A || C  =>   A || (B == C)`
+///  - `A && B == A && C  =>  !A || (B == C)`
+pub struct RuleBooleanUndistribute;
+
+impl Rule for RuleBooleanUndistribute {
+    fn name(&self) -> &str {
+        "booleanundistribute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn0 = data.op(op).input(0).unwrap();
+        if !data.vn(vn0).is_written() {
+            return 0;
+        }
+        let vn1 = data.op(op).input(1).unwrap();
+        if !data.vn(vn1).is_written() {
+            return 0;
+        }
+        let op0 = data.vn(vn0).def.unwrap();
+        let opc0 = data.op(op0).code();
+        if opc0 != OpCode::BoolAnd && opc0 != OpCode::BoolOr {
+            return 0;
+        }
+        let op1 = data.vn(vn1).def.unwrap();
+        let opc1 = data.op(op1).code();
+        if opc1 != OpCode::BoolAnd && opc1 != OpCode::BoolOr {
+            return 0;
+        }
+        let ins = [
+            data.op(op0).input(0).unwrap(),
+            data.op(op0).input(1).unwrap(),
+            data.op(op1).input(0).unwrap(),
+            data.op(op1).input(1).unwrap(),
+        ];
+        if data.vn(ins[0]).is_free()
+            || data.vn(ins[1]).is_free()
+            || data.vn(ins[2]).is_free()
+            || data.vn(ins[3]).is_free()
+        {
+            return 0;
+        }
+        let mut isflipped = [false; 4];
+        let mut central_equal = data.op(op).code() == OpCode::IntEqual;
+        if opc0 == OpCode::BoolOr {
+            isflipped[0] = !isflipped[0];
+            isflipped[1] = !isflipped[1];
+            central_equal = !central_equal;
+        }
+        if opc1 == OpCode::BoolOr {
+            isflipped[2] = !isflipped[2];
+            isflipped[3] = !isflipped[3];
+            central_equal = !central_equal;
+        }
+        let left_slot: usize;
+        let right_slot: usize;
+        if boolean_undistribute_is_match(data, ins[0], ins[2], &mut isflipped[2]) {
+            left_slot = 0;
+            right_slot = 2;
+        } else if boolean_undistribute_is_match(data, ins[0], ins[3], &mut isflipped[3]) {
+            left_slot = 0;
+            right_slot = 3;
+        } else if boolean_undistribute_is_match(data, ins[1], ins[2], &mut isflipped[2]) {
+            left_slot = 1;
+            right_slot = 2;
+        } else if boolean_undistribute_is_match(data, ins[1], ins[3], &mut isflipped[3]) {
+            left_slot = 1;
+            right_slot = 3;
+        } else {
+            return 0;
+        }
+        if isflipped[left_slot] != isflipped[right_slot] {
+            return 0;
+        }
+        let combine_opc: OpCode;
+        if central_equal {
+            combine_opc = OpCode::BoolOr;
+            isflipped[left_slot] = !isflipped[left_slot];
+        } else {
+            combine_opc = OpCode::BoolAnd;
+        }
+        let mut final_a = ins[left_slot];
+        if isflipped[left_slot] {
+            final_a = data.op_bool_negate(final_a, op, false);
+        }
+        if isflipped[1 - left_slot] {
+            central_equal = !central_equal;
+        }
+        if isflipped[5 - right_slot] {
+            central_equal = !central_equal;
+        }
+        let final_b = ins[1 - left_slot];
+        let final_c = ins[5 - right_slot];
+        let eq_op = data.new_op_before_sized(
+            op,
+            if central_equal { OpCode::IntEqual } else { OpCode::IntNotequal },
+            vec![final_b, final_c],
+            1,
+        );
+        let tmp1 = data.op(eq_op).output.unwrap();
+        data.op_set_opcode(op, combine_opc);
+        data.op_set_input(op, 1, tmp1);
+        data.op_set_input(op, 0, final_a);
+        1
+    }
+}
+
+/// Ghidra `RuleBooleanDedup::isMatch` (ruleaction.cc:2817): determine if the two given boolean
+/// Varnodes always contain matching values. `is_flip` passes back `false` if the values are
+/// always equal or `true` if they are complements; returns `false` if uncorrelated.
+fn boolean_dedup_is_match(
+    data: &Funcdata,
+    left_vn: VarnodeId,
+    right_vn: VarnodeId,
+    is_flip: &mut bool,
+) -> bool {
+    use super::expression::BooleanMatch;
+    let val = super::expression::evaluate(data, left_vn, right_vn, 1);
+    if val == BooleanMatch::Same {
+        *is_flip = false;
+        return true;
+    }
+    if val == BooleanMatch::Complementary {
+        *is_flip = true;
+        return true;
+    }
+    false
+}
+
+/// Ghidra `RuleBooleanDedup` (ruleaction.cc:2792): remove duplicate clauses in boolean
+/// expressions —
+///  - `(A && B) || (A && C)   =>  A && (B || C)`
+///  - `(A || B) && (A || C)   =>  A || (B && C)`
+///  - `(A || B) || (!A && C)  =>  A || (B || C)`
+///  - `(A && B) && (A && C)   =>  A && (B && C)`
+///  - `(A || B) || (A || C)   =>  A || (B || C)`
+pub struct RuleBooleanDedup;
+
+impl Rule for RuleBooleanDedup {
+    fn name(&self) -> &str {
+        "booleandedup"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolAnd, OpCode::BoolOr]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn0 = data.op(op).input(0).unwrap();
+        if !data.vn(vn0).is_written() {
+            return 0;
+        }
+        let vn1 = data.op(op).input(1).unwrap();
+        if !data.vn(vn1).is_written() {
+            return 0;
+        }
+        let op0 = data.vn(vn0).def.unwrap();
+        let opc0 = data.op(op0).code();
+        if opc0 != OpCode::BoolAnd && opc0 != OpCode::BoolOr {
+            return 0;
+        }
+        let op1 = data.vn(vn1).def.unwrap();
+        let opc1 = data.op(op1).code();
+        if opc1 != OpCode::BoolAnd && opc1 != OpCode::BoolOr {
+            return 0;
+        }
+        let ins = [
+            data.op(op0).input(0).unwrap(),
+            data.op(op0).input(1).unwrap(),
+            data.op(op1).input(0).unwrap(),
+            data.op(op1).input(1).unwrap(),
+        ];
+        if data.vn(ins[0]).is_free()
+            || data.vn(ins[1]).is_free()
+            || data.vn(ins[2]).is_free()
+            || data.vn(ins[3]).is_free()
+        {
+            return 0;
+        }
+        let mut isflipped = false;
+        let left_a: VarnodeId;
+        let right_a: VarnodeId;
+        let left_o: VarnodeId;
+        let right_o: VarnodeId;
+        if boolean_dedup_is_match(data, ins[0], ins[2], &mut isflipped) {
+            left_a = ins[0];
+            right_a = ins[2];
+            left_o = ins[1];
+            right_o = ins[3];
+        } else if boolean_dedup_is_match(data, ins[0], ins[3], &mut isflipped) {
+            left_a = ins[0];
+            right_a = ins[3];
+            left_o = ins[1];
+            right_o = ins[2];
+        } else if boolean_dedup_is_match(data, ins[1], ins[2], &mut isflipped) {
+            left_a = ins[1];
+            right_a = ins[2];
+            left_o = ins[0];
+            right_o = ins[3];
+        } else if boolean_dedup_is_match(data, ins[1], ins[3], &mut isflipped) {
+            left_a = ins[1];
+            right_a = ins[3];
+            left_o = ins[0];
+            right_o = ins[2];
+        } else {
+            return 0;
+        }
+        let central_opc = data.op(op).code();
+        let bc_opc: OpCode;
+        let final_opc: OpCode;
+        let final_a: VarnodeId;
+        if isflipped {
+            if central_opc == OpCode::BoolAnd
+                && opc0 == OpCode::BoolAnd
+                && opc1 == OpCode::BoolAnd
+            {
+                // (A && B) && (!A && C)
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 1);
+                let zero = data.new_const(1, 0);
+                data.op_set_input(op, 0, zero); // Whole expression is false
+                return 1;
+            }
+            if central_opc == OpCode::BoolOr && opc0 == OpCode::BoolOr && opc1 == OpCode::BoolOr {
+                // (A || B) || (!A || C)
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_remove_input(op, 1);
+                let one = data.new_const(1, 1);
+                data.op_set_input(op, 0, one); // Whole expression is true
+                return 1;
+            }
+            if central_opc == OpCode::BoolOr && opc0 != opc1 {
+                // (A || B) || (!A && C)
+                final_a = if opc0 == OpCode::BoolOr { left_a } else { right_a };
+                final_opc = OpCode::BoolOr;
+                bc_opc = OpCode::BoolOr;
+            } else {
+                return 0;
+            }
+        } else if central_opc == opc0 && central_opc == opc1 {
+            // (A && B) && (A && C)    or   (A || B) || (A || C)
+            final_a = left_a;
+            final_opc = central_opc;
+            bc_opc = central_opc;
+        } else if opc0 == opc1 && central_opc != opc0 {
+            // (A && B) || (A && C)    or   (A || B) && (A || C)
+            final_a = left_a;
+            final_opc = opc0;
+            bc_opc = central_opc;
+        } else {
+            return 0;
+        }
+        let bc_op = data.new_op_before_sized(op, bc_opc, vec![left_o, right_o], 1);
+        let tmp = data.op(bc_op).output.unwrap();
+        data.op_set_opcode(op, final_opc);
+        data.op_set_input(op, 0, final_a);
+        data.op_set_input(op, 1, tmp);
+        1
+    }
+}
+
 /// Ghidra `RuleSubNormal` (ruleaction.cc:7714): pull a SUBPIECE back through an INT_RIGHT/INT_SRIGHT
 /// so the truncation happens before the shift — `sub(V >> n, c) => sub(V, c + n/8) >> (n mod 8)`, or
 /// `=> ext(sub(V, c'))` when the shift is byte-aligned and the surviving field runs a whole
@@ -9689,6 +9973,216 @@ mod tests {
 
         assert_eq!(RuleNegateIdentity.apply_op(neg, &mut f), 0);
         assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    // ---- BooleanMatch (expression.cc) / RuleBooleanUndistribute (#60) / RuleBooleanDedup (#61) --
+
+    use crate::decompile::expression::{self, BooleanMatch};
+
+    #[test]
+    fn booleanmatch_direct_same_flip_uncorrelated() {
+        // Two INT_EQUAL(x,y) => same; INT_EQUAL vs INT_NOTEQUAL(x,y) => complementary (booleanflip);
+        // INT_EQUAL(x,y) vs INT_EQUAL(x,z) => uncorrelated.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let y = f.new_input(4, Address::new(reg, 0x18));
+        let z = f.new_input(4, Address::new(reg, 0x20));
+        let eq1 = f.new_op(OpCode::IntEqual, seq, vec![x, y]);
+        let e1 = f.new_output(eq1, 1, Address::new(reg, 0x30));
+        let eq2 = f.new_op(OpCode::IntEqual, seq, vec![x, y]);
+        let e2 = f.new_output(eq2, 1, Address::new(reg, 0x31));
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![x, y]);
+        let n1 = f.new_output(ne, 1, Address::new(reg, 0x32));
+        let eqz = f.new_op(OpCode::IntEqual, seq, vec![x, z]);
+        let ez = f.new_output(eqz, 1, Address::new(reg, 0x33));
+        parent_all(&mut f, vec![eq1, eq2, ne, eqz]);
+
+        assert_eq!(expression::evaluate(&f, e1, e2, 1), BooleanMatch::Same);
+        assert_eq!(expression::evaluate(&f, e1, n1, 1), BooleanMatch::Complementary);
+        assert_eq!(expression::evaluate(&f, e1, ez, 1), BooleanMatch::Uncorrelated);
+    }
+
+    #[test]
+    fn booleanmatch_reorder_and_sameop_complement() {
+        // INT_SLESS(x,y) vs INT_SLESSEQUAL(y,x) => complementary (booleanflip with reorder);
+        // x < 9 vs 8 < x (INT_LESS) => complementary (sameOpComplement).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let y = f.new_input(4, Address::new(reg, 0x18));
+        let sl = f.new_op(OpCode::IntSless, seq, vec![x, y]);
+        let sl_out = f.new_output(sl, 1, Address::new(reg, 0x30));
+        let sle = f.new_op(OpCode::IntSlessequal, seq, vec![y, x]);
+        let sle_out = f.new_output(sle, 1, Address::new(reg, 0x31));
+        let c9 = f.new_const(4, 9);
+        let c8 = f.new_const(4, 8);
+        let l1 = f.new_op(OpCode::IntLess, seq, vec![x, c9]);
+        let l1_out = f.new_output(l1, 1, Address::new(reg, 0x32));
+        let l2 = f.new_op(OpCode::IntLess, seq, vec![c8, x]);
+        let l2_out = f.new_output(l2, 1, Address::new(reg, 0x33));
+        parent_all(&mut f, vec![sl, sle, l1, l2]);
+
+        assert_eq!(expression::evaluate(&f, sl_out, sle_out, 1), BooleanMatch::Complementary);
+        assert_eq!(expression::evaluate(&f, l1_out, l2_out, 1), BooleanMatch::Complementary);
+    }
+
+    #[test]
+    fn booleanmatch_negate_and_demorgan() {
+        // !A vs A => complementary (BOOL_NEGATE unwrap); A&&B vs !A||!B => complementary (De Morgan).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let nega = f.new_op(OpCode::BoolNegate, seq, vec![a]);
+        let na = f.new_output(nega, 1, Address::new(reg, 0x20));
+        let negb = f.new_op(OpCode::BoolNegate, seq, vec![b]);
+        let nb = f.new_output(negb, 1, Address::new(reg, 0x21));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let and_out = f.new_output(and, 1, Address::new(reg, 0x22));
+        let or = f.new_op(OpCode::BoolOr, seq, vec![na, nb]);
+        let or_out = f.new_output(or, 1, Address::new(reg, 0x23));
+        parent_all(&mut f, vec![nega, negb, and, or]);
+
+        assert_eq!(expression::evaluate(&f, na, a, 1), BooleanMatch::Complementary);
+        assert_eq!(expression::evaluate(&f, and_out, or_out, 1), BooleanMatch::Complementary);
+        // Depth exhausted: the AND/OR pair requires descending, so depth 0 gives uncorrelated
+        assert_eq!(expression::evaluate(&f, and_out, or_out, 0), BooleanMatch::Uncorrelated);
+    }
+
+    #[test]
+    fn booleanundistribute_notequal_of_ands() {
+        // (A && B) != (A && C)  =>  A && (B != C)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let c = f.new_input(1, Address::new(reg, 0x12));
+        let and0 = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let v0 = f.new_output(and0, 1, Address::new(reg, 0x20));
+        let and1 = f.new_op(OpCode::BoolAnd, seq, vec![a, c]);
+        let v1 = f.new_output(and1, 1, Address::new(reg, 0x21));
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![v0, v1]);
+        f.new_output(ne, 1, Address::new(reg, 0x22));
+        parent_all(&mut f, vec![and0, and1, ne]);
+
+        assert_eq!(RuleBooleanUndistribute.apply_op(ne, &mut f), 1);
+        assert_eq!(f.op(ne).code(), OpCode::BoolAnd);
+        assert_eq!(f.op(ne).input(0), Some(a));
+        let tmp = f.op(ne).input(1).unwrap();
+        let eq_op = f.vn(tmp).def.unwrap();
+        assert_eq!(f.op(eq_op).code(), OpCode::IntNotequal);
+        assert_eq!(f.op(eq_op).input(0), Some(b));
+        assert_eq!(f.op(eq_op).input(1), Some(c));
+    }
+
+    #[test]
+    fn booleanundistribute_equal_of_ands_negates() {
+        // (A && B) == (A && C)  =>  !A || (B == C)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let c = f.new_input(1, Address::new(reg, 0x12));
+        let and0 = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let v0 = f.new_output(and0, 1, Address::new(reg, 0x20));
+        let and1 = f.new_op(OpCode::BoolAnd, seq, vec![a, c]);
+        let v1 = f.new_output(and1, 1, Address::new(reg, 0x21));
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![v0, v1]);
+        f.new_output(eq, 1, Address::new(reg, 0x22));
+        parent_all(&mut f, vec![and0, and1, eq]);
+
+        assert_eq!(RuleBooleanUndistribute.apply_op(eq, &mut f), 1);
+        assert_eq!(f.op(eq).code(), OpCode::BoolOr);
+        let neg_a = f.op(eq).input(0).unwrap();
+        let neg_def = f.vn(neg_a).def.unwrap();
+        assert_eq!(f.op(neg_def).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(neg_def).input(0), Some(a));
+        let tmp = f.op(eq).input(1).unwrap();
+        let inner = f.vn(tmp).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::IntEqual);
+        assert_eq!(f.op(inner).input(0), Some(b));
+        assert_eq!(f.op(inner).input(1), Some(c));
+    }
+
+    #[test]
+    fn booleandedup_or_of_ands_factors() {
+        // (A && B) || (A && C)  =>  A && (B || C)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let c = f.new_input(1, Address::new(reg, 0x12));
+        let and0 = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let v0 = f.new_output(and0, 1, Address::new(reg, 0x20));
+        let and1 = f.new_op(OpCode::BoolAnd, seq, vec![a, c]);
+        let v1 = f.new_output(and1, 1, Address::new(reg, 0x21));
+        let or = f.new_op(OpCode::BoolOr, seq, vec![v0, v1]);
+        f.new_output(or, 1, Address::new(reg, 0x22));
+        parent_all(&mut f, vec![and0, and1, or]);
+
+        assert_eq!(RuleBooleanDedup.apply_op(or, &mut f), 1);
+        assert_eq!(f.op(or).code(), OpCode::BoolAnd);
+        assert_eq!(f.op(or).input(0), Some(a));
+        let tmp = f.op(or).input(1).unwrap();
+        let inner = f.vn(tmp).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::BoolOr);
+        assert_eq!(f.op(inner).input(0), Some(b));
+        assert_eq!(f.op(inner).input(1), Some(c));
+    }
+
+    #[test]
+    fn booleandedup_contradiction_becomes_false() {
+        // (A && B) && (!A && C)  =>  false
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let c = f.new_input(1, Address::new(reg, 0x12));
+        let nega = f.new_op(OpCode::BoolNegate, seq, vec![a]);
+        let na = f.new_output(nega, 1, Address::new(reg, 0x18));
+        let and0 = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let v0 = f.new_output(and0, 1, Address::new(reg, 0x20));
+        let and1 = f.new_op(OpCode::BoolAnd, seq, vec![na, c]);
+        let v1 = f.new_output(and1, 1, Address::new(reg, 0x21));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![v0, v1]);
+        f.new_output(and, 1, Address::new(reg, 0x22));
+        parent_all(&mut f, vec![nega, and0, and1, and]);
+
+        assert_eq!(RuleBooleanDedup.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        let k = f.op(and).input(0).unwrap();
+        assert!(f.vn(k).is_constant() && f.vn(k).constant_value() == 0 && f.vn(k).size == 1);
+    }
+
+    #[test]
+    fn booleandedup_no_fire_uncorrelated() {
+        // (A && B) || (D && C) with unrelated D — no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(1, Address::new(reg, 0x10));
+        let b = f.new_input(1, Address::new(reg, 0x11));
+        let c = f.new_input(1, Address::new(reg, 0x12));
+        let d = f.new_input(1, Address::new(reg, 0x13));
+        let and0 = f.new_op(OpCode::BoolAnd, seq, vec![a, b]);
+        let v0 = f.new_output(and0, 1, Address::new(reg, 0x20));
+        let and1 = f.new_op(OpCode::BoolAnd, seq, vec![d, c]);
+        let v1 = f.new_output(and1, 1, Address::new(reg, 0x21));
+        let or = f.new_op(OpCode::BoolOr, seq, vec![v0, v1]);
+        f.new_output(or, 1, Address::new(reg, 0x22));
+        parent_all(&mut f, vec![and0, and1, or]);
+
+        assert_eq!(RuleBooleanDedup.apply_op(or, &mut f), 0);
+        assert_eq!(f.op(or).code(), OpCode::BoolOr);
     }
 
     // ---- RuleAndOrLump (#21) / RuleRightShiftAnd (#23) -----------------------------------------

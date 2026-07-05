@@ -354,6 +354,21 @@ impl Funcdata {
         id
     }
 
+    /// Ghidra `Funcdata::opBoolNegate` (funcdata_op.cc:560): construct a new BOOL_NEGATE of `vn`
+    /// inserted before (or after, if `insertafter`) `op`, returning the negated (unique) output.
+    pub fn op_bool_negate(&mut self, vn: VarnodeId, op: OpId, insertafter: bool) -> VarnodeId {
+        let pc = self.ops[op.0 as usize].seqnum.pc;
+        let uniq = self.ops.len() as u32;
+        let negateop = self.new_op(OpCode::BoolNegate, SeqNum { pc, uniq }, vec![vn]);
+        self.new_output_unique(negateop, 1);
+        if insertafter {
+            self.op_insert_after(negateop, op);
+        } else {
+            self.op_insert_before(negateop, op);
+        }
+        self.ops[negateop.0 as usize].output.unwrap()
+    }
+
     /// Ghidra `Funcdata::newExtendedConstant` (funcdata_varnode.cc:462): materialize a constant of
     /// `size` bytes holding the (up to 128-bit) value `val`, inserted just before `op`. Up to 8
     /// bytes it is a plain constant; wider, it is built as an `INT_ZEXT` of the low 8 bytes (when
