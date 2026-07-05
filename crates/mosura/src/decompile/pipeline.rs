@@ -14,7 +14,7 @@ use super::rules::{
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess,
     RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
     RuleZextCommute, RuleConcatZero, RuleConcatLeftShift,
-    RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift,
+    RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
@@ -114,6 +114,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSborrow) // (8)
         .with(RuleScarry) // (9)
         .with(RuleTrivialArith) // (11)
+        .with(RuleTrivialBool) // (12)
         .with(RuleTrivialShift) // (13)
         .with(RuleIdentityEl) // (16)
         .with(RuleIdempotent) // mosura extra — trivial idempotent AND/OR/XOR/SUB folds

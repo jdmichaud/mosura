@@ -122,7 +122,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleScarry | PORTED (rules.rs; byte-neutral, unit-tested — ADD sibling of RuleSborrow via add_matches) |
 | RuleIntLessEqual | MISSING |
 | RuleTrivialArith | PORTED |
-| RuleTrivialBool | MISSING |
+| RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
 | RuleSignShift | MISSING |
 | RuleTestSign | MISSING |
@@ -385,7 +385,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~66 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift), 7 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~67 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool), 7 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 2 BLOCKED (SubvarSext, and RulePtrFlow needs isPtrFlow),
   ~66 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras. The MISSING set is the mechanical
   rule tail (Phase 1b, in progress).

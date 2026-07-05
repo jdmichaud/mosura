@@ -4859,6 +4859,52 @@ impl Rule for RuleSignForm {
     }
 }
 
+/// Ghidra `RuleTrivialBool` (`ruleaction.cc`, oppool1 @5523 "analysis"): simplify a boolean op with a
+/// constant operand — `V&&false=>false`, `V&&true=>V`, `V||false=>V`, `V||true=>true`,
+/// `V^^true=>!V`, `V^^false=>V`.
+pub struct RuleTrivialBool;
+
+impl Rule for RuleTrivialBool {
+    fn name(&self) -> &str {
+        "trivialbool"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolAnd, OpCode::BoolOr, OpCode::BoolXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vnconst = data.op(op).input(1).unwrap();
+        if !data.vn(vnconst).is_constant() {
+            return 0;
+        }
+        let val = data.vn(vnconst).constant_value();
+        let (opc, vn) = match data.op(op).code() {
+            OpCode::BoolXor => {
+                let opc = if val == 1 { OpCode::BoolNegate } else { OpCode::Copy };
+                (opc, data.op(op).input(0).unwrap())
+            }
+            OpCode::BoolAnd => {
+                if val == 1 {
+                    (OpCode::Copy, data.op(op).input(0).unwrap())
+                } else {
+                    (OpCode::Copy, data.new_const(1, 0)) // Copy false
+                }
+            }
+            OpCode::BoolOr => {
+                if val == 1 {
+                    (OpCode::Copy, data.new_const(1, 1)) // Copy true
+                } else {
+                    (OpCode::Copy, data.op(op).input(0).unwrap())
+                }
+            }
+            _ => return 0,
+        };
+        data.op_remove_input(op, 1);
+        data.op_set_opcode(op, opc);
+        data.op_set_input(op, 0, vn);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6757,5 +6803,52 @@ mod tests {
         let _o2 = f.new_output(sub2, 4, Address::new(r, 0x40));
         assert_eq!(RuleSignForm.apply_op(sub2, &mut f), 0);
         assert_eq!(f.op(sub2).code(), OpCode::Subpiece);
+    }
+
+    #[test]
+    fn trivial_bool_folds_constant_operand() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let mut addr = 0x10u64;
+        // Build `V <bop> const` and return the op id.
+        let mut mk = |f: &mut Funcdata, bop: OpCode, k: u64| -> (VarnodeId, OpId) {
+            let v = f.new_input(1, Address::new(r, addr));
+            let c = f.new_const(1, k);
+            let o = f.new_op(bop, seq, vec![v, c]);
+            f.new_output(o, 1, Address::new(r, addr + 8));
+            addr += 0x10;
+            (v, o)
+        };
+
+        // V && false => false (COPY 0);  V && true => V.
+        let (_v, o) = mk(&mut f, OpCode::BoolAnd, 0);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert!(f.vn(f.op(o).input(0).unwrap()).is_constant() && f.vn(f.op(o).input(0).unwrap()).constant_value() == 0);
+        let (v, o) = mk(&mut f, OpCode::BoolAnd, 1);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert_eq!(f.op(o).input(0).unwrap(), v);
+
+        // V || false => V;  V || true => true (COPY 1).
+        let (v, o) = mk(&mut f, OpCode::BoolOr, 0);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert_eq!(f.op(o).input(0).unwrap(), v);
+        let (_v, o) = mk(&mut f, OpCode::BoolOr, 1);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert!(f.vn(f.op(o).input(0).unwrap()).is_constant() && f.vn(f.op(o).input(0).unwrap()).constant_value() == 1);
+
+        // V ^^ true => !V (BOOL_NEGATE);  V ^^ false => V.
+        let (v, o) = mk(&mut f, OpCode::BoolXor, 1);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(o).input(0).unwrap(), v);
+        let (v, o) = mk(&mut f, OpCode::BoolXor, 0);
+        assert_eq!(RuleTrivialBool.apply_op(o, &mut f), 1);
+        assert_eq!(f.op(o).code(), OpCode::Copy);
+        assert_eq!(f.op(o).input(0).unwrap(), v);
     }
 }
