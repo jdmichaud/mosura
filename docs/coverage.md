@@ -170,8 +170,8 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSlessToLess | PORTED |
 | RuleZextSless | PORTED (rules.rs; byte-neutral, unit-tested — `zext(V) s< c => V < c` (+ SLESSEQUAL / reversed-operand), when c's narrow sign bit is clear so the zext is unnecessary; inert on corpus: no surviving signed-compare-of-zext-vs-const idiom in the fixtures) |
 | RuleBitUndistribute | PORTED (rules.rs; byte-neutral, 3 unit tests — pull a common ext/shift out of both operands of a bitwise op: `zext(V)&zext(W)=>zext(V&W)` (ZEXT/SEXT), `(V>>X)|(W>>X)=>(V|W)>>X` (LEFT/RIGHT/SRIGHT, shift amounts must match); builds an inner bitwise op on the un-ext/un-shifted values via new_op_before_sized; 0 firings on corpus — the idiom doesn't occur in the fixtures) |
-| RuleBooleanUndistribute | MISSING |
-| RuleBooleanDedup | MISSING |
+| RuleBooleanUndistribute | BLOCKED (needs the `BooleanMatch` helper — `testMatchingBooleans`/`BooleanMatch::evaluate` in ruleaction.cc that classifies two boolean expressions as same/complementary; mosura has no BooleanMatch. Port that helper first, then this + RuleBooleanDedup) |
+| RuleBooleanDedup | BLOCKED (same `BooleanMatch` dependency as RuleBooleanUndistribute — `isMatch` uses `BooleanMatch::evaluate`) |
 | RuleBoolZext | PORTED (rules.rs; byte-neutral, unit-tested — simplify `zext(V)*-1` extended booleans: `+1`=>`zext(!V)`, `==-1`=>`V==true`, `&`/`|`/`^`=>`zext(V&&W)*-1`; inert on corpus: the all-ones-smeared boolean idiom doesn't survive to actprop in the fixtures) |
 | RuleBooleanNegate | PORTED |
 | RuleLogic2Bool | PORTED |
