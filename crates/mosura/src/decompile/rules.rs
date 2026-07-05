@@ -5772,6 +5772,90 @@ impl Rule for RuleThreeWayCompare {
     }
 }
 
+/// Ghidra `RuleBitUndistribute` (ruleaction.cc:2614): pull a common extension or shift out of both
+/// operands of a bitwise op — `zext(V) & zext(W) => zext(V & W)`, `(V >> X) | (W >> X) => (V | W) >> X`
+/// — for INT_ZEXT/INT_SEXT and INT_LEFT/INT_RIGHT/INT_SRIGHT (the shift amounts must match). A new
+/// inner bitwise op is built on the un-extended/un-shifted values and the outer op becomes the ext/shift.
+pub struct RuleBitUndistribute;
+
+impl Rule for RuleBitUndistribute {
+    fn name(&self) -> &str {
+        "bitundistribute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd, OpCode::IntOr, OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn1 = data.op(op).input(0).unwrap();
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn1).is_written() || !data.vn(vn2).is_written() {
+            return 0;
+        }
+        let def1 = data.vn(vn1).def.unwrap();
+        let def2 = data.vn(vn2).def.unwrap();
+        let opc = data.op(def1).code();
+        if data.op(def2).code() != opc {
+            return 0;
+        }
+        let orig_opc = data.op(op).code(); // the bitwise op, captured before op is repurposed
+        let in1: VarnodeId;
+        let in2: VarnodeId;
+        match opc {
+            OpCode::IntZext | OpCode::IntSext => {
+                // Test for full equality of the extension operation
+                in1 = data.op(def1).input(0).unwrap();
+                if data.vn(in1).is_free() {
+                    return 0;
+                }
+                in2 = data.op(def2).input(0).unwrap();
+                if data.vn(in2).is_free() {
+                    return 0;
+                }
+                if data.vn(in1).size != data.vn(in2).size {
+                    return 0;
+                }
+                data.op_remove_input(op, 1);
+            }
+            OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright => {
+                // Test for full equality of the shift operation
+                let s1 = data.op(def1).input(1).unwrap();
+                let s2 = data.op(def2).input(1).unwrap();
+                let vnextra: VarnodeId;
+                if data.vn(s1).is_constant() && data.vn(s2).is_constant() {
+                    if data.vn(s1).constant_value() != data.vn(s2).constant_value() {
+                        return 0;
+                    }
+                    vnextra = data.new_const(data.vn(s1).size, data.vn(s1).constant_value());
+                } else if s1 != s2 {
+                    return 0;
+                } else {
+                    if data.vn(s1).is_free() {
+                        return 0;
+                    }
+                    vnextra = s1;
+                }
+                in1 = data.op(def1).input(0).unwrap();
+                if data.vn(in1).is_free() {
+                    return 0;
+                }
+                in2 = data.op(def2).input(0).unwrap();
+                if data.vn(in2).is_free() {
+                    return 0;
+                }
+                data.op_set_input(op, 1, vnextra);
+            }
+            _ => return 0,
+        }
+
+        let in1_size = data.vn(in1).size;
+        let newext = data.new_op_before_sized(op, orig_opc, vec![in1, in2], in1_size);
+        let smalllogic = data.op(newext).output.unwrap();
+        data.op_set_opcode(op, opc);
+        data.op_set_input(op, 0, smalllogic);
+        1
+    }
+}
+
 /// Ghidra `RuleNegateIdentity` (ruleaction.cc:452): apply INT_NEGATE identities against a logical op
 /// that reads both the negation output and its input — `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1`.
 /// The reading AND/OR/XOR collapses to a COPY of the constant.
@@ -9132,6 +9216,87 @@ mod tests {
 
         assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 0);
         assert_eq!(f.op(cmp).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleBitUndistribute (#59) -------------------------------------------------------------
+
+    #[test]
+    fn bitundistribute_pulls_zext_out_of_and() {
+        // zext(V:4):8 & zext(W:4):8  =>  zext(V & W)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let zv = f.new_op(OpCode::IntZext, seq, vec![v]);
+        let zvv = f.new_output(zv, 8, Address::new(reg, 0x20));
+        let zw = f.new_op(OpCode::IntZext, seq, vec![w]);
+        let zwv = f.new_output(zw, 8, Address::new(reg, 0x28));
+        let and = f.new_op(OpCode::IntAnd, seq, vec![zvv, zwv]);
+        f.new_output(and, 8, Address::new(reg, 0x30));
+        parent_all(&mut f, vec![zv, zw, and]);
+
+        assert_eq!(RuleBitUndistribute.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::IntZext);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        let sl = f.op(and).input(0).unwrap();
+        assert_eq!(f.vn(sl).size, 4);
+        let inner = f.vn(sl).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::IntAnd);
+        assert_eq!(f.op(inner).input(0), Some(v));
+        assert_eq!(f.op(inner).input(1), Some(w));
+    }
+
+    #[test]
+    fn bitundistribute_pulls_shift_out_of_or() {
+        // (V >> 8) | (W >> 8)  =>  (V | W) >> 8
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let c8a = f.new_const(4, 8);
+        let sv = f.new_op(OpCode::IntRight, seq, vec![v, c8a]);
+        let svv = f.new_output(sv, 4, Address::new(reg, 0x20));
+        let c8b = f.new_const(4, 8);
+        let sw = f.new_op(OpCode::IntRight, seq, vec![w, c8b]);
+        let swv = f.new_output(sw, 4, Address::new(reg, 0x28));
+        let or = f.new_op(OpCode::IntOr, seq, vec![svv, swv]);
+        f.new_output(or, 4, Address::new(reg, 0x30));
+        parent_all(&mut f, vec![sv, sw, or]);
+
+        assert_eq!(RuleBitUndistribute.apply_op(or, &mut f), 1);
+        assert_eq!(f.op(or).code(), OpCode::IntRight);
+        assert_eq!(f.op(or).num_inputs(), 2);
+        let sa = f.op(or).input(1).unwrap();
+        assert!(f.vn(sa).is_constant() && f.vn(sa).constant_value() == 8);
+        let sl = f.op(or).input(0).unwrap();
+        let inner = f.vn(sl).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::IntOr);
+        assert_eq!(f.op(inner).input(0), Some(v));
+        assert_eq!(f.op(inner).input(1), Some(w));
+    }
+
+    #[test]
+    fn bitundistribute_no_fire_on_mismatched_shift() {
+        // (V >> 8) | (W >> 4) — shift amounts differ, no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let c8 = f.new_const(4, 8);
+        let sv = f.new_op(OpCode::IntRight, seq, vec![v, c8]);
+        let svv = f.new_output(sv, 4, Address::new(reg, 0x20));
+        let c4 = f.new_const(4, 4);
+        let sw = f.new_op(OpCode::IntRight, seq, vec![w, c4]);
+        let swv = f.new_output(sw, 4, Address::new(reg, 0x28));
+        let or = f.new_op(OpCode::IntOr, seq, vec![svv, swv]);
+        f.new_output(or, 4, Address::new(reg, 0x30));
+        parent_all(&mut f, vec![sv, sw, or]);
+
+        assert_eq!(RuleBitUndistribute.apply_op(or, &mut f), 0);
+        assert_eq!(f.op(or).code(), OpCode::IntOr);
     }
 
     // ---- RuleNegateIdentity (#80) --------------------------------------------------------------
