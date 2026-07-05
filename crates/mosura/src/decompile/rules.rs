@@ -4986,6 +4986,79 @@ impl Rule for RuleOrConsume {
     }
 }
 
+/// Ghidra `RuleEqual2Constant` (`ruleaction.cc`, oppool1 @5555 "analysis"): fold a constant through an
+/// arithmetic operand of INT_EQUAL/INT_NOTEQUAL — `V*-1 == c => V == -c`, `V+c == d => V == d-c`,
+/// `~V == c => V == ~c` — provided `V` is only used in similar constant comparisons.
+pub struct RuleEqual2Constant;
+
+impl Rule for RuleEqual2Constant {
+    fn name(&self) -> &str {
+        "equal2constant"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntEqual, OpCode::IntNotequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let cvn = data.op(op).input(1).unwrap();
+        if !data.vn(cvn).is_constant() {
+            return 0;
+        }
+        let lhs = data.op(op).input(0).unwrap();
+        if !data.vn(lhs).is_written() {
+            return 0;
+        }
+        let leftop = data.vn(lhs).def.unwrap();
+        let opc = data.op(leftop).code();
+        let cval = data.vn(cvn).constant_value();
+        let newconst: u64 = if opc == OpCode::IntAdd {
+            let otherconst = data.op(leftop).input(1).unwrap();
+            if !data.vn(otherconst).is_constant() {
+                return 0;
+            }
+            cval.wrapping_sub(data.vn(otherconst).constant_value())
+                & super::nzmask::calc_mask(data.vn(cvn).size)
+        } else if opc == OpCode::IntMult {
+            // The only multiply we transform is multiply by -1.
+            let otherconst = data.op(leftop).input(1).unwrap();
+            if !data.vn(otherconst).is_constant() {
+                return 0;
+            }
+            if data.vn(otherconst).constant_value() != super::nzmask::calc_mask(data.vn(otherconst).size) {
+                return 0;
+            }
+            cval.wrapping_neg() & super::nzmask::calc_mask(data.vn(otherconst).size)
+        } else if opc == OpCode::IntNegate {
+            !cval & super::nzmask::calc_mask(data.vn(lhs).size)
+        } else {
+            return 0;
+        };
+
+        let a = data.op(leftop).input(0).unwrap();
+        if data.vn(a).is_free() {
+            return 0;
+        }
+        // Make sure the transformed form of `a` is only used in comparisons of similar form.
+        for dop in data.vn(lhs).descend.clone() {
+            if dop == op {
+                continue;
+            }
+            let dc = data.op(dop).code();
+            if dc != OpCode::IntEqual && dc != OpCode::IntNotequal {
+                return 0;
+            }
+            if !data.vn(data.op(dop).input(1).unwrap()).is_constant() {
+                return 0;
+            }
+        }
+
+        let asize = data.vn(a).size;
+        data.op_set_input(op, 0, a);
+        let c = data.new_const(asize, newconst);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7026,5 +7099,62 @@ mod tests {
         f.vn_mut(out3).consume = 0x0000_00ff;
         assert_eq!(RuleOrConsume.apply_op(o3, &mut f), 0);
         assert_eq!(f.op(o3).code(), OpCode::IntOr);
+    }
+
+    #[test]
+    fn equal2constant_folds_arith_through_compare() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+
+        // V + 3 == 10  =>  V == 7
+        let v = f.new_input(4, Address::new(r, 0x10));
+        let c3 = f.new_const(4, 3);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![v, c3]);
+        let addo = f.new_output(add, 4, Address::new(r, 0x18));
+        let c10 = f.new_const(4, 10);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![addo, c10]);
+        let _eo = f.new_output(eq, 1, Address::new(r, 0x20));
+        assert_eq!(RuleEqual2Constant.apply_op(eq, &mut f), 1);
+        assert_eq!(f.op(eq).input(0).unwrap(), v);
+        assert_eq!(f.vn(f.op(eq).input(1).unwrap()).constant_value(), 7);
+
+        // V * -1 == 5  =>  V == -5 (0xfffffffb)
+        let v2 = f.new_input(4, Address::new(r, 0x30));
+        let cm1 = f.new_const(4, 0xffff_ffff);
+        let mul = f.new_op(OpCode::IntMult, seq, vec![v2, cm1]);
+        let mulo = f.new_output(mul, 4, Address::new(r, 0x38));
+        let c5 = f.new_const(4, 5);
+        let eq2 = f.new_op(OpCode::IntEqual, seq, vec![mulo, c5]);
+        let _eo2 = f.new_output(eq2, 1, Address::new(r, 0x40));
+        assert_eq!(RuleEqual2Constant.apply_op(eq2, &mut f), 1);
+        assert_eq!(f.op(eq2).input(0).unwrap(), v2);
+        assert_eq!(f.vn(f.op(eq2).input(1).unwrap()).constant_value(), 0xffff_fffb);
+
+        // ~V == 0xf  =>  V == ~0xf (0xfffffff0)
+        let v3 = f.new_input(4, Address::new(r, 0x50));
+        let neg = f.new_op(OpCode::IntNegate, seq, vec![v3]);
+        let nego = f.new_output(neg, 4, Address::new(r, 0x58));
+        let cf = f.new_const(4, 0xf);
+        let eq3 = f.new_op(OpCode::IntEqual, seq, vec![nego, cf]);
+        let _eo3 = f.new_output(eq3, 1, Address::new(r, 0x60));
+        assert_eq!(RuleEqual2Constant.apply_op(eq3, &mut f), 1);
+        assert_eq!(f.op(eq3).input(0).unwrap(), v3);
+        assert_eq!(f.vn(f.op(eq3).input(1).unwrap()).constant_value(), 0xffff_fff0);
+
+        // No fire: the arith result is also used in a non-comparison (INT_ADD).
+        let v4 = f.new_input(4, Address::new(r, 0x70));
+        let c1 = f.new_const(4, 1);
+        let add4 = f.new_op(OpCode::IntAdd, seq, vec![v4, c1]);
+        let add4o = f.new_output(add4, 4, Address::new(r, 0x78));
+        let c2 = f.new_const(4, 2);
+        let eq4 = f.new_op(OpCode::IntEqual, seq, vec![add4o, c2]);
+        let _eo4 = f.new_output(eq4, 1, Address::new(r, 0x80));
+        let c9 = f.new_const(4, 9);
+        let other = f.new_op(OpCode::IntAdd, seq, vec![add4o, c9]); // non-comparison use of add4o
+        let _oo = f.new_output(other, 4, Address::new(r, 0x88));
+        assert_eq!(RuleEqual2Constant.apply_op(eq4, &mut f), 0);
+        assert_eq!(f.op(eq4).input(0).unwrap(), add4o);
     }
 }

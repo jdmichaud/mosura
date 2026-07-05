@@ -159,7 +159,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleLessEqual2Zero | PORTED |
 | RuleSLess2Zero | MISSING |
 | RuleEqual2Zero | PORTED |
-| RuleEqual2Constant | MISSING |
+| RuleEqual2Constant | PORTED (rules.rs; byte-neutral, unit-tested — fold const through arith operand of INT_EQUAL/NOTEQUAL when V only used in similar compares; inert on corpus) |
 | RuleThreeWayCompare | MISSING |
 | RuleXorCollapse | PORTED |
 | RuleAddMultCollapse | PORTED (ptrarith_pool) |
@@ -396,7 +396,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~69 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume), 7 HELD (NotDistribute, AndDistribute,
+- **oppool1**: ~70 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume, RuleEqual2Constant), 7 HELD (NotDistribute, AndDistribute,
   AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 6 BLOCKED (SubvarSext,
   RulePtrFlow=isPtrFlow, and the sign-div cluster SignForm2/SignDiv2/SignNearMult/SignMod2Opt on
   RuleDivOpt de-fusion Task #9), ~62 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras.
