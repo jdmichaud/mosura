@@ -5772,6 +5772,46 @@ impl Rule for RuleThreeWayCompare {
     }
 }
 
+/// Ghidra `RuleNegateIdentity` (ruleaction.cc:452): apply INT_NEGATE identities against a logical op
+/// that reads both the negation output and its input — `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1`.
+/// The reading AND/OR/XOR collapses to a COPY of the constant.
+pub struct RuleNegateIdentity;
+
+impl Rule for RuleNegateIdentity {
+    fn name(&self) -> &str {
+        "negateidentity"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntNegate]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        let out_vn = data.op(op).output.unwrap();
+        for logic_op in data.vn(out_vn).descend.clone() {
+            let opc = data.op(logic_op).code();
+            if opc != OpCode::IntAnd && opc != OpCode::IntOr && opc != OpCode::IntXor {
+                continue;
+            }
+            let slot = slot_of(data, logic_op, out_vn);
+            if data.op(logic_op).input(1 - slot).unwrap() != vn {
+                continue; // The other operand must be the un-negated value
+            }
+            // AND identity yields 0; OR/XOR identities yield the all-ones mask
+            let value = if opc != OpCode::IntAnd {
+                super::nzmask::calc_mask(data.vn(vn).size)
+            } else {
+                0
+            };
+            let c = data.new_const(data.vn(vn).size, value);
+            data.op_set_input(logic_op, 0, c);
+            data.op_remove_input(logic_op, 1);
+            data.op_set_opcode(logic_op, OpCode::Copy);
+            return 1;
+        }
+        0
+    }
+}
+
 /// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
 /// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
 /// `V < -1(max) => V != -1`.
@@ -9092,6 +9132,66 @@ mod tests {
 
         assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 0);
         assert_eq!(f.op(cmp).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleNegateIdentity (#80) --------------------------------------------------------------
+
+    #[test]
+    fn negateidentity_and_becomes_zero() {
+        // V & ~V  =>  0   (negation output at slot 1)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let neg = f.new_op(OpCode::IntNegate, seq, vec![v]);
+        let negv = f.new_output(neg, 4, Address::new(reg, 0x18));
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, negv]);
+        f.new_output(and, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![neg, and]);
+
+        assert_eq!(RuleNegateIdentity.apply_op(neg, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        let c = f.op(and).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0 && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn negateidentity_or_becomes_allones() {
+        // ~V | V  =>  -1   (negation output at slot 0)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let neg = f.new_op(OpCode::IntNegate, seq, vec![v]);
+        let negv = f.new_output(neg, 4, Address::new(reg, 0x18));
+        let or = f.new_op(OpCode::IntOr, seq, vec![negv, v]);
+        f.new_output(or, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![neg, or]);
+
+        assert_eq!(RuleNegateIdentity.apply_op(neg, &mut f), 1);
+        assert_eq!(f.op(or).code(), OpCode::Copy);
+        assert_eq!(f.op(or).num_inputs(), 1);
+        let c = f.op(or).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xffff_ffff && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn negateidentity_no_fire_on_different_operand() {
+        // W & ~V  (other operand is not the negated value) — no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let neg = f.new_op(OpCode::IntNegate, seq, vec![v]);
+        let negv = f.new_output(neg, 4, Address::new(reg, 0x20));
+        let and = f.new_op(OpCode::IntAnd, seq, vec![w, negv]);
+        f.new_output(and, 4, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![neg, and]);
+
+        assert_eq!(RuleNegateIdentity.apply_op(neg, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
     }
 
     // ---- RuleAndOrLump (#21) / RuleRightShiftAnd (#23) -----------------------------------------

@@ -190,7 +190,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleHumptyDumpty | PORTED |
 | RuleDumptyHump | PORTED |
 | RuleHumptyOr | PORTED |
-| RuleNegateIdentity | MISSING |
+| RuleNegateIdentity | PORTED (rules.rs; byte-neutral, 3 unit tests — INT_NEGATE identities against a logical op reading both `~V` and `V`: `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1` (collapse the AND/OR/XOR to a COPY of the constant); 0 firings on corpus — the idiom doesn't survive to actprop in the fixtures) |
 | RuleSubNormal | MISSING |
 | RulePositiveDiv | PORTED |
 | RuleDivTermAdd | HELD(regresses modulo — fused RuleDivOpt races it; Task #9) |
