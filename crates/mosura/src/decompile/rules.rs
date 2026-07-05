@@ -5997,6 +5997,67 @@ impl Rule for RuleNegateIdentity {
     }
 }
 
+/// Ghidra `Funcdata::replaceLessequal` (funcdata_op.cc:1029): rewrite a `<=` comparison against a
+/// constant as a `<` — `V <= c => V < (c+1)`, `c <= V => (c-1) < V` — for both the unsigned
+/// (INT_LESSEQUAL→INT_LESS) and signed (INT_SLESSEQUAL→INT_SLESS) forms, adjusting the constant by
+/// ±1. Bails when that would overflow (signed overflow for the signed form; the extremal
+/// `<= 0`/`<= max` cases for the unsigned form). Returns whether it fired.
+///
+/// (Ghidra also `copySymbol`s the data-type/Symbol onto the new constant; mosura has no per-Varnode
+/// symbol, so that is omitted — same as the subvarflow port.)
+fn replace_lessequal(data: &mut Funcdata, op: OpId) -> bool {
+    let in0 = data.op(op).input(0).unwrap();
+    let in1 = data.op(op).input(1).unwrap();
+    let (vn, diff, i) = if data.vn(in0).is_constant() {
+        (in0, -1i64, 0usize)
+    } else if data.vn(in1).is_constant() {
+        (in1, 1i64, 1usize)
+    } else {
+        return false;
+    };
+    let size = data.vn(vn).size;
+    let val = sign_extend_val(data.vn(vn).constant_value(), size, 8) as i64;
+    if data.op(op).code() == OpCode::IntSlessequal {
+        let vpd = val.wrapping_add(diff);
+        if val < 0 && vpd > 0 {
+            return false; // Check for sign overflow
+        }
+        if val > 0 && vpd < 0 {
+            return false;
+        }
+        data.op_set_opcode(op, OpCode::IntSless);
+    } else {
+        // Check for unsigned overflow
+        if diff == -1 && val == 0 {
+            return false;
+        }
+        if diff == 1 && val == -1 {
+            return false;
+        }
+        data.op_set_opcode(op, OpCode::IntLess);
+    }
+    let res = val.wrapping_add(diff) as u64 & super::nzmask::calc_mask(size);
+    let newvn = data.new_const(size, res);
+    data.op_set_input(op, i, newvn);
+    true
+}
+
+/// Ghidra `RuleIntLessEqual` (ruleaction.cc:602): convert a `<=` comparison against a constant to a
+/// `<` via [`replace_lessequal`] — `V <= c => V < (c+1)` (and the `c <= V` / signed forms).
+pub struct RuleIntLessEqual;
+
+impl Rule for RuleIntLessEqual {
+    fn name(&self) -> &str {
+        "intlessequal"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLessequal, OpCode::IntSlessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        u32::from(replace_lessequal(data, op))
+    }
+}
+
 /// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
 /// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
 /// `V < -1(max) => V != -1`.
@@ -9317,6 +9378,80 @@ mod tests {
 
         assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 0);
         assert_eq!(f.op(cmp).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleIntLessEqual (#10) ----------------------------------------------------------------
+
+    #[test]
+    fn intlessequal_right_const_becomes_less() {
+        // V <= 5  =>  V < 6
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let le = f.new_op(OpCode::IntLessequal, seq, vec![v, c5]);
+        f.new_output(le, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![le]);
+
+        assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 1);
+        assert_eq!(f.op(le).code(), OpCode::IntLess);
+        assert_eq!(f.op(le).input(0), Some(v));
+        let c = f.op(le).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 6 && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn intlessequal_left_const_becomes_less() {
+        // 5 <= V  =>  4 < V
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let le = f.new_op(OpCode::IntLessequal, seq, vec![c5, v]);
+        f.new_output(le, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![le]);
+
+        assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 1);
+        assert_eq!(f.op(le).code(), OpCode::IntLess);
+        assert_eq!(f.op(le).input(1), Some(v));
+        let c = f.op(le).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 4 && f.vn(c).size == 4);
+    }
+
+    #[test]
+    fn intlessequal_signed_form() {
+        // V s<= 5  =>  V s< 6
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let le = f.new_op(OpCode::IntSlessequal, seq, vec![v, c5]);
+        f.new_output(le, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![le]);
+
+        assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 1);
+        assert_eq!(f.op(le).code(), OpCode::IntSless);
+        let c = f.op(le).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 6);
+    }
+
+    #[test]
+    fn intlessequal_no_fire_on_unsigned_overflow() {
+        // V <= 0xffffffff (unsigned max) — always true, can't add 1, no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let cmax = f.new_const(4, 0xffff_ffff);
+        let le = f.new_op(OpCode::IntLessequal, seq, vec![v, cmax]);
+        f.new_output(le, 1, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![le]);
+
+        assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 0);
+        assert_eq!(f.op(le).code(), OpCode::IntLessequal);
     }
 
     // ---- RuleSubNormal (#81) -------------------------------------------------------------------

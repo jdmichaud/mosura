@@ -115,6 +115,14 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleMultMult) // mosura extra — term collection over MULT, next to CollectTerms
         .with(RuleSborrow) // (8)
         .with(RuleScarry) // (9)
+        // RuleIntLessEqual (10) is defined + unit-tested in rules.rs but HELD UNWIRED: it is a
+        // faithful port (`V <= c => V < c+1`), but mosura ALREADY implements that rewrite
+        // non-faithfully at PRINT time (printc::incr_in_width, `x <= c => x < c+1`) and keeps the
+        // SLESSEQUAL form in the IR. Wiring the faithful IR rule converts to SLESS early, and
+        // mosura's structuring/condition-negation (tuned for the SLESSEQUAL form) then mis-renders it
+        // as `x == c || x < c` disjunctions — regressing concat/condconst/condmulti/condsplit.
+        // Resolve per port-all-faithful-rules by CANCELLING the print-time adaptation and letting this
+        // rule normalize at the IR level (instrument-first; couples into P7/P8 structuring #5/#6).
         .with(RuleTrivialArith) // (11)
         .with(RuleTrivialBool) // (12)
         .with(RuleTrivialShift) // (13)

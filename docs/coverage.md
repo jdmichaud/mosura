@@ -120,7 +120,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePushMulti | BLOCKED (nodejoin subsystem — pushes an op back through a MULTIEQUAL across the node-join machinery mosura lacks) |
 | RuleSborrow | PORTED |
 | RuleScarry | PORTED (rules.rs; byte-neutral, unit-tested — ADD sibling of RuleSborrow via add_matches) |
-| RuleIntLessEqual | MISSING |
+| RuleIntLessEqual | HELD (defined + 4 unit tests in rules.rs via `replace_lessequal` port of Funcdata::replaceLessequal, UNWIRED — faithful `V <= c => V < c+1` / signed / both operand positions / overflow guards). CONFLICTS with a mosura print-time adaptation: printc::incr_in_width already does `x <= c => x < c+1` at render, keeping SLESSEQUAL in the IR. Wiring the faithful IR rule (63 firings) converts to SLESS early and the structuring/condition-negation (tuned for SLESSEQUAL) regresses concat/condconst/condmulti/condsplit into `x == c || x < c` disjunctions. Wire after cancelling the print-time adaptation + fixing the structuring dependency (instrument-first; P7/P8 #5/#6) |
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
