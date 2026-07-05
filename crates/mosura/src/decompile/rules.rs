@@ -5856,6 +5856,107 @@ impl Rule for RuleBitUndistribute {
     }
 }
 
+/// Ghidra `RuleSubNormal` (ruleaction.cc:7714): pull a SUBPIECE back through an INT_RIGHT/INT_SRIGHT
+/// so the truncation happens before the shift — `sub(V >> n, c) => sub(V, c + n/8) >> (n mod 8)`, or
+/// `=> ext(sub(V, c'))` when the shift is byte-aligned and the surviving field runs a whole
+/// power-of-two past the input's end. Normalizes byte-granular right shifts into SUBPIECEs. All the
+/// size arithmetic is signed (Ghidra `int4`).
+pub struct RuleSubNormal;
+
+impl Rule for RuleSubNormal {
+    fn name(&self) -> &str {
+        "subnormal"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let shiftout = data.op(op).input(0).unwrap();
+        if !data.vn(shiftout).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(shiftout).def.unwrap();
+        let opc = data.op(shiftop).code();
+        if opc != OpCode::IntRight && opc != OpCode::IntSright {
+            return 0;
+        }
+        let sa = data.op(shiftop).input(1).unwrap();
+        if !data.vn(sa).is_constant() {
+            return 0;
+        }
+        let a = data.op(shiftop).input(0).unwrap();
+        if data.vn(a).is_free() {
+            return 0;
+        }
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).is_precis_hi() || data.vn(outvn).is_precis_lo() {
+            return 0;
+        }
+        let mut n = data.vn(sa).constant_value() as i64;
+        let mut c = data.vn(data.op(op).input(1).unwrap()).constant_value() as i64;
+        let mut k = n / 8;
+        let insize = data.vn(a).size as i64;
+        let outsize = data.vn(outvn).size as i64;
+
+        // Total shift + outsize must reach the size of the input (unless the shift is byte-aligned)
+        if n + 8 * c + 8 * outsize < 8 * insize && n != k * 8 {
+            return 0;
+        }
+
+        // If the cut window would extend past the original input
+        if k + c + outsize > insize {
+            let trunc_size = insize - c - k;
+            if n == k * 8 && trunc_size > 0 && (trunc_size as u64).count_ones() == 1 {
+                // We need an additional extension
+                c += k;
+                let ext_opc = if opc == OpCode::IntSright {
+                    OpCode::IntSext
+                } else {
+                    OpCode::IntZext
+                };
+                let cconst = data.new_const(4, c as u64);
+                let newop = data.new_op_before_sized(
+                    op,
+                    OpCode::Subpiece,
+                    vec![a, cconst],
+                    trunc_size as u32,
+                );
+                let newout = data.op(newop).output.unwrap();
+                data.op_set_input(op, 0, newout);
+                data.op_remove_input(op, 1);
+                data.op_set_opcode(op, ext_opc);
+                return 1;
+            } else {
+                k = insize - c - outsize; // Or we can shrink the cut
+            }
+        }
+
+        // If n == k*8, the shift is unnecessary
+        c += k;
+        n -= k * 8;
+        if n == 0 {
+            data.op_set_input(op, 0, a);
+            let cconst = data.new_const(4, c as u64);
+            data.op_set_input(op, 1, cconst);
+            return 1;
+        } else if n >= outsize * 8 {
+            n = outsize * 8; // Can only shift so far
+            if opc == OpCode::IntSright {
+                n -= 1;
+            }
+        }
+
+        let cconst = data.new_const(4, c as u64);
+        let newop = data.new_op_before_sized(op, OpCode::Subpiece, vec![a, cconst], outsize as u32);
+        let newout = data.op(newop).output.unwrap();
+        data.op_set_input(op, 0, newout);
+        let nconst = data.new_const(4, n as u64);
+        data.op_set_input(op, 1, nconst);
+        data.op_set_opcode(op, opc);
+        1
+    }
+}
+
 /// Ghidra `RuleNegateIdentity` (ruleaction.cc:452): apply INT_NEGATE identities against a logical op
 /// that reads both the negation output and its input — `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1`.
 /// The reading AND/OR/XOR collapses to a COPY of the constant.
@@ -9216,6 +9317,102 @@ mod tests {
 
         assert_eq!(RuleThreeWayCompare.apply_op(cmp, &mut f), 0);
         assert_eq!(f.op(cmp).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleSubNormal (#81) -------------------------------------------------------------------
+
+    #[test]
+    fn subnormal_byte_aligned_folds_into_subpiece() {
+        // sub(V:8 >> 16, 0):4  =>  sub(V, 2):4   (byte-aligned shift absorbed into the offset)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let sh = f.new_const(4, 16);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![v, sh]);
+        let shrv = f.new_output(shr, 8, Address::new(reg, 0x18));
+        let c0 = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![shrv, c0]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![shr, sub]);
+
+        assert_eq!(RuleSubNormal.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(sub).input(0), Some(v));
+        let c = f.op(sub).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 2);
+    }
+
+    #[test]
+    fn subnormal_past_end_becomes_zext_of_subpiece() {
+        // sub(V:4 >> 16, 0):4  =>  zext(sub(V, 2):2)   (window runs past input end, truncSize=2)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let sh = f.new_const(4, 16);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![v, sh]);
+        let shrv = f.new_output(shr, 4, Address::new(reg, 0x18));
+        let c0 = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![shrv, c0]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![shr, sub]);
+
+        assert_eq!(RuleSubNormal.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntZext);
+        assert_eq!(f.op(sub).num_inputs(), 1);
+        let inner_out = f.op(sub).input(0).unwrap();
+        assert_eq!(f.vn(inner_out).size, 2);
+        let inner = f.vn(inner_out).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::Subpiece);
+        assert_eq!(f.op(inner).input(0), Some(v));
+        let ic = f.op(inner).input(1).unwrap();
+        assert!(f.vn(ic).is_constant() && f.vn(ic).constant_value() == 2);
+    }
+
+    #[test]
+    fn subnormal_nonaligned_becomes_shift_of_subpiece() {
+        // sub(V:8 >> 36, 0):4  =>  sub(V, 4):4 >> 4   (byte part folds, 4-bit remainder stays)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let sh = f.new_const(4, 36);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![v, sh]);
+        let shrv = f.new_output(shr, 8, Address::new(reg, 0x18));
+        let c0 = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![shrv, c0]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![shr, sub]);
+
+        assert_eq!(RuleSubNormal.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntRight);
+        assert_eq!(f.op(sub).num_inputs(), 2);
+        let sh_amt = f.op(sub).input(1).unwrap();
+        assert!(f.vn(sh_amt).is_constant() && f.vn(sh_amt).constant_value() == 4);
+        let inner_out = f.op(sub).input(0).unwrap();
+        assert_eq!(f.vn(inner_out).size, 4);
+        let inner = f.vn(inner_out).def.unwrap();
+        assert_eq!(f.op(inner).code(), OpCode::Subpiece);
+        assert_eq!(f.op(inner).input(0), Some(v));
+        let ic = f.op(inner).input(1).unwrap();
+        assert!(f.vn(ic).is_constant() && f.vn(ic).constant_value() == 4);
+    }
+
+    #[test]
+    fn subnormal_no_fire_on_plain_subpiece() {
+        // sub(V, 0) where V is a plain input (not a shift) — no fire.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let c0 = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, c0]);
+        f.new_output(sub, 4, Address::new(reg, 0x18));
+        parent_all(&mut f, vec![sub]);
+
+        assert_eq!(RuleSubNormal.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
     }
 
     // ---- RuleBitUndistribute (#59) -------------------------------------------------------------

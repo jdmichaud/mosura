@@ -174,6 +174,12 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleDumptyHump) // (78)
         .with(RuleHumptyOr) // (79)
         .with(RuleNegateIdentity) // (80)
+        // RuleSubNormal (81) is defined + unit-tested in rules.rs but HELD UNWIRED: it is a faithful
+        // port, but it is a MIXED mover — it correctly rewrites `sub(V >> n, c)` into non-zero-offset
+        // SUBPIECEs, which mosura currently mis-renders as `(int4)V` (low bits) instead of the high
+        // extraction. That regresses impliedfield/packstructaccess (bitfield/high-dword extracts
+        // collapse to the low word) even though it fixes ifswitch (magic-number `/5` now recognized).
+        // Wire it once the SUBPIECE-at-non-zero-offset rendering / shift-extract debt is fixed (#10/#12).
         .with(RulePositiveDiv) // (82)
         .with(super::divopt::RuleDivTermAdd2) // (84)
         .with(super::divopt::RuleDivOpt) // (85)

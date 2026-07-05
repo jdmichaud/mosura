@@ -191,7 +191,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDumptyHump | PORTED |
 | RuleHumptyOr | PORTED |
 | RuleNegateIdentity | PORTED (rules.rs; byte-neutral, 3 unit tests — INT_NEGATE identities against a logical op reading both `~V` and `V`: `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1` (collapse the AND/OR/XOR to a COPY of the constant); 0 firings on corpus — the idiom doesn't survive to actprop in the fixtures) |
-| RuleSubNormal | MISSING |
+| RuleSubNormal | HELD (defined + 4 unit tests in rules.rs, UNWIRED — faithful port of ruleaction.cc:7714, `sub(V>>n,c) => sub(V,c+n/8) >> (n mod 8)` / `=> ext(sub(V,c'))`; but a MIXED mover: fires 8x, +ifswitch (magic-number `(int8)(int4)p*0x66666667>>0x21 - p>>0x1f` now collapses to `(int4)p/5`, toward oracle `p/5`) but -impliedfield/-packstructaccess (it correctly rewrites the high-dword/bitfield extracts into non-zero-offset SUBPIECEs which mosura mis-renders as `(int4)V` low bits — `p>>0x20`=>`p`, three distinct `(int2)(x>>0x30/0x20)`+`(int4)x` terms collapse to `(int4)x`*3). Wire after the SUBPIECE-non-zero-offset / shift-extract rendering debt #10/#12 is fixed) |
 | RulePositiveDiv | PORTED |
 | RuleDivTermAdd | HELD(regresses modulo — fused RuleDivOpt races it; Task #9) |
 | RuleDivTermAdd2 | PORTED |
