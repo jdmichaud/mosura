@@ -129,6 +129,15 @@ impl Varnode {
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
+    /// Ghidra `Varnode::isPrecisLo` / `isPrecisHi` — this value is the low / high half of a
+    /// double-precision (piece-tracked) quantity. Guards rules (e.g. RuleSubCommute) that must not
+    /// commute across a precision boundary.
+    pub fn is_precis_lo(&self) -> bool {
+        self.flags & flags::PRECISLO != 0
+    }
+    pub fn is_precis_hi(&self) -> bool {
+        self.flags & flags::PRECISHI != 0
+    }
     /// Ghidra `Varnode::isPersist` — the value is persistent (a global/`persist` location visible
     /// beyond this function). Used by SubVariableFlow's sign-extension restriction path.
     pub fn is_persist(&self) -> bool {

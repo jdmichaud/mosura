@@ -5185,6 +5185,267 @@ impl Rule for RuleEqual2Constant {
     }
 }
 
+/// Ghidra `sign_extend(uintb in, int4 sizein, int4 sizeout)` (address.cc): treat `val` as a
+/// `sizein`-byte value, sign-extend it, and truncate the result to `sizeout` bytes. Only used with
+/// `sizein <= 8` here (the SDIV/SREM constant-divisor check).
+fn sign_extend_val(val: u64, sizein: u32, sizeout: u32) -> u64 {
+    let bit = sizein * 8;
+    let sval = if bit == 0 || bit >= 64 {
+        val
+    } else {
+        (((val << (64 - bit)) as i64) >> (64 - bit)) as u64
+    };
+    sval & super::nzmask::calc_mask(sizeout)
+}
+
+/// Ghidra `RuleSubCommute::shortenExtension` (ruleaction.cc:4463): replace the output of an
+/// INT_ZEXT/INT_SEXT `ext_op` with a `max_size`-byte truncation at the same address. mosura is
+/// little-endian (x86-64), so the output stays at the same address — Ghidra's big-endian
+/// `addr + (size - maxSize)` adjustment never applies. Returns the new smaller output Varnode.
+/// (`new_output` unsets the extension's old output, matching Ghidra's `opUnsetOutput`.)
+fn shorten_extension(data: &mut Funcdata, ext_op: OpId, max_size: u32) -> VarnodeId {
+    let orig_out = data.op(ext_op).output.unwrap();
+    let addr = data.vn(orig_out).loc;
+    data.new_output(ext_op, max_size, addr)
+}
+
+/// Ghidra `RuleSubCommute::cancelExtensions` (ruleaction.cc:4483): eliminate the input extensions on
+/// binary `longform` (a DIV/REM/SDIV/SREM whose two inputs are ZEXT/SEXT) whose output is truncated
+/// by `sub_op`. This is the PARTIAL commute — the SUBPIECE stays but the extensions are removed and
+/// `longform` is narrowed to the larger of the two pre-extension operand sizes. Returns true when it
+/// modified the graph.
+fn cancel_extensions(
+    data: &mut Funcdata,
+    longform: OpId,
+    sub_op: OpId,
+    mut ext0_in: VarnodeId,
+    mut ext1_in: VarnodeId,
+) -> bool {
+    let outvn = data.op(longform).output.unwrap();
+    if lone_descend(data, outvn) != Some(sub_op) {
+        return false; // Must be exactly one output to SUBPIECE
+    }
+    let (s0, s1) = (data.vn(ext0_in).size, data.vn(ext1_in).size);
+    let max_size;
+    if s0 == s1 {
+        max_size = s0;
+        if data.vn(ext0_in).is_free() || data.vn(ext1_in).is_free() {
+            return false; // Must be able to propagate inputs
+        }
+    } else if s0 < s1 {
+        max_size = s1;
+        if data.vn(ext1_in).is_free() {
+            return false;
+        }
+        let lin0 = data.op(longform).input(0).unwrap();
+        if lone_descend(data, lin0) != Some(longform) {
+            return false;
+        }
+        ext0_in = shorten_extension(data, data.vn(lin0).def.unwrap(), max_size);
+    } else {
+        max_size = s0;
+        if data.vn(ext0_in).is_free() {
+            return false;
+        }
+        let lin1 = data.op(longform).input(1).unwrap();
+        if lone_descend(data, lin1) != Some(longform) {
+            return false;
+        }
+        ext1_in = shorten_extension(data, data.vn(lin1).def.unwrap(), max_size);
+    }
+    // Create the truncated form of longform's output (new_output_unique unsets the old output).
+    let newout = data.new_output_unique(longform, max_size);
+    data.op_set_input(longform, 0, ext0_in);
+    data.op_set_input(longform, 1, ext1_in);
+    data.op_set_input(sub_op, 0, newout);
+    true
+}
+
+/// Ghidra `RuleSubCommute` (ruleaction.cc:4514): commute a SUBPIECE with the operation defining its
+/// input, pushing the truncation earlier in the expression tree (preferring short forms of ops) so
+/// it can run into a constant / INT_ZEXT / INT_SEXT and cancel. Commutes with INT_LEFT (offset 0,
+/// shifted value a ZEXT/PIECE), INT_DIV/REM (zero-extended inputs), INT_SDIV/SREM (sign-extended
+/// inputs), INT_ADD/MULT (least-significant SUBPIECE only), and the bitwise INT_NEGATE/XOR/AND/OR
+/// (any offset). The DIV/REM families additionally support a PARTIAL commute via [`cancel_extensions`]
+/// when the extensions are wider than the SUBPIECE output.
+pub struct RuleSubCommute;
+
+impl Rule for RuleSubCommute {
+    fn name(&self) -> &str {
+        "subcommute"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let base = data.op(op).input(0).unwrap();
+        if !data.vn(base).is_written() {
+            return 0;
+        }
+        let offset = data.vn(data.op(op).input(1).unwrap()).constant_value();
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).is_precis_lo() || data.vn(outvn).is_precis_hi() {
+            return 0;
+        }
+        let outsize = data.vn(outvn).size;
+        let insize = data.vn(base).size;
+        let longform = data.vn(base).def.unwrap();
+        let mut j: i64 = -1;
+        match data.op(longform).code() {
+            OpCode::IntLeft => {
+                j = 1; // Special processing for shift amount param
+                if offset != 0 {
+                    return 0;
+                }
+                let lin0 = data.op(longform).input(0).unwrap();
+                if data.vn(lin0).is_written() {
+                    let opc = data.op(data.vn(lin0).def.unwrap()).code();
+                    if opc != OpCode::IntZext && opc != OpCode::Piece {
+                        return 0;
+                    }
+                } else {
+                    return 0;
+                }
+            }
+            OpCode::IntRem | OpCode::IntDiv => {
+                // Only commutes if inputs are zero extended
+                if offset != 0 {
+                    return 0;
+                }
+                let lin0 = data.op(longform).input(0).unwrap();
+                if !data.vn(lin0).is_written() {
+                    return 0;
+                }
+                let zext0 = data.vn(lin0).def.unwrap();
+                if data.op(zext0).code() != OpCode::IntZext {
+                    return 0;
+                }
+                let zext0_in = data.op(zext0).input(0).unwrap();
+                let lin1 = data.op(longform).input(1).unwrap();
+                if data.vn(lin1).is_written() {
+                    let zext1 = data.vn(lin1).def.unwrap();
+                    if data.op(zext1).code() != OpCode::IntZext {
+                        return 0;
+                    }
+                    let zext1_in = data.op(zext1).input(0).unwrap();
+                    if data.vn(zext1_in).size > outsize || data.vn(zext0_in).size > outsize {
+                        // Special case: SUBPIECE cancels the ZEXTs but some SUBPIECE remains
+                        if cancel_extensions(data, longform, op, zext0_in, zext1_in) {
+                            return 1; // Leave SUBPIECE intact
+                        }
+                        return 0;
+                    }
+                    // If ZEXT sizes are both not bigger, go ahead and commute (fallthru)
+                } else if data.vn(lin1).is_constant() && data.vn(zext0_in).size <= outsize {
+                    let val = data.vn(lin1).constant_value();
+                    let smallval = val & super::nzmask::calc_mask(outsize);
+                    if val != smallval {
+                        return 0;
+                    }
+                } else {
+                    return 0;
+                }
+            }
+            OpCode::IntSrem | OpCode::IntSdiv => {
+                // Only commutes if inputs are sign extended
+                if offset != 0 {
+                    return 0;
+                }
+                let lin0 = data.op(longform).input(0).unwrap();
+                if !data.vn(lin0).is_written() {
+                    return 0;
+                }
+                let sext0 = data.vn(lin0).def.unwrap();
+                if data.op(sext0).code() != OpCode::IntSext {
+                    return 0;
+                }
+                let sext0_in = data.op(sext0).input(0).unwrap();
+                let lin1 = data.op(longform).input(1).unwrap();
+                if data.vn(lin1).is_written() {
+                    let sext1 = data.vn(lin1).def.unwrap();
+                    if data.op(sext1).code() != OpCode::IntSext {
+                        return 0;
+                    }
+                    let sext1_in = data.op(sext1).input(0).unwrap();
+                    if data.vn(sext1_in).size > outsize || data.vn(sext0_in).size > outsize {
+                        // Special case: SUBPIECE cancels the SEXTs but some SUBPIECE remains
+                        if cancel_extensions(data, longform, op, sext0_in, sext1_in) {
+                            return 1; // Leave SUBPIECE intact
+                        }
+                        return 0;
+                    }
+                    // If SEXT sizes are both not bigger, go ahead and commute (fallthru)
+                } else if data.vn(lin1).is_constant() && data.vn(sext0_in).size <= outsize {
+                    let val = data.vn(lin1).constant_value();
+                    let smallval = val & super::nzmask::calc_mask(outsize);
+                    let smallval = sign_extend_val(smallval, outsize, insize);
+                    if val != smallval {
+                        return 0;
+                    }
+                } else {
+                    return 0;
+                }
+            }
+            OpCode::IntAdd => {
+                if offset != 0 {
+                    return 0; // Only commutes with least significant SUBPIECE
+                }
+                if data.vn(data.op(longform).input(0).unwrap()).is_spacebase() {
+                    return 0; // Deconflict with RulePtrArith
+                }
+            }
+            OpCode::IntMult => {
+                if offset != 0 {
+                    return 0; // Only commutes with least significant SUBPIECE
+                }
+            }
+            // Bitwise ops, type of subpiece doesn't matter
+            OpCode::IntNegate | OpCode::IntXor | OpCode::IntAnd | OpCode::IntOr => {}
+            _ => return 0, // Most ops don't commute
+        }
+
+        // Make sure no other piece of base is getting used
+        if lone_descend(data, base) != Some(op) {
+            return 0;
+        }
+
+        if offset == 0 {
+            // Look for overlap with RuleSubZext
+            if let Some(nextop) = lone_descend(data, outvn) {
+                if data.op(nextop).code() == OpCode::IntZext
+                    && data.vn(data.op(nextop).output.unwrap()).size == insize
+                {
+                    return 0;
+                }
+            }
+        }
+
+        let mut last_in: Option<VarnodeId> = None;
+        let mut new_vn: Option<VarnodeId> = None;
+        let ninput = data.op(longform).num_inputs();
+        for i in 0..ninput {
+            let vn = data.op(longform).input(i).unwrap();
+            if i as i64 != j {
+                if last_in != Some(vn) || new_vn.is_none() {
+                    // Don't duplicate the SUBPIECE if consecutive inputs are the same varnode
+                    let off_c = data.new_const(4, offset);
+                    let newsub =
+                        data.new_op_before_sized(longform, OpCode::Subpiece, vec![vn, off_c], outsize);
+                    let nv = data.op(newsub).output.unwrap();
+                    data.op_set_input(longform, i, nv);
+                    new_vn = Some(nv);
+                } else {
+                    data.op_set_input(longform, i, new_vn.unwrap());
+                }
+            }
+            last_in = Some(vn);
+        }
+        data.op_set_output(longform, outvn); // longform now produces the truncated value
+        data.op_destroy(op); // Get rid of old SUBPIECE
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7394,5 +7655,99 @@ mod tests {
         assert_eq!(f.op(band).code(), OpCode::BoolAnd);
         assert_eq!(f.op(band).input(0), Some(v));
         assert_eq!(f.op(band).input(1), Some(w));
+    }
+
+    // ---- RuleSubCommute (#66) ------------------------------------------------------------------
+
+    #[test]
+    fn subcommute_pushes_subpiece_into_add() {
+        // SUBPIECE(a + b, 0):4  =>  SUBPIECE(a,0):4 + SUBPIECE(b,0):4, the ADD narrowed to 4 bytes.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(8, Address::new(reg, 0x10));
+        let b = f.new_input(8, Address::new(reg, 0x18));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let base = f.new_output(add, 8, Address::new(reg, 0x20));
+        let z = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![base, z]);
+        let out = f.new_output(sub, 4, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![add, sub]);
+
+        assert_eq!(RuleSubCommute.apply_op(sub, &mut f), 1);
+        assert!(f.op(sub).is_dead());
+        assert_eq!(f.op(add).code(), OpCode::IntAdd);
+        assert_eq!(f.op(add).output, Some(out));
+        // Both operands are now SUBPIECE(_, 0)
+        for slot in 0..2 {
+            let s = f.vn(f.op(add).input(slot).unwrap()).def.unwrap();
+            assert_eq!(f.op(s).code(), OpCode::Subpiece);
+            assert_eq!(f.vn(f.op(s).output.unwrap()).size, 4);
+        }
+        assert_eq!(f.vn(f.op(f.vn(f.op(add).input(0).unwrap()).def.unwrap()).input(0).unwrap()).size, 8);
+    }
+
+    #[test]
+    fn subcommute_commutes_div_of_zexts() {
+        // SUBPIECE(zext(a:4) / zext(b:4), 0):4  =>  DIV narrowed to 4 bytes over SUBPIECEs
+        // (which cancel the ZEXTs downstream). ZEXT input sizes == outsize → the commute path.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let za = f.new_op(OpCode::IntZext, seq, vec![a]);
+        let zav = f.new_output(za, 8, Address::new(reg, 0x20));
+        let zb = f.new_op(OpCode::IntZext, seq, vec![b]);
+        let zbv = f.new_output(zb, 8, Address::new(reg, 0x28));
+        let div = f.new_op(OpCode::IntDiv, seq, vec![zav, zbv]);
+        let base = f.new_output(div, 8, Address::new(reg, 0x30));
+        let z = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![base, z]);
+        let out = f.new_output(sub, 4, Address::new(reg, 0x38));
+        parent_all(&mut f, vec![za, zb, div, sub]);
+
+        assert_eq!(RuleSubCommute.apply_op(sub, &mut f), 1);
+        assert!(f.op(sub).is_dead());
+        assert_eq!(f.op(div).code(), OpCode::IntDiv);
+        assert_eq!(f.op(div).output, Some(out));
+        for slot in 0..2 {
+            let s = f.vn(f.op(div).input(slot).unwrap()).def.unwrap();
+            assert_eq!(f.op(s).code(), OpCode::Subpiece);
+            assert_eq!(f.vn(f.op(s).output.unwrap()).size, 4);
+        }
+    }
+
+    #[test]
+    fn subcommute_partial_cancels_wide_zext_div() {
+        // SUBPIECE(zext(a:4) / zext(b:4), 0):2  — the ZEXT inputs (4) are wider than the SUBPIECE
+        // output (2), so cancelExtensions removes the ZEXTs, narrows the DIV to 4 bytes over a,b,
+        // and leaves a SUBPIECE(div:4, 0):2 in place.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x18));
+        let za = f.new_op(OpCode::IntZext, seq, vec![a]);
+        let zav = f.new_output(za, 8, Address::new(reg, 0x20));
+        let zb = f.new_op(OpCode::IntZext, seq, vec![b]);
+        let zbv = f.new_output(zb, 8, Address::new(reg, 0x28));
+        let div = f.new_op(OpCode::IntDiv, seq, vec![zav, zbv]);
+        let base = f.new_output(div, 8, Address::new(reg, 0x30));
+        let z = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![base, z]);
+        let out = f.new_output(sub, 2, Address::new(reg, 0x38));
+        parent_all(&mut f, vec![za, zb, div, sub]);
+
+        assert_eq!(RuleSubCommute.apply_op(sub, &mut f), 1);
+        // SUBPIECE stays; DIV is now 4-byte over the raw a,b (ZEXTs cancelled)
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(sub).output, Some(out));
+        assert_eq!(f.op(div).code(), OpCode::IntDiv);
+        assert_eq!(f.op(div).input(0), Some(a));
+        assert_eq!(f.op(div).input(1), Some(b));
+        let divout = f.op(div).output.unwrap();
+        assert_eq!(f.vn(divout).size, 4);
+        assert_eq!(f.op(sub).input(0), Some(divout));
     }
 }
