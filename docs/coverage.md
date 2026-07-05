@@ -117,15 +117,15 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleCollectTerms | PORTED |
 | RulePullsubMulti | MISSING |
 | RulePullsubIndirect | MISSING |
-| RulePushMulti | MISSING (nodejoin) |
+| RulePushMulti | BLOCKED (nodejoin subsystem — pushes an op back through a MULTIEQUAL across the node-join machinery mosura lacks) |
 | RuleSborrow | PORTED |
 | RuleScarry | PORTED (rules.rs; byte-neutral, unit-tested — ADD sibling of RuleSborrow via add_matches) |
 | RuleIntLessEqual | MISSING |
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
-| RuleSignShift | MISSING |
-| RuleTestSign | MISSING |
+| RuleSignShift | BLOCKED (→Task #9 de-fuse — `V >> (8*sz-1) => (V s>> (8*sz-1)) * -1` when feeding arith/compare; a sign-bit normalization, same class as the already-HELD RuleSignForm that mosura's FUSED RuleDivOpt can't re-collapse. Port inside the #9 de-fusion, not piecemeal) |
+| RuleTestSign | BLOCKED (→Task #9 de-fuse — normalizes a sign-bit-extraction `V >> (8*sz-1)` feeding INT_EQUAL/NOTEQUAL into a sign test; same sign-normalization / fused-RuleDivOpt-race class as RuleSignShift/RuleSignForm. Port inside #9) |
 | RuleIdentityEl | PORTED |
 | RuleOrMask | PORTED |
 | RuleAndMask | PORTED |
@@ -145,12 +145,12 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDoubleShift | PORTED (rules.rs; byte-neutral, unit-tested — combine/cancel chained shifts; inert on corpus) |
 | RuleDoubleArithShift | PORTED (rules.rs; byte-neutral, unit-tested — (x s>> c) s>> d => x s>> saturate(c+d); inert on corpus) |
 | RuleConcatShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,W)>>c => ext(V) when the shift discards W; inert on corpus) |
-| RuleLeftRight | MISSING |
+| RuleLeftRight | BLOCKED (→Task #9 de-fuse — `(V << c) s>> c => sext(sub(V,#0))`, a sign-extension normalization (produces SEXT of a SUBPIECE); same sext/sign-normalization class the fused RuleDivOpt can't re-collapse (RuleSignForm precedent) — a mover taken with the #9 rock, not piecemeal) |
 | RuleShiftCompare | PORTED |
 | RuleShift2Mult | PORTED |
 | RuleShiftPiece | PORTED |
 | RuleMultiCollapse | PORTED (+ nofunc const-base guard `68a059e`) |
-| RuleIndirectCollapse | MISSING |
+| RuleIndirectCollapse | BLOCKED (INDIRECT/effect subsystem, Task #10 — "remove a CPUI_INDIRECT if its blocking PcodeOp is dead"; depends on mosura's INDIRECT/effect-guard machinery, which is the iop/2-input-INDIRECT debt) |
 | Rule2Comp2Mult | PORTED (rules.rs; byte-neutral, unit-tested — `-V => V * -1` canonicalization in the main pool so mult/term rules act on it uniformly; cleanup-pool `RuleMultNegOne` restores `-V` (separate pools, no ping-pong); 0 firings on corpus — no surviving INT_2COMP reaches actprop — byte-IDENTICAL. Added `op_insert_input` helper) |
 | RuleSub2Add | PORTED (ptrarith_pool, not main — deliberate: switch/jumptable cascade, Task #9) |
 | RuleCarryElim | PORTED (rules.rs; byte-neutral, unit-tested — `carry(V, c) => (-c) <= V`, special case `carry(V, 0) => false`; fires 19x on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
@@ -164,7 +164,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleXorCollapse | PORTED |
 | RuleAddMultCollapse | PORTED (ptrarith_pool) |
 | RuleCollapseConstants | PORTED (= RuleConstFold) |
-| RuleTransformCpool | MISSING (constant pool) |
+| RuleTransformCpool | BLOCKED (constant-pool subsystem absent — transforms CPUI_CPOOLREF by looking the reference up in the constant pool; mosura has the CPOOLREF opcode but no constant-pool resolution subsystem) |
 | RulePropagateCopy | PORTED (+ isReturnCopy RETURN guard `5a8ac03`) |
 | RuleZextEliminate | PORTED |
 | RuleSlessToLess | PORTED |
