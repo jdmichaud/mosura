@@ -131,9 +131,9 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleAndMask | PORTED |
 | RuleOrConsume | PORTED (rules.rs; unit-tested — drop OR/XOR input whose nz bits are unconsumed downstream; fires 124× on corpus but rendered C byte-IDENTICAL, absorbed by consume/deadcode) |
 | RuleOrCollapse | PORTED |
-| RuleAndOrLump | MISSING |
+| RuleAndOrLump | PORTED (rules.rs; byte-neutral, unit-tested — `(V op c) op d => V op (c⊙d)` for AND/OR/XOR; fires 1x on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleShiftBitops | PORTED |
-| RuleRightShiftAnd | MISSING |
+| RuleRightShiftAnd | PORTED (rules.rs; byte-neutral, unit-tested — `(V & M) >> sa => V >> sa` when the mask covers the whole surviving field, INT_RIGHT/INT_SRIGHT; inert on corpus) |
 | RuleNotDistribute | HELD(defined, unwired — no verified firing site / kept out) |
 | RuleHighOrderAnd | PORTED |
 | RuleAndDistribute | HELD(RuleHumptyOr ping-pong hang) |

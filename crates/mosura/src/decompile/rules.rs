@@ -1417,6 +1417,104 @@ impl Rule for RuleZextSless {
     }
 }
 
+/// Ghidra `RuleAndOrLump` (ruleaction.cc:413): collapse a constant through a same-opcode parent —
+/// `(V & c) & d => V & (c & d)`, and likewise for INT_OR (`|`) and INT_XOR (`^`).
+pub struct RuleAndOrLump;
+
+impl Rule for RuleAndOrLump {
+    fn name(&self) -> &str {
+        "andorlump"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd, OpCode::IntOr, OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let opc = data.op(op).code();
+        let (Some(in0), Some(in1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(in1).is_constant() {
+            return 0;
+        }
+        if !data.vn(in0).is_written() {
+            return 0;
+        }
+        let op2 = data.vn(in0).def.unwrap();
+        if data.op(op2).code() != opc {
+            return 0; // Must be same op
+        }
+        let (Some(basevn), Some(c2)) = (data.op(op2).input(0), data.op(op2).input(1)) else {
+            return 0;
+        };
+        if !data.vn(c2).is_constant() {
+            return 0;
+        }
+        if data.vn(basevn).is_free() {
+            return 0;
+        }
+        let val = data.vn(in1).constant_value();
+        let val2 = data.vn(c2).constant_value();
+        let combined = match opc {
+            OpCode::IntAnd => val & val2,
+            OpCode::IntOr => val | val2,
+            OpCode::IntXor => val ^ val2,
+            _ => return 0,
+        };
+        let c = data.new_const(data.vn(basevn).size, combined);
+        data.op_set_input(op, 0, basevn);
+        data.op_set_input(op, 1, c);
+        1
+    }
+}
+
+/// Ghidra `RuleRightShiftAnd` (ruleaction.cc:580): drop an INT_AND mask rendered unnecessary by a
+/// following right shift — `(V & 0xf000) >> 24 => V >> 24` (and the arithmetic `s>>` form) — when
+/// every bit the mask clears is shifted out anyway (the mask, shifted right by the shift amount,
+/// covers the whole surviving field).
+pub struct RuleRightShiftAnd;
+
+impl Rule for RuleRightShiftAnd {
+    fn name(&self) -> &str {
+        "rightshiftand"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight, OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(in0), Some(constvn)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        if !data.vn(constvn).is_constant() {
+            return 0;
+        }
+        if !data.vn(in0).is_written() {
+            return 0;
+        }
+        let and_op = data.vn(in0).def.unwrap();
+        if data.op(and_op).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let (Some(root_vn), Some(mask_vn)) = (data.op(and_op).input(0), data.op(and_op).input(1))
+        else {
+            return 0;
+        };
+        if !data.vn(mask_vn).is_constant() {
+            return 0;
+        }
+        let sa = data.vn(constvn).constant_value() as u32;
+        let mask = data.vn(mask_vn).constant_value().checked_shr(sa).unwrap_or(0);
+        let full = super::nzmask::calc_mask(data.vn(root_vn).size).checked_shr(sa).unwrap_or(0);
+        if full != mask {
+            return 0;
+        }
+        if data.vn(root_vn).is_free() {
+            return 0;
+        }
+        data.op_set_input(op, 0, root_vn); // Bypass the INT_AND
+        1
+    }
+}
+
 /// Ghidra `Varnode::loneDescend` (varnode.cc): the single op reading `vn`, or `None` if it has
 /// zero or more than one reader. (Descendant lists are kept exact by the op-mutation helpers, so a
 /// rewritten-away or removed reader no longer counts.)
@@ -7847,5 +7945,85 @@ mod tests {
 
         assert_eq!(RuleZextSless.apply_op(sless, &mut f), 0);
         assert_eq!(f.op(sless).code(), OpCode::IntSless);
+    }
+
+    // ---- RuleAndOrLump (#21) / RuleRightShiftAnd (#23) -----------------------------------------
+
+    #[test]
+    fn andorlump_folds_nested_and_constants() {
+        // (V & 0xff) & 0xf0  =>  V & 0xf0
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c1 = f.new_const(4, 0xff);
+        let inner = f.new_op(OpCode::IntAnd, seq, vec![v, c1]);
+        let iv = f.new_output(inner, 4, Address::new(reg, 0x18));
+        let c2 = f.new_const(4, 0xf0);
+        let outer = f.new_op(OpCode::IntAnd, seq, vec![iv, c2]);
+        f.new_output(outer, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![inner, outer]);
+
+        assert_eq!(RuleAndOrLump.apply_op(outer, &mut f), 1);
+        assert_eq!(f.op(outer).input(0), Some(v));
+        let c = f.op(outer).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 0xf0);
+    }
+
+    #[test]
+    fn andorlump_needs_matching_parent_op() {
+        // (V | 0xff) & 0xf0 — parent is OR, this op is AND → no fold.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c1 = f.new_const(4, 0xff);
+        let inner = f.new_op(OpCode::IntOr, seq, vec![v, c1]);
+        let iv = f.new_output(inner, 4, Address::new(reg, 0x18));
+        let c2 = f.new_const(4, 0xf0);
+        let outer = f.new_op(OpCode::IntAnd, seq, vec![iv, c2]);
+        f.new_output(outer, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![inner, outer]);
+
+        assert_eq!(RuleAndOrLump.apply_op(outer, &mut f), 0);
+    }
+
+    #[test]
+    fn rightshiftand_drops_redundant_mask() {
+        // (V:4 & 0xff000000) >> 0x18  =>  V >> 0x18  (mask covers the whole surviving field)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0xff000000);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let av = f.new_output(and, 4, Address::new(reg, 0x18));
+        let sa = f.new_const(4, 0x18);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![av, sa]);
+        f.new_output(shr, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![and, shr]);
+
+        assert_eq!(RuleRightShiftAnd.apply_op(shr, &mut f), 1);
+        assert_eq!(f.op(shr).input(0), Some(v));
+    }
+
+    #[test]
+    fn rightshiftand_keeps_load_bearing_mask() {
+        // (V:4 & 0xff0000) >> 8 — mask does NOT cover all surviving bits (bits 8..16 are cleared but
+        // survive the shift), so the AND stays.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0xff0000);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let av = f.new_output(and, 4, Address::new(reg, 0x18));
+        let sa = f.new_const(4, 8);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![av, sa]);
+        f.new_output(shr, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![and, shr]);
+
+        assert_eq!(RuleRightShiftAnd.apply_op(shr, &mut f), 0);
+        assert_eq!(f.op(shr).input(0), Some(av));
     }
 }

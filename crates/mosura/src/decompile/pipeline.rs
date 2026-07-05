@@ -12,7 +12,7 @@ use super::rules::{
     RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess, RuleZextSless, RuleBoolZext,
-    RuleOrCollapse, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
+    RuleOrCollapse, RuleAndOrLump, RuleRightShiftAnd, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
     RuleZextCommute, RuleConcatZero, RuleConcatLeftShift,
     RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero,
     RuleOrConsume, RuleEqual2Constant,
@@ -124,7 +124,9 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleRangeAnd) // mosura extra — AND with a range mask, next to AndMask
         .with(RuleOrConsume) // (19)
         .with(RuleOrCollapse) // (20)
+        .with(RuleAndOrLump) // (21)
         .with(RuleShiftBitops) // (22)
+        .with(RuleRightShiftAnd) // (23)
         .with(RuleHighOrderAnd) // (25)
         .with(RuleAndCommute) // (27)
         .with(RuleAndPiece) // (28)
