@@ -13,7 +13,7 @@ use super::rules::{
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess, RuleZextSless, RuleBoolZext,
     RuleOrCollapse, RuleAndOrLump, RuleRightShiftAnd, RuleXorCollapse, RuleHighOrderAnd, RuleZextShiftZext, RuleConcatCommute, RuleConcatZext,
-    RuleZextCommute, RuleConcatZero, RuleConcatLeftShift, RuleSubCancel, RuleShiftSub,
+    RuleZextCommute, RuleConcatZero, RuleConcatLeftShift, RuleSubCancel, RuleShiftSub, RuleSubCommute,
     RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero,
     RuleOrConsume, RuleEqual2Constant,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
@@ -153,6 +153,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleBooleanNegate) // (63)
         .with(RuleLogic2Bool) // (64)
         .with(RuleSubExtComm) // (65)
+        .with(RuleSubCommute) // (66)
         .with(RuleConcatCommute) // (67)
         .with(RuleConcatZext) // (68)
         .with(RuleZextCommute) // (69)

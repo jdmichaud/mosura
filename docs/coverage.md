@@ -176,7 +176,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleBooleanNegate | PORTED |
 | RuleLogic2Bool | PORTED |
 | RuleSubExtComm | PORTED |
-| RuleSubCommute | HELD(mover — defined+unit-tested in rules.rs, UNWIRED pending lead go; faithful port of ruleaction.cc:4514 incl. shortenExtension/cancelExtensions. Wiring fires 56x and moves 12 fixtures NET TOWARD Ghidra: avg +0.0194, standout modulo 0.7464→0.9077 [`x - x/K*K` now renders `x % K`], ifswitch +0.0495, switchloop +0.0103 [toward, unlike SignForm], switchhide/noforloop/loopcomment/elseif up; sole dip impliedfield −0.0342 is a token artifact — RuleSubCommute correctly drops redundant same-width casts on a line where Ghidra emits `(int4)` casts over an upstream float4-vs-int8 shift-typing divergence, not this rule's fault) |
+| RuleSubCommute | PORTED (ruleaction.cc:4514 incl. shortenExtension/cancelExtensions; wired lead-side, corpus avg->0.8870 [modulo 0.908, ifswitch 0.922 toward Ghidra]; sole dip impliedfield 0.889 = token artifact of correctly dropping redundant casts over an upstream float-typing divergence, debt-tracked) |
 | RuleConcatCommute | PORTED (rules.rs; unit-tested — commute PIECE with AND/OR/XOR-const; MOVER: fires 11×/5 fixtures, 4 byte-identical, switchloop 0.7658→0.7680 toward Ghidra; surfaces an `xunknown1` cast on the rule-created PIECE input — separate type-inference gap, debt-tracked) |
 | RuleConcatZext | PORTED (rules.rs; byte-neutral, unit-tested — pull zext out of concat: concat(zext(V),W)=>zext(concat(V,W)); inert on corpus) |
 | RuleZextCommute | PORTED (rules.rs; byte-neutral, unit-tested — commute zext/right-shift: zext(V)>>W=>zext(V>>W); inert on corpus) |
