@@ -74,7 +74,7 @@ fn recover_one(f: &Funcdata, indop: OpId) -> Option<JumpTable> {
 /// Ghidra `JumpBasic::foldInOneGuard` geometry: a bounds guard whose in-range edge branches
 /// directly into the switch block has its *other* (out-of-range) edge target as the `default`
 /// case. Find that guard among the switch block's predecessors and return the default address.
-fn find_default(f: &Funcdata, indop: OpId, path: &HashSet<VarnodeId>) -> Option<u64> {
+pub(crate) fn find_default(f: &Funcdata, indop: OpId, path: &HashSet<VarnodeId>) -> Option<u64> {
     let ind_block = f.op(indop).parent?;
     for &pred in &f.block(ind_block).in_edges {
         let blk = f.block(pred);
@@ -114,7 +114,7 @@ fn find_default(f: &Funcdata, indop: OpId, path: &HashSet<VarnodeId>) -> Option<
 }
 
 /// Whether `addr` lies within some loaded chunk (a backstop sanity check on recovered targets).
-fn in_image(f: &Funcdata, addr: u64) -> bool {
+pub(crate) fn in_image(f: &Funcdata, addr: u64) -> bool {
     f.image.iter().any(|(base, bytes)| addr >= *base && addr < base + bytes.len() as u64)
 }
 
@@ -163,7 +163,7 @@ fn normalize(f: &Funcdata, mut v: VarnodeId) -> VarnodeId {
 
 /// The set of varnodes the value `vn` is computed from (Ghidra's `PathMeld` reach): a backward
 /// walk through defining ops, collecting every varnode on the way.
-fn backtrace_set(f: &Funcdata, vn: VarnodeId) -> HashSet<VarnodeId> {
+pub(crate) fn backtrace_set(f: &Funcdata, vn: VarnodeId) -> HashSet<VarnodeId> {
     let mut set = HashSet::new();
     let mut stack = vec![vn];
     while let Some(v) = stack.pop() {
@@ -280,7 +280,7 @@ fn guard_range(f: &Funcdata, path: &HashSet<VarnodeId>, indop: OpId) -> Option<(
 /// Emulate the address calculation `vn` with the switch variable pinned to `idx`
 /// (Ghidra `EmulateFunction::emulatePath`): a forward evaluation of the defining-op chain, with
 /// LOADs served from the function's image (the switch table).
-fn emulate(f: &Funcdata, vn: VarnodeId, sw: VarnodeId, idx: u64, depth: u32) -> Option<u64> {
+pub(crate) fn emulate(f: &Funcdata, vn: VarnodeId, sw: VarnodeId, idx: u64, depth: u32) -> Option<u64> {
     if depth > 100 {
         return None;
     }

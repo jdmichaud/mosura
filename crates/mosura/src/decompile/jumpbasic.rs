@@ -15,6 +15,7 @@
 use super::block::BlockId;
 use super::circlerange::CircleRange;
 use super::funcdata::Funcdata;
+use super::jumptable::{self, JumpTable};
 use super::nzmask::{calc_mask, coveringmask, mostsigbit_set};
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -834,6 +835,136 @@ pub fn find_determining_varnodes(data: &mut Funcdata, op: OpId, slot: i32) -> Pa
     path_meld
 }
 
+/// The maximum normalized-range size mosura accepts for a jump table (Ghidra's `maxtablesize`);
+/// matches the cap in [`super::jumptable::recover_one`].
+const MAX_TABLE_SIZE: u64 = 4096;
+
+/// Ghidra `JumpBasic::calcRange` (`jumptable.cc:1120`): the range of values `vn` can hold when
+/// control reaches the switch. Start from an initial range (constant value / boolean / nzmask +
+/// stride), then intersect the range of every [`GuardRecord`] that applies to `vn`.
+fn calc_range(data: &Funcdata, vn: VarnodeId, guards: &[GuardRecord]) -> CircleRange {
+    // Initial range based on the size/type of `vn`.
+    let size = data.vn(vn).size as i32;
+    let mut stride = 1;
+    let mut rng = if data.vn(vn).is_constant() {
+        CircleRange::from_value(data.vn(vn).constant_value(), size)
+    } else if data.vn(vn).is_written() && data.op(data.vn(vn).def.unwrap()).is_bool_output() {
+        CircleRange::new(0, 2, 1, 1) // Only 0 or 1 possible
+    } else {
+        let max_value = get_max_value(data, vn);
+        stride = get_stride(data, vn);
+        CircleRange::new(0, max_value, size, stride)
+    };
+
+    // Intersect any guard ranges which apply to `vn`.
+    let (base_vn, bits_preserved) = quasi_copy(data, vn);
+    for guard in guards {
+        let matchval = guard.value_match(data, vn, base_vn, bits_preserved);
+        // if (matchval == 2) TODO: check for aliases (Ghidra leaves this open too)
+        if matchval == 0 {
+            continue;
+        }
+        if rng.intersect(guard.get_range()) != 0 {
+            continue;
+        }
+    }
+
+    // The switch value may be assumed positive, with the guard not checking for it: if the range is
+    // too big, try only positive values.
+    if rng.get_size() > 0x10000 {
+        let mut positive = CircleRange::new(0, (rng.get_mask() >> 1) + 1, size, stride);
+        positive.intersect(&rng);
+        if !positive.is_empty() {
+            rng = positive;
+        }
+    }
+    rng
+}
+
+/// Ghidra `JumpBasic::findSmallestNormal` (`jumptable.cc:1165`): the common Varnode with the
+/// smallest value range (closest to the BRANCHIND) is the normalized switch variable. Returns
+/// `(varnode_index, range, start_vn, start_op)` — the JumpValuesRange setup.
+fn find_smallest_normal(
+    data: &Funcdata,
+    path_meld: &PathMeld,
+    guards: &[GuardRecord],
+    matchsize: u64,
+) -> (i32, CircleRange, VarnodeId, OpId) {
+    let mut varnode_index = 0i32;
+    let mut rng = calc_range(data, path_meld.get_varnode(0), guards);
+    let mut out_range = rng;
+    let mut start_vn = path_meld.get_varnode(0);
+    let mut start_op = path_meld.get_op(0);
+    let mut maxsize = rng.get_size();
+    let mut i = 1;
+    while i < path_meld.num_common_varnode() {
+        if maxsize == matchsize {
+            // Found a variable giving the already-recovered size.
+            return (varnode_index, out_range, start_vn, start_op);
+        }
+        rng = calc_range(data, path_meld.get_varnode(i), guards);
+        let sz = rng.get_size();
+        if sz < maxsize {
+            // Don't let a 1-byte switch variable through without a guard.
+            let vn = path_meld.get_varnode(i);
+            if sz != 256 || data.vn(vn).size != 1 {
+                varnode_index = i;
+                maxsize = sz;
+                out_range = rng;
+                start_vn = vn;
+                start_op = path_meld.get_earliest_op(i).expect("earliest op exists for common varnode");
+            }
+        }
+        i += 1;
+    }
+    (varnode_index, out_range, start_vn, start_op)
+}
+
+/// Ghidra `JumpBasic::recoverModel` + `buildAddresses` (`jumptable.cc:1418`/`:1434`): recover the
+/// jump-table targets for a `BRANCHIND` the Ghidra way — [`find_determining_varnodes`] to get the
+/// candidate switch Varnodes, [`analyze_guards`] to bound them, [`find_smallest_normal`] to pick the
+/// normalized switch variable and its range, then emulate the address calculation for each value in
+/// range (reusing [`super::jumptable::emulate`]).
+///
+/// Stage 3 of the JumpBasic port: this runs **alongside** [`super::jumptable::recover`]'s existing
+/// `recover_one` (not swapped in — that is the gated Stage 4). Takes `&mut Funcdata` because the
+/// PathMeld walk transiently marks Varnodes (they are all cleared before return).
+pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> {
+    let target_vn = data.op(indop).input(0)?;
+    let rootbl = data.op(indop).parent?;
+
+    // recoverModel: pathMeld + guards + normalized switch variable & range.
+    let path_meld = find_determining_varnodes(data, indop, 0);
+    if path_meld.empty() {
+        return None;
+    }
+    let guards = analyze_guards(data, rootbl, -1, indop, true);
+    let (_varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, 0);
+    let count = range.get_size();
+    if count == 0 || count > MAX_TABLE_SIZE {
+        return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
+    }
+
+    // buildAddresses: emulate the address calculation for each value in the normalized range.
+    let mut targets = Vec::with_capacity(count as usize);
+    let mut curval = range.get_min();
+    loop {
+        let addr = jumptable::emulate(data, target_vn, start_vn, curval, 0)?;
+        if !jumptable::in_image(data, addr) {
+            return None; // sanityCheck: every target must be a real address in the image
+        }
+        targets.push(addr);
+        if !range.get_next(&mut curval) {
+            break;
+        }
+    }
+
+    // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
+    let path = jumptable::backtrace_set(data, target_vn);
+    let default = jumptable::find_default(data, indop, &path);
+    Some(JumpTable { op_addr: data.op(indop).seqnum.pc.offset, targets, default })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,5 +1216,71 @@ mod tests {
         f.new_output(a3, 4, Address::new(reg, 0x20));
         assert_eq!(one_off_match(&f, a1, a2), 1);
         assert_eq!(one_off_match(&f, a1, a3), 0);
+    }
+
+    /// End-to-end: a guarded LOAD-table switch. `index` is bounded by `if (index < 3)`, the target
+    /// is `LOAD(0x2000 + index*8)`, and the table holds three real code addresses. The driver must
+    /// pick `index` (range `[0,3)`) as the normalized switch variable and emulate all three targets,
+    /// with the guard's out-of-range edge as the default.
+    #[test]
+    fn recover_jumpbasic_reads_a_guarded_load_table() {
+        let mut f = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        // Image: a code region (so targets are in-image) and the 3-entry jump table at 0x2000.
+        f.image.push((0x1000, vec![0u8; 0x400]));
+        let mut table = Vec::new();
+        for t in [0x1100u64, 0x1200, 0x1300] {
+            table.extend_from_slice(&t.to_le_bytes());
+        }
+        f.image.push((0x2000, table));
+
+        // block0 (guard): cond = index < 3; CBRANCH(->switch, cond).
+        let index = f.new_input(8, Address::new(reg, 0x10));
+        let three = f.new_const(8, 3);
+        let less = f.new_op(OpCode::IntLess, seq(0x10), vec![index, three]);
+        let cond = f.new_output(less, 1, Address::new(reg, 0x20));
+        let brtarget = f.new_const(8, 0x100);
+        let cbr = f.new_op(OpCode::Cbranch, seq(0x14), vec![brtarget, cond]);
+        // block1 (switch): target = LOAD(ram, 0x2000 + index*8); BRANCHIND(target).
+        let eight = f.new_const(8, 8);
+        let mult = f.new_op(OpCode::IntMult, seq(0x40), vec![index, eight]);
+        let off = f.new_output(mult, 8, Address::new(reg, 0x28));
+        let base = f.new_const(8, 0x2000);
+        let add = f.new_op(OpCode::IntAdd, seq(0x44), vec![off, base]);
+        let addr = f.new_output(add, 8, Address::new(reg, 0x30));
+        let ramid = f.new_const(8, 0); // LOAD space operand (ignored by emulation)
+        let load = f.new_op(OpCode::Load, seq(0x48), vec![ramid, addr]);
+        let target = f.new_output(load, 8, Address::new(reg, 0x38));
+        let branchind = f.new_op(OpCode::Branchind, seq(0x4c), vec![target]);
+        // block2 (default): RETURN at 0x300.
+        let ret = f.new_op(OpCode::Return, seq(0x300), vec![]);
+
+        // out-edges [fallthrough=default(block2), taken=switch(block1)].
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![less, cbr], in_edges: vec![], out_edges: vec![BlockId(2), BlockId(1)] },
+            BlockBasic {
+                ops: vec![mult, add, load, branchind],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![],
+            },
+            BlockBasic { ops: vec![ret], in_edges: vec![BlockId(0)], out_edges: vec![] },
+        ]);
+        for (bi, ops) in [
+            (0u32, vec![less, cbr]),
+            (1, vec![mult, add, load, branchind]),
+            (2, vec![ret]),
+        ] {
+            for op in ops {
+                f.op_mut(op).parent = Some(BlockId(bi));
+            }
+        }
+
+        let jt = recover_jumpbasic(&mut f, branchind).expect("recovers the table");
+        assert_eq!(jt.op_addr, 0x4c);
+        assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300]);
+        assert_eq!(jt.default, Some(0x300), "the out-of-range edge is the default case");
     }
 }
