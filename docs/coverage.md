@@ -366,6 +366,7 @@ mosura `jumptable.rs` (`JumpTable`, `recover`).
 | Ghidra model | mosura |
 |---|---|
 | JumpBasic (the common LOAD-table model) | PARTIAL (jumptable.rs recover) |
+| CircleRange pull-back (rangeutil.cc) | HELD (circlerange.rs — faithful port of the pull-back half: ctors/intersect/circleUnion/minimalContainer/setNZMask/setStride/pullBackUnary+Binary and the `pullBack` op-driver, validated against Ghidra's own `testcirclerange.cc` element-set oracle (intersect/union/pullback vectors) + the `(index-1)<8`→[1,9) key case; pushForward/ValueSet half deliberately not ported. Unwired pending JumpBasic Stages 1-4, Task #8) |
 | JumpBasicOverride | MISSING |
 | JumpModelTrivial | MISSING |
 | JumpAssisted / JumpAssistOp | MISSING |
