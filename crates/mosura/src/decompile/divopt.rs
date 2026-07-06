@@ -808,9 +808,526 @@ impl Rule for RuleDivTermAdd2 {
     }
 }
 
+// ===========================================================================
+// Signed-division / division-chain cluster (Ghidra `ruleaction.cc`, oppool1 @5599-5605).
+// De-fusion Task #9/#20: these are faithful ports landed HELD (defined-but-unwired). They
+// compose with the faithful ADD-normalized div form that only appears once RuleSub2Add moves
+// into the main pool (Stage 2), so they are inert on the corpus until then. Unit-tested here.
+// ===========================================================================
+
+/// Ghidra `RuleSignMod2nOpt::checkSignExtraction` (ruleaction.cc:8758): if `out_vn` is the
+/// sign-bit replication `res s>> (8*|res|-1)`, return `res`; else `None`.
+fn check_sign_extraction(f: &Funcdata, out_vn: VarnodeId) -> Option<VarnodeId> {
+    if !f.vn(out_vn).is_written() {
+        return None;
+    }
+    let sign_op = f.vn(out_vn).def.unwrap();
+    if f.op(sign_op).code() != OpCode::IntSright {
+        return None;
+    }
+    let const_vn = f.op(sign_op).input(1).unwrap();
+    if !f.vn(const_vn).is_constant() {
+        return None;
+    }
+    let val = f.vn(const_vn).constant_value();
+    let res_vn = f.op(sign_op).input(0).unwrap();
+    let insize = f.vn(res_vn).size;
+    if val != (insize * 8 - 1) as u64 {
+        return None;
+    }
+    Some(res_vn)
+}
+
+/// Ghidra `RuleSignDiv2` (ruleaction.cc:8339, INT_SRIGHT): convert the sign-corrected halving
+/// form back into a division — `(V + -1*(V s>> (8|V|-1))) s>> 1  =>  V s/ 2`.
+pub struct RuleSignDiv2;
+
+impl Rule for RuleSignDiv2 {
+    fn name(&self) -> &str {
+        "signdiv2"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() || data.vn(in1).constant_value() != 1 {
+            return 0;
+        }
+        let addout = data.op(op).input(0).unwrap();
+        if !data.vn(addout).is_written() {
+            return 0;
+        }
+        let addop = data.vn(addout).def.unwrap();
+        if data.op(addop).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let mut found = None;
+        for i in 0..2 {
+            let multout = data.op(addop).input(i).unwrap();
+            if !data.vn(multout).is_written() {
+                continue;
+            }
+            let multop = data.vn(multout).def.unwrap();
+            if data.op(multop).code() != OpCode::IntMult {
+                continue;
+            }
+            let mc = data.op(multop).input(1).unwrap();
+            if !data.vn(mc).is_constant()
+                || data.vn(mc).constant_value() != super::nzmask::calc_mask(data.vn(mc).size)
+            {
+                continue;
+            }
+            let shiftout = data.op(multop).input(0).unwrap();
+            if !data.vn(shiftout).is_written() {
+                continue;
+            }
+            let shiftop = data.vn(shiftout).def.unwrap();
+            if data.op(shiftop).code() != OpCode::IntSright {
+                continue;
+            }
+            let sc = data.op(shiftop).input(1).unwrap();
+            if !data.vn(sc).is_constant() {
+                continue;
+            }
+            let n = data.vn(sc).constant_value();
+            let a = data.op(shiftop).input(0).unwrap();
+            if Some(a) != data.op(addop).input(1 - i) {
+                continue;
+            }
+            if n != (8 * data.vn(a).size - 1) as u64 || data.vn(a).is_free() {
+                continue;
+            }
+            found = Some(a);
+            break;
+        }
+        let Some(a) = found else {
+            return 0;
+        };
+        data.op_set_input(op, 0, a);
+        let two = data.new_const(data.vn(a).size, 2);
+        data.op_set_input(op, 1, two);
+        data.op_set_opcode(op, OpCode::IntSdiv);
+        1
+    }
+}
+
+/// Ghidra `RuleDivChain` (ruleaction.cc:8392, INT_DIV/INT_SDIV): collapse two consecutive
+/// divisions — `(x / c1) / c2  =>  x / (c1*c2)` (with the unsigned `x >> sa` first-shift case),
+/// guarded against overflow and against reuse of the intermediate result.
+pub struct RuleDivChain;
+
+impl Rule for RuleDivChain {
+    fn name(&self) -> &str {
+        "divchain"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntDiv, OpCode::IntSdiv]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let opc2 = data.op(op).code();
+        let const_vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn2).is_constant() {
+            return 0;
+        }
+        let vn = data.op(op).input(0).unwrap();
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let div_op = data.vn(vn).def.unwrap();
+        let opc1 = data.op(div_op).code();
+        if opc1 != opc2 && (opc2 != OpCode::IntDiv || opc1 != OpCode::IntRight) {
+            return 0;
+        }
+        let const_vn1 = data.op(div_op).input(1).unwrap();
+        if !data.vn(const_vn1).is_constant() {
+            return 0;
+        }
+        // If the intermediate result is used elsewhere, don't apply — collapsing would interfere
+        // with the modulo rules (Ghidra: `vn->loneDescend() == 0`).
+        if data.vn(vn).descend.len() != 1 {
+            return 0;
+        }
+        let sz = data.vn(vn).size;
+        let val1: u64 = if opc1 == opc2 {
+            data.vn(const_vn1).constant_value()
+        } else {
+            // Unsigned case with INT_RIGHT: val1 = 1 << sa
+            let sa = data.vn(const_vn1).constant_value();
+            1u64.checked_shl(sa as u32).unwrap_or(0)
+        };
+        let base_vn = data.op(div_op).input(0).unwrap();
+        if data.vn(base_vn).is_free() {
+            return 0;
+        }
+        let val2 = data.vn(const_vn2).constant_value();
+        let mask = super::nzmask::calc_mask(sz);
+        let resval = val1.wrapping_mul(val2) & mask;
+        if resval == 0 {
+            return 0;
+        }
+        let mut v1 = val1;
+        let mut v2 = val2;
+        if super::nzmask::signbit_negative(v1, sz) {
+            v1 = v1.wrapping_neg() & mask;
+        }
+        if super::nzmask::signbit_negative(v2, sz) {
+            v2 = v2.wrapping_neg() & mask;
+        }
+        let bitcount = super::nzmask::mostsigbit_set(v1) + super::nzmask::mostsigbit_set(v2) + 2;
+        if opc2 == OpCode::IntDiv && bitcount > (sz * 8) as i32 {
+            return 0; // Unsigned overflow
+        }
+        if opc2 == OpCode::IntSdiv && bitcount > (sz * 8) as i32 - 2 {
+            return 0; // Signed overflow
+        }
+        data.op_set_input(op, 0, base_vn);
+        let rc = data.new_const(sz, resval);
+        data.op_set_input(op, 1, rc);
+        1
+    }
+}
+
+/// Ghidra `RuleSignNearMult` (ruleaction.cc:8533, INT_AND): recover a rounded division —
+/// `(V + (V s>> 0x1f)>>(32-n)) & (-1<<n)  =>  (V s/ 2^n) * 2^n`.
+pub struct RuleSignNearMult;
+
+impl Rule for RuleSignNearMult {
+    fn name(&self) -> &str {
+        "signnearmult"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if !data.vn(data.op(op).input(1).unwrap()).is_constant() {
+            return 0;
+        }
+        let in0 = data.op(op).input(0).unwrap();
+        if !data.vn(in0).is_written() {
+            return 0;
+        }
+        let addop = data.vn(in0).def.unwrap();
+        if data.op(addop).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let mut idx = 2;
+        let (mut shiftvn, mut unshiftop) = (None, None);
+        for i in 0..2 {
+            let sv = data.op(addop).input(i).unwrap();
+            if !data.vn(sv).is_written() {
+                continue;
+            }
+            let uso = data.vn(sv).def.unwrap();
+            if data.op(uso).code() == OpCode::IntRight {
+                if !data.vn(data.op(uso).input(1).unwrap()).is_constant() {
+                    continue;
+                }
+                shiftvn = Some(sv);
+                unshiftop = Some(uso);
+                idx = i;
+                break;
+            }
+        }
+        if idx == 2 {
+            return 0;
+        }
+        let (shiftvn, unshiftop) = (shiftvn.unwrap(), unshiftop.unwrap());
+        let x = data.op(addop).input(1 - idx).unwrap();
+        if data.vn(x).is_free() {
+            return 0;
+        }
+        let n0 = data.vn(data.op(unshiftop).input(1).unwrap()).constant_value() as i64;
+        if n0 <= 0 {
+            return 0;
+        }
+        let n = data.vn(shiftvn).size as i64 * 8 - n0;
+        if n <= 0 {
+            return 0;
+        }
+        let mask0 = super::nzmask::calc_mask(data.vn(shiftvn).size);
+        let mask = (mask0 << n as u32) & mask0;
+        if mask != data.vn(data.op(op).input(1).unwrap()).constant_value() {
+            return 0;
+        }
+        let sgnvn = data.op(unshiftop).input(0).unwrap();
+        if !data.vn(sgnvn).is_written() {
+            return 0;
+        }
+        let sshiftop = data.vn(sgnvn).def.unwrap();
+        if data.op(sshiftop).code() != OpCode::IntSright {
+            return 0;
+        }
+        if !data.vn(data.op(sshiftop).input(1).unwrap()).is_constant() {
+            return 0;
+        }
+        if data.op(sshiftop).input(0) != Some(x) {
+            return 0;
+        }
+        let val = data.vn(data.op(sshiftop).input(1).unwrap()).constant_value();
+        if val != (8 * data.vn(x).size - 1) as u64 {
+            return 0;
+        }
+        let pow = 1u64 << n as u32;
+        let xsize = data.vn(x).size;
+        let powc1 = data.new_const(xsize, pow);
+        let newdiv = data.new_op_before_sized(op, OpCode::IntSdiv, vec![x, powc1], xsize);
+        let divvn = data.op(newdiv).output.unwrap();
+        data.op_set_opcode(op, OpCode::IntMult);
+        let powc2 = data.new_const(xsize, pow);
+        data.op_set_input(op, 0, divvn);
+        data.op_set_input(op, 1, powc2);
+        1
+    }
+}
+
+/// Ghidra `RuleSignMod2Opt` (ruleaction.cc:8776, INT_AND): a specialized `RuleSignMod2nOpt` —
+/// `(V - sign)&1 + sign  =>  V s% 2` where `sign = V s>> (8|V|-1)`. The INT_AND may be performed
+/// on a truncated result then re-extended (the `trunc` path).
+pub struct RuleSignMod2Opt;
+
+impl Rule for RuleSignMod2Opt {
+    fn name(&self) -> &str {
+        "signmod2opt"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_vn = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn).is_constant() || data.vn(const_vn).constant_value() != 1 {
+            return 0;
+        }
+        let add_out = data.op(op).input(0).unwrap();
+        if !data.vn(add_out).is_written() {
+            return 0;
+        }
+        let add_op = data.vn(add_out).def.unwrap();
+        if data.op(add_op).code() != OpCode::IntAdd {
+            return 0;
+        }
+        let mut mult_slot = 2;
+        let mut mult_op = None;
+        for slot in 0..2 {
+            let vn = data.op(add_op).input(slot).unwrap();
+            if !data.vn(vn).is_written() {
+                continue;
+            }
+            let mo = data.vn(vn).def.unwrap();
+            if data.op(mo).code() != OpCode::IntMult {
+                continue;
+            }
+            let cvn = data.op(mo).input(1).unwrap();
+            if !data.vn(cvn).is_constant() {
+                continue;
+            }
+            // Check for INT_MULT by -1
+            if data.vn(cvn).constant_value() == super::nzmask::calc_mask(data.vn(cvn).size) {
+                mult_slot = slot;
+                mult_op = Some(mo);
+                break;
+            }
+        }
+        if mult_slot > 1 {
+            return 0;
+        }
+        let mult_op = mult_op.unwrap();
+        let mut base = match check_sign_extraction(data, data.op(mult_op).input(0).unwrap()) {
+            Some(b) => b,
+            None => return 0,
+        };
+        let mut other_base = data.op(add_op).input(1 - mult_slot).unwrap();
+        let mut trunc = false;
+        if base != other_base {
+            if !data.vn(base).is_written() || !data.vn(other_base).is_written() {
+                return 0;
+            }
+            let sub_op = data.vn(base).def.unwrap();
+            if data.op(sub_op).code() != OpCode::Subpiece {
+                return 0;
+            }
+            let trunc_amt = data.vn(data.op(sub_op).input(1).unwrap()).constant_value();
+            // Must truncate all but the high part
+            if trunc_amt + data.vn(base).size as u64
+                != data.vn(data.op(sub_op).input(0).unwrap()).size as u64
+            {
+                return 0;
+            }
+            base = data.op(sub_op).input(0).unwrap();
+            let sub_op2 = data.vn(other_base).def.unwrap();
+            if data.op(sub_op2).code() != OpCode::Subpiece {
+                return 0;
+            }
+            if data.vn(data.op(sub_op2).input(1).unwrap()).constant_value() != 0 {
+                return 0;
+            }
+            other_base = data.op(sub_op2).input(0).unwrap();
+            if other_base != base {
+                return 0;
+            }
+            trunc = true;
+        }
+        if data.vn(base).is_free() {
+            return 0;
+        }
+        let mut and_out = data.op(op).output.unwrap();
+        if trunc {
+            if data.vn(and_out).descend.len() != 1 {
+                return 0;
+            }
+            let ext_op = data.vn(and_out).descend[0];
+            if data.op(ext_op).code() != OpCode::IntZext {
+                return 0;
+            }
+            and_out = data.op(ext_op).output.unwrap();
+        }
+        for &root_op in &data.vn(and_out).descend.clone() {
+            if data.op(root_op).code() != OpCode::IntAdd {
+                continue;
+            }
+            let slot = if data.op(root_op).input(0) == Some(and_out) { 0 } else { 1 };
+            if check_sign_extraction(data, data.op(root_op).input(1 - slot).unwrap()) != Some(base) {
+                continue;
+            }
+            data.op_set_opcode(root_op, OpCode::IntSrem);
+            data.op_set_input(root_op, 0, base);
+            let two = data.new_const(data.vn(base).size, 2);
+            data.op_set_input(root_op, 1, two);
+            return 1;
+        }
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signdiv2_recovers_signed_halving() {
+        // (V + -1*(V s>> 63)) s>> 1  =>  V s/ 2
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        let sh = f.new_const(8, 0x3f);
+        let sr = f.new_op(OpCode::IntSright, seq, vec![x, sh]);
+        let sro = f.new_output_unique(sr, 8);
+        let negone = f.new_const(8, super::super::nzmask::calc_mask(8));
+        let mult = f.new_op(OpCode::IntMult, seq, vec![sro, negone]);
+        let multo = f.new_output_unique(mult, 8);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![multo, x]);
+        let addo = f.new_output_unique(add, 8);
+        let one = f.new_const(8, 1);
+        let op = f.new_op(OpCode::IntSright, seq, vec![addo, one]);
+        f.new_output_unique(op, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![sr, mult, add, op], ..Default::default() }]);
+
+        assert_eq!(RuleSignDiv2.apply_op(op, &mut f), 1);
+        assert_eq!(f.op(op).code(), OpCode::IntSdiv);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
+    }
+
+    #[test]
+    fn divchain_collapses_two_signed_divisions() {
+        // (x s/ 3) s/ 5  =>  x s/ 15
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        let c1 = f.new_const(8, 3);
+        let div1 = f.new_op(OpCode::IntSdiv, seq, vec![x, c1]);
+        let div1o = f.new_output_unique(div1, 8);
+        let c2 = f.new_const(8, 5);
+        let op = f.new_op(OpCode::IntSdiv, seq, vec![div1o, c2]);
+        f.new_output_unique(op, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![div1, op], ..Default::default() }]);
+
+        assert_eq!(RuleDivChain.apply_op(op, &mut f), 1);
+        assert_eq!(f.op(op).code(), OpCode::IntSdiv);
+        assert_eq!(f.op(op).input(0), Some(x));
+        let dc = f.op(op).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 15);
+        // reuse guard: a second descendant on the intermediate blocks the fold
+        assert_eq!(RuleDivChain.apply_op(op, &mut f), 0);
+    }
+
+    #[test]
+    fn signnearmult_recovers_rounded_division() {
+        // (V + (V s>> 31)>>30) & 0xfffffffc  =>  (V s/ 4) * 4   (size 4, n=2)
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(4, Address::new(reg, 0x38));
+        let sh31 = f.new_const(4, 31);
+        let sr = f.new_op(OpCode::IntSright, seq, vec![x, sh31]);
+        let sro = f.new_output_unique(sr, 4);
+        let n0c = f.new_const(4, 30);
+        let unshift = f.new_op(OpCode::IntRight, seq, vec![sro, n0c]);
+        let unsho = f.new_output_unique(unshift, 4);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![unsho, x]);
+        let addo = f.new_output_unique(add, 4);
+        let maskc = f.new_const(4, 0xfffffffc);
+        let op = f.new_op(OpCode::IntAnd, seq, vec![addo, maskc]);
+        f.new_output_unique(op, 4);
+        f.set_blocks(vec![BlockBasic { ops: vec![sr, unshift, add, op], ..Default::default() }]);
+
+        assert_eq!(RuleSignNearMult.apply_op(op, &mut f), 1);
+        assert_eq!(f.op(op).code(), OpCode::IntMult);
+        let divvn = f.op(op).input(0).unwrap();
+        let divop = f.vn(divvn).def.unwrap();
+        assert_eq!(f.op(divop).code(), OpCode::IntSdiv);
+        assert_eq!(f.op(divop).input(0), Some(x));
+        assert!(f.vn(f.op(divop).input(1).unwrap()).constant_value() == 4);
+        assert!(f.vn(f.op(op).input(1).unwrap()).constant_value() == 4);
+    }
+
+    #[test]
+    fn signmod2opt_recovers_signed_mod_2() {
+        // ((V - sign) & 1) + sign  =>  V s% 2,  sign = V s>> 63
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x38));
+        let sh63 = f.new_const(8, 0x3f);
+        let sign = f.new_op(OpCode::IntSright, seq, vec![v, sh63]);
+        let signo = f.new_output_unique(sign, 8);
+        let negone = f.new_const(8, super::super::nzmask::calc_mask(8));
+        let mult = f.new_op(OpCode::IntMult, seq, vec![signo, negone]);
+        let multo = f.new_output_unique(mult, 8);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![multo, v]);
+        let addo = f.new_output_unique(add, 8);
+        let one = f.new_const(8, 1);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![addo, one]);
+        let ando = f.new_output_unique(and, 8);
+        let root = f.new_op(OpCode::IntAdd, seq, vec![ando, signo]);
+        f.new_output_unique(root, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![sign, mult, add, and, root], ..Default::default() }]);
+
+        assert_eq!(RuleSignMod2Opt.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(root).code(), OpCode::IntSrem);
+        assert_eq!(f.op(root).input(0), Some(v));
+        let dc = f.op(root).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
+    }
 
     #[test]
     fn recovers_known_unsigned_divisors_32bit() {

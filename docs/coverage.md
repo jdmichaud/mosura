@@ -198,13 +198,13 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDivOpt | PORTED (NON-FAITHFUL: fused recognizer; de-fusion is Task #9/#20) |
 | RuleSignForm | HELD(defined+unit-tested in rules.rs, UNWIRED — faithful, but mosura's FUSED RuleDivOpt fails to re-collapse the s>> form it normalizes to, regressing switchloop 0.7787->0.7709 `(int8)iVar5`->`iVar5>>0x1f` vs Ghidra's `(int4)param_1/10`; same class as RuleDivTermAdd; wire after RuleDivOpt de-fusion Task #9/#20. NB: modulo fires 4x but byte-identical — no modulo regression) |
 | RuleSignForm2 | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
-| RuleSignDiv2 | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
-| RuleDivChain | MISSING |
-| RuleSignNearMult | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
+| RuleSignDiv2 | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8339 `(V + -1*(V s>> 8n-1)) s>> 1 => V s/2`; wire in the Task #9/#20 keystone once RuleSub2Add reaches the main pool) |
+| RuleDivChain | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8392 `(x/c1)/c2 => x/(c1*c2)` with the unsigned INT_RIGHT case + overflow/reuse guards; wire in Task #9/#20 keystone) |
+| RuleSignNearMult | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8533 `(V + (V s>>0x1f)>>(32-n)) & (-1<<n) => (V s/2^n)*2^n`; wire in Task #9/#20 keystone) |
 | RuleModOpt | PORTED |
 | RuleSignMod2nOpt | PORTED |
 | RuleSignMod2nOpt2 | PORTED |
-| RuleSignMod2Opt | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
+| RuleSignMod2Opt | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8776 `(V - sign)&1 + sign => V s%2` (+ check_sign_extraction helper, the trunc/re-extend path); wire in Task #9/#20 keystone) |
 | RuleSwitchSingle | MISSING |
 | RuleCondNegate | MISSING |
 | RuleBoolNegate | PORTED |
