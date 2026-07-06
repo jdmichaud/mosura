@@ -191,7 +191,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDumptyHump | PORTED |
 | RuleHumptyOr | PORTED |
 | RuleNegateIdentity | PORTED (rules.rs; byte-neutral, 3 unit tests — INT_NEGATE identities against a logical op reading both `~V` and `V`: `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1` (collapse the AND/OR/XOR to a COPY of the constant); 0 firings on corpus — the idiom doesn't survive to actprop in the fixtures) |
-| RuleSubNormal | HELD (defined + 4 unit tests in rules.rs, UNWIRED — faithful port of ruleaction.cc:7714, `sub(V>>n,c) => sub(V,c+n/8) >> (n mod 8)` / `=> ext(sub(V,c'))`; but a MIXED mover: fires 8x, +ifswitch (magic-number `(int8)(int4)p*0x66666667>>0x21 - p>>0x1f` now collapses to `(int4)p/5`, toward oracle `p/5`) but -impliedfield/-packstructaccess (it correctly rewrites the high-dword/bitfield extracts into non-zero-offset SUBPIECEs which mosura mis-renders as `(int4)V` low bits — `p>>0x20`=>`p`, three distinct `(int2)(x>>0x30/0x20)`+`(int4)x` terms collapse to `(int4)x`*3). Wire after the SUBPIECE-non-zero-offset / shift-extract rendering debt #10/#12 is fixed) |
+| RuleSubNormal | PORTED (rules.rs, WIRED at slot 81 — faithful port of ruleaction.cc:7714, `sub(V>>n,c) => sub(V,c+n/8) >> (n mod 8)` / `=> ext(sub(V,c'))`, 4 unit tests. Its non-zero-offset SUBPIECEs are re-expanded for printing by the cleanup-pool RuleSubRight, exactly as Ghidra does (instrumented: Ghidra fires subnormal 2x then subright 2x on packstructaccess; oracle final IR keeps shift + offset-0 SUBPIECE). Lead-approved mover: ifswitch 0.922→0.985 (`(int4)p/5`), packstructaccess 0.826→0.913; impliedfield dip traces to the pre-existing missing float4-conversion/explicit-var path, divopt dip to the fused RuleDivOpt #9) |
 | RulePositiveDiv | PORTED |
 | RuleDivTermAdd | HELD(regresses modulo — fused RuleDivOpt races it; Task #9) |
 | RuleDivTermAdd2 | PORTED |
@@ -291,7 +291,7 @@ sibling and IS ported.
 | RuleAddUnsigned | PORTED (cleanup_pool) |
 | Rule2Comp2Sub | PORTED (cleanup_pool) |
 | RuleDumptyHumpLate | MISSING |
-| RuleSubRight | MISSING |
+| RuleSubRight | PORTED (rules.rs, wired in cleanup_pool at Ghidra's actcleanup slot (coreaction.cc:5700) — `sub(V,c) => sub(V>>c*8, 0)` truncation-to-cast cleanup, with lone INT_RIGHT/SRIGHT descendant lumping + sign-extraction clamp; 4 unit tests. Ghidra's special-print/isPieceStructured guard is vacuously absent (no TypePartialStruct yet, P4/P8 debt); the uint/int typing of the new shift output is likewise not carried (no datatypes at rule time)) |
 | RuleFloatSignCleanup | MISSING |
 | RuleExpandLoad | MISSING |
 | RulePtrsubCharConstant | MISSING |

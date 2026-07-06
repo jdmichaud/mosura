@@ -6140,6 +6140,88 @@ impl Rule for RuleBooleanDedup {
     }
 }
 
+/// Ghidra `RuleSubRight` (ruleaction.cc:7251, CLEANUP pool — `actcleanup`, coreaction.cc:5700):
+/// convert truncation to cast — `sub(V,c) => sub(V >> c*8, 0)`. If the lone descendant of the
+/// SUBPIECE is an INT_RIGHT/INT_SRIGHT by a constant and the SUBPIECE takes the "hi" piece, the
+/// shift is lumped in too. This is what re-expands RuleSubNormal's non-zero-offset SUBPIECEs into
+/// the shift + least-sig-truncation shape the printer renders as `(int2)(x >> 0x30)`.
+///
+/// Ghidra first checks `doesSpecialPrinting()`/`isPieceStructured()` to preserve structure-field
+/// extractions for field printing; mosura has no TypePartialStruct/special-print machinery (P4/P8
+/// debt), so that guard is vacuously absent. Ghidra also types the new shift output
+/// (uint for `>>`, int for `s>>`); mosura varnodes carry no datatype at rule time.
+pub struct RuleSubRight;
+
+impl Rule for RuleSubRight {
+    fn name(&self) -> &str {
+        "subright"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let c = data.vn(data.op(op).input(1).unwrap()).constant_value();
+        if c == 0 {
+            return 0; // SUBPIECE is not least sig
+        }
+        let a = data.op(op).input(0).unwrap();
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).is_addrtied() && data.vn(a).is_addrtied() {
+            // Ghidra `outvn->overlap(*a) == c` (Varnode::overlap, little-endian: the byte offset
+            // of outvn's start within a's range, or -1 if disjoint / different space). This
+            // SUBPIECE should get converted to a marker by ActionCopyMarker, so don't convert it.
+            let ol = data.vn(outvn).loc;
+            let al = data.vn(a).loc;
+            if ol.space == al.space
+                && ol.offset >= al.offset
+                && ol.offset - al.offset < data.vn(a).size as u64
+                && ol.offset - al.offset == c
+            {
+                return 0;
+            }
+        }
+        let mut op = op;
+        let mut opc = OpCode::IntRight; // Default shift type
+        let mut d = c as i64 * 8; // Convert to bit shift
+        // Search for lone right shift descendant
+        if let Some(lone) = lone_descend(data, outvn) {
+            let opc2 = data.op(lone).code();
+            if opc2 == OpCode::IntRight || opc2 == OpCode::IntSright {
+                let sa = data.op(lone).input(1).unwrap();
+                if data.vn(sa).is_constant() {
+                    // Shift by constant
+                    if data.vn(outvn).size as i64 + c as i64 == data.vn(a).size as i64 {
+                        // If SUB is "hi" lump the SUB and shift together
+                        d += data.vn(sa).constant_value() as i64;
+                        if d >= data.vn(a).size as i64 * 8 {
+                            if opc2 == OpCode::IntRight {
+                                return 0; // Result should have been 0
+                            }
+                            d = data.vn(a).size as i64 * 8 - 1; // sign extraction
+                        }
+                        // Ghidra opUnlink: unset inputs/output + remove from the basic block
+                        data.op_destroy(op);
+                        data.op_uninsert(op);
+                        op = lone;
+                        data.op_set_opcode(op, OpCode::Subpiece);
+                        opc = opc2;
+                    }
+                }
+            }
+        }
+        // Create shift BEFORE the SUBPIECE happens
+        let a_size = data.vn(a).size;
+        let dvn = data.new_const(4, d as u64);
+        let shiftop = data.new_op_before_sized(op, opc, vec![a, dvn], a_size);
+        let newout = data.op(shiftop).output.unwrap();
+        // Change SUBPIECE into a least sig SUBPIECE
+        data.op_set_input(op, 0, newout);
+        let zero = data.new_const(4, 0);
+        data.op_set_input(op, 1, zero);
+        1
+    }
+}
+
 /// Ghidra `RuleSubNormal` (ruleaction.cc:7714): pull a SUBPIECE back through an INT_RIGHT/INT_SRIGHT
 /// so the truncation happens before the shift — `sub(V >> n, c) => sub(V, c + n/8) >> (n mod 8)`, or
 /// `=> ext(sub(V, c'))` when the shift is byte-aligned and the surviving field runs a whole
@@ -9832,6 +9914,113 @@ mod tests {
 
         assert_eq!(RuleSubNormal.apply_op(sub, &mut f), 0);
         assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+    }
+
+    // ---- RuleSubRight (cleanup) ------------------------------------------------------------------
+
+    #[test]
+    fn subright_converts_truncation_to_shift() {
+        // sub(V:8, 4):4  =>  sub(V >> 0x20, 0):4
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, c4]);
+        f.new_output(sub, 4, Address::new(reg, 0x20));
+        parent_all(&mut f, vec![sub]);
+
+        assert_eq!(RuleSubRight.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        let off = f.op(sub).input(1).unwrap();
+        assert!(f.vn(off).is_constant() && f.vn(off).constant_value() == 0);
+        let shifted = f.op(sub).input(0).unwrap();
+        let shiftop = f.vn(shifted).def.unwrap();
+        assert_eq!(f.op(shiftop).code(), OpCode::IntRight);
+        assert_eq!(f.op(shiftop).input(0), Some(v));
+        let d = f.op(shiftop).input(1).unwrap();
+        assert!(f.vn(d).is_constant() && f.vn(d).constant_value() == 0x20);
+        assert_eq!(f.vn(shifted).size, 8);
+    }
+
+    #[test]
+    fn subright_lumps_lone_sright_descendant() {
+        // u = sub(V:8, 4):4;  w = u s>> 0x10   =>   w = sub(V s>> 0x30, 0):4
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, c4]);
+        let u = f.new_output(sub, 4, Address::new(reg, 0x20));
+        let c16 = f.new_const(4, 0x10);
+        let shr = f.new_op(OpCode::IntSright, seq, vec![u, c16]);
+        f.new_output(shr, 4, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![sub, shr]);
+
+        assert_eq!(RuleSubRight.apply_op(sub, &mut f), 1);
+        // The lone shift descendant was repurposed as the least-sig SUBPIECE
+        assert_eq!(f.op(shr).code(), OpCode::Subpiece);
+        let off = f.op(shr).input(1).unwrap();
+        assert!(f.vn(off).is_constant() && f.vn(off).constant_value() == 0);
+        let shifted = f.op(shr).input(0).unwrap();
+        let shiftop = f.vn(shifted).def.unwrap();
+        assert_eq!(f.op(shiftop).code(), OpCode::IntSright);
+        assert_eq!(f.op(shiftop).input(0), Some(v));
+        let d = f.op(shiftop).input(1).unwrap();
+        assert!(f.vn(d).is_constant() && f.vn(d).constant_value() == 0x30);
+        // The original SUBPIECE is dead and out of the block
+        assert!(f.op(sub).is_dead());
+    }
+
+    #[test]
+    fn subright_sright_overflow_becomes_sign_extraction() {
+        // u = sub(V:8, 4):4; w = u s>> 0x20 — total 0x40 >= 64 bits: clamps to 63 (sign extraction).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, c4]);
+        let u = f.new_output(sub, 4, Address::new(reg, 0x20));
+        let c32 = f.new_const(4, 0x20);
+        let shr = f.new_op(OpCode::IntSright, seq, vec![u, c32]);
+        f.new_output(shr, 4, Address::new(reg, 0x28));
+        parent_all(&mut f, vec![sub, shr]);
+
+        assert_eq!(RuleSubRight.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(shr).code(), OpCode::Subpiece);
+        let shifted = f.op(shr).input(0).unwrap();
+        let shiftop = f.vn(shifted).def.unwrap();
+        assert_eq!(f.op(shiftop).code(), OpCode::IntSright);
+        let d = f.op(shiftop).input(1).unwrap();
+        assert!(f.vn(d).is_constant() && f.vn(d).constant_value() == 63);
+    }
+
+    #[test]
+    fn subright_no_fire_offset_zero_or_unsigned_overflow() {
+        // sub(V, 0) — least sig, no fire. And u = sub(V:8,4):4; w = u >> 0x20 (unsigned, total
+        // 64 bits) — result would be 0; Ghidra returns without transforming.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let c0 = f.new_const(4, 0);
+        let sub0 = f.new_op(OpCode::Subpiece, seq, vec![v, c0]);
+        f.new_output(sub0, 4, Address::new(reg, 0x20));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![v, c4]);
+        let u = f.new_output(sub, 4, Address::new(reg, 0x28));
+        let c32 = f.new_const(4, 0x20);
+        let shr = f.new_op(OpCode::IntRight, seq, vec![u, c32]);
+        f.new_output(shr, 4, Address::new(reg, 0x30));
+        parent_all(&mut f, vec![sub0, sub, shr]);
+
+        assert_eq!(RuleSubRight.apply_op(sub0, &mut f), 0);
+        assert_eq!(f.op(sub0).code(), OpCode::Subpiece);
+        assert_eq!(RuleSubRight.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(shr).code(), OpCode::IntRight);
     }
 
     // ---- RuleBitUndistribute (#59) -------------------------------------------------------------
