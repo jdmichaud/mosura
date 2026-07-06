@@ -23,6 +23,7 @@ pub mod float;
 pub mod fspec;
 pub mod funcdata;
 pub mod heritage;
+pub mod jumpbasic;
 pub mod jumptable;
 pub mod merge;
 pub mod nzmask;

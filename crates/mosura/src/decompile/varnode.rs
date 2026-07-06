@@ -110,6 +110,15 @@ impl Varnode {
     pub fn clear_mark(&mut self) {
         self.flags &= !flags::MARK;
     }
+    /// Ghidra `Varnode::isAnnotation` — a code-address annotation (e.g. a CALLOTHER selector),
+    /// never a real value, so it can never be a switch variable.
+    pub fn is_annotation(&self) -> bool {
+        self.flags & flags::ANNOTATION != 0
+    }
+    /// Ghidra `Varnode::isReadOnly` — the value lives in a read-only region of the load image.
+    pub fn is_readonly(&self) -> bool {
+        self.flags & flags::READONLY != 0
+    }
     pub fn is_addrtied(&self) -> bool {
         self.flags & flags::ADDRTIED != 0
     }

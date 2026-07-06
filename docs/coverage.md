@@ -367,6 +367,7 @@ mosura `jumptable.rs` (`JumpTable`, `recover`).
 |---|---|
 | JumpBasic (the common LOAD-table model) | PARTIAL (jumptable.rs recover) |
 | CircleRange pull-back (rangeutil.cc) | HELD (circlerange.rs — faithful port of the pull-back half: ctors/intersect/circleUnion/minimalContainer/setNZMask/setStride/pullBackUnary+Binary and the `pullBack` op-driver, validated against Ghidra's own `testcirclerange.cc` element-set oracle (intersect/union/pullback vectors) + the `(index-1)<8`→[1,9) key case; pushForward/ValueSet half deliberately not ported. Unwired pending JumpBasic Stages 1-4, Task #8) |
+| PathMeld + findDeterminingVarnodes (jumptable.cc) | HELD (jumpbasic.rs — faithful port of `PathMeld` (internalIntersect/meldOps/meld/markPaths/truncatePaths/append/getEarliestOp), `findDeterminingVarnodes`, and the `isprune`/`ispoint`/`getStride`/`getMaxValue` statics. meldOps' `getSeqNum().getOrder()` maps to within-block op index (`op_order`); the op MARK flag was added to op.rs. Unit-tested incl. a split-rejoin diamond exercising meld. Unwired pending Stages 2-4, Task #8) |
 | JumpBasicOverride | MISSING |
 | JumpModelTrivial | MISSING |
 | JumpAssisted / JumpAssistOp | MISSING |

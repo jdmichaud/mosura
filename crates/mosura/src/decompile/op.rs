@@ -29,6 +29,7 @@ pub mod flags {
     pub const RETURN: u32 = 0x8; // op is a return
     pub const DEAD: u32 = 0x10; // op is marked dead (pending removal)
     pub const MARKER: u32 = 0x20; // MULTIEQUAL/INDIRECT — a heritage marker, not real flow
+    pub const MARK: u32 = 0x40; // transient traversal bit (Ghidra `PcodeOp::mark`)
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -62,6 +63,18 @@ impl PcodeOp {
     /// A heritage marker (MULTIEQUAL/INDIRECT) — placed by heritage, not real control flow.
     pub fn is_marker(&self) -> bool {
         matches!(self.opcode, OpCode::Multiequal | OpCode::Indirect)
+    }
+    /// Ghidra `PcodeOp::isMark` — the transient traversal bit (see [`flags::MARK`]).
+    pub fn is_mark(&self) -> bool {
+        self.flags & flags::MARK != 0
+    }
+    /// Ghidra `PcodeOp::setMark`.
+    pub fn set_mark(&mut self) {
+        self.flags |= flags::MARK;
+    }
+    /// Ghidra `PcodeOp::clearMark`.
+    pub fn clear_mark(&mut self) {
+        self.flags &= !flags::MARK;
     }
     /// Ghidra `PcodeOp::isCall` — a CALL/CALLIND/CALLOTHER.
     pub fn is_call(&self) -> bool {
