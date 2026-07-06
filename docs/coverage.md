@@ -124,8 +124,8 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
-| RuleSignShift | BLOCKED (→Task #9 de-fuse — `V >> (8*sz-1) => (V s>> (8*sz-1)) * -1` when feeding arith/compare; a sign-bit normalization, same class as the already-HELD RuleSignForm that mosura's FUSED RuleDivOpt can't re-collapse. Port inside the #9 de-fusion, not piecemeal) |
-| RuleTestSign | BLOCKED (→Task #9 de-fuse — normalizes a sign-bit-extraction `V >> (8*sz-1)` feeding INT_EQUAL/NOTEQUAL into a sign test; same sign-normalization / fused-RuleDivOpt-race class as RuleSignShift/RuleSignForm. Port inside #9) |
+| RuleSignShift | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:3524 `V >> (8*sz-1) => (V s>> (8*sz-1)) * -1` when feeding arith/compare; wire in the Task #9/#20 keystone once RuleSub2Add reaches the main pool) |
+| RuleTestSign | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:3582 sign-bit-test `(V s>> (8*sz-1)) !=/==0 => V s</s<= 0` via findComparisons; wire in Task #9/#20 keystone) |
 | RuleIdentityEl | PORTED |
 | RuleOrMask | PORTED |
 | RuleAndMask | PORTED |
@@ -197,7 +197,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDivTermAdd2 | PORTED |
 | RuleDivOpt | PORTED (NON-FAITHFUL: fused recognizer; de-fusion is Task #9/#20) |
 | RuleSignForm | HELD(defined+unit-tested in rules.rs, UNWIRED — faithful, but mosura's FUSED RuleDivOpt fails to re-collapse the s>> form it normalizes to, regressing switchloop 0.7787->0.7709 `(int8)iVar5`->`iVar5>>0x1f` vs Ghidra's `(int4)param_1/10`; same class as RuleDivTermAdd; wire after RuleDivOpt de-fusion Task #9/#20. NB: modulo fires 4x but byte-identical — no modulo regression) |
-| RuleSignForm2 | BLOCKED(fused RuleDivOpt de-fusion — Task #9) |
+| RuleSignForm2 | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8476 `sub(sext(V)*small,c) s>> (8n-1) => V s>> (8n-1)`; replicates Ghidra's return-0-after-mutate quirk; wire in Task #9/#20 keystone) |
 | RuleSignDiv2 | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8339 `(V + -1*(V s>> 8n-1)) s>> 1 => V s/2`; wire in the Task #9/#20 keystone once RuleSub2Add reaches the main pool) |
 | RuleDivChain | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8392 `(x/c1)/c2 => x/(c1*c2)` with the unsigned INT_RIGHT case + overflow/reuse guards; wire in Task #9/#20 keystone) |
 | RuleSignNearMult | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8533 `(V + (V s>>0x1f)>>(32-n)) & (-1<<n) => (V s/2^n)*2^n`; wire in Task #9/#20 keystone) |

@@ -5274,6 +5274,225 @@ impl Rule for RuleSignForm {
     }
 }
 
+/// Ghidra `RuleSignShift` (`ruleaction.cc:3524`, INT_RIGHT): normalize a logical sign-bit
+/// extraction into an arithmetic one when it feeds arithmetic/comparison —
+/// `V >> (8|V|-1)  =>  (V s>> (8|V|-1)) * -1`. Landed HELD (UNWIRED) — Task #9/#20 de-fusion
+/// (sign-normalization the fused RuleDivOpt can't re-collapse; wire with the keystone).
+pub struct RuleSignShift;
+
+impl Rule for RuleSignShift {
+    fn name(&self) -> &str {
+        "signshift"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntRight]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_vn = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn).is_constant() {
+            return 0;
+        }
+        let val = data.vn(const_vn).constant_value();
+        let in_vn = data.op(op).input(0).unwrap();
+        let in_size = data.vn(in_vn).size;
+        if val != (8 * in_size - 1) as u64 || data.vn(in_vn).is_free() {
+            return 0;
+        }
+        // Only convert if the result is involved in an arithmetic expression or a comparison.
+        let out_vn = data.op(op).output.unwrap();
+        let mut do_conversion = false;
+        for &arith_op in &data.vn(out_vn).descend.clone() {
+            match data.op(arith_op).code() {
+                OpCode::IntEqual | OpCode::IntNotequal => {
+                    if data.vn(data.op(arith_op).input(1).unwrap()).is_constant() {
+                        do_conversion = true;
+                    }
+                }
+                OpCode::IntAdd | OpCode::IntMult => do_conversion = true,
+                _ => {}
+            }
+            if do_conversion {
+                break;
+            }
+        }
+        if !do_conversion {
+            return 0;
+        }
+        let shift_op = data.new_op_before_sized(op, OpCode::IntSright, vec![in_vn, const_vn], in_size);
+        let unique_vn = data.op(shift_op).output.unwrap();
+        data.op_set_input(op, 0, unique_vn);
+        let negone = data.new_const(in_size, super::nzmask::calc_mask(in_size));
+        data.op_set_input(op, 1, negone);
+        data.op_set_opcode(op, OpCode::IntMult);
+        1
+    }
+}
+
+/// Ghidra `RuleTestSign` (`ruleaction.cc:3582`, INT_SRIGHT): rewrite a sign-bit test as a signed
+/// comparison — `(V s>> (8|V|-1)) != 0  =>  V s< 0` (and `== 0  =>  0 s<= V`), for each `INT_EQUAL`
+/// / `INT_NOTEQUAL` descendant taking the sign bit against 0 or -1. Landed HELD (UNWIRED) —
+/// Task #9/#20 de-fusion (same sign-normalization class; wire with the keystone).
+pub struct RuleTestSign;
+
+impl RuleTestSign {
+    /// Ghidra `RuleTestSign::findComparisons` (:3596): the `INT_EQUAL`/`INT_NOTEQUAL` descendants of
+    /// `vn` that test it against a constant.
+    fn find_comparisons(data: &Funcdata, vn: VarnodeId) -> Vec<OpId> {
+        let mut res = Vec::new();
+        for &op in &data.vn(vn).descend {
+            let opc = data.op(op).code();
+            if (opc == OpCode::IntEqual || opc == OpCode::IntNotequal)
+                && data.vn(data.op(op).input(1).unwrap()).is_constant()
+            {
+                res.push(op);
+            }
+        }
+        res
+    }
+}
+
+impl Rule for RuleTestSign {
+    fn name(&self) -> &str {
+        "testsign"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_vn = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn).is_constant() {
+            return 0;
+        }
+        let val = data.vn(const_vn).constant_value();
+        let in_vn = data.op(op).input(0).unwrap();
+        if val != (8 * data.vn(in_vn).size - 1) as u64 {
+            return 0;
+        }
+        let out_vn = data.op(op).output.unwrap();
+        if data.vn(in_vn).is_free() {
+            return 0;
+        }
+        let compare_ops = Self::find_comparisons(data, out_vn);
+        let mut result = 0;
+        for compare_op in compare_ops {
+            let comp_vn = data.op(compare_op).input(0).unwrap();
+            let comp_size = data.vn(comp_vn).size;
+            let offset = data.vn(data.op(compare_op).input(1).unwrap()).constant_value();
+            let mut sgn = if offset == 0 {
+                1
+            } else if offset == super::nzmask::calc_mask(comp_size) {
+                -1
+            } else {
+                continue;
+            };
+            if data.op(compare_op).code() == OpCode::IntNotequal {
+                sgn = -sgn; // Complement the domain
+            }
+            let zero_vn = data.new_const(data.vn(in_vn).size, 0);
+            if sgn == 1 {
+                data.op_set_input(compare_op, 1, in_vn);
+                data.op_set_input(compare_op, 0, zero_vn);
+                data.op_set_opcode(compare_op, OpCode::IntSlessequal);
+            } else {
+                data.op_set_input(compare_op, 0, in_vn);
+                data.op_set_input(compare_op, 1, zero_vn);
+                data.op_set_opcode(compare_op, OpCode::IntSless);
+            }
+            result = 1;
+        }
+        result
+    }
+}
+
+/// Ghidra `RuleSignForm2` (`ruleaction.cc:8476`, INT_SRIGHT): normalize a sign extraction through a
+/// non-overflowing multiply — `sub(sext(V) * small, c) s>> (8|out|-1)  =>  V s>> (8|out|-1)`.
+/// Landed HELD (UNWIRED) — Task #9/#20 de-fusion. FAITHFUL QUIRK: Ghidra repoints the shift input to
+/// `V` then `return 0` (reports no-change though it mutated the graph); the port replicates that.
+pub struct RuleSignForm2;
+
+impl Rule for RuleSignForm2 {
+    fn name(&self) -> &str {
+        "signform2"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSright]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_vn = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn).is_constant() {
+            return 0;
+        }
+        let in_vn = data.op(op).input(0).unwrap();
+        let sizeout = data.vn(in_vn).size;
+        if data.vn(const_vn).constant_value() != (sizeout * 8 - 1) as u64 {
+            return 0;
+        }
+        if !data.vn(in_vn).is_written() {
+            return 0;
+        }
+        let sub_op = data.vn(in_vn).def.unwrap();
+        if data.op(sub_op).code() != OpCode::Subpiece {
+            return 0;
+        }
+        let c = data.vn(data.op(sub_op).input(1).unwrap()).constant_value() as u32;
+        let mult_out = data.op(sub_op).input(0).unwrap();
+        let mult_size = data.vn(mult_out).size;
+        if c + sizeout != mult_size {
+            return 0; // Must be extracting the high part
+        }
+        if !data.vn(mult_out).is_written() {
+            return 0;
+        }
+        let mult_op = data.vn(mult_out).def.unwrap();
+        if data.op(mult_op).code() != OpCode::IntMult {
+            return 0;
+        }
+        let mut slot = 2;
+        let mut sext_op = None;
+        for s in 0..2 {
+            let vn = data.op(mult_op).input(s).unwrap();
+            if !data.vn(vn).is_written() {
+                continue;
+            }
+            let so = data.vn(vn).def.unwrap();
+            if data.op(so).code() == OpCode::IntSext {
+                slot = s;
+                sext_op = Some(so);
+                break;
+            }
+        }
+        if slot > 1 {
+            return 0;
+        }
+        let a = data.op(sext_op.unwrap()).input(0).unwrap();
+        if data.vn(a).is_free() || data.vn(a).size != sizeout {
+            return 0;
+        }
+        let other_vn = data.op(mult_op).input(1 - slot).unwrap();
+        // otherVn must be positive and small enough that the INT_MULT can't overflow into the sign bit
+        if data.vn(other_vn).is_constant() {
+            if data.vn(other_vn).constant_value() > super::nzmask::calc_mask(sizeout) {
+                return 0;
+            }
+            if 2 * sizeout > mult_size {
+                return 0;
+            }
+        } else if data.vn(other_vn).is_written() {
+            let zext_op = data.vn(other_vn).def.unwrap();
+            if data.op(zext_op).code() != OpCode::IntZext {
+                return 0;
+            }
+            if data.vn(data.op(zext_op).input(0).unwrap()).size + sizeout > mult_size {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+        data.op_set_input(op, 0, a);
+        0 // faithful: Ghidra mutates then returns 0
+    }
+}
+
 /// Ghidra `RuleTrivialBool` (`ruleaction.cc`, oppool1 @5523 "analysis"): simplify a boolean op with a
 /// constant operand — `V&&false=>false`, `V&&true=>V`, `V||false=>V`, `V||true=>true`,
 /// `V^^true=>!V`, `V^^false=>V`.
@@ -8971,6 +9190,91 @@ mod tests {
         let _o2 = f.new_output(sub2, 4, Address::new(r, 0x40));
         assert_eq!(RuleSignForm.apply_op(sub2, &mut f), 0);
         assert_eq!(f.op(sub2).code(), OpCode::Subpiece);
+    }
+
+    #[test]
+    fn sign_shift_converts_logical_to_arithmetic_when_arith_fed() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // (V >> 63) feeding an INT_ADD  =>  (V s>> 63) * -1
+        let v = f.new_input(8, Address::new(r, 0x10));
+        let sh = f.new_const(8, 0x3f);
+        let op = f.new_op(OpCode::IntRight, seq, vec![v, sh]);
+        let opo = f.new_output(op, 8, Address::new(r, 0x18));
+        let w = f.new_input(8, Address::new(r, 0x20));
+        let add = f.new_op(OpCode::IntAdd, seq, vec![opo, w]);
+        let _ = f.new_output(add, 8, Address::new(r, 0x28));
+
+        assert_eq!(RuleSignShift.apply_op(op, &mut f), 1);
+        assert_eq!(f.op(op).code(), OpCode::IntMult);
+        assert_eq!(f.vn(f.op(op).input(1).unwrap()).constant_value(), super::super::nzmask::calc_mask(8));
+        let sr = f.vn(f.op(op).input(0).unwrap()).def.unwrap();
+        assert_eq!(f.op(sr).code(), OpCode::IntSright);
+        assert_eq!(f.op(sr).input(0), Some(v));
+        assert_eq!(f.vn(f.op(sr).input(1).unwrap()).constant_value(), 0x3f);
+
+        // No fire when the sign bit is not fed into arithmetic/comparison.
+        let v2 = f.new_input(8, Address::new(r, 0x40));
+        let sh2 = f.new_const(8, 0x3f);
+        let op2 = f.new_op(OpCode::IntRight, seq, vec![v2, sh2]);
+        let _ = f.new_output(op2, 8, Address::new(r, 0x48));
+        assert_eq!(RuleSignShift.apply_op(op2, &mut f), 0);
+    }
+
+    #[test]
+    fn test_sign_rewrites_sign_bit_tests_as_signed_compares() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // sign = V s>> 63; then  (sign != 0) => V s< 0   and   (sign == 0) => 0 s<= V
+        let v = f.new_input(8, Address::new(r, 0x10));
+        let sh = f.new_const(8, 0x3f);
+        let op = f.new_op(OpCode::IntSright, seq, vec![v, sh]);
+        let opo = f.new_output(op, 8, Address::new(r, 0x18));
+        let z1 = f.new_const(8, 0);
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![opo, z1]);
+        let _ = f.new_output(ne, 1, Address::new(r, 0x20));
+        let z2 = f.new_const(8, 0);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![opo, z2]);
+        let _ = f.new_output(eq, 1, Address::new(r, 0x28));
+
+        assert_eq!(RuleTestSign.apply_op(op, &mut f), 1);
+        // NOTEQUAL vs 0  =>  V s< 0
+        assert_eq!(f.op(ne).code(), OpCode::IntSless);
+        assert_eq!(f.op(ne).input(0), Some(v));
+        assert_eq!(f.vn(f.op(ne).input(1).unwrap()).constant_value(), 0);
+        // EQUAL vs 0  =>  0 s<= V
+        assert_eq!(f.op(eq).code(), OpCode::IntSlessequal);
+        assert_eq!(f.vn(f.op(eq).input(0).unwrap()).constant_value(), 0);
+        assert_eq!(f.op(eq).input(1), Some(v));
+    }
+
+    #[test]
+    fn sign_form2_repoints_through_nonoverflow_mult_and_returns_zero() {
+        let (mut f, _) = fd();
+        let r = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // sub(sext(V) * 3, 4) s>> 31  =>  repoints shift input to V, returns 0 (faithful quirk)
+        let v = f.new_input(4, Address::new(r, 0x10));
+        let sx = f.new_op(OpCode::IntSext, seq, vec![v]);
+        let sxo = f.new_output(sx, 8, Address::new(r, 0x18));
+        let small = f.new_const(8, 3);
+        let mult = f.new_op(OpCode::IntMult, seq, vec![sxo, small]);
+        let multo = f.new_output(mult, 8, Address::new(r, 0x20));
+        let c4 = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![multo, c4]);
+        let subo = f.new_output(sub, 4, Address::new(r, 0x28));
+        let sh31 = f.new_const(4, 31);
+        let op = f.new_op(OpCode::IntSright, seq, vec![subo, sh31]);
+        let _ = f.new_output(op, 4, Address::new(r, 0x30));
+
+        assert_eq!(RuleSignForm2.apply_op(op, &mut f), 0); // faithful: reports no-change
+        assert_eq!(f.op(op).input(0), Some(v)); // but the shift input was repointed to V
+        assert_eq!(f.op(op).code(), OpCode::IntSright);
     }
 
     #[test]
