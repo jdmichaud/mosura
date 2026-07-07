@@ -6,9 +6,10 @@
 **/*.rs.bk
 Cargo.lock.bak
 
-# local throwaway grounding tool (dump the IR/scope of a fixture); never committed.
+# local throwaway grounding tools (dump the IR/scope of a fixture); never committed.
 # The runner examples/trace.rs and dumpc.rs ARE tracked (grounding tools kept for the port).
-/crates/mosura/examples/dump.rs
+/crates/mosura/examples/dump*.rs
+!/crates/mosura/examples/dumpc.rs
 
 # offline capture tool (binary built by setup-oracle.sh; source is tracked)
 /oracle/capture
