@@ -974,6 +974,32 @@ impl Rule for RuleEqual2Zero {
                 data.op_set_all_input(op, &[a, nc]);
                 1
             }
+            OpCode::IntAdd => {
+                // `(posvn + x*(-1)) == 0  =>  posvn == x` — the post-RuleSub2Add subtraction form.
+                let mult_neg1 = |data: &Funcdata, v: VarnodeId| -> Option<VarnodeId> {
+                    let d = data.vn(v).def?;
+                    if data.op(d).code() != OpCode::IntMult {
+                        return None;
+                    }
+                    let unneg = data.op(d).input(0)?;
+                    let m = data.op(d).input(1)?;
+                    (data.vn(m).is_constant()
+                        && data.vn(m).constant_value() == super::nzmask::calc_mask(data.vn(unneg).size))
+                    .then_some(unneg)
+                };
+                let (posvn, unnegvn) = if let Some(u) = mult_neg1(data, a) {
+                    (b, u)
+                } else if let Some(u) = mult_neg1(data, b) {
+                    (a, u)
+                } else {
+                    return 0;
+                };
+                if !data.vn(posvn).is_heritage_known() || !data.vn(unnegvn).is_heritage_known() {
+                    return 0;
+                }
+                data.op_set_all_input(op, &[posvn, unnegvn]);
+                1
+            }
             _ => 0,
         }
     }
@@ -1034,6 +1060,66 @@ impl Rule for RuleLessEqual {
             data.op_set_opcode(op, newcode);
             data.op_set_all_input(op, &[l0, l1]);
         }
+        1
+    }
+}
+
+/// Combine a less-than-or-equal and an inequality into less-than (Ghidra's `RuleLessNotEqual`,
+/// ruleaction.cc): `(V <= W) && (V != W)  =>  V < W` (signed and unsigned, operands in either
+/// order). Once [`RuleSub2Add`] canonicalizes the `!=` operand, `RuleEqual2Zero` reduces
+/// `(V - W) != 0` to `V != W`, and this rule collapses the loop guard `i <= n && i != n` to `i < n`.
+pub struct RuleLessNotEqual;
+
+impl Rule for RuleLessNotEqual {
+    fn name(&self) -> &str {
+        "lessnotequal"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let vnout1 = data.op(op).input(0).unwrap();
+        let vnout2 = data.op(op).input(1).unwrap();
+        if !data.vn(vnout1).is_written() || !data.vn(vnout2).is_written() {
+            return 0;
+        }
+        let is_le = |c: OpCode| matches!(c, OpCode::IntLessequal | OpCode::IntSlessequal);
+        let mut op_less = data.vn(vnout1).def.unwrap();
+        let mut opc = data.op(op_less).code();
+        let op_equal;
+        if !is_le(opc) {
+            op_equal = op_less;
+            op_less = data.vn(vnout2).def.unwrap();
+            opc = data.op(op_less).code();
+            if !is_le(opc) {
+                return 0;
+            }
+        } else {
+            op_equal = data.vn(vnout2).def.unwrap();
+        }
+        if data.op(op_equal).code() != OpCode::IntNotequal
+            || data.op(op_less).num_inputs() != 2
+            || data.op(op_equal).num_inputs() != 2
+        {
+            return 0;
+        }
+        let compvn1 = data.op(op_less).input(0).unwrap();
+        let compvn2 = data.op(op_less).input(1).unwrap();
+        if !data.vn(compvn1).is_heritage_known() || !data.vn(compvn2).is_heritage_known() {
+            return 0;
+        }
+        let (e0, e1) = (data.op(op_equal).input(0).unwrap(), data.op(op_equal).input(1).unwrap());
+        let matches = (same_value(data, compvn1, e0) && same_value(data, compvn2, e1))
+            || (same_value(data, compvn1, e1) && same_value(data, compvn2, e0));
+        if !matches {
+            return 0;
+        }
+        let newcode = if opc == OpCode::IntSlessequal { OpCode::IntSless } else { OpCode::IntLess };
+        data.op_set_opcode(op, newcode);
+        data.op_set_all_input(op, &[compvn1, compvn2]);
         1
     }
 }

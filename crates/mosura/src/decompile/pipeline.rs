@@ -6,7 +6,7 @@ use super::action::{Action, ActionGroup, ActionPool};
 use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
-    RuleIdentityEl, RuleLessEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
+    RuleIdentityEl, RuleLessEqual, RuleLessNotEqual, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
     RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
@@ -206,6 +206,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::divopt::RuleSignMod2Opt) // (94)
         .with(RuleBoolNegate) // (98)
         .with(RuleLessEqual) // (99)
+        .with(RuleLessNotEqual) // (100)
         .with(RuleFloatRange) // (102)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
