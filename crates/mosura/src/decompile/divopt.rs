@@ -447,33 +447,10 @@ impl Rule for RuleModOpt {
     }
 }
 
-/// Depth-1 functional equivalence (Ghidra's `functionalEqualityLevel == 0`): the same
-/// varnode, equal constants, or the same op applied to pairwise-equal operands. The sign
-/// correction is computed once but may reach the add and the subtract as distinct varnodes.
-fn equiv(f: &Funcdata, a: VarnodeId, b: VarnodeId) -> bool {
-    if a == b {
-        return true;
-    }
-    match (f.vn(a).def, f.vn(b).def) {
-        (Some(da), Some(db)) => {
-            f.op(da).code() == f.op(db).code()
-                && f.op(da).num_inputs() == f.op(db).num_inputs()
-                && (0..f.op(da).num_inputs()).all(|i| {
-                    let (ia, ib) = (f.op(da).input(i).unwrap(), f.op(db).input(i).unwrap());
-                    ia == ib
-                        || (f.vn(ia).is_constant()
-                            && f.vn(ib).is_constant()
-                            && f.vn(ia).constant_value() == f.vn(ib).constant_value())
-                })
-        }
-        _ => false,
-    }
-}
-
-/// Recover signed modulo by a power of two: `((x + corr) & (2^k-1)) - corr` ⇒ `x % 2^k`,
-/// where `corr` is the sign-rounding correction added before the mask and subtracted after
-/// (Ghidra's `RuleSignMod2nOpt`). Ghidra matches the correction as `INT_ADD(.., MULT(corr,-1))`;
-/// mosura's pipeline has already folded that to an `INT_SUB`, so we match that shape.
+/// Ghidra `RuleSignMod2nOpt` (ruleaction.cc:8665, INT_RIGHT): recover signed modulo by a power of
+/// two — `((V + (sign >> (w-n))) & (2^n-1)) - (sign >> (w-n))  =>  V s% 2^n`, `sign = V s>> (w-1)`.
+/// Rooted at the `sign >> (w-n)` shift, walking forward to the `* -1`, the containing INT_ADD, the
+/// mask, and the `V + correction` (which may be computed truncated then zero-extended).
 pub struct RuleSignMod2nOpt;
 
 impl Rule for RuleSignMod2nOpt {
@@ -481,71 +458,192 @@ impl Rule for RuleSignMod2nOpt {
         "signmod2n"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntSub]
+        vec![OpCode::IntRight]
     }
-    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
-        let (Some(m), Some(corr)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
-        // the correction is a sign-bit extraction (a right shift), used on both sides
-        let Some(cdef) = f.vn(corr).def else { return 0 };
-        if !matches!(f.op(cdef).code(), OpCode::IntRight | OpCode::IntSright) {
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let in1 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_constant() {
             return 0;
         }
-        // m = ZEXT(and) — the masked value widened back; peel the optional extension
-        let and = match f.vn(m).def {
-            Some(d) if f.op(d).code() == OpCode::IntZext => f.op(d).input(0).and_then(|v| f.vn(v).def),
-            d => d,
-        };
-        let Some(and) = and else { return 0 };
-        if f.op(and).code() != OpCode::IntAnd {
+        let shift_amt = data.vn(in1).constant_value() as i64;
+        let Some(a) = check_sign_extraction(data, data.op(op).input(0).unwrap()) else { return 0 };
+        if data.vn(a).is_free() {
             return 0;
         }
-        let (Some(and_in), Some(mask_v)) = (f.op(and).input(0), f.op(and).input(1)) else { return 0 };
-        let Some(mask) = cval(f, mask_v) else { return 0 };
-        if mask == 0 || (mask & (mask + 1)) != 0 {
-            return 0; // mask+1 must be a power of two (the modulus)
-        }
-        // and_in = SUBPIECE(add, 0) (the masked value is computed truncated) or add directly
-        let add = match f.vn(and_in).def {
-            Some(d)
-                if f.op(d).code() == OpCode::Subpiece
-                    && f.op(d).input(1).and_then(|v| cval(f, v)) == Some(0) =>
-            {
-                f.op(d).input(0).and_then(|v| f.vn(v).def)
+        let correct_vn = data.op(op).output.unwrap();
+        let n = data.vn(a).size as i64 * 8 - shift_amt;
+        let mask: u64 = (1u64 << n) - 1;
+        for multop in data.vn(correct_vn).descend.clone() {
+            if data.op(multop).code() != OpCode::IntMult {
+                continue;
             }
-            d => d,
-        };
-        let Some(add) = add else { return 0 };
-        if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
-            return 0;
+            let negone = data.op(multop).input(1).unwrap();
+            if !data.vn(negone).is_constant() {
+                continue;
+            }
+            if data.vn(negone).constant_value() != super::nzmask::calc_mask(data.vn(correct_vn).size) {
+                continue;
+            }
+            let mult_out = data.op(multop).output.unwrap();
+            if data.vn(mult_out).descend.len() != 1 {
+                continue;
+            }
+            let base_op = data.vn(mult_out).descend[0];
+            if data.op(base_op).code() != OpCode::IntAdd {
+                continue;
+            }
+            let mult_slot = if data.op(base_op).input(0) == Some(mult_out) { 0 } else { 1 };
+            let mut and_out = data.op(base_op).input(1 - mult_slot).unwrap();
+            if !data.vn(and_out).is_written() {
+                continue;
+            }
+            let mut and_op = data.vn(and_out).def.unwrap();
+            let mut trunc_size: i64 = -1;
+            if data.op(and_op).code() == OpCode::IntZext {
+                // An intervening extension after the INT_AND — the truncated form.
+                and_out = data.op(and_op).input(0).unwrap();
+                if !data.vn(and_out).is_written() {
+                    continue;
+                }
+                and_op = data.vn(and_out).def.unwrap();
+                if data.op(and_op).code() != OpCode::IntAnd {
+                    continue;
+                }
+                trunc_size = data.vn(and_out).size as i64;
+            } else if data.op(and_op).code() != OpCode::IntAnd {
+                continue;
+            }
+            let const_vn = data.op(and_op).input(1).unwrap();
+            if !data.vn(const_vn).is_constant() || data.vn(const_vn).constant_value() != mask {
+                continue;
+            }
+            let add_out = data.op(and_op).input(0).unwrap();
+            if !data.vn(add_out).is_written() {
+                continue;
+            }
+            let add_op = data.vn(add_out).def.unwrap();
+            if data.op(add_op).code() != OpCode::IntAdd {
+                continue;
+            }
+            // Search for `a` as one of addOp's inputs (through a SUBPIECE-0 in the truncated form).
+            let mut a_slot = 2usize;
+            for slot in 0..2 {
+                let mut vn = data.op(add_op).input(slot).unwrap();
+                if trunc_size >= 0 {
+                    if !data.vn(vn).is_written() {
+                        continue;
+                    }
+                    let sub_op = data.vn(vn).def.unwrap();
+                    if data.op(sub_op).code() != OpCode::Subpiece
+                        || data.vn(data.op(sub_op).input(1).unwrap()).constant_value() != 0
+                    {
+                        continue;
+                    }
+                    vn = data.op(sub_op).input(0).unwrap();
+                }
+                if a == vn {
+                    a_slot = slot;
+                    break;
+                }
+            }
+            if a_slot > 1 {
+                continue;
+            }
+            // The other addOp input is an INT_RIGHT by shiftAmt of a sign extraction of `a`.
+            let ext_vn = data.op(add_op).input(1 - a_slot).unwrap();
+            if !data.vn(ext_vn).is_written() {
+                continue;
+            }
+            let shift_op = data.vn(ext_vn).def.unwrap();
+            if data.op(shift_op).code() != OpCode::IntRight {
+                continue;
+            }
+            let cvn = data.op(shift_op).input(1).unwrap();
+            if !data.vn(cvn).is_constant() {
+                continue;
+            }
+            let mut shiftval = data.vn(cvn).constant_value() as i64;
+            if trunc_size >= 0 {
+                shiftval += (data.vn(a).size as i64 - trunc_size) * 8;
+            }
+            if shiftval != shift_amt {
+                continue;
+            }
+            let Some(mut ext2) = check_sign_extraction(data, data.op(shift_op).input(0).unwrap())
+            else {
+                continue;
+            };
+            if trunc_size >= 0 {
+                if !data.vn(ext2).is_written() {
+                    continue;
+                }
+                let sub_op = data.vn(ext2).def.unwrap();
+                if data.op(sub_op).code() != OpCode::Subpiece
+                    || data.vn(data.op(sub_op).input(1).unwrap()).constant_value() as i64 != trunc_size
+                {
+                    continue;
+                }
+                ext2 = data.op(sub_op).input(0).unwrap();
+            }
+            if a != ext2 {
+                continue;
+            }
+            let sz = data.vn(a).size;
+            data.op_set_opcode(base_op, OpCode::IntSrem);
+            data.op_set_input(base_op, 0, a);
+            let c = data.new_const(sz, mask + 1);
+            data.op_set_input(base_op, 1, c);
+            return 1;
         }
-        // the addend equal to the subtracted correction is `corr`; the other is the dividend
-        let (a0, a1) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
-        let x = if equiv(f, a0, corr) {
-            a1
-        } else if equiv(f, a1, corr) {
-            a0
-        } else {
-            return 0;
-        };
-        let dc = f.new_const(f.vn(x).size, mask + 1);
-        f.op_set_opcode(op, OpCode::IntSrem);
-        f.op_set_all_input(op, &[x, dc]);
-        1
+        0
     }
 }
 
-/// True if `sh` computes the sign bit of `v` — `v >> (w-1)` (logical or arithmetic right shift).
-fn is_sign_shift(f: &Funcdata, sh: VarnodeId, v: VarnodeId, size: u32) -> bool {
-    let Some(d) = f.vn(sh).def else { return false };
-    matches!(f.op(d).code(), OpCode::IntRight | OpCode::IntSright)
-        && f.op(d).input(0).is_some_and(|x| equiv(f, x, v))
-        && f.op(d).input(1).and_then(|c| cval(f, c)) == Some((8 * size - 1) as u64)
+/// Ghidra `RuleSignMod2nOpt2::checkSignExtForm` (ruleaction.cc:8910): verify `V - (V s>> (w-1))`
+/// (as `V + (V s>> (w-1))*-1`), returning `V`.
+fn check_sign_ext_form(data: &Funcdata, op: OpId) -> Option<VarnodeId> {
+    for slot in 0..2 {
+        let minus_vn = data.op(op).input(slot)?;
+        if !data.vn(minus_vn).is_written() {
+            continue;
+        }
+        let mult_op = data.vn(minus_vn).def.unwrap();
+        if data.op(mult_op).code() != OpCode::IntMult {
+            continue;
+        }
+        let const_vn = data.op(mult_op).input(1)?;
+        if !data.vn(const_vn).is_constant()
+            || data.vn(const_vn).constant_value() != super::nzmask::calc_mask(data.vn(const_vn).size)
+        {
+            continue;
+        }
+        let base = data.op(op).input(1 - slot)?;
+        let sign_ext = data.op(mult_op).input(0)?;
+        if !data.vn(sign_ext).is_written() {
+            continue;
+        }
+        let shift_op = data.vn(sign_ext).def.unwrap();
+        if data.op(shift_op).code() != OpCode::IntSright {
+            continue;
+        }
+        if data.op(shift_op).input(0) != Some(base) {
+            continue;
+        }
+        let cvn = data.op(shift_op).input(1)?;
+        if !data.vn(cvn).is_constant()
+            || data.vn(cvn).constant_value() as i64 != 8 * data.vn(base).size as i64 - 1
+        {
+            continue;
+        }
+        return Some(base);
+    }
+    None
 }
 
-/// Recover signed `x % 2` from the *division* form `x - ((x + (x >> (w-1))) & ~1)` (Ghidra's
-/// `RuleSignMod2nOpt2`, mod-2 special case). The rounded value `(x + signbit) & ~(2^k-1)` is
-/// subtracted from `x`, leaving `x % 2^k`; for k=1 the correction is just the sign bit. (The
-/// general `2^k` case routes the correction through a MULTIEQUAL and is left for later.)
+/// Ghidra `RuleSignMod2nOpt2` (ruleaction.cc:8859, INT_MULT): recover signed `V s% 2^n` from
+/// `V - (Vadj & ~(2^n-1))` where `Vadj = (V<0) ? V+2^n-1 : V`. Rooted at the `Vadj_masked * -1`.
+/// The mod-2 form (`Vadj = V - (V s>> (w-1))`) is matched via [`check_sign_ext_form`]; the general
+/// `2^n` MULTIEQUAL (conditional) form is deferred.
 pub struct RuleSignMod2nOpt2;
 
 impl Rule for RuleSignMod2nOpt2 {
@@ -553,43 +651,71 @@ impl Rule for RuleSignMod2nOpt2 {
         "signmod2n2"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntSub]
+        vec![OpCode::IntMult]
     }
-    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
-        let (Some(base), Some(and_out)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
-        // and_out = INT_AND(adj, ~(2^k-1))
-        let Some(and) = f.vn(and_out).def else { return 0 };
-        if f.op(and).code() != OpCode::IntAnd {
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let const_vn = data.op(op).input(1).unwrap();
+        if !data.vn(const_vn).is_constant() {
             return 0;
         }
-        let (Some(adj), Some(mask_v)) = (f.op(and).input(0), f.op(and).input(1)) else { return 0 };
-        let Some(maskc) = cval(f, mask_v) else { return 0 };
-        let size = f.vn(base).size;
-        let full = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
-        let npow = (!maskc).wrapping_add(1) & full; // the modulus 2^k
-        if npow.count_ones() != 1 || npow != 2 {
-            return 0; // only the mod-2 add form here
+        let mask = super::nzmask::calc_mask(data.vn(const_vn).size);
+        if data.vn(const_vn).constant_value() != mask {
+            return 0; // must be INT_MULT by -1
         }
-        // adj = INT_ADD(V, V >> (w-1)) — the sign-bit correction
-        let Some(adj_def) = f.vn(adj).def else { return 0 };
-        if f.op(adj_def).code() != OpCode::IntAdd || f.op(adj_def).num_inputs() != 2 {
+        let and_out = data.op(op).input(0).unwrap();
+        if !data.vn(and_out).is_written() {
             return 0;
         }
-        let (a0, a1) = (f.op(adj_def).input(0).unwrap(), f.op(adj_def).input(1).unwrap());
-        let v = if is_sign_shift(f, a0, a1, size) {
-            a1
-        } else if is_sign_shift(f, a1, a0, size) {
-            a0
+        let and_op = data.vn(and_out).def.unwrap();
+        if data.op(and_op).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let cvn = data.op(and_op).input(1).unwrap();
+        if !data.vn(cvn).is_constant() {
+            return 0;
+        }
+        let npow = (!data.vn(cvn).constant_value()).wrapping_add(1) & mask;
+        if npow.count_ones() != 1 || npow == 1 {
+            return 0; // constVn must be of form 111..000, and not the mod-1 degenerate
+        }
+        let adj_vn = data.op(and_op).input(0).unwrap();
+        if !data.vn(adj_vn).is_written() {
+            return 0;
+        }
+        let adj_op = data.vn(adj_vn).def.unwrap();
+        let base = if data.op(adj_op).code() == OpCode::IntAdd {
+            if npow != 2 {
+                return 0; // special mod-2 form
+            }
+            match check_sign_ext_form(data, adj_op) {
+                Some(b) => b,
+                None => return 0,
+            }
         } else {
+            // The MULTIEQUAL (general 2^n conditional `V = (V<0) ? V+2^n-1 : V`) form is deferred.
             return 0;
         };
-        if !equiv(f, v, base) {
+        if data.vn(base).is_free() {
             return 0;
         }
-        let dc = f.new_const(size, npow);
-        f.op_set_opcode(op, OpCode::IntSrem);
-        f.op_set_all_input(op, &[base, dc]);
-        1
+        let mult_out = data.op(op).output.unwrap();
+        for root_op in data.vn(mult_out).descend.clone() {
+            if data.op(root_op).code() != OpCode::IntAdd {
+                continue;
+            }
+            let slot = if data.op(root_op).input(0) == Some(mult_out) { 0 } else { 1 };
+            if data.op(root_op).input(1 - slot) != Some(base) {
+                continue;
+            }
+            if slot == 0 {
+                data.op_set_input(root_op, 0, base);
+            }
+            let c = data.new_const(data.vn(base).size, npow);
+            data.op_set_input(root_op, 1, c);
+            data.op_set_opcode(root_op, OpCode::IntSrem);
+            return 1;
+        }
+        0
     }
 }
 
@@ -1437,7 +1563,8 @@ mod tests {
 
     #[test]
     fn recovers_signed_mod_power_of_two() {
-        use crate::decompile::action::{Action, ActionPool};
+        // ((V + (sign >> 30)) & 3) - (sign >> 30)  =>  V s% 4,  sign = V s>> 31  (V 4 bytes, n=2)
+        // rooted at the INT_RIGHT `sign >> 30` (Ghidra RuleSignMod2nOpt).
         use crate::decompile::space::{Address, SpaceManager};
         use crate::decompile::{BlockBasic, Funcdata, SeqNum};
         let spaces = SpaceManager::standard();
@@ -1445,36 +1572,39 @@ mod tests {
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let x = f.new_input(8, Address::new(reg, 0x38));
-        // corr = x >>u 63  (the sign bit as 0/1)
-        let sh = f.new_const(8, 0x3f);
-        let corr = f.new_op(OpCode::IntRight, seq, vec![x, sh]);
-        let corro = f.new_output_unique(corr, 8);
-        // ((x + corr) & 1) - corr   ⇒   x % 2
-        let add = f.new_op(OpCode::IntAdd, seq, vec![x, corro]);
-        let addo = f.new_output_unique(add, 8);
-        let off0 = f.new_const(4, 0);
-        let subp = f.new_op(OpCode::Subpiece, seq, vec![addo, off0]);
-        let subpo = f.new_output_unique(subp, 4);
-        let mask = f.new_const(4, 1);
-        let and = f.new_op(OpCode::IntAnd, seq, vec![subpo, mask]);
+        let v = f.new_input(4, Address::new(reg, 0x38));
+        let sh31 = f.new_const(4, 31);
+        let sign = f.new_op(OpCode::IntSright, seq, vec![v, sh31]);
+        let signo = f.new_output_unique(sign, 4);
+        let sh30 = f.new_const(4, 30);
+        let corr = f.new_op(OpCode::IntRight, seq, vec![signo, sh30]); // root: sign >> (32-2)
+        let corro = f.new_output_unique(corr, 4);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![v, corro]);
+        let addo = f.new_output_unique(add, 4);
+        let mask = f.new_const(4, 3);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![addo, mask]);
         let ando = f.new_output_unique(and, 4);
-        let ze = f.new_op(OpCode::IntZext, seq, vec![ando]);
-        let zeo = f.new_output_unique(ze, 8);
-        let op = f.new_op(OpCode::IntSub, seq, vec![zeo, corro]);
-        f.new_output(op, 8, Address::new(reg, 0));
-        f.set_blocks(vec![BlockBasic { ops: vec![corr, add, subp, and, ze, op], ..Default::default() }]);
+        let negone = f.new_const(4, super::super::nzmask::calc_mask(4));
+        let negcorr = f.new_op(OpCode::IntMult, seq, vec![corro, negone]);
+        let negcorro = f.new_output_unique(negcorr, 4);
+        let base = f.new_op(OpCode::IntAdd, seq, vec![ando, negcorro]);
+        f.new_output(base, 4, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic {
+            ops: vec![sign, corr, add, and, negcorr, base],
+            ..Default::default()
+        }]);
 
-        ActionPool::new("p").with(RuleSignMod2nOpt).apply(&mut f);
-        assert_eq!(f.op(op).code(), OpCode::IntSrem);
-        assert_eq!(f.op(op).input(0), Some(x));
-        let dc = f.op(op).input(1).unwrap();
-        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
+        assert_eq!(RuleSignMod2nOpt.apply_op(corr, &mut f), 1);
+        assert_eq!(f.op(base).code(), OpCode::IntSrem);
+        assert_eq!(f.op(base).input(0), Some(v));
+        let dc = f.op(base).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 4);
     }
 
     #[test]
     fn recovers_signed_mod_2_division_form() {
-        use crate::decompile::action::{Action, ActionPool};
+        // V - ((V - (V s>> 63)) & -2)  =>  V s% 2,  rooted at the `masked * -1` INT_MULT
+        // (Ghidra RuleSignMod2nOpt2, mod-2 / checkSignExtForm path).
         use crate::decompile::space::{Address, SpaceManager};
         use crate::decompile::{BlockBasic, Funcdata, SeqNum};
         let spaces = SpaceManager::standard();
@@ -1483,23 +1613,32 @@ mod tests {
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let x = f.new_input(8, Address::new(reg, 0x38));
-        // x - ((x + (x >>u 63)) & -2)  ⇒  x % 2  (the division form)
+        let negone = super::super::nzmask::calc_mask(8);
         let sh = f.new_const(8, 0x3f);
-        let corr = f.new_op(OpCode::IntRight, seq, vec![x, sh]);
-        let corro = f.new_output_unique(corr, 8);
-        let add = f.new_op(OpCode::IntAdd, seq, vec![corro, x]);
-        let addo = f.new_output_unique(add, 8);
+        let sign = f.new_op(OpCode::IntSright, seq, vec![x, sh]);
+        let signo = f.new_output_unique(sign, 8);
+        let no1 = f.new_const(8, negone);
+        let negsign = f.new_op(OpCode::IntMult, seq, vec![signo, no1]);
+        let negsigno = f.new_output_unique(negsign, 8);
+        let adj = f.new_op(OpCode::IntAdd, seq, vec![x, negsigno]); // x - sign
+        let adjo = f.new_output_unique(adj, 8);
         let mask = f.new_const(8, (-2i64) as u64);
-        let and = f.new_op(OpCode::IntAnd, seq, vec![addo, mask]);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![adjo, mask]);
         let ando = f.new_output_unique(and, 8);
-        let op = f.new_op(OpCode::IntSub, seq, vec![x, ando]);
-        f.new_output(op, 8, Address::new(reg, 0));
-        f.set_blocks(vec![BlockBasic { ops: vec![corr, add, and, op], ..Default::default() }]);
+        let no2 = f.new_const(8, negone);
+        let negand = f.new_op(OpCode::IntMult, seq, vec![ando, no2]); // root: (adj & -2) * -1
+        let negando = f.new_output_unique(negand, 8);
+        let base = f.new_op(OpCode::IntAdd, seq, vec![x, negando]); // x - (adj & -2)
+        f.new_output(base, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic {
+            ops: vec![sign, negsign, adj, and, negand, base],
+            ..Default::default()
+        }]);
 
-        ActionPool::new("p").with(RuleSignMod2nOpt2).apply(&mut f);
-        assert_eq!(f.op(op).code(), OpCode::IntSrem);
-        assert_eq!(f.op(op).input(0), Some(x));
-        let dc = f.op(op).input(1).unwrap();
+        assert_eq!(RuleSignMod2nOpt2.apply_op(negand, &mut f), 1);
+        assert_eq!(f.op(base).code(), OpCode::IntSrem);
+        assert_eq!(f.op(base).input(0), Some(x));
+        let dc = f.op(base).input(1).unwrap();
         assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 2);
     }
 
