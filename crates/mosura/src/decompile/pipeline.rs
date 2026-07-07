@@ -127,6 +127,8 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleTrivialArith) // (11)
         .with(RuleTrivialBool) // (12)
         .with(RuleTrivialShift) // (13)
+        .with(super::rules::RuleSignShift) // (14)
+        .with(super::rules::RuleTestSign) // (15)
         .with(RuleIdentityEl) // (16)
         .with(RuleIdempotent) // mosura extra — trivial idempotent AND/OR/XOR/SUB folds
         .with(RuleOrMask) // (17)
@@ -150,6 +152,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleShiftPiece) // (38)
         .with(RuleMultiCollapse) // (39)
         .with(Rule2Comp2Mult) // (41)
+        .with(super::rules::RuleSub2Add) // (42)
         .with(RuleCarryElim) // (43)
         .with(RuleBxor2NotEqual) // (44)
         .with(RuleLess2Zero) // (45)
@@ -159,6 +162,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleEqual2Constant) // (49)
         .with(RuleThreeWayCompare) // (50)
         .with(RuleXorCollapse) // (51)
+        .with(super::rules::RuleAddMultCollapse) // (52)
         .with(RuleConstFold) // (53) RuleCollapseConstants
         .with(RulePropagateCopy) // (55)
         .with(RuleZextEliminate) // (56)
@@ -188,15 +192,18 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubNormal) // (81) — its non-zero-offset SUBPIECEs are re-expanded for printing
         // by the cleanup-pool RuleSubRight (Ghidra actcleanup, coreaction.cc:5700), as in Ghidra.
         .with(RulePositiveDiv) // (82)
+        .with(super::divopt::RuleDivTermAdd) // (83)
         .with(super::divopt::RuleDivTermAdd2) // (84)
         .with(super::divopt::RuleDivOpt) // (85)
-        // RuleSignForm (86) is defined in rules.rs but HELD UNWIRED: it is faithful, but mosura's
-        // FUSED non-faithful RuleDivOpt (85) fails to re-collapse the `s>>` form it normalizes to, so
-        // it regresses switchloop (0.7787->0.7709: `(int8)iVar5` -> `iVar5 >> 0x1f`, away from Ghidra's
-        // `(int4)param_1 / 10`). Same class as RuleDivTermAdd. Wire after RuleDivOpt is de-fused (#9/#20).
+        .with(super::rules::RuleSignForm) // (86)
+        .with(super::rules::RuleSignForm2) // (87)
+        .with(super::divopt::RuleSignDiv2) // (88)
+        .with(super::divopt::RuleDivChain) // (89)
+        .with(super::divopt::RuleSignNearMult) // (90)
         .with(super::divopt::RuleModOpt) // (91)
         .with(super::divopt::RuleSignMod2nOpt) // (92)
         .with(super::divopt::RuleSignMod2nOpt2) // (93)
+        .with(super::divopt::RuleSignMod2Opt) // (94)
         .with(RuleBoolNegate) // (98)
         .with(RuleLessEqual) // (99)
         .with(RuleFloatRange) // (102)
@@ -262,10 +269,8 @@ impl Action for ActionInferTypes {
 /// the negated constant actually reaches the INT_ADD before pointer arithmetic / cleanup runs.
 pub fn ptrarith_pool() -> ActionPool {
     ActionPool::new("ptrarith")
-        .with(super::rules::RuleSub2Add)
         .with(RuleConstFold)
         .with(RulePropagateCopy)
-        .with(super::rules::RuleAddMultCollapse)
         .with(super::ptrarith::RulePtrArith)
 }
 
