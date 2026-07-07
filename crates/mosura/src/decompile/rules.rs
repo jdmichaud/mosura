@@ -953,6 +953,13 @@ impl Rule for RuleEqual2Zero {
         } else {
             return 0;
         };
+        // DEBT (Task #20): Ghidra's RuleEqual2Zero (ruleaction.cc:~8xx) guards here — it fires only
+        // when EVERY descendant of the sum is a bool-output op (`for (iter : addvn->beginDescend())
+        // if (!boolop->isBoolOutput()) return 0;`). That guard is deliberately OMITTED: adding it
+        // suppresses an equal2zero firing switchloop's jumptable recovery depends on, because
+        // mosura's switch-path IR gives the guard sum a non-bool use Ghidra's doesn't (a separate
+        // switch-path divergence). Per no-adaptation-grandfathered this omission is CANCELED the
+        // moment that divergence is fixed — restore the guard then and re-verify switchloop.
         let Some(def) = data.vn(other).def else { return 0 };
         if data.op(def).num_inputs() != 2 {
             return 0;
