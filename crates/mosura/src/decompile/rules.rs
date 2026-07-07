@@ -673,42 +673,106 @@ fn same_value(data: &Funcdata, a: VarnodeId, b: VarnodeId) -> bool {
     }
 }
 
-/// Does `xvn` compute `avn - bvn`? Directly as `INT_SUB(avn, bvn)`, or as `INT_ADD(avn, c)`
-/// with `c` the (constant) negation of `bvn`.
-fn subtract_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
-    let Some(def) = data.vn(xvn).def else { return false };
-    let o = data.op(def);
-    if o.num_inputs() != 2 || !same_value(data, o.input(0).unwrap(), avn) {
-        return false;
+/// Ghidra `AddExpression` (expression.hh:141): lightweight matcher for an additive expression — up
+/// to two non-constant terms (a varnode + multiplicative coefficient) plus a collected constant.
+/// [`AddExpression::gather`] walks INT_ADD (recursively, depth-limited) and INT_MULT-by-constant
+/// (folding the coefficient), so `a - b` written as `a + b*(-1)` (post-[`RuleSub2Add`]) compares
+/// equal to the direct subtraction — which is what keeps `RuleSborrow`/`RuleScarry` firing once
+/// subtraction is canonicalized to the additive form.
+struct AddExpression {
+    constval: u64,
+    terms: Vec<(VarnodeId, u64)>, // up to 2 (varnode, coefficient)
+}
+
+impl AddExpression {
+    fn new() -> Self {
+        AddExpression { constval: 0, terms: Vec::new() }
     }
-    match o.code() {
-        OpCode::IntSub => same_value(data, o.input(1).unwrap(), bvn),
-        OpCode::IntAdd => {
-            let Some(c) = o.input(1) else { return false };
-            if !data.vn(c).is_constant() || !data.vn(bvn).is_constant() {
-                return false;
-            }
-            let size = data.vn(xvn).size;
-            let mask = if size >= 8 { u64::MAX } else { (1u64 << (size * 8)) - 1 };
-            data.vn(c).constant_value().wrapping_add(data.vn(bvn).constant_value()) & mask == 0
+    fn add(&mut self, vn: VarnodeId, coeff: u64) {
+        if self.terms.len() < 2 {
+            self.terms.push((vn, coeff));
         }
-        _ => false,
+    }
+    fn gather(&mut self, data: &Funcdata, vn: VarnodeId, coeff: u64, depth: i32) {
+        if data.vn(vn).is_constant() {
+            let m = super::nzmask::calc_mask(data.vn(vn).size);
+            self.constval =
+                self.constval.wrapping_add(coeff.wrapping_mul(data.vn(vn).constant_value())) & m;
+            return;
+        }
+        if data.vn(vn).is_written() {
+            let op = data.vn(vn).def.unwrap();
+            if data.op(op).code() == OpCode::IntAdd && data.op(op).num_inputs() == 2 {
+                let mut d = depth;
+                if !data.vn(data.op(op).input(1).unwrap()).is_constant() {
+                    d -= 1;
+                }
+                if d >= 0 {
+                    self.gather(data, data.op(op).input(0).unwrap(), coeff, d);
+                    self.gather(data, data.op(op).input(1).unwrap(), coeff, d);
+                    return;
+                }
+            } else if data.op(op).code() == OpCode::IntMult && data.op(op).num_inputs() == 2 {
+                let c1 = data.op(op).input(1).unwrap();
+                if data.vn(c1).is_constant() {
+                    let m = super::nzmask::calc_mask(data.vn(vn).size);
+                    let c = coeff.wrapping_mul(data.vn(c1).constant_value()) & m;
+                    self.gather(data, data.op(op).input(0).unwrap(), c, depth);
+                    return;
+                }
+            }
+        }
+        self.add(vn, coeff);
+    }
+    fn gather_two_terms_subtract(&mut self, data: &Funcdata, a: VarnodeId, b: VarnodeId) {
+        let depth = if data.vn(a).is_constant() || data.vn(b).is_constant() { 1 } else { 0 };
+        self.gather(data, a, 1, depth);
+        self.gather(data, b, super::nzmask::calc_mask(data.vn(b).size), depth);
+    }
+    fn gather_two_terms_add(&mut self, data: &Funcdata, a: VarnodeId, b: VarnodeId) {
+        let depth = if data.vn(a).is_constant() || data.vn(b).is_constant() { 1 } else { 0 };
+        self.gather(data, a, 1, depth);
+        self.gather(data, b, 1, depth);
+    }
+    fn gather_two_terms_root(&mut self, data: &Funcdata, root: VarnodeId) {
+        self.gather(data, root, 1, 1);
+    }
+    fn is_equivalent(&self, data: &Funcdata, other: &AddExpression) -> bool {
+        if self.constval != other.constval || self.terms.len() != other.terms.len() {
+            return false;
+        }
+        let te = |t1: (VarnodeId, u64), t2: (VarnodeId, u64)| {
+            t1.1 == t2.1 && functional_equality(data, t1.0, t2.0)
+        };
+        match self.terms.len() {
+            1 => te(self.terms[0], other.terms[0]),
+            2 => {
+                (te(self.terms[0], other.terms[0]) && te(self.terms[1], other.terms[1]))
+                    || (te(self.terms[0], other.terms[1]) && te(self.terms[1], other.terms[0]))
+            }
+            _ => false, // Ghidra returns false for 0 terms (pure constants)
+        }
     }
 }
 
-/// Does `xvn` compute `avn + bvn`? Directly as `INT_ADD(avn, bvn)` in either operand order — the
-/// additive-sum counterpart of [`subtract_matches`] used by [`RuleScarry`]. (Ghidra uses the general
-/// `AddExpression::gatherTwoTermsAdd`/`gatherTwoTermsRoot` equivalence; this is the direct-def subset,
-/// matching mosura's simplified `subtract_matches`.)
+/// Does `xvn` compute `avn - bvn`? Uses Ghidra's [`AddExpression`] functional comparison, so it holds
+/// whether the difference is an `INT_SUB` or the canonical `avn + bvn*(-1)` additive form.
+fn subtract_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
+    let mut expr1 = AddExpression::new();
+    expr1.gather_two_terms_subtract(data, avn, bvn);
+    let mut expr2 = AddExpression::new();
+    expr2.gather_two_terms_root(data, xvn);
+    expr1.is_equivalent(data, &expr2)
+}
+
+/// Does `xvn` compute `avn + bvn`? The additive-sum counterpart of [`subtract_matches`] used by
+/// [`RuleScarry`] (Ghidra `AddExpression::gatherTwoTermsAdd`).
 fn add_matches(data: &Funcdata, xvn: VarnodeId, avn: VarnodeId, bvn: VarnodeId) -> bool {
-    let Some(def) = data.vn(xvn).def else { return false };
-    let o = data.op(def);
-    if o.code() != OpCode::IntAdd || o.num_inputs() != 2 {
-        return false;
-    }
-    let (i0, i1) = (o.input(0).unwrap(), o.input(1).unwrap());
-    (same_value(data, i0, avn) && same_value(data, i1, bvn))
-        || (same_value(data, i0, bvn) && same_value(data, i1, avn))
+    let mut expr1 = AddExpression::new();
+    expr1.gather_two_terms_add(data, avn, bvn);
+    let mut expr2 = AddExpression::new();
+    expr2.gather_two_terms_root(data, xvn);
+    expr1.is_equivalent(data, &expr2)
 }
 
 /// Simplify signed comparisons built from `INT_SBORROW` (Ghidra's `RuleSborrow`). The x86
@@ -7876,7 +7940,12 @@ mod tests {
         let seq = SeqNum { pc: ram, uniq: 0 };
         let sb = f.new_op(OpCode::IntSborrow, seq, vec![a, b]); // sborrow(a,b)
         let sbout = f.new_output(sb, 1, Address::new(uniq, 0x100));
-        let sub = f.new_op(OpCode::IntSub, seq, vec![a, b]); // a - b
+        // a - b in the canonical additive form `a + b*(-1)` (post-RuleSub2Add), which is what
+        // RuleSborrow's AddExpression comparison expects.
+        let negone = f.new_const(4, crate::decompile::nzmask::calc_mask(4));
+        let negb = f.new_op(OpCode::IntMult, seq, vec![b, negone]);
+        let negbout = f.new_output(negb, 4, Address::new(uniq, 0x180));
+        let sub = f.new_op(OpCode::IntAdd, seq, vec![a, negbout]); // a + b*(-1)
         let subout = f.new_output(sub, 4, Address::new(uniq, 0x200));
         let zero = f.new_const(4, 0);
         let sl = f.new_op(OpCode::IntSless, seq, vec![subout, zero]); // (a-b) s< 0
@@ -7884,7 +7953,7 @@ mod tests {
         let ne = f.new_op(OpCode::IntNotequal, seq, vec![sbout, slout]); // sborrow != (a-b s< 0)
         f.new_output(ne, 1, Address::new(reg, 0));
         f.set_blocks(vec![crate::decompile::BlockBasic {
-            ops: vec![sb, sub, sl, ne],
+            ops: vec![sb, negb, sub, sl, ne],
             ..Default::default()
         }]);
 
