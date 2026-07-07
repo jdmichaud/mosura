@@ -151,7 +151,7 @@ impl Funcdata {
     /// `jumpvec`), since folding the out-of-range guard into the switch (`cfg::build_cfg`) destroys
     /// the guard the range-recovery would re-derive from. Falls back to on-demand recovery for
     /// funcdata that never cached (e.g. the analysis track's own graphs).
-    pub fn jump_tables(&self) -> Vec<super::jumptable::JumpTable> {
+    pub fn jump_tables(&mut self) -> Vec<super::jumptable::JumpTable> {
         if !self.jumptables.is_empty() {
             return self.jumptables.clone();
         }

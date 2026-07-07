@@ -34,18 +34,27 @@ pub struct JumpTable {
 }
 
 /// Recover every jump table in `f` (Ghidra `Funcdata::recoverJumpTables` over each BRANCHIND).
-pub fn recover(f: &Funcdata) -> Vec<JumpTable> {
+pub fn recover(f: &mut Funcdata) -> Vec<JumpTable> {
     let mut out = Vec::new();
-    for op in f.op_ids() {
-        if !f.op(op).is_dead() && f.op(op).code() == OpCode::Branchind {
-            if let Some(jt) = recover_one(f, op) {
-                out.push(jt);
-            }
+    // Collect the BRANCHIND ops first: recover_jumpbasic takes `&mut Funcdata` (its PathMeld walk
+    // transiently marks Varnodes), so we can't hold an immutable op iterator across the calls.
+    let branchinds: Vec<OpId> = f
+        .op_ids()
+        .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Branchind)
+        .collect();
+    for op in branchinds {
+        if let Some(jt) = super::jumpbasic::recover_jumpbasic(f, op) {
+            out.push(jt);
         }
     }
     out
 }
 
+// Superseded by the faithful `jumpbasic::recover_jumpbasic` (Ghidra `JumpBasic`); kept dead-in-place
+// for one commit, removed in the follow-up. `recover_one` and its private helpers `guard_range`,
+// `reaches`, and `Kind` are the old structurally-simpler recovery (pick-one-switch-var by
+// normalize+backtrace-membership + i128 lo/hi guard bounds).
+#[allow(dead_code)]
 fn recover_one(f: &Funcdata, indop: OpId) -> Option<JumpTable> {
     let target_vn = f.op(indop).input(0)?;
     // findDeterminingVarnodes: the varnodes the branch target is computed from.
@@ -121,6 +130,7 @@ pub(crate) fn in_image(f: &Funcdata, addr: u64) -> bool {
 /// Whether `start` can reach `target` without passing through `avoid` (used to decide which side
 /// of a guard's branch is in-range — `avoid` is the guard block itself, so a loop's back-edge to
 /// the switch, which must pass through the guard, doesn't make the out-of-range side look in-range).
+#[allow(dead_code)]
 fn reaches(f: &Funcdata, start: BlockId, target: BlockId, avoid: BlockId) -> bool {
     if start == target {
         return true;
@@ -186,6 +196,7 @@ pub(crate) fn backtrace_set(f: &Funcdata, vn: VarnodeId) -> HashSet<VarnodeId> {
 
 /// A one-sided inequality constraint on the switch variable (the in-range condition of a guard).
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum Kind {
     Lt,
     Le,
@@ -193,6 +204,7 @@ enum Kind {
     Ge,
 }
 
+#[allow(dead_code)]
 impl Kind {
     /// The constraint that holds when the comparison is *false* (the other side of the branch).
     fn negate(self) -> Kind {
@@ -208,6 +220,7 @@ impl Kind {
 /// Ghidra `analyzeGuards` + `CircleRange`: bound the switch variable's value range `[low,high]`
 /// from the guard comparisons, using the CFG to decide which side of each guard is in-range (the
 /// side that reaches the BRANCHIND). Returns the most tightly-bounded path variable and its range.
+#[allow(dead_code)]
 fn guard_range(f: &Funcdata, path: &HashSet<VarnodeId>, indop: OpId) -> Option<(VarnodeId, u64, u64)> {
     let ind_block = f.op(indop).parent?;
     let mut bounds: std::collections::HashMap<VarnodeId, (i128, Option<i128>)> = std::collections::HashMap::new();
