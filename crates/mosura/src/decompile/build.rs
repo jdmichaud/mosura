@@ -211,6 +211,16 @@ pub fn raw_funcdata_flow_image(
         }
         let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned());
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
+        // Ghidra `FlowInfo::recoverJumpTables` -> `newAddress` (flow.cc:806): feed the targets
+        // recovered by prior passes back as the BRANCHIND's flow edges before re-simplifying. This
+        // makes the discovered case blocks reachable, so their state updates (e.g. a loop switch
+        // variable `iVar = <case>`) reach the loop-header MULTIEQUAL and widen its realized value
+        // range pass-over-pass — the range `JumpBasic::findSmallestNormal` reads to size the switch
+        // (switchloop: without the edges the phi stays {0,1} and recovery collapses to one case).
+        // Targets only, NOT `switch_defaults`: Ghidra folds the out-of-range guard (`foldInOneGuard`)
+        // only after recovery completes; folding it here would destroy the guard the range analysis
+        // pulls back through on every pass.
+        partial.switch_targets = switch_targets.clone();
         super::pipeline::decompile(&mut partial);
         let tables = partial.jump_tables();
         let mut added = false;
