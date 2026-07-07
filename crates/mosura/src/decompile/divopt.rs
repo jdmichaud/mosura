@@ -61,35 +61,10 @@ fn cval(f: &Funcdata, v: VarnodeId) -> Option<u64> {
     f.vn(v).is_constant().then(|| f.vn(v).constant_value())
 }
 
-/// Match `mulhi = SUBPIECE(INT_MULT(ext(x) | x, M), off)` — the high half of `x * M`.
-/// Returns `(x, M, high_shift_bits, signed)` where `signed` means the dividend was
-/// sign-extended (a signed division) rather than zero-extended.
-fn match_mulhi(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32, bool)> {
-    let sub = f.vn(v).def?;
-    if f.op(sub).code() != OpCode::Subpiece {
-        return None;
-    }
-    let off = cval(f, f.op(sub).input(1)?)?;
-    let mult = f.vn(f.op(sub).input(0)?).def?;
-    if f.op(mult).code() != OpCode::IntMult {
-        return None;
-    }
-    let (m0, m1) = (f.op(mult).input(0)?, f.op(mult).input(1)?);
-    for (cvn, xvn) in [(m1, m0), (m0, m1)] {
-        if let Some(magic) = cval(f, cvn) {
-            let (x, signed) = match f.vn(xvn).def {
-                Some(d) if f.op(d).code() == OpCode::IntZext => (f.op(d).input(0)?, false),
-                Some(d) if f.op(d).code() == OpCode::IntSext => (f.op(d).input(0)?, true),
-                _ => (xvn, false),
-            };
-            return Some((x, magic, (off as u32) * 8, signed));
-        }
-    }
-    None
-}
-
-/// Recover unsigned division by a constant from the add-correction magic-multiply form
-/// (Ghidra's `RuleDivTermAdd` + `RuleDivOpt`, unsigned path), rewriting it to `x / d`.
+/// Recover division by a constant (Ghidra's `RuleDivOpt`, ruleaction.cc): recognize the
+/// multiply-by-reciprocal form the compiler emits and rewrite it to `x / d` (unsigned) or `x s/ d`
+/// (signed). The add-correction and shift-correction terms are reassembled upstream by
+/// [`RuleDivTermAdd`]/[`RuleDivTermAdd2`] before this rule's [`find_form`] recognizes the result.
 pub struct RuleDivOpt;
 
 impl Rule for RuleDivOpt {
@@ -97,22 +72,10 @@ impl Rule for RuleDivOpt {
         "divopt"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntRight, OpCode::IntSright, OpCode::Subpiece, OpCode::IntSub]
+        vec![OpCode::Subpiece, OpCode::IntRight, OpCode::IntSright]
     }
     fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
-        match f.op(op).code() {
-            // the multiply-by-reciprocal form ending in a shift or SUBPIECE (Ghidra `findForm`)
-            OpCode::IntRight | OpCode::IntSright | OpCode::Subpiece => {
-                let r = find_form_apply(op, f);
-                if r != 0 || f.op(op).code() != OpCode::IntRight {
-                    r
-                } else {
-                    try_unsigned(op, f) // else the add-correction form (RuleDivTermAdd + findForm)
-                }
-            }
-            OpCode::IntSub => try_signed(op, f),
-            _ => 0,
-        }
+        find_form_apply(op, f)
     }
 }
 
@@ -170,74 +133,104 @@ fn is_constant_extended(f: &Funcdata, v: VarnodeId) -> Option<u128> {
     None
 }
 
-/// Ghidra `RuleDivOpt::findForm`: detect the multiply-by-reciprocal division rooted at `op` (a
-/// shift or a SUBPIECE), returning `(x, n, magic, xsize, signed)` where the divisor is
-/// `calc_divisor(n, magic, xsize)` and `signed` selects INT_SDIV vs INT_DIV.
-fn find_form(f: &Funcdata, op: OpId) -> Option<(VarnodeId, u32, u128, u32, bool)> {
-    let root = f.op(op).code();
-    // optional leading shift contributes its amount to n
-    let (mut n, mut cur, shift_signed): (i64, OpId, Option<bool>) = match root {
+/// Ghidra `RuleDivOpt::findForm` (ruleaction.cc:8051): detect the multiply-by-reciprocal division
+/// rooted at `op` (a shift or a SUBPIECE). Returns `(resvn, n, y, xsize, extopc)` — the numerand
+/// varnode, total truncation `n`, multiplicative constant `y`, numerand bit-width `xsize`, and the
+/// extension opcode (`INT_ZEXT` for unsigned, `INT_SEXT` for signed; a numerand with no explicit
+/// extension is reported as `INT_ZEXT`). The divisor is `calc_divisor(n, y, xsize)`.
+fn find_form(f: &Funcdata, op: OpId) -> Option<(VarnodeId, i64, u128, i64, OpCode)> {
+    let mut cur = op;
+    let root = f.op(cur).code();
+    // Optional leading shift contributes its amount to `n`. `shiftopc = None` is Ghidra's CPUI_MAX
+    // sentinel (the SUBPIECE-rooted case with no leading shift).
+    let (mut n, shiftopc): (i64, Option<OpCode>) = match root {
         OpCode::IntRight | OpCode::IntSright => {
-            let vn = f.op(op).input(0)?;
-            f.vn(vn).def?; // must be written
-            let n = cval(f, f.op(op).input(1)?)? as i64;
-            (n, f.vn(vn).def?, Some(root == OpCode::IntSright))
+            let vn = f.op(cur).input(0)?;
+            if !f.vn(vn).is_written() {
+                return None;
+            }
+            let cvn = f.op(cur).input(1)?;
+            if !f.vn(cvn).is_constant() {
+                return None;
+            }
+            let n = f.vn(cvn).constant_value() as i64;
+            cur = f.vn(vn).def?;
+            (n, Some(root))
         }
-        OpCode::Subpiece => (0, op, None), // SUBPIECE is the (required) root
+        OpCode::Subpiece => (0, None),
         _ => return None,
     };
-    // optional SUBPIECE keeping the high bits
+    // Optional SUBPIECE keeping the high bits.
     if f.op(cur).code() == OpCode::Subpiece {
-        let c = cval(f, f.op(cur).input(1)?)? as i64;
+        let c = f.vn(f.op(cur).input(1)?).constant_value() as i64;
         let invn = f.op(cur).input(0)?;
-        f.vn(invn).def?;
-        let out_size = f.vn(f.op(cur).output?).size as i64;
-        if out_size + c != f.vn(invn).size as i64 {
+        if !f.vn(invn).is_written() {
+            return None;
+        }
+        if f.vn(f.op(cur).output?).size as i64 + c != f.vn(invn).size as i64 {
             return None; // must keep the high bits
         }
         n += 8 * c;
         cur = f.vn(invn).def?;
-    } else if shift_signed.is_none() {
-        return None; // SUBPIECE root but no SUBPIECE found
     }
     if f.op(cur).code() != OpCode::IntMult {
+        return None; // there MUST be an INT_MULT
+    }
+    // in(0) must be written; the constant multiplier and the numerand can be in either slot.
+    let mut invn = f.op(cur).input(0)?;
+    if !f.vn(invn).is_written() {
         return None;
     }
-    let (mi0, mi1) = (f.op(cur).input(0)?, f.op(cur).input(1)?);
-    let (magic, xvn) = if let Some(m) = is_constant_extended(f, mi0) {
-        (m, mi1)
-    } else if let Some(m) = is_constant_extended(f, mi1) {
-        (m, mi0)
-    } else {
-        return None;
-    };
-    let ext = f.vn(xvn).def?;
-    let extopc = f.op(ext).code();
-    let out_size = f.vn(f.op(op).output?).size;
-    let (xsize, signed, resvn) = match extopc {
-        // Signed magic division is `(mulhi >> e) - (x s>> 63)`: the high-multiply shift alone is
-        // NOT `x s/ d` (it is off by one for negative x; the sign-bit subtraction supplies the
-        // correction, which Ghidra folds in via `moveSignBitExtraction`). Until that is ported
-        // (the full signed chain, RuleDivOpt's signed path), recovering the inner shift here would
-        // emit an incorrect `INT_SDIV` and strand the `- (x s>> 63)` term — so defer the signed
-        // form to the dedicated signed handler, which matches the whole INT_SUB shape.
-        OpCode::IntSext => return None,
-        OpCode::IntZext => {
-            let inner = f.op(ext).input(0)?;
-            let xsize = f.vn(inner).size * 8; // (approximates Ghidra's getNZMask for clean values)
-            let resvn = if f.vn(xvn).size == out_size { xvn } else { inner };
-            (xsize, false, resvn)
+    let y: u128;
+    if let Some(yy) = is_constant_extended(f, invn) {
+        y = yy;
+        invn = f.op(cur).input(1)?;
+        if !f.vn(invn).is_written() {
+            return None;
         }
-        _ => (f.vn(xvn).size * 8, false, xvn), // no extension ⇒ treat as unsigned
-    };
-    // signed mismatch: the extension and shift signedness must agree, else the extension bits
-    // are truncated and the form only holds when no extension bits survive
-    let mismatch =
-        (!signed && shift_signed == Some(true)) || (signed && shift_signed == Some(false));
-    if mismatch && 8 * out_size as i64 - n != xsize as i64 {
+    } else if let Some(yy) = is_constant_extended(f, f.op(cur).input(1)?) {
+        y = yy;
+    } else {
+        return None; // there MUST be a constant
+    }
+    let ext = f.vn(invn).def?;
+    let mut extopc = f.op(ext).code();
+    let out_size = f.vn(f.op(op).output?).size as i64;
+    let xsize: i64;
+    if extopc != OpCode::IntSext {
+        let nzmask = if extopc == OpCode::IntZext {
+            f.vn(f.op(ext).input(0)?).get_nzmask()
+        } else {
+            f.vn(invn).get_nzmask()
+        };
+        xsize = 64 - nzmask.leading_zeros() as i64;
+        if xsize == 0 {
+            return None;
+        }
+        if xsize > 4 * f.vn(invn).size as i64 {
+            return None;
+        }
+    } else {
+        xsize = f.vn(f.op(ext).input(0)?).size as i64 * 8;
+    }
+    let resvn: VarnodeId;
+    if extopc == OpCode::IntZext || extopc == OpCode::IntSext {
+        let extvn = f.op(ext).input(0)?;
+        if f.vn(extvn).is_free() {
+            return None;
+        }
+        resvn = if f.vn(invn).size as i64 == out_size { invn } else { extvn };
+    } else {
+        extopc = OpCode::IntZext; // treat as unsigned extension
+        resvn = invn;
+    }
+    // Signed mismatch: the extension bits are all truncated, so `op`'s signedness doesn't matter.
+    let mismatch = (extopc == OpCode::IntZext && shiftopc == Some(OpCode::IntSright))
+        || (extopc == OpCode::IntSext && shiftopc == Some(OpCode::IntRight));
+    if mismatch && 8 * out_size - n != xsize {
         return None;
     }
-    Some((resvn, n as u32, magic, xsize, signed))
+    Some((resvn, n, y, xsize, extopc))
 }
 
 /// Ghidra `RuleDivOpt::checkFormOverlap`: a SUBPIECE-rooted form is superseded when its output
@@ -266,136 +259,118 @@ fn check_form_overlap(f: &Funcdata, op: OpId) -> bool {
     false
 }
 
-/// Apply [`find_form`] (Ghidra `RuleDivOpt::applyOp`): rewrite the matched form to `x / d`.
-fn find_form_apply(op: OpId, f: &mut Funcdata) -> u32 {
-    let Some((x, n, magic, xsize, signed)) = find_form(f, op) else { return 0 };
-    if check_form_overlap(f, op) || f.vn(x).is_free() {
-        return 0;
-    }
-    let xsize = if signed { xsize.saturating_sub(1) } else { xsize }; // one less bit for the signbit
-    let out_size = f.vn(f.op(op).output.unwrap()).size;
-    // Ghidra inserts a width extension/truncation when `x` isn't already the output width; that
-    // recovers more divisions but mosura's printer renders the inserted ops where Ghidra absorbs
-    // them — pushing the output *further* from Ghidra's `--c`. So restrict to the matched width.
-    if f.vn(x).size != out_size {
-        return 0;
-    }
-    let d = calc_divisor(n, magic, xsize);
-    if d == 0 {
-        return 0;
-    }
-    let dc = f.new_const(out_size, d);
-    f.op_set_opcode(op, if signed { OpCode::IntSdiv } else { OpCode::IntDiv });
-    f.op_set_all_input(op, &[x, dc]);
-    1
-}
-
-/// Unsigned add-correction form: `(mulhi + ((x - mulhi) >> e2)) >> e1` ⇒ `x / d`.
-fn try_unsigned(op: OpId, f: &mut Funcdata) -> u32 {
-    let Some(e1) = f.op(op).input(1).and_then(|v| cval(f, v)) else { return 0 };
-    let Some(add) = f.op(op).input(0).and_then(|v| f.vn(v).def) else { return 0 };
-    if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
-        return 0;
-    }
-    let (a, b) = (f.op(add).input(0).unwrap(), f.op(add).input(1).unwrap());
-    for (mulhi_v, inner_v) in [(a, b), (b, a)] {
-        let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v) else { continue };
-        if signed {
-            continue;
+/// Ghidra `RuleDivOpt::moveSignBitExtraction` (ruleaction.cc:8192): repoint any sign-bit extraction
+/// `firstVn >> (8*|firstVn|-1)` / `firstVn s>> ...` (allowing the value to be COPYed around, and the
+/// shift amount to arrive via COPY or masked INT_AND) onto `replaceVn`, so the added and subtracted
+/// sign corrections of the recovered signed division share a varnode and cancel.
+fn move_sign_bit_extraction(f: &mut Funcdata, first_vn: VarnodeId, replace_vn: VarnodeId) {
+    let mut test_list: Vec<VarnodeId> = vec![first_vn];
+    if f.vn(first_vn).is_written() {
+        let d = f.vn(first_vn).def.unwrap();
+        if f.op(d).code() == OpCode::IntSright {
+            // The same sign bit could be extracted from the previous shifted version.
+            test_list.push(f.op(d).input(0).unwrap());
         }
-        let Some(inner) = f.vn(inner_v).def else { continue };
-        if f.op(inner).code() != OpCode::IntRight {
-            continue;
-        }
-        let Some(e2) = f.op(inner).input(1).and_then(|v| cval(f, v)) else { continue };
-        let Some(sub) = f.op(inner).input(0).and_then(|v| f.vn(v).def) else { continue };
-        if f.op(sub).code() != OpCode::IntSub
-            || f.op(sub).input(0) != Some(x)
-            || f.op(sub).input(1) != Some(mulhi_v)
-        {
-            continue;
-        }
-        let xsize = f.vn(x).size * 8;
-        if h >= 128 || xsize == 0 {
-            continue;
-        }
-        let d = calc_divisor(h + e1 as u32 + e2 as u32, magic as u128 + (1u128 << h), xsize);
-        if d == 0 {
-            continue;
-        }
-        let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
-        f.op_set_opcode(op, OpCode::IntDiv);
-        f.op_set_all_input(op, &[x, dc]);
-        return 1;
     }
-    0
-}
-
-/// The signed high-multiply correction `mulhi + x`: when the signed reciprocal `M` has its top
-/// bit set, the 64-bit-truncated magic stored in the code is `M - 2^64`, and the high half of
-/// `sext(x)*that` is short by exactly `x` — so the compiler adds `x` back. The recovered divisor
-/// uses the *stored* magic, identical to the non-add signed form; the `+ x` is a high-multiply
-/// fixup, not a change of coefficient. Returns `(x, magic, h, signed)` when `v` is
-/// `mulhi(sext(x)*magic) + x` with the same `x`.
-fn add_correction(f: &Funcdata, v: VarnodeId) -> Option<(VarnodeId, u64, u32, bool)> {
-    let add = f.vn(v).def?;
-    if f.op(add).code() != OpCode::IntAdd || f.op(add).num_inputs() != 2 {
-        return None;
-    }
-    let (p, q) = (f.op(add).input(0)?, f.op(add).input(1)?);
-    for (w, other) in [(p, q), (q, p)] {
-        if let Some((x, magic, h, signed)) = match_mulhi(f, w) {
-            if other == x && signed {
-                return Some((x, magic, h, signed));
+    let mut i = 0;
+    while i < test_list.len() {
+        let vn = test_list[i];
+        i += 1;
+        for op in f.vn(vn).descend.clone() {
+            let opc = f.op(op).code();
+            if opc == OpCode::IntRight || opc == OpCode::IntSright {
+                let mut const_vn = f.op(op).input(1).unwrap();
+                if f.vn(const_vn).is_written() {
+                    let const_op = f.vn(const_vn).def.unwrap();
+                    if f.op(const_op).code() == OpCode::Copy {
+                        const_vn = f.op(const_op).input(0).unwrap();
+                    } else if f.op(const_op).code() == OpCode::IntAnd {
+                        let cv = f.op(const_op).input(0).unwrap();
+                        let other_vn = f.op(const_op).input(1).unwrap();
+                        if !f.vn(other_vn).is_constant() {
+                            continue;
+                        }
+                        // getOffset() == constant_value() (== loc.offset) for any varnode.
+                        if f.vn(cv).constant_value()
+                            != (f.vn(cv).constant_value() & f.vn(other_vn).constant_value())
+                        {
+                            continue;
+                        }
+                        const_vn = cv;
+                    }
+                }
+                if f.vn(const_vn).is_constant() {
+                    let sa = f.vn(first_vn).size * 8 - 1;
+                    if sa as u64 == f.vn(const_vn).constant_value() {
+                        f.op_set_input(op, 0, replace_vn);
+                    }
+                }
+            } else if opc == OpCode::Copy {
+                test_list.push(f.op(op).output.unwrap());
             }
         }
     }
-    None
 }
 
-/// Signed sign-subtraction form: `(mulhi_s >> e) - (x s>> (size-1))` ⇒ `x s/ d`, where `mulhi_s`
-/// may be the bare high-multiply or carry the `+ x` high-multiply correction.
-fn try_signed(op: OpId, f: &mut Funcdata) -> u32 {
-    let (a, b) = match (f.op(op).input(0), f.op(op).input(1)) {
-        (Some(a), Some(b)) => (a, b),
-        _ => return 0,
-    };
-    // b = x s>> (size-1) — the sign-bit replication
-    let Some(sgn) = f.vn(b).def else { return 0 };
-    if f.op(sgn).code() != OpCode::IntSright {
+/// Apply [`find_form`] (Ghidra `RuleDivOpt::applyOp`, ruleaction.cc:8277): rewrite the matched form
+/// to `x / d` (unsigned) or `(x s/ d) + (x s>> (w-1))` (signed — the sign correction cancels the
+/// stranded `- (x s>> (w-1))` term once `RuleSub2Add`/`RuleCollectTerms` run). Inserts a width
+/// extension/truncation when the numerand is narrower/wider than the output.
+fn find_form_apply(op: OpId, f: &mut Funcdata) -> u32 {
+    let Some((mut in_vn, n, y, xsize, ext_opc)) = find_form(f, op) else { return 0 };
+    if check_form_overlap(f, op) {
         return 0;
     }
-    let (Some(xb), Some(shamt)) = (f.op(sgn).input(0), f.op(sgn).input(1).and_then(|v| cval(f, v)))
-    else {
-        return 0;
-    };
-    // a = mulhi_s, optionally shifted right by e
-    let (mulhi_v, e) = match f.vn(a).def {
-        Some(d) if f.op(d).code() == OpCode::IntSright => {
-            (f.op(d).input(0).unwrap(), f.op(d).input(1).and_then(|v| cval(f, v)).unwrap_or(99))
-        }
-        _ => (a, 0),
-    };
-    // mulhi_v is the bare high-multiply, or the signed high-multiply correction `mulhi + x`
-    let Some((x, magic, h, signed)) = match_mulhi(f, mulhi_v).or_else(|| add_correction(f, mulhi_v))
-    else {
-        return 0;
-    };
-    let size = f.vn(x).size;
-    if !signed || x != xb || shamt != (size * 8 - 1) as u64 || h >= 128 {
+    let xsize = if ext_opc == OpCode::IntSext { xsize - 1 } else { xsize }; // one less bit for signbit
+    let divisor = calc_divisor(n as u32, y, xsize as u32);
+    if divisor == 0 {
         return 0;
     }
-    let d = calc_divisor(h + e as u32, magic as u128, size * 8 - 1); // signed: magic uncorrected, xsize-1
-    if d == 0 {
-        return 0;
+    let mut op = op;
+    let mut out_size = f.vn(f.op(op).output.unwrap()).size;
+
+    if f.vn(in_vn).size < out_size {
+        // Need an extension to reach the final size.
+        let in_ext = f.new_op_before_sized(op, ext_opc, vec![in_vn], out_size);
+        in_vn = f.op(in_ext).output.unwrap();
+    } else if f.vn(in_vn).size > out_size {
+        // Need a truncation to reach the final size: a new op holds the INT_DIV / INT_SDIV:INT_ADD,
+        // and the original op becomes a truncating SUBPIECE of it.
+        let in_size = f.vn(in_vn).size;
+        let newop = f.new_op_before_sized(op, OpCode::IntAdd, vec![in_vn, in_vn], in_size);
+        let res_vn = f.op(newop).output.unwrap();
+        f.op_set_opcode(op, OpCode::Subpiece);
+        let zero = f.new_const(4, 0);
+        f.op_set_all_input(op, &[res_vn, zero]);
+        op = newop;
+        out_size = in_size;
     }
-    let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
-    f.op_set_opcode(op, OpCode::IntSdiv);
-    f.op_set_all_input(op, &[x, dc]);
+    if ext_opc == OpCode::IntZext {
+        // Unsigned division.
+        let dc = f.new_const(out_size, divisor);
+        f.op_set_all_input(op, &[in_vn, dc]);
+        f.op_set_opcode(op, OpCode::IntDiv);
+    } else {
+        // Signed division: `(x s/ d) + (x s>> (w-1))`.
+        let out_vn = f.op(op).output.unwrap();
+        move_sign_bit_extraction(f, out_vn, in_vn);
+        let dc = f.new_const(out_size, divisor);
+        let divop = f.new_op_before_sized(op, OpCode::IntSdiv, vec![in_vn, dc], out_size);
+        let newout = f.op(divop).output.unwrap();
+        let sac = f.new_const(out_size, (out_size * 8 - 1) as u64);
+        let sgnop = f.new_op_before_sized(op, OpCode::IntSright, vec![in_vn, sac], out_size);
+        let sgnvn = f.op(sgnop).output.unwrap();
+        f.op_set_all_input(op, &[newout, sgnvn]);
+        f.op_set_opcode(op, OpCode::IntAdd);
+    }
     1
 }
 
-/// Recover modulo from `x - (x / d) * d` ⇒ `x % d` (Ghidra's `RuleModOpt`).
+/// Recover modulo from `x - (x / d) * d` ⇒ `x % d` (Ghidra's `RuleModOpt`, ruleaction.cc:8603).
+/// Rooted at the recovered INT_DIV/INT_SDIV, it walks forward to the `(x/d) * (-d)` multiply and
+/// the `x + (x/d)*(-d)` add — the additive shape the subtraction takes once [`super::rules::RuleSub2Add`]
+/// has run — and rewrites that add into `x % d`. The `-d` factor is matched either as the
+/// literal 2's-complement constant or as an `INT_2COMP` of the divisor.
 pub struct RuleModOpt;
 
 impl Rule for RuleModOpt {
@@ -403,31 +378,70 @@ impl Rule for RuleModOpt {
         "modopt"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntSub]
+        vec![OpCode::IntDiv, OpCode::IntSdiv]
     }
-    fn apply_op(&mut self, op: OpId, f: &mut Funcdata) -> u32 {
-        let (Some(x), Some(mul_v)) = (f.op(op).input(0), f.op(op).input(1)) else { return 0 };
-        let Some(mul) = f.vn(mul_v).def else { return 0 };
-        if f.op(mul).code() != OpCode::IntMult || f.op(mul).num_inputs() != 2 {
-            return 0;
-        }
-        let (m0, m1) = (f.op(mul).input(0).unwrap(), f.op(mul).input(1).unwrap());
-        for (dv, dc_v) in [(m0, m1), (m1, m0)] {
-            let Some(d) = cval(f, dc_v) else { continue };
-            let Some(div) = f.vn(dv).def else { continue };
-            let code = f.op(div).code();
-            if !matches!(code, OpCode::IntSdiv | OpCode::IntDiv) {
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let x = data.op(op).input(0).unwrap();
+        let div = data.op(op).input(1).unwrap();
+        let outvn = data.op(op).output.unwrap();
+        for multop in data.vn(outvn).descend.clone() {
+            if data.op(multop).code() != OpCode::IntMult {
                 continue;
             }
-            // div = (x / d)
-            if f.op(div).input(0) != Some(x) || f.op(div).input(1).and_then(|v| cval(f, v)) != Some(d)
-            {
-                continue;
+            let mut div2 = data.op(multop).input(1).unwrap();
+            if div2 == outvn {
+                div2 = data.op(multop).input(0).unwrap();
             }
-            let dc = f.new_const(f.vn(f.op(op).output.unwrap()).size, d);
-            f.op_set_opcode(op, if code == OpCode::IntSdiv { OpCode::IntSrem } else { OpCode::IntRem });
-            f.op_set_all_input(op, &[x, dc]);
-            return 1;
+            // Check that div is the 2's-complement of div2.
+            if data.vn(div2).is_constant() {
+                if !data.vn(div).is_constant() {
+                    continue;
+                }
+                let mask = super::nzmask::calc_mask(data.vn(div2).size);
+                if (((data.vn(div2).constant_value() ^ mask).wrapping_add(1)) & mask)
+                    != data.vn(div).constant_value()
+                {
+                    continue;
+                }
+            } else {
+                if !data.vn(div2).is_written() {
+                    continue;
+                }
+                let d2def = data.vn(div2).def.unwrap();
+                if data.op(d2def).code() != OpCode::Int2comp {
+                    continue;
+                }
+                if data.op(d2def).input(0) != Some(div) {
+                    continue;
+                }
+            }
+            let outvn2 = data.op(multop).output.unwrap();
+            for addop in data.vn(outvn2).descend.clone() {
+                if data.op(addop).code() != OpCode::IntAdd {
+                    continue;
+                }
+                let mut lvn = data.op(addop).input(0).unwrap();
+                if lvn == outvn2 {
+                    lvn = data.op(addop).input(1).unwrap();
+                }
+                if lvn != x {
+                    continue;
+                }
+                data.op_set_input(addop, 0, x);
+                if data.vn(div).is_constant() {
+                    let dc = data.new_const(data.vn(div).size, data.vn(div).constant_value());
+                    data.op_set_input(addop, 1, dc);
+                } else {
+                    data.op_set_input(addop, 1, div);
+                }
+                let newcode = if data.op(op).code() == OpCode::IntDiv {
+                    OpCode::IntRem
+                } else {
+                    OpCode::IntSrem
+                };
+                data.op_set_opcode(addop, newcode);
+                return 1;
+            }
         }
         0
     }
@@ -1235,6 +1249,34 @@ mod tests {
     }
 
     #[test]
+    fn modopt_recovers_modulo_from_add_form() {
+        // x + (x s/ 3) * -3   =>   x s% 3   (the post-Sub2Add additive shape; rooted at the SDIV)
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(8, Address::new(reg, 0x38));
+        let three = f.new_const(8, 3);
+        let div = f.new_op(OpCode::IntSdiv, seq, vec![x, three]);
+        let divo = f.new_output_unique(div, 8);
+        let negthree = f.new_const(8, (-3i64) as u64);
+        let mult = f.new_op(OpCode::IntMult, seq, vec![divo, negthree]);
+        let multo = f.new_output_unique(mult, 8);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![x, multo]);
+        f.new_output(add, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![div, mult, add], ..Default::default() }]);
+
+        assert_eq!(RuleModOpt.apply_op(div, &mut f), 1);
+        assert_eq!(f.op(add).code(), OpCode::IntSrem);
+        assert_eq!(f.op(add).input(0), Some(x));
+        let dc = f.op(add).input(1).unwrap();
+        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 3);
+    }
+
+    #[test]
     fn divchain_collapses_two_signed_divisions() {
         // (x s/ 3) s/ 5  =>  x s/ 15
         use crate::decompile::space::{Address, SpaceManager};
@@ -1355,43 +1397,42 @@ mod tests {
     }
 
     #[test]
-    fn recovers_unsigned_add_correction_division() {
-        use crate::decompile::action::{Action, ActionPool};
+    fn recovers_signed_division_via_findform() {
+        // `SUBPIECE(sext(x) * 0x55555556, 4)` (x is 4 bytes)  =>  `(x s/ 3) + (x s>> 31)`
+        // (the signed find_form/applyOp path: the sign correction is emitted so the stranded
+        // `- (x s>> 31)` cancels once RuleSub2Add/RuleCollectTerms run). calc_divisor(32, magic, 31).
         use crate::decompile::space::{Address, SpaceManager};
         use crate::decompile::{BlockBasic, Funcdata, SeqNum};
+        assert_eq!(calc_divisor(32, 0x55555556, 31), 3, "signed /3 magic must recover");
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let x = f.new_input(8, Address::new(reg, 0x38));
-        let ze = f.new_op(OpCode::IntZext, seq, vec![x]);
-        let zeo = f.new_output_unique(ze, 16);
-        let magic = f.new_const(16, 0x948b0fcd6e9e0653);
-        let mu = f.new_op(OpCode::IntMult, seq, vec![zeo, magic]);
-        let muo = f.new_output_unique(mu, 16);
-        let off = f.new_const(4, 8);
-        let sp = f.new_op(OpCode::Subpiece, seq, vec![muo, off]);
-        let mulhi = f.new_output_unique(sp, 8);
-        let sb = f.new_op(OpCode::IntSub, seq, vec![x, mulhi]);
-        let sbo = f.new_output_unique(sb, 8);
-        let one = f.new_const(8, 1);
-        let inr = f.new_op(OpCode::IntRight, seq, vec![sbo, one]);
-        let inro = f.new_output_unique(inr, 8);
-        let ad = f.new_op(OpCode::IntAdd, seq, vec![mulhi, inro]);
-        let ado = f.new_output_unique(ad, 8);
-        let six = f.new_const(8, 6);
-        let op = f.new_op(OpCode::IntRight, seq, vec![ado, six]);
-        f.new_output(op, 8, Address::new(reg, 0));
-        f.set_blocks(vec![BlockBasic { ops: vec![ze, mu, sp, sb, inr, ad, op], ..Default::default() }]);
+        let x = f.new_input(4, Address::new(reg, 0x38));
+        let se = f.new_op(OpCode::IntSext, seq, vec![x]);
+        let seo = f.new_output_unique(se, 8);
+        let magic = f.new_const(8, 0x55555556);
+        let mu = f.new_op(OpCode::IntMult, seq, vec![seo, magic]);
+        let muo = f.new_output_unique(mu, 8);
+        let off = f.new_const(4, 4);
+        let op = f.new_op(OpCode::Subpiece, seq, vec![muo, off]); // keeps the high 4 bytes = mulhi
+        f.new_output(op, 4, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![se, mu, op], ..Default::default() }]);
 
-        let mut pool = ActionPool::new("p").with(RuleDivOpt);
-        pool.apply(&mut f);
-        // (mulhi + ((x - mulhi) >> 1)) >> 6  with magic 0x948b...  =>  x / 0x51
-        assert_eq!(f.op(op).code(), OpCode::IntDiv);
-        assert_eq!(f.op(op).input(0), Some(x));
-        let dc = f.op(op).input(1).unwrap();
-        assert!(f.vn(dc).is_constant() && f.vn(dc).constant_value() == 0x51);
+        assert_eq!(find_form_apply(op, &mut f), 1);
+        // op rewritten to INT_ADD( x s/ 3, x s>> 31 ).
+        assert_eq!(f.op(op).code(), OpCode::IntAdd);
+        let divvn = f.op(op).input(0).unwrap();
+        let divop = f.vn(divvn).def.unwrap();
+        assert_eq!(f.op(divop).code(), OpCode::IntSdiv);
+        assert_eq!(f.op(divop).input(0), Some(x));
+        assert_eq!(f.vn(f.op(divop).input(1).unwrap()).constant_value(), 3);
+        let sgnvn = f.op(op).input(1).unwrap();
+        let sgnop = f.vn(sgnvn).def.unwrap();
+        assert_eq!(f.op(sgnop).code(), OpCode::IntSright);
+        assert_eq!(f.op(sgnop).input(0), Some(x));
+        assert_eq!(f.vn(f.op(sgnop).input(1).unwrap()).constant_value(), 31);
     }
 
     #[test]

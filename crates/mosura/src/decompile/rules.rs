@@ -387,22 +387,14 @@ impl Rule for RuleShift2Mult {
     }
 }
 
-/// Express `vn` as `(base, coefficient)` — Ghidra's `getMultCoeff`: `base * c` for an
-/// `INT_MULT` by a constant, `base * 2^k` for an `INT_LEFT` by a constant (so a shift-add
-/// like `(x<<2)+x` collects to `x*5`), else `(vn, 1)`. Assumes `RuleTermOrder` put the
-/// constant in slot 1.
-fn as_term(data: &Funcdata, vn: VarnodeId) -> (VarnodeId, i64) {
+/// Ghidra `RuleCollectTerms::getMultCoeff` (ruleaction.cc:82): if `vn = INT_MULT(base, c)` with `c`
+/// constant, return `(base, c)`; otherwise `(vn, 1)`.
+fn get_mult_coeff(data: &Funcdata, vn: VarnodeId) -> (VarnodeId, u64) {
     if let Some(def) = data.vn(vn).def {
-        let o = data.op(def);
-        if o.num_inputs() == 2 {
-            if let Some(c) = o.input(1) {
+        if data.op(def).code() == OpCode::IntMult {
+            if let Some(c) = data.op(def).input(1) {
                 if data.vn(c).is_constant() {
-                    let cv = data.vn(c).constant_value();
-                    match o.code() {
-                        OpCode::IntMult => return (o.input(0).unwrap(), cv as i64),
-                        OpCode::IntLeft if cv < 63 => return (o.input(0).unwrap(), 1i64 << cv),
-                        _ => {}
-                    }
+                    return (data.op(def).input(0).unwrap(), data.vn(c).constant_value());
                 }
             }
         }
@@ -410,10 +402,118 @@ fn as_term(data: &Funcdata, vn: VarnodeId) -> (VarnodeId, i64) {
     (vn, 1)
 }
 
-/// Collect like additive terms (Ghidra's `RuleCollectTerms`, binary form): `a*c1 + a*c2`
-/// → `a*(c1+c2)` (covering `a + a` → `a*2` and `a*c + a` → `a*(c+1)`). Deeper additive
-/// trees collapse pairwise as the pool iterates to fixpoint. The full N-ary tree gather is
-/// the remaining generalization.
+/// Ghidra `Varnode::termOrder` (varnode.cc:1153): order two additive terms — constants sort last,
+/// non-constants by their base varnode's storage address (peeling an `INT_MULT`-by-constant
+/// coefficient first, so `x*c` and `x` compare equal). Basis of `TermOrder::additiveCompare`.
+fn term_order(data: &Funcdata, this: VarnodeId, op: VarnodeId) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let peel = |vn: VarnodeId| -> VarnodeId {
+        if let Some(def) = data.vn(vn).def {
+            if data.op(def).code() == OpCode::IntMult
+                && data.op(def).input(1).is_some_and(|c| data.vn(c).is_constant())
+            {
+                return data.op(def).input(0).unwrap();
+            }
+        }
+        vn
+    };
+    if data.vn(this).is_constant() {
+        if !data.vn(op).is_constant() {
+            return Ordering::Greater;
+        }
+        return Ordering::Equal;
+    }
+    if data.vn(op).is_constant() {
+        return Ordering::Less;
+    }
+    let a = data.vn(peel(this)).loc;
+    let b = data.vn(peel(op)).loc;
+    (a.space.0, a.offset).cmp(&(b.space.0, b.offset))
+}
+
+/// One additive term of an `INT_ADD` tree: the op adding it, the input slot, and the optional
+/// distributing `INT_MULT` coefficient (Ghidra `AdditiveEdge`, expression.hh:106).
+struct AdditiveEdge {
+    op: OpId,
+    slot: usize,
+    mult: Option<OpId>,
+}
+
+/// Ghidra `TermOrder::collect` (expression.cc:236): gather every additive term of the `INT_ADD` tree
+/// rooted at `root`. A term is a leaf varnode (unwritten, multiply-used, or not an INT_ADD); an
+/// `INT_MULT(INT_ADD(..), c)` with a lone-descendant inner ADD is descended into, carrying the MULT
+/// as a distributing multiplier.
+fn collect_terms(data: &Funcdata, root: OpId) -> Vec<AdditiveEdge> {
+    let mut terms = Vec::new();
+    let mut stack: Vec<(OpId, Option<OpId>)> = vec![(root, None)];
+    while let Some((curop, multop)) = stack.pop() {
+        for i in 0..data.op(curop).num_inputs() {
+            let curvn = data.op(curop).input(i).unwrap();
+            if !data.vn(curvn).is_written() || data.vn(curvn).descend.len() != 1 {
+                terms.push(AdditiveEdge { op: curop, slot: i, mult: multop });
+                continue;
+            }
+            let subop = data.vn(curvn).def.unwrap();
+            if data.op(subop).code() != OpCode::IntAdd {
+                if data.op(subop).code() == OpCode::IntMult
+                    && data.op(subop).input(1).is_some_and(|c| data.vn(c).is_constant())
+                {
+                    if let Some(addop) = data.op(subop).input(0).and_then(|v| data.vn(v).def) {
+                        if data.op(addop).code() == OpCode::IntAdd
+                            && data.op(addop).output.is_some_and(|o| data.vn(o).descend.len() == 1)
+                        {
+                            stack.push((addop, Some(subop)));
+                            continue;
+                        }
+                    }
+                }
+                terms.push(AdditiveEdge { op: curop, slot: i, mult: multop });
+                continue;
+            }
+            stack.push((subop, multop));
+        }
+    }
+    terms
+}
+
+/// Ghidra `Funcdata::distributeIntMultAdd` (funcdata_op.cc:1071): rewrite `INT_MULT(INT_ADD(a,b), c)`
+/// (c constant) into `INT_ADD(a*c, b*c)` so the coefficient reaches the inner terms.
+fn distribute_int_mult_add(data: &mut Funcdata, op: OpId) -> bool {
+    let addop = data.vn(data.op(op).input(0).unwrap()).def.unwrap();
+    let vn0 = data.op(addop).input(0).unwrap();
+    let vn1 = data.op(addop).input(1).unwrap();
+    if data.vn(vn0).is_free() && !data.vn(vn0).is_constant() {
+        return false;
+    }
+    if data.vn(vn1).is_free() && !data.vn(vn1).is_constant() {
+        return false;
+    }
+    let coeff = data.vn(data.op(op).input(1).unwrap()).constant_value();
+    let sz = data.vn(data.op(op).output.unwrap()).size;
+    let mk = |data: &mut Funcdata, vn: VarnodeId| -> VarnodeId {
+        if data.vn(vn).is_constant() {
+            let val = coeff.wrapping_mul(data.vn(vn).constant_value()) & super::nzmask::calc_mask(sz);
+            data.new_const(sz, val)
+        } else {
+            let newc = data.new_const(sz, coeff);
+            let newop = data.new_op_before_sized(op, OpCode::IntMult, vec![vn, newc], sz);
+            data.op(newop).output.unwrap()
+        }
+    };
+    let newvn0 = mk(data, vn0);
+    let newvn1 = mk(data, vn1);
+    data.op_set_input(op, 0, newvn0);
+    data.op_set_input(op, 1, newvn1);
+    data.op_set_opcode(op, OpCode::IntAdd);
+    true
+}
+
+/// Collect like additive terms (Ghidra's `RuleCollectTerms`, ruleaction.cc:107): gather all terms of
+/// an `INT_ADD` tree, sort them so like terms are adjacent, then combine `a*c1 + a*c2 => a*(c1+c2)`
+/// (dropping the term when the coefficient reaches 0 — this is what cancels a division's
+/// `+ (x s>> k) - (x s>> k)` sign correction), or lump multiple constant addends into one. Runs only
+/// at the root of the ADD tree; operates on `INT_ADD` only (negation arrives as `*-1` via
+/// [`RuleSub2Add`]).
 pub struct RuleCollectTerms;
 
 impl Rule for RuleCollectTerms {
@@ -421,40 +521,97 @@ impl Rule for RuleCollectTerms {
         "collectterms"
     }
     fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntAdd, OpCode::IntSub]
+        vec![OpCode::IntAdd]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        if data.op(op).num_inputs() != 2 {
+        // Only fire at the root of an ADD tree.
+        let out = data.op(op).output.unwrap();
+        if data.vn(out).descend.len() == 1 && data.op(data.vn(out).descend[0]).code() == OpCode::IntAdd
+        {
             return 0;
         }
-        let (bx, cx) = as_term(data, data.op(op).input(0).unwrap());
-        let (by, cy) = as_term(data, data.op(op).input(1).unwrap());
-        if bx != by {
+        let terms = collect_terms(data, op);
+        // `order` is the sorted permutation of term positions (Ghidra's `getSort()`); `order[k]`
+        // indexes into `terms`. `tvn(k)` is the term varnode at sorted position `k`.
+        let tvn = |data: &Funcdata, t: &AdditiveEdge| data.op(t.op).input(t.slot).unwrap();
+        let mut order: Vec<usize> = (0..terms.len()).collect();
+        order.sort_by(|&a, &b| term_order(data, tvn(data, &terms[a]), tvn(data, &terms[b])));
+
+        // Combine the first pair of adjacent non-constant terms with equal base.
+        let mut i = 0usize;
+        if !order.is_empty() && !data.vn(tvn(data, &terms[order[0]])).is_constant() {
+            i = 1;
+            while i < order.len() {
+                let vn2raw = tvn(data, &terms[order[i]]);
+                if data.vn(vn2raw).is_constant() {
+                    break;
+                }
+                let (vn1, coef1) = get_mult_coeff(data, tvn(data, &terms[order[i - 1]]));
+                let (vn2, coef2) = get_mult_coeff(data, vn2raw);
+                if vn1 == vn2 {
+                    let prev = &terms[order[i - 1]];
+                    let cur = &terms[order[i]];
+                    if let Some(m) = prev.mult {
+                        return if distribute_int_mult_add(data, m) { 1 } else { 0 };
+                    }
+                    if let Some(m) = cur.mult {
+                        return if distribute_int_mult_add(data, m) { 1 } else { 0 };
+                    }
+                    let sz = data.vn(vn1).size;
+                    let newcoef = coef1.wrapping_add(coef2) & super::nzmask::calc_mask(sz);
+                    let (pop, pslot) = (prev.op, prev.slot);
+                    let (cop, cslot) = (cur.op, cur.slot);
+                    let zerocoeff = data.new_const(sz, 0);
+                    data.op_set_input(pop, pslot, zerocoeff);
+                    if newcoef == 0 {
+                        let newcoeff = data.new_const(sz, 0);
+                        data.op_set_input(cop, cslot, newcoeff);
+                    } else {
+                        let newcoeff = data.new_const(sz, newcoef);
+                        let nextop =
+                            data.new_op_before_sized(cop, OpCode::IntMult, vec![vn1, newcoeff], sz);
+                        let vn2out = data.op(nextop).output.unwrap();
+                        data.op_set_input(cop, cslot, vn2out);
+                    }
+                    return 1;
+                }
+                i += 1;
+            }
+        }
+
+        // Lump multiple constant addends (those without a multiplier) into one. Positions are the
+        // sorted order (constants sort last); `lastconst` is the earliest such position.
+        let mut coef1: u64 = 0;
+        let mut nonzerocount = 0;
+        let mut lastconst = 0usize;
+        for pos in (i..order.len()).rev() {
+            let t = &terms[order[pos]];
+            if t.mult.is_some() {
+                continue;
+            }
+            let val = data.vn(tvn(data, t)).constant_value();
+            if val != 0 {
+                nonzerocount += 1;
+                coef1 = coef1.wrapping_add(val);
+                lastconst = pos;
+            }
+        }
+        if nonzerocount <= 1 {
             return 0;
         }
-        // a*cx ± a*cy  →  a*(cx ± cy)
-        let combined = if data.op(op).code() == OpCode::IntSub {
-            cx.wrapping_sub(cy)
-        } else {
-            cx.wrapping_add(cy)
-        };
-        let out_size = data.vn(data.op(op).output.unwrap()).size;
-        match combined {
-            0 => {
-                let z = data.new_const(out_size, 0);
-                data.op_set_opcode(op, OpCode::Copy);
-                data.op_set_all_input(op, &[z]);
-            }
-            1 => {
-                data.op_set_opcode(op, OpCode::Copy);
-                data.op_set_all_input(op, &[bx]);
-            }
-            c => {
-                let coef = data.new_const(out_size, c as u64);
-                data.op_set_opcode(op, OpCode::IntMult);
-                data.op_set_all_input(op, &[bx, coef]);
+        let sz = data.vn(tvn(data, &terms[order[lastconst]])).size;
+        coef1 &= super::nzmask::calc_mask(sz);
+        for pos in (lastconst + 1)..order.len() {
+            let t = &terms[order[pos]];
+            if t.mult.is_none() {
+                let (top, tslot) = (t.op, t.slot);
+                let z = data.new_const(sz, 0);
+                data.op_set_input(top, tslot, z);
             }
         }
+        let (lop, lslot) = { let t = &terms[order[lastconst]]; (t.op, t.slot) };
+        let c = data.new_const(sz, coef1);
+        data.op_set_input(lop, lslot, c);
         1
     }
 }
@@ -851,12 +1008,20 @@ impl Rule for RuleSelectCse {
             if data.vn(out).size != data.vn(other_out).size {
                 continue;
             }
-            // depth-1 functional equality: same operands (same varnode or same constant value)
+            // Ghidra `PcodeOp::isCseMatch` (op.cc:162): inputs match if they are the same varnode
+            // or two constants with equal value — the constant *size* is NOT compared (a shift
+            // amount `#0x3f:8` and `#0x3f:4` are the same value), which is what lets the division
+            // sign correction `x s>> (w-1)` created by RuleDivOpt merge with the compiler's own.
             if data.op(op).num_inputs() != data.op(other).num_inputs() {
                 continue;
             }
-            let eq = (0..data.op(op).num_inputs())
-                .all(|i| same_value(data, data.op(op).input(i).unwrap(), data.op(other).input(i).unwrap()));
+            let eq = (0..data.op(op).num_inputs()).all(|i| {
+                let (a, b) = (data.op(op).input(i).unwrap(), data.op(other).input(i).unwrap());
+                a == b
+                    || (data.vn(a).is_constant()
+                        && data.vn(b).is_constant()
+                        && data.vn(a).constant_value() == data.vn(b).constant_value())
+            });
             if !eq {
                 continue;
             }
@@ -7518,12 +7683,19 @@ mod tests {
         f.new_output(add, 8, Address::new(reg, 0));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![m, add], ..Default::default() }]);
 
-        let mut pool = ActionPool::new("p").with(RuleTermOrder).with(RuleCollectTerms);
+        // Faithful RuleCollectTerms produces `INT_ADD(#0, a*3)`; RuleIdentityEl drops the `+0`.
+        let mut pool =
+            ActionPool::new("p").with(RuleTermOrder).with(RuleCollectTerms).with(RuleIdentityEl);
         pool.apply(&mut f);
         // a + a*2  →  a*3
-        assert_eq!(f.op(add).code(), OpCode::IntMult);
-        assert_eq!(f.op(add).input(0), Some(a));
-        let c = f.op(add).input(1).unwrap();
+        let result = if f.op(add).code() == OpCode::Copy {
+            f.vn(f.op(add).input(0).unwrap()).def.unwrap()
+        } else {
+            add
+        };
+        assert_eq!(f.op(result).code(), OpCode::IntMult);
+        assert_eq!(f.op(result).input(0), Some(a));
+        let c = f.op(result).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 3);
     }
 
@@ -7738,12 +7910,24 @@ mod tests {
         f.new_output(add, 8, Address::new(reg, 0));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![sh, add], ..Default::default() }]);
 
-        let mut pool = ActionPool::new("p").with(RuleTermOrder).with(RuleCollectTerms);
+        // Ghidra's getMultCoeff only reads INT_MULT coefficients, so RuleShift2Mult converts
+        // `a<<2` to `a*4` first; RuleCollectTerms then combines to `INT_ADD(#0, a*5)`, cleaned by
+        // RuleIdentityEl.
+        let mut pool = ActionPool::new("p")
+            .with(RuleShift2Mult)
+            .with(RuleTermOrder)
+            .with(RuleCollectTerms)
+            .with(RuleIdentityEl);
         pool.apply(&mut f);
         // (a<<2) + a  →  a*5  (the lea-as-multiply Ghidra recovers)
-        assert_eq!(f.op(add).code(), OpCode::IntMult);
-        assert_eq!(f.op(add).input(0), Some(a));
-        let c = f.op(add).input(1).unwrap();
+        let result = if f.op(add).code() == OpCode::Copy {
+            f.vn(f.op(add).input(0).unwrap()).def.unwrap()
+        } else {
+            add
+        };
+        assert_eq!(f.op(result).code(), OpCode::IntMult);
+        assert_eq!(f.op(result).input(0), Some(a));
+        let c = f.op(result).input(1).unwrap();
         assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 5);
     }
 
