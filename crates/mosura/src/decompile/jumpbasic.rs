@@ -8,9 +8,9 @@
 //! of Varnodes common to every data-flow path reaching the branch, together with the p-code ops
 //! along those paths in execution order.
 //!
-//! The module is not yet wired into [`super::jumptable::recover`]; that swap is Stage 4. Everything
-//! here is corpus-neutral. The [`super::circlerange::CircleRange`] range machinery (Stage 0) and the
-//! guard analysis (Stage 2) build on top of the [`PathMeld`] produced here.
+//! This module is the recovery driver [`super::jumptable::recover`] calls (Stage 4 swap landed).
+//! The [`super::circlerange::CircleRange`] range machinery (Stage 0) and the guard analysis
+//! (Stage 2) build on top of the [`PathMeld`] produced here.
 
 use super::block::BlockId;
 use super::circlerange::CircleRange;
@@ -926,9 +926,9 @@ fn find_smallest_normal(
 /// normalized switch variable and its range, then emulate the address calculation for each value in
 /// range (reusing [`super::jumptable::emulate`]).
 ///
-/// Stage 3 of the JumpBasic port: this runs **alongside** [`super::jumptable::recover`]'s existing
-/// `recover_one` (not swapped in — that is the gated Stage 4). Takes `&mut Funcdata` because the
-/// PathMeld walk transiently marks Varnodes (they are all cleared before return).
+/// The recovery driver [`super::jumptable::recover`] calls (Stage 4 swap landed; the old
+/// `recover_one` is retired). Takes `&mut Funcdata` because the PathMeld walk transiently marks
+/// Varnodes (they are all cleared before return), matching Ghidra's non-const `recoverModel`.
 pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> {
     let target_vn = data.op(indop).input(0)?;
     let rootbl = data.op(indop).parent?;
