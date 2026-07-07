@@ -744,7 +744,11 @@ impl Rule for RuleEqual2Zero {
             }
             OpCode::IntAdd if data.vn(b).is_constant() => {
                 let size = data.vn(b).size;
-                let neg = data.vn(b).constant_value().wrapping_neg();
+                // Mask the negated constant to the operand size — a `uintb` constant is always the
+                // masked value (Ghidra `calc_mask`). Without this, `-c` computed in 64 bits leaves the
+                // high bits set (e.g. `-0xfffffff6` → `0xffffffff0000000a` in a 4-byte const), which
+                // then fails to match the sibling INT_LESS's clean constant in `RuleLessEqual`.
+                let neg = data.vn(b).constant_value().wrapping_neg() & super::nzmask::calc_mask(size);
                 let nc = data.new_const(size, neg);
                 data.op_set_all_input(op, &[a, nc]);
                 1
