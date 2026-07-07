@@ -151,6 +151,13 @@ impl Funcdata {
     /// `jumpvec`), since folding the out-of-range guard into the switch (`cfg::build_cfg`) destroys
     /// the guard the range-recovery would re-derive from. Falls back to on-demand recovery for
     /// funcdata that never cached (e.g. the analysis track's own graphs).
+    ///
+    /// GUARD-RAIL: the faithful driver (`jumpbasic::recover_jumpbasic`) bounds the switch variable
+    /// by pulling a CircleRange back through the guard comparison (`analyze_guards`). On a
+    /// fully-built graph whose out-of-range guard has already been folded into the switch, that
+    /// guard is gone, so recovery declines (empty range). Recovery must therefore run on the
+    /// build-time multistage partial (guard still intact) and be cached here — never re-run on the
+    /// final folded graph.
     pub fn jump_tables(&mut self) -> Vec<super::jumptable::JumpTable> {
         if !self.jumptables.is_empty() {
             return self.jumptables.clone();
