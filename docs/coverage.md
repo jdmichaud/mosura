@@ -113,19 +113,19 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 |---|---|---|
 | RuleEarlyRemoval | PORTED (rules.rs; byte-neutral, 78× on namespace) — + ram-persist guard (Ghidra's commented isPersist, load-bearing under mosura's ram-root global liveness) |
 | RuleTermOrder | PORTED |
-| RuleSelectCse | PORTED (+ isCseMatch output-size guard `8dd6d80`) |
-| RuleCollectTerms | PORTED |
+| RuleSelectCse | PORTED (+ isCseMatch output-size guard `8dd6d80`; + Task #20 `cd0fd9e` isCseMatch INPUT rule — constant inputs match by VALUE not size, so the division sign correction `x s>> (w-1)` merges with the compiler's own #0x3f:4/#0x3f:8) |
+| RuleCollectTerms | PORTED (N-ary, `cd0fd9e` Task #20 — Ghidra's TermOrder::collect + Varnode::termOrder + distributeIntMultAdd; the whole additive tree is linearized so `(SDIV + s) - s` cancels, replacing the binary as_term collector) |
 | RulePullsubMulti | MISSING |
 | RulePullsubIndirect | MISSING |
 | RulePushMulti | BLOCKED (nodejoin subsystem — pushes an op back through a MULTIEQUAL across the node-join machinery mosura lacks) |
-| RuleSborrow | PORTED |
-| RuleScarry | PORTED (rules.rs; byte-neutral, unit-tested — ADD sibling of RuleSborrow via add_matches) |
+| RuleSborrow | PORTED (+ AddExpression `b5e3df8` Task #20 — subtract_matches now uses Ghidra's functional additive comparison, so `a - b` in the post-Sub2Add `a + b*-1` form still matches) |
+| RuleScarry | PORTED (rules.rs; ADD sibling of RuleSborrow via add_matches, now Ghidra's AddExpression `b5e3df8` Task #20) |
 | RuleIntLessEqual | HELD (defined + 4 unit tests in rules.rs via `replace_lessequal` port of Funcdata::replaceLessequal, UNWIRED — faithful `V <= c => V < c+1` / signed / both operand positions / overflow guards). CONFLICTS with a mosura print-time adaptation: printc::incr_in_width already does `x <= c => x < c+1` at render, keeping SLESSEQUAL in the IR. Wiring the faithful IR rule (63 firings) converts to SLESS early and the structuring/condition-negation (tuned for SLESSEQUAL) regresses concat/condconst/condmulti/condsplit into `x == c || x < c` disjunctions. Wire after cancelling the print-time adaptation + fixing the structuring dependency (instrument-first; P7/P8 #5/#6) |
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
-| RuleSignShift | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:3524 `V >> (8*sz-1) => (V s>> (8*sz-1)) * -1` when feeding arith/compare; wire in the Task #9/#20 keystone once RuleSub2Add reaches the main pool) |
-| RuleTestSign | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:3582 sign-bit-test `(V s>> (8*sz-1)) !=/==0 => V s</s<= 0` via findComparisons; wire in Task #9/#20 keystone) |
+| RuleSignShift | PORTED (rules.rs, WIRED slot 14 — Task #20 keystone, RuleSub2Add now in the main pool) |
+| RuleTestSign | PORTED (rules.rs, WIRED slot 15 — Task #20 keystone) |
 | RuleIdentityEl | PORTED |
 | RuleOrMask | PORTED |
 | RuleAndMask | PORTED |
@@ -145,24 +145,24 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleDoubleShift | PORTED (rules.rs; byte-neutral, unit-tested — combine/cancel chained shifts; inert on corpus) |
 | RuleDoubleArithShift | PORTED (rules.rs; byte-neutral, unit-tested — (x s>> c) s>> d => x s>> saturate(c+d); inert on corpus) |
 | RuleConcatShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,W)>>c => ext(V) when the shift discards W; inert on corpus) |
-| RuleLeftRight | BLOCKED (→Task #9 de-fuse — `(V << c) s>> c => sext(sub(V,#0))`, a sign-extension normalization (produces SEXT of a SUBPIECE); same sext/sign-normalization class the fused RuleDivOpt can't re-collapse (RuleSignForm precedent) — a mover taken with the #9 rock, not piecemeal) |
+| RuleLeftRight | DEFERRED (`(V << c) s>> c => sext(sub(V,#0))`; needs op_unset_input/output + register-piece varnode creation (new_varnode_out+renormalize) mosura lacks — same register-piece territory as Task #7; not blocked on the (now-done) RuleDivOpt de-fusion) |
 | RuleShiftCompare | PORTED |
 | RuleShift2Mult | PORTED |
 | RuleShiftPiece | PORTED |
 | RuleMultiCollapse | PORTED (+ nofunc const-base guard `68a059e`) |
 | RuleIndirectCollapse | BLOCKED (INDIRECT/effect subsystem, Task #10 — "remove a CPUI_INDIRECT if its blocking PcodeOp is dead"; depends on mosura's INDIRECT/effect-guard machinery, which is the iop/2-input-INDIRECT debt) |
 | Rule2Comp2Mult | PORTED (rules.rs; byte-neutral, unit-tested — `-V => V * -1` canonicalization in the main pool so mult/term rules act on it uniformly; cleanup-pool `RuleMultNegOne` restores `-V` (separate pools, no ping-pong); 0 firings on corpus — no surviving INT_2COMP reaches actprop — byte-IDENTICAL. Added `op_insert_input` helper) |
-| RuleSub2Add | PORTED (ptrarith_pool, not main — deliberate: switch/jumptable cascade, Task #9) |
+| RuleSub2Add | PORTED (relocated to the main pool slot 42, Ghidra's actprop position — Task #20 keystone; the switch/jumptable cascade it triggered was resolved by the RuleEqual2Zero mask fix `3225f2b` + the faithful comparison/sign cluster, not by keeping it out of main) |
 | RuleCarryElim | PORTED (rules.rs; byte-neutral, unit-tested — `carry(V, c) => (-c) <= V`, special case `carry(V, 0) => false`; fires 19x on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleBxor2NotEqual | PORTED (rules.rs; byte-neutral, unit-tested — `V ^^ W => V != W` (BOOL_XOR is boolean inequality); inert on corpus) |
 | RuleLess2Zero | PORTED (rules.rs; unit-tested — INT_LESS vs extremal 0/max constants; fires 9× on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
 | RuleLessEqual2Zero | PORTED |
 | RuleSLess2Zero | PORTED (rules.rs; byte-neutral, 7 unit tests — INT_SLESS vs 0/-1, peel a sign-only op: SUBPIECE-of-top-piece / `~V` / `V & 0x8..` / `CONCAT(V,W)` / `getHiBit(add\|or\|xor)`=>EQUAL/NOTEQUAL / `bool << (8*sz-1)`=>`!bool`; 0 firings on corpus, byte-IDENTICAL — the sign-only-op-against-0/-1 idiom doesn't survive to actprop in the fixtures) |
-| RuleEqual2Zero | PORTED |
+| RuleEqual2Zero | PORTED (+ the INT_ADD(x, y*-1) variable-negation arm `2b22f65`, Task #20 — `(x + y*-1) == 0 => x == y` for the post-Sub2Add subtraction form. NB: Ghidra's all-descendants-bool-output guard is NOT ported — adding it suppresses an equal2zero firing switchloop's jumptable recovery needs, a separate switch-path IR divergence) |
 | RuleEqual2Constant | PORTED (rules.rs; byte-neutral, unit-tested — fold const through arith operand of INT_EQUAL/NOTEQUAL when V only used in similar compares; inert on corpus) |
 | RuleThreeWayCompare | PORTED (rules.rs; byte-neutral, 3 unit tests — detect a three-way `zext(V<W)+zext(V<=W)-1` (3 add/const permutations + partial form, via detectThreeWay/testCompareEquivalence helpers) and fold a secondary compare of it vs a small constant back to a direct `V`/`W` compare (24-case form table); 0 firings on corpus — the C++ spaceship idiom doesn't occur in the fixtures) |
 | RuleXorCollapse | PORTED |
-| RuleAddMultCollapse | PORTED (ptrarith_pool) |
+| RuleAddMultCollapse | PORTED (relocated to the main pool slot 52 — Task #20 keystone) |
 | RuleCollapseConstants | PORTED (= RuleConstFold) |
 | RuleTransformCpool | BLOCKED (constant-pool subsystem absent — transforms CPUI_CPOOLREF by looking the reference up in the constant pool; mosura has the CPOOLREF opcode but no constant-pool resolution subsystem) |
 | RulePropagateCopy | PORTED (+ isReturnCopy RETURN guard `5a8ac03`) |
@@ -193,23 +193,23 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleNegateIdentity | PORTED (rules.rs; byte-neutral, 3 unit tests — INT_NEGATE identities against a logical op reading both `~V` and `V`: `V & ~V => 0`, `V | ~V => -1`, `V ^ ~V => -1` (collapse the AND/OR/XOR to a COPY of the constant); 0 firings on corpus — the idiom doesn't survive to actprop in the fixtures) |
 | RuleSubNormal | PORTED (rules.rs, WIRED at slot 81 — faithful port of ruleaction.cc:7714, `sub(V>>n,c) => sub(V,c+n/8) >> (n mod 8)` / `=> ext(sub(V,c'))`, 4 unit tests. Its non-zero-offset SUBPIECEs are re-expanded for printing by the cleanup-pool RuleSubRight, exactly as Ghidra does (instrumented: Ghidra fires subnormal 2x then subright 2x on packstructaccess; oracle final IR keeps shift + offset-0 SUBPIECE). Lead-approved mover: ifswitch 0.922→0.985 (`(int4)p/5`), packstructaccess 0.826→0.913; impliedfield dip traces to the pre-existing missing float4-conversion/explicit-var path, divopt dip to the fused RuleDivOpt #9) |
 | RulePositiveDiv | PORTED |
-| RuleDivTermAdd | HELD(regresses modulo — fused RuleDivOpt races it; Task #9) |
+| RuleDivTermAdd | PORTED (WIRED slot 83 — Task #20 keystone; the fused RuleDivOpt that raced it is retired) |
 | RuleDivTermAdd2 | PORTED |
-| RuleDivOpt | PORTED (NON-FAITHFUL: fused recognizer; de-fusion is Task #9/#20) |
-| RuleSignForm | HELD(defined+unit-tested in rules.rs, UNWIRED — faithful, but mosura's FUSED RuleDivOpt fails to re-collapse the s>> form it normalizes to, regressing switchloop 0.7787->0.7709 `(int8)iVar5`->`iVar5>>0x1f` vs Ghidra's `(int4)param_1/10`; same class as RuleDivTermAdd; wire after RuleDivOpt de-fusion Task #9/#20. NB: modulo fires 4x but byte-identical — no modulo regression) |
-| RuleSignForm2 | HELD(rules.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8476 `sub(sext(V)*small,c) s>> (8n-1) => V s>> (8n-1)`; replicates Ghidra's return-0-after-mutate quirk; wire in Task #9/#20 keystone) |
-| RuleSignDiv2 | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8339 `(V + -1*(V s>> 8n-1)) s>> 1 => V s/2`; wire in the Task #9/#20 keystone once RuleSub2Add reaches the main pool) |
-| RuleDivChain | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8392 `(x/c1)/c2 => x/(c1*c2)` with the unsigned INT_RIGHT case + overflow/reuse guards; wire in Task #9/#20 keystone) |
-| RuleSignNearMult | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8533 `(V + (V s>>0x1f)>>(32-n)) & (-1<<n) => (V s/2^n)*2^n`; wire in Task #9/#20 keystone) |
-| RuleModOpt | PORTED |
-| RuleSignMod2nOpt | PORTED |
-| RuleSignMod2nOpt2 | PORTED |
-| RuleSignMod2Opt | HELD(divopt.rs, defined+unit-tested, UNWIRED — faithful port of ruleaction.cc:8776 `(V - sign)&1 + sign => V s%2` (+ check_sign_extraction helper, the trunc/re-extend path); wire in Task #9/#20 keystone) |
+| RuleDivOpt | PORTED (FAITHFUL, de-fused `cd0fd9e` Task #20 — findForm signed INT_SEXT path + nzmask xsize + applyOp width ext/trunc + moveSignBitExtraction (emits `(x s/d)+(x s>>63)`); the fused try_unsigned/match_mulhi/try_signed/add_correction recognizers RETIRED) |
+| RuleSignForm | PORTED (WIRED slot 86 — Task #20 keystone; the fused RuleDivOpt that failed to re-collapse its s>> form is retired) |
+| RuleSignForm2 | PORTED (WIRED slot 87 — Task #20; ruleaction.cc:8476, replicates Ghidra's return-0-after-mutate quirk) |
+| RuleSignDiv2 | PORTED (divopt.rs, WIRED slot 88 — Task #20; ruleaction.cc:8339 `(V + -1*(V s>> 8n-1)) s>> 1 => V s/2`) |
+| RuleDivChain | PORTED (divopt.rs, WIRED slot 89 — Task #20; ruleaction.cc:8392 `(x/c1)/c2 => x/(c1*c2)` + unsigned INT_RIGHT case + overflow/reuse guards) |
+| RuleSignNearMult | PORTED (divopt.rs, WIRED slot 90 — Task #20; ruleaction.cc:8533 `(V + (V s>>0x1f)>>(32-n)) & (-1<<n) => (V s/2^n)*2^n`) |
+| RuleModOpt | PORTED (FAITHFUL, `cd0fd9e` Task #20 — Ghidra's INT_DIV/INT_SDIV-rooted forward walk over the post-Sub2Add `x + (x/d)*(-d)` ADD form, replacing the non-faithful INT_SUB-rooted adaptation) |
+| RuleSignMod2nOpt | PORTED (FAITHFUL, `4f19ab6` Task #20 — INT_RIGHT-rooted, walking forward to the `* -1`/AND/`V + correction`, replacing the INT_SUB-rooted adaptation that fired where Ghidra didn't) |
+| RuleSignMod2nOpt2 | PORTED (FAITHFUL, `4f19ab6` Task #20 — INT_MULT-rooted with checkSignExtForm; the general 2^n MULTIEQUAL conditional form is deferred) |
+| RuleSignMod2Opt | PORTED (divopt.rs, WIRED slot 94 — Task #20; ruleaction.cc:8776 `(V - sign)&1 + sign => V s%2` + check_sign_extraction / trunc-re-extend path) |
 | RuleSwitchSingle | MISSING |
 | RuleCondNegate | MISSING |
 | RuleBoolNegate | PORTED |
 | RuleLessEqual | PORTED |
-| RuleLessNotEqual | MISSING |
+| RuleLessNotEqual | PORTED (rules.rs, WIRED slot 100 — `2b22f65` Task #20; BOOL_AND `(V <= W) && (V != W) => V < W`, collapses the for-loop guard to `<` without the print-time `<=` adaptation) |
 | RuleLessOne | MISSING |
 | RuleRangeMeld | MISSING |
 | RuleFloatRange | PORTED |
@@ -249,16 +249,18 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 **mosura-only pool rules (no Ghidra oppool1 counterpart, slotted next to siblings):** RuleMultMult,
 RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs comments).
 
-**Sign-div cluster BLOCKED on RuleDivOpt de-fusion (Task #9).** The signed-division normalizers/
-recognizers registered around RuleDivOpt — RuleSignForm2, RuleSignDiv2, RuleSignNearMult, RuleSignMod2Opt
-(and RuleSignForm, ported+HELD as the proof case) — all race mosura's FUSED non-faithful RuleDivOpt (#85),
-which recognizes the whole signed-div idiom in one step rather than composing from these faithful pieces.
-RuleSignForm demonstrated it: wiring it regressed switchloop (0.7787->0.7709) because the fused recognizer
-can't re-collapse the `s>>` form the normalization exposes (Ghidra reaches `(int4)param_1 / 10`). Porting
-these held-now is dead code that can't be validated until de-fusion; they belong to the de-fusion effort
-itself (Task #9/#20), where they'd compose and be verified. Kept visible here as BLOCKED, not declined.
-RuleDivTermAdd is the same class (HELD). (RuleSignShift #14 is a general sign-bit normalization, not in
-this cluster — left MISSING, separable.)
+**Sign-div cluster DE-FUSED + WIRED (Task #20, done 2026-07-07).** The RuleDivOpt de-fusion landed:
+the fused non-faithful recognizer (try_unsigned/match_mulhi/try_signed/add_correction) is RETIRED and
+replaced by Ghidra's separate composition — RuleDivTermAdd(83)/DivTermAdd2(84) reassembly →
+RuleDivOpt(85, faithful findForm/applyOp signed+unsigned) → RuleModOpt(91, INT_DIV-rooted) — and the
+whole normalizer/recognizer cluster around it is now WIRED at Ghidra's actprop slots: RuleSignShift(14),
+RuleTestSign(15), RuleSignForm(86), RuleSignForm2(87), RuleSignDiv2(88), RuleDivChain(89),
+RuleSignNearMult(90), RuleSignMod2nOpt(92), RuleSignMod2nOpt2(93), RuleSignMod2Opt(94). RuleSub2Add(42)
+and RuleAddMultCollapse(52) were relocated from ptrarith into the main pool so the additive forms these
+rules key on actually appear. The sign correction `(x s/d)+(x s>>k) - (x s>>k)` cancels via the
+isCseMatch-value fix + N-ary RuleCollectTerms; the comparison flag idioms compose via AddExpression +
+RuleLessNotEqual + the RuleEqual2Zero variable arm. Corpus net-positive (0.8865 vs 0.8864); divopt +0.021.
+Residual: the 64-bit signed 65-bit-magic case (modulo -0.012) = Task #9.
 
 **RuleSubfloatConvert** is BLOCKED, not a mechanical tail rule: it is a thin dispatcher (`subflow.cc:3489`)
 into `SubfloatFlow : public TransformManager` (subflow.cc). That needs (a) the generic `TransformManager`/
@@ -401,10 +403,13 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~71 PORTED (incl. RuleFloatCast, RuleShiftAnd, RuleConcatCommute, RuleConcatZext, RuleZextCommute, RuleConcatLeftShift, RuleConcatZero, RuleDoubleSub, RuleDoubleShift, RuleDoubleArithShift, RuleConcatShift, RuleTrivialBool, RuleLess2Zero, RuleOrConsume, RuleEqual2Constant, RuleBoolZext), 7 HELD (NotDistribute, AndDistribute,
-  AndCompare, SubZext, Piece2Zext, DivTermAdd, SignForm=fused-DivOpt-race), 6 BLOCKED (SubvarSext,
-  RulePtrFlow=isPtrFlow, and the sign-div cluster SignForm2/SignDiv2/SignNearMult/SignMod2Opt on
-  RuleDivOpt de-fusion Task #9), ~61 MISSING, 1 non-faithful (DivOpt fused), + 3 mosura-only extras.
+- **oppool1**: ~84 PORTED (incl. the now-de-fused div/sign cluster — RuleDivOpt (faithful), RuleDivTermAdd,
+  RuleSignShift, RuleTestSign, RuleSignForm, RuleSignForm2, RuleSignDiv2, RuleDivChain, RuleSignNearMult,
+  RuleModOpt, RuleSignMod2nOpt, RuleSignMod2nOpt2, RuleSignMod2Opt, RuleLessNotEqual — Task #20; plus
+  RuleFloatCast, RuleShiftAnd, RuleConcat*, RuleDouble*, RuleTrivialBool, RuleLess2Zero, RuleOrConsume,
+  RuleEqual2Constant, RuleBoolZext), 3 HELD (NotDistribute, AndDistribute, AndCompare), 3 BLOCKED (SubZext,
+  Piece2Zext, SubvarSext / RulePtrFlow=isPtrFlow), 1 DEFERRED (RuleLeftRight — register-piece dep, Task #7),
+  ~61 MISSING, 0 non-faithful (the fused DivOpt is retired), + 3 mosura-only extras.
   The MISSING set is the mechanical rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
   — spacebase-placeholder dep).
