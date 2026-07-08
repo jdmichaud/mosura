@@ -72,7 +72,7 @@ of the fine-grained actions.
 | ActionDeterminedBranch | PORTED (determinedbranch.rs) | |
 | ActionNodeJoin | MISSING | MULTIEQUAL node-join (RulePushMulti pair) |
 | ActionConditionalExe | MISSING | conditional-execution recovery |
-| ActionConditionalConst | MISSING | conditional constant propagation |
+| ActionConditionalConst | HELD — ported + unit-tested in condconst.rs, DEFINED-BUT-UNWIRED (gated mover, Task #5) | conditional constant propagation (full faithful port incl. pushConstant + phi machinery); wiring after ActionDeterminedBranch is the mover gate |
 
 ### fullloop tail
 | Ghidra action | mosura | notes |
