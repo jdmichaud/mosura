@@ -345,6 +345,16 @@ pub fn universal_action() -> ActionGroup {
         // target (Ghidra ActionDeterminedBranch). A second simplify+dead-code sweep cleans up the
         // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
         .then(super::determinedbranch::ActionDeterminedBranch)
+        // Conditional-constant propagation (Ghidra ActionConditionalConst, the last action in its
+        // mainloop). Placed after ActionDeterminedBranch — mirroring Ghidra's determinedbranch ->
+        // condconst order — so the compares are already normalized to INT_EQUAL/NOTEQUAL and the two
+        // following simplify sweeps fold the substituted constants (`0 + y => y`, `7 + 9 => 0x10`),
+        // as Ghidra's mainloop re-runs oppool1 after it. Ghidra's mainloop also REPEATS, so its
+        // condconst can re-fire on its own output; mosura's hand-unrolled pipeline runs it once here
+        // — the same once-pass approximation the rest of the pipeline uses. A fixture that needed
+        // *iterative* condconst (its output enabling further propagation) would be the mainloop-repeat
+        // item (backlog #8), not a condconst special-case.
+        .then(super::condconst::ActionConditionalConst)
         .then(ActionNonzeroMask)
         .then(ActionConsume)
         .then(default_rule_pool())

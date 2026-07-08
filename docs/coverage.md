@@ -72,7 +72,7 @@ of the fine-grained actions.
 | ActionDeterminedBranch | PORTED (determinedbranch.rs) | |
 | ActionNodeJoin | MISSING | MULTIEQUAL node-join (RulePushMulti pair) |
 | ActionConditionalExe | MISSING | conditional-execution recovery |
-| ActionConditionalConst | HELD — ported + unit-tested in condconst.rs, DEFINED-BUT-UNWIRED (gated mover, Task #5) | conditional constant propagation (full faithful port incl. pushConstant + phi machinery); wiring after ActionDeterminedBranch is the mover gate |
+| ActionConditionalConst | PORTED (condconst.rs) — WIRED after ActionDeterminedBranch (Task #5) | conditional constant propagation (full faithful port incl. pushConstant + phi machinery). condconst 0.814→0.862, elseif 0.899→0.915, no regressions. Runs ONCE (mosura's hand-unrolled pipeline) vs Ghidra's mainloop-repeat, which can re-fire condconst on its own output — the once-pass approximation used throughout; iterative condconst would be the mainloop-repeat item (backlog #8). |
 
 ### fullloop tail
 | Ghidra action | mosura | notes |
