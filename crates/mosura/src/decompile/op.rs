@@ -21,7 +21,9 @@ pub struct SeqNum {
     pub uniq: u32,
 }
 
-/// Ghidra's `PcodeOp::pcode_flags` — the subset used so far.
+/// Ghidra's `PcodeOp::pcode_flags` — the subset used so far. mosura assigns its own compact bit
+/// values (they are internal, never serialized against Ghidra's), so these do not match Ghidra's
+/// literal flag constants; the doc comment names the Ghidra flag each mirrors.
 pub mod flags {
     pub const STARTBASIC: u32 = 0x1; // op starts a basic block
     pub const BRANCH: u32 = 0x2; // op is a branch
@@ -30,6 +32,12 @@ pub mod flags {
     pub const DEAD: u32 = 0x10; // op is marked dead (pending removal)
     pub const MARKER: u32 = 0x20; // MULTIEQUAL/INDIRECT — a heritage marker, not real flow
     pub const MARK: u32 = 0x40; // transient traversal bit (Ghidra `PcodeOp::mark`)
+    /// Ghidra `PcodeOp::boolean_flip` (op.hh:83): on a CBRANCH, the condition must be \e false to
+    /// take the branch — the branch sense is inverted relative to the condition varnode.
+    pub const BOOLEAN_FLIP: u32 = 0x80;
+    /// Ghidra `PcodeOp::fallthru_true` (op.hh:84): on a CBRANCH, fall-through happens on the \e true
+    /// condition (paired with `BOOLEAN_FLIP` to record how the structurer oriented the branch).
+    pub const FALLTHRU_TRUE: u32 = 0x100;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -79,6 +87,16 @@ impl PcodeOp {
     /// Ghidra `PcodeOp::isCall` — a CALL/CALLIND/CALLOTHER.
     pub fn is_call(&self) -> bool {
         matches!(self.opcode, OpCode::Call | OpCode::Callind | OpCode::Callother)
+    }
+    /// Ghidra `PcodeOp::isBooleanFlip` (op.hh:191) — on a CBRANCH, the branch is taken when the
+    /// condition is \e false (see [`flags::BOOLEAN_FLIP`]).
+    pub fn is_boolean_flip(&self) -> bool {
+        self.flags & flags::BOOLEAN_FLIP != 0
+    }
+    /// Ghidra `PcodeOp::isFallthruTrue` (op.hh:193) — on a CBRANCH, fall-through is taken when the
+    /// condition is \e true (see [`flags::FALLTHRU_TRUE`]).
+    pub fn is_fallthru_true(&self) -> bool {
+        self.flags & flags::FALLTHRU_TRUE != 0
     }
     /// Ghidra `PcodeOp::isBoolOutput` — the op's output is a 1-bit boolean (the `booloutput`
     /// opflag). This is the same opcode set nzmask treats as boolean-result (`op_nzmask_local`).

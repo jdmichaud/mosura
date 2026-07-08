@@ -204,6 +204,13 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::divopt::RuleSignMod2nOpt) // (92)
         .with(super::divopt::RuleSignMod2nOpt2) // (93)
         .with(super::divopt::RuleSignMod2Opt) // (94)
+        // RuleCondNegate (coreaction.cc:5607, immediately before RuleBoolNegate) is defined +
+        // unit-tested in rules.rs but HELD UNWIRED: it only fires on a CBRANCH the structurer has
+        // marked `boolean_flip`, and mosura does not yet set that flag — it still negates branch
+        // sense at PRINT time (printc::render_negated + the structurer's `Structured.negated`).
+        // Wiring it is inert until the structurer sets `boolean_flip` instead (task #1 S1/S2); at
+        // that point this materializes the negation in the IR so RuleBoolNegate/RuleIntLessEqual
+        // normalize it there and printc reads the positive condition directly.
         .with(RuleBoolNegate) // (98)
         .with(RuleLessEqual) // (99)
         .with(RuleLessNotEqual) // (100)

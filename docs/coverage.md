@@ -206,7 +206,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSignMod2nOpt2 | PORTED (FAITHFUL, `4f19ab6` Task #20 — INT_MULT-rooted with checkSignExtForm; the general 2^n MULTIEQUAL conditional form is deferred) |
 | RuleSignMod2Opt | PORTED (divopt.rs, WIRED slot 94 — Task #20; ruleaction.cc:8776 `(V - sign)&1 + sign => V s%2` + check_sign_extraction / trunc-re-extend path) |
 | RuleSwitchSingle | MISSING |
-| RuleCondNegate | MISSING |
+| RuleCondNegate | HELD (defined + 2 unit tests in rules.rs, UNWIRED — faithful port of ruleaction.cc:5474: on a CBRANCH marked `boolean_flip`, insert `BOOL_NEGATE(cond)`, repoint the CBRANCH at it, and `opFlipCondition`. Added `PcodeOp::boolean_flip`/`fallthru_true` flags + accessors and `Funcdata::opFlipCondition`. Task #1 S0: HELD because mosura still negates branch sense at PRINT time (printc::render_negated + the structurer's `Structured.negated`) rather than setting `boolean_flip`; the rule is inert until the structurer sets the flag (S1/S2). Wiring it then materializes the negation in the IR so RuleBoolNegate/RuleIntLessEqual normalize it there and printc reads the positive condition — unblocking Task #4) |
 | RuleBoolNegate | PORTED |
 | RuleLessEqual | PORTED |
 | RuleLessNotEqual | PORTED (rules.rs, WIRED slot 100 — `2b22f65` Task #20; BOOL_AND `(V <= W) && (V != W) => V < W`, collapses the for-loop guard to `<` without the print-time `<=` adaptation) |

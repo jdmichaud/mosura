@@ -421,6 +421,14 @@ impl Funcdata {
         self.ops[op.0 as usize].opcode = opcode;
     }
 
+    /// Flip the output condition of a CBRANCH (Ghidra's `Funcdata::opFlipCondition`,
+    /// funcdata.hh:489 — `op->flipFlag(PcodeOp::boolean_flip)`). Toggles the `BOOLEAN_FLIP` bit so
+    /// the branch-sense meaning inverts; used by `RuleCondNegate` after it materializes the
+    /// negation in the IR, and by the structurer to record a chosen branch orientation.
+    pub fn op_flip_condition(&mut self, op: OpId) {
+        self.ops[op.0 as usize].flags ^= super::op::flags::BOOLEAN_FLIP;
+    }
+
     /// Remove `op` from its parent block's op list without touching its data-flow connections
     /// (Ghidra's `opUninsert`). Used by `RuleMultiCollapse`'s functional-equality path, which
     /// rewrites a MULTIEQUAL into a plain op and must re-position it (via [`op_insert_begin`])

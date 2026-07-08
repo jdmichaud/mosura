@@ -6969,6 +6969,38 @@ impl Rule for RuleIntLessEqual {
     }
 }
 
+/// Ghidra `RuleCondNegate` (ruleaction.cc:5474, oppool1 @5607 "analysis"): flip a CBRANCH condition
+/// to match the branch sense the structurer chose. When the structurer marks a CBRANCH
+/// [`boolean_flip`](super::op::flags::BOOLEAN_FLIP) — meaning the branch is taken on the \e false
+/// condition — this rule materializes that inversion in the IR: it inserts `BOOL_NEGATE(cond)`,
+/// repoints the CBRANCH at the negated value, and flips the flag ([`op_flip_condition`]). The
+/// fall-through block's true/false status is unchanged (`fallthru_true` stays). Downstream
+/// [`RuleBoolNegate`] then absorbs the BOOL_NEGATE into the complementary comparison, so the printed
+/// condition reads directly off the (now positive) IR — instead of being negated at print time.
+///
+/// [`op_flip_condition`]: Funcdata::op_flip_condition
+pub struct RuleCondNegate;
+
+impl Rule for RuleCondNegate {
+    fn name(&self) -> &str {
+        "condnegate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Cbranch]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if !data.op(op).is_boolean_flip() {
+            return 0;
+        }
+        let vn = data.op(op).input(1).unwrap();
+        // Build BOOL_NEGATE(vn) just before the CBRANCH; the new unique output is the flipped value.
+        let outvn = data.op_bool_negate(vn, op, false);
+        data.op_set_input(op, 1, outvn);
+        data.op_flip_condition(op); // Flip meaning of condition; fall-thru status unchanged.
+        1
+    }
+}
+
 /// Ghidra `RuleLess2Zero` (`ruleaction.cc`, oppool1 @5573 "analysis"): simplify INT_LESS against
 /// extremal constants — `0 < V => 0 != V`, `V < 0 => false`, `-1(max) < V => false`,
 /// `V < -1(max) => V != -1`.
@@ -10472,6 +10504,56 @@ mod tests {
 
         assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 0);
         assert_eq!(f.op(le).code(), OpCode::IntLessequal);
+    }
+
+    // ---- RuleCondNegate (#condnegate) ----------------------------------------------------------
+
+    /// Build a `CBRANCH(target, cond)` where `cond = INT_SLESS(v, 5)`, all in one block.
+    /// Returns (cbranch, cond-varnode, v-input).
+    fn cbranch_on_sless(f: &mut Funcdata, ram: Address) -> (OpId, VarnodeId, VarnodeId) {
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let cmp = f.new_op(OpCode::IntSless, seq, vec![v, c5]);
+        let cond = f.new_output(cmp, 1, Address::new(reg, 0x20));
+        let target = f.new_const(8, 0x1000); // coderef target (unread by the rule)
+        let cbr = f.new_op(OpCode::Cbranch, seq, vec![target, cond]);
+        parent_all(f, vec![cmp, cbr]);
+        (cbr, cond, v)
+    }
+
+    #[test]
+    fn condnegate_materializes_negation_when_flagged() {
+        // boolean_flip set => insert BOOL_NEGATE(cond), repoint CBRANCH.in[1] at it, clear the flag.
+        let (mut f, ram) = fd();
+        let (cbr, cond, _v) = cbranch_on_sless(&mut f, ram);
+        f.op_flip_condition(cbr); // structurer's mark: branch taken on the false condition
+        assert!(f.op(cbr).is_boolean_flip());
+
+        assert_eq!(RuleCondNegate.apply_op(cbr, &mut f), 1);
+
+        // Flag flipped back off; condition input now the negated value.
+        assert!(!f.op(cbr).is_boolean_flip());
+        let neg = f.op(cbr).input(1).unwrap();
+        assert_ne!(neg, cond);
+        let negop = f.vn(neg).def.unwrap();
+        assert_eq!(f.op(negop).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(negop).input(0), Some(cond));
+        // cond now feeds only the BOOL_NEGATE (the CBRANCH was repointed off it).
+        assert_eq!(f.vn(cond).descend, vec![negop]);
+    }
+
+    #[test]
+    fn condnegate_no_fire_without_flag() {
+        // No boolean_flip => rule declines and leaves the CBRANCH untouched.
+        let (mut f, ram) = fd();
+        let (cbr, cond, _v) = cbranch_on_sless(&mut f, ram);
+        assert!(!f.op(cbr).is_boolean_flip());
+
+        assert_eq!(RuleCondNegate.apply_op(cbr, &mut f), 0);
+        assert_eq!(f.op(cbr).input(1), Some(cond));
+        assert_eq!(f.vn(cond).descend, vec![cbr]);
     }
 
     // ---- RuleSubNormal (#81) -------------------------------------------------------------------
