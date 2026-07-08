@@ -75,6 +75,58 @@ fn op_flip_in_place_test(f: &Funcdata, op: OpId) -> i32 {
     }
 }
 
+/// Whether the negation of block `bid`'s terminating CBRANCH condition folds cleanly into a single
+/// complementary comparison via [`RuleBoolNegate`](super::rules::RuleBoolNegate) — i.e. the condition
+/// varnode is written and its defining op is one of the comparisons `RuleBoolNegate` complements
+/// (`==`/`!=`/`<`/`<=` and their signed/float forms). Only such conditions are materialized by the
+/// branch-orientation stage; compound (`BOOL_AND`/`BOOL_OR`) or other booleans are left to the
+/// deferred normal-form flip (Ghidra's `opFlipInPlaceExecute`).
+fn condition_folds_cleanly(f: &Funcdata, bid: BlockId) -> bool {
+    let Some(&last) = f.block(bid).ops.last() else {
+        return false;
+    };
+    if f.op(last).code() != OpCode::Cbranch {
+        return false;
+    }
+    let Some(cond) = f.op(last).input(1) else {
+        return false;
+    };
+    let v = f.vn(cond);
+    if !v.is_written() {
+        return false;
+    }
+    matches!(
+        f.op(v.def.unwrap()).code(),
+        OpCode::IntEqual
+            | OpCode::IntNotequal
+            | OpCode::IntLess
+            | OpCode::IntLessequal
+            | OpCode::IntSless
+            | OpCode::IntSlessequal
+            | OpCode::FloatEqual
+            | OpCode::FloatNotequal
+            | OpCode::FloatLess
+            | OpCode::FloatLessequal
+    )
+}
+
+/// Whether block `bid` is a switch range-guard — it, or a direct successor, holds a jump-table
+/// dispatch: a live BRANCHIND, or an op at a recovered table's dispatch address (`jumptables`,
+/// cached at build). The cached address is what makes this robust once the BRANCHIND has been folded
+/// away by switch recovery (it becomes a plain terminator at the same address). Such a guard is owned
+/// by the switch machinery (Ghidra's `analyzeGuards`/`GuardRecord`, jumptable.cc — the guard is
+/// folded into the switch's default, not printed as a normal `if`), so the branch-orientation stage
+/// leaves it alone: materializing its negation keeps printc from forming the `switch`.
+fn near_switch(f: &Funcdata, bid: BlockId) -> bool {
+    let is_dispatch = |b: BlockId| {
+        f.block(b).ops.iter().any(|&op| {
+            f.op(op).code() == OpCode::Branchind
+                || f.jumptables.iter().any(|t| t.op_addr == f.op(op).seqnum.pc.offset)
+        })
+    };
+    is_dispatch(bid) || f.block(bid).out_edges.iter().any(|&s| is_dispatch(s))
+}
+
 /// A node in the structuring graph: a leaf basic block or a structured composite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlowKind {
@@ -122,6 +174,10 @@ pub struct Structured {
     /// non-normal form so an `if`/`else` over it should flip to the positive form (Ghidra's
     /// `opFlipInPlaceTest == 0`). Precomputed from `Funcdata` since the structurer holds no `f`.
     flip: Vec<bool>,
+    /// Per basic block: whether its terminating CBRANCH was branch-oriented (Ghidra's `fallthru_true`
+    /// flag). An oriented block's body-on-false negation is already materialized positive in the IR,
+    /// so the collapse rules XOR this in to flip its `negated` off. Precomputed from `Funcdata`.
+    oriented: Vec<bool>,
 }
 
 impl Structured {
@@ -137,6 +193,48 @@ impl Structured {
         match &self.blocks[idx].kind {
             FlowKind::Basic(b) => Some(*b),
             _ => self.exit_basic(*self.blocks[idx].components.last()?),
+        }
+    }
+
+    /// The CBRANCH basic blocks whose branch sense the structurer negated because the body is on
+    /// the *false* edge — the blocks Ghidra's `CollapseStructure` runs `negateCondition` on. Only
+    /// the branch-direction kinds (`If`/`WhileDo`/`DoWhile`) qualify; an `IfElse`'s `negated` is the
+    /// normal-form flip (Ghidra's `ActionNormalizeBranches` / `opFlipInPlaceExecute`, mechanism A),
+    /// which is still applied at print time. The condition CBRANCH of a composite is the exit of its
+    /// first component (the `render_condition` path reads `exit_basic(components[0])`). Consumed by
+    /// [`ActionOrientBranches`] to materialize the negation in the IR.
+    pub fn branch_negations(&self, f: &Funcdata) -> Vec<BlockId> {
+        let mut out = Vec::new();
+        self.collect_negations(self.root, f, &mut out);
+        out
+    }
+
+    /// Walk the *final* structured tree from `idx` (as [`emit_structured`](super::printc) does),
+    /// collecting each rendered negated `if`/`while`/`do-while`'s condition CBRANCH block. Walking
+    /// from the root — rather than scanning every `FlowBlock` — skips stale intermediate composites
+    /// that were superseded during collapse (e.g. a guard temporarily structured as a negated `if`
+    /// then folded into a `switch`): those are never rendered, so orienting them would corrupt the
+    /// switch. See [`branch_negations`](Self::branch_negations).
+    fn collect_negations(&self, idx: usize, f: &Funcdata, out: &mut Vec<BlockId>) {
+        let fb = &self.blocks[idx];
+        if fb.negated && matches!(fb.kind, FlowKind::If | FlowKind::WhileDo | FlowKind::DoWhile) {
+            if let Some(&cond) = fb.components.first() {
+                // Skip a compound `&&`/`||` (short-circuit) condition: Ghidra distributes the NOT to
+                // each leaf via `BlockCondition::negateCondition` (block.cc:3023), which — like the
+                // normal-form flip (mechanism A) — is deferred, so it stays negated at print time.
+                // Orient only a simple condition whose materialized negation folds cleanly via
+                // RuleBoolNegate (its def is a comparison); other booleans need the deferred flip.
+                if !matches!(self.blocks[cond].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+                    if let Some(bid) = self.exit_basic(cond) {
+                        if condition_folds_cleanly(f, bid) && !near_switch(f, bid) {
+                            out.push(bid);
+                        }
+                    }
+                }
+            }
+        }
+        for &c in &self.blocks[idx].components {
+            self.collect_negations(c, f, out);
         }
     }
 
@@ -247,7 +345,7 @@ impl Structured {
                     continue;
                 }
                 let n = self.install(vec![b, clause], FlowKind::If, vec![other], ins);
-                self.blocks[n].negated = i == 0;
+                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
                 return true;
             }
         }
@@ -370,7 +468,7 @@ impl Structured {
             if ins[clause].len() == 1 && self.out(clause).len() == 1 && self.out(clause)[0] == self.out(b)[1 - i] {
                 let merge = self.out(b)[1 - i];
                 let n = self.install(vec![b, clause], FlowKind::If, vec![merge], ins);
-                self.blocks[n].negated = i == 0;
+                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
                 return true;
             }
         }
@@ -382,6 +480,15 @@ impl Structured {
     /// condition. A compound (short-circuit) condition is left as-is — its normal form needs the
     /// `BOOL_AND`/`BOOL_OR` recursion over the structural operands (a faithful subset, the simple
     /// CBRANCH case covers the corpus's if/else conditions).
+    /// Whether the condition CBRANCH of block `b` was branch-oriented by `ActionOrientBranches`
+    /// (its `fallthru_true` flag is set). When so, the collapse rules flip `negated` off: the
+    /// body-on-false negation is already materialized positive in the IR, so the condition prints
+    /// directly. The mosura analogue of Ghidra's edge reversal in `BlockBasic::negateCondition`,
+    /// recorded in the flag instead so the re-deriving structurer collapses the original topology.
+    fn is_oriented(&self, b: usize) -> bool {
+        self.exit_basic(b).is_some_and(|bid| self.oriented.get(bid.0 as usize).copied().unwrap_or(false))
+    }
+
     fn if_else_flip(&self, b: usize) -> bool {
         if matches!(self.blocks[b].kind, FlowKind::CondAnd | FlowKind::CondOr) {
             return false;
@@ -422,7 +529,7 @@ impl Structured {
             if ins[body].len() == 1 && self.out(body).len() == 1 && self.out(body)[0] == b {
                 let exit = self.out(b)[1 - i];
                 let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
-                self.blocks[n].negated = i == 0;
+                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
                 return true;
             }
         }
@@ -438,7 +545,7 @@ impl Structured {
             if self.out(b)[i] == b {
                 let exit = self.out(b)[1 - i];
                 let n = self.install(vec![b], FlowKind::DoWhile, vec![exit], ins);
-                self.blocks[n].negated = i == 0;
+                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
                 return true;
             }
         }
@@ -469,7 +576,23 @@ pub fn structure(f: &Funcdata) -> Structured {
                 .is_some_and(|op| f.op(op).code() == OpCode::Cbranch && op_flip_in_place_test(f, op) == 0)
         })
         .collect();
-    let mut s = Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), flip };
+    // Per basic block: whether its terminating CBRANCH has been branch-oriented by
+    // `ActionOrientBranches` (Ghidra's `fallthru_true` flag, which its printc also reads,
+    // printc.cc:542). An oriented block's negation is already materialized positive in the IR, so
+    // its structuring `negated` is flipped off — the condition prints directly. Recording the flip
+    // in this flag (instead of reversing the CFG out-edges as Ghidra's structure-once graph does)
+    // keeps the persistent CFG intact so the re-deriving structurer collapses the original topology.
+    let oriented: Vec<bool> = (0..f.num_blocks())
+        .map(|b| {
+            f.block(BlockId(b as u32))
+                .ops
+                .last()
+                .copied()
+                .is_some_and(|op| f.op(op).is_fallthru_true())
+        })
+        .collect();
+    let mut s =
+        Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), flip, oriented };
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
@@ -490,6 +613,43 @@ pub fn structure(f: &Funcdata) -> Structured {
     }
     s.root = (0..s.blocks.len()).find(|&b| s.blocks[b].active).unwrap_or(0);
     s
+}
+
+/// Materialize the structurer's branch-direction negations in the IR (the mosura analogue of the
+/// `negateCondition` calls Ghidra's `CollapseStructure` makes during `ActionBlockStructure`). Runs
+/// the structuring collapse to find every `if`/`while`/`do-while` whose body sits on the false edge,
+/// then applies [`Funcdata::block_negate_condition`] to each condition CBRANCH — flipping
+/// `boolean_flip`/`fallthru_true` and the out-edge order. The paired post-orientation rule pool
+/// ([`RuleCondNegate`] → [`RuleBoolNegate`] → [`RuleIntLessEqual`]) then materializes `!cond` and
+/// normalizes it, so the printed condition is read directly off the positive IR instead of negated
+/// at print time. Placed after type recovery, mirroring Ghidra's final `ActionNormalizeBranches`
+/// placement (a once-pass approximation of Ghidra's repeating mainloop, consistent with mosura's
+/// hand-unrolled pipeline). The normal-form flip (mechanism A, `opFlipInPlaceExecute`) stays at
+/// print time for now and is deferred.
+///
+/// [`RuleCondNegate`]: super::rules::RuleCondNegate
+/// [`RuleBoolNegate`]: super::rules::RuleBoolNegate
+/// [`RuleIntLessEqual`]: super::rules::RuleIntLessEqual
+pub struct ActionOrientBranches;
+
+impl super::action::Action for ActionOrientBranches {
+    fn name(&self) -> &str {
+        "orientbranches"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Skip during the jump-table recovery probe: orientation is a render-time transform and
+        // materializing a switch guard there under-recovers the table (see `table_recovery_probe`).
+        if data.table_recovery_probe {
+            return 0;
+        }
+        let negations = structure(data).branch_negations(data);
+        let mut changed = 0;
+        for bid in negations {
+            data.block_negate_condition(bid);
+            changed = 1;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]

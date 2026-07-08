@@ -70,6 +70,12 @@ pub struct Funcdata {
     /// (`AliasChecker::hasLocalAlias`, `offset >= aliasBoundary`). `None` ⇒ nothing escapes ⇒ no
     /// stack slot is guarded. Set from the alias probe before the real heritage.
     pub alias_boundary: Option<i64>,
+    /// Set on the throwaway `partial` clone that `build` decompiles only to recover jump tables
+    /// (build.rs). The late branch-orientation stage (`ActionOrientBranches`) is skipped on it:
+    /// materializing a switch guard's negation there perturbs the range analysis
+    /// (`JumpBasic::findSmallestNormal`) and under-recovers the table. Orientation is a render-time
+    /// concern and only needs to run in the real decompile.
+    pub table_recovery_probe: bool,
 }
 
 impl Funcdata {
@@ -94,6 +100,7 @@ impl Funcdata {
             active_inputs: std::collections::HashMap::new(),
             call_guards_active: false,
             alias_boundary: None,
+            table_recovery_probe: false,
         }
     }
 
@@ -427,6 +434,28 @@ impl Funcdata {
     /// negation in the IR, and by the structurer to record a chosen branch orientation.
     pub fn op_flip_condition(&mut self, op: OpId) {
         self.ops[op.0 as usize].flags ^= super::op::flags::BOOLEAN_FLIP;
+    }
+
+    /// Negate the branch sense of a 2-out CBRANCH block (Ghidra's `BlockBasic::negateCondition`,
+    /// block.cc:2351): the structurer chose to put this block's body on the false edge, so set
+    /// `boolean_flip` (marking the CBRANCH for `RuleCondNegate` to materialize the negation) and
+    /// `fallthru_true` on the terminating CBRANCH.
+    ///
+    /// Ghidra additionally reverses the block's out-edge order (`FlowBlock::negateCondition`).
+    /// mosura does NOT: its structurer re-derives the block tree from the CFG at print time, and a
+    /// reversed edge order makes the re-collapse diverge for condition blocks entangled with loops
+    /// or short-circuits (`rule_short_circuit` re-installs never converge). Instead the orientation
+    /// lives in the persistent `fallthru_true` flag — which Ghidra's printc also reads
+    /// (printc.cc:542) — and the structurer XORs it into `negated` (`Structured::is_oriented`). The
+    /// materialized positive condition is then printed directly, matching Ghidra's rendering without
+    /// perturbing the CFG topology.
+    pub fn block_negate_condition(&mut self, bid: super::block::BlockId) {
+        let Some(&lastop) = self.blocks[bid.0 as usize].ops.last() else {
+            return;
+        };
+        debug_assert_eq!(self.ops[lastop.0 as usize].opcode, OpCode::Cbranch);
+        self.ops[lastop.0 as usize].flags |=
+            super::op::flags::BOOLEAN_FLIP | super::op::flags::FALLTHRU_TRUE;
     }
 
     /// Remove `op` from its parent block's op list without touching its data-flow connections

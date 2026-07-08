@@ -364,6 +364,32 @@ pub fn universal_action() -> ActionGroup {
         .then(ptrarith_pool())
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
+        // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
+        // branch negations in the IR, mirroring Ghidra's final ActionNormalizeBranches placement
+        // (after type recovery, where the guards are in final simplified form). ActionOrientBranches
+        // sets boolean_flip on each body-on-false CBRANCH (Ghidra BlockBasic::negateCondition);
+        // condnegate_pool then materializes and normalizes the negation so printc reads the positive
+        // condition directly instead of negating at print time.
+        .then(super::structure::ActionOrientBranches)
+        .then(condnegate_pool())
+        .then(super::deadcode::ActionDeadCode)
+}
+
+/// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::
+/// ActionOrientBranches) has set `boolean_flip` on the body-on-false CBRANCHes, [`RuleCondNegate`]
+/// materializes `BOOL_NEGATE(cond)` (Ghidra ruleaction.cc:5474, registered coreaction.cc:5607 just
+/// before RuleBoolNegate), [`RuleBoolNegate`] folds it into the complementary comparison, and
+/// [`RuleIntLessEqual`] normalizes `<=` to the strict form — yielding e.g. ifswitch's `99 < param_1`
+/// in the IR. Scoped to the branch-negation cluster; the normal-form flip (opFlipInPlaceExecute) is
+/// deferred.
+///
+/// [`RuleCondNegate`]: super::rules::RuleCondNegate
+/// [`RuleIntLessEqual`]: super::rules::RuleIntLessEqual
+fn condnegate_pool() -> ActionPool {
+    ActionPool::new("condnegate")
+        .with(super::rules::RuleCondNegate)
+        .with(RuleBoolNegate)
+        .with(super::rules::RuleIntLessEqual)
 }
 
 /// Run the pipeline on a raw (post-load) Funcdata in place.

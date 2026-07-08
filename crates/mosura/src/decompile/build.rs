@@ -221,6 +221,7 @@ pub fn raw_funcdata_flow_image(
         // only after recovery completes; folding it here would destroy the guard the range analysis
         // pulls back through on every pass.
         partial.switch_targets = switch_targets.clone();
+        partial.table_recovery_probe = true; // skip late branch-orientation during table recovery
         super::pipeline::decompile(&mut partial);
         let tables = partial.jump_tables();
         let mut added = false;

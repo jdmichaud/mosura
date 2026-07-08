@@ -168,12 +168,13 @@ fn orcompare_recovers_logical_or() {
 /// Guard for the float NaN-guard collapse (Ghidra `RuleIgnoreNan` + `RuleFloatRange`,
 /// ruleaction.cc): pointerrel's `ucomisd`-derived condition is `!(NAN(a)||NAN(b) || a<=b)`. The
 /// two rules dissolve the redundant NaN checks and collapse the ordered compares into the single
-/// `!(fStack_18 <= fRam...)` — a compact negated float comparison, not the De-Morgan-expanded
-/// `(!NAN && !NAN) && ...` an ungated distribution would produce. (The residual vs Ghidra's
-/// `fRam... < fStack_18` is only the `opFlipInPlaceTest` flip of `!(a<=b)` → `b<a`, a separate
-/// normalization.)
+/// negated float comparison `!(fStack_18 <= fRam...)` — not the De-Morgan-expanded
+/// `(!NAN && !NAN) && ...` an ungated distribution would produce. The branch-orientation stage
+/// (task #1: `ActionOrientBranches` -> RuleCondNegate -> RuleBoolNegate) then materializes that
+/// negation in the IR as the strict form `fRam... < fStack_18`, matching Ghidra's `--c` exactly
+/// (previously mosura kept the `!(a<=b)` residual and only negated at print time).
 #[test]
-fn pointerrel_negated_condition_stays_compact() {
+fn pointerrel_negated_condition_normalizes() {
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
@@ -189,8 +190,8 @@ fn pointerrel_negated_condition_stays_compact() {
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
-        c.contains("if (!(fStack_18 <= fRam00000000001008b8))") && !c.contains("NAN"),
-        "pointerrel's NaN-guarded condition did not collapse to the compact float compare:\n{c}"
+        c.contains("if (fRam00000000001008b8 < fStack_18)") && !c.contains("NAN"),
+        "pointerrel's NaN-guarded condition did not normalize to Ghidra's strict float compare:\n{c}"
     );
 }
 
