@@ -26,6 +26,7 @@ pub mod funcdata;
 pub mod heritage;
 pub mod jumpbasic;
 pub mod jumptable;
+pub mod lanedivide;
 pub mod merge;
 pub mod mergesnip;
 pub mod nzmask;

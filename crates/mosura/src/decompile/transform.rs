@@ -99,6 +99,10 @@ pub struct TransformOp {
     pub input: Vec<Option<TVarId>>,
     /// The op that follows this one (if not `None`), gating insertion order.
     pub follow: Option<TOpId>,
+    /// mosura's INDIRECT guarded-op (Ghidra's `iop` input(1)): the causing CALL/STORE. Carried onto
+    /// the replacement op when a laned INDIRECT is split, replacing Ghidra's `newIop` annotation
+    /// varnode (mosura's 1-input INDIRECT model). `None` for non-INDIRECT ops.
+    pub guarded_op: Option<OpId>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -573,6 +577,7 @@ impl<'a> TransformManager<'a> {
             output: None,
             input: vec![None; num_params],
             follow: None,
+            guarded_op: None,
         })
     }
 
@@ -588,6 +593,7 @@ impl<'a> TransformManager<'a> {
             output: None,
             input: vec![None; num_params],
             follow: Some(follow),
+            guarded_op: None,
         })
     }
 
@@ -602,6 +608,7 @@ impl<'a> TransformManager<'a> {
             output: None,
             input: vec![None; num_params],
             follow: None,
+            guarded_op: None,
         })
     }
 
@@ -653,6 +660,29 @@ impl<'a> TransformManager<'a> {
             return true;
         }
         !matches!(other_ttype, TVarType::Piece | TVarType::PieceTemp)
+    }
+
+    /// Set the INDIRECT guarded-op carried onto `rop`'s replacement (mosura's iop; see
+    /// [`TransformOp::guarded_op`]).
+    pub fn op_set_guarded(&mut self, rop: TOpId, guard: Option<OpId>) {
+        self.ops[rop.0 as usize].guarded_op = guard;
+    }
+
+    /// Set the indirect-creation flags on `rop` from the original INDIRECT `ind_op` (Ghidra
+    /// `TransformOp::inheritIndirect`, transform.cc:273). Ghidra distinguishes an iop-zero creation
+    /// (`indirect_creation`) from a possible call output (`indirect_creation_possible_out`) via
+    /// `getIn(0)->isIndirectZero()`; mosura's 1-input INDIRECT has no iop-zero annotation, so the
+    /// conservative `possible_out` branch is used (this only fires when the original INDIRECT models
+    /// a `killedbycall` creation — inert for the laned stack/register guards on the corpus).
+    pub fn inherit_indirect(&mut self, rop: TOpId, ind_op: OpId) {
+        let is_creation = self
+            .fd
+            .op(ind_op)
+            .output
+            .is_some_and(|o| self.fd.vn(o).is_indirect_creation());
+        if is_creation {
+            self.ops[rop.0 as usize].special |= top_flags::INDIRECT_CREATION_POSSIBLE_OUT;
+        }
     }
 
     // -- apply pipeline (Ghidra transform.cc:654-765) -----------------------------------------
@@ -741,6 +771,9 @@ impl<'a> TransformManager<'a> {
             // Reserve the input slots so place_inputs can address them (mosura has no null inputs;
             // op_set_all_input fills the real vector at place time).
             let _ = num_in;
+            // Carry mosura's INDIRECT guarded-op onto the replacement (Ghidra threads its iop via the
+            // input(1) annotation; mosura uses the field). No-op for non-INDIRECT ops.
+            self.fd.op_mut(newop).guarded_op = self.ops[to.0 as usize].guarded_op;
             self.ops[to.0 as usize].replacement = Some(newop);
             if let Some(out) = output {
                 self.create_var_replacement(out);
