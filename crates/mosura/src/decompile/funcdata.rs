@@ -571,8 +571,13 @@ impl Funcdata {
             }
         }
         if let Some(out) = self.ops[op.0 as usize].output.take() {
+            // Ghidra's opDestroy calls destroyVarnode(op->getOut()): the output is removed from the
+            // bank. mosura keeps the arena slot index-stable, so free it (clear INPUT|INSERT|WRITTEN
+            // + def) as delete_varnode does — otherwise it lingers as a non-free orphan (def=None,
+            // INSERT set) that address-tied merge/cover passes wrongly treat as a live same-address
+            // value.
             self.varnodes[out.0 as usize].def = None;
-            self.varnodes[out.0 as usize].flags &= !flags::WRITTEN;
+            self.varnodes[out.0 as usize].flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN);
         }
         self.mark_dead(op);
     }
