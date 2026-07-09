@@ -42,6 +42,7 @@ pub mod scope;
 pub mod space;
 pub mod stackvars;
 pub mod structure;
+pub mod transform;
 pub mod types;
 pub mod infertypes;
 pub mod varmap;

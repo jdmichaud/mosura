@@ -432,6 +432,51 @@ impl Funcdata {
         self.ops[op.0 as usize].opcode = opcode;
     }
 
+    /// Ghidra `Funcdata::transferVarnodeProperties` (funcdata_varnode.cc): when a new varnode
+    /// `new_vn` is created as a logical piece of `vn` at bit-offset `lsb_offset*8` (i.e. byte
+    /// offset `lsb_offset`), carry over the `directwrite`/`addrforce` properties and shift the
+    /// consume mask down by that many bytes. Used by the TransformManager when materializing a
+    /// `piece` placeholder over overlapping storage.
+    pub fn transfer_varnode_properties(&mut self, vn: VarnodeId, new_vn: VarnodeId, lsb_offset: i32) {
+        let new_size = self.varnodes[new_vn.0 as usize].size;
+        let mut new_consume = !0u64; // bits shifted in above precision are set
+        if (lsb_offset as usize) < std::mem::size_of::<u64>() {
+            let mut fill_bits = 0u64;
+            if lsb_offset != 0 {
+                fill_bits = new_consume << (8 * (std::mem::size_of::<u64>() as i32 - lsb_offset));
+            }
+            new_consume = ((self.varnodes[vn.0 as usize].consume >> (8 * lsb_offset))
+                | fill_bits)
+                & super::nzmask::calc_mask(new_size);
+        }
+        let vn_flags = self.varnodes[vn.0 as usize].flags & (flags::DIRECTWRITE | flags::ADDRFORCE);
+        let nv = &mut self.varnodes[new_vn.0 as usize];
+        nv.flags |= vn_flags; // Preserve addrforce/directwrite setting
+        nv.consume = new_consume;
+    }
+
+    /// Ghidra `Funcdata::markIndirectCreation` (funcdata_op.cc): mark an INDIRECT op as modeling
+    /// a value created out of nothing (a call's `killedbycall` clobber). Ghidra sets
+    /// `indirect_creation` on the op, on `in(0)` (the iop-zero, unless the value is a possible
+    /// output), and on the output varnode. mosura tracks `indirect_creation` on the output varnode
+    /// (`Varnode::INDIRECT_CREATION`, read by `is_indirect_creation`); the op-level flag + the iop
+    /// in(0) marking follow the guarded-op INDIRECT model (see the buildIndirect rebase TODO in
+    /// `transform.rs`).
+    pub fn mark_indirect_creation(&mut self, indop: OpId, possible_output: bool) {
+        let out = self.ops[indop.0 as usize].output;
+        let in0 = self.ops[indop.0 as usize].input(0);
+        if let Some(out) = out {
+            self.varnodes[out.0 as usize].set_indirect_creation();
+        }
+        if !possible_output {
+            if let Some(in0) = in0 {
+                if self.varnodes[in0.0 as usize].is_constant() {
+                    self.varnodes[in0.0 as usize].set_indirect_creation();
+                }
+            }
+        }
+    }
+
     /// Flip the output condition of a CBRANCH (Ghidra's `Funcdata::opFlipCondition`,
     /// funcdata.hh:489 — `op->flipFlag(PcodeOp::boolean_flip)`). Toggles the `BOOLEAN_FLIP` bit so
     /// the branch-sense meaning inverts; used by `RuleCondNegate` after it materializes the
