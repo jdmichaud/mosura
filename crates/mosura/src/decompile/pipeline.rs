@@ -383,6 +383,13 @@ pub fn universal_action() -> ActionGroup {
         .then(super::structure::ActionOrientBranches)
         .then(condnegate_pool())
         .then(super::deadcode::ActionDeadCode)
+        // NOTE: the address-tied cover-intersection snip (super::mergesnip::ActionMergeRequired,
+        // Ghidra ActionMergeRequired) is HELD unwired. Wiring it here regresses: printc inlines the
+        // single-use snapshot COPY (defeating partialmerge's snapshot) and it over-fires on stack
+        // SSA inputs (spurious self-assignments) because the candidate gate is the ram/stack space
+        // proxy rather than a real ADDRTIED flag. It needs (1) explicit-marking of the snapshot
+        // (Ghidra ActionMarkExplicit) so printc keeps it a named temp, and (2) a real addrtied flag
+        // computed before this pass. See mergesnip.rs + task-sb-spacebase-placeholder.
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

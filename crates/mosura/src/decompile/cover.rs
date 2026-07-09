@@ -43,6 +43,68 @@ impl Cover {
     pub fn is_empty(&self) -> bool {
         self.blocks.is_empty()
     }
+
+    /// The live `[lo, hi]` position range in `block`, if the varnode is live there.
+    pub fn block_range(&self, block: usize) -> Option<(i32, i32)> {
+        self.blocks.get(&block).copied()
+    }
+}
+
+/// The single-read cover of `v`: its live range from its def to exactly one read `read_op`
+/// (Ghidra's `eliminateIntersect` builds `single` from one descend — cover.cc, merge.cc:502).
+/// A copy of [`cover_of`]'s liveness restricted to the one use, used by the addrtied snip
+/// ([`super::mergesnip`]) to test whether that read crosses another same-address def.
+pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
+    let mut cov = Cover::default();
+    let vn = f.vn(v);
+    let (def_block, def_wpos) = if vn.is_written() {
+        let (db, di) = pos[&vn.def.unwrap()];
+        (Some(db), 2 * di as i32 + 2)
+    } else if vn.is_input() {
+        (Some(0usize), 0)
+    } else {
+        return cov;
+    };
+
+    let mut liveout: Vec<usize> = Vec::new();
+    let Some(&(ub, ui)) = pos.get(&read_op) else { return cov };
+    if f.op(read_op).code() == OpCode::Multiequal {
+        for (slot, &iv) in f.op(read_op).inrefs.iter().enumerate() {
+            if iv == v {
+                if let Some(p) = f.block(super::block::BlockId(ub as u32)).in_edges.get(slot) {
+                    liveout.push(p.0 as usize);
+                }
+            }
+        }
+    } else {
+        let rpos = 2 * ui as i32 + 1;
+        if def_block == Some(ub) && def_wpos <= rpos {
+            cov.extend(ub, def_wpos, rpos);
+        } else {
+            cov.extend(ub, 0, rpos);
+            for p in &f.block(super::block::BlockId(ub as u32)).in_edges {
+                liveout.push(p.0 as usize);
+            }
+        }
+    }
+
+    let mut seen: HashSet<usize> = HashSet::new();
+    while let Some(b) = liveout.pop() {
+        if !seen.insert(b) {
+            continue;
+        }
+        let end = 2 * f.blocks()[b].ops.len() as i32 + 2;
+        let lo = if def_block == Some(b) { def_wpos } else { 0 };
+        cov.extend(b, lo, end);
+        if def_block != Some(b) {
+            for p in &f.blocks()[b].in_edges {
+                if !seen.contains(&(p.0 as usize)) {
+                    liveout.push(p.0 as usize);
+                }
+            }
+        }
+    }
+    cov
 }
 
 /// `(block index, op index within the block)` for every op.

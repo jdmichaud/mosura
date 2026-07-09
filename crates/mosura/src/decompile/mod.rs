@@ -27,6 +27,7 @@ pub mod heritage;
 pub mod jumpbasic;
 pub mod jumptable;
 pub mod merge;
+pub mod mergesnip;
 pub mod nzmask;
 pub mod op;
 pub mod opcode;
