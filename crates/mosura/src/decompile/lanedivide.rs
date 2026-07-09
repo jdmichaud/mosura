@@ -11,9 +11,11 @@
 //! identity here (mosura's spaces are byte-addressable LE), the same convention as
 //! [`super::transform`]/[`super::subvarflow`].
 
+use super::action::Action;
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::transform::{LaneDescription, TVarId, TransformManager};
+use super::space::SpaceId;
+use super::transform::{LaneDescription, LanedRegister, TVarId, TransformManager};
 use super::varnode::VarnodeId;
 use super::funcdata::Funcdata;
 
@@ -625,6 +627,163 @@ impl<'a> LaneDivide<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// ActionLaneDivide — the pipeline action driving LaneDivide over the laned registers.
+// (Ghidra coreaction.cc:585, coreaction.hh:113, `rule_onceperfunc`.)
+// ---------------------------------------------------------------------------------------------
+
+/// Examine the ops using `vn` to determine possible lane sizes, registering those allowed by
+/// `allowed` (Ghidra `ActionLaneDivide::collectLaneSizes`, coreaction.cc:509). SUBPIECE descendants
+/// give the truncated lane size; a PIECE def gives the smaller of its two input sizes.
+fn collect_lane_sizes(fd: &Funcdata, vn: VarnodeId, allowed: &LanedRegister) -> LanedRegister {
+    let mut check = LanedRegister::default();
+    let descend = fd.vn(vn).descend.clone();
+    for op in descend {
+        if fd.op(op).code() == OpCode::Subpiece {
+            let cur = fd.vn(fd.op(op).output.unwrap()).size as i32;
+            if allowed.allowed_lane(cur) {
+                check.add_lane_size(cur);
+            }
+        }
+    }
+    if let Some(def) = fd.vn(vn).def {
+        if fd.op(def).code() == OpCode::Piece {
+            let s0 = fd.vn(fd.op(def).input(0).unwrap()).size as i32;
+            let s1 = fd.vn(fd.op(def).input(1).unwrap()).size as i32;
+            let cur = s0.min(s1);
+            if allowed.allowed_lane(cur) {
+                check.add_lane_size(cur);
+            }
+        }
+    }
+    check
+}
+
+/// Search for a lane size and try to divide `vn` into lanes (Ghidra
+/// `ActionLaneDivide::processVarnode`, coreaction.cc:558). Mode 0 collects lane sizes from local
+/// ops; mode 1 additionally allows SUBPIECE downcasts; mode 2 uses the default (pointer) size.
+fn process_varnode(fd: &mut Funcdata, vn: VarnodeId, laned_reg: &LanedRegister, mode: i32) -> bool {
+    let allow_downcast = mode > 0;
+    let check_lanes = if mode < 2 {
+        collect_lane_sizes(fd, vn, laned_reg)
+    } else {
+        // Default lane size = the architecture pointer size (Ghidra getSizeOfPointer; 8 unless 4).
+        let ram = fd.spaces.by_name("ram").expect("ram space");
+        let default_size = if fd.spaces.get(ram).addr_size as i32 != 4 { 8 } else { 4 };
+        let mut c = LanedRegister::default();
+        c.add_lane_size(default_size);
+        c
+    };
+    let whole_size = laned_reg.whole_size();
+    for cur_size in check_lanes.lane_sizes() {
+        let description = LaneDescription::uniform(whole_size, cur_size);
+        let mut lane_divide = LaneDivide::new(fd, vn, description, allow_downcast);
+        if lane_divide.do_trace() {
+            lane_divide.apply();
+            return true;
+        }
+    }
+    false
+}
+
+/// A laned storage location plus the register record describing it (mosura's per-apply scan
+/// replaces Ghidra's incrementally-maintained `Funcdata::lanedMap`).
+struct LanedAccess {
+    space: SpaceId,
+    offset: u64,
+    size: u32,
+    reg: LanedRegister,
+}
+
+/// Scan for live register varnodes whose size matches a laned record (mosura's stand-in for Ghidra's
+/// `checkForLanedRegister`/`lanedMap`, funcdata_varnode.cc:298 — the map is just the set of laned
+/// storage locations, which we re-derive from the live varnodes at apply time). Deduped by storage.
+fn collect_laned_accesses(fd: &Funcdata) -> Vec<LanedAccess> {
+    let Some(reg) = fd.spaces.by_name("register") else { return Vec::new() };
+    let min_size = fd.laned.minimum_laned_register_size();
+    if min_size < 0 {
+        return Vec::new();
+    }
+    let mut seen: std::collections::BTreeSet<(u64, u32)> = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for i in 0..fd.num_varnodes() as u32 {
+        let v = fd.vn(VarnodeId(i));
+        if v.loc.space != reg || v.descend.is_empty() || (v.size as i32) < min_size {
+            continue;
+        }
+        if let Some(lr) = fd.laned.get_laned_register(v.size as i32) {
+            if seen.insert((v.loc.offset, v.size)) {
+                out.push(LanedAccess { space: reg, offset: v.loc.offset, size: v.size, reg: lr.clone() });
+            }
+        }
+    }
+    out
+}
+
+/// Find a live varnode at the given storage that still has uses and hasn't been rejected this pass.
+fn find_laned_varnode(
+    fd: &Funcdata,
+    space: SpaceId,
+    offset: u64,
+    size: u32,
+    failed: &std::collections::BTreeSet<VarnodeId>,
+) -> Option<VarnodeId> {
+    (0..fd.num_varnodes() as u32).map(VarnodeId).find(|&vid| {
+        let v = fd.vn(vid);
+        v.loc.space == space
+            && v.loc.offset == offset
+            && v.size == size
+            && !v.descend.is_empty()
+            && !failed.contains(&vid)
+    })
+}
+
+/// Find laned (vector) registers and split them into explicit lanes (Ghidra `ActionLaneDivide`,
+/// coreaction.cc:585). `rule_onceperfunc` — wired once in the pipeline. Escalates through modes 0/1/2
+/// until every laned storage is processed.
+pub struct ActionLaneDivide;
+
+impl Action for ActionLaneDivide {
+    fn name(&self) -> &str {
+        "lanedivide"
+    }
+
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.laned.is_empty() {
+            return 0;
+        }
+        let accesses = collect_laned_accesses(data);
+        if accesses.is_empty() {
+            return 0;
+        }
+        let mut count = 0u32;
+        for mode in 0..3 {
+            let mut all_storage_processed = true;
+            for access in &accesses {
+                let mut failed: std::collections::BTreeSet<VarnodeId> = std::collections::BTreeSet::new();
+                loop {
+                    let Some(vn) = find_laned_varnode(data, access.space, access.offset, access.size, &failed)
+                    else {
+                        break;
+                    };
+                    if process_varnode(data, vn, &access.reg, mode) {
+                        count += 1; // a laned varnode was split; storage may hold fewer wide varnodes now
+                    } else {
+                        failed.insert(vn); // Ghidra's `++viter`: skip this varnode
+                    }
+                }
+                if !failed.is_empty() {
+                    all_storage_processed = false;
+                }
+            }
+            if all_storage_processed {
+                break;
+            }
+        }
+        count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +850,44 @@ mod tests {
         for &c in &copies {
             assert_eq!(f.vn(f.op(c).output.unwrap()).size, 8);
         }
+    }
+
+    /// `ActionLaneDivide` discovers the lane size (8, from the SUBPIECE) via collectLaneSizes and
+    /// drives the split over the laned XMM storage — the full action path (collect_laned_accesses →
+    /// process_varnode → collect_lane_sizes → LaneDivide).
+    #[test]
+    fn action_splits_a_laned_register() {
+        use super::super::transform::LanedRegisterSet;
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        // The XMM record: whole size 16, lane sizes {8} (mask bit 8).
+        f.laned = LanedRegisterSet::from_size_masks([(16, 1u32 << 8)]);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // xmm:16 = COPY src ; STORE(ram, ptr, xmm) ; u:8 = SUBPIECE(xmm, 0)  (the lane-size hint)
+        let src = f.new_input(16, Address::new(ram, 0x100250));
+        let copyop = f.new_op(OpCode::Copy, seq, vec![src]);
+        let xmm = f.new_output(copyop, 16, Address::new(reg, 0x1200));
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x100));
+        let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, xmm]);
+        let z = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq, vec![xmm, z]);
+        f.new_output(sub, 8, Address::new(reg, 0x40));
+        f.set_blocks(vec![BlockBasic { ops: vec![copyop, store, sub], ..Default::default() }]);
+        for op in [copyop, store, sub] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+
+        let n = ActionLaneDivide.apply(&mut f);
+        assert!(n >= 1, "the action reports a lane split");
+        assert!(f.op(copyop).is_dead() && f.op(store).is_dead());
+        let stores = (0..f.num_ops() as u32)
+            .map(OpId)
+            .filter(|&o| !f.op(o).is_dead() && f.op(o).code() == OpCode::Store)
+            .count();
+        assert_eq!(stores, 2, "the 16-byte store split into two 8-byte lane stores");
     }
 
     /// A downcast SUBPIECE below a lane terminates the trace only when `allow_downcast` is set

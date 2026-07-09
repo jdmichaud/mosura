@@ -76,6 +76,12 @@ pub struct Funcdata {
     /// (`JumpBasic::findSmallestNormal`) and under-recovers the table. Orientation is a render-time
     /// concern and only needs to run in the real decompile.
     pub table_recovery_probe: bool,
+    /// The architecture's laned-register records (Ghidra `Architecture::lanerecords`, reached via
+    /// `Funcdata::getArch`). Consumed by `ActionLaneDivide` to decide which vector registers may be
+    /// lane-split. Parsed from the `.pspec` `vector_lane_sizes` by the build caller
+    /// ([`crate::lang::pspec_laned_registers`]); empty ⇒ no lane splitting (the default, so a
+    /// hand-built or lane-unaware Funcdata is unaffected).
+    pub laned: super::transform::LanedRegisterSet,
 }
 
 impl Funcdata {
@@ -101,6 +107,7 @@ impl Funcdata {
             call_guards_active: false,
             alias_boundary: None,
             table_recovery_probe: false,
+            laned: super::transform::LanedRegisterSet::default(),
         }
     }
 
