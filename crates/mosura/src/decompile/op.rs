@@ -53,6 +53,15 @@ pub struct PcodeOp {
     pub output: Option<VarnodeId>,
     /// The ordered input varnodes.
     pub inrefs: Vec<VarnodeId>,
+    /// For an INDIRECT, the op whose side effect caused it (a CALL/STORE) — Ghidra's `iop`
+    /// annotation. Ghidra stores it as the INDIRECT's `input(1) = newVarnodeIop(indeffect)`
+    /// (`funcdata_op.cc:newIndirectOp`), an annotation *varnode* whose value encodes the causing
+    /// op; the varnode form exists for graph uniformity/serialization. mosura's arena carries the
+    /// op reference directly in this field — the same representation-choice pattern as the
+    /// branch-orientation flag (Ghidra edge-reversal → a persistent op flag). The semantic content
+    /// is identical: "which op caused this INDIRECT". Read by the cover machinery, where an
+    /// INDIRECT is positioned at its causing op (Ghidra `CoverBlock::getUIndex`, `cover.cc`).
+    pub guarded_op: Option<OpId>,
 }
 
 impl PcodeOp {
@@ -67,6 +76,11 @@ impl PcodeOp {
     }
     pub fn is_dead(&self) -> bool {
         self.flags & flags::DEAD != 0
+    }
+    /// The op whose side effect caused this INDIRECT (Ghidra's `iop`), if recorded. See
+    /// [`guarded_op`](Self::guarded_op).
+    pub fn guarded_op(&self) -> Option<OpId> {
+        self.guarded_op
     }
     /// A heritage marker (MULTIEQUAL/INDIRECT) — placed by heritage, not real control flow.
     pub fn is_marker(&self) -> bool {

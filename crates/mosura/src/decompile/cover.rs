@@ -118,6 +118,23 @@ pub fn op_positions(f: &Funcdata) -> HashMap<OpId, (usize, usize)> {
     pos
 }
 
+/// The `(block, op-index)` used for `op`'s cover half-points, mapping an INDIRECT to its guarded
+/// (causing) op — Ghidra `CoverBlock::getUIndex` (`cover.cc`) treats an INDIRECT as living at the op
+/// it is indirect for (via its `iop` annotation), so all the INDIRECTs around one call collapse to
+/// that call's position and don't spuriously intersect the values flowing across it. Falls back to
+/// the INDIRECT's own position if it has no recorded [`guarded_op`](super::op::PcodeOp::guarded_op)
+/// or that op is no longer positioned (removed).
+pub fn op_index(f: &Funcdata, op: OpId, pos: &HashMap<OpId, (usize, usize)>) -> Option<(usize, usize)> {
+    if f.op(op).code() == OpCode::Indirect {
+        if let Some(g) = f.op(op).guarded_op() {
+            if let Some(&p) = pos.get(&g) {
+                return Some(p);
+            }
+        }
+    }
+    pos.get(&op).copied()
+}
+
 /// Compute the [`Cover`] of one varnode via backward liveness from its uses to its def.
 pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
     let mut cov = Cover::default();
@@ -241,5 +258,35 @@ mod tests {
         let (f, r1, r2) = build(true); // r1 still read at op3, after r2's def at op2
         let pos = op_positions(&f);
         assert!(cover_of(&f, r1, &pos).intersects(&cover_of(&f, r2, &pos)));
+    }
+
+    /// `op_index` maps an INDIRECT to its guarded (causing) op's position; a non-INDIRECT and an
+    /// INDIRECT with no recorded guarded op fall back to their own position.
+    #[test]
+    fn op_index_maps_indirect_to_guarded_op() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // op0: a CALL; op1: an INDIRECT caused by it; op2: an unrelated COPY.
+        let call = f.new_op(OpCode::Call, seq, vec![]);
+        let zero = f.new_const(8, 0);
+        let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
+        f.op_mut(ind).guarded_op = Some(call);
+        f.new_output(ind, 8, Address::new(reg, 0));
+        let c = f.new_const(8, 1);
+        let cpy = f.new_op(OpCode::Copy, seq, vec![c]);
+        f.new_output(cpy, 8, Address::new(reg, 8));
+        f.set_blocks(vec![BlockBasic { ops: vec![call, ind, cpy], ..Default::default() }]);
+
+        let pos = op_positions(&f);
+        // the INDIRECT reports the CALL's position (0), not its own (1)
+        assert_eq!(op_index(&f, ind, &pos), Some((0, 0)));
+        // an INDIRECT with no guarded op falls back to its own position
+        f.op_mut(ind).guarded_op = None;
+        assert_eq!(op_index(&f, ind, &pos), Some((0, 1)));
+        // a non-INDIRECT uses its own position
+        assert_eq!(op_index(&f, cpy, &pos), Some((0, 2)));
     }
 }

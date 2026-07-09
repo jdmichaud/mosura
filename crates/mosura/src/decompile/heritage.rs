@@ -864,6 +864,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             let seq = f.op(call).seqnum;
             let zero = f.new_const(size, 0);
             let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
+            f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);
             f.vn_mut(out).set_indirect_creation();
             f.op_mut(ind).parent = Some(bid);
@@ -875,6 +876,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             let seq = f.op(call).seqnum;
             let before = f.new_varnode(size, addr);
             let ind = f.new_op(OpCode::Indirect, seq, vec![before]);
+            f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);
             f.op_mut(ind).parent = Some(bid);
             f.op_insert_after(ind, call);

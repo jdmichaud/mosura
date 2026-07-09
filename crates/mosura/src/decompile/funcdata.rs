@@ -274,6 +274,7 @@ impl Funcdata {
             parent: None,
             output: None,
             inrefs: inputs,
+            guarded_op: None,
         });
         id
     }
@@ -411,13 +412,16 @@ impl Funcdata {
     /// the range (heritage links it to the reaching def); `out` is the post-effect value.
     ///
     /// mosura's INDIRECT is a 1-input model: Ghidra's `input(1) = newVarnodeIop(indeffect)` (the
-    /// `iop` annotation referencing the causing op) is omitted here, as mosura omits the `iop`
-    /// everywhere (a dead-code-removal detail; see `consume.rs`).
+    /// `iop` annotation referencing the causing op) is carried instead in the op's
+    /// [`guarded_op`](super::op::PcodeOp::guarded_op) field (see there for the representation choice).
+    /// The consume-side use of the `iop` (`setIndirectSource`) is still omitted (a dead-code-removal
+    /// detail; see `consume.rs`).
     pub fn new_indirect_op(&mut self, indeffect: OpId, loc: Address, size: u32) -> OpId {
         let before = self.new_varnode(size, loc);
         let pc = self.ops[indeffect.0 as usize].seqnum.pc;
         let uniq = self.ops.len() as u32;
         let op = self.new_op(OpCode::Indirect, SeqNum { pc, uniq }, vec![before]);
+        self.ops[op.0 as usize].guarded_op = Some(indeffect);
         self.new_output(op, size, loc);
         self.op_insert_before(op, indeffect);
         op
