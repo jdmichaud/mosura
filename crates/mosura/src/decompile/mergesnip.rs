@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 
-use super::cover::{cover_to_read, op_positions, Cover};
+use super::cover::{cover_to_read, op_index, op_positions, Cover};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -196,12 +196,13 @@ fn partial_copy_shadow(f: &Funcdata, a: VarnodeId, b: VarnodeId, rel_off: i32) -
 
 /// The `(block, position)` of `vn2`'s def in the cover half-point scheme (`super::cover`): a written
 /// varnode's def is its op's write position `2i+2`; a MULTIEQUAL is at the block beginning (`0`,
-/// Ghidra's `getUIndex` treats it as "very beginning"); an input/free varnode is `(0, 0)`. INDIRECT
-/// is approximated by its write position — mosura's 1-input INDIRECT lacks Ghidra's guarded-op link
-/// (no such op sits on any critical snip path here).
+/// Ghidra's `getUIndex` treats it as "very beginning"); an input/free varnode is `(0, 0)`. An
+/// INDIRECT def is positioned at its guarded (causing) op via [`op_index`] — Ghidra `getUIndex`
+/// treats an INDIRECT as living at the op it is indirect for, so an INDIRECT-created value's def
+/// sits just after the call (`2i+2`) rather than at the INDIRECT's own later slot.
 fn def_point(f: &Funcdata, vn2: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> (usize, i32) {
     if let Some(def) = f.vn(vn2).def {
-        let (b, i) = pos[&def];
+        let (b, i) = op_index(f, def, pos).expect("def op is positioned");
         match f.op(def).code() {
             OpCode::Multiequal => (b, 0),
             _ => (b, 2 * i as i32 + 2),

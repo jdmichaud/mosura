@@ -58,7 +58,7 @@ pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<Op
     let mut cov = Cover::default();
     let vn = f.vn(v);
     let (def_block, def_wpos) = if vn.is_written() {
-        let (db, di) = pos[&vn.def.unwrap()];
+        let (db, di) = op_index(f, vn.def.unwrap(), pos).expect("def op is positioned");
         (Some(db), 2 * di as i32 + 2)
     } else if vn.is_input() {
         (Some(0usize), 0)
@@ -67,7 +67,7 @@ pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<Op
     };
 
     let mut liveout: Vec<usize> = Vec::new();
-    let Some(&(ub, ui)) = pos.get(&read_op) else { return cov };
+    let Some((ub, ui)) = op_index(f, read_op, pos) else { return cov };
     if f.op(read_op).code() == OpCode::Multiequal {
         for (slot, &iv) in f.op(read_op).inrefs.iter().enumerate() {
             if iv == v {
@@ -141,7 +141,7 @@ pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>)
     let vn = f.vn(v);
     // where the value comes alive: def op (write at 2i+2), or function entry (block 0, pos 0)
     let (def_block, def_wpos) = if vn.is_written() {
-        let (db, di) = pos[&vn.def.unwrap()];
+        let (db, di) = op_index(f, vn.def.unwrap(), pos).expect("def op is positioned");
         (Some(db), 2 * di as i32 + 2)
     } else if vn.is_input() {
         (Some(0usize), 0)
@@ -157,7 +157,7 @@ pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>)
     };
     let mut liveout: Vec<usize> = Vec::new();
     for u in descend {
-        let Some(&(ub, ui)) = pos.get(&u) else { continue };
+        let Some((ub, ui)) = op_index(f, u, pos) else { continue };
         if f.op(u).code() == OpCode::Multiequal {
             // a phi input is live at the *exit* of the matching predecessor edge
             for (slot, &iv) in f.op(u).inrefs.iter().enumerate() {
