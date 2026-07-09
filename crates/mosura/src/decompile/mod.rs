@@ -46,6 +46,7 @@ pub mod types;
 pub mod infertypes;
 pub mod varmap;
 pub mod varnode;
+pub mod varnodeprops;
 
 pub use action::{Action, ActionGroup, ActionPool, ActionStart, Rule};
 pub use block::{BlockBasic, BlockId};

@@ -45,7 +45,7 @@ of the fine-grained actions.
 | Ghidra action | mosura | notes |
 |---|---|---|
 | ActionUnreachable | PARTIAL (cfg.rs) | CFG build prunes; no standalone unreachable action |
-| ActionVarnodeProps | PORTED (scope.rs) | query_properties (mapped/addrtied/persist) |
+| ActionVarnodeProps | PORTED (varnodeprops.rs `ActionMarkAddrTied`, wired; scope.rs `query_properties`) | Sets `mapped/addrtied/persist` on memory varnodes before the first pool (Ghidra's `setVarnodeProperties`/`queryProperties` + the `ActionRestructureVarnode`/`syncVarnodesWithSymbols` `nolocalalias` clear): ram→addrtied\|persist, stack→addrtied iff aliased (`AliasChecker::hasLocalAlias`, `offset >= alias_boundary`). Byte-neutral on the corpus (the addrtied/persist guards in RuleSubRight/ActionConditionalConst/SubVariableFlow are inert/absorbed on these fixtures); the real flag is the Task #1 B-ii/B-iii prereq for the MergeRequired snip gate. |
 | ActionHeritage | PORTED (heritage.rs) | see §5 |
 | ActionParamDouble | MISSING | double-precision parameter join |
 | ActionSegmentize | N/A | segmented arch only |

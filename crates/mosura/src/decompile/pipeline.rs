@@ -236,6 +236,23 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleIgnoreNan) // (124) floatprecision group
 }
 
+/// Mark address-tied varnodes (Ghidra `Funcdata::setVarnodeProperties`/`queryProperties` plus the
+/// `ActionRestructureVarnode`/`syncVarnodesWithSymbols` `nolocalalias` clear), so the downstream
+/// rules that guard on `addrtied`/`persist` see the flag. Runs after heritage/alias info is
+/// available and before the first simplification pool — mirroring Ghidra's addrtied-before-mainloop.
+/// See [`super::varnodeprops::mark_addrtied`].
+pub struct ActionMarkAddrTied;
+
+impl Action for ActionMarkAddrTied {
+    fn name(&self) -> &str {
+        "markaddrtied"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        super::varnodeprops::mark_addrtied(data);
+        1
+    }
+}
+
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
 /// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
 /// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
@@ -337,6 +354,10 @@ pub fn universal_action() -> ActionGroup {
         // group, the foundation for folding the rest of the pipeline into the loop next.
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
+        // Set addrtied/persist on memory varnodes before the first pool (Ghidra's
+        // addrtied-before-mainloop), so RuleSubRight / ActionConditionalConst's phi guards /
+        // SubVariableFlow see the flag for the whole run.
+        .then(ActionMarkAddrTied)
         .then(ActionNonzeroMask)
         .then(ActionConsume)
         .then(default_rule_pool())
