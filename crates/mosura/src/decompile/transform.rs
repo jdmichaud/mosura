@@ -162,6 +162,54 @@ impl LanedRegister {
     }
 }
 
+/// The architecture's set of laned-register records, keyed by whole-register size (Ghidra
+/// `Architecture::lanerecords`, architecture.hh:211). Built from a processor spec's
+/// `vector_lane_sizes` attributes (see [`super::super::lang::pspec_laned_registers`], the port of
+/// `Architecture::decodeRegisterData`, architecture.cc:929) and queried by *size* — the record is
+/// associated with the storage size, not its address (Ghidra `getLanedRegister`, architecture.cc:290).
+#[derive(Clone, Debug, Default)]
+pub struct LanedRegisterSet {
+    /// One record per distinct whole-register size that has lanes, ascending by size.
+    records: Vec<LanedRegister>,
+}
+
+impl LanedRegisterSet {
+    /// Build from `(register_size, lane_size_mask)` contributions, OR-merging masks for equal sizes
+    /// (Ghidra accumulates `maskList[size] |= mask` then emits one record per nonzero size,
+    /// architecture.cc:958-974).
+    pub fn from_size_masks(size_masks: impl IntoIterator<Item = (i32, u32)>) -> LanedRegisterSet {
+        let mut by_size: std::collections::BTreeMap<i32, u32> = std::collections::BTreeMap::new();
+        for (sz, m) in size_masks {
+            *by_size.entry(sz).or_insert(0) |= m;
+        }
+        let records = by_size
+            .into_iter()
+            .filter(|&(_, m)| m != 0)
+            .map(|(sz, m)| LanedRegister::new(sz, m))
+            .collect();
+        LanedRegisterSet { records }
+    }
+
+    /// The record for storage of the given byte `size`, or `None` (Ghidra `getLanedRegister`,
+    /// architecture.cc:290 — binary search by whole size).
+    pub fn get_laned_register(&self, size: i32) -> Option<&LanedRegister> {
+        self.records
+            .binary_search_by_key(&size, |r| r.whole_size())
+            .ok()
+            .map(|i| &self.records[i])
+    }
+
+    /// The smallest laned-register size, or -1 if there are none (Ghidra
+    /// `getMinimumLanedRegisterSize`, architecture.cc:312).
+    pub fn minimum_laned_register_size(&self) -> i32 {
+        self.records.first().map_or(-1, |r| r.whole_size())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // LaneDescription — logical lanes tiling a big Varnode. (Ghidra transform.hh:132 / transform.cc:24.)
 // ---------------------------------------------------------------------------------------------

@@ -475,6 +475,20 @@ impl Spec {
         }
     }
 
+    /// The byte size of the named register (a `Varnode` symbol), or `None` if there is no such
+    /// register. Used to resolve a `.pspec` `<register name=…>` to the storage size Ghidra reads
+    /// from the sleigh register table (the `vector_lane_sizes` laned-register lookup).
+    pub fn register_size(&self, name: &str) -> Option<u32> {
+        for (i, sym) in self.symbols.iter().enumerate() {
+            if let Some(Symbol::Varnode { size, .. }) = sym {
+                if self.symbol_names.get(i).map(String::as_str) == Some(name) {
+                    return Some(*size as u32);
+                }
+            }
+        }
+        None
+    }
+
     /// Build a context-register word array from named context-variable settings
     /// (e.g. the `.pspec` `<context_set>` defaults: `longMode=1`, `addrsize=2`…).
     pub fn context_from_sets(&self, sets: &[(&str, u64)]) -> Vec<u32> {
