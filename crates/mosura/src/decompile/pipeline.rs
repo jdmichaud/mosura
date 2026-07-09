@@ -404,13 +404,21 @@ pub fn universal_action() -> ActionGroup {
         .then(super::structure::ActionOrientBranches)
         .then(condnegate_pool())
         .then(super::deadcode::ActionDeadCode)
-        // NOTE: the address-tied cover-intersection snip (super::mergesnip::ActionMergeRequired,
-        // Ghidra ActionMergeRequired) is HELD unwired. Wiring it here regresses: printc inlines the
-        // single-use snapshot COPY (defeating partialmerge's snapshot) and it over-fires on stack
-        // SSA inputs (spurious self-assignments) because the candidate gate is the ram/stack space
-        // proxy rather than a real ADDRTIED flag. It needs (1) explicit-marking of the snapshot
-        // (Ghidra ActionMarkExplicit) so printc keeps it a named temp, and (2) a real addrtied flag
-        // computed before this pass. See mergesnip.rs + task-sb-spacebase-placeholder.
+        // Re-mark addrtied on memory varnodes (Ghidra sets addrtied at varnode *creation*, so
+        // pool-created ram/stack varnodes — e.g. partialmerge's SubVariableFlow-narrowed input read
+        // r0x100670:4 — are addrtied by the time the merge phase runs). mosura marks once before the
+        // first pool (for the pool guards) and again here for the snip: a once-pass approximation of
+        // addrtied-at-creation (the faithful setVarnodeProperties-at-creation is a backlog follow-up).
+        .then(ActionMarkAddrTied)
+        // Address-tied cover-intersection snip (Ghidra ActionMergeRequired, coreaction.cc:5718):
+        // snapshot each addrtied read whose live range crosses a same-address write into a COPY, so
+        // the printer doesn't re-read post-write memory at the use site. Gated on the real ADDRTIED
+        // flag, so it fires on ram globals / aliased stack slots but not on non-aliased stack temps.
+        // The snapshot only survives as a named temp once ActionMarkExplicit keeps printc from
+        // inlining the single-use COPY (Task #1 B-iii); until then printc inlines it, so partialmerge
+        // stays flat while the wire is live. A deadcode sweep follows.
+        .then(super::mergesnip::ActionMergeRequired)
+        .then(super::deadcode::ActionDeadCode)
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

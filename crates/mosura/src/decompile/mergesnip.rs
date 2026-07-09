@@ -17,11 +17,12 @@
 //! Placement: after `ActionInferTypes` + the cleanup pool (Ghidra's late "merge" phase runs after
 //! `ActionInferTypes`/cleanup, before naming/casts/print), before the read-only merge in printc; a
 //! `deadcode` sweep follows. This is a once-pass approximation of Ghidra's iterating merge phase
-//! (tied to the mainloop-repeat backlog). The addrtied gate is proxied by the space filter: within
-//! the `ram`/`stack` (processor/spacebase) spaces an unmapped memory location is addrtied per
-//! `Scope::queryProperties` (`scope::query_properties`), so the space filter carries the snip;
-//! moving mosura's print-time ADDRTIED flag earlier is a separate logged follow-up. See
-//! [[task-sb-spacebase-placeholder]].
+//! (tied to the mainloop-repeat backlog). The candidate set is gated on the real `addrtied` flag
+//! (Ghidra `Merge::mergeAddrTied`, `merge.cc:631`), which [`super::varnodeprops::mark_addrtied`]
+//! sets before the first pool (and again just before this pass, so pool-created ram/stack varnodes
+//! are marked — a once-pass approximation of Ghidra's addrtied-at-creation; see the pipeline note).
+//! So a ram global or an aliased stack slot is snipped, while a non-aliased stack SSA temp is not.
+//! See [[task-sb-spacebase-placeholder]].
 
 use std::collections::HashMap;
 
@@ -343,14 +344,16 @@ pub fn merge_required(f: &mut Funcdata) {
     if f.num_blocks() == 0 {
         return;
     }
-    // Candidate groups: all non-free varnodes per memory space. `characterize_overlap` filters
-    // non-overlapping pairs inside `eliminate_intersect`, so a per-space group is equivalent to
-    // Ghidra's maximal-overlap ranges for the snip decision.
+    // Candidate groups: the address-tied non-free varnodes, grouped by space (Ghidra
+    // `Merge::mergeAddrTied` gates the snip on `flags & addrtied`, merge.cc:631). The real ADDRTIED
+    // flag (set by `ActionMarkAddrTied`) is what excludes the non-aliased stack SSA temps a space
+    // proxy would wrongly include. `characterize_overlap` filters non-overlapping pairs inside
+    // `eliminate_intersect`, so a per-space group is equivalent to Ghidra's maximal-overlap ranges.
     let mut by_space: HashMap<SpaceId, Vec<VarnodeId>> = HashMap::new();
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
         let vn = f.vn(v);
-        if vn.is_free() || !super::scope::is_memory_space(&f.spaces, vn.loc.space) {
+        if vn.is_free() || !vn.is_addrtied() {
             continue;
         }
         by_space.entry(vn.loc.space).or_default().push(v);
@@ -424,6 +427,8 @@ mod tests {
 
         f.set_blocks(vec![BlockBasic { ops: vec![store, add], ..Default::default() }]);
 
+        // The snip is gated on the real ADDRTIED flag, which the pipeline sets before this pass.
+        super::super::varnodeprops::mark_addrtied(&mut f);
         merge_required(&mut f);
 
         // The ADD must now read a unique COPY of the pre-store value, not the ram varnode directly.
@@ -450,6 +455,7 @@ mod tests {
         let _t = f.new_output(add, 4, Address::new(uniq, 0x10));
         f.set_blocks(vec![BlockBasic { ops: vec![add], ..Default::default() }]);
 
+        super::super::varnodeprops::mark_addrtied(&mut f);
         merge_required(&mut f);
 
         assert_eq!(f.op(add).input(0), Some(g_read), "unrelated read must not be snipped");
