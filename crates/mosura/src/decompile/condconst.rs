@@ -256,7 +256,7 @@ fn place_copy(f: &mut Funcdata, phi_op: OpId, bl: usize, const_vn: VarnodeId) ->
 
 /// Ghidra `FlowBlock::findCommonBlock` (`block.cc:796`): the most immediate dominator common to all
 /// blocks in `block_set` (which must be non-empty).
-fn find_common_block(dom: &Dominators, block_set: &[usize]) -> usize {
+pub(crate) fn find_common_block(dom: &Dominators, block_set: &[usize]) -> usize {
     let mut marked: Vec<usize> = Vec::new();
     let mut res = block_set[0];
     let mut best_index = res;

@@ -62,7 +62,7 @@ of the fine-grained actions.
 | ActionNonzeroMask | PORTED (nzmask.rs) | calc_nzmask |
 | ActionInferTypes | PORTED (infertypes.rs) | see §6 |
 | ActionLaneDivide | MISSING | SIMD lane splitting |
-| ActionMultiCse | MISSING | cross-block CSE (mosura has in-block cse_find_in_block only) |
+| ActionMultiCse | MISSING | MULTIEQUAL-input cross-block CSE (multicse.cc). Distinct from RuleSelectCse, which DOES do cross-block cseElimination as of Task #1; and from in-block cse_find_in_block. |
 | ActionShadowVar | MISSING | shadow-varnode detection |
 | ActionDeindirect | PARTIAL (recover.rs) | resolve_call_output; deindirect fixture works |
 | ActionStackPtrFlow | PARTIAL (stackvars.rs) | |
@@ -113,7 +113,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 |---|---|---|
 | RuleEarlyRemoval | PORTED (rules.rs; byte-neutral, 78× on namespace) — + ram-persist guard (Ghidra's commented isPersist, load-bearing under mosura's ram-root global liveness) |
 | RuleTermOrder | PORTED |
-| RuleSelectCse | PORTED (+ isCseMatch output-size guard `8dd6d80`; + Task #20 `cd0fd9e` isCseMatch INPUT rule — constant inputs match by VALUE not size, so the division sign correction `x s>> (w-1)` merges with the compiler's own #0x3f:4/#0x3f:8) |
+| RuleSelectCse | PORTED — full `cseEliminateList`/`cseElimination` (funcdata_op.cc:1418/1356): getCseHash (op.cc:130) list collect + isCseMatch (op.cc:153) + **CROSS-BLOCK** elimination (Task #1: keep the dominating op, else build at the common dominator via `find_common_block`; the prior same-block-only limitation is removed — it fragmented impliedfield's shared union field). (+ earlier: isCseMatch output-size guard `8dd6d80`; Task #20 `cd0fd9e` constant inputs match by VALUE not size, so `x s>> (w-1)` merges with the compiler's own #0x3f:4/#0x3f:8) |
 | RuleCollectTerms | PORTED (N-ary, `cd0fd9e` Task #20 — Ghidra's TermOrder::collect + Varnode::termOrder + distributeIntMultAdd; the whole additive tree is linearized so `(SDIV + s) - s` cancels, replacing the binary as_term collector) |
 | RulePullsubMulti | MISSING |
 | RulePullsubIndirect | MISSING |

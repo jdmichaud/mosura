@@ -4,6 +4,7 @@
 
 use super::action::Rule;
 use super::block::BlockId;
+use super::dominator::Dominators;
 use super::funcdata::Funcdata;
 use super::op::{OpId, SeqNum};
 use super::opcode::OpCode;
@@ -1140,11 +1141,166 @@ impl Rule for RuleLessNotEqual {
     }
 }
 
-/// `RuleSelectCse` (`ruleaction.cc`): common-subexpression elimination over the duplicated
+/// Ghidra `PcodeOp::getCseHash` (`op.cc:130`): a hash of output size + opcode + input identities,
+/// the primary duplicate-calculation test for [`cse_eliminate_list`]. Returns 0 (unhashable) for
+/// `COPY` (`op.cc:135`, "let copy propagation deal with this"). Ghidra's eval-type unary|binary
+/// guard (`op.cc:134`) is subsumed here: [`RuleSelectCse`] only feeds this SUBPIECE/INT_SRIGHT ops,
+/// both binary. Input identity: a constant hashes its value, a non-constant its varnode id (Ghidra
+/// hashes `getCreateIndex()` — mosura's `VarnodeId` is the equivalent stable per-varnode id).
+fn cse_hash(f: &Funcdata, op: OpId) -> u32 {
+    let o = f.op(op);
+    if o.code() == OpCode::Copy {
+        return 0;
+    }
+    let Some(out) = o.output else { return 0 };
+    let mut hash: u32 = ((f.vn(out).size) << 8) | (o.code() as u32);
+    for i in 0..o.num_inputs() {
+        let vn = o.input(i).unwrap();
+        hash = (hash << 8) | (hash >> (u32::BITS - 8));
+        let v = f.vn(vn);
+        hash ^= if v.is_constant() { v.constant_value() as u32 } else { vn.0 };
+    }
+    hash
+}
+
+/// Ghidra `PcodeOp::isCseMatch` (`op.cc:153`): the full test that two ops compute the identical
+/// value — same output size, same opcode (never `COPY`), same input count, and each input pair is
+/// the same varnode or two constants with equal value (constant *size* is NOT compared — a shift
+/// amount `#0x3f:8` and `#0x3f:4` are the same value, which is what lets RuleDivOpt's sign
+/// correction `x s>> (w-1)` merge with the compiler's own). The eval-type guard (`op.cc:156`) is
+/// subsumed by the SUBPIECE/INT_SRIGHT opcode filter.
+fn is_cse_match(f: &Funcdata, op1: OpId, op2: OpId) -> bool {
+    let (o1, o2) = (f.op(op1), f.op(op2));
+    let (Some(out1), Some(out2)) = (o1.output, o2.output) else { return false };
+    if f.vn(out1).size != f.vn(out2).size {
+        return false;
+    }
+    if o1.code() != o2.code() || o1.code() == OpCode::Copy {
+        return false;
+    }
+    if o1.num_inputs() != o2.num_inputs() {
+        return false;
+    }
+    (0..o1.num_inputs()).all(|i| {
+        let (a, b) = (o1.input(i).unwrap(), o2.input(i).unwrap());
+        a == b
+            || (f.vn(a).is_constant()
+                && f.vn(b).is_constant()
+                && f.vn(a).constant_value() == f.vn(b).constant_value())
+    })
+}
+
+/// Ghidra `Funcdata::cseElimination` (`funcdata_op.cc:1356`): assuming `op1` and `op2` are a
+/// depth-1 common subexpression, eliminate the redundancy and return the surviving (dominating)
+/// op. If one op's block dominates the other's, the dominating op is kept; if neither dominates,
+/// a fresh copy of the op is built at the end of their common dominator and BOTH are eliminated.
+/// The other op's output uses are repointed via `total_replace`. `dom` is the dominator tree.
+fn cse_elimination(f: &mut Funcdata, op1: OpId, op2: OpId, dom: &Dominators) -> OpId {
+    let p1 = f.op(op1).parent.expect("cse op has a parent");
+    let p2 = f.op(op2).parent.expect("cse op has a parent");
+    let out1 = f.op(op1).output.expect("cse op has output");
+    let out2 = f.op(op2).output.expect("cse op has output");
+
+    let replace = if p1 == p2 {
+        // Same block: keep whichever appears first (Ghidra compares getSeqNum().getOrder()).
+        let ops = &f.block(p1).ops;
+        let pos = |o: OpId| ops.iter().position(|&x| x == o).unwrap_or(usize::MAX);
+        if pos(op1) < pos(op2) { op1 } else { op2 }
+    } else {
+        // Cross-block: the common dominator decides (Ghidra FlowBlock::findCommonBlock, block.cc:736,
+        // reused from the condconst port). common==one parent => that op dominates; else build anew.
+        let common = super::condconst::find_common_block(dom, &[p1.0 as usize, p2.0 as usize]);
+        if common == p1.0 as usize {
+            op1
+        } else if common == p2.0 as usize {
+            op2
+        } else {
+            build_cse_at_common(f, op1, BlockId(common as u32))
+        }
+    };
+
+    if replace != op1 {
+        let rout = f.op(replace).output.unwrap();
+        f.total_replace(out1, rout);
+        f.op_destroy(op1);
+    }
+    if replace != op2 {
+        let rout = f.op(replace).output.unwrap();
+        f.total_replace(out2, rout);
+        f.op_destroy(op2);
+    }
+    replace
+}
+
+/// Build a fresh copy of `template`'s op at the end of `common` (the neither-dominates arm of
+/// Ghidra `cseElimination`, `funcdata_op.cc:1374`): same opcode, the output at `template`'s output
+/// size and address, and each input carried over (constants rebuilt via `new_const`, as Ghidra
+/// does with `newConstant`). Inserted before `common`'s terminating branch (the `place_copy`
+/// insertion discipline).
+fn build_cse_at_common(f: &mut Funcdata, template: OpId, common: BlockId) -> OpId {
+    let opc = f.op(template).code();
+    let out_size = f.vn(f.op(template).output.unwrap()).size;
+    let out_addr = f.vn(f.op(template).output.unwrap()).loc;
+    let inputs: Vec<VarnodeId> = (0..f.op(template).num_inputs())
+        .map(|i| {
+            let v = f.op(template).input(i).unwrap();
+            if f.vn(v).is_constant() {
+                f.new_const(f.vn(v).size, f.vn(v).constant_value())
+            } else {
+                v
+            }
+        })
+        .collect();
+    let last = f.block(common).ops.last().copied();
+    let branch_last = last.filter(|&o| f.op(o).code().terminates_block());
+    let seq_pc = match (last, branch_last) {
+        (_, Some(b)) => f.op(b).seqnum.pc,
+        (Some(l), None) => f.op(l).seqnum.pc,
+        (None, None) => f.op(template).seqnum.pc,
+    };
+    let newop = f.new_op(opc, SeqNum { pc: seq_pc, uniq: 0 }, inputs);
+    f.new_output(newop, out_size, out_addr);
+    match (branch_last, last) {
+        (Some(b), _) => f.op_insert_before(newop, b),
+        (None, Some(l)) => f.op_insert_after(newop, l),
+        (None, None) => f.op_insert_begin(newop, common),
+    }
+    newop
+}
+
+/// Ghidra `Funcdata::cseEliminateList` (`funcdata_op.cc:1418`): the `list` is (hash, op) pairs of
+/// descendants of a single varnode. Sort by hash so duplicate calculations are adjacent, then walk
+/// adjacent pairs and, on a hash match that survives the full `is_cse_match` test, eliminate the
+/// redundancy via [`cse_elimination`]. Returns the varnodes produced by the surviving ops.
+///
+/// Ghidra's `isHeritaged(outvn)` guard (`funcdata_op.cc:1436`) is omitted: it is `heritagePass(addr)
+/// >= 0`, always true for these SUBPIECE/INT_SRIGHT outputs which are minted during/after heritage,
+/// and mosura's pre-existing same-block RuleSelectCse never carried it.
+fn cse_eliminate_list(f: &mut Funcdata, mut list: Vec<(u32, OpId)>, dom: &Dominators) -> Vec<VarnodeId> {
+    let mut outlist = Vec::new();
+    if list.is_empty() {
+        return outlist;
+    }
+    list.sort_by_key(|&(h, _)| h); // stable; matches Ghidra stable_sort(compareCseHash)
+    for i in 0..list.len() - 1 {
+        let (h1, op1) = list[i];
+        let (h2, op2) = list[i + 1];
+        if h1 == h2 && !f.op(op1).is_dead() && !f.op(op2).is_dead() && is_cse_match(f, op1, op2) {
+            let resop = cse_elimination(f, op1, op2, dom);
+            outlist.push(f.op(resop).output.unwrap());
+        }
+    }
+    outlist
+}
+
+/// `RuleSelectCse` (`ruleaction.cc:178`): common-subexpression elimination over the duplicated
 /// ops that heritage's read-size normalization (and div-correction) produce — `SUBPIECE` and
-/// `INT_SRIGHT`. Two siblings reading the same varnode with depth-1 functional equality (same
-/// opcode, equal operands) collapse to one, so later rules (signed-compare idioms, `x&x`,
-/// `x^x`) see the *same* varnode instead of two equal-but-distinct copies.
+/// `INT_SRIGHT`. Collects the descendants of the op's first input that share its opcode and, via
+/// [`cse_eliminate_list`] → [`cse_elimination`], collapses depth-1 functionally-equal siblings to
+/// one — INCLUDING across blocks (keeping the dominating op, or hoisting to the common dominator).
+/// So later rules (signed-compare idioms, `x&x`, `x^x`) and the explicit/implied-varnode marker see
+/// the *same* varnode instead of equal-but-distinct copies in each branch (impliedfield's union
+/// field never formed while the two `SUBPIECE(param_1,4)` copies stayed distinct).
 pub struct RuleSelectCse;
 
 impl Rule for RuleSelectCse {
@@ -1155,57 +1311,33 @@ impl Rule for RuleSelectCse {
         vec![OpCode::Subpiece, OpCode::IntSright]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        let (Some(vn), Some(out), Some(parent)) =
-            (data.op(op).input(0), data.op(op).output, data.op(op).parent)
-        else {
-            return 0;
-        };
+        let Some(vn) = data.op(op).input(0) else { return 0 };
         let opc = data.op(op).code();
+        // Collect the descendants of in(0) that share this opcode and are cse-hashable (Ghidra
+        // RuleSelectCse::applyOp, ruleaction.cc:198).
+        let mut list: Vec<(u32, OpId)> = Vec::new();
         for other in data.vn(vn).descend.clone() {
-            if other == op || data.op(other).code() != opc || data.op(other).parent != Some(parent) {
+            if data.op(other).code() != opc {
                 continue;
             }
-            let Some(other_out) = data.op(other).output else { continue };
-            // Ghidra `PcodeOp::isCseMatch` (op.cc): outputs must be the same size. Two SUBPIECEs
-            // reading the same varnode at the same offset but truncating to different widths (an
-            // x86 AL vs EAX sub-register read) are NOT the same value and must not be merged —
-            // merging one into the other yields a size-inconsistent op. (mosura's other CSE path,
-            // `cse_find_in_block` via `functional_equality_level0`, already guards on size.)
-            if data.vn(out).size != data.vn(other_out).size {
+            let hash = cse_hash(data, other);
+            if hash == 0 {
                 continue;
             }
-            // Ghidra `PcodeOp::isCseMatch` (op.cc:162): inputs match if they are the same varnode
-            // or two constants with equal value — the constant *size* is NOT compared (a shift
-            // amount `#0x3f:8` and `#0x3f:4` are the same value), which is what lets the division
-            // sign correction `x s>> (w-1)` created by RuleDivOpt merge with the compiler's own.
-            if data.op(op).num_inputs() != data.op(other).num_inputs() {
-                continue;
-            }
-            let eq = (0..data.op(op).num_inputs()).all(|i| {
-                let (a, b) = (data.op(op).input(i).unwrap(), data.op(other).input(i).unwrap());
-                a == b
-                    || (data.vn(a).is_constant()
-                        && data.vn(b).is_constant()
-                        && data.vn(a).constant_value() == data.vn(b).constant_value())
-            });
-            if !eq {
-                continue;
-            }
-            // keep the earlier op in the block; repoint the later's uses and destroy it
-            let pos = |o: OpId| data.block(parent).ops.iter().position(|&x| x == o).unwrap_or(usize::MAX);
-            let (keep_out, kill, kill_out) =
-                if pos(op) <= pos(other) { (out, other, other_out) } else { (other_out, op, out) };
-            for u in data.vn(kill_out).descend.clone() {
-                for slot in 0..data.op(u).num_inputs() {
-                    if data.op(u).input(slot) == Some(kill_out) {
-                        data.op_set_input(u, slot, keep_out);
-                    }
-                }
-            }
-            data.op_destroy(kill);
-            return 1;
+            list.push((hash, other));
         }
-        0
+        if list.len() <= 1 {
+            return 0;
+        }
+        // Only reached when in(0) has >1 same-opcode descendant (a real duplicate), so the
+        // dominator computation is transient — it disappears once the duplicates are collapsed.
+        let dom = super::dominator::compute(data);
+        let vlist = cse_eliminate_list(data, list, &dom);
+        if vlist.is_empty() {
+            0
+        } else {
+            1
+        }
     }
 }
 
@@ -7717,6 +7849,106 @@ mod tests {
         }
         assert_eq!(RuleSubvarSubpiece.apply_op(op1, &mut f), 1);
         assert_eq!(f.op(op1).code(), OpCode::Copy);
+    }
+
+    #[test]
+    fn selectcse_hoists_to_common_dominator_when_neither_dominates() {
+        // Diamond 0 -> {1,2} -> 3. Blocks 1 and 2 each compute SUBPIECE(RAX,4); neither dominates
+        // the other, so Ghidra `cseElimination` (funcdata_op.cc:1374) builds the op at their common
+        // dominator (block 0, before its CBRANCH) and merges both. The corpus exercises only the
+        // same-block and one-dominates arms — this pins the neither-dominates arm.
+        use crate::decompile::BlockBasic;
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let rax = f.new_input(8, Address::new(reg, 0x0));
+
+        // block 0: a terminating CBRANCH (the hoisted op must land before it)
+        let cond = f.new_input(1, Address::new(reg, 0x200));
+        let target = f.new_const(8, 0x100);
+        let br = f.new_op(OpCode::Cbranch, seq, vec![target, cond]);
+
+        // block 1 and block 2: identical SUBPIECE(rax, 4) at distinct output addresses
+        let c4a = f.new_const(4, 4);
+        let op_a = f.new_op(OpCode::Subpiece, seq, vec![rax, c4a]);
+        let out_a = f.new_output(op_a, 4, Address::new(reg, 0x40));
+        let c4b = f.new_const(4, 4);
+        let op_b = f.new_op(OpCode::Subpiece, seq, vec![rax, c4b]);
+        let out_b = f.new_output(op_b, 4, Address::new(reg, 0x48));
+
+        // block 3: join reads BOTH, so the merge is observable
+        let add = f.new_op(OpCode::IntAdd, seq, vec![out_a, out_b]);
+        f.new_output(add, 4, Address::new(reg, 0x50));
+
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![br], out_edges: vec![BlockId(1), BlockId(2)], ..Default::default() },
+            BlockBasic {
+                ops: vec![op_a],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+                ..Default::default()
+            },
+            BlockBasic {
+                ops: vec![op_b],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+                ..Default::default()
+            },
+            BlockBasic { ops: vec![add], in_edges: vec![BlockId(1), BlockId(2)], ..Default::default() },
+        ]);
+        for b in 0..4u32 {
+            for op in f.block(BlockId(b)).ops.clone() {
+                f.op_mut(op).parent = Some(BlockId(b));
+            }
+        }
+
+        assert_eq!(RuleSelectCse.apply_op(op_a, &mut f), 1);
+        assert!(f.op(op_a).is_dead());
+        assert!(f.op(op_b).is_dead());
+        // a single hoisted SUBPIECE now sits in block 0, before the CBRANCH
+        let b0 = f.block(BlockId(0)).ops.clone();
+        assert_eq!(b0.len(), 2);
+        assert_eq!(f.op(b0[0]).code(), OpCode::Subpiece);
+        assert_eq!(f.op(b0[1]).code(), OpCode::Cbranch);
+        // the join reads that single output for BOTH operands
+        let hout = f.op(b0[0]).output.unwrap();
+        assert_eq!(f.op(add).input(0), Some(hout));
+        assert_eq!(f.op(add).input(1), Some(hout));
+    }
+
+    #[test]
+    fn selectcse_keeps_dominating_op_across_blocks() {
+        // 0 -> 1, both compute SUBPIECE(RAX,4). Block 0 dominates block 1, so the block-0 op is
+        // kept and block-1's is repointed to it (Ghidra cseElimination common==op1->parent arm).
+        use crate::decompile::BlockBasic;
+        let (mut f, _) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let rax = f.new_input(8, Address::new(reg, 0x0));
+        let c4a = f.new_const(4, 4);
+        let op0 = f.new_op(OpCode::Subpiece, seq, vec![rax, c4a]); // block 0
+        let out0 = f.new_output(op0, 4, Address::new(reg, 0x40));
+        let c4b = f.new_const(4, 4);
+        let op1 = f.new_op(OpCode::Subpiece, seq, vec![rax, c4b]); // block 1
+        let out1 = f.new_output(op1, 4, Address::new(reg, 0x48));
+        let use1 = f.new_op(OpCode::IntAdd, seq, vec![out1, out0]);
+        f.new_output(use1, 4, Address::new(reg, 0x50));
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![op0], out_edges: vec![BlockId(1)], ..Default::default() },
+            BlockBasic { ops: vec![op1, use1], in_edges: vec![BlockId(0)], ..Default::default() },
+        ]);
+        for b in 0..2u32 {
+            for op in f.block(BlockId(b)).ops.clone() {
+                f.op_mut(op).parent = Some(BlockId(b));
+            }
+        }
+        assert_eq!(RuleSelectCse.apply_op(op1, &mut f), 1);
+        assert!(!f.op(op0).is_dead()); // dominating op kept
+        assert!(f.op(op1).is_dead()); // dominated op removed
+        assert_eq!(f.op(use1).input(0), Some(out0));
+        assert_eq!(f.op(use1).input(1), Some(out0));
     }
 
     // The firing path of the remaining 3 driving rules is covered end-to-end by the 20 SubvariableFlow
