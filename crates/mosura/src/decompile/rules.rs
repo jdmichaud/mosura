@@ -134,6 +134,15 @@ impl Rule for RuleConstFold {
             inputs.push((vn.constant_value(), vn.size));
         }
         let out_size = data.vn(out).size;
+        // Ghidra `PcodeOp::isCollapsible` (op.cc:115) refuses to collapse an op whose output exceeds
+        // `sizeof(uintb)` (8 bytes); `RuleCollapseConstants` (ruleaction.cc:3854) gates on it. mosura
+        // constants carry a u64 value (`constant_value()`), so folding a wider output would silently
+        // drop the high bits — e.g. `INT_SEXT` of a top-bit-set 8-byte magic would become a 16-byte
+        // constant with a zero high word (an effective zero-extension). Leave the op in place so the
+        // width-aware readers (`is_constant_extended`) see the real `INT_SEXT`.
+        if out_size > 8 {
+            return 0;
+        }
         let Some(val) = eval_const(code, &inputs, out_size) else { return 0 };
         // Rewrite in place as `out = COPY const` (Ghidra `RuleCollapseConstants`): unlink the old
         // constant inputs, link the collapsed constant as input 0, become a COPY.

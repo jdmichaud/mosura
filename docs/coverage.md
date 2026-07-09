@@ -163,7 +163,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleThreeWayCompare | PORTED (rules.rs; byte-neutral, 3 unit tests — detect a three-way `zext(V<W)+zext(V<=W)-1` (3 add/const permutations + partial form, via detectThreeWay/testCompareEquivalence helpers) and fold a secondary compare of it vs a small constant back to a direct `V`/`W` compare (24-case form table); 0 firings on corpus — the C++ spaceship idiom doesn't occur in the fixtures) |
 | RuleXorCollapse | PORTED |
 | RuleAddMultCollapse | PORTED (relocated to the main pool slot 52 — Task #20 keystone) |
-| RuleCollapseConstants | PORTED (= RuleConstFold) |
+| RuleCollapseConstants | PORTED (= RuleConstFold; + the previously-omitted `PcodeOp::isCollapsible` size guard restored (op.cc:115 `getOut()->getSize() > sizeof(uintb)` → no fold) — mosura constants carry a u64, so folding a >8-byte output silently zero-extended, e.g. turning the sign-extended 64-bit division magic into the unrecoverable magic65; restoring the guard collapsed modulo's 64-bit signed `%0x3c`/`%100` byte-exact (0.893→0.950) and fixed floatconv's same-class truncating fold (0.578→0.596)) |
 | RuleTransformCpool | BLOCKED (constant-pool subsystem absent — transforms CPUI_CPOOLREF by looking the reference up in the constant pool; mosura has the CPOOLREF opcode but no constant-pool resolution subsystem) |
 | RulePropagateCopy | PORTED (+ isReturnCopy RETURN guard `5a8ac03`) |
 | RuleZextEliminate | PORTED |
