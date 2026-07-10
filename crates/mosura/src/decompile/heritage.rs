@@ -131,10 +131,35 @@ impl LocationMap {
         }
     }
 
+    /// The merged range `(base, size)` covering `off` in `space`, or `None` if `off` is not covered.
+    /// Ghidra's `disjoint` task-list entry for a heritaged location — `(*liter).first,
+    /// (*liter).second.size` (`heritage.cc:2708`) — the cumulative union of every overlapping
+    /// access footprint. [`normalize_ranges`] keys the per-range width normalization on this so a
+    /// location widened on a later pass takes its cumulative width.
+    pub fn merged_range(&self, space: SpaceId, off: u64) -> Option<(u64, u32)> {
+        let map = self.themap.get(&space)?;
+        match map.range(..=off).next_back() {
+            Some((&k, sp)) if off.wrapping_sub(k) < sp.size as u64 => Some((k, sp.size)),
+            _ => None,
+        }
+    }
+
     /// Ghidra `LocationMap::clear`: reset to empty.
     pub fn clear(&mut self) {
         self.themap.clear();
     }
+}
+
+/// The x86-64 vector (XMM/YMM/ZMM) register file begins at register offset `0x1200`; everything
+/// below it (GP/flags/segment/x87) is scalar. `movaps`/`xorps` write these *laned* registers in
+/// 4-byte lanes while floats read 8 bytes, so they need Ghidra's `refinement` partition
+/// ([`refine_overlaps`]) rather than the whole-range `guard()` normalize ([`normalize_ranges`]).
+const XMM_BASE: u64 = 0x1200;
+
+/// Whether a register offset falls in the laned (XMM) vector file, so its overlapping accesses are
+/// partitioned by [`refine_overlaps`] and skipped by [`normalize_ranges`].
+fn is_laned_register(spaces: &super::space::SpaceManager, sp: SpaceId, off: u64) -> bool {
+    spaces.by_name("register") == Some(sp) && off >= XMM_BASE
 }
 
 /// Per-space heritage bookkeeping (Ghidra's `HeritageInfo`, `heritage.cc:179`). Heritage is
@@ -218,13 +243,20 @@ fn write_loc(f: &Funcdata, op: OpId) -> Option<Loc> {
     Some((vn.loc.space, vn.loc.offset, vn.size))
 }
 
-/// Refinement (read side) — Ghidra's `normalizeReadSize`. Where a location is written at
-/// a single width `S` but also *read* at a smaller width `s` at the same offset (a
-/// sub-register: EAX of a wider RAX def), rewrite each narrow read as `SUBPIECE(W, 0)` of
-/// a full-width read `W`, so every access to the location is uniform width and SSA links
-/// it cleanly. Conservative: only locations whose writes are all one width are touched;
-/// partial writes (the PIECE / write side) and cross-offset overlap (CONCAT) are not yet
-/// handled, so those reads remain independent (an under-linking, never a miswiring).
+/// Pass-0 batch read-normalization (Ghidra's `normalizeReadSize`, heritage.cc:382). Where a
+/// location is written at a single width `S` but also *read* at a smaller width `s` at the same
+/// offset (a sub-register: EAX of a wider RAX def), rewrite each narrow read as `SUBPIECE(W, 0)` of
+/// a full-width read `W`, so every access to the location is uniform width and SSA links it cleanly.
+/// Conservative: only locations whose writes are all one width are touched; partial writes (the
+/// PIECE / write side) and cross-offset overlap (CONCAT) are not handled, so those reads remain
+/// independent (an under-linking, never a miswiring).
+///
+/// INTERIM — this is the pass-0 batch adaptation the faithful per-range [`normalize_ranges`] will
+/// replace. It is single-write-width-keyed (bails on a range with two write widths) and read-only,
+/// so it cannot normalize a re-heritaged range's now-narrow accesses — the gap `normalize_ranges`
+/// closes for re-entry. Its RETIREMENT is coupled to the call-output-in-RAX fix (task #6): retiring
+/// it now surfaces that separate adaptation (mosura's CALLIND output lands in RAX, so a whole-range
+/// `guard()` normalize PIECEs a merge Ghidra never makes — deindirect2). Both land with mainloop S8-2.
 fn normalize_read_size(f: &mut Funcdata) {
     let nb = f.num_blocks();
     let mut write_sizes: HashMap<(SpaceId, u64), HashSet<u32>> = HashMap::new();
@@ -300,6 +332,169 @@ fn normalize_read_size(f: &mut Funcdata) {
             new_ops.push(op);
         }
         f.set_block_ops(super::block::BlockId(b as u32), new_ops);
+    }
+}
+
+/// Faithful port of Ghidra's per-range width normalization — `Heritage::guard`'s read/write
+/// normalize step (`heritage.cc:1172-1182`), driven for every heritaged range by
+/// `Heritage::placeMultiequals` (`heritage.cc:2608-2629`), EVERY pass. For each merged range
+/// `[base, base+size)` that this pass's eligible free accesses span, every *free read* narrower
+/// than `size` is rewritten `SUBPIECE(whole, overlap)` (`normalizeReadSize`, `heritage.cc:382`)
+/// and every *write* narrower than `size` is widened into a whole-range write reassembled by
+/// PIECE (`normalizeWriteSize`, `heritage.cc:416`, via [`normalize_write_size`]), so every access
+/// to the range is uniform `size` and the per-location SSA links it as one variable.
+///
+/// The range `size` is the cumulative `globaldisjoint` merge (`heritage.cc:2618`), queried via
+/// [`LocationMap::merged_range`] on a clone seeded with `f.globaldisjoint` (the prior passes'
+/// ranges) and this pass's free-access footprints — Ghidra's `disjoint` task list. Because it is
+/// keyed on the cumulative width, a location WIDENED on a later pass (re-heritage) re-normalizes its
+/// now-narrow accesses to the new width — e.g. revisit's RAM range `r0x100074:4`, where the 2-byte
+/// `AX` write becomes `CONCAT22(SUB42(r74:4,#2), AX)` and the 2-byte reads become `SUB42(r74:4,…)`.
+/// This is the mechanism the pass-0 batch heuristics (`normalize_read_size`'s single-write-width read
+/// hack + [`refine_overlaps`]' register-only Normalize mode) cannot reach.
+///
+/// SCOPE (S8-1): this fires ONLY on **widening re-entry** — a range already heritaged at some width
+/// in an earlier pass, now merged WIDER (Ghidra re-heritages a grown range, heritage.cc:2711). The
+/// pass-0 batch still does all first-pass normalization, and a same-width re-read of an already-
+/// heritaged range (a 2-byte `AX` inside an 8-byte `RAX` call output — deindirect2) is left to it,
+/// its retirement coupled to the call-output-in-RAX fix (task #6). No range widens without the
+/// mainloop restart, so this is a dormant no-op today (byte-identical) — it is the mainloop brick
+/// that makes S8-2's scoped re-heritage-after-pool restart correct (revisit's `r74:2`→`r74:4`).
+///
+/// Structure vs Ghidra: mosura heritages each exact `(space, offset, size)` as its own SSA
+/// location and runs this BEFORE candidate gathering (rather than inside `guard()`), so afterward
+/// every in-range access is at the merged width and the existing per-location cover / phi / rename
+/// reconstructs Ghidra's whole-range MULTIEQUAL identically. Laned/XMM ranges — Ghidra's
+/// `refinement` *partition* — are excluded here and handled by [`refine_overlaps`].
+fn normalize_ranges(f: &mut Funcdata, pass: i32) {
+    if f.num_blocks() == 0 {
+        return;
+    }
+    let infos = build_info_list(&f.spaces);
+    let eligible = |sp: SpaceId| {
+        let info = &infos[sp.0 as usize];
+        info.is_heritaged() && info.delay <= pass
+    };
+    // Build this pass's merged ranges in a clone of globaldisjoint (Ghidra's `disjoint` task list):
+    // start from the cumulative prior-pass ranges, then add every eligible free-access footprint in
+    // address order (matching `beginLoc`'s address-ordered walk, `heritage.cc:2699`), so re-entry
+    // ranges take their cumulative width and the LocationMap left-overlap merge is faithful.
+    let mut footprints: Vec<Loc> = Vec::new();
+    let mut writes: Vec<Loc> = Vec::new();
+    for b in 0..f.num_blocks() {
+        for &op in &f.blocks()[b].ops {
+            for slot in 0..f.op(op).num_inputs() {
+                if let Some((sp, off, sz)) = read_loc(f, op, slot) {
+                    if eligible(sp)
+                        && !is_laned_register(&f.spaces, sp, off)
+                        && !f.vn(f.op(op).input(slot).unwrap()).is_heritage_known()
+                    {
+                        footprints.push((sp, off, sz));
+                    }
+                }
+            }
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if eligible(sp) && !is_laned_register(&f.spaces, sp, off) {
+                    footprints.push((sp, off, sz));
+                    writes.push((sp, off, sz));
+                }
+            }
+        }
+    }
+    if footprints.is_empty() {
+        return;
+    }
+    footprints.sort_unstable_by_key(|&(sp, off, sz)| (sp.0, off, sz));
+    let mut merged = f.globaldisjoint.clone();
+    for &(sp, off, sz) in &footprints {
+        merged.add(sp, off, sz, pass);
+    }
+    // Re-entry gate (S8-1): normalize only ranges that WIDENED vs a prior pass — a location already
+    // heritaged at some width, now merged wider (Ghidra re-heritages a grown range, heritage.cc:2711,
+    // and `guard()` re-normalizes its now-narrow accesses to the new width; revisit's `r74:2` grown to
+    // `r74:4`). `f.globaldisjoint` (unmutated here) holds only prior-pass ranges, so a merged range
+    // wider than the prior range covering its base is a genuine widening. A SAME-width re-read of an
+    // already-heritaged range (a 2-byte `AX` contained in an 8-byte `RAX` call output — deindirect2)
+    // is NOT widening and stays with the pass-0 batch; retiring that is coupled to the call-output-in-
+    // RAX fix (task #6, with S8-2). No widening happens without the mainloop restart, so this is a
+    // dormant no-op on the current pipeline (byte-identical) — the brick for S8-2's re-versioning.
+    let widened: HashSet<(SpaceId, u64)> = footprints
+        .iter()
+        .filter_map(|&(sp, off, _)| {
+            let (base, size) = merged.merged_range(sp, off)?;
+            match f.globaldisjoint.merged_range(sp, base) {
+                Some((_, prior)) if size > prior => Some((sp, base)),
+                _ => None,
+            }
+        })
+        .collect();
+    if widened.is_empty() {
+        return;
+    }
+    // Per merged range, the maximum contained write size (Ghidra's `collect` `maxsize`,
+    // heritage.cc:336). A range that no single write covers AND is wider than 4 bytes is Ghidra's
+    // *refinement* (partition) case (`placeMultiequals`, heritage.cc:2610: `size > 4 && max < size`),
+    // NOT the whole-range `guard()` normalize — so it is skipped here (for non-laned ranges mosura
+    // keeps refinement a deliberate no-op, leaving the pieces independent, as [`refine_overlaps`]
+    // does; the laned partition is handled there). Normalize thus fires only where Ghidra's `guard()`
+    // would: a single write covers the range, or the range is <= 4 bytes.
+    let mut max_write: HashMap<(SpaceId, u64), u32> = HashMap::new();
+    for (sp, off, sz) in writes {
+        if let Some((base, _)) = merged.merged_range(sp, off) {
+            let e = max_write.entry((sp, base)).or_insert(0);
+            *e = (*e).max(sz);
+        }
+    }
+    let is_refine_range = |sp: SpaceId, base: u64, size: u32| {
+        size > 4 && max_write.get(&(sp, base)).copied().unwrap_or(0) < size
+    };
+    // Apply normalizeReadSize / normalizeWriteSize per block, driven by the merged range width.
+    for b in 0..f.num_blocks() {
+        let ops = f.blocks()[b].ops.clone();
+        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
+        let bid = super::block::BlockId(b as u32);
+        for op in ops {
+            let seq = f.op(op).seqnum;
+            // Reads: a free read narrower than its merged range becomes `SUBPIECE(whole, overlap)`
+            // of a fresh whole-range read, which the per-location rename links to the covering def.
+            for slot in 0..f.op(op).num_inputs() {
+                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
+                if !eligible(sp) || is_laned_register(&f.spaces, sp, off) {
+                    continue;
+                }
+                if f.vn(f.op(op).input(slot).unwrap()).is_heritage_known() {
+                    continue;
+                }
+                let Some((base, size)) = merged.merged_range(sp, off) else { continue };
+                if sz >= size || is_refine_range(sp, base, size) || !widened.contains(&(sp, base)) {
+                    continue;
+                }
+                let whole = f.new_varnode(size, super::space::Address::new(sp, base));
+                let cst = f.new_const(4, off - base);
+                let subop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
+                f.op_mut(subop).parent = Some(bid);
+                let subout = f.new_output_unique(subop, sz);
+                f.op_set_input(op, slot, subout);
+                new_ops.push(subop); // splice the SUBPIECE in just before its reader
+            }
+            // Writes: a write narrower than its merged range is widened into a whole-range write,
+            // pulling the surrounding bytes from the range's previous value and PIECE-ing them back.
+            let mut after: Vec<OpId> = Vec::new();
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if eligible(sp) && !is_laned_register(&f.spaces, sp, off) {
+                    if let Some((base, size)) = merged.merged_range(sp, off) {
+                        if size > sz && !is_refine_range(sp, base, size) && widened.contains(&(sp, base)) {
+                            normalize_write_size(
+                                f, op, sp, base, off, sz, size, bid, seq, &mut new_ops, &mut after,
+                            );
+                        }
+                    }
+                }
+            }
+            new_ops.push(op);
+            new_ops.extend(after);
+        }
+        f.set_block_ops(bid, new_ops);
     }
 }
 
@@ -456,12 +651,11 @@ fn normalize_write_size(
 /// functions see no change.
 pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
     let Some(reg) = f.spaces.by_name("register") else { return };
-    // The vector (XMM/YMM/ZMM) register file begins at register offset 0x1200; everything below it
-    // (GP/flags/segment/x87) is scalar. Lane refinement is needed only for these *laned* registers
+    // The vector (XMM/YMM/ZMM) register file begins at register offset `XMM_BASE`; everything below
+    // it (GP/flags/segment/x87) is scalar. Lane refinement is needed only for these *laned* registers
     // (Ghidra's `LanedRegister`/`ActionLaneDivide` model) — `movaps`/`xorps` write them in 4-byte
-    // lanes while floats read 8 bytes. Restricting to them keeps the existing `normalize_read_size`
-    // path (and the whole scalar SSA) untouched, so the change is a no-op outside SIMD code.
-    const XMM_BASE: u64 = 0x1200;
+    // lanes while floats read 8 bytes. Restricting the *partition* to them keeps the existing scalar
+    // `Normalize` path (and the whole scalar SSA) untouched, so the change is a no-op outside SIMD code.
     let is_laned = |off: u64| off >= XMM_BASE;
     // 1. Collect every laned-register access (free reads as (op,slot); writes as op outputs).
     struct Acc {
@@ -510,12 +704,12 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
         }
     }
     // 3. Per range, classify: `Refine` (a partition — no single write covers it, Ghidra's
-    //    `placeMultiequals` guard `size > 4 && max_write < size`, kept laned-only), or `Normalize`
-    //    (a single write of the whole range covers it, so Ghidra's `guard` normalizes every narrow
-    //    read to a `SUBPIECE` of the whole and every narrow write to a `normalizeWriteSize` `PIECE`
-    //    into the whole). On GP registers `Normalize` is the faithful uniform `guard()`; on laned
-    //    (XMM) registers it keeps the pre-existing tuned subset (`mixed_at_base` + the self-extension
-    //    skip), the justified adaptation that the broad guard() would otherwise over-collapse.
+    //    `placeMultiequals` guard `size > 4 && max_write < size`, kept laned-only) or `Normalize`
+    //    (a single write covers the whole range, so Ghidra's `guard` normalizes every narrow read to
+    //    a `SUBPIECE` of the whole and every narrow write to a `normalizeWriteSize` `PIECE` into it).
+    //    The laned partition is what the whole-range normalize cannot express; the scalar `Normalize`
+    //    is the pass-0 batch's uniform `guard()`, retired once the faithful [`normalize_ranges`] takes
+    //    over first-pass normalization (coupled to the call-output-in-RAX fix, with mainloop S8-2).
     enum Mode {
         Refine(Vec<u32>),
         Normalize { size: u32 },
@@ -558,9 +752,10 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                 }
             }
             // A range a single write fully covers: every sub-read/sub-write is normalized to the
-            // whole (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). `mixed_at_base` flags
-            // a base written at more than one width (the SIMD lane-clear+narrow-write shape) and is
-            // consulted only on the laned path to preserve its tuned subset.
+            // whole (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). This is the pass-0
+            // batch's scalar `Normalize` half; the faithful per-pass whole-range normalize
+            // ([`normalize_ranges`]) is wired re-entry-only for now (S8-1), so first-pass
+            // normalization stays here until the batch is retired with the call-output-in-RAX fix.
             if size > 1 && max_write == size {
                 return Mode::Normalize { size: size as u32 };
             }
@@ -944,8 +1139,10 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     }
     let pass = f.heritage_pass;
     if pass == 0 {
-        // Pass-0 setup, like Ghidra's `splitmanage.split()` / refinement at `pass == 0`: the
-        // cross-width refinement that makes overlapping sub-register accesses uniform width.
+        // Pass-0 setup, like Ghidra's `splitmanage.split()` / refinement at `pass == 0`: the laned
+        // (XMM) partition, then the batch read-normalization that makes overlapping scalar
+        // sub-register accesses uniform width. This is the interim first-pass normalization; the
+        // faithful per-range `normalize_ranges` (below) takes it over — coupled to task #6 — with S8-2.
         let t0 = std::time::Instant::now();
         refine_overlaps(f, dom);
         if super::action::perf::enabled() {
@@ -956,6 +1153,15 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         if super::action::perf::enabled() {
             super::action::perf::record("heritage", "normalize_read_size", t0.elapsed());
         }
+    }
+    // Per-pass, per-range width normalization (Ghidra's `guard()` normalizeReadSize/normalizeWriteSize,
+    // driven by `placeMultiequals` every pass). Wired RE-ENTRY-ONLY for S8-1 (a dormant no-op until a
+    // later pass re-heritages a widened range — the mainloop brick for S8-2), so it runs every pass
+    // but only rewrites accesses whose location an earlier pass already heritaged.
+    let t0 = std::time::Instant::now();
+    normalize_ranges(f, pass);
+    if super::action::perf::enabled() {
+        super::action::perf::record("heritage", "normalize_ranges", t0.elapsed());
     }
     // The per-location cover heritaged this pass — Ghidra's `disjoint` task list, built from
     // `globaldisjoint.add`. Process candidates in address order (as Ghidra's `beginLoc` does) so the
@@ -1431,5 +1637,204 @@ mod tests {
         assert_eq!(m.find_pass(reg, 0x8), -1, "gap between ranges is uncovered");
         // A later-pass range starting inside the first and reaching into the gap ⇒ partial (1).
         assert_eq!(m.add(reg, 0x2, 6, 1), 1, "overlaps the older [0,4) on the left");
+    }
+
+    /// `normalize_ranges` (Ghidra `guard()` normalizeReadSize/normalizeWriteSize, heritage.cc:382/416)
+    /// on the re-entry mixed-width shape: a RAM range `[0x100074, +4)` a 4-byte write covers, with a
+    /// free 2-byte read and a 2-byte write at the base. The narrow read becomes `SUBPIECE(r74:4, #0)`
+    /// and the narrow write is widened to a whole-range `PIECE(SUBPIECE(r74:4,#2), <write>)` — exactly
+    /// revisit's oracle IR (`r74:2 = SUB42(r74:4,#0)`, `r74:4 = CONCAT22(SUB42(r74:4,#2), AX)`). This
+    /// is the width unification the retired pass-0 batch could not reach on a re-heritaged RAM range.
+    #[test]
+    fn normalize_ranges_reenters_mixed_width_range() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0x100074u64;
+
+        // A 4-byte covering write `r74:4 = COPY in` (max_write == range size 4 ⇒ a Normalize range).
+        let cov_in = f.new_input(4, Address::new(reg, 0x40));
+        let op_cover = f.new_op(OpCode::Copy, seq, vec![cov_in]);
+        f.new_output(op_cover, 4, Address::new(ram, base));
+        // A free 2-byte read at the base feeding `AX = r74:2 + #0x64`.
+        let narrow_read = f.new_varnode(2, Address::new(ram, base));
+        let addc = f.new_const(2, 0x64);
+        let op_read = f.new_op(OpCode::IntAdd, seq, vec![narrow_read, addc]);
+        let ax = f.new_output(op_read, 2, Address::new(reg, 0x0));
+        // A 2-byte write at the base `r74:2 = COPY AX`.
+        let op_write = f.new_op(OpCode::Copy, seq, vec![ax]);
+        f.new_output(op_write, 2, Address::new(ram, base));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![op_cover, op_read, op_write], ..Default::default() }]);
+        for &op in &[op_cover, op_read, op_write] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+
+        // The 2-byte location was heritaged on an earlier pass; pass 1 widens it to 4 bytes — a
+        // genuine re-entry, the only case normalize_ranges fires (S8-1 re-entry scope).
+        f.globaldisjoint.add(ram, base, 2, 0);
+        normalize_ranges(&mut f, 1); // ram is delay-1
+
+        // normalizeReadSize: the 2-byte read became `SUBPIECE(r74:4, #0)` and the reader is rewired.
+        let r_in = f.op(op_read).input(0).unwrap();
+        let read_sub = f.vn(r_in).def.expect("reader input now has a def");
+        assert_eq!(f.op(read_sub).code(), OpCode::Subpiece, "narrow read normalized to SUBPIECE");
+        let whole = f.op(read_sub).input(0).unwrap();
+        assert_eq!(
+            (f.vn(whole).loc.space, f.vn(whole).loc.offset, f.vn(whole).size),
+            (ram, base, 4),
+            "SUBPIECE reads the whole 4-byte range",
+        );
+        assert_eq!(f.vn(f.op(read_sub).input(1).unwrap()).loc.offset, 0, "read overlap is 0");
+
+        // normalizeWriteSize: the 2-byte write is widened to a whole-range PIECE ending at r74:4,
+        // whose high input is `SUBPIECE(r74:4, #2)` of the previous value (overlap 0, mostsig 2).
+        let piece = f.blocks()[0]
+            .ops
+            .iter()
+            .copied()
+            .find(|&op| {
+                f.op(op).code() == OpCode::Piece
+                    && f.op(op)
+                        .output
+                        .is_some_and(|o| f.vn(o).loc == Address::new(ram, base) && f.vn(o).size == 4)
+            })
+            .expect("narrow write widened to a whole-range PIECE at r74:4");
+        let most = f.op(piece).input(0).unwrap();
+        let mostdef = f.vn(most).def.expect("high piece has a def");
+        assert_eq!(f.op(mostdef).code(), OpCode::Subpiece, "high piece is a SUBPIECE of the old value");
+        assert_eq!(f.vn(f.op(mostdef).input(1).unwrap()).loc.offset, 2, "high piece SUBPIECE at overlap 2");
+        // The original write op no longer targets the range loc directly (retargeted to a unique).
+        assert_ne!(write_loc(&f, op_write), Some((ram, base, 2)), "narrow write retargeted off the range");
+    }
+
+    /// `normalize_ranges` is DORMANT with no re-entry (S8-1 scope): the same mixed-width range, but
+    /// with NO prior-pass heritage of the location, is left completely untouched — the pass-0 batch
+    /// owns first-pass normalization, so this is byte-identical on the current pipeline. (This is the
+    /// property that lets the faithful normalize land as a no-op brick for the S8-2 mainloop.)
+    #[test]
+    fn normalize_ranges_no_reentry_is_dormant() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0x100074u64;
+
+        let cov_in = f.new_input(4, Address::new(reg, 0x40));
+        let op_cover = f.new_op(OpCode::Copy, seq, vec![cov_in]);
+        f.new_output(op_cover, 4, Address::new(ram, base));
+        let narrow_read = f.new_varnode(2, Address::new(ram, base));
+        let addc = f.new_const(2, 0x64);
+        let op_read = f.new_op(OpCode::IntAdd, seq, vec![narrow_read, addc]);
+        let ax = f.new_output(op_read, 2, Address::new(reg, 0x0));
+        let op_write = f.new_op(OpCode::Copy, seq, vec![ax]);
+        f.new_output(op_write, 2, Address::new(ram, base));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![op_cover, op_read, op_write], ..Default::default() }]);
+        for &op in &[op_cover, op_read, op_write] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        let before = f.blocks()[0].ops.len();
+        // NO globaldisjoint pre-seed ⇒ no location was heritaged earlier ⇒ nothing is re-entry.
+        normalize_ranges(&mut f, 1);
+        assert_eq!(f.blocks()[0].ops.len(), before, "no ops inserted without re-entry");
+        assert!(
+            !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
+            "dormant: no normalization without re-entry",
+        );
+    }
+
+    /// `normalize_ranges` inserts nothing when a widened range's accesses already fill the new width:
+    /// a 4-byte write and 4-byte read fill a range grown to 4, so no SUBPIECE/PIECE is needed (Ghidra's
+    /// `guard()` normalizes only `vn < size`). Exercises the widening path with no narrow access.
+    #[test]
+    fn normalize_ranges_single_width_is_noop() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0x2000u64;
+
+        let cov_in = f.new_input(4, Address::new(reg, 0x40));
+        let op_cover = f.new_op(OpCode::Copy, seq, vec![cov_in]);
+        f.new_output(op_cover, 4, Address::new(ram, base));
+        let read4 = f.new_varnode(4, Address::new(ram, base));
+        let addc = f.new_const(4, 1);
+        let op_read = f.new_op(OpCode::IntAdd, seq, vec![read4, addc]);
+        f.new_output(op_read, 4, Address::new(reg, 0x0));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![op_cover, op_read], ..Default::default() }]);
+        for &op in &[op_cover, op_read] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        f.globaldisjoint.add(ram, base, 2, 0); // prior heritage 2 bytes; this pass widens to 4
+        let before = f.blocks()[0].ops.len();
+        normalize_ranges(&mut f, 1);
+        assert_eq!(f.blocks()[0].ops.len(), before, "no ops inserted");
+        assert!(
+            !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
+            "uniform-width range untouched",
+        );
+    }
+
+    /// A range no single write covers and wider than 4 bytes is Ghidra's *refinement* (partition)
+    /// case (`placeMultiequals`, heritage.cc:2610: `size > 4 && max < size`), NOT whole-range
+    /// normalize. For non-laned ranges mosura keeps refinement a deliberate no-op (see
+    /// [`refine_overlaps`]), so `normalize_ranges` must skip it — leaving the pieces independent, not
+    /// widening the narrow writes into bogus PIECEs (the stackreturn/impliedfield regression cause).
+    #[test]
+    fn normalize_ranges_skips_wide_uncovered_refinement_range() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0x3000u64;
+
+        // Two adjacent 4-byte writes (base, base+4) — no single write covers the union — and a free
+        // 8-byte read spanning both, so the merged range is `[base, +8)` with max_write 4 < 8.
+        let in0 = f.new_input(4, Address::new(reg, 0x40));
+        let w0 = f.new_op(OpCode::Copy, seq, vec![in0]);
+        f.new_output(w0, 4, Address::new(ram, base));
+        let in1 = f.new_input(4, Address::new(reg, 0x48));
+        let w1 = f.new_op(OpCode::Copy, seq, vec![in1]);
+        f.new_output(w1, 4, Address::new(ram, base + 4));
+        let read8 = f.new_varnode(8, Address::new(ram, base));
+        let op_read = f.new_op(OpCode::Copy, seq, vec![read8]);
+        f.new_output(op_read, 8, Address::new(reg, 0x0));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![w0, w1, op_read], ..Default::default() }]);
+        for &op in &[w0, w1, op_read] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        // Prior heritage 4 bytes; this pass widens to 8 (a genuine widening re-entry) — but the
+        // widened range no single write covers, so the refinement gate must still skip it.
+        f.globaldisjoint.add(ram, base, 4, 0);
+        normalize_ranges(&mut f, 1);
+        assert!(
+            !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
+            "refinement range left independent (no whole-range normalize)",
+        );
+        assert_eq!(write_loc(&f, w0), Some((ram, base, 4)), "narrow write NOT widened");
     }
 }

@@ -334,8 +334,8 @@ Guards/normalize/refine are the restructure remainder (Task #3).
 | guardLoads / generateLoadGuard / analyzeNewLoadGuards | BLOCKED(needs discoverIndexedStackPointers; Task #10) |
 | discoverIndexedStackPointers | BLOCKED (Task #10) |
 | guardOutputOverlap / guardOutputOverlapStack / tryOutputOverlapGuard | MISSING |
-| normalizeReadSize | PORTED (normalize_read_size) — documented x86-64 adaptation |
-| normalizeWriteSize | PORTED (normalize_write_size) — the widened-write PIECE source (Task #8/#12) |
+| normalizeReadSize | PORTED — two paths. (1) FAITHFUL per-range `normalize_ranges` (heritage.rs, Ghidra `guard()`:1172-1182 driven per merged range by `placeMultiequals`:2608-2629, keyed on the cumulative `globaldisjoint` merge via new `LocationMap::merged_range`); wired at top of `heritage_pass` every pass but **scoped WIDENING-re-entry-only** for S8-1 (a range grown vs a prior pass) → dormant no-op on the current pipeline (byte-identical), the mainloop brick for S8-2's revisit re-versioning. 4 synthetic unit tests. (2) `normalize_read_size` — the INTERIM pass-0 batch adaptation (single-write-width-keyed, read-only) that still does first-pass normalization. **Batch RETIREMENT (path 1 drives first-pass normalize too) is coupled to call-output-in-RAX (task #6)**: retiring it now regresses deindirect2 −0.116 by exposing that adaptation (mosura's CALLIND output lands in RAX, so a whole-range `guard()` normalize PIECEs a RAX+AX merge Ghidra never makes). Both land with mainloop S8-2. |
+| normalizeWriteSize | PORTED (normalize_write_size) — the widened-write PIECE source; used by both `normalize_read_size`'s refine and the faithful `normalize_ranges` (Task #8/#12) |
 | refineRead / refineWrite / refinement / buildRefinement / splitByRefinement | PARTIAL (refine_overlaps, split_by_refinement) — partition-broadening → Task #3/#15 |
 | splitJoinRead / splitJoinWrite / processJoins / concatPieces / splitPieces | PARTIAL (heritage.rs join handling) |
 | protectFreeStores / reprocessFreeStores | MISSING |
