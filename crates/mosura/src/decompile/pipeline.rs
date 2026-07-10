@@ -358,6 +358,18 @@ pub fn universal_action() -> ActionGroup {
         // addrtied-before-mainloop), so RuleSubRight / ActionConditionalConst's phi guards /
         // SubVariableFlow see the flag for the whole run.
         .then(ActionMarkAddrTied)
+        // Split laned (vector) registers into explicit lanes (Ghidra ActionLaneDivide). PLACEMENT
+        // DIVERGENCE (documented, FORCED not chosen): Ghidra's literal slot is the `stackstall` group
+        // AFTER oppool1 (coreaction.cc:5652). mosura places it here — post-heritage, BEFORE the first
+        // default_rule_pool — because mosura resolves stack stores pre-pool (recover_stack in
+        // ActionHeritage) and the first pool copy-propagates the laned register away, so at Ghidra's
+        // slot there is no live laned register to divide. Post-heritage the laned XMM is still live
+        // (r0x1200:16 with its SUBPIECE + COPY-to-slot descendants), the shape LaneDivide needs. This
+        // is the pipeline-shape approximation family (same class as the once-pass placements). LINKAGE:
+        // if/when the pre-pool stack resolution is replaced by the faithful spacebase/StackPtrFlow
+        // model (backlog), re-evaluate moving this to Ghidra's stackstall slot. Inert unless the
+        // Funcdata carries laned-register records (parsed from the pspec by the build caller).
+        .then(super::lanedivide::ActionLaneDivide)
         .then(ActionNonzeroMask)
         .then(ActionConsume)
         .then(default_rule_pool())

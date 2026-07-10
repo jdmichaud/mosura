@@ -61,7 +61,7 @@ of the fine-grained actions.
 | ActionSpacebase | PARTIAL (stackvars.rs) | stack-pointer flow |
 | ActionNonzeroMask | PORTED (nzmask.rs) | calc_nzmask |
 | ActionInferTypes | PORTED (infertypes.rs) | see §6 |
-| ActionLaneDivide | MISSING | SIMD lane splitting |
+| ActionLaneDivide | PORTED-INERT (transform.rs TransformManager S1 `c65b2cd`; lanedivide.rs LaneDivide S2 `7d3fb71`; ActionLaneDivide + pipeline wire S3a `73bd676`; Spec.laned/loader plumbing S3b) | SIMD lane splitting. Full faithful subsystem, wired post-heritage/pre-pool, but the loader does NOT populate `Spec.laned` (see the HELD-INERT note in `speccache::get`): live it net-regresses the corpus (avg 0.8936→0.8935) — mosura over-splits XMM into 4-byte lanes where Ghidra uses 8-byte. REACTIVATE (re-add the populate line in `speccache::get` + `lang::load`) when EITHER: (i) [primary] P6 stops the spurious 4-byte XMM output/param trials (`characterizeAsOutput` over-widen — a dead `SUBPIECE r0x1200:16→:4` of XMM0 that Ghidra lacks, so `collectLaneSizes` smallest-first picks 4); (ii) spacebase/StackPtrFlow moves stack resolution post-pool → Ghidra's stackstall slot usable (measured: post-pool the laned reg copy-props away, no split). `floatcast` already +0.038 → the split is right once fed correct-width reads. |
 | ActionMultiCse | MISSING | MULTIEQUAL-input cross-block CSE (multicse.cc). Distinct from RuleSelectCse, which DOES do cross-block cseElimination as of Task #1; and from in-block cse_find_in_block. |
 | ActionShadowVar | MISSING | shadow-varnode detection |
 | ActionDeindirect | PARTIAL (recover.rs) | resolve_call_output; deindirect fixture works |
@@ -264,8 +264,9 @@ Residual: the 64-bit signed 65-bit-magic case (modulo -0.012) = Task #9.
 
 **RuleSubfloatConvert** is BLOCKED, not a mechanical tail rule: it is a thin dispatcher (`subflow.cc:3489`)
 into `SubfloatFlow : public TransformManager` (subflow.cc). That needs (a) the generic `TransformManager`/
-`TransformVar` transform framework — which mosura lacks; its `SubvariableFlow` (subvarflow.rs) is a
-bespoke integer-subvalue port, not the reusable base SubfloatFlow extends — and (b) `FloatFormat`-driven
+`TransformVar` transform framework — NOW PORTED (transform.rs, task #6 S1: TransformManager/TransformVar/
+TransformOp/LaneDescription/LanedRegister, the reusable base SubfloatFlow/SplitFlow/SplitDatatype extend;
+mosura's `SubvariableFlow` in subvarflow.rs remains a bespoke integer-subvalue port) — and (b) `FloatFormat`-driven
 precision tracing (maxPrecision/exceedsPrecision/traceForward/traceBackward/doTrace/apply). This is the
 float-precision-narrowing subsystem (Task #11 float / a TransformManager port), not the rule tail. It is
 `FLOAT_FLOAT2FLOAT`'s real handler; RuleFloatCast (also on FLOAT_FLOAT2FLOAT) is the small in-place

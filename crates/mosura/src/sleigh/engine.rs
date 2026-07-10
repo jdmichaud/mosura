@@ -366,6 +366,13 @@ pub struct Spec {
     context_vars: std::collections::HashMap<String, (u32, u32)>,
     /// Number of 32-bit words in the context register.
     context_words: usize,
+    /// Laned-register metadata from the processor spec's `vector_lane_sizes` (Ghidra
+    /// `Architecture::lanerecords`, architecture.hh:211), as `(whole_register_size, lane_size_mask)`
+    /// pairs merged by size. Filled by the loader ([`crate::speccache::get`] / [`crate::lang::load`])
+    /// from the `.pspec`, not from the `.sla`; empty for a bare [`Spec::from_sla`]. The decompiler's
+    /// `build` wraps these in a `LanedRegisterSet` for `ActionLaneDivide`. Kept as primitives here so
+    /// the `sleigh` layer needs no dependency on the `decompile` types.
+    pub laned: Vec<(i32, u32)>,
 }
 
 impl Spec {
@@ -459,6 +466,7 @@ impl Spec {
             root_subtable,
             context_vars,
             context_words,
+            laned: Vec::new(),
         })
     }
 
@@ -473,6 +481,20 @@ impl Spec {
             Some(Symbol::Operand(o)) => Some(o),
             _ => None,
         }
+    }
+
+    /// The byte size of the named register (a `Varnode` symbol), or `None` if there is no such
+    /// register. Used to resolve a `.pspec` `<register name=…>` to the storage size Ghidra reads
+    /// from the sleigh register table (the `vector_lane_sizes` laned-register lookup).
+    pub fn register_size(&self, name: &str) -> Option<u32> {
+        for (i, sym) in self.symbols.iter().enumerate() {
+            if let Some(Symbol::Varnode { size, .. }) = sym {
+                if self.symbol_names.get(i).map(String::as_str) == Some(name) {
+                    return Some(*size as u32);
+                }
+            }
+        }
+        None
     }
 
     /// Build a context-register word array from named context-variable settings
