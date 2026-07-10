@@ -38,6 +38,11 @@ pub mod flags {
     /// Ghidra `PcodeOp::fallthru_true` (op.hh:84): on a CBRANCH, fall-through happens on the \e true
     /// condition (paired with `BOOLEAN_FLIP` to record how the structurer oriented the branch).
     pub const FALLTHRU_TRUE: u32 = 0x100;
+    /// Ghidra `PcodeOp::return_copy` (op.hh:94): a "return form" COPY that holds a global (persistent)
+    /// value to the end of the function — the COPY `Heritage::guardReturns` inserts before each RETURN
+    /// for a persistent range (heritage.cc:1686, `markReturnCopy`). Its presence blocks
+    /// `RulePropagateCopy` (ruleaction.cc:3933) so the COPY keeps reading the store version directly.
+    pub const RETURN_COPY: u32 = 0x200;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -101,6 +106,16 @@ impl PcodeOp {
     /// Ghidra `PcodeOp::isCall` — a CALL/CALLIND/CALLOTHER.
     pub fn is_call(&self) -> bool {
         matches!(self.opcode, OpCode::Call | OpCode::Callind | OpCode::Callother)
+    }
+    /// Ghidra `PcodeOp::isReturnCopy` (op.hh:222) — a global-holding return-form COPY (see
+    /// [`flags::RETURN_COPY`]). Set on the `guardReturns` COPY via [`Self::mark_return_copy`].
+    pub fn is_return_copy(&self) -> bool {
+        self.flags & flags::RETURN_COPY != 0
+    }
+    /// Ghidra `Funcdata::markReturnCopy` (funcdata.hh:452) — mark a COPY as holding a global value
+    /// to (past) the end of the function.
+    pub fn mark_return_copy(&mut self) {
+        self.flags |= flags::RETURN_COPY;
     }
     /// Ghidra `PcodeOp::isBooleanFlip` (op.hh:191) — on a CBRANCH, the branch is taken when the
     /// condition is \e false (see [`flags::BOOLEAN_FLIP`]).

@@ -116,6 +116,10 @@ struct PrintC<'a> {
     /// HighVariable representative → the frame offset of its `stack` member, so every member of the
     /// HighVariable (including merged register versions) is named `xStack_NN` by that offset.
     high_stack_off: HashMap<u32, u64>,
+    /// HighVariable representative → the `ram` address of its global member, so a value merged into
+    /// a global's HighVariable (e.g. `iRam.. = COPY(param_1 + 1)` after `merge_copy`) is named and
+    /// materialized by that global's address `iRam<addr>` — the ram analogue of `high_stack_off`.
+    high_ram_off: HashMap<u32, u64>,
     /// Signed frame offset → type prefix of the `stack` slot living there, so an address-of-local
     /// `&<prefix>Stack_NN` carries the slot's prefix (`&iStack_28`); defaults to `x` (xunknown).
     stack_prefix: HashMap<i64, &'static str>,
@@ -128,6 +132,10 @@ struct PrintC<'a> {
     /// at one of these locations names `param_N`. This is XMM-aware (a `float8` in `XMM0` is a real
     /// parameter), unlike the old GP-only register table, and carries the convention's ordering.
     param_index: HashMap<Address, u32>,
+    /// Frozen HighVariable representative per Varnode (`high_of[v] = h.high(v)` snapshot), so the
+    /// `&self` explicitness test can compare two Varnodes' HighVariables without the `&mut` the
+    /// union-find `high()` needs. Used by [`Self::is_explicit`]'s cross-high COPY arm.
+    high_of: Vec<u32>,
 }
 
 impl PrintC<'_> {
@@ -193,6 +201,21 @@ impl<'a> PrintC<'a> {
         if vn.is_input() {
             return true;
         }
+        // Ghidra `ActionMarkExplicit::baseExplicit` (coreaction.cc:3021): an address-tied Varnode is
+        // explicit — "pointers may reference it", and it is the materialization of a store to that
+        // address (`xRam.. = ..`, `xStack_NN = ..`). Without this, a global store made single-use by
+        // the `guardReturns` terminal COPY would be inlined into that hidden COPY and disappear.
+        // (Ghidra's SUBPIECE/ZEXT/PIECE sub-cases — an addrtied piece of a larger variable hidden as
+        // a copymarker — need VariablePiece, the P4/P8 debt, and are not modeled here.)
+        if vn.is_addrtied() {
+            return true;
+        }
+        // A value merged into a global's HighVariable is that global (Ghidra `baseExplicit`'s
+        // `numInstances() > 1` rule for the addrtied case): it materializes the store `iRam.. = ..`
+        // and must not be inlined into the hidden same-high COPY that carries it there.
+        if self.high_ram_off.contains_key(&self.high_of[v.0 as usize]) {
+            return true;
+        }
         if !vn.is_written() {
             return true;
         }
@@ -212,6 +235,22 @@ impl<'a> PrintC<'a> {
             // implied even with multiple uses — unless one of those uses is a phi.
             if matches!(self.f.op(def).code(), OpCode::Ptradd | OpCode::Ptrsub) {
                 return vn.descend.iter().any(|&u| self.f.op(u).code() == OpCode::Multiequal);
+            }
+            // The snapshot COPY that `ActionMergeRequired` inserts for an address-tied value read
+            // before its address is overwritten (`u = COPY(glob(i))`) stays cross-high — `merge_copy`
+            // declines it on the Cover intersection with the whole global — so it must render as an
+            // explicit `iVar = <snapshot>` even though it is single-use (Ghidra `markInternalCopies`
+            // keeps the cross-high COPY printing). Gated on a PERSISTENT (global) input: that is
+            // the snapshot case (a global read before a later store overwrites it); an ordinary
+            // register COPY, or a snapshot of a non-persistent escaped stack slot, stays inlined.
+            if self.f.op(def).code() == OpCode::Copy {
+                if let Some(inv) = self.f.op(def).input(0) {
+                    if self.f.vn(inv).is_persist()
+                        && self.high_of[v.0 as usize] != self.high_of[inv.0 as usize]
+                    {
+                        return true;
+                    }
+                }
             }
         }
         if vn.descend.len() != 1 {
@@ -247,6 +286,12 @@ impl<'a> PrintC<'a> {
         // like Ghidra's `<typeprefix>Ram<addr>` (e.g. `iRam0000000000101000`)
         if Some(vn.loc.space) == self.ram_space {
             let (off, prefix) = (vn.loc.offset, type_prefix(&self.type_of(v)));
+            return format!("{prefix}Ram{off:016x}");
+        }
+        // a value merged into a global's HighVariable (e.g. the `param_1 + 1` that `merge_copy`
+        // unified with `iRam..`) is named by that global's address, too.
+        if let Some(&off) = self.high_ram_off.get(&self.h.high(v)) {
+            let prefix = type_prefix(&self.type_of(v));
             return format!("{prefix}Ram{off:016x}");
         }
         // a value left in a caller-saved register by a call (an INDIRECT def) is Ghidra's
@@ -1191,7 +1236,15 @@ impl<'a> PrintC<'a> {
                 }
                 _ => {
                     if let Some(outv) = o.output {
-                        if self.is_explicit(outv) {
+                        // A COPY between two Varnodes of the SAME HighVariable is a hidden internal
+                        // copy (Ghidra `Merge::markInternalCopies` → `opMarkNonPrinting`): `x = x`
+                        // is redundant, so it is not emitted. This hides the `guardReturns` terminal
+                        // COPY that holds a global to the end of the function (same-high, no reader).
+                        let hidden = o.code() == OpCode::Copy
+                            && o.input(0).is_some_and(|inv| {
+                                self.high_of[outv.0 as usize] == self.high_of[inv.0 as usize]
+                            });
+                        if !hidden && self.is_explicit(outv) {
                             let lhs = self.name_of(outv);
                             let rhs = self.render_op(op).0;
                             let _ = writeln!(out, "{pad}{lhs} = {rhs};");
@@ -1545,6 +1598,31 @@ pub fn print_c(f: &Funcdata) -> String {
     if super::action::perf::enabled() {
         super::action::perf::record("print", "merge", t0.elapsed());
     }
+    // Freeze the HighVariable representative of every Varnode, so the `&self` explicitness test can
+    // compare two Varnodes' HighVariables (the cross-high COPY arm) without the `&mut` `h.high` needs.
+    let high_of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
+    // A global's HighVariable → its ram address, so a value merged into it is named/materialized by
+    // that address (the ram analogue of `high_stack_off`, populated below). A HighVariable that also
+    // holds a `stack` member is named by the stack slot instead (a stack local initialized from a
+    // global stays `fStack_18`, not the global's `fRam..`), so those reps are excluded.
+    let mut high_ram_off: HashMap<u32, u64> = HashMap::new();
+    if let Some(ram) = f.spaces.by_name("ram") {
+        let stack = f.spaces.by_name("stack");
+        let mut stack_reps: HashSet<u32> = HashSet::new();
+        if stack.is_some() {
+            for i in 0..f.num_varnodes() as u32 {
+                if Some(f.vn(VarnodeId(i)).loc.space) == stack {
+                    stack_reps.insert(h.high(VarnodeId(i)));
+                }
+            }
+        }
+        for i in 0..f.num_varnodes() as u32 {
+            let v = VarnodeId(i);
+            if f.vn(v).loc.space == ram && f.vn(v).is_addrtied() && !stack_reps.contains(&h.high(v)) {
+                high_ram_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
+            }
+        }
+    }
     let mut high_stack_off: HashMap<u32, u64> = HashMap::new();
     let mut slot_write = vec![false; f.num_varnodes()];
     // The type prefix of each `stack` slot, keyed by its signed frame offset, so an address-of-local
@@ -1590,9 +1668,11 @@ pub fn print_c(f: &Funcdata) -> String {
         decls: Vec::new(),
         slot_write,
         high_stack_off,
+        high_ram_off,
         stack_prefix,
         force_explicit: HashSet::new(),
         param_index,
+        high_of,
     };
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();

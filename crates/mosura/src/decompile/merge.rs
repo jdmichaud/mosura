@@ -10,10 +10,11 @@
 
 use std::collections::HashMap;
 
+use super::block::BlockId;
 use super::cover::{all_covers, Cover};
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
-use super::space::SpaceId;
+use super::space::{Address, SpaceId};
 use super::varnode::VarnodeId;
 
 /// A union-find over Varnodes: each class is one HighVariable (one C variable).
@@ -67,12 +68,17 @@ fn mergeable(f: &Funcdata, v: VarnodeId) -> bool {
     !vn.is_constant() && vn.flags & super::varnode::flags::ANNOTATION == 0
 }
 
-/// Build the HighVariables for `f`: the required marker merges (`Merge::mergeMarker`)
-/// followed by cover-based merging of non-interfering same-storage varnodes.
+/// Build the HighVariables for `f`, in Ghidra's merge-phase order (coreaction.cc:5719-5735):
+/// the required marker merges (`Merge::mergeMarker`) and address-tied unification
+/// (`Merge::mergeAddrTied`), then the COPY input/output merges (`Merge::mergeOpcode(COPY)`), then
+/// the speculative cover-based merging of non-interfering same-storage varnodes.
 pub fn merge(f: &Funcdata) -> HighVariables {
     let mut h = HighVariables::new(f.num_varnodes());
+    let covers = all_covers(f);
     merge_markers(f, &mut h);
-    merge_same_storage(f, &mut h);
+    merge_addrtied(f, &mut h, &covers);
+    merge_copy(f, &mut h, &covers);
+    merge_same_storage(f, &mut h, &covers);
     h
 }
 
@@ -109,10 +115,10 @@ fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeI
     })
 }
 
-/// `Merge::mergeAddrTied`/`mergeOpcode`: greedily merge HighVariables that share storage
-/// and never live simultaneously, so reused registers/slots become one variable.
-fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
-    let covers = all_covers(f);
+/// The speculative same-storage merges (Ghidra `Merge::mergeByDatatype` / `ActionMergeType`):
+/// greedily merge HighVariables that share storage and never live simultaneously, so reused
+/// registers/slots become one variable.
+fn merge_same_storage(f: &Funcdata, h: &mut HighVariables, covers: &HashMap<VarnodeId, Cover>) {
     // Group by storage *and size* with members in varnode (create_index) order — Ghidra processes
     // varnodes in a deterministic order, so this drives a deterministic merge (a HashMap's
     // iteration order must never reach the output). A Ghidra HighVariable has a single size: a
@@ -143,7 +149,7 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
     // `full` (rep → all cover-bearing members) is maintained incrementally across unions —
     // only the two unioned classes change, and `classes_interfere` is an order-insensitive
     // any-pair test, so splicing their member lists is decision-identical to the full rescan.
-    let mut full = full_members_by_rep(f, h, &covers);
+    let mut full = full_members_by_rep(f, h, covers);
     for members in groups {
         loop {
             // partition this storage group into current HighVariable classes, ordered by their
@@ -162,7 +168,7 @@ fn merge_same_storage(f: &Funcdata, h: &mut HighVariables) {
                     let rep_j = h.high(class_list[j][0]);
                     let fi = full.get(&rep_i).unwrap_or(&empty);
                     let fj = full.get(&rep_j).unwrap_or(&empty);
-                    if !classes_interfere(fi, fj, &covers) {
+                    if !classes_interfere(fi, fj, covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
                         let mut m = full.remove(&rep_i).unwrap_or_default();
                         m.extend(full.remove(&rep_j).unwrap_or_default());
@@ -195,6 +201,166 @@ fn full_members_by_rep(
         }
     }
     full
+}
+
+/// All cover-bearing Varnodes currently merged into the HighVariable `rep` — the membership over
+/// which Cover interference is tested (Ghidra's `HighVariable::inst`).
+fn members_of(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    covers: &HashMap<VarnodeId, Cover>,
+    rep: u32,
+) -> Vec<VarnodeId> {
+    (0..f.num_varnodes() as u32)
+        .map(VarnodeId)
+        .filter(|&v| covers.contains_key(&v) && h.high(v) == rep)
+        .collect()
+}
+
+/// `Merge::mergeAddrTied` (merge.cc:609) — force-merge address-tied Varnodes sharing a storage
+/// address into one HighVariable. Ghidra force-merges the same-size versions (`mergeRangeMust`,
+/// the [`super::mergesnip`] snip having already resolved any Cover intersection) and links
+/// different-size versions into a VariableGroup (`groupWith`/VariablePiece). mosura has no
+/// VariablePiece (the P4/P8 debt), so it approximates the group by unioning *every* address-tied
+/// cover-bearing version at an address, any size — giving the storage one HighVariable whose Cover
+/// spans all its versions. That spanning Cover is what lets [`merge_copy`] tell a pre-store
+/// snapshot (which stays live across the overwriting store) apart from the stored value.
+fn merge_addrtied(f: &Funcdata, h: &mut HighVariables, _covers: &HashMap<VarnodeId, Cover>) {
+    let mut by_addr: HashMap<(SpaceId, u64), Vec<VarnodeId>> = HashMap::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        let vn = f.vn(v);
+        // Ghidra `unifyAddress` gates on `!isFree` (heritaged), NOT on having a Cover: an
+        // address-forced write held to the end of the function has no explicit reader (so mosura's
+        // Cover is empty) but is still an instance of the storage's variable and must be unified,
+        // else the `guardReturns` terminal COPY stays cross-high and prints a spurious `g = g`.
+        if vn.is_free() || !vn.is_addrtied() {
+            continue;
+        }
+        by_addr.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
+    }
+    // Deterministic order (the union representative is the lowest-index member of each group).
+    let mut groups: Vec<Vec<VarnodeId>> = by_addr.into_values().filter(|g| g.len() >= 2).collect();
+    groups.sort_by_key(|g| g[0]);
+    for g in groups {
+        for &w in &g[1..] {
+            h.union(g[0].0, w.0);
+        }
+    }
+}
+
+/// `Merge::mergeOpcode(CPUI_COPY)` (merge.cc:326) — in linear block order, try to merge each
+/// COPY's input HighVariable with its output HighVariable. The merge is skipped if `mergeTestBasic`
+/// or `mergeTestRequired` forbids it, or if it would introduce a Cover intersection (Ghidra ignores
+/// `merge()`'s return, merge.cc:346). This collapses redundant register/return COPYs into one
+/// variable and — crucially — LEAVES a COPY whose input and output Covers interfere (a snapshot of
+/// an address-tied value taken before that address is overwritten) as two distinct HighVariables,
+/// so the printer renders it as an explicit `iVar = <snapshot>` assignment (see printc's
+/// cross-high COPY arm, Ghidra `Merge::markInternalCopies`).
+fn merge_copy(f: &Funcdata, h: &mut HighVariables, covers: &HashMap<VarnodeId, Cover>) {
+    for b in 0..f.num_blocks() as u32 {
+        let ops = f.block(BlockId(b)).ops.clone();
+        for op in ops {
+            let o = f.op(op);
+            if o.is_dead() || o.code() != OpCode::Copy {
+                continue;
+            }
+            let Some(out) = o.output else { continue };
+            if !merge_test_basic(f, covers, out) {
+                continue;
+            }
+            for j in 0..o.num_inputs() {
+                let Some(inv) = o.input(j) else { continue };
+                if !merge_test_basic(f, covers, inv) {
+                    continue;
+                }
+                let rep_out = h.high(out);
+                let rep_in = h.high(inv);
+                if rep_out == rep_in {
+                    continue;
+                }
+                if !merge_test_required(f, h, rep_out, rep_in) {
+                    continue;
+                }
+                let mo = members_of(f, h, covers, rep_out);
+                let mi = members_of(f, h, covers, rep_in);
+                if classes_interfere(&mo, &mi, covers) {
+                    continue; // would introduce a Cover intersection — skip
+                }
+                h.union(out.0, inv.0);
+            }
+        }
+    }
+}
+
+/// `Merge::mergeTestBasic` (merge.cc:255) — a Varnode may take part in a merge only if it has a
+/// Cover and is neither implied nor a spacebase. (Ghidra also excludes `isProtoPartial`; mosura
+/// has no VariablePiece so that case is inapplicable.)
+fn merge_test_basic(f: &Funcdata, covers: &HashMap<VarnodeId, Cover>, v: VarnodeId) -> bool {
+    if !covers.contains_key(&v) {
+        return false;
+    }
+    let vn = f.vn(v);
+    !vn.is_implied() && !vn.is_spacebase()
+}
+
+/// The aggregate `(address-tied storage address, is-input, is-persist)` over every Varnode merged
+/// into HighVariable `rep` — Ghidra's HighVariable flag aggregation across its instances. A `stack`
+/// member counts as tied-to-its-address even without the `addrtied` flag: Ghidra maps every stack
+/// local (so it is addrtied), while mosura marks only *escaped* slots ([`super::varnodeprops`]), so
+/// the merge guard would otherwise let a stack local merge with a differently-addressed global.
+fn high_props(f: &Funcdata, h: &mut HighVariables, rep: u32) -> (Option<Address>, bool, bool) {
+    let stack = f.spaces.by_name("stack");
+    let mut tied: Option<Address> = None;
+    let (mut input, mut persist) = (false, false);
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        if h.high(v) != rep {
+            continue;
+        }
+        let vn = f.vn(v);
+        if vn.is_addrtied() || Some(vn.loc.space) == stack {
+            tied = Some(vn.loc);
+        }
+        input |= vn.is_input();
+        persist |= vn.is_persist();
+    }
+    (tied, input, persist)
+}
+
+/// `Merge::mergeTestRequired` (merge.cc:102), the subset mosura models: keep an address-tied output
+/// from swallowing an address-tied input of a *different* address, and keep function inputs
+/// distinct from persistent / address-tied storage (an input must not be dragged into the internal
+/// parts of a stack structure). The typelock / extraout / protopartial / VariablePiece / symbol
+/// guards are not modeled — mosura has no type-locks, VariablePieces or symbol tables at merge time.
+fn merge_test_required(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
+    if rep_out == rep_in {
+        return true; // already merged
+    }
+    let (out_tied, out_input, out_persist) = high_props(f, h, rep_out);
+    let (in_tied, in_input, in_persist) = high_props(f, h, rep_in);
+    if let (Some(oa), Some(ia)) = (out_tied, in_tied) {
+        if oa != ia {
+            return false; // address-tied output vs address-tied input of a different address
+        }
+    }
+    if in_input {
+        if out_persist {
+            return false; // inputs and persists are inherently different variables
+        }
+        if out_tied.is_some() && in_tied.is_none() {
+            return false; // don't drag an input into address-tied storage
+        }
+    }
+    if out_input {
+        if in_persist {
+            return false;
+        }
+        if in_tied.is_some() && out_tied.is_none() {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -291,5 +457,100 @@ mod tests {
         // the compare where vbound is also live, so the whole HighVariables interfere.
         assert!(!h.same(vinit, vbound), "bound must not merge into the iterator (full-cover interference)");
         assert!(!h.same(vphi, vbound));
+    }
+
+    /// `merge_addrtied` unifies every address-tied version at one storage address, ANY size (the
+    /// VariablePiece approximation) — a 4-byte and an 8-byte write to the same global become one
+    /// HighVariable, while a write to a different address stays distinct.
+    #[test]
+    fn merge_addrtied_unifies_all_sizes_at_one_address() {
+        use crate::decompile::varnode::flags as vflags;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let (c1, c2, c3) = (f.new_const(8, 1), f.new_const(4, 2), f.new_const(8, 3));
+        let o1 = f.new_op(OpCode::Copy, seq, vec![c1]);
+        let g8 = f.new_output(o1, 8, Address::new(ram, 0x1000));
+        let o2 = f.new_op(OpCode::Copy, seq, vec![c2]);
+        let g4 = f.new_output(o2, 4, Address::new(ram, 0x1000)); // same address, smaller size
+        let o3 = f.new_op(OpCode::Copy, seq, vec![c3]);
+        let other = f.new_output(o3, 8, Address::new(ram, 0x2000)); // different address
+        for v in [g8, g4, other] {
+            f.vn_mut(v).flags |= vflags::ADDRTIED | vflags::PERSIST;
+        }
+        f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3], ..Default::default() }]);
+
+        let covers = all_covers(&f);
+        let mut h = HighVariables::new(f.num_varnodes());
+        merge_addrtied(&f, &mut h, &covers);
+        assert!(h.same(g8, g4), "same-address addrtied versions unify regardless of size");
+        assert!(!h.same(g8, other), "a different address stays a distinct variable");
+    }
+
+    /// `merge_copy` (mergeOpcode COPY) merges a COPY's input and output when their Covers don't
+    /// interfere, but LEAVES them distinct when they do — a snapshot read that stays live across a
+    /// later write to the same variable must remain its own explicit temporary.
+    #[test]
+    fn merge_copy_merges_noninterfering_but_not_interfering() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let c = f.new_const(8, 5);
+
+        // Non-interfering chain: a = c + c; b = COPY(a); rb = b + c. `a` is dead after the COPY.
+        let o1 = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        let a = f.new_output(o1, 8, Address::new(reg, 0));
+        let o2 = f.new_op(OpCode::Copy, s(1), vec![a]);
+        let b = f.new_output(o2, 8, Address::new(reg, 0x8));
+        let o3 = f.new_op(OpCode::IntAdd, s(2), vec![b, c]);
+        let _rb = f.new_output(o3, 8, Address::new(reg, 0x10));
+
+        // Interfering chain: e = c + c; d = COPY(e); rd = e + d. `e` is read again alongside `d`,
+        // so `e` and `d` are both live at the last op and must NOT merge.
+        let o4 = f.new_op(OpCode::IntAdd, s(3), vec![c, c]);
+        let e = f.new_output(o4, 8, Address::new(reg, 0x18));
+        let o5 = f.new_op(OpCode::Copy, s(4), vec![e]);
+        let d = f.new_output(o5, 8, Address::new(reg, 0x20));
+        let o6 = f.new_op(OpCode::IntAdd, s(5), vec![e, d]);
+        let _rd = f.new_output(o6, 8, Address::new(reg, 0x28));
+        f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3, o4, o5, o6], ..Default::default() }]);
+
+        let mut h = merge(&f);
+        assert!(h.same(a, b), "a non-interfering COPY merges its input and output");
+        assert!(!h.same(e, d), "an interfering COPY (input still live) is left as a distinct variable");
+    }
+
+    /// `merge_test_required` (the modeled subset of `mergeTestRequired`): an address-tied output
+    /// never swallows a differently-addressed address-tied input — including a `stack` local, which
+    /// mosura does not flag `addrtied` but Ghidra maps — nor a function input into persistent
+    /// storage; a plain register temporary CAN become a global's value.
+    #[test]
+    fn merge_test_required_guards() {
+        use crate::decompile::varnode::flags as vflags;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let glob = f.new_varnode(8, Address::new(ram, 0x1000));
+        let glob2 = f.new_varnode(8, Address::new(ram, 0x2000));
+        for v in [glob, glob2] {
+            f.vn_mut(v).flags |= vflags::ADDRTIED | vflags::PERSIST | vflags::INSERT;
+        }
+        let slot = f.new_varnode(4, Address::new(stack, 0xffff_ffff_ffff_fff0));
+        f.vn_mut(slot).flags |= vflags::INSERT; // stack local, NOT addrtied in mosura
+        let inp = f.new_input(8, Address::new(reg, 0x38));
+        let tmp = f.new_varnode(8, Address::new(reg, 0));
+        f.vn_mut(tmp).flags |= vflags::INSERT;
+
+        // No unions performed, so each Varnode is its own HighVariable (rep == id).
+        let mut h = HighVariables::new(f.num_varnodes());
+        assert!(!merge_test_required(&f, &mut h, glob.0, glob2.0), "two globals at different addresses");
+        assert!(!merge_test_required(&f, &mut h, glob.0, slot.0), "a global and a stack local");
+        assert!(!merge_test_required(&f, &mut h, glob.0, inp.0), "a persistent global and a function input");
+        assert!(merge_test_required(&f, &mut h, glob.0, tmp.0), "a register temp CAN become the global's value");
     }
 }

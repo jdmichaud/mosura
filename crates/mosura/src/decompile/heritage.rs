@@ -890,6 +890,43 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     }
 }
 
+/// Guard global (persistent) data-flow at RETURN ops (Ghidra `Heritage::guardReturns` persist branch,
+/// heritage.cc:1676-1691). A persistent global's value must persist to (past) the end of the function,
+/// so for each range whose space marks it persistent, a COPY is inserted right before every RETURN:
+/// its input renames to the store version reaching the return (giving that write a real reader — and
+/// hence a Cover), and its output is `addrForce`d and `markReturnCopy`'d so dead-code keeps it and
+/// `RulePropagateCopy` won't fold it. This is what lets `Merge::mergeAddrTied` unify the store version
+/// into the global's whole HighVariable, so the merge phase can tell a pre-store snapshot apart from
+/// the post-store value.
+///
+/// Ghidra derives `persist` fresh at guard time via `queryProperties` (heritage.cc:1191). mosura's
+/// decompile corpus has no populated scope, so — like [`super::varnodeprops::mark_addrtied`] and
+/// [`guard_calls`] — persist is determined by space: an unmapped `ram` (global) location is
+/// persistent. (The active-output/return-value branch of guardReturns, heritage.cc:1658-1675, is a
+/// separate prototype-recovery concern, P6.)
+fn guard_returns(f: &mut Funcdata, range: Loc) {
+    let (spc, off, size) = range;
+    let Some(ram) = f.spaces.by_name("ram") else { return };
+    if spc != ram {
+        return; // only persistent globals get the return-copy; stack/register are not persist
+    }
+    let addr = super::space::Address::new(spc, off);
+    let returns: Vec<OpId> = (0..f.num_blocks() as u32)
+        .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
+        .filter(|&op| f.op(op).code() == OpCode::Return && !f.op(op).is_dead())
+        .collect();
+    for ret in returns {
+        // COPY: out@(addr,size)[addrForce, returnCopy] = in@(addr,size), inserted before RETURN.
+        let seq = f.op(ret).seqnum;
+        let invn = f.new_varnode(size, addr);
+        let copyop = f.new_op(OpCode::Copy, seq, vec![invn]);
+        let out = f.new_output(copyop, size, addr);
+        f.vn_mut(out).set_addr_force();
+        f.op_mut(copyop).mark_return_copy();
+        f.op_insert_before(copyop, ret);
+    }
+}
+
 /// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is one
 /// pass). Brings into SSA form the per-LOCATION cover newly eligible at the current `f.heritage_pass`:
 /// each candidate location is classified by `globaldisjoint.add` and added to the cover when it is
@@ -988,6 +1025,7 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new
     guarded.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
     for l in guarded {
         guard_calls(f, l);
+        guard_returns(f, l);
         guard_stores(f, l);
     }
 

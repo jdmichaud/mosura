@@ -643,9 +643,10 @@ impl Rule for RulePropagateCopy {
         // Ghidra `RulePropagateCopy::applyOp` (ruleaction.cc:3933): `if (op->isReturnCopy()) return 0;`.
         // `TypeOpReturn` sets `return_copy` as a default opflag (typeop.cc:878), so every CPUI_RETURN
         // op is a "return copy" — copies are never propagated into a RETURN's inputs, keeping the
-        // returned register in place. (mosura has no globals-holding markReturnCopy COPY yet — the
-        // heritage.cc:1686 case — so `isReturnCopy` ≡ the RETURN op here.)
-        if data.op(op).code() == OpCode::Return {
+        // returned register in place. `Heritage::guardReturns` also marks its global-holding COPY
+        // (heritage.cc:1686) — bailing on it keeps that COPY reading the store version directly (else
+        // propagatecopy would replace its input with the store's own source, stripping the reader).
+        if data.op(op).code() == OpCode::Return || data.op(op).is_return_copy() {
             return 0;
         }
         for i in 0..data.op(op).num_inputs() {
