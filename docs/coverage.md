@@ -281,8 +281,8 @@ sibling and IS ported.
 | RulePushPtr | MISSING |
 | RuleStructOffset0 | PARTIAL (ptrarith.rs / infertypes struct-offset-0) |
 | RulePtrArith | PORTED (ptrarith.rs, ptrarith_pool) |
-| RuleLoadVarnode | BLOCKED(mosura resolves LOAD addresses pre-pool via stackvars; a faithful pool-rule port needs the spacebase-placeholder model — checkSpacebase/resolveSpacebaseRelative/isSpacebasePlaceholder) |
-| RuleStoreVarnode | BLOCKED(same spacebase-placeholder dep as RuleLoadVarnode) |
+| RuleLoadVarnode | PARTIAL (rules.rs, ptrarith_pool — task #7 S1) — the **ram-global const-offset branch** ported (ruleaction.cc:4277, the `checkSpacebase` `offvn->isConstant()` case): `LOAD #space #constaddr` → `COPY <space:addr>`, so a constant-address global access names as `iRam/fRam/xRam` instead of `*addr`. Wired in ptrarith_pool after RulePtrArith (Ghidra actprop2 order, coreaction.cc:5666-5669). Corpus 0.9140→0.9168 (+.0028): longdouble .783→.909, switchmulti .564→.628; revisit .654→.633 CITED below. NOT ported: the **spacebase-register branch** (`vnSpacebase`/`correctSpacebase`, stackpointer+const — the stack case, entangled with pre-pool stackvars + heritage guardLoads versioning) = task #7 S2; the `isSpacebasePlaceholder`→`resolveSpacebaseRelative` SP-across-call trigger = S3. **CITATION (revisit −.021):** the pool-converted ram varnode is not re-heritaged (Ghidra runs this rule in the re-heritaging mainloop; mosura runs heritage-to-completion before the pools), so a read/modify/write of a global reads the pre-store version and the faithful merge-snip snapshots it (`iVar1=iRam; iRam=iVar1+10` vs Ghidra `iRam=iRam+10`). The value-versioning fix (re-heritage after conversion) folds into S2, same class as the multiret partial-overlap citation. |
+| RuleStoreVarnode | PARTIAL (rules.rs, ptrarith_pool — task #7 S1) — the ram-global const-offset counterpart of RuleLoadVarnode (ruleaction.cc:4319): `STORE #space #constaddr val` → `<space:addr> = COPY val`. `setStackStore` (a later-stack-analysis marker) + `markNotMapped` (needs a local scope the raw-decompile path lacks) omitted — neither affects ram-global naming. Same S2/S3 remainder + versioning citation as RuleLoadVarnode. |
 
 ---
 
@@ -412,15 +412,15 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
   Piece2Zext, SubvarSext / RulePtrFlow=isPtrFlow), 1 DEFERRED (RuleLeftRight — register-piece dep, Task #7),
   ~61 MISSING, 0 non-faithful (the fused DivOpt is retired), + 3 mosura-only extras.
   The MISSING set is the mechanical rule tail (Phase 1b, in progress).
-- **oppool2**: 1 PORTED (PtrArith), 1 PARTIAL, 1 MISSING (PushPtr), 2 BLOCKED (LoadVarnode, StoreVarnode
-  — spacebase-placeholder dep).
+- **oppool2**: 1 PORTED (PtrArith), 3 PARTIAL (LoadVarnode/StoreVarnode ram-global branch ported task #7 S1;
+  stack/spacebase-reg branch = S2), 1 MISSING (PushPtr).
 - **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store —
   SplitDatatype/TypePartialStruct dep), 9 MISSING (DumptyHumpLate etc.).
 
 **Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleConcatZext/RuleConcatZero
 family. (RuleEarlyRemoval — 78× —, RuleScarry, RuleFloatCast, and RuleShiftAnd now PORTED byte-neutral;
-RuleLoadVarnode/StoreVarnode and the RuleSplit* family reclassified BLOCKED on the spacebase /
-SplitDatatype subsystems respectively.)
+RuleLoadVarnode/StoreVarnode ram-global branch PORTED (task #7 S1, +.0028); their stack branch + the
+RuleSplit* family remain on the spacebase-S2 / SplitDatatype subsystems respectively.)
 
 **Sub-case gaps within PORTED functions** (the class this matrix is meant to catch — e.g. the
 extended-precision consume branches found in Task #8): audit each PORTED rule/action for omitted

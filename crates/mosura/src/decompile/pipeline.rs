@@ -297,6 +297,10 @@ pub fn ptrarith_pool() -> ActionPool {
         .with(RuleConstFold)
         .with(RulePropagateCopy)
         .with(super::ptrarith::RulePtrArith)
+        // Ghidra actprop2 order (coreaction.cc:5666-5669): RulePtrArith, then RuleLoadVarnode,
+        // RuleStoreVarnode. The ram-global (const-offset) branch of the spacebase model (task #7 S1).
+        .with(super::rules::RuleLoadVarnode)
+        .with(super::rules::RuleStoreVarnode)
 }
 
 /// Ghidra's cleanup rule pool (`actcleanup`, `coreaction.cc`) — the tail group that runs after all
