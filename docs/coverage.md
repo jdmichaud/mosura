@@ -61,7 +61,7 @@ of the fine-grained actions.
 | ActionSpacebase | PARTIAL (stackvars.rs) | stack-pointer flow |
 | ActionNonzeroMask | PORTED (nzmask.rs) | calc_nzmask |
 | ActionInferTypes | PORTED (infertypes.rs) | see §6 |
-| ActionLaneDivide | MISSING (generic TransformManager base ported — transform.rs, task #6 S1; LaneDivide subclass + action wiring = S2/S3) | SIMD lane splitting |
+| ActionLaneDivide | PORTED-INERT (transform.rs TransformManager S1 `c65b2cd`; lanedivide.rs LaneDivide S2 `7d3fb71`; ActionLaneDivide + pipeline wire S3a `73bd676`; Spec.laned/loader plumbing S3b) | SIMD lane splitting. Full faithful subsystem, wired post-heritage/pre-pool, but the loader does NOT populate `Spec.laned` (see the HELD-INERT note in `speccache::get`): live it net-regresses the corpus (avg 0.8936→0.8935) — mosura over-splits XMM into 4-byte lanes where Ghidra uses 8-byte. REACTIVATE (re-add the populate line in `speccache::get` + `lang::load`) when EITHER: (i) [primary] P6 stops the spurious 4-byte XMM output/param trials (`characterizeAsOutput` over-widen — a dead `SUBPIECE r0x1200:16→:4` of XMM0 that Ghidra lacks, so `collectLaneSizes` smallest-first picks 4); (ii) spacebase/StackPtrFlow moves stack resolution post-pool → Ghidra's stackstall slot usable (measured: post-pool the laned reg copy-props away, no split). `floatcast` already +0.038 → the split is right once fed correct-width reads. |
 | ActionMultiCse | MISSING | MULTIEQUAL-input cross-block CSE (multicse.cc). Distinct from RuleSelectCse, which DOES do cross-block cseElimination as of Task #1; and from in-block cse_find_in_block. |
 | ActionShadowVar | MISSING | shadow-varnode detection |
 | ActionDeindirect | PARTIAL (recover.rs) | resolve_call_output; deindirect fixture works |

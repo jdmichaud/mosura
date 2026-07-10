@@ -10,6 +10,7 @@ use super::funcdata::Funcdata;
 use super::op::SeqNum;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceKind, SpaceManager};
+use super::transform::LanedRegisterSet;
 use super::varnode::VarnodeId;
 
 impl Funcdata {
@@ -42,10 +43,14 @@ fn build_from_instrs(
     name: impl Into<String>,
     base: u64,
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
+    laned: &[(i32, u32)],
 ) -> Funcdata {
     let spaces = SpaceManager::standard();
     let ram = spaces.by_name("ram").expect("standard ram space");
     let mut f = Funcdata::new(name, Address::new(ram, base), spaces);
+    // The architecture's laned (vector) registers, wrapped for `ActionLaneDivide`. Sourced from the
+    // processor spec's `vector_lane_sizes` via the loader ([`Spec::laned`]); empty ⇒ no lane splitting.
+    f.laned = LanedRegisterSet::from_size_masks(laned.iter().copied());
 
     let mut uniq: u32 = 0;
     for insn in instrs {
@@ -88,7 +93,7 @@ pub fn raw_funcdata(
     base: u64,
     context: &[u32],
 ) -> Funcdata {
-    build_from_instrs(name, base, spec.disassemble_ctx(bytes, base, context))
+    build_from_instrs(name, base, spec.disassemble_ctx(bytes, base, context), &spec.laned)
 }
 
 /// Lift by **flow-following** from `base` (Ghidra's `followFlow`): decode only the
@@ -140,7 +145,7 @@ pub fn raw_funcdata_flow(
         decoded.insert(a, insn);
         worklist.extend(succs);
     }
-    build_from_instrs(name, base, decoded.into_values())
+    build_from_instrs(name, base, decoded.into_values(), &spec.laned)
 }
 
 /// Like [`raw_funcdata_flow`] but over a multi-chunk memory image, and recovering jump
@@ -209,7 +214,7 @@ pub fn raw_funcdata_flow_image(
         if !has_indirect {
             break;
         }
-        let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned());
+        let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned(), &spec.laned);
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         // Ghidra `FlowInfo::recoverJumpTables` -> `newAddress` (flow.cc:806): feed the targets
         // recovered by prior passes back as the BRANCHIND's flow edges before re-simplifying. This
@@ -260,7 +265,7 @@ pub fn raw_funcdata_flow_image(
             ins: vec![PArg::Var(crate::sleigh::pcode::Varnode { space: "const".into(), offset: 1, size: 4 })],
         });
     }
-    let mut f = build_from_instrs(name, entry, decoded.into_values());
+    let mut f = build_from_instrs(name, entry, decoded.into_values(), &spec.laned);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = recovered_tables;
