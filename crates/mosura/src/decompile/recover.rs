@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use super::fspec::{trial_flags, ParamActive};
+use super::fspec::{sysv_output, trial_flags, Containment, ParamActive, ParamList};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -775,19 +775,33 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     }
 }
 
-/// SysV output (return) registers, in priority order: RAX (integer/pointer) then XMM0 (float).
-const OUT_REGS: [u64; 2] = [RAX, XMM0];
-
-/// Recover each call's return value — a port of Ghidra's `ActionActiveReturn` /
-/// `FuncCallSpecs::checkOutputTrialUse` + `buildOutputFromTrials` (fspec.cc:5661/5770). After
-/// heritage's `guard_calls` models a call's `killedbycall` output registers as indirect-creations
-/// and dead-code removes the unused ones, an output register (RAX, else XMM0) whose creation
-/// *survived* (its value is read) is, by Ghidra's `checkOutputTrialUse`, the call's active return
-/// value: its INDIRECT-creation output is moved to be the CALL's own output (`opSetOutput`) and the
-/// INDIRECT is destroyed. So `RAX = INDIRECT()` (rendered `extraout_RAX`) becomes `RAX = CALL(...)`
-/// — `xVar = func(...)`. Runs post-dead-code (so only *used* creations remain), pre-type-inference.
+/// Recover each call's return value — a faithful port of Ghidra's `ActionActiveReturn::apply`
+/// (coreaction.cc:1773) for the CALL-output side: `checkOutputTrialUse` → `deriveOutputMap` →
+/// `buildOutputFromTrials` (fspec.cc:5661 / 1721 / 5770). This RETIRES the earlier first-present-of-
+/// `[RAX,XMM0]` single-pick adaptation (no-adaptation-grandfathered): that heuristic could only pick a
+/// *whole* register, so when the mainloop's range-driven normalize splits a return register into
+/// pieces (deindirect2: `AX:2` + the upper 6 bytes, because a later `xor ax,ax` writes the sub-
+/// register), it cannot reassemble them — Ghidra does, via the 2-trial `findPreexistingWhole` path,
+/// so the call directly outputs the merged whole (a `unique`) and the register range is left free for
+/// the sub-register return. See [[task6-call-output-in-rax]].
+///
+/// heritage's `guard_calls` models a call's `killedbycall` output registers as INDIRECT creations;
+/// this reads them back as output trials. For each surviving creation whose storage is a return
+/// register (`characterize_as_param` on the SysV output list — Ghidra `characterizeAsOutput`,
+/// fspec.cc:4336), a trial is registered and marked active iff its varnode is live (mosura runs pre-
+/// dead-code, so `!descend.is_empty()` stands in for Ghidra's post-dead-code
+/// `collectOutputTrialVarnodes`, which sees only creations that survived the mainloop sweep,
+/// fspec.cc:5536). [`derive_output_map`] then picks the single output storage and marks its piece(s)
+/// used, and [`build_call_output_from_trials`] moves the used varnode(s) to be the call's output.
+/// Runs post-heritage, pre-type-inference.
+///
+/// PLACEMENT NOTE: mosura registers the output trials here (post-heritage) rather than in
+/// `guard_calls` — the surviving INDIRECT creations ARE the heritaged ranges, so their `(addr,size)`
+/// exactly match what Ghidra's in-heritage `registerTrial` would record, and this mirrors how the
+/// input side (`setup_active_input`) already consolidates guardCalls' trial registration post-heritage.
 pub fn resolve_call_output(f: &mut Funcdata) {
-    let Some(reg) = f.spaces.by_name("register") else { return };
+    let reg = f.spaces.by_name("register");
+    let Some(outlist) = sysv_output(&f.spaces) else { return };
     let calls: Vec<OpId> =
         f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
     for call in calls {
@@ -797,33 +811,193 @@ pub fn resolve_call_output(f: &mut Funcdata) {
         let Some(bid) = f.op(call).parent else { continue };
         let block_ops = f.block(bid).ops.clone();
         let Some(pos) = block_ops.iter().position(|&o| o == call) else { continue };
-        // The clobber INDIRECTs sit in a contiguous run right after the call; gather the surviving
-        // indirect-creation outputs (the unused ones were already removed by dead-code).
-        let mut creations: Vec<(OpId, VarnodeId)> = Vec::new();
+        // collectOutputTrialVarnodes (fspec.cc:5536) fused with guardCalls' output-trial registration
+        // (heritage.cc:1469): the contiguous INDIRECT-creation run right after the call. A creation at
+        // a return register becomes a trial; checkOutputTrialUse marks it active iff live (present).
+        let mut active = ParamActive::new(reg);
+        let mut vnmap: Vec<(Address, OpId, VarnodeId)> = Vec::new();
         for &op in &block_ops[pos + 1..] {
             if f.op(op).code() != OpCode::Indirect {
                 break;
             }
-            if let Some(out) = f.op(op).output {
-                if f.vn(out).is_indirect_creation() && !f.vn(out).descend.is_empty() {
-                    creations.push((op, out));
+            let Some(out) = f.op(op).output else { continue };
+            if !f.vn(out).is_indirect_creation() {
+                continue;
+            }
+            let (loc, size) = (f.vn(out).loc, f.vn(out).size as u32);
+            if outlist.characterize_as_param(loc, size) == Containment::NoContainment {
+                continue; // not a return register (RCX/RSI/... clobbers) — plain killedbycall
+            }
+            let ti = active.register_trial(loc, size);
+            if f.vn(out).descend.is_empty() {
+                active.trial[ti].mark_inactive(); // present-but-dead ⇒ Ghidra markInactive (fspec.cc:5675)
+            } else {
+                active.trial[ti].mark_active(); // a live creation ⇒ the value is used
+            }
+            vnmap.push((loc, op, out));
+        }
+        if active.num_trials() == 0 {
+            continue;
+        }
+        derive_output_map(&outlist, &mut active);
+        // buildOutputFromTrials (fspec.cc:5770): collect the used trials' varnodes in address
+        // (least-significant-first) order, then reassemble.
+        let mut used: Vec<(Address, OpId, VarnodeId)> = active
+            .trial
+            .iter()
+            .filter(|t| t.is_used())
+            .filter_map(|t| vnmap.iter().find(|(a, _, _)| *a == t.addr).copied())
+            .collect();
+        used.sort_by_key(|(a, _, _)| (a.space.0, a.offset));
+        build_call_output_from_trials(f, call, bid, &used);
+    }
+}
+
+/// Ghidra `ParamListStandardOut::fillinMap` output-map (fspec.cc:1721) reduced to what the SysV
+/// output convention exercises: find the output entry best covered by the active trials — the most
+/// contiguous least-significant-justified bytes, preferring a more generic type class then larger
+/// coverage — and mark the trials it justified-contains as USED (the rest not-used). A single return
+/// register with one live trial is used directly; a return register split into contiguous pieces
+/// (both justified-contained in the same entry) has BOTH pieces marked used, so
+/// `build_call_output_from_trials` reassembles them.
+///
+/// `firstOnly` (fspec.cc:1649): only the FIRST entry of each storage class may match — a return is
+/// justified into the first register of its class (RAX/XMM0), never a lone high-half register
+/// (RDX/XMM1), which is only reachable as the high piece of a `join_dual_class` 16-byte pair. mosura's
+/// output resolution lands here directly: Ghidra's non-fallback `fillinMap` first tries the
+/// `join_dual_class` model rule (`MultiSlotAssign::fillinOutputMap`, modelrules.cc:902) and, for every
+/// SysV single-class return it does NOT fire (a lone RAX fires it trivially → still used; a lone
+/// RDX/XMM1 fails `isFirstInClass`; two same-group RAX pieces fail the consecutive-group check),
+/// falling through to `fillinMapFallback(active, true)` (fspec.cc:1762) — so this fallback-with-
+/// firstOnly IS the effective map for all cases here. The one un-exercised divergence is a genuine
+/// 16-byte RAX:RDX return, where `join_dual_class` would additionally take RDX; that pair case is
+/// deferred (no corpus fixture returns a 128-bit integer). The multi-precision `extracheck_low/high` +
+/// `isRemFormed`/`isIndCreateFormed` guards (fspec.cc:1676-1681) are omitted — inert for mosura's
+/// single-register SysV output entries, which never set those flags.
+fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) {
+    let mut best: Option<usize> = None;
+    let mut best_cover = 0u32;
+    let mut best_class = u8::MAX; // Ghidra `bestclass = TYPECLASS_PTR` — worse than GENERAL(0)/FLOAT(1)
+    for (ei, e) in outlist.entry.iter().enumerate() {
+        // firstOnly: skip an entry that is not the first of its storage class (RDX after RAX, XMM1
+        // after XMM0) — those carry only the high half of a dual-class join, never a lone return.
+        if outlist.entry[..ei].iter().any(|p| p.type_class == e.type_class) {
+            continue;
+        }
+        // Contiguous least-justified coverage of this entry by its active trials.
+        let mut pieces: Vec<(u64, u32)> = active
+            .trial
+            .iter()
+            .filter(|t| t.is_active())
+            .filter_map(|t| e.justified_contain(t.addr, t.size).map(|off| (off, t.size)))
+            .collect();
+        if pieces.is_empty() {
+            continue;
+        }
+        pieces.sort_by_key(|&(off, _)| off);
+        let mut offmatch = 0u64;
+        for (off, size) in pieces {
+            if off != offmatch {
+                break; // a gap — coverage stops at the least-justified contiguous run
+            }
+            offmatch += size as u64;
+        }
+        let cover = offmatch as u32;
+        if cover < e.minsize {
+            continue; // didn't cover the entry's minimum — not this entry
+        }
+        // Prefer a more generic type restriction, else larger coverage (fspec.cc:1688).
+        if e.type_class < best_class || cover > best_cover {
+            best = Some(ei);
+            best_cover = cover;
+            best_class = e.type_class;
+        }
+    }
+    match best {
+        None => {
+            for t in active.trial.iter_mut() {
+                t.mark_no_use();
+            }
+        }
+        Some(be) => {
+            for t in active.trial.iter_mut() {
+                if t.is_active() && outlist.entry[be].justified_contain(t.addr, t.size).is_some() {
+                    t.mark_used();
+                } else {
+                    t.mark_no_use();
                 }
             }
         }
-        // The single active output is the first present output register (RAX, then XMM0): a
-        // function returns one value (Ghidra's output `ParamList::fillinMap` picks the one entry).
-        let chosen = OUT_REGS.iter().find_map(|&off| {
-            creations.iter().copied().find(|&(_, v)| {
-                let l = f.vn(v).loc;
-                l.space == reg && l.offset == off
-            })
-        });
-        if let Some((indop, outvn)) = chosen {
-            f.op_set_output(call, outvn); // move the trial varnode to be the CALL's output
-            f.op_destroy(indop); // destroy the now-empty INDIRECT
-            let kept: Vec<OpId> = f.block(bid).ops.iter().copied().filter(|&o| o != indop).collect();
-            f.set_block_ops(bid, kept);
+    }
+}
+
+/// Ghidra `FuncCallSpecs::findPreexistingWhole` (fspec.cc:5750): if two varnodes are each the lone
+/// input of one common `PIECE` op, return that op's output (their merged whole), else `None`.
+fn find_preexisting_whole(f: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> Option<VarnodeId> {
+    let op1 = lone_descend(f, vn1)?;
+    let op2 = lone_descend(f, vn2)?;
+    if op1 != op2 || f.op(op1).code() != OpCode::Piece {
+        return None;
+    }
+    f.op(op1).output
+}
+
+/// Ghidra `Varnode::loneDescend`: the single op reading `vn`, or `None` if it has zero or several.
+fn lone_descend(f: &Funcdata, vn: VarnodeId) -> Option<OpId> {
+    match f.vn(vn).descend.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// Ghidra `FuncCallSpecs::buildOutputFromTrials` (fspec.cc:5770), reduced to the register cases the
+/// SysV output convention produces: move the used trial varnode(s) to be the CALL's output and
+/// destroy the INDIRECTs that held them. One used trial → its varnode becomes the output directly. Two
+/// used trials (a return register split into low+high pieces) → if they already flow into a common
+/// `PIECE` (`findPreexistingWhole`), that pre-existing whole becomes the call output and the `PIECE` +
+/// both INDIRECTs are removed, so the call directly outputs the reassembled value (Ghidra's
+/// `u0x…9 = callind …`) rather than leaving the register split. `used` is in least-significant-first
+/// (address) order.
+fn build_call_output_from_trials(
+    f: &mut Funcdata,
+    call: OpId,
+    bid: super::block::BlockId,
+    used: &[(Address, OpId, VarnodeId)],
+) {
+    let mut remove: Vec<OpId> = Vec::new();
+    match used {
+        [(_, indop, outvn)] => {
+            // Single, properly justified output (fspec.cc:5787).
+            f.op_set_output(call, *outvn);
+            f.op_destroy(*indop);
+            remove.push(*indop);
         }
+        [(_, lo_ind, lovn), (_, hi_ind, hivn)] => {
+            // Two trials — merge into a single output (fspec.cc:5806). little-endian: `used[0]` is the
+            // low piece, `used[1]` the high piece.
+            if let Some(whole) = find_preexisting_whole(f, *hivn, *lovn) {
+                let piece_def = f.vn(whole).def; // the PIECE op (Ghidra `finaloutvn->getDef()`)
+                f.op_set_output(call, whole);
+                if let Some(p) = piece_def {
+                    f.op_destroy(p);
+                    remove.push(p);
+                }
+                f.op_destroy(*hi_ind);
+                f.op_destroy(*lo_ind);
+                remove.push(*hi_ind);
+                remove.push(*lo_ind);
+            }
+            // else: no pre-existing whole ⇒ Ghidra constructs a join-space varnode + two SUBPIECEs
+            // (fspec.cc:5823). That branch needs join-space support and is not reachable on the current
+            // single-pass corpus (the split only appears once the mainloop's un-scoped normalize runs);
+            // it is deferred with the batch-retirement that produces clean split pieces. Leave the call
+            // output unset (as the retired code did for a non-single output).
+        }
+        _ => {} // 0 used ⇒ void; >2 ⇒ Ghidra `buildOutputFromTrials` returns without an output.
+    }
+    if !remove.is_empty() {
+        let kept: Vec<OpId> = f.block(bid).ops.iter().copied().filter(|o| !remove.contains(o)).collect();
+        f.set_block_ops(bid, kept);
     }
 }
 
@@ -1196,6 +1370,79 @@ mod tests {
         let (mut f, call, _ind) = call_then_rax_creation(false);
         resolve_call_output(&mut f);
         assert!(f.op(call).output.is_none(), "an unused clobber is not a return value");
+    }
+
+    #[test]
+    fn split_call_output_reassembles_via_preexisting_whole() {
+        // deindirect2's shape (the reassembly path the single-pass corpus never exercises — it
+        // activates once the mainloop's un-scoped normalize splits the return register): a later
+        // sub-register write splits the return register into two INDIRECT-creation pieces (AX:2 low +
+        // the upper 6 bytes) that a wide read reassembles via a PIECE. `buildOutputFromTrials`' 2-trial
+        // path (`findPreexistingWhole`) must set that pre-existing whole — a fresh unique, as Ghidra's
+        // `u0x…9 = callind …` — to be the call output and remove the PIECE + both INDIRECTs.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(8, 0x400430);
+        let call = f.new_op(OpCode::Callind, seq, vec![target]);
+        // The two call-clobber pieces of RAX: AX:2 (offset 0) and the upper 6 bytes (offset 2).
+        let mk_creation = |f: &mut Funcdata, off: u64, size: u32| -> (OpId, VarnodeId) {
+            let zero = f.new_const(size, 0);
+            let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
+            let out = f.new_output(ind, size, Address::new(reg, off));
+            f.vn_mut(out).set_indirect_creation();
+            (ind, out)
+        };
+        let (ind_lo, ax) = mk_creation(&mut f, RAX, 2);
+        let (ind_hi, upper6) = mk_creation(&mut f, RAX + 2, 6);
+        // The wide read reassembles them into a unique whole: `whole:8 = PIECE(upper6, AX)`.
+        let piece = f.new_op(OpCode::Piece, seq, vec![upper6, ax]);
+        let whole = f.new_output_unique(piece, 8);
+        // A consumer of the whole (a STORE `*addr = whole`), as deindirect2's `*ptr = rax`.
+        let sp = f.new_const(8, 0);
+        let addr = f.new_input(8, Address::new(reg, 0x38));
+        let store = f.new_op(OpCode::Store, seq, vec![sp, addr, whole]);
+        let ops = vec![call, ind_lo, ind_hi, piece, store];
+        f.set_blocks(vec![BlockBasic { ops: ops.clone(), ..Default::default() }]);
+        for &op in &ops {
+            f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
+        }
+        resolve_call_output(&mut f);
+        assert_eq!(f.op(call).output, Some(whole), "the call directly outputs the reassembled whole (a unique)");
+        assert_eq!(f.vn(whole).def, Some(call), "the whole is now defined by the call; the STORE still reads it");
+        assert!(f.op(ind_lo).is_dead() && f.op(ind_hi).is_dead(), "both piece INDIRECTs are removed");
+        assert!(f.op(piece).is_dead(), "the reassembly PIECE is removed — the call outputs the whole directly");
+        assert!(!f.block(crate::decompile::BlockId(0)).ops.contains(&piece), "the PIECE is dropped from the block");
+    }
+
+    #[test]
+    fn lone_rdx_clobber_is_not_a_return() {
+        // A live RDX:4 clobber with no RAX return is NOT a return: RDX is only the high half of a
+        // RAX:RDX dual-class join, so `firstOnly` skips it and the call stays void — matching Ghidra
+        // (loopcomment: `func_0x00100580(0x100924)` is void, not `iVar = func_…`). Guards the fillinMap
+        // firstOnly semantics: without them a spuriously-live high-half clobber becomes a bogus return.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(8, 0x400430);
+        let call = f.new_op(OpCode::Call, seq, vec![target]);
+        let zero = f.new_const(4, 0);
+        let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
+        let rdx = f.new_output(ind, 4, Address::new(reg, 0x10)); // RDX:4 clobber
+        f.vn_mut(rdx).set_indirect_creation();
+        let c = f.new_const(4, 1); // a reader, so the clobber is live pre-dead-code
+        let add = f.new_op(OpCode::IntAdd, seq, vec![rdx, c]);
+        f.new_output(add, 4, Address::new(reg, 0x10));
+        f.set_blocks(vec![BlockBasic { ops: vec![call, ind, add], ..Default::default() }]);
+        for &op in &[call, ind] {
+            f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
+        }
+        resolve_call_output(&mut f);
+        assert!(f.op(call).output.is_none(), "a lone RDX clobber (not first-in-class) is not a SysV return");
     }
 
     /// Pre-seed a trial container over an op's candidate slots (1..) with a raised `maxpass`, to
