@@ -83,6 +83,50 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
     }
 }
 
+/// Realism for a value reached while walking BACK from a *call argument* trial — a port of Ghidra
+/// `AncestorRealistic::enterNode` (funcdata_varnode.cc:2033) for the register-input case. It differs
+/// from [`is_realistic`] in exactly one place: the unwritten-input base case. `is_realistic` is the
+/// return-register port, where the trial *is* the candidate register and an unwritten input is never a
+/// real return (Ghidra `AncestorRealistic::execute` funcdata_varnode.cc:2211 early-returns false when
+/// `op->getIn(slot)->isInput()`). But an input reached *through* a copy/subpiece/piece/zext chain is a
+/// value flowing from the caller — Ghidra's `enterNode` returns `pop_success` for it (a "normal
+/// parameter, not active movement, but valid"). So here an unwritten input is REALISTIC unless it is a
+/// return-address storage location (Ghidra's `pop_fail`). (The `isUnaffected`/`!isDirectWrite`
+/// sub-cases that Ghidra also fails are inert for SysV call-input trials: the candidates are the
+/// argument registers, never callee-saved/unaffected storage — and mosura carries no such flag on the
+/// raw-decompile path.) The top-level "trial itself is the input" case is handled by the caller
+/// ([`check_input_trial_use`]), mirroring the `execute` early-return.
+fn realistic_faithful(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> bool {
+    let v = f.vn(vn);
+    if v.is_constant() {
+        return true;
+    }
+    if !v.is_written() {
+        return !v.is_return_address(); // a traversed-to input: pop_success unless a return address
+    }
+    if !seen.insert(vn) {
+        return false;
+    }
+    let def = v.def.unwrap();
+    match f.op(def).code() {
+        OpCode::Copy | OpCode::Subpiece | OpCode::IntZext | OpCode::IntSext => {
+            f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, seen))
+        }
+        OpCode::Multiequal => {
+            f.op(def).inrefs.clone().iter().any(|&i| realistic_faithful(f, i, seen))
+        }
+        OpCode::Piece => f.op(def).input(1).is_some_and(|i| realistic_faithful(f, i, seen)),
+        OpCode::Indirect => {
+            if f.vn(vn).is_indirect_creation() || f.vn(vn).is_return_address() {
+                false
+            } else {
+                f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, seen))
+            }
+        }
+        _ => true,
+    }
+}
+
 /// Ghidra `trim_recurse_max` (architecture.cc:1419): how many ancestor-copy levels
 /// [`ancestor_op_use`] recurses through before giving up.
 const TRIM_RECURSE_MAX: i32 = 5;
@@ -621,17 +665,32 @@ fn setup_active_input(f: &mut Funcdata, call: OpId) {
     f.active_inputs.insert(call, active);
 }
 
-/// Ghidra `FuncCallSpecs::checkInputTrialUse` (fspec.cc:5585): mark each not-yet-checked trial
-/// active (its candidate is a realistic, caller-set value — the [`is_realistic`] essence of
-/// `AncestorRealistic`) or definitely-not-used. A definitely-not-used candidate has its dataflow
-/// *freed* — the input slot is set to a constant 0 (fspec.cc:5650-5651) — rather than removed, so
-/// the slot count stays stable across passes; the structural removal is deferred to
-/// [`build_input_from_trials`]. Then advance the pass counter and gate fully-checked.
+/// Ghidra `FuncCallSpecs::checkInputTrialUse` (fspec.cc:5585) — the register (non-spacebase) branch
+/// (fspec.cc:5638-5651). Each not-yet-checked argument trial gets one of three verdicts:
+///   - `AncestorRealistic::execute` accepts it (the value has a realistic caller-set ancestor — a
+///     top-level input trial is rejected, but an input reached *through* a copy chain is accepted,
+///     [`realistic_faithful`]) AND [`ancestor_op_use`] confirms it is used only to feed this call ⇒
+///     `markActive` (a genuine argument);
+///   - realistic but not only-used-here ⇒ `markInactive` (Ghidra: "not actively used" — dataflow
+///     preserved);
+///   - not realistic but the trial varnode is itself a function input ⇒ `markInactive` ("Not likely a
+///     parameter but maybe" — a passed-through input, dataflow PRESERVED so the function's own
+///     parameter recovery can still see it, fspec.cc:5645);
+///   - otherwise ⇒ `markNoUse`, and the dataflow is *freed* (the input slot is set to a constant 0,
+///     fspec.cc:5650-5651) — the value is unaffected/killed-by-call, not an argument.
+/// The structural removal is deferred to [`build_input_from_trials`]; freeing keeps the slot count
+/// stable across passes. Then advance the pass counter and gate fully-checked.
 fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
+    /// Trial disposition, in Ghidra's `ParamTrial` terms.
+    enum Verdict {
+        Active,   // markActive — a genuine argument
+        Inactive, // markInactive — dataflow PRESERVED (may still be a parameter)
+        NoUse,    // markNoUse — dataflow FREED (definitely not an argument)
+    }
     let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
-    // (trial index, op slot, realistic) for every trial unchecked at entry, evaluated on the current
+    // (trial index, op slot, verdict) for every trial unchecked at entry, evaluated on the current
     // (pre-free) dataflow so no trial's verdict depends on another's freeing.
-    let mut verdicts: Vec<(usize, usize, bool)> = Vec::new();
+    let mut verdicts: Vec<(usize, usize, Verdict)> = Vec::new();
     for ti in 0..ntrials {
         let (checked, slot) = {
             let t = &f.active_inputs[&call].trial[ti];
@@ -640,28 +699,49 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         if checked {
             continue;
         }
-        let realistic = f.op(call).input(slot).is_some_and(|v| is_realistic(f, v, &mut HashSet::new()));
-        verdicts.push((ti, slot, realistic));
+        let verdict = match f.op(call).input(slot) {
+            None => Verdict::NoUse,
+            Some(v) => {
+                let vn_is_input = f.vn(v).is_input();
+                // `AncestorRealistic::execute`: a top-level input trial is not realistic (the
+                // early-return at funcdata_varnode.cc:2211), but a written chain reaching an input via
+                // traversal is (`realistic_faithful`).
+                let realistic = !vn_is_input && realistic_faithful(f, v, &mut HashSet::new());
+                if realistic {
+                    let addr = f.vn(v).loc;
+                    let aou = ancestor_op_use(
+                        f, TRIM_RECURSE_MAX, v, call, slot, 0, 0, addr, false, &mut HashSet::new(),
+                    );
+                    if aou { Verdict::Active } else { Verdict::Inactive }
+                } else if vn_is_input {
+                    Verdict::Inactive
+                } else {
+                    Verdict::NoUse
+                }
+            }
+        };
+        verdicts.push((ti, slot, verdict));
     }
-    // Free the dataflow of the definitely-not-used slots (Ghidra opSetInput(op, newConstant(sz,0))).
-    for &(_, slot, realistic) in &verdicts {
-        if realistic {
+    // Free the dataflow of the definitely-not-used (`markNoUse`) slots only; `markInactive` preserves
+    // its dataflow (Ghidra frees only when `trial.isDefinitelyNotUsed()`, fspec.cc:5649-5651).
+    for (_, slot, verdict) in &verdicts {
+        if !matches!(verdict, Verdict::NoUse) {
             continue;
         }
-        if let Some(v) = f.op(call).input(slot) {
+        if let Some(v) = f.op(call).input(*slot) {
             if !f.vn(v).is_constant() {
                 let size = f.vn(v).size as u32;
                 let zero = f.new_const(size, 0);
-                f.op_set_input(call, slot, zero);
+                f.op_set_input(call, *slot, zero);
             }
         }
     }
     let active = f.active_inputs.get_mut(&call).unwrap();
-    for (ti, _, realistic) in verdicts {
-        if realistic {
-            active.trial[ti].mark_active();
-        } else {
-            active.trial[ti].mark_no_use();
+    for (ti, _, verdict) in verdicts {
+        match verdict {
+            Verdict::Active => active.trial[ti].mark_active(),
+            Verdict::Inactive => active.trial[ti].mark_inactive(),
+            Verdict::NoUse => active.trial[ti].mark_no_use(),
         }
     }
     active.finish_pass();
@@ -1016,16 +1096,34 @@ mod tests {
         let cp0 = f.new_op(OpCode::Copy, seq, vec![c0]);
         let rdi = f.new_output(cp0, 8, Address::new(reg, ARG_REGS[0]));
         // RSI: a value reaching the call through an INDIRECT. For a passthrough, input(0) is the real
-        // value flowing across the call; for a creation, the indirect-zero `#0` placeholder.
-        let ind_in = if creation { f.new_const(8, 0) } else { f.new_const(8, 0x99) };
+        // value flowing across the call — a written, only-used-by-this-call computed value (loopcomment's
+        // aliased-stack-local load), which passes BOTH input-trial gates: AncestorRealistic (a solid
+        // write reached by traversal) AND ancestorOpUse (used only to feed this call). A bare *constant*
+        // here would fail ancestorOpUse (funcdata_varnode.cc:1922 — unwritten, non-input ⇒ false), just
+        // as it does in Ghidra. For a creation, input(0) is the indirect-zero `#0` placeholder.
+        let mut extra = Vec::new();
+        let ind_in = if creation {
+            f.new_const(8, 0)
+        } else {
+            let a = f.new_const(8, 0x40);
+            let b = f.new_const(8, 0x8);
+            let add = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+            let src = f.new_output(add, 8, Address::new(reg, 0x100)); // scratch, not an argument register
+            extra.push(add);
+            src
+        };
         let ind = f.new_op(OpCode::Indirect, seq, vec![ind_in]);
         let rsi = f.new_output(ind, 8, Address::new(reg, ARG_REGS[1]));
         if creation {
             f.vn_mut(rsi).set_indirect_creation();
         }
         let call = f.new_op(OpCode::Call, seq, vec![target, rdi, rsi]);
-        f.set_blocks(vec![BlockBasic { ops: vec![cp0, ind, call], ..Default::default() }]);
-        for &op in &[cp0, ind, call] {
+        let mut ops = vec![cp0];
+        ops.extend(extra);
+        ops.push(ind);
+        ops.push(call);
+        f.set_blocks(vec![BlockBasic { ops: ops.clone(), ..Default::default() }]);
+        for &op in &ops {
             f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
         }
         (f, call)
