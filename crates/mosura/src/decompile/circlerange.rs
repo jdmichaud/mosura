@@ -1101,6 +1101,48 @@ impl CircleRange {
         }
         Some(res)
     }
+
+    /// Ghidra `CircleRange::translate2Op` (`rangeutil.cc:1093`): express this range as a single
+    /// comparison against a constant. Returns `(restype, opc, c, cslot)`:
+    ///   - `0` — representable: the range is `opc` with the constant `c` in input slot `cslot`
+    ///     (the tested Varnode goes in the other slot);
+    ///   - `1` — the range covers every value (condition always true);
+    ///   - `2` — cannot be represented as a single comparison (a stride, or a two-ended interval);
+    ///   - `3` — the range is empty (condition always false).
+    ///
+    /// `opc`/`c`/`cslot` are meaningful only when `restype == 0`.
+    pub fn translate2_op(&self) -> (i32, OpCode, u64, i32) {
+        if self.isempty {
+            return (3, OpCode::Copy, 0, 0);
+        }
+        if self.step != 1 {
+            return (2, OpCode::Copy, 0, 0); // Not possible with a stride
+        }
+        if self.right == (self.left.wrapping_add(1) & self.mask) {
+            // Single value
+            return (0, OpCode::IntEqual, self.left, 0);
+        }
+        if self.left == (self.right.wrapping_add(1) & self.mask) {
+            // All but one value
+            return (0, OpCode::IntNotequal, self.right, 0);
+        }
+        if self.left == self.right {
+            return (1, OpCode::Copy, 0, 0); // All outputs are possible
+        }
+        if self.left == 0 {
+            return (0, OpCode::IntLess, self.right, 1);
+        }
+        if self.right == 0 {
+            return (0, OpCode::IntLess, self.left.wrapping_sub(1) & self.mask, 0);
+        }
+        if self.left == (self.mask >> 1) + 1 {
+            return (0, OpCode::IntSless, self.right, 1);
+        }
+        if self.right == (self.mask >> 1) + 1 {
+            return (0, OpCode::IntSless, self.left.wrapping_sub(1) & self.mask, 0);
+        }
+        (2, OpCode::Copy, 0, 0) // Cannot represent
+    }
 }
 
 #[cfg(test)]
@@ -1719,5 +1761,30 @@ mod tests {
         // Wrapped range [0xffe0, 0x20) mod 2^16, step 2: 16 elements 0xffe0..0xfffe plus
         // 16 elements 0x0..0x1e.
         assert_eq!(CircleRange::new(0xffe0, 0x20, 2, 2).get_size(), 32);
+    }
+
+    /// `translate2_op` round-trips each representable form back to a comparison against a constant.
+    #[test]
+    fn translate2_op_forms() {
+        // {5}: single value => v == 5, constant in slot 0.
+        assert_eq!(CircleRange::new(5, 6, 4, 1).translate2_op(), (0, OpCode::IntEqual, 5, 0));
+        // all-but-{6}: [7, 6) => v != 6, constant in slot 0.
+        assert_eq!(CircleRange::new(7, 6, 4, 1).translate2_op(), (0, OpCode::IntNotequal, 6, 0));
+        // [0, 10): unsigned less => v < 10, constant in slot 1.
+        assert_eq!(CircleRange::new(0, 10, 4, 1).translate2_op(), (0, OpCode::IntLess, 10, 1));
+        // [0x80000000, 10): signed less => v s< 10, constant in slot 1 (the `jle` union result).
+        assert_eq!(CircleRange::new(0x8000_0000, 10, 4, 1).translate2_op(), (0, OpCode::IntSless, 10, 1));
+        // [7, 0x80000000): signed greater => 6 s< v, constant in slot 0 (the `jg` intersect result).
+        assert_eq!(CircleRange::new(7, 0x8000_0000, 4, 1).translate2_op(), (0, OpCode::IntSless, 6, 0));
+    }
+
+    /// `translate2_op` reports the non-comparison outcomes: 1 = always true (whole domain),
+    /// 2 = cannot represent (a stride, or an interior two-ended interval), 3 = always false (empty).
+    #[test]
+    fn translate2_op_non_comparison_outcomes() {
+        assert_eq!(CircleRange::new(3, 3, 4, 1).translate2_op().0, 1); // left==right => whole domain
+        assert_eq!(CircleRange::default().translate2_op().0, 3); // empty
+        assert_eq!(CircleRange::new(0, 10, 4, 2).translate2_op().0, 2); // stride
+        assert_eq!(CircleRange::new(5, 20, 4, 1).translate2_op().0, 2); // interior interval
     }
 }

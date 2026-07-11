@@ -3,6 +3,7 @@
 //! slot in the same way Ghidra's pool grows.
 
 use super::action::Rule;
+use super::circlerange::CircleRange;
 use super::space::{Address, SpaceId};
 use super::block::BlockId;
 use super::dominator::Dominators;
@@ -1216,6 +1217,138 @@ impl Rule for RuleLessNotEqual {
         let newcode = if opc == OpCode::IntSlessequal { OpCode::IntSless } else { OpCode::IntLess };
         data.op_set_opcode(op, newcode);
         data.op_set_all_input(op, &[compvn1, compvn2]);
+        1
+    }
+}
+
+/// Ghidra `RuleRangeMeld` (ruleaction.cc:1348, oppool1 @101 coreaction.cc:5612): merge two range
+/// conditions of the form `V s< c`, `c s< V`, `V == c`, `V != c` combined by BOOL_AND / BOOL_OR
+/// into a single comparison. Each side is pulled back to a common Varnode `A` as a [`CircleRange`]
+/// (Ghidra `CircleRange::pullBack`); the two ranges are then intersected (for `&&`) or unioned
+/// (for `||`) and [`CircleRange::translate2_op`] re-expresses the result as one comparison against
+/// a constant (or a constant `true`/`false`). This collapses the x86 signed-compare flag
+/// reconstructions: the `jg` form `(x != c) && (c-1 s< x)` folds to `c s< x`, and the `jle` form
+/// `(x == c) || (x s< c)` folds to `x s<= c` (which [`RuleIntLessEqual`] then normalizes to
+/// `x s< c+1`). mosura previously leaned on [`RuleLessNotEqual`] for the `&&` case, but that needs
+/// the SLESSEQUAL form; once RuleIntLessEqual @10 converts SLESSEQUAL to SLESS, this rule is what
+/// recovers the fold.
+pub struct RuleRangeMeld;
+
+impl Rule for RuleRangeMeld {
+    fn name(&self) -> &str {
+        "rangemeld"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::BoolOr, OpCode::BoolAnd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let vn1 = data.op(op).input(0).unwrap();
+        let vn2 = data.op(op).input(1).unwrap();
+        if !data.vn(vn1).is_written() || !data.vn(vn2).is_written() {
+            return 0;
+        }
+        let sub1 = data.vn(vn1).def.unwrap();
+        let sub2 = data.vn(vn2).def.unwrap();
+        if !data.op(sub1).is_bool_output() || !data.op(sub2).is_bool_output() {
+            return 0;
+        }
+
+        // Pull the {true} range back through each side's defining comparison to a base Varnode.
+        let mut range1 = CircleRange::from_bool(true);
+        let Some(mut a1) = range1.pull_back(data, sub1, false) else {
+            return 0;
+        };
+        let mut range2 = CircleRange::from_bool(true);
+        let Some(mut a2) = range2.pull_back(data, sub2, false) else {
+            return 0;
+        };
+        // An extra pull-back if the last step was a boolean negate `!`.
+        if data.op(sub1).code() == OpCode::BoolNegate {
+            if !data.vn(a1).is_written() {
+                return 0;
+            }
+            let d = data.vn(a1).def.unwrap();
+            match range1.pull_back(data, d, false) {
+                Some(x) => a1 = x,
+                None => return 0,
+            }
+        }
+        if data.op(sub2).code() == OpCode::BoolNegate {
+            if !data.vn(a2).is_written() {
+                return 0;
+            }
+            let d = data.vn(a2).def.unwrap();
+            match range2.pull_back(data, d, false) {
+                Some(x) => a2 = x,
+                None => return 0,
+            }
+        }
+
+        if !functional_equality(data, a1, a2) {
+            // Different base Varnodes — Ghidra allows one more pull-back on the wider side (a size
+            // mismatch resolving through a zext/sext step) and then requires identity.
+            if data.vn(a2).size == data.vn(a1).size {
+                return 0;
+            }
+            if data.vn(a1).size < data.vn(a2).size && data.vn(a2).is_written() {
+                let d = data.vn(a2).def.unwrap();
+                match range2.pull_back(data, d, false) {
+                    Some(x) => a2 = x,
+                    None => return 0,
+                }
+            } else if data.vn(a1).is_written() {
+                let d = data.vn(a1).def.unwrap();
+                match range1.pull_back(data, d, false) {
+                    Some(x) => a1 = x,
+                    None => return 0,
+                }
+            }
+            if a1 != a2 {
+                return 0;
+            }
+        }
+        if !data.vn(a1).is_heritage_known() {
+            return 0;
+        }
+
+        let mut restype = if data.op(op).code() == OpCode::BoolAnd {
+            range1.intersect(&range2)
+        } else {
+            range1.circle_union(&range2)
+        };
+
+        if restype == 0 {
+            let (t, opc, resc, resslot) = range1.translate2_op();
+            if t == 0 {
+                let size = data.vn(a1).size;
+                let newconst = data.new_const(size, resc);
+                data.op_set_opcode(op, opc);
+                data.op_set_input(op, (1 - resslot) as usize, a1);
+                data.op_set_input(op, resslot as usize, newconst);
+                return 1;
+            }
+            restype = t;
+        }
+
+        if restype == 2 {
+            return 0; // Cannot represent as a single comparison
+        }
+        if restype == 1 {
+            // Pieces cover every value → the condition is always true.
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_remove_input(op, 1);
+            let one = data.new_const(1, 1);
+            data.op_set_input(op, 0, one);
+        } else if restype == 3 {
+            // Nothing left in the intersection → the condition is always false.
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_remove_input(op, 1);
+            let zero = data.new_const(1, 0);
+            data.op_set_input(op, 0, zero);
+        }
         1
     }
 }
@@ -10884,6 +11017,78 @@ mod tests {
 
         assert_eq!(RuleIntLessEqual.apply_op(le, &mut f), 0);
         assert_eq!(f.op(le).code(), OpCode::IntLessequal);
+    }
+
+    // ---- RuleRangeMeld (#101) ------------------------------------------------------------------
+
+    #[test]
+    fn rangemeld_and_collapses_jg_flag_form() {
+        // (v != 6) && (5 s< v)  =>  6 s< v   (the x86 `jg` signed-compare flag reconstruction)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c6 = f.new_const(4, 6);
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![v, c6]);
+        let neout = f.new_output(ne, 1, Address::new(reg, 0x18));
+        let c5 = f.new_const(4, 5);
+        let sl = f.new_op(OpCode::IntSless, seq, vec![c5, v]);
+        let slout = f.new_output(sl, 1, Address::new(reg, 0x19));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![neout, slout]);
+        f.new_output(and, 1, Address::new(reg, 0x1a));
+        parent_all(&mut f, vec![ne, sl, and]);
+
+        assert_eq!(RuleRangeMeld.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::IntSless);
+        let c = f.op(and).input(0).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 6);
+        assert_eq!(f.op(and).input(1), Some(v));
+    }
+
+    #[test]
+    fn rangemeld_or_collapses_jle_flag_form() {
+        // (v == 9) || (v s< 9)  =>  v s< 10   (the x86 `jle` signed-compare flag reconstruction)
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c9a = f.new_const(4, 9);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![v, c9a]);
+        let eqout = f.new_output(eq, 1, Address::new(reg, 0x18));
+        let c9b = f.new_const(4, 9);
+        let sl = f.new_op(OpCode::IntSless, seq, vec![v, c9b]);
+        let slout = f.new_output(sl, 1, Address::new(reg, 0x19));
+        let or = f.new_op(OpCode::BoolOr, seq, vec![eqout, slout]);
+        f.new_output(or, 1, Address::new(reg, 0x1a));
+        parent_all(&mut f, vec![eq, sl, or]);
+
+        assert_eq!(RuleRangeMeld.apply_op(or, &mut f), 1);
+        assert_eq!(f.op(or).code(), OpCode::IntSless);
+        assert_eq!(f.op(or).input(0), Some(v));
+        let c = f.op(or).input(1).unwrap();
+        assert!(f.vn(c).is_constant() && f.vn(c).constant_value() == 10);
+    }
+
+    #[test]
+    fn rangemeld_no_fire_on_distinct_variables() {
+        // (v != 6) && (5 s< w) — different base Varnodes of equal size, no meld.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x20));
+        let c6 = f.new_const(4, 6);
+        let ne = f.new_op(OpCode::IntNotequal, seq, vec![v, c6]);
+        let neout = f.new_output(ne, 1, Address::new(reg, 0x18));
+        let c5 = f.new_const(4, 5);
+        let sl = f.new_op(OpCode::IntSless, seq, vec![c5, w]);
+        let slout = f.new_output(sl, 1, Address::new(reg, 0x19));
+        let and = f.new_op(OpCode::BoolAnd, seq, vec![neout, slout]);
+        f.new_output(and, 1, Address::new(reg, 0x1a));
+        parent_all(&mut f, vec![ne, sl, and]);
+
+        assert_eq!(RuleRangeMeld.apply_op(and, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::BoolAnd);
     }
 
     // ---- RuleCondNegate (#condnegate) ----------------------------------------------------------
