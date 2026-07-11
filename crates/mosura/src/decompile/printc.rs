@@ -223,13 +223,37 @@ impl<'a> PrintC<'a> {
         if vn.is_input() {
             return true;
         }
-        // Ghidra `ActionMarkExplicit::baseExplicit` (coreaction.cc:3021): an address-tied Varnode is
+        // Ghidra `ActionMarkExplicit::baseExplicit` (coreaction.cc:3022): an address-tied Varnode is
         // explicit — "pointers may reference it", and it is the materialization of a store to that
         // address (`xRam.. = ..`, `xStack_NN = ..`). Without this, a global store made single-use by
         // the `guardReturns` terminal COPY would be inlined into that hidden COPY and disappear.
-        // (Ghidra's SUBPIECE/ZEXT/PIECE sub-cases — an addrtied piece of a larger variable hidden as
-        // a copymarker — need VariablePiece, the P4/P8 debt, and are not modeled here.)
         if vn.is_addrtied() {
+            // baseExplicit's addrtied SUBPIECE-of-addrtied sub-case (coreaction.cc:3023-3029): a narrow
+            // addrtied piece read from the SAME addrtied whole at the matching overlap
+            // (`vn->overlapJoin(vin) == SUBPIECE offset` — the piece sits exactly `off` bytes into the
+            // whole) is an internal copymarker, NOT a store. Ghidra prints it inline as a piece read
+            // (`(int2)glob`), not a spurious `glob = (int2)glob;`. A widening re-heritage re-frees a
+            // narrow read of a grown range as `SUBPIECE(whole, off)` (the mainloop
+            // `removeRevisitedMarkers` / `normalizeReadSize` path), so this keeps such a read inline.
+            // The genuine ZEXT / PIECE-into-a-structure sub-cases (coreaction.cc:3032-3045) still need
+            // VariablePiece (the P4/P8 debt) and stay deferred.
+            if let Some(def) = vn.def {
+                if self.f.op(def).code() == OpCode::Subpiece {
+                    if let (Some(inv), Some(cst)) = (self.f.op(def).input(0), self.f.op(def).input(1))
+                    {
+                        let ivn = self.f.vn(inv);
+                        let coff = self.f.vn(cst);
+                        if coff.is_constant()
+                            && ivn.is_addrtied()
+                            && ivn.loc.space == vn.loc.space
+                            && vn.loc.offset == ivn.loc.offset + coff.loc.offset
+                            && vn.loc.offset + vn.size as u64 <= ivn.loc.offset + ivn.size as u64
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
             return true;
         }
         // A value merged into a global's HighVariable is that global (Ghidra `baseExplicit`'s
@@ -1257,11 +1281,17 @@ impl<'a> PrintC<'a> {
                 }
                 _ => {
                     if let Some(outv) = o.output {
-                        // A COPY between two Varnodes of the SAME HighVariable is a hidden internal
-                        // copy (Ghidra `Merge::markInternalCopies` → `opMarkNonPrinting`): `x = x`
-                        // is redundant, so it is not emitted. This hides the `guardReturns` terminal
-                        // COPY that holds a global to the end of the function (same-high, no reader).
-                        let hidden = o.code() == OpCode::Copy
+                        // A COPY or SUBPIECE between two Varnodes of the SAME HighVariable is a hidden
+                        // internal copy (Ghidra `Merge::markInternalCopies` → `opMarkNonPrinting`,
+                        // merge.cc:1461 for COPY / merge.cc:1508-1523 for SUBPIECE): `x = x` /
+                        // `x = (int2)x` is redundant, so it is not emitted. This hides the `guardReturns`
+                        // terminal COPY that holds a global to the end of the function (same-high, no
+                        // reader) and, under the mainloop re-heritage, the write-masked narrow piece
+                        // markers `removeRevisitedMarkers` leaves at the whole's address (same high as
+                        // the whole once its source merges in). Ghidra's SUBPIECE arm keys on the
+                        // VariablePiece group + offset; mosura's HighVariable identity (`high_of`) is the
+                        // faithful stand-in, exactly as for the existing COPY arm.
+                        let hidden = matches!(o.code(), OpCode::Copy | OpCode::Subpiece)
                             && o.input(0).is_some_and(|inv| {
                                 self.high_of[outv.0 as usize] == self.high_of[inv.0 as usize]
                             });
