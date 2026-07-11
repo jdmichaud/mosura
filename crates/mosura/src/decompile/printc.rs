@@ -1178,23 +1178,7 @@ impl<'a> PrintC<'a> {
                     self.emit_structured(s, c, indent, out);
                 }
             }
-            FlowKind::If => {
-                self.emit_structured(s, comps[0], indent, out);
-                let cond = self.render_condition(s, comps[0], negated);
-                let _ = writeln!(out, "{pad}if ({cond}) {{");
-                self.emit_structured(s, comps[1], indent + 1, out);
-                let _ = writeln!(out, "{pad}}}");
-            }
-            FlowKind::IfElse => {
-                self.emit_structured(s, comps[0], indent, out);
-                let cond = self.render_condition(s, comps[0], negated);
-                let _ = writeln!(out, "{pad}if ({cond}) {{");
-                self.emit_structured(s, comps[1], indent + 1, out);
-                let _ = writeln!(out, "{pad}}}");
-                let _ = writeln!(out, "{pad}else {{");
-                self.emit_structured(s, comps[2], indent + 1, out);
-                let _ = writeln!(out, "{pad}}}");
-            }
+            FlowKind::If | FlowKind::IfElse => self.emit_if(s, idx, indent, out, false),
             FlowKind::WhileDo => {
                 self.emit_structured(s, comps[0], indent, out);
                 if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
@@ -1227,6 +1211,63 @@ impl<'a> PrintC<'a> {
                 let cond = self.render_condition(s, comps[0], negated);
                 let _ = writeln!(out, "{pad}}} while ({cond});");
             }
+        }
+    }
+
+    /// Emit a `FlowKind::If` / `FlowKind::IfElse`, collapsing `else { if … }` into `else if …`.
+    ///
+    /// Faithful port of `PrintC::emitBlockIf`'s pending-brace handling (printc.cc:2882-2943): when
+    /// an `if`/`else`'s else-arm is itself an `if` (`FlowBlock::t_if`), Ghidra prints the `else`
+    /// keyword and emits the nested `if` in "pending brace" mode — the nested `if`'s opening brace
+    /// is only issued if its condition block emits a leading statement; otherwise the `if` glues
+    /// onto the `else` on one line (`else if (…)`). `else_if` is true when this block sits in that
+    /// else-position and the caller has just written the bare `else` keyword (no trailing newline).
+    /// ccompare normalizes `else { if … }` and `else if …` to the same token skeleton, so this
+    /// changes no corpus score — it makes the emitted C match Ghidra's exact rendering.
+    fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
+        let fb = &s.blocks[idx];
+        let (comps, negated) = (fb.components.clone(), fb.negated);
+        let has_else = matches!(fb.kind, FlowKind::IfElse);
+
+        // Ghidra emits the condition block (with `no_branch`) before deciding the merge; buffer its
+        // leading statements so the pending-brace decision can see whether anything printed.
+        let stmt_indent = indent + if else_if { 1 } else { 0 };
+        let mut cond_stmts = String::new();
+        self.emit_structured(s, comps[0], stmt_indent, &mut cond_stmts);
+        let cond = self.render_condition(s, comps[0], negated);
+        let merged = else_if && cond_stmts.is_empty();
+
+        // `body_indent` is where the `if` and its closing brace sit: on a clean merge the `if` glues
+        // onto the caller's `else` at the outer indent; otherwise (top-level, or the pending brace
+        // fired) it sits one level in, under the just-opened `else {`.
+        let body_indent = if merged { indent } else { stmt_indent };
+        let bpad = "  ".repeat(body_indent);
+
+        if else_if && !merged {
+            let _ = writeln!(out, " {{"); // pending brace fired: continue the caller's "else" → "else {"
+        }
+        if !merged {
+            out.push_str(&cond_stmts);
+            let _ = writeln!(out, "{bpad}if ({cond}) {{");
+        } else {
+            let _ = writeln!(out, " if ({cond}) {{"); // "else if (…)" on one line
+        }
+        self.emit_structured(s, comps[1], body_indent + 1, out);
+        let _ = writeln!(out, "{bpad}}}");
+        if has_else {
+            let else_arm = comps[2];
+            let _ = write!(out, "{bpad}else");
+            if matches!(s.blocks[else_arm].kind, FlowKind::If | FlowKind::IfElse) {
+                self.emit_if(s, else_arm, body_indent, out, true);
+            } else {
+                let _ = writeln!(out, " {{");
+                self.emit_structured(s, else_arm, body_indent + 1, out);
+                let _ = writeln!(out, "{bpad}}}");
+            }
+        }
+        if else_if && !merged {
+            // close the "else {" opened above when the pending brace fired
+            let _ = writeln!(out, "{}}}", "  ".repeat(indent));
         }
     }
 
