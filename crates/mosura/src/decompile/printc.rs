@@ -1017,34 +1017,25 @@ impl<'a> PrintC<'a> {
                     let inner = self.f.op(def).input(0).unwrap();
                     return self.render_var(inner).0; // !(!x) => x
                 }
-                // operands route through `cast_operand` so a flipped signed compare keeps its
-                // `(int4)` cast (`!(9 s< x)` => `(int4)x < 10`), matching the un-negated path
+                // The equality flip `!(a == b)` => `a != b` is Ghidra's print-time `negatetoken`
+                // (printlanguage.cc:549, `tok->negate`: `==`↔`!=`, printc.cc:133-134) — a pure token
+                // flip, no operand reorder. Operands route through `cast_operand` so both sides keep
+                // their `(int4)` cast, matching the un-negated path.
+                //
+                // The order-comparison flips (`<`/`<=`) are NOT here: Ghidra's `negatetoken` for those
+                // is `<`↔`>=`, `<=`↔`>` (printc.cc:129-132) — but the branch-negation stage
+                // (ActionOrientBranches / ActionPreferComplement / compound `BlockCondition::
+                // negateCondition`) now materializes every oriented order comparison into normal form
+                // in the IR (`RuleBoolNegate` + `RuleIntLessEqual`), so no `<`/`<=` condition reaches
+                // print still negated. The old print-time `!(a<=b)=>b<a` / `!(c<x)=>x<c+1` reorder-
+                // and-increment shortcut (a mosura-only form Ghidra never used — it materializes
+                // instead) is retired; a genuinely-unmaterialized order comparison falls through to
+                // the `!(...)` fallback below.
                 OpCode::IntEqual | OpCode::IntNotequal => {
                     let sym = if code == OpCode::IntEqual { "!=" } else { "==" };
                     let l = self.cast_operand(def, 0, 9, false);
                     let r = self.cast_operand(def, 1, 9, true);
                     return format!("{l} {sym} {r}");
-                }
-                // !(a <= b) => b < a
-                OpCode::IntLessequal | OpCode::IntSlessequal => {
-                    let l = self.cast_operand(def, 1, 9, false);
-                    let r = self.cast_operand(def, 0, 9, true);
-                    return format!("{l} < {r}");
-                }
-                // !(a < b) => b <= a; but when a is a constant c, Ghidra keeps the strict form
-                // by incrementing the constant (`b < c+1`), unless c+1 overflows the width
-                OpCode::IntLess | OpCode::IntSless => {
-                    let i0 = self.f.op(def).input(0).unwrap();
-                    let vn0 = self.f.vn(i0);
-                    if vn0.is_constant() {
-                        if let Some(cp1) = incr_in_width(vn0.constant_value(), vn0.size, code == OpCode::IntSless) {
-                            let l = self.cast_operand(def, 1, 9, false);
-                            return format!("{l} < {}", render_const(cp1, vn0.size));
-                        }
-                    }
-                    let l = self.cast_operand(def, 1, 9, false);
-                    let r = self.cast_operand(def, 0, 9, true);
-                    return format!("{l} <= {r}");
                 }
                 // De Morgan: `!(a && b)` => `!a || !b`, `!(a || b)` => `!a && !b`, pushing the
                 // negation into each operand. This is the print-time analogue of Ghidra's
@@ -1431,22 +1422,6 @@ fn op_flip_normalizes(f: &Funcdata, op: OpId) -> i32 {
         }
         _ => 2,
     }
-}
-
-/// `c + 1` masked to a comparison's width, or `None` if it would overflow the maximum value
-/// for the signedness — so the strict-`<` rewrite `x <= c` ⇒ `x < c+1` stays exact.
-fn incr_in_width(c: u64, size: u32, signed: bool) -> Option<u64> {
-    let bits = (size * 8).clamp(1, 64);
-    let full = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
-    let cm = c & full;
-    let max = if !signed {
-        full
-    } else if bits >= 64 {
-        i64::MAX as u64
-    } else {
-        (1u64 << (bits - 1)) - 1
-    };
-    (cm != max).then(|| (cm + 1) & full)
 }
 
 /// Ops whose constant operands inherit the operation's signedness (Ghidra's `inherits_sign`):
