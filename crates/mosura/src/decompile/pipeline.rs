@@ -220,15 +220,29 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleLessNotEqual) // (100)
         .with(RuleRangeMeld) // (101)
         .with(RuleFloatRange) // (102)
+        // RulePiece2Zext (coreaction.cc:5614): `CONCAT(#0, W) => ZEXT(W)`. Wired now that RuleSubvarZext
+        // narrows returns — the earlier floatconv over-fire that held it was the wide-return divergence,
+        // which the int4-return narrowing cleared (floatconv unchanged 0.653 at wiring). It feeds
+        // RuleSplitFlow: a movsd's zero-high half `CONCAT88(#0, Qa)` becomes `ZEXT816(Qa)`, the form
+        // SplitFlow's traceBackward splits into low/high lanes.
+        .with(super::rules::RulePiece2Zext) // (103)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
         // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —
         // sign-extension tracer still stubbed. RuleAndDistribute (5537) stays OUT (RuleHumptyOr
-        // ping-pong hang). SubZext/Piece2Zext stay HELD until re-measured after RuleSubvarZext narrows
-        // returns: their earlier regressors were all the wide-return divergence (they reconstruct the
-        // upper-RAX packing an 8-byte RETURN consumes), which int4 returns should clear.
+        // ping-pong hang). RuleSubZext stays HELD until re-measured after RuleSubvarZext narrows
+        // returns: its earlier regressors were the wide-return divergence (it reconstructs the upper-RAX
+        // packing an 8-byte RETURN consumes), which int4 returns should clear. (RulePiece2Zext was in
+        // the same hold and is now wired above — its floatconv over-fire was cleared by RuleSubvarZext.)
         .with(RuleSubvarAnd) // (110)
         .with(RuleSubvarSubpiece) // (111)
+        // RuleSplitFlow (coreaction.cc:5623): split an artificially-joined wide value — a high SUBPIECE
+        // of a PIECE reached through INDIRECT(s)/MULTIEQUAL — into its two logical halves ([`super::
+        // splitflow`]). The floatcast XMM 16->8 narrowing: the movsd-zero-joined XMM0 MULTIEQUAL splits
+        // into 8-byte Qa/Qb lanes and the `Qb = #0` lane dies. The straight-line `PIECE #0:8 -> SUBPIECE
+        // #0` return chain is faithfully NOT split (Ghidra's `vn->getDef() != multiOp` guard rejects a
+        // direct PIECE->SUBPIECE); that return-decomposition residual is task #21.
+        .with(super::splitflow::RuleSplitFlow) // (112)
         .with(RuleSubvarCompZero) // (114)
         .with(RuleSubvarShift) // (115)
         // RuleSubvarZext (116): narrows a zext-fed value to its logical width; its RETURN pull

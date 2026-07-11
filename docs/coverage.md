@@ -235,7 +235,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleLessOne | MISSING |
 | RuleRangeMeld | PORTED (rules.rs, WIRED slot 101 — Task #11; BOOL_AND/BOOL_OR of two `V s< c`/`c s< V`/`V == c`/`V != c` range conditions, pulled back to a common Varnode as a `CircleRange` and intersected/unioned, then `CircleRange::translate2_op` re-expresses the result as one comparison. Collapses the x86 signed-compare flag reconstructions — `jg` form `(x != c) && (c-1 s< x) => c s< x`, `jle` form `(x == c) || (x s< c) => x s< c+1`. This is the paydown for RuleIntLessEqual @10 (Task #9): the @10 SLESSEQUAL→SLESS conversion put the fold out of RuleLessNotEqual's reach (SLESSEQUAL-form only); RuleRangeMeld recovers it in the SLESS form, matching Ghidra's `sborrow→intlessequal→rangemeld` chain. Recovers condmulti/deindirect/elseif/loopcomment byte-identically (corpus 0.9168/55→0.9196/56). 3 unit tests. `CircleRange::pullBack`/`intersect`/`circleUnion` already present; only `translate2Op` was added.) |
 | RuleFloatRange | PORTED |
-| RulePiece2Zext | HELD(rides with SubZext un-hold; Task #8) |
+| RulePiece2Zext | PORTED (rules.rs; WIRED at coreaction.cc:5614, after RuleFloatRange). Was HELD ("rides with SubZext un-hold") for a floatconv over-fire; that hold is RESOLVED — the over-fire was the wide-return divergence, cleared once RuleSubvarZext narrows returns (floatconv unchanged 0.653 at wiring). Feeds RuleSplitFlow (movsd zero-high `CONCAT88(#0,Qa)`->`ZEXT816(Qa)`). |
 | RulePiece2Sext | MISSING |
 | RulePopcountBoolXor | PORTED |
 | RuleXorSwap | MISSING |
@@ -244,7 +244,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleOrCompare | PORTED |
 | RuleSubvarAnd | PORTED |
 | RuleSubvarSubpiece | PORTED |
-| RuleSplitFlow | PORTED-INERT (`splitflow.rs` SplitFlow + RuleSplitFlow on the transform.rs TransformManager; subflow.cc:1754-2088) — S1 unwired/byte-identical; wire at coreaction.cc:5623 (after RuleSubvarSubpiece) = the floatcast XMM 16→8 narrowing mover, gated |
+| RuleSplitFlow | PORTED (`splitflow.rs` SplitFlow + RuleSplitFlow on the transform.rs TransformManager; subflow.cc:1754-2088; S1 `d171301`). WIRED at coreaction.cc:5623 (after RuleSubvarSubpiece) = the floatcast XMM 16→8 narrowing: splits a movsd-zero-joined XMM0 MULTIEQUAL into 8-byte Qa/Qb lanes (Qb=0 dies). floatcast 0.776→0.845, the only mover, zero regressions. RESIDUAL (task #21): the straight-line `PIECE #0:8 -> SUBPIECE #0` return chain stays 16-byte — faithfully NOT split (Ghidra `vn->getDef()!=multiOp` guard); Piece2Zext re-widens the 8-byte diff, so the return decomposition renders CONCAT124 not CONCAT44. |
 | RulePtrFlow | MISSING (needs Varnode::isPtrFlow — aggressive subvar) |
 | RuleSubvarCompZero | PORTED |
 | RuleSubvarShift | PORTED |
