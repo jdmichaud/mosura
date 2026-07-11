@@ -49,6 +49,17 @@ pub mod flags {
     pub const PROTO_PARTIAL: u32 = 0x80000000;
 }
 
+/// Ghidra's `Varnode::addl_flags` (varnode.hh:118) — the *additional* attributes, kept in a second
+/// field because `varnode_flags` (above) already fills all 32 bits. mosura carries only the subset
+/// it uses.
+pub mod addlflags {
+    /// Ghidra `Varnode::writemask` (varnode.hh:120): "Should not be considered a write in heritage
+    /// calculation." Set by `Heritage::removeRevisitedMarkers` on the narrow varnode whose defining
+    /// MULTIEQUAL/INDIRECT was rewritten to a SUBPIECE of a wider re-heritaged range, so the later
+    /// candidate/cover scan does not re-collect it as an independent location.
+    pub const WRITEMASK: u32 = 0x02;
+}
+
 /// An SSA value. Created via [`Funcdata`](super::funcdata::Funcdata); never constructed
 /// directly elsewhere.
 #[derive(Clone, Debug)]
@@ -59,6 +70,8 @@ pub struct Varnode {
     pub size: u32,
     /// Boolean attributes — see [`flags`].
     pub flags: u32,
+    /// Additional attributes — see [`addlflags`] (Ghidra's second flag word). Defaults to 0.
+    pub addlflags: u32,
     /// One-up creation index (Ghidra's `create_index`; ties order the varnode bank).
     pub create_index: u32,
     /// The defining op, if [`WRITTEN`](flags::WRITTEN).
@@ -84,6 +97,15 @@ pub struct Varnode {
 impl Varnode {
     pub fn is_constant(&self) -> bool {
         self.flags & flags::CONSTANT != 0
+    }
+    /// Ghidra `Varnode::isWriteMask` (varnode.hh): this varnode should not be treated as a write
+    /// during heritage (its defining marker was rewritten to a SUBPIECE of a wider range).
+    pub fn is_write_mask(&self) -> bool {
+        self.addlflags & addlflags::WRITEMASK != 0
+    }
+    /// Ghidra `Varnode::setWriteMask`.
+    pub fn set_write_mask(&mut self) {
+        self.addlflags |= addlflags::WRITEMASK;
     }
     pub fn is_input(&self) -> bool {
         self.flags & flags::INPUT != 0

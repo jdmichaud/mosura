@@ -231,6 +231,7 @@ impl Funcdata {
             loc,
             size,
             flags: vflags,
+            addlflags: 0,
             create_index,
             def: None,
             descend: Vec::new(),
