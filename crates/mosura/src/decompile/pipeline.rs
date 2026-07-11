@@ -116,14 +116,18 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleMultMult) // mosura extra — term collection over MULT, next to CollectTerms
         .with(RuleSborrow) // (8)
         .with(RuleScarry) // (9)
-        // RuleIntLessEqual (10) is defined + unit-tested in rules.rs but HELD UNWIRED: it is a
-        // faithful port (`V <= c => V < c+1`), but mosura ALREADY implements that rewrite
-        // non-faithfully at PRINT time (printc::incr_in_width, `x <= c => x < c+1`) and keeps the
-        // SLESSEQUAL form in the IR. Wiring the faithful IR rule converts to SLESS early, and
-        // mosura's structuring/condition-negation (tuned for the SLESSEQUAL form) then mis-renders it
-        // as `x == c || x < c` disjunctions — regressing concat/condconst/condmulti/condsplit.
-        // Resolve per port-all-faithful-rules by CANCELLING the print-time adaptation and letting this
-        // rule normalize at the IR level (instrument-first; couples into P7/P8 structuring #5/#6).
+        // RuleIntLessEqual (10): `V <= c => V < (c+1)`. Faithful Ghidra rule; wiring it here mirrors
+        // Ghidra's own trace (coreaction.cc:5521, "analysis" pool) — e.g. condmulti's SF==OF term
+        // reconstructs to `6 <= x`, which Ghidra AND mosura convert to `5 < x` at this slot. Formerly
+        // HELD-unwired: pre-keystone it made the PRINT-time branch negation emit `100 <= x` vs Ghidra's
+        // `99 < x`; task #8 (isBooleanFlip/RuleCondNegate) materialized the negation in the IR, so that
+        // blocker is gone. It exposes one downstream gap — mosura lacks RuleRangeMeld (coreaction.cc:
+        // 5612), which collapses the SLESS-form flag reconstruction `(x==c)||(x<c)` / `(x!=c)&&(c-1<x)`
+        // that this rule's early SLESSEQUAL->SLESS conversion hands off; mosura had leaned on
+        // RuleLessNotEqual (SLESSEQUAL-form only). Until RuleRangeMeld lands (task #11), condmulti/
+        // deindirect/elseif/loopcomment render the un-collapsed disjunction. The regression is the
+        // diagnostic naming that gap, not this faithful wiring (per faithful-ports-land-not-held).
+        .with(super::rules::RuleIntLessEqual) // (10)
         .with(RuleTrivialArith) // (11)
         .with(RuleTrivialBool) // (12)
         .with(RuleTrivialShift) // (13)
