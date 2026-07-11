@@ -80,6 +80,41 @@ fn type_prefix(t: &Datatype) -> &'static str {
     }
 }
 
+/// Ghidra `CastStrategyC::isSubpieceCast` (`cast.cc`): a SUBPIECE prints as a C truncation cast
+/// `(outtype)x` (rather than the functional `SUB<n><m>(x,off)`) exactly when it slices at offset 0
+/// and both operands are scalar — input `int`/`uint`/`unknown`/`pointer`, output additionally
+/// allowing `float`. Keyed purely on the type metatypes: Ghidra never consults the nonzero-mask or
+/// how wide the value is actually used (mosura's former `effective_width` gate did, a non-faithful
+/// adaptation that suppressed the cast whenever the used width already fit the slice).
+fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool {
+    if offset != 0 {
+        return false;
+    }
+    if !matches!(
+        intype,
+        Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..)
+    ) {
+        return false;
+    }
+    if !matches!(
+        outtype,
+        Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..) | Datatype::Float(_)
+    ) {
+        return false;
+    }
+    if let Datatype::Pointer(insz, _) = intype {
+        if let Datatype::Pointer(outsz, _) = outtype {
+            if outsz < insz {
+                return true; // Cast from far pointer to near pointer
+            }
+        }
+        if !matches!(outtype, Datatype::Int(_) | Datatype::Uint(_)) {
+            return false; // other casts don't make sense for pointers
+        }
+    }
+    true
+}
+
 /// The 64-bit name of an x86-64 integer register by offset (for `extraout_*` etc.).
 fn reg64_name(offset: u64) -> Option<&'static str> {
     Some(match offset {
@@ -165,35 +200,6 @@ impl PrintC<'_> {
         self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
     }
 
-    /// The variable's effective (type) width: the highest byte index any use reads — Ghidra's
-    /// type-width that `ActionInferTypes::propagateOneType` derives from consumed bytes. A
-    /// `SUBPIECE` use reads `[offset, offset+out_size)`; any other use reads the whole varnode.
-    /// A truncating SUBPIECE renders as a cast exactly when this exceeds its output size (the
-    /// value is genuinely wider than the slice), which distinguishes an int8 used at 4 bytes
-    /// (`(int4)x`) from an int4 used at its width (plain `x`).
-    fn effective_width(&self, x: VarnodeId) -> u32 {
-        let full = self.f.vn(x).size;
-        let mut w = 0;
-        for &u in &self.f.vn(x).descend {
-            let o = self.f.op(u);
-            for (slot, &iv) in o.inrefs.iter().enumerate() {
-                if iv != x {
-                    continue;
-                }
-                let top = if o.code() == OpCode::Subpiece && slot == 0 {
-                    let off = o
-                        .input(1)
-                        .and_then(|v| self.f.vn(v).is_constant().then(|| self.f.vn(v).constant_value()))
-                        .unwrap_or(0) as u32;
-                    off + o.output.map(|out| self.f.vn(out).size).unwrap_or(full)
-                } else {
-                    full
-                };
-                w = w.max(top);
-            }
-        }
-        w
-    }
 }
 
 impl<'a> PrintC<'a> {
@@ -734,18 +740,22 @@ impl<'a> PrintC<'a> {
         match o.code() {
             // COPY and ZEXT (the implicit x86 32→64 zero-extension) stay transparent
             OpCode::Copy | OpCode::IntZext => self.render_var(a(0)),
-            // SUBPIECE: a truncation at offset 0 of a value wider than the slice is a C cast
-            // (Ghidra's `opSubpiece`/`isSubpieceCast`); when the value's type-width equals the
-            // slice it is the natural read and stays transparent
+            // SUBPIECE (Ghidra `PrintC::opSubpiece`, printc.cc:843): a truncation renders as a C
+            // cast when `CastStrategyC::isSubpieceCast` holds (offset 0 + scalar in/out metatypes),
+            // otherwise as the functional `SUB<insize><outsize>(x, off)` (`opFunc`,
+            // `TypeOpSubpiece::getOperatorName`). The cast target is the output type.
             OpCode::Subpiece => {
                 let in0 = a(0);
-                let off = self.f.vn(a(1)).is_constant().then(|| self.f.vn(a(1)).constant_value());
-                let out_size = self.f.vn(o.output.unwrap()).size;
-                if off == Some(0) && self.effective_width(in0) > out_size {
-                    let ty = self.type_of(o.output.unwrap()).name();
-                    (format!("({ty}){}", self.operand(in0, 14, false)), 14)
+                let off =
+                    self.f.vn(a(1)).is_constant().then(|| self.f.vn(a(1)).constant_value()).unwrap_or(1);
+                let out_ty = self.type_of(o.output.unwrap());
+                let in_ty = self.type_of(in0);
+                if is_subpiece_cast(&out_ty, &in_ty, off) {
+                    (format!("({}){}", out_ty.name(), self.operand(in0, 14, false)), 14)
                 } else {
-                    self.render_var(in0)
+                    let insize = self.f.vn(in0).size;
+                    let outsize = self.f.vn(o.output.unwrap()).size;
+                    (format!("SUB{insize}{outsize}({},{off})", self.render_var(in0).0), 16)
                 }
             }
             OpCode::IntSext => {

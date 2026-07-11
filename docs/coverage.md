@@ -393,7 +393,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 | opCopy / opLoad / opStore / opBranch / opCbranch / opReturn | PORTED (printc.rs) |
 | opCall / opCallind / opCallother | PORTED |
 | opFunc / opTypeCast / opHiddenFunc | PORTED (opTypeCast = cast.rs) |
-| opIntZext / opIntSext / opBoolNegate / opSubpiece | PORTED |
+| opIntZext / opIntSext / opBoolNegate / opSubpiece | PORTED (opSubpiece is faithful to Ghidra printc.cc:843 — `is_subpiece_cast` port of `CastStrategyC::isSubpieceCast` (cast.cc: offset0 + scalar in/out metatypes → C truncation cast) + the `opFunc` non-cast branch `SUB<insize><outsize>(x,off)`. Replaced the non-faithful `effective_width`/nzmask gate (Task #12), which suppressed the cast whenever the value's used width already fit the slice — packstructaccess now `(int4)(int2)(uVar1>>0x30)`, impliedfield `(float4)(param_1>>0x20)`, matching Ghidra. Corpus 0.9196→0.9209 (+0.0013): packstructaccess +.045, impliedfield +.017, floatconv +.057. Dips are the faithful cast EXPOSING upstream type gaps the adaptation was masking (faithful-exposes-gap): (xunknownN) on wide/multi-precision CONCAT truncations where mosura infers Unknown vs Ghidra float8 = **Task #13** (floatcast −.028, revisit −.012, switchloop); extra/narrower SUBPIECE type-width divergence = **Task #14** (loopcomment −.003, switchloop −.001). The struct-field `doesSpecialPrinting` path (`tVar1.b`) stays deferred — the oracle gauge doesn't apply composite types.) |
 | opFloatInt / float+NAN emission | PORTED (Task #11; float.rs) |
 | opBranchind (switch) | PARTIAL |
 | opPtradd / opPtrsub | PORTED (ptrarith) |
