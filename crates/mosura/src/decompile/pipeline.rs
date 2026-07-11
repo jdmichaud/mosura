@@ -413,7 +413,19 @@ pub fn universal_action() -> ActionGroup {
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)
         .then(ActionInferTypes)
-        .then(ptrarith_pool())
+        // Iterating mainloop re-heritage (Ghidra runs ActionHeritage every actmainloop iteration,
+        // coreaction.cc:5492): a LOAD/STORE that RuleLoadVarnode/RuleStoreVarnode converts to a free
+        // COPY in ptrarith_pool re-enters heritage, which widens the range (globaldisjoint.add) and
+        // re-versions it. The widening re-free (removeRevisitedMarkers + normalize_ranges) then
+        // reconstructs Ghidra's whole-range SSA (revisit `iRam74 = iRam74 + 10` in-place instead of
+        // the snapshot). The group repeats to a fixpoint (rule_repeatapply): ptrarith bottoms out,
+        // heritage returns 0 once complete, deadcode is idempotent — measured to converge in <=2 passes.
+        .then(
+            ActionGroup::restart("reheritage")
+                .then(ptrarith_pool())
+                .then(ActionHeritage)
+                .then(super::deadcode::ActionDeadCode),
+        )
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
