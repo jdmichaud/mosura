@@ -13,6 +13,21 @@ fn ghidra_c(fx: &std::path::Path) -> Option<String> {
     (!c.trim().is_empty()).then_some(c)
 }
 
+/// Stamp every corpus number with the commit it was measured at, so a recorded/pasted score
+/// carries its provenance and staleness (`@sha` != current HEAD) is a one-glance check — a number
+/// measured on an old base can no longer masquerade as current. `-dirty` when the tree has
+/// uncommitted changes (a clean sha over a modified tree is itself a stale-number trap).
+fn head_sha() -> String {
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).output().ok();
+    let sha = git(&["rev-parse", "--short", "HEAD"])
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let dirty = git(&["status", "--porcelain"]).map(|o| !o.stdout.is_empty()).unwrap_or(false);
+    if dirty { format!("{sha}-dirty") } else { sha }
+}
+
 #[test]
 fn decompile_track_corpus_report() {
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
@@ -58,7 +73,8 @@ fn decompile_track_corpus_report() {
         }
     }
 
-    eprintln!("decompile track: decompiled {decompiled}/{total} x86-64 datatests");
+    let sha = head_sha();
+    eprintln!("decompile track @ {sha}: decompiled {decompiled}/{total} x86-64 datatests");
     if !have_oracle {
         eprintln!("skip scoring: oracle capture tool not built");
         return;
@@ -70,7 +86,7 @@ fn decompile_track_corpus_report() {
     for (n, s) in &scored {
         eprintln!("  {s:.3}  {n}");
     }
-    eprintln!("\n=== decompile-track corpus: avg {avg:.4}, >=0.70: {good}/{} ===", scored.len());
+    eprintln!("\n=== decompile-track corpus @ {sha}: avg {avg:.4}, >=0.70: {good}/{} ===", scored.len());
 
     assert!(decompiled >= 40, "decompile track only handled {decompiled} datatests — regressed");
 }
