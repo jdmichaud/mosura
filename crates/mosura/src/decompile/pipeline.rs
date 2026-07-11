@@ -195,6 +195,15 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleShiftAnd) // (71)
         .with(RuleConcatZero) // (72)
         .with(RuleConcatLeftShift) // (73)
+        // RuleSubZext (coreaction.cc:5585, between RuleConcatLeftShift and RuleSubCancel; body
+        // ruleaction.cc:5039): `zext(sub(V,0)) => V & mask` etc. Now WIRED — the SubVariableFlow
+        // driving rules (slots 110-116) landed, so this composes as Ghidra intends. The old
+        // wide-return regressors it caused are gone (the iterating mainloop + const-0 fold + subvar
+        // return-narrowing + RulePiece2Zext cleared them; those fixtures are byte-identical). The
+        // residual forloop_varused/noforloop_iterused dip is the diagnostic for the missing
+        // induction-phi narrowing (Ghidra narrows the 8-byte loop phi via subvar_subpiece+andmask at
+        // the loop header; mosura doesn't yet) — Task #24, the faithful-exposes-gap payback.
+        .with(super::rules::RuleSubZext) // (74)
         .with(RuleSubCancel) // (75)
         .with(RuleShiftSub) // (76)
         .with(RuleHumptyDumpty) // (77)
@@ -238,10 +247,8 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleOrCompare) // (109)
         // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —
         // sign-extension tracer still stubbed. RuleAndDistribute (5537) stays OUT (RuleHumptyOr
-        // ping-pong hang). RuleSubZext stays HELD until re-measured after RuleSubvarZext narrows
-        // returns: its earlier regressors were the wide-return divergence (it reconstructs the upper-RAX
-        // packing an 8-byte RETURN consumes), which int4 returns should clear. (RulePiece2Zext was in
-        // the same hold and is now wired above — its floatconv over-fire was cleared by RuleSubvarZext.)
+        // ping-pong hang). RuleSubZext is now wired at slot 74 above (its wide-return regressors were
+        // cleared by the mainloop + subvar return-narrowing + Piece2Zext).
         .with(RuleSubvarAnd) // (110)
         .with(RuleSubvarSubpiece) // (111)
         // RuleSplitFlow (coreaction.cc:5623): split an artificially-joined wide value — a high SUBPIECE

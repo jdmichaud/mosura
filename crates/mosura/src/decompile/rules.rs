@@ -4257,14 +4257,14 @@ impl Rule for RuleZextShiftZext {
 ///   - `zext( sub(V, k) >> d )  =>  (V >> (k*8+d)) & mask`
 /// where the truncate-then-extend returns to `V`'s original width (`|sub base| == |zext out|`).
 ///
-/// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
-/// shows mosura over-fires it on piecestruct and rewrites `zext(byte)` forms that [`RuleShiftPiece`]
-/// needs to fold into CONCAT — broadly regressing the corpus (piecestruct itself 0.889→0.736). With
-/// Ghidra's per-op rule priority now in place (**Task #7**, `c88ff35`) it still over-fires 31×-vs-26×,
-/// so priority was not the blocker. Root cause (Ghidra's own trace on piecestruct): Ghidra fires
-/// subzext 26× *alongside* subvar 20× + piece2zext 19× + andmask 27× — its SubVariableFlow subsystem
-/// consumes the extra IntZext forms mosura's SubZext hits. Wire it once SubVariableFlow lands
-/// (**Task #9**).
+/// Faithful port, **WIRED** into [`default_rule_pool`] at slot 74 (Ghidra `coreaction.cc:5585`,
+/// between RuleConcatLeftShift and RuleSubCancel). It was held for 16 sessions because it over-fired
+/// where mosura's own rules already matched Ghidra; those regressors were all wide-return divergences
+/// that the iterating mainloop + const-0 fold + `RuleSubvarZext` return-narrowing + `RulePiece2Zext`
+/// have since cleared (the piecestruct/namespace/orcompare/floatconv family is byte-identical with
+/// this on). Its SubVariableFlow siblings (slots 110-116) now consume the extra IntZext forms as
+/// Ghidra intends. The remaining forloop_varused/noforloop_iterused dip is the missing
+/// induction-phi narrowing (**Task #24**) — the faithful-exposes-gap diagnostic, not a mis-port.
 pub struct RuleSubZext;
 
 impl Rule for RuleSubZext {

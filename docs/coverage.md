@@ -206,7 +206,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleShiftAnd | PORTED (rules.rs; byte-neutral, unit-tested — shift/mult over redundant AND-mask drop, nzmask-gated; inert on corpus: mosura collapses the masked AND upstream before it reaches actprop) |
 | RuleConcatZero | PORTED (rules.rs; unit-tested — concat(V,0)=>zext(V)<<c; MOVER, lead-approved: sole corpus mover is nan CONCAT44(0,0)=>0, ccompare 0.5385->0.5600 toward Ghidra) |
 | RuleConcatLeftShift | PORTED (rules.rs; byte-neutral, unit-tested — concat(V,zext(W)<<c)=>concat(concat(V,W),0); inert on corpus) |
-| RuleSubZext | HELD(preempts RuleSubvarZext return-narrowing on the truncation-return family; Task #8) |
+| RuleSubZext | PORTED (rules.rs; WIRED at coreaction.cc:5585, slot 74, between RuleConcatLeftShift and RuleSubCancel). Held 16 sessions for corpus-protection (a faithful-ports-land-not-held drift); landed once the old wide-return regressors were cleared by the iterating mainloop + const-0 fold + RuleSubvarZext return-narrowing + RulePiece2Zext (piecestruct/namespace/orcompare/floatconv family now byte-identical with it on). Residual forloop_varused/noforloop_iterused −0.086/−0.022 = the missing induction-phi narrowing diagnostic (Ghidra narrows the 8-byte loop phi via subvar_subpiece+andmask at the loop header; mosura doesn't) → Task #24; switchloop +0.012. |
 | RuleSubCancel | PORTED (rules.rs; byte-neutral, unit-tested — SUBPIECE cancels a ZEXT/SEXT/AND: `sub(zext(V),0)`=>V/sub(V)/narrower zext, `sub(V&fullmask,0)`=>sub(V), `sub(zext(V),c>=farin)`=>0; fires 5x but rendered C byte-IDENTICAL, absorbed downstream. mosura's is_free treats constants as non-free, so the big-constant offset-0 sub-case is structurally preserved but unreachable) |
 | RuleShiftSub | PORTED (rules.rs; byte-neutral, unit-tested — `sub(V << 8k, c) => sub(V, c-k)` for a byte-granular left shift when the window stays within V; inert on corpus) |
 | RuleHumptyDumpty | PORTED |
@@ -431,8 +431,8 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
   RuleSignShift, RuleTestSign, RuleSignForm, RuleSignForm2, RuleSignDiv2, RuleDivChain, RuleSignNearMult,
   RuleModOpt, RuleSignMod2nOpt, RuleSignMod2nOpt2, RuleSignMod2Opt, RuleLessNotEqual — Task #20; plus
   RuleFloatCast, RuleShiftAnd, RuleConcat*, RuleDouble*, RuleTrivialBool, RuleLess2Zero, RuleOrConsume,
-  RuleEqual2Constant, RuleBoolZext), 3 HELD (NotDistribute, AndDistribute, AndCompare), 3 BLOCKED (SubZext,
-  Piece2Zext, SubvarSext / RulePtrFlow=isPtrFlow), 1 DEFERRED (RuleLeftRight — register-piece dep, Task #7),
+  RuleEqual2Constant, RuleBoolZext), 3 HELD (NotDistribute, AndDistribute, AndCompare), 1 BLOCKED
+  (SubvarSext / RulePtrFlow=isPtrFlow; SubZext + Piece2Zext now WIRED), 1 DEFERRED (RuleLeftRight — register-piece dep, Task #7),
   ~61 MISSING, 0 non-faithful (the fused DivOpt is retired), + 3 mosura-only extras.
   The MISSING set is the mechanical rule tail (Phase 1b, in progress).
 - **oppool2**: 1 PORTED (PtrArith), 3 PARTIAL (LoadVarnode/StoreVarnode ram-global branch ported task #7 S1;
