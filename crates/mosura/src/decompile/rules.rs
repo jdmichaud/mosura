@@ -7136,7 +7136,7 @@ impl Rule for RuleNegateIdentity {
 ///
 /// (Ghidra also `copySymbol`s the data-type/Symbol onto the new constant; mosura has no per-Varnode
 /// symbol, so that is omitted — same as the subvarflow port.)
-fn replace_lessequal(data: &mut Funcdata, op: OpId) -> bool {
+pub(crate) fn replace_lessequal(data: &mut Funcdata, op: OpId) -> bool {
     let in0 = data.op(op).input(0).unwrap();
     let in1 = data.op(op).input(1).unwrap();
     let (vn, diff, i) = if data.vn(in0).is_constant() {
@@ -10934,6 +10934,88 @@ mod tests {
         assert_eq!(RuleCondNegate.apply_op(cbr, &mut f), 0);
         assert_eq!(f.op(cbr).input(1), Some(cond));
         assert_eq!(f.vn(cond).descend, vec![cbr]);
+    }
+
+    // ---- opFlipInPlaceTest / opFlipInPlaceExecute (ActionPreferComplement / mechanism A) --------
+
+    /// Build a `CBRANCH(target, cond)` where `cond = <opc>(a, b)`; returns (cbranch, cmp op).
+    fn cbranch_on_cmp(f: &mut Funcdata, ram: Address, opc: OpCode, a: VarnodeId, b: VarnodeId) -> (OpId, OpId) {
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let cmp = f.new_op(opc, seq, vec![a, b]);
+        let cond = f.new_output(cmp, 1, Address::new(reg, 0x20));
+        let target = f.new_const(8, 0x1000);
+        let cbr = f.new_op(OpCode::Cbranch, seq, vec![target, cond]);
+        let _ = cond;
+        parent_all(f, vec![cmp, cbr]);
+        (cbr, cmp)
+    }
+
+    #[test]
+    fn flip_in_place_const_left_less_normalizes_to_strict_lt() {
+        // `9 s< v` (const on the left) normalizes (test==0); the flip yields `v s< 10` in place —
+        // opFlipInPlaceExecute swaps to `v s<= 9` then replaceLessequal rewrites to `v s< 10`.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c9 = f.new_const(4, 9);
+        let (cbr, cmp) = cbranch_on_cmp(&mut f, ram, OpCode::IntSless, c9, v);
+
+        let (result, fliplist) = f.op_flip_in_place_test(cbr);
+        assert_eq!(result, 0, "const-left `<` normalizes");
+        assert_eq!(fliplist, vec![cmp]);
+
+        f.op_flip_in_place_execute(&fliplist);
+        assert_eq!(f.op(cmp).code(), OpCode::IntSless);
+        assert_eq!(f.op(cmp).input(0), Some(v));
+        let rhs = f.op(cmp).input(1).unwrap();
+        assert!(f.vn(rhs).is_constant());
+        assert_eq!(f.vn(rhs).constant_value(), 10);
+    }
+
+    #[test]
+    fn flip_in_place_notequal_becomes_equal() {
+        // `v != c` normalizes (test==0); the flip is the plain complement `v == c`, no reorder.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let (cbr, cmp) = cbranch_on_cmp(&mut f, ram, OpCode::IntNotequal, v, c5);
+
+        let (result, fliplist) = f.op_flip_in_place_test(cbr);
+        assert_eq!(result, 0);
+        f.op_flip_in_place_execute(&fliplist);
+        assert_eq!(f.op(cmp).code(), OpCode::IntEqual);
+        assert_eq!(f.op(cmp).input(0), Some(v));
+        assert_eq!(f.op(cmp).input(1), Some(c5));
+    }
+
+    #[test]
+    fn flip_in_place_nonconst_less_is_ambivalent() {
+        // `v s< w` with both non-constant is ambivalent (test==1) — ActionPreferComplement leaves it.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let (cbr, _cmp) = cbranch_on_cmp(&mut f, ram, OpCode::IntSless, v, w);
+
+        let (result, _fliplist) = f.op_flip_in_place_test(cbr);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn flip_in_place_execute_flips_fallthru_flag_only() {
+        // flip_in_place_execute toggles fallthru_true and leaves boolean_flip clear (the op-code is
+        // being changed explicitly, unlike block_negate_condition).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c9 = f.new_const(4, 9);
+        let (_cbr, _cmp) = cbranch_on_cmp(&mut f, ram, OpCode::IntSless, c9, v);
+        f.flip_in_place_execute(BlockId(0));
+        let cbr = *f.block(BlockId(0)).ops.last().unwrap();
+        assert!(f.op(cbr).is_fallthru_true());
+        assert!(!f.op(cbr).is_boolean_flip());
     }
 
     // ---- RuleSubNormal (#81) -------------------------------------------------------------------

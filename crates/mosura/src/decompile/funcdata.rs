@@ -515,6 +515,145 @@ impl Funcdata {
             super::op::flags::BOOLEAN_FLIP | super::op::flags::FALLTHRU_TRUE;
     }
 
+    /// The lone op reading `vn`, or `None` if it has zero or several readers (Ghidra
+    /// `Varnode::loneDescend`).
+    fn lone_descend(&self, vn: VarnodeId) -> Option<OpId> {
+        let d = &self.varnodes[vn.0 as usize].descend;
+        (d.len() == 1).then(|| d[0])
+    }
+
+    /// Trace a boolean value to the set of PcodeOps that would need op-code flipping to negate it,
+    /// and report whether that flip *normalizes* (Ghidra's `Funcdata::opFlipInPlaceTest`,
+    /// funcdata_op.cc:1221). `op` is a CBRANCH (recurses to its `getIn(1)`'s def) or a
+    /// boolean-producing op. Returns `(result, fliplist)`: result 0 if the flip normalizes, 1 if it
+    /// is ambivalent, 2 if it does not normalize; `fliplist` holds the ops to hand to
+    /// [`op_flip_in_place_execute`](Self::op_flip_in_place_execute). The normal form prefers `==`
+    /// over `!=`, a constant on the left of `<`, and a non-constant on the right of `<=`. This is
+    /// the decision behind Ghidra's `BlockIf::preferComplement` / `ActionNormalizeBranches`.
+    pub fn op_flip_in_place_test(&self, op: OpId) -> (i32, Vec<OpId>) {
+        let mut fliplist = Vec::new();
+        let r = self.op_flip_in_place_test_rec(op, &mut fliplist);
+        (r, fliplist)
+    }
+
+    fn op_flip_in_place_test_rec(&self, op: OpId, fliplist: &mut Vec<OpId>) -> i32 {
+        match self.op(op).code() {
+            OpCode::Cbranch => {
+                let Some(vn) = self.op(op).input(1) else { return 2 };
+                if self.lone_descend(vn) != Some(op) || !self.vn(vn).is_written() {
+                    return 2;
+                }
+                self.op_flip_in_place_test_rec(self.vn(vn).def.unwrap(), fliplist)
+            }
+            OpCode::IntEqual | OpCode::FloatEqual => {
+                fliplist.push(op);
+                1
+            }
+            OpCode::BoolNegate | OpCode::IntNotequal | OpCode::FloatNotequal => {
+                fliplist.push(op);
+                0
+            }
+            OpCode::IntSless | OpCode::IntLess => {
+                let in0 = self.op(op).input(0).unwrap();
+                fliplist.push(op);
+                if !self.vn(in0).is_constant() {
+                    1
+                } else {
+                    0
+                }
+            }
+            OpCode::IntSlessequal | OpCode::IntLessequal => {
+                let in1 = self.op(op).input(1).unwrap();
+                fliplist.push(op);
+                if self.vn(in1).is_constant() {
+                    1
+                } else {
+                    0
+                }
+            }
+            OpCode::BoolOr | OpCode::BoolAnd => {
+                let in0 = self.op(op).input(0).unwrap();
+                if self.lone_descend(in0) != Some(op) || !self.vn(in0).is_written() {
+                    return 2;
+                }
+                let subtest1 = self.op_flip_in_place_test_rec(self.vn(in0).def.unwrap(), fliplist);
+                if subtest1 == 2 {
+                    return 2;
+                }
+                let in1 = self.op(op).input(1).unwrap();
+                if self.lone_descend(in1) != Some(op) || !self.vn(in1).is_written() {
+                    return 2;
+                }
+                let subtest2 = self.op_flip_in_place_test_rec(self.vn(in1).def.unwrap(), fliplist);
+                if subtest2 == 2 {
+                    return 2;
+                }
+                fliplist.push(op);
+                subtest1 // the front of an AND/OR governs whether the whole normalizes
+            }
+            _ => 2,
+        }
+    }
+
+    /// Perform the op-code flips computed by [`op_flip_in_place_test`](Self::op_flip_in_place_test)
+    /// (Ghidra's `Funcdata::opFlipInPlaceExecute`, funcdata_op.cc:1280): rewrite each fliplist op to
+    /// its complement in place. A BOOL_NEGATE (`get_booleanflip` ⇒ COPY) is removed entirely —
+    /// its input is propagated into its output's lone descendant. A BOOL_AND/BOOL_OR
+    /// (`get_booleanflip` ⇒ CPUI_MAX) is swapped to the other connective. A comparison is set to its
+    /// complementary op-code, its inputs swapped when the complement reorders, and a resulting `<=`
+    /// is rewritten to `<` via [`replace_lessequal`](super::rules::replace_lessequal).
+    pub fn op_flip_in_place_execute(&mut self, fliplist: &[OpId]) {
+        for &op in fliplist {
+            let code = self.op(op).code();
+            match super::opcode::get_booleanflip(code) {
+                Some((OpCode::Copy, _)) => {
+                    // Remove the BOOL_NEGATE, propagating its input into the lone descendant.
+                    let vn = self.op(op).input(0).unwrap();
+                    let outvn = self.op(op).output.unwrap();
+                    let otherop =
+                        self.lone_descend(outvn).expect("flipInPlace BOOL_NEGATE lone descend");
+                    let slot = (0..self.op(otherop).num_inputs())
+                        .find(|&s| self.op(otherop).input(s) == Some(outvn))
+                        .unwrap();
+                    self.op_set_input(otherop, slot, vn);
+                    self.op_destroy(op);
+                }
+                None => {
+                    // get_booleanflip ⇒ CPUI_MAX: only BOOL_AND/BOOL_OR reach here from a fliplist.
+                    match code {
+                        OpCode::BoolAnd => self.op_set_opcode(op, OpCode::BoolOr),
+                        OpCode::BoolOr => self.op_set_opcode(op, OpCode::BoolAnd),
+                        _ => panic!("Bad flipInPlace op"),
+                    }
+                }
+                Some((opc, flipyes)) => {
+                    self.op_set_opcode(op, opc);
+                    if flipyes {
+                        self.op_swap_input(op, 0, 1);
+                        if matches!(opc, OpCode::IntLessequal | OpCode::IntSlessequal) {
+                            super::rules::replace_lessequal(self, op);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Flip which of a 2-out CBRANCH block's edges is the fall-through true branch (Ghidra's
+    /// `BlockBasic::flipInPlaceExecute`, block.cc:2378): toggle the terminating CBRANCH's
+    /// `fallthru_true` flag. Unlike [`block_negate_condition`](Self::block_negate_condition) it does
+    /// **not** touch `boolean_flip` — the condition op-code is being changed explicitly by
+    /// [`op_flip_in_place_execute`](Self::op_flip_in_place_execute), so no `RuleCondNegate`
+    /// materialization is needed. Per the S1 no-edge-reversal discipline the CFG out-edges are left
+    /// intact; the flag alone carries the orientation, which the structurer XORs back in.
+    pub fn flip_in_place_execute(&mut self, bid: super::block::BlockId) {
+        let Some(&lastop) = self.blocks[bid.0 as usize].ops.last() else {
+            return;
+        };
+        debug_assert_eq!(self.ops[lastop.0 as usize].opcode, OpCode::Cbranch);
+        self.ops[lastop.0 as usize].flags ^= super::op::flags::FALLTHRU_TRUE;
+    }
+
     /// Remove `op` from its parent block's op list without touching its data-flow connections
     /// (Ghidra's `opUninsert`). Used by `RuleMultiCollapse`'s functional-equality path, which
     /// rewrites a MULTIEQUAL into a plain op and must re-position it (via [`op_insert_begin`])

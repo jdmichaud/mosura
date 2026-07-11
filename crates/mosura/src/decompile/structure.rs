@@ -13,67 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
-use super::op::OpId;
 use super::opcode::OpCode;
-use super::varnode::VarnodeId;
-
-/// The lone op that reads `vn`, or `None` if it has zero or multiple readers (Ghidra's
-/// `Varnode::loneDescend`).
-fn lone_descend(f: &Funcdata, vn: VarnodeId) -> Option<OpId> {
-    let d = &f.vn(vn).descend;
-    (d.len() == 1).then(|| d[0])
-}
-
-/// Faithful port of `Funcdata::opFlipInPlaceTest` (funcdata_op.cc:1221): trace a boolean
-/// value to decide whether flipping it (negating the predicate + swapping the branch arms)
-/// puts the condition in Ghidra's normal form. Returns 0 if the flip normalizes, 1 if it is
-/// ambivalent, 2 if it cannot. `op` is the CBRANCH (Ghidra recurses to its `getIn(1)`'s def);
-/// the normal form prefers `==` over `!=`, a constant on the left of `<`, and a non-constant
-/// on the right of `<=`. This is the decision behind `ActionNormalizeBranches`
-/// (blockaction.cc:2117); mosura applies it at the structurer + print-time negation
-/// (`printc::render_negated`, the `get_booleanflip`/`replaceLessequal` port) rather than as
-/// an IR rewrite — a justified architectural subset, result-verified against `oracle --c`.
-fn op_flip_in_place_test(f: &Funcdata, op: OpId) -> i32 {
-    match f.op(op).code() {
-        OpCode::Cbranch => {
-            let Some(vn) = f.op(op).input(1) else { return 2 };
-            if lone_descend(f, vn) != Some(op) || !f.vn(vn).is_written() {
-                return 2;
-            }
-            op_flip_in_place_test(f, f.vn(vn).def.unwrap())
-        }
-        OpCode::IntEqual | OpCode::FloatEqual => 1,
-        OpCode::BoolNegate | OpCode::IntNotequal | OpCode::FloatNotequal => 0,
-        OpCode::IntSless | OpCode::IntLess => {
-            let in0 = f.op(op).input(0).unwrap();
-            if f.vn(in0).is_constant() { 0 } else { 1 }
-        }
-        OpCode::IntSlessequal | OpCode::IntLessequal => {
-            let in1 = f.op(op).input(1).unwrap();
-            if f.vn(in1).is_constant() { 1 } else { 0 }
-        }
-        OpCode::BoolOr | OpCode::BoolAnd => {
-            let in0 = f.op(op).input(0).unwrap();
-            if lone_descend(f, in0) != Some(op) || !f.vn(in0).is_written() {
-                return 2;
-            }
-            let subtest1 = op_flip_in_place_test(f, f.vn(in0).def.unwrap());
-            if subtest1 == 2 {
-                return 2;
-            }
-            let in1 = f.op(op).input(1).unwrap();
-            if lone_descend(f, in1) != Some(op) || !f.vn(in1).is_written() {
-                return 2;
-            }
-            let subtest2 = op_flip_in_place_test(f, f.vn(in1).def.unwrap());
-            if subtest2 == 2 {
-                return 2;
-            }
-            subtest1 // the front of an AND/OR governs whether the whole normalizes
-        }
-        _ => 2,
-    }
-}
 
 /// Whether the negation of block `bid`'s terminating CBRANCH condition folds cleanly into a single
 /// complementary comparison via [`RuleBoolNegate`](super::rules::RuleBoolNegate) — i.e. the condition
@@ -170,10 +110,6 @@ pub struct Structured {
     pub gotos: HashMap<BlockId, (BlockId, bool)>,
     /// Basic blocks that are goto targets (get a label).
     pub labels: HashSet<BlockId>,
-    /// Per basic block (indexed by `BlockId`): whether its terminating CBRANCH condition is in
-    /// non-normal form so an `if`/`else` over it should flip to the positive form (Ghidra's
-    /// `opFlipInPlaceTest == 0`). Precomputed from `Funcdata` since the structurer holds no `f`.
-    flip: Vec<bool>,
     /// Per basic block: whether its terminating CBRANCH was branch-oriented (Ghidra's `fallthru_true`
     /// flag). An oriented block's body-on-false negation is already materialized positive in the IR,
     /// so the collapse rules XOR this in to flip its `negated` off. Precomputed from `Funcdata`.
@@ -475,25 +411,40 @@ impl Structured {
         false
     }
 
-    /// Whether the `if`/`else` over condition block `b` should be rendered in Ghidra's positive
-    /// normal form (`opFlipInPlaceTest == 0`): swap the then/else arms and negate the printed
-    /// condition. A compound (short-circuit) condition is left as-is — its normal form needs the
-    /// `BOOL_AND`/`BOOL_OR` recursion over the structural operands (a faithful subset, the simple
-    /// CBRANCH case covers the corpus's if/else conditions).
-    /// Whether the condition CBRANCH of block `b` was branch-oriented by `ActionOrientBranches`
-    /// (its `fallthru_true` flag is set). When so, the collapse rules flip `negated` off: the
-    /// body-on-false negation is already materialized positive in the IR, so the condition prints
-    /// directly. The mosura analogue of Ghidra's edge reversal in `BlockBasic::negateCondition`,
-    /// recorded in the flag instead so the re-deriving structurer collapses the original topology.
+    /// Whether the condition CBRANCH of block `b` was branch-oriented (Ghidra's `fallthru_true`
+    /// flag is set) — either by [`ActionOrientBranches`] (body-on-false negation, mechanism B) or by
+    /// [`ActionPreferComplement`] (`if`/`else` normal-form flip, mechanism A). When so, the collapse
+    /// rules flip `negated` off / swap the `if`/`else` arms: the flip is already materialized
+    /// positive in the IR, so the condition prints directly. The mosura analogue of Ghidra's edge
+    /// reversal (`BlockBasic::negateCondition` / `flipInPlaceExecute`), recorded in the flag instead
+    /// so the re-deriving structurer collapses the original topology.
     fn is_oriented(&self, b: usize) -> bool {
         self.exit_basic(b).is_some_and(|bid| self.oriented.get(bid.0 as usize).copied().unwrap_or(false))
     }
 
-    fn if_else_flip(&self, b: usize) -> bool {
-        if matches!(self.blocks[b].kind, FlowKind::CondAnd | FlowKind::CondOr) {
-            return false;
+    /// The condition CBRANCH basic blocks of `if`/`else` composites, in final-tree order — the split
+    /// points Ghidra's `ActionPreferComplement` (blockaction.cc:2140) tests via
+    /// `BlockIf::preferComplement` (block.cc:3093, only `getSize()==3`). Walks the final tree from
+    /// the root (like [`collect_negations`](Self::collect_negations)) so superseded intermediate
+    /// composites are skipped. Consumed by [`ActionPreferComplement`] to materialize the normal-form
+    /// flip in the IR.
+    pub fn if_else_splits(&self) -> Vec<BlockId> {
+        let mut out = Vec::new();
+        self.collect_if_else_splits(self.root, &mut out);
+        out
+    }
+
+    fn collect_if_else_splits(&self, idx: usize, out: &mut Vec<BlockId>) {
+        if matches!(self.blocks[idx].kind, FlowKind::IfElse) {
+            if let Some(&cond) = self.blocks[idx].components.first() {
+                if let Some(bid) = self.exit_basic(cond) {
+                    out.push(bid);
+                }
+            }
         }
-        self.exit_basic(b).is_some_and(|bid| self.flip.get(bid.0 as usize).copied().unwrap_or(false))
+        for &c in &self.blocks[idx].components {
+            self.collect_if_else_splits(c, out);
+        }
     }
 
     /// `ruleBlockIfElse`: both arms reconverge to one block.
@@ -509,13 +460,14 @@ impl Structured {
         if merge == b || merge != self.out(fc)[0] {
             return false;
         }
-        // Ghidra `ActionNormalizeBranches`: render the positive form when the condition is
-        // non-normal — swap the then/else arms and negate (printc::render_negated). The taken
-        // edge `tc` is the un-negated then; flipping makes the fall-through `fc` the then.
-        let flip = self.if_else_flip(b);
-        let (then_c, else_c) = if flip { (fc, tc) } else { (tc, fc) };
+        // Ghidra `BlockIf::preferComplement` (block.cc:3093) materializes the if/else normal-form
+        // flip in the IR (via [`ActionPreferComplement`]) and `swapBlocks(1,2)`. mosura reads the
+        // resulting `fallthru_true` flag (`is_oriented`) to swap the then/else arms; the condition is
+        // already positive in the IR, so it prints directly (`negated = false`). When the block was
+        // not flipped, `is_oriented` is false and the taken edge `tc` is the then.
+        let (then_c, else_c) = if self.is_oriented(b) { (fc, tc) } else { (tc, fc) };
         let n = self.install(vec![b, then_c, else_c], FlowKind::IfElse, vec![merge], ins);
-        self.blocks[n].negated = flip;
+        self.blocks[n].negated = false;
         true
     }
 
@@ -564,18 +516,6 @@ pub fn structure(f: &Funcdata) -> Structured {
             negated: false,
         })
         .collect();
-    // Precompute the normal-form flip decision per basic block from its terminating CBRANCH
-    // (Ghidra's `opFlipInPlaceTest`); `rule_if_else` consults it to choose the positive form.
-    let flip: Vec<bool> = (0..f.num_blocks())
-        .map(|b| {
-            let bid = BlockId(b as u32);
-            f.block(bid)
-                .ops
-                .last()
-                .copied()
-                .is_some_and(|op| f.op(op).code() == OpCode::Cbranch && op_flip_in_place_test(f, op) == 0)
-        })
-        .collect();
     // Per basic block: whether its terminating CBRANCH has been branch-oriented by
     // `ActionOrientBranches` (Ghidra's `fallthru_true` flag, which its printc also reads,
     // printc.cc:542). An oriented block's negation is already materialized positive in the IR, so
@@ -592,7 +532,7 @@ pub fn structure(f: &Funcdata) -> Structured {
         })
         .collect();
     let mut s =
-        Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), flip, oriented };
+        Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), oriented };
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
@@ -622,10 +562,9 @@ pub fn structure(f: &Funcdata) -> Structured {
 /// `boolean_flip`/`fallthru_true` and the out-edge order. The paired post-orientation rule pool
 /// ([`RuleCondNegate`] → [`RuleBoolNegate`] → [`RuleIntLessEqual`]) then materializes `!cond` and
 /// normalizes it, so the printed condition is read directly off the positive IR instead of negated
-/// at print time. Placed after type recovery, mirroring Ghidra's final `ActionNormalizeBranches`
-/// placement (a once-pass approximation of Ghidra's repeating mainloop, consistent with mosura's
-/// hand-unrolled pipeline). The normal-form flip (mechanism A, `opFlipInPlaceExecute`) stays at
-/// print time for now and is deferred.
+/// at print time. Placed after type recovery, mirroring Ghidra's final structuring placement (a
+/// once-pass approximation of Ghidra's repeating mainloop, consistent with mosura's hand-unrolled
+/// pipeline). The `if`/`else` normal-form flip (mechanism A) follows in [`ActionPreferComplement`].
 ///
 /// [`RuleCondNegate`]: super::rules::RuleCondNegate
 /// [`RuleBoolNegate`]: super::rules::RuleBoolNegate
@@ -646,6 +585,48 @@ impl super::action::Action for ActionOrientBranches {
         let mut changed = 0;
         for bid in negations {
             data.block_negate_condition(bid);
+            changed = 1;
+        }
+        changed
+    }
+}
+
+/// Materialize the `if`/`else` normal-form flip in the IR — the mosura analogue of Ghidra's
+/// `ActionPreferComplement` (blockaction.cc:2140), which walks the structured block tree calling
+/// `BlockIf::preferComplement` (block.cc:3093) on each `if`/`else`. Runs the structuring collapse to
+/// find every `if`/`else` split CBRANCH ([`if_else_splits`](Structured::if_else_splits)); for each
+/// whose condition [`Funcdata::op_flip_in_place_test`] reports *normalizes* (returns 0), it applies
+/// [`Funcdata::op_flip_in_place_execute`] to rewrite the comparison into normal form in place (e.g.
+/// `9 < param_1` ⇒ `param_1 <= 9` ⇒ `param_1 < 10` via `replace_lessequal`) and
+/// [`Funcdata::flip_in_place_execute`] to flip the CBRANCH's `fallthru_true` (Ghidra's
+/// `swapBlocks(1,2)` analogue, recorded in the flag per the no-edge-reversal discipline). The printed
+/// condition is then read directly off the positive IR, so [`rule_if_else`](Structured::rule_if_else)
+/// swaps the arms from the flag and prints `negated = false` — retiring the print-time normal-form
+/// flip. Scoped to `if`/`else` (Ghidra's `getSize()!=3` guard); the global per-basic-block
+/// `ActionNormalizeBranches` (blockaction.cc:2117) is deferred (near-inert on the corpus). Placed
+/// after [`ActionOrientBranches`] + the condnegate pool, mirroring Ghidra's late `preferComplement`.
+pub struct ActionPreferComplement;
+
+impl super::action::Action for ActionPreferComplement {
+    fn name(&self) -> &str {
+        "prefercomplement"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.table_recovery_probe {
+            return 0;
+        }
+        let splits = structure(data).if_else_splits();
+        let mut changed = 0;
+        for bid in splits {
+            let Some(&cbr) = data.block(bid).ops.last() else {
+                continue;
+            };
+            let (result, fliplist) = data.op_flip_in_place_test(cbr);
+            if result != 0 {
+                continue;
+            }
+            data.op_flip_in_place_execute(&fliplist);
+            data.flip_in_place_execute(bid);
             changed = 1;
         }
         changed

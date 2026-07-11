@@ -420,6 +420,12 @@ pub fn universal_action() -> ActionGroup {
         .then(super::structure::ActionOrientBranches)
         .then(condnegate_pool())
         .then(super::deadcode::ActionDeadCode)
+        // Materialize the if/else normal-form flip in the IR (Ghidra ActionPreferComplement /
+        // BlockIf::preferComplement, block.cc:3093 — scoped to if/else). Runs after the condnegate
+        // pool so it sees the mechanism-B-materialized conditions; opFlipInPlaceExecute rewrites the
+        // comparison into normal form (via replace_lessequal), retiring the print-time if_else_flip.
+        .then(super::structure::ActionPreferComplement)
+        .then(super::deadcode::ActionDeadCode)
         // Re-mark addrtied on memory varnodes (Ghidra sets addrtied at varnode *creation*, so
         // pool-created ram/stack varnodes — e.g. partialmerge's SubVariableFlow-narrowed input read
         // r0x100670:4 — are addrtied by the time the merge phase runs). mosura marks once before the
