@@ -157,6 +157,12 @@ impl Varnode {
     pub fn set_addr_force(&mut self) {
         self.flags |= flags::ADDRFORCE;
     }
+    /// Ghidra `Varnode::clearAddrForce` (varnode.hh) — drop the addr-force. Used by
+    /// `Heritage::removeRevisitedMarkers` when an INDIRECT marker is rewritten to a SUBPIECE of a
+    /// wider re-heritaged range (the replacement wide varnode holds the address instead).
+    pub fn clear_addr_force(&mut self) {
+        self.flags &= !flags::ADDRFORCE;
+    }
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
