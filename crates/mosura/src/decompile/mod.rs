@@ -41,6 +41,7 @@ pub mod ptrarith;
 pub mod rules;
 pub mod scope;
 pub mod space;
+pub mod splitflow;
 pub mod stackvars;
 pub mod structure;
 pub mod transform;

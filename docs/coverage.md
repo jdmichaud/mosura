@@ -244,7 +244,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleOrCompare | PORTED |
 | RuleSubvarAnd | PORTED |
 | RuleSubvarSubpiece | PORTED |
-| RuleSplitFlow | MISSING (subvar SplitFlow) |
+| RuleSplitFlow | PORTED-INERT (`splitflow.rs` SplitFlow + RuleSplitFlow on the transform.rs TransformManager; subflow.cc:1754-2088) — S1 unwired/byte-identical; wire at coreaction.cc:5623 (after RuleSubvarSubpiece) = the floatcast XMM 16→8 narrowing mover, gated |
 | RulePtrFlow | MISSING (needs Varnode::isPtrFlow — aggressive subvar) |
 | RuleSubvarCompZero | PORTED |
 | RuleSubvarShift | PORTED |
