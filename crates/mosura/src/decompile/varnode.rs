@@ -166,6 +166,13 @@ impl Varnode {
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
+    /// Ghidra `Varnode::setFlags(Varnode::spacebase)` (funcdata.cc:262, `Funcdata::spacebase`):
+    /// mark this value a spacebase (stack-pointer) register. Set on every SSA version of the base
+    /// register, not just the input, so the pointer-arithmetic / nonzero-mask / type-inference rules
+    /// that key on `is_spacebase()` recognise stack-relative arithmetic.
+    pub fn set_spacebase(&mut self) {
+        self.flags |= flags::SPACEBASE;
+    }
     /// Ghidra `Varnode::isPrecisLo` / `isPrecisHi` — this value is the low / high half of a
     /// double-precision (piece-tracked) quantity. Guards rules (e.g. RuleSubCommute) that must not
     /// commute across a precision boundary.

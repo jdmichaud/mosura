@@ -272,6 +272,23 @@ impl Action for ActionMarkAddrTied {
     }
 }
 
+/// Ghidra `ActionSpacebase` (coreaction.cc:5506, "Must come before infertypes and nonzeromask"):
+/// mark the input stack pointer (and every SSA version of it) `is_spacebase()` and give the input a
+/// locked pointer type — see [`Funcdata::spacebase`]. Activates the faithful pointer-arithmetic /
+/// nonzero-mask / type-inference rules that key on `is_spacebase()`. The spacebase-register
+/// (`RuleLoadVarnode` stack) branch that this enables is not yet wired (S2b).
+pub struct ActionSpacebase;
+
+impl Action for ActionSpacebase {
+    fn name(&self) -> &str {
+        "spacebase"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        data.spacebase();
+        0
+    }
+}
+
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
 /// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
 /// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
@@ -393,6 +410,11 @@ pub fn universal_action() -> ActionGroup {
         // model (backlog), re-evaluate moving this to Ghidra's stackstall slot. Inert unless the
         // Funcdata carries laned-register records (parsed from the pspec by the build caller).
         .then(super::lanedivide::ActionLaneDivide)
+        // Mark the input stack pointer `is_spacebase()` (Ghidra ActionSpacebase, coreaction.cc:5506 —
+        // before the first nonzero-mask + infertypes + pool). Ghidra re-runs it every mainloop
+        // iteration; mosura runs it once here (the base-register set is stable across the scoped
+        // reheritage restart, which only re-heritages ram globals).
+        .then(ActionSpacebase)
         .then(ActionNonzeroMask)
         .then(ActionConsume)
         .then(default_rule_pool())

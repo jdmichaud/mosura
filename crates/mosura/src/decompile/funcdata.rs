@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use super::block::BlockBasic;
 use super::op::{OpId, PcodeOp, SeqNum};
 use super::opcode::OpCode;
-use super::space::{Address, SpaceKind, SpaceManager};
+use super::space::{Address, SpaceId, SpaceKind, SpaceManager};
 use super::varnode::{flags, Varnode, VarnodeId};
 
 /// One function being decompiled.
@@ -335,6 +335,52 @@ impl Funcdata {
         v.flags &= !flags::WRITTEN;
         v.flags |= flags::INPUT | flags::INSERT;
         vid
+    }
+
+    /// Ghidra `Funcdata::spacebase` (funcdata.cc:230, the body of `ActionSpacebase`): mark every SSA
+    /// version of each space's spacebase (base-pointer) register `is_spacebase()`, and give the input
+    /// version a locked pointer type. This activates the pointer-arithmetic (`RulePtrArith`),
+    /// nonzero-mask (the stack pointer is treated as aligned) and type-inference (a value copied off
+    /// the stack pointer is itself a pointer) rules that key on `is_spacebase()`.
+    ///
+    /// mosura runs this once, before the first nonzero-mask / infertypes / pool. Ghidra runs it every
+    /// mainloop iteration, but the stack-pointer register set is stable across iterations, so a single
+    /// pass suffices — the re-mark `splitUses` branch Ghidra takes when a register is *already*
+    /// spacebase with an `INT_ADD` def (funcdata.cc:253-259) is unreachable on a single pass and is
+    /// omitted (mosura has no `splitUses`).
+    pub fn spacebase(&mut self) {
+        // The (register, size) of every spacebase register across all spaces (Ghidra iterates each
+        // space's `getSpacebase(i)`); for x86-64 this is the single stack pointer RSP.
+        let regs: Vec<(Address, u32)> = (0..self.spaces.num_spaces() as u32)
+            .flat_map(|i| self.spaces.get(SpaceId(i)).spacebase.clone())
+            .collect();
+        for (loc, size) in regs {
+            // Every varnode at exactly this register location and size (Ghidra `vbank.beginLoc`).
+            let vids: Vec<VarnodeId> = (0..self.varnodes.len() as u32)
+                .map(VarnodeId)
+                .filter(|&v| self.vn(v).loc == loc && self.vn(v).size == size)
+                .collect();
+            for v in vids {
+                if self.vn(v).is_free() {
+                    continue; // give descendants a chance to die naturally (funcdata.cc:252)
+                }
+                if self.vn(v).is_spacebase() {
+                    continue; // already marked (single-pass never; splitUses branch omitted)
+                }
+                self.vn_mut(v).set_spacebase(); // mark all base registers, not just the input
+                if self.vn(v).is_input() {
+                    // Ghidra `updateType(getTypePointer(size, getTypeSpacebase(...)), true, true)`: the
+                    // input stack pointer is a locked pointer. mosura has no TypeSpacebase; the faithful
+                    // stand-in is the `Pointer(size, undefined1)` infertypes already synthesises for a
+                    // value copied off a spacebase pointer (`copy_like`).
+                    self.vn_mut(v).ty = Some(super::types::Datatype::Pointer(
+                        size,
+                        Box::new(super::types::Datatype::Unknown(1)),
+                    ));
+                    self.vn_mut(v).flags |= flags::TYPELOCK;
+                }
+            }
+        }
     }
 
     /// Detach a varnode from the graph (Ghidra's `deleteVarnode`). mosura keeps the arena slot
@@ -903,6 +949,43 @@ impl Funcdata {
 mod tests {
     use super::*;
     use crate::decompile::space::{Address, SpaceManager};
+
+    /// `Funcdata::spacebase` (ActionSpacebase) marks every non-free 8-byte SSA version of RSP
+    /// `is_spacebase()`, gives only the *input* version a locked pointer type, and leaves free
+    /// varnodes, differently-sized varnodes, and other registers untouched.
+    #[test]
+    fn spacebase_marks_rsp_versions() {
+        use crate::decompile::types::Datatype;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let rsp = Address::new(reg, 0x20);
+
+        let input = f.new_input(8, rsp); // the entry stack pointer
+        // a written version: r0x20:8 = INT_ADD(input, 8)  (a `pop`/frame adjust)
+        let eight = f.new_const(8, 8);
+        let seq = SeqNum { pc: Address::new(ram, 0x10), uniq: 0 };
+        let addop = f.new_op(OpCode::IntAdd, seq, vec![input, eight]);
+        let written = f.new_output(addop, 8, rsp);
+        let free8 = f.new_varnode(8, rsp); // free (no def, not input) — must be skipped
+        let esp4 = f.new_varnode(4, rsp); // 4-byte at RSP location — wrong size, not marked
+        let rax = f.new_input(8, Address::new(reg, 0)); // a different register
+
+        f.spacebase();
+
+        // input: marked + locked pointer type
+        assert!(f.vn(input).is_spacebase());
+        assert!(f.vn(input).is_typelock());
+        assert_eq!(f.vn(input).ty, Some(Datatype::Pointer(8, Box::new(Datatype::Unknown(1)))));
+        // written version: marked, but NOT typed (only the input gets the pointer type)
+        assert!(f.vn(written).is_spacebase());
+        assert!(!f.vn(written).is_typelock());
+        // free / wrong-size / other-register: untouched
+        assert!(!f.vn(free8).is_spacebase());
+        assert!(!f.vn(esp4).is_spacebase());
+        assert!(!f.vn(rax).is_spacebase());
+    }
 
     #[test]
     fn new_indirect_op_models_effect_on_range() {

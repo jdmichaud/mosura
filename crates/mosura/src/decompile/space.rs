@@ -40,6 +40,13 @@ pub struct Space {
     /// Number of passes before dead-code removal is allowed on this space (Ghidra's
     /// `AddrSpace::getDeadcodeDelay`); defaults equal to `delay`.
     pub deadcodedelay: i32,
+    /// The base register(s) that make this a virtual `Spacebase` space (Ghidra's
+    /// `AddrSpace::numSpacebase`/`getSpacebase`, whose records are `VarnodeData`). For the x86-64
+    /// `stack` space this is the single stack-pointer register RSP `(register:0x20, 8)`. Empty for
+    /// every non-virtual space. Read by [`SpaceManager::space_by_spacebase`] (Ghidra
+    /// `getSpaceBySpacebase`) and by `Funcdata::spacebase` (`ActionSpacebase`) to mark the input
+    /// stack pointer `is_spacebase()`.
+    pub spacebase: Vec<(Address, u32)>,
 }
 
 impl Space {
@@ -86,10 +93,33 @@ impl SpaceManager {
         let mut m = SpaceManager { spaces: Vec::new(), by_name: HashMap::new() };
         m.add("const", SpaceKind::Constant, 8, 1);
         m.add("ram", SpaceKind::Processor, 8, 1);
-        m.add("register", SpaceKind::Processor, 4, 1);
+        let register = m.add("register", SpaceKind::Processor, 4, 1);
         m.add("unique", SpaceKind::Internal, 4, 1);
-        m.add("stack", SpaceKind::Spacebase, 8, 1);
+        let stack = m.add("stack", SpaceKind::Spacebase, 8, 1);
+        // Register the x86-64 stack pointer RSP `(register:0x20, 8)` as the `stack` space's spacebase
+        // register (Ghidra reads this from the compiler spec's `<stackpointer>`; mosura hardcodes it,
+        // the same RSP=0x20 the pre-pool `stackvars` recovery already uses). This is what
+        // `ActionSpacebase` (`Funcdata::spacebase`) looks up to mark the input RSP `is_spacebase()`.
+        m.set_spacebase(stack, Address::new(register, 0x20), 8);
         m
+    }
+
+    /// Register a spacebase (base pointer) register for a virtual space (Ghidra's per-space
+    /// `spacebaselist`, populated from the compiler spec). `reg`/`size` describe the register.
+    pub fn set_spacebase(&mut self, space: SpaceId, reg: Address, size: u32) {
+        self.spaces[space.0 as usize].spacebase.push((reg, size));
+    }
+
+    /// Ghidra `Architecture::getSpaceBySpacebase` (architecture.cc:264): the address space whose
+    /// spacebase register matches `(loc, size)` — e.g. passing RSP's location returns the `stack`
+    /// space. Returns `None` if no space claims the register (Ghidra throws `LowlevelError`). Used by
+    /// the spacebase-register branch of `checkSpacebase`/`correctSpacebase` (the stack `RuleLoadVarnode`
+    /// case, wired in S2b).
+    pub fn space_by_spacebase(&self, loc: Address, size: u32) -> Option<SpaceId> {
+        self.spaces
+            .iter()
+            .find(|s| s.spacebase.iter().any(|&(rl, rs)| rl == loc && rs == size))
+            .map(|s| s.id)
     }
 
     /// Register a space, returning its id.
@@ -107,6 +137,7 @@ impl SpaceManager {
             wordsize,
             delay,
             deadcodedelay: delay,
+            spacebase: Vec::new(),
         });
         self.by_name.insert(name.to_string(), id);
         id
@@ -167,5 +198,21 @@ mod tests {
             assert_eq!(s.deadcodedelay, delay, "{name} deadcodedelay");
             assert_eq!(s.is_heritaged(), heritaged, "{name} heritaged");
         }
+    }
+
+    /// The standard space set registers RSP `(register:0x20, 8)` as the `stack` space's spacebase
+    /// register, and `space_by_spacebase` (Ghidra `getSpaceBySpacebase`) resolves it — the reg→space
+    /// lookup the spacebase-register `RuleLoadVarnode` branch (S2b) uses.
+    #[test]
+    fn stack_spacebase_register_registered() {
+        let m = SpaceManager::standard();
+        let register = m.by_name("register").unwrap();
+        let stack = m.by_name("stack").unwrap();
+        let rsp = Address::new(register, 0x20);
+        assert_eq!(m.get(stack).spacebase, vec![(rsp, 8)]);
+        assert_eq!(m.space_by_spacebase(rsp, 8), Some(stack));
+        // Wrong size or a non-spacebase register resolves to nothing (Ghidra throws; we return None).
+        assert_eq!(m.space_by_spacebase(rsp, 4), None);
+        assert_eq!(m.space_by_spacebase(Address::new(register, 0), 8), None);
     }
 }
