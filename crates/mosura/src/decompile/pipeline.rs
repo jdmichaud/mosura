@@ -114,6 +114,14 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSelectCse) // (3)
         .with(RuleCollectTerms) // (4)
         .with(RuleMultMult) // mosura extra — term collection over MULT, next to CollectTerms
+        // RulePullsubMulti (coreaction.cc:5516): pull a SUBPIECE truncation up through a MULTIEQUAL —
+        // the faithful clean phi-narrowing mosura lacked. On a dual-width selector heritaged wide
+        // (switchloop's r0x8), it narrows the switch-merge phis in one step where SubVariableFlow
+        // otherwise over-fires and duplicates. Loop-header phis are skipped (hasLoopIn guard).
+        .with(super::rules::RulePullsubMulti) // (5)
+        .with(super::rules::RulePullsubIndirect) // (6) coreaction.cc:5517 — the INDIRECT analogue
+        .with(super::rules::RulePushMulti) // (7) coreaction.cc:5518 ("nodejoin") — dual: push a phi
+        // down through a shared functional op / collapse a phi of two shadowing COPYs.
         .with(RuleSborrow) // (8)
         .with(RuleScarry) // (9)
         // RuleIntLessEqual (10): `V <= c => V < (c+1)`. Faithful Ghidra rule; wiring it here mirrors

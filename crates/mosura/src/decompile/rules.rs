@@ -1553,6 +1553,475 @@ impl Rule for RuleSelectCse {
     }
 }
 
+/// Ghidra `RulePullsubMulti::minMaxUse` (`ruleaction.cc`): the byte range of `vn` actually used by
+/// its descendants. If every descendant is a SUBPIECE, returns the `[minByte, maxByte]` envelope of
+/// those truncations; any other reader means all bytes are used (`maxByte = size-1, minByte = 0`).
+/// Shared by [`RulePullsubMulti`] and [`RulePullsubIndirect`].
+fn pullsub_min_max_use(data: &Funcdata, vn: VarnodeId) -> (i32, i32) {
+    let in_size = data.vn(vn).size as i32;
+    let mut max_byte: i32 = -1;
+    let mut min_byte: i32 = in_size;
+    for &op in &data.vn(vn).descend {
+        if data.op(op).code() == OpCode::Subpiece {
+            let min = data.vn(data.op(op).input(1).unwrap()).constant_value() as i32;
+            let max = min + data.vn(data.op(op).output.unwrap()).size as i32 - 1;
+            if min < min_byte {
+                min_byte = min;
+            }
+            if max > max_byte {
+                max_byte = max;
+            }
+        } else {
+            // By default assume all bytes are used.
+            return (in_size - 1, 0);
+        }
+    }
+    (max_byte, min_byte)
+}
+
+/// Ghidra `RulePullsubMulti::acceptableSize` (`ruleaction.cc`): only pull to a power-of-two-ish
+/// truncation size (1/2/4, or anything >= 8).
+fn pullsub_acceptable_size(size: i32) -> bool {
+    if size == 0 {
+        return false;
+    }
+    if size >= 8 {
+        return true;
+    }
+    matches!(size, 1 | 2 | 4)
+}
+
+/// Ghidra `RulePullsubMulti::findSubpiece` (`ruleaction.cc`): a pre-existing `SUBPIECE(basevn, shift)`
+/// of exactly `outsize`, defined in the same block as `basevn`'s def — so pulling the truncation up
+/// the MULTIEQUAL reuses it instead of adding a redundant one (Ghidra's exponential-split guard).
+fn pullsub_find_subpiece(data: &Funcdata, basevn: VarnodeId, outsize: u32, shift: u64) -> Option<VarnodeId> {
+    for &prevop in &data.vn(basevn).descend {
+        if data.op(prevop).code() != OpCode::Subpiece {
+            continue;
+        }
+        // Make sure output is defined in same block as basevn.
+        if data.vn(basevn).is_input() && data.op(prevop).parent.map(|b| b.0) != Some(0) {
+            continue;
+        }
+        if !data.vn(basevn).is_written() {
+            continue;
+        }
+        let def = data.vn(basevn).def.unwrap();
+        if data.op(def).parent != data.op(prevop).parent {
+            continue;
+        }
+        // Make sure subpiece matches form.
+        if data.op(prevop).input(0) == Some(basevn)
+            && data.vn(data.op(prevop).output.unwrap()).size == outsize
+            && data.vn(data.op(prevop).input(1).unwrap()).constant_value() == shift
+        {
+            return data.op(prevop).output;
+        }
+    }
+    None
+}
+
+/// Ghidra `RulePullsubMulti::buildSubpiece` (`ruleaction.cc`): build a fresh `SUBPIECE(basevn, shift)`
+/// of `outsize` near `basevn`'s definition. The join-address partition path (double-precision pieces)
+/// is not reached in mosura's model — those varnodes never appear here — so this is the non-join case;
+/// a join base falls back to a `unique` output (Ghidra's `usetmp`).
+fn pullsub_build_subpiece(data: &mut Funcdata, basevn: VarnodeId, outsize: u32, shift: u64) -> VarnodeId {
+    let is_input = data.vn(basevn).is_input();
+    let base_addr = data.vn(basevn).loc;
+    let usetmp = data.spaces.by_name("join") == Some(base_addr.space);
+    // The new SUBPIECE sits at basevn's definition (or block-0 start for an input).
+    let seq = if is_input {
+        let b0 = data.block(BlockId(0));
+        b0.ops.first().map(|&o| data.op(o).seqnum).unwrap_or_else(|| data.op(data.op_ids().next().unwrap()).seqnum)
+    } else {
+        data.op(data.vn(basevn).def.unwrap()).seqnum
+    };
+    let new_op = data.new_op(OpCode::Subpiece, seq, Vec::new());
+    let outvn = if usetmp {
+        data.new_output_unique(new_op, outsize)
+    } else {
+        // little-endian: the low piece starts at addr + shift
+        data.new_output(new_op, outsize, Address::new(base_addr.space, base_addr.offset + shift))
+    };
+    let c = data.new_const(4, shift);
+    data.op_set_all_input(new_op, &[basevn, c]);
+    if is_input {
+        data.op_insert_begin(new_op, BlockId(0));
+    } else {
+        let def = data.vn(basevn).def.unwrap();
+        data.op_insert_after(new_op, def);
+    }
+    outvn
+}
+
+/// Ghidra `RulePullsubMulti::replaceDescendants` (`ruleaction.cc`): after the truncation has been
+/// pulled up into a new narrow MULTIEQUAL `newVn`, rewrite each SUBPIECE descendant of the wide `origVn`
+/// to read `newVn` — collapsing to a COPY when the widths match, or re-basing the truncation offset
+/// otherwise. `minMaxUse` guarantees every descendant is a SUBPIECE.
+fn pullsub_replace_descendants(data: &mut Funcdata, orig_vn: VarnodeId, new_vn: VarnodeId, min_byte: i32) {
+    let new_size = data.vn(new_vn).size as i32;
+    for op in data.vn(orig_vn).descend.clone() {
+        debug_assert_eq!(data.op(op).code(), OpCode::Subpiece, "replaceDescendants saw a non-SUBPIECE");
+        let trunc_amount = data.vn(data.op(op).input(1).unwrap()).constant_value() as i32;
+        let out_size = data.vn(data.op(op).output.unwrap()).size as i32;
+        data.op_set_input(op, 0, new_vn);
+        if new_size == out_size {
+            debug_assert_eq!(trunc_amount, min_byte, "replaceDescendants width match but offset != minByte");
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_remove_input(op, 1);
+        } else if new_size > out_size {
+            let new_trunc = trunc_amount - min_byte;
+            debug_assert!(new_trunc >= 0, "replaceDescendants negative truncation");
+            if new_trunc != trunc_amount {
+                let c = data.new_const(4, new_trunc as u64);
+                data.op_set_input(op, 1, c);
+            }
+        }
+    }
+}
+
+/// Ghidra `FlowBlock::hasLoopIn` (`block.cc:428`): does `block` have any incoming loop back-edge.
+/// Ghidra reads a precomputed `f_loop_edge` flag; mosura has no such flag before structuring, so a
+/// back-edge is detected structurally — an in-edge from a predecessor the block dominates (the
+/// natural-loop definition, same test as [`super::nzmask`]'s `is_loop_in`; exact for reducible CFGs).
+fn block_has_loop_in(data: &Funcdata, block: BlockId, dom: &Dominators) -> bool {
+    data.block(block)
+        .in_edges
+        .iter()
+        .any(|pred| dom.dominates(block.0 as usize, pred.0 as usize))
+}
+
+/// Ghidra `RulePullsubMulti` (`ruleaction.cc`, registered `coreaction.cc:5516` in `oppool1`). Pull a
+/// SUBPIECE truncation up through a MULTIEQUAL: `SUBPIECE(phi(a, b, ...), off)` becomes a narrow
+/// `phi(SUBPIECE(a, off), SUBPIECE(b, off), ...)`, replacing the wide phi's SUBPIECE readers. This is
+/// the faithful clean phi-narrowing mosura lacked — on a dual-width switch selector heritaged wide,
+/// it narrows the switch-merge phis in one step (loop-header phis are skipped by the `hasLoopIn` guard,
+/// matching Ghidra). Missing-rule port; feeds the SubVariableFlow family.
+pub struct RulePullsubMulti;
+
+impl Rule for RulePullsubMulti {
+    fn name(&self) -> &str {
+        "pullsub_multi"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let mult = data.vn(vn).def.unwrap();
+        if data.op(mult).code() != OpCode::Multiequal {
+            return 0;
+        }
+        let (max_byte, min_byte) = pullsub_min_max_use(data, vn);
+        let new_size = max_byte - min_byte + 1;
+        if max_byte < min_byte || new_size >= data.vn(vn).size as i32 {
+            // If all or none is getting used, nothing to do.
+            return 0;
+        }
+        if !pullsub_acceptable_size(new_size) {
+            return 0;
+        }
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).is_precis_lo() || data.vn(outvn).is_precis_hi() {
+            return 0; // Don't pull apart a double precision object.
+        }
+        // Make sure we don't add new SUBPIECE ops that aren't going to cancel in some way.
+        if min_byte > 8 {
+            return 0;
+        }
+        let consume = if min_byte < 8 {
+            !(super::nzmask::calc_mask(new_size as u32) << (8 * min_byte))
+        } else {
+            !0u64
+        };
+        let branches = data.op(mult).num_inputs();
+        for i in 0..branches {
+            let in_vn = data.op(mult).input(i).unwrap();
+            if consume & data.vn(in_vn).get_consume() != 0 {
+                // Bits outside the truncation are still used — unless an extension matches the
+                // truncation, so the new SUBPIECE cancels it anyway.
+                let mut ok = false;
+                if min_byte == 0 && data.vn(in_vn).is_written() {
+                    let def_op = data.vn(in_vn).def.unwrap();
+                    let opc = data.op(def_op).code();
+                    if (opc == OpCode::IntZext || opc == OpCode::IntSext)
+                        && new_size == data.vn(data.op(def_op).input(0).unwrap()).size as i32
+                    {
+                        ok = true; // matching extension — new SUBPIECE will cancel
+                    }
+                }
+                if !ok {
+                    return 0;
+                }
+            }
+        }
+        // All cheap structural checks pass; the dominator-based loop guard is the last gate (Ghidra
+        // checks it early, but it is the one expensive test — mirror RuleSelectCse and compute the
+        // dominators only when a pull is otherwise viable).
+        let dom = super::dominator::compute(data);
+        let parent = data.op(mult).parent.unwrap();
+        if block_has_loop_in(data, parent, &dom) {
+            // We only pull up, do not pull "down" to bottom of loop.
+            return 0;
+        }
+        let base_addr = data.vn(vn).loc;
+        let smalladdr2 = Address::new(base_addr.space, base_addr.offset + min_byte as u64);
+        let mut params: Vec<VarnodeId> = Vec::with_capacity(branches);
+        for i in 0..branches {
+            let vn_piece = data.op(mult).input(i).unwrap();
+            // Wary of exponential splittings: reuse a previous SUBPIECE if one exists.
+            let vn_sub = pullsub_find_subpiece(data, vn_piece, new_size as u32, min_byte as u64)
+                .unwrap_or_else(|| pullsub_build_subpiece(data, vn_piece, new_size as u32, min_byte as u64));
+            params.push(vn_sub);
+        }
+        // Build the new narrow MULTIEQUAL near the original.
+        let seq = data.op(mult).seqnum;
+        let new_multi = data.new_op(OpCode::Multiequal, seq, Vec::new());
+        let new_vn = data.new_output(new_multi, new_size as u32, smalladdr2);
+        data.op_set_all_input(new_multi, &params);
+        data.op_insert_begin(new_multi, parent);
+
+        pullsub_replace_descendants(data, vn, new_vn, min_byte);
+        1
+    }
+}
+
+/// Ghidra `RulePullsubIndirect` (`ruleaction.cc`, registered `coreaction.cc:5517` in `oppool1`). The
+/// INDIRECT analogue of [`RulePullsubMulti`]: pull a SUBPIECE truncation up through an INDIRECT, so a
+/// call/store effect on a wide storage range that is only read narrowly becomes a narrow INDIRECT.
+/// Ghidra reads the causing op from the INDIRECT's `input(1)` IOP annotation; mosura carries that in the
+/// op's `guarded_op` (its 1-input INDIRECT model, see [`Funcdata::new_indirect_op`]). Missing-rule port.
+pub struct RulePullsubIndirect;
+
+impl Rule for RulePullsubIndirect {
+    fn name(&self) -> &str {
+        "pullsub_indirect"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).input(0).unwrap();
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        if data.vn(vn).size > 8 {
+            return 0;
+        }
+        let indir = data.vn(vn).def.unwrap();
+        if data.op(indir).code() != OpCode::Indirect {
+            return 0;
+        }
+        // Ghidra: in(1) must be an IPTR_IOP annotation. mosura carries the causing op in guarded_op.
+        let Some(targ_op) = data.op(indir).guarded_op() else {
+            return 0;
+        };
+        if data.op(targ_op).is_dead() {
+            return 0;
+        }
+        if data.vn(vn).is_addr_force() {
+            return 0;
+        }
+        let (max_byte, min_byte) = pullsub_min_max_use(data, vn);
+        let new_size = max_byte - min_byte + 1;
+        if max_byte < min_byte || new_size >= data.vn(vn).size as i32 {
+            return 0;
+        }
+        if !pullsub_acceptable_size(new_size) {
+            return 0;
+        }
+        let outvn = data.op(op).output.unwrap();
+        if data.vn(outvn).is_precis_lo() || data.vn(outvn).is_precis_hi() {
+            return 0; // Don't pull apart a double precision object.
+        }
+        // The wide INDIRECT's incoming value (in(0)) must not use the bits outside the truncation.
+        let consume = !(super::nzmask::calc_mask(new_size as u32) << (8 * min_byte));
+        let basevn = data.op(indir).input(0).unwrap();
+        if consume & data.vn(basevn).get_consume() != 0 {
+            return 0;
+        }
+        let base_addr = data.vn(vn).loc;
+        let smalladdr2 = Address::new(base_addr.space, base_addr.offset + min_byte as u64);
+        let small2: VarnodeId;
+        if data.vn(vn).is_indirect_creation() {
+            // The clobber has no realistic incoming value — build a narrow indirect creation
+            // (Ghidra `Funcdata::newIndirectCreation`; mosura's 1-input creation = INDIRECT(#0) with
+            // guarded_op set and the output marked indirect-creation, as heritage's own version does).
+            let possibleout = !is_indirect_zero(data, basevn);
+            let seq = data.op(targ_op).seqnum;
+            let zero = data.new_const(new_size as u32, 0);
+            let new_ind = data.new_op(OpCode::Indirect, seq, vec![zero]);
+            data.op_mut(new_ind).guarded_op = Some(targ_op);
+            small2 = data.new_output(new_ind, new_size as u32, smalladdr2);
+            if !possibleout {
+                data.vn_mut(zero).set_indirect_creation();
+            }
+            data.vn_mut(small2).set_indirect_creation();
+            data.op_insert_before(new_ind, targ_op);
+        } else {
+            let small1 = pullsub_find_subpiece(data, basevn, new_size as u32, min_byte as u64)
+                .unwrap_or_else(|| pullsub_build_subpiece(data, basevn, new_size as u32, min_byte as u64));
+            // Create the new narrow INDIRECT near the original.
+            let seq = data.op(indir).seqnum;
+            let new_ind = data.new_op(OpCode::Indirect, seq, vec![small1]);
+            data.op_mut(new_ind).guarded_op = Some(targ_op);
+            small2 = data.new_output(new_ind, new_size as u32, smalladdr2);
+            data.op_insert_before(new_ind, indir);
+        }
+        pullsub_replace_descendants(data, vn, small2, min_byte);
+        1
+    }
+}
+
+/// Ghidra `Varnode::isIndirectZero` (`varnode.hh`): the constant-0 IOP-zero input of an indirect
+/// creation (a constant also flagged `indirect_creation`).
+fn is_indirect_zero(data: &Funcdata, vn: VarnodeId) -> bool {
+    data.vn(vn).is_constant() && data.vn(vn).is_indirect_creation()
+}
+
+/// Ghidra `RulePushMulti::findSubstitute` (`ruleaction.cc`): find an existing op that already computes
+/// the merge of `in1`/`in2` in block `bb` — either a MULTIEQUAL(in1, in2) already present, or (when
+/// `in1`/`in2` are functionally equal one level down) a CSE of their shared defining op — so the push
+/// reuses it instead of building a duplicate.
+fn push_multi_find_substitute(
+    data: &Funcdata,
+    in1: VarnodeId,
+    in2: VarnodeId,
+    bb: BlockId,
+    earliest: Option<OpId>,
+) -> Option<OpId> {
+    for &op in &data.vn(in1).descend {
+        if data.op(op).parent != Some(bb) {
+            continue;
+        }
+        if data.op(op).code() != OpCode::Multiequal {
+            continue;
+        }
+        if data.op(op).input(0) != Some(in1) || data.op(op).input(1) != Some(in2) {
+            continue;
+        }
+        return Some(op);
+    }
+    if in1 == in2 {
+        return None;
+    }
+    if !functional_equality(data, in1, in2) {
+        return None;
+    }
+    // in1 and in2 must be written (not equal but functionally equal) — find matching inputs to their
+    // defining ops and search for a CSE of the first op in bb.
+    let op1 = data.vn(in1).def.unwrap();
+    let op2 = data.vn(in2).def.unwrap();
+    for i in 0..data.op(op1).num_inputs() {
+        let vn = data.op(op1).input(i).unwrap();
+        if data.vn(vn).is_constant() {
+            continue;
+        }
+        if data.op(op2).input(i) == Some(vn) {
+            return cse_find_in_block(data, op1, vn, bb, earliest);
+        }
+    }
+    None
+}
+
+/// Ghidra `RulePushMulti` (`ruleaction.cc`, registered `coreaction.cc:5518` "nodejoin" in `oppool1`).
+/// Push a 2-input MULTIEQUAL down through a functional operation shared by both inputs: when the two
+/// phi inputs are the same op applied to (mostly) the same operands, replace the phi with that single
+/// op, merging the one differing operand pair into a smaller MULTIEQUAL. Also collapses a phi of two
+/// shadowing COPYs. Missing-rule port (mosura had zero); SubVariableFlow-family node-join.
+pub struct RulePushMulti;
+
+impl Rule for RulePushMulti {
+    fn name(&self) -> &str {
+        "push_multi"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Multiequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0;
+        }
+        let in1 = data.op(op).input(0).unwrap();
+        let in2 = data.op(op).input(1).unwrap();
+        if !data.vn(in1).is_written() || !data.vn(in2).is_written() {
+            return 0;
+        }
+        if data.vn(in1).is_spacebase() || data.vn(in2).is_spacebase() {
+            return 0;
+        }
+        let (res, pair) = functional_equality_level_pair(data, in1, in2);
+        if res < 0 || res > 1 {
+            return 0;
+        }
+        let op1 = data.vn(in1).def.unwrap();
+        if data.op(op1).code() == OpCode::Subpiece {
+            return 0; // SUBPIECE is pulled, not pushed.
+        }
+        let bl = data.op(op).parent.unwrap();
+        let outvn = data.op(op).output.unwrap();
+        let earliest = earliest_use(data, outvn, bl);
+        if data.op(op1).code() == OpCode::Copy {
+            // Special case: MERGE of 2 shadowing varnodes.
+            if res == 0 {
+                return 0;
+            }
+            let (b1, b2) = pair.unwrap();
+            let Some(substitute) = push_multi_find_substitute(data, b1, b2, bl, earliest) else {
+                return 0;
+            };
+            let sub_out = data.op(substitute).output.unwrap();
+            data.total_replace(outvn, sub_out);
+            data.op_destroy(op);
+            return 1;
+        }
+        let op2 = data.vn(in2).def.unwrap();
+        // in1/in2 must each feed only this MULTIEQUAL (Ghidra loneDescend).
+        if data.vn(in1).descend.len() != 1 || data.vn(in1).descend[0] != op {
+            return 0;
+        }
+        if data.vn(in2).descend.len() != 1 || data.vn(in2).descend[0] != op {
+            return 0;
+        }
+        // Move the MULTIEQUAL output to op1, which becomes the unified op moved into the merge block.
+        data.op_set_output(op1, outvn);
+        data.op_uninsert(op1);
+        if res == 1 {
+            let (b1, b2) = pair.unwrap();
+            let slot1 = data.op(op1).inrefs.iter().position(|&v| v == b1).expect("buf1[0] is an input of op1");
+            let substitute_out = match push_multi_find_substitute(data, b1, b2, bl, earliest) {
+                Some(sub) => data.op(sub).output.unwrap(),
+                None => {
+                    let seq = data.op(op).seqnum;
+                    let substitute = data.new_op(OpCode::Multiequal, seq, Vec::new());
+                    // Preserve the storage location if the inputs share it and it isn't addrtied.
+                    let b1_addr = data.vn(b1).loc;
+                    let b1_size = data.vn(b1).size;
+                    let sout = if data.vn(b1).loc == data.vn(b2).loc && !data.vn(b1).is_addrtied() {
+                        data.new_output(substitute, b1_size, b1_addr)
+                    } else {
+                        data.new_output_unique(substitute, b1_size)
+                    };
+                    data.op_set_all_input(substitute, &[b1, b2]);
+                    data.op_insert_begin(substitute, bl);
+                    sout
+                }
+            };
+            data.op_set_input(op1, slot1, substitute_out);
+            let sub_def = data.vn(substitute_out).def.unwrap();
+            data.op_insert_after(op1, sub_def);
+        } else {
+            data.op_insert_begin(op1, bl);
+        }
+        data.op_destroy(op);
+        data.op_destroy(op2);
+        1
+    }
+}
+
 /// `RuleSubExtComm` (`ruleaction.cc`): push a `SUBPIECE` through a `ZEXT`/`SEXT`. When the
 /// piece never reaches the extended bits (`out_size + subcut <= invn_size`) it is a piece of
 /// the pre-extension value directly — and when it exactly covers that value it collapses to a
@@ -4956,6 +5425,98 @@ fn functional_equality_level(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) ->
 /// Ghidra `functionalEquality` (expression.cc): are `vn1` and `vn2` provably the same value?
 fn functional_equality(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> bool {
     functional_equality_level(data, vn1, vn2) == 0
+}
+
+/// Ghidra `functionalEqualityLevel` (expression.cc) with the leftover-unmatch pair (`res1[0]`,
+/// `res2[0]`) exposed — the plain [`functional_equality_level`] discards it. Used by [`RulePushMulti`]:
+/// a return of `1` means the two values match contingent on that single differing sub-pair, which the
+/// rule merges into one MULTIEQUAL. The pair is meaningful only for a return of `0`/`1` (after descent);
+/// callers that only test `== 0` use the plain variant.
+fn functional_equality_level_pair(
+    data: &Funcdata,
+    vn1: VarnodeId,
+    vn2: VarnodeId,
+) -> (i32, Option<(VarnodeId, VarnodeId)>) {
+    let testval = functional_equality_level0(data, vn1, vn2);
+    if testval != 1 {
+        return (testval, None);
+    }
+    if !data.vn(vn1).is_written() || !data.vn(vn2).is_written() {
+        return (-1, None);
+    }
+    let op1 = data.vn(vn1).def.unwrap();
+    let op2 = data.vn(vn2).def.unwrap();
+    let opc = data.op(op1).code();
+    if opc != data.op(op2).code() {
+        return (-1, None);
+    }
+    let mut num = data.op(op1).num_inputs();
+    if num != data.op(op2).num_inputs() {
+        return (-1, None);
+    }
+    if data.op(op1).is_marker() {
+        return (-1, None);
+    }
+    if data.op(op2).is_call() {
+        return (-1, None);
+    }
+    if opc == OpCode::Load && data.op(op1).seqnum.pc != data.op(op2).seqnum.pc {
+        return (-1, None);
+    }
+    if num >= 3 {
+        if opc != OpCode::Ptradd {
+            return (-1, None);
+        }
+        let e1 = data.op(op1).input(2).unwrap();
+        let e2 = data.op(op2).input(2).unwrap();
+        if data.vn(e1).constant_value() != data.vn(e2).constant_value() {
+            return (-1, None);
+        }
+        num = 2;
+    }
+    let r1: Vec<VarnodeId> = (0..num).map(|i| data.op(op1).input(i).unwrap()).collect();
+    let r2: Vec<VarnodeId> = (0..num).map(|i| data.op(op2).input(i).unwrap()).collect();
+
+    let testval = functional_equality_level0(data, r1[0], r2[0]);
+    if testval == 0 {
+        if num == 1 {
+            return (0, Some((r1[0], r2[0])));
+        }
+        let t = functional_equality_level0(data, r1[1], r2[1]);
+        if t == 0 {
+            return (0, Some((r1[0], r2[0])));
+        }
+        if t < 0 {
+            return (-1, None);
+        }
+        return (1, Some((r1[1], r2[1]))); // contingent on the second pair
+    }
+    if num == 1 {
+        return (testval, Some((r1[0], r2[0])));
+    }
+    let testval2 = functional_equality_level0(data, r1[1], r2[1]);
+    if testval2 == 0 {
+        return (testval, Some((r1[0], r2[0])));
+    }
+    let unmatchsize = if testval == 1 && testval2 == 1 { 2 } else { -1 };
+    if !is_commutative(opc) {
+        return (unmatchsize, Some((r1[0], r2[0])));
+    }
+    let comm1 = functional_equality_level0(data, r1[0], r2[1]);
+    let comm2 = functional_equality_level0(data, r1[1], r2[0]);
+    if comm1 == 0 && comm2 == 0 {
+        return (0, Some((r1[0], r2[0])));
+    }
+    if comm1 < 0 || comm2 < 0 {
+        return (unmatchsize, Some((r1[0], r2[0])));
+    }
+    if comm1 == 0 {
+        return (1, Some((r1[1], r2[0]))); // leftover unmatch res1[1]/res2[0]
+    }
+    if comm2 == 0 {
+        return (1, Some((r1[0], r2[1]))); // leftover unmatch res1[0]/res2[1]
+    }
+    (2, Some((r1[0], r2[0])))
 }
 
 /// Ghidra `BlockBasic::earliestUse`: the earliest op in `block` that reads `vid`. We order ops by
@@ -8799,6 +9360,126 @@ mod tests {
         assert_eq!(f.op(op).input(0), Some(a));
         assert_eq!(f.op(op).input(1), Some(b));
         assert!(!f.vn(out).is_mark(), "the traversal mark is cleared on the failure path");
+    }
+
+    // --- RulePullsubMulti / RulePullsubIndirect / RulePushMulti (the pullsub cluster) ----------
+
+    /// RulePullsubMulti: `SUBPIECE(MULTIEQUAL(a, b), 0):4` pulls the truncation up into a narrow
+    /// `MULTIEQUAL(SUBPIECE(a,0), SUBPIECE(b,0)):4`, and the reader collapses to a COPY of it.
+    #[test]
+    fn pullsub_multi_narrows_phi() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let a = f.new_input(8, Address::new(reg, 0x10));
+        let b = f.new_input(8, Address::new(reg, 0x18));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let phi = f.new_op(OpCode::Multiequal, seq, vec![a, b]);
+        let m = f.new_output(phi, 8, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, SeqNum { pc: ram, uniq: 1 }, vec![m, zero]);
+        let s = f.new_output(sub, 4, Address::new(reg, 0x28));
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 2 }, vec![s]);
+        f.new_output(user, 4, Address::new(reg, 0x30));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![phi, sub, user], ..Default::default() }]);
+        for o in [phi, sub, user] {
+            f.op_mut(o).parent = Some(BlockId(0));
+        }
+
+        assert_eq!(RulePullsubMulti.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Copy, "the reader collapses to a COPY");
+        let narrow = f.op(sub).input(0).unwrap();
+        assert_eq!(f.vn(narrow).size, 4);
+        let np = f.vn(narrow).def.unwrap();
+        assert_eq!(f.op(np).code(), OpCode::Multiequal, "a new narrow phi is built");
+        assert_eq!(f.op(np).num_inputs(), 2);
+        for i in 0..2 {
+            let inp = f.op(np).input(i).unwrap();
+            assert_eq!(f.vn(inp).size, 4);
+            assert_eq!(f.op(f.vn(inp).def.unwrap()).code(), OpCode::Subpiece);
+        }
+    }
+
+    /// RulePullsubMulti declines a loop-header phi (Ghidra's `hasLoopIn` guard): pulling into the
+    /// loop back-edge is not allowed. `MULTIEQUAL(a, self)` in a self-looping block is left alone.
+    #[test]
+    fn pullsub_multi_declines_loop_header() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let a = f.new_input(8, Address::new(reg, 0x10));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let phi = f.new_op(OpCode::Multiequal, seq, vec![a, a]);
+        let m = f.new_output(phi, 8, Address::new(reg, 0x20));
+        f.op_set_input(phi, 1, m); // back-edge: the phi reaches itself
+        let zero = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, SeqNum { pc: ram, uniq: 1 }, vec![m, zero]);
+        f.new_output(sub, 4, Address::new(reg, 0x28));
+        let mut blk = crate::decompile::BlockBasic { ops: vec![phi, sub], ..Default::default() };
+        blk.in_edges = vec![BlockId(0)]; // self-edge => this block dominates its own predecessor
+        blk.out_edges = vec![BlockId(0)];
+        f.set_blocks(vec![blk]);
+        for o in [phi, sub] {
+            f.op_mut(o).parent = Some(BlockId(0));
+        }
+        assert_eq!(RulePullsubMulti.apply_op(sub, &mut f), 0, "a loop-header phi is not pulled");
+    }
+
+    /// RulePullsubIndirect: `SUBPIECE(INDIRECT(before), 0):4` becomes a narrow INDIRECT of the same
+    /// causing op (mosura's `guarded_op`), and the reader collapses to a COPY.
+    #[test]
+    fn pullsub_indirect_narrows_indirect() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let call = f.new_op(OpCode::Call, SeqNum { pc: ram, uniq: 0 }, vec![]);
+        let before = f.new_input(8, Address::new(reg, 0x10));
+        let indir = f.new_op(OpCode::Indirect, SeqNum { pc: ram, uniq: 1 }, vec![before]);
+        f.op_mut(indir).guarded_op = Some(call);
+        let iout = f.new_output(indir, 8, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, SeqNum { pc: ram, uniq: 2 }, vec![iout, zero]);
+        let s = f.new_output(sub, 4, Address::new(reg, 0x18));
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 3 }, vec![s]);
+        f.new_output(user, 4, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![call, indir, sub, user], ..Default::default() }]);
+        for o in [call, indir, sub, user] {
+            f.op_mut(o).parent = Some(BlockId(0));
+        }
+        assert_eq!(RulePullsubIndirect.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Copy);
+        let narrow = f.op(sub).input(0).unwrap();
+        assert_eq!(f.vn(narrow).size, 4);
+        let ni = f.vn(narrow).def.unwrap();
+        assert_eq!(f.op(ni).code(), OpCode::Indirect);
+        assert_eq!(f.op(ni).guarded_op(), Some(call), "the narrow INDIRECT keeps the causing op");
+    }
+
+    /// RulePushMulti (general path): `MULTIEQUAL(x+1, x+1)` — two functionally-equal ADDs feeding only
+    /// the phi — collapses to a single `x+1` producing the phi's output; the phi and the duplicate are
+    /// destroyed.
+    #[test]
+    fn push_multi_pushes_shared_op() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let c1 = f.new_const(4, 1);
+        let add1 = f.new_op(OpCode::IntAdd, SeqNum { pc: ram, uniq: 0 }, vec![x, c1]);
+        let a1 = f.new_output(add1, 4, Address::new(reg, 0x18));
+        let c2 = f.new_const(4, 1);
+        let add2 = f.new_op(OpCode::IntAdd, SeqNum { pc: ram, uniq: 1 }, vec![x, c2]);
+        let a2 = f.new_output(add2, 4, Address::new(reg, 0x20));
+        let seq = SeqNum { pc: ram, uniq: u32::MAX };
+        let phi = f.new_op(OpCode::Multiequal, seq, vec![a1, a2]);
+        let m = f.new_output(phi, 4, Address::new(reg, 0x28));
+        let user = f.new_op(OpCode::Copy, SeqNum { pc: ram, uniq: 2 }, vec![m]);
+        f.new_output(user, 4, Address::new(reg, 0x30));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![add1, add2, phi, user], ..Default::default() }]);
+        for o in [add1, add2, phi, user] {
+            f.op_mut(o).parent = Some(BlockId(0));
+        }
+        assert_eq!(RulePushMulti.apply_op(phi, &mut f), 1);
+        assert!(f.op(phi).is_dead(), "the MULTIEQUAL is destroyed");
+        assert!(f.op(add2).is_dead(), "the duplicate op is destroyed");
+        assert_eq!(f.op(add1).output, Some(m), "the surviving op produces the unified output");
+        assert_eq!(f.op(user).input(0), Some(m), "the use reads the unified value");
     }
 
     /// Functional equality: two branches that each `COPY` the same constant collapse, with the
