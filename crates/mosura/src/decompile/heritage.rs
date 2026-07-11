@@ -1168,15 +1168,22 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     let (spc, off, size) = range;
     let Some(reg) = f.spaces.by_name("register") else { return };
     let stack = f.spaces.by_name("stack");
+    let ram = f.spaces.by_name("ram");
 
-    // Ghidra `fc->hasEffect(transAddr,size)`: the effect a call has on this range. Registers query
-    // the SysV EffectRecord list; a stack local at/above the alias boundary is `unknown_effect` (a
-    // passthrough guard), everything else in the stack is left unguarded here.
+    // Ghidra `fc->hasEffect(transAddr,size)`: the effect a call has on this range. Ghidra does NOT
+    // special-case any space — `ProtoModel::lookupEffect` (fspec.cc:2472-2485) returns `unknown_effect`
+    // for any address not covered by the model's (register-only) EffectRecord list. So registers query
+    // the SysV list; a stack local at/above the alias boundary and a ram global both fall through to
+    // the default `unknown_effect` (a passthrough guard) — a call with an unknown prototype may modify
+    // any global its callee can reach, so the global's value does not constant-fold to its pre-call
+    // version (the post-call read reads through the INDIRECT, not the stale pre-call write).
     use super::fspec::effect;
+    let aliased_stack = Some(spc) == stack && f.alias_boundary.is_some_and(|b| (off as i64) >= b);
     let effecttype = if spc == reg {
         let efflist = super::fspec::sysv_effect_list(&f.spaces);
         super::fspec::lookup_effect(&efflist, super::space::Address::new(reg, off), size)
-    } else if Some(spc) == stack && f.alias_boundary.is_some_and(|b| (off as i64) >= b) {
+    } else if aliased_stack || Some(spc) == ram {
+        // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
         effect::UNKNOWN_EFFECT
     } else {
         return;
@@ -1185,9 +1192,10 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         return;
     }
     // holdind = (fl & addrtied): a mapped (addr-tied) range keeps its passthrough INDIRECT auto-live
-    // via setAddrForce, so dead-code preserves the across-call chain and the spill store feeding it.
-    // mosura's mapped stack locals are addr-tied; register passthroughs are not.
-    let holdind = Some(spc) == stack;
+    // via setAddrForce, so dead-code preserves the across-call chain and the write feeding it. Faithful
+    // to `queryProperties` (heritage.cc:1191) + [`super::varnodeprops::mark_addrtied`]: an unmapped ram
+    // global and an aliased stack slot are addr-tied; a register passthrough is not.
+    let holdind = Some(spc) == ram || aliased_stack;
 
     let calls: Vec<OpId> = (0..f.num_blocks() as u32)
         .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
@@ -1779,6 +1787,22 @@ mod tests {
         // a stack slot below the boundary (offset -32 < -16) ⇒ not aliased ⇒ no guard.
         guard_calls(&mut f, (stack, (-32i64) as u64, 8));
         assert_eq!(indirects(&f).len(), 2, "non-aliased stack slot is left untouched");
+
+        // a ram global ⇒ passthrough (Ghidra `lookupEffect` returns `unknown_effect` for any address
+        // not in the register-only EffectRecord list): free before-value, and addr-forced because an
+        // unmapped ram global is addr-tied (holdind = fl & addrtied).
+        guard_calls(&mut f, (ram, 0x100074, 4));
+        let inds = indirects(&f);
+        assert_eq!(inds.len(), 3, "passthrough for the ram global across the call");
+        let gpass = *inds.iter().find(|&&op| f.op(op).output.is_some_and(|o| f.vn(o).loc.space == ram)).unwrap();
+        let gout = f.op(gpass).output.unwrap();
+        assert!(!f.vn(gout).is_indirect_creation(), "ram passthrough is not a creation");
+        assert!(f.vn(gout).is_addr_force(), "ram passthrough output addr-forced (global is addr-tied, holdind)");
+        assert_eq!((f.vn(gout).loc.space, f.vn(gout).loc.offset, f.vn(gout).size), (ram, 0x100074, 4));
+        let gbefore = f.op(gpass).input(0).unwrap();
+        assert!(!f.vn(gbefore).is_constant() && f.vn(gbefore).loc.space == ram, "ram passthrough before-value is a free ram read");
+        let ipos = |op: OpId| f.blocks()[0].ops.iter().position(|&o| o == op).unwrap();
+        assert_eq!(ipos(gpass), ipos(call) + 1, "ram passthrough spliced right after the call");
     }
 
     /// A second range disjoint from the first is recorded independently (intersect 0), and a new
