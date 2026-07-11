@@ -572,6 +572,58 @@ impl<'a> SubvariableFlow<'a> {
         true
     }
 
+    /// Ghidra `SubvariableFlow::tryCallPull` (`subflow.cc:208`): the logical value flows into a CALL/
+    /// CALLIND as an input parameter. If the call's params aren't in active recovery, add a parameter
+    /// patch letting the CALL take the smaller logical value. mosura adaptations: `getCallSpecs()==null`
+    /// (subflow.cc:216) cannot hold for a CALL/CALLIND op — only CALLOTHER (`isCallWithoutSpec`, a
+    /// different opcode) lacks a spec — and mosura models no input-lock/`isDotdotdot` on calls, so that
+    /// gate (subflow.cc:218) is omitted; `isInputActive()` maps to an `active_inputs` entry.
+    fn try_call_pull(&mut self, op: OpId, rvn: usize, slot: i32) -> bool {
+        if slot == 0 {
+            return false; // slot 0 is the call target, not a parameter
+        }
+        if !self.aggressive {
+            let vn = self.rvnodes[rvn].vn.expect("real varnode");
+            let mask = self.rvnodes[rvn].mask;
+            if (self.fd.vn(vn).get_consume() & !mask) != 0 {
+                return false; // something outside the mask is consumed — don't truncate
+            }
+        }
+        if self.fd.active_inputs.contains_key(&op) {
+            return false; // don't trim while param recovery is mid-flight (isInputActive)
+        }
+        self.add_terminal_patch_same_op(op, rvn, slot);
+        true
+    }
+
+    /// Ghidra `PcodeOp::getRepeatSlot` (`op.cc:93`): in the rare case the same Varnode feeds this op in
+    /// multiple input slots, map the current descend-iteration position (`idx` into the cloned descend
+    /// list) to the corresponding slot; `first_slot` is its first occurrence. Returns -1 if not found
+    /// (as Ghidra). The descend list holds `op` once per referencing slot (`Funcdata::new_op`), matching
+    /// Ghidra's `beginDescend`.
+    fn get_repeat_slot(&self, op: OpId, vn: VarnodeId, first_slot: usize, idx: usize, descend: &[OpId]) -> i32 {
+        let mut count = 1;
+        for &o in &descend[..idx] {
+            if o == op {
+                count += 1;
+            }
+        }
+        if count == 1 {
+            return first_slot as i32;
+        }
+        let mut recount = 1;
+        let inrefs = &self.fd.op(op).inrefs;
+        for i in (first_slot + 1)..inrefs.len() {
+            if inrefs[i] == vn {
+                recount += 1;
+                if recount == count {
+                    return i as i32;
+                }
+            }
+        }
+        -1
+    }
+
     /// Ghidra `SubvariableFlow::addExtensionPatch` (`subflow.cc:1221`): op pads the logical value with
     /// zero bits, shifted left by `sa` (bits); `sa == -1` means shift by the mask's least-set bit.
     /// Not a true modification (the output keeps the expanded size).
@@ -607,16 +659,19 @@ impl<'a> SubvariableFlow<'a> {
 
     /// Ghidra `SubvariableFlow::traceForward` (`subflow.cc:373`): trace the logical value through its
     /// descendant ops one level, extending the subgraph. Returns false to abort the whole transform.
-    /// The CALL/CALLIND/RETURN/BRANCHIND/FLOAT_INT2FLOAT pulls and the INT_MULT/ADD/DIV/REM/LESS/
-    /// bool/CBRANCH arms are Stage-4 work: they fall to the `default` abort.
+    /// The RETURN pull (`try_return_pull`) and the CALL/CALLIND pull (`try_call_pull`) are handled; the
+    /// BRANCHIND/FLOAT_INT2FLOAT pulls and the INT_MULT/ADD/DIV/REM/LESS/bool/CBRANCH arms are Stage-4
+    /// work: they fall to the `default` abort.
     fn trace_forward(&mut self, rvn: usize) -> bool {
         let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
         let mask = self.rvnodes[rvn].mask;
         let mut dcount = 0i32;
         let mut hcount = 0i32;
+        let mut callcount = 0i32;
 
         let descend = self.fd.vn(vn).descend.clone();
-        for op in descend {
+        for idx in 0..descend.len() {
+            let op = descend[idx];
             let out_opt = self.fd.op(op).output;
             if let Some(o) = out_opt {
                 if self.fd.vn(o).is_mark() && !self.fd.op(op).is_call() {
@@ -877,6 +932,21 @@ impl<'a> SubvariableFlow<'a> {
                     }
                     hcount += 1;
                 }
+                // CALL/CALLIND: pull the logical value into the call parameter (Ghidra traceForward,
+                // subflow.cc:616-623). A value passed in 2+ slots of one call is disambiguated by
+                // `get_repeat_slot` (Ghidra getRepeatSlot, op.cc:93) once callcount > 1.
+                OpCode::Call | OpCode::Callind => {
+                    callcount += 1;
+                    let slot = if callcount > 1 {
+                        self.get_repeat_slot(op, vn, slot, idx, &descend)
+                    } else {
+                        slot as i32
+                    };
+                    if !self.try_call_pull(op, rvn, slot) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
                 // RETURN: pull the logical value out of the return (Ghidra traceForward, subflow.cc:624).
                 OpCode::Return => {
                     if !self.try_return_pull(op, rvn, slot) {
@@ -884,8 +954,8 @@ impl<'a> SubvariableFlow<'a> {
                     }
                     hcount += 1;
                 }
-                // Stage-4 arms — CALL/CALLIND/BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/
-                // DIV/REM, INT_LESS/LESSEQUAL, bool ops, CBRANCH: abort the trace (Ghidra `default`).
+                // Stage-4 arms — BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/DIV/REM,
+                // INT_LESS/LESSEQUAL, bool ops, CBRANCH: abort the trace (Ghidra `default`).
                 _ => return false,
             }
         }
@@ -1886,6 +1956,66 @@ mod tests {
         let ret = f.new_op(OpCode::Return, seq, vec![rax]); // rax at slot 0
         f.set_blocks(vec![BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
         parent_all_to_block0(&mut f);
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(!s.do_trace());
+    }
+
+    #[test]
+    fn try_call_pull_narrows_a_call_argument() {
+        // RAX:8 = ZEXT(u:4); CALL(target, RAX:8). RuleSubvarZext seeds the flow on the ZEXT output;
+        // try_call_pull (Ghidra subflow.cc:208) lets the CALL take the 4-byte logical value.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let target = f.new_const(8, 0x400440);
+        let call = f.new_op(OpCode::Call, seq, vec![target, rax]);
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, call], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+        f.vn_mut(rax).consume = 0xffffffff; // only the low 4 bytes consumed → truncatable
+
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(s.do_trace());
+        s.do_replacement();
+        drop(s);
+        // The CALL's parameter (slot 1) is now the 4-byte logical value, not the 8-byte ZEXT.
+        assert_eq!(f.vn(f.op(call).input(1).unwrap()).size, 4);
+    }
+
+    #[test]
+    fn try_call_pull_refuses_while_input_active() {
+        // While the call's parameters are in active recovery (Ghidra isInputActive, subflow.cc:217),
+        // don't trim. do_trace aborts, the CALL argument stays 8-byte.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let target = f.new_const(8, 0x400440);
+        let call = f.new_op(OpCode::Call, seq, vec![target, rax]);
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, call], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+        f.vn_mut(rax).consume = 0xffffffff;
+        f.active_inputs.insert(call, super::super::fspec::ParamActive::new(None));
+
+        let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
+        assert!(!s.do_trace()); // try_call_pull refuses; trace aborts
+        assert_eq!(f.vn(f.op(call).input(1).unwrap()).size, 8); // CALL argument unchanged
+    }
+
+    #[test]
+    fn try_call_pull_refuses_call_target_slot() {
+        // A value flowing into slot 0 is the call target, not a parameter — refuse (subflow.cc:210).
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let u = f.new_input(4, Address::new(reg, 0x10));
+        let op_z = f.new_op(OpCode::IntZext, seq, vec![u]);
+        let rax = f.new_output(op_z, 8, Address::new(reg, 0x0));
+        let call = f.new_op(OpCode::Call, seq, vec![rax]); // rax at slot 0 (the call target)
+        f.set_blocks(vec![BlockBasic { ops: vec![op_z, call], ..Default::default() }]);
+        parent_all_to_block0(&mut f);
+        f.vn_mut(rax).consume = 0xffffffff;
         let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
         assert!(!s.do_trace());
     }

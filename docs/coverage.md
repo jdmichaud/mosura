@@ -243,13 +243,13 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleFloatSign | MISSING |
 | RuleOrCompare | PORTED |
 | RuleSubvarAnd | PORTED |
-| RuleSubvarSubpiece | PORTED |
+| RuleSubvarSubpiece | PORTED. Its trace now handles the CALL-pull: `SubvariableFlow::try_call_pull` (subflow.cc:208) + `PcodeOp::getRepeatSlot` (op.cc:93) + the traceForward CALL/CALLIND arm (subflow.cc:616-623) are ported (was a Stage-4 `_ => return false` stub) — the loop induction phi passed to a call now narrows 8→4 bytes. WIRED (engine, all subvar rules). Net-positive: forloop_varused 0.914→1.000 (byte-identical to Ghidra), noforloop_iterused +0.035, noforloop_alias/elseif/loopcomment bonus, 0 down (+0.0025). Prereq: `active_inputs` cleared on param-recovery commit (isInputActive→false in a later mainloop pass). |
 | RuleSplitFlow | PORTED (`splitflow.rs` SplitFlow + RuleSplitFlow on the transform.rs TransformManager; subflow.cc:1754-2088; S1 `d171301`). WIRED at coreaction.cc:5623 (after RuleSubvarSubpiece) = the floatcast XMM 16→8 narrowing: splits a movsd-zero-joined XMM0 MULTIEQUAL into 8-byte Qa/Qb lanes (Qb=0 dies). floatcast 0.776→0.845, the only mover, zero regressions. RESIDUAL (task #21): the straight-line `PIECE #0:8 -> SUBPIECE #0` return chain stays 16-byte — faithfully NOT split (Ghidra `vn->getDef()!=multiOp` guard); Piece2Zext re-widens the 8-byte diff, so the return decomposition renders CONCAT124 not CONCAT44. |
 | RulePtrFlow | MISSING (needs Varnode::isPtrFlow — aggressive subvar) |
 | RuleSubvarCompZero | PORTED |
 | RuleSubvarShift | PORTED |
 | RuleSubvarZext | PORTED (`381e745`; delivers int4 returns) |
-| RuleSubvarSext | BLOCKED(sext tracer stubbed in subvarflow.rs; Stage 4) |
+| RuleSubvarSext | BLOCKED(sext tracer `trace_forward_sext`/`trace_backward_sext` stubbed in subvarflow.rs; the last Stage-4 remainder alongside RulePtrFlow=isPtrFlow) |
 | RuleNegateNegate | MISSING |
 | RuleConditionalMove | MISSING |
 | RuleOrPredicate | MISSING |
