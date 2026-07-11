@@ -52,6 +52,22 @@ fn entry_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     }
 }
 
+/// Whether a short-circuit operand is an oriented leaf — a basic-block leaf whose terminating CBRANCH
+/// was oriented (`fallthru_true`) by the branch-negation stage (Ghidra `BlockCondition::negateCondition`
+/// distributed the NOT to it), so its negation is materialized positive in the IR and it prints
+/// directly. A nested compound returns false (its own leaves are flipped recursively). The compound
+/// analogue of [`Structured::is_oriented`], read at print to XOR the pending negation off the leaf.
+fn operand_oriented(f: &super::funcdata::Funcdata, s: &Structured, idx: usize) -> bool {
+    if matches!(s.blocks[idx].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+        return false;
+    }
+    exit_basic(s, idx)
+        .and_then(|bid| {
+            f.block(bid).ops.iter().rev().copied().find(|&op| f.op(op).code() == OpCode::Cbranch)
+        })
+        .is_some_and(|cbr| f.op(cbr).is_fallthru_true())
+}
+
 /// Ghidra's one-letter type prefix for a variable/global name.
 fn type_prefix(t: &Datatype) -> &'static str {
     match t {
@@ -956,8 +972,12 @@ impl<'a> PrintC<'a> {
                 let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
                 // De Morgan swaps the connective under negation
                 let conn = if is_and == !neg { "&&" } else { "||" };
-                let a = self.render_cond_operand(s, comps[0], neg);
-                let b = self.render_cond_operand(s, comps[1], neg);
+                // A leaf whose CBRANCH was oriented (Ghidra's BlockCondition::negateCondition
+                // distributed the NOT to it — its negation is materialized positive in the IR) prints
+                // directly, so flip the pending negation off for that operand. Nested compounds return
+                // false here and flip their own leaves recursively.
+                let a = self.render_cond_operand(s, comps[0], neg ^ operand_oriented(self.f, s, comps[0]));
+                let b = self.render_cond_operand(s, comps[1], neg ^ operand_oriented(self.f, s, comps[1]));
                 format!("{a} {conn} {b}")
             }
             _ => {

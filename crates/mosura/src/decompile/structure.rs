@@ -155,22 +155,49 @@ impl Structured {
         let fb = &self.blocks[idx];
         if fb.negated && matches!(fb.kind, FlowKind::If | FlowKind::WhileDo | FlowKind::DoWhile) {
             if let Some(&cond) = fb.components.first() {
-                // Skip a compound `&&`/`||` (short-circuit) condition: Ghidra distributes the NOT to
-                // each leaf via `BlockCondition::negateCondition` (block.cc:3023), which — like the
-                // normal-form flip (mechanism A) — is deferred, so it stays negated at print time.
-                // Orient only a simple condition whose materialized negation folds cleanly via
-                // RuleBoolNegate (its def is a comparison); other booleans need the deferred flip.
-                if !matches!(self.blocks[cond].kind, FlowKind::CondAnd | FlowKind::CondOr) {
-                    if let Some(bid) = self.exit_basic(cond) {
-                        if condition_folds_cleanly(f, bid) && !near_switch(f, bid) {
-                            out.push(bid);
-                        }
+                if matches!(self.blocks[cond].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+                    // Compound `&&`/`||` (short-circuit) condition: Ghidra's
+                    // `BlockCondition::negateCondition` (block.cc:3023) distributes the NOT to each
+                    // short-circuit leaf. Orient every leaf CBRANCH so RuleCondNegate materializes it
+                    // (RuleBoolNegate + RuleIntLessEqual then normalize) — all-or-nothing, matching
+                    // Ghidra's recursion over both sides; the connective is re-derived by De Morgan.
+                    if let Some(mut leaves) = self.compound_leaves(cond, f) {
+                        out.append(&mut leaves);
+                    }
+                } else if let Some(bid) = self.exit_basic(cond) {
+                    // Simple condition: orient it when its materialized negation folds cleanly via
+                    // RuleBoolNegate (its def is a comparison) and it is not a switch guard.
+                    if condition_folds_cleanly(f, bid) && !near_switch(f, bid) {
+                        out.push(bid);
                     }
                 }
             }
         }
         for &c in &self.blocks[idx].components {
             self.collect_negations(c, f, out);
+        }
+    }
+
+    /// The leaf CBRANCH blocks of a (possibly nested) short-circuit compound, for branch orientation —
+    /// mirroring Ghidra's `BlockCondition::negateCondition` (block.cc:3023) distributing the NOT to
+    /// each side (it recurses over both operands). Returns `None` (orient nothing) unless EVERY leaf is
+    /// a cleanly-foldable comparison ([`condition_folds_cleanly`]) that is not a switch guard —
+    /// all-or-nothing, matching Ghidra's recursion that negates every side, and leaving a compound with
+    /// a non-foldable leaf (e.g. a nested `NAN`/`BOOL_OR` test) on the deferred print-time De Morgan.
+    fn compound_leaves(&self, cond: usize, f: &Funcdata) -> Option<Vec<BlockId>> {
+        match self.blocks[cond].kind {
+            FlowKind::CondAnd | FlowKind::CondOr => {
+                let c0 = self.blocks[cond].components[0];
+                let c1 = self.blocks[cond].components[1];
+                let mut a = self.compound_leaves(c0, f)?;
+                let mut b = self.compound_leaves(c1, f)?;
+                a.append(&mut b);
+                Some(a)
+            }
+            _ => {
+                let bid = self.exit_basic(cond)?;
+                (condition_folds_cleanly(f, bid) && !near_switch(f, bid)).then_some(vec![bid])
+            }
         }
     }
 
@@ -419,6 +446,13 @@ impl Structured {
     /// reversal (`BlockBasic::negateCondition` / `flipInPlaceExecute`), recorded in the flag instead
     /// so the re-deriving structurer collapses the original topology.
     fn is_oriented(&self, b: usize) -> bool {
+        // A compound (`&&`/`||`) condition reports NOT oriented at the top level: its leaves are
+        // oriented individually (Ghidra's `BlockCondition::negateCondition` distributes the NOT), so
+        // the enclosing `if`/`while`'s `negated` (the De Morgan direction) must not read the last
+        // leaf's flag — the per-leaf orientation is applied at print (printc `operand_oriented`).
+        if matches!(self.blocks[b].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+            return false;
+        }
         self.exit_basic(b).is_some_and(|bid| self.oriented.get(bid.0 as usize).copied().unwrap_or(false))
     }
 
@@ -666,6 +700,39 @@ mod tests {
         }
         walk(s, s.root, &mut k);
         k
+    }
+
+    #[test]
+    fn condition_folds_cleanly_gates_compound_leaf_orientation() {
+        // The all-or-nothing gate (`compound_leaves`) orients a negated compound only when EVERY leaf
+        // folds cleanly. `condition_folds_cleanly` is that per-leaf decision: a comparison folds
+        // (→ orient), a BOOL_OR (e.g. nan's nested `NAN(x) || NAN(x)` leaf) does not (→ skip the whole
+        // compound, keeping it on print-time De Morgan — why nan stays byte-identical).
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // block 0: CBRANCH on INT_SLESS(v, 5) — a foldable comparison.
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c5 = f.new_const(4, 5);
+        let cmp = f.new_op(OpCode::IntSless, seq, vec![v, c5]);
+        let cond = f.new_output(cmp, 1, Address::new(reg, 0x20));
+        let tgt = f.new_const(8, 0x1000);
+        let cbr0 = f.new_op(OpCode::Cbranch, seq, vec![tgt, cond]);
+        // block 1: CBRANCH on BOOL_OR(a, b) — not a foldable comparison.
+        let a = f.new_input(1, Address::new(reg, 0x30));
+        let b = f.new_input(1, Address::new(reg, 0x31));
+        let orop = f.new_op(OpCode::BoolOr, seq, vec![a, b]);
+        let orcond = f.new_output(orop, 1, Address::new(reg, 0x40));
+        let cbr1 = f.new_op(OpCode::Cbranch, seq, vec![tgt, orcond]);
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![cmp, cbr0], ..Default::default() },
+            BlockBasic { ops: vec![orop, cbr1], ..Default::default() },
+        ]);
+        assert!(condition_folds_cleanly(&f, BlockId(0)), "comparison leaf orients");
+        assert!(!condition_folds_cleanly(&f, BlockId(1)), "BOOL_OR leaf is skipped (the nan gate)");
     }
 
     #[test]
