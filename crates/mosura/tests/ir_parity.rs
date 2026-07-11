@@ -314,10 +314,23 @@ fn merge_groups_phi_versions_into_variables() {
                 if o.code() == OpCode::Multiequal {
                     had_phi = true;
                     let out = o.output.unwrap();
+                    // Ghidra's `Merge::mergeOp` gates each phi-input merge on `mergeTestRequired`, and
+                    // when the merge is forbidden it TRIMS the input (an inserted COPY) instead of
+                    // merging — so a function input dragged into address-tied storage (elseif: `EDI`
+                    // into the `s_f4` stack slot) stays a DISTINCT HighVariable, matching Ghidra, which
+                    // merges a COPY of the param, not the param itself. Skip those required-trim inputs.
+                    let stack = f.spaces.by_name("stack");
+                    let tied_like = |v: mosura::decompile::VarnodeId| {
+                        f.vn(v).is_addrtied() || Some(f.vn(v).loc.space) == stack
+                    };
                     for &inv in &o.inrefs {
-                        if !f.vn(inv).is_constant() {
-                            assert!(h.same(out, inv), "{name}: phi output and input must be one variable");
+                        if f.vn(inv).is_constant() {
+                            continue;
                         }
+                        if f.vn(inv).is_input() && tied_like(out) && !tied_like(inv) {
+                            continue; // required-trim: an input is not dragged into address-tied storage
+                        }
+                        assert!(h.same(out, inv), "{name}: phi output and input must be one variable");
                     }
                 }
             }

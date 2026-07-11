@@ -68,21 +68,36 @@ fn mergeable(f: &Funcdata, v: VarnodeId) -> bool {
     !vn.is_constant() && vn.flags & super::varnode::flags::ANNOTATION == 0
 }
 
-/// Build the HighVariables for `f`, in Ghidra's merge-phase order (coreaction.cc:5719-5735):
-/// the required marker merges (`Merge::mergeMarker`) and address-tied unification
-/// (`Merge::mergeAddrTied`), then the COPY input/output merges (`Merge::mergeOpcode(COPY)`), then
-/// the speculative cover-based merging of non-interfering same-storage varnodes.
+/// Build the HighVariables for `f`, in Ghidra's merge-phase order: `ActionMergeRequired`
+/// (`coreaction.hh:370`) does `mergeAddrTied(); groupPartials(); mergeMarker();` — address-tied
+/// unification (`Merge::mergeAddrTied`) FIRST, then the required marker merges (`Merge::mergeMarker`);
+/// then `ActionMergeCopy`'s COPY input/output merges (`Merge::mergeOpcode(COPY)`), then
+/// `ActionMergeType`'s speculative cover-based merging of non-interfering same-storage varnodes.
+/// (mosura has no `groupPartials` — the VariablePiece debt.) The addrtied-before-marker order matters
+/// now that `merge_markers` gates each union on `merge_test_required`: the marker gate must see the
+/// address-tied HighVariables already aggregated, exactly as Ghidra does.
 pub fn merge(f: &Funcdata) -> HighVariables {
     let mut h = HighVariables::new(f.num_varnodes());
     let covers = all_covers(f);
-    merge_markers(f, &mut h);
     merge_addrtied(f, &mut h, &covers);
+    merge_markers(f, &mut h);
     merge_copy(f, &mut h, &covers);
     merge_same_storage(f, &mut h, &covers);
     h
 }
 
-/// `Merge::mergeMarker`: a MULTIEQUAL/INDIRECT output is one variable with its inputs.
+/// `Merge::mergeMarker` (merge.cc:889) — merge a MULTIEQUAL/INDIRECT output with its inputs. Like
+/// every other required merge (`Merge::mergeOp`/`mergeIndirect`/`mergeOpcode`, merge.cc), each union
+/// is gated by `mergeTestRequired`: Ghidra force-resolves a forbidden merge by trimming the input (an
+/// inserted COPY), which in mosura's union-find model is simply a *non-union* — the input keeps its
+/// own HighVariable. This gate is what stops an address-forced INDIRECT that carries a stack slot into
+/// a ram global (`r0x140 = INDIRECT s_f0`, once copy-prop has threaded the store's source through the
+/// INDIRECT) from fusing the global's HighVariable with the stack slot's — without it the global's
+/// store COPY looks like an internal same-high copy and vanishes (stackreturn's shadowed writes). For
+/// an address-forced INDIRECT `mergeIndirect` additionally snips on cover interference, but the gate
+/// and the resulting non-union are identical whether or not the output is address forced. (An
+/// indirect *creation* has a constant `#0` data input, filtered by `mergeable`, so it never merges —
+/// matching Ghidra's `isIndirectCreation` skip.)
 fn merge_markers(f: &Funcdata, h: &mut HighVariables) {
     for op in f.op_ids() {
         let o = f.op(op);
@@ -98,7 +113,10 @@ fn merge_markers(f: &Funcdata, h: &mut HighVariables) {
         for j in 0..max {
             if let Some(inv) = o.input(j) {
                 if mergeable(f, inv) {
-                    h.union(out.0, inv.0);
+                    let (rep_out, rep_in) = (h.high(out), h.high(inv));
+                    if merge_test_required(f, h, rep_out, rep_in) {
+                        h.union(out.0, inv.0);
+                    }
                 }
             }
         }
