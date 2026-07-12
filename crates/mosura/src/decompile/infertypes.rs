@@ -156,6 +156,12 @@ struct TypeInfer<'a> {
     /// Type-locked varnodes (Ghidra `Varnode::typelock`) — e.g. parameters locked to their
     /// prototype type. A locked varnode keeps its type through `getLocalType`/`propagateTypeEdge`.
     locks: &'a HashMap<VarnodeId, Datatype>,
+    /// The recovered `ScopeLocal` stack-frame symbols (Ghidra `Funcdata::getScopeLocal`), resolved
+    /// once per pass so the `TYPE_SPACEBASE` pointer propagation (`TypePointer::downChain` →
+    /// `TypeSpacebase::getSubType`) can type a `PTRSUB(RSP, off)` output as a pointer to the mapped
+    /// symbol. mosura resolves it here (where the `Funcdata` is reachable) rather than in
+    /// `Datatype::get_subtype`, which has no `glb` back-pointer.
+    sb_syms: Vec<super::varmap::StackSymbol>,
 }
 
 impl<'a> TypeInfer<'a> {
@@ -163,7 +169,13 @@ impl<'a> TypeInfer<'a> {
         let temp = (0..f.num_varnodes() as u32)
             .map(|i| Datatype::Unknown(f.vn(VarnodeId(i)).size))
             .collect();
-        TypeInfer { f, temp, mark: vec![false; f.num_varnodes()], locks }
+        TypeInfer {
+            f,
+            temp,
+            mark: vec![false; f.num_varnodes()],
+            locks,
+            sb_syms: super::varmap::recover_scope(f),
+        }
     }
 
     fn t(&self, v: VarnodeId) -> &Datatype {
@@ -183,10 +195,20 @@ impl<'a> TypeInfer<'a> {
     /// Ghidra `Varnode::getLocalType`: the most-specific of the def's output local type and each
     /// use's input local type. A type-locked varnode returns its locked type unchanged.
     fn get_local_type(&self, v: VarnodeId) -> Datatype {
-        if let Some(t) = self.locks.get(&v) {
-            return t.clone(); // Ghidra: `if (isTypeLock()) return type;`
-        }
         let vn = self.f.vn(v);
+        // Ghidra `Varnode::getLocalType` (varnode.cc): `if (isTypeLock()) return type;` — a
+        // type-locked varnode keeps its own committed type. The in-pipeline spacebase input
+        // (ActionSpacebase locks RSP to `Pointer(TypeSpacebase)`, funcdata.rs) relies on this so the
+        // spacebase pointer seeds propagation and flows into the `PTRSUB(RSP, off)` outputs — where
+        // the TYPE_SPACEBASE getSubType arm types them as pointers to the ScopeLocal symbol
+        // (task #22-A-2b). Without it, RSP seeds `Int` from its PTRSUB descendants and the pointer
+        // never propagates. The external `locks` map is mosura's print-time symbol-lock channel.
+        if vn.is_typelock() {
+            return vn.get_type();
+        }
+        if let Some(t) = self.locks.get(&v) {
+            return t.clone();
+        }
         let mut ct: Option<Datatype> = vn.def.map(|def| self.output_type_local(def));
         for &op in &vn.descend {
             let slot = get_slot(self.f, op, v);
@@ -472,6 +494,21 @@ impl<'a> TypeInfer<'a> {
         if command != 3 {
             let mut type_offset = off;
             while let Some(p) = pointer.as_ref() {
+                // Ghidra `TypePointer::downChain`: a `TYPE_SPACEBASE` pointee resolves its sub-type
+                // through `TypeSpacebase::getSubType` over the `ScopeLocal` table. mosura's
+                // `Datatype::get_subtype` can't reach the ScopeLocal (no `glb` back-pointer), so the
+                // spacebase level is resolved here from `sb_syms` — typing a `PTRSUB(RSP, off)`
+                // output as a pointer to the mapped stack symbol (array stripped to its element, as
+                // `getTypePointerStripArray`) instead of relaying the bare spacebase pointer.
+                if let Datatype::Pointer(psize, pointee) = p {
+                    if matches!(**pointee, Datatype::Spacebase(_)) {
+                        pointer = Some(self.spacebase_sub_pointer(*psize, &mut type_offset));
+                        if type_offset == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 pointer = down_chain(p, &mut type_offset, true);
                 if type_offset == 0 {
                     break;
@@ -482,6 +519,28 @@ impl<'a> TypeInfer<'a> {
             None => (command == 0).then(|| alttype.clone()),
             some => some,
         }
+    }
+
+    /// Ghidra `TypePointer::downChain` for a `TYPE_SPACEBASE` pointee (type.cc) +
+    /// `TypeSpacebase::getSubType` (type.cc:2947): resolve the mapped `ScopeLocal` symbol containing
+    /// frame offset `*off`, then build the pointer to it with a top-level array stripped to its
+    /// element (`TypeFactory::getTypePointerStripArray`). `*off` is updated to the residual into the
+    /// symbol. No mapped symbol ⇒ Ghidra's `getSubType` returns `TYPE_UNKNOWN`, so the result is
+    /// `Pointer(undefined1)` (never the bare spacebase — matching Ghidra's `isSpacebase` final arm).
+    fn spacebase_sub_pointer(&self, psize: u32, off: &mut u64) -> Datatype {
+        let soff = *off as i64; // the offset constant is pointer-width, so the cast sign-extends
+        for s in &self.sb_syms {
+            if s.start <= soff && soff < s.start + s.size as i64 {
+                *off = (soff - s.start) as u64;
+                let stripped = match &s.ty {
+                    Datatype::Array(elem, _) => (**elem).clone(),
+                    other => other.clone(),
+                };
+                return Datatype::Pointer(psize, Box::new(stripped));
+            }
+        }
+        *off = 0;
+        Datatype::Pointer(psize, Box::new(Datatype::Unknown(1)))
     }
 
     /// Ghidra `canonicalReturnOp`: the live RETURN whose value input has the most specific type.

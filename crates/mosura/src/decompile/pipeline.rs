@@ -410,7 +410,10 @@ impl Action for ActionNonzeroMask {
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let dom = super::dominator::compute(data);
         super::nzmask::calc_nzmask(data, &dom);
-        1
+        // Ghidra `ActionNonzeroMask::apply` returns 0 (coreaction.hh:301): recomputing nonzero masks
+        // is analysis, never a data-flow change, so it must not drive the mainloop's rule_repeatapply
+        // fixpoint. (Was 1 — a mis-port that made the reheritage restart group never converge.)
+        0
     }
 }
 
@@ -511,9 +514,28 @@ pub fn universal_action() -> ActionGroup {
         // (task #27 S3). Because it runs *before* ptrarith_pool in the same repeating group, the now
         // single-use frame base is then folded to `PTRSUB(RSP, -0x68)` (the typed spacebase pointer),
         // matching Ghidra's IR so every stack address is a PTRSUB the ScopeLocal naming resolves.
+        // ActionNonzeroMask + ActionInferTypes run *inside* the re-heritage group, before
+        // ptrarith_pool (Ghidra actmainloop order, coreaction.cc:5506-5508/5666): ActionSpacebase →
+        // ActionNonzeroMask → ActionInferTypes → … → RulePtrArith. This is what forms the clean array
+        // subscript (task #22-A-2b): pass 1's ptrarith creates `PTRSUB(RSP, array_start)`, then pass
+        // 2's ActionInferTypes types that PTRSUB output as a pointer to the ScopeLocal symbol (via the
+        // TYPE_SPACEBASE getSubType propagation), so pass 2's ptrarith Array arm folds the index into a
+        // `PTRADD(array, i, elem)` — `axStack_N[i]` — instead of a raw `+ i*elem`. ActionInferTypes is
+        // convergence-safe here: it returns 0 (never drives the fixpoint) and self-caps at 7 passes
+        // (localcount, coreaction.cc:5390); only heritage/ptrarith/deadcode drive the repeat.
         .then(
             ActionGroup::restart("reheritage")
                 .then(ActionSpacebase)
+                .then(ActionNonzeroMask)
+                .then(ActionInferTypes::default())
+                // Ghidra actmainloop runs oppool1 (actstackstall) between ActionInferTypes and
+                // actprop2/RulePtrArith (coreaction.cc:5509/5666). Re-running the simplification pool
+                // here folds the leftover `array_start + (i*elem - array_start)` compensation the
+                // first ptrarith pass emits into a bare `i*elem`, so the now array-typed base's second
+                // ptrarith pass sees an empty non-multiple tail and forms the clean `PTRADD(array, i,
+                // elem)` subscript (task #22-A-2b). Idempotent rule pool → converges (task #8 S8-3).
+                .then(default_rule_pool())
+                .then(super::deadcode::ActionDeadCode)
                 .then(ptrarith_pool())
                 .then(ActionHeritage)
                 .then(super::deadcode::ActionDeadCode),
