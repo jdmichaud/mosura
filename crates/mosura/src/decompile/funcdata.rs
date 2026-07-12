@@ -383,6 +383,52 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `Funcdata::splitUses` (funcdata_varnode.cc:1540): for the given varnode, duplicate its
+    /// defining op at each read so every read becomes its own fresh single-use version. This is what
+    /// turns one broad SSA version of a register (e.g. the frame-base `RSP = INT_ADD(RSP,-0x68)` shared
+    /// by a loop-phi init and a call argument) into Ghidra's narrow single-use versions (RSP:93 / RSP:94),
+    /// so a version's cover ends at its lone use instead of spanning the whole live range. Must NOT be
+    /// called on a def with side effects (CALL etc.); the caller (`spacebase`) only invokes it for an
+    /// `INT_ADD`-defined spacebase register.
+    ///
+    /// For each descendant `useop`, clone `op` (same opcode + same inputs, a fresh output varnode at the
+    /// same addr/size/type) and repoint that read at the clone. Every read is rewired — including the
+    /// last — so the original `op`/`vn` are left with no descendants and dead-code elimination removes
+    /// them (Ghidra's "Dead-code actions should remove original op").
+    pub fn split_uses(&mut self, vn: VarnodeId) {
+        let op = match self.vn(vn).def {
+            Some(o) => o,
+            None => return, // no def to clone
+        };
+        // Snapshot the descendant list up front (rewiring below mutates `vn.descend`); Ghidra's live
+        // iterator is advanced past each `useop` before the rewire, so a copy is equivalent.
+        let descend = self.vn(vn).descend.clone();
+        if descend.len() <= 1 {
+            return; // no descendants, or only one — nothing to split
+        }
+        let opcode = self.op(op).opcode;
+        let addr = self.op(op).seqnum.pc;
+        let inputs = self.op(op).inrefs.clone();
+        let size = self.vn(vn).size;
+        let loc = self.vn(vn).loc;
+        let ty = self.vn(vn).ty.clone();
+        for useop in descend {
+            // The slot of `useop` still reading `vn` (Ghidra `useop->getSlot(vn)`, the first such slot;
+            // a useop that reads `vn` in two slots appears in `descend` twice, so each pass takes the
+            // next remaining slot).
+            let slot = match self.op(useop).inrefs.iter().position(|&v| v == vn) {
+                Some(s) => s,
+                None => continue, // already rewired
+            };
+            let uniq = self.ops.len() as u32;
+            let newop = self.new_op(opcode, SeqNum { pc: addr, uniq }, inputs.clone());
+            let newvn = self.new_output(newop, size, loc);
+            self.vn_mut(newvn).ty = ty.clone();
+            self.op_set_input(useop, slot, newvn);
+            self.op_insert_before(newop, op);
+        }
+    }
+
     /// Detach a varnode from the graph (Ghidra's `deleteVarnode`). mosura keeps the arena slot
     /// index-stable, so this orphans the varnode: clear its `def` and `INPUT | INSERT` so nothing
     /// downstream treats it as a live value. The caller must have already moved all of its uses
@@ -1002,6 +1048,80 @@ mod tests {
         assert!(!f.vn(free8).is_spacebase());
         assert!(!f.vn(esp4).is_spacebase());
         assert!(!f.vn(rax).is_spacebase());
+    }
+
+    /// `Funcdata::split_uses` (funcdata_varnode.cc:1540): given the frame-base spacebase varnode
+    /// `RSP = INT_ADD(RSP_input, -0x68)` with two reads (a loop-phi init + a call arg), clone the
+    /// INT_ADD def per read so each read becomes its own single-use version at the RSP location —
+    /// the narrow SSA versions (Ghidra's RSP:93 / RSP:94) that let each cover end at its lone use.
+    #[test]
+    fn split_uses_clones_def_per_read() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let rsp = Address::new(reg, 0x20);
+
+        let input = f.new_input(8, rsp); // the entry stack pointer
+        // frame base: r0x20:8 = INT_ADD(input, -0x68)
+        let neg = f.new_const(8, (-0x68i64) as u64);
+        let seq = SeqNum { pc: Address::new(ram, 0x10), uniq: 0 };
+        let addop = f.new_op(OpCode::IntAdd, seq, vec![input, neg]);
+        let fb = f.new_output(addop, 8, rsp);
+
+        // two reads of the frame base (modelled as two COPY ops to distinct registers)
+        let s1 = SeqNum { pc: Address::new(ram, 0x20), uniq: 1 };
+        let use1 = f.new_op(OpCode::Copy, s1, vec![fb]);
+        f.new_output(use1, 8, Address::new(reg, 0));
+        let s2 = SeqNum { pc: Address::new(ram, 0x30), uniq: 2 };
+        let use2 = f.new_op(OpCode::Copy, s2, vec![fb]);
+        f.new_output(use2, 8, Address::new(reg, 8));
+
+        assert_eq!(f.vn(fb).descend.len(), 2);
+        f.split_uses(fb);
+
+        // Original frame base now has NO descendants (both reads rewired to fresh clones); dead-code
+        // elimination removes the now-unused original op.
+        assert!(f.vn(fb).descend.is_empty());
+        let r1 = f.op(use1).input(0).unwrap();
+        let r2 = f.op(use2).input(0).unwrap();
+        // distinct fresh versions, neither is the original
+        assert_ne!(r1, fb);
+        assert_ne!(r2, fb);
+        assert_ne!(r1, r2);
+        for r in [r1, r2] {
+            // each clone lives at the RSP location, single-use, with its own INT_ADD def
+            assert_eq!(f.vn(r).loc, rsp);
+            assert_eq!(f.vn(r).size, 8);
+            assert_eq!(f.vn(r).descend.len(), 1);
+            let d = f.vn(r).def.expect("clone has a def");
+            assert_eq!(f.op(d).code(), OpCode::IntAdd);
+            assert_eq!(f.op(d).input(0), Some(input));
+            assert_eq!(f.op(d).input(1), Some(neg));
+        }
+    }
+
+    /// `split_uses` on a varnode with a single read is a no-op (Ghidra's early return).
+    #[test]
+    fn split_uses_single_read_is_noop() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let rsp = Address::new(reg, 0x20);
+
+        let input = f.new_input(8, rsp);
+        let neg = f.new_const(8, (-0x68i64) as u64);
+        let seq = SeqNum { pc: Address::new(ram, 0x10), uniq: 0 };
+        let addop = f.new_op(OpCode::IntAdd, seq, vec![input, neg]);
+        let fb = f.new_output(addop, 8, rsp);
+        let use1 = f.new_op(OpCode::Copy, SeqNum { pc: Address::new(ram, 0x20), uniq: 1 }, vec![fb]);
+        f.new_output(use1, 8, Address::new(reg, 0));
+
+        f.split_uses(fb);
+        // the lone read still points at the original frame base — no clone made
+        assert_eq!(f.op(use1).input(0), Some(fb));
+        assert_eq!(f.vn(fb).descend.len(), 1);
     }
 
     #[test]
