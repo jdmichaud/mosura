@@ -2084,11 +2084,18 @@ impl Rule for RulePushMulti {
     }
 }
 
-/// `RuleSubExtComm` (`ruleaction.cc`): push a `SUBPIECE` through a `ZEXT`/`SEXT`. When the
+/// `RuleSubExtComm` (`ruleaction.cc:4402`): push a `SUBPIECE` through a `ZEXT`/`SEXT`. When the
 /// piece never reaches the extended bits (`out_size + subcut <= invn_size`) it is a piece of
 /// the pre-extension value directly — and when it exactly covers that value it collapses to a
 /// `COPY`. This cancels the `SUBPIECE(ZEXT(reg:4))` round-trips that heritage's sub-register
 /// canonicalization introduces (the bulk of the IR-op gap vs Ghidra).
+///
+/// A piece that STRADDLES the extension boundary is split (ruleaction.cc:4423-4439): unless the
+/// cut starts at/past the pre-extension value (`subcut >= in_size`, decline), rewrite
+/// `SUB(ext(V), c)` as `ext(SUB(V, c))` with a fresh inner `SUBPIECE` of size `in_size - subcut`
+/// (or `V` itself at offset 0). Ghidra's return-collapse chain rides this: the split feeds
+/// `RuleConcatZext`, collapsing floatcast's 16-byte `CONCAT124` return into the 8-byte
+/// `CONCAT44` (task #21(a); safe for switch recovery since the #31 table lifecycle landed).
 pub struct RuleSubExtComm;
 
 impl Rule for RuleSubExtComm {
@@ -2127,14 +2134,25 @@ impl Rule for RuleSubExtComm {
             }
             return 1;
         }
-        // reaching into the extension at a nonzero offset needs a fresh SUBPIECE op (Ghidra
-        // splits it); leave those alone. At offset 0 the result is just `ext(invn)`.
-        if subcut != 0 {
+        // The piece straddles the extension boundary (ruleaction.cc:4423-4439): decline only when
+        // the cut starts at/past the pre-extension value; otherwise split — a fresh inner SUBPIECE
+        // of the unextended value (size in_size - subcut) at a nonzero offset, the value itself at
+        // offset 0 — and commute the extension outward.
+        if subcut >= in_size {
             return 0;
         }
+        let newvn = if subcut != 0 {
+            let cut_size = data.vn(cut_v).size;
+            let c = data.new_const(cut_size, subcut);
+            let newop =
+                data.new_op_before_sized(op, OpCode::Subpiece, vec![invn, c], (in_size - subcut) as u32);
+            data.op(newop).output.unwrap()
+        } else {
+            invn
+        };
         data.op_remove_input(op, 1);
         data.op_set_opcode(op, ec);
-        data.op_set_input(op, 0, invn);
+        data.op_set_input(op, 0, newvn);
         1
     }
 }
@@ -8680,6 +8698,50 @@ mod tests {
         let out = f.op(store).output.unwrap();
         assert_eq!(f.vn(out).loc, Address::new(ram, 0x100074));
         assert_eq!(f.vn(out).size, 4);
+    }
+
+    #[test]
+    fn sub_ext_comm_splits_straddling_piece() {
+        // floatcast's return chain (ruleaction.cc:4423-4439): `SUB(ZEXT(diff:8):16, #4):12` straddles
+        // the extension boundary at a nonzero offset → split into `ZEXT(SUB(diff, #4):4):12`, the
+        // shape RuleConcatZext then collapses.
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u16| SeqNum { pc: Address::new(ram, 0), uniq: u as u32 };
+        let diff = f.new_input(8, Address::new(reg, 0x10));
+        let zext = f.new_op(OpCode::IntZext, seq(0), vec![diff]);
+        let wide = f.new_output(zext, 16, Address::new(reg, 0x20));
+        let four = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq(1), vec![wide, four]);
+        f.new_output(sub, 12, Address::new(reg, 0x30));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![zext, sub], ..Default::default() }]);
+        f.op_mut(zext).parent = Some(BlockId(0));
+        f.op_mut(sub).parent = Some(BlockId(0));
+
+        assert_eq!(RuleSubExtComm.apply_op(sub, &mut f), 1);
+        // The SUBPIECE became the commuted ZEXT of a fresh inner SUBPIECE(diff, 4):4.
+        assert_eq!(f.op(sub).code(), OpCode::IntZext);
+        assert_eq!(f.op(sub).num_inputs(), 1);
+        let inner = f.op(sub).input(0).unwrap();
+        assert_eq!(f.vn(inner).size, 4, "inner piece is in_size - subcut = 8 - 4");
+        let innerop = f.vn(inner).def.expect("inner piece is written");
+        assert_eq!(f.op(innerop).code(), OpCode::Subpiece);
+        assert_eq!(f.op(innerop).input(0), Some(diff));
+        let c = f.op(innerop).input(1).unwrap();
+        assert_eq!(f.vn(c).constant_value(), 4);
+
+        // Decline when the cut starts at/past the pre-extension value (`subcut >= in_size`).
+        let zext2 = f.new_op(OpCode::IntZext, seq(2), vec![diff]);
+        let wide2 = f.new_output(zext2, 16, Address::new(reg, 0x40));
+        let eight = f.new_const(4, 8);
+        let sub2 = f.new_op(OpCode::Subpiece, seq(3), vec![wide2, eight]);
+        f.new_output(sub2, 8, Address::new(reg, 0x50));
+        f.block_mut(BlockId(0)).ops.extend([zext2, sub2]);
+        f.op_mut(zext2).parent = Some(BlockId(0));
+        f.op_mut(sub2).parent = Some(BlockId(0));
+        assert_eq!(RuleSubExtComm.apply_op(sub2, &mut f), 0);
+        assert_eq!(f.op(sub2).code(), OpCode::Subpiece);
     }
 
     #[test]
