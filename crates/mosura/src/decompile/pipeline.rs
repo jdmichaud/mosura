@@ -477,6 +477,13 @@ pub fn universal_action() -> ActionGroup {
                 .then(ActionHeritage)
                 .then(super::deadcode::ActionDeadCode),
         )
+        // Second ActionSpacebase pass (Ghidra runs ActionSpacebase every mainloop iteration,
+        // coreaction.cc:5506): now that the frame base's descendants (loop-phi init, call arg) exist,
+        // its re-mark arm's splitUses fires (funcdata.cc:253-259), cloning `RSP = RSP-0x68` per read
+        // into Ghidra's narrow single-use versions (RSP:93/RSP:94). This ends each version's cover at
+        // its lone use, so the later ActionMergeRequired trimOpInput no longer sees a cover conflict
+        // and stops over-firing the spurious frame-base COPY (task #27 S3).
+        .then(ActionSpacebase)
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
