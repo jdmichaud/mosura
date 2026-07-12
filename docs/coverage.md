@@ -102,7 +102,7 @@ not the full mainloop body = S8-3); iterative condconst and the full actmainloop
 |---|---|---|
 | ActionLikelyTrash | MISSING | likely-trash register elimination |
 | ActionDoNothing | N/A | |
-| ActionSwitchNorm | PARTIAL (jumptable.rs) | see §7 |
+| ActionSwitchNorm | PORTED (jumpbasic.rs `switch_norm`, wired pipeline.rs after the reheritage mainloop, before cleanup — Ghidra actfullloop coreaction.cc:4548/5684) | see §7 |
 | ActionReturnSplit | MISSING | return-block split |
 | ActionUnjustifiedParams | MISSING | |
 | ActionStartTypes | PORTED (infertypes.rs) | type-recovery gate |
@@ -402,7 +402,9 @@ mosura `jumptable.rs` (`JumpTable`, `recover`).
 | JumpModelTrivial | MISSING |
 | JumpAssisted / JumpAssistOp | MISSING |
 | JumpValuesRange / JumpValuesRangeDefault | PARTIAL |
-| ActionSwitchNorm / RuleSwitchSingle normalization | MISSING (Task #9 cascade) |
+| findUnnormalized / buildLabels / backup2Switch / flowsOnlyToModel / markModel (jumptable.cc:1462/1506/472/1274/1254) | PORTED (jumpbasic.rs — `find_unnormalized` peels the normalized variable back through maxaddsub=1 INT_ADD/INT_SUB-by-const + maxext=1 ZEXT/SEXT (defaults jumptable.cc:2390-2392) to the *unnormalized* switch variable, each step guarded by `flows_only_to_model` over `mark_model`-marked model ops; `backup2switch` reverse-emulates each normalized-range value to it (OpBehavior::recoverInput*, opbehavior.cc:257/273/297/311) giving the real case labels (switchloop 0..8 → 1..9). Runs at recovery time where the bounded range is known; the labels + switchvn storage are saved on the JumpTable — mosura's stand-in for Ghidra's saved `origmodel` (the final graph loses the range, which only the recovery partial's edge-feedback phi widening bounds). Ghidra's readonly-memory binary companion in backup2Switch (jumptable.cc:488) is unreachable after the const-peel and declined; an incomplete label set drops labels whole (Ghidra pushes NO_LABEL + warns) and normalization declines. Unit-tested: identity labels + the `index-1` peel/shift/fold case) |
+| ActionSwitchNorm: matchModel + recoverLabels + foldInNormalization (coreaction.cc:4548, jumptable.cc:2683/2714/1546) | PORTED (jumpbasic.rs `switch_norm` + pipeline.rs `ActionSwitchNorm`, wired after the reheritage mainloop before cleanup (Ghidra actfullloop :5684, before ActionStartCleanUp :5692), final graph only — never inside the multistage recovery partial (`table_recovery_probe`), where folding the BRANCHIND would destroy the address path table discovery re-emulates. matchModel re-finds the switch variable on the final graph as the `find_determining_varnodes` common varnode at the saved storage; recoverLabels' labels come from the saved recovery-time model (above); foldInNormalization = `op_set_input(indop, switchvn, 0)` + a deadcode sweep (Ghidra: the repeating fullloop's ActionDeadCode member). RETIRES the print-time switch heuristics for normalized tables — printc `switch_index` reads the folded BRANCHIND input (Ghidra `BlockSwitch` `getSwitchVarnode()`) and `case_labels` the recovered labels, keeping the trace/position fallback only for unnormalized tables. ifswitch 0.985→1.000 (real case values 19/20 not positions), switchloop 0.820→0.828 (`switch(iVar1)` cases 1..9 = Ghidra's exact shape), zero regressions) |
+| RuleSwitchSingle | MISSING |
 | getSwitchVarConsume (deadcode integration) | MISSING (mosura fully-consumes switch var — consume.rs note) |
 
 ---

@@ -929,29 +929,198 @@ fn find_smallest_normal(
 /// The recovery driver [`super::jumptable::recover`] calls (Stage 4 swap landed; the old
 /// `recover_one` is retired). Takes `&mut Funcdata` because the PathMeld walk transiently marks
 /// Varnodes (they are all cleared before return), matching Ghidra's non-const `recoverModel`.
+/// Ghidra `JumpBasic::findUnnormalized` (`jumptable.cc:1462`): walk the PathMeld back from the
+/// *normalized* switch variable (`pathMeld[varnode_index]`, the value whose range was bounded —
+/// often the scaled/rebased table index) to the *unnormalized* switch variable the user's `switch`
+/// statement reads, peeling at most `maxaddsub`=1 INT_ADD/INT_SUB-by-constant and `maxext`=1
+/// INT_ZEXT/INT_SEXT (defaults, `jumptable.cc:2390-2392`). Each step requires the current variable
+/// to flow only into the model (`flowsOnlyToModel`, `jumptable.cc:1274`), checked against the model
+/// ops marked by `markModel` (`jumptable.cc:1254`). Returns the unnormalized `switchvn`
+/// (`foldInNormalization`'s fold target — switchloop's 4-byte loop phi `r0x8`, not the 8-byte
+/// zero-extended LEA index).
+fn find_unnormalized(
+    data: &mut Funcdata,
+    path_meld: &mut PathMeld,
+    varnode_index: i32,
+    guards: &[GuardRecord],
+) -> VarnodeId {
+    const MAXADDSUB: u32 = 1; // jumptable.cc:2390
+    const MAXEXT: u32 = 1; // jumptable.cc:2392
+
+    let mut i = varnode_index;
+    let normalvn = path_meld.get_varnode(i);
+    i += 1;
+    let mut switchvn = normalvn;
+    mark_model(data, path_meld, varnode_index, guards, true);
+
+    let mut countaddsub = 0u32;
+    let mut countext = 0u32;
+    let mut normop: Option<OpId> = None;
+    while i < path_meld.num_common_varnode() {
+        if !flows_only_to_model(data, switchvn, normop) {
+            break; // switch variable should only flow into model
+        }
+        let testvn = path_meld.get_varnode(i);
+        if !data.vn(switchvn).is_written() {
+            break;
+        }
+        let defop = data.vn(switchvn).def.expect("written varnode has a def");
+        normop = Some(defop);
+        let num_inputs = data.op(defop).num_inputs();
+        let Some(j) = (0..num_inputs).find(|&k| data.op(defop).input(k) == Some(testvn)) else {
+            break;
+        };
+        match data.op(defop).code() {
+            OpCode::IntAdd | OpCode::IntSub => {
+                countaddsub += 1;
+                if countaddsub <= MAXADDSUB
+                    && num_inputs == 2
+                    && data.op(defop).input(1 - j).is_some_and(|o| data.vn(o).is_constant())
+                {
+                    switchvn = testvn;
+                }
+            }
+            OpCode::IntZext | OpCode::IntSext => {
+                countext += 1;
+                if countext <= MAXEXT {
+                    switchvn = testvn;
+                }
+            }
+            _ => {}
+        }
+        if switchvn != testvn {
+            break;
+        }
+        i += 1;
+    }
+    mark_model(data, path_meld, varnode_index, guards, false);
+    switchvn
+}
+
+/// Ghidra `JumpBasic::markModel` (`jumptable.cc:1254`): mark (or clear) the model's ops — the
+/// PathMeld paths rooted at the normalized variable plus each guard's comparison read — so
+/// `flowsOnlyToModel` can test whether a value escapes the model.
+fn mark_model(data: &mut Funcdata, path_meld: &mut PathMeld, varnode_index: i32, guards: &[GuardRecord], val: bool) {
+    path_meld.mark_paths(data, val, varnode_index);
+    for g in guards {
+        if g.get_branch().is_none() {
+            continue;
+        }
+        let read_op = g.get_read_op();
+        if val {
+            data.op_mut(read_op).set_mark();
+        } else {
+            data.op_mut(read_op).clear_mark();
+        }
+    }
+}
+
+/// Ghidra `JumpBasic::flowsOnlyToModel` (`jumptable.cc:1274`): every op reading `vn` must be the
+/// trailing normalization op or a marked model op.
+fn flows_only_to_model(data: &Funcdata, vn: VarnodeId, trail_op: Option<OpId>) -> bool {
+    data.vn(vn).descend.iter().all(|&op| Some(op) == trail_op || data.op(op).is_mark())
+}
+
+/// Ghidra `JumpBasic::backup2Switch` (`jumptable.cc:472`): reverse-emulate a value of `outvn`
+/// (the normalized switch variable) backward to the corresponding value of `invn` (the
+/// unnormalized one) by inverting each defining op on the chain (`OpBehavior::recoverInput*`,
+/// `opbehavior.cc:257/273/297/311`). Only the shapes `findUnnormalized` peels appear —
+/// INT_ADD/INT_SUB by constant and INT_ZEXT/INT_SEXT; anything else (Ghidra's "Bad switch
+/// normalization op" / `EvaluationError` out-of-range) declines with `None`.
+fn backup2switch(data: &Funcdata, mut output: u64, outvn: VarnodeId, invn: VarnodeId) -> Option<u64> {
+    let mut curvn = outvn;
+    while curvn != invn {
+        let op = data.vn(curvn).def?;
+        let o = data.op(op);
+        // First non-constant input (jumptable.cc:483).
+        let slot = (0..o.num_inputs()).find(|&k| o.input(k).is_some_and(|v| !data.vn(v).is_constant()))?;
+        let sizeout = data.vn(o.output?).size;
+        match o.code() {
+            OpCode::IntAdd | OpCode::IntSub => {
+                if o.num_inputs() != 2 {
+                    return None;
+                }
+                let othervn = o.input(1 - slot)?;
+                // findUnnormalized only peeled constant-companion adds; Ghidra's readonly-memory
+                // fallback (jumptable.cc:488-492) is unreachable here.
+                if !data.vn(othervn).is_constant() {
+                    return None;
+                }
+                let otherval = data.vn(othervn).constant_value();
+                let mask = calc_mask(sizeout);
+                output = if o.code() == OpCode::IntAdd {
+                    // OpBehaviorIntAdd::recoverInputBinary (opbehavior.cc:297): in = out - other.
+                    output.wrapping_sub(otherval) & mask
+                } else if slot == 0 {
+                    // OpBehaviorIntSub::recoverInputBinary (opbehavior.cc:311): in1 = other + out.
+                    otherval.wrapping_add(output) & mask
+                } else {
+                    // in2 = other - out.
+                    otherval.wrapping_sub(output) & mask
+                };
+                curvn = o.input(slot)?;
+            }
+            OpCode::IntZext => {
+                // OpBehaviorIntZext::recoverInputUnary (opbehavior.cc:257).
+                let sizein = data.vn(o.input(0)?).size;
+                if output & calc_mask(sizein) != output {
+                    return None; // output is not in range of zext
+                }
+                curvn = o.input(0)?;
+            }
+            OpCode::IntSext => {
+                // OpBehaviorIntSext::recoverInputUnary (opbehavior.cc:273).
+                let sizein = data.vn(o.input(0)?).size;
+                let masklong = calc_mask(sizeout);
+                let maskshort = calc_mask(sizein);
+                if output & (maskshort ^ (maskshort >> 1)) == 0 {
+                    if output & maskshort != output {
+                        return None; // positive input out of range
+                    }
+                } else if output & (masklong ^ maskshort) != (masklong ^ maskshort) {
+                    return None; // negative input out of range
+                }
+                output &= maskshort;
+                curvn = o.input(0)?;
+            }
+            _ => return None, // "Bad switch normalization op"
+        }
+    }
+    Some(output)
+}
+
 pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> {
     let target_vn = data.op(indop).input(0)?;
     let rootbl = data.op(indop).parent?;
 
     // recoverModel: pathMeld + guards + normalized switch variable & range.
-    let path_meld = find_determining_varnodes(data, indop, 0);
+    let mut path_meld = find_determining_varnodes(data, indop, 0);
     if path_meld.empty() {
         return None;
     }
     let guards = analyze_guards(data, rootbl, -1, indop, true);
-    let (_varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, 0);
+    let (varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, 0);
     let count = range.get_size();
     if count == 0 || count > MAX_TABLE_SIZE {
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
     }
 
+    // findUnnormalized (jumptable.cc:1462): peel the normalized variable (`start_vn`) back to the
+    // unnormalized switch variable the user's `switch` reads — `ActionSwitchNorm`'s fold target.
+    let switchvn = find_unnormalized(data, &mut path_meld, varnode_index, &guards);
+
     // buildAddresses: emulate the address calculation for each value in the normalized range. The
-    // switch-variable value that produces each target IS its case label (Ghidra `buildLabels`), so
-    // record them here where the bounded range is known — on the final graph the range is lost (only
-    // the build-time partial's edge-feedback phi widening bounds it), exactly why Ghidra saves the
-    // model (`origmodel`) at recovery time for the later `ActionSwitchNorm`.
+    // case label for each target is the *unnormalized* value producing it — `buildLabels`
+    // (jumptable.cc:1506) reverse-emulating each normalized-range value to `switchvn` via
+    // `backup2Switch` (switchloop: normalized 0..8 → labels 1..9). Recorded here where the bounded
+    // range is known — on the final graph the range is lost (only the build-time partial's
+    // edge-feedback phi widening bounds it), exactly why Ghidra saves the recovery-time model
+    // (`origmodel`) for the later `ActionSwitchNorm`. On any reverse-emulation failure the labels
+    // are dropped whole (Ghidra pushes NO_LABEL + warns; mosura's printer needs the complete set,
+    // so an incomplete set declines normalization and the print-time fallback remains).
     let mut targets = Vec::with_capacity(count as usize);
     let mut labels = Vec::with_capacity(count as usize);
+    let mut labels_ok = true;
     let mut curval = range.get_min();
     loop {
         let addr = jumptable::emulate(data, target_vn, start_vn, curval, 0)?;
@@ -959,10 +1128,16 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
             return None; // sanityCheck: every target must be a real address in the image
         }
         targets.push(addr);
-        labels.push(curval as i64);
+        match backup2switch(data, curval, start_vn, switchvn) {
+            Some(v) => labels.push(v as i64),
+            None => labels_ok = false,
+        }
         if !range.get_next(&mut curval) {
             break;
         }
+    }
+    if !labels_ok {
+        labels.clear();
     }
 
     // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
@@ -973,7 +1148,7 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
         targets,
         default,
         labels,
-        switchvn_loc: Some(data.vn(start_vn).loc),
+        switchvn_loc: Some((data.vn(switchvn).loc, data.vn(switchvn).size)),
         normalized: false,
     })
 }
@@ -1017,18 +1192,18 @@ fn branchind_at(data: &Funcdata, op_addr: u64) -> Option<OpId> {
 /// recovery time from the saved model (`jt.labels`); here we re-instantiate the switch variable on
 /// the final graph (Ghidra `matchModel`) and fold the `BRANCHIND` onto it (`foldInNormalization`).
 fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) {
-    let Some(loc) = jt.switchvn_loc else { return };
-    if jt.labels.len() != jt.targets.len() {
+    let Some((loc, size)) = jt.switchvn_loc else { return };
+    if jt.labels.len() != jt.targets.len() || jt.targets.is_empty() {
         return; // labels incomplete — keep the cached table, leave the print-time heuristics
     }
     // matchModel: re-find the switch variable on the final graph — it is a determining varnode of
-    // the BRANCHIND at the address the saved model recorded. (Its bounded range is not recoverable
+    // the BRANCHIND at the storage the saved model recorded. (Its bounded range is not recoverable
     // on the final graph — only the build-time partial's edge-feedback widening bounds it — so the
     // labels come from the saved model, exactly as Ghidra's `buildLabels` reads `origmodel`.)
     let path_meld = find_determining_varnodes(data, indop, 0);
     let Some(switchvn) = (0..path_meld.num_common_varnode())
         .map(|i| path_meld.get_varnode(i))
-        .find(|&v| data.vn(v).loc == loc)
+        .find(|&v| data.vn(v).loc == loc && data.vn(v).size == size)
     else {
         return;
     };
@@ -1355,5 +1530,84 @@ mod tests {
         assert_eq!(jt.op_addr, 0x4c);
         assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300]);
         assert_eq!(jt.default, Some(0x300), "the out-of-range edge is the default case");
+        // The switch variable IS the guarded index (nothing to peel): identity labels.
+        assert_eq!(jt.labels, vec![0, 1, 2]);
+        assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)));
+    }
+
+    /// A switch normalized by `index - 1`: the guard bounds `idxm1 = index - 1` to `[0,3)` and the
+    /// table is addressed by `idxm1`, but the user's switch variable is `index`.
+    /// `findUnnormalized` (jumptable.cc:1462) peels the INT_ADD back to `index` and
+    /// `buildLabels`/`backup2Switch` (jumptable.cc:1506/472) shift the labels to `[1,2,3]`
+    /// (switchloop's `case 1..9`, not `case 0..8`). `switch_norm` (ActionSwitchNorm,
+    /// coreaction.cc:4548) then folds the BRANCHIND onto `index` (`foldInNormalization`,
+    /// jumptable.cc:1546), making the address computation dead.
+    #[test]
+    fn switch_norm_folds_branchind_onto_the_unnormalized_variable() {
+        let mut f = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let seq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        f.image.push((0x1000, vec![0u8; 0x400]));
+        let mut table = Vec::new();
+        for t in [0x1100u64, 0x1200, 0x1300] {
+            table.extend_from_slice(&t.to_le_bytes());
+        }
+        f.image.push((0x2000, table));
+
+        // block0 (guard): idxm1 = index - 1; cond = idxm1 < 3; CBRANCH(->switch, cond).
+        let index = f.new_input(8, Address::new(reg, 0x10));
+        let negone = f.new_const(8, u64::MAX);
+        let sub1 = f.new_op(OpCode::IntAdd, seq(0xc), vec![index, negone]);
+        let idxm1 = f.new_output(sub1, 8, Address::new(reg, 0x18));
+        let three = f.new_const(8, 3);
+        let less = f.new_op(OpCode::IntLess, seq(0x10), vec![idxm1, three]);
+        let cond = f.new_output(less, 1, Address::new(reg, 0x20));
+        let brtarget = f.new_const(8, 0x100);
+        let cbr = f.new_op(OpCode::Cbranch, seq(0x14), vec![brtarget, cond]);
+        // block1 (switch): target = LOAD(ram, 0x2000 + idxm1*8); BRANCHIND(target).
+        let eight = f.new_const(8, 8);
+        let mult = f.new_op(OpCode::IntMult, seq(0x40), vec![idxm1, eight]);
+        let off = f.new_output(mult, 8, Address::new(reg, 0x28));
+        let base = f.new_const(8, 0x2000);
+        let add = f.new_op(OpCode::IntAdd, seq(0x44), vec![off, base]);
+        let addr = f.new_output(add, 8, Address::new(reg, 0x30));
+        let ramid = f.new_const(8, 0);
+        let load = f.new_op(OpCode::Load, seq(0x48), vec![ramid, addr]);
+        let target = f.new_output(load, 8, Address::new(reg, 0x38));
+        let branchind = f.new_op(OpCode::Branchind, seq(0x4c), vec![target]);
+        // block2 (default): RETURN at 0x300.
+        let ret = f.new_op(OpCode::Return, seq(0x300), vec![]);
+
+        f.set_blocks(vec![
+            BlockBasic { ops: vec![sub1, less, cbr], in_edges: vec![], out_edges: vec![BlockId(2), BlockId(1)] },
+            BlockBasic {
+                ops: vec![mult, add, load, branchind],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![],
+            },
+            BlockBasic { ops: vec![ret], in_edges: vec![BlockId(0)], out_edges: vec![] },
+        ]);
+        for (bi, ops) in [
+            (0u32, vec![sub1, less, cbr]),
+            (1, vec![mult, add, load, branchind]),
+            (2, vec![ret]),
+        ] {
+            for op in ops {
+                f.op_mut(op).parent = Some(BlockId(bi));
+            }
+        }
+
+        let jt = recover_jumpbasic(&mut f, branchind).expect("recovers the table");
+        assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300], "targets from the normalized range");
+        assert_eq!(jt.labels, vec![1, 2, 3], "labels reverse-emulated to the unnormalized index");
+        assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)), "switchvn is the peeled index");
+
+        // ActionSwitchNorm: matchModel re-finds `index` on the graph and folds the BRANCHIND.
+        f.jumptables = vec![jt];
+        switch_norm(&mut f);
+        assert!(f.jumptables[0].normalized);
+        assert_eq!(f.op(branchind).input(0), Some(index), "BRANCHIND folded onto the switch variable");
     }
 }

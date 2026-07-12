@@ -1377,10 +1377,18 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// The index variable of a switch head: trace the BRANCHIND through the table lookup if
-    /// the lookup survived, else fall back to the dominating bound check `index <(=) count`.
+    /// The index variable of a switch head. A table `ActionSwitchNorm` normalized has its
+    /// `BRANCHIND` folded onto the unnormalized switch variable (`foldInNormalization`,
+    /// jumptable.cc:1546) — read it directly, like Ghidra's `BlockSwitch` printing the
+    /// `getSwitchVarnode()`. Otherwise (normalization declined) fall back to the print-time
+    /// heuristics: trace the BRANCHIND through the table lookup if the lookup survived, else the
+    /// dominating bound check `index <(=) count`.
     fn switch_index(&self, head: BlockId) -> Option<VarnodeId> {
         let bi = self.f.block(head).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind)?;
+        let bi_pc = self.f.op(bi).seqnum.pc.offset;
+        if self.f.jumptables.iter().any(|jt| jt.op_addr == bi_pc && jt.normalized) {
+            return self.f.op(bi).input(0);
+        }
         if let Some(v) = self.trace_table_index(self.f.op(bi).input(0)?) {
             return Some(v);
         }
@@ -1436,17 +1444,24 @@ impl<'a> PrintC<'a> {
     /// `getLabelByIndex(getIndexByBlock(block,j))`). Each recovered target is attributed to the
     /// case block it enters — the first case block at or after the target address, since a case
     /// block can start a few bytes past its recovered target (leading instructions get CSE'd /
-    /// hoisted out). For the canonical 0-based switch the index is the label; this is exact for a
-    /// dense table and recovers the labels a strict `target == block-start` match dropped after a
-    /// block shift.
-    fn case_labels(&self, head_pc: u64, case_addr: u64, case_addrs: &[u64]) -> Vec<usize> {
+    /// hoisted out). A table `ActionSwitchNorm` normalized carries the real case labels — the
+    /// unnormalized switch-variable values `buildLabels` recovered (switchloop `case 1..9`);
+    /// otherwise fall back to the position-index heuristic (exact only for the canonical 0-based
+    /// dense form).
+    fn case_labels(&self, head_pc: u64, case_addr: u64, case_addrs: &[u64]) -> Vec<i64> {
         let Some(targets) = self.f.switch_targets.get(&head_pc) else { return Vec::new() };
+        let labels = self
+            .f
+            .jumptables
+            .iter()
+            .find(|jt| jt.op_addr == head_pc && jt.normalized && jt.labels.len() == targets.len())
+            .map(|jt| &jt.labels);
         targets
             .iter()
             .enumerate()
             .filter_map(|(i, &t)| {
                 let owner = case_addrs.iter().copied().filter(|&a| a >= t).min()?;
-                (owner == case_addr).then_some(i)
+                (owner == case_addr).then(|| labels.map_or(i as i64, |l| l[i]))
             })
             .collect()
     }

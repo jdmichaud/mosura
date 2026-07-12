@@ -34,10 +34,11 @@ pub struct JumpTable {
     /// by `JumpBasic::buildLabels` at recovery time (where the switch variable's bounded range is
     /// known). Parallel to `targets`: a switch on `iVar` with cases `1..9`, not `0..8`.
     pub labels: Vec<i64>,
-    /// Storage location of the switch variable found during recovery (Ghidra's saved model
+    /// Storage location and size of the *unnormalized* switch variable found during recovery
+    /// (`JumpBasic::findUnnormalized` on the recovery partial; kept as Ghidra keeps the saved model
     /// `origmodel`). `ActionSwitchNorm` re-instantiates the variable on the final graph at this
     /// address (`matchModel`) to fold the `BRANCHIND` onto it.
-    pub switchvn_loc: Option<super::space::Address>,
+    pub switchvn_loc: Option<(super::space::Address, u32)>,
     /// Set once `ActionSwitchNorm`'s `foldInNormalization` has repointed the `BRANCHIND` at the
     /// switch variable, so the printer reads that variable directly and uses `labels`.
     pub normalized: bool,

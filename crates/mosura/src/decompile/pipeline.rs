@@ -555,14 +555,20 @@ pub fn universal_action() -> ActionGroup {
                 .then(ActionHeritage)
                 .then(super::deadcode::ActionDeadCode),
         )
+        // Switch normalization (Ghidra ActionSwitchNorm, coreaction.cc:4548, in actfullloop after
+        // the mainloop and before cleanup, :5684/:5692): for each recovered jump table, re-find the
+        // unnormalized switch variable on the final graph (matchModel over the saved recovery-time
+        // model — findUnnormalized ran at recovery, jumptable.cc:1462) and fold the BRANCHIND onto
+        // it (foldInNormalization, jumptable.cc:1546) so the index/table-load computation dies; the
+        // recovered labels (buildLabels/backup2Switch, jumptable.cc:1506/472) become the printed
+        // case values. Retires the print-time switch heuristics for normalized tables — the printer
+        // reads `switch(switchvn)` + labels directly (`switch(iVar1)` cases 1..9, not
+        // `switch(iVar1 - 1)` cases 0..8). A deadcode sweep removes the folded-away address code
+        // (Ghidra: the fullloop repeats, its ActionDeadCode member cleans up next iteration).
+        .then(ActionSwitchNorm)
+        .then(super::deadcode::ActionDeadCode)
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
-        // NOTE: Ghidra `ActionSwitchNorm` (coreaction.cc:4548) belongs here — see
-        // [`ActionSwitchNorm`]/[`super::jumpbasic::switch_norm`]. It is UNWIRED pending the
-        // `findUnnormalized`/`buildLabels` port (jumptable.cc:1462/1506): mosura's JumpBasic recovery
-        // returns the *normalized* switch var (the final address, unstable across multistage passes),
-        // not the *unnormalized* switch variable `foldInNormalization` folds onto — so wiring it now
-        // would fold onto the wrong varnode and mis-render. Tracked for the follow-on brick.
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
         // branch negations in the IR, mirroring Ghidra's final ActionNormalizeBranches placement
         // (after type recovery, where the guards are in final simplified form). ActionOrientBranches
