@@ -47,6 +47,11 @@ pub struct Space {
     /// `getSpaceBySpacebase`) and by `Funcdata::spacebase` (`ActionSpacebase`) to mark the input
     /// stack pointer `is_spacebase()`.
     pub spacebase: Vec<(Address, u32)>,
+    /// For a `Spacebase` (stack) space, the physical space it is a placeholder into (Ghidra
+    /// `SpacebaseSpace::getContain`) — `ram` for the x86-64 stack. `None` for every non-virtual
+    /// space. Read by the spacebase-register branch of `RuleLoadVarnode::correctSpacebase` to
+    /// reject a LOAD/STORE whose data space is not this spacebase's container.
+    pub contain: Option<SpaceId>,
 }
 
 impl Space {
@@ -101,6 +106,10 @@ impl SpaceManager {
         // the same RSP=0x20 the pre-pool `stackvars` recovery already uses). This is what
         // `ActionSpacebase` (`Funcdata::spacebase`) looks up to mark the input RSP `is_spacebase()`.
         m.set_spacebase(stack, Address::new(register, 0x20), 8);
+        // The `stack` spacebase is a placeholder into `ram` (Ghidra `SpacebaseSpace` `contain`),
+        // so `correctSpacebase` accepts a stack-relative LOAD/STORE only off the `ram` data space.
+        let ram = m.by_name("ram").expect("standard ram space registered");
+        m.set_contain(stack, ram);
         m
     }
 
@@ -108,6 +117,12 @@ impl SpaceManager {
     /// `spacebaselist`, populated from the compiler spec). `reg`/`size` describe the register.
     pub fn set_spacebase(&mut self, space: SpaceId, reg: Address, size: u32) {
         self.spaces[space.0 as usize].spacebase.push((reg, size));
+    }
+
+    /// Record the physical space a virtual `Spacebase` space is a placeholder into (Ghidra
+    /// `SpacebaseSpace` `contain`, space.cc). For x86-64 the `stack` space is contained in `ram`.
+    pub fn set_contain(&mut self, space: SpaceId, contain: SpaceId) {
+        self.spaces[space.0 as usize].contain = Some(contain);
     }
 
     /// Ghidra `Architecture::getSpaceBySpacebase` (architecture.cc:264): the address space whose
@@ -138,6 +153,7 @@ impl SpaceManager {
             delay,
             deadcodedelay: delay,
             spacebase: Vec::new(),
+            contain: None,
         });
         self.by_name.insert(name.to_string(), id);
         id

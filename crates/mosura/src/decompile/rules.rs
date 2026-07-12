@@ -205,20 +205,86 @@ impl Rule for RuleTrivialArith {
 /// per-op early dead-code removal; keeping the graph clean mid-pool (rather than only at the heavier
 /// `ActionDeadCode` sweeps) changes which later rules fire (a `loneDescend`/`hasNoDescend` check sees
 /// the pruned graph). Applies to every opcode (empty oplist).
+/// Ghidra `RuleLoadVarnode::correctSpacebase` (ruleaction.cc:4173): if `vn` is a spacebase register,
+/// return the space it is the spacebase of — provided that space's container is the load/store space
+/// `spc`. A *constant* spacebase is the ram-global pseudo-spacebase, associated with the load space
+/// directly. The STRICT boundary: a non-input written value (a `COPY`-of-RSP, a `MULTIEQUAL`-of-RSP,
+/// an indexed pointer) is DECLINED — only the RSP *input* is the true stack spacebase, so a value
+/// merely derived from it stays an indirect access (this is exactly why Ghidra keeps varcross's loop
+/// `*pxVar1 = 0` and partialsplit's `*puVar3` stores indirect where mosura's pre-pool `stackvars`
+/// symbolic tracker over-resolves them to fixed slots).
+fn correct_spacebase(data: &Funcdata, vn: super::varnode::VarnodeId, spc: SpaceId) -> Option<SpaceId> {
+    if !data.vn(vn).is_spacebase() {
+        return None;
+    }
+    if data.vn(vn).is_constant() {
+        return Some(spc); // global pseudo-spacebase → the load space itself
+    }
+    if !data.vn(vn).is_input() {
+        return None; // only the RSP input, never a derived (COPY/phi/indexed) value
+    }
+    let assoc = data.spaces.space_by_spacebase(data.vn(vn).loc, data.vn(vn).size)?;
+    if data.spaces.get(assoc).contain != Some(spc) {
+        return None; // loading off a data space this spacebase does not contain
+    }
+    Some(assoc)
+}
+
+/// Ghidra `RuleLoadVarnode::vnSpacebase` (ruleaction.cc:4194): recognize a `spacebase [+ const]`
+/// pointer, returning the associated space and the constant offset. The stack pointer itself is
+/// offset 0; an `INT_ADD(RSP_input, const)` (either operand order) contributes the constant.
+fn vn_spacebase(data: &Funcdata, vn: super::varnode::VarnodeId, spc: SpaceId) -> Option<(SpaceId, u64)> {
+    if let Some(rs) = correct_spacebase(data, vn, spc) {
+        return Some((rs, 0));
+    }
+    if !data.vn(vn).is_written() {
+        return None;
+    }
+    let def = data.vn(vn).def?;
+    if data.op(def).code() != OpCode::IntAdd {
+        return None;
+    }
+    let vn1 = data.op(def).input(0)?;
+    let vn2 = data.op(def).input(1)?;
+    if let Some(rs) = correct_spacebase(data, vn1, spc) {
+        // spacebase + vn2: a fixed slot only when the addend is constant, else decline (Ghidra
+        // returns null here rather than also trying vn2).
+        return data.vn(vn2).is_constant().then(|| (rs, data.vn(vn2).loc.offset));
+    }
+    if let Some(rs) = correct_spacebase(data, vn2, spc) {
+        return data.vn(vn1).is_constant().then(|| (rs, data.vn(vn1).loc.offset));
+    }
+    None
+}
+
+/// Ghidra `RuleLoadVarnode::checkSpacebase` (ruleaction.cc:4236): the shared LOAD/STORE address
+/// analysis. `op` is a LOAD or STORE; return the resolved `(space, offset)` of a bare-constant pointer
+/// (ram-global) or a `spacebase [+ const]` pointer (stack), or `None` to decline. Ghidra's SEGMENTOP
+/// unwrap is omitted — mosura's x86-64 lift emits no `CPUI_SEGMENTOP` on this path; it re-enables
+/// faithfully when a segmented target is added. (Byte offsets: every mosura space has `wordSize` 1, so
+/// Ghidra's `addressToByte` is the identity here.)
+fn check_spacebase(data: &Funcdata, op: OpId) -> Option<(SpaceId, u64)> {
+    let offvn = data.op(op).input(1)?;
+    let loadspace = SpaceId(data.vn(data.op(op).input(0)?).loc.offset as u32);
+    if data.vn(offvn).is_constant() {
+        return Some((loadspace, data.vn(offvn).loc.offset)); // ram-global const branch
+    }
+    vn_spacebase(data, offvn, loadspace)
+}
+
 /// Ghidra `RuleLoadVarnode` (ruleaction.cc:4277, registered in `actprop2`/`stackvars` at :5668):
-/// convert a LOAD whose pointer is a *bare constant* into a COPY of the direct varnode at that
-/// address in the loaded space. This is the ram-global case of `checkSpacebase` (:4236) — the
-/// `offvn->isConstant()` branch, which returns the load space directly. So `u = LOAD #space #addr`
-/// becomes `u = COPY <space:addr>`, unifying a constant-address global access with the space's other
-/// (already-lifted) varnode reads so it names as `iRam/fRam/xRam<addr>` instead of `*<addr>`.
+/// convert a LOAD whose pointer is a *bare constant* (ram-global) or a *spacebase register `[+ const]`*
+/// (stack) into a COPY of the direct varnode at that address in the resolved space, via
+/// [`check_spacebase`]. So `u = LOAD #space #addr` becomes `u = COPY <space:addr>`, unifying the access
+/// with the space's other (already-lifted) varnode reads so it names as `iRam/fRam/xRam<addr>` (ram) or
+/// resolves to a `stack`-space slot instead of `*<addr>`.
 ///
-/// The *spacebase-register* branch of `checkSpacebase` (`vnSpacebase`/`correctSpacebase`, recognizing
-/// a `stackpointer [+ const]` pointer) is NOT ported here — that is the stack case, entangled with
-/// mosura's pre-pool `stackvars` resolution and heritage `guardLoads` versioning (task #7 stage S2).
-/// The `isSpacebasePlaceholder`→`resolveSpacebaseRelative` trigger (SP-across-call) is likewise
-/// deferred (S3). A pool-converted ram varnode is not re-heritaged (Ghidra's mainloop re-heritages
-/// after this rule; mosura runs heritage to completion before the pools), so a read/modify/write of a
-/// global reads the pre-store value — the value-versioning follow-up folded into S2.
+/// The spacebase-register (stack) branch is DORMANT while the pre-heritage `stackvars::recover_stack`
+/// adaptation is active: recover_stack's symbolic tracker converts every `RSP [+ const]` LOAD/STORE
+/// before heritage (a strict superset of `correctSpacebase`'s `RSP_input`/`INT_ADD(RSP_input,const)`
+/// cases), so no such op survives to this pool — the branch fires only once recover_stack's LOAD/STORE
+/// conversion is cancelled (task #22-B Brick 2). The `isSpacebasePlaceholder`→`resolveSpacebaseRelative`
+/// trigger (SP-across-call) is deferred (task #22-C).
 pub struct RuleLoadVarnode;
 impl Rule for RuleLoadVarnode {
     fn name(&self) -> &str {
@@ -228,16 +294,12 @@ impl Rule for RuleLoadVarnode {
         vec![OpCode::Load]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        let (Some(spacevn), Some(ptrvn), Some(out)) =
-            (data.op(op).input(0), data.op(op).input(1), data.op(op).output)
-        else {
+        let Some(out) = data.op(op).output else {
             return 0;
         };
-        if !data.vn(ptrvn).is_constant() {
-            return 0; // ram-global (const-offset) branch only; spacebase-reg branch = S2
-        }
-        let space = SpaceId(data.vn(spacevn).loc.offset as u32);
-        let off = data.vn(ptrvn).loc.offset;
+        let Some((space, off)) = check_spacebase(data, op) else {
+            return 0;
+        };
         let size = data.vn(out).size as u32;
         let newvn = data.new_varnode(size, Address::new(space, off));
         data.op_set_input(op, 0, newvn);
@@ -248,11 +310,15 @@ impl Rule for RuleLoadVarnode {
 }
 
 /// Ghidra `RuleStoreVarnode` (ruleaction.cc:4319, `actprop2`/`stackvars` at :5669): the STORE
-/// counterpart of [`RuleLoadVarnode`]. A STORE with a bare-constant pointer becomes a COPY whose
-/// output is the direct varnode at that address: `STORE #space #addr val` → `<space:addr> = COPY val`.
-/// (Ghidra also `setStackStore`s the output — a marker for later stack-store analysis that mosura does
-/// not model, omitted; and `markNotMapped` when the store is unmapped, which needs a local scope
-/// mosura's raw-decompile path lacks — omitted. Neither affects the ram-global naming.)
+/// counterpart of [`RuleLoadVarnode`], sharing [`check_spacebase`]. A STORE off a bare-constant
+/// (ram-global) or `spacebase [+ const]` (stack) pointer becomes a COPY whose output is the direct
+/// varnode at that address: `STORE #space #addr val` → `<space:addr> = COPY val`.
+///
+/// Ghidra also `setStackStore`s the resolved output (a marker for later stack-store analysis) and
+/// `markNotMapped`s an unmapped store; both are omitted here — mosura models no stack-store analysis
+/// and the raw-decompile path has no local scope to mark, exactly as the ram-global const branch has
+/// always omitted them. Neither affects naming. The stack branch is dormant until task #22-B Brick 2
+/// (see [`RuleLoadVarnode`]).
 pub struct RuleStoreVarnode;
 impl Rule for RuleStoreVarnode {
     fn name(&self) -> &str {
@@ -262,16 +328,12 @@ impl Rule for RuleStoreVarnode {
         vec![OpCode::Store]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        let (Some(spacevn), Some(ptrvn), Some(valvn)) =
-            (data.op(op).input(0), data.op(op).input(1), data.op(op).input(2))
-        else {
+        let Some(valvn) = data.op(op).input(2) else {
             return 0;
         };
-        if !data.vn(ptrvn).is_constant() {
+        let Some((space, off)) = check_spacebase(data, op) else {
             return 0;
-        }
-        let space = SpaceId(data.vn(spacevn).loc.offset as u32);
-        let off = data.vn(ptrvn).loc.offset;
+        };
         let size = data.vn(valvn).size as u32;
         data.new_output(op, size, Address::new(space, off));
         // COPY takes the stored value (STORE input 2) as its sole input.
@@ -8622,16 +8684,125 @@ mod tests {
 
     #[test]
     fn loadvarnode_skips_nonconst_pointer() {
-        // A non-constant pointer (the spacebase-register case, deferred to S2) is left as a LOAD.
+        // A non-constant pointer that is NOT a marked spacebase register is left as a LOAD.
         let (mut f, _) = fd();
         let ram = f.spaces.by_name("ram").unwrap();
         let reg = f.spaces.by_name("register").unwrap();
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let sid = f.new_const(8, ram.0 as u64);
-        let ptr = f.new_input(8, Address::new(reg, 0x20));
+        let ptr = f.new_input(8, Address::new(reg, 0x20)); // RSP input, but NOT spacebase-marked
         let load = f.new_op(OpCode::Load, seq, vec![sid, ptr]);
         f.new_output(load, 4, Address::new(reg, 0x40));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![load], ..Default::default() }]);
+        f.op_mut(load).parent = Some(BlockId(0));
+        assert_eq!(RuleLoadVarnode.apply_op(load, &mut f), 0);
+        assert_eq!(f.op(load).code(), OpCode::Load);
+    }
+
+    #[test]
+    fn loadvarnode_spacebase_input_becomes_stack_copy() {
+        // `u = LOAD #ram RSP_input` (RSP marked spacebase) → `u = COPY <stack:0>`
+        // (RuleLoadVarnode spacebase-register branch, correctSpacebase direct-input case).
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let stack = f.spaces.by_name("stack").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let sid = f.new_const(8, ram.0 as u64);
+        let rsp = f.new_input(8, Address::new(reg, 0x20));
+        f.vn_mut(rsp).set_spacebase();
+        let load = f.new_op(OpCode::Load, seq, vec![sid, rsp]);
+        f.new_output(load, 4, Address::new(reg, 0x40));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![load], ..Default::default() }]);
+        f.op_mut(load).parent = Some(BlockId(0));
+        assert_eq!(RuleLoadVarnode.apply_op(load, &mut f), 1);
+        assert_eq!(f.op(load).code(), OpCode::Copy);
+        assert_eq!(f.op(load).num_inputs(), 1);
+        let in0 = f.op(load).input(0).unwrap();
+        assert_eq!(f.vn(in0).loc, Address::new(stack, 0));
+        assert_eq!(f.vn(in0).size, 4);
+    }
+
+    #[test]
+    fn loadvarnode_spacebase_plus_const_becomes_stack_copy() {
+        // `u = LOAD #ram (RSP_input + -0x18)` → `u = COPY <stack:-0x18>`
+        // (correctSpacebase via vnSpacebase INT_ADD(RSP_input, const) arm).
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let stack = f.spaces.by_name("stack").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let sid = f.new_const(8, ram.0 as u64);
+        let rsp = f.new_input(8, Address::new(reg, 0x20));
+        f.vn_mut(rsp).set_spacebase();
+        let c = f.new_const(8, 0xffffffffffffffe8); // -0x18
+        let add = f.new_op(OpCode::IntAdd, seq, vec![rsp, c]);
+        f.new_output(add, 8, Address::new(uniq, 0x100));
+        let sum = f.op(add).output.unwrap();
+        let load = f.new_op(OpCode::Load, seq, vec![sid, sum]);
+        f.new_output(load, 4, Address::new(reg, 0x40));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![add, load], ..Default::default() }]);
+        f.op_mut(add).parent = Some(BlockId(0));
+        f.op_mut(load).parent = Some(BlockId(0));
+        assert_eq!(RuleLoadVarnode.apply_op(load, &mut f), 1);
+        assert_eq!(f.op(load).code(), OpCode::Copy);
+        let in0 = f.op(load).input(0).unwrap();
+        assert_eq!(f.vn(in0).loc, Address::new(stack, 0xffffffffffffffe8));
+        assert_eq!(f.vn(in0).size, 4);
+    }
+
+    #[test]
+    fn storevarnode_spacebase_plus_const_becomes_stack_copy() {
+        // `STORE #ram (RSP_input + -0x40) val` → `<stack:-0x40> = COPY val`.
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let stack = f.spaces.by_name("stack").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let sid = f.new_const(8, ram.0 as u64);
+        let rsp = f.new_input(8, Address::new(reg, 0x20));
+        f.vn_mut(rsp).set_spacebase();
+        let c = f.new_const(8, 0xffffffffffffffc0); // -0x40
+        let add = f.new_op(OpCode::IntAdd, seq, vec![rsp, c]);
+        f.new_output(add, 8, Address::new(uniq, 0x100));
+        let sum = f.op(add).output.unwrap();
+        let val = f.new_input(4, Address::new(reg, 0x10));
+        let store = f.new_op(OpCode::Store, seq, vec![sid, sum, val]);
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![add, store], ..Default::default() }]);
+        f.op_mut(add).parent = Some(BlockId(0));
+        f.op_mut(store).parent = Some(BlockId(0));
+        assert_eq!(RuleStoreVarnode.apply_op(store, &mut f), 1);
+        assert_eq!(f.op(store).code(), OpCode::Copy);
+        assert_eq!(f.op(store).num_inputs(), 1);
+        assert_eq!(f.op(store).input(0), Some(val));
+        let out = f.op(store).output.unwrap();
+        assert_eq!(f.vn(out).loc, Address::new(stack, 0xffffffffffffffc0));
+        assert_eq!(f.vn(out).size, 4);
+    }
+
+    #[test]
+    fn loadvarnode_declines_copy_of_spacebase() {
+        // The STRICT boundary (correctSpacebase `!vn->isInput()`): a `COPY`-of-RSP is spacebase-marked
+        // (ActionSpacebase marks every RSP version) but is NOT the input, so the LOAD off it is left
+        // indirect — matching Ghidra keeping `*puVar3` where `puVar3 = COPY(RSP)` (partialsplit).
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let sid = f.new_const(8, ram.0 as u64);
+        let rsp = f.new_input(8, Address::new(reg, 0x20));
+        f.vn_mut(rsp).set_spacebase();
+        let copy = f.new_op(OpCode::Copy, seq, vec![rsp]);
+        f.new_output(copy, 8, Address::new(uniq, 0x200));
+        let cpy = f.op(copy).output.unwrap();
+        f.vn_mut(cpy).set_spacebase(); // marked spacebase, but written (not input)
+        let load = f.new_op(OpCode::Load, seq, vec![sid, cpy]);
+        f.new_output(load, 4, Address::new(reg, 0x40));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![copy, load], ..Default::default() }]);
+        f.op_mut(copy).parent = Some(BlockId(0));
         f.op_mut(load).parent = Some(BlockId(0));
         assert_eq!(RuleLoadVarnode.apply_op(load, &mut f), 0);
         assert_eq!(f.op(load).code(), OpCode::Load);
