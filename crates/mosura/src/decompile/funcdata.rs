@@ -41,6 +41,11 @@ pub struct Funcdata {
     /// Ghidra `Funcdata::hasTypeRecoveryStarted`: set once `ActionInferTypes` has committed
     /// data-types onto varnodes, gating the pointer-arithmetic rules.
     typerecovery_started: bool,
+    /// Ghidra `Funcdata::isTypeRecoveryExceeded` (`typerecovery_exceeded` flag, funcdata.hh:152/182):
+    /// set once `ActionInferTypes` has made its maximum propagation passes (`localcount == 7`,
+    /// coreaction.cc:5390-5394) without the type lattice settling. It is the mainloop's convergence
+    /// safety net: propagation then stops re-firing instead of stalling the iterating group.
+    typerecovery_exceeded: bool,
     /// Iterating-heritage state (Ghidra's `Heritage` member, `heritage.cc`): the next heritage
     /// pass index. A space enters SSA construction once `pass >= delay`, so registers (delay 0)
     /// heritage before `ram`/`stack` (delay 1). Persists across `ActionHeritage` calls so the
@@ -100,6 +105,7 @@ impl Funcdata {
             jumptables: Vec::new(),
             image: Vec::new(),
             typerecovery_started: false,
+            typerecovery_exceeded: false,
             heritage_pass: 0,
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
@@ -118,6 +124,15 @@ impl Funcdata {
     /// Mark type recovery as begun (Ghidra sets this in `ActionInferTypes`).
     pub fn set_type_recovery_started(&mut self) {
         self.typerecovery_started = true;
+    }
+
+    /// Ghidra `Funcdata::isTypeRecoveryExceeded`: whether type propagation hit its pass cap (7).
+    pub fn is_type_recovery_exceeded(&self) -> bool {
+        self.typerecovery_exceeded
+    }
+    /// Ghidra `Funcdata::setTypeRecoveryExceeded`: mark that propagation passes reached the maximum.
+    pub fn set_type_recovery_exceeded(&mut self) {
+        self.typerecovery_exceeded = true;
     }
 
     /// Read `size` bytes (little-endian) from the loaded image at `addr`, if present.

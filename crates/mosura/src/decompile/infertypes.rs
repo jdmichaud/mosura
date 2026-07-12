@@ -668,12 +668,20 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
 /// the varnode (`Varnode::updateType`, Ghidra's `writeBack`), so later actions — notably
 /// `RulePtrArith` — can read `Varnode::get_type`/`type_read_facing`. Marks type recovery started.
 /// This is the in-pipeline counterpart of the print-time [`infer`]; both share one engine.
-pub fn infer_types(f: &mut Funcdata, locks: &HashMap<VarnodeId, Datatype>) {
+///
+/// Returns whether any varnode's committed type changed — Ghidra's `writeBack` return value
+/// (coreaction.cc:5043/5411), which drives the `localcount` pass counter so a type lattice that
+/// never settles is capped rather than stalling the iterating mainloop.
+pub fn infer_types(f: &mut Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> bool {
     let map = infer(f, locks);
+    let mut changed = false;
     for (v, t) in map {
-        f.vn_mut(v).update_type(t);
+        if f.vn_mut(v).update_type(t) {
+            changed = true;
+        }
     }
     f.set_type_recovery_started();
+    changed
 }
 
 #[cfg(test)]

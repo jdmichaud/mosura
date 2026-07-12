@@ -322,16 +322,44 @@ impl Action for ActionActiveReturn {
 /// The universal decompile action: heritage, simplification, then dead-code removal.
 /// Ghidra `ActionInferTypes`: recover and commit a data-type onto every varnode, so the
 /// pointer-arithmetic rules can read pointer types during the pipeline.
-pub struct ActionInferTypes;
+#[derive(Default)]
+pub struct ActionInferTypes {
+    /// Ghidra `ActionInferTypes::localcount` (coreaction.hh:964): passes performed for this
+    /// function, reset per function ([`Action::reset`]). Capped at 7 (coreaction.cc:5390).
+    localcount: u32,
+}
 
 impl Action for ActionInferTypes {
     fn name(&self) -> &str {
         "infertypes"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        // No recovered type-locks yet (see printc), so inference types every varnode.
-        super::infertypes::infer_types(data, &std::collections::HashMap::new());
-        1
+        // Ghidra `ActionInferTypes::apply` (coreaction.cc:5390-5397): at most 7 propagation passes
+        // per function ("This constant arrived at empirically"). On the 7th, flag type-recovery
+        // exceeded (so `AddTreeState::buildTree` assigns propagated types directly instead) and
+        // stop; thereafter this action is a no-op. This is the mainloop's convergence safety net —
+        // a type lattice that never settles caps out rather than re-propagating forever.
+        if self.localcount >= 7 {
+            if self.localcount == 7 {
+                data.set_type_recovery_exceeded();
+                self.localcount += 1;
+            }
+            return 0;
+        }
+        // No recovered type-locks yet (see printc), so inference types every varnode. Count a pass
+        // only when writeBack actually changed a committed type (coreaction.cc:5411-5414).
+        if super::infertypes::infer_types(data, &std::collections::HashMap::new()) {
+            self.localcount += 1;
+        }
+        // Ghidra returns 0 (coreaction.cc:5415, "Do not consider this a data-flow change"): type
+        // inference must never drive the mainloop's `rule_repeatapply` fixpoint (only
+        // heritage/ptrarith/deadcode do). Returning nonzero would prevent the reheritage restart
+        // group from ever converging.
+        0
+    }
+    fn reset(&mut self, _data: &mut Funcdata) {
+        // Ghidra `ActionInferTypes::reset` (coreaction.hh:975): localcount = 0 per function.
+        self.localcount = 0;
     }
 }
 
@@ -466,7 +494,7 @@ pub fn universal_action() -> ActionGroup {
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)
-        .then(ActionInferTypes)
+        .then(ActionInferTypes::default())
         // Iterating mainloop re-heritage (Ghidra runs ActionHeritage every actmainloop iteration,
         // coreaction.cc:5492): a LOAD/STORE that RuleLoadVarnode/RuleStoreVarnode converts to a free
         // COPY in ptrarith_pool re-enters heritage, which widens the range (globaldisjoint.add) and
