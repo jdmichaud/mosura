@@ -343,11 +343,14 @@ impl Funcdata {
     /// nonzero-mask (the stack pointer is treated as aligned) and type-inference (a value copied off
     /// the stack pointer is itself a pointer) rules that key on `is_spacebase()`.
     ///
-    /// mosura runs this once, before the first nonzero-mask / infertypes / pool. Ghidra runs it every
-    /// mainloop iteration, but the stack-pointer register set is stable across iterations, so a single
-    /// pass suffices — the re-mark `splitUses` branch Ghidra takes when a register is *already*
-    /// spacebase with an `INT_ADD` def (funcdata.cc:253-259) is unreachable on a single pass and is
-    /// omitted (mosura has no `splitUses`).
+    /// mosura runs this early once, before the first nonzero-mask / infertypes / pool. Ghidra runs it
+    /// every mainloop iteration: pass 1 hits the mark arm (`else`), pass 2+ hits the re-mark arm — when
+    /// a register is *already* spacebase with an `INT_ADD` def (the frame base `RSP = RSP+const`) and
+    /// still has multiple descendants, `splitUses` clones the def per read into narrow single-use
+    /// versions (funcdata.cc:253-259). The re-mark arm is faithfully present here, but inert on the
+    /// early once-call (nothing is spacebase-marked yet — `spacebase` is the only setter — so every RSP
+    /// version takes the mark arm). It fires only on a *second* late invocation after reheritage, once
+    /// the frame base's descendants (loop phi, call arg) exist.
     pub fn spacebase(&mut self) {
         // The (register, size) of every spacebase register across all spaces (Ghidra iterates each
         // space's `getSpacebase(i)`); for x86-64 this is the single stack pointer RSP.
@@ -365,7 +368,16 @@ impl Funcdata {
                     continue; // give descendants a chance to die naturally (funcdata.cc:252)
                 }
                 if self.vn(v).is_spacebase() {
-                    continue; // already marked (single-pass never; splitUses branch omitted)
+                    // Already marked spacebase (funcdata.cc:253-259). Descendants were given a chance
+                    // to die naturally; now force a split if it still has multiple descendants — an
+                    // `INT_ADD`-defined base register (the frame base `RSP = RSP+const`) gets each read
+                    // its own single-use version via `splitUses`. Inert on the early once-call.
+                    if let Some(op) = self.vn(v).def {
+                        if self.op(op).code() == OpCode::IntAdd {
+                            self.split_uses(v);
+                        }
+                    }
+                    continue;
                 }
                 self.vn_mut(v).set_spacebase(); // mark all base registers, not just the input
                 if self.vn(v).is_input() {
