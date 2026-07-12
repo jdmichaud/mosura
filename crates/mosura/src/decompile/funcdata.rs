@@ -730,6 +730,23 @@ impl Funcdata {
         self.blocks[block.0 as usize].ops.insert(pos, op);
     }
 
+    /// Insert `op` as the last op in `block`, but *before* a trailing branch/return if the block
+    /// ends in one (Ghidra's `opInsertEnd`, funcdata_op.cc): `opInsertEnd` steps back from the block
+    /// end and, if the last op is a flow-break (`isFlowBreak`), inserts ahead of it. `op` adopts
+    /// `block` as its parent. Used by [`super::merge`]'s marker-trim (`Merge::trimOpInput`) to place a
+    /// phi-input snapshot COPY at the predecessor block's end.
+    pub fn op_insert_end(&mut self, op: OpId, block: super::block::BlockId) {
+        self.ops[op.0 as usize].parent = Some(block);
+        let blk_ops = &self.blocks[block.0 as usize].ops;
+        let mut pos = blk_ops.len();
+        if let Some(&last) = blk_ops.last() {
+            if self.ops[last.0 as usize].opcode.terminates_block() {
+                pos -= 1; // insert before the terminating branch/return (Ghidra isFlowBreak)
+            }
+        }
+        self.blocks[block.0 as usize].ops.insert(pos, op);
+    }
+
     /// Re-point `op` to produce the existing varnode `vid` (Ghidra's `opSetOutput`): drop
     /// `op`'s current output, detach `vid` from its old producer, then wire `vid.def = op`.
     /// Used by `RulePtrArith::buildTree` to hand the original ADD's output to the new tail op.

@@ -381,6 +381,122 @@ fn merge_test_required(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in
     true
 }
 
+/// `Merge::mergeMarker` → `Merge::mergeOp` → `Merge::trimOpInput` (merge.cc:889/719/692) — the
+/// graph-mutating half of the required marker merge that mosura's read-only [`merge`] cannot do.
+/// `mergeOp` force-merges a MULTIEQUAL's output with each input; where an input's HighVariable Cover
+/// conflicts with the output's, Ghidra resolves it not by declining (mosura's [`merge_markers`]
+/// non-union) but by *trimming* the input — inserting a COPY of the input at the predecessor block's
+/// end (`trimOpInput`, merge.cc:692) and rewiring the phi to read the COPY. The COPY's tiny cover no
+/// longer conflicts, so the phi output merges into a distinct local while the conflicting value keeps
+/// its own HighVariable, and the trim COPY renders as an explicit init assignment.
+///
+/// floatcast: the incoming address-tied global read `fRam80` reaches the phi with a broad Cover that
+/// conflicts with the phi output (the value live from the join onward). `merge_markers` gates only on
+/// `merge_test_required` — which passes — so it fuses the phi output into the global's HighVariable and
+/// names the whole thing `fRam80`. The trim severs that fusion: `fVar1 = fRam80;` at the entry, the
+/// phi output a distinct local `fVar1`.
+///
+/// **Faithful trim-any-conflict** (Ghidra merge.cc:719 tests *any* cover conflict): a conflicting
+/// input is trimmed regardless of whether it is address-tied. A conflicting *register* input — one
+/// Ghidra would SSA-split into narrow single-use versions that never conflict, but mosura keeps as a
+/// single broad version — is trimmed here too. That over-trim is mosura's coarse-register-SSA gap
+/// (varcross), a diagnostic naming the upstream fix, not a reason to restrict this pass.
+fn merge_marker_trim(f: &mut Funcdata) {
+    if f.num_blocks() == 0 {
+        return;
+    }
+    // Each trim strictly severs one conflicting phi input, so the fixpoint terminates; the cap only
+    // guards a covers/highs mis-derivation from cycling. Re-derive covers/highs after every trim
+    // (the inserted COPY changes both).
+    for _ in 0..(f.num_varnodes() + 16) {
+        let covers = all_covers(f);
+        let mut h = HighVariables::new(f.num_varnodes());
+        merge_addrtied(f, &mut h, &covers);
+        let Some((op, slot)) = find_marker_trim(f, &mut h, &covers) else {
+            break;
+        };
+        trim_op_input(f, op, slot);
+    }
+}
+
+/// The first `(MULTIEQUAL, input slot)` whose input HighVariable Cover conflicts with the output's —
+/// modelling `Merge::mergeOp`'s cover-restriction test (merge.cc:719) reduced to output-vs-input (the
+/// conflict `merge_markers` would wrongly fuse). Only an input that `merge_test_required` would let
+/// `merge_markers` union is a candidate: an input it already keeps separate needs no trim. Covers/highs
+/// are Ghidra's `mergeMarker`-entry state — address-tied merged (`merge_addrtied`), markers not yet.
+fn find_marker_trim(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    covers: &HashMap<VarnodeId, Cover>,
+) -> Option<(super::op::OpId, usize)> {
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.is_dead() || o.code() != OpCode::Multiequal {
+            continue;
+        }
+        let Some(out) = o.output else { continue };
+        if !mergeable(f, out) || !covers.contains_key(&out) {
+            continue;
+        }
+        let rep_out = h.high(out);
+        let mo = members_of(f, h, covers, rep_out);
+        let n = o.num_inputs();
+        for j in 0..n {
+            let Some(inv) = f.op(op).input(j) else { continue };
+            if !mergeable(f, inv) || !covers.contains_key(&inv) {
+                continue;
+            }
+            let rep_in = h.high(inv);
+            if rep_in == rep_out {
+                continue;
+            }
+            if !merge_test_required(f, h, rep_out, rep_in) {
+                continue;
+            }
+            let mi = members_of(f, h, covers, rep_in);
+            if classes_interfere(&mo, &mi, covers) {
+                return Some((op, j));
+            }
+        }
+    }
+    None
+}
+
+/// `Merge::trimOpInput` (merge.cc:692) — snip phi input `slot` into a fresh `unique` via a COPY placed
+/// at the predecessor block's end (`opInsertEnd`, at the block's stop address), then rewire the phi to
+/// read the COPY. The COPY's cover is tiny (just the block-end read), so it no longer conflicts.
+fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) {
+    // MULTIEQUAL input `slot` corresponds to `in_edges[slot]` (heritage wires `op_set_input(phi, j,
+    // ...)` with `j = in_edges.position(pred)`).
+    let parent = f.op(op).parent.expect("MULTIEQUAL has a parent block");
+    let pred = f.block(parent).in_edges[slot];
+    // Ghidra places the COPY at the predecessor block's stop address (`bb->getStop()`).
+    let pc = f.block(pred).ops.last().map(|&o| f.op(o).seqnum.pc).unwrap_or(f.addr);
+    let vn = f.op(op).input(slot).expect("trimmed slot has an input");
+    let size = f.vn(vn).size;
+    let uniq = f.num_ops() as u32;
+    let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
+    let cout = f.new_output_unique(copyop, size);
+    f.op_set_input(op, slot, cout);
+    f.op_insert_end(copyop, pred);
+}
+
+/// Graph-mutating pipeline action wrapping [`merge_marker_trim`] — the mosura analogue of Ghidra's
+/// `Merge::mergeMarker` trim half, run inside `ActionMergeRequired` (`coreaction.cc`) after
+/// `mergeAddrTied` ([`super::mergesnip::ActionMergeRequired`]).
+pub struct ActionMergeMarkerTrim;
+
+impl super::action::Action for ActionMergeMarkerTrim {
+    fn name(&self) -> &str {
+        "mergemarkertrim"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let before = data.num_ops();
+        merge_marker_trim(data);
+        (data.num_ops() - before) as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,6 +655,81 @@ mod tests {
         let mut h = merge(&f);
         assert!(h.same(a, b), "a non-interfering COPY merges its input and output");
         assert!(!h.same(e, d), "an interfering COPY (input still live) is left as a distinct variable");
+    }
+
+    /// `merge_marker_trim` (`Merge::mergeMarker`→`mergeOp`→`trimOpInput`): a MULTIEQUAL input whose
+    /// address-tied HighVariable Cover conflicts with the (register) phi output — which `merge_markers`
+    /// would fuse (`merge_test_required` passes) — is trimmed: a COPY of the input is inserted at the
+    /// predecessor block's end and the phi rewired to read it, so the phi output stays a distinct
+    /// variable. This is floatcast's `fVar1 = fRam80;` init in miniature.
+    #[test]
+    fn marker_trim_snips_a_cover_conflicting_addrtied_phi_input() {
+        use crate::decompile::varnode::flags as vflags;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+
+        // g0: the incoming global (ram:0x2000), an address-tied input.
+        let g0 = f.new_input(8, Address::new(ram, 0x2000));
+        f.vn_mut(g0).flags |= vflags::ADDRTIED | vflags::PERSIST;
+
+        // block 0 (entry): conditional branch to the if-body (block 1) or straight to the join (block 2).
+        let cbr = f.new_op(OpCode::Cbranch, s(0), vec![]);
+
+        // block 1 (if-body): v1 = COPY(param) into a plain register (the written value flows through a
+        // register, NOT address-tied — as in floatcast, where the phi's second input is a unique).
+        let param = f.new_input(8, Address::new(reg, 0x38));
+        let wr = f.new_op(OpCode::Copy, s(1), vec![param]);
+        let v1 = f.new_output(wr, 8, Address::new(reg, 0x8));
+        let br1 = f.new_op(OpCode::Branch, s(2), vec![]);
+
+        // block 2 (join): phi = MULTIEQUAL(g0 from block 0, v1 from block 1) -> a register (NOT tied).
+        let phi = f.new_op(OpCode::Multiequal, SeqNum { pc: Address::new(ram, 3), uniq: u32::MAX }, vec![g0, v1]);
+        let phi_out = f.new_output(phi, 8, Address::new(reg, 0));
+        // A use that reads BOTH the phi output and g0, keeping g0 live across the phi (the conflict).
+        let add = f.new_op(OpCode::IntAdd, s(4), vec![phi_out, g0]);
+        let _r = f.new_output(add, 8, Address::new(reg, 0x10));
+        let ret = f.new_op(OpCode::Return, s(5), vec![]);
+
+        let blocks = vec![
+            BlockBasic { ops: vec![cbr], in_edges: vec![], out_edges: vec![BlockId(1), BlockId(2)] },
+            BlockBasic { ops: vec![wr, br1], in_edges: vec![BlockId(0)], out_edges: vec![BlockId(2)] },
+            BlockBasic {
+                ops: vec![phi, add, ret],
+                in_edges: vec![BlockId(0), BlockId(1)],
+                out_edges: vec![],
+            },
+        ];
+        // Assign each op its parent block, as `build_cfg` does before `set_blocks` (cfg.rs:292).
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+
+        merge_marker_trim(&mut f);
+
+        // The phi's slot-0 input is no longer g0 directly: it now reads a fresh unique COPY of g0…
+        let new_in0 = f.op(phi).input(0).unwrap();
+        assert_ne!(new_in0, g0, "the cover-conflicting addrtied input was not trimmed");
+        let def = f.vn(new_in0).def.expect("trimmed input must be COPY-defined");
+        assert_eq!(f.op(def).code(), OpCode::Copy);
+        assert_eq!(f.op(def).input(0), Some(g0), "the COPY must snapshot g0");
+        // …and that COPY sits at the end of the slot-0 predecessor (block 0), before its branch.
+        assert_eq!(f.op(def).parent, Some(BlockId(0)));
+        let blk0 = &f.block(BlockId(0)).ops;
+        assert_eq!(blk0.last(), Some(&cbr), "COPY must be inserted before the terminating branch");
+        assert!(blk0.contains(&def));
+
+        // With the conflict severed, the read-only merge keeps the phi output its own HighVariable
+        // (a distinct local) rather than fusing it into the global.
+        let mut h = merge(&f);
+        assert!(!h.same(phi_out, g0), "phi output must not be fused into the addrtied global");
+        // The slot-1 (register) input has no cover conflict, so it is untouched.
+        assert_eq!(f.op(phi).input(1), Some(v1), "the non-conflicting input is left in place");
     }
 
     /// `merge_test_required` (the modeled subset of `mergeTestRequired`): an address-tied output

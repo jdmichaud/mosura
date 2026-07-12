@@ -509,6 +509,14 @@ pub fn universal_action() -> ActionGroup {
         // stays flat while the wire is live. A deadcode sweep follows.
         .then(super::mergesnip::ActionMergeRequired)
         .then(super::deadcode::ActionDeadCode)
+        // The graph-mutating half of Ghidra's ActionMergeRequired: mergeMarker -> mergeOp ->
+        // trimOpInput (merge.cc:889/719/692), run after mergeAddrTied above. For each MULTIEQUAL,
+        // trim (snip into a predecessor-end COPY) the first input whose HighVariable Cover conflicts
+        // with the output's — so the read-only merge in printc no longer fuses the phi output into a
+        // conflicting address-tied global (floatcast's `fVar1 = fRam80;` init). A deadcode sweep
+        // follows the inserted COPYs.
+        .then(super::merge::ActionMergeMarkerTrim)
+        .then(super::deadcode::ActionDeadCode)
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::
