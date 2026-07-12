@@ -347,6 +347,9 @@ pub fn ptrarith_pool() -> ActionPool {
     ActionPool::new("ptrarith")
         .with(RuleConstFold)
         .with(RulePropagateCopy)
+        // Ghidra actprop2 order (coreaction.cc:5664/5666): RulePushPtr normalizes a pointer to the
+        // bottom of its additive expression, then RulePtrArith converts.
+        .with(super::ptrarith::RulePushPtr)
         .with(super::ptrarith::RulePtrArith)
         // Ghidra actprop2 order (coreaction.cc:5666-5669): RulePtrArith, then RuleLoadVarnode,
         // RuleStoreVarnode. The ram-global (const-offset) branch of the spacebase model (task #7 S1).
@@ -471,19 +474,22 @@ pub fn universal_action() -> ActionGroup {
         // reconstructs Ghidra's whole-range SSA (revisit `iRam74 = iRam74 + 10` in-place instead of
         // the snapshot). The group repeats to a fixpoint (rule_repeatapply): ptrarith bottoms out,
         // heritage returns 0 once complete, deadcode is idempotent — measured to converge in <=2 passes.
+        // Second ActionSpacebase pass runs *inside* the re-heritage fixpoint group (Ghidra runs both
+        // ActionSpacebase and RulePtrArith every actmainloop iteration, coreaction.cc:5506/5666): now
+        // that the frame base's descendants (loop-phi init, call arg) exist, its re-mark arm's
+        // splitUses fires (funcdata.cc:253-259), cloning `RSP = RSP-0x68` per read into Ghidra's narrow
+        // single-use versions (RSP:93/RSP:94) — this ends each version's cover at its lone use so the
+        // later ActionMergeRequired trimOpInput no longer over-fires the spurious frame-base COPY
+        // (task #27 S3). Because it runs *before* ptrarith_pool in the same repeating group, the now
+        // single-use frame base is then folded to `PTRSUB(RSP, -0x68)` (the typed spacebase pointer),
+        // matching Ghidra's IR so every stack address is a PTRSUB the ScopeLocal naming resolves.
         .then(
             ActionGroup::restart("reheritage")
+                .then(ActionSpacebase)
                 .then(ptrarith_pool())
                 .then(ActionHeritage)
                 .then(super::deadcode::ActionDeadCode),
         )
-        // Second ActionSpacebase pass (Ghidra runs ActionSpacebase every mainloop iteration,
-        // coreaction.cc:5506): now that the frame base's descendants (loop-phi init, call arg) exist,
-        // its re-mark arm's splitUses fires (funcdata.cc:253-259), cloning `RSP = RSP-0x68` per read
-        // into Ghidra's narrow single-use versions (RSP:93/RSP:94). This ends each version's cover at
-        // its lone use, so the later ActionMergeRequired trimOpInput no longer sees a cover conflict
-        // and stops over-firing the spurious frame-base COPY (task #27 S3).
-        .then(ActionSpacebase)
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false

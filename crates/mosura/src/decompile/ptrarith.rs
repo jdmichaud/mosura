@@ -97,6 +97,65 @@ impl Rule for RulePtrArith {
     }
 }
 
+/// Ghidra `RulePushPtr` (ruleaction.cc:6834): push a pointer-typed Varnode to the bottom of its
+/// additive expression, so the pointer is added *last* onto the offset calculation. This normalizes
+/// `INT_ADD(INT_ADD(ptr, a), b)` into `INT_ADD(ptr, INT_ADD(a, b))` so the later `RulePtrArith` can
+/// root the pointer arithmetic directly at the pointer. It is the piece that lets a shared frame
+/// base (`RSP - k`, itself `INT_ADD(RSP_input, -k)`) feeding a variable-indexed array LOAD
+/// `framebase + i*elem` reroot at `RSP_input`, so the whole tree folds to `PTRSUB(RSP, array) + i`.
+/// Fires only when `evaluatePointerExpression` returns 1 (a push is needed). Registered before
+/// `RulePtrArith` (Ghidra `actprop2`, coreaction.cc:5664).
+pub struct RulePushPtr;
+
+impl Rule for RulePushPtr {
+    fn name(&self) -> &str {
+        "pushptr"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAdd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if !data.has_type_recovery_started() {
+            return 0;
+        }
+        // Search for a pointer-typed input.
+        let mut slot = None;
+        for s in 0..data.op(op).num_inputs() {
+            let v = data.op(op).input(s).unwrap();
+            if type_read_facing(data, v).is_pointer() {
+                slot = Some(s);
+                break;
+            }
+        }
+        let Some(slot) = slot else { return 0 };
+        if evaluate_pointer_expression(data, op, slot) != 1 {
+            return 0;
+        }
+
+        let vni = data.op(op).input(slot).unwrap(); // the pointer
+        let vnadd2 = data.op(op).input(1 - slot).unwrap(); // the addend pushed down past the pointer
+        let vn = data.op(op).output.unwrap();
+
+        // Ghidra's collectDuplicateNeeds/duplicateNeed CSE (for a shared, multi-descendant push) is
+        // omitted: `splitUses` gives each frame base a single descendant, so the push has a lone
+        // consumer and the duplicate path is unreached. Each descendant `decop = INT_ADD(vn, vnadd1)`
+        // is rewritten to `INT_ADD(vni, INT_ADD(vnadd1, vnadd2))`.
+        while let Some(decop) = data.vn(vn).descend.first().copied() {
+            let j = get_slot(data, decop, vn);
+            let vnadd1 = data.op(decop).input(1 - j).unwrap();
+            // newop = INT_ADD(vnadd1, vnadd2), a fresh unique sized like vnadd1 (Ghidra newUniqueOut).
+            let newop = data.new_op_before(decop, OpCode::IntAdd, vec![vnadd1, vnadd2]);
+            let newout = data.op(newop).output.unwrap();
+            data.op_set_input(decop, 0, vni); // pointer added last
+            data.op_set_input(decop, 1, newout);
+        }
+        if !data.vn(vn).is_auto_live() {
+            data.op_destroy(op);
+        }
+        1
+    }
+}
+
 /// Ghidra `RulePtrArith::evaluatePointerExpression`: is the expression rooted at this INT_ADD
 /// ready for conversion? Returns 0 (no action), 1 (a push is needed first), or 2 (convert now).
 fn evaluate_pointer_expression(f: &Funcdata, op: OpId, slot: usize) -> i32 {
@@ -165,6 +224,46 @@ fn verify_preferred_pointer(f: &Funcdata, op: OpId, slot: usize) -> bool {
         }
     }
     evaluate_pointer_expression(f, pre_op, preslot) != 1
+}
+
+/// Ghidra `TypeSpacebase::getSubType` (type.cc:2947) over the recovered `ScopeLocal` table: the
+/// symbol containing frame offset `off`, with the residual into it. `None` when no symbol is mapped
+/// (Ghidra returns a `TYPE_UNKNOWN`/0 stand-in there; callers treat `None` accordingly).
+fn sb_get_subtype(syms: &[super::varmap::StackSymbol], off: i64) -> Option<(Datatype, i64)> {
+    syms.iter()
+        .find(|s| s.start <= off && off < s.start + s.size as i64)
+        .map(|s| (s.ty.clone(), off - s.start))
+}
+
+/// Ghidra `TypeSpacebase::nearestArrayedComponentBackward` (type.cc:3020): if the symbol the offset
+/// lands inside is an ARRAY, return `(element_size, residual_into_it, array_size)`.
+fn sb_nearest_backward(syms: &[super::varmap::StackSymbol], off: i64) -> Option<(u64, i64, i64)> {
+    let (ty, newoff) = sb_get_subtype(syms, off)?;
+    if let Datatype::Array(elem, _) = &ty {
+        return Some((elem.align_size() as u64, newoff, ty.size() as i64));
+    }
+    None
+}
+
+/// Ghidra `TypeSpacebase::nearestArrayedComponentForward` (type.cc:2971): find the nearest ARRAY
+/// symbol *after* `off`. Returns `(element_size, residual = off - array_start)` (the residual is
+/// negative because the array starts after the offset). The symbol at the next boundary must start
+/// there (Ghidra's `getOffset() != 0` reject).
+fn sb_nearest_forward(syms: &[super::varmap::StackSymbol], off: i64) -> Option<(u64, i64)> {
+    // The boundary to look past: the end of the symbol starting exactly at `off`, else a fixed
+    // window (Ghidra `addr + 32`).
+    let next_addr = match syms.iter().find(|s| s.start == off) {
+        Some(s) => s.start + s.size as i64,
+        None => off + 32,
+    };
+    if next_addr < off {
+        return None; // don't let the address wrap
+    }
+    let sym = syms.iter().find(|s| s.start == next_addr)?;
+    if let Datatype::Array(elem, _) = &sym.ty {
+        return Some((elem.align_size() as u64, off - sym.start));
+    }
+    None
 }
 
 /// Ghidra `AddTreeState` — the analysis + rewrite state for one pointer-rooted ADD tree. Read-only
@@ -371,16 +470,58 @@ impl AddTreeState {
         false
     }
 
-    /// Ghidra `AddTreeState::hasMatchingSubType`: find the sub-component nearest `off`. The
-    /// `array_hint` (nearestArrayedComponent) refinement is faithfully deferred — falls back to
-    /// the plain `getSubType` lookup (Ghidra's `arrayHint == 0` path).
-    fn has_matching_sub_type(&self, off: i64, _array_hint: u64) -> Option<i64> {
+    /// Ghidra `AddTreeState::hasMatchingSubType` (ruleaction.cc:6064): find the sub-component nearest
+    /// `off`, returning the residual offset into it (`newoff`) or `None` if there is no match. For a
+    /// `TYPE_SPACEBASE` base the lookup goes through the recovered `ScopeLocal` symbol table
+    /// (`recover_scope`): with no array index (`array_hint == 0`) `getSubType` is never null so it
+    /// always matches; with an index it resolves the nearest ARRAY component (backward = the array the
+    /// offset lands inside, forward = the next array after it) whose element size matches the index
+    /// coefficient, so the `PTRSUB` folds to the array's base with the residual folded back into the
+    /// additive tail (Ghidra `TypeSpacebase::nearestArrayedComponent{Backward,Forward}`, type.cc:2971).
+    fn has_matching_sub_type(&self, f: &Funcdata, off: i64, array_hint: u64) -> Option<i64> {
+        if matches!(self.base_type, Datatype::Spacebase(_)) {
+            let syms = super::varmap::recover_scope(f);
+            if array_hint == 0 {
+                // getSubType is never null for a spacebase (TYPE_UNKNOWN when no symbol) — always match.
+                return Some(sb_get_subtype(&syms, off).map(|(_, no)| no).unwrap_or(0));
+            }
+            // Ghidra hasMatchingSubType (ruleaction.cc:6064): backward (the array the offset lands in),
+            // with an early return when its element size matches and the offset is in-bounds.
+            let before = sb_nearest_backward(&syms, off);
+            if let Some((el_before, off_before, arr_size)) = before {
+                if (array_hint == 1 || el_before == array_hint) && off_before >= 0 && off_before < arr_size
+                {
+                    return Some(off_before);
+                }
+            }
+            // Otherwise consider the array forward of the offset, and pick the nearer of the two.
+            let after = sb_nearest_forward(&syms, off);
+            return match (before, after) {
+                (None, None) => sb_get_subtype(&syms, off).map(|(_, no)| no),
+                (None, Some((_, noa))) => Some(noa),
+                (Some((_, nob, _)), None) => Some(nob),
+                (Some((elb, nob, _)), Some((ela, noa))) => {
+                    // Pick the nearer array; a non-matching element size is penalised (Ghidra +0x1000).
+                    let mut db = nob.unsigned_abs();
+                    let mut da = noa.unsigned_abs();
+                    if array_hint != 1 {
+                        if elb != array_hint {
+                            db += 0x1000;
+                        }
+                        if ela != array_hint {
+                            da += 0x1000;
+                        }
+                    }
+                    Some(if da < db { noa } else { nob })
+                }
+            };
+        }
         self.base_type.get_subtype(off).map(|(_, newoff)| newoff)
     }
 
     /// Ghidra `AddTreeState::calcSubtype`: settle the sub-type offset (→ a PTRSUB) vs. a plain
     /// element index (→ a PTRADD).
-    fn calc_subtype(&mut self, _f: &Funcdata) {
+    fn calc_subtype(&mut self, f: &Funcdata) {
         let tmpoff = self.multsum.wrapping_add(self.nonmultsum) & self.ptrmask;
         if self.size == 0 || tmpoff < self.size as u64 {
             self.offset = tmpoff;
@@ -405,10 +546,28 @@ impl AddTreeState {
                 return;
             }
             self.is_subtype = false; // No offsets INTO the pointer
+        } else if matches!(self.base_type, Datatype::Spacebase(..)) {
+            // Ghidra `AddTreeState::calcSubtype` TYPE_SPACEBASE arm (ruleaction.cc:6286): a spacebase
+            // pointee always has a matching sub-type (`getSubType` is never null — TYPE_UNKNOWN when no
+            // symbol), so any offset off the stack pointer folds into a `PTRSUB`. `hasMatchingSubType`
+            // returns the residual into the mapped ScopeLocal variable: for a variable-indexed array it
+            // resolves the array's base (via `nearestArrayedComponent`) and folds the residual back into
+            // the additive tail, so `PTRSUB(RSP, array_start) + index` renders `axStack_N[index]`.
+            let offsetbytes = sign_extend(self.offset, self.ptrsize * 8 - 1); // wordsize 1 → identity
+            let extra = match self.has_matching_sub_type(f, offsetbytes, self.biggest_non_mult_coeff) {
+                Some(e) => e,
+                None => {
+                    self.valid = false; // Cannot find mapped variable but nonmult is non-empty
+                    return;
+                }
+            };
+            self.offset = self.offset.wrapping_sub(extra as u64) & self.ptrmask;
+            self.correct = self.correct.wrapping_sub(extra as u64) & self.ptrmask;
+            self.is_subtype = true;
         } else if matches!(self.base_type, Datatype::Struct(..)) {
             let soffset = sign_extend(self.offset, self.ptrsize * 8 - 1);
             let offsetbytes = soffset; // wordsize 1 → byteToAddressInt is identity
-            let extra = match self.has_matching_sub_type(offsetbytes, self.biggest_non_mult_coeff) {
+            let extra = match self.has_matching_sub_type(f, offsetbytes, self.biggest_non_mult_coeff) {
                 Some(e) => e,
                 None => {
                     if offsetbytes < 0 || offsetbytes >= self.base_type.size() as i64 {

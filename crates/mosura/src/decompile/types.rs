@@ -2,10 +2,20 @@
 //! are ordered by *metatype* (how specific they are); type inference (`infertypes`) meets
 //! the types implied at each varnode and settles on the most specific consistent one.
 
+use super::space::SpaceId;
+
 /// A C data type. `Pointer` carries the pointee; aggregate types (array/struct) are later.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Datatype {
     Void,
+    /// Ghidra `TypeSpacebase` (`TYPE_SPACEBASE`, type.hh:721): a size-0 placeholder standing for a
+    /// virtual address space (the `stack`) treated as a structure of symbols. It is the pointee of
+    /// the input stack-pointer's locked pointer type (`Funcdata::spacebase`, funcdata.cc:245): a
+    /// `PTRSUB` off such a pointer resolves, via the function's `ScopeLocal` symbol table, to a named
+    /// local. `getSubType` is never null (Ghidra returns `TYPE_UNKNOWN` when no symbol is mapped), so
+    /// pointer-arithmetic always folds a spacebase offset into a `PTRSUB` (`calcSubtype`,
+    /// ruleaction.cc:6286); the symbol lookup/naming is deferred to print (`opPtrsub`, printc.cc:1057).
+    Spacebase(SpaceId),
     /// `undefined<N>` — a value of known width but unknown interpretation.
     Unknown(u32),
     /// Signed integer of N bytes.
@@ -28,6 +38,8 @@ impl Datatype {
     pub fn size(&self) -> u32 {
         match self {
             Datatype::Void => 0,
+            // Ghidra `TypeSpacebase` is size 0 (open-ended, `Datatype(0,1,TYPE_SPACEBASE)`).
+            Datatype::Spacebase(_) => 0,
             Datatype::Bool => 1,
             Datatype::Unknown(n) | Datatype::Int(n) | Datatype::Uint(n) | Datatype::Float(n) => *n,
             Datatype::Pointer(n, _) => *n,
@@ -36,19 +48,22 @@ impl Datatype {
         }
     }
 
-    /// How specific the type is (higher wins a meet). Mirrors Ghidra's metatype ordering:
-    /// unknown < int/uint < bool < float < pointer.
+    /// How specific the type is (higher wins a meet). Mirrors Ghidra's metatype ordering
+    /// (`enum type_metatype`, type.hh:79, here inverted so higher = more specific):
+    /// void < spacebase < unknown < int/uint < bool < float < pointer < array < struct.
     pub fn metatype(&self) -> u8 {
         match self {
             Datatype::Void => 0,
-            Datatype::Unknown(_) => 1,
-            Datatype::Int(_) | Datatype::Uint(_) => 2,
-            Datatype::Bool => 3,
-            Datatype::Float(_) => 4,
-            Datatype::Pointer(..) => 5,
+            // Ghidra `TYPE_SPACEBASE = 16`, between `TYPE_VOID = 17` and `TYPE_UNKNOWN = 15`.
+            Datatype::Spacebase(_) => 1,
+            Datatype::Unknown(_) => 2,
+            Datatype::Int(_) | Datatype::Uint(_) => 3,
+            Datatype::Bool => 4,
+            Datatype::Float(_) => 5,
+            Datatype::Pointer(..) => 6,
             // aggregates are more specific than a pointer (Ghidra TYPE_ARRAY/STRUCT < TYPE_PTR)
-            Datatype::Array(..) => 6,
-            Datatype::Struct(..) => 7,
+            Datatype::Array(..) => 7,
+            Datatype::Struct(..) => 8,
         }
     }
 
@@ -58,15 +73,16 @@ impl Datatype {
     /// `uint` (16) is deemed slightly more specific than `int` (17), as in Ghidra.
     pub fn submeta(&self) -> u8 {
         match self {
-            Datatype::Struct(..) => 2,  // SUB_STRUCT
-            Datatype::Array(..) => 3,   // SUB_ARRAY
-            Datatype::Pointer(..) => 6, // SUB_PTR
-            Datatype::Float(_) => 8,    // SUB_FLOAT
-            Datatype::Bool => 10,       // SUB_BOOL
-            Datatype::Uint(_) => 16,    // SUB_UINT_PLAIN
-            Datatype::Int(_) => 17,     // SUB_INT_PLAIN
-            Datatype::Unknown(_) => 21, // SUB_UNKNOWN
-            Datatype::Void => 23,       // SUB_VOID
+            Datatype::Struct(..) => 2,    // SUB_STRUCT
+            Datatype::Array(..) => 3,     // SUB_ARRAY
+            Datatype::Pointer(..) => 6,   // SUB_PTR
+            Datatype::Float(_) => 8,      // SUB_FLOAT
+            Datatype::Bool => 10,         // SUB_BOOL
+            Datatype::Uint(_) => 16,      // SUB_UINT_PLAIN
+            Datatype::Int(_) => 17,       // SUB_INT_PLAIN
+            Datatype::Unknown(_) => 21,   // SUB_UNKNOWN
+            Datatype::Spacebase(_) => 22, // SUB_SPACEBASE
+            Datatype::Void => 23,         // SUB_VOID
         }
     }
 
@@ -100,6 +116,13 @@ impl Datatype {
     /// element; structs to the field; scalars have no sub-component (`None`).
     pub fn get_subtype(&self, off: i64) -> Option<(Datatype, i64)> {
         match self {
+            // Ghidra `TypeSpacebase::getSubType` (type.cc:2947) queries the function's `ScopeLocal`
+            // symbol at `off` and returns its type, or `TYPE_UNKNOWN` size 1 (newoff 0) when no symbol
+            // is mapped — it is **never** null. mosura has no `glb` back-pointer on the `Datatype`, so
+            // the symbol resolution is deferred to print time (`printc::render_ptrsub` over
+            // `varmap::recover_scope`); here it returns the always-present `undefined1`/0 stand-in, so
+            // `hasMatchingSubType` is trivially true and `calcSubtype` always folds into a `PTRSUB`.
+            Datatype::Spacebase(_) => Some((Datatype::Unknown(1), 0)),
             Datatype::Array(elem, _) => {
                 if off >= self.size() as i64 {
                     return None; // Ghidra TypeArray::getSubType: out of bounds → base (none)
@@ -122,6 +145,9 @@ impl Datatype {
     pub fn name(&self) -> String {
         match self {
             Datatype::Void => "void".into(),
+            // Ghidra `TypeSpacebase` is an internal analysis type never declared in C output; it only
+            // ever appears as the pointee of the stack-pointer's type. Ghidra's name is "spacebase".
+            Datatype::Spacebase(_) => "spacebase".into(),
             // Ghidra's core name for an undefined value of N bytes (`sleigh_arch.cc` core types).
             Datatype::Unknown(n) => format!("xunknown{n}"),
             Datatype::Int(n) => format!("int{n}"),

@@ -75,9 +75,9 @@ impl<'a> LaneDivide<'a> {
         if self.tm.fd.vn(vn).is_typelock() {
             // Don't split a typelocked non-array: a primitive/pointer (mosura metatype < Array) or a
             // struct/union (Ghidra subflow.cc:3532, `meta > TYPE_ARRAY` / STRUCT / UNION — mosura's
-            // metatype ordering is reversed, so primitives are below Array=6, Struct=7).
-            const ARRAY_META: u8 = 6;
-            const STRUCT_META: u8 = 7;
+            // metatype ordering is reversed, so primitives are below Array=7, Struct=8).
+            const ARRAY_META: u8 = 7;
+            const STRUCT_META: u8 = 8;
             let meta = self.tm.fd.vn(vn).get_type().metatype();
             if meta < ARRAY_META || meta == STRUCT_META {
                 return None;

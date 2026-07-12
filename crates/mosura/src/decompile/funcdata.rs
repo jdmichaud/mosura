@@ -352,12 +352,16 @@ impl Funcdata {
     /// version takes the mark arm). It fires only on a *second* late invocation after reheritage, once
     /// the frame base's descendants (loop phi, call arg) exist.
     pub fn spacebase(&mut self) {
-        // The (register, size) of every spacebase register across all spaces (Ghidra iterates each
-        // space's `getSpacebase(i)`); for x86-64 this is the single stack pointer RSP.
-        let regs: Vec<(Address, u32)> = (0..self.spaces.num_spaces() as u32)
-            .flat_map(|i| self.spaces.get(SpaceId(i)).spacebase.clone())
+        // The (space, register, size) of every spacebase register across all spaces (Ghidra iterates
+        // each space's `getSpacebase(i)`); for x86-64 this is the single stack pointer RSP that is the
+        // spacebase for the `stack` space. `spc` (the space RSP points into) is the `TypeSpacebase`'s
+        // space, distinct from `loc.space` (the `register` space the RSP varnode lives in).
+        let regs: Vec<(SpaceId, Address, u32)> = (0..self.spaces.num_spaces() as u32)
+            .flat_map(|i| {
+                self.spaces.get(SpaceId(i)).spacebase.clone().into_iter().map(move |(loc, sz)| (SpaceId(i), loc, sz))
+            })
             .collect();
-        for (loc, size) in regs {
+        for (spc, loc, size) in regs {
             // Every varnode at exactly this register location and size (Ghidra `vbank.beginLoc`).
             let vids: Vec<VarnodeId> = (0..self.varnodes.len() as u32)
                 .map(VarnodeId)
@@ -382,12 +386,13 @@ impl Funcdata {
                 self.vn_mut(v).set_spacebase(); // mark all base registers, not just the input
                 if self.vn(v).is_input() {
                     // Ghidra `updateType(getTypePointer(size, getTypeSpacebase(...)), true, true)`: the
-                    // input stack pointer is a locked pointer. mosura has no TypeSpacebase; the faithful
-                    // stand-in is the `Pointer(size, undefined1)` infertypes already synthesises for a
-                    // value copied off a spacebase pointer (`copy_like`).
+                    // input stack pointer is a locked pointer to a `TypeSpacebase` for this space. The
+                    // spacebase pointee (size 0) makes `RulePtrArith` fold every `RSP + const` into a
+                    // `PTRSUB` (not the degenerate `PTRADD` a unit `undefined1` pointee produced), which
+                    // `printc` names off the recovered `ScopeLocal` symbol table.
                     self.vn_mut(v).ty = Some(super::types::Datatype::Pointer(
                         size,
-                        Box::new(super::types::Datatype::Unknown(1)),
+                        Box::new(super::types::Datatype::Spacebase(spc)),
                     ));
                     self.vn_mut(v).flags |= flags::TYPELOCK;
                 }
@@ -1034,6 +1039,7 @@ mod tests {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let rsp = Address::new(reg, 0x20);
 
@@ -1049,10 +1055,11 @@ mod tests {
 
         f.spacebase();
 
-        // input: marked + locked pointer type
+        // input: marked + locked pointer to the `stack` space's TypeSpacebase (Ghidra
+        // `getTypePointer(size, getTypeSpacebase(stack, ...))`).
         assert!(f.vn(input).is_spacebase());
         assert!(f.vn(input).is_typelock());
-        assert_eq!(f.vn(input).ty, Some(Datatype::Pointer(8, Box::new(Datatype::Unknown(1)))));
+        assert_eq!(f.vn(input).ty, Some(Datatype::Pointer(8, Box::new(Datatype::Spacebase(stack)))));
         // written version: marked, but NOT typed (only the input gets the pointer type)
         assert!(f.vn(written).is_spacebase());
         assert!(!f.vn(written).is_typelock());

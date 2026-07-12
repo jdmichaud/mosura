@@ -136,6 +136,14 @@ struct PrintC<'a> {
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
+    /// The recovered `ScopeLocal` stack-symbol layout (`varmap::recover_scope`), computed once. Ghidra's
+    /// `TypeSpacebase`/`opPtrsub` naming resolves a `PTRSUB(RSP, off)` against this symbol table.
+    stack_syms: Vec<super::varmap::StackSymbol>,
+    /// `(frame offset, width)` of symbols already emitted as a declaration, so a symbol referenced by
+    /// many `PTRSUB`s (and/or a direct `stack`-space varnode at the same slot) is declared exactly
+    /// once — keyed by width too, so two differently-sized slots at one offset (a `recover_stack`
+    /// granularity artefact, e.g. stackreturn's 8- and 4-byte `-0x10` slots) stay distinct.
+    stack_declared: std::collections::HashSet<(i64, u32)>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     types: HashMap<VarnodeId, Datatype>,
@@ -367,15 +375,32 @@ impl<'a> PrintC<'a> {
             .get(&id)
             .copied()
             .or_else(|| (Some(vn.loc.space) == self.stack_space).then_some(vn.loc.offset));
-        let n = if let Some(off) = stack_off {
-            format!("{prefix}Stack_{:x}", (off as i64).unsigned_abs())
-        } else {
-            self.var_counter += 1;
-            format!("{prefix}Var{}", self.var_counter)
-        };
+        if let Some(off) = stack_off {
+            let foff = off as i64;
+            // Ghidra drives ALL stack naming off the recovered `ScopeLocal` symbol table (`opPtrsub`).
+            // A direct `stack`-space slot that falls inside a recovered ARRAY is that array's element
+            // `axStack_<start>[index]` (the array, not a per-slot scalar, is declared) — the same
+            // symbol a `PTRSUB` to this address resolves to, so the two views share one declaration.
+            if let Some(sym) = self.spacebase_sym_at(foff) {
+                if let Some((elem_ty, index)) = sym.array_index(foff) {
+                    let aname =
+                        format!("a{}Stack_{:x}", type_prefix(&elem_ty), sym.start.unsigned_abs());
+                    self.declare_stack(sym.start, &aname, sym.ty.clone());
+                    let elem_name = format!("{aname}[{index}]");
+                    self.names.insert(id, elem_name.clone());
+                    return elem_name;
+                }
+            }
+            let n = format!("{prefix}Stack_{:x}", foff.unsigned_abs());
+            self.names.insert(id, n.clone());
+            self.declare_stack(foff, &n, ty);
+            return n;
+        }
+        self.var_counter += 1;
+        let n = format!("{prefix}Var{}", self.var_counter);
         self.names.insert(id, n.clone());
-        // a genuine local — declared at the body top, keyed by stack offset for the decl-order sort
-        self.decls.push((n.clone(), ty, stack_off.map(|o| o as i64)));
+        // a genuine local — declared at the body top (register/temp locals have no frame offset).
+        self.decls.push((n.clone(), ty, None));
         n
     }
 
@@ -519,26 +544,6 @@ impl<'a> PrintC<'a> {
         self.operand(v, prec, right)
     }
 
-    /// The signed frame offset if `(base, off)` is a stack-pointer-relative address (the stack/frame
-    /// pointer RSP 0x20 / RBP 0x28 plus a constant). Shared by `stack_addr` (rendering) and
-    /// `is_explicit` (an address-of-local is recomputed inline at every use, like a PTRSUB).
-    fn stack_addr_off(&self, base: VarnodeId, off: VarnodeId) -> Option<i64> {
-        let bvn = self.f.vn(base);
-        let is_fp = Some(bvn.loc.space) == self.reg_space && matches!(bvn.loc.offset, 0x20 | 0x28);
-        if !is_fp || !self.f.vn(off).is_constant() {
-            return None;
-        }
-        Some(self.f.vn(off).constant_value() as i64)
-    }
-
-    /// If `base` is the stack/frame pointer and `off` a constant, this is the address of a stack
-    /// local taken as a value — render `&<prefix>Stack_<offset>` (Ghidra names a stack local by its
-    /// frame offset, with a type prefix; the address is an `&` of that name).
-    fn stack_addr(&self, base: VarnodeId, off: VarnodeId) -> Option<String> {
-        let c = self.stack_addr_off(base, off)?;
-        Some(format!("&{}", self.stack_slot_name(c)))
-    }
-
     /// Ghidra names a stack local `<prefix>Stack_<offset>` by its frame offset and the type of the
     /// slot there. The prefix comes from a `stack` slot at this offset when one exists, else `x`.
     fn stack_slot_name(&self, off: i64) -> String {
@@ -607,62 +612,6 @@ impl<'a> PrintC<'a> {
             }
         }
         info.into_iter().filter_map(|(b, s)| s.map(|sz| (b, sz))).collect()
-    }
-
-    /// Item C — anchor frame addresses on the recovered ScopeLocal stack symbols
-    /// (`varmap::recover_scope`). A varnode that is the address of the START of a recovered ARRAY
-    /// symbol (an INT_ADD on the stack pointer) is named by the array (`axStack_NN`), declared, has
-    /// its address-computation assignment suppressed, and its element size registered. The array
-    /// then decays to a pointer at a call (`func(axStack_NN)`) and an indexed access renders
-    /// `axStack_NN[i]`, the way Ghidra renders a recovered stack array.
-    fn anchor_stack_arrays(&mut self) {
-        let syms = super::varmap::recover_scope(self.f);
-        // the offsets of direct `stack`-space varnodes — a slot accessed as a scalar value, not
-        // through a base+index. When one falls inside a recovered array we cannot cleanly render the
-        // array (Ghidra would unify the scalar into `arr[0]`, which we do not model yet), so skip it.
-        let scalar_offs: Vec<i64> = match self.stack_space {
-            Some(stk) => (0..self.f.num_varnodes() as u32)
-                .map(VarnodeId)
-                .filter(|&v| self.f.vn(v).loc.space == stk)
-                .map(|v| self.f.vn(v).loc.offset as i64)
-                .collect(),
-            None => Vec::new(),
-        };
-        for sym in &syms {
-            let Datatype::Array(elem, _) = &sym.ty else { continue };
-            let elem_sz = elem.align_size();
-            if elem_sz == 0 {
-                continue;
-            }
-            let range = sym.start..(sym.start + sym.size as i64);
-            if scalar_offs.iter().any(|o| range.contains(o)) {
-                continue; // a direct scalar access overlaps this array — leave it un-anchored
-            }
-            let aname =
-                format!("a{}Stack_{:x}", type_prefix(elem), sym.start.unsigned_abs());
-            let mut matched = false;
-            for i in 0..self.f.num_varnodes() as u32 {
-                let v = VarnodeId(i);
-                let Some(def) = self.f.vn(v).def else { continue };
-                let o = self.f.op(def);
-                if o.code() != OpCode::IntAdd || o.num_inputs() != 2 {
-                    continue;
-                }
-                let (b, off) = (o.input(0).unwrap(), o.input(1).unwrap());
-                if self.stack_addr_off(b, off) != Some(sym.start) {
-                    continue;
-                }
-                let id = self.h.high(v);
-                self.names.entry(id).or_insert_with(|| aname.clone());
-                self.array_elem.insert(v, elem_sz);
-                self.suppressed.insert(def); // the array address is implicit, not an assignment
-                self.force_explicit.insert(v); // render the array name even if the base is single-use
-                matched = true;
-            }
-            if matched {
-                self.decls.push((aname.clone(), sym.ty.clone(), Some(sym.start)));
-            }
-        }
     }
 
     /// Render a memory access `*addr` of `size` bytes holding a value of type `vty` — `base[i]`
@@ -735,19 +684,81 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// Render a `PTRSUB(base, off)` as a member/element access (Ghidra `opPtrsub`). The result has
-    /// no leading `&`/`*`: the deref (LOAD/STORE) context uses it as the field value (`base->f`),
-    /// the value context prepends `&` (`&base->f`). Pointer-to-struct ⇒ `base->field_0x<off>`
-    /// (Ghidra's default recovered field name); pointer-to-array ⇒ element 0.
-    fn render_ptrsub(&mut self, op: OpId, _deref: bool) -> String {
+    /// The recovered `ScopeLocal` stack symbol containing frame offset `off`, if any (Ghidra's
+    /// `TypeSpacebase::getSubType` symbol lookup, deferred to print time).
+    fn spacebase_sym_at(&self, off: i64) -> Option<super::varmap::StackSymbol> {
+        self.stack_syms
+            .iter()
+            .find(|s| s.start <= off && off < s.start + s.size as i64)
+            .cloned()
+    }
+
+    /// Ghidra `PrintC::opPtrsub` TYPE_SPACEBASE case (printc.cc:1057): render a `PTRSUB(RSP, off)` off
+    /// the recovered stack-symbol table. An array symbol drops the `&` and decays to its name (with an
+    /// element `[index]` when the access lands inside it); a scalar symbol is `&<prefix>Stack_NN`.
+    /// `deref` = the PTRSUB is a LOAD/STORE pointer (`valueon`), so the symbol value/element is used;
+    /// otherwise the address is taken. The referenced symbol is declared exactly once.
+    fn render_spacebase_ptrsub(&mut self, off: i64, deref: bool) -> String {
+        match self.spacebase_sym_at(off) {
+            Some(sym) => {
+                if let Some((elem_ty, index)) = sym.array_index(off) {
+                    // Array symbol: `axStack_<start>` decays to a pointer (drop `&`).
+                    let name = format!("a{}Stack_{:x}", type_prefix(&elem_ty), sym.start.unsigned_abs());
+                    self.declare_stack(sym.start, &name, sym.ty.clone());
+                    if deref {
+                        format!("{name}[{index}]") // element access (Ghidra pushSymbol + [0]/[i])
+                    } else if index == 0 {
+                        name // pointer-decay of the array base (`pxVar1 = axStack_68`)
+                    } else {
+                        format!("{name} + {index}") // address of an interior element
+                    }
+                } else {
+                    // Scalar symbol: named by its frame offset (`&xStack_NN` / the slot value).
+                    let name = self.stack_slot_name(off);
+                    self.declare_stack(off, &name, sym.ty.clone());
+                    if deref { name } else { format!("&{name}") }
+                }
+            }
+            // No mapped symbol (Ghidra `pushUnnamedLocation`): name by the raw frame slot.
+            None => {
+                let name = self.stack_slot_name(off);
+                if deref { name } else { format!("&{name}") }
+            }
+        }
+    }
+
+    /// Declare a recovered stack symbol at frame offset `start` exactly once (Ghidra declares the
+    /// `ScopeLocal` symbols in the function body; the sort at emission orders them by frame address).
+    /// Keyed by `(start, width)` so distinct-width slots at one offset are not collapsed.
+    fn declare_stack(&mut self, start: i64, name: &str, ty: Datatype) {
+        if self.stack_declared.insert((start, ty.size())) {
+            self.decls.push((name.to_string(), ty, Some(start)));
+        }
+    }
+
+    /// Render a `PTRSUB(base, off)` (Ghidra `opPtrsub`). The result already carries any leading `&`
+    /// (an address-of a struct field or scalar stack local) or none (an array decay), so the caller
+    /// uses it verbatim. `deref` = the PTRSUB is used as a LOAD/STORE pointer (the field/element value
+    /// is wanted); otherwise its address value is wanted. Pointer-to-spacebase ⇒ the ScopeLocal name;
+    /// pointer-to-struct ⇒ `base->field_0x<off>`; pointer-to-array ⇒ element 0.
+    fn render_ptrsub(&mut self, op: OpId, deref: bool) -> String {
         let base = self.f.op(op).input(0).unwrap();
         let off = self.f.op(op).input(1).map(|v| self.f.vn(v).constant_value()).unwrap_or(0);
+        // Spacebase: the base is the stack pointer (`is_spacebase()` — keyed on the varnode flag, not
+        // `type_of`, because the RSP input's HighVariable is storage-merged with integer frame-adjust
+        // versions so its printed type is not the locked `Pointer(Spacebase)`). Resolve the offset to a
+        // ScopeLocal symbol. The offset varnode is pointer-width (8 bytes on x86-64), so `off as i64`
+        // is the signed frame offset directly.
+        if self.f.vn(base).is_spacebase() {
+            return self.render_spacebase_ptrsub(off as i64, deref);
+        }
         let b = self.operand(base, 16, false);
-        match self.type_of(base).ptr_to() {
+        let inner = match self.type_of(base).ptr_to() {
             Some(Datatype::Array(..)) => format!("{b}[0]"),
             Some(_) => format!("{b}->field_0x{off:x}"),
             None => format!("*{b}"),
-        }
+        };
+        if deref { inner } else { format!("&{inner}") }
     }
 
     /// Render an op as a C expression with its precedence.
@@ -791,14 +802,10 @@ impl<'a> PrintC<'a> {
             OpCode::IntMult => bin(self, "*", 13),
             OpCode::IntDiv | OpCode::IntSdiv => bin(self, "/", 13),
             OpCode::IntRem | OpCode::IntSrem => bin(self, "%", 13),
-            OpCode::IntAdd => {
-                // a frame-pointer-relative address taken as a value is `&Stack_<offset>`
-                let (i0, i1) = (a(0), a(1));
-                match self.stack_addr(i0, i1) {
-                    Some(s) => (s, 15),
-                    None => bin(self, "+", 12),
-                }
-            }
+            // A frame-pointer-relative address is now a `PTRSUB(RSP, off)` (the typed spacebase
+            // pointer), named off the ScopeLocal table by `render_ptrsub`; a plain `INT_ADD` is just
+            // addition. (The print-time `stack_addr` INT_ADD adaptation is retired — task #22-A.)
+            OpCode::IntAdd => bin(self, "+", 12),
             OpCode::IntSub => bin(self, "-", 12),
             OpCode::IntLeft => bin(self, "<<", 11),
             OpCode::IntRight | OpCode::IntSright => bin(self, ">>", 11),
@@ -858,7 +865,9 @@ impl<'a> PrintC<'a> {
                 let r = self.operand(index, 12, true);
                 (format!("{l} + {r}"), 12)
             }
-            OpCode::Ptrsub => (format!("&{}", self.render_ptrsub(op, false)), 15),
+            // `render_ptrsub` returns the address expression already carrying any leading `&` (a scalar
+            // stack local / struct field) or none (an array decay), so it is used verbatim.
+            OpCode::Ptrsub => (self.render_ptrsub(op, false), 15),
             OpCode::Call => {
                 // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
                 let name = match o.input(0) {
@@ -1733,6 +1742,8 @@ pub fn print_c(f: &Funcdata) -> String {
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
+        stack_syms: super::varmap::recover_scope(f),
+        stack_declared: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,
         types,
@@ -1752,7 +1763,6 @@ pub fn print_c(f: &Funcdata) -> String {
     };
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
-    p.anchor_stack_arrays();
     p.ret_val = p.return_value();
     if super::action::perf::enabled() {
         super::action::perf::record("print", "detect_arrays+anchor", t0.elapsed());
