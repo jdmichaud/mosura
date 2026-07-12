@@ -54,11 +54,63 @@ pub fn recover(f: &mut Funcdata) -> Vec<JumpTable> {
         .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Branchind)
         .collect();
     for op in branchinds {
-        if let Some(jt) = super::jumpbasic::recover_jumpbasic(f, op) {
+        if let Some(jt) = super::jumpbasic::recover_jumpbasic(f, op, true, 0) {
             out.push(jt);
         }
     }
     out
+}
+
+/// One pass of the multistage jump-table recovery protocol over an already-simplified partial —
+/// Ghidra `Funcdata::recoverJumpTable` (funcdata_block.cc:639-673) consulting the persistent table
+/// set (`Funcdata::jumpvec`), plus the multistage mark/retry chain: `JumpTable::matchModel`
+/// (jumptable.cc:2699-2704), `checkForMultistage` (jumptable.cc:2847-2857) and `recoverMultistage`
+/// (jumptable.cc:2653-2675). `jumpvec` persists across the build loop's flow passes (`build.rs`),
+/// the analogue of Ghidra's `jumpvec` surviving on the main function while each recovery pass gets
+/// a fresh flow partial (and of the multistage-jump Override surviving `Funcdata::clear` across a
+/// whole-decompile restart, funcdata.cc:106).
+///
+/// Per reachable BRANCHIND:
+/// - Table already recovered with MORE than one entry → FROZEN: kept as-is, never re-recovered
+///   (funcdata_block.cc:645-649 returns the pre-existing complete table). A later pass's
+///   perturbed graph can no longer silently shrink a recovered table.
+/// - Table recovered with exactly ONE entry → the `matchModel` mismatch test (jumptable.cc:2699:
+///   `addresstable.size()==1 && jmodel->getTableSize()>1`): re-run the model on the current
+///   (richer) graph with the nzmask ON and `matchsize=1`; if it now yields more than one value the
+///   table is multistage (`checkForMultistage`'s `size()==1` gate; Ghidra routes this through an
+///   Override + whole-decompile restart, which this build loop replaces) → re-recover with the
+///   nzmask OFF (`analyzeGuards` `usenzmask = !jumptable->isPartial()`, jumptable.cc:1052) so the
+///   guard comparison, not the realized value set of the partially-wired flow, bounds the switch.
+///   On failure the old table is kept (`recoverMultistage`'s restore-on-failure,
+///   jumptable.cc:2664-2673).
+/// - No table yet → initial recovery, nzmask ON, `matchsize=0`.
+pub fn recover_staged(f: &mut Funcdata, jumpvec: &mut std::collections::BTreeMap<u64, JumpTable>) {
+    let branchinds: Vec<OpId> = f
+        .op_ids()
+        .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Branchind)
+        .collect();
+    for op in branchinds {
+        let addr = f.op(op).seqnum.pc.offset;
+        match jumpvec.get(&addr) {
+            Some(jt) if jt.targets.len() != 1 => {} // frozen: previously calculated jumptable
+            Some(_) => {
+                // matchModel: does the model on the richer graph disagree with the 1-entry table?
+                let model = super::jumpbasic::recover_jumpbasic(f, op, true, 1);
+                if model.is_some_and(|m| m.targets.len() > 1) {
+                    // recoverMultistage: re-recover trusting the guard (nzmask off); keep the old
+                    // table if the retry fails.
+                    if let Some(newjt) = super::jumpbasic::recover_jumpbasic(f, op, false, 0) {
+                        jumpvec.insert(addr, newjt);
+                    }
+                }
+            }
+            None => {
+                if let Some(jt) = super::jumpbasic::recover_jumpbasic(f, op, true, 0) {
+                    jumpvec.insert(addr, jt);
+                }
+            }
+        }
+    }
 }
 
 /// Ghidra `JumpBasic::foldInOneGuard` geometry: a bounds guard whose in-range edge branches

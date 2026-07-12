@@ -172,7 +172,11 @@ pub fn raw_funcdata_flow_image(
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
     let mut switch_defaults: HashMap<u64, u64> = HashMap::new();
-    let mut recovered_tables: Vec<super::jumptable::JumpTable> = Vec::new();
+    // The persistent recovered-table set (Ghidra `Funcdata::jumpvec`): survives across the flow
+    // passes below, so a table recovered complete is FROZEN and only a 1-entry (multistage
+    // suspect) table is ever re-recovered — see `jumptable::recover_staged`.
+    let mut jumpvec: std::collections::BTreeMap<u64, super::jumptable::JumpTable> =
+        std::collections::BTreeMap::new();
     let mut worklist = vec![entry];
     // Multistage flow recovery — Ghidra `FlowInfo::recoverJumpTables` / `generateOps`: follow flow,
     // then faithfully recover any indirect-branch jump tables on a simplified partial function (the
@@ -228,9 +232,16 @@ pub fn raw_funcdata_flow_image(
         partial.switch_targets = switch_targets.clone();
         partial.table_recovery_probe = true; // skip late branch-orientation during table recovery
         super::pipeline::decompile(&mut partial);
-        let tables = partial.jump_tables();
+        // Recover under the faithful table-lifecycle protocol (Ghidra `Funcdata::recoverJumpTable`,
+        // funcdata_block.cc:639-673): a complete (>1 entry) table in `jumpvec` is FROZEN; a 1-entry
+        // table is re-checked (`matchModel`) and, when the model disagrees, re-recovered with the
+        // nzmask OFF (`recoverMultistage`, jumptable.cc:2653 / `analyzeGuards` usenzmask,
+        // jumptable.cc:1052) so the guard comparison bounds the switch — not the realized value set
+        // of the partially-wired flow. The frozen tables make the recovery robust to simplification
+        // changes in later passes (a perturbed graph can't shrink an already-recovered table).
+        super::jumptable::recover_staged(&mut partial, &mut jumpvec);
         let mut added = false;
-        for jt in &tables {
+        for jt in jumpvec.values() {
             for &t in &jt.targets {
                 if in_code(t) && !decoded.contains_key(&t) {
                     worklist.push(t);
@@ -242,7 +253,6 @@ pub fn raw_funcdata_flow_image(
             }
             switch_targets.insert(jt.op_addr, jt.targets.clone());
         }
-        recovered_tables = tables; // keep the last (stable) recovery for the cache
         if !added {
             break;
         }
@@ -268,7 +278,7 @@ pub fn raw_funcdata_flow_image(
     let mut f = build_from_instrs(name, entry, decoded.into_values(), &spec.laned);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
-    f.jumptables = recovered_tables;
+    f.jumptables = jumpvec.into_values().collect();
     f.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
     f
 }

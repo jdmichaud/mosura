@@ -1089,7 +1089,21 @@ fn backup2switch(data: &Funcdata, mut output: u64, outvn: VarnodeId, invn: Varno
     Some(output)
 }
 
-pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> {
+/// Recover the jump table rooted at `indop` (Ghidra `JumpTable::recoverAddresses` →
+/// `JumpBasic::recoverModel`, jumptable.cc:2623/1435).
+///
+/// `usenzmask` is Ghidra's `bool usenzmask = !jumptable->isPartial()` (`analyzeGuards`,
+/// jumptable.cc:1052): the initial recovery of a table uses the nonzero-mask to sharpen the guard
+/// pullback, but a *multistage re-recovery* (the table was previously recovered incomplete —
+/// `partialTable`) runs with the nzmask OFF, so the switch is bounded by the guard comparison
+/// alone rather than the realized value set of the partially-wired flow (whose nzmask is exactly
+/// as incomplete as the flow).
+///
+/// `matchsize` is Ghidra's `recoverModel(fd, indirect, addresstable.size(), ...)` argument
+/// (jumptable.cc:2281 pattern): on a re-recovery the already-recovered table size is passed so
+/// `findSmallestNormal` prefers (early-stops on) a candidate whose range matches it
+/// (jumptable.cc:1178). `0` on an initial recovery.
+pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matchsize: u64) -> Option<JumpTable> {
     let target_vn = data.op(indop).input(0)?;
     let rootbl = data.op(indop).parent?;
 
@@ -1098,8 +1112,8 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
     if path_meld.empty() {
         return None;
     }
-    let guards = analyze_guards(data, rootbl, -1, indop, true);
-    let (varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, 0);
+    let guards = analyze_guards(data, rootbl, -1, indop, usenzmask);
+    let (varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, matchsize);
     let count = range.get_size();
     if count == 0 || count > MAX_TABLE_SIZE {
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
@@ -1526,13 +1540,44 @@ mod tests {
             }
         }
 
-        let jt = recover_jumpbasic(&mut f, branchind).expect("recovers the table");
+        let jt = recover_jumpbasic(&mut f, branchind, true, 0).expect("recovers the table");
         assert_eq!(jt.op_addr, 0x4c);
         assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300]);
         assert_eq!(jt.default, Some(0x300), "the out-of-range edge is the default case");
         // The switch variable IS the guarded index (nothing to peel): identity labels.
         assert_eq!(jt.labels, vec![0, 1, 2]);
         assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)));
+
+        // A multistage re-recovery (`usenzmask=false`, jumptable.cc:1052) is bounded by the guard
+        // alone — same table, independent of any nzmask narrowing.
+        let jt2 = recover_jumpbasic(&mut f, branchind, false, 0).expect("recovers with nzmask off");
+        assert_eq!(jt2.targets, vec![0x1100, 0x1200, 0x1300]);
+        assert_eq!(jt2.labels, vec![0, 1, 2]);
+
+        // The table lifecycle protocol (`jumptable::recover_staged` = Funcdata::recoverJumpTable,
+        // funcdata_block.cc:639-673 + matchModel/checkForMultistage/recoverMultistage):
+        let mut jumpvec = std::collections::BTreeMap::new();
+        // (a) initial recovery populates the set;
+        jumptable::recover_staged(&mut f, &mut jumpvec);
+        assert_eq!(jumpvec[&0x4c].targets, vec![0x1100, 0x1200, 0x1300]);
+        // (b) a complete (>1 entry) table is FROZEN (funcdata_block.cc:645-649) — even a stale one
+        // is returned as-is, never re-recovered;
+        let stale =
+            JumpTable { targets: vec![0x1100, 0x1200], ..jumpvec[&0x4c].clone() };
+        jumpvec.insert(0x4c, stale);
+        jumptable::recover_staged(&mut f, &mut jumpvec);
+        assert_eq!(jumpvec[&0x4c].targets, vec![0x1100, 0x1200], "complete tables are frozen");
+        // (c) a 1-entry table is multistage-suspect (checkForMultistage's size()==1 gate,
+        // jumptable.cc:2850): the matchModel mismatch (model says 3 > 1, jumptable.cc:2699)
+        // triggers the nzmask-off re-recovery, restoring the full table.
+        let one = JumpTable { targets: vec![0x1100], ..jumpvec[&0x4c].clone() };
+        jumpvec.insert(0x4c, one);
+        jumptable::recover_staged(&mut f, &mut jumpvec);
+        assert_eq!(
+            jumpvec[&0x4c].targets,
+            vec![0x1100, 0x1200, 0x1300],
+            "a 1-entry table is re-recovered multistage (nzmask off)"
+        );
     }
 
     /// A switch normalized by `index - 1`: the guard bounds `idxm1 = index - 1` to `[0,3)` and the
@@ -1599,7 +1644,7 @@ mod tests {
             }
         }
 
-        let jt = recover_jumpbasic(&mut f, branchind).expect("recovers the table");
+        let jt = recover_jumpbasic(&mut f, branchind, true, 0).expect("recovers the table");
         assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300], "targets from the normalized range");
         assert_eq!(jt.labels, vec![1, 2, 3], "labels reverse-emulated to the unnormalized index");
         assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)), "switchvn is the peeled index");
