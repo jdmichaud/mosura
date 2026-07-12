@@ -945,8 +945,13 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
     }
 
-    // buildAddresses: emulate the address calculation for each value in the normalized range.
+    // buildAddresses: emulate the address calculation for each value in the normalized range. The
+    // switch-variable value that produces each target IS its case label (Ghidra `buildLabels`), so
+    // record them here where the bounded range is known — on the final graph the range is lost (only
+    // the build-time partial's edge-feedback phi widening bounds it), exactly why Ghidra saves the
+    // model (`origmodel`) at recovery time for the later `ActionSwitchNorm`.
     let mut targets = Vec::with_capacity(count as usize);
+    let mut labels = Vec::with_capacity(count as usize);
     let mut curval = range.get_min();
     loop {
         let addr = jumptable::emulate(data, target_vn, start_vn, curval, 0)?;
@@ -954,6 +959,7 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
             return None; // sanityCheck: every target must be a real address in the image
         }
         targets.push(addr);
+        labels.push(curval as i64);
         if !range.get_next(&mut curval) {
             break;
         }
@@ -962,7 +968,74 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId) -> Option<JumpTable> 
     // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
     let path = jumptable::backtrace_set(data, target_vn);
     let default = jumptable::find_default(data, indop, &path);
-    Some(JumpTable { op_addr: data.op(indop).seqnum.pc.offset, targets, default })
+    Some(JumpTable {
+        op_addr: data.op(indop).seqnum.pc.offset,
+        targets,
+        default,
+        labels,
+        switchvn_loc: Some(data.vn(start_vn).loc),
+        normalized: false,
+    })
+}
+
+/// Ghidra `ActionSwitchNorm` (`coreaction.cc:4548`) run late on the final graph: for each recovered
+/// jump table, re-find the switch variable on the current Funcdata (`JumpTable::matchModel` →
+/// `recoverModel`), compute the case labels as the switch-variable values that reach each target
+/// (`recoverLabels` → `JumpBasic::buildLabels`), then repoint the `BRANCHIND` at the switch variable
+/// so the intervening index/table-load computation folds away as dead (`foldInNormalization`,
+/// `jumptable.cc:1546`). The following dead-code pass removes the now-unreachable address code. This
+/// retires the print-time switch heuristics (`printc::switch_index`/`case_labels`): the printer now
+/// reads `switch(switchvn)` directly and labels cases with the recovered values.
+///
+/// Runs on the FINAL graph only — never inside the multistage recovery partial
+/// (`table_recovery_probe`): folding the `BRANCHIND` there would destroy the address path the table
+/// discovery re-emulates each pass.
+pub fn switch_norm(data: &mut Funcdata) {
+    if data.table_recovery_probe {
+        return;
+    }
+    let tables = data.jumptables.clone();
+    let mut out = Vec::with_capacity(tables.len());
+    for mut jt in tables {
+        if let Some(indop) = branchind_at(data, jt.op_addr) {
+            normalize_one(data, indop, &mut jt);
+        }
+        out.push(jt);
+    }
+    data.jumptables = out;
+}
+
+/// The live `BRANCHIND` at a jump table's recorded address.
+fn branchind_at(data: &Funcdata, op_addr: u64) -> Option<OpId> {
+    data.op_ids().find(|&op| {
+        let o = data.op(op);
+        !o.is_dead() && o.code() == OpCode::Branchind && o.seqnum.pc.offset == op_addr
+    })
+}
+
+/// matchModel + foldInNormalization for one recovered table. The case labels were computed at
+/// recovery time from the saved model (`jt.labels`); here we re-instantiate the switch variable on
+/// the final graph (Ghidra `matchModel`) and fold the `BRANCHIND` onto it (`foldInNormalization`).
+fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) {
+    let Some(loc) = jt.switchvn_loc else { return };
+    if jt.labels.len() != jt.targets.len() {
+        return; // labels incomplete — keep the cached table, leave the print-time heuristics
+    }
+    // matchModel: re-find the switch variable on the final graph — it is a determining varnode of
+    // the BRANCHIND at the address the saved model recorded. (Its bounded range is not recoverable
+    // on the final graph — only the build-time partial's edge-feedback widening bounds it — so the
+    // labels come from the saved model, exactly as Ghidra's `buildLabels` reads `origmodel`.)
+    let path_meld = find_determining_varnodes(data, indop, 0);
+    let Some(switchvn) = (0..path_meld.num_common_varnode())
+        .map(|i| path_meld.get_varnode(i))
+        .find(|&v| data.vn(v).loc == loc)
+    else {
+        return;
+    };
+    // foldInNormalization (jumptable.cc:1551): point the BRANCHIND at the switch variable; the
+    // address computation becomes dead and is removed by the following ActionDeadCode.
+    data.op_set_input(indop, 0, switchvn);
+    jt.normalized = true;
 }
 
 #[cfg(test)]

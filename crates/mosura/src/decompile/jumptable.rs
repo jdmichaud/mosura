@@ -30,6 +30,17 @@ pub struct JumpTable {
     /// switch (Ghidra `JumpTable::defaultBlock`, set by `JumpBasic::foldInOneGuard`). `None` when
     /// no guard branches directly into the switch.
     pub default: Option<u64>,
+    /// The case label (switch-variable value) for each target — Ghidra `JumpTable::label`, computed
+    /// by `JumpBasic::buildLabels` at recovery time (where the switch variable's bounded range is
+    /// known). Parallel to `targets`: a switch on `iVar` with cases `1..9`, not `0..8`.
+    pub labels: Vec<i64>,
+    /// Storage location of the switch variable found during recovery (Ghidra's saved model
+    /// `origmodel`). `ActionSwitchNorm` re-instantiates the variable on the final graph at this
+    /// address (`matchModel`) to fold the `BRANCHIND` onto it.
+    pub switchvn_loc: Option<super::space::Address>,
+    /// Set once `ActionSwitchNorm`'s `foldInNormalization` has repointed the `BRANCHIND` at the
+    /// switch variable, so the printer reads that variable directly and uses `labels`.
+    pub normalized: bool,
 }
 
 /// Recover every jump table in `f` (Ghidra `Funcdata::recoverJumpTables` over each BRANCHIND).

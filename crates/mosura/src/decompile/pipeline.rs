@@ -101,6 +101,21 @@ impl Action for ActionResolveCalls {
     }
 }
 
+/// Ghidra `ActionSwitchNorm` (`coreaction.cc:4548`): normalize each recovered jump table late on the
+/// final graph — recover the case labels and fold the `BRANCHIND` onto the switch variable. See
+/// [`super::jumpbasic::switch_norm`].
+pub struct ActionSwitchNorm;
+
+impl Action for ActionSwitchNorm {
+    fn name(&self) -> &str {
+        "switchnorm"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        super::jumpbasic::switch_norm(data);
+        1
+    }
+}
+
 /// The simplification rule pool (Ghidra's `oppool1`, `coreaction.cc:5512`). The rules are ordered to
 /// match Ghidra's `addRule` registration sequence — which *is* the per-opcode priority
 /// (`ActionPool::addRule` appends each rule to `perop[opcode]`, so registration order = the order
@@ -542,6 +557,12 @@ pub fn universal_action() -> ActionGroup {
         )
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
+        // NOTE: Ghidra `ActionSwitchNorm` (coreaction.cc:4548) belongs here — see
+        // [`ActionSwitchNorm`]/[`super::jumpbasic::switch_norm`]. It is UNWIRED pending the
+        // `findUnnormalized`/`buildLabels` port (jumptable.cc:1462/1506): mosura's JumpBasic recovery
+        // returns the *normalized* switch var (the final address, unstable across multistage passes),
+        // not the *unnormalized* switch variable `foldInNormalization` folds onto — so wiring it now
+        // would fold onto the wrong varnode and mis-render. Tracked for the follow-on brick.
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
         // branch negations in the IR, mirroring Ghidra's final ActionNormalizeBranches placement
         // (after type recovery, where the guards are in final simplified form). ActionOrientBranches
