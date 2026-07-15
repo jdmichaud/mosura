@@ -258,6 +258,10 @@ pub fn default_rule_pool() -> ActionPool {
         // RuleSplitFlow: a movsd's zero-high half `CONCAT88(#0, Qa)` becomes `ZEXT816(Qa)`, the form
         // SplitFlow's traceBackward splits into low/high lanes.
         .with(super::rules::RulePiece2Zext) // (103)
+        // RulePiece2Sext (coreaction.cc:5615, immediately after RulePiece2Zext):
+        // `CONCAT(V s>> (8*|V|-1), V) => SEXT(V)` — the cdq;idiv dividend; feeds RuleSubCommute's
+        // SDIV/SREM arm so the 8-byte signed-division idiom narrows to the 4-byte `/`.
+        .with(super::rules::RulePiece2Sext) // (104)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
         // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —

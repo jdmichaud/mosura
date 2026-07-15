@@ -4475,6 +4475,48 @@ impl Rule for RulePiece2Zext {
     }
 }
 
+/// Ghidra `RulePiece2Sext` (ruleaction.cc:232): concatenation with sign bits is a sign extension —
+/// `concat(V s>> #0x1f, V)  =>  sext(V)` (the shift amount must smear the sign across the whole
+/// high part, `8*|V| - 1`). This is the x86 `cdq; idiv` dividend form once RuleSubExtComm has
+/// rewritten the SUB84-of-SEXT high half into `V s>> 0x1f`: the PIECE becomes `SEXT(V)`, which
+/// RuleSubCommute's INT_SDIV/SREM arm + RuleSubExtComm then narrow to the 4-byte division
+/// (`(int4)x / 10`), matching Ghidra's chain on switchloop case 4.
+pub struct RulePiece2Sext;
+
+impl Rule for RulePiece2Sext {
+    fn name(&self) -> &str {
+        "piece2sext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let shiftout = data.op(op).input(0).unwrap(); // most-significant half
+        if !data.vn(shiftout).is_written() {
+            return 0;
+        }
+        let shiftop = data.vn(shiftout).def.unwrap();
+        if data.op(shiftop).code() != OpCode::IntSright {
+            return 0;
+        }
+        let sa = data.op(shiftop).input(1).unwrap();
+        if !data.vn(sa).is_constant() {
+            return 0;
+        }
+        let n = data.vn(sa).constant_value();
+        let x = data.op(shiftop).input(0).unwrap();
+        if Some(x) != data.op(op).input(1) {
+            return 0;
+        }
+        if n != (8 * data.vn(x).size - 1) as u64 {
+            return 0; // the arithmetic shift must copy the sign bit through the whole high part
+        }
+        data.op_remove_input(op, 0);
+        data.op_set_opcode(op, OpCode::IntSext);
+        1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SubVariableFlow driving rules — Ghidra `subflow.cc:1547-1721`. Each spots a
 // seed (a wide Varnode from which only a narrow logical sub-value is used),
@@ -10165,6 +10207,64 @@ mod tests {
         assert_eq!(f.op(piece).code(), OpCode::IntZext);
         assert_eq!(f.op(piece).num_inputs(), 1);
         assert_eq!(f.op(piece).input(0), Some(w));
+    }
+
+    // --- RulePiece2Sext (ruleaction.cc:232) — wired @104, after RulePiece2Zext --
+
+    #[test]
+    fn piece2sext_sign_smear_becomes_sext() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // concat(V s>> 0x1f, V) : 8  =>  sext(V)   (the cdq;idiv dividend)
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c31 = f.new_const(4, 31);
+        let sr = f.new_op(OpCode::IntSright, seq, vec![v, c31]);
+        let hi = f.new_output_unique(sr, 4);
+        let piece = f.new_op(OpCode::Piece, SeqNum { pc: ram, uniq: 1 }, vec![hi, v]);
+        f.new_output_unique(piece, 8);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sr, piece],
+            ..Default::default()
+        }]);
+        assert_eq!(RulePiece2Sext.apply_op(piece, &mut f), 1);
+        assert_eq!(f.op(piece).code(), OpCode::IntSext);
+        assert_eq!(f.op(piece).num_inputs(), 1);
+        assert_eq!(f.op(piece).input(0), Some(v));
+    }
+
+    #[test]
+    fn piece2sext_declines_non_sign_smear() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        // Wrong shift amount (not 8*|V|-1): concat(V s>> 16, V) stays a PIECE.
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let c16 = f.new_const(4, 16);
+        let sr = f.new_op(OpCode::IntSright, seq, vec![v, c16]);
+        let hi = f.new_output_unique(sr, 4);
+        let piece = f.new_op(OpCode::Piece, SeqNum { pc: ram, uniq: 1 }, vec![hi, v]);
+        f.new_output_unique(piece, 8);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sr, piece],
+            ..Default::default()
+        }]);
+        assert_eq!(RulePiece2Sext.apply_op(piece, &mut f), 0);
+        assert_eq!(f.op(piece).code(), OpCode::Piece);
+
+        // High half shifts a DIFFERENT varnode than the low half: decline.
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let c31 = f.new_const(4, 31);
+        let sr2 = f.new_op(OpCode::IntSright, SeqNum { pc: ram, uniq: 2 }, vec![w, c31]);
+        let hi2 = f.new_output_unique(sr2, 4);
+        let piece2 = f.new_op(OpCode::Piece, SeqNum { pc: ram, uniq: 3 }, vec![hi2, v]);
+        f.new_output_unique(piece2, 8);
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![sr, piece, sr2, piece2],
+            ..Default::default()
+        }]);
+        assert_eq!(RulePiece2Sext.apply_op(piece2, &mut f), 0);
+        assert_eq!(f.op(piece2).code(), OpCode::Piece);
     }
 
     // --- RuleLessEqual2Zero (ruleaction.cc:5601) — wired ----------------------
