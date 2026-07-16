@@ -570,6 +570,21 @@ pub fn universal_action() -> ActionGroup {
                 .then(default_rule_pool())
                 .then(super::deadcode::ActionDeadCode)
                 .then(ptrarith_pool())
+                // Ghidra actmainloop tail, in order (task #8 Brick B): actprop2 (:5666-5669, =
+                // ptrarith_pool above) → ActionDeterminedBranch (:5672) → ActionUnreachable (:5673,
+                // inlined in mosura's determinedbranch) → ActionConditionalConst (:5676) — then the
+                // cycle wraps to ActionHeritage (:5492) and ActionDeadCode (:5503), the next
+                // iteration's head. This is Ghidra's exact member cycle rotated to mosura's
+                // spacebase entry point, so within every pass the stack/global LOAD/STOREs that
+                // RuleLoadVarnode/RuleStoreVarnode resolve are seen by determinedbranch/condconst
+                // in the same iteration (the #22-B ordering evidence: Ghidra resolves stack BEFORE
+                // both, every iteration). The early once-instances above (before the restart) are
+                // Ghidra's iteration 1. ActionNodeJoin (:5674) / ActionConditionalExe (:5675) are
+                // not yet ported and join here when they land. Both members count real changes and
+                // are monotone (branch removal strictly shrinks the CFG; a propagated constant
+                // no longer matches), so the fixpoint converges.
+                .then(super::determinedbranch::ActionDeterminedBranch)
+                .then(super::condconst::ActionConditionalConst)
                 .then(ActionHeritage)
                 .then(super::deadcode::ActionDeadCode),
         )
