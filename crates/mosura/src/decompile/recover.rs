@@ -239,12 +239,15 @@ fn block_pos(f: &Funcdata, op: OpId) -> usize {
 }
 
 /// Is `vn` used by return op `op` as a return-VALUE input (slot ≥ 1)? Ghidra's `onlyOpUse` checks
-/// only the single trial slot (`op->getIn(trial.getSlot())==vn`), because its return carries one
-/// output trial per storage. mosura's [`recover_return`] instead appends several OVERLAPPING fixed
-/// candidates (RAX:8, XMM0:8, XMM0:4) as sibling input slots, so one reaching value legitimately
-/// feeds more than one of them (a `float`/`double` return reaches both XMM0:8 and XMM0:4). All those
-/// slots are the SAME return's output recovery — not an external use — so any of them counts as the
-/// return use. (`opslot` is retained for signature symmetry with the CALL-input reuse.)
+/// only the single trial slot (`op->getIn(trial.getSlot())==vn`, funcdata_varnode.cc:1823-1825),
+/// because its return carries one output trial per storage. mosura's [`recover_return`] instead
+/// appends fixed sibling candidates (RAX:8, XMM0:8) as input slots, so a value could feed more
+/// than one of them; all those slots are the SAME return's output recovery — not an external use —
+/// so any of them counts as the return use. (The overlapping XMM0:4 sibling that motivated this
+/// accommodation is retired; whether the any-slot skip itself can now revert to Ghidra's exact
+/// own-slot test — it is shared with the CALL-input path, where Ghidra routes same-op-other-slot
+/// uses through `checkCallDoubleUse` — is a pinned open question, instrument before changing.
+/// `opslot` is retained for signature symmetry with the CALL-input reuse.)
 fn is_return_value_use(f: &Funcdata, op: OpId, opslot: usize, vn: VarnodeId) -> bool {
     let _ = opslot;
     f.op(op).inrefs.iter().skip(1).any(|&x| x == vn)
@@ -470,7 +473,7 @@ fn overlap_bytes(f: &Funcdata, inner: VarnodeId, outer: VarnodeId) -> i64 {
 /// `ActionReturnRecovery::apply` coreaction.cc:1930-1931.
 fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
     let Some(v) = f.op(ret).input(slot) else { return false };
-    if !is_realistic(f, v, &mut HashSet::new()) || is_const_padded_piece(f, v) {
+    if !is_realistic(f, v, &mut HashSet::new()) {
         return false;
     }
     let addr = f.vn(v).loc;
@@ -479,29 +482,29 @@ fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
 
 /// Append the candidate return-convention registers (RAX, XMM0) to every RETURN op, so
 /// heritage links them to the value reaching each RETURN. Runs pre-heritage.
+///
+/// One candidate per SysV output register class, at the full register width. Ghidra registers
+/// exactly ONE output trial per heritaged range (`Heritage::guardReturns`, heritage.cc:1652:
+/// `characterizeAsOutput` ⇒ a single `registerTrial(addr,size)`; a range overlapping the entry
+/// goes through `guardReturnsOverlapping`) — never overlapping sibling candidates. The former
+/// XMM0:4 sibling (a `float`-return accommodation, arbitrated by an `is_const_padded_piece`
+/// narrowing check Ghidra does not have) was RETIRED toward that single-trial model: it was
+/// corpus-inert dead weight whose only observable effect was materializing a dead
+/// `SUBPIECE XMM0:16 → :4` that mis-sized `ActionLaneDivide`'s lane choice (`collectLaneSizes`
+/// picks smallest-first, coreaction.cc:509). A `float` return now commits at the XMM0:8 trial,
+/// exactly as Ghidra's `buildReturnOutput` commits the registered trial; the 8→4 width
+/// narrowing is downstream IR work (the SubvariableFlow/SubfloatFlow rule family), not return
+/// recovery. The remaining fixed-candidate list (vs. per-heritaged-range registration) is still
+/// an adaptation — the full single-trial `characterizeAsOutput` model stays on the backlog.
 pub fn recover_return(f: &mut Funcdata) {
     let Some(reg) = f.spaces.by_name("register") else { return };
     let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
-        // RAX/XMM0 at 8 bytes, plus XMM0 at 4 bytes for a `float` return (the low lane of a
-        // zeroed XMM0). resolve keeps the first realistic, so the wider candidates win first.
-        for (off, size) in [(RAX, 8), (XMM0, 8), (XMM0, 4)] {
+        for (off, size) in [(RAX, 8), (XMM0, 8)] {
             let v = f.new_varnode(size, Address::new(reg, off));
             f.op_append_input(ret, v);
         }
     }
-}
-
-/// True when `vn` is an 8-byte value built as `PIECE(constant_high, low)` — a narrow value sitting
-/// in a zeroed (or otherwise constant-padded) wide register. The genuine return is the low part, so
-/// the wide candidate should defer to the narrower one (Ghidra's output prototype recovers the
-/// minimal covering storage — a `float` return is `XMM0:4`, not the zero-extended `XMM0:8`).
-fn is_const_padded_piece(f: &Funcdata, vn: VarnodeId) -> bool {
-    let Some(def) = f.vn(vn).def else { return false };
-    if f.op(def).code() != OpCode::Piece {
-        return false;
-    }
-    f.op(def).input(0).is_some_and(|hi| f.vn(hi).is_constant())
 }
 
 /// Maximum number of evaluation passes before the trial decisions are committed structurally — a
@@ -585,7 +588,7 @@ fn check_output_trial_use(f: &mut Funcdata) {
 }
 
 /// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837) reduced to mosura's single-
-/// return-value case: keep, on each RETURN, the first realistic non-constant-padded candidate
+/// return-value case: keep, on each RETURN, the first candidate passing the full trial gate
 /// (RAX before XMM0, by slot order) and remove the rest. Gated behind the fully-checked trials, so
 /// it commits the prune only once the decision is stable. (The per-RETURN realism check — rather
 /// than the shared trial flags — preserves the exact survivors of the old greedy prune.)
@@ -594,9 +597,8 @@ fn build_return_output(f: &mut Funcdata) {
     for ret in rets {
         let n = f.op(ret).num_inputs();
         // slot 0 is the return address; slots 1.. are the candidate return registers. Keep the first
-        // slot that passes the full gate (realistic AND only-used-by-this-return, minus a
-        // constant-padded wide candidate so a narrower one wins) — consistent with the trial
-        // evaluation in [`check_output_trial_use`].
+        // slot that passes the full gate (realistic AND only-used-by-this-return) — consistent with
+        // the trial evaluation in [`check_output_trial_use`].
         let keep = (1..n).find(|&slot| return_trial_kept(f, ret, slot));
         for slot in (1..n).rev() {
             if Some(slot) != keep {
@@ -1068,6 +1070,39 @@ mod tests {
         assert!(kept_offset(&f, ret, RAX), "a function returns one value; prefer RAX");
     }
 
+    #[test]
+    fn bare_float_return_commits_the_wide_xmm0_trial() {
+        // A `float` return: the 4-byte value sits in a zero-padded XMM0 — `XMM0:8 =
+        // PIECE(#0:4, f:4)`. With the overlapping XMM0:4 sibling candidate retired (see
+        // [`recover_return`]), the XMM0:8 trial must COMMIT (not void): Ghidra registers the
+        // heritaged range as the single output trial (`guardReturns`, heritage.cc:1652) and
+        // `buildReturnOutput` commits it — there is no const-padded-PIECE narrowing in Ghidra's
+        // return recovery. The 8→4 width narrowing happens later on the IR (the
+        // SubvariableFlow/SubfloatFlow rule family), not here.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // f:4 = FLOAT_ADD(xmm1_in:4, xmm1_in:4)  — a real computed float
+        let xmm1 = f.new_input(4, Address::new(reg, XMM0 + 0x40));
+        let fadd = f.new_op(OpCode::FloatAdd, seq, vec![xmm1, xmm1]);
+        let fval = f.new_output(fadd, 4, Address::new(reg, XMM0));
+        // XMM0:8 = PIECE(#0:4, f:4) — the zero-padded wide register
+        let zero = f.new_const(4, 0);
+        let piece = f.new_op(OpCode::Piece, seq, vec![zero, fval]);
+        let xmm0 = f.new_output(piece, 8, Address::new(reg, XMM0));
+        let rax = f.new_input(8, Address::new(reg, RAX)); // unwritten
+        let retaddr = f.new_input(8, Address::new(reg, 0x20));
+        let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax, xmm0]);
+        f.set_blocks(vec![BlockBasic { ops: vec![ret], ..Default::default() }]);
+        resolve_return(&mut f);
+        assert!(
+            kept_offset(&f, ret, XMM0),
+            "a zero-padded float return commits the XMM0:8 trial (width narrowing is downstream IR work)"
+        );
+    }
+
     // ---- ancestorOpUse (the USE gate) — paths the corpus exercises plus its unexercised branches --
 
     /// `RAX = INT_ADD(RDI, 1)`, read by the RETURN; `extra` optionally attaches a second use of RAX.
@@ -1149,10 +1184,11 @@ mod tests {
 
     #[test]
     fn overlapping_return_candidates_keep_the_value() {
-        // A float/double return reaches BOTH the XMM0:8 and XMM0:4 sibling candidates that
-        // recover_return appends. When evaluating one, onlyOpUse must count the value's use at the
-        // OTHER return-value slot as the return use (not an external use) — otherwise a valid return
-        // is wrongly voided. Guards [`is_return_value_use`].
+        // A value reaching TWO return-value slots of the same RETURN (here via a SUBPIECE view —
+        // the shape the retired XMM0:4 sibling candidate used to produce). When evaluating one
+        // slot, onlyOpUse must count the value's use at the OTHER return-value slot as the return
+        // use (not an external use) — otherwise a valid return is wrongly voided. Guards
+        // [`is_return_value_use`] (the any-slot skip, pending the own-slot-only re-check).
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
@@ -1167,7 +1203,7 @@ mod tests {
         let sub = f.new_output(subop, 4, Address::new(reg, XMM0)); // XMM0:4 sibling view of the same value
         let retaddr = f.new_input(8, Address::new(reg, 0x20));
         let ret = f.new_op(OpCode::Return, seq, vec![retaddr, v, sub]);
-        assert!(return_trial_kept(&f, ret, 1), "the value also feeding the sibling XMM0:4 candidate is still a real return");
+        assert!(return_trial_kept(&f, ret, 1), "the value also feeding a sibling return-value slot is still a real return");
     }
 
     /// A CALL reading `v` at slot 1, plus a `RETURN` (the opmatch during return recovery). `active`
