@@ -39,9 +39,16 @@ corpus exists. **Toolchains** (decided: user-installed): `gcc-aarch64-linux-gnu`
 | Arch | SLEIGH (engine) | Distinctive blocker | Auto-analysis agent (me) | Main/decompiler agent |
 | --- | --- | --- | --- | --- |
 | **ARM64 (AArch64)** | ✅ validated | none | un-gate ELF loader (`EM_AARCH64`→`AARCH64:LE:64:v8A`) + corpus + validate pipeline | — (engine ready); optional: decompiler-driven switch recovery on ARM |
-| **RISC-V** | ⚠️ `.sla` present, **not** in validated set | none (LE) | un-gate loader (`EM_RISCV`) + corpus + validate | **SLEIGH validation pass** (`coverage_riscv.rs`); fix any unimplemented construct |
-| **68k (m68000)** | ⚠️ present, not validated | **big-endian** — analysis read paths are LE-hardcoded (`read_mem_const`, the data markup, the `big_endian` reject) | thread endianness through the analysis read paths + un-gate/build loader + corpus | **SLEIGH validation pass** (`coverage_68k.rs`) |
-| **Z80** | ⚠️ present, not validated (6502 is, so likely small) | **no loader** — Z80 binaries aren't ELF/PE/MZ | **new flat/platform loader** + corpus | **SLEIGH validation pass** (`coverage_z80.rs`) |
+| **RISC-V** | ✅ smoke-tested (12/12 insns, gcc -O1, incl. compressed) — full coverage pass pending | none (LE) | **coverage pass** (`coverage_riscv.rs`, `riscv.lp64d.sla`) + un-gate loader (`EM_RISCV`) + corpus + validate | on-call: engine fix only if the p-code golden diff finds a gap |
+| **68k (m68000)** | ✅ smoke-tested (15/15 insns, gcc -O1, big-endian decode fine) — full coverage pass pending | **big-endian** — *analysis read paths* are LE-hardcoded (`read_mem_const`, the data markup, the `big_endian` reject); the engine itself is endian-aware | **coverage pass** (`coverage_68k.rs`, `68040.sla` = `68000:BE:32:default`) + thread endianness through the analysis read paths + un-gate/build loader + corpus | on-call: engine fix only if the p-code golden diff finds a gap |
+| **Z80** | ✅ smoke-tested (25/25 insns, sdcc) — full coverage pass pending | **no loader** — Z80 binaries aren't ELF/PE/MZ | **coverage pass** (`coverage_z80.rs`, `z80.sla`) + **new flat/platform loader** + corpus | on-call: engine fix only if the p-code golden diff finds a gap |
+
+**Re-scope (2026-07-16):** a smoke probe ran real toolchain output (gcc-riscv64 / gcc-m68k /
+sdcc, `-O1` classify()) through the engine via `sleigh::disassemble` — all three specs load and
+disassemble with **100% byte coverage and correct mnemonics, zero engine changes**. The
+"SLEIGH validation pass" is therefore corpus+golden+test work owned by the auto-analysis
+agent (the `coverage_aarch64.rs` pattern, diffing disasm **and raw p-code**); the main agent
+is only on-call for a precise failing-construct report if the p-code diff exposes an engine gap.
 
 **Decompiler-driven analyzers** (A6 switch/param recovery via the decompiler bridge) on any new
 arch need the *decompiler* to handle that arch's p-code — main agent's domain — but they are a
