@@ -314,6 +314,43 @@ impl Action for ActionPool {
     }
 }
 
+/// Ghidra's `rule_onceperfunc` flag (action.hh) as a wrapper: after its first `apply`, the wrapped
+/// action is `status_end` — it returns 0 on every later call until `reset`, *regardless* of whether
+/// that first application reported changes (`Action::perform`, action.cc:349-357: `if ((count>0) ||
+/// ((flags&rule_onceperfunc)!=0)) status = status_end`, and `case status_end: return 0; // Rule
+/// applied, do not repeat until reset`). Ghidra uses this for members of repeating groups that must
+/// fire exactly once per function at their slot — e.g. `ActionLaneDivide` (coreaction.cc:585
+/// constructor flags) inside the repeating `actstackstall` group (coreaction.cc:5652). Wrap a member
+/// in this when it joins a `restart` group; `reset` re-arms it for the next function.
+pub struct OncePerFunc<A: Action> {
+    inner: A,
+    done: bool,
+}
+
+impl<A: Action> OncePerFunc<A> {
+    /// Wrap `inner` so it applies once per function (until `reset`).
+    pub fn new(inner: A) -> OncePerFunc<A> {
+        OncePerFunc { inner, done: false }
+    }
+}
+
+impl<A: Action> Action for OncePerFunc<A> {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if self.done {
+            return 0; // status_end — do not repeat until reset (action.cc:343-344)
+        }
+        self.done = true; // rule_onceperfunc: end after the first perform even if count==0
+        self.inner.apply(data)
+    }
+    fn reset(&mut self, data: &mut Funcdata) {
+        self.done = false;
+        self.inner.reset(data);
+    }
+}
+
 /// The first action of the pipeline (Ghidra's `ActionStart`): a marker that does nothing
 /// itself. The real phases (heritage, rules, …) are appended to the universal group as
 /// they are ported.
@@ -398,6 +435,54 @@ mod tests {
         let mut pool = ActionPool::new("pool").with(KillAdds);
         let changes = pool.apply(&mut f);
         assert_eq!(changes, 3);
+        assert!(f.op_ids().all(|id| f.op(id).is_dead()));
+    }
+
+    /// An action that always reports a change and counts its applications — the shape that would
+    /// hang a restart group without the `rule_onceperfunc` wrapper.
+    struct AlwaysChanges {
+        applied: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+    impl Action for AlwaysChanges {
+        fn name(&self) -> &str {
+            "always-changes"
+        }
+        fn apply(&mut self, _data: &mut Funcdata) -> u32 {
+            self.applied.set(self.applied.get() + 1);
+            1
+        }
+    }
+
+    /// `rule_onceperfunc` semantics (action.cc:349-357): the wrapped action applies exactly once —
+    /// later calls return 0 without invoking it — and `reset` re-arms it.
+    #[test]
+    fn once_per_func_applies_once_until_reset() {
+        let mut f = three_adds();
+        let applied = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut once = OncePerFunc::new(AlwaysChanges { applied: applied.clone() });
+        assert_eq!(once.apply(&mut f), 1);
+        assert_eq!(once.apply(&mut f), 0, "status_end: no repeat until reset");
+        assert_eq!(applied.get(), 1, "inner action must not be re-invoked");
+        once.reset(&mut f);
+        assert_eq!(once.apply(&mut f), 1, "reset re-arms the once-per-function action");
+        assert_eq!(applied.get(), 2);
+    }
+
+    /// Inside a restart group, a `OncePerFunc` member fires on the first pass only; the group still
+    /// runs to its fixpoint driven by the other members (Ghidra: ActionLaneDivide in the repeating
+    /// actstackstall group, coreaction.cc:5652).
+    #[test]
+    fn once_per_func_in_restart_group_fires_once() {
+        let mut f = three_adds();
+        let applied = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut g = ActionGroup::restart("test")
+            .then(OncePerFunc::new(AlwaysChanges { applied: applied.clone() }))
+            .then(MarkOneDead);
+        let changes = g.apply(&mut f);
+        // Pass 1: once-member fires (+1) + one op marked dead (+1); passes 2-3: one op each;
+        // pass 4: zero — fixpoint. The once-member contributed exactly one application.
+        assert_eq!(changes, 4);
+        assert_eq!(applied.get(), 1, "once-per-func member fired on the first pass only");
         assert!(f.op_ids().all(|id| f.op(id).is_dead()));
     }
 }

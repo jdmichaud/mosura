@@ -522,13 +522,20 @@ const CALL_MAXPASS: i32 = 0;
 /// ([`check_output_trial_use`]) but the structural rewrite ([`build_return_output`]) only runs once
 /// the trials are *fully checked* (`numpasses > maxpass`), so a premature decision on an unstable
 /// early-pass graph can't irreversibly drop a real return. Runs post-heritage.
-pub fn resolve_return(f: &mut Funcdata) {
+///
+/// Returns the change count per Ghidra's `ActionReturnRecovery::apply` convention: +1 per
+/// not-yet-checked trial evaluated (coreaction.cc:1933) and +1 when the fully-checked trials commit
+/// the structural rewrite (coreaction.cc:1951) — so a repeating group sees work-in-progress as
+/// change, and quiescence (trials committed, container cleared) as 0.
+pub fn resolve_return(f: &mut Funcdata) -> u32 {
     setup_active_output(f);
-    check_output_trial_use(f);
+    let mut count = check_output_trial_use(f);
     if f.active_output.as_ref().is_some_and(|a| a.is_fully_checked()) {
         build_return_output(f);
         f.active_output = None; // Ghidra `Funcdata::clearActiveOutput`
+        count += 1; // coreaction.cc:1951 — the commit is a change
     }
+    count
 }
 
 /// Ghidra `Funcdata::initActiveOutput` (coreaction.cc:4651): create the output trial container once,
@@ -560,9 +567,14 @@ fn setup_active_output(f: &mut Funcdata) {
 /// candidate that fails either gate is left unchecked so a later pass can reconsider it as the
 /// dataflow refines. Then advance the pass counter and, once `numpasses > maxpass`, mark the
 /// container fully checked (which gates the commit).
-fn check_output_trial_use(f: &mut Funcdata) {
+///
+/// Returns +1 per not-yet-checked trial evaluated — Ghidra's unconditional `count += 1` inside the
+/// per-RETURN trial loop (coreaction.cc:1933), with mosura's RETURN iteration fused into the
+/// `any()`. Checked trials contribute 0, so the count bottoms out once every trial is decided.
+fn check_output_trial_use(f: &mut Funcdata) -> u32 {
     let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
     let ntrials = f.active_output.as_ref().map_or(0, |a| a.num_trials());
+    let mut count = 0u32;
     let mut verdicts: Vec<usize> = Vec::new(); // indices of trials found realistic this pass
     for ti in 0..ntrials {
         let (checked, slot) = {
@@ -572,6 +584,7 @@ fn check_output_trial_use(f: &mut Funcdata) {
         if checked {
             continue;
         }
+        count += 1; // coreaction.cc:1933 — an unchecked trial evaluation is a change
         let kept = rets.iter().any(|&ret| return_trial_kept(f, ret, slot));
         if kept {
             verdicts.push(ti);
@@ -585,6 +598,7 @@ fn check_output_trial_use(f: &mut Funcdata) {
     if active.get_num_passes() > active.get_max_pass() {
         active.mark_fully_checked();
     }
+    count
 }
 
 /// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837) reduced to mosura's single-
@@ -632,7 +646,17 @@ pub fn recover_call_args(f: &mut Funcdata) {
 /// ([`build_input_from_trials`]) only commits once the trials are fully checked (`numpasses >
 /// maxpass`). So an unstable early-pass graph can't irreversibly drop a real argument. Runs
 /// post-heritage.
-pub fn resolve_call_args(f: &mut Funcdata) {
+///
+/// Returns the change count per Ghidra's `ActionActiveParam::apply` convention: per call, +1 while
+/// the trials are not yet fully checked ("Count a change, to indicate we still have work to do",
+/// coreaction.cc:1748) and +1 when the fully-checked trials commit the prune (coreaction.cc:1756).
+/// NOTE (loop-join prerequisite, campaign Brick E): Ghidra re-enters a call only while
+/// `fc->isInputActive()` — the container, created once by heritage's guardCalls, is never
+/// re-initialized after `clearActiveInput`. mosura's [`setup_active_input`] re-creates a cleared
+/// container, so a *repeating* caller would re-commit (and re-count) every pass; joining a repeating
+/// group requires porting the isInputActive once-gate along with the full pass protocol.
+pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
+    let mut count = 0u32;
     let calls: Vec<OpId> =
         f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
     for call in calls {
@@ -641,8 +665,12 @@ pub fn resolve_call_args(f: &mut Funcdata) {
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
             build_input_from_trials(f, call);
             f.active_inputs.remove(&call); // Ghidra `FuncCallSpecs::clearActiveInput`
+            count += 1; // coreaction.cc:1756 — the commit is a change
+        } else {
+            count += 1; // coreaction.cc:1748 — trials still being evaluated: work to do
         }
     }
+    count
 }
 
 /// Ghidra `FuncCallSpecs::initActiveInput` (fspec.cc:5331) + the candidate-trial registration
@@ -801,9 +829,16 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
 /// `guard_calls` — the surviving INDIRECT creations ARE the heritaged ranges, so their `(addr,size)`
 /// exactly match what Ghidra's in-heritage `registerTrial` would record, and this mirrors how the
 /// input side (`setup_active_input`) already consolidates guardCalls' trial registration post-heritage.
-pub fn resolve_call_output(f: &mut Funcdata) {
+///
+/// Returns the change count per Ghidra's `ActionActiveReturn::apply` convention: +1 per call whose
+/// output trials were resolved and committed (coreaction.cc:1788, the `isOutputActive` body). A call
+/// that already has an output — or yields no usable trial — contributes 0, so the count bottoms out
+/// once every recoverable call output is built (mosura's `output.is_some()` skip standing in for
+/// Ghidra's cleared `isOutputActive` gate).
+pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
+    let mut count = 0u32;
     let reg = f.spaces.by_name("register");
-    let Some(outlist) = sysv_output(&f.spaces) else { return };
+    let Some(outlist) = sysv_output(&f.spaces) else { return 0 };
     let calls: Vec<OpId> =
         f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
     for call in calls {
@@ -852,7 +887,11 @@ pub fn resolve_call_output(f: &mut Funcdata) {
             .collect();
         used.sort_by_key(|(a, _, _)| (a.space.0, a.offset));
         build_call_output_from_trials(f, call, bid, &used);
+        if f.op(call).output.is_some() {
+            count += 1; // coreaction.cc:1788 — a committed call output is a change
+        }
     }
+    count
 }
 
 /// Ghidra `ParamListStandardOut::fillinMap` output-map (fspec.cc:1721) reduced to what the SysV

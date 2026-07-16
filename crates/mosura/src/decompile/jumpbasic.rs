@@ -1179,19 +1179,33 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
 /// Runs on the FINAL graph only — never inside the multistage recovery partial
 /// (`table_recovery_probe`): folding the `BRANCHIND` there would destroy the address path the table
 /// discovery re-emulates each pass.
-pub fn switch_norm(data: &mut Funcdata) {
+///
+/// Returns the change count per Ghidra's `ActionSwitchNorm::apply` convention (coreaction.cc:4551-
+/// 4557): +1 per table actually normalized this call. Ghidra gates each table on `!jt->isLabelled()`
+/// so a table is folded (and counted) at most once across the repeating `actfullloop`; mosura's
+/// analogue is the `normalized` flag — an already-normalized table is skipped, so the count bottoms
+/// out at 0 and a repeating caller converges. (`foldInGuards`, the second counted arm, is not
+/// ported.)
+pub fn switch_norm(data: &mut Funcdata) -> u32 {
     if data.table_recovery_probe {
-        return;
+        return 0;
     }
+    let mut count = 0u32;
     let tables = data.jumptables.clone();
     let mut out = Vec::with_capacity(tables.len());
     for mut jt in tables {
-        if let Some(indop) = branchind_at(data, jt.op_addr) {
-            normalize_one(data, indop, &mut jt);
+        if !jt.normalized {
+            // Ghidra `if (!jt->isLabelled())` (coreaction.cc:4551): only a not-yet-normalized table.
+            if let Some(indop) = branchind_at(data, jt.op_addr) {
+                if normalize_one(data, indop, &mut jt) {
+                    count += 1; // coreaction.cc:4556 — a folded table is a change
+                }
+            }
         }
         out.push(jt);
     }
     data.jumptables = out;
+    count
 }
 
 /// The live `BRANCHIND` at a jump table's recorded address.
@@ -1205,10 +1219,11 @@ fn branchind_at(data: &Funcdata, op_addr: u64) -> Option<OpId> {
 /// matchModel + foldInNormalization for one recovered table. The case labels were computed at
 /// recovery time from the saved model (`jt.labels`); here we re-instantiate the switch variable on
 /// the final graph (Ghidra `matchModel`) and fold the `BRANCHIND` onto it (`foldInNormalization`).
-fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) {
-    let Some((loc, size)) = jt.switchvn_loc else { return };
+/// Returns whether the table was folded (the [`switch_norm`] change count).
+fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) -> bool {
+    let Some((loc, size)) = jt.switchvn_loc else { return false };
     if jt.labels.len() != jt.targets.len() || jt.targets.is_empty() {
-        return; // labels incomplete — keep the cached table, leave the print-time heuristics
+        return false; // labels incomplete — keep the cached table, leave the print-time heuristics
     }
     // matchModel: re-find the switch variable on the final graph — it is a determining varnode of
     // the BRANCHIND at the storage the saved model recorded. (Its bounded range is not recoverable
@@ -1219,12 +1234,13 @@ fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) {
         .map(|i| path_meld.get_varnode(i))
         .find(|&v| data.vn(v).loc == loc && data.vn(v).size == size)
     else {
-        return;
+        return false;
     };
     // foldInNormalization (jumptable.cc:1551): point the BRANCHIND at the switch variable; the
     // address computation becomes dead and is removed by the following ActionDeadCode.
     data.op_set_input(indop, 0, switchvn);
     jt.normalized = true;
+    true
 }
 
 #[cfg(test)]

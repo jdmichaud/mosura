@@ -95,9 +95,12 @@ impl Action for ActionResolveCalls {
         "resolvecalls"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        super::recover::resolve_return(data);
-        super::recover::resolve_call_args(data);
-        1
+        // Ghidra's count conventions, per side: ActionReturnRecovery +1 per unchecked trial + 1 on
+        // commit (coreaction.cc:1933/1951); ActionActiveParam +1 per call still being evaluated + 1
+        // on commit (coreaction.cc:1748/1756). Bottoms out at 0 once both trial containers are
+        // committed and cleared. (Was an unconditional `1` — the return-1 mis-port class that makes
+        // a rule_repeatapply group never converge; cf. ActionNonzeroMask/ActionInferTypes.)
+        super::recover::resolve_return(data) + super::recover::resolve_call_args(data)
     }
 }
 
@@ -111,8 +114,11 @@ impl Action for ActionSwitchNorm {
         "switchnorm"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        super::jumpbasic::switch_norm(data);
-        1
+        // Ghidra `ActionSwitchNorm::apply` counts +1 per table folded, gated `!jt->isLabelled()` so
+        // each table is counted at most once across the repeating actfullloop (coreaction.cc:4551-
+        // 4557); `switch_norm` returns that count. (Was an unconditional `1` — the return-1
+        // mis-port class; ActionSwitchNorm sits in Ghidra's actfullloop, which iterates on it.)
+        super::jumpbasic::switch_norm(data)
     }
 }
 
@@ -302,7 +308,12 @@ impl Action for ActionMarkAddrTied {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         super::varnodeprops::mark_addrtied(data);
-        1
+        // Analysis convention: recomputing varnode property flags is never a data-flow change, so it
+        // must not drive a rule_repeatapply fixpoint — same convention as ActionNonzeroMask
+        // (coreaction.hh:300) and ActionSpacebase (coreaction.hh:277). (Ghidra has no addrtied
+        // action at all — it sets the flag at varnode creation; this adaptation is a pure marking
+        // pass. Was an unconditional `1` — the return-1 mis-port class.)
+        0
     }
 }
 
@@ -333,8 +344,11 @@ impl Action for ActionActiveReturn {
         "activereturn"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        super::recover::resolve_call_output(data);
-        1
+        // Ghidra `ActionActiveReturn::apply` counts +1 per call output committed (coreaction.cc:
+        // 1788, the isOutputActive body); `resolve_call_output` returns that count and skips calls
+        // that already have an output, so the count bottoms out at 0. (Was an unconditional `1` —
+        // the return-1 mis-port class; ActionActiveReturn sits in Ghidra's actfullloop.)
+        super::recover::resolve_call_output(data)
     }
 }
 
