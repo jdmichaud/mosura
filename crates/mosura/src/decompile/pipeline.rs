@@ -367,6 +367,14 @@ impl Action for ActionInferTypes {
         "infertypes"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Ghidra `ActionInferTypes::apply` (coreaction.cc:5378): inert until `ActionStartTypes`
+        // has flipped type recovery on — "Make sure spacebase is accurate or bases could get
+        // typed and then ptrarithed". The fullloop's first round runs the whole mainloop
+        // typeless; only after StartTypes fires does inference (and the ptrarith rules it feeds)
+        // participate.
+        if !data.has_type_recovery_started() {
+            return 0;
+        }
         // Ghidra `ActionInferTypes::apply` (coreaction.cc:5390-5397): at most 7 propagation passes
         // per function ("This constant arrived at empirically"). On the 7th, flag type-recovery
         // exceeded (so `AddTreeState::buildTree` assigns propagated types directly instead) and
@@ -393,6 +401,27 @@ impl Action for ActionInferTypes {
     fn reset(&mut self, _data: &mut Funcdata) {
         // Ghidra `ActionInferTypes::reset` (coreaction.hh:975): localcount = 0 per function.
         self.localcount = 0;
+    }
+}
+
+/// Ghidra `ActionStartTypes` (coreaction.hh:74-86): mark that data-type analysis has started.
+/// Its slot is the tail of `actfullloop` (coreaction.cc:5687): the repeating fullloop first runs
+/// the whole mainloop to quiescence TYPELESS — every `hasTypeRecoveryStarted`-gated site
+/// ([`ActionInferTypes`], `RulePushPtr`, `RulePtrArith`) inert — then this action flips the flag
+/// and counts one change, which forces the fullloop into another round that re-runs everything
+/// TYPED. `Funcdata::startTypeRecovery` returns true exactly once (funcdata.cc:182-188), so
+/// exactly one extra round is forced. (Ghidra's `reset` also sets the `typerecovery_on` "type
+/// recovery will be performed" flag, coreaction.hh:77 — trivially true in mosura, not modeled.)
+pub struct ActionStartTypes;
+
+impl Action for ActionStartTypes {
+    fn name(&self) -> &str {
+        "starttypes"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // coreaction.hh:82-85: `if (data.startTypeRecovery()) count += 1; return 0;` — mosura's
+        // `Action::apply` returns the change count directly, so the counted start is the return.
+        u32::from(data.start_type_recovery())
     }
 }
 
@@ -530,6 +559,13 @@ pub fn universal_action() -> ActionGroup {
         .then(default_rule_pool())
         .then(super::deadcode::ActionDeadCode)
         .then(ActionActiveReturn)
+        // Flip type recovery on (Ghidra ActionStartTypes, actfullloop tail coreaction.cc:5687)
+        // immediately before the first ActionInferTypes application, so every gated site —
+        // ActionInferTypes here and in the reheritage restart, RulePushPtr/RulePtrArith in
+        // ptrarith_pool (all after this point in the chain) — behaves exactly as before the gate
+        // existed. When the fullloop wrap lands (task #8 Brick C1) this moves to its faithful
+        // fullloop-tail slot and the typeless phase-1 becomes real.
+        .then(ActionStartTypes)
         .then(ActionInferTypes::default())
         // Iterating mainloop re-heritage (Ghidra runs ActionHeritage every actmainloop iteration,
         // coreaction.cc:5492): a LOAD/STORE that RuleLoadVarnode/RuleStoreVarnode converts to a free

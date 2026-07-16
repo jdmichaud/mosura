@@ -38,8 +38,9 @@ pub struct Funcdata {
     /// The function's loaded memory (address, bytes) chunks — code + data — so jump-table
     /// recovery can read switch tables (Ghidra's LoadImage). Empty for hand-built test functions.
     pub image: Vec<(u64, Vec<u8>)>,
-    /// Ghidra `Funcdata::hasTypeRecoveryStarted`: set once `ActionInferTypes` has committed
-    /// data-types onto varnodes, gating the pointer-arithmetic rules.
+    /// Ghidra's `typerecovery_start` Funcdata flag (funcdata.hh:150): set once `ActionStartTypes`
+    /// flips type recovery on (`startTypeRecovery`, funcdata.cc:182), gating `ActionInferTypes`
+    /// and the pointer-arithmetic rules — the fullloop's typeless-then-typed two-phase cadence.
     typerecovery_started: bool,
     /// Ghidra `Funcdata::isTypeRecoveryExceeded` (`typerecovery_exceeded` flag, funcdata.hh:152/182):
     /// set once `ActionInferTypes` has made its maximum propagation passes (`localcount == 7`,
@@ -117,13 +118,23 @@ impl Funcdata {
         }
     }
 
-    /// Ghidra `Funcdata::hasTypeRecoveryStarted`: whether data-type recovery has committed types.
+    /// Ghidra `Funcdata::hasTypeRecoveryStarted`: whether data-type recovery has started
+    /// (funcdata.hh:151, the `typerecovery_start` flag). Gates every type-reading site —
+    /// `ActionInferTypes` (coreaction.cc:5378), `RulePushPtr` (ruleaction.cc:6851), `RulePtrArith`
+    /// (ruleaction.cc:6642) — so the mainloop's first fullloop round runs typeless.
     pub fn has_type_recovery_started(&self) -> bool {
         self.typerecovery_started
     }
-    /// Mark type recovery as begun (Ghidra sets this in `ActionInferTypes`).
-    pub fn set_type_recovery_started(&mut self) {
+    /// Ghidra `Funcdata::startTypeRecovery` (funcdata.cc:182-188): mark that data-type analysis
+    /// has started. Returns `true` exactly once — `false` if already started — so
+    /// `ActionStartTypes` counts a change (forcing one more fullloop round, the typed phase)
+    /// only the first time.
+    pub fn start_type_recovery(&mut self) -> bool {
+        if self.typerecovery_started {
+            return false; // Already started
+        }
         self.typerecovery_started = true;
+        true
     }
 
     /// Ghidra `Funcdata::isTypeRecoveryExceeded`: whether type propagation hit its pass cap (7).

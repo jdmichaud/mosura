@@ -725,7 +725,8 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
 
 /// Ghidra `ActionInferTypes::apply`: recover a data-type for every varnode and *commit* it onto
 /// the varnode (`Varnode::updateType`, Ghidra's `writeBack`), so later actions — notably
-/// `RulePtrArith` — can read `Varnode::get_type`/`type_read_facing`. Marks type recovery started.
+/// `RulePtrArith` — can read `Varnode::get_type`/`type_read_facing`. Runs only after
+/// `ActionStartTypes` has flipped type recovery on (the pipeline action's coreaction.cc:5378 gate).
 /// This is the in-pipeline counterpart of the print-time [`infer`]; both share one engine.
 ///
 /// Returns whether any varnode's committed type changed — Ghidra's `writeBack` return value
@@ -739,7 +740,6 @@ pub fn infer_types(f: &mut Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> bo
             changed = true;
         }
     }
-    f.set_type_recovery_started();
     changed
 }
 
