@@ -85,6 +85,15 @@ dispatched by format, producing the LE's objects-as-blocks directly.
 - Entry: LE+`0x1C` init-EIP is an **offset within the init object**, not a virtual address;
   absolute entry = `obj1_vbase + 0x501F8 = 0x601F8` (`_cstart_`, a Watcom CRT init thunk;
   first 2 bytes `EB 76` jump over an inline banner string).
+- **The inline banner (file `0xAA89C`, right after the `EB 76`) identifies the compiler +
+  version era**: `WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International
+  Corp. 1988-1994. All rights reserved.` — vendor wording + copyright year range are the
+  version fingerprint (classic "WATCOM International Corp." ≤10.x era; later versions use
+  Sybase / Open Watcom wordings). The 16-bit DOS/4GW stub carries its own banner
+  (`WATCOM C Run-Time system ... 1988-1993`). Ghidra has **no** Watcom detection outside
+  the OMF loader's translator comment, and **no watcom cspec at all** — so Watcom
+  detection/versioning and the watcall cspec are two-oracle extensions (tasks #8/#9),
+  grounded in open-watcom-v2 source, validated vs warcraft2-re.
 - Page alignment `0x1000`. Loads as `x86:LE:32:default`, image base `0x10000`.
 - The LE loader-section region (`0x37CF4`..`0x5A6A4`) holds fixup/import/resident-name tables —
   needed for a faithful loader (fixups), though `warcraft2-re`'s diff tool works on file
