@@ -492,7 +492,14 @@ impl Action for ActionConsume {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         super::consume::calc_consume(data);
-        1
+        // The consume sweep is the analysis prelude of Ghidra's ActionDeadCode (coreaction.cc:
+        // 3925+), whose count reports only actual dead-code changes — mosura's deletion half
+        // (deadcode.rs) counts those. Recomputing consume is analysis, never a data-flow change,
+        // so it must not drive a rule_repeatapply fixpoint. (Was an unconditional `1` — the
+        // return-1 mis-port class, cf. ActionNonzeroMask; inside the mainloop restart it would
+        // never converge. This edit overlaps the parked consume-default brick, which owns the
+        // remaining `Varnode::consume` default fix — see consume-model-misport.)
+        0
     }
 }
 
@@ -521,109 +528,76 @@ pub fn universal_action() -> ActionGroup {
         // model (backlog), re-evaluate moving this to Ghidra's stackstall slot. Inert unless the
         // Funcdata carries laned-register records (parsed from the pspec by the build caller).
         .then(super::lanedivide::ActionLaneDivide)
-        // Mark the input stack pointer `is_spacebase()` (Ghidra ActionSpacebase, coreaction.cc:5506 —
-        // before the first nonzero-mask + infertypes + pool). Ghidra re-runs it every mainloop
-        // iteration; mosura runs it once here (the base-register set is stable across the scoped
-        // reheritage restart, which only re-heritages ram globals).
-        .then(ActionSpacebase)
-        .then(ActionNonzeroMask)
-        .then(ActionConsume)
-        .then(default_rule_pool())
-        .then(super::deadcode::ActionDeadCode)
-        // Fold any CBRANCH whose condition simplified to a constant, then prune the unreachable
-        // target (Ghidra ActionDeterminedBranch). A second simplify+dead-code sweep cleans up the
-        // collapsed MULTIEQUAL (now a COPY) and the dead ops the prune leaves behind.
-        .then(super::determinedbranch::ActionDeterminedBranch)
-        // Conditional-constant propagation (Ghidra ActionConditionalConst, the last action in its
-        // mainloop). Placed after ActionDeterminedBranch — mirroring Ghidra's determinedbranch ->
-        // condconst order — so the compares are already normalized to INT_EQUAL/NOTEQUAL and the two
-        // following simplify sweeps fold the substituted constants (`0 + y => y`, `7 + 9 => 0x10`),
-        // as Ghidra's mainloop re-runs oppool1 after it. Ghidra's mainloop also REPEATS, so its
-        // condconst can re-fire on its own output; mosura's hand-unrolled pipeline runs it once here
-        // — the same once-pass approximation the rest of the pipeline uses. A fixture that needed
-        // *iterative* condconst (its output enabling further propagation) would be the mainloop-repeat
-        // item (backlog #8), not a condconst special-case.
-        .then(super::condconst::ActionConditionalConst)
-        .then(ActionNonzeroMask)
-        .then(ActionConsume)
-        .then(default_rule_pool())
-        .then(super::deadcode::ActionDeadCode)
-        // A third simplify+dead-code sweep, continuing the hand-unrolled approximation of Ghidra's
-        // `rule_repeatapply` mainloop (which repeats pool+deadcode to fixpoint). It is a no-op for
-        // functions already converged; it matters when a rule needs a *prior* dead op cleared
-        // before it can fire — e.g. the orcompare boolean chain, where RuleOrCompare/RuleShiftCompare
-        // settle in the second sweep and only then does dead-code drop the multiply, exposing the
-        // `loneDescend` that lets RuleZextEliminate/RuleBooleanNegate recover the `||`.
-        .then(ActionNonzeroMask)
-        .then(ActionConsume)
-        .then(default_rule_pool())
-        .then(super::deadcode::ActionDeadCode)
-        .then(ActionActiveReturn)
-        // Flip type recovery on (Ghidra ActionStartTypes, actfullloop tail coreaction.cc:5687)
-        // immediately before the first ActionInferTypes application, so every gated site —
-        // ActionInferTypes here and in the reheritage restart, RulePushPtr/RulePtrArith in
-        // ptrarith_pool (all after this point in the chain) — behaves exactly as before the gate
-        // existed. When the fullloop wrap lands (task #8 Brick C1) this moves to its faithful
-        // fullloop-tail slot and the typeless phase-1 becomes real.
-        .then(ActionStartTypes)
-        .then(ActionInferTypes::default())
-        // Iterating mainloop re-heritage (Ghidra runs ActionHeritage every actmainloop iteration,
-        // coreaction.cc:5492): a LOAD/STORE that RuleLoadVarnode/RuleStoreVarnode converts to a free
-        // COPY in ptrarith_pool re-enters heritage, which widens the range (globaldisjoint.add) and
-        // re-versions it. The widening re-free (removeRevisitedMarkers + normalize_ranges) then
-        // reconstructs Ghidra's whole-range SSA (revisit `iRam74 = iRam74 + 10` in-place instead of
-        // the snapshot). The group repeats to a fixpoint (rule_repeatapply): ptrarith bottoms out,
-        // heritage returns 0 once complete, deadcode is idempotent — measured to converge in <=2 passes.
-        // Second ActionSpacebase pass runs *inside* the re-heritage fixpoint group (Ghidra runs both
-        // ActionSpacebase and RulePtrArith every actmainloop iteration, coreaction.cc:5506/5666): now
-        // that the frame base's descendants (loop-phi init, call arg) exist, its re-mark arm's
-        // splitUses fires (funcdata.cc:253-259), cloning `RSP = RSP-0x68` per read into Ghidra's narrow
-        // single-use versions (RSP:93/RSP:94) — this ends each version's cover at its lone use so the
-        // later ActionMergeRequired trimOpInput no longer over-fires the spurious frame-base COPY
-        // (task #27 S3). Because it runs *before* ptrarith_pool in the same repeating group, the now
-        // single-use frame base is then folded to `PTRSUB(RSP, -0x68)` (the typed spacebase pointer),
-        // matching Ghidra's IR so every stack address is a PTRSUB the ScopeLocal naming resolves.
-        // ActionNonzeroMask + ActionInferTypes run *inside* the re-heritage group, before
-        // ptrarith_pool (Ghidra actmainloop order, coreaction.cc:5506-5508/5666): ActionSpacebase →
-        // ActionNonzeroMask → ActionInferTypes → … → RulePtrArith. This is what forms the clean array
-        // subscript (task #22-A-2b): pass 1's ptrarith creates `PTRSUB(RSP, array_start)`, then pass
-        // 2's ActionInferTypes types that PTRSUB output as a pointer to the ScopeLocal symbol (via the
-        // TYPE_SPACEBASE getSubType propagation), so pass 2's ptrarith Array arm folds the index into a
-        // `PTRADD(array, i, elem)` — `axStack_N[i]` — instead of a raw `+ i*elem`. ActionInferTypes is
-        // convergence-safe here: it returns 0 (never drives the fixpoint) and self-caps at 7 passes
-        // (localcount, coreaction.cc:5390); only heritage/ptrarith/deadcode drive the repeat.
+        // ★ The two-phase fullloop (task #8 Brick C1): Ghidra `actfullloop` (rule_repeatapply,
+        // coreaction.cc:5487) wrapping `actmainloop` (rule_repeatapply, :5489) with
+        // `ActionStartTypes` at its tail (:5687). It replaces the three hand-unrolled
+        // nzmask→consume→pool→deadcode sweeps and the once-instances of determinedbranch/
+        // condconst/infertypes that approximated it. The mainloop body — grown from the
+        // "reheritage" restart, Ghidra's actmainloop member cycle rotated to mosura's spacebase
+        // entry — first runs to quiescence TYPELESS: ActionInferTypes (coreaction.cc:5378),
+        // RulePushPtr (ruleaction.cc:6851) and RulePtrArith (ruleaction.cc:6642) are inert behind
+        // the `hasTypeRecoveryStarted` gate, while the UNGATED RuleLoadVarnode/RuleStoreVarnode
+        // resolve stack/ram accesses in phase 1 exactly as Ghidra's actprop2 does. Then
+        // ActionStartTypes flips the flag, counting one change — which forces the repeatapply
+        // fullloop into round 2: the whole mainloop re-runs TYPED to quiescence.
+        //
+        // Mainloop member notes (Ghidra actmainloop order, coreaction.cc:5490-5676):
+        // - ActionSpacebase first ("must come before infertypes and nonzeromask", :5506): marks
+        //   the input stack pointer `is_spacebase()`; on re-entry its re-mark arm's splitUses
+        //   clones `RSP = RSP-k` per read (funcdata.cc:253-259) into narrow single-use versions,
+        //   ending each version's cover at its lone use so ActionMergeRequired's trimOpInput no
+        //   longer over-fires the spurious frame-base COPY (task #27 S3); the single-use base then
+        //   folds to `PTRSUB(RSP, -k)` in the same pass's ptrarith, so every stack address is a
+        //   PTRSUB the ScopeLocal naming resolves.
+        // - ActionNonzeroMask → ActionConsume → ActionInferTypes (:5507-5508): the analysis
+        //   recomputes, refreshed every iteration as Ghidra does (consume is the analysis half of
+        //   Ghidra's ActionDeadCode, coreaction.cc:3925+ — the slot the parked consume-default
+        //   brick re-uses). InferTypes-in-the-loop is what forms the clean array subscript (task
+        //   #22-A-2b): pass N's ptrarith creates `PTRSUB(RSP, array_start)`, pass N+1's
+        //   ActionInferTypes types it as a pointer to the ScopeLocal symbol (TYPE_SPACEBASE
+        //   getSubType), so the next ptrarith Array arm folds the index into `PTRADD(array, i,
+        //   elem)` — `axStack_N[i]` — instead of a raw `+ i*elem`.
+        // - default_rule_pool = oppool1/actstackstall (:5509-5652), ActionDeadCode (:5503,
+        //   rotated), ptrarith_pool = actprop2 (:5666-5669): a LOAD/STORE that RuleLoadVarnode/
+        //   RuleStoreVarnode converts to a free COPY re-enters ActionHeritage below, which widens
+        //   the range (globaldisjoint.add) and re-versions it — the widening re-free
+        //   (removeRevisitedMarkers + normalize_ranges, S8-1/2) reconstructs Ghidra's whole-range
+        //   SSA (revisit `iRam74 = iRam74 + 10` in-place instead of the snapshot).
+        // - The Brick-B tail: ActionDeterminedBranch (:5672) → ActionUnreachable (:5673, inlined
+        //   in mosura's determinedbranch) → ActionConditionalConst (:5676) — then the cycle wraps
+        //   to ActionHeritage (:5492) + ActionDeadCode, the next iteration's head, so within every
+        //   pass the stack/global LOAD/STOREs just resolved are seen by determinedbranch/condconst
+        //   in the same iteration (the #22-B ordering evidence). ActionNodeJoin (:5674) /
+        //   ActionConditionalExe (:5675) join here when ported.
+        // - Convergence: heritage returns 0 once complete, deadcode counts removals, the pools are
+        //   fixpoint, nzmask/consume return 0 (analysis), determinedbranch/condconst are monotone
+        //   (branch removal strictly shrinks the CFG; a propagated constant no longer matches),
+        //   and ActionInferTypes returns 0 and self-caps at 7 passes (localcount, coreaction.cc:
+        //   5390) — only heritage/pools/deadcode/branch-folds drive the repeat, and StartTypes
+        //   forces exactly one extra fullloop round (startTypeRecovery returns true once).
         .then(
-            ActionGroup::restart("reheritage")
-                .then(ActionSpacebase)
-                .then(ActionNonzeroMask)
-                .then(ActionInferTypes::default())
-                // Ghidra actmainloop runs oppool1 (actstackstall) between ActionInferTypes and
-                // actprop2/RulePtrArith (coreaction.cc:5509/5666). Re-running the simplification pool
-                // here folds the leftover `array_start + (i*elem - array_start)` compensation the
-                // first ptrarith pass emits into a bare `i*elem`, so the now array-typed base's second
-                // ptrarith pass sees an empty non-multiple tail and forms the clean `PTRADD(array, i,
-                // elem)` subscript (task #22-A-2b). Idempotent rule pool → converges (task #8 S8-3).
-                .then(default_rule_pool())
-                .then(super::deadcode::ActionDeadCode)
-                .then(ptrarith_pool())
-                // Ghidra actmainloop tail, in order (task #8 Brick B): actprop2 (:5666-5669, =
-                // ptrarith_pool above) → ActionDeterminedBranch (:5672) → ActionUnreachable (:5673,
-                // inlined in mosura's determinedbranch) → ActionConditionalConst (:5676) — then the
-                // cycle wraps to ActionHeritage (:5492) and ActionDeadCode (:5503), the next
-                // iteration's head. This is Ghidra's exact member cycle rotated to mosura's
-                // spacebase entry point, so within every pass the stack/global LOAD/STOREs that
-                // RuleLoadVarnode/RuleStoreVarnode resolve are seen by determinedbranch/condconst
-                // in the same iteration (the #22-B ordering evidence: Ghidra resolves stack BEFORE
-                // both, every iteration). The early once-instances above (before the restart) are
-                // Ghidra's iteration 1. ActionNodeJoin (:5674) / ActionConditionalExe (:5675) are
-                // not yet ported and join here when they land. Both members count real changes and
-                // are monotone (branch removal strictly shrinks the CFG; a propagated constant
-                // no longer matches), so the fixpoint converges.
-                .then(super::determinedbranch::ActionDeterminedBranch)
-                .then(super::condconst::ActionConditionalConst)
-                .then(ActionHeritage)
-                .then(super::deadcode::ActionDeadCode),
+            ActionGroup::restart("fullloop")
+                .then(
+                    ActionGroup::restart("mainloop")
+                        .then(ActionSpacebase)
+                        .then(ActionNonzeroMask)
+                        .then(ActionConsume)
+                        .then(ActionInferTypes::default())
+                        .then(default_rule_pool())
+                        .then(super::deadcode::ActionDeadCode)
+                        .then(ptrarith_pool())
+                        .then(super::determinedbranch::ActionDeterminedBranch)
+                        .then(super::condconst::ActionConditionalConst)
+                        .then(ActionHeritage)
+                        .then(super::deadcode::ActionDeadCode),
+                )
+                .then(ActionStartTypes),
         )
+        // Ghidra's ActionActiveReturn slot is the actfullloop tail, directly after ActionStartTypes
+        // (coreaction.cc:5688) — it re-evaluates at the end of every fullloop round. Minimal Brick
+        // C keeps it linear (once, after the loop); joining the fullloop together with the rest of
+        // Ghidra's tail members (ActionDeadCode :5682, ActionSwitchNorm :5684) is the C2 follow-on.
+        .then(ActionActiveReturn)
         // Switch normalization (Ghidra ActionSwitchNorm, coreaction.cc:4548, in actfullloop after
         // the mainloop and before cleanup, :5684/:5692): for each recovered jump table, re-find the
         // unnormalized switch variable on the final graph (matchModel over the saved recovery-time
