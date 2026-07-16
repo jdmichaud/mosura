@@ -4,8 +4,8 @@
 //! out a `&'static Spec` (leaked — specs live for the whole run anyway). Purely a loader
 //! cache: the parsed `Spec` is bit-identical to a fresh `Spec::from_sla`.
 //!
-//! (This is also the intended seat of the architecture's laned-register metadata
-//! [`Spec::laned`] — see the HELD-INERT note in [`get`].)
+//! (This is also the seat of the architecture's laned-register metadata
+//! [`Spec::laned`] — see the reactivation note in [`get`].)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,31 +22,29 @@ pub fn get(path: &Path) -> Option<&'static Spec> {
     if let Some(&hit) = map.get(path) {
         return hit;
     }
-    // HELD INERT (Task #6 S3b). This is the seat where the architecture's laned (vector) registers
-    // would be attached — the `.sla` alone carries no `vector_lane_sizes` (Ghidra reads them from the
-    // `.pspec`), so this loader is the natural place to resolve them:
+    // The architecture's laned (vector) registers are attached here — the `.sla` alone carries no
+    // `vector_lane_sizes` (Ghidra reads them from the `.pspec`), so this loader resolves them
+    // (mirrored in `lang::load`). This feeds the lane-division subsystem (TransformManager +
+    // LaneDivide + ActionLaneDivide, wired at pipeline.rs post-heritage/pre-pool), a complete
+    // faithful port of subflow.cc/coreaction.cc:585.
     //
-    //     if let Some(pspec) = crate::lang::default_pspec_for_sla(path) {
-    //         s.laned = crate::lang::pspec_laned_size_masks(&pspec, &s);
-    //     }
-    //
-    // The lane-division subsystem it feeds (TransformManager + LaneDivide + ActionLaneDivide, wired at
-    // pipeline.rs post-heritage/pre-pool) is a COMPLETE, faithful port — but it is NOT populated,
-    // because live it net-regresses the corpus (avg 0.8936→0.8935): mosura over-splits XMM into 4-byte
-    // lanes where Ghidra uses 8-byte. Re-add the two lines above (and the mirror in `lang::load`) once
-    // EITHER upstream cause is fixed:
-    //   (i) [PRIMARY] P6 stops the spurious 4-byte XMM output/param trials (`characterizeAsOutput`
-    //       over-widen): at lanedivide time mosura carries a dead `SUBPIECE r0x1200:16 -> :4` of XMM0
-    //       that Ghidra lacks, so `collectLaneSizes` (smallest-first) picks 4-byte lanes.
-    //   (ii) the spacebase/StackPtrFlow model moves stack resolution post-pool, making Ghidra's
-    //       stackstall slot usable — measured: moving the action post-pool copy-props the laned
-    //       register away entirely (no split), so today only the pre-pool slot has a live reg to divide.
-    // At reactivation, `floatcast` already improves (+0.038) — evidence the split itself is right once
-    // fed the correct-width reads.
+    // REACTIVATED (task #5 Brick 2) after Brick 1 retired the overlapping XMM0:4 return candidate
+    // (recover.rs `recover_return`) whose dead `SUBPIECE XMM0:16 -> :4` mis-sized
+    // `collectLaneSizes`' smallest-first lane choice — the cause of the original net regression
+    // that had held this populate inert (task #6 S3b). Reactivation measure (base `19f1ebb` +
+    // Brick 1): floatprint holds 1.000, stackstring 0.818→0.899 (splits into Ghidra's 8-byte lane
+    // shapes), concatsplit 0.881→0.863 — the one regression, a PRE-EXISTING LaneDivide
+    // do_trace/placement gap (genuine live 4-byte SUBPIECEs at mosura's pre-pool slot that
+    // Ghidra's post-oppool1 stackstall slot never sees; see docs/coverage.md ActionLaneDivide).
     let spec = std::fs::read(path)
         .ok()
         .and_then(|bytes| Spec::from_sla(&bytes).ok())
-        .map(|s| &*Box::leak(Box::new(s)));
+        .map(|mut s| {
+            if let Some(pspec) = crate::lang::default_pspec_for_sla(path) {
+                s.laned = crate::lang::pspec_laned_size_masks(&pspec, &s);
+            }
+            &*Box::leak(Box::new(s))
+        });
     map.insert(path.to_path_buf(), spec);
     spec
 }

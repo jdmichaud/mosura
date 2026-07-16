@@ -4,14 +4,16 @@
 //! Usage: `cargo run -q --example dumpc -- <fixture-stem> [--raw]`.
 use mosura::decompile::{build, pipeline};
 use mosura::decompile::printc::print_c;
-use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let stem = args.get(1).expect("fixture stem");
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
-    let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+    // Load through the spec cache so the dump sees exactly what the pipeline/tests see —
+    // including the laned (vector) registers the cache loader attaches (a direct
+    // `Spec::from_sla` would silently miss them and dump a lane-blind decompile).
+    let spec = mosura::speccache::get(&sla).expect("x86-64.sla parses");
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join(format!("{stem}.xml"));
     let dt = datatest::parse_file(&path).unwrap();

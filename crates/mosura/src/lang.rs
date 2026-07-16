@@ -121,10 +121,10 @@ pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
 /// when the tables aren't present (e.g. the Ghidra tree isn't set up).
 pub fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     let (sla, pspec) = resolve(lang_id)?;
-    let spec = Spec::from_sla(&fs::read(&sla).ok()?).ok()?;
-    // NOTE: this is where the real-disassembly path would attach the laned (vector) registers
-    // (`spec.laned = pspec_laned_size_masks(&pspec, &spec)`), mirroring the cache loader. Held inert
-    // for the same reason — see the HELD-INERT note in `speccache::get`.
+    let mut spec = Spec::from_sla(&fs::read(&sla).ok()?).ok()?;
+    // The real-disassembly path attaches the laned (vector) registers, mirroring the cache
+    // loader — see the reactivation note in `speccache::get`.
+    spec.laned = pspec_laned_size_masks(&pspec, &spec);
     let sets = pspec_context_sets(&pspec);
     let refs: Vec<(&str, u64)> = sets.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let ctx = spec.context_from_sets(&refs);
