@@ -637,25 +637,35 @@ pub fn universal_action() -> ActionGroup {
                         .then(ActionHeritage)
                         .then(super::deadcode::ActionDeadCode),
                 )
-                .then(ActionStartTypes),
+                // The actfullloop tail (Ghidra coreaction.cc:5678-5689), the mosura-present members
+                // at Ghidra's order — each re-evaluates at the end of every fullloop round, and a
+                // change any of them makes forces another full round (mainloop re-quiesces on the
+                // updated graph):
+                // - ActionDeadCode (:5682): the between-rounds sweep — e.g. the address computation
+                //   a SwitchNorm fold orphaned in the PREVIOUS round dies here.
+                // - ActionSwitchNorm (:5684): for each recovered jump table, re-find the
+                //   unnormalized switch variable on the final graph (matchModel over the saved
+                //   recovery-time model — findUnnormalized ran at recovery, jumptable.cc:1462) and
+                //   fold the BRANCHIND onto it (foldInNormalization, jumptable.cc:1546); the
+                //   recovered labels (buildLabels/backup2Switch, jumptable.cc:1506/472) become the
+                //   printed case values. Retires the print-time switch heuristics for normalized
+                //   tables — the printer reads `switch(switchvn)` + labels directly. Convergent:
+                //   +1 once per table (`jt.normalized`, = Ghidra `!jt->isLabelled()`,
+                //   coreaction.cc:4551); a fold counts a change, so the fullloop repeats and the
+                //   next round's dead-code members clean up the folded-away address code.
+                // - ActionStartTypes (:5687): flips type recovery on after the first (typeless)
+                //   round, counting one change — forces the typed round 2 (see above).
+                // - ActionActiveReturn (:5688): commit call outputs from the surviving
+                //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
+                //   are skipped (`output.is_some()`, cleared isOutputActive).
+                // Tail members mosura has not ported are absent here: ActionLikelyTrash (:5679),
+                // ActionDirectWrite ×2 (:5680-5681), ActionDoNothing (:5683), ActionReturnSplit
+                // (:5685), ActionUnjustifiedParams (:5686) — each joins at its slot with its port.
+                .then(super::deadcode::ActionDeadCode)
+                .then(ActionSwitchNorm)
+                .then(ActionStartTypes)
+                .then(ActionActiveReturn),
         )
-        // Ghidra's ActionActiveReturn slot is the actfullloop tail, directly after ActionStartTypes
-        // (coreaction.cc:5688) — it re-evaluates at the end of every fullloop round. Minimal Brick
-        // C keeps it linear (once, after the loop); joining the fullloop together with the rest of
-        // Ghidra's tail members (ActionDeadCode :5682, ActionSwitchNorm :5684) is the C2 follow-on.
-        .then(ActionActiveReturn)
-        // Switch normalization (Ghidra ActionSwitchNorm, coreaction.cc:4548, in actfullloop after
-        // the mainloop and before cleanup, :5684/:5692): for each recovered jump table, re-find the
-        // unnormalized switch variable on the final graph (matchModel over the saved recovery-time
-        // model — findUnnormalized ran at recovery, jumptable.cc:1462) and fold the BRANCHIND onto
-        // it (foldInNormalization, jumptable.cc:1546) so the index/table-load computation dies; the
-        // recovered labels (buildLabels/backup2Switch, jumptable.cc:1506/472) become the printed
-        // case values. Retires the print-time switch heuristics for normalized tables — the printer
-        // reads `switch(switchvn)` + labels directly (`switch(iVar1)` cases 1..9, not
-        // `switch(iVar1 - 1)` cases 0..8). A deadcode sweep removes the folded-away address code
-        // (Ghidra: the fullloop repeats, its ActionDeadCode member cleans up next iteration).
-        .then(ActionSwitchNorm)
-        .then(super::deadcode::ActionDeadCode)
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
