@@ -24,18 +24,6 @@ use super::structure::{structure, FlowKind, Structured};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
-/// Collect the basic blocks under a structured block (its loop body, etc.).
-fn basic_blocks_of(s: &Structured, idx: usize, acc: &mut Vec<BlockId>) {
-    match &s.blocks[idx].kind {
-        FlowKind::Basic(b) => acc.push(*b),
-        _ => {
-            for &c in &s.blocks[idx].components {
-                basic_blocks_of(s, c, acc);
-            }
-        }
-    }
-}
-
 /// The exit basic block of a structured block (where its terminating CBRANCH lives).
 fn exit_basic(s: &Structured, idx: usize) -> Option<BlockId> {
     match &s.blocks[idx].kind {
@@ -195,6 +183,15 @@ struct PrintC<'a> {
     /// `&self` explicitness test can compare two Varnodes' HighVariables without the `&mut` the
     /// union-find `high()` needs. Used by [`Self::is_explicit`]'s cross-high COPY arm.
     high_of: Vec<u32>,
+    /// Per-varnode liveness ([`super::cover::all_covers`]) for the `check_implied_cover` arm of
+    /// [`Self::is_explicit`] (Ghidra `ActionMarkImplied::checkImpliedCover`).
+    covers: HashMap<VarnodeId, super::cover::Cover>,
+    /// HighVariable representative → its member Varnodes (the frozen [`Self::high_of`] classes).
+    high_members: HashMap<u32, Vec<VarnodeId>>,
+    /// The required-merges-only HighVariable state ([`super::merge::merge_required_only`], Ghidra's
+    /// classes at the `ActionMarkImplied` slot) as `(rep per varnode, rep → members)` — the
+    /// instance list `Merge::inflateTest` walks in [`Self::is_explicit`]'s implied-cover arm.
+    implied_high: (Vec<u32>, HashMap<u32, Vec<VarnodeId>>),
 }
 
 impl PrintC<'_> {
@@ -310,6 +307,51 @@ impl<'a> PrintC<'a> {
         if vn.descend.len() != 1 {
             return true; // 0 or >1 uses: named
         }
+        // Ghidra `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) via
+        // `Merge::inflateTest` (merge.cc): a value can stay implied only if no def-op input's
+        // HighVariable has another instance whose live range intersects the value's own cover —
+        // otherwise the inlined expression would read a value REDEFINED between the def and the
+        // use point (switchloop case 4: the SLESS reads the accumulator phi, the merge trim COPY
+        // rewrites the accumulator's HighVariable between the SLESS and the CBRANCH, so the
+        // condition must materialize as `bVar1 = …` before the copy). Instances that are copy
+        // shadows of the input (`Varnode::copyShadow`) carry the same value and are exempt.
+        if let (Some(def), Some(vcov)) = (vn.def, self.covers.get(&v)) {
+            for slot in 0..self.f.op(def).num_inputs() {
+                let Some(defvn) = self.f.op(def).input(slot) else { continue };
+                if self.f.vn(defvn).is_constant() {
+                    continue;
+                }
+                let Some(members) = self.implied_high.1.get(&self.implied_high.0[defvn.0 as usize])
+                else {
+                    continue;
+                };
+                for &b in members {
+                    if b == defvn || self.copy_shadow(defvn, b) {
+                        continue;
+                    }
+                    // Cross-size members of mosura's address-tied class stand in for Ghidra's
+                    // VariablePiece group; inflateTest's piece branch exempts partial copy
+                    // shadows (`b->partialCopyShadow(a, off)`, merge.cc) — a SUBPIECE/PIECE of
+                    // the same value is not a redefinition (revisit's INDIRECT whole vs its
+                    // 2-byte piece).
+                    if self.f.vn(b).size != self.f.vn(defvn).size
+                        && self.f.vn(b).loc.space == self.f.vn(defvn).loc.space
+                        && super::mergesnip::partial_copy_shadow(
+                            self.f,
+                            defvn,
+                            b,
+                            (self.f.vn(defvn).loc.offset as i64 - self.f.vn(b).loc.offset as i64)
+                                as i32,
+                        )
+                    {
+                        continue;
+                    }
+                    if self.covers.get(&b).is_some_and(|bc| bc.intersects(vcov)) {
+                        return true;
+                    }
+                }
+            }
+        }
         // single use: inline, unless it feeds a marker that stands for the *same* variable, in
         // which case it must be materialized as an assignment to that variable:
         //  - a phi (the loop increment `i = i + 1`, the init `i = 0`); or
@@ -327,6 +369,141 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// Ghidra `PcodeOp::isMoveable` (op.cc:178): can `op` be moved down in its block to just
+    /// before `point` without changing meaning? Mirrors Ghidra's checks: special ops other than
+    /// LOAD don't move; same block only; the output may not be read before `point`; walking the
+    /// intervening ops — INDIRECT passes through, STORE blocks a moving LOAD / address-tied
+    /// operands, CALLs block unless the op touches no address-tied or persistent storage, any
+    /// other special op blocks; and an intervening def may not overlap an address-tied input.
+    fn is_moveable(&self, op: OpId, point: OpId) -> bool {
+        if op == point {
+            return true; // no movement necessary
+        }
+        let f = self.f;
+        let special = |o: OpId| {
+            matches!(
+                f.op(o).code(),
+                OpCode::Load
+                    | OpCode::Store
+                    | OpCode::Branch
+                    | OpCode::Cbranch
+                    | OpCode::Branchind
+                    | OpCode::Call
+                    | OpCode::Callind
+                    | OpCode::Callother
+                    | OpCode::Return
+                    | OpCode::Indirect
+                    | OpCode::Multiequal
+            )
+        };
+        let mut moving_load = false;
+        if special(op) {
+            if f.op(op).code() == OpCode::Load {
+                moving_load = true; // LOAD moves with additional restrictions
+            } else {
+                return false; // don't move special ops
+            }
+        }
+        if f.op(op).parent.is_none() || f.op(op).parent != f.op(point).parent {
+            return false; // not in the same block
+        }
+        let parent = f.op(op).parent.expect("checked");
+        let ops = &f.block(parent).ops;
+        let Some(opos) = ops.iter().position(|&o| o == op) else { return false };
+        let Some(ppos) = ops.iter().position(|&o| o == point) else { return false };
+        if ppos < opos {
+            return false;
+        }
+        // The output cannot move past an op that reads it.
+        if let Some(out) = f.op(op).output {
+            for &read in &f.vn(out).descend {
+                if f.op(read).parent != Some(parent) {
+                    continue;
+                }
+                if ops.iter().position(|&o| o == read).is_some_and(|rp| rp <= ppos) {
+                    return false; // read before (or at) `point`
+                }
+            }
+        }
+        // Crossing a CALL is allowed only for a normal op touching no address-tied or
+        // persistent storage.
+        let not_tied = |v: VarnodeId| !f.vn(v).is_addrtied() && !f.vn(v).is_persist();
+        let cross_calls = !special(op)
+            && f.op(op).output.is_some_and(not_tied)
+            && (0..f.op(op).num_inputs())
+                .all(|i| f.op(op).input(i).is_some_and(|v| f.vn(v).is_constant() || not_tied(v)));
+        let tied_list: Vec<VarnodeId> = (0..f.op(op).num_inputs())
+            .filter_map(|i| f.op(op).input(i))
+            .filter(|&v| f.vn(v).is_addrtied())
+            .collect();
+        let overlaps = |a: VarnodeId, b: VarnodeId| {
+            let (va, vb) = (f.vn(a), f.vn(b));
+            va.loc.space == vb.loc.space
+                && va.loc.offset < vb.loc.offset + vb.size as u64
+                && vb.loc.offset < va.loc.offset + va.size as u64
+        };
+        for &op2 in &ops[opos + 1..=ppos] {
+            if special(op2) {
+                match f.op(op2).code() {
+                    OpCode::Load => {
+                        if f.op(op).output.is_some_and(|o| f.vn(o).is_addrtied()) {
+                            return false;
+                        }
+                    }
+                    OpCode::Store => {
+                        if moving_load || !tied_list.is_empty() {
+                            return false;
+                        }
+                        if f.op(op).output.is_some_and(|o| f.vn(o).is_addrtied()) {
+                            return false;
+                        }
+                    }
+                    OpCode::Indirect => {} // let through
+                    OpCode::Call | OpCode::Callind => {
+                        if !cross_calls {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+            if let Some(out2) = f.op(op2).output {
+                if moving_load && f.vn(out2).is_addrtied() {
+                    return false;
+                }
+                if tied_list.iter().any(|&v| overlaps(v, out2)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Ghidra `Varnode::copyShadow` (varnode.cc): two varnodes carry the same value when one is
+    /// reachable from the other through a chain of COPY defs — follow both chains to their non-COPY
+    /// roots and compare.
+    fn copy_shadow(&self, a: VarnodeId, b: VarnodeId) -> bool {
+        if a == b {
+            return true;
+        }
+        let root = |mut v: VarnodeId, other: VarnodeId| -> Option<VarnodeId> {
+            loop {
+                if v == other {
+                    return None; // found the other on the chain — shadow
+                }
+                match self.f.vn(v).def {
+                    Some(d) if self.f.op(d).code() == OpCode::Copy => {
+                        v = self.f.op(d).input(0).expect("COPY has an input");
+                    }
+                    _ => return Some(v),
+                }
+            }
+        };
+        let Some(ra) = root(a, b) else { return true };
+        let Some(rb) = root(b, a) else { return true };
+        ra == rb
+    }
+
     /// The name of `v`'s variable, assigning one on first use.
     fn name_of(&mut self, v: VarnodeId) -> String {
         let vn = self.f.vn(v);
@@ -334,6 +511,21 @@ impl<'a> PrintC<'a> {
         if vn.is_input() {
             if let Some(&n) = self.param_index.get(&vn.loc) {
                 return format!("param_{n}");
+            }
+        }
+        // A HighVariable containing a parameter's input instance IS that parameter — Ghidra names
+        // the HighVariable (the input instance attaches the param symbol to the whole variable),
+        // not each Varnode. Without this, a phi merged with its param initializer splits into two
+        // names with no connecting assignment (switchloop's accumulator: `uVar2` read-uninitialized
+        // while `param_1` goes unused).
+        if let Some(members) = self.high_members.get(&self.high_of[v.0 as usize]) {
+            for &m in members {
+                let mv = self.f.vn(m);
+                if mv.is_input() {
+                    if let Some(&n) = self.param_index.get(&mv.loc) {
+                        return format!("param_{n}");
+                    }
+                }
             }
         }
         // a direct global — a constant-address access in `ram` — is named by its address,
@@ -939,10 +1131,32 @@ impl<'a> PrintC<'a> {
         None
     }
 
+    /// Ghidra's typed `FlowBlock::lastOp` (block.hh:239 + overrides): only structured kinds that
+    /// forward a last op have one — a basic block (its last op), a List (its last component,
+    /// block.cc:2960), a short-circuit Condition (its second operand, block.cc:3016). A `BlockIf`
+    /// with a then-body has none (block.cc:3119 — only the degenerate if-goto forwards), and a
+    /// Switch (or any other composite) inherits the null base. This typing is what makes Ghidra's
+    /// `BlockWhileDo::finalTransform` (block.cc:3356) decline the for-loop when the loop body ends
+    /// in a switch or an if.
+    fn structured_last_op(&self, s: &Structured, idx: usize) -> Option<OpId> {
+        match &s.blocks[idx].kind {
+            FlowKind::Basic(b) => self.f.block(*b).ops.last().copied(),
+            FlowKind::List => self.structured_last_op(s, *s.blocks[idx].components.last()?),
+            FlowKind::CondAnd | FlowKind::CondOr => {
+                self.structured_last_op(s, s.blocks[idx].components[1])
+            }
+            _ => None,
+        }
+    }
+
     /// If the WhileDo with header `cond_idx` and body `body_idx` is a `for`-loop, return its
-    /// `(initializer, iterator)` ops (Ghidra `findLoopVariable`/`findInitializer`): the
-    /// condition variable's loop-header phi has one input defined in the body (the iterator)
-    /// and one defined before the loop (the initializer).
+    /// `(initializer, iterator)` ops — Ghidra `BlockWhileDo::finalTransform` (block.cc:3356) +
+    /// `findLoopVariable` (block.cc:3164) + `findInitializer` (block.cc:3223): the body's typed
+    /// last op names the loop *tail*, which must flow only to the head; the iterator is the
+    /// condition phi's input along the tail's edge, defined in the tail as its last statement
+    /// (Ghidra moves a non-last iterate op there when moveable; mosura requires it in place). The
+    /// initializer needs a two-in head (`findInitializer`'s `sizeIn() != 2` bail) with the other
+    /// phi input defined in the pre-loop block.
     fn for_parts(
         &self,
         s: &Structured,
@@ -958,31 +1172,41 @@ impl<'a> PrintC<'a> {
             .rev()
             .copied()
             .find(|&op| self.f.op(op).code() == OpCode::Cbranch)?;
+        // The body must have a typed last op; its block is the loop tail, flowing only to head.
+        let mut last = self.structured_last_op(s, body_idx)?;
+        let tail = self.f.op(last).parent?;
+        if self.f.block(tail).out_edges.len() != 1 || self.f.block(tail).out_edges[0] != head {
+            return None;
+        }
+        // The iterate statement must appear after this point (skip a trailing branch).
+        if self.f.op(last).code().is_branch() {
+            let pos = self.f.block(tail).ops.iter().position(|&o| o == last)?;
+            last = *self.f.block(tail).ops.get(pos.checked_sub(1)?)?;
+        }
         let cond_var = self.f.op(cbranch).input(1)?;
         let phi = self.find_loop_phi(cond_var, head)?;
         let phi_out = self.f.op(phi).output?;
-
-        let mut body_blocks = Vec::new();
-        basic_blocks_of(s, body_idx, &mut body_blocks);
-
-        // the phi's body-defined input is the iterator; its other input is the initializer
-        // value (often a folded constant, so carry the varnode rather than a defining op)
-        let (mut iterate, mut init_var) = (None, None);
-        for &inp in &self.f.op(phi).inrefs {
-            let in_body = match self.f.vn(inp).def {
-                Some(d) => {
-                    self.f.op(d).parent.is_some_and(|pb| body_blocks.contains(&pb))
-                        && !self.f.op(d).is_marker()
-                }
-                None => false,
-            };
-            if in_body {
-                iterate = self.f.vn(inp).def;
-            } else {
-                init_var = Some(inp);
-            }
+        // findLoopVariable: the modification comes in from the tail block — the phi input at the
+        // tail's slot, defined in the tail, and the tail's final statement.
+        let slot = self.f.block(head).in_edges.iter().position(|&p| p == tail)?;
+        let itvn = self.f.op(phi).input(slot)?;
+        let iterate = self.f.vn(itvn).def?;
+        if self.f.op(iterate).parent != Some(tail) || self.f.op(iterate).is_marker() {
+            return None;
         }
-        iterate.map(|it| (init_var, it, phi_out))
+        if iterate != last && !self.is_moveable(iterate, last) {
+            return None; // not the final statement and not moveable there (findLoopVariable)
+        }
+        // findInitializer: only a two-in head has one; the other phi input's def must sit in the
+        // pre-loop block that flows only into the loop. (A folded-constant initializer has no def
+        // op — carry the varnode.)
+        let mut init_var = None;
+        if self.f.block(head).in_edges.len() == 2 {
+            let init_slot = 1 - slot;
+            let initvn = self.f.op(phi).input(init_slot)?;
+            init_var = Some(initvn);
+        }
+        Some((init_var, iterate, phi_out))
     }
 
     /// Find all `for`-loops in the structure tree and record their parts.
@@ -1774,7 +1998,24 @@ pub fn print_c(f: &Funcdata) -> String {
         stack_prefix,
         force_explicit: HashSet::new(),
         param_index,
-        high_of,
+        high_of: high_of.clone(),
+        covers: super::cover::all_covers(f),
+        high_members: {
+            let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+            for (i, &rep) in high_of.iter().enumerate() {
+                m.entry(rep).or_default().push(VarnodeId(i as u32));
+            }
+            m
+        },
+        implied_high: {
+            let mut ih = super::merge::merge_required_only(f);
+            let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| ih.high(VarnodeId(i))).collect();
+            let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+            for (i, &rep) in of.iter().enumerate() {
+                m.entry(rep).or_default().push(VarnodeId(i as u32));
+            }
+            (of, m)
+        },
     };
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();

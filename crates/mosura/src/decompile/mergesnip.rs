@@ -173,7 +173,7 @@ fn find_piece_shadow(f: &Funcdata, vn: VarnodeId, least_byte: i32, piece: Varnod
 /// Ghidra `Varnode::partialCopyShadow` (`varnode.cc`): for a partial overlap, whether the smaller
 /// varnode is literally a piece/subpiece of the larger (same value) — so their covers touching is
 /// not a real intersection. x86-64 is little-endian, so `least_byte == relOff`.
-fn partial_copy_shadow(f: &Funcdata, a: VarnodeId, b: VarnodeId, rel_off: i32) -> bool {
+pub(crate) fn partial_copy_shadow(f: &Funcdata, a: VarnodeId, b: VarnodeId, rel_off: i32) -> bool {
     // `vn` becomes the smaller of the two (Ghidra swaps and negates relOff when `this` is bigger).
     let (vn, op2, rel_off) = if f.vn(a).size < f.vn(b).size {
         (a, b, rel_off)

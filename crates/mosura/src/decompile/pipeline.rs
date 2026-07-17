@@ -664,6 +664,11 @@ pub fn universal_action() -> ActionGroup {
                 // updated graph):
                 // - ActionDeadCode (:5682): the between-rounds sweep — e.g. the address computation
                 //   a SwitchNorm fold orphaned in the PREVIOUS round dies here.
+                // - ActionDoNothing (:5683, "deadcontrolflow"): remove marker-only blocks
+                //   (removeDoNothingBlock -> blockRemoveInternal -> pushMultiequals) — collapsing a
+                //   switch's common join pushes the per-case values directly into the loop-header
+                //   MULTIEQUAL, the flattened phi the merge phase's cover trims key off
+                //   (switchloop's accumulator).
                 // - ActionSwitchNorm (:5684): for each recovered jump table, re-find the
                 //   unnormalized switch variable on the final graph (matchModel over the saved
                 //   recovery-time model — findUnnormalized ran at recovery, jumptable.cc:1462) and
@@ -680,9 +685,10 @@ pub fn universal_action() -> ActionGroup {
                 //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
                 //   are skipped (`output.is_some()`, cleared isOutputActive).
                 // Tail members mosura has not ported are absent here: ActionLikelyTrash (:5679),
-                // ActionDirectWrite ×2 (:5680-5681), ActionDoNothing (:5683), ActionReturnSplit
-                // (:5685), ActionUnjustifiedParams (:5686) — each joins at its slot with its port.
+                // ActionDirectWrite ×2 (:5680-5681), ActionReturnSplit (:5685),
+                // ActionUnjustifiedParams (:5686) — each joins at its slot with its port.
                 .then(super::deadcode::ActionDeadCode)
+                .then(super::determinedbranch::ActionDoNothing)
                 .then(ActionSwitchNorm)
                 .then(ActionStartTypes)
                 .then(ActionActiveReturn),

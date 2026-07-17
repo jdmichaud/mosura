@@ -50,23 +50,6 @@ fn condition_folds_cleanly(f: &Funcdata, bid: BlockId) -> bool {
     )
 }
 
-/// Whether block `bid` is a switch range-guard — it, or a direct successor, holds a jump-table
-/// dispatch: a live BRANCHIND, or an op at a recovered table's dispatch address (`jumptables`,
-/// cached at build). The cached address is what makes this robust once the BRANCHIND has been folded
-/// away by switch recovery (it becomes a plain terminator at the same address). Such a guard is owned
-/// by the switch machinery (Ghidra's `analyzeGuards`/`GuardRecord`, jumptable.cc — the guard is
-/// folded into the switch's default, not printed as a normal `if`), so the branch-orientation stage
-/// leaves it alone: materializing its negation keeps printc from forming the `switch`.
-fn near_switch(f: &Funcdata, bid: BlockId) -> bool {
-    let is_dispatch = |b: BlockId| {
-        f.block(b).ops.iter().any(|&op| {
-            f.op(op).code() == OpCode::Branchind
-                || f.jumptables.iter().any(|t| t.op_addr == f.op(op).seqnum.pc.offset)
-        })
-    };
-    is_dispatch(bid) || f.block(bid).out_edges.iter().any(|&s| is_dispatch(s))
-}
-
 /// A node in the structuring graph: a leaf basic block or a structured composite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlowKind {
@@ -167,7 +150,7 @@ impl Structured {
                 } else if let Some(bid) = self.exit_basic(cond) {
                     // Simple condition: orient it when its materialized negation folds cleanly via
                     // RuleBoolNegate (its def is a comparison) and it is not a switch guard.
-                    if condition_folds_cleanly(f, bid) && !near_switch(f, bid) {
+                    if condition_folds_cleanly(f, bid) {
                         out.push(bid);
                     }
                 }
@@ -196,7 +179,7 @@ impl Structured {
             }
             _ => {
                 let bid = self.exit_basic(cond)?;
-                (condition_folds_cleanly(f, bid) && !near_switch(f, bid)).then_some(vec![bid])
+                (condition_folds_cleanly(f, bid)).then_some(vec![bid])
             }
         }
     }

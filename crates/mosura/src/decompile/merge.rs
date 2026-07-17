@@ -86,6 +86,20 @@ pub fn merge(f: &Funcdata) -> HighVariables {
     h
 }
 
+/// The HighVariable state at Ghidra's `ActionMarkImplied` slot (coreaction.cc:5720, "this must come
+/// BEFORE general merging"): only `ActionMergeRequired`'s merges have run — address-tied unification
+/// plus the marker merges — not the COPY / adjacent / speculative type merges. This is the instance
+/// set `ActionMarkImplied::checkImpliedCover` → `Merge::inflateTest` walks; using the fully-merged
+/// classes instead makes the implied test see speculative same-storage merges Ghidra hasn't done yet
+/// and over-materializes temps (divopt's inline loads).
+pub fn merge_required_only(f: &Funcdata) -> HighVariables {
+    let mut h = HighVariables::new(f.num_varnodes());
+    let covers = all_covers(f);
+    merge_addrtied(f, &mut h, &covers);
+    merge_markers(f, &mut h);
+    h
+}
+
 /// `Merge::mergeMarker` (merge.cc:889) — merge a MULTIEQUAL/INDIRECT output with its inputs. Like
 /// every other required merge (`Merge::mergeOp`/`mergeIndirect`/`mergeOpcode`, merge.cc), each union
 /// is gated by `mergeTestRequired`: Ghidra force-resolves a forbidden merge by trimming the input (an

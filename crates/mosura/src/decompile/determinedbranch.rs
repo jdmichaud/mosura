@@ -10,7 +10,7 @@
 use super::action::Action;
 use super::block::{BlockBasic, BlockId};
 use super::funcdata::Funcdata;
-use super::op::OpId;
+use super::op::{OpId, SeqNum};
 use super::opcode::OpCode;
 
 /// Ghidra `Funcdata::opZeroMulti` (funcdata_block.cc:177): a MULTIEQUAL whose input count has
@@ -182,6 +182,325 @@ impl Action for ActionDeterminedBranch {
     }
 }
 
+/// Ghidra `BlockBasic::hasOnlyMarkers` (block.cc:2580): only MULTIEQUAL/INDIRECT placeholders and
+/// branch operations — nothing substantial.
+fn has_only_markers(f: &Funcdata, bb: BlockId) -> bool {
+    f.block(bb).ops.iter().all(|&op| {
+        let o = f.op(op);
+        o.is_marker() || o.code().is_branch()
+    })
+}
+
+/// Ghidra `FlowBlock::isSwitchOut` — the block ends in a BRANCHIND with a recovered jump table.
+/// (Ghidra sets `f_switch_out` on the block when the JumpTable links; mosura derives it from the
+/// recovered-table map, keyed by the BRANCHIND's address.)
+fn is_switch_out(f: &Funcdata, bb: BlockId) -> bool {
+    f.block(bb).ops.last().is_some_and(|&op| {
+        f.op(op).code() == OpCode::Branchind
+            && f.switch_targets.contains_key(&f.op(op).seqnum.pc.offset)
+    })
+}
+
+/// Ghidra `BlockBasic::isDoNothing` (block.cc:2596): a block with exactly one out-edge, at least
+/// one in-edge, no BRANCHIND terminator, and only marker/branch ops. A switch target whose
+/// successor joins other edges is kept (the switch edge may still propagate a unique value).
+fn is_do_nothing(f: &Funcdata, bb: BlockId) -> bool {
+    if f.block(bb).out_edges.len() != 1 {
+        return false; // a do-nothing block has exactly one out (no return or cbranch)
+    }
+    if f.block(bb).in_edges.is_empty() {
+        return false; // a starting block may need to be a placeholder for global vars
+    }
+    for &switchbl in &f.block(bb).in_edges {
+        if !is_switch_out(f, switchbl) {
+            continue;
+        }
+        if f.block(switchbl).out_edges.len() > 1 {
+            // This block is a switch target; if multiple edges come together at the successor,
+            // the switch edge may still be propagating a unique value — don't remove it.
+            if f.block(f.block(bb).out_edges[0]).in_edges.len() > 1 {
+                return false;
+            }
+        }
+    }
+    if f.block(bb).ops.last().is_some_and(|&op| f.op(op).code() == OpCode::Branchind) {
+        return false; // don't remove single-out indirect jumps
+    }
+    has_only_markers(f, bb)
+}
+
+/// Ghidra `BlockBasic::unblockedMulti` (block.cc:2534): does removing `bb` (collapsing it into out
+/// edge `outslot`) leave redundant MULTIEQUAL entries that are inconsistent? A MULTIEQUAL can hide
+/// an implied copy, in which case `bb` is actually doing something and must not be removed.
+fn unblocked_multi(f: &Funcdata, bb: BlockId, outslot: usize) -> bool {
+    let blout = f.block(bb).out_edges[outslot];
+    // Blocks which would end up with redundant branches into blout.
+    let mut redundlist: Vec<BlockId> = Vec::new();
+    for &bl in &f.block(bb).in_edges {
+        for &o in &f.block(bl).out_edges {
+            if o == blout {
+                redundlist.push(bl);
+            }
+        }
+    }
+    if redundlist.is_empty() {
+        return true;
+    }
+    for &multiop in &f.block(blout).ops {
+        if f.op(multiop).code() != OpCode::Multiequal {
+            continue;
+        }
+        for &bl in &redundlist {
+            let slot_redund =
+                f.block(blout).in_edges.iter().position(|&p| p == bl).expect("redundant in-edge");
+            let slot_remove =
+                f.block(blout).in_edges.iter().position(|&p| p == bb).expect("bb feeds blout");
+            let vnredund = f.op(multiop).input(slot_redund).expect("phi input per in-edge");
+            let mut vnremove = f.op(multiop).input(slot_remove).expect("phi input per in-edge");
+            if let Some(def) = f.vn(vnremove).def {
+                if f.op(def).code() == OpCode::Multiequal && f.op(def).parent == Some(bb) {
+                    let s = f
+                        .block(bb)
+                        .in_edges
+                        .iter()
+                        .position(|&p| p == bl)
+                        .expect("bl feeds bb too");
+                    vnremove = f.op(def).input(s).expect("phi input per in-edge");
+                }
+            }
+            if vnremove != vnredund {
+                return false; // redundant branches must be identical
+            }
+        }
+    }
+    true
+}
+
+/// Ghidra `Funcdata::pushMultiequals` (funcdata_block.cc:84): assuming `bb` is being removed, force
+/// any Varnode defined by a MULTIEQUAL in `bb` to be defined in the output block instead — an
+/// artificial MULTIEQUAL at the head of the out-block whose `bb`-edge input is the original value
+/// and every other input is itself (all alternate ins to the out-block are dominated by `bb`).
+fn push_multiequals(f: &mut Funcdata, bb: BlockId) {
+    if f.block(bb).out_edges.is_empty() {
+        return;
+    }
+    // Take the first output block; for a do-nothing block it is the only one.
+    let outblock = f.block(bb).out_edges[0];
+    let outblock_ind =
+        f.block(outblock).in_edges.iter().position(|&p| p == bb).expect("bb feeds its out-block");
+    for origop in f.block(bb).ops.clone() {
+        if f.op(origop).code() != OpCode::Multiequal {
+            continue;
+        }
+        let Some(origvn) = f.op(origop).output else { continue };
+        if f.vn(origvn).descend.is_empty() {
+            continue;
+        }
+        let mut needreplace = false;
+        let mut neednewunique = false;
+        for &rop in &f.vn(origvn).descend {
+            if f.op(rop).code() == OpCode::Multiequal && f.op(rop).parent == Some(outblock) {
+                // Check for a reference to origvn NOT through the dead edge.
+                let mut dead_edge = true;
+                for i in 0..f.op(rop).num_inputs() {
+                    if i == outblock_ind {
+                        continue; // not going through the dead edge
+                    }
+                    if f.op(rop).input(i) == Some(origvn) {
+                        dead_edge = false;
+                        break;
+                    }
+                }
+                if dead_edge {
+                    // If origvn is addrtied and feeds a MULTIEQUAL at the same address in the
+                    // out-block, any use beyond the out-block that did not go through that
+                    // MULTIEQUAL must have propagated through some other register — so the new
+                    // MULTIEQUAL writes to a unique.
+                    if f.vn(origvn).loc
+                        == f.vn(f.op(rop).output.expect("phi output")).loc
+                        && f.vn(origvn).is_addrtied()
+                    {
+                        neednewunique = true;
+                    }
+                    continue;
+                }
+            }
+            needreplace = true;
+            break;
+        }
+        if !needreplace {
+            continue;
+        }
+        // Construct the artificial MULTIEQUAL at the out-block's start.
+        let size = f.vn(origvn).size;
+        let start_pc =
+            f.block(outblock).ops.first().map(|&o| f.op(o).seqnum.pc).unwrap_or(f.addr);
+        let uniq = f.num_ops() as u32;
+        let replaceop = f.new_op(OpCode::Multiequal, SeqNum { pc: start_pc, uniq }, vec![]);
+        let replacevn = if neednewunique {
+            f.new_output_unique(replaceop, size)
+        } else {
+            let loc = f.vn(origvn).loc;
+            f.new_output(replaceop, size, loc)
+        };
+        let branches: Vec<_> = f
+            .block(outblock)
+            .in_edges
+            .clone()
+            .iter()
+            .map(|&inb| if inb == bb { origvn } else { replacevn })
+            .collect();
+        f.op_set_all_input(replaceop, &branches);
+        f.op_insert_begin(replaceop, outblock);
+        // Replace obsolete origvn reads with replacevn — one input slot per descend entry, keeping
+        // the dead-edge slot of out-block MULTIEQUALs (Ghidra's titer walk).
+        for rop in f.vn(origvn).descend.clone() {
+            if rop == replaceop {
+                continue; // the artificial phi's own bb-edge input stays origvn
+            }
+            for i in 0..f.op(rop).num_inputs() {
+                if f.op(rop).input(i) != Some(origvn) {
+                    continue;
+                }
+                if i == outblock_ind
+                    && f.op(rop).parent == Some(outblock)
+                    && f.op(rop).code() == OpCode::Multiequal
+                {
+                    continue;
+                }
+                f.op_set_input(rop, i, replacevn);
+                break;
+            }
+        }
+    }
+}
+
+/// The dataflow-preserving arm of Ghidra `Funcdata::blockRemoveInternal(bb, unreachable=false)`
+/// (funcdata_block.cc:254): push `bb`'s MULTIEQUALs into the out-block, expand the out-block's
+/// MULTIEQUAL slot for the dead edge into one input per `bb` in-edge, rewire every in-edge of `bb`
+/// directly to the out-block (Ghidra `BlockGraph::removeFromFlow`, appending in `bb`'s in order so
+/// edge order matches the expanded phi inputs), destroy `bb`'s ops, and drop the block. (The
+/// `unreachable=true` arm is [`remove_unreachable_blocks`] above.)
+fn block_remove_internal_preserving(f: &mut Funcdata, bb: BlockId) {
+    // A removed BRANCHIND drops its recovered jump table (Ghidra `Funcdata::removeJumpTable`).
+    if let Some(&last) = f.block(bb).ops.last() {
+        if f.op(last).code() == OpCode::Branchind {
+            let pc = f.op(last).seqnum.pc.offset;
+            f.switch_targets.remove(&pc);
+            f.switch_defaults.remove(&pc);
+        }
+    }
+    push_multiequals(f, bb); // make sure data flow is preserved
+
+    let outs = f.block(bb).out_edges.clone();
+    for &bbout in &outs {
+        let blocknum =
+            f.block(bbout).in_edges.iter().position(|&p| p == bb).expect("bb feeds its out-block");
+        let phis: Vec<OpId> = f
+            .block(bbout)
+            .ops
+            .iter()
+            .copied()
+            .filter(|&op| f.op(op).code() == OpCode::Multiequal)
+            .collect();
+        for op in phis {
+            let deadvn = f.op(op).input(blocknum).expect("phi input per in-edge");
+            f.op_remove_input(op, blocknum); // remove the deleted block's branch
+            let deadop = f.vn(deadvn).def;
+            let from_phi = deadop.is_some_and(|d| {
+                f.op(d).code() == OpCode::Multiequal && f.op(d).parent == Some(bb)
+            });
+            let n_in = f.block(bb).in_edges.len();
+            for j in 0..n_in {
+                // Append the dead MULTIEQUAL's branches — otherwise copies of the dead value.
+                let v = if from_phi {
+                    f.op(deadop.expect("checked")).input(j).expect("phi input per in-edge")
+                } else {
+                    deadvn
+                };
+                let at = f.op(op).num_inputs();
+                f.op_insert_input(op, at, v);
+            }
+            op_zero_multi(f, op);
+        }
+    }
+    // BlockGraph::removeFromFlow — sever bb->out, then redirect each in-edge of bb to the
+    // out-block, appending to the out-block's in list in bb's in order.
+    while let Some(&bbout) = f.block(bb).out_edges.last() {
+        f.block_mut(bb).out_edges.pop();
+        let pos = f.block(bbout).in_edges.iter().position(|&p| p == bb).expect("edge exists");
+        f.block_mut(bbout).in_edges.remove(pos);
+        let ins = std::mem::take(&mut f.block_mut(bb).in_edges);
+        for &inb in &ins {
+            let opos =
+                f.block(inb).out_edges.iter().position(|&o| o == bb).expect("in-edge exists");
+            f.block_mut(inb).out_edges[opos] = bbout;
+            f.block_mut(bbout).in_edges.push(inb);
+        }
+    }
+    // Destroy the ops (all data flow through the block has been patched away). A surviving
+    // descendant outside bb means the patch-up failed (Ghidra throws "Deleting op with
+    // descendants").
+    let ops = std::mem::take(&mut f.block_mut(bb).ops);
+    for &op in &ops {
+        if let Some(out) = f.op(op).output {
+            assert!(
+                f.vn(out).descend.iter().all(|&d| f.op(d).parent == Some(bb)),
+                "deleting op with descendants"
+            );
+        }
+    }
+    for op in ops {
+        f.op_destroy(op);
+    }
+    // Remove the block from the graph (mosura's renumbering removal pattern; bb's edges are
+    // already severed so the remap drops nothing else).
+    let mut keep = vec![true; f.num_blocks()];
+    keep[bb.0 as usize] = false;
+    renumber_reachable(f, &keep);
+}
+
+/// Ghidra `Funcdata::removeDoNothingBlock` (funcdata_block.cc:327): remove a reachable block that
+/// contains only markers and an unconditional branch.
+fn remove_do_nothing_block(f: &mut Funcdata, bb: BlockId) {
+    assert!(f.block(bb).out_edges.len() <= 1, "cannot delete a reachable block with >1 out");
+    block_remove_internal_preserving(f, bb);
+}
+
+/// Ghidra `ActionDoNothing` (coreaction.cc:3466), wired in the full-loop tail between
+/// `ActionDeadCode` and `ActionSwitchNorm` (coreaction.cc:5683, group "deadcontrolflow"): remove
+/// blocks that do nothing. Collapsing a marker-only join block pushes its MULTIEQUALs into the
+/// successor's (e.g. a switch's common join: the per-case values become direct inputs of the loop
+/// header phi), which is the IR shape the merge phase's cover trims key off. Ghidra removes one
+/// block per application under `rule_repeatapply`; the internal loop here is equivalent.
+pub struct ActionDoNothing;
+
+impl Action for ActionDoNothing {
+    fn name(&self) -> &str {
+        "donothing"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let mut count = 0;
+        loop {
+            let found = (0..data.num_blocks()).map(|b| BlockId(b as u32)).find(|&bb| {
+                if !is_do_nothing(data, bb) {
+                    return false;
+                }
+                // A do-nothing block looping to itself is an infinite loop (Ghidra warns and
+                // keeps it).
+                if data.block(bb).out_edges[0] == bb {
+                    return false;
+                }
+                unblocked_multi(data, bb, 0)
+            });
+            let Some(bb) = found else { break };
+            remove_do_nothing_block(data, bb);
+            count += 1;
+        }
+        count
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +588,163 @@ mod tests {
         ActionDeterminedBranch.apply(&mut f);
         // block1 (fallthrough) is now unreachable and pruned; entry + the taken target remain.
         assert_eq!(f.num_blocks(), 2, "the fallthrough block is removed for a const-true CBRANCH");
+    }
+
+    /// A marker-only join block (a MULTIEQUAL + BRANCH) between two case blocks and a loop
+    /// header: `ActionDoNothing` removes it, expanding the join's phi values directly into the
+    /// header phi's slot for the removed edge (Ghidra `removeDoNothingBlock` →
+    /// `blockRemoveInternal` → the dead-phi expansion), and rewiring the case blocks to the
+    /// header — the switchloop accumulator flattening.
+    #[test]
+    fn do_nothing_join_block_pushes_phi_into_successor() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        // block0 (entry): r0 = 1; branch to header (block4)
+        let c1 = f.new_const(4, 1);
+        let init = f.new_op(OpCode::Copy, seq(0x0), vec![c1]);
+        let r_init = f.new_output(init, 4, Address::new(reg, 0));
+        let t0 = f.new_const(8, 0x40);
+        let br0 = f.new_op(OpCode::Branch, seq(0x4), vec![t0]);
+        // block1 / block2 (cases): r0 = 2 / r0 = 3, both branch to the join (block3)
+        let c2 = f.new_const(4, 2);
+        let case1 = f.new_op(OpCode::Copy, seq(0x10), vec![c2]);
+        let r_case1 = f.new_output(case1, 4, Address::new(reg, 0));
+        let t1 = f.new_const(8, 0x30);
+        let br1 = f.new_op(OpCode::Branch, seq(0x14), vec![t1]);
+        let c3 = f.new_const(4, 3);
+        let case2 = f.new_op(OpCode::Copy, seq(0x20), vec![c3]);
+        let r_case2 = f.new_output(case2, 4, Address::new(reg, 0));
+        let t2 = f.new_const(8, 0x30);
+        let br2 = f.new_op(OpCode::Branch, seq(0x24), vec![t2]);
+        // block3 (join, marker-only): rj = MULTIEQUAL(r_case1, r_case2); BRANCH header
+        let join_phi = f.new_op(OpCode::Multiequal, seq(0x30), vec![r_case1, r_case2]);
+        let r_join = f.new_output(join_phi, 4, Address::new(reg, 0));
+        let t3 = f.new_const(8, 0x40);
+        let br3 = f.new_op(OpCode::Branch, seq(0x34), vec![t3]);
+        // block4 (header): rh = MULTIEQUAL(r_init, rj); RETURN rh — preds [block0, block3]
+        let head_phi = f.new_op(OpCode::Multiequal, seq(0x40), vec![r_init, r_join]);
+        let r_head = f.new_output(head_phi, 4, Address::new(reg, 0));
+        let ret = f.new_op(OpCode::Return, seq(0x44), vec![r_head]);
+
+        f.set_blocks(vec![
+            BlockBasic {
+                ops: vec![init, br0],
+                in_edges: vec![],
+                out_edges: vec![BlockId(4)],
+            },
+            BlockBasic { ops: vec![case1, br1], in_edges: vec![], out_edges: vec![BlockId(3)] },
+            BlockBasic { ops: vec![case2, br2], in_edges: vec![], out_edges: vec![BlockId(3)] },
+            BlockBasic {
+                ops: vec![join_phi, br3],
+                in_edges: vec![BlockId(1), BlockId(2)],
+                out_edges: vec![BlockId(4)],
+            },
+            BlockBasic {
+                ops: vec![head_phi, ret],
+                in_edges: vec![BlockId(0), BlockId(3)],
+                out_edges: vec![],
+            },
+        ]);
+        for (bi, ops) in [
+            (0u32, vec![init, br0]),
+            (1, vec![case1, br1]),
+            (2, vec![case2, br2]),
+            (3, vec![join_phi, br3]),
+            (4, vec![head_phi, ret]),
+        ] {
+            for op in ops {
+                f.op_mut(op).parent = Some(BlockId(bi));
+            }
+        }
+
+        let n = ActionDoNothing.apply(&mut f);
+        assert_eq!(n, 1, "exactly the join block is removed");
+        assert_eq!(f.num_blocks(), 4);
+        // The header phi expanded: the join edge's slot was replaced by the join phi's inputs,
+        // appended after the surviving slots (Ghidra appends at the end).
+        assert_eq!(f.op(head_phi).code(), OpCode::Multiequal);
+        assert_eq!(
+            (0..f.op(head_phi).num_inputs()).filter_map(|i| f.op(head_phi).input(i)).collect::<Vec<_>>(),
+            vec![r_init, r_case1, r_case2],
+            "the join's per-case values become direct header-phi inputs"
+        );
+        // The case blocks now flow directly to the header (block indices shifted down by one).
+        let head = BlockId(3);
+        assert_eq!(f.block(BlockId(1)).out_edges, vec![head]);
+        assert_eq!(f.block(BlockId(2)).out_edges, vec![head]);
+        assert_eq!(f.block(head).in_edges, vec![BlockId(0), BlockId(1), BlockId(2)]);
+        // The join phi itself is destroyed.
+        assert!(f.op(join_phi).is_dead(), "the pushed MULTIEQUAL is destroyed with its block");
+    }
+
+    /// `unblockedMulti` (block.cc:2534) blocks the removal when a predecessor also branches
+    /// directly to the successor with a DIFFERENT phi value — the do-nothing block's MULTIEQUAL
+    /// hides an implied copy.
+    #[test]
+    fn do_nothing_removal_declines_on_inconsistent_redundant_edge() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        // block0: rA = 1; CBRANCH — edges to block1 (the do-nothing candidate) AND block2.
+        let c1 = f.new_const(4, 1);
+        let defa = f.new_op(OpCode::Copy, seq(0x0), vec![c1]);
+        let ra = f.new_output(defa, 4, Address::new(reg, 0));
+        let cond = f.new_const(1, 0);
+        let tcb = f.new_const(8, 0x10);
+        let cbr = f.new_op(OpCode::Cbranch, seq(0x4), vec![tcb, cond]);
+        // block1 (marker-only): rb = MULTIEQUAL(ra); BRANCH block2 — a 1-in do-nothing block.
+        let mid_phi = f.new_op(OpCode::Multiequal, seq(0x10), vec![ra]);
+        let rb = f.new_output(mid_phi, 4, Address::new(reg, 4));
+        let t1 = f.new_const(8, 0x20);
+        let br1 = f.new_op(OpCode::Branch, seq(0x14), vec![t1]);
+        // block2: rc = MULTIEQUAL(rd [direct from block0], rb [thru block1]); RETURN — the direct
+        // edge carries a DIFFERENT varnode, so collapsing block1 would leave inconsistent slots.
+        let c9 = f.new_const(4, 9);
+        let defd = f.new_op(OpCode::Copy, seq(0x6), vec![c9]);
+        let rd = f.new_output(defd, 4, Address::new(reg, 8));
+        let out_phi = f.new_op(OpCode::Multiequal, seq(0x20), vec![rd, rb]);
+        let rc = f.new_output(out_phi, 4, Address::new(reg, 12));
+        let ret = f.new_op(OpCode::Return, seq(0x24), vec![rc]);
+
+        f.set_blocks(vec![
+            BlockBasic {
+                ops: vec![defa, defd, cbr],
+                in_edges: vec![],
+                out_edges: vec![BlockId(1), BlockId(2)],
+            },
+            BlockBasic {
+                ops: vec![mid_phi, br1],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(2)],
+            },
+            BlockBasic {
+                ops: vec![out_phi, ret],
+                in_edges: vec![BlockId(0), BlockId(1)],
+                out_edges: vec![],
+            },
+        ]);
+        for (bi, ops) in
+            [(0u32, vec![defa, defd, cbr]), (1, vec![mid_phi, br1]), (2, vec![out_phi, ret])]
+        {
+            for op in ops {
+                f.op_mut(op).parent = Some(BlockId(bi));
+            }
+        }
+
+        assert!(is_do_nothing(&f, BlockId(1)), "marker-only single-out block qualifies");
+        assert!(
+            !unblocked_multi(&f, BlockId(1), 0),
+            "the redundant direct edge carries a different value — removal must decline"
+        );
+        let n = ActionDoNothing.apply(&mut f);
+        assert_eq!(n, 0, "ActionDoNothing leaves the implied-copy block in place");
+        assert_eq!(f.num_blocks(), 3);
     }
 }
