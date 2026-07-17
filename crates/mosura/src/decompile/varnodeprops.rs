@@ -1,33 +1,35 @@
-//! Address-tied varnode properties — a port of the `addrtied`/`persist` half of Ghidra's
-//! `Funcdata::setVarnodeProperties` (`funcdata_varnode.cc:25`, via `Scope::queryProperties`,
-//! `database.cc:1263`) together with the `nolocalalias` clear performed by
-//! `ActionRestructureVarnode`/`Funcdata::syncVarnodesWithSymbols` (`funcdata_varnode.cc:938`,
-//! `ScopeLocal::isUnmappedUnaliased`, `varmap.cc:494`).
+//! Address-tied varnode property sync — a port of the `addrtied`/`addrforce` update half of
+//! Ghidra's `Funcdata::syncVarnodesWithSymbols` (`funcdata_varnode.cc:939`, per-varnode update
+//! `syncVarnodesWithSymbol`, `:1046`) together with the `nolocalalias` classification of
+//! `ScopeLocal::restructureVarnode`/`markUnaliased` (`varmap.cc:1256`/`:1332`,
+//! `isUnmappedUnaliased` `varmap.cc:494`), which `ActionRestructureVarnode`
+//! (`coreaction.cc:2274`) drives every mainloop iteration.
 //!
-//! Ghidra sets these flags at varnode-creation time: `queryProperties` returns `mapped | addrtied`
-//! for any *unmapped memory* location (`+persist` for a global), so every processor/spacebase
-//! varnode is born address-tied. `ActionRestructureVarnode` then *clears* `addrtied` on the stack
-//! locals whose address does not escape (the `nolocalalias` case). mosura has no populated
-//! `ScopeLocal` in the decompile corpus (the fixture `map addr` script is skipped), so this pass
-//! computes the *net* result directly by space, refined for the stack by the alias analysis
-//! ([`super::alias`], the same `AliasChecker` boundary heritage's `guard_calls` uses):
+//! The *set* side lives at varnode CREATION (`Funcdata::alloc_varnode`; Ghidra `newVarnode`/
+//! `newVarnodeOut`, `funcdata_varnode.cc:162`/`:115`, → `Scope::queryProperties`,
+//! `database.cc:1263`): every stack/ram varnode is born `mapped | addrtied` (+ `persist` for a
+//! ram global). This pass is the *reconcile* side: Ghidra "can CLEAR but not SET the addrtied
+//! flag" here (`funcdata_varnode.cc:1057-1062` — and "if addrtied is cleared, so should
+//! addrforce"), clearing it on the stack locals whose address never escapes (`nolocalalias`).
+//! mosura has no populated `ScopeLocal` in the decompile corpus (the fixture `map addr` script is
+//! skipped), so the classification is the alias analysis directly ([`super::alias`], the same
+//! `AliasChecker` boundary heritage's `guard_calls` uses):
 //!
-//! * a *ram* (global) varnode ⇒ `mapped | addrtied | persist` (unmapped ram is always addrtied);
-//! * a *stack* varnode ⇒ `mapped | addrtied` iff its slot is aliased — its address escapes to a
-//!   call (`offset >= alias_boundary`, Ghidra `AliasChecker::hasLocalAlias`); a non-aliased local
-//!   (a spilled loop/temp variable) stays *not* addrtied, matching the `nolocalalias` clear;
-//! * register/unique/constant ⇒ untouched (never addrtied).
-//!
-//! Ghidra applies `queryProperties` at creation, before its mainloop; mosura runs this once after
-//! heritage/alias info is available and before the first simplification pool, so the downstream
-//! rules that guard on `addrtied`/`persist` (RuleSubRight, ActionConditionalConst's phi guards,
-//! SubVariableFlow) see the flag for the whole pool run — mirroring Ghidra's addrtied-before-mainloop.
+//! * a *ram* (global) varnode ⇒ keep/set `mapped | addrtied | persist` (a global is never
+//!   `nolocalalias`);
+//! * a *stack* varnode ⇒ `mapped | addrtied` iff its slot is aliased — its address escapes
+//!   (`offset >= alias_boundary`, Ghidra `AliasChecker::hasLocalAlias`, `varmap.cc:711`); a
+//!   non-aliased local (a spilled loop/temp variable) gets `addrtied`/`addrforce` CLEARED — the
+//!   `nolocalalias` net effect;
+//! * register/unique/constant ⇒ untouched (never scope-mapped);
+//! * free varnodes ⇒ skipped (`syncVarnodesWithSymbol`: `if (vn->isFree()) continue`) — they
+//!   keep their creation flags until heritage links them.
 
 use super::funcdata::Funcdata;
 use super::varnode::{flags, VarnodeId};
 
-/// Set `addrtied`/`persist`/`mapped` on the memory varnodes that Ghidra's `queryProperties`
-/// (+ the `nolocalalias` clear) would leave address-tied. See the module docs.
+/// Reconcile `addrtied`/`addrforce`/`persist`/`mapped` on the memory varnodes with the current
+/// alias classification (Ghidra `syncVarnodesWithSymbols` + `markUnaliased`). See the module docs.
 pub fn mark_addrtied(f: &mut Funcdata) {
     let ram = f.spaces.by_name("ram");
     let stack = f.spaces.by_name("stack");
@@ -35,17 +37,23 @@ pub fn mark_addrtied(f: &mut Funcdata) {
     for i in 0..f.num_varnodes() as u32 {
         let id = VarnodeId(i);
         let vn = f.vn(id);
+        if vn.is_free() {
+            continue; // syncVarnodesWithSymbol: free varnodes are not updated
+        }
         let space = vn.loc.space;
-        let fl = if Some(space) == ram {
+        if Some(space) == ram {
             // Unmapped ram is a global: mapped|addrtied|persist (queryProperties, isGlobal branch).
-            flags::MAPPED | flags::ADDRTIED | flags::PERSIST
-        } else if Some(space) == stack && boundary.is_some_and(|b| (vn.loc.offset as i64) >= b) {
-            // An aliased stack slot stays addrtied; a non-aliased local is cleared (nolocalalias).
-            flags::MAPPED | flags::ADDRTIED
-        } else {
-            continue;
-        };
-        f.vn_mut(id).flags |= fl;
+            f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED | flags::PERSIST;
+        } else if Some(space) == stack {
+            if boundary.is_some_and(|b| (vn.loc.offset as i64) >= b) {
+                // An aliased stack slot stays addrtied.
+                f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED;
+            } else {
+                // A non-aliased local: nolocalalias ⇒ clear addrtied, and addrforce with it
+                // ("if addrtied is cleared, so should addrforce", funcdata_varnode.cc:1060-1062).
+                f.vn_mut(id).flags &= !(flags::ADDRTIED | flags::ADDRFORCE);
+            }
+        }
     }
 }
 

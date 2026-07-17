@@ -7,12 +7,15 @@
 //! and passed to a call, so the callee can modify it through the pointer) is guarded.
 //!
 //! `AliasChecker::gatherAdditiveBase` (varmap.cc:741): forward-walk the entry stack-pointer value
-//! through *additive* ops only (`COPY`/`INT_ADD`/`INT_SUB`, the constant-offset address arithmetic);
-//! an SP-derived value used by any *non-additive* op (a CALL argument, a STORE value, a compare, a
-//! MULTIEQUAL, …) is a root, and its stack offset has escaped. Dead ops are skipped — Ghidra walks
-//! the live graph. A slot reached only via direct constant-offset load/store never becomes a root
-//! (those are already stack-space varnodes), so it is not aliased — the exact discriminator between
-//! a spilled loop variable and a call-modified local, with no calling-convention register scan.
+//! through *additive* ops only (`COPY`/`INT_ADD`/`INT_SUB`/`PTRADD`/`PTRSUB`, the constant-offset
+//! address arithmetic); an SP-derived value used by any *non-additive* op (a CALL argument, a STORE
+//! value, a compare, a MULTIEQUAL, …) is a root, and its stack offset has escaped. Dead ops are
+//! skipped — Ghidra walks the live graph. A direct constant-offset LOAD/STORE *through* the pointer
+//! is discounted (it is the class `RuleLoadVarnode`/`RuleStoreVarnode` resolves to a direct
+//! stack-space varnode — Ghidra's checker runs at `aliasyes` passes, after conversion, so it never
+//! sees them as pointer uses), so a slot only ever accessed directly is not aliased — the exact
+//! discriminator between a spilled loop variable and a call-modified local, with no
+//! calling-convention register scan.
 
 use std::collections::HashSet;
 
@@ -76,6 +79,46 @@ pub fn aliased_stack_offsets(f: &Funcdata) -> HashSet<i64> {
                         aliased.insert(off);
                     }
                 },
+                // The typed additive forms RulePushPtr/RulePtrArith rewrite the INT_ADDs into
+                // (`gatherAdditiveBase` treats PTRADD like INT_ADD and follows PTRSUB, varmap.cc:
+                // 783-798): PTRSUB(base, #c) ⇒ base + c; PTRADD(base, idx, #elem) ⇒ base +
+                // idx*elem, a non-constant idx being an indexed (aliased) access like INT_ADD's.
+                OpCode::Ptrsub if o.input(0) == Some(vn) => {
+                    match o.input(1).filter(|&x| f.vn(x).is_constant()) {
+                        Some(c) => {
+                            if let Some(out) = o.output {
+                                queue.push((out, off.wrapping_add(f.vn(c).loc.offset as i64)));
+                            }
+                        }
+                        None => {
+                            aliased.insert(off);
+                        }
+                    }
+                }
+                OpCode::Ptradd if o.input(0) == Some(vn) => {
+                    let idx = o.input(1).filter(|&x| f.vn(x).is_constant());
+                    let elem = o.input(2).filter(|&x| f.vn(x).is_constant());
+                    match (idx, elem) {
+                        (Some(i), Some(e)) => {
+                            if let Some(out) = o.output {
+                                let c = (f.vn(i).loc.offset as i64).wrapping_mul(f.vn(e).loc.offset as i64);
+                                queue.push((out, off.wrapping_add(c)));
+                            }
+                        }
+                        _ => {
+                            aliased.insert(off); // a non-constant index ⇒ an indexed (aliased) access
+                        }
+                    }
+                }
+                // A LOAD/STORE *through* the SP-derived pointer is a direct access to the slot, not
+                // an escape of its address — exactly the class `RuleLoadVarnode`/`RuleStoreVarnode`
+                // resolves to a direct stack varnode. Ghidra's checker never sees these: it runs at
+                // `aliasyes` passes (`ActionRestructureVarnode`, pass != 0), after the previous
+                // iteration's actprop2 already converted them; mosura's probe runs pre-conversion,
+                // so the deref must be discounted here or every directly-accessed slot classifies
+                // aliased. A STORE of the pointer *as the value* (input 2) still escapes below.
+                OpCode::Load if o.input(1) == Some(vn) => {}
+                OpCode::Store if o.input(1) == Some(vn) && o.input(2) != Some(vn) => {}
                 // any other use ⇒ the SP-derived address escapes here, so the slot is aliased
                 _ => {
                     aliased.insert(off);

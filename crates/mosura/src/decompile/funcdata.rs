@@ -253,10 +253,27 @@ impl Funcdata {
         } else {
             super::nzmask::calc_mask(size)
         };
+        // Ghidra sets the storage-derived properties at varnode CREATION: `Funcdata::newVarnode` /
+        // `newVarnodeOut` (funcdata_varnode.cc:162-167 / :115-120) call `localmap->queryProperties`
+        // → `Scope::queryProperties` (database.cc:1263-1282): an address inside a mapped scope with
+        // no explicit symbol gets `mapped | addrtied` (+ `persist` when the scope is global). So a
+        // stack or ram varnode is *born* address-tied — including the ones rules create mid-mainloop
+        // (`RuleStoreVarnode`'s output, a SubVariableFlow-narrowed global) — and the per-pass symbol
+        // sync (`syncVarnodesWithSymbols`, driven by `ActionRestructureVarnode`) can only CLEAR
+        // `addrtied` later, for the unaliased stack locals ([`super::varnodeprops::mark_addrtied`]).
+        // mosura's scope shape is by space (see `scope::query_properties`): the `stack` (Spacebase)
+        // space is the local scope; the delayed Processor space (`ram`) is the global one; the
+        // register space (Processor, delay 0), `unique` and `const` are never scope-mapped.
+        let sp = self.spaces.get(loc.space);
+        let scope_flags = match sp.kind {
+            SpaceKind::Spacebase => flags::MAPPED | flags::ADDRTIED,
+            SpaceKind::Processor if sp.delay > 0 => flags::MAPPED | flags::ADDRTIED | flags::PERSIST,
+            _ => 0,
+        };
         self.varnodes.push(Varnode {
             loc,
             size,
-            flags: vflags,
+            flags: vflags | scope_flags,
             addlflags: 0,
             create_index,
             def: None,
