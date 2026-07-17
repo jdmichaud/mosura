@@ -778,6 +778,290 @@ fn normalize_write_size(
     }
 }
 
+/// Faithful port of Ghidra's heritage *refinement* for ranges materializing on a RE-ENTRY pass —
+/// `Heritage::refinement` (`heritage.cc:1890`), invoked per merged range from `placeMultiequals`
+/// (`heritage.cc:2608-2616`) whenever `size > 4 && max_write < size` (no single write covers the
+/// range, so whole-range SSA cannot link it as one variable). The range is partitioned at the
+/// boundary points of ALL its accesses (`buildRefinement`, `heritage.cc:1704`; boundary→size
+/// conversion, `heritage.cc:1911-1918`; `remove13Refinement`, `heritage.cc:1857`) and every
+/// boundary-crossing access is rewritten onto the partition:
+///   - a *free read* spanning several pieces becomes a CONCAT of piece reads feeding a `unique`
+///     that replaces it in its reader (`refineRead` :1772 + `concatPieces` :507);
+///   - a *write* spanning several pieces is retargeted to a `unique` with a defining SUBPIECE per
+///     piece (`refineWrite` :1806 + `splitPieces` :563), and readers of the old output are
+///     re-pointed at the temp (Ghidra `totalReplace`);
+///   - an *input-like* read — one no write dominates — is kept whole: mosura's landed realization
+///     of `refineInput`/`guardInput` (`heritage.cc:1836`/`:1952`; see [`refine_overlaps`] and the
+///     mixfloatint regression test).
+///
+/// The piece accesses then heritage per piece this same pass, each free piece read linking to its
+/// matching-width write — reconstructing Ghidra's post-refinement SSA. This is the mechanism that
+/// links concatsplit's 8-byte stack re-load to its two 4-byte lane writes
+/// (`CONCAT44(param_6,param_5)`), whose absence left a read-never-written free stack varnode whose
+/// lane writes dead-coded (wrong code).
+///
+/// SCOPE: fires only on a space's re-entry passes (`pass > delay`) — a range materializing
+/// mid-mainloop when the pool's RuleLoadVarnode/RuleStoreVarnode conversions free mixed-width
+/// stack/ram accesses. A space's initial pass keeps the pass-0 batch behavior
+/// ([`refine_overlaps`]' laned-only partition, GP ranges skipped), so first-pass output is
+/// unchanged; retiring the laned-only restriction at pass 0 is its own later gated brick (the
+/// rule-pool-explosion risk named in refine_overlaps).
+///
+/// Range identity is the shared [`widening_ranges`] merged map, so this,
+/// [`remove_revisited_markers`] and [`normalize_ranges`] act on identical range extents — Ghidra
+/// sequences all three in the same `placeMultiequals` body (refinement :2611 FIRST, then
+/// `removeRevisitedMarkers` :2627, then `guard()`'s normalize :2629), the order [`heritage_pass`]
+/// preserves. After the partition the piece accesses are no longer refine-domain, so the
+/// `is_refine_range` skips in the other two never fire on them; those skips remain as the
+/// >1024/trivial-refinement guard, matching Ghidra's own bails (`heritage.cc:1896/1915`).
+///
+/// Ghidra's rewrite of `disjoint`/`globaldisjoint` (`heritage.cc:1926-1946`, erase the wide range
+/// and re-insert the pieces at the same pass) needs no analog: mosura refines BEFORE
+/// [`gather_candidates`] records this pass's locations, so only the piece-width locations ever
+/// enter `globaldisjoint`. A write whose def is a heritage marker narrower than its range is
+/// `removevars` domain (`collect`, heritage.cc:327-333) — excluded from the partition boundaries,
+/// from the gate's max-write, and from the rewrite, exactly as Ghidra's collect segregates it —
+/// and handled by [`remove_revisited_markers`] after.
+fn refine_ranges(f: &mut Funcdata, dom: &Dominators, pass: i32) {
+    if f.num_blocks() == 0 || pass == 0 {
+        return;
+    }
+    let infos = build_info_list(&f.spaces);
+    let reentry = |sp: SpaceId| {
+        let info = &infos[sp.0 as usize];
+        info.is_heritaged() && info.delay < pass
+    };
+    // 1. Collect the accesses (Ghidra `collect`, heritage.cc:307): free reads, and writes with
+    //    their marker-ness plus block index + intra-block position for the dominating-write
+    //    (input-like) test. Write-masked and laned varnodes excluded like [`widening_ranges`], so
+    //    range extents match. (The rewrite step re-walks the blocks, so no op handles are kept.)
+    struct RAcc {
+        sp: SpaceId,
+        off: u64,
+        size: u32,
+    }
+    struct WAcc {
+        sp: SpaceId,
+        off: u64,
+        size: u32,
+        blk: usize,
+        pos: usize,
+        marker: bool,
+    }
+    let mut reads: Vec<RAcc> = Vec::new();
+    let mut writes: Vec<WAcc> = Vec::new();
+    for b in 0..f.num_blocks() {
+        for (pos, op) in f.blocks()[b].ops.clone().into_iter().enumerate() {
+            for slot in 0..f.op(op).num_inputs() {
+                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
+                let vn = f.vn(f.op(op).input(slot).unwrap());
+                if reentry(sp)
+                    && !is_laned_register(&f.spaces, sp, off)
+                    && !vn.is_heritage_known()
+                    && !vn.is_write_mask()
+                {
+                    reads.push(RAcc { sp, off, size: sz });
+                }
+            }
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if reentry(sp)
+                    && !is_laned_register(&f.spaces, sp, off)
+                    && !f.vn(f.op(op).output.unwrap()).is_write_mask()
+                {
+                    let o = f.op(op);
+                    let marker = o.is_marker() || o.is_return_copy();
+                    writes.push(WAcc { sp, off, size: sz, blk: b, pos, marker });
+                }
+            }
+        }
+    }
+    if reads.is_empty() && writes.is_empty() {
+        return;
+    }
+    // 2. Group the accesses by their merged range and apply Ghidra's refinement gate per range
+    //    (`placeMultiequals` heritage.cc:2610 `size > 4 && max < size`; `refinement` :1896
+    //    `size > 1024` bail). `max` is collect()'s maxsize: every non-write-masked write except a
+    //    marker narrower than the range (those hit the `remove.push_back` branch BEFORE the
+    //    maxsize update, heritage.cc:329-336 — a FULL-width marker does count).
+    let (merged, _, _) = widening_ranges(f, pass);
+    #[derive(Default)]
+    struct RangeAccs {
+        size: u32,
+        reads: Vec<usize>,
+        writes: Vec<usize>,
+    }
+    let mut per_range: HashMap<(SpaceId, u64), RangeAccs> = HashMap::new();
+    for (i, r) in reads.iter().enumerate() {
+        if let Some((base, size)) = merged.merged_range(r.sp, r.off) {
+            let e = per_range.entry((r.sp, base)).or_default();
+            e.size = size;
+            e.reads.push(i);
+        }
+    }
+    for (i, w) in writes.iter().enumerate() {
+        if let Some((base, size)) = merged.merged_range(w.sp, w.off) {
+            let e = per_range.entry((w.sp, base)).or_default();
+            e.size = size;
+            e.writes.push(i);
+        }
+    }
+    // Partition each qualifying range: buildRefinement boundary marks → piece sizes →
+    // remove13Refinement, bailing when there is no internal boundary (`lastpos == 0`,
+    // heritage.cc:1915 — the trivial refinement).
+    let mut parts: HashMap<(SpaceId, u64), Vec<u32>> = HashMap::new();
+    let mut keys: Vec<(SpaceId, u64)> = per_range.keys().copied().collect();
+    keys.sort_unstable_by_key(|&(sp, base)| (sp.0, base));
+    for key in keys {
+        let accs = &per_range[&key];
+        let size = accs.size;
+        if size <= 4 || size > 1024 {
+            continue;
+        }
+        let narrow_marker = |w: &WAcc| w.marker && w.size < size;
+        let max_write = accs
+            .writes
+            .iter()
+            .map(|&i| &writes[i])
+            .filter(|w| !narrow_marker(w))
+            .map(|w| w.size)
+            .max()
+            .unwrap_or(0);
+        if max_write >= size {
+            continue;
+        }
+        let base = key.1;
+        let mut refine = vec![0u32; size as usize + 1]; // fencepost for the end position
+        for &i in &accs.reads {
+            let r = &reads[i];
+            let d = r.off.wrapping_sub(base) as usize;
+            refine[d] = 1;
+            refine[d + r.size as usize] = 1;
+        }
+        for &i in &accs.writes {
+            let w = &writes[i];
+            if narrow_marker(w) {
+                continue;
+            }
+            let d = w.off.wrapping_sub(base) as usize;
+            refine[d] = 1;
+            refine[d + w.size as usize] = 1;
+        }
+        let mut lastpos = 0usize;
+        for curpos in 1..size as usize {
+            if refine[curpos] != 0 {
+                refine[lastpos] = (curpos - lastpos) as u32;
+                lastpos = curpos;
+            }
+        }
+        if lastpos == 0 {
+            continue; // no non-trivial refinement
+        }
+        refine[lastpos] = size - lastpos as u32;
+        refine.truncate(size as usize); // drop the fencepost
+        remove13_refinement(&mut refine);
+        parts.insert(key, refine);
+    }
+    if parts.is_empty() {
+        return;
+    }
+    // 3. Rewrite each block: a CONCAT chain spliced before a split read, SUBPIECEs after a split
+    //    write (same splice pattern as [`refine_overlaps`] step 4).
+    for b in 0..f.num_blocks() {
+        let ops = f.blocks()[b].ops.clone();
+        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
+        let bid = super::block::BlockId(b as u32);
+        for (pos, op) in ops.iter().copied().enumerate() {
+            let seq = f.op(op).seqnum;
+            // refineRead + concatPieces (heritage.cc:1772/:507, little-endian): the pieces are in
+            // address order, so each next (higher) piece is the more-significant PIECE input; the
+            // final unique replaces the wide free read in its reader.
+            for slot in 0..f.op(op).num_inputs() {
+                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
+                if !reentry(sp) || is_laned_register(&f.spaces, sp, off) {
+                    continue;
+                }
+                let vn = f.vn(f.op(op).input(slot).unwrap());
+                if vn.is_heritage_known() || vn.is_write_mask() {
+                    continue;
+                }
+                let Some((base, _)) = merged.merged_range(sp, off) else { continue };
+                let Some(part) = parts.get(&(sp, base)) else { continue };
+                let pieces = split_by_refinement(base, part, off, sz);
+                if pieces.is_empty() {
+                    continue; // already refined — fits a single piece
+                }
+                // refineInput realization (see [`refine_overlaps`]): a read no write dominates has
+                // no reaching def — it is a function-input/uninitialized-stack read and stays
+                // whole, linking as ONE input rather than a CONCAT of free pieces nothing rejoins.
+                let has_dom_write = writes.iter().any(|w| {
+                    w.sp == sp
+                        && w.off < off + sz as u64
+                        && off < w.off + w.size as u64
+                        && dom.dominates(w.blk, b)
+                        && (w.blk != b || w.pos < pos)
+                });
+                if !has_dom_write {
+                    continue;
+                }
+                let pvns: Vec<VarnodeId> = pieces
+                    .iter()
+                    .map(|&(po, ps)| f.new_varnode(ps, super::space::Address::new(sp, po)))
+                    .collect();
+                let mut preexist = pvns[0];
+                for (i, &pvn) in pvns.iter().enumerate().skip(1) {
+                    let pieceop = f.new_op(OpCode::Piece, seq, vec![pvn, preexist]);
+                    f.op_mut(pieceop).parent = Some(bid);
+                    let outsz =
+                        if i == pvns.len() - 1 { sz } else { f.vn(preexist).size + f.vn(pvn).size };
+                    preexist = f.new_output_unique(pieceop, outsz);
+                    new_ops.push(pieceop);
+                }
+                f.op_set_input(op, slot, preexist);
+            }
+            // refineWrite + splitPieces (heritage.cc:1806/:563): the op is retargeted to a unique
+            // temp; each piece is a SUBPIECE of it at its byte offset, spliced after the op; the
+            // old output's readers are re-pointed at the temp (Ghidra `totalReplace`).
+            let mut after: Vec<OpId> = Vec::new();
+            if let Some((sp, off, sz)) = write_loc(f, op) {
+                if reentry(sp)
+                    && !is_laned_register(&f.spaces, sp, off)
+                    && !f.vn(f.op(op).output.unwrap()).is_write_mask()
+                    && !f.op(op).is_marker()
+                    && !f.op(op).is_return_copy()
+                {
+                    if let Some((base, _)) = merged.merged_range(sp, off) {
+                        if let Some(part) = parts.get(&(sp, base)) {
+                            let pieces = split_by_refinement(base, part, off, sz);
+                            if !pieces.is_empty() {
+                                let old = f.op(op).output.unwrap();
+                                let old_descend = f.vn(old).descend.clone();
+                                let temp = f.new_output_unique(op, sz);
+                                for &(po, ps) in &pieces {
+                                    let cst = f.new_const(4, po.wrapping_sub(off));
+                                    let subop = f.new_op(OpCode::Subpiece, seq, vec![temp, cst]);
+                                    f.op_mut(subop).parent = Some(bid);
+                                    f.new_output(subop, ps, super::space::Address::new(sp, po));
+                                    after.push(subop);
+                                }
+                                for d in old_descend {
+                                    for dslot in 0..f.op(d).num_inputs() {
+                                        if f.op(d).input(dslot) == Some(old) {
+                                            f.op_set_input(d, dslot, temp);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            new_ops.push(op);
+            new_ops.extend(after);
+        }
+        f.set_block_ops(bid, new_ops);
+    }
+}
+
 /// Ghidra heritage *refinement* (`heritage.cc`: `refinement`/`buildRefinement`/`splitByRefinement`/
 /// `refineRead`/`refineWrite`/`concatPieces`/`splitPieces`). A pre-SSA pass run over the register
 /// space: in a range that no single *write* covers — so SSA cannot link it as one variable, e.g. a
@@ -1308,6 +1592,15 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         if super::action::perf::enabled() {
             super::action::perf::record("heritage", "normalize_read_size", t0.elapsed());
         }
+    }
+    // Re-entry range maintenance, at Ghidra's `placeMultiequals` order (heritage.cc:2608-2629):
+    // refinement partition FIRST (:2610-2616), then the revisited-marker rewrite (:2627), then the
+    // per-range `guard()` width normalize (:2629). Each recomputes its ranges, so the marker/
+    // normalize steps see the post-partition piece-granular footprints.
+    let t0 = std::time::Instant::now();
+    refine_ranges(f, dom, pass);
+    if super::action::perf::enabled() {
+        super::action::perf::record("heritage", "refine_ranges", t0.elapsed());
     }
     // Widening re-entry gate (Ghidra's `placeMultiequals` per-pass re-heritage of a grown range):
     // probe once for any range that widened vs its prior-pass heritage. On the current once-pass
@@ -1977,9 +2270,9 @@ mod tests {
 
     /// A range no single write covers and wider than 4 bytes is Ghidra's *refinement* (partition)
     /// case (`placeMultiequals`, heritage.cc:2610: `size > 4 && max < size`), NOT whole-range
-    /// normalize. For non-laned ranges mosura keeps refinement a deliberate no-op (see
-    /// [`refine_overlaps`]), so `normalize_ranges` must skip it — leaving the pieces independent, not
-    /// widening the narrow writes into bogus PIECEs (the stackreturn/impliedfield regression cause).
+    /// normalize. `normalize_ranges` must skip it — it is [`refine_ranges`]' domain (which runs
+    /// FIRST and partitions the accesses so the recomputed ranges are piece-granular) — not widen
+    /// the narrow writes into bogus PIECEs (the stackreturn/impliedfield regression cause).
     #[test]
     fn normalize_ranges_skips_wide_uncovered_refinement_range() {
         use super::super::block::{BlockBasic, BlockId};
@@ -2018,6 +2311,174 @@ mod tests {
             "refinement range left independent (no whole-range normalize)",
         );
         assert_eq!(write_loc(&f, w0), Some((ram, base, 4)), "narrow write NOT widened");
+    }
+
+    /// [`refine_ranges`] (Ghidra `Heritage::refinement`, heritage.cc:1890, from `placeMultiequals`
+    /// :2610) on a re-entry pass partitions a stack range no single write covers — concatsplit's
+    /// shape: two 8-byte lane writes plus a 16-byte re-load, all materialized mid-mainloop by the
+    /// pool's STORE/LOAD conversions. The partition is [8,8]; `refineRead`/`concatPieces` rewrite
+    /// the 16-byte read as `PIECE(hi_piece, lo_piece)` of free 8-byte piece reads that heritage
+    /// against the matching lane writes (the writes already fit their pieces and are untouched).
+    /// On the space's INITIAL pass the same shape is left alone (the re-entry scope).
+    #[test]
+    fn refine_ranges_partitions_stack_range_by_lane_boundaries() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0u64.wrapping_sub(0x18); // s-0x18, a realistic negative stack offset
+
+        // Two 8-byte lane writes `s-0x18:8 = COPY lo` / `s-0x10:8 = COPY hi` ...
+        let lo_in = f.new_input(8, Address::new(reg, 0x40));
+        let w_lo = f.new_op(OpCode::Copy, seq, vec![lo_in]);
+        f.new_output(w_lo, 8, Address::new(stack, base));
+        let hi_in = f.new_input(8, Address::new(reg, 0x48));
+        let w_hi = f.new_op(OpCode::Copy, seq, vec![hi_in]);
+        f.new_output(w_hi, 8, Address::new(stack, base + 8));
+        // ... and a free 16-byte re-load of the whole range feeding a register.
+        let read16 = f.new_varnode(16, Address::new(stack, base));
+        let op_read = f.new_op(OpCode::Copy, seq, vec![read16]);
+        f.new_output(op_read, 16, Address::new(reg, 0x1200));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![w_lo, w_hi, op_read], ..Default::default() }]);
+        for &op in &[w_lo, w_hi, op_read] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        let dom = super::super::dominator::compute(&f);
+
+        // Stack's INITIAL heritage pass (pass == delay == 1): the re-entry scope leaves the range
+        // to the pass-0/batch machinery — nothing is rewritten.
+        refine_ranges(&mut f, &dom, 1);
+        assert!(
+            !f.blocks()[0].ops.iter().any(|&op| f.op(op).code() == OpCode::Piece),
+            "initial pass untouched (re-entry scope)",
+        );
+
+        // Re-entry pass 2 (the mid-mainloop materialization): partition [8,8] fires.
+        refine_ranges(&mut f, &dom, 2);
+        // The read now goes through a CONCAT of the two piece reads: PIECE(in0 = hi more-significant
+        // piece, in1 = lo piece) — little-endian concatPieces order — output a 16-byte unique.
+        let r_in = f.op(op_read).input(0).unwrap();
+        let concat = f.vn(r_in).def.expect("read input now has a def");
+        assert_eq!(f.op(concat).code(), OpCode::Piece, "16-byte read split into a CONCAT");
+        assert_eq!(f.vn(r_in).size, 16, "CONCAT output keeps the read's width");
+        let hi = f.op(concat).input(0).unwrap();
+        let lo = f.op(concat).input(1).unwrap();
+        assert_eq!(
+            (f.vn(hi).loc.space, f.vn(hi).loc.offset, f.vn(hi).size),
+            (stack, base + 8, 8),
+            "most-significant piece reads the upper lane",
+        );
+        assert_eq!(
+            (f.vn(lo).loc.space, f.vn(lo).loc.offset, f.vn(lo).size),
+            (stack, base, 8),
+            "least-significant piece reads the lower lane",
+        );
+        assert!(!f.vn(hi).is_heritage_known() && !f.vn(lo).is_heritage_known(), "pieces are free reads");
+        // The lane writes already match the partition — untouched.
+        assert_eq!(write_loc(&f, w_lo), Some((stack, base, 8)), "lo lane write untouched");
+        assert_eq!(write_loc(&f, w_hi), Some((stack, base + 8, 8)), "hi lane write untouched");
+    }
+
+    /// [`refine_ranges`] leaves a range alone when a single write covers it (`max_write == size`
+    /// fails Ghidra's `placeMultiequals` gate, heritage.cc:2610) — that is `guard()`-normalize
+    /// domain, not refinement.
+    #[test]
+    fn refine_ranges_skips_covered_range() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0u64.wrapping_sub(0x18);
+
+        // A single 16-byte write covers the range; an 8-byte free read sits inside it.
+        let w_in = f.new_input(16, Address::new(reg, 0x1200));
+        let w = f.new_op(OpCode::Copy, seq, vec![w_in]);
+        f.new_output(w, 16, Address::new(stack, base));
+        let read8 = f.new_varnode(8, Address::new(stack, base));
+        let op_read = f.new_op(OpCode::Copy, seq, vec![read8]);
+        f.new_output(op_read, 8, Address::new(reg, 0x40));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![w, op_read], ..Default::default() }]);
+        for &op in &[w, op_read] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        let dom = super::super::dominator::compute(&f);
+        let before = f.blocks()[0].ops.len();
+        refine_ranges(&mut f, &dom, 2);
+        assert_eq!(f.blocks()[0].ops.len(), before, "no ops inserted");
+        assert_eq!(
+            f.op(op_read).input(0),
+            Some(read8),
+            "read of a covered range untouched (normalize domain, not refinement)",
+        );
+    }
+
+    /// The 1-3/3-1 partition repair (`remove13Refinement`, heritage.cc:1857) inside
+    /// [`refine_ranges`]: an 8-byte range accessed 4+1+3 partitions as [4,1,3], the artificial
+    /// 1-3 split is merged back to 4, and the 8-byte read is CONCAT-split at [4,4] — never into
+    /// 1- or 3-byte pieces.
+    #[test]
+    fn refine_ranges_merges_13_partition() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let stack = spaces.by_name("stack").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let base = 0u64.wrapping_sub(0x10);
+
+        // Writes at +0:4, +4:1, +5:3 and a free 8-byte read over all of them: boundaries
+        // {0,4,5,8} → partition [4,1,3] → remove13Refinement → [4,4].
+        let in0 = f.new_input(4, Address::new(reg, 0x40));
+        let w0 = f.new_op(OpCode::Copy, seq, vec![in0]);
+        f.new_output(w0, 4, Address::new(stack, base));
+        let in1 = f.new_input(1, Address::new(reg, 0x48));
+        let w1 = f.new_op(OpCode::Copy, seq, vec![in1]);
+        f.new_output(w1, 1, Address::new(stack, base + 4));
+        let in2 = f.new_input(3, Address::new(reg, 0x50));
+        let w2 = f.new_op(OpCode::Copy, seq, vec![in2]);
+        f.new_output(w2, 3, Address::new(stack, base + 5));
+        let read8 = f.new_varnode(8, Address::new(stack, base));
+        let op_read = f.new_op(OpCode::Copy, seq, vec![read8]);
+        f.new_output(op_read, 8, Address::new(reg, 0x0));
+
+        f.set_blocks(vec![BlockBasic { ops: vec![w0, w1, w2, op_read], ..Default::default() }]);
+        for &op in &[w0, w1, w2, op_read] {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        let dom = super::super::dominator::compute(&f);
+        refine_ranges(&mut f, &dom, 2);
+
+        let r_in = f.op(op_read).input(0).unwrap();
+        let concat = f.vn(r_in).def.expect("read input now has a def");
+        assert_eq!(f.op(concat).code(), OpCode::Piece, "8-byte read split into a CONCAT");
+        let hi = f.op(concat).input(0).unwrap();
+        let lo = f.op(concat).input(1).unwrap();
+        assert_eq!(
+            (f.vn(lo).loc.offset, f.vn(lo).size, f.vn(hi).loc.offset, f.vn(hi).size),
+            (base, 4, base + 4, 4),
+            "pieces are [4,4] — the 1-3 split merged back (remove13Refinement)",
+        );
+        // The 1- and 3-byte writes fit INSIDE the merged 4-byte piece — untouched by the rewrite.
+        assert_eq!(write_loc(&f, w1), Some((stack, base + 4, 1)), "1-byte write untouched");
+        assert_eq!(write_loc(&f, w2), Some((stack, base + 5, 3)), "3-byte write untouched");
     }
 
     /// `remove_revisited_markers` (Ghidra `Heritage::removeRevisitedMarkers`, heritage.cc:244, with the
