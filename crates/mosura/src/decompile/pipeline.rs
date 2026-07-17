@@ -651,6 +651,10 @@ pub fn universal_action() -> ActionGroup {
                                 .then(default_rule_pool())
                                 .then(OncePerFunc::new(super::lanedivide::ActionLaneDivide)),
                         )
+                        // Ghidra ActionRedundBranch (:5658, "deadcontrolflow"), directly after
+                        // actstackstall: splice single-in/single-out block pairs and drop branches
+                        // whose exits all reach the same block.
+                        .then(super::determinedbranch::ActionRedundBranch)
                         .then(super::deadcode::ActionDeadCode)
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
