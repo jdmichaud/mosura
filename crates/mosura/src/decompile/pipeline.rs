@@ -2,7 +2,7 @@
 //! analogue of Ghidra's `ActionDatabase::universalAction` (`coreaction.cc`). Grows as each
 //! phase lands; currently heritage (P1) + the simplification rule pool (P2).
 
-use super::action::{Action, ActionGroup, ActionPool};
+use super::action::{Action, ActionGroup, ActionPool, OncePerFunc};
 use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
@@ -556,18 +556,6 @@ pub fn universal_action() -> ActionGroup {
         // group, the foundation for folding the rest of the pipeline into the loop next.
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
-        // Split laned (vector) registers into explicit lanes (Ghidra ActionLaneDivide). PLACEMENT
-        // DIVERGENCE (documented, FORCED not chosen): Ghidra's literal slot is the `stackstall` group
-        // AFTER oppool1 (coreaction.cc:5652). mosura places it here — post-heritage, BEFORE the first
-        // default_rule_pool — because mosura resolves stack stores pre-pool (recover_stack in
-        // ActionHeritage) and the first pool copy-propagates the laned register away, so at Ghidra's
-        // slot there is no live laned register to divide. Post-heritage the laned XMM is still live
-        // (r0x1200:16 with its SUBPIECE + COPY-to-slot descendants), the shape LaneDivide needs. This
-        // is the pipeline-shape approximation family (same class as the once-pass placements). LINKAGE:
-        // if/when the pre-pool stack resolution is replaced by the faithful spacebase/StackPtrFlow
-        // model (backlog), re-evaluate moving this to Ghidra's stackstall slot. Inert unless the
-        // Funcdata carries laned-register records (parsed from the pspec by the build caller).
-        .then(super::lanedivide::ActionLaneDivide)
         // ★ The two-phase fullloop (task #8 Brick C1): Ghidra `actfullloop` (rule_repeatapply,
         // coreaction.cc:5487) wrapping `actmainloop` (rule_repeatapply, :5489) with
         // `ActionStartTypes` at its tail (:5687). It replaces the three hand-unrolled
@@ -629,7 +617,33 @@ pub fn universal_action() -> ActionGroup {
                         .then(ActionNonzeroMask)
                         .then(ActionConsume)
                         .then(ActionInferTypes::default())
-                        .then(default_rule_pool())
+                        // Ghidra `actstackstall` (coreaction.cc:5509, rule_repeatapply; mainloop
+                        // slot :5651-5656): an INNER fixpoint group {oppool1, ActionLaneDivide}.
+                        // The repeat is load-bearing: when LaneDivide splits a laned store,
+                        // `buildStore` mints new pointer arithmetic (base + lane offset); the
+                        // group re-runs oppool1 so RuleCollectTerms/AddMultCollapse fold it to
+                        // spacebase-relative form BEFORE the group quiesces — then actprop2
+                        // (ptrarith below) converts ALL the lane STOREs in one sweep and the
+                        // next ActionHeritage sees the complete access set (its refinement
+                        // partition links every lane; a flat member ordering left the high lane's
+                        // STORE unconverted across the heritage pass — the concatsplit
+                        // read-never-written wrong code). LaneDivide is `rule_onceperfunc`
+                        // (OncePerFunc): it fires once per function AT this slot — after the
+                        // first oppool1 quiescence, where the SubVariableFlow-family rules have
+                        // already narrowed the spurious sub-lane reads (call-arg float4 SUBPIECEs
+                        // etc.), so `collectLaneSizes`' smallest-first pick sees only the real
+                        // lane widths. (The former post-heritage/pre-pool placement — forced
+                        // while recover_stack resolved stack stores pre-pool — saw the raw 4-byte
+                        // SUBPIECEs and over-split; task #8 Brick D retired that ordering.) Inert
+                        // unless the Funcdata carries laned-register records (parsed from the
+                        // pspec by the build caller). Absent members join at their slots when
+                        // ported: ActionMultiCse (:5653), ActionShadowVar (:5654),
+                        // ActionDeindirect (:5655), ActionStackPtrFlow (:5656).
+                        .then(
+                            ActionGroup::restart("stackstall")
+                                .then(default_rule_pool())
+                                .then(OncePerFunc::new(super::lanedivide::ActionLaneDivide)),
+                        )
                         .then(super::deadcode::ActionDeadCode)
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
