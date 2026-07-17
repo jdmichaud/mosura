@@ -238,21 +238,6 @@ fn block_pos(f: &Funcdata, op: OpId) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Is `vn` used by return op `op` as a return-VALUE input (slot ≥ 1)? Ghidra's `onlyOpUse` checks
-/// only the single trial slot (`op->getIn(trial.getSlot())==vn`, funcdata_varnode.cc:1823-1825),
-/// because its return carries one output trial per storage. mosura's [`recover_return`] instead
-/// appends fixed sibling candidates (RAX:8, XMM0:8) as input slots, so a value could feed more
-/// than one of them; all those slots are the SAME return's output recovery — not an external use —
-/// so any of them counts as the return use. (The overlapping XMM0:4 sibling that motivated this
-/// accommodation is retired; whether the any-slot skip itself can now revert to Ghidra's exact
-/// own-slot test — it is shared with the CALL-input path, where Ghidra routes same-op-other-slot
-/// uses through `checkCallDoubleUse` — is a pinned open question, instrument before changing.
-/// `opslot` is retained for signature symmetry with the CALL-input reuse.)
-fn is_return_value_use(f: &Funcdata, op: OpId, opslot: usize, vn: VarnodeId) -> bool {
-    let _ = opslot;
-    f.op(op).inrefs.iter().skip(1).any(|&x| x == vn)
-}
-
 /// Ghidra `Funcdata::onlyOpUse` (funcdata_varnode.cc:1805): forward-walk the value of `invn`; return
 /// `true` iff it is only used to feed `opmatch` at `opslot` (transforming ops are traversed), `false`
 /// once it reaches a real use — a STORE/LOAD/BRANCH, a CALL that isn't a legitimate double-use, a
@@ -278,8 +263,14 @@ fn only_op_use(
         let (vn, base_flags) = varlist[i];
         i += 1;
         for op in f.vn(vn).descend.clone() {
-            if op == opmatch && is_return_value_use(f, op, opslot, vn) {
-                continue; // the parameter/return use we are evaluating
+            if op == opmatch && f.op(op).input(opslot) == Some(vn) {
+                // The parameter/return use we are evaluating — Ghidra skips ONLY the trial's own
+                // slot (funcdata_varnode.cc:1823-1825). A use of the value at ANOTHER slot of the
+                // same op falls through to the opcode cases (e.g. `check_call_double_use` for a
+                // CALL, the own-slot RETURN test below), which can reject it as a real use:
+                // deindirect's `param_3+5` feeds RSI and RDX of the same call, and only the RSI
+                // trial is the argument.
+                continue;
             }
             let mut cur_flags = base_flags;
             match f.op(op).code() {
@@ -307,8 +298,8 @@ fn only_op_use(
                 }
                 OpCode::Return => {
                     if f.op(opmatch).code() == OpCode::Return {
-                        if is_return_value_use(f, op, opslot, vn) {
-                            continue; // a return-value-slot use in a (possibly different) RETURN
+                        if f.op(op).input(opslot) == Some(vn) {
+                            continue; // the same trial slot in a (possibly different) RETURN
                         }
                     } else if active_output && f.op(op).input(0) != Some(vn) {
                         if !is_alternate_path_valid(f, vn, cur_flags) {
@@ -718,9 +709,10 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         NoUse,    // markNoUse — dataflow FREED (definitely not an argument)
     }
     let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
-    // (trial index, op slot, verdict) for every trial unchecked at entry, evaluated on the current
-    // (pre-free) dataflow so no trial's verdict depends on another's freeing.
-    let mut verdicts: Vec<(usize, usize, Verdict)> = Vec::new();
+    // Each unchecked trial is evaluated, marked and (for `markNoUse`) freed IN-LOOP — Ghidra's
+    // sequential semantics (both the marking and the constant-0 free happen inside the trial loop,
+    // fspec.cc:5613-5651) — so a later trial's [`check_call_double_use`] sees the verdicts of the
+    // trials evaluated before it (the `isChecked`/`isActive` branch, funcdata_varnode.cc:1787).
     for ti in 0..ntrials {
         let (checked, slot) = {
             let t = &f.active_inputs[&call].trial[ti];
@@ -750,30 +742,26 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
                 }
             }
         };
-        verdicts.push((ti, slot, verdict));
-    }
-    // Free the dataflow of the definitely-not-used (`markNoUse`) slots only; `markInactive` preserves
-    // its dataflow (Ghidra frees only when `trial.isDefinitelyNotUsed()`, fspec.cc:5649-5651).
-    for (_, slot, verdict) in &verdicts {
-        if !matches!(verdict, Verdict::NoUse) {
-            continue;
-        }
-        if let Some(v) = f.op(call).input(*slot) {
-            if !f.vn(v).is_constant() {
-                let size = f.vn(v).size as u32;
-                let zero = f.new_const(size, 0);
-                f.op_set_input(call, *slot, zero);
+        // Free the dataflow of a definitely-not-used (`markNoUse`) slot only; `markInactive`
+        // preserves its dataflow (Ghidra frees only when `trial.isDefinitelyNotUsed()`,
+        // fspec.cc:5649-5651).
+        if matches!(verdict, Verdict::NoUse) {
+            if let Some(v) = f.op(call).input(slot) {
+                if !f.vn(v).is_constant() {
+                    let size = f.vn(v).size as u32;
+                    let zero = f.new_const(size, 0);
+                    f.op_set_input(call, slot, zero);
+                }
             }
         }
-    }
-    let active = f.active_inputs.get_mut(&call).unwrap();
-    for (ti, _, verdict) in verdicts {
+        let active = f.active_inputs.get_mut(&call).unwrap();
         match verdict {
             Verdict::Active => active.trial[ti].mark_active(),
             Verdict::Inactive => active.trial[ti].mark_inactive(),
             Verdict::NoUse => active.trial[ti].mark_no_use(),
         }
     }
+    let active = f.active_inputs.get_mut(&call).unwrap();
     active.finish_pass();
     if active.get_num_passes() > active.get_max_pass() {
         active.mark_fully_checked();
@@ -1222,12 +1210,15 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_return_candidates_keep_the_value() {
+    fn sibling_slot_use_fails_the_own_slot_test() {
         // A value reaching TWO return-value slots of the same RETURN (here via a SUBPIECE view —
-        // the shape the retired XMM0:4 sibling candidate used to produce). When evaluating one
-        // slot, onlyOpUse must count the value's use at the OTHER return-value slot as the return
-        // use (not an external use) — otherwise a valid return is wrongly voided. Guards
-        // [`is_return_value_use`] (the any-slot skip, pending the own-slot-only re-check).
+        // the shape the retired XMM0:4 sibling candidate used to produce). Ghidra's `onlyOpUse`
+        // skips ONLY the trial's own slot (funcdata_varnode.cc:1823-1825, and the RETURN case's
+        // own-slot test at :1852-1854): the value's use at the OTHER slot is a real use, so the
+        // trial is rejected. (The former any-slot accommodation existed for the retired XMM0:4
+        // sibling candidate; with disjoint RAX:8/XMM0:8 candidates the only corpus occurrence is
+        // impliedfield's RAX-slot/XMM0-slot value flow, where Ghidra's own rule also rejects the
+        // XMM0 trial and the first-match RAX commit is unchanged.)
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
@@ -1242,7 +1233,10 @@ mod tests {
         let sub = f.new_output(subop, 4, Address::new(reg, XMM0)); // XMM0:4 sibling view of the same value
         let retaddr = f.new_input(8, Address::new(reg, 0x20));
         let ret = f.new_op(OpCode::Return, seq, vec![retaddr, v, sub]);
-        assert!(return_trial_kept(&f, ret, 1), "the value also feeding a sibling return-value slot is still a real return");
+        assert!(
+            !return_trial_kept(&f, ret, 1),
+            "the value's use at a sibling return-value slot is a real use under the own-slot test"
+        );
     }
 
     /// A CALL reading `v` at slot 1, plus a `RETURN` (the opmatch during return recovery). `active`
