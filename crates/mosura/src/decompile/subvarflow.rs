@@ -1357,6 +1357,15 @@ mod tests {
         }
     }
 
+    /// Establish the pipeline's precondition for the consume-gated paths (`set_replacement`
+    /// subflow.cc:112, the call/return pulls): fresh varnodes default to *fully consumed*
+    /// (Ghidra Varnode constructor, varnode.cc:586), and the pipeline always runs
+    /// `ActionConsume` before anything reads `consume` — so a hand-built graph must run the
+    /// same analysis or the gates reject everything.
+    fn recompute_consume(f: &mut Funcdata) {
+        super::super::consume::calc_consume(f);
+    }
+
     #[test]
     fn constructor_sizes_the_flow() {
         // Distinct roots per construction: `mark` is a per-Funcdata Varnode flag that `do_trace`
@@ -1401,6 +1410,7 @@ mod tests {
         let (mut f, reg, _) = mkfd();
         // A 1-byte root whose full byte is the logical value: replacement == vn, not worklisted.
         let b = f.new_input(1, Address::new(reg, 0x10));
+        recompute_consume(&mut f);
         let s = SubvariableFlow::new(&mut f, b, 0xff, false, false, false);
         assert!(s.valid);
         let idx = *s.varmap.get(&b).unwrap();
@@ -1448,6 +1458,7 @@ mod tests {
         let op = f.new_op(OpCode::IntAnd, seq, vec![x, c]);
         let out = f.new_output(op, 4, Address::new(reg, 0x20));
         f.set_blocks(vec![BlockBasic { ops: vec![op], ..Default::default() }]);
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, out, 0xff, false, false, false);
         assert!(!s.worklist.is_empty()); // root worklisted for tracing
         assert!(!s.do_trace()); // stub tracer aborts
@@ -1475,6 +1486,7 @@ mod tests {
         let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, p]);
         f.set_blocks(vec![BlockBasic { ops: vec![op_a, op0, op1, store], ..Default::default() }]);
         parent_all_to_block0(&mut f);
+        recompute_consume(&mut f);
 
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         // Node for a's low byte, and the logical output node for y (already seeded by the ctor).
@@ -1525,6 +1537,9 @@ mod tests {
         let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, out]);
         f.set_blocks(vec![BlockBasic { ops: vec![op_a, op, store], ..Default::default() }]);
         parent_all_to_block0(&mut f);
+        // The hand-built graph stores the FULL zext output (so `calc_consume` would report `a`
+        // fully used); the patch scenario under test is narrow use — set the precondition directly.
+        f.vn_mut(a).consume = 0xff;
 
         let mut s = SubvariableFlow::new(&mut f, a, 0xff, false, false, false);
         // logical 1-byte node standing in as the small value flowing into `op`.
@@ -1551,6 +1566,7 @@ mod tests {
         let y = f.new_input(4, Address::new(reg, 0x10));
         let opz = f.new_op(OpCode::Copy, seq, vec![y]);
         let z = f.new_output(opz, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, z, 0xff, false, false, false);
         let zrvn = *s.varmap.get(&z).unwrap();
         assert!(s.trace_backward(zrvn));
@@ -1567,6 +1583,7 @@ mod tests {
         let q = f.new_input(4, Address::new(reg, 0x14));
         let opm = f.new_op(OpCode::Multiequal, seq, vec![p, q]);
         let m = f.new_output(opm, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, m, 0xff, false, false, false);
         let mrvn = *s.varmap.get(&m).unwrap();
         assert!(s.trace_backward(mrvn));
@@ -1583,6 +1600,7 @@ mod tests {
         let c = f.new_const(4, 0xf0f0);
         let opy = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1597,6 +1615,7 @@ mod tests {
         let c = f.new_const(4, 0xff00);
         let opy = f.new_op(OpCode::IntAnd, seq, vec![a, c]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1614,6 +1633,7 @@ mod tests {
         let c = f.new_const(4, 0xff);
         let opy = f.new_op(OpCode::IntOr, seq, vec![a, c]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1630,6 +1650,7 @@ mod tests {
         let b = f.new_input(1, Address::new(reg, 0x10));
         let opy = f.new_op(OpCode::IntZext, seq, vec![b]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1644,6 +1665,7 @@ mod tests {
         let opy = f.new_op(OpCode::IntZext, seq, vec![b]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
         // mask 0x1ffff → 17-bit logical value (flowsize 3) wider than b's 2 bytes.
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0x1ffff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1662,6 +1684,7 @@ mod tests {
         let c1 = f.new_const(4, 1);
         let opy = f.new_op(OpCode::Subpiece, seq, vec![w, c1]);
         let y = f.new_output(opy, 1, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1679,6 +1702,7 @@ mod tests {
         let lo = f.new_input(2, Address::new(reg, 0x14));
         let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1696,6 +1720,7 @@ mod tests {
         let c8 = f.new_const(4, 8);
         let opy = f.new_op(OpCode::IntLeft, seq, vec![a, c8]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff00, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1713,6 +1738,7 @@ mod tests {
         let c8 = f.new_const(4, 8);
         let opy = f.new_op(OpCode::IntRight, seq, vec![a, c8]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_backward(yrvn));
@@ -1730,6 +1756,7 @@ mod tests {
         let z0 = f.new_const(4, 0);
         let op1 = f.new_op(OpCode::Subpiece, seq, vec![y, z0]);
         let _p = f.new_output(op1, 1, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_forward(yrvn));
@@ -1747,6 +1774,7 @@ mod tests {
         let c = f.new_const(4, 0xff);
         let op = f.new_op(OpCode::IntAnd, seq, vec![y, c]);
         let _out = f.new_output(op, 1, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_forward(yrvn));
@@ -1760,6 +1788,7 @@ mod tests {
         let c = f.new_const(4, 0xff);
         let op = f.new_op(OpCode::IntAnd, seq, vec![y, c]);
         let out = f.new_output(op, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         f.vn_mut(out).consume = 0xffff; // consumed beyond the logical byte
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
@@ -1777,6 +1806,7 @@ mod tests {
         let y = f.new_input(4, Address::new(reg, 0x10));
         let op = f.new_op(OpCode::IntZext, seq, vec![y]);
         let out = f.new_output(op, 8, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_forward(yrvn));
@@ -1794,6 +1824,7 @@ mod tests {
         let other = f.new_const(4, 0x12);
         let op = f.new_op(OpCode::IntEqual, seq, vec![y, other]);
         let _b = f.new_output(op, 1, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
         let yrvn = *s.varmap.get(&y).unwrap();
         assert!(s.trace_forward(yrvn));
@@ -1811,6 +1842,7 @@ mod tests {
         let lo = f.new_input(2, Address::new(reg, 0x14));
         let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, lo, 0xff, false, false, false);
         let lorvn = *s.varmap.get(&lo).unwrap();
         assert!(s.trace_forward(lorvn));
@@ -1824,6 +1856,7 @@ mod tests {
         let lo = f.new_input(2, Address::new(reg, 0x14));
         let opy = f.new_op(OpCode::Piece, seq, vec![hi, lo]);
         let y = f.new_output(opy, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, hi, 0xff, false, false, false);
         let hirvn = *s.varmap.get(&hi).unwrap();
         assert!(s.trace_forward(hirvn));
@@ -1840,6 +1873,7 @@ mod tests {
         let b = f.new_input(4, Address::new(reg, 0x14));
         let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
         let sum = f.new_output(op, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, sum, 0xff, false, false, false);
         let srvn = *s.varmap.get(&sum).unwrap();
         assert!(!s.trace_backward(srvn)); // INT_ADD not among the core backward arms
@@ -1851,6 +1885,7 @@ mod tests {
         let b = f.new_input(4, Address::new(reg, 0x14));
         let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
         let _sum = f.new_output(op, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
         let mut s = SubvariableFlow::new(&mut f, a, 0xff, false, false, false);
         let arvn = *s.varmap.get(&a).unwrap();
         assert!(!s.trace_forward(arvn));
@@ -1874,6 +1909,7 @@ mod tests {
         let store = f.new_op(OpCode::Store, seq, vec![sid, ptr, p]);
         f.set_blocks(vec![BlockBasic { ops: vec![op0, op1, store], ..Default::default() }]);
         parent_all_to_block0(&mut f);
+        recompute_consume(&mut f);
 
         // Seed root = y with mask calc_mask(1) << 0 == 0xff (the SUBPIECE's logical value).
         let mut s = SubvariableFlow::new(&mut f, y, 0xff, false, false, false);
@@ -1913,6 +1949,11 @@ mod tests {
         let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
         f.set_blocks(vec![BlockBasic { ops: vec![op_z, ret], ..Default::default() }]);
         parent_all_to_block0(&mut f);
+        // ActionNonzeroMask precedes ActionConsume in the pipeline: nzm(RAX) = 0xffffffff for the
+        // ZEXT 4→8, and `gather_consumed_return` seeds the RETURN value with minimalmask(nzm) —
+        // which is exactly what makes a ZEXT-padded return narrowable in Ghidra.
+        f.vn_mut(rax).nzm = 0xffffffff;
+        recompute_consume(&mut f);
 
         // Seed as RuleSubvarZext does: root = ZEXT output, mask = calc_mask(input size) = 0xffffffff.
         let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
@@ -1973,7 +2014,10 @@ mod tests {
         let call = f.new_op(OpCode::Call, seq, vec![target, rax]);
         f.set_blocks(vec![BlockBasic { ops: vec![op_z, call], ..Default::default() }]);
         parent_all_to_block0(&mut f);
-        f.vn_mut(rax).consume = 0xffffffff; // only the low 4 bytes consumed → truncatable
+        // nzm(RAX) = 0xffffffff (ZEXT 4→8); `mark_consumed_parameters` seeds the CALL argument
+        // with minimalmask(nzm) → only the low 4 bytes consumed → truncatable.
+        f.vn_mut(rax).nzm = 0xffffffff;
+        recompute_consume(&mut f);
 
         let mut s = SubvariableFlow::new(&mut f, rax, 0xffffffff, false, false, false);
         assert!(s.do_trace());

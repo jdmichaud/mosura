@@ -280,7 +280,12 @@ impl Funcdata {
             descend: Vec::new(),
             ty: None,
             nzm,
-            consume: 0,
+            // Ghidra Varnode constructor (varnode.cc:586): `consumed = ~((uintb)0)` — a fresh
+            // varnode is FULLY consumed (conservative) until the next consume recompute. A 0
+            // default is a mis-port: it makes every consume-gated rule (RuleOrConsume, the
+            // SubVariableFlow gates, RulePullsubMulti/Indirect) maximally aggressive on varnodes
+            // created after the last ActionConsume — e.g. folding a live `x ^ 0x87` to `0x87`.
+            consume: !0u64,
         });
         id
     }

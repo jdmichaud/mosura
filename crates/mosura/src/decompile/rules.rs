@@ -8929,6 +8929,11 @@ mod tests {
         for op in f.block(BlockId(0)).ops.clone() {
             f.op_mut(op).parent = Some(BlockId(0));
         }
+        // Pipeline precondition (fresh varnodes default to fully-consumed, Ghidra varnode.cc:586):
+        // nzm(RAX) = 0xffffffff for the ZEXT 4→8 (ActionNonzeroMask), then ActionConsume seeds the
+        // RETURN value with minimalmask(nzm) — what makes a ZEXT-padded return narrowable.
+        f.vn_mut(rax).nzm = 0xffffffff;
+        crate::decompile::consume::calc_consume(&mut f);
         assert_eq!(RuleSubvarZext.apply_op(op_z, &mut f), 1);
         assert_eq!(f.vn(f.op(ret).input(1).unwrap()).size, 4);
     }
@@ -8955,6 +8960,10 @@ mod tests {
         for op in f.block(BlockId(0)).ops.clone() {
             f.op_mut(op).parent = Some(BlockId(0));
         }
+        // Pipeline precondition: ActionConsume always precedes the pool (fresh varnodes default to
+        // fully-consumed, Ghidra varnode.cc:586); the STORE-seeded backward sweep computes the
+        // narrow-use consume the SubVariableFlow gates require.
+        crate::decompile::consume::calc_consume(&mut f);
         assert_eq!(RuleSubvarSubpiece.apply_op(op1, &mut f), 1);
         assert_eq!(f.op(op1).code(), OpCode::Copy);
     }
@@ -9660,6 +9669,9 @@ mod tests {
             f.op_mut(o).parent = Some(BlockId(0));
         }
 
+        // Pipeline precondition: ActionConsume precedes the pool (fresh varnodes default to
+        // fully-consumed, Ghidra varnode.cc:586); the gate checks the phi's high bits are unused.
+        crate::decompile::consume::calc_consume(&mut f);
         assert_eq!(RulePullsubMulti.apply_op(sub, &mut f), 1);
         assert_eq!(f.op(sub).code(), OpCode::Copy, "the reader collapses to a COPY");
         let narrow = f.op(sub).input(0).unwrap();
@@ -9718,6 +9730,9 @@ mod tests {
         for o in [call, indir, sub, user] {
             f.op_mut(o).parent = Some(BlockId(0));
         }
+        // Pipeline precondition: ActionConsume precedes the pool (fresh varnodes default to
+        // fully-consumed, Ghidra varnode.cc:586); the gate checks the INDIRECT's high bits are unused.
+        crate::decompile::consume::calc_consume(&mut f);
         assert_eq!(RulePullsubIndirect.apply_op(sub, &mut f), 1);
         assert_eq!(f.op(sub).code(), OpCode::Copy);
         let narrow = f.op(sub).input(0).unwrap();
