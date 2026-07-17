@@ -19,6 +19,7 @@ pub mod cover;
 pub mod deadcode;
 pub mod determinedbranch;
 pub mod dominator;
+pub mod double;
 pub mod expression;
 pub mod float;
 pub mod fspec;

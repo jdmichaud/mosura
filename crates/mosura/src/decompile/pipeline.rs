@@ -293,6 +293,13 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubvarZext) // (116)
         .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
+        // The double-precision LOAD/STORE recombiners sit at Ghidra's oppool1 tail (coreaction.cc:
+        // 5643-5644, after RulePiecePathology :5642 — not ported). RuleDoubleStore is dormant until
+        // a PRECISLO/PRECISHI marker port lands (ActionParamDouble / SplitVarnode markings); the
+        // remaining family members RuleDoubleIn/RuleDoubleOut (:5645-5646) need combineInputVarnodes
+        // and join with their own port.
+        .with(super::double::RuleDoubleLoad) // (125) doubleload group
+        .with(super::double::RuleDoubleStore) // (126) doubleprecis group
 }
 
 /// Sync address-tied varnode properties with the alias classification (the
