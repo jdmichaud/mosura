@@ -695,29 +695,37 @@ struct LanedAccess {
     reg: LanedRegister,
 }
 
-/// Scan for live register varnodes whose size matches a laned record (mosura's stand-in for Ghidra's
+/// Scan for live varnodes whose size matches a laned record (mosura's stand-in for Ghidra's
 /// `checkForLanedRegister`/`lanedMap`, funcdata_varnode.cc:298 — the map is just the set of laned
-/// storage locations, which we re-derive from the live varnodes at apply time). Deduped by storage.
+/// storage locations, which we re-derive from the live varnodes at apply time). Deduped by storage,
+/// iterated in storage order (Ghidra's `map<VarnodeData,...>` key order).
+///
+/// ALL spaces, not just registers: Ghidra's `Architecture::getLanedRegister` matches by SIZE ONLY
+/// (`loc` is unused, architecture.cc:290), and `checkForLanedRegister` runs on every varnode
+/// creation — `newUnique`/`newVarnodeOut`/`newUniqueOut`/`newVarnode` (funcdata_varnode.cc:91/113/
+/// 137/160; `newConstant` does not register, so constants are excluded). Uniques matter: on
+/// concatsplit the 16-byte reload web is rooted at a *unique* (`u0xd700:16 = LOAD; STORE(..)` —
+/// the XMM copies fold away before the stackstall slot) and Ghidra still lane-divides it via its
+/// unique-storage lanedMap entry, producing the split 8-byte stores of the final render.
 fn collect_laned_accesses(fd: &Funcdata) -> Vec<LanedAccess> {
-    let Some(reg) = fd.spaces.by_name("register") else { return Vec::new() };
     let min_size = fd.laned.minimum_laned_register_size();
     if min_size < 0 {
         return Vec::new();
     }
-    let mut seen: std::collections::BTreeSet<(u64, u32)> = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
+    let mut seen: std::collections::BTreeMap<(u32, u64, u32), LanedRegister> =
+        std::collections::BTreeMap::new();
     for i in 0..fd.num_varnodes() as u32 {
         let v = fd.vn(VarnodeId(i));
-        if v.loc.space != reg || v.descend.is_empty() || (v.size as i32) < min_size {
+        if v.is_constant() || v.descend.is_empty() || (v.size as i32) < min_size {
             continue;
         }
         if let Some(lr) = fd.laned.get_laned_register(v.size as i32) {
-            if seen.insert((v.loc.offset, v.size)) {
-                out.push(LanedAccess { space: reg, offset: v.loc.offset, size: v.size, reg: lr.clone() });
-            }
+            seen.entry((v.loc.space.0, v.loc.offset, v.size)).or_insert_with(|| lr.clone());
         }
     }
-    out
+    seen.into_iter()
+        .map(|((space, offset, size), reg)| LanedAccess { space: SpaceId(space), offset, size, reg })
+        .collect()
 }
 
 /// Find a live varnode at the given storage that still has uses and hasn't been rejected this pass.
@@ -916,5 +924,46 @@ mod tests {
         };
         assert!(!build(false), "a sub-lane truncation blocks the trace without downcast");
         assert!(build(true), "allow_downcast treats the truncation as terminating");
+    }
+
+    /// A 16-byte web rooted at a *unique* (`u:16 = LOAD(ram, ptr); STORE(ram, ptr2, u)` — no
+    /// register-storage varnode at all, no PIECE/SUBPIECE hints) is still a laned access: Ghidra's
+    /// `getLanedRegister` matches by size only and `newUnique` registers in the lanedMap
+    /// (funcdata_varnode.cc:91, architecture.cc:290), so `ActionLaneDivide` reaches it at mode 2
+    /// (default lane size 8). This is concatsplit's reload web — the source of Ghidra's split
+    /// 8-byte stores.
+    #[test]
+    fn action_splits_a_unique_rooted_load_store_web() {
+        use super::super::transform::LanedRegisterSet;
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.laned = LanedRegisterSet::from_size_masks([(16, 1u32 << 8)]);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        // u:16 = LOAD(ram, ptr) ; STORE(ram, ptr2, u)
+        let sid = f.new_const(8, ram.0 as u64);
+        let ptr = f.new_input(8, Address::new(reg, 0x100));
+        let load = f.new_op(OpCode::Load, seq, vec![sid, ptr]);
+        let u = f.new_output_unique(load, 16);
+        let sid2 = f.new_const(8, ram.0 as u64);
+        let ptr2 = f.new_input(8, Address::new(reg, 0x110));
+        let store = f.new_op(OpCode::Store, seq, vec![sid2, ptr2, u]);
+        f.set_blocks(vec![BlockBasic { ops: vec![load, store], ..Default::default() }]);
+        f.op_mut(load).parent = Some(BlockId(0));
+        f.op_mut(store).parent = Some(BlockId(0));
+
+        let n = ActionLaneDivide.apply(&mut f);
+        assert!(n >= 1, "the unique-rooted web splits (mode 2, default size)");
+        assert!(f.op(load).is_dead() && f.op(store).is_dead());
+        let loads = (0..f.num_ops() as u32)
+            .map(OpId)
+            .filter(|&o| !f.op(o).is_dead() && f.op(o).code() == OpCode::Load)
+            .count();
+        let stores = (0..f.num_ops() as u32)
+            .map(OpId)
+            .filter(|&o| !f.op(o).is_dead() && f.op(o).code() == OpCode::Store)
+            .count();
+        assert_eq!((loads, stores), (2, 2), "one LOAD and STORE per 8-byte lane");
     }
 }
