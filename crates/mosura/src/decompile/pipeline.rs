@@ -295,11 +295,13 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleIgnoreNan) // (124) floatprecision group
 }
 
-/// Mark address-tied varnodes (Ghidra `Funcdata::setVarnodeProperties`/`queryProperties` plus the
-/// `ActionRestructureVarnode`/`syncVarnodesWithSymbols` `nolocalalias` clear), so the downstream
-/// rules that guard on `addrtied`/`persist` see the flag. Runs after heritage/alias info is
-/// available and before the first simplification pool — mirroring Ghidra's addrtied-before-mainloop.
-/// See [`super::varnodeprops::mark_addrtied`].
+/// Sync address-tied varnode properties with the alias classification (the
+/// `ActionRestructureVarnode`/`Funcdata::syncVarnodesWithSymbols` + `ScopeLocal::markUnaliased`
+/// update, coreaction.cc:2274 / funcdata_varnode.cc:939 / varmap.cc:1332). The *set* side is at
+/// varnode creation (`Funcdata::alloc_varnode`, Ghidra's `newVarnode` → `queryProperties`); this
+/// pass reconciles — clearing `addrtied`/`addrforce` on the non-aliased stack locals
+/// (`nolocalalias`) — so the downstream rules that guard on `addrtied`/`persist` see the net
+/// classification. See [`super::varnodeprops::mark_addrtied`].
 pub struct ActionMarkAddrTied;
 
 impl Action for ActionMarkAddrTied {
@@ -310,10 +312,52 @@ impl Action for ActionMarkAddrTied {
         super::varnodeprops::mark_addrtied(data);
         // Analysis convention: recomputing varnode property flags is never a data-flow change, so it
         // must not drive a rule_repeatapply fixpoint — same convention as ActionNonzeroMask
-        // (coreaction.hh:300) and ActionSpacebase (coreaction.hh:277). (Ghidra has no addrtied
-        // action at all — it sets the flag at varnode creation; this adaptation is a pure marking
-        // pass. Was an unconditional `1` — the return-1 mis-port class.)
+        // (coreaction.hh:300) and ActionSpacebase (coreaction.hh:277). (Ghidra's
+        // ActionRestructureVarnode likewise returns 0, coreaction.cc:2296.)
         0
+    }
+}
+
+/// Ghidra `ActionRestructureVarnode` (coreaction.hh:848, apply coreaction.cc:2274; mainloop slot
+/// :5505, immediately before ActionSpacebase): re-analyze the stack scope every mainloop
+/// iteration — `l1->restructureVarnode(aliasyes)` re-runs the `AliasChecker` and marks the
+/// unaliased symbols `nolocalalias`, then `syncVarnodesWithSymbols` reconciles the varnode
+/// `addrtied`/`addrforce` flags with that classification. `aliasyes = (numpass != 0)`: "Alias
+/// calculations are not reliable on the first pass" (coreaction.cc:2279) — pass 0 syncs against
+/// the creation-time flags without re-classifying.
+///
+/// mosura: the alias re-analysis is [`super::alias::alias_boundary`] on the real graph (Ghidra's
+/// checker shape — by pass 1 the previous iteration's actprop2 has resolved the direct
+/// `RSP [+ const]` LOAD/STOREs, so only genuine escapes root the walk), and the sync is
+/// [`super::varnodeprops::mark_addrtied`]. At pass 0 the boundary is the `ActionHeritage`
+/// first-call probe's (the up-front clone probe — mosura's stand-in for the `guardCalls`
+/// param-trials, P6-adjacent; its retirement is a follow-up). The switch-path INDIRECT
+/// protection (`protectSwitchPaths`, jumptable-recovery-time only) is not modelled.
+#[derive(Default)]
+pub struct ActionRestructureVarnode {
+    /// Ghidra `ActionRestructureVarnode::numpass` (coreaction.hh:849), reset per function (:856).
+    numpass: u32,
+}
+
+impl Action for ActionRestructureVarnode {
+    fn name(&self) -> &str {
+        "restructure_varnode"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let aliasyes = self.numpass != 0; // coreaction.cc:2279
+        if aliasyes {
+            data.alias_boundary = super::alias::alias_boundary(data);
+        }
+        super::varnodeprops::mark_addrtied(data);
+        self.numpass += 1;
+        // Ghidra returns 0 (coreaction.cc:2296): scope/property maintenance is analysis, never a
+        // data-flow change driving the repeatapply fixpoint (syncVarnodesWithSymbols' update count
+        // feeds Ghidra's statistics `count`, not a graph change).
+        0
+    }
+    fn reset(&mut self, _data: &mut Funcdata) {
+        // Ghidra `ActionRestructureVarnode::reset` (coreaction.hh:856): numpass = 0 per function.
+        self.numpass = 0;
     }
 }
 
@@ -512,10 +556,6 @@ pub fn universal_action() -> ActionGroup {
         // group, the foundation for folding the rest of the pipeline into the loop next.
         .then(ActionGroup::restart("heritage").then(ActionHeritage))
         .then(ActionResolveCalls)
-        // Set addrtied/persist on memory varnodes before the first pool (Ghidra's
-        // addrtied-before-mainloop), so RuleSubRight / ActionConditionalConst's phi guards /
-        // SubVariableFlow see the flag for the whole run.
-        .then(ActionMarkAddrTied)
         // Split laned (vector) registers into explicit lanes (Ghidra ActionLaneDivide). PLACEMENT
         // DIVERGENCE (documented, FORCED not chosen): Ghidra's literal slot is the `stackstall` group
         // AFTER oppool1 (coreaction.cc:5652). mosura places it here — post-heritage, BEFORE the first
@@ -579,6 +619,12 @@ pub fn universal_action() -> ActionGroup {
             ActionGroup::restart("fullloop")
                 .then(
                     ActionGroup::restart("mainloop")
+                        // ActionRestructureVarnode (:5505, before spacebase): per-iteration stack
+                        // re-analysis — recompute the alias boundary on the real graph (aliasyes =
+                        // pass != 0) and reconcile addrtied/addrforce with it, so RuleSubRight /
+                        // ActionConditionalConst's phi guards / SubVariableFlow see the net
+                        // classification (pass 0 syncs against the ActionHeritage probe boundary).
+                        .then(ActionRestructureVarnode::default())
                         .then(ActionSpacebase)
                         .then(ActionNonzeroMask)
                         .then(ActionConsume)
@@ -627,11 +673,11 @@ pub fn universal_action() -> ActionGroup {
         // comparison into normal form (via replace_lessequal), retiring the print-time if_else_flip.
         .then(super::structure::ActionPreferComplement)
         .then(super::deadcode::ActionDeadCode)
-        // Re-mark addrtied on memory varnodes (Ghidra sets addrtied at varnode *creation*, so
-        // pool-created ram/stack varnodes — e.g. partialmerge's SubVariableFlow-narrowed input read
-        // r0x100670:4 — are addrtied by the time the merge phase runs). mosura marks once before the
-        // first pool (for the pool guards) and again here for the snip: a once-pass approximation of
-        // addrtied-at-creation (the faithful setVarnodeProperties-at-creation is a backlog follow-up).
+        // Re-sync addrtied before the merge phase (Ghidra's ActionMappedLocalSync slot,
+        // coreaction.cc:2298: the late syncVarnodesWithSymbols before merge). Creation marks every
+        // pool-created ram/stack varnode addrtied (e.g. partialmerge's SubVariableFlow-narrowed
+        // input read r0x100670:4); this reconciles the now-linked ones against the alias boundary
+        // so the snip sees the net classification.
         .then(ActionMarkAddrTied)
         // Address-tied cover-intersection snip (Ghidra ActionMergeRequired, coreaction.cc:5718):
         // snapshot each addrtied read whose live range crosses a same-address write into a COPY, so

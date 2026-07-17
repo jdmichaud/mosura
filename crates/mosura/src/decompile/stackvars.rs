@@ -1,9 +1,17 @@
-//! Stack-variable recovery — the spacebase part of Ghidra's `ActionStackPtrFlow` /
-//! `Funcdata::spacebase`. A forward symbolic pass tracks each location's value as an offset
-//! from the entry stack pointer; a `LOAD`/`STORE` through such a value becomes an access to
-//! the `stack` space at that offset. Heritage (P1) then gives those slots SSA form: a
-//! spilled value's `STORE` then `LOAD` link directly, the frame ops fall to dead-code, and
-//! locals become variables instead of raw pointer arithmetic.
+//! Call-mechanism stack modelling — the return-address-push half of what Ghidra's
+//! `ActionStackPtrFlow` handles. A forward symbolic pass tracks each location's value as an
+//! offset from the entry stack pointer so each x86 `call`'s return-address push can be
+//! neutralized (RSP net-unchanged across the call, the callee's `ret` popping the slot) and
+//! its constant return-address store landed at the real pushed `stack` slot.
+//!
+//! The *general* stack LOAD/STORE resolution is NOT done here: it is Ghidra's in-pool
+//! mechanism — `RuleLoadVarnode`/`RuleStoreVarnode`'s spacebase-register branch
+//! (`checkSpacebase`/`correctSpacebase`, ruleaction.cc:4173-4334, actprop2) converts a
+//! `RSP_input [+ const]` LOAD/STORE into a direct addrtied `stack`-space COPY inside the
+//! iterating mainloop, and the next iteration's `ActionHeritage` gives the slot SSA form.
+//! (This module's pre-heritage symbolic tracker used to convert them all — a loose superset
+//! of `correctSpacebase` that also resolved COPY/MULTIEQUAL-of-RSP, over-resolving the
+//! indexed/derived accesses Ghidra deliberately keeps indirect; task #22-B cancelled it.)
 //!
 //! Tracking from the entry RSP unifies frame-pointer (RBP) and frameless (RSP) frames —
 //! `mov rbp, rsp` simply copies the current offset into RBP. It runs pre-heritage (reads
@@ -62,7 +70,7 @@ fn symbolic_value(f: &Funcdata, o: &super::op::PcodeOp, sval: &HashMap<Loc, i64>
 /// COPY *after* converting the store, so the store lands at the real pushed slot while RSP is
 /// net-unchanged across the call (the callee's `ret` pops those `N` bytes; the default prototype
 /// marks the stack pointer `unaffected`).
-fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, i64)> {
+fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, OpId, i64)> {
     let mut out = HashMap::new();
     let Some(reg) = f.spaces.by_name("register") else { return out };
     let is_rsp = |v: VarnodeId, f: &Funcdata| {
@@ -76,7 +84,7 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, i64)> {
     for call in calls {
         let pc = f.op(call).seqnum.pc;
         // Scan backward over the ops emitted by the same `call` instruction for its push/store.
-        let mut store_found = false;
+        let mut store: Option<OpId> = None;
         let mut push: Option<(OpId, i64)> = None;
         let mut i = call.0 as usize;
         while i > 0 {
@@ -88,11 +96,11 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, i64)> {
             match f.op(op).code() {
                 // the return-address store: STORE [RSP], <constant return address>
                 OpCode::Store
-                    if !store_found
+                    if store.is_none()
                         && f.op(op).input(1).is_some_and(|a| is_rsp(a, f))
                         && f.op(op).input(2).is_some_and(|v| f.vn(v).is_constant()) =>
                 {
-                    store_found = true;
+                    store = Some(op);
                 }
                 // the push: RSP = RSP - <const>
                 OpCode::IntSub
@@ -107,18 +115,20 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, i64)> {
                 _ => {}
             }
         }
-        if let (true, Some(p)) = (store_found, push) {
-            out.insert(call, p);
+        if let (Some(s), Some((p, amt))) = (store, push) {
+            out.insert(call, (s, p, amt));
         }
     }
     out
 }
 
-/// Rewrite stack-pointer-relative LOAD/STORE into `stack`-space accesses, propagating the stack
-/// pointer over the CFG: each block's entry stack state is a processed predecessor's exit state (the
-/// pre-heritage analog of the SSA MULTIEQUAL phi-join Ghidra's `StackSolver` relies on), so the
-/// stack pointer no longer drifts across independent blocks the flat op order interleaves. The call
-/// mechanism's return-address push is modelled per [`call_push_restores`].
+/// Model the call mechanism's return-address push (per [`call_push_restores`]), propagating the
+/// stack pointer over the CFG: each block's entry stack state is a processed predecessor's exit
+/// state (the pre-heritage analog of the SSA MULTIEQUAL phi-join Ghidra's `StackSolver` relies
+/// on), so the stack pointer no longer drifts across independent blocks the flat op order
+/// interleaves. Only each call's return-address STORE is converted to its `stack` slot; every
+/// other stack LOAD/STORE is left for the in-pool `RuleLoadVarnode`/`RuleStoreVarnode`
+/// spacebase-register branch (see the module docs).
 pub fn recover_stack(f: &mut Funcdata) {
     let (Some(reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
         return;
@@ -128,6 +138,8 @@ pub fn recover_stack(f: &mut Funcdata) {
         return;
     }
     let call_restores = call_push_restores(f);
+    let retaddr_stores: std::collections::HashSet<OpId> =
+        call_restores.values().map(|&(store, _, _)| store).collect();
     let entry_sval = HashMap::from([((reg, RSP), 0i64)]);
     let mut sval_out: Vec<Option<HashMap<Loc, i64>>> = vec![None; nblk];
 
@@ -157,7 +169,9 @@ pub fn recover_stack(f: &mut Funcdata) {
             }
             let o = f.op(op).clone();
             match o.code() {
-                OpCode::Store => {
+                // ONLY each call's return-address store is converted here (the call-mechanism
+                // model); a general stack STORE stays a STORE for the in-pool RuleStoreVarnode.
+                OpCode::Store if retaddr_stores.contains(&op) => {
                     if let (Some(addr), Some(val)) = (o.input(1), o.input(2)) {
                         if let Some(&c) = sval.get(&loc_of(f, addr)) {
                             let size = f.vn(val).size;
@@ -168,26 +182,13 @@ pub fn recover_stack(f: &mut Funcdata) {
                         }
                     }
                 }
-                OpCode::Load => {
-                    if let (Some(addr), Some(out)) = (o.input(1), o.output) {
-                        if let Some(&c) = sval.get(&loc_of(f, addr)) {
-                            let size = f.vn(out).size;
-                            let sv = f.new_varnode(size, Address::new(stack, c as u64));
-                            f.op_set_all_input(op, &[sv]);
-                            f.op_set_opcode(op, OpCode::Copy);
-                            // the loaded value is data, not a stack address
-                            sval.remove(&loc_of(f, out));
-                            continue;
-                        }
-                    }
-                }
                 OpCode::Call | OpCode::Callind => {
                     // The return-address store (one of the ops above, already converted to its
                     // `stack`-space slot) is kept; now neutralize the push to an identity COPY so RSP
                     // is net-unchanged across the call, and add the push amount back to the tracked
                     // RSP (modelling the callee's `ret` pop). Done here, after the store conversion,
                     // so the store lands at the real pushed slot rather than the pre-push one.
-                    if let Some(&(push, amt)) = call_restores.get(&op) {
+                    if let Some(&(_, push, amt)) = call_restores.get(&op) {
                         let base = f.op(push).input(0).unwrap();
                         f.op_set_opcode(push, OpCode::Copy);
                         f.op_set_all_input(push, &[base]);

@@ -279,12 +279,12 @@ fn check_spacebase(data: &Funcdata, op: OpId) -> Option<(SpaceId, u64)> {
 /// with the space's other (already-lifted) varnode reads so it names as `iRam/fRam/xRam<addr>` (ram) or
 /// resolves to a `stack`-space slot instead of `*<addr>`.
 ///
-/// The spacebase-register (stack) branch is DORMANT while the pre-heritage `stackvars::recover_stack`
-/// adaptation is active: recover_stack's symbolic tracker converts every `RSP [+ const]` LOAD/STORE
-/// before heritage (a strict superset of `correctSpacebase`'s `RSP_input`/`INT_ADD(RSP_input,const)`
-/// cases), so no such op survives to this pool — the branch fires only once recover_stack's LOAD/STORE
-/// conversion is cancelled (task #22-B Brick 2). The `isSpacebasePlaceholder`→`resolveSpacebaseRelative`
-/// trigger (SP-across-call) is deferred (task #22-C).
+/// The spacebase-register (stack) branch is LIVE (task #22-B Brick 2 cancelled `stackvars::
+/// recover_stack`'s general LOAD/STORE conversion, so `RSP [+ const]` accesses reach this pool):
+/// a stack LOAD converts to a COPY of the direct `stack`-space varnode inside the mainloop, and
+/// the next iteration's `ActionHeritage` re-entry gives the slot SSA form — Ghidra's exact
+/// in-pool resolution. The `isSpacebasePlaceholder`→`resolveSpacebaseRelative` trigger
+/// (SP-across-call) is deferred (task #22-C).
 pub struct RuleLoadVarnode;
 impl Rule for RuleLoadVarnode {
     fn name(&self) -> &str {
@@ -317,8 +317,8 @@ impl Rule for RuleLoadVarnode {
 /// Ghidra also `setStackStore`s the resolved output (a marker for later stack-store analysis) and
 /// `markNotMapped`s an unmapped store; both are omitted here — mosura models no stack-store analysis
 /// and the raw-decompile path has no local scope to mark, exactly as the ram-global const branch has
-/// always omitted them. Neither affects naming. The stack branch is dormant until task #22-B Brick 2
-/// (see [`RuleLoadVarnode`]).
+/// always omitted them. Neither affects naming. The stack branch is LIVE (task #22-B Brick 2; see
+/// [`RuleLoadVarnode`]).
 pub struct RuleStoreVarnode;
 impl Rule for RuleStoreVarnode {
     fn name(&self) -> &str {
