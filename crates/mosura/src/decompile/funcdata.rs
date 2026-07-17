@@ -38,6 +38,11 @@ pub struct Funcdata {
     /// The function's loaded memory (address, bytes) chunks — code + data — so jump-table
     /// recovery can read switch tables (Ghidra's LoadImage). Empty for hand-built test functions.
     pub image: Vec<(u64, Vec<u8>)>,
+    /// Ghidra `Merge::copyTrims` (merge.hh:90, recorded by `allocateCopyTrim`, merge.cc:432): the
+    /// COPY ops inserted by the merge trimming process (`trimOpInput`, the addrtied read snips).
+    /// `ActionDominantCopy` (`processCopyTrims`, merge.cc:1415) later collects same-source groups
+    /// of these and replaces them with a single dominant COPY; the list is drained there.
+    pub copy_trims: Vec<OpId>,
     /// Ghidra's `typerecovery_start` Funcdata flag (funcdata.hh:150): set once `ActionStartTypes`
     /// flips type recovery on (`startTypeRecovery`, funcdata.cc:182), gating `ActionInferTypes`
     /// and the pointer-arithmetic rules — the fullloop's typeless-then-typed two-phase cadence.
@@ -105,6 +110,7 @@ impl Funcdata {
             switch_defaults: std::collections::HashMap::new(),
             jumptables: Vec::new(),
             image: Vec::new(),
+            copy_trims: Vec::new(),
             typerecovery_started: false,
             typerecovery_exceeded: false,
             heritage_pass: 0,

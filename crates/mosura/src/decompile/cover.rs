@@ -48,6 +48,20 @@ impl Cover {
     pub fn block_range(&self, block: usize) -> Option<(i32, i32)> {
         self.blocks.get(&block).copied()
     }
+
+    /// Union another cover into this one (Ghidra `Cover::merge`, cover.cc) — per block, the
+    /// combined `[lo, hi]` range.
+    pub fn merge_from(&mut self, other: &Cover) {
+        for (&b, &(lo, hi)) in &other.blocks {
+            self.extend(b, lo, hi);
+        }
+    }
+
+    /// Is the given position inside this cover in `block`? (Ghidra `Cover::contain`, cover.cc —
+    /// the point query `checkCopyPair` uses to detect an intervening write inside a range.)
+    pub fn contains_point(&self, block: usize, point: i32) -> bool {
+        self.blocks.get(&block).is_some_and(|&(lo, hi)| lo <= point && point <= hi)
+    }
 }
 
 /// The single-read cover of `v`: its live range from its def to exactly one read `read_op`
@@ -196,6 +210,95 @@ pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>)
                 }
             }
         }
+    }
+    cov
+}
+
+/// The Cover a value defined at `def_vn`'s def point would have if it replaced `read_vn` at every
+/// one of `read_vn`'s read sites — Ghidra's dominant-COPY replacement test cover
+/// (`Merge::buildDominantCopy`, merge.cc:1201-1207: `aCover.addDefPoint(domVn)` +
+/// `aCover.addRefPoint(op, outVn)` per descendant of the COPY being replaced). Phi reads follow
+/// `read_vn`'s slots (live at the matching predecessor's exit).
+pub fn cover_replacing(
+    f: &Funcdata,
+    def_vn: VarnodeId,
+    read_vn: VarnodeId,
+    pos: &HashMap<OpId, (usize, usize)>,
+) -> Cover {
+    let mut cov = Cover::default();
+    let dv = f.vn(def_vn);
+    let (def_block, def_wpos) = if dv.is_written() {
+        let (db, di) = op_index(f, dv.def.unwrap(), pos).expect("def op is positioned");
+        (Some(db), 2 * di as i32 + 2)
+    } else if dv.is_input() {
+        (Some(0usize), 0)
+    } else {
+        return cov;
+    };
+
+    let mut liveout: Vec<usize> = Vec::new();
+    let descend: Vec<OpId> = {
+        let mut d = f.vn(read_vn).descend.clone();
+        d.sort_unstable();
+        d.dedup();
+        d
+    };
+    for u in descend {
+        let Some((ub, ui)) = op_index(f, u, pos) else { continue };
+        if f.op(u).code() == OpCode::Multiequal {
+            for (slot, &iv) in f.op(u).inrefs.iter().enumerate() {
+                if iv == read_vn {
+                    if let Some(p) = f.block(super::block::BlockId(ub as u32)).in_edges.get(slot) {
+                        liveout.push(p.0 as usize);
+                    }
+                }
+            }
+        } else {
+            let rpos = 2 * ui as i32 + 1;
+            if def_block == Some(ub) && def_wpos <= rpos {
+                cov.extend(ub, def_wpos, rpos);
+            } else {
+                cov.extend(ub, 0, rpos);
+                for p in &f.block(super::block::BlockId(ub as u32)).in_edges {
+                    liveout.push(p.0 as usize);
+                }
+            }
+        }
+    }
+    let mut seen: HashSet<usize> = HashSet::new();
+    while let Some(b) = liveout.pop() {
+        if !seen.insert(b) {
+            continue;
+        }
+        let end = 2 * f.blocks()[b].ops.len() as i32 + 2;
+        let lo = if def_block == Some(b) { def_wpos } else { 0 };
+        cov.extend(b, lo, end);
+        if def_block != Some(b) {
+            for p in &f.blocks()[b].in_edges {
+                if !seen.contains(&(p.0 as usize)) {
+                    liveout.push(p.0 as usize);
+                }
+            }
+        }
+    }
+    cov
+}
+
+/// The single-point Cover of a varnode's definition (Ghidra `Cover::addDefPoint`): the write
+/// half-point of its def op (or the entry point for an input). Empty for a free/constant varnode.
+/// Used where Ghidra tests a never-read write against other covers (`Merge::shadowedVarnode`) —
+/// mosura's [`cover_of`] yields an empty cover for an unread value, but the def point still
+/// occupies its program point.
+pub fn def_point_cover(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
+    let mut cov = Cover::default();
+    let vn = f.vn(v);
+    if vn.is_written() {
+        if let Some((db, di)) = op_index(f, vn.def.unwrap(), pos) {
+            let p = 2 * di as i32 + 2;
+            cov.extend(db, p, p);
+        }
+    } else if vn.is_input() {
+        cov.extend(0, 0, 0);
     }
     cov
 }

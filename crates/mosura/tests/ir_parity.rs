@@ -372,12 +372,16 @@ fn merged_variables_have_no_internal_interference() {
         }
         // correctness: within one variable, no two SSA versions are live at once — that
         // is exactly the property that lets them share one storage slot. (The cover logic
-        // itself is ground-truth-tested in cover.rs.)
+        // itself is ground-truth-tested in cover.rs.) Copy shadows are exempt, as in Ghidra's
+        // own invariant (`Merge::verifyHighCovers`, merge.cc: "no internal intersections …
+        // unless one is a COPY shadow of the other") — two COPYs of one value overlap
+        // harmlessly because they carry the same bits (the mergeOp trim COPYs).
         for members in by_hv.values() {
             for i in 0..members.len() {
                 for j in (i + 1)..members.len() {
                     assert!(
-                        !covers[&members[i]].intersects(&covers[&members[j]]),
+                        !covers[&members[i]].intersects(&covers[&members[j]])
+                            || mosura::decompile::merge::copy_shadow(&f, members[i], members[j]),
                         "{name}: two SSA versions of one variable are simultaneously live"
                     );
                 }

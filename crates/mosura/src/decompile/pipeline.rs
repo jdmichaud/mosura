@@ -733,6 +733,10 @@ pub fn universal_action() -> ActionGroup {
         // follows the inserted COPYs.
         .then(super::merge::ActionMergeMarkerTrim)
         .then(super::deadcode::ActionDeadCode)
+        // Ghidra ActionDominantCopy (coreaction.cc:5723, after ActionMergeCopy): collapse the
+        // same-source COPY groups the merge trimming inserted into one dominant COPY
+        // (Merge::processCopyTrims/buildDominantCopy, merge.cc:1415/1151).
+        .then(super::merge::ActionDominantCopy)
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

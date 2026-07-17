@@ -192,6 +192,9 @@ struct PrintC<'a> {
     /// classes at the `ActionMarkImplied` slot) as `(rep per varnode, rep → members)` — the
     /// instance list `Merge::inflateTest` walks in [`Self::is_explicit`]'s implied-cover arm.
     implied_high: (Vec<u32>, HashMap<u32, Vec<VarnodeId>>),
+    /// Ops marked non-printing by Ghidra's `ActionCopyMarker`
+    /// ([`super::merge::copy_marker_nonprinting`]): shadow assignments and redundant COPYs.
+    nonprinting: HashSet<OpId>,
 }
 
 impl PrintC<'_> {
@@ -209,6 +212,13 @@ impl PrintC<'_> {
 
 impl<'a> PrintC<'a> {
     /// Whether a varnode is printed as its own named variable (vs inlined into its use).
+    ///
+    /// The Ghidra chain (`ActionMarkExplicit::baseExplicit` + `ActionMarkImplied`,
+    /// coreaction.cc:3007/3416) lives in [`super::merge::explicit_leading`] /
+    /// [`super::merge::explicit_trailing`], shared with the merge-time classifier that gates the
+    /// COPY/speculative merges (`mergeTestBasic`). The arms here are printc-only additions layered
+    /// on that core — each only ADDS explicitness, so merge-explicit ⊆ print-explicit and every
+    /// value the merge left un-merged materializes in the output.
     fn is_explicit(&self, v: VarnodeId) -> bool {
         let vn = self.f.vn(v);
         if vn.is_constant() {
@@ -225,41 +235,9 @@ impl<'a> PrintC<'a> {
         if self.slot_write[v.0 as usize] {
             return true;
         }
-        if vn.is_input() {
-            return true;
-        }
-        // Ghidra `ActionMarkExplicit::baseExplicit` (coreaction.cc:3022): an address-tied Varnode is
-        // explicit — "pointers may reference it", and it is the materialization of a store to that
-        // address (`xRam.. = ..`, `xStack_NN = ..`). Without this, a global store made single-use by
-        // the `guardReturns` terminal COPY would be inlined into that hidden COPY and disappear.
-        if vn.is_addrtied() {
-            // baseExplicit's addrtied SUBPIECE-of-addrtied sub-case (coreaction.cc:3023-3029): a narrow
-            // addrtied piece read from the SAME addrtied whole at the matching overlap
-            // (`vn->overlapJoin(vin) == SUBPIECE offset` — the piece sits exactly `off` bytes into the
-            // whole) is an internal copymarker, NOT a store. Ghidra prints it inline as a piece read
-            // (`(int2)glob`), not a spurious `glob = (int2)glob;`. A widening re-heritage re-frees a
-            // narrow read of a grown range as `SUBPIECE(whole, off)` (the mainloop
-            // `removeRevisitedMarkers` / `normalizeReadSize` path), so this keeps such a read inline.
-            // The genuine ZEXT / PIECE-into-a-structure sub-cases (coreaction.cc:3032-3045) still need
-            // VariablePiece (the P4/P8 debt) and stay deferred.
-            if let Some(def) = vn.def {
-                if self.f.op(def).code() == OpCode::Subpiece {
-                    if let (Some(inv), Some(cst)) = (self.f.op(def).input(0), self.f.op(def).input(1))
-                    {
-                        let ivn = self.f.vn(inv);
-                        let coff = self.f.vn(cst);
-                        if coff.is_constant()
-                            && ivn.is_addrtied()
-                            && ivn.loc.space == vn.loc.space
-                            && vn.loc.offset == ivn.loc.offset + coff.loc.offset
-                            && vn.loc.offset + vn.size as u64 <= ivn.loc.offset + ivn.size as u64
-                        {
-                            return false;
-                        }
-                    }
-                }
-            }
-            return true;
+        // input / addrtied (with the SUBPIECE-of-addrtied internal-copymarker sub-case).
+        if let Some(e) = super::merge::explicit_leading(self.f, v) {
+            return e;
         }
         // A value merged into a global's HighVariable is that global (Ghidra `baseExplicit`'s
         // `numInstances() > 1` rule for the addrtied case): it materializes the store `iRam.. = ..`
@@ -267,106 +245,17 @@ impl<'a> PrintC<'a> {
         if self.high_ram_off.contains_key(&self.high_of[v.0 as usize]) {
             return true;
         }
-        if !vn.is_written() {
-            return true;
-        }
-        if let Some(def) = vn.def {
-            // a phi is a merged variable, and an INDIRECT (a value clobbered by a call) is an
-            // opaque `extraout_*` — both are always named, never inlined raw. A CALL's return value
-            // is likewise always named (Ghidra `ActionMarkExplicit::baseExplicit`, coreaction.cc:3015
-            // `def->isCall()` ⇒ explicit) — a call result is `xVar = func(…)`, not folded into its use.
-            if matches!(
-                self.f.op(def).code(),
-                OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind
-            ) {
-                return true;
-            }
-            // PTRADD/PTRSUB are address sub-expressions Ghidra recomputes inline at every use (an
-            // `arr[i]` / `p->field` is re-rendered, never spilled to a pointer temp), so they stay
-            // implied even with multiple uses — unless one of those uses is a phi.
-            if matches!(self.f.op(def).code(), OpCode::Ptradd | OpCode::Ptrsub) {
-                return vn.descend.iter().any(|&u| self.f.op(u).code() == OpCode::Multiequal);
-            }
-            // The snapshot COPY that `ActionMergeRequired` inserts for an address-tied value read
-            // before its address is overwritten (`u = COPY(glob(i))`) stays cross-high — `merge_copy`
-            // declines it on the Cover intersection with the whole global — so it must render as an
-            // explicit `iVar = <snapshot>` even though it is single-use (Ghidra `markInternalCopies`
-            // keeps the cross-high COPY printing). Gated on a PERSISTENT (global) input: that is
-            // the snapshot case (a global read before a later store overwrites it); an ordinary
-            // register COPY, or a snapshot of a non-persistent escaped stack slot, stays inlined.
-            if self.f.op(def).code() == OpCode::Copy {
-                if let Some(inv) = self.f.op(def).input(0) {
-                    if self.f.vn(inv).is_persist()
-                        && self.high_of[v.0 as usize] != self.high_of[inv.0 as usize]
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        if vn.descend.len() != 1 {
-            return true; // 0 or >1 uses: named
-        }
-        // Ghidra `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) via
-        // `Merge::inflateTest` (merge.cc): a value can stay implied only if no def-op input's
-        // HighVariable has another instance whose live range intersects the value's own cover —
-        // otherwise the inlined expression would read a value REDEFINED between the def and the
-        // use point (switchloop case 4: the SLESS reads the accumulator phi, the merge trim COPY
-        // rewrites the accumulator's HighVariable between the SLESS and the CBRANCH, so the
-        // condition must materialize as `bVar1 = …` before the copy). Instances that are copy
-        // shadows of the input (`Varnode::copyShadow`) carry the same value and are exempt.
-        if let (Some(def), Some(vcov)) = (vn.def, self.covers.get(&v)) {
-            for slot in 0..self.f.op(def).num_inputs() {
-                let Some(defvn) = self.f.op(def).input(slot) else { continue };
-                if self.f.vn(defvn).is_constant() {
-                    continue;
-                }
-                let Some(members) = self.implied_high.1.get(&self.implied_high.0[defvn.0 as usize])
-                else {
-                    continue;
-                };
-                for &b in members {
-                    if b == defvn || self.copy_shadow(defvn, b) {
-                        continue;
-                    }
-                    // Cross-size members of mosura's address-tied class stand in for Ghidra's
-                    // VariablePiece group; inflateTest's piece branch exempts partial copy
-                    // shadows (`b->partialCopyShadow(a, off)`, merge.cc) — a SUBPIECE/PIECE of
-                    // the same value is not a redefinition (revisit's INDIRECT whole vs its
-                    // 2-byte piece).
-                    if self.f.vn(b).size != self.f.vn(defvn).size
-                        && self.f.vn(b).loc.space == self.f.vn(defvn).loc.space
-                        && super::mergesnip::partial_copy_shadow(
-                            self.f,
-                            defvn,
-                            b,
-                            (self.f.vn(defvn).loc.offset as i64 - self.f.vn(b).loc.offset as i64)
-                                as i32,
-                        )
-                    {
-                        continue;
-                    }
-                    if self.covers.get(&b).is_some_and(|bc| bc.intersects(vcov)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        // single use: inline, unless it feeds a marker that stands for the *same* variable, in
-        // which case it must be materialized as an assignment to that variable:
-        //  - a phi (the loop increment `i = i + 1`, the init `i = 0`); or
-        //  - an across-call INDIRECT carrying the same addrtied stack slot — the value is the write
-        //    to that slot (`xStack_NN = …`); Ghidra renders the store, the INDIRECT is invisible.
-        let user = vn.descend[0];
-        match self.f.op(user).code() {
-            OpCode::Multiequal => true,
-            OpCode::Indirect => self
-                .f
-                .op(user)
-                .output
-                .is_some_and(|uout| self.f.vn(uout).loc == vn.loc && self.f.vn(uout).size == vn.size),
-            _ => false,
-        }
+        // The trailing chain (written/marker/use-count arms + `checkImpliedCover`), with printc's
+        // full-merge classes for the cross-high persistent-COPY arm and the required-merges-only
+        // classes for the implied-cover walk — the states Ghidra has at each corresponding check.
+        super::merge::explicit_trailing(
+            self.f,
+            &self.high_of,
+            &self.implied_high.0,
+            &self.implied_high.1,
+            &self.covers,
+            v,
+        )
     }
 
     /// Ghidra `PcodeOp::isMoveable` (op.cc:178): can `op` be moved down in its block to just
@@ -477,31 +366,6 @@ impl<'a> PrintC<'a> {
             }
         }
         true
-    }
-
-    /// Ghidra `Varnode::copyShadow` (varnode.cc): two varnodes carry the same value when one is
-    /// reachable from the other through a chain of COPY defs — follow both chains to their non-COPY
-    /// roots and compare.
-    fn copy_shadow(&self, a: VarnodeId, b: VarnodeId) -> bool {
-        if a == b {
-            return true;
-        }
-        let root = |mut v: VarnodeId, other: VarnodeId| -> Option<VarnodeId> {
-            loop {
-                if v == other {
-                    return None; // found the other on the chain — shadow
-                }
-                match self.f.vn(v).def {
-                    Some(d) if self.f.op(d).code() == OpCode::Copy => {
-                        v = self.f.op(d).input(0).expect("COPY has an input");
-                    }
-                    _ => return Some(v),
-                }
-            }
-        };
-        let Some(ra) = root(a, b) else { return true };
-        let Some(rb) = root(b, a) else { return true };
-        ra == rb
     }
 
     /// The name of `v`'s variable, assigning one on first use.
@@ -1514,6 +1378,9 @@ impl<'a> PrintC<'a> {
             if self.suppressed.contains(&op) {
                 continue; // emitted in a for-loop header (initializer / iterator)
             }
+            if self.nonprinting.contains(&op) {
+                continue; // Ghidra opMarkNonPrinting (ActionCopyMarker): shadow / redundant COPY
+            }
             let o = self.f.op(op);
             match o.code() {
                 OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => {}
@@ -2016,7 +1883,11 @@ pub fn print_c(f: &Funcdata) -> String {
             }
             (of, m)
         },
+        nonprinting: HashSet::new(),
     };
+    // Ghidra ActionCopyMarker (Merge::markInternalCopies, coreaction.cc:5729 — after all merging):
+    // shadow assignments and redundant same-source COPYs are marked non-printing.
+    p.nonprinting = super::merge::copy_marker_nonprinting(f, &p.high_of, &p.high_members, &p.covers);
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();

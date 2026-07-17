@@ -326,6 +326,8 @@ fn snip_reads(f: &mut Funcdata, vn: VarnodeId, marked: &[OpId]) {
         f.op_insert_after(op, def);
         op
     };
+    // `allocateCopyTrim` records every trim COPY (merge.cc:432) for ActionDominantCopy.
+    f.copy_trims.push(copyop);
     let cout = f.op(copyop).output.unwrap();
     for &op in marked {
         for slot in 0..f.op(op).num_inputs() {

@@ -182,6 +182,98 @@ impl Action for ActionDeterminedBranch {
     }
 }
 
+/// Ghidra `Funcdata::spliceBlockBasic` (funcdata_block.cc:908) + `BlockGraph::spliceBlock`
+/// (block.cc:1597): merge a block with exactly one output into its successor with exactly one
+/// input — destroy `bb`'s trailing branch, move the successor's ops into `bb`, give `bb` the
+/// successor's out-edges, and remove the successor from the graph. Declines (returns `false`)
+/// where Ghidra throws: the successor must not start with a MULTIEQUAL (with a single in-edge it
+/// never should). The successor's `f_switch_out` character transfers with its terminating op.
+fn splice_block_basic(f: &mut Funcdata, bb: BlockId) -> bool {
+    if f.block(bb).out_edges.len() != 1 {
+        return false;
+    }
+    let outbl = f.block(bb).out_edges[0];
+    if f.block(outbl).in_edges.len() != 1 {
+        return false;
+    }
+    if f.block(outbl).ops.first().is_some_and(|&o| f.op(o).code() == OpCode::Multiequal) {
+        return false; // Ghidra: "Splicing block with MULTIEQUAL"
+    }
+    // Remove any jump op at the end of bb.
+    if let Some(&last) = f.block(bb).ops.last() {
+        if f.op(last).code().is_branch() {
+            f.op_destroy(last);
+            f.block_mut(bb).ops.pop();
+        }
+    }
+    // Move the successor's ops to the end of bb.
+    let moved = std::mem::take(&mut f.block_mut(outbl).ops);
+    for &op in &moved {
+        f.op_mut(op).parent = Some(bb);
+    }
+    f.block_mut(bb).ops.extend(moved);
+    // Graph splice: bb takes outbl's out-edges; successors repoint their in-edge at bb.
+    let outs = f.block(outbl).out_edges.clone();
+    for &o in &outs {
+        for e in f.block_mut(o).in_edges.iter_mut() {
+            if *e == outbl {
+                *e = bb;
+            }
+        }
+    }
+    f.block_mut(bb).out_edges = outs;
+    f.block_mut(outbl).in_edges.clear();
+    f.block_mut(outbl).out_edges.clear();
+    // Remove the emptied block from the list (compact + renumber, entry stays block 0).
+    let mut reachable = vec![true; f.num_blocks()];
+    reachable[outbl.0 as usize] = false;
+    renumber_reachable(f, &reachable);
+    true
+}
+
+/// Ghidra `ActionRedundBranch` (coreaction.cc:3492, `actmainloop` slot :5658 "deadcontrolflow"):
+/// remove redundant branches. Two arms: a block with a single out-edge whose successor has a
+/// single in-edge is spliced into it (unless the successor is the entry or the block is a switch
+/// exit — splicing a single-exit switch's target would block second-stage recovery); and a
+/// multi-out block whose exits all reach the same block loses its branch (`removeBranch`), the
+/// decision being vacuous.
+pub struct ActionRedundBranch;
+
+impl Action for ActionRedundBranch {
+    fn name(&self) -> &str {
+        "redundbranch"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let mut count = 0;
+        let mut i = 0;
+        while i < data.num_blocks() {
+            let bb = BlockId(i as u32);
+            i += 1;
+            if data.block(bb).out_edges.is_empty() {
+                continue;
+            }
+            let bl = data.block(bb).out_edges[0];
+            if data.block(bb).out_edges.len() == 1 {
+                if data.block(bl).in_edges.len() == 1 && bl.0 != 0 && !is_switch_out(data, bb) {
+                    // Do not splice a block coming from a single-exit switch, as this prevents
+                    // possible second-stage recovery.
+                    if splice_block_basic(data, bb) {
+                        count += 1;
+                        i = 0; // this removed one block, so restart the scan
+                    }
+                }
+                continue;
+            }
+            // Are all exits to the same block?
+            if data.block(bb).out_edges.iter().all(|&o| o == bl) {
+                branch_remove_internal(data, bb, 1); // = Funcdata::removeBranch
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
 /// Ghidra `BlockBasic::hasOnlyMarkers` (block.cc:2580): only MULTIEQUAL/INDIRECT placeholders and
 /// branch operations — nothing substantial.
 fn has_only_markers(f: &Funcdata, bb: BlockId) -> bool {
@@ -507,6 +599,75 @@ mod tests {
     use crate::decompile::op::SeqNum;
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::Funcdata;
+
+    /// `ActionRedundBranch` arm 1 (coreaction.cc:3505): a single-out block whose successor has a
+    /// single in-edge is spliced into it — the trailing branch dies and the two op lists join.
+    #[test]
+    fn redundbranch_splices_single_in_single_out_pair() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let c = f.new_const(8, 1);
+        let o1 = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        let v1 = f.new_output(o1, 8, Address::new(reg, 0));
+        let br = f.new_op(OpCode::Branch, s(1), vec![]);
+        let o2 = f.new_op(OpCode::IntAdd, s(2), vec![v1, c]);
+        let _v2 = f.new_output(o2, 8, Address::new(reg, 8));
+        let ret = f.new_op(OpCode::Return, s(3), vec![]);
+        let blocks = vec![
+            BlockBasic { ops: vec![o1, br], in_edges: vec![], out_edges: vec![BlockId(1)] },
+            BlockBasic { ops: vec![o2, ret], in_edges: vec![BlockId(0)], out_edges: vec![] },
+        ];
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+
+        let n = ActionRedundBranch.apply(&mut f);
+        assert_eq!(n, 1, "one splice");
+        assert_eq!(f.num_blocks(), 1, "the pair collapses to one block");
+        assert!(f.op(br).is_dead(), "the trailing branch is destroyed");
+        assert_eq!(f.block(BlockId(0)).ops, vec![o1, o2, ret]);
+        assert!(f.block(BlockId(0)).out_edges.is_empty());
+    }
+
+    /// `ActionRedundBranch` arm 2 (coreaction.cc:3515): a CBRANCH both of whose exits reach the
+    /// same block is vacuous — the branch is removed (`removeBranch`), leaving one edge.
+    #[test]
+    fn redundbranch_removes_branch_with_all_exits_equal() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let c = f.new_const(1, 1);
+        let cbr = f.new_op(OpCode::Cbranch, s(0), vec![c, c]);
+        let o = f.new_op(OpCode::IntAdd, s(1), vec![c, c]);
+        let _v = f.new_output(o, 8, Address::new(reg, 0));
+        let ret = f.new_op(OpCode::Return, s(2), vec![]);
+        let blocks = vec![
+            BlockBasic { ops: vec![cbr], in_edges: vec![], out_edges: vec![BlockId(1), BlockId(1)] },
+            BlockBasic { ops: vec![o, ret], in_edges: vec![BlockId(0), BlockId(0)], out_edges: vec![] },
+        ];
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+
+        let n = ActionRedundBranch.apply(&mut f);
+        assert_eq!(n, 1, "the vacuous branch is removed");
+        assert!(f.op(cbr).is_dead(), "the CBRANCH is destroyed");
+        // A single edge remains (the splice of the now single-in/single-out pair happens on a
+        // later invocation — Ghidra's scan does not restart after this arm).
+        assert_eq!(f.block(BlockId(0)).out_edges, vec![BlockId(1)]);
+        assert_eq!(f.block(BlockId(1)).in_edges, vec![BlockId(0)]);
+    }
 
     /// entry block0 CBRANCHes on a const-false condition to block2; block1 (fallthrough) and block2
     /// (only reachable via the dead branch) both flow into block3, whose MULTIEQUAL merges their
