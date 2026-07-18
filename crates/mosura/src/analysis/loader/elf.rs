@@ -12,18 +12,21 @@
 //!   placed after the image on a linkage-alignment boundary (Ghidra
 //!   `allocateLinkageBlock`/`createExternalBlock`).
 //!
-//! Arch scope: little-endian ELF for x86-64 and AArch64 (the corpus). The ELF
-//! container markup (`Elf64_Ehdr`/`Phdr`/`Sym`/`Rela`/…) is arch-neutral; only the
-//! `e_machine → (language id, compiler-spec id)` map distinguishes them. Big-endian
-//! and other arches map in later (see `docs/multi-arch-plan.md`).
+//! Arch scope: ELF for x86-64, AArch64, RISC-V (little-endian, 64-bit) and m68k
+//! (**big-endian, 32-bit**). The ELF container markup (`ElfN_Ehdr`/`Phdr`/`Sym`/`Rela`/…)
+//! is arch-neutral in structure but class/endian-parameterized in geometry: the loader
+//! is generic over the `object` crate's [`FileHeader`] (32- or 64-bit) and threads the
+//! file's endianness through every raw-byte read (header/phdr field offsets, note
+//! parsing, `.dynamic`/`.gnu.hash`). The `e_machine → (language id, compiler-spec id)`
+//! map distinguishes the CPUs. See `docs/multi-arch-plan.md`.
 
 use std::collections::BTreeSet;
 
 use object::elf;
-use object::read::elf::{ElfFile64, FileHeader, ProgramHeader, SectionHeader};
+use object::read::elf::{ElfFile, FileHeader, ProgramHeader, SectionHeader};
 use object::{
-    Endianness, Object, ObjectSection, ObjectSymbol, ObjectSymbolTable, RelocationTarget,
-    SectionFlags, SymbolKind,
+    Endianness, FileKind, Object, ObjectSection, ObjectSymbol, ObjectSymbolTable,
+    RelocationTarget, SectionFlags, SymbolKind,
 };
 
 use crate::analysis::program::{AddressSet, Memory, Program, RefType, SymbolType};
@@ -58,36 +61,121 @@ impl From<object::Error> for LoadError {
     }
 }
 
-type Elf<'a> = ElfFile64<'a, Endianness>;
+/// ELF class + endianness geometry — the only things that differ between an `Elf32` and
+/// `Elf64` container. Ghidra reads the same fields from each; only their byte offsets,
+/// struct sizes, and the endianness of the raw reads change. Derived once per load from
+/// the file header (`FileHeader::is_type_64`) and `elf.endian()`.
+#[derive(Clone, Copy)]
+struct Geom {
+    is64: bool,
+    endian: Endianness,
+}
 
-/// Parse an ELF image and build the [`Program`] memory map (A2).
+impl Geom {
+    fn big_endian(&self) -> bool {
+        matches!(self.endian, Endianness::Big)
+    }
+    /// Pointer / word size (`getDefaultPointerSize`): 8 for ELF64, 4 for ELF32.
+    fn ptr_len(&self) -> u64 {
+        if self.is64 { 8 } else { 4 }
+    }
+    /// `ElfN_Ehdr` size: 64 (Elf64) / 52 (Elf32).
+    fn ehdr_len(&self) -> u32 {
+        if self.is64 { 64 } else { 52 }
+    }
+    /// `ElfN_Phdr` size: 56 (Elf64) / 32 (Elf32).
+    fn phdr_len(&self) -> u64 {
+        if self.is64 { 56 } else { 32 }
+    }
+    /// `ElfN_Sym` size: 24 (Elf64) / 16 (Elf32).
+    fn sym_len(&self) -> u64 {
+        if self.is64 { 24 } else { 16 }
+    }
+    /// `ElfN_Rela` size: 24 (Elf64) / 12 (Elf32).
+    fn rela_len(&self) -> u64 {
+        if self.is64 { 24 } else { 12 }
+    }
+    /// `ElfN_Dyn` entry size: 16 (Elf64) / 8 (Elf32).
+    fn dyn_len(&self) -> usize {
+        if self.is64 { 16 } else { 8 }
+    }
+    /// Offset of `e_phoff` within `ElfN_Ehdr`: 0x20 (Elf64) / 0x1c (Elf32). `e_entry`
+    /// precedes it at 0x18 in both.
+    fn e_phoff_field(&self) -> u64 {
+        if self.is64 { 0x20 } else { 0x1c }
+    }
+    /// Offset of `p_vaddr` within `ElfN_Phdr`: 0x10 (Elf64) / 0x08 (Elf32).
+    fn p_vaddr_field(&self) -> u64 {
+        if self.is64 { 0x10 } else { 0x08 }
+    }
+    /// Struct-name prefix Ghidra uses for the container markup: `Elf64` / `Elf32`.
+    fn struct_prefix(&self) -> &'static str {
+        if self.is64 { "Elf64" } else { "Elf32" }
+    }
+    /// Read a 32-bit value with the file's endianness.
+    fn u32(&self, b: &[u8]) -> u32 {
+        let a: [u8; 4] = b[0..4].try_into().unwrap();
+        if self.big_endian() { u32::from_be_bytes(a) } else { u32::from_le_bytes(a) }
+    }
+    /// Read a 64-bit value with the file's endianness.
+    fn u64(&self, b: &[u8]) -> u64 {
+        let a: [u8; 8] = b[0..8].try_into().unwrap();
+        if self.big_endian() { u64::from_be_bytes(a) } else { u64::from_le_bytes(a) }
+    }
+    /// Read one pointer-sized word (a `.dynamic`/array slot) with the file's endianness.
+    fn uword(&self, b: &[u8]) -> u64 {
+        if self.is64 { self.u64(b) } else { u64::from(self.u32(b)) }
+    }
+}
+
+/// Parse an ELF image and build the [`Program`] memory map (A2). Dispatches on the ELF
+/// class (32- vs 64-bit) into the generic [`load_elf_inner`]; both classes share every
+/// step, parameterized by [`Geom`] geometry and the file's endianness.
 pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
-    let elf = Elf::parse(data)?;
+    match FileKind::parse(data) {
+        Ok(FileKind::Elf32) => load_elf_inner::<elf::FileHeader32<Endianness>>(data),
+        Ok(FileKind::Elf64) => load_elf_inner::<elf::FileHeader64<Endianness>>(data),
+        Ok(other) => Err(LoadError::Unsupported(format!("not an ELF file: {other:?}"))),
+        Err(e) => Err(LoadError::Parse(e)),
+    }
+}
+
+fn load_elf_inner<H>(data: &[u8]) -> Result<Program, LoadError>
+where
+    H: FileHeader<Endian = Endianness>,
+{
+    let elf = ElfFile::<H>::parse(data)?;
     let endian = elf.endian();
     let header = elf.elf_header();
+    let geom = Geom { is64: header.is_type_64(), endian };
 
     // --- language / compiler (e_machine → Ghidra language + compiler-spec id) ---
-    // The big-endian analysis read paths are not yet threaded (see docs/multi-arch-plan.md),
-    // so a BE ELF is rejected regardless of arch; AArch64-LE is fine. The compiler-spec id is
-    // the one Ghidra's per-arch `.opinion` declares for an ELF (`compilerSpecID=...`) and
-    // `.ldefs` resolves: x86-64 → "gcc", AArch64 → "default" (AARCH64.opinion uses
-    // `compilerSpecID="default"`, AARCH64.ldefs declares `<compiler id="default"
-    // spec="AARCH64.cspec">`).
+    // The compiler-spec id is the one Ghidra's per-arch `.opinion` declares for an ELF
+    // (`compilerSpecID=...`) and `.ldefs` resolves: x86-64 → "gcc", AArch64 → "default",
+    // RISC-V → "gcc", 68k → "default". 68k maps to the **Coldfire** variant, not "default":
+    // 68000.opinion's ELF constraint (`primary="4"` = EM_68K, `endian="big" size="32"`,
+    // `compilerSpecID="default"`) specifies no processor *variant*, so Ghidra's broad
+    // language query (`QueryOpinionService.addQuery` → `getLanguageCompilerSpecPairs` with
+    // `variant=null`) returns all four 68000:BE:32 variants and the importer deterministically
+    // selects `68000:BE:32:Coldfire` (verified against the analyzeHeadless golden across
+    // repeated runs). The big-endian/32-bit read paths below are class/endian-parameterized.
     let machine = header.e_machine(endian);
-    let big_endian = matches!(endian, Endianness::Big);
-    let arch = (!big_endian)
-        .then_some(match machine {
-            elf::EM_X86_64 => Some(("x86:LE:64:default", "gcc")),
-            elf::EM_AARCH64 => Some(("AARCH64:LE:64:v8A", "default")),
-            elf::EM_RISCV => Some(("RISCV:LE:64:default", "gcc")),
-            _ => None,
-        })
-        .flatten();
+    let big_endian = geom.big_endian();
+    let arch = match (machine, big_endian, geom.is64) {
+        (elf::EM_X86_64, false, true) => Some(("x86:LE:64:default", "gcc")),
+        (elf::EM_AARCH64, false, true) => Some(("AARCH64:LE:64:v8A", "default")),
+        (elf::EM_RISCV, false, true) => Some(("RISCV:LE:64:default", "gcc")),
+        (elf::EM_68K, true, false) => Some(("68000:BE:32:Coldfire", "default")),
+        _ => None,
+    };
     let Some((language_id, compiler_spec_id)) = arch else {
         return Err(LoadError::Unsupported(format!(
-            "e_machine={machine} big_endian={big_endian} (supported: x86-64 LE, AArch64 LE, RISC-V LE)"
+            "e_machine={machine} big_endian={big_endian} is64={} \
+             (supported: x86-64/AArch64/RISC-V LE 64-bit, m68k BE 32-bit)",
+            geom.is64
         )));
     };
+    let addr_size_bits = if geom.is64 { 64 } else { 32 };
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
@@ -100,8 +188,8 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
         if ph.p_type(endian) != elf::PT_LOAD {
             continue;
         }
-        let vaddr = ph.p_vaddr(endian);
-        loads.push((i, vaddr, ph.p_filesz(endian), ph.p_offset(endian), ph.p_flags(endian)));
+        let vaddr: u64 = ph.p_vaddr(endian).into();
+        loads.push((i, vaddr, ph.p_filesz(endian).into(), ph.p_offset(endian).into(), ph.p_flags(endian)));
         image_base = Some(image_base.map_or(vaddr, |b| b.min(vaddr)));
     }
     let image_base = Address::new(ram, image_base.unwrap_or(0));
@@ -201,10 +289,11 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
         Some(start)
     };
 
-    let mut program = Program::new(spaces, ram, language_id, compiler_spec_id, image_base, false, 64);
+    let mut program =
+        Program::new(spaces, ram, language_id, compiler_spec_id, image_base, big_endian, addr_size_bits);
     program.memory = memory;
-    recover_symbols(&elf, ram, &externals, ext_start, &mut program);
-    markup_elf_structures(&elf, ram, &mut program);
+    recover_symbols(&elf, geom, ram, &externals, ext_start, &mut program);
+    markup_elf_structures(&elf, geom, ram, &mut program);
     Ok(program)
 }
 
@@ -212,7 +301,10 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
 /// emits (`ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`): `e_entry` → entry,
 /// `e_phoff` → the program-header table, and each loaded segment's `p_vaddr` → its load
 /// address. The header sits at the image base (where file offset 0 loads).
-fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
+fn markup_elf_structures<H>(elf: &ElfFile<H>, geom: Geom, ram: SpaceId, program: &mut Program)
+where
+    H: FileHeader<Endian = Endianness>,
+{
     let endian = elf.endian();
     let header = elf.elf_header();
     let base = program.image_base.offset;
@@ -221,67 +313,67 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
         program.reference_manager.add(Address::new(ram, from), Address::new(ram, to), RefType::Data, -1);
     };
 
-    // Elf64_Ehdr: e_entry @ 0x18 (a pointer field), e_phoff @ 0x20.
-    let e_entry = header.e_entry(endian);
+    // ElfN_Ehdr: e_entry @ 0x18 in both classes; e_phoff @ 0x20 (Elf64) / 0x1c (Elf32).
+    let e_entry: u64 = header.e_entry(endian).into();
     if e_entry != 0 && mapped(program, e_entry) {
         data_ref(program, base + 0x18, e_entry);
     }
-    let e_phoff = header.e_phoff(endian);
+    let e_phoff: u64 = header.e_phoff(endian).into();
     let phentsize = u64::from(header.e_phentsize(endian));
     let phdr_vaddr = base + e_phoff; // file offset e_phoff loads at base + e_phoff
     if e_phoff != 0 && mapped(program, phdr_vaddr) {
-        data_ref(program, base + 0x20, phdr_vaddr);
+        data_ref(program, base + geom.e_phoff_field(), phdr_vaddr);
     }
 
-    // Each program header's p_vaddr (@ 0x10 in Elf64_Phdr) → its load address. Skip
-    // PT_NULL and offset-0 segments (the latter is the file-start LOAD — Ghidra's
-    // `p_offset == 0` skip), and segments whose target isn't loaded.
+    // Each program header's p_vaddr (@ 0x10 in Elf64_Phdr / 0x08 in Elf32_Phdr) → its load
+    // address. Skip PT_NULL and offset-0 segments (the latter is the file-start LOAD —
+    // Ghidra's `p_offset == 0` skip), and segments whose target isn't loaded.
     for (i, ph) in elf.elf_program_headers().iter().enumerate() {
-        if ph.p_type(endian) == elf::PT_NULL || ph.p_offset(endian) == 0 {
+        if ph.p_type(endian) == elf::PT_NULL || ph.p_offset(endian).into() == 0 {
             continue;
         }
-        let pvaddr = ph.p_vaddr(endian);
+        let pvaddr: u64 = ph.p_vaddr(endian).into();
         if pvaddr != 0 && mapped(program, pvaddr) {
-            data_ref(program, phdr_vaddr + i as u64 * phentsize + 0x10, pvaddr);
+            data_ref(program, phdr_vaddr + i as u64 * phentsize + geom.p_vaddr_field(), pvaddr);
         }
     }
 
     // Defined-data markup (Ghidra `ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`):
-    // create the `Elf64_Ehdr` struct at the image base and the `Elf64_Phdr[e_phnum]` array at
+    // create the `ElfN_Ehdr` struct at the image base and the `ElfN_Phdr[e_phnum]` array at
     // `e_phoff`, at their loaded addresses, only when the structure lies in loaded memory
     // (Ghidra's `headerAddr` reachability check). The datatype names + lengths are Ghidra's
-    // fixed Elf64 structures: `Elf64_Ehdr` = 64 bytes, `Elf64_Phdr` = 56 bytes each.
-    const ELF64_EHDR_LEN: u32 = 64;
-    const ELF64_PHDR_LEN: u64 = 56;
+    // fixed structures: Ehdr = 64 (Elf64) / 52 (Elf32) bytes, Phdr = 56 / 32 bytes each.
+    let prefix = geom.struct_prefix();
     if mapped(program, base) {
-        program.defined_data.push((Address::new(ram, base), "Elf64_Ehdr".to_string(), ELF64_EHDR_LEN));
+        program.defined_data.push((Address::new(ram, base), format!("{prefix}_Ehdr"), geom.ehdr_len()));
     }
     let e_phnum = u64::from(header.e_phnum(endian));
     if e_phoff != 0 && e_phnum != 0 && mapped(program, phdr_vaddr) {
-        let len = (e_phnum * ELF64_PHDR_LEN) as u32;
+        let len = (e_phnum * geom.phdr_len()) as u32;
         program
             .defined_data
-            .push((Address::new(ram, phdr_vaddr), format!("Elf64_Phdr[{e_phnum}]"), len));
+            .push((Address::new(ram, phdr_vaddr), format!("{prefix}_Phdr[{e_phnum}]"), len));
     }
 
     // Section-table defined-data markup (Ghidra `ElfProgramBuilder` symbol/relocation-table
-    // markup): a symbol table (`SHT_SYMTAB`/`SHT_DYNSYM`) → an `Elf64_Sym[n]` array, a RELA
-    // relocation table (`SHT_RELA`) → an `Elf64_Rela[n]` array, at the section's loaded
-    // `sh_addr` (driven by `sh_type`, as Ghidra does — not section names). 24-byte entries.
-    const ELF64_SYM_LEN: u64 = 24;
-    const ELF64_RELA_LEN: u64 = 24;
+    // markup): a symbol table (`SHT_SYMTAB`/`SHT_DYNSYM`) → an `ElfN_Sym[n]` array, a RELA
+    // relocation table (`SHT_RELA`) → an `ElfN_Rela[n]` array, at the section's loaded
+    // `sh_addr` (driven by `sh_type`, as Ghidra does — not section names). Sym = 24 (Elf64) /
+    // 16 (Elf32) bytes; Rela = 24 / 12 bytes.
     for section in elf.sections() {
         let sh = section.elf_section_header();
-        let (sh_type, sh_addr, sh_size) = (sh.sh_type(endian), sh.sh_addr(endian), sh.sh_size(endian));
+        let sh_type = sh.sh_type(endian);
+        let sh_addr: u64 = sh.sh_addr(endian).into();
+        let sh_size: u64 = sh.sh_size(endian).into();
         if sh_addr == 0 || sh_size == 0 || !mapped(program, sh_addr) {
             continue;
         }
         let unit = match sh_type {
             elf::SHT_SYMTAB | elf::SHT_DYNSYM => {
-                Some((format!("Elf64_Sym[{}]", sh_size / ELF64_SYM_LEN), sh_size as u32))
+                Some((format!("{prefix}_Sym[{}]", sh_size / geom.sym_len()), sh_size as u32))
             }
             elf::SHT_RELA => {
-                Some((format!("Elf64_Rela[{}]", sh_size / ELF64_RELA_LEN), sh_size as u32))
+                Some((format!("{prefix}_Rela[{}]", sh_size / geom.rela_len()), sh_size as u32))
             }
             _ => None,
         };
@@ -291,24 +383,26 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     }
 
     // .dynamic table (Ghidra `ElfProgramBuilder.markupDynamicTable` → `createData(addr,
-    // dynamicTable.toDataType())`): an `Elf64_Dyn[n]` array at the table's load address.
-    // `n` is the entry count `ElfDynamicTable` parses — it reads 16-byte entries until and
+    // dynamicTable.toDataType())`): an `ElfN_Dyn[n]` array at the table's load address.
+    // `n` is the entry count `ElfDynamicTable` parses — it reads entries until and
     // **including** the first `DT_NULL` (tag == 0) and stops — so it does NOT span the whole
-    // section (trailing zero padding is left undefined). 16 bytes per `Elf64_Dyn`.
+    // section (trailing zero padding is left undefined). `ElfN_Dyn` = 16 (Elf64) / 8 (Elf32)
+    // bytes; the tag is the leading pointer-sized word.
     if let Some(dynamic) = elf.section_by_name(".dynamic") {
         let addr = dynamic.address();
+        let dyn_len = geom.dyn_len();
         if let Ok(data) = dynamic.data() {
-            if mapped(program, addr) && data.len() >= 16 {
+            if mapped(program, addr) && data.len() >= dyn_len {
                 let mut n = 0u64;
-                for e in data.chunks_exact(16) {
+                for e in data.chunks_exact(dyn_len) {
                     n += 1;
-                    if u64::from_le_bytes(e[0..8].try_into().unwrap()) == 0 {
+                    if geom.uword(e) == 0 {
                         break; // DT_NULL terminates the table (inclusive — see ElfDynamicTable)
                     }
                 }
                 program
                     .defined_data
-                    .push((Address::new(ram, addr), format!("Elf64_Dyn[{n}]"), (n * 16) as u32));
+                    .push((Address::new(ram, addr), format!("{prefix}_Dyn[{n}]"), (n * dyn_len as u64) as u32));
             }
         }
     }
@@ -316,8 +410,8 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     // GOT / .got.plt pointer markup (Ghidra `ElfDefaultGotPltMarkup.processGOTSections` →
     // `processGOT`): every initialized memory block whose name begins with `.got` is filled
     // with `pointer` units — `createPointer` per `pointerSize`-byte slot across the block,
-    // `while (gotSizeRemaining >= pointerSize)`. x86-64 default pointer size = 8.
-    const PTR_LEN: u64 = 8;
+    // `while (gotSizeRemaining >= pointerSize)`. Pointer size = 8 (Elf64) / 4 (Elf32).
+    let ptr_len = geom.ptr_len();
     let got_blocks: Vec<(u64, u64)> = program
         .memory
         .blocks()
@@ -327,9 +421,9 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     for (start, end) in got_blocks {
         let size = end - start + 1;
         let mut off = 0;
-        while off + PTR_LEN <= size {
-            program.defined_data.push((Address::new(ram, start + off), "pointer".to_string(), PTR_LEN as u32));
-            off += PTR_LEN;
+        while off + ptr_len <= size {
+            program.defined_data.push((Address::new(ram, start + off), "pointer".to_string(), ptr_len as u32));
+            off += ptr_len;
         }
     }
 
@@ -341,7 +435,7 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
         let addr = gh.address();
         if let Ok(data) = gh.data() {
             if data.len() >= 16 && mapped(program, addr) {
-                let rd = |o: usize| u64::from(u32::from_le_bytes(data[o..o + 4].try_into().unwrap()));
+                let rd = |o: usize| u64::from(geom.u32(&data[o..o + 4]));
                 let (nbucket, bloom_size) = (rd(0), rd(8));
                 for i in 0..4u64 {
                     program.defined_data.push((Address::new(ram, addr + i * 4), "dword".to_string(), 4));
@@ -366,7 +460,7 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     // per dynamic symbol — `maxCnt = min(tableBytes/2, dynsymCount)`.
     if let Some(gv) = elf.section_by_name(".gnu.version") {
         let addr = gv.address();
-        let dynsym_count = elf.section_by_name(".dynsym").map_or(0, |s| s.size() / ELF64_SYM_LEN);
+        let dynsym_count = elf.section_by_name(".dynsym").map_or(0, |s| s.size() / geom.sym_len());
         let count = (gv.size() / 2).min(dynsym_count);
         if count > 0 && mapped(program, addr) {
             for i in 0..count {
@@ -417,7 +511,7 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
         }
     }
 
-    markup_elf_notes(elf, ram, program);
+    markup_elf_notes(elf, geom, ram, program);
 
     // Undefined data for sized OBJECT symbols (Ghidra `ElfProgramBuilder.processSymbols` builds
     // a `dataAllocationMap` of `address -> size` for every `elfSymbol.isObject()` (STT_OBJECT)
@@ -437,7 +531,10 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
 /// from both the `.symtab` (`Object::symbols`) and `.dynamic` (`Object::dynamic_symbols`)
 /// tables, skipping addresses already covered by structured markup. Runs after all other
 /// markup so the conflict skip mirrors Ghidra's clear-and-override net result (see caller).
-fn markup_undefined_symbol_data(elf: &Elf, ram: SpaceId, program: &mut Program) {
+fn markup_undefined_symbol_data<H>(elf: &ElfFile<H>, ram: SpaceId, program: &mut Program)
+where
+    H: FileHeader<Endian = Endianness>,
+{
     // address -> size, deduped across both symbol tables (Ghidra's shared HashMap).
     let mut alloc: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
     let mut collect = |syms: &mut dyn Iterator<Item = (SymbolKind, u64, u64)>| {
@@ -485,23 +582,27 @@ fn markup_undefined_symbol_data(elf: &Elf, ram: SpaceId, program: &mut Program) 
 ///   * `.note.ABI-tag` → `NoteAbiTag` (`NoteAbiTag.java`).
 /// `markupPtNoteSegments` (the PT_NOTE fallback) re-marks only *undefined* note addresses,
 /// so on these binaries (each note is its own named section) it is a no-op and is omitted.
-fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
-    // x86-64 default pointer size — `program.getDefaultPointerSize()` for the
-    // property-element inter-element alignment (`readNextNotePropertyElement` align(intSize)).
-    const PTR_SIZE: u64 = 8;
+fn markup_elf_notes<H>(elf: &ElfFile<H>, geom: Geom, ram: SpaceId, program: &mut Program)
+where
+    H: FileHeader<Endian = Endianness>,
+{
+    // `program.getDefaultPointerSize()` for the property-element inter-element alignment
+    // (`readNextNotePropertyElement` align(intSize)): 8 (Elf64) / 4 (Elf32).
+    let ptr_size: u64 = geom.ptr_len();
     let mapped = |program: &Program, off: u64| program.memory.contains(Address::new(ram, off));
 
     // `ElfNote.read`: parse the generic note header (DWORD namesz, DWORD descsz, DWORD type),
     // the `namesz`-byte name (ascii up to NUL), then `nameLen += align(4)` (pad the name field
     // up to a 4-byte boundary — the header is already 4-aligned), then the `descsz`-byte desc
-    // blob. Returns `(padded_name_len, name, desc_len, desc_offset_in_section)`, or `None`
-    // (the IOException paths — bad/short data) so no spurious unit is emitted.
-    fn parse_note(data: &[u8]) -> Option<(u32, String, u32, usize)> {
+    // blob. The header DWORDs are read with the file's endianness. Returns `(padded_name_len,
+    // name, desc_len, desc_offset_in_section)`, or `None` (the IOException paths — bad/short
+    // data) so no spurious unit is emitted.
+    let parse_note = |data: &[u8]| -> Option<(u32, String, u32, usize)> {
         if data.len() < 12 {
             return None;
         }
-        let namesz = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let descsz = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let namesz = geom.u32(&data[0..4]);
+        let descsz = geom.u32(&data[4..8]);
         // data[8..12] = vendorType (unused for markup geometry).
         let name_start = 12usize;
         let name_end = name_start.checked_add(namesz as usize)?;
@@ -518,7 +619,7 @@ fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
             return None; // readNextByteArray would overrun — bail
         }
         Some((name_len, name, descsz, desc_off))
-    }
+    };
 
     // .note.gnu.property (NoteGnuProperty.markupProgram): the `NoteGnuProperty_<nameLen>`
     // header struct (`createNoteStructure(..., nameLen, 0)` = 12 + nameLen, no desc field)
@@ -543,8 +644,7 @@ fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
                     let mut p = 0usize; // desc-reader pointer (NoteGnuProperty.read)
                     while p + 8 <= desc.len() {
                         // prType @ p (4), prDatasz @ p+4 (4)
-                        let pr_datasz =
-                            u32::from_le_bytes(desc[p + 4..p + 8].try_into().unwrap());
+                        let pr_datasz = geom.u32(&desc[p + 4..p + 8]);
                         let elem_len = 8 + pr_datasz;
                         program.defined_data.push((
                             Address::new(ram, elem_addr),
@@ -554,7 +654,7 @@ fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
                         elem_addr += elem_len as u64;
                         let data_start = p + 8;
                         let next = data_start + pr_datasz as usize;
-                        p = align_up(next as u64, PTR_SIZE) as usize;
+                        p = align_up(next as u64, ptr_size) as usize;
                     }
                 }
             }
@@ -609,13 +709,15 @@ fn markup_elf_notes(elf: &Elf, ram: SpaceId, program: &mut Program) {
 /// `R_X86_64_JUMP_SLOT`): set the slot to the symbol's EXTERNAL-block address and record
 /// the DATA reference Ghidra's loader emits. Relocations against non-external symbols (and
 /// addend-only kinds like `R_X86_64_RELATIVE`) are left for the full relocation port.
-fn apply_external_relocations(
-    elf: &Elf,
+fn apply_external_relocations<H>(
+    elf: &ElfFile<H>,
     ram: SpaceId,
     externals: &[(String, SymbolKind)],
     ext_start: u64,
     program: &mut Program,
-) {
+) where
+    H: FileHeader<Endian = Endianness>,
+{
     let slot_of: std::collections::HashMap<&str, u64> = externals
         .iter()
         .enumerate()
@@ -650,14 +752,17 @@ fn apply_external_relocations(
 /// 3. defined `.symtab` symbols → a `Symbol` (`STT_FUNC` → `Function`, else `Label`) with
 ///    Ghidra's `isPrimary` rule; `STT_FUNC` → a `Function`; `e_entry` + every global/weak
 ///    symbol's address → external entry points.
-fn recover_symbols(
-    elf: &Elf,
+fn recover_symbols<H>(
+    elf: &ElfFile<H>,
+    geom: Geom,
     ram: SpaceId,
     externals: &[(String, SymbolKind)],
     ext_start: Option<u64>,
     program: &mut Program,
-) {
-    let (dyn_addr, dyn_entries) = dynamic_entries(elf);
+) where
+    H: FileHeader<Endian = Endianness>,
+{
+    let (dyn_addr, dyn_entries) = dynamic_entries(elf, geom);
     markup_dynamic(ram, dyn_addr, &dyn_entries, program);
 
     if let Some(start) = ext_start {
@@ -722,16 +827,17 @@ fn recover_symbols(
     // Init/fini/preinit-array targets are entry points too (Ghidra `createDynamicEntryPoints`):
     // each array is pointer-sized function addresses; an executable target is marked an entry.
     let dt_val = |t: u64| dyn_entries.iter().find(|(tag, _)| *tag == t).map(|(_, v)| *v);
+    let ptr_len = geom.ptr_len();
     for (array_tag, size_tag) in [(25u64, 27u64), (32, 33), (26, 28)] {
         let (Some(base), Some(size)) = (dt_val(array_tag), dt_val(size_tag)) else { continue };
         let mut off = 0;
-        while off + 8 <= size {
+        while off + ptr_len <= size {
             // Each array element is laid down as a `pointer` data unit (Ghidra
             // `ElfProgramBuilder.createDynamicEntryPoints`: `createData(addr, dt)` with
-            // `dt = PointerDataType` since x86-64 non-prelinked binaries take the
-            // `getImageBaseWordAdjustmentOffset() == 0` branch). `elementCount = size / 8`.
-            program.defined_data.push((Address::new(ram, base + off), "pointer".to_string(), 8));
-            if let Some(target) = read_u64(&program.memory, Address::new(ram, base + off)) {
+            // `dt = PointerDataType` since non-prelinked binaries take the
+            // `getImageBaseWordAdjustmentOffset() == 0` branch). `elementCount = size / ptrSize`.
+            program.defined_data.push((Address::new(ram, base + off), "pointer".to_string(), ptr_len as u32));
+            if let Some(target) = read_ptr(&program.memory, Address::new(ram, base + off), geom) {
                 // Each array slot is a function pointer → a DATA reference (Ghidra's
                 // pointer-array markup); an executable target is also an entry point.
                 if target != 0 && program.memory.contains(Address::new(ram, target)) {
@@ -746,14 +852,14 @@ fn recover_symbols(
                     entry_addrs.insert(target);
                 }
             }
-            off += 8;
+            off += ptr_len;
         }
     }
 
     // DT_PLTGOT's first slot holds &_DYNAMIC (the dynamic-linker convention) — a DATA
     // reference (Ghidra's GOT pointer markup).
     if let Some(gotplt) = dt_val(3) {
-        if let Some(target) = read_u64(&program.memory, Address::new(ram, gotplt)) {
+        if let Some(target) = read_ptr(&program.memory, Address::new(ram, gotplt), geom) {
             if target != 0 && program.memory.contains(Address::new(ram, target)) {
                 program.reference_manager.add(
                     Address::new(ram, gotplt),
@@ -781,24 +887,33 @@ fn is_dropped_elf_symbol(machine: u16, name: &str) -> bool {
         && (name == "$x" || name.starts_with("$x.") || name == "$d" || name.starts_with("$d."))
 }
 
-/// Read a little-endian `u64` from initialized program memory at `addr`.
-fn read_u64(memory: &Memory, addr: Address) -> Option<u64> {
+/// Read a pointer-sized value from initialized program memory at `addr`, with the
+/// program's ELF class + endianness (a loaded function pointer / GOT slot). 8 bytes for
+/// ELF64, 4 for ELF32.
+fn read_ptr(memory: &Memory, addr: Address, geom: Geom) -> Option<u64> {
+    let n = geom.ptr_len() as usize;
     let mut bytes = [0u8; 8];
-    for (i, b) in bytes.iter_mut().enumerate() {
+    for (i, b) in bytes.iter_mut().take(n).enumerate() {
         *b = memory.byte_at(Address::new(addr.space, addr.offset + i as u64))?;
     }
-    Some(u64::from_le_bytes(bytes))
+    Some(geom.uword(&bytes))
 }
 
 /// Parse the `.dynamic` table: returns its load address and the `(tag, value)` entries
-/// (up to `DT_NULL`).
-fn dynamic_entries(elf: &Elf) -> (Option<u64>, Vec<(u64, u64)>) {
+/// (up to `DT_NULL`). `ElfN_Dyn` entries are 16 (Elf64) / 8 (Elf32) bytes, two
+/// pointer-sized words each, read with the file's endianness.
+fn dynamic_entries<H>(elf: &ElfFile<H>, geom: Geom) -> (Option<u64>, Vec<(u64, u64)>)
+where
+    H: FileHeader<Endian = Endianness>,
+{
     let Some(dynamic) = elf.section_by_name(".dynamic") else { return (None, Vec::new()) };
     let mut entries = Vec::new();
+    let dyn_len = geom.dyn_len();
+    let w = geom.ptr_len() as usize;
     if let Ok(data) = dynamic.data() {
-        for e in data.chunks_exact(16) {
-            let tag = u64::from_le_bytes(e[0..8].try_into().unwrap());
-            let val = u64::from_le_bytes(e[8..16].try_into().unwrap());
+        for e in data.chunks_exact(dyn_len) {
+            let tag = geom.uword(&e[0..w]);
+            let val = geom.uword(&e[w..2 * w]);
             if tag == 0 {
                 break; // DT_NULL terminates the table
             }

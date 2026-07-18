@@ -1,0 +1,25 @@
+# mosura-analysis-snapshot v1 lang=68000:BE:32:Coldfire compiler=default base=80000000 endian=big addrsize=32
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=m68k.elf
+block 80000000 80000093 segment_0.1
+block 80000094 800000b7 .note.gnu.build-id
+block 800000b8 8000011f .text
+func 800000b8 add
+func 800000c8 sum_to
+func 800000f4 _start
+fnbody 800000b8 800000b8:800000b8
+fnbody 800000c8 800000c8:800000c8
+fnbody 800000f4 800000f4:800000f4
+entry 800000f4 _start
+entry 80002120 __bss_start
+sym 800000b8 add Function
+sym 800000c8 sum_to Function
+sym 800000f4 _start Function
+sym 80002120 __bss_start Label
+sym 80002120 _edata Label
+sym 80002120 _end Label
+ref 80000018 800000f4 DATA
+ref 8000001c 80000034 DATA
+ref 8000005c 80000094 DATA
+data 80000000 Elf32_Ehdr 52
+data 80000034 Elf32_Phdr[3] 96
+data 80000094 GnuBuildId 36

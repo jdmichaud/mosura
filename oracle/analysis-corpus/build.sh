@@ -41,5 +41,12 @@ aarch64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
 riscv64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
     -fno-unwind-tables -fno-asynchronous-unwind-tables -o riscv.elf src/riscv.c
 
+# Freestanding m68k ELF — mosura's first BIG-ENDIAN (and first 32-bit) fixture. Same
+# freestanding recipe; Ghidra's ELF opinion (EM_68K=4, big, 32, no variant) resolves this to
+# 68000:BE:32:Coldfire. Validates the class/endian-parameterized loader + big-endian analysis
+# read paths on 68000:BE:32:Coldfire.
+m68k-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
+    -fno-unwind-tables -fno-asynchronous-unwind-tables -o m68k.elf src/m68k.c
+
 echo "built:"
-for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf m68k.elf; do printf '  %-18s ' "$f"; file -b "$f"; done

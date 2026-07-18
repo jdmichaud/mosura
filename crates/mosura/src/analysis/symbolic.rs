@@ -97,9 +97,9 @@ fn arg_var(a: &PArg) -> Option<&Varnode> {
     }
 }
 
-/// Read `size` little-endian bytes of initialized memory at `addr` as a constant value
-/// (Ghidra `VarnodeContext.getValue` reading the program image — pointer-following). Any
-/// uninitialized byte makes the value unknown.
+/// Read `size` bytes of initialized memory at `addr` as a constant value, with the
+/// program's endianness (Ghidra `VarnodeContext.getValue` reading the program image —
+/// pointer-following). Any uninitialized byte makes the value unknown.
 fn read_mem_const(program: &Program, ram: SpaceId, addr: u64, size: u32) -> SymValue {
     if size == 0 || size > 8 {
         return SymValue::Unknown;
@@ -109,8 +109,14 @@ fn read_mem_const(program: &Program, ram: SpaceId, addr: u64, size: u32) -> SymV
         return SymValue::Unknown;
     }
     let mut v = 0u64;
-    for (i, b) in bytes.iter().enumerate() {
-        v |= (*b as u64) << (i * 8);
+    if program.big_endian {
+        for b in bytes.iter() {
+            v = (v << 8) | u64::from(*b);
+        }
+    } else {
+        for (i, b) in bytes.iter().enumerate() {
+            v |= (*b as u64) << (i * 8);
+        }
     }
     SymValue::Const(v)
 }

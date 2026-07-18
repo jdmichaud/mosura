@@ -1,0 +1,60 @@
+# mosura-analysis-snapshot v1 lang=68000:BE:32:Coldfire compiler=default base=80000000 endian=big addrsize=32
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=m68k.elf
+block 80000000 80000093 segment_0.1
+block 80000094 800000b7 .note.gnu.build-id
+block 800000b8 8000011f .text
+func 800000b8 add
+func 800000c8 sum_to
+func 800000f4 _start
+fnbody 800000b8 800000b8:800000c7
+fnbody 800000c8 800000c8:800000f3
+fnbody 800000f4 800000f4:8000011f
+entry 800000f4 _start
+entry 80002120 __bss_start
+sym 800000b8 add Function
+sym 800000c8 sum_to Function
+sym 800000f4 _start Function
+sym 80002120 __bss_start Label
+sym 80002120 _edata Label
+sym 80002120 _end Label
+insn 800000b8
+insn 800000bc
+insn 800000c0
+insn 800000c4
+insn 800000c6
+insn 800000c8
+insn 800000cc
+insn 800000d0
+insn 800000d4
+insn 800000d6
+insn 800000da
+insn 800000de
+insn 800000e2
+insn 800000e6
+insn 800000ea
+insn 800000ec
+insn 800000f0
+insn 800000f2
+insn 800000f4
+insn 800000f8
+insn 800000fc
+insn 80000100
+insn 80000104
+insn 80000106
+insn 8000010a
+insn 8000010e
+insn 80000112
+insn 80000114
+insn 80000118
+insn 8000011a
+insn 8000011e
+ref 80000018 800000f4 DATA
+ref 8000001c 80000034 DATA
+ref 8000005c 80000094 DATA
+ref 800000d4 800000e2 UNCONDITIONAL_JUMP
+ref 800000ea 800000d6 CONDITIONAL_JUMP
+ref 80000100 800000b8 UNCONDITIONAL_CALL
+ref 8000010e 800000c8 UNCONDITIONAL_CALL
+data 80000000 Elf32_Ehdr 52
+data 80000034 Elf32_Phdr[3] 96
+data 80000094 GnuBuildId 36
