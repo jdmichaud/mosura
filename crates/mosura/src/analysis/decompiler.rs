@@ -45,7 +45,7 @@ mod tests {
         let program = loader::load(&data).unwrap();
         // classify() @ 0x401010 — the dense 7-case switch → jump table (-O2: classify.cold
         // sits at 0x401000, below the entry).
-        let f = decompile_function(&program, Address::new(program.default_space, 0x40_1010)).unwrap();
+        let mut f = decompile_function(&program, Address::new(program.default_space, 0x40_1010)).unwrap();
         let jts = f.jump_tables();
         let total: usize = jts.iter().map(|t| t.targets.len()).sum();
         eprintln!(

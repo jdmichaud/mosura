@@ -50,7 +50,7 @@ impl Analyzer for DecompilerSwitchAnalyzer {
                 continue; // no switch candidate in this function
             }
             let entry = Address::new(ram, entry_off);
-            let Some(f) = crate::analysis::decompiler::decompile_function(program, entry) else {
+            let Some(mut f) = crate::analysis::decompiler::decompile_function(program, entry) else {
                 continue;
             };
             for jt in f.jump_tables() {
