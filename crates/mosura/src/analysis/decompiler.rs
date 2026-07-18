@@ -27,7 +27,22 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     }
     let name = format!("FUN_{:08x}", entry.offset);
     let mut f = crate::decompile::build::raw_funcdata_flow_image(&spec, name, &chunks, entry.offset, &ctx);
-    crate::decompile::pipeline::decompile(&mut f);
+    // Per-function isolation, faithful to Ghidra's `DecompilerSwitchAnalyzer`: it decompiles each
+    // candidate through a `DecompilerCallback` and a single function's decompiler failure is caught
+    // and logged, never aborting the analysis pass (DecompInterface returns an error result, not a
+    // crash). Mirror that here — a panic inside the ported pipeline on one function yields no
+    // jump-table/prototype for it and the pass continues. The half-built `f` is discarded on
+    // failure (return None), so no caller observes a partially-decompiled state.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::decompile::pipeline::decompile(&mut f);
+    }));
+    if outcome.is_err() {
+        eprintln!(
+            "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto)",
+            entry.offset
+        );
+        return None;
+    }
     Some(f)
 }
 
