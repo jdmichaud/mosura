@@ -1107,9 +1107,12 @@ impl<'a> PrintC<'a> {
                 // A leaf whose CBRANCH was oriented (Ghidra's BlockCondition::negateCondition
                 // distributed the NOT to it — its negation is materialized positive in the IR) prints
                 // directly, so flip the pending negation off for that operand. Nested compounds return
-                // false here and flip their own leaves recursively.
-                let a = self.render_cond_operand(s, comps[0], neg ^ operand_oriented(self.f, s, comps[0]));
-                let b = self.render_cond_operand(s, comps[1], neg ^ operand_oriented(self.f, s, comps[1]));
+                // false here and flip their own leaves recursively. `cond_flip` (from ruleBlockOr's
+                // swapped-sense fold) XORs in the per-side negation mosura deferred rather than
+                // swapping CFG edges (Ghidra's `negateCondition` on `bl`/`orblock`).
+                let (f0, f1) = s.blocks[idx].cond_flip;
+                let a = self.render_cond_operand(s, comps[0], neg ^ operand_oriented(self.f, s, comps[0]) ^ f0);
+                let b = self.render_cond_operand(s, comps[1], neg ^ operand_oriented(self.f, s, comps[1]) ^ f1);
                 format!("{a} {conn} {b}")
             }
             _ => {
@@ -1456,8 +1459,7 @@ impl<'a> PrintC<'a> {
         // Ghidra's BlockIfGoto (`if (cond) goto LAB;`, the false edge falls through) followed by
         // any BlockGoto/BlockMultiGoto (unconditional `goto LAB;`).
         if let Some(records) = self.gotos.get(&b).cloned() {
-            for GotoRecord { target, negated, conditional } in records {
-                let lab = self.lab_name(target);
+            for GotoRecord { target, negated, conditional, is_break } in records {
                 let cbr = self
                     .f
                     .block(b)
@@ -1467,13 +1469,17 @@ impl<'a> PrintC<'a> {
                     .copied()
                     .find(|&op| self.f.op(op).code() == OpCode::Cbranch)
                     .filter(|_| conditional);
-                match cbr.and_then(|op| self.f.op(op).input(1)) {
+                let cond = cbr.and_then(|op| self.f.op(op).input(1));
+                // Ghidra's `emitGotoStatement` (printc.cc:2303): a `break` keyword for `f_break_goto`
+                // (scopeBreak reclassified a loop-exit goto), else `goto LABEL`.
+                let stmt = if is_break { "break".to_string() } else { format!("goto {}", self.lab_name(target)) };
+                match cond {
                     Some(cond) => {
                         let c = if negated { self.render_negated(cond) } else { self.render_var(cond).0 };
-                        let _ = writeln!(out, "{pad}if ({c}) goto {lab};");
+                        let _ = writeln!(out, "{pad}if ({c}) {stmt};");
                     }
                     None => {
-                        let _ = writeln!(out, "{pad}goto {lab};");
+                        let _ = writeln!(out, "{pad}{stmt};");
                     }
                 }
             }

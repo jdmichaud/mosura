@@ -133,6 +133,10 @@ pub struct GotoRecord {
     /// Whether the goto is conditional (`BlockIfGoto`: cut from a two-out CBRANCH block) or
     /// unconditional (`BlockGoto`/`BlockMultiGoto`).
     pub conditional: bool,
+    /// Whether [`scope_break`](Structured::scope_break) reclassified this edge as a `break;` —
+    /// Ghidra's `f_break_goto` (block.hh:90), set when the goto targets the enclosing loop's exit.
+    /// (The C++ decompiler never produces `f_continue_goto`, so break is the only reclassification.)
+    pub is_break: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +159,12 @@ pub struct FlowBlock {
     /// `None` while the block is still in the top-level graph. `LoopBody::update` and
     /// `FloatingEdge::getCurrentEdge` walk this to find a block's current collapsed form.
     pub parent: Option<usize>,
+    /// For a `CondAnd`/`CondOr`: whether `ruleBlockOr` had to negate each side to reach the
+    /// canonical orientation (Ghidra's `negateCondition` on `bl`/`orblock`, blockaction.cc:1359-1364).
+    /// mosura does not swap CFG edges (see [`Funcdata::block_negate_condition`]), so the swapped-sense
+    /// fold records the per-side flip here; [`render_cond_expr`](super::printc) XORs it into each
+    /// operand's print negation. `(false, false)` for the canonical fold and every non-condition block.
+    pub cond_flip: (bool, bool),
 }
 
 #[allow(dead_code)]
@@ -332,7 +342,10 @@ impl Structured {
                     // short-circuit leaf. Orient every leaf CBRANCH so RuleCondNegate materializes it
                     // (RuleBoolNegate + RuleIntLessEqual then normalize) — all-or-nothing, matching
                     // Ghidra's recursion over both sides; the connective is re-derived by De Morgan.
-                    if let Some(mut leaves) = self.compound_leaves(cond, f) {
+                    // A leaf reached through an odd number of `ruleBlockOr` fold-flips (`cond_flip`)
+                    // was already negated by the fold, so the while's NOT cancels on it (net raw) —
+                    // it is left un-oriented and its print sense is fixed by `render_cond_expr`.
+                    if let Some(mut leaves) = self.compound_leaves(cond, f, false) {
                         out.append(&mut leaves);
                     }
                 } else if let Some(bid) = self.exit_basic(cond) {
@@ -355,19 +368,30 @@ impl Structured {
     /// a cleanly-foldable comparison ([`condition_folds_cleanly`]) that is not a switch guard —
     /// all-or-nothing, matching Ghidra's recursion that negates every side, and leaving a compound with
     /// a non-foldable leaf (e.g. a nested `NAN`/`BOOL_OR` test) on the deferred print-time De Morgan.
-    fn compound_leaves(&self, cond: usize, f: &Funcdata) -> Option<Vec<BlockId>> {
+    ///
+    /// `acc_flip` accumulates the `ruleBlockOr` fold-flips ([`FlowBlock::cond_flip`]) along the path
+    /// to each leaf: a leaf at odd accumulated flip was already negated by the fold, so the while's
+    /// distributed NOT cancels on it (Ghidra flips it twice → net raw) and it is left un-oriented
+    /// (contributes no CBRANCH to materialize); [`render_cond_expr`](super::printc) then prints it
+    /// directly via the same `cond_flip` XOR. Its cleanliness does not gate the all-or-nothing decision.
+    fn compound_leaves(&self, cond: usize, f: &Funcdata, acc_flip: bool) -> Option<Vec<BlockId>> {
         match self.blocks[cond].kind {
             FlowKind::CondAnd | FlowKind::CondOr => {
+                let (fl0, fl1) = self.blocks[cond].cond_flip;
                 let c0 = self.blocks[cond].components[0];
                 let c1 = self.blocks[cond].components[1];
-                let mut a = self.compound_leaves(c0, f)?;
-                let mut b = self.compound_leaves(c1, f)?;
+                let mut a = self.compound_leaves(c0, f, acc_flip ^ fl0)?;
+                let mut b = self.compound_leaves(c1, f, acc_flip ^ fl1)?;
                 a.append(&mut b);
                 Some(a)
             }
             _ => {
                 let bid = self.exit_basic(cond)?;
-                (condition_folds_cleanly(f, bid)).then_some(vec![bid])
+                if acc_flip {
+                    Some(Vec::new()) // odd-flip leaf: net raw, not oriented
+                } else {
+                    (condition_folds_cleanly(f, bid)).then_some(vec![bid])
+                }
             }
         }
     }
@@ -436,7 +460,7 @@ impl Structured {
                 flags |= block_flags::SWITCH_OUT;
             }
         }
-        self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags, active: true, negated: false, parent: None });
+        self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags, active: true, negated: false, parent: None, cond_flip: (false, false) });
         for p in preds {
             for e in self.blocks[p].out_edges.iter_mut() {
                 if compset.contains(e) {
@@ -680,10 +704,20 @@ impl Structured {
     }
 
     /// `ruleBlockOr` (blockaction.cc:1321): two chained condition blocks collapse to a
-    /// short-circuit condition. For `a && b`, `a`'s *true* edge enters `b` and both *false* edges
-    /// share an exit; for `a || b`, `a`'s *false* edge enters `b` and both *true* edges share. The
-    /// result is itself a two-out condition block (structured later by the `if` rules). Only run
-    /// by `collapse_conditions` up front (Ghidra keeps `ruleBlockOr` out of `collapseInternal`).
+    /// short-circuit condition. `bl`'s edge `i` enters the second condition `orblock`; the
+    /// other edge (`1-i`) and one of `orblock`'s edges (`j`) share the exit `clauseblock`. Ghidra
+    /// tries all four orientations `(i,j)`, calling `negateCondition` on `bl` (when `i==1`) and/or
+    /// `orblock` (when `j==0`) to reach canonical form; the result is a two-out condition block
+    /// (structured later by the `if` rules). Only run by `collapse_conditions` up front (Ghidra
+    /// keeps `ruleBlockOr` out of `collapseInternal`).
+    ///
+    /// mosura never swaps CFG edges (see [`Funcdata::block_negate_condition`]), so instead of the
+    /// two `negateCondition` edge reversals it (a) orders the composite's out-edges the way Ghidra's
+    /// `newBlockCondition` forces them — false edge = `orblock`'s non-clause continuation, true edge
+    /// = the shared clause — and (b) records the per-side flip in [`FlowBlock::cond_flip`], which
+    /// [`render_cond_expr`](super::printc) XORs into each operand's print negation. The two canonical
+    /// orientations `(i=0,j=1)`/`(i=1,j=0)` carry no flip and reproduce the previous 2-case fold
+    /// byte-for-byte; the swapped `(i=0,j=0)`/`(i=1,j=1)` orientations are the newly-recovered folds.
     fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
         if self.out(b).len() != 2 {
             return false;
@@ -694,36 +728,44 @@ impl Structured {
         if self.blocks[b].is_switch_out() {
             return false;
         }
-        for and in [true, false] {
-            let (cont, shared) = if and { (1, 0) } else { (0, 1) };
-            let bb = self.out(b)[cont]; // the second condition (Ghidra's orblock)
-            if bb == b || ins[bb].len() != 1 || self.out(bb).len() != 2 {
+        for i in 0..2 {
+            let orblock = self.out(b)[i]; // the second condition (Ghidra's orblock)
+            if orblock == b || ins[orblock].len() != 1 || self.out(orblock).len() != 2 {
                 continue;
             }
-            if self.blocks[bb].is_interior_goto_target() {
+            if self.blocks[orblock].is_interior_goto_target() {
                 continue; // no unstructured jumps into the second condition
             }
-            if self.blocks[bb].is_switch_out() {
+            if self.blocks[orblock].is_switch_out() {
                 continue;
             }
-            if self.blocks[b].is_back_edge_out(cont) {
+            if self.blocks[b].is_back_edge_out(i) {
                 continue; // don't use a loop branch to reach the second condition
             }
-            if self.is_complex(bb) {
+            if self.is_complex(orblock) {
                 continue; // second condition block must print as a pure expression
             }
-            if self.out(b)[shared] == b {
+            let clauseblock = self.out(b)[1 - i];
+            if clauseblock == b {
                 continue; // Ghidra: clauseblock == bl — no looping
             }
-            if self.out(b)[shared] == bb || self.out(b)[shared] != self.out(bb)[shared] {
+            if clauseblock == orblock {
                 continue;
             }
-            if self.out(bb)[cont] == b {
+            // clauseblock must be one of orblock's two out-edges (index j)
+            let Some(j) = (0..2).find(|&j| clauseblock == self.out(orblock)[j]) else {
+                continue;
+            };
+            if self.out(orblock)[1 - j] == b {
                 continue; // Ghidra: orblock->getOut(1-j) == bl — no looping
             }
-            let out = self.blocks[bb].out_edges.clone();
-            let kind = if and { FlowKind::CondAnd } else { FlowKind::CondOr };
-            self.install(vec![b, bb], kind, out, ins);
+            let continuation = self.out(orblock)[1 - j];
+            let out = vec![continuation, clauseblock];
+            // opcode: (bl->getFalseOut()==orblock) after the negates → i==0 gives OR, i==1 AND.
+            let kind = if i == 0 { FlowKind::CondOr } else { FlowKind::CondAnd };
+            let n = self.install(vec![b, orblock], kind, out, ins);
+            // The deferred per-side negations: bl flipped when i==1, orblock flipped when j==0.
+            self.blocks[n].cond_flip = (i == 1, j == 0);
             return true;
         }
         false
@@ -794,7 +836,7 @@ impl Structured {
             return;
         };
         let negated = conditional && ((i == 0) ^ self.is_oriented(b));
-        self.gotos.entry(eb).or_default().push(GotoRecord { target: et, negated, conditional });
+        self.gotos.entry(eb).or_default().push(GotoRecord { target: et, negated, conditional, is_break: false });
         self.labels.insert(et);
     }
 
@@ -1439,6 +1481,100 @@ impl Structured {
                     Some(t) => isolated_count = self.collapse_internal(Some(t)),
                     None => break, // no edges left at all
                 },
+            }
+        }
+    }
+
+    /// Ghidra's `BlockGraph::scopeBreak` (block.cc:1270) plus the per-block overrides, run by
+    /// `ActionFinalStructure` (blockaction.cc:2193) after `collapseAll`: walk the structured tree
+    /// and flip every loop-exit goto to a `break`. Only `f_break_goto` (block.hh:90) is produced —
+    /// the C++ decompiler never assigns `f_continue_goto`, because a back-edge to the loop head is
+    /// the loop's own structure, so no explicit `continue` arises. `curexit`/`curloopexit` are the
+    /// entry basic blocks of the emission-successor and of the innermost enclosing loop's exit; a
+    /// goto whose target equals `curloopexit` is a break (`BlockGoto`/`BlockIf::scopeBreak`, both
+    /// test `gototarget->getIndex() == curloopexit`). After the walk, targets referenced only by
+    /// breaks no longer need a label — Ghidra's `markUnstructured` marks `f_unstructured_targ` only
+    /// for surviving `f_goto_goto` edges — so the label set is rebuilt from the non-break gotos.
+    fn scope_break(&mut self) {
+        let mut loopexit: HashMap<BlockId, Option<BlockId>> = HashMap::new();
+        self.scope_break_walk(self.root, None, None, &mut loopexit);
+        for (src, records) in self.gotos.iter_mut() {
+            if let Some(&cle) = loopexit.get(src) {
+                for r in records.iter_mut() {
+                    if Some(r.target) == cle {
+                        r.is_break = true;
+                    }
+                }
+            }
+        }
+        self.labels.clear();
+        for records in self.gotos.values() {
+            for r in records {
+                if !r.is_break {
+                    self.labels.insert(r.target);
+                }
+            }
+        }
+    }
+
+    /// Recurse `scopeBreak` over the structured tree (the block-type overrides in block.cc),
+    /// recording the `curloopexit` in effect at each leaf basic block into `loopexit` so
+    /// [`scope_break`](Self::scope_break) can flip that leaf's gotos. `curexit` is the block emitted
+    /// immediately after this subtree; `curloopexit` is the innermost enclosing loop's exit.
+    fn scope_break_walk(&self, idx: usize, curexit: Option<BlockId>, curloopexit: Option<BlockId>, loopexit: &mut HashMap<BlockId, Option<BlockId>>) {
+        let kind = self.blocks[idx].kind.clone();
+        let comps = self.blocks[idx].components.clone();
+        match kind {
+            // A leaf (BlockCopy, or a BlockGoto/BlockIfGoto carrier): a goto here is a break iff it
+            // targets the current loop exit (BlockGoto/BlockIf::scopeBreak, block.cc:2866/3075).
+            FlowKind::Basic(bid) => {
+                loopexit.insert(bid, curloopexit);
+            }
+            // BlockGraph::scopeBreak (block.cc:1270): each subblock exits into the next sibling.
+            FlowKind::List => {
+                for i in 0..comps.len() {
+                    let sub_exit = if i + 1 < comps.len() { self.entry_basic(comps[i + 1]) } else { curexit };
+                    self.scope_break_walk(comps[i], sub_exit, curloopexit, loopexit);
+                }
+            }
+            // BlockIf::scopeBreak (block.cc:3075): condition has multiple exits (curexit=-1); the
+            // arms share this block's curexit.
+            FlowKind::If => {
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
+                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit);
+            }
+            FlowKind::IfElse => {
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
+                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit);
+                self.scope_break_walk(comps[2], curexit, curloopexit, loopexit);
+            }
+            // BlockWhileDo::scopeBreak (block.cc:3324): a new loop scope — curloopexit becomes this
+            // loop's curexit; the body exits back into the condition (the loop top).
+            FlowKind::WhileDo => {
+                self.scope_break_walk(comps[0], None, curexit, loopexit);
+                let top = self.entry_basic(comps[0]);
+                self.scope_break_walk(comps[1], top, curexit, loopexit);
+            }
+            // BlockDoWhile::scopeBreak (block.cc:3434): new loop scope, curloopexit becomes curexit.
+            FlowKind::DoWhile => {
+                self.scope_break_walk(comps[0], None, curexit, loopexit);
+            }
+            // BlockInfLoop::scopeBreak (block.cc:3462): exits into itself, curloopexit becomes curexit.
+            FlowKind::InfLoop => {
+                let top = self.entry_basic(comps[0]);
+                self.scope_break_walk(comps[0], top, curexit, loopexit);
+            }
+            // BlockCondition::scopeBreak (block.cc:3034): both sides, no fixed exit.
+            FlowKind::CondAnd | FlowKind::CondOr => {
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
+                self.scope_break_walk(comps[1], None, curloopexit, loopexit);
+            }
+            // BlockSwitch::scopeBreak (block.cc:3613): new scope; cases share the switch exit.
+            FlowKind::Switch => {
+                self.scope_break_walk(comps[0], None, curexit, loopexit);
+                for &case in &comps[1..] {
+                    self.scope_break_walk(case, curexit, curexit, loopexit);
+                }
             }
         }
     }
@@ -2198,6 +2334,7 @@ pub fn structure(f: &Funcdata) -> Structured {
                 active: true,
                 negated: false,
                 parent: None,
+                cond_flip: (false, false),
             }
         })
         .collect();
@@ -2290,6 +2427,12 @@ pub fn structure(f: &Funcdata) -> Structured {
     // The root is the entry block's collapsed form (the single isolated block, when the graph
     // fully collapsed).
     s.root = if n == 0 { 0 } else { s.current_form(0) };
+
+    // Reclassify loop-exit gotos as breaks (Ghidra's ActionFinalStructure → BlockGraph::scopeBreak,
+    // blockaction.cc:2193), run over the fully-collapsed tree.
+    if n != 0 {
+        s.scope_break();
+    }
     s
 }
 
@@ -2489,22 +2632,40 @@ mod tests {
     }
 
     #[test]
+    fn short_circuit_swapped_sense_records_fold_flip() {
+        // The mirrored `ruleBlockOr` orientation (i=0, j=0): bl(0) out [orblock=1(false), clause=3];
+        // orblock(1) out [clause=3(false), cont=2(true)] — the shared clause sits on orblock's
+        // *false* edge, so Ghidra negates orblock. mosura never swaps CFG edges, so it folds anyway
+        // (a `CondOr`, i==0) and records the orblock-side flip in `cond_flip.1` for the printer.
+        let s = structure(&cfg(4, &[(0, 1), (0, 3), (1, 3), (1, 2), (2, 3)]));
+        assert_eq!(active(&s), 1);
+        let cond = s.blocks.iter().position(|b| matches!(b.kind, FlowKind::CondOr)).expect("CondOr formed");
+        assert_eq!(s.blocks[cond].components, vec![0, 1]);
+        assert_eq!(s.blocks[cond].cond_flip, (false, true), "orblock (j=0) side flip recorded");
+        // Composite out-edges are Ghidra's forced order: false = orblock's continuation, true = clause.
+        assert_eq!(s.blocks[cond].out_edges, vec![2, 3]);
+    }
+
+    #[test]
     fn irreducible_collapses_with_goto() {
         // 0 -> {1, 2}; 1 -> 2; 2 -> 1  (1 and 2 form an irreducible two-cycle)
         let s = structure(&cfg(3, &[(0, 1), (0, 2), (1, 2), (2, 1)]));
         assert_eq!(active(&s), 1, "collapses fully via gotos");
         assert!(!s.gotos.is_empty(), "recorded a goto edge");
+        // The irreducible edge is not a loop-exit break — scopeBreak leaves it a labeled goto.
+        assert!(s.gotos.values().all(|v| v.iter().all(|r| !r.is_break)), "irreducible goto stays a goto");
+        assert!(!s.labels.is_empty(), "the surviving goto keeps its target label");
     }
 
     #[test]
-    fn loop_break_edge_becomes_conditional_goto() {
+    fn loop_break_edge_becomes_conditional_break() {
         // while (c1) { s; if (c2) break; s2 }:
         // 0 -> 1(head c1); 1 -> {2(s), 5(exit)}; 2 -> 3(c2); 3 -> {4(s2), 5(break)}; 4 -> 1(back)
         // The break edge keeps the body multi-block, so the flat rules are stuck; selectGoto
         // picks the loop-exit edge 3->5 (the middle exit — first in the emitLikelyEdges
         // priority) and NEVER the back-edge, so the while loop is recovered with one
-        // conditional goto owned by the [2,3] cat composite (Ghidra's BlockIfGoto; `break`
-        // rendering is B4b).
+        // conditional goto owned by the [2,3] cat composite (Ghidra's BlockIfGoto). scopeBreak
+        // (B4b) then reclassifies it as a break because the goto targets the loop exit (5).
         let s = structure(&cfg(6, &[(0, 1), (1, 2), (1, 5), (2, 3), (3, 4), (3, 5), (4, 1)]));
         assert_eq!(active(&s), 1);
         let k = kinds(&s);
@@ -2513,7 +2674,9 @@ mod tests {
         assert_eq!(recs.len(), 1, "records: {recs:?}");
         assert!(recs[0].conditional, "break is an if-goto");
         assert_eq!(recs[0].target, BlockId(5));
-        assert!(s.labels.contains(&BlockId(5)));
+        assert!(recs[0].is_break, "loop-exit goto reclassified as break by scopeBreak");
+        // a break references no label — block 5 is not a goto target
+        assert!(!s.labels.contains(&BlockId(5)), "break needs no label");
         // exactly one goto total — the back-edge survived
         assert_eq!(s.gotos.values().map(|v| v.len()).sum::<usize>(), 1, "gotos: {:?}", s.gotos);
     }
