@@ -45,6 +45,24 @@ for elf in "$CORPUS"/*.elf; do
   echo "  wrote $name.snapshot + $name.loaded.snapshot"
 done
 
+# Raw CP/M .COM (Z80): no container magic, so Ghidra needs the format set manually — the
+# BinaryLoader with the load base at the CP/M TPA (0x100), the z80:LE:16:default processor,
+# and a -preScript (SetComEntry.java) marking the 0x100 entry so auto-analysis seeds from it
+# (with -noanalysis this is the pure loader-stage state). mosura's `load_com` encodes the
+# same processor/base/entry knowledge.
+for com in "$CORPUS"/*.com; do
+  name="$(basename "$com" .com)"
+  echo "capturing $name (converged + loader-stage; raw .COM, manual z80/base/entry) …"
+  "$HEADLESS" "$PROJ" cap -import "$com" -loader BinaryLoader -loader-baseAddr 0x100 \
+    -processor "z80:LE:16:default" -scriptPath "$SCRIPTS" -preScript SetComEntry.java \
+    -postScript DumpAnalysisSnapshot.java "$GOLDENS/$name.snapshot" -deleteProject >/dev/null 2>&1
+  "$HEADLESS" "$PROJ" cap -import "$com" -loader BinaryLoader -loader-baseAddr 0x100 \
+    -processor "z80:LE:16:default" -noanalysis -scriptPath "$SCRIPTS" -preScript SetComEntry.java \
+    -postScript DumpAnalysisSnapshot.java "$GOLDENS/$name.loaded.snapshot" -deleteProject >/dev/null 2>&1
+  [ -s "$GOLDENS/$name.snapshot" ] && [ -s "$GOLDENS/$name.loaded.snapshot" ] || { echo "  FAILED: $name"; exit 1; }
+  echo "  wrote $name.snapshot + $name.loaded.snapshot"
+done
+
 # User-provided binaries (not committed): capture only if present. Add paths here.
 for ext in "cnv:/home/jd/cnv.exe" "comcom32:/home/jd/.local/share/comcom32/comcom32.exe" "war2:/home/jd/WAR2.EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"

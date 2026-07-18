@@ -48,5 +48,24 @@ riscv64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
 m68k-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
     -fno-unwind-tables -fno-asynchronous-unwind-tables -o m68k.elf src/m68k.c
 
+# Zilog Z80 CP/M .COM — mosura's first non-ELF corpus fixture (a raw flat image, no
+# container). Compiled with sdcc + a minimal CP/M crt0 (call main; rst 0), linked at the
+# TPA (_CODE=0x100), converted to a flat image, and the code bytes extracted from 0x100.
+# Ghidra can't auto-detect a raw .COM, so its golden is captured with a manual processor +
+# base + entry (see scripts/capture-analysis.sh); mosura's `load_com` encodes the same.
+sdcc -mz80 -c --opt-code-size src/z80.c -o z80.rel
+sdasz80 -o z80_crt0.rel src/z80_crt0.s
+sdldz80 -n -i -b _CODE=0x100 z80.ihx z80_crt0.rel z80.rel
+makebin -s 65536 z80.ihx z80.full.bin 2>/dev/null
+Z80_END=$(python3 -c "
+mx=0
+for l in open('z80.ihx').read().splitlines():
+    if l.startswith(':') and l[7:9]=='00':
+        n=int(l[1:3],16); a=int(l[3:7],16); mx=max(mx,a+n)
+print(mx)")
+dd if=z80.full.bin of=z80.com bs=1 skip=256 count=$((Z80_END-0x100)) 2>/dev/null
+rm -f z80.rel z80_crt0.rel z80.ihx z80.full.bin z80.lk z80.map z80.noi z80.rst z80.sym 2>/dev/null
+
 echo "built:"
 for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf m68k.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+printf '  %-18s ' "z80.com"; file -b "z80.com"

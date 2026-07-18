@@ -3,17 +3,32 @@
 //! PE (x86-64) today; MZ (16-bit DOS) next. Containers are decoded with the `object`
 //! crate — only the block-layout logic is ported.
 
+pub mod com;
 pub mod elf;
 pub mod le;
 pub mod mz;
 pub mod pe;
 
+pub use com::load_com;
 pub use elf::{load_elf, LoadError};
 pub use le::{detect_le, load_le};
 pub use mz::load_mz;
 pub use pe::load_pe;
 
+use std::path::Path;
+
 use crate::analysis::program::Program;
+
+/// Dispatch to a loader using the file path as well as its bytes. A raw CP/M `.COM` has no
+/// container magic (it is a flat Z80 image), so — like Ghidra, which needs the format chosen
+/// manually for a raw binary — it is selected by its `.com` extension; every other format is
+/// detected by magic via [`load`].
+pub fn load_path(path: &Path, data: &[u8]) -> Result<Program, LoadError> {
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("com")) {
+        return com::load_com(data);
+    }
+    load(data)
+}
 
 /// Detect the container format by magic and dispatch to the matching loader, mirroring
 /// Ghidra's loader-opinion selection for the formats we support.

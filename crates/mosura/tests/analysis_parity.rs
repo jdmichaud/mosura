@@ -269,6 +269,69 @@ fn demangler_parity() {
     assert_eq!(mine_sym, gold_sym, "cppsym: symbols must match Ghidra exactly");
 }
 
+/// Z80 CP/M `.COM` — mosura's first non-ELF (raw flat) corpus fixture, on its own gate (the
+/// `.com` container doesn't fit the ELF `MANDATORY` loop). Validates the function listing as a
+/// clean subset of the analyzeHeadless golden (captured via `BinaryLoader` + a manual
+/// `z80:LE:16:default` processor / `0x100` base / entry pre-script — see
+/// `scripts/capture-analysis.sh`). Function/code-unit/reference/body comparison is
+/// address-based — as for the MZ corpus in [`pe_mz_convergence_parity`], Ghidra's dynamic
+/// default names (`FUN_ram_XXXX`) are internal rendering, not string-compared — plus the
+/// loader-stage block and the explicit processor-spec RST/NMI symbols (exact).
+#[test]
+fn z80_com_parity() {
+    use std::collections::BTreeSet;
+    let corpus = analysis_corpus_dir().join("z80.com");
+    let goldens = analysis_goldens_dir();
+
+    // --- converged: functions / code-units / references / bodies, 0 spurious / 0 misaligned ---
+    let golden = snapshot::parse(&std::fs::read_to_string(goldens.join("z80.snapshot")).unwrap());
+    let snap = analysis::analyze_file(&corpus).unwrap().snapshot();
+
+    let mf: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
+    let gf: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
+    let spurious_fns: Vec<_> = mf.difference(&gf).collect();
+    assert!(spurious_fns.is_empty(), "z80: spurious functions vs Ghidra: {spurious_fns:x?}");
+    assert_eq!(mf, gf, "z80: function set must match Ghidra (4 functions: crt0/helper/compute/main)");
+
+    let mi: BTreeSet<u64> = snap.code_units.iter().copied().collect();
+    let gi: BTreeSet<u64> = golden.code_units.iter().copied().collect();
+    let misaligned: Vec<_> = mi.difference(&gi).collect();
+    assert!(misaligned.is_empty(), "z80: {} misaligned decode(s): {misaligned:x?}", misaligned.len());
+    assert_eq!(mi, gi, "z80: code-unit set must match Ghidra");
+
+    let mr: BTreeSet<(u64, u64)> = snap.refs.iter().map(|r| (r.from, r.to)).collect();
+    let gr: BTreeSet<(u64, u64)> = golden.refs.iter().map(|r| (r.from, r.to)).collect();
+    let spurious_refs: Vec<_> = mr.difference(&gr).collect();
+    assert!(spurious_refs.is_empty(), "z80: spurious refs vs Ghidra: {spurious_refs:x?}");
+    assert_eq!(mr, gr, "z80: reference set must match Ghidra (6 flow refs, no spurious param/data ref)");
+
+    let bodies: std::collections::BTreeMap<u64, Vec<(u64, u64)>> =
+        snap.bodies.iter().map(|b| (b.entry, b.ranges.clone())).collect();
+    for gb in &golden.bodies {
+        assert_eq!(bodies.get(&gb.entry), Some(&gb.ranges), "z80: function {:x} body differs", gb.entry);
+    }
+    eprintln!(
+        "z80 .COM converged: funcs {}/{}, code-units {}/{}, refs {}/{}, bodies {} (0 spurious/misaligned)",
+        mf.len(), gf.len(), mi.len(), gi.len(), mr.len(), gr.len(), golden.bodies.len()
+    );
+
+    // --- loader-stage: block + processor-spec RST/NMI symbols + entry addresses (exact) ---
+    let golden_l = snapshot::parse(&std::fs::read_to_string(goldens.join("z80.loaded.snapshot")).unwrap());
+    let snap_l = analysis::analyze_binary(&corpus).unwrap();
+    assert_eq!(snap_l.blocks, golden_l.blocks, "z80: loader memory map must match (one 0x100 TPA block)");
+    // The pspec default symbols (RST0..RST7 + NMI_ISR) — a HARD exact match, 0 spurious.
+    let ms: BTreeSet<(u64, String, String)> =
+        snap_l.symbols.iter().map(|s| (s.addr, s.name.clone(), s.kind.clone())).collect();
+    let gs: BTreeSet<(u64, String, String)> =
+        golden_l.symbols.iter().map(|s| (s.addr, s.name.clone(), s.kind.clone())).collect();
+    assert_eq!(ms, gs, "z80: loader symbols (RST/NMI processor-spec defaults) must match Ghidra exactly");
+    // Entry addresses: the 8 RST + NMI vectors + the 0x100 TPA entry.
+    let me: BTreeSet<u64> = snap_l.entries.iter().map(|e| e.addr).collect();
+    let ge: BTreeSet<u64> = golden_l.entries.iter().map(|e| e.addr).collect();
+    assert_eq!(me, ge, "z80: loader entry-point addresses must match Ghidra");
+    eprintln!("z80 .COM loader-stage: block + {} RST/NMI symbols + {} entries (exact)", gs.len(), ge.len());
+}
+
 /// Task 4 — native LE (Linear Executable) loader. WAR2.EXE is a DOS/4GW-bound LE; Ghidra
 /// has no LE loader, so there is no Ghidra golden — this validates `loader::le` against the
 /// warcraft2-re reverse-engineering ground truth recorded in `docs/le-loader-notes.md`: the

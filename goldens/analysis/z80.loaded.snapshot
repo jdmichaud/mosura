@@ -1,0 +1,22 @@
+# mosura-analysis-snapshot v1 lang=z80:LE:16:default compiler=default base=00000000 endian=little addrsize=16
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=z80.com
+block 00000100 00000140 ram
+entry 00000000 RST0
+entry 00000008 RST1
+entry 00000010 RST2
+entry 00000018 RST3
+entry 00000020 RST4
+entry 00000028 RST5
+entry 00000030 RST6
+entry 00000038 RST7
+entry 00000066 NMI_ISR
+entry 00000100 EXT_ram_0100
+sym 00000000 RST0 Label
+sym 00000008 RST1 Label
+sym 00000010 RST2 Label
+sym 00000018 RST3 Label
+sym 00000020 RST4 Label
+sym 00000028 RST5 Label
+sym 00000030 RST6 Label
+sym 00000038 RST7 Label
+sym 00000066 NMI_ISR Label

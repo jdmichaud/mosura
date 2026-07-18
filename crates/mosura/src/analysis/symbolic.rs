@@ -426,7 +426,19 @@ pub fn flow_constants(
     // The default calling convention's integer-argument registers (Ghidra
     // `getDefaultCallingConvention` + `getArgLocation`), loaded from the `.cspec` once for
     // the function.
-    let arg_regs = integer_arg_registers(spec, program);
+    //
+    // Ghidra `ConstantPropagationAnalyzer.canAnalyze` sets `checkPointerParamRefs =
+    // (getDefaultPointerSize() <= 2 || isHarvard)`, and `SymbolicPropogator` runs the
+    // no-signature param-pointer scan only in the `else if (!checkForParamPointerRefs)` branch
+    // — so on a small-pointer (≤ 2-byte) architecture like Z80 the constant propagator recovers
+    // NO parameter references for calls without a known signature. Model that by clearing the
+    // arg-register set there, so [`add_param_references`] no-ops. (`isHarvard` — default space
+    // ≠ default data space — is false for the flat images these loaders build.)
+    let arg_regs = if program.addr_size_bits <= 16 {
+        Vec::new()
+    } else {
+        integer_arg_registers(spec, program)
+    };
     let mut visited: HashSet<u64> = HashSet::new();
     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
 

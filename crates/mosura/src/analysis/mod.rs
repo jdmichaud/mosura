@@ -65,7 +65,7 @@ impl From<loader::LoadError> for AnalysisError {
 /// their own goldens (A4's partial analysis matches no converged golden yet).
 pub fn analyze_binary(path: &Path) -> Result<Snapshot, AnalysisError> {
     let data = std::fs::read(path)?;
-    let program = loader::load(&data)?;
+    let program = loader::load_path(path, &data)?;
     Ok(program.snapshot())
 }
 
@@ -73,7 +73,7 @@ pub fn analyze_binary(path: &Path) -> Result<Snapshot, AnalysisError> {
 /// converged [`Program`].
 pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
-    let mut program = loader::load(&data)?;
+    let mut program = loader::load_path(path, &data)?;
     analyze(&mut program);
     Ok(program)
 }
