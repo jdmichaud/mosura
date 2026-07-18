@@ -20,7 +20,7 @@ use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::Address;
-use super::structure::{structure, FlowKind, Structured};
+use super::structure::{structure, FlowKind, GotoRecord, Structured};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
@@ -142,8 +142,9 @@ struct PrintC<'a> {
     /// Pointer base → element size, for bases accessed uniformly as an array (so the access
     /// renders `base[i]`). Non-uniform bases (struct-like) are absent and stay `*(base+k)`.
     array_elem: HashMap<VarnodeId, u32>,
-    /// Goto edges cut for irreducible regions: source block → (target, negated condition).
-    gotos: HashMap<BlockId, (BlockId, bool)>,
+    /// The unstructured branches cut by the collapse driver, keyed by the source basic block
+    /// whose exit emits them (in insertion = cut order).
+    gotos: HashMap<BlockId, Vec<GotoRecord>>,
     /// Basic blocks that are goto targets (emitted with a label).
     labels: HashSet<BlockId>,
     /// Local variable declarations `(name, type, stack_offset)`, collected as names are assigned and
@@ -1308,6 +1309,12 @@ impl<'a> PrintC<'a> {
                 let cond = self.render_condition(s, comps[0], negated);
                 let _ = writeln!(out, "{pad}}} while ({cond});");
             }
+            // Ghidra PrintC::emitBlockInfLoop (printc.cc:3097): a loop with no exit.
+            FlowKind::InfLoop => {
+                let _ = writeln!(out, "{pad}do {{");
+                self.emit_structured(s, comps[0], indent + 1, out);
+                let _ = writeln!(out, "{pad}}} while( true );");
+            }
         }
     }
 
@@ -1445,24 +1452,29 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
-        // a goto edge cut from this block for an irreducible region
-        if let Some(&(target, negated)) = self.gotos.get(&b) {
-            let lab = self.lab_name(target);
-            let cbr = self
-                .f
-                .block(b)
-                .ops
-                .iter()
-                .rev()
-                .copied()
-                .find(|&op| self.f.op(op).code() == OpCode::Cbranch);
-            match cbr.and_then(|op| self.f.op(op).input(1)) {
-                Some(cond) => {
-                    let c = if negated { self.render_negated(cond) } else { self.render_var(cond).0 };
-                    let _ = writeln!(out, "{pad}if ({c}) goto {lab};");
-                }
-                None => {
-                    let _ = writeln!(out, "{pad}goto {lab};");
+        // Unstructured branches cut from this block by the collapse driver, in cut order —
+        // Ghidra's BlockIfGoto (`if (cond) goto LAB;`, the false edge falls through) followed by
+        // any BlockGoto/BlockMultiGoto (unconditional `goto LAB;`).
+        if let Some(records) = self.gotos.get(&b).cloned() {
+            for GotoRecord { target, negated, conditional } in records {
+                let lab = self.lab_name(target);
+                let cbr = self
+                    .f
+                    .block(b)
+                    .ops
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&op| self.f.op(op).code() == OpCode::Cbranch)
+                    .filter(|_| conditional);
+                match cbr.and_then(|op| self.f.op(op).input(1)) {
+                    Some(cond) => {
+                        let c = if negated { self.render_negated(cond) } else { self.render_var(cond).0 };
+                        let _ = writeln!(out, "{pad}if ({c}) goto {lab};");
+                    }
+                    None => {
+                        let _ = writeln!(out, "{pad}goto {lab};");
+                    }
                 }
             }
         }

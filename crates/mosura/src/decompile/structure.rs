@@ -6,8 +6,16 @@
 //! The graph is a vector of [`FlowBlock`]s; each structured block lists its sub-blocks and
 //! presents the same successor interface, so the rules compose. Out-edges are the source of
 //! truth; in-edges are recomputed each pass. CBRANCH order is `[false, true]` (as built by
-//! `cfg`). This increment ports the reducible patterns; gotos for irreducible regions,
-//! switches, and short-circuit conditions are later additions.
+//! `cfg`).
+//!
+//! The collapse driver is Ghidra's `CollapseStructure::collapseAll` (blockaction.cc:1877):
+//! `orderLoopBodies` → `collapseConditions` → `collapseInternal` → `{selectGoto →
+//! collapseInternal}` until everything is isolated. Gotos are never invented by a fallback
+//! rule: `selectGoto` (blockaction.cc:1260) marks a *likely* unstructured edge — a loop exit
+//! or last-resort back-edge from `LoopBody::emitLikelyEdges` — and `ruleBlockGoto`
+//! (blockaction.cc:1450) consumes marked (`GOTO`/`IRREDUCIBLE`) edges. The `TraceDAG`
+//! interior trace that scores additional non-DAG gotos is deferred (P7 Brick 3): on clean
+//! reducible interiors it contributes no surviving gotos (B1 instrument verdict).
 
 use std::collections::{HashMap, HashSet};
 
@@ -105,6 +113,26 @@ pub enum FlowKind {
     CondOr,
     /// `switch` — components `[head, case0, case1, …]`; head ends in BRANCHIND.
     Switch,
+    /// `do body while(true)` — components `[body]`; a loop with no exits (Ghidra's
+    /// `BlockInfLoop`, built by `ruleBlockInfLoop` blockaction.cc:1579).
+    InfLoop,
+}
+
+/// One unstructured branch recorded by [`rule_block_goto`](Structured::rule_block_goto) —
+/// the mosura carrier for Ghidra's `BlockGoto`/`BlockIf::gototarget`/`BlockMultiGoto` print
+/// state. Keyed (in [`Structured::gotos`]) by the basic block whose exit emits the goto;
+/// rendered by printc after that block's statements, in insertion order (Ghidra emits the
+/// conditional if-goto wrapper before an unconditional goto wrapper the same way).
+#[derive(Clone, Copy, Debug)]
+pub struct GotoRecord {
+    /// The target entry basic block (gets a label).
+    pub target: BlockId,
+    /// For a conditional goto: print `if (!cond) goto` (the goto sits on the false edge,
+    /// accounting for a materialized branch orientation).
+    pub negated: bool,
+    /// Whether the goto is conditional (`BlockIfGoto`: cut from a two-out CBRANCH block) or
+    /// unconditional (`BlockGoto`/`BlockMultiGoto`).
+    pub conditional: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -113,8 +141,9 @@ pub struct FlowBlock {
     pub components: Vec<usize>,
     pub out_edges: Vec<usize>,
     /// Per-out-edge boolean labels — Ghidra's `BlockEdge::label` ([`edge_flags`], block.hh:108),
-    /// parallel to `out_edges`. Written by the structuring passes landing in Bricks 1-4; the current
-    /// collapse rules do not read it, so it stays clean (`0`) and the output is byte-identical.
+    /// parallel to `out_edges`. `structure_loops` writes `BACK`/`LOOP`/`IRREDUCIBLE` on the leaf
+    /// graph; `install` propagates the labels of collapsed sub-blocks onto composite edges
+    /// (Ghidra's `selfIdentify` edge inheritance); `select_goto` marks `GOTO`.
     pub out_labels: Vec<u32>,
     /// Block-level boolean flags — Ghidra's `FlowBlock::flags` ([`block_flags`], block.hh:88).
     pub flags: u32,
@@ -122,6 +151,10 @@ pub struct FlowBlock {
     /// For `If`/`IfElse`/`WhileDo`/`DoWhile`: the body/then is reached on the condition's
     /// *false* edge, so the printed condition must be negated.
     pub negated: bool,
+    /// The composite this block collapsed into — Ghidra's `FlowBlock::parent` (block.hh:161).
+    /// `None` while the block is still in the top-level graph. `LoopBody::update` and
+    /// `FloatingEdge::getCurrentEdge` walk this to find a block's current collapsed form.
+    pub parent: Option<usize>,
 }
 
 #[allow(dead_code)]
@@ -174,6 +207,11 @@ impl FlowBlock {
     fn is_interior_goto_target(&self) -> bool {
         self.flags & block_flags::INTERIOR_GOTOIN != 0
     }
+    /// The `i`-th out-edge is the switch's default edge — Ghidra's `FlowBlock::isDefaultBranch`
+    /// (block.hh:320).
+    fn is_default_branch(&self, i: usize) -> bool {
+        self.out_labels[i] & edge_flags::DEFAULTSWITCH_EDGE != 0
+    }
 }
 
 /// The structured-block forest; `root` is the single block the CFG collapsed to (or the
@@ -181,31 +219,54 @@ impl FlowBlock {
 pub struct Structured {
     pub blocks: Vec<FlowBlock>,
     pub root: usize,
-    /// Edges cut to gotos for an irreducible region: source exit basic block → (target
-    /// entry basic block, negated condition). An unconditional source has no CBRANCH.
-    pub gotos: HashMap<BlockId, (BlockId, bool)>,
+    /// The unstructured branches, keyed by the basic block whose exit emits them — filled by
+    /// [`rule_block_goto`](Self::rule_block_goto) consuming `GOTO`/`IRREDUCIBLE`-marked edges
+    /// (Ghidra's `BlockGoto`/`BlockIfGoto`/`BlockMultiGoto` wrappers, blockaction.cc:1450).
+    pub gotos: HashMap<BlockId, Vec<GotoRecord>>,
     /// Basic blocks that are goto targets (get a label).
     pub labels: HashSet<BlockId>,
     /// Per basic block: whether its terminating CBRANCH was branch-oriented (Ghidra's `fallthru_true`
     /// flag). An oriented block's body-on-false negation is already materialized positive in the IR,
     /// so the collapse rules XOR this in to flip its `negated` off. Precomputed from `Funcdata`.
     oriented: Vec<bool>,
+    /// Per basic block: whether it is too complicated to print inside a condition — Ghidra's
+    /// `BlockBasic::isComplex` (block.cc:2388), precomputed from `Funcdata` at build. Read by
+    /// [`is_complex`](Self::is_complex) (the `ruleBlockOr` orblock guard, blockaction.cc:1342).
+    complex: Vec<bool>,
     /// Reverse-post-order number per leaf block — Ghidra's `FlowBlock::index` set by
     /// [`structure_loops`] (`findSpanningTree`). Loop ordering (`compare_ends`/`compare_head`) keys on
     /// it. Indexed by leaf block id.
     rpo: Vec<i32>,
     /// The loop records built by [`order_loop_bodies`] (Ghidra's `CollapseStructure::loopbody`) — head,
-    /// tails, exit block, and exit edges per loop, in nesting order. Brick 2 computes them inert (the
-    /// selectGoto driver that consumes them lands in Brick 4), so this stays unread.
-    #[allow(dead_code)]
+    /// tails, exit block, and exit edges per loop. Consumed (and updated to current collapsed forms)
+    /// by the `selectGoto` driver.
     loopbody: Vec<LoopBody>,
+    /// Indices into `loopbody` in processing order — deepest nesting first (Ghidra's sorted
+    /// `loopbody` list, `LoopBody::operator<` blockaction.hh:70), subsumed (headless) bodies
+    /// excluded.
+    loop_order: Vec<usize>,
+    /// The live top-level graph in Ghidra's `BlockGraph::list` order: surviving blocks in creation
+    /// order, composites appended as they form. Drives the rule-scan iteration order.
+    order: Vec<usize>,
+    /// `CollapseStructure::loopbodyiter` — position in `loop_order` of the current innermost loop.
+    loopiter: usize,
+    /// `CollapseStructure::likelygoto` — the current likely-goto edge list.
+    likelygoto: Vec<FloatingEdge>,
+    /// `CollapseStructure::likelyiter` — next unconsumed entry of `likelygoto`.
+    likelyiter: usize,
+    /// `CollapseStructure::likelylistfull` — whether `likelygoto` was generated for the current loop.
+    likelylistfull: bool,
+    /// `CollapseStructure::finaltrace` — the final DAG search for unstructured edges already ran.
+    finaltrace: bool,
+    /// Switch heads whose `DEFAULTSWITCH` edge was cut to a goto — Ghidra's
+    /// `BlockMultiGoto::hasDefaultGoto`, read by `checkSwitchSkips`.
+    default_goto: HashSet<usize>,
 }
 
 /// An edge tracked across graph collapse by its endpoints — Ghidra's `FloatingEdge`
-/// (blockaction.hh). Stored as leaf block indices; the current-form lookup (`getCurrentEdge`, which
-/// walks the collapse hierarchy) lands with the selectGoto driver in Brick 4 that reads these fields.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
+/// (blockaction.hh:80). `getCurrentEdge` walks the endpoints up the collapse hierarchy (updating
+/// them in place, as Ghidra does) to find the edge's current form.
+#[derive(Clone, Copy, Debug)]
 struct FloatingEdge {
     top: usize,
     bottom: usize,
@@ -311,13 +372,15 @@ impl Structured {
         }
     }
 
-    /// Predecessor lists for the currently-active blocks, from their out-edges.
-    fn in_edges(&self) -> Vec<Vec<usize>> {
+    /// Predecessor lists for the currently-active blocks, from their out-edges:
+    /// `ins[t] = [(pred, pred-out-index), …]` (the in-edge view of `out_labels` reads the label off
+    /// the pred's slot, mirroring Ghidra's paired `intothis`/`outofthis` labels).
+    fn in_edges(&self) -> Vec<Vec<(usize, usize)>> {
         let mut ins = vec![Vec::new(); self.blocks.len()];
         for b in 0..self.blocks.len() {
             if self.blocks[b].active {
-                for &o in &self.blocks[b].out_edges {
-                    ins[o].push(b);
+                for (oi, &o) in self.blocks[b].out_edges.iter().enumerate() {
+                    ins[o].push((b, oi));
                 }
             }
         }
@@ -326,16 +389,54 @@ impl Structured {
 
     /// Replace `components` (entry = `components[0]`) with one structured block of `kind`
     /// and the given external `out_edges`. Predecessors of the entry are redirected to the
-    /// new block; components are deactivated.
-    fn install(&mut self, components: Vec<usize>, kind: FlowKind, out_edges: Vec<usize>, ins: &[Vec<usize>]) -> usize {
+    /// new block; components are deactivated and get their `parent` set.
+    ///
+    /// The composite inherits its edges' labels and its component flags the way Ghidra's
+    /// `identifyInternal`/`selfIdentify` (block.cc:940/895) do: an external predecessor's
+    /// redirected edge keeps its label (`replaceOutEdge` carries `label`, block.cc:178); each
+    /// composite out-edge takes the OR of the component edges it stands for (`replaceInEdge`
+    /// carries the label, and `dedup`'s `eliminateOutDups` ORs duplicates, block.cc:488); the
+    /// `INTERIOR_GOTOIN`/`INTERIOR_GOTOOUT` flags are inherited from every component
+    /// (identifyInternal block.cc:951) and `SWITCH_OUT` from any component that still has an
+    /// external out-edge (selfIdentify block.cc:925).
+    fn install(&mut self, components: Vec<usize>, kind: FlowKind, out_edges: Vec<usize>, ins: &[Vec<(usize, usize)>]) -> usize {
         let entry = components[0];
         let compset: HashSet<usize> = components.iter().copied().collect();
         let n = self.blocks.len();
-        let preds: Vec<usize> = ins[entry].iter().copied().filter(|p| !compset.contains(p)).collect();
-        // New composite edges start unlabeled (Brick 0: default-clean, byte-identical); the faithful
-        // edge-label propagation from the collapsed sub-blocks lands with the flag-consuming rules.
-        let out_labels = vec![0u32; out_edges.len()];
-        self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags: 0, active: true, negated: false });
+        let preds: Vec<usize> = ins[entry].iter().map(|&(p, _)| p).filter(|p| !compset.contains(p)).collect();
+        // An out-target inside the component set is an internal edge Ghidra's `selfIdentify` drops
+        // and `forceOutputNum` (block.cc:888) recreates as a LOOP|BACK-labeled self-edge on the
+        // composite (e.g. a cat chain ending in the loop bottom whose back-edge re-enters the
+        // chain head: the BlockList gets a self-edge and collapses as a do-while).
+        let mut out_edges = out_edges;
+        let out_labels: Vec<u32> = out_edges
+            .iter_mut()
+            .map(|t| {
+                if compset.contains(t) {
+                    *t = n;
+                    return edge_flags::LOOP_EDGE | edge_flags::BACK_EDGE;
+                }
+                let mut lab = 0u32;
+                for &c in &components {
+                    for (oi, &tt) in self.blocks[c].out_edges.iter().enumerate() {
+                        if tt == *t {
+                            lab |= self.blocks[c].out_labels[oi];
+                        }
+                    }
+                }
+                lab
+            })
+            .collect();
+        let mut flags = 0u32;
+        for &c in &components {
+            flags |= self.blocks[c].flags & (block_flags::INTERIOR_GOTOOUT | block_flags::INTERIOR_GOTOIN);
+            if self.blocks[c].flags & block_flags::SWITCH_OUT != 0
+                && self.blocks[c].out_edges.iter().any(|o| !compset.contains(o))
+            {
+                flags |= block_flags::SWITCH_OUT;
+            }
+        }
+        self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags, active: true, negated: false, parent: None });
         for p in preds {
             for e in self.blocks[p].out_edges.iter_mut() {
                 if compset.contains(e) {
@@ -345,121 +446,280 @@ impl Structured {
         }
         for &c in &self.blocks[n].components.clone() {
             self.blocks[c].active = false;
+            self.blocks[c].parent = Some(n);
         }
+        // Maintain the live graph list: components out, composite appended (Ghidra's
+        // identifyInternal removes the nodes from `list`, addBlock appends the composite).
+        self.order.retain(|x| !compset.contains(x));
+        self.order.push(n);
         n
     }
 
-    /// `ruleBlockSwitch`: a block with ≥3 out-edges is a switch head (a BRANCHIND). Collapse
-    /// it with its single-entry case successors into a `Switch`; the remaining edges (shared
-    /// / default cases, or break targets) are the switch's exits.
-    fn rule_switch(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() < 3 {
+    /// Ghidra's `CollapseStructure::checkSwitchSkips` (blockaction.cc:1607): a switch edge that
+    /// goes straight to the exit block must be the \e default edge; if a default exists elsewhere,
+    /// the skip edges are converted to gotos (returning `false` so `rule_switch` reports a change
+    /// without collapsing).
+    fn check_switch_skips(&mut self, switchbl: usize, exitblock: Option<usize>) -> bool {
+        let Some(exitblock) = exitblock else {
+            return true;
+        };
+        let sizeout = self.out(switchbl).len();
+        let mut defaultnottoexit = false;
+        let mut anyskiptoexit = false;
+        for e in 0..sizeout {
+            if self.out(switchbl)[e] == exitblock {
+                if !self.blocks[switchbl].is_default_branch(e) {
+                    anyskiptoexit = true;
+                }
+            } else if self.blocks[switchbl].is_default_branch(e) {
+                defaultnottoexit = true;
+            }
+        }
+        if !anyskiptoexit {
+            return true;
+        }
+        // Ghidra checks the BlockMultiGoto wrapper for an already-cut default goto edge; mosura's
+        // uncut head is the same block, with the cut recorded in `default_goto`.
+        if !defaultnottoexit && self.default_goto.contains(&switchbl) {
+            defaultnottoexit = true;
+        }
+        if !defaultnottoexit {
+            return true;
+        }
+        for e in 0..sizeout {
+            if self.out(switchbl)[e] == exitblock && !self.blocks[switchbl].is_default_branch(e) {
+                self.set_goto_branch(switchbl, e);
+            }
+        }
+        false
+    }
+
+    /// `ruleBlockSwitch` (blockaction.cc:1649): collapse a switch head (`SWITCH_OUT`) with its
+    /// case blocks into a `Switch`, all cases exiting to a single exit block.
+    fn rule_switch(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if !self.blocks[b].is_switch_out() {
             return false;
         }
-        // Defer until each single-entry case has fully collapsed: a case with internal control
-        // flow (an `if` in its body, >1 exit) must structure first, and a case whose single
-        // exit is its own continuation block (a single-entry "break" tail) must `cat` that tail
-        // in first — otherwise those tails leak as extra switch exits and the dispatch nests
-        // into gotos (the switch-in-loop case).
-        for c in self.blocks[b].out_edges.clone() {
-            if c == b || ins[c].len() != 1 {
-                continue;
-            }
-            let outc: Vec<usize> = self.out(c).to_vec();
-            if outc.len() > 1 || (outc.len() == 1 && outc[0] != b && ins[outc[0]].len() == 1) {
-                return false;
+        let sizeout = self.out(b).len();
+        // Find the "obvious" exit block: a self-edge (exit back to the top of a switch loop), or a
+        // successor with more than one in- or out-edge.
+        let mut exitblock: Option<usize> = None;
+        for i in 0..sizeout {
+            let curbl = self.out(b)[i];
+            if curbl == b || self.out(curbl).len() > 1 || ins[curbl].len() > 1 {
+                exitblock = Some(curbl);
+                break;
             }
         }
-        let mut comps = vec![b];
-        let mut exits: Vec<usize> = Vec::new();
-        for c in self.blocks[b].out_edges.clone() {
-            if c == b {
-                return false;
+        match exitblock {
+            None => {
+                // Every immediate successor has sizeIn==1 and sizeOut<=1: the first successor
+                // with an output determines the exit, and all others must agree.
+                for i in 0..sizeout {
+                    let curbl = self.out(b)[i];
+                    if is_goto_in(self, ins, curbl, 0) {
+                        return false; // in cannot be a goto
+                    }
+                    if self.blocks[curbl].is_switch_out() {
+                        return false; // must resolve nested switch first
+                    }
+                    if self.out(curbl).len() == 1 {
+                        if self.blocks[curbl].is_goto_out(0) {
+                            return false; // out cannot be goto
+                        }
+                        match exitblock {
+                            Some(e) if e != self.out(curbl)[0] => return false,
+                            Some(_) => {}
+                            None => exitblock = Some(self.out(curbl)[0]),
+                        }
+                    }
+                }
             }
-            if ins[c].len() == 1 && self.out(c).len() <= 1 {
-                comps.push(c);
-                exits.extend(self.out(c).iter().copied());
-            } else {
-                exits.push(c);
+            Some(e) => {
+                for k in 0..ins[e].len() {
+                    if is_goto_in(self, ins, e, k) {
+                        return false; // no in gotos to exitblock
+                    }
+                }
+                for k in 0..self.out(e).len() {
+                    if self.blocks[e].is_goto_out(k) {
+                        return false; // no out gotos from exitblock
+                    }
+                }
+                for i in 0..sizeout {
+                    let curbl = self.out(b)[i];
+                    if curbl == e {
+                        continue; // the switch can go straight to the exit block
+                    }
+                    if ins[curbl].len() > 1 {
+                        return false; // a case can only have the switch fall into it
+                    }
+                    if is_goto_in(self, ins, curbl, 0) {
+                        return false;
+                    }
+                    if self.out(curbl).len() > 1 {
+                        return false; // at most 1 exit from a case
+                    }
+                    if self.out(curbl).len() == 1 {
+                        if self.blocks[curbl].is_goto_out(0) {
+                            return false;
+                        }
+                        if self.out(curbl)[0] != e {
+                            return false; // which must be to the exitblock
+                        }
+                    }
+                    if self.blocks[curbl].is_switch_out() {
+                        return false; // nested switch must be resolved first
+                    }
+                }
             }
         }
-        if comps.len() < 2 {
-            return false;
+
+        if !self.check_switch_skips(b, exitblock) {
+            return true; // matched, but the special condition adds gotos instead
         }
-        exits.retain(|e| !comps.contains(e));
-        exits.sort_unstable();
-        exits.dedup();
-        self.install(comps, FlowKind::Switch, exits, ins);
+
+        let mut cases = vec![b];
+        for i in 0..sizeout {
+            let curbl = self.out(b)[i];
+            if Some(curbl) == exitblock {
+                continue; // don't include the exit as a case
+            }
+            cases.push(curbl);
+        }
+        // A self-edge exit ("exit back to top of switch") becomes a self-edge on the composite
+        // (Ghidra: the internal edge is collapsed and forceOutputNum recreates it as a
+        // LOOP|BACK-labeled self loop, block.cc:888).
+        let selfexit = exitblock == Some(b);
+        let out_edges = match exitblock {
+            Some(e) if !selfexit => vec![e],
+            _ => vec![],
+        };
+        let n = self.install(cases, FlowKind::Switch, out_edges, ins);
+        if selfexit {
+            self.blocks[n].out_edges.push(n);
+            self.blocks[n].out_labels.push(edge_flags::LOOP_EDGE | edge_flags::BACK_EDGE);
+        }
+        self.blocks[n].clear_flag(block_flags::SWITCH_OUT); // newBlockSwitch, block.cc:1917
         true
     }
 
-    /// Try every rule on `b`; return whether one fired (and changed the graph).
-    fn try_rules(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        self.rule_switch(b, ins)
-            || self.rule_cat(b, ins)
-            || self.rule_short_circuit(b, ins)
-            || self.rule_proper_if(b, ins)
-            || self.rule_if_else(b, ins)
-            || self.rule_while_do(b, ins)
-            || self.rule_do_while(b, ins)
-            // after the loop rules: a loop exit is terminal too, so loops must match first
-            || self.rule_if_no_exit(b, ins)
+    /// `ruleCaseFallthru` (blockaction.cc:1729): a switch case that falls through into another
+    /// case gets its fall-through edge marked as a goto (so the switch can collapse; the goto
+    /// prints as the fall-through jump).
+    fn rule_case_fallthru(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if !self.blocks[b].is_switch_out() {
+            return false;
+        }
+        let sizeout = self.out(b).len();
+        let mut nonfallthru = 0; // count of exits that are not fallthru
+        let mut fallthru: Vec<usize> = Vec::new();
+        for i in 0..sizeout {
+            let curbl = self.out(b)[i];
+            if curbl == b {
+                return false; // cannot exit to itself
+            }
+            if ins[curbl].len() > 2 || self.out(curbl).len() > 1 {
+                nonfallthru += 1;
+            } else if self.out(curbl).len() == 1 {
+                let target = self.out(curbl)[0];
+                if ins[target].len() == 2 && self.out(target).len() <= 1 {
+                    let inslot = ins[target].iter().position(|&(p, _)| p == curbl).unwrap();
+                    if ins[target][1 - inslot].0 == b {
+                        fallthru.push(curbl);
+                    }
+                }
+            }
+            if nonfallthru > 1 {
+                return false; // can have at most 1 other exit block
+            }
+        }
+        if fallthru.is_empty() {
+            return false;
+        }
+        for &curbl in &fallthru {
+            self.set_goto_branch(curbl, 0);
+        }
+        true
     }
 
-    /// `ruleBlockIfNoExit`: `if (cond) clause` where the clause is a single-entry block with
-    /// no exit (it returns/halts), so control continues to the other arm afterwards.
-    fn rule_if_no_exit(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() != 2 || self.out(b)[0] == b || self.out(b)[1] == b {
+    /// `ruleBlockIfNoExit` (blockaction.cc:1481): `if (cond) clause` where the clause is a
+    /// single-entry block with no exit (it returns/halts), so control continues to the other arm
+    /// afterwards. Only tried when no other rule applies (the `fullchange` slot of
+    /// `collapseInternal`).
+    fn rule_if_no_exit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+            return false;
+        }
+        if self.out(b)[0] == b || self.out(b)[1] == b {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
         }
         for i in 0..2 {
-            let (clause, other) = (self.out(b)[i], self.out(b)[1 - i]);
-            if clause != other && ins[clause].len() == 1 && self.out(clause).is_empty() {
-                // don't dissolve a loop header: if the other arm flows back to `b`, this is the
-                // exit test of a loop — leave it for the loop rules (after the body collapses).
-                if self.reaches(other, b) {
-                    continue;
-                }
-                let n = self.install(vec![b, clause], FlowKind::If, vec![other], ins);
-                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
-                return true;
+            let clause = self.out(b)[i];
+            if ins[clause].len() != 1 {
+                continue; // nothing else must hit the clause
             }
-        }
-        false
-    }
-
-    /// Whether `from` can reach `target` over the current (active) structure graph.
-    fn reaches(&self, from: usize, target: usize) -> bool {
-        let mut seen = vec![false; self.blocks.len()];
-        let mut stack = vec![from];
-        while let Some(x) = stack.pop() {
-            if x == target {
-                return true;
+            if !self.out(clause).is_empty() {
+                continue; // must be no way out of the clause
             }
-            if std::mem::replace(&mut seen[x], true) {
+            if self.blocks[clause].is_switch_out() {
                 continue;
             }
-            stack.extend_from_slice(self.out(x));
+            if !self.blocks[b].is_decision_out(i) {
+                continue;
+            }
+            let other = self.out(b)[1 - i];
+            let n = self.install(vec![b, clause], FlowKind::If, vec![other], ins);
+            self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
+            return true;
         }
         false
     }
 
-    /// `ruleBlockCondition`: two chained condition blocks collapse to a short-circuit
-    /// condition. For `a && b`, `a`'s *true* edge enters `b` and both *false* edges share an
-    /// exit; for `a || b`, `a`'s *false* edge enters `b` and both *true* edges share. The
-    /// result is itself a two-out condition block (structured later by the `if` rules).
-    fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
+    /// `ruleBlockOr` (blockaction.cc:1321): two chained condition blocks collapse to a
+    /// short-circuit condition. For `a && b`, `a`'s *true* edge enters `b` and both *false* edges
+    /// share an exit; for `a || b`, `a`'s *false* edge enters `b` and both *true* edges share. The
+    /// result is itself a two-out condition block (structured later by the `if` rules). Only run
+    /// by `collapse_conditions` up front (Ghidra keeps `ruleBlockOr` out of `collapseInternal`).
+    fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
         if self.out(b).len() != 2 {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
+            return false;
+        }
+        if self.blocks[b].is_switch_out() {
             return false;
         }
         for and in [true, false] {
             let (cont, shared) = if and { (1, 0) } else { (0, 1) };
-            let bb = self.out(b)[cont]; // the second condition
+            let bb = self.out(b)[cont]; // the second condition (Ghidra's orblock)
             if bb == b || ins[bb].len() != 1 || self.out(bb).len() != 2 {
                 continue;
             }
+            if self.blocks[bb].is_interior_goto_target() {
+                continue; // no unstructured jumps into the second condition
+            }
+            if self.blocks[bb].is_switch_out() {
+                continue;
+            }
+            if self.blocks[b].is_back_edge_out(cont) {
+                continue; // don't use a loop branch to reach the second condition
+            }
+            if self.is_complex(bb) {
+                continue; // second condition block must print as a pure expression
+            }
+            if self.out(b)[shared] == b {
+                continue; // Ghidra: clauseblock == bl — no looping
+            }
             if self.out(b)[shared] == bb || self.out(b)[shared] != self.out(bb)[shared] {
                 continue;
+            }
+            if self.out(bb)[cont] == b {
+                continue; // Ghidra: orblock->getOut(1-j) == bl — no looping
             }
             let out = self.blocks[bb].out_edges.clone();
             let kind = if and { FlowKind::CondAnd } else { FlowKind::CondOr };
@@ -473,81 +733,161 @@ impl Structured {
         &self.blocks[b].out_edges
     }
 
-    /// `ruleBlockGoto`: last resort for an irreducible region — when no structural rule
-    /// fires, cut one in-edge of a merge block to a goto so structuring can proceed. The cut
-    /// edge `b → t` is recorded (`b`'s exit emits `goto L_t`, `t`'s entry gets a label) and
-    /// removed; `b` (now with one fewer out-edge) and `t` (one fewer in-edge) become
-    /// reducible. Repeated until the graph collapses.
-    fn rule_goto(&mut self) -> bool {
-        let ins = self.in_edges();
-        let active: Vec<usize> = (0..self.blocks.len()).filter(|&b| self.blocks[b].active).collect();
-        for &t in &active {
-            if ins[t].len() < 2 {
-                continue;
-            }
-            for &b in &ins[t] {
-                if b == t {
-                    continue; // a self-loop is a do-while, not a goto
+    /// Whether the block is too complicated to print inside a condition — Ghidra's virtual
+    /// `FlowBlock::isComplex` (block.hh:250, default \b true): a basic block (via BlockCopy)
+    /// computes it (block.cc:2388, precomputed in [`complex`](Self::complex)); a short-circuit
+    /// condition delegates to its first side (`BlockCondition::isComplex`, block.hh:635); every
+    /// other composite is complex.
+    fn is_complex(&self, idx: usize) -> bool {
+        match self.blocks[idx].kind {
+            FlowKind::Basic(b) => self.complex.get(b.0 as usize).copied().unwrap_or(true),
+            FlowKind::CondAnd | FlowKind::CondOr => self.is_complex(self.blocks[idx].components[0]),
+            _ => true,
+        }
+    }
+
+    /// `ruleBlockGoto` (blockaction.cc:1450): consume an out-edge marked \e unstructured
+    /// (`GOTO` by `select_goto`/`check_switch_skips`/`rule_case_fallthru`, or `IRREDUCIBLE` by
+    /// `structure_loops`). The edge is recorded — the source's exit basic block emits the goto,
+    /// the target's entry gets a label — and removed, exactly the graph shape Ghidra's
+    /// `BlockGoto`/`BlockIfGoto`/`BlockMultiGoto` wrappers leave behind (the wrapper itself is
+    /// only Ghidra's print carrier; mosura's carrier is the [`GotoRecord`]).
+    fn rule_block_goto(&mut self, b: usize, _ins: &[Vec<(usize, usize)>]) -> bool {
+        let sizeout = self.out(b).len();
+        for i in 0..sizeout {
+            if self.blocks[b].is_goto_out(i) {
+                if self.blocks[b].is_switch_out() {
+                    // BlockMultiGoto (block.cc:1720): pull the goto edge off the switch head.
+                    if self.blocks[b].is_default_branch(i) {
+                        self.default_goto.insert(b); // BlockMultiGoto::hasDefaultGoto
+                    }
+                    self.record_goto(b, i, false);
+                    self.remove_out_edge(b, i);
+                    return true;
                 }
-                let Some(idx) = self.blocks[b].out_edges.iter().position(|&o| o == t) else {
-                    continue;
-                };
-                let (Some(eb), Some(et)) = (self.exit_basic(b), self.entry_basic(t)) else {
-                    continue;
-                };
-                self.gotos.insert(eb, (et, idx == 0)); // out[0] is the false edge
-                self.labels.insert(et);
-                self.blocks[b].out_edges.remove(idx);
-                self.blocks[b].out_labels.remove(idx); // keep the parallel edge-label vec aligned
-                return true;
+                if sizeout == 2 {
+                    // BlockIfGoto (block.cc:1799): `if (cond) goto LAB;`, the other edge falls
+                    // through (kept as the block's single remaining out-edge).
+                    self.record_goto(b, i, true);
+                    self.remove_out_edge(b, i);
+                    return true;
+                }
+                if sizeout == 1 {
+                    // BlockGoto (block.cc:1702): unconditional goto; the block becomes terminal.
+                    self.record_goto(b, i, false);
+                    self.remove_out_edge(b, i);
+                    return true;
+                }
             }
         }
         false
     }
 
-    /// `ruleBlockCat`: a chain of single-out → single-in blocks becomes a list.
-    fn rule_cat(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
+    /// Record the goto for edge `i` of block `b` in [`gotos`](Self::gotos)/[`labels`](Self::labels).
+    /// A conditional goto on out-edge 0 sits on the CBRANCH's false edge → print negated; a
+    /// materialized branch orientation ([`is_oriented`](Self::is_oriented)) has already negated the
+    /// IR condition, so it flips the sense back (the mosura analogue of Ghidra's `negateCondition`
+    /// call in `ruleBlockGoto` operating on the already-flipped edge order).
+    fn record_goto(&mut self, b: usize, i: usize, conditional: bool) {
+        let target = self.blocks[b].out_edges[i];
+        let (Some(eb), Some(et)) = (self.exit_basic(b), self.entry_basic(target)) else {
+            return;
+        };
+        let negated = conditional && ((i == 0) ^ self.is_oriented(b));
+        self.gotos.entry(eb).or_default().push(GotoRecord { target: et, negated, conditional });
+        self.labels.insert(et);
+    }
+
+    /// Remove out-edge `i` of block `b`, keeping the parallel label vector aligned.
+    fn remove_out_edge(&mut self, b: usize, i: usize) {
+        self.blocks[b].out_edges.remove(i);
+        self.blocks[b].out_labels.remove(i);
+    }
+
+    /// `ruleBlockCat` (blockaction.cc:1284): a chain of single-out → single-in blocks becomes a
+    /// list. Internal edges must be plain decision edges (no goto/back); the chain stops at a
+    /// switch head or loop bottom.
+    fn rule_cat(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
         if self.out(b).len() != 1 {
             return false;
         }
+        if self.blocks[b].is_switch_out() {
+            return false;
+        }
         // if b's only predecessor has a single out, let that predecessor start the list
-        if ins[b].len() == 1 && self.out(ins[b][0]).len() == 1 {
+        if ins[b].len() == 1 && self.out(ins[b][0].0).len() == 1 {
             return false;
         }
-        let mut nodes = vec![b];
-        let mut cur = b;
-        loop {
-            let nxt = self.out(cur)[0];
-            if nxt == b || ins[nxt].len() != 1 {
-                break;
-            }
-            nodes.push(nxt);
-            cur = nxt;
-            if self.out(cur).len() != 1 {
-                break;
-            }
+        let outblock = self.out(b)[0];
+        if outblock == b {
+            return false; // no looping
         }
-        if nodes.len() < 2 {
-            return false;
+        if ins[outblock].len() != 1 {
+            return false; // nothing else can hit outblock
+        }
+        if !self.blocks[b].is_decision_out(0) {
+            return false; // not a goto or a loop bottom
+        }
+        if self.blocks[outblock].is_switch_out() {
+            return false; // switch must be resolved first
+        }
+        let mut nodes = vec![b, outblock];
+        let mut cur = outblock;
+        while self.out(cur).len() == 1 {
+            let outbl2 = self.out(cur)[0];
+            if outbl2 == b {
+                break; // no looping
+            }
+            if ins[outbl2].len() != 1 {
+                break;
+            }
+            if !self.blocks[cur].is_decision_out(0) {
+                break; // don't use loop bottom
+            }
+            if self.blocks[outbl2].is_switch_out() {
+                break;
+            }
+            cur = outbl2;
+            nodes.push(cur);
         }
         let out = self.blocks[*nodes.last().unwrap()].out_edges.clone();
         self.install(nodes, FlowKind::List, out, ins);
         true
     }
 
-    /// `ruleBlockProperIf`: `if (cond) clause` where `clause` reconverges to the other arm.
-    fn rule_proper_if(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() != 2 || self.out(b)[0] == b || self.out(b)[1] == b {
+    /// `ruleBlockProperIf` (blockaction.cc:1378): `if (cond) clause` where `clause` reconverges
+    /// to the other arm.
+    fn rule_proper_if(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+            return false;
+        }
+        if self.out(b)[0] == b || self.out(b)[1] == b {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
         }
         for i in 0..2 {
             let clause = self.out(b)[i];
-            if ins[clause].len() == 1 && self.out(clause).len() == 1 && self.out(clause)[0] == self.out(b)[1 - i] {
-                let merge = self.out(b)[1 - i];
-                let n = self.install(vec![b, clause], FlowKind::If, vec![merge], ins);
-                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
-                return true;
+            if ins[clause].len() != 1 || self.out(clause).len() != 1 {
+                continue;
             }
+            if self.blocks[clause].is_switch_out() {
+                continue; // don't use switch (possibly with goto edges)
+            }
+            if !self.blocks[b].is_decision_out(i) {
+                continue; // don't use loop bottom or exit
+            }
+            if self.blocks[clause].is_goto_out(0) {
+                continue; // no unstructured jumps out of the clause
+            }
+            if self.out(clause)[0] != self.out(b)[1 - i] {
+                continue; // path after the clause must be the same
+            }
+            let merge = self.out(b)[1 - i];
+            let n = self.install(vec![b, clause], FlowKind::If, vec![merge], ins);
+            self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
+            return true;
         }
         false
     }
@@ -595,9 +935,12 @@ impl Structured {
         }
     }
 
-    /// `ruleBlockIfElse`: both arms reconverge to one block.
-    fn rule_if_else(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() != 2 {
+    /// `ruleBlockIfElse` (blockaction.cc:1416): both arms reconverge to one block.
+    fn rule_if_else(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+            return false;
+        }
+        if !self.blocks[b].is_decision_out(0) || !self.blocks[b].is_decision_out(1) {
             return false;
         }
         let (fc, tc) = (self.out(b)[0], self.out(b)[1]);
@@ -606,6 +949,12 @@ impl Structured {
         }
         let merge = self.out(tc)[0];
         if merge == b || merge != self.out(fc)[0] {
+            return false;
+        }
+        if self.blocks[tc].is_switch_out() || self.blocks[fc].is_switch_out() {
+            return false;
+        }
+        if self.blocks[tc].is_goto_out(0) || self.blocks[fc].is_goto_out(0) {
             return false;
         }
         // Ghidra `BlockIf::preferComplement` (block.cc:3093) materializes the if/else normal-form
@@ -619,26 +968,47 @@ impl Structured {
         true
     }
 
-    /// `ruleBlockWhileDo`: one arm is a single-in/single-out block that loops back to `b`.
-    fn rule_while_do(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() != 2 || self.out(b)[0] == b || self.out(b)[1] == b {
+    /// `ruleBlockWhileDo` (blockaction.cc:1518): one arm is a single-in/single-out block that
+    /// loops back to `b`. Any break or continue must already have collapsed as a goto.
+    /// (Ghidra's `isComplex` overflow-syntax variant is a deferred print-side refinement.)
+    fn rule_while_do(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+            return false;
+        }
+        if self.out(b)[0] == b || self.out(b)[1] == b {
+            return false; // no loops at this point
+        }
+        if self.blocks[b].is_interior_goto_target() {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
         }
         for i in 0..2 {
             let body = self.out(b)[i];
-            if ins[body].len() == 1 && self.out(body).len() == 1 && self.out(body)[0] == b {
-                let exit = self.out(b)[1 - i];
-                let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
-                self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
-                return true;
+            if ins[body].len() != 1 || self.out(body).len() != 1 {
+                continue;
             }
+            if self.blocks[body].is_switch_out() {
+                continue;
+            }
+            if self.out(body)[0] != b {
+                continue; // clause must loop back to b
+            }
+            let exit = self.out(b)[1 - i];
+            let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
+            self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
+            return true;
         }
         false
     }
 
-    /// `ruleBlockDoWhile`: a block with a self-edge.
-    fn rule_do_while(&mut self, b: usize, ins: &[Vec<usize>]) -> bool {
-        if self.out(b).len() != 2 {
+    /// `ruleBlockDoWhile` (blockaction.cc:1555): a two-out block with a self-edge.
+    fn rule_do_while(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
         }
         for i in 0..2 {
@@ -651,6 +1021,436 @@ impl Structured {
         }
         false
     }
+
+    /// `ruleBlockInfLoop` (blockaction.cc:1579): a single-out block falling into itself is a
+    /// loop with no exit. Deliberately no switch check (a BRANCHIND self-loop must still
+    /// collapse — Ghidra's comment at blockaction.cc:1584).
+    fn rule_inf_loop(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        if self.out(b).len() != 1 {
+            return false;
+        }
+        if self.blocks[b].is_goto_out(0) {
+            return false;
+        }
+        if self.out(b)[0] != b {
+            return false; // must fall into itself
+        }
+        self.install(vec![b], FlowKind::InfLoop, vec![], ins);
+        true
+    }
+
+    // ---- the collapse driver: Ghidra's CollapseStructure (blockaction.cc:1877) ----
+
+    /// A block's current form in the top-level graph — Ghidra's `getParent()` walk
+    /// (`LoopBody::update` blockaction.cc:97, `FloatingEdge::getCurrentEdge` blockaction.cc:30).
+    fn current_form(&self, mut b: usize) -> usize {
+        while let Some(p) = self.blocks[b].parent {
+            b = p;
+        }
+        b
+    }
+
+    /// `FloatingEdge::getCurrentEdge` (blockaction.cc:27): update the edge's endpoints to their
+    /// current collapsed forms and return `(top, out-index)` if the edge still exists.
+    fn get_current_edge(&self, e: &mut FloatingEdge) -> Option<(usize, usize)> {
+        e.top = self.current_form(e.top);
+        e.bottom = self.current_form(e.bottom);
+        let outedge = self.blocks[e.top].out_edges.iter().position(|&o| o == e.bottom)?;
+        Some((e.top, outedge))
+    }
+
+    /// `FlowBlock::setGotoBranch` (block.cc:305): mark out-edge `i` of `b` unstructured and set
+    /// the interior-goto flags on source and target.
+    fn set_goto_branch(&mut self, b: usize, i: usize) {
+        self.blocks[b].set_out_edge_flag(i, edge_flags::GOTO_EDGE);
+        self.blocks[b].set_flag(block_flags::INTERIOR_GOTOOUT);
+        let t = self.blocks[b].out_edges[i];
+        self.blocks[t].set_flag(block_flags::INTERIOR_GOTOIN);
+    }
+
+    /// `LoopBody::update` (blockaction.cc:94): update the loop's head and tails to their current
+    /// collapsed forms; return the first live tail (or the head, for a head looping with itself),
+    /// or `None` if the loop has completely collapsed.
+    fn loop_body_update(&mut self, li: usize) -> Option<usize> {
+        let head = self.current_form(self.loopbody[li].head.expect("loop_order holds only live bodies"));
+        self.loopbody[li].head = Some(head);
+        for i in 0..self.loopbody[li].tails.len() {
+            let bottom = self.current_form(self.loopbody[li].tails[i]);
+            self.loopbody[li].tails[i] = bottom;
+            if bottom != head {
+                return Some(bottom); // the loop hasn't fully collapsed yet
+            }
+        }
+        if self.blocks[head].out_edges.contains(&head) {
+            return Some(head); // head looping with itself
+        }
+        None
+    }
+
+    /// `LoopBody::emitLikelyEdges` (blockaction.cc:364): append this loop's exit edges to the
+    /// likely-goto list in priority order — the exit edges as labeled (middle, head, then tails),
+    /// with the official exit edge held until right before the back-edges, and finally the
+    /// back-edges themselves (less-preferred tails first) as the last resort.
+    fn emit_likely_edges(&mut self, li: usize) {
+        let head = self.current_form(self.loopbody[li].head.expect("live loop"));
+        self.loopbody[li].head = Some(head);
+        let mut exitblock = self.loopbody[li].exitblock.map(|e| self.current_form(e));
+        for i in 0..self.loopbody[li].tails.len() {
+            let tail = self.current_form(self.loopbody[li].tails[i]);
+            self.loopbody[li].tails[i] = tail;
+            if Some(tail) == exitblock {
+                exitblock = None; // exitblock collapsed into a tail: no real exit any longer
+            }
+        }
+        self.loopbody[li].exitblock = exitblock;
+
+        let n_exit = self.loopbody[li].exitedges.len();
+        let mut hold: Option<(usize, usize)> = None; // (inbl, outbl) of the delayed official exit
+        for idx in 0..n_exit {
+            let mut e = self.loopbody[li].exitedges[idx];
+            let cur = self.get_current_edge(&mut e);
+            self.loopbody[li].exitedges[idx] = e;
+            let Some((inbl, outedge)) = cur else {
+                continue; // edge does not exist (any longer)
+            };
+            let outbl = self.blocks[inbl].out_edges[outedge];
+            if idx + 1 == n_exit && Some(outbl) == exitblock {
+                hold = Some((inbl, outbl)); // official exit edge: hold off putting it in the list
+                break;
+            }
+            self.likelygoto.push(FloatingEdge { top: inbl, bottom: outbl });
+        }
+        let tails = self.loopbody[li].tails.clone();
+        for i in (0..tails.len()).rev() {
+            // put out less-preferred back-edges first; the delayed exit right before the final one
+            if i == 0 {
+                if let Some((hin, hout)) = hold {
+                    self.likelygoto.push(FloatingEdge { top: hin, bottom: hout });
+                }
+            }
+            let tail = tails[i];
+            for j in 0..self.blocks[tail].out_edges.len() {
+                if self.blocks[tail].out_edges[j] == head {
+                    self.likelygoto.push(FloatingEdge { top: tail, bottom: head });
+                }
+            }
+        }
+    }
+
+    /// `CollapseStructure::updateLoopBody` (blockaction.cc:1193): advance to the current
+    /// innermost live loop and make sure its likely-goto list is generated. Returns `true` while
+    /// there are likely unstructured edges left to provide.
+    ///
+    /// The `TraceDAG` interior trace is deferred (P7 Brick 3): for a live loop the likely list is
+    /// exactly `emit_likely_edges` (the tracer's `setExitMarks`/`clearExitMarks` bracket guards
+    /// only the trace, so it is skipped with it); for the final DAG the tracer is the only source,
+    /// so the search ends (`finaltrace`) with no likely edges.
+    fn update_loop_body(&mut self) -> bool {
+        if self.finaltrace {
+            return false;
+        }
+        let mut current_li: Option<usize> = None;
+        while self.loopiter < self.loop_order.len() {
+            let li = self.loop_order[self.loopiter];
+            if let Some(loopbottom) = self.loop_body_update(li) {
+                let looptop = self.loopbody[li].head.expect("live loop");
+                if loopbottom == looptop {
+                    // A single node looping back to itself: with 1 or 2 out-edges the loop would
+                    // have collapsed, so the node is likely a switch — mark the loop edge itself.
+                    self.likelygoto.clear();
+                    self.likelygoto.push(FloatingEdge { top: looptop, bottom: looptop });
+                    self.likelyiter = 0;
+                    self.likelylistfull = true;
+                    return true;
+                }
+                if !self.likelylistfull || self.likelyiter != self.likelygoto.len() {
+                    current_li = Some(li); // loop still exists
+                    break;
+                }
+            }
+            self.loopiter += 1;
+            self.likelylistfull = false; // need to generate the list for the next loop (or DAG)
+        }
+        if self.likelylistfull && self.likelyiter != self.likelygoto.len() {
+            return true;
+        }
+        // Generate likely gotos for a new inner loop or the final DAG.
+        self.likelygoto.clear();
+        self.likelylistfull = true;
+        match current_li {
+            Some(li) => {
+                self.emit_likely_edges(li);
+            }
+            None => {
+                self.finaltrace = true; // no loops left; the DAG trace (TraceDAG) is deferred
+                return false;
+            }
+        }
+        self.likelyiter = 0;
+        true
+    }
+
+    /// `CollapseStructure::selectGoto` (blockaction.cc:1260): pick the next likely unstructured
+    /// edge whose endpoints haven't collapsed together and mark it as a goto.
+    fn select_goto(&mut self) -> SelectGoto {
+        while self.update_loop_body() {
+            while self.likelyiter < self.likelygoto.len() {
+                let mut e = self.likelygoto[self.likelyiter];
+                let cur = self.get_current_edge(&mut e);
+                self.likelygoto[self.likelyiter] = e;
+                self.likelyiter += 1;
+                if let Some((startbl, outedge)) = cur {
+                    self.set_goto_branch(startbl, outedge);
+                    return SelectGoto::Target(startbl);
+                }
+            }
+        }
+        if self.clip_extra_roots() {
+            SelectGoto::Rescan
+        } else {
+            // Ghidra never reaches here without TraceDAG having scored the non-DAG gotos (else it
+            // throws "Could not finish collapsing block structure"); the caller falls back to the
+            // Brick-3 placeholder so the graph still fully collapses.
+            SelectGoto::Stuck
+        }
+    }
+
+    /// TraceDAG placeholder (P7 Brick 3 pending): when the loop-exit likely lists and
+    /// `clipExtraRoots` are exhausted but the graph has not fully collapsed — exactly where
+    /// Ghidra's `TraceDAG` trace would score a non-DAG goto — mark one merge-block in-edge as a
+    /// goto so collapse can proceed instead of silently truncating the function to the partial
+    /// root. This is the retired flat-driver picker kept only as this safety net; it never fires
+    /// on graphs the faithful driver structures (instrumented zero on the corpus movers), and
+    /// Brick 3 replaces it.
+    fn trace_dag_placeholder_goto(&mut self) -> Option<usize> {
+        let ins = self.in_edges();
+        for &t in &self.order {
+            if ins[t].len() < 2 {
+                continue;
+            }
+            for &(b, oi) in &ins[t] {
+                if b == t {
+                    continue;
+                }
+                self.set_goto_branch(b, oi);
+                return Some(b);
+            }
+        }
+        None
+    }
+
+    /// `CollapseStructure::onlyReachableFromRoot` (blockaction.cc:1052): mark and collect the
+    /// blocks only reachable from `root`.
+    fn only_reachable_from_root(&mut self, root: usize, ins: &[Vec<(usize, usize)>]) -> Vec<usize> {
+        let mut visit = vec![0i32; self.blocks.len()];
+        let mut body = vec![root];
+        self.blocks[root].set_flag(block_flags::MARK);
+        let mut i = 0;
+        while i < body.len() {
+            let bl = body[i];
+            i += 1;
+            for j in 0..self.blocks[bl].out_edges.len() {
+                let curbl = self.blocks[bl].out_edges[j];
+                if self.blocks[curbl].flags & block_flags::MARK != 0 {
+                    continue;
+                }
+                visit[curbl] += 1;
+                if visit[curbl] == ins[curbl].len() as i32 {
+                    self.blocks[curbl].set_flag(block_flags::MARK);
+                    body.push(curbl);
+                }
+            }
+        }
+        body
+    }
+
+    /// `CollapseStructure::markExitsAsGotos` (blockaction.cc:1083): mark every edge leaving the
+    /// (marked) body as unstructured; return how many were marked.
+    fn mark_exits_as_gotos(&mut self, body: &[usize]) -> usize {
+        let mut changecount = 0;
+        for &bl in body {
+            for j in 0..self.blocks[bl].out_edges.len() {
+                let curbl = self.blocks[bl].out_edges[j];
+                if self.blocks[curbl].flags & block_flags::MARK == 0 {
+                    self.set_goto_branch(bl, j);
+                    changecount += 1;
+                }
+            }
+        }
+        changecount
+    }
+
+    /// `CollapseStructure::clipExtraRoots` (blockaction.cc:1108): find a disjoint subset hanging
+    /// off an extra root (no in-edges, other than the canonical root) with cross-over edges into
+    /// the rest of the graph; mark those exits as gotos.
+    fn clip_extra_roots(&mut self) -> bool {
+        let ins = self.in_edges();
+        for oi in 1..self.order.len() {
+            // skip the canonical root
+            let bl = self.order[oi];
+            if !ins[bl].is_empty() {
+                continue;
+            }
+            let body = self.only_reachable_from_root(bl, &ins);
+            let count = self.mark_exits_as_gotos(&body);
+            for &b in &body {
+                self.blocks[b].clear_flag(block_flags::MARK);
+            }
+            if count != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `CollapseStructure::collapseConditions` (blockaction.cc:1854): simplify just the
+    /// short-circuit AND/OR constructions, to a fixed point. Run once, up front (Ghidra keeps
+    /// `ruleBlockOr` out of the main rule scan).
+    fn collapse_conditions(&mut self) {
+        loop {
+            let mut change = false;
+            let mut index = 0;
+            while index < self.order.len() {
+                let bl = self.order[index];
+                index += 1;
+                let ins = self.in_edges();
+                if self.rule_short_circuit(bl, &ins) {
+                    change = true;
+                }
+            }
+            if !change {
+                break;
+            }
+        }
+    }
+
+    /// `CollapseStructure::collapseInternal` (blockaction.cc:1768): apply the structuring rules
+    /// to a fixed point, starting from `targetbl` if given (the block `select_goto` just marked).
+    /// `ruleBlockIfNoExit`/`ruleCaseFallthru` run only when nothing else applies. Returns the
+    /// count of isolated blocks (no in- or out-edges).
+    fn collapse_internal(&mut self, mut targetbl: Option<usize>) -> usize {
+        let mut isolated_count;
+        loop {
+            loop {
+                let mut change = false;
+                let mut index = 0;
+                isolated_count = 0;
+                while index < self.order.len() {
+                    let bl = match targetbl.take() {
+                        Some(t) => {
+                            change = true; // force a rescan so we still go through all blocks
+                            index = self.order.len(); // only target the block once
+                            t
+                        }
+                        None => {
+                            let b = self.order[index];
+                            index += 1;
+                            b
+                        }
+                    };
+                    let ins = self.in_edges();
+                    if self.blocks[bl].out_edges.is_empty() && ins[bl].is_empty() {
+                        isolated_count += 1; // a completely collapsed block; not a change
+                        continue;
+                    }
+                    if self.rule_block_goto(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_cat(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_proper_if(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_if_else(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_while_do(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_do_while(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_inf_loop(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                    if self.rule_switch(bl, &ins) {
+                        change = true;
+                        continue;
+                    }
+                }
+                if !change {
+                    break;
+                }
+            }
+            // Applying IfNoExit too early can cause other (preferable) rules to miss; only when
+            // nothing else applies.
+            let mut fullchange = false;
+            let mut index = 0;
+            while index < self.order.len() {
+                let bl = self.order[index];
+                index += 1;
+                let ins = self.in_edges();
+                if self.rule_if_no_exit(bl, &ins) {
+                    fullchange = true;
+                    break;
+                }
+                if self.rule_case_fallthru(bl, &ins) {
+                    fullchange = true;
+                    break;
+                }
+            }
+            if !fullchange {
+                break;
+            }
+        }
+        isolated_count
+    }
+
+    /// `CollapseStructure::collapseAll` (blockaction.cc:1877): collapse everything to isolated
+    /// blocks — conditions first, then the structural rules, marking one likely goto at a time
+    /// when stuck. Every `select_goto` marks at least one new goto edge (consumed and removed by
+    /// `rule_block_goto`), so the isolated count grows and the loop terminates; the counter is a
+    /// safety net for that invariant.
+    fn collapse_all(&mut self) {
+        self.finaltrace = false;
+        self.collapse_conditions();
+        let mut isolated_count = self.collapse_internal(None);
+        // Every spin cuts >=1 edge; the leaf graph's edge count (plus slack) bounds the spins.
+        let cap = 16 + self.blocks.iter().map(|b| b.out_edges.len() + 1).sum::<usize>();
+        let mut spins = 0usize;
+        while isolated_count < self.order.len() {
+            spins += 1;
+            if spins > cap {
+                debug_assert!(false, "structure collapse did not converge in {cap} goto selections");
+                break;
+            }
+            match self.select_goto() {
+                SelectGoto::Target(t) => isolated_count = self.collapse_internal(Some(t)),
+                SelectGoto::Rescan => isolated_count = self.collapse_internal(None),
+                SelectGoto::Stuck => match self.trace_dag_placeholder_goto() {
+                    Some(t) => isolated_count = self.collapse_internal(Some(t)),
+                    None => break, // no edges left at all
+                },
+            }
+        }
+    }
+}
+
+/// The outcome of [`Structured::select_goto`]: a block whose out-edge was just marked (Ghidra
+/// returns the FlowBlock), a rescan request after `clipExtraRoots` marked cross-over edges
+/// (Ghidra returns null), or a genuinely stuck graph (Ghidra throws `LowlevelError`).
+enum SelectGoto {
+    Target(usize),
+    Rescan,
+    Stuck,
 }
 
 /// Ghidra's `BlockGraph::structureLoops` (block.cc:2194) run over the initial leaf graph: label the
@@ -1298,13 +2098,14 @@ fn label_loops(s: &Structured, in_adj: &[Vec<(usize, usize)>], rpo: &[i32]) -> (
 /// Ghidra's `CollapseStructure::orderLoopBodies` (blockaction.cc:1148): identify the loops, label
 /// their exit edges, and produce a nesting-depth partial order (deepest first). Runs on the leaf
 /// graph. Ghidra erases the subsumed (merged-away) loop bodies; mosura keeps them with `head = None`
-/// and skips them, which is equivalent since they are inert.
-fn order_loop_bodies(s: &mut Structured, n: usize) -> Vec<LoopBody> {
+/// and excludes them from the returned processing order, which is equivalent since they are inert.
+/// Returns the bodies and the deepest-first order the collapse driver iterates.
+fn order_loop_bodies(s: &mut Structured, n: usize) -> (Vec<LoopBody>, Vec<usize>) {
     let in_adj = in_adjacency(s, n);
     let rpo = s.rpo.clone();
     let (mut loopbody, mut looporder) = label_loops(s, &in_adj, &rpo);
     if loopbody.is_empty() {
-        return loopbody;
+        return (loopbody, Vec::new());
     }
     merge_identical_heads(&mut loopbody, &mut looporder);
 
@@ -1339,7 +2140,40 @@ fn order_loop_bodies(s: &mut Structured, n: usize) -> Vec<LoopBody> {
         label_exit_edges(s, &mut loopbody, cur, &body);
         clear_marks(s, &body);
     }
-    loopbody
+    (loopbody, process_order)
+}
+
+/// Ghidra's `Funcdata::installSwitchDefaults` (funcdata_block.cc:687), run at the head of
+/// `ActionBlockStructure` (blockaction.cc:2176) — after `structureLoops` has (re)cleared the edge
+/// labels: mark each jump table's \e default out-edge on its BRANCHIND block with
+/// `DEFAULTSWITCH_EDGE` (`FlowBlock::setDefaultSwitch`, block.cc:318). mosura's default-case record
+/// is `Funcdata::switch_defaults` (BRANCHIND pc → default target address).
+fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
+    if f.switch_defaults.is_empty() {
+        return;
+    }
+    for b in 0..f.num_blocks() {
+        let bid = BlockId(b as u32);
+        let Some(&last) = f.block(bid).ops.last() else {
+            continue;
+        };
+        if f.op(last).code() != OpCode::Branchind {
+            continue;
+        }
+        let Some(&defaddr) = f.switch_defaults.get(&f.op(last).seqnum.pc.offset) else {
+            continue;
+        };
+        for oi in 0..s.blocks[b].out_edges.len() {
+            let t = s.blocks[b].out_edges[oi];
+            let FlowKind::Basic(tb) = s.blocks[t].kind else {
+                continue;
+            };
+            if f.block_range(tb).map(|(a, _)| a) == Some(defaddr) {
+                s.blocks[b].set_out_edge_flag(oi, edge_flags::DEFAULTSWITCH_EDGE);
+                break;
+            }
+        }
+    }
 }
 
 /// Structure the CFG of `f`.
@@ -1348,14 +2182,22 @@ pub fn structure(f: &Funcdata) -> Structured {
         .map(|b| {
             let out_edges: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
             let out_labels = vec![0u32; out_edges.len()];
+            // SWITCH_OUT: a block ending in BRANCHIND (BlockBasic::insertOp, block.cc:2287) or
+            // with more than two out-edges (newBlockCopy, block.cc:1693).
+            let mut flags = 0u32;
+            let branchind = f.blocks()[b].ops.last().is_some_and(|&op| f.op(op).code() == OpCode::Branchind);
+            if branchind || out_edges.len() > 2 {
+                flags |= block_flags::SWITCH_OUT;
+            }
             FlowBlock {
                 kind: FlowKind::Basic(BlockId(b as u32)),
                 components: Vec::new(),
                 out_edges,
                 out_labels,
-                flags: 0,
+                flags,
                 active: true,
                 negated: false,
+                parent: None,
             }
         })
         .collect();
@@ -1374,44 +2216,80 @@ pub fn structure(f: &Funcdata) -> Structured {
                 .is_some_and(|op| f.op(op).is_fallthru_true())
         })
         .collect();
+    // Per-block print complexity — Ghidra's `BlockBasic::isComplex` (block.cc:2388): count the
+    // ops that print as statements (a conservative `calc_explicit`); more than two (the branch
+    // counts as one) makes the block too complex to fold into a condition.
+    let complex: Vec<bool> = (0..f.num_blocks())
+        .map(|b| {
+            let bid = BlockId(b as u32);
+            let mut statement = if f.block(bid).out_edges.len() >= 2 { 1 } else { 0 };
+            for &op in &f.block(bid).ops {
+                let o = f.op(op);
+                if o.is_marker() {
+                    continue;
+                }
+                let yes = if matches!(o.code(), OpCode::Call | OpCode::Callind | OpCode::Callother) {
+                    true
+                } else if let Some(vn) = o.output {
+                    let v = f.vn(vn);
+                    v.descend.is_empty()
+                        || v.is_addrtied()
+                        || v.descend.len() > 2 // max_implied_ref (architecture.cc:1420)
+                        || v.descend.iter().any(|&r| f.op(r).is_marker() || f.op(r).parent != Some(bid))
+                } else {
+                    // a no-output op that isn't a flow break is a statement (e.g. STORE)
+                    !matches!(o.code(), OpCode::Branch | OpCode::Cbranch | OpCode::Branchind | OpCode::Return)
+                };
+                if yes {
+                    statement += 1;
+                }
+                if statement > 2 {
+                    return true;
+                }
+            }
+            false
+        })
+        .collect();
+    let n = f.num_blocks();
     let mut s = Structured {
         blocks,
         root: 0,
         gotos: HashMap::new(),
         labels: HashSet::new(),
         oriented,
+        complex,
         rpo: Vec::new(),
         loopbody: Vec::new(),
+        loop_order: Vec::new(),
+        order: (0..n).collect(),
+        loopiter: 0,
+        likelygoto: Vec::new(),
+        likelyiter: 0,
+        likelylistfull: false,
+        finaltrace: false,
+        default_goto: HashSet::new(),
     };
 
     // Label loop back-edges and irreducible edges on the leaf graph before collapsing (Ghidra's
-    // structureLoops, run on the CFG before ActionBlockStructure's buildCopy). Brick 1: the labels
-    // are written but not yet consumed by the collapse rules, so this is byte-identical.
-    structure_loops(&mut s, f.num_blocks());
+    // structureLoops, run on the CFG at structureReset before ActionBlockStructure's buildCopy).
+    structure_loops(&mut s, n);
 
-    // Build the loop records (Ghidra's orderLoopBodies): label each loop's exit edges and order the
-    // loops by nesting depth. Brick 2: computed inert (the selectGoto driver consuming them lands in
-    // Brick 4), so this is byte-identical.
-    s.loopbody = order_loop_bodies(&mut s, f.num_blocks());
+    // Mark the jump tables' default out-edges (Ghidra's installSwitchDefaults at the head of
+    // ActionBlockStructure — after structureLoops cleared the edge labels).
+    install_switch_defaults(&mut s, f);
 
-    loop {
-        let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
-        if active.len() <= 1 {
-            break;
-        }
-        let ins = s.in_edges();
-        let mut fired = false;
-        for &b in &active {
-            if s.try_rules(b, &ins) {
-                fired = true;
-                break;
-            }
-        }
-        if !fired && !s.rule_goto() {
-            break; // truly stuck (no structural rule and no goto edge to cut)
-        }
-    }
-    s.root = (0..s.blocks.len()).find(|&b| s.blocks[b].active).unwrap_or(0);
+    // Build the loop records (Ghidra's orderLoopBodies): label each loop's exit edges and order
+    // the loops by nesting depth, deepest first.
+    let (loopbody, loop_order) = order_loop_bodies(&mut s, n);
+    s.loopbody = loopbody;
+    s.loop_order = loop_order;
+
+    // Collapse everything (Ghidra's CollapseStructure::collapseAll).
+    s.collapse_all();
+
+    // The root is the entry block's collapsed form (the single isolated block, when the graph
+    // fully collapsed).
+    s.root = if n == 0 { 0 } else { s.current_form(0) };
     s
 }
 
@@ -1616,6 +2494,108 @@ mod tests {
         let s = structure(&cfg(3, &[(0, 1), (0, 2), (1, 2), (2, 1)]));
         assert_eq!(active(&s), 1, "collapses fully via gotos");
         assert!(!s.gotos.is_empty(), "recorded a goto edge");
+    }
+
+    #[test]
+    fn loop_break_edge_becomes_conditional_goto() {
+        // while (c1) { s; if (c2) break; s2 }:
+        // 0 -> 1(head c1); 1 -> {2(s), 5(exit)}; 2 -> 3(c2); 3 -> {4(s2), 5(break)}; 4 -> 1(back)
+        // The break edge keeps the body multi-block, so the flat rules are stuck; selectGoto
+        // picks the loop-exit edge 3->5 (the middle exit — first in the emitLikelyEdges
+        // priority) and NEVER the back-edge, so the while loop is recovered with one
+        // conditional goto owned by the [2,3] cat composite (Ghidra's BlockIfGoto; `break`
+        // rendering is B4b).
+        let s = structure(&cfg(6, &[(0, 1), (1, 2), (1, 5), (2, 3), (3, 4), (3, 5), (4, 1)]));
+        assert_eq!(active(&s), 1);
+        let k = kinds(&s);
+        assert!(k.contains(&FlowKind::WhileDo), "loop recovered, not goto-cut: {k:?}");
+        let recs = s.gotos.get(&BlockId(3)).expect("break edge cut at the composite's exit basic 3");
+        assert_eq!(recs.len(), 1, "records: {recs:?}");
+        assert!(recs[0].conditional, "break is an if-goto");
+        assert_eq!(recs[0].target, BlockId(5));
+        assert!(s.labels.contains(&BlockId(5)));
+        // exactly one goto total — the back-edge survived
+        assert_eq!(s.gotos.values().map(|v| v.len()).sum::<usize>(), 1, "gotos: {:?}", s.gotos);
+    }
+
+    #[test]
+    fn while_condition_break_folds_to_or() {
+        // while (c1) { if (c2) break; body }, with the break test heading the body: the exact
+        // ruleBlockOr topology (both exits shared), so collapseConditions folds c1/c2 into one
+        // compound condition and the loop collapses with NO goto (Ghidra's collapseAll does the
+        // same — the guard blocks only a *complex* second condition).
+        let s = structure(&cfg(5, &[(0, 1), (1, 2), (1, 4), (2, 3), (2, 4), (3, 1)]));
+        assert_eq!(active(&s), 1);
+        let k = kinds(&s);
+        assert!(k.contains(&FlowKind::WhileDo), "kinds: {k:?}");
+        assert!(k.contains(&FlowKind::CondOr) || k.contains(&FlowKind::CondAnd), "kinds: {k:?}");
+        assert!(s.gotos.is_empty(), "no goto needed: {:?}", s.gotos);
+    }
+
+    #[test]
+    fn complex_second_condition_blocks_or_merge() {
+        // The or-topology (0 -> {1(false), 2(true)}; 1 -> {3(false), 2(true)}) whose second
+        // condition block carries three STOREs: `BlockBasic::isComplex` reports it too complex
+        // to print inside a condition, so ruleBlockOr must NOT fold it (blockaction.cc:1342).
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let spc = f.new_const(8, 0);
+        let addr = f.new_input(8, Address::new(reg, 0x10));
+        let val = f.new_input(4, Address::new(reg, 0x20));
+        let stores: Vec<_> =
+            (0..3).map(|_| f.new_op(OpCode::Store, seq, vec![spc, addr, val])).collect();
+        let mut blocks: Vec<BlockBasic> = vec![BlockBasic::default(); 4];
+        blocks[1].ops = stores;
+        for &(a, b) in &[(0usize, 1usize), (0, 2), (1, 3), (1, 2), (2, 3)] {
+            blocks[a].out_edges.push(BlockId(b as u32));
+            blocks[b].in_edges.push(BlockId(a as u32));
+        }
+        f.set_blocks(blocks);
+        let s = structure(&f);
+        // No short-circuit composite may exist anywhere in the collapse history: the or-fold was
+        // refused, so this non-structurable DAG resolved through gotos (the TraceDAG-placeholder
+        // path) instead of swallowing the statements into a condition.
+        assert!(
+            !s.blocks.iter().any(|b| matches!(b.kind, FlowKind::CondOr | FlowKind::CondAnd)),
+            "complex condition must not fold"
+        );
+        assert_eq!(active(&s), 1, "still collapses fully (via gotos)");
+        assert!(!s.gotos.is_empty());
+    }
+
+    #[test]
+    fn no_exit_self_loop_becomes_inf_loop() {
+        // 0 -> 1; 1 -> 1 (single-out self edge: a loop with no exit)
+        let s = structure(&cfg(2, &[(0, 1), (1, 1)]));
+        assert_eq!(active(&s), 1);
+        assert!(kinds(&s).contains(&FlowKind::InfLoop), "kinds: {:?}", kinds(&s));
+        assert!(s.gotos.is_empty());
+    }
+
+    #[test]
+    fn case_fallthru_marks_goto_and_switch_collapses() {
+        // switch head 0 (3 outs -> SWITCH_OUT) with case 1 falling through into case 2;
+        // cases 2 and 3 exit to 4. ruleCaseFallthru marks 1->2 as a goto so the switch
+        // can collapse with 4 as its exit.
+        let s = structure(&cfg(5, &[(0, 1), (0, 2), (0, 3), (1, 2), (2, 4), (3, 4)]));
+        assert_eq!(active(&s), 1);
+        assert!(kinds(&s).contains(&FlowKind::Switch), "kinds: {:?}", kinds(&s));
+        let recs = s.gotos.get(&BlockId(1)).expect("fallthru edge cut at case 1");
+        assert!(!recs[0].conditional, "fallthru goto is unconditional");
+        assert_eq!(recs[0].target, BlockId(2));
+        assert!(s.labels.contains(&BlockId(2)));
+    }
+
+    #[test]
+    fn tangled_graph_converges() {
+        // an irreducible two-cycle with separate exits — multiple selectGoto rounds needed
+        let s = structure(&cfg(4, &[(0, 1), (0, 2), (1, 2), (2, 1), (1, 3), (2, 3)]));
+        assert_eq!(active(&s), 1, "collapse terminates and fully collapses");
+        assert!(!s.gotos.is_empty());
     }
 
     #[test]
