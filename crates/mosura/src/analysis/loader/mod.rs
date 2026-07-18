@@ -9,6 +9,7 @@ pub mod le;
 pub mod mz;
 pub mod pe;
 pub mod pe_opinion;
+pub mod watcom;
 
 pub use com::load_com;
 pub use elf::{load_elf, LoadError};

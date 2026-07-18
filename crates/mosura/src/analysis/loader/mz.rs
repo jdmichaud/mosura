@@ -114,6 +114,14 @@ pub fn load_mz(data: &[u8]) -> Result<Program, LoadError> {
     let mut program = Program::new(spaces, ram, "x86:LE:16:Real Mode", "default", Address::new(ram, 0), false, 16);
     program.memory = memory;
 
+    // Watcom compiler detection (two-oracle — see `watcom.rs`), beyond Ghidra (which reports
+    // `unknown`): an MZ/DOS-extender image built by Watcom embeds the C run-time copyright
+    // banner (WAR2.EXE's DOS/4GW-bound stub carries it). Record the detected era as the
+    // `Compiler` info property; a non-Watcom MZ (e.g. DJGPP comcom32) has no banner → unchanged.
+    if let Some(w) = super::watcom::detect(data) {
+        program.compiler = w.compiler_label();
+    }
+
     // Entry point at CS:IP (Ghidra MzLoader.processEntryPoint): a label `entry`, also an
     // external entry point. Linear = ((0x1000 + e_cs) & 0xffff) << 4 + e_ip.
     let entry = Address::new(ram, ((((INITIAL_SEGMENT + e_cs) & 0xffff) << 4) + e_ip) as u64);

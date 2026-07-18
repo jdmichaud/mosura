@@ -215,6 +215,13 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     let mut program = Program::new(spaces, ram, "x86:LE:32:default", "gcc", image_base, false, 32);
     program.memory = memory;
 
+    // Watcom compiler detection (two-oracle — see `watcom.rs`): a DOS/4GW-bound LE is a Watcom
+    // build; its C run-time startup embeds the copyright banner right after the `_cstart_`
+    // `EB 76` entry jump. Detect it and record the era as the `Compiler` info property.
+    if let Some(w) = super::watcom::detect(data) {
+        program.compiler = w.compiler_label();
+    }
+
     // Entry point: EIP is an offset *within* the EIP object, so the absolute entry is the
     // object's virtual base + EIP (docs/le-loader-notes.md: 0x10000 + 0x501F8 = 0x601F8).
     if eip_object >= 1 && (eip_object as usize) <= objects.len() {

@@ -366,6 +366,47 @@ fn z80_com_parity() {
     eprintln!("z80 .COM loader-stage: block + {} RST/NMI symbols + {} entries (exact)", gs.len(), ge.len());
 }
 
+/// Watcom compiler detection (two-oracle — `loader::watcom`). Beyond Ghidra (which reports
+/// `unknown` for Watcom binaries): the loader reads the Watcom C run-time copyright banner and
+/// records the era as the `Compiler` info property. Validated against the SECOND oracle — real
+/// Watcom-toolchain output — not Ghidra: (1) `watcom_hello.exe`, a committed DOS/4GW LE freshly
+/// built with a real Watcom 10.0a toolchain (see oracle/analysis-corpus/src/watcom_hello.c);
+/// (2) WAR2.EXE if present (user-provided); and the no-false-positive case on a non-Watcom MZ
+/// (DJGPP comcom32). The banner is an era fingerprint (year range), not a precise release — see
+/// the `watcom` module note.
+#[test]
+fn watcom_detection() {
+    // (1) The fresh 10.0a-built LE fixture — committed, so this always runs.
+    let fixture = analysis_corpus_dir().join("watcom_hello.exe");
+    let data = std::fs::read(&fixture).expect("watcom_hello.exe fixture");
+    let info = mosura::analysis::loader::watcom::detect(&data).expect("watcom banner in fixture");
+    assert_eq!(info.compiler_label(), "watcom:1988-1994");
+    assert_eq!(info.product, "C/C++");
+    assert_eq!(info.bitness, "32");
+    // Through the loader dispatch (a standalone DOS/4GW LE) the Compiler property is set.
+    let prog = mosura::analysis::loader::load(&data).expect("load watcom_hello.exe");
+    assert_eq!(prog.compiler, "watcom:1988-1994", "fresh Watcom LE fixture → watcom era");
+    eprintln!("watcom_hello.exe: {} ({})", prog.compiler, info.banner);
+
+    // (2) WAR2.EXE ground truth (user-provided): both the LE and the default MZ dispatch detect it.
+    let war2 = std::path::Path::new("/home/jd/WAR2.EXE");
+    if war2.exists() {
+        let d = std::fs::read(war2).unwrap();
+        assert_eq!(mosura::analysis::loader::load_le(&d).unwrap().compiler, "watcom:1988-1994");
+        assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, "watcom:1988-1994");
+        eprintln!("WAR2.EXE: watcom:1988-1994 (LE + MZ)");
+    }
+
+    // (3) No false positive: a non-Watcom MZ (DJGPP comcom32) has no Watcom banner.
+    let comcom = std::path::Path::new("/home/jd/.local/share/comcom32/comcom32.exe");
+    if comcom.exists() {
+        let d = std::fs::read(comcom).unwrap();
+        assert!(mosura::analysis::loader::watcom::detect(&d).is_none(), "DJGPP must not match Watcom");
+        assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, "unknown", "non-Watcom → unknown");
+        eprintln!("comcom32 (DJGPP): no Watcom banner (compiler=unknown)");
+    }
+}
+
 /// Task 4 — native LE (Linear Executable) loader. WAR2.EXE is a DOS/4GW-bound LE; Ghidra
 /// has no LE loader, so there is no Ghidra golden — this validates `loader::le` against the
 /// warcraft2-re reverse-engineering ground truth recorded in `docs/le-loader-notes.md`: the
