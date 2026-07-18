@@ -27,13 +27,30 @@ So the rule is: **default validated against Ghidra; `--le` validated against the
 truth.** This is also the standing precedent for any future format Ghidra cannot open: default
 to Ghidra parity, offer a documented extension behind a flag, validated against its own oracle.
 
-**What remains (NOT done):** the flag + warning land **with the CLI** (analysis is a library
-API today; no CLI yet) — meanwhile the LE path is exposed as a library option and tested
-separately. The native LE loader (`le.rs`) and its object/entry parsing are done + validated
-(`le_war2_objects`). The remaining opt-in work: run the 32-bit (`x86:LE:32:default`) analysis
-pipeline over the LE objects, and add an RE-derived switch-table golden to validate the 20
-protected-mode COMPUTED_JUMP as a clean subset. The default MZ path + its Ghidra gates are
-untouched by all of this. See the loader file's header for the precise scope boundary.
+**Native-LE analysis (task #8, done):** the 32-bit (`x86:LE:32:default`) analysis pipeline runs
+over the LE objects via the library entry `analysis::analyze_le_file` — the opt-in `--le` view
+(the flag + warning land later **with the CLI**; analysis is a library API today). The default
+container dispatch keeps a bound exe on the Ghidra-parity MZ-stub path (its goldens + gates
+UNTOUCHED). The native-LE path is validated against the warcraft2-re RE ground truth (Ghidra has
+no LE loader) as a clean subset in `le_war2_analysis`: 541 functions discovered (watcall cspec
+from task #7, `_cstart_` entry 0x601F8), the no-spurious-reference invariant (every recovered
+reference targets mapped obj1/obj2 memory), and 0 spurious COMPUTED_JUMP.
+
+**Switch-recovery finding (a two-oracle discrepancy — reported, not invented around):** the
+plan called for validating "the 20 protected-mode COMPUTED_JUMP" as a clean subset, but those
+20 (in the Ghidra `war2.snapshot` golden) are **artifacts of Ghidra's MZ *misinterpretation* of
+the 32-bit code** — the warcraft2-re RE contradicts them. All five golden switch-sources
+(`0x1a607/0x1b88d/0x1ccb5/0x1ccf1/0x1de4e`) sit in functions the RE recovered as framed loops /
+linear search, **not** switches (`src/*/g1a598.c`, `g1b828.c`, `g1caec.c` "linear search of
+g_f304", `g1dcc1.c` "counted loop"). The *real* protected-mode computed jumps are the
+decompressor family's **cs:-relative inline jump tables** (`fn_79130`/`793e0`/`7a5b0`, per
+`warcraft2-re analysis/reference/decomp.c`: "cs: computed jump tables that dispatch the decode
+loops", "16-entry inline jump tables per case"). mosura's flow-based discovery does not reach
+those functions from the entry (they are invoked indirectly), so native-LE switch recall is
+honestly **0, with 0 spurious**. Recovering the decompressor jump tables — reaching those
+functions + the Watcom cs:-inline-jump-table construct — is a filed follow-up, and is
+decompiler-adjacent (the switch analyzer is a read-only bridge; the inline-table shape is the
+hard part). Since the Ghidra "20" are not real, no switch golden was authored from them.
 
 ## Why native, not an ELF32 wrapper
 

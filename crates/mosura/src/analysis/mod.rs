@@ -78,6 +78,19 @@ pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
     Ok(program)
 }
 
+/// Load a DOS/4GW-bound Linear Executable via the **native LE loader** and run the full
+/// auto-analysis pipeline over its 32-bit objects — the opt-in `--le` path for a bound exe
+/// (docs/le-loader-notes.md). The default container dispatch ([`analyze_file`]) keeps a bound
+/// exe on the Ghidra-parity MZ-stub path; this is the two-oracle native-LE view, validated
+/// against the warcraft2-re RE ground truth (Ghidra has no LE loader). The CLI flag + warning
+/// that select this land later with the CLI; today it is a library entry point.
+pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
+    let data = std::fs::read(path)?;
+    let mut program = loader::load_le(&data)?;
+    analyze(&mut program);
+    Ok(program)
+}
+
 /// Run the auto-analysis pipeline over a loaded [`Program`] (A3 framework + A4 analyzers):
 /// recursive-descent disassembly from the loader's functions and entry points, creating
 /// code units and discovering functions at call targets, to a fixpoint.
