@@ -619,6 +619,259 @@ impl Structured {
     }
 }
 
+/// Ghidra's `BlockGraph::structureLoops` (block.cc:2194) run over the initial leaf graph: label the
+/// CFG's loop back-edges and irreducible edges. It is `findSpanningTree` (block.cc:1009 — a DFS that
+/// classifies every edge as tree/forward/cross/back) + `findIrreducible` (block.cc:1147, Tarjan's
+/// algorithm marking the edges that must be removed to make the graph reducible) + `calcLoop`
+/// (block.cc:2104, a safety net that marks any residual directed cycle as a loop edge). Sets the
+/// `BACK`/`LOOP`/`IRREDUCIBLE` (and the transient `TREE`/`FORWARD`/`CROSS`) labels on `out_labels`.
+///
+/// Ghidra runs this once on the permanent CFG (`funcdata_block.cc:711`) and `buildCopy` carries the
+/// labels into the structure graph; mosura re-derives the structure graph from the CFG each call, so
+/// running the identical pass on the leaf blocks (0..`n`, before any collapse) yields the identical
+/// labels. Operating on `list_order`/`preorder`/`index`/`visitcount`/`numdesc`/`copymap` scratch
+/// (Ghidra's per-`FlowBlock` fields) leaves mosura's `blocks` order untouched — the labels depend
+/// only on out-edge order, which is preserved. Brick 1: nothing reads these labels yet, so the corpus
+/// stays byte-identical.
+fn structure_loops(s: &mut Structured, n: usize) {
+    use edge_flags::*;
+    if n == 0 {
+        return;
+    }
+    // In-adjacency with reverse index: `in_adj[t] = [(source, source-out-index), …]` in the order
+    // mosura builds `in_edges` (source-block order, then out-edge order), so `getIn`/`getInRevIndex`/
+    // `isBackEdgeIn` read the same edge Ghidra does. Static during this pass (no collapse yet); the
+    // edge labels are read live off the source's `out_labels`.
+    let mut in_adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for src in 0..n {
+        for (oi, &t) in s.blocks[src].out_edges.iter().enumerate() {
+            in_adj[t].push((src, oi));
+        }
+    }
+
+    let mut index = vec![-1i32; n]; // reverse-post-order number (FlowBlock::index)
+    let mut visitcount = vec![-1i32; n]; // pre-order position (FlowBlock::visitcount)
+    let mut numdesc = vec![0i32; n]; // spanning-tree descendant count (FlowBlock::numdesc)
+    let mut copymap: Vec<usize> = (0..n).collect(); // union-find (FlowBlock::copymap)
+    let mut list_order: Vec<usize> = (0..n).collect(); // Ghidra's `list`, reordered to r-post-order
+    let mut preorder: Vec<usize> = Vec::with_capacity(n);
+    let mut irreducible_count = 0i32;
+
+    loop {
+        // ---- findSpanningTree (block.cc:1009) ----
+        preorder.clear();
+        for b in 0..n {
+            index[b] = -1;
+            visitcount[b] = -1;
+            copymap[b] = b;
+        }
+        let mut rootlist: Vec<usize> = list_order.iter().copied().filter(|&b| in_adj[b].is_empty()).collect();
+        if rootlist.len() > 1 {
+            let last = rootlist.len() - 1;
+            rootlist.swap(0, last); // orighead visited last (first in reverse post order)
+        } else if rootlist.is_empty() {
+            rootlist.push(list_order[0]); // no obvious entry: assume first block
+        }
+        let origrootpos = rootlist.len() - 1;
+        let mut rpostorder = vec![0usize; n];
+
+        let mut spanning_failed = false;
+        let mut repeat = 0;
+        loop {
+            let mut extraroots = false;
+            let mut rpostcount = n as i32;
+            let mut rootindex = 0usize;
+            for b in 0..n {
+                for l in s.blocks[b].out_labels.iter_mut() {
+                    *l = 0; // clearEdgeFlags(~0)
+                }
+            }
+            preorder.clear();
+            for b in 0..n {
+                index[b] = -1;
+                visitcount[b] = -1;
+                copymap[b] = b;
+            }
+            while preorder.len() < n {
+                let mut startbl: Option<usize> = None;
+                while rootindex < rootlist.len() {
+                    let cand = rootlist[rootindex];
+                    rootindex += 1;
+                    if visitcount[cand] == -1 {
+                        startbl = Some(cand);
+                        break;
+                    }
+                    rootlist.remove(rootindex - 1); // stale root from a previous pass
+                    rootindex -= 1;
+                }
+                let startbl = match startbl {
+                    Some(b) => b,
+                    None => {
+                        extraroots = true;
+                        let mut sb = list_order[0];
+                        for &b in &list_order {
+                            if visitcount[b] == -1 {
+                                sb = b;
+                                break;
+                            }
+                        }
+                        rootlist.push(sb);
+                        rootindex += 1;
+                        sb
+                    }
+                };
+                let mut state: Vec<usize> = vec![startbl];
+                let mut istate: Vec<usize> = vec![0];
+                visitcount[startbl] = preorder.len() as i32;
+                preorder.push(startbl);
+                numdesc[startbl] = 1;
+                while let Some(&curbl) = state.last() {
+                    let ist = *istate.last().unwrap();
+                    if s.blocks[curbl].out_edges.len() <= ist {
+                        state.pop();
+                        istate.pop();
+                        rpostcount -= 1;
+                        index[curbl] = rpostcount;
+                        rpostorder[rpostcount as usize] = curbl;
+                        if let Some(&parent) = state.last() {
+                            numdesc[parent] += numdesc[curbl];
+                        }
+                    } else {
+                        let edgenum = ist;
+                        *istate.last_mut().unwrap() += 1;
+                        if s.blocks[curbl].out_labels[edgenum] & IRREDUCIBLE != 0 {
+                            continue; // pretend irreducible edges don't exist
+                        }
+                        let childbl = s.blocks[curbl].out_edges[edgenum];
+                        if visitcount[childbl] == -1 {
+                            s.blocks[curbl].set_out_edge_flag(edgenum, TREE_EDGE);
+                            state.push(childbl);
+                            istate.push(0);
+                            visitcount[childbl] = preorder.len() as i32;
+                            preorder.push(childbl);
+                            numdesc[childbl] = 1;
+                        } else if index[childbl] == -1 {
+                            s.blocks[curbl].set_out_edge_flag(edgenum, BACK_EDGE | LOOP_EDGE);
+                        } else if visitcount[curbl] < visitcount[childbl] {
+                            s.blocks[curbl].set_out_edge_flag(edgenum, FORWARD_EDGE);
+                        } else {
+                            s.blocks[curbl].set_out_edge_flag(edgenum, CROSS_EDGE);
+                        }
+                    }
+                }
+            }
+            if !extraroots {
+                break;
+            }
+            if repeat == 1 {
+                spanning_failed = true; // Ghidra throws "Could not generate spanning tree"
+                break;
+            }
+            // regenerate so the entry block comes first
+            let last = rootlist.len() - 1;
+            rootlist.swap(last, origrootpos);
+            repeat += 1;
+        }
+        if spanning_failed {
+            return; // irreducible beyond what the DFS can order — leave labels as-is
+        }
+        list_order = rpostorder;
+
+        // ---- findIrreducible (block.cc:1147) ----
+        let mut needrebuild = false;
+        let mut mark = vec![false; n];
+        let mut reachunder: Vec<usize> = Vec::new();
+        let mut xi = preorder.len() as i32 - 1;
+        while xi >= 0 {
+            let x = preorder[xi as usize];
+            xi -= 1;
+            for &(y, revidx) in &in_adj[x] {
+                if s.blocks[y].out_labels[revidx] & BACK_EDGE == 0 {
+                    continue; // only back-edges into x
+                }
+                if y == x {
+                    continue; // reachunder does not include the loop head
+                }
+                let fy = copymap[y];
+                reachunder.push(fy); // Ghidra adds FIND(y) unconditionally (block.cc:1161)
+                mark[fy] = true;
+            }
+            let mut q = 0;
+            while q < reachunder.len() {
+                let t = reachunder[q];
+                q += 1;
+                for &(y, revidx) in &in_adj[t] {
+                    if s.blocks[y].out_labels[revidx] & IRREDUCIBLE != 0 {
+                        continue; // pretend irreducible edges don't exist
+                    }
+                    let yprime = copymap[y];
+                    if visitcount[x] > visitcount[yprime] || visitcount[x] + numdesc[x] <= visitcount[yprime] {
+                        irreducible_count += 1;
+                        let is_tree = s.blocks[y].out_labels[revidx] & TREE_EDGE != 0;
+                        s.blocks[y].set_out_edge_flag(revidx, IRREDUCIBLE);
+                        if is_tree {
+                            needrebuild = true; // an irreducible tree edge forces a rebuild
+                        } else {
+                            s.blocks[y].clear_out_edge_flag(revidx, CROSS_EDGE | FORWARD_EDGE);
+                        }
+                    } else if !mark[yprime] && yprime != x {
+                        reachunder.push(yprime);
+                        mark[yprime] = true;
+                    }
+                }
+            }
+            for &blk in &reachunder {
+                mark[blk] = false;
+                copymap[blk] = x; // collapse reachunder into x
+            }
+            reachunder.clear();
+        }
+
+        if needrebuild {
+            for b in 0..n {
+                for l in s.blocks[b].out_labels.iter_mut() {
+                    *l &= !(TREE_EDGE | FORWARD_EDGE | CROSS_EDGE | BACK_EDGE | LOOP_EDGE);
+                }
+            }
+            continue; // rebuild the spanning tree
+        }
+        break;
+    }
+
+    // ---- calcLoop (block.cc:2104) — only if some edge was irreducible ----
+    if irreducible_count > 0 {
+        let mut m = vec![false; n]; // f_mark (visited)
+        let mut m2 = vec![false; n]; // f_mark2 (on current path)
+        let start = list_order[0];
+        let mut path: Vec<usize> = vec![start];
+        let mut state: Vec<usize> = vec![0];
+        m[start] = true;
+        m2[start] = true;
+        while let Some(&bl) = path.last() {
+            let i = *state.last().unwrap();
+            if i >= s.blocks[bl].out_edges.len() {
+                m2[bl] = false;
+                path.pop();
+                state.pop();
+            } else {
+                *state.last_mut().unwrap() += 1;
+                if s.blocks[bl].out_labels[i] & LOOP_EDGE != 0 {
+                    continue; // previously marked loop edge
+                }
+                let nextbl = s.blocks[bl].out_edges[i];
+                if m2[nextbl] {
+                    s.blocks[bl].set_out_edge_flag(i, LOOP_EDGE); // addLoopEdge: found a cycle
+                } else if !m[nextbl] {
+                    m[nextbl] = true;
+                    m2[nextbl] = true;
+                    path.push(nextbl);
+                    state.push(0);
+                }
+            }
+        }
+    }
+}
+
 /// Structure the CFG of `f`.
 pub fn structure(f: &Funcdata) -> Structured {
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
@@ -653,6 +906,11 @@ pub fn structure(f: &Funcdata) -> Structured {
         .collect();
     let mut s =
         Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), oriented };
+
+    // Label loop back-edges and irreducible edges on the leaf graph before collapsing (Ghidra's
+    // structureLoops, run on the CFG before ActionBlockStructure's buildCopy). Brick 1: the labels
+    // are written but not yet consumed by the collapse rules, so this is byte-identical.
+    structure_loops(&mut s, f.num_blocks());
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
