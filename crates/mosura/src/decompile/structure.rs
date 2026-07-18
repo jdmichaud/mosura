@@ -13,9 +13,12 @@
 //! collapseInternal}` until everything is isolated. Gotos are never invented by a fallback
 //! rule: `selectGoto` (blockaction.cc:1260) marks a *likely* unstructured edge — a loop exit
 //! or last-resort back-edge from `LoopBody::emitLikelyEdges` — and `ruleBlockGoto`
-//! (blockaction.cc:1450) consumes marked (`GOTO`/`IRREDUCIBLE`) edges. The `TraceDAG`
-//! interior trace that scores additional non-DAG gotos is deferred (P7 Brick 3): on clean
-//! reducible interiors it contributes no surviving gotos (B1 instrument verdict).
+//! (blockaction.cc:1450) consumes marked (`GOTO`/`IRREDUCIBLE`) edges. Ghidra's `TraceDAG`
+//! (blockaction.cc:499-1014) scores the additional non-DAG gotos by tracing the reducible DAG
+//! (or a loop interior between looptop/loopbottom): it pushes `BlockTrace`s out of each
+//! `BranchPoint` and, when it can no longer push, `selectBadEdge` scores the stuck edges and
+//! records the worst one as a likely goto. On clean reducible interiors it fully retires and
+//! contributes nothing.
 
 use std::collections::{HashMap, HashSet};
 
@@ -1179,19 +1182,76 @@ impl Structured {
         }
     }
 
+    /// `LoopBody::setExitMarks` (blockaction.cc:416): label every current exit edge of the loop with
+    /// `LOOP_EXIT_EDGE`, so the `TraceDAG` trace (which reads `isLoopDAGOut`) does not push out of the
+    /// loop. Bracketed by [`clear_exit_marks`](Self::clear_exit_marks); the marks live only for the
+    /// duration of one interior trace and never reach a collapse rule.
+    fn set_exit_marks(&mut self, li: usize) {
+        let n = self.loopbody[li].exitedges.len();
+        for idx in 0..n {
+            let mut e = self.loopbody[li].exitedges[idx];
+            let cur = self.get_current_edge(&mut e);
+            self.loopbody[li].exitedges[idx] = e;
+            if let Some((inbl, outedge)) = cur {
+                self.blocks[inbl].set_out_edge_flag(outedge, edge_flags::LOOP_EXIT_EDGE);
+            }
+        }
+    }
+
+    /// `LoopBody::clearExitMarks` (blockaction.cc:430): clear the `LOOP_EXIT_EDGE` marks set by
+    /// [`set_exit_marks`](Self::set_exit_marks) once the interior trace (and `emit_likely_edges`) is
+    /// done.
+    fn clear_exit_marks(&mut self, li: usize) {
+        let n = self.loopbody[li].exitedges.len();
+        for idx in 0..n {
+            let mut e = self.loopbody[li].exitedges[idx];
+            let cur = self.get_current_edge(&mut e);
+            self.loopbody[li].exitedges[idx] = e;
+            if let Some((inbl, outedge)) = cur {
+                self.blocks[inbl].clear_out_edge_flag(outedge, edge_flags::LOOP_EXIT_EDGE);
+            }
+        }
+    }
+
+    /// Run Ghidra's `TraceDAG` (blockaction.cc:499-1014) over the current collapsed graph, returning
+    /// the edges it scores as likely `goto`s. For a loop the trace runs from `looptop` to the
+    /// `finishblock` (loopbottom) between the (marked) exit edges; for the final DAG the roots are all
+    /// entry blocks. On a clean reducible interior/DAG the trace fully retires and returns nothing.
+    fn run_trace_dag(&self, roots: &[usize], finishblock: Option<usize>) -> Vec<FloatingEdge> {
+        let in_adj = self.in_edges();
+        let n = self.blocks.len();
+        let tracer = TraceDag {
+            blocks: &self.blocks,
+            rpo: &self.rpo,
+            in_adj,
+            bps: Vec::new(),
+            trs: Vec::new(),
+            ahead: None,
+            atail: None,
+            activecount: 0,
+            visitcount: vec![0i32; n],
+            finishblock,
+            rootlist: roots.to_vec(),
+            likelygoto: Vec::new(),
+        };
+        tracer.run()
+    }
+
     /// `CollapseStructure::updateLoopBody` (blockaction.cc:1193): advance to the current
     /// innermost live loop and make sure its likely-goto list is generated. Returns `true` while
     /// there are likely unstructured edges left to provide.
     ///
-    /// The `TraceDAG` interior trace is deferred (P7 Brick 3): for a live loop the likely list is
-    /// exactly `emit_likely_edges` (the tracer's `setExitMarks`/`clearExitMarks` bracket guards
-    /// only the trace, so it is skipped with it); for the final DAG the tracer is the only source,
-    /// so the search ends (`finaltrace`) with no likely edges.
+    /// For a live loop the list is the `TraceDAG` interior gotos (scored between the loop's marked
+    /// exit edges from `looptop` to `loopbottom`) followed by `emit_likely_edges`' exit/back edges;
+    /// for the final DAG the tracer over all entry roots is the only source — if it finds nothing the
+    /// search ends (`finaltrace`).
     fn update_loop_body(&mut self) -> bool {
         if self.finaltrace {
             return false;
         }
-        let mut current_li: Option<usize> = None;
+        // The current live loop being processed, carried with its live loop bottom (Ghidra's
+        // `loopbottom`, which distinguishes a loop trace from the final-DAG trace).
+        let mut current: Option<(usize, usize)> = None;
         while self.loopiter < self.loop_order.len() {
             let li = self.loop_order[self.loopiter];
             if let Some(loopbottom) = self.loop_body_update(li) {
@@ -1206,7 +1266,7 @@ impl Structured {
                     return true;
                 }
                 if !self.likelylistfull || self.likelyiter != self.likelygoto.len() {
-                    current_li = Some(li); // loop still exists
+                    current = Some((li, loopbottom)); // loop still exists
                     break;
                 }
             }
@@ -1219,13 +1279,28 @@ impl Structured {
         // Generate likely gotos for a new inner loop or the final DAG.
         self.likelygoto.clear();
         self.likelylistfull = true;
-        match current_li {
-            Some(li) => {
+        match current {
+            Some((li, loopbottom)) => {
+                // Trace the loop interior (looptop..loopbottom) between the marked exit edges,
+                // then append the loop's own exit/back edges — Ghidra's updateLoopBody loop branch.
+                let looptop = self.loopbody[li].head.expect("live loop");
+                self.set_exit_marks(li);
+                let gotos = self.run_trace_dag(&[looptop], Some(loopbottom));
+                self.likelygoto.extend(gotos);
                 self.emit_likely_edges(li);
+                self.clear_exit_marks(li);
             }
             None => {
-                self.finaltrace = true; // no loops left; the DAG trace (TraceDAG) is deferred
-                return false;
+                // Final DAG: trace from every entry (in-degree-0) root. If nothing is scored, the
+                // graph is fully structurable and the search is done.
+                let ins = self.in_edges();
+                let roots: Vec<usize> = self.order.iter().copied().filter(|&b| ins[b].is_empty()).collect();
+                let gotos = self.run_trace_dag(&roots, None);
+                self.likelygoto.extend(gotos);
+                if self.likelygoto.is_empty() {
+                    self.finaltrace = true; // no loops left and the DAG trace found no gotos
+                    return false;
+                }
             }
         }
         self.likelyiter = 0;
@@ -1250,35 +1325,12 @@ impl Structured {
         if self.clip_extra_roots() {
             SelectGoto::Rescan
         } else {
-            // Ghidra never reaches here without TraceDAG having scored the non-DAG gotos (else it
-            // throws "Could not finish collapsing block structure"); the caller falls back to the
-            // Brick-3 placeholder so the graph still fully collapses.
+            // Ghidra's `selectGoto` throws `LowlevelError("Could not finish collapsing block
+            // structure")` here: the `TraceDAG` trace (run inside `update_loop_body`) has already
+            // scored every non-DAG goto, so a well-formed graph never reaches this point with
+            // uncollapsed blocks. mosura reports it to the driver, which stops rather than throwing.
             SelectGoto::Stuck
         }
-    }
-
-    /// TraceDAG placeholder (P7 Brick 3 pending): when the loop-exit likely lists and
-    /// `clipExtraRoots` are exhausted but the graph has not fully collapsed — exactly where
-    /// Ghidra's `TraceDAG` trace would score a non-DAG goto — mark one merge-block in-edge as a
-    /// goto so collapse can proceed instead of silently truncating the function to the partial
-    /// root. This is the retired flat-driver picker kept only as this safety net; it never fires
-    /// on graphs the faithful driver structures (instrumented zero on the corpus movers), and
-    /// Brick 3 replaces it.
-    fn trace_dag_placeholder_goto(&mut self) -> Option<usize> {
-        let ins = self.in_edges();
-        for &t in &self.order {
-            if ins[t].len() < 2 {
-                continue;
-            }
-            for &(b, oi) in &ins[t] {
-                if b == t {
-                    continue;
-                }
-                self.set_goto_branch(b, oi);
-                return Some(b);
-            }
-        }
-        None
     }
 
     /// `CollapseStructure::onlyReachableFromRoot` (blockaction.cc:1052): mark and collect the
@@ -1477,10 +1529,12 @@ impl Structured {
             match self.select_goto() {
                 SelectGoto::Target(t) => isolated_count = self.collapse_internal(Some(t)),
                 SelectGoto::Rescan => isolated_count = self.collapse_internal(None),
-                SelectGoto::Stuck => match self.trace_dag_placeholder_goto() {
-                    Some(t) => isolated_count = self.collapse_internal(Some(t)),
-                    None => break, // no edges left at all
-                },
+                // Ghidra throws here (the TraceDAG has already scored every non-DAG goto); a
+                // well-formed graph never reaches this, so stop instead of looping forever.
+                SelectGoto::Stuck => {
+                    debug_assert!(false, "structure collapse stuck: TraceDAG scored no goto and no extra roots");
+                    break;
+                }
             }
         }
     }
@@ -2279,6 +2333,525 @@ fn order_loop_bodies(s: &mut Structured, n: usize) -> (Vec<LoopBody>, Vec<usize>
     (loopbody, process_order)
 }
 
+// ---- Ghidra's TraceDAG (blockaction.cc:499-1014): score the non-DAG unstructured edges ----
+
+/// `TraceDAG::BlockTrace::f_active` (blockaction.hh:125): this `BlockTrace` is on the active list.
+const TR_ACTIVE: u32 = 1;
+/// `TraceDAG::BlockTrace::f_terminal` (blockaction.hh:126): all paths from this trace exit without
+/// merging back to the parent.
+const TR_TERMINAL: u32 = 2;
+
+/// `TraceDAG::BranchPoint` (blockaction.hh:102): a node with multiple outgoing DAG edges, along which
+/// the trace splits. `top` is the branch FlowBlock (`None` for the virtual root); `paths` are the
+/// `BlockTrace` indices out of it. Parent pointers + `depth` give the ancestor distance metric.
+struct BpNode {
+    parent: Option<usize>,
+    pathout: i32,
+    top: Option<usize>,
+    paths: Vec<usize>,
+    depth: i32,
+    ismark: bool,
+}
+
+/// `TraceDAG::BlockTrace` (blockaction.hh:123): a single traced path out of a `BranchPoint`. `bottom`
+/// is the current node reached along the path, `destnode` the next node it will try to push into, and
+/// `edgelump` the number of real edges a retired sub-branch collapsed into. `anext`/`aprev` implement
+/// the intrusive active list (Ghidra's `std::list<BlockTrace*>` + per-trace `activeiter`).
+struct TrNode {
+    flags: u32,
+    top: usize,
+    pathout: i32,
+    bottom: Option<usize>,
+    destnode: Option<usize>,
+    edgelump: i32,
+    derivedbp: Option<usize>,
+    anext: Option<usize>,
+    aprev: Option<usize>,
+}
+
+/// `TraceDAG::BadEdgeScore` (blockaction.hh:146): metrics for ranking a stuck `BlockTrace` as the
+/// unstructured edge.
+struct BadEdgeScore {
+    exitproto: usize,
+    trace: usize,
+    distance: i32,
+    terminal: i32,
+    siblingedge: i32,
+}
+
+/// Ghidra's `TraceDAG` (blockaction.cc:499-1014), ported over mosura's index-based collapse graph.
+/// `BranchPoint`/`BlockTrace` pointers become indices into `bps`/`trs`; the `std::list` active set is
+/// an intrusive doubly linked list threaded through `TrNode::anext`/`aprev`. The graph is read-only
+/// during a trace (no collapse happens), so `in_adj` is snapshotted once; `visitcount` is the tracer's
+/// own copy of Ghidra's per-`FlowBlock` field (only touched by `removeTrace`, discarded at the end).
+struct TraceDag<'a> {
+    blocks: &'a [FlowBlock],
+    rpo: &'a [i32],
+    in_adj: Vec<Vec<(usize, usize)>>,
+    bps: Vec<BpNode>,
+    trs: Vec<TrNode>,
+    ahead: Option<usize>,
+    atail: Option<usize>,
+    activecount: i32,
+    visitcount: Vec<i32>,
+    finishblock: Option<usize>,
+    rootlist: Vec<usize>,
+    likelygoto: Vec<FloatingEdge>,
+}
+
+impl<'a> TraceDag<'a> {
+    /// `FlowBlock::getIndex` (block.hh:160): the reverse-post-order number; a composite `BlockGraph`
+    /// takes the minimum index over its components (`BlockGraph::addBlock`, block.cc:862).
+    fn block_index(&self, b: usize) -> i32 {
+        match self.blocks[b].kind {
+            FlowKind::Basic(bid) => self.rpo[bid.0 as usize],
+            _ => self.blocks[b].components.iter().map(|&c| self.block_index(c)).min().unwrap_or(0),
+        }
+    }
+
+    /// `FlowBlock::isLoopDAGIn` (block.hh:345): the `k`-th in-edge of `bl` stays within the reducible
+    /// loop DAG (label read off the source's out-edge, as elsewhere).
+    fn is_loop_dag_in(&self, bl: usize, k: usize) -> bool {
+        use edge_flags::*;
+        let (src, oi) = self.in_adj[bl][k];
+        self.blocks[src].out_labels[oi] & (IRREDUCIBLE | BACK_EDGE | LOOP_EXIT_EDGE | GOTO_EDGE) == 0
+    }
+
+    /// `TraceDAG::insertActive` (blockaction.cc:786): append `tr` to the active list.
+    fn insert_active(&mut self, tr: usize) {
+        self.trs[tr].aprev = self.atail;
+        self.trs[tr].anext = None;
+        match self.atail {
+            Some(x) => self.trs[x].anext = Some(tr),
+            None => self.ahead = Some(tr),
+        }
+        self.atail = Some(tr);
+        self.trs[tr].flags |= TR_ACTIVE;
+        self.activecount += 1;
+    }
+
+    /// `TraceDAG::removeActive` (blockaction.cc:798): unlink `tr` from the active list.
+    fn remove_active(&mut self, tr: usize) {
+        let p = self.trs[tr].aprev;
+        let nx = self.trs[tr].anext;
+        match p {
+            Some(x) => self.trs[x].anext = nx,
+            None => self.ahead = nx,
+        }
+        match nx {
+            Some(x) => self.trs[x].aprev = p,
+            None => self.atail = p,
+        }
+        self.trs[tr].flags &= !TR_ACTIVE;
+        self.activecount -= 1;
+    }
+
+    /// `TraceDAG::BlockTrace::BlockTrace(BranchPoint*,int4,int4)` (blockaction.cc:586): a path out of
+    /// `bp` along its out-edge `eo` (the `po`-th loop-DAG path).
+    fn new_trace_from_bp(&mut self, bp: usize, po: i32, eo: usize) -> usize {
+        let bottom = self.bps[bp].top;
+        let destnode = Some(self.blocks[bottom.expect("branch point has a FlowBlock")].out_edges[eo]);
+        self.trs.push(TrNode {
+            flags: 0,
+            top: bp,
+            pathout: po,
+            bottom,
+            destnode,
+            edgelump: 1,
+            derivedbp: None,
+            anext: None,
+            aprev: None,
+        });
+        self.trs.len() - 1
+    }
+
+    /// `TraceDAG::BlockTrace::BlockTrace(BranchPoint*,int4,FlowBlock*)` (blockaction.cc:603): a root
+    /// path off the virtual BranchPoint to entry block `bl` (the edge is not a real edge).
+    fn new_root_trace(&mut self, bp: usize, po: i32, bl: usize) -> usize {
+        self.trs.push(TrNode {
+            flags: 0,
+            top: bp,
+            pathout: po,
+            bottom: None,
+            destnode: Some(bl),
+            edgelump: 1,
+            derivedbp: None,
+            anext: None,
+            aprev: None,
+        });
+        self.trs.len() - 1
+    }
+
+    /// `TraceDAG::BranchPoint::createTraces` (blockaction.cc:499): one `BlockTrace` per loop-DAG
+    /// out-edge of the branch FlowBlock.
+    fn create_traces(&mut self, bp: usize) {
+        let fb = self.bps[bp].top.expect("branch point has a FlowBlock");
+        let sizeout = self.blocks[fb].out_edges.len();
+        for i in 0..sizeout {
+            if !self.blocks[fb].is_loop_dag_out(i) {
+                continue;
+            }
+            let po = self.bps[bp].paths.len() as i32;
+            let tr = self.new_trace_from_bp(bp, po, i);
+            self.bps[bp].paths.push(tr);
+        }
+    }
+
+    /// `TraceDAG::BranchPoint::BranchPoint(BlockTrace*)` (blockaction.cc:565): open a new BranchPoint
+    /// at the destination of `parent_tr`.
+    fn make_bp_from_trace(&mut self, parent_tr: usize) -> usize {
+        let parent = self.trs[parent_tr].top;
+        let depth = self.bps[parent].depth + 1;
+        let pathout = self.trs[parent_tr].pathout;
+        let top = self.trs[parent_tr].destnode;
+        self.bps.push(BpNode { parent: Some(parent), pathout, top, paths: Vec::new(), depth, ismark: false });
+        let bp = self.bps.len() - 1;
+        self.create_traces(bp);
+        bp
+    }
+
+    /// `TraceDAG::BranchPoint::markPath` (blockaction.cc:509): toggle the mark from `bp` up to the root.
+    fn mark_path(&mut self, bp: usize) {
+        let mut cur = Some(bp);
+        while let Some(c) = cur {
+            self.bps[c].ismark = !self.bps[c].ismark;
+            cur = self.bps[c].parent;
+        }
+    }
+
+    /// `TraceDAG::BranchPoint::distance` (blockaction.cc:524): edges from `a` up to the common ancestor
+    /// of `a` and `b` plus edges down to `b` (`a`'s path to the root is assumed marked).
+    fn distance(&self, a: usize, b: usize) -> i32 {
+        let mut cur = Some(b);
+        while let Some(c) = cur {
+            if self.bps[c].ismark {
+                return (self.bps[a].depth - self.bps[c].depth) + (self.bps[b].depth - self.bps[c].depth);
+            }
+            cur = self.bps[c].parent;
+        }
+        self.bps[a].depth + self.bps[b].depth + 1
+    }
+
+    /// `TraceDAG::removeTrace` (blockaction.cc:656): record `tr`'s edge as a likely goto and detach it
+    /// (terminal if it has advanced past the branch root, else spliced out of the BranchPoint's paths).
+    fn remove_trace(&mut self, tr: usize) {
+        let bottom = self.trs[tr].bottom;
+        let dn = self.trs[tr].destnode;
+        self.likelygoto.push(FloatingEdge { top: bottom.expect("non-terminal trace"), bottom: dn.expect("non-terminal trace") });
+        self.visitcount[dn.unwrap()] += self.trs[tr].edgelump;
+        let parentbp = self.trs[tr].top;
+        if self.trs[tr].bottom != self.bps[parentbp].top {
+            // Trace moved past the root branch: treat it as terminal, keep it on the active list.
+            self.trs[tr].flags |= TR_TERMINAL;
+            self.trs[tr].bottom = None;
+            self.trs[tr].destnode = None;
+            self.trs[tr].edgelump = 0;
+            return;
+        }
+        // Otherwise remove the path from the BranchPoint (its root branch becomes a goto).
+        self.remove_active(tr);
+        let size = self.bps[parentbp].paths.len();
+        let po = self.trs[tr].pathout as usize;
+        for i in (po + 1)..size {
+            let moved = self.bps[parentbp].paths[i];
+            self.trs[moved].pathout -= 1;
+            if let Some(dbp) = self.trs[moved].derivedbp {
+                self.bps[dbp].pathout -= 1;
+            }
+            self.bps[parentbp].paths[i - 1] = moved;
+        }
+        self.bps[parentbp].paths.pop();
+    }
+
+    /// `TraceDAG::processExitConflict` (blockaction.cc:694): for a run of BlockTraces sharing an exit
+    /// block, compute the minimum inter-branchpoint distance and count sibling edges.
+    fn process_exit_conflict(&mut self, scores: &mut [BadEdgeScore], start: usize, end: usize) {
+        let mut s = start;
+        while s < end {
+            let startbp = self.trs[scores[s].trace].top;
+            if s + 1 < end {
+                self.mark_path(startbp);
+                for it in (s + 1)..end {
+                    if startbp == self.trs[scores[it].trace].top {
+                        scores[s].siblingedge += 1;
+                        scores[it].siblingedge += 1;
+                    }
+                    let dist = self.distance(startbp, self.trs[scores[it].trace].top);
+                    if scores[s].distance == -1 || scores[s].distance > dist {
+                        scores[s].distance = dist;
+                    }
+                    if scores[it].distance == -1 || scores[it].distance > dist {
+                        scores[it].distance = dist;
+                    }
+                }
+                self.mark_path(startbp);
+            }
+            s += 1;
+        }
+    }
+
+    /// `TraceDAG::BadEdgeScore::operator<` (blockaction.cc:635): group traces by exit block, then by
+    /// branch-point FlowBlock, then by the branch taken (`pathout`).
+    fn bad_edge_cmp(&self, a: &BadEdgeScore, b: &BadEdgeScore) -> std::cmp::Ordering {
+        let ai = self.block_index(a.exitproto);
+        let bi = self.block_index(b.exitproto);
+        if ai != bi {
+            return ai.cmp(&bi);
+        }
+        let atmp = self.bps[self.trs[a.trace].top].top.map(|x| self.block_index(x)).unwrap_or(-1);
+        let btmp = self.bps[self.trs[b.trace].top].top.map(|x| self.block_index(x)).unwrap_or(-1);
+        if atmp != btmp {
+            return atmp.cmp(&btmp);
+        }
+        self.trs[a.trace].pathout.cmp(&self.trs[b.trace].pathout)
+    }
+
+    /// `TraceDAG::BadEdgeScore::compareFinal` (blockaction.cc:617): `true` if `a` is LESS likely to be
+    /// the bad edge than `b` (bigger sibling edge / non-terminal / smaller distance / shallower).
+    fn compare_final(&self, a: &BadEdgeScore, b: &BadEdgeScore) -> bool {
+        if a.siblingedge != b.siblingedge {
+            return b.siblingedge < a.siblingedge;
+        }
+        if a.terminal != b.terminal {
+            return a.terminal < b.terminal;
+        }
+        if a.distance != b.distance {
+            return a.distance < b.distance;
+        }
+        self.bps[self.trs[a.trace].top].depth < self.bps[self.trs[b.trace].top].depth
+    }
+
+    /// `TraceDAG::selectBadEdge` (blockaction.cc:730): annotate the active BlockTraces and return the
+    /// one most likely to be an unstructured edge.
+    fn select_bad_edge(&mut self) -> usize {
+        let mut list: Vec<BadEdgeScore> = Vec::new();
+        let mut cur = self.ahead;
+        while let Some(tr) = cur {
+            cur = self.trs[tr].anext;
+            if self.trs[tr].flags & TR_TERMINAL != 0 {
+                continue;
+            }
+            // Never remove virtual edges (the root paths off the artificial BranchPoint).
+            if self.bps[self.trs[tr].top].top.is_none() && self.trs[tr].bottom.is_none() {
+                continue;
+            }
+            let exitproto = self.trs[tr].destnode.expect("non-terminal trace has a destnode");
+            let terminal = if self.blocks[exitproto].out_edges.is_empty() { 1 } else { 0 };
+            list.push(BadEdgeScore { exitproto, trace: tr, distance: -1, terminal, siblingedge: 0 });
+        }
+        list.sort_by(|a, b| self.bad_edge_cmp(a, b));
+
+        // Process each maximal run of traces sharing an exit block.
+        let mut i = 0;
+        while i < list.len() {
+            let curbl = list[i].exitproto;
+            let mut j = i + 1;
+            while j < list.len() && list[j].exitproto == curbl {
+                j += 1;
+            }
+            if j - i > 1 {
+                self.process_exit_conflict(&mut list, i, j);
+            }
+            i = j;
+        }
+
+        let mut maxi = 0;
+        for k in 1..list.len() {
+            if self.compare_final(&list[maxi], &list[k]) {
+                maxi = k;
+            }
+        }
+        list[maxi].trace
+    }
+
+    /// `TraceDAG::checkOpen` (blockaction.cc:810): a node can be opened only once all its loop-DAG
+    /// in-edges have been traced (accounting for edges already treated as goto via `visitcount`).
+    fn check_open(&self, tr: usize) -> bool {
+        if self.trs[tr].flags & TR_TERMINAL != 0 {
+            return false;
+        }
+        let mut isroot = false;
+        if self.bps[self.trs[tr].top].depth == 0 {
+            if self.trs[tr].bottom.is_none() {
+                return true; // artificial root can always open its first level
+            }
+            isroot = true;
+        }
+        let bl = self.trs[tr].destnode.expect("active non-terminal trace has a destnode");
+        if Some(bl) == self.finishblock && !isroot {
+            return false; // only the root may open the designated exit
+        }
+        let ignore = self.trs[tr].edgelump + self.visitcount[bl];
+        let mut count = 0;
+        for k in 0..self.in_adj[bl].len() {
+            if self.is_loop_dag_in(bl, k) {
+                count += 1;
+                if count > ignore {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// `TraceDAG::openBranch` (blockaction.cc:839): split `parent` into a new BranchPoint at its
+    /// destination; returns the active cursor to resume from.
+    fn open_branch(&mut self, parent: usize) -> Option<usize> {
+        let newbp = self.make_bp_from_trace(parent);
+        self.trs[parent].derivedbp = Some(newbp);
+        if self.bps[newbp].paths.is_empty() {
+            // No new traces: the destination has no loop-DAG out-edges, so `parent` is terminal.
+            self.trs[parent].derivedbp = None;
+            self.trs[parent].flags |= TR_TERMINAL;
+            self.trs[parent].bottom = None;
+            self.trs[parent].destnode = None;
+            self.trs[parent].edgelump = 0;
+            return Some(parent); // parent stays active
+        }
+        self.remove_active(parent);
+        let paths = self.bps[newbp].paths.clone();
+        for &p in &paths {
+            self.insert_active(p);
+        }
+        Some(self.bps[newbp].paths[0])
+    }
+
+    /// `TraceDAG::checkRetirement` (blockaction.cc:866): a BranchPoint can retire once all sibling
+    /// paths (checked from the first sibling) either terminate or flow to the same node. Returns
+    /// `Some(exitblock)` (`exitblock` may be `None` when all paths terminated) or `None` if not ready.
+    fn check_retirement(&self, tr: usize) -> Option<Option<usize>> {
+        if self.trs[tr].pathout != 0 {
+            return None; // only check on the first sibling
+        }
+        let bp = self.trs[tr].top;
+        if self.bps[bp].depth == 0 {
+            for &p in &self.bps[bp].paths {
+                if self.trs[p].flags & TR_ACTIVE == 0 {
+                    return None;
+                }
+                if self.trs[p].flags & TR_TERMINAL == 0 {
+                    return None; // all root paths must be terminal
+                }
+            }
+            return Some(None);
+        }
+        let mut outblock: Option<usize> = None;
+        for idx in 0..self.bps[bp].paths.len() {
+            let p = self.bps[bp].paths[idx];
+            if self.trs[p].flags & TR_ACTIVE == 0 {
+                return None;
+            }
+            if self.trs[p].flags & TR_TERMINAL != 0 {
+                continue;
+            }
+            if outblock == self.trs[p].destnode {
+                continue;
+            }
+            if outblock.is_some() {
+                return None;
+            }
+            outblock = self.trs[p].destnode;
+        }
+        Some(outblock)
+    }
+
+    /// `TraceDAG::retireBranch` (blockaction.cc:900): remove all of `bp`'s child traces from the active
+    /// list and re-activate its parent trace as having reached `exitblock`.
+    fn retire_branch(&mut self, bp: usize, exitblock: Option<usize>) -> Option<usize> {
+        let mut edgeout_bl: Option<usize> = None;
+        let mut edgelump_sum = 0;
+        let paths = self.bps[bp].paths.clone();
+        for &p in &paths {
+            if self.trs[p].flags & TR_TERMINAL == 0 {
+                edgelump_sum += self.trs[p].edgelump;
+                if edgeout_bl.is_none() {
+                    edgeout_bl = self.trs[p].bottom;
+                }
+            }
+            self.remove_active(p);
+        }
+        if self.bps[bp].depth == 0 {
+            return self.ahead; // root block: nothing more to do
+        }
+        if let Some(parent) = self.bps[bp].parent {
+            let po = self.bps[bp].pathout as usize;
+            let parenttrace = self.bps[parent].paths[po];
+            self.trs[parenttrace].derivedbp = None;
+            if edgeout_bl.is_none() {
+                self.trs[parenttrace].flags |= TR_TERMINAL;
+                self.trs[parenttrace].bottom = None;
+                self.trs[parenttrace].destnode = None;
+                self.trs[parenttrace].edgelump = 0;
+            } else {
+                self.trs[parenttrace].bottom = edgeout_bl;
+                self.trs[parenttrace].destnode = exitblock;
+                self.trs[parenttrace].edgelump = edgelump_sum;
+            }
+            self.insert_active(parenttrace);
+            return Some(parenttrace);
+        }
+        self.ahead
+    }
+
+    /// `TraceDAG::initialize` (blockaction.cc:967): create the virtual root BranchPoint and a root
+    /// BlockTrace for each entry FlowBlock.
+    fn initialize(&mut self) {
+        self.bps.push(BpNode { parent: None, pathout: -1, top: None, paths: Vec::new(), depth: 0, ismark: false });
+        let rb = self.bps.len() - 1;
+        for i in 0..self.rootlist.len() {
+            let bl = self.rootlist[i];
+            let po = self.bps[rb].paths.len() as i32;
+            let tr = self.new_root_trace(rb, po, bl);
+            self.bps[rb].paths.push(tr);
+            self.insert_active(tr);
+        }
+    }
+
+    /// `TraceDAG::pushBranches` (blockaction.cc:983): push the traces as far as possible, retiring or
+    /// removing edges, until nothing is active.
+    fn push_branches(&mut self) {
+        let mut cursor = self.ahead;
+        let mut missed = 0i32;
+        // Ghidra relies on the algorithm's own progress guarantee; a generous cap guards a port bug.
+        let cap = 16 + 8 * self.blocks.iter().map(|b| b.out_edges.len() + 1).sum::<usize>();
+        let mut steps = 0usize;
+        while self.activecount > 0 {
+            steps += 1;
+            if steps > cap {
+                debug_assert!(false, "TraceDAG pushBranches did not converge");
+                break;
+            }
+            if cursor.is_none() {
+                cursor = self.ahead;
+            }
+            let curtrace = cursor.expect("active list non-empty while activecount > 0");
+            if missed >= self.activecount {
+                let badtrace = self.select_bad_edge();
+                self.remove_trace(badtrace);
+                cursor = self.ahead;
+                missed = 0;
+            } else if let Some(exitblock) = self.check_retirement(curtrace) {
+                let bp = self.trs[curtrace].top;
+                cursor = self.retire_branch(bp, exitblock);
+                missed = 0;
+            } else if self.check_open(curtrace) {
+                cursor = self.open_branch(curtrace);
+                missed = 0;
+            } else {
+                missed += 1;
+                cursor = self.trs[curtrace].anext;
+            }
+        }
+    }
+
+    /// Run the trace and return the likely unstructured edges it scored.
+    fn run(mut self) -> Vec<FloatingEdge> {
+        self.initialize();
+        self.push_branches();
+        self.likelygoto
+    }
+}
+
 /// Ghidra's `Funcdata::installSwitchDefaults` (funcdata_block.cc:687), run at the head of
 /// `ActionBlockStructure` (blockaction.cc:2176) — after `structureLoops` has (re)cleared the edge
 /// labels: mark each jump table's \e default out-edge on its BRANCHIND block with
@@ -2720,8 +3293,8 @@ mod tests {
         f.set_blocks(blocks);
         let s = structure(&f);
         // No short-circuit composite may exist anywhere in the collapse history: the or-fold was
-        // refused, so this non-structurable DAG resolved through gotos (the TraceDAG-placeholder
-        // path) instead of swallowing the statements into a condition.
+        // refused, so this non-structurable DAG resolved through a goto scored by the final-DAG
+        // TraceDAG trace, instead of swallowing the statements into a condition.
         assert!(
             !s.blocks.iter().any(|b| matches!(b.kind, FlowKind::CondOr | FlowKind::CondAnd)),
             "complex condition must not fold"
@@ -2767,5 +3340,82 @@ mod tests {
         let s = structure(&cfg(3, &[(0, 1), (1, 1), (1, 2)]));
         assert_eq!(active(&s), 1);
         assert!(kinds(&s).contains(&FlowKind::DoWhile));
+    }
+
+    /// A bare leaf-only `Structured` (all edges unlabeled = loop-DAG) with identity reverse-post-order,
+    /// for testing the `TraceDAG` port directly.
+    fn bare(nb: usize, edges: &[(usize, usize)]) -> Structured {
+        let mut blocks: Vec<FlowBlock> = (0..nb)
+            .map(|b| FlowBlock {
+                kind: FlowKind::Basic(BlockId(b as u32)),
+                components: Vec::new(),
+                out_edges: Vec::new(),
+                out_labels: Vec::new(),
+                flags: 0,
+                active: true,
+                negated: false,
+                parent: None,
+                cond_flip: (false, false),
+            })
+            .collect();
+        for &(a, b) in edges {
+            blocks[a].out_edges.push(b);
+            blocks[a].out_labels.push(0);
+        }
+        Structured {
+            blocks,
+            root: 0,
+            gotos: HashMap::new(),
+            labels: HashSet::new(),
+            oriented: vec![false; nb],
+            complex: vec![false; nb],
+            rpo: (0..nb as i32).collect(),
+            loopbody: Vec::new(),
+            loop_order: Vec::new(),
+            order: (0..nb).collect(),
+            loopiter: 0,
+            likelygoto: Vec::new(),
+            likelyiter: 0,
+            likelylistfull: false,
+            finaltrace: false,
+            default_goto: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn trace_dag_clean_diamond_needs_no_goto() {
+        // 0 -> {1, 2} -> 3: a clean reducible DAG. Both branch paths merge at 3, the BranchPoint
+        // retires, and the trace finishes with no unstructured edge.
+        let s = bare(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]);
+        let gotos = s.run_trace_dag(&[0], None);
+        assert!(gotos.is_empty(), "clean DAG scores no goto: {gotos:?}");
+    }
+
+    #[test]
+    fn trace_dag_forward_jump_needs_one_goto() {
+        // 0 -> {1, 2}; 1 -> {3, 2}; 2 -> 3. Node 2 has two loop-DAG in-edges (from 0 and from 1)
+        // at different branch depths, so the trace cannot open it from either path alone and gets
+        // stuck; selectBadEdge scores exactly one edge as the unstructured goto.
+        let s = bare(4, &[(0, 1), (0, 2), (1, 3), (1, 2), (2, 3)]);
+        let gotos = s.run_trace_dag(&[0], None);
+        assert_eq!(gotos.len(), 1, "one non-DAG edge scored: {gotos:?}");
+        // The scored edge is a real out-edge of its source in the graph.
+        let e = gotos[0];
+        assert!(s.blocks[e.top].out_edges.contains(&e.bottom), "scored edge exists: {e:?}");
+    }
+
+    #[test]
+    fn trace_dag_loop_interior_clean_scores_no_goto() {
+        // A while-loop interior with a nested if: head 0 -> {1, exit 4}; body 1 -> {2, 3}; 2 -> 3;
+        // 3 -> 0 (back). Tracing from the head to the loop bottom (3), with the exit edge 0->4
+        // marked, the interior is a clean DAG so no interior goto is scored — the loop is fully
+        // reducible (mirrors the corpus loops, which stay byte-identical).
+        let mut s = bare(5, &[(0, 1), (0, 4), (1, 2), (1, 3), (2, 3), (3, 0)]);
+        // Mark the exit edge (0 -> 4) LOOP_EXIT and the back-edge (3 -> 0) BACK, as structureLoops +
+        // setExitMarks would, so isLoopDAGOut excludes them.
+        s.blocks[0].out_labels[1] = edge_flags::LOOP_EXIT_EDGE; // 0 -> 4
+        s.blocks[3].out_labels[0] = edge_flags::BACK_EDGE | edge_flags::LOOP_EDGE; // 3 -> 0
+        let gotos = s.run_trace_dag(&[0], Some(3));
+        assert!(gotos.is_empty(), "clean loop interior scores no goto: {gotos:?}");
     }
 }
