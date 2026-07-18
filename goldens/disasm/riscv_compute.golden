@@ -1,0 +1,100 @@
+# lang=RISCV:LE:64:default:gcc capture=v1
+00010144  bb05b502  mulw a1,a0,a1
+          pcode: (unique,0x21100,4) = INT_MULT (register,0x2050,4) (register,0x2058,4)
+          pcode: (register,0x2058,8) = INT_SEXT (unique,0x21100,4)
+00010148  2d9d  c.addw a0,a1
+          pcode: (unique,0x2a200,4) = INT_ADD (register,0x2050,4) (register,0x2058,4)
+          pcode: (register,0x2050,8) = INT_SEXT (unique,0x2a200,4)
+0001014a  8280  ret 
+          pcode: RETURN (register,0x2008,8)
+0001014c  7971  c.addi16sp sp,-0x30
+          pcode: (unique,0x2600,8) = COPY (const,0xffffffffffffffd0,8)
+          pcode: (register,0x2010,8) = INT_ADD (register,0x2010,8) (unique,0x2600,8)
+0001014e  06f4  c.sdsp ra,0x28(sp)
+          pcode: (unique,0x2c00,8) = COPY (const,0x28,8)
+          pcode: (unique,0x2c200,8) = INT_ADD (unique,0x2c00,8) (register,0x2010,8)
+          pcode: STORE (space,ram) (unique,0x2c200,8) (register,0x2008,8)
+00010150  4ae8  c.sdsp s2,0x10(sp)
+          pcode: (unique,0x2c00,8) = COPY (const,0x10,8)
+          pcode: (unique,0x2c200,8) = INT_ADD (unique,0x2c00,8) (register,0x2010,8)
+          pcode: STORE (space,ram) (unique,0x2c200,8) (register,0x2090,8)
+00010152  635bb002  bge zero,a1,0x10188
+          pcode: (unique,0x3f00,1) = INT_SLESSEQUAL (register,0x2058,8) (const,0x0,8)
+          pcode: CBRANCH (ram,0x10188,8) (unique,0x3f00,1)
+00010156  22f0  c.sdsp s0,0x20(sp)
+          pcode: (unique,0x2c00,8) = COPY (const,0x20,8)
+          pcode: (unique,0x2c200,8) = INT_ADD (unique,0x2c00,8) (register,0x2010,8)
+          pcode: STORE (space,ram) (unique,0x2c200,8) (register,0x2040,8)
+00010158  26ec  c.sdsp s1,0x18(sp)
+          pcode: (unique,0x2c00,8) = COPY (const,0x18,8)
+          pcode: (unique,0x2c200,8) = INT_ADD (unique,0x2c00,8) (register,0x2010,8)
+          pcode: STORE (space,ram) (unique,0x2c200,8) (register,0x2048,8)
+0001015a  4ee4  c.sdsp s3,0x8(sp)
+          pcode: (unique,0x2c00,8) = COPY (const,0x8,8)
+          pcode: (unique,0x2c200,8) = INT_ADD (unique,0x2c00,8) (register,0x2010,8)
+          pcode: STORE (space,ram) (unique,0x2c200,8) (register,0x2098,8)
+0001015c  ae89  c.mv s3,a1
+          pcode: (register,0x2098,8) = COPY (register,0x2058,8)
+0001015e  aa84  c.mv s1,a0
+          pcode: (register,0x2048,8) = COPY (register,0x2050,8)
+00010160  0144  c.li s0,0x0
+          pcode: (unique,0x1d00,8) = COPY (const,0x0,8)
+          pcode: (register,0x2040,8) = COPY (unique,0x1d00,8)
+00010162  0149  c.li s2,0x0
+          pcode: (unique,0x1d00,8) = COPY (const,0x0,8)
+          pcode: (register,0x2090,8) = COPY (unique,0x1d00,8)
+00010164  a285  c.mv a1,s0
+          pcode: (register,0x2058,8) = COPY (register,0x2040,8)
+00010166  8840  c.lw a0,0x0(s1)
+          pcode: (unique,0x2700,8) = COPY (const,0x0,8)
+          pcode: (unique,0x2b900,8) = INT_ADD (unique,0x2700,8) (register,0x2048,8)
+          pcode: (unique,0x2ba00,4) = LOAD (space,ram) (unique,0x2b900,8)
+          pcode: (register,0x2050,8) = INT_SEXT (unique,0x2ba00,4)
+00010168  eff0dffd  jal ra,0x10144
+          pcode: (register,0x2008,8) = COPY (const,0x1016c,8)
+          pcode: CALL (ram,0x10144,8)
+0001016c  3b092501  addw s2,a0,s2
+          pcode: (unique,0x1ab00,4) = INT_ADD (register,0x2050,4) (register,0x2090,4)
+          pcode: (register,0x2090,8) = INT_SEXT (unique,0x1ab00,4)
+00010170  0524  c.addiw s0,0x1
+          pcode: (unique,0x1d00,8) = COPY (const,0x1,8)
+          pcode: (unique,0x29f00,8) = INT_ADD (register,0x2040,8) (unique,0x1d00,8)
+          pcode: (register,0x2040,8) = INT_SEXT (unique,0x29f00,4)
+00010172  9104  c.addi s1,0x4
+          pcode: (unique,0x1d00,8) = COPY (const,0x4,8)
+          pcode: (register,0x2048,8) = INT_ADD (register,0x2048,8) (unique,0x1d00,8)
+00010174  e39889fe  bne s3,s0,0x10164
+          pcode: (unique,0x4300,1) = INT_NOTEQUAL (register,0x2098,8) (register,0x2040,8)
+          pcode: CBRANCH (ram,0x10164,8) (unique,0x4300,1)
+00010178  0274  c.ldsp s0,0x20(sp)
+          pcode: (unique,0x2b00,8) = COPY (const,0x20,8)
+          pcode: (unique,0x2b600,8) = INT_ADD (unique,0x2b00,8) (register,0x2010,8)
+          pcode: (register,0x2040,8) = LOAD (space,ram) (unique,0x2b600,8)
+0001017a  e264  c.ldsp s1,0x18(sp)
+          pcode: (unique,0x2b00,8) = COPY (const,0x18,8)
+          pcode: (unique,0x2b600,8) = INT_ADD (unique,0x2b00,8) (register,0x2010,8)
+          pcode: (register,0x2048,8) = LOAD (space,ram) (unique,0x2b600,8)
+0001017c  a269  c.ldsp s3,0x8(sp)
+          pcode: (unique,0x2b00,8) = COPY (const,0x8,8)
+          pcode: (unique,0x2b600,8) = INT_ADD (unique,0x2b00,8) (register,0x2010,8)
+          pcode: (register,0x2098,8) = LOAD (space,ram) (unique,0x2b600,8)
+0001017e  4a85  c.mv a0,s2
+          pcode: (register,0x2050,8) = COPY (register,0x2090,8)
+00010180  a270  c.ldsp ra,0x28(sp)
+          pcode: (unique,0x2b00,8) = COPY (const,0x28,8)
+          pcode: (unique,0x2b600,8) = INT_ADD (unique,0x2b00,8) (register,0x2010,8)
+          pcode: (register,0x2008,8) = LOAD (space,ram) (unique,0x2b600,8)
+00010182  4269  c.ldsp s2,0x10(sp)
+          pcode: (unique,0x2b00,8) = COPY (const,0x10,8)
+          pcode: (unique,0x2b600,8) = INT_ADD (unique,0x2b00,8) (register,0x2010,8)
+          pcode: (register,0x2090,8) = LOAD (space,ram) (unique,0x2b600,8)
+00010184  4561  c.addi16sp sp,0x30
+          pcode: (unique,0x2600,8) = COPY (const,0x30,8)
+          pcode: (register,0x2010,8) = INT_ADD (register,0x2010,8) (unique,0x2600,8)
+00010186  8280  ret 
+          pcode: RETURN (register,0x2008,8)
+00010188  0149  c.li s2,0x0
+          pcode: (unique,0x1d00,8) = COPY (const,0x0,8)
+          pcode: (register,0x2090,8) = COPY (unique,0x1d00,8)
+0001018a  d5bf  c.j 0x1017e
+          pcode: BRANCH (ram,0x1017e,8)

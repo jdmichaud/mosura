@@ -1,0 +1,7 @@
+<binaryimage arch="68000:BE:32:default:default">
+<bytechunk space="ram" offset="0x800000b8" readonly="true">
+202f00044c2f08000008d0af00044e7548e73830282f001c6f24246f0018
+4282428347faffdc2f022f1a4e93508fd6805282b48466f020034cdf0c1c
+4e75428360f4
+</bytechunk>
+</binaryimage>

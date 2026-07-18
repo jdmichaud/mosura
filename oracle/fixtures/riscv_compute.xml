@@ -1,0 +1,7 @@
+<binaryimage arch="RISCV:LE:64:default:gcc">
+<bytechunk space="ram" offset="0x10144" readonly="true">
+bb05b5022d9d8280797106f44ae8635bb00222f026ec4ee4ae89aa840144
+0149a2858840eff0dffd3b09250105249104e39889fe0274e264a2694a85
+a2704269456182800149d5bf
+</bytechunk>
+</binaryimage>

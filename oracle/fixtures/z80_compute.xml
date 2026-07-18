@@ -1,0 +1,6 @@
+<binaryimage arch="z80:LE:16:default:default">
+<bytechunk space="ram" offset="0x200" readonly="true">
+dde5dd210000dd39eb01000078dd96043011682600197ec5d5cd2902d1c1
+814f0418e979dde1e133e9873cc9
+</bytechunk>
+</binaryimage>
