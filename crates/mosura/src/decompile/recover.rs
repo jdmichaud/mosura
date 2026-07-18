@@ -301,11 +301,10 @@ fn only_op_use(
                         if f.op(op).input(opslot) == Some(vn) {
                             continue; // the same trial slot in a (possibly different) RETURN
                         }
-                    } else if active_output && f.op(op).input(0) != Some(vn) {
-                        if !is_alternate_path_valid(f, vn, cur_flags) {
+                    } else if active_output && f.op(op).input(0) != Some(vn)
+                        && !is_alternate_path_valid(f, vn, cur_flags) {
                             continue; // don't consider this a "use"
                         }
-                    }
                     res = false;
                 }
                 OpCode::Multiequal | OpCode::IntSext | OpCode::IntZext | OpCode::Cast => {} // transparent
@@ -543,7 +542,7 @@ fn setup_active_output(f: &mut Funcdata) {
         let n = f.op(ret).num_inputs();
         for slot in 1..n {
             if let Some(v) = f.op(ret).input(slot) {
-                let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+                let (loc, size) = (f.vn(v).loc, f.vn(v).size);
                 let ti = active.register_trial(loc, size);
                 active.trial[ti].op_slot = slot as u32;
             }
@@ -678,7 +677,7 @@ fn setup_active_input(f: &mut Funcdata, call: OpId) {
     let n = f.op(call).num_inputs();
     for slot in 1..n {
         if let Some(v) = f.op(call).input(slot) {
-            let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+            let (loc, size) = (f.vn(v).loc, f.vn(v).size);
             let ti = active.register_trial(loc, size);
             active.trial[ti].op_slot = slot as u32;
         }
@@ -748,7 +747,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         if matches!(verdict, Verdict::NoUse) {
             if let Some(v) = f.op(call).input(slot) {
                 if !f.vn(v).is_constant() {
-                    let size = f.vn(v).size as u32;
+                    let size = f.vn(v).size;
                     let zero = f.new_const(size, 0);
                     f.op_set_input(call, slot, zero);
                 }
@@ -849,7 +848,7 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
             if !f.vn(out).is_indirect_creation() {
                 continue;
             }
-            let (loc, size) = (f.vn(out).loc, f.vn(out).size as u32);
+            let (loc, size) = (f.vn(out).loc, f.vn(out).size);
             if outlist.characterize_as_param(loc, size) == Containment::NoContainment {
                 continue; // not a return register (RCX/RSI/... clobbers) — plain killedbycall
             }
@@ -1191,7 +1190,7 @@ mod tests {
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let rdi = f.new_input(8, Address::new(reg, 0x38));
-        let mut store_addr = |f: &mut Funcdata, k: u64| -> VarnodeId {
+        let store_addr = |f: &mut Funcdata, k: u64| -> VarnodeId {
             let c = f.new_const(8, k);
             let add = f.new_op(OpCode::IntAdd, seq, vec![rdi, c]);
             let a = f.new_output(add, 8, Address::new(reg, RAX));
@@ -1523,7 +1522,7 @@ mod tests {
         let n = f.op(op).num_inputs();
         for slot in 1..n {
             let v = f.op(op).input(slot).unwrap();
-            let (loc, size) = (f.vn(v).loc, f.vn(v).size as u32);
+            let (loc, size) = (f.vn(v).loc, f.vn(v).size);
             let ti = active.register_trial(loc, size);
             active.trial[ti].op_slot = slot as u32;
         }

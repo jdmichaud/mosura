@@ -631,7 +631,7 @@ impl<'a> PrintC<'a> {
                 let (base, off) = (o.input(0).unwrap(), o.input(1).unwrap());
                 let ok = (self.f.vn(off).is_constant()
                     && size > 0
-                    && self.f.vn(off).constant_value() % size as u64 == 0)
+                    && self.f.vn(off).constant_value().is_multiple_of(size as u64))
                     || self.scaled_index(off, size).is_some();
                 return (base, ok);
             }
@@ -701,7 +701,7 @@ impl<'a> PrintC<'a> {
                 if let Some(&elem) = self.array_elem.get(&base) {
                     if self.f.vn(off).is_constant() && elem > 0 {
                         let c = self.f.vn(off).constant_value();
-                        if c != 0 && c % elem as u64 == 0 {
+                        if c != 0 && c.is_multiple_of(elem as u64) {
                             let b = self.operand(base, 16, false);
                             return (format!("{b}[{}]", c / elem as u64), 16);
                         }
@@ -839,7 +839,7 @@ impl<'a> PrintC<'a> {
             OpCode::Subpiece => {
                 let in0 = a(0);
                 let off =
-                    self.f.vn(a(1)).is_constant().then(|| self.f.vn(a(1)).constant_value()).unwrap_or(1);
+                    if self.f.vn(a(1)).is_constant() { self.f.vn(a(1)).constant_value() } else { 1 };
                 let out_ty = self.type_of(o.output.unwrap());
                 let in_ty = self.type_of(in0);
                 if is_subpiece_cast(&out_ty, &in_ty, off) {
@@ -1103,7 +1103,7 @@ impl<'a> PrintC<'a> {
             FlowKind::CondAnd | FlowKind::CondOr => {
                 let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
                 // De Morgan swaps the connective under negation
-                let conn = if is_and == !neg { "&&" } else { "||" };
+                let conn = if is_and != neg { "&&" } else { "||" };
                 // A leaf whose CBRANCH was oriented (Ghidra's BlockCondition::negateCondition
                 // distributed the NOT to it — its negation is materialized positive in the IR) prints
                 // directly, so flip the pending negation off for that operand. Nested compounds return
@@ -1764,7 +1764,7 @@ pub fn print_c(f: &Funcdata) -> String {
             let v = VarnodeId(i);
             let vn = f.vn(v);
             if vn.is_input() && !vn.descend.is_empty() && vn.loc == addr {
-                if vn.size as u32 == size {
+                if vn.size == size {
                     return Some(v);
                 }
                 fallback.get_or_insert(v);

@@ -217,9 +217,7 @@ impl CircleRange {
             self.isempty = true;
             return;
         }
-        let tmp = self.left;
-        self.left = self.right;
-        self.right = tmp;
+        std::mem::swap(&mut self.left, &mut self.right);
     }
 
     /// Ghidra `CircleRange::convertToBoolean` (`rangeutil.cc:63`) — coerce to a boolean range;
@@ -760,6 +758,9 @@ impl CircleRange {
 
     /// Ghidra `CircleRange::pullBackUnary` (`rangeutil.cc:728`) — pull `self` back through a
     /// unary operator. Returns `true` if a valid range is formed.
+    // faithful port of the sext-case nested if/else (rangeutil.cc:782-792): both branches return
+    // false but test distinct conditions (intersection non-empty vs range non-empty), kept as Ghidra
+    #[allow(clippy::if_same_then_else)]
     pub fn pull_back_unary(&mut self, opc: OpCode, in_size: i32, out_size: i32) -> bool {
         // If there is nothing in the output set, no input maps to it.
         if self.isempty {

@@ -403,6 +403,8 @@ fn test_alternate_path(f: &Funcdata, vn: VarnodeId, op: OpId, slot: i32, depth: 
 /// Ghidra `ActionConditionalConst::handlePhiNodes` (`coreaction.cc:4299`): replace the constant on
 /// each phi edge that has its own disconnected path forward; for edges that flow together, share a
 /// single COPY placed at their common ancestor. Returns the number of changes made.
+// `&mut Vec` mirrors Ghidra's `vector<PcodeOpNode> &phiNodeEdges` (sorted in place, passed on)
+#[allow(clippy::ptr_arg)]
 fn handle_phi_nodes(
     f: &mut Funcdata,
     dom: &Dominators,

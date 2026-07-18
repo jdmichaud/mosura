@@ -613,6 +613,8 @@ impl<'a> SubvariableFlow<'a> {
         }
         let mut recount = 1;
         let inrefs = &self.fd.op(op).inrefs;
+        // faithful port of Ghidra's numbered-input scan; `i` is the returned slot index
+        #[allow(clippy::needless_range_loop)]
         for i in (first_slot + 1)..inrefs.len() {
             if inrefs[i] == vn {
                 recount += 1;
@@ -871,7 +873,7 @@ impl<'a> SubvariableFlow<'a> {
                     let in0 = self.fd.op(op).input(0).unwrap();
                     let newmask = if vn == in0 {
                         let in1 = self.fd.op(op).input(1).unwrap();
-                        let sh = (8 * self.fd.vn(in1).size) as u32;
+                        let sh = 8 * self.fd.vn(in1).size;
                         if sh >= 64 { 0 } else { mask << sh }
                     } else {
                         mask
@@ -1432,7 +1434,7 @@ mod tests {
         let mut s = SubvariableFlow::new(&mut f, out, 0xff, false, false, false);
         // The constructor's create_link → set_replacement should have rejected: invalid trace state
         // is not signalled by `valid` (only mask/size are), but the node is not added.
-        assert!(s.varmap.get(&out).is_none());
+        assert!(!s.varmap.contains_key(&out));
         let _ = s.do_trace(); // clears marks, returns false (pullcount 0)
     }
 

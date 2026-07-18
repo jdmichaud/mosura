@@ -6,6 +6,10 @@
 //! hold a *red baseline* against the Ghidra reference oracle (see
 //! `docs/testing-baseline.md`).
 
+// cosmetic; fires on prose doc-comment paragraphs that continue after a markdown list,
+// where clippy's suggested 4-space indent would misrender the prose as an indented block.
+#![allow(clippy::doc_lazy_continuation)]
+
 pub mod analysis;
 pub mod ccompare;
 pub mod conformance;

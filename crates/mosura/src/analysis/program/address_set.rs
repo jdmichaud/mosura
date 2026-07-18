@@ -101,7 +101,7 @@ impl AddressSet {
             }
         }
         out.push(new);
-        out.sort_by_key(|r| key(r));
+        out.sort_by_key(key);
         self.ranges = out;
     }
 

@@ -61,7 +61,7 @@ fn decompile_track_corpus_report() {
         let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
         let entry = dt.chunks[0].offset;
         let c = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+            let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
             pipeline::decompile(&mut f);
             printc::print_c(&f)
         }));
@@ -110,7 +110,7 @@ fn mixfloatint_float_param_stays_whole() {
     let dt = datatest::parse_file(&path).expect("parse mixfloatint");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -138,7 +138,7 @@ fn indproto_if_else_uses_positive_condition() {
     let dt = datatest::parse_file(&path).expect("parse indproto");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -167,7 +167,7 @@ fn orcompare_recovers_logical_or() {
     let dt = datatest::parse_file(&path).expect("parse orcompare");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -202,7 +202,7 @@ fn pointerrel_negated_condition_normalizes() {
     let dt = datatest::parse_file(&path).expect("parse pointerrel");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -230,7 +230,7 @@ fn piecestruct_folds_shifts_to_concat() {
     let dt = datatest::parse_file(&path).expect("parse piecestruct");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(

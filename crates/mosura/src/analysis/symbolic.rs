@@ -68,6 +68,8 @@ impl VarnodeContext {
             self.state.get(&(space_key(&vn.space), vn.offset)).copied().unwrap_or(SymValue::Unknown)
         }
     }
+    // ported base of VarnodeContext put; only put_at is wired currently
+    #[allow(dead_code)]
     fn put(&mut self, vn: &Varnode, val: SymValue) {
         if vn.space != "const" {
             self.state.insert((space_key(&vn.space), vn.offset), val);

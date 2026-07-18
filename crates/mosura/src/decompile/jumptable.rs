@@ -219,9 +219,9 @@ pub(crate) fn emulate(f: &Funcdata, vn: VarnodeId, sw: VarnodeId, idx: u64, dept
     }
     let def = v.def?;
     let op = f.op(def);
-    let osz = op.output.map(|o| f.vn(o).size as u32).unwrap_or(8);
+    let osz = op.output.map(|o| f.vn(o).size).unwrap_or(8);
     let e = |i: usize| op.input(i).and_then(|x| emulate(f, x, sw, idx, depth + 1));
-    let in_size = |i: usize| op.input(i).map(|x| f.vn(x).size as u32);
+    let in_size = |i: usize| op.input(i).map(|x| f.vn(x).size);
     let r = match op.code() {
         OpCode::IntAdd => e(0)?.wrapping_add(e(1)?),
         OpCode::IntSub => e(0)?.wrapping_sub(e(1)?),

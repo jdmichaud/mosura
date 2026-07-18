@@ -222,7 +222,7 @@ impl<'a> TypeInfer<'a> {
                 _ => {}
             }
         }
-        ct.unwrap_or_else(|| Datatype::Unknown(vn.size))
+        ct.unwrap_or(Datatype::Unknown(vn.size))
     }
 
     fn output_type_local(&self, op: OpId) -> Datatype {
@@ -251,8 +251,7 @@ impl<'a> TypeInfer<'a> {
     fn propagate_one_type(&mut self, root: VarnodeId) {
         let mut stack = vec![PropagationState::new(self.f, root)];
         self.mark[root.0 as usize] = true;
-        loop {
-            let Some(top) = stack.last() else { break };
+        while let Some(top) = stack.last() {
             if !top.valid() {
                 let vn = top.vn;
                 stack.pop();
@@ -318,6 +317,10 @@ impl<'a> TypeInfer<'a> {
 
     /// Ghidra `TypeOp::propagateType`: how each op transforms a type flowing across one of its
     /// edges. `None` means the type does not propagate along this edge.
+    // The IntAdd/Ptradd/Ptrsub pointer guards `(inslot != -1 && outslot != -1) || inslot == -1`
+    // faithfully fuse Ghidra's two propagateType clauses (typeop.cc:1191 "must propagate input <->
+    // output" + 1196 "don't propagate output -> input"); kept in that documented two-condition form.
+    #[allow(clippy::nonminimal_bool)]
     fn propagate_type(
         &self,
         op: OpId,
@@ -416,6 +419,8 @@ impl<'a> TypeInfer<'a> {
     /// LOAD/STORE pointer↔value propagation (Ghidra `TypeOpLoad`/`TypeOpStore::propagateType` via
     /// `propagateToPointer`/`propagateFromPointer`). LOAD: in0=space, in1=ptr, out=value. STORE:
     /// in0=space, in1=ptr, in2=value. Slot 0 (the space constant) never participates.
+    // faithful port of TypeOpLoad/TypeOpStore::propagateType — mirrors Ghidra's parameter set
+    #[allow(clippy::too_many_arguments)]
     fn propagate_load_store(
         &self,
         _op: OpId,
@@ -457,7 +462,7 @@ impl<'a> TypeInfer<'a> {
                             if mult == mask {
                                 return (2, 0); // multiply by -1 → pointer difference
                             }
-                            if sz != 0 && mult % sz as u64 != 0 {
+                            if sz != 0 && !mult.is_multiple_of(sz as u64) {
                                 return (2, 0);
                             }
                         }
@@ -632,8 +637,8 @@ fn propagate_from_pointer(dt: &Datatype, sz: u32) -> Option<Datatype> {
 fn down_chain(ptr: &Datatype, off: &mut u64, allow_wrap: bool) -> Option<Datatype> {
     let Datatype::Pointer(psize, pointee) = ptr else { return None };
     let ptrto_size = pointee.size() as u64;
-    if *off >= ptrto_size {
-        if ptrto_size != 0 {
+    if *off >= ptrto_size
+        && ptrto_size != 0 {
             if !allow_wrap {
                 return None;
             }
@@ -642,7 +647,6 @@ fn down_chain(ptr: &Datatype, off: &mut u64, allow_wrap: bool) -> Option<Datatyp
                 return Some(ptr.clone()); // wrapped to an element boundary: down one level
             }
         }
-    }
     if let Datatype::Array(elem, _) = &**pointee {
         let esize = elem.size() as u64;
         *off = if esize != 0 { *off % esize } else { 0 };

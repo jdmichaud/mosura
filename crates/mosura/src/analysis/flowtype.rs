@@ -114,6 +114,9 @@ fn convert_flow_flags(mut flow_flags: u32) -> Option<RefType> {
 /// `FlowOverride.getModifiedFlowType` — apply a flow override to a base flow type. Faithful
 /// port of the `CALL_RETURN` arm (the only override mosura's analyzers set). Returns the
 /// (possibly modified) flow type.
+// faithful port of Ghidra's flow-override mapping; the computed/terminal branches map to the
+// same RefType but test distinct flow properties, so the cascade is kept as-is
+#[allow(clippy::if_same_then_else)]
 pub fn modified_flow_type(original: RefType, ov: FlowOverride) -> RefType {
     let flow = original;
     // NONE, or a non jump/terminal/call flow, is returned unchanged.

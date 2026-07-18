@@ -76,9 +76,7 @@ pub fn build_cfg(f: &mut Funcdata) {
     let mut block_of = vec![0usize; n];
     for (bi, &start) in leader_vec.iter().enumerate() {
         let end = leader_vec.get(bi + 1).copied().unwrap_or(n);
-        for idx in start..end {
-            block_of[idx] = bi;
-        }
+        block_of[start..end].fill(bi);
     }
 
     let mut blocks: Vec<BlockBasic> = vec![BlockBasic::default(); nb];
@@ -89,8 +87,8 @@ pub fn build_cfg(f: &mut Funcdata) {
     }
 
     // out edges, by the block's last op
-    for bi in 0..nb {
-        let last_idx = blocks[bi].ops.last().unwrap().0 as usize;
+    for (bi, blk) in blocks.iter_mut().enumerate() {
+        let last_idx = blk.ops.last().unwrap().0 as usize;
         let oc = f.op(OpId(last_idx as u32)).code();
         let fallthrough = (bi + 1 < nb).then_some(bi + 1);
         let mut outs: Vec<usize> = Vec::new();
@@ -124,7 +122,7 @@ pub fn build_cfg(f: &mut Funcdata) {
             }
             _ => outs.extend(fallthrough),
         }
-        blocks[bi].out_edges = outs.into_iter().map(|b| BlockId(b as u32)).collect();
+        blk.out_edges = outs.into_iter().map(|b| BlockId(b as u32)).collect();
     }
 
     // Fold the out-of-range guard into each switch (Ghidra `JumpBasic::foldInOneGuard` +
@@ -152,18 +150,18 @@ pub fn build_cfg(f: &mut Funcdata) {
             blocks[ind_bi].out_edges.push(BlockId(db as u32));
         }
         // rewrite each guard that branched into this switch and to the default (`pushBranch`)
-        for gb in 0..nb {
+        for (gb, blk) in blocks.iter_mut().enumerate() {
             if gb == ind_bi {
                 continue;
             }
-            let Some(&last) = blocks[gb].ops.last() else { continue };
+            let Some(&last) = blk.ops.last() else { continue };
             if f.op(last).code() != super::OpCode::Cbranch {
                 continue;
             }
-            let outs: Vec<usize> = blocks[gb].out_edges.iter().map(|e| e.0 as usize).collect();
+            let outs: Vec<usize> = blk.out_edges.iter().map(|e| e.0 as usize).collect();
             if outs.len() == 2 && outs.contains(&ind_bi) && outs.contains(&db) {
-                blocks[gb].out_edges = vec![BlockId(ind_bi as u32)];
-                blocks[gb].ops.retain(|&o| o != last);
+                blk.out_edges = vec![BlockId(ind_bi as u32)];
+                blk.ops.retain(|&o| o != last);
                 f.op_destroy(last);
             }
         }
@@ -180,8 +178,8 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
         // the loop through this switch: blocks both reachable from bi and able to reach bi
         let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
-        for b in 0..nb {
-            for e in &blocks[b].out_edges {
+        for (b, blk) in blocks.iter().enumerate() {
+            for e in &blk.out_edges {
                 preds[e.0 as usize].push(b);
             }
         }
@@ -210,9 +208,9 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
         let in_loop = |b: usize| reach_bi[b] && from_bi[b];
         let mut exit_targets = BTreeSet::new();
-        for b in 0..nb {
+        for (b, blk) in blocks.iter().enumerate() {
             if in_loop(b) {
-                for e in &blocks[b].out_edges {
+                for e in &blk.out_edges {
                     if !in_loop(e.0 as usize) {
                         exit_targets.insert(e.0 as usize);
                     }

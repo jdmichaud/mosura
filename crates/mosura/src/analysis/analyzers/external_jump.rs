@@ -21,6 +21,12 @@ use crate::analysis::program::{AddressSet, Program};
 
 pub struct ExternalJumpAnalyzer;
 
+impl Default for ExternalJumpAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExternalJumpAnalyzer {
     pub fn new() -> ExternalJumpAnalyzer {
         ExternalJumpAnalyzer

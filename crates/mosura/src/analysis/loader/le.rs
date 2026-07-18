@@ -30,6 +30,8 @@ fn u16le(data: &[u8], off: usize) -> Option<u16> {
 }
 
 /// LE header field offsets (relative to the LE header start), per the LE/LX spec.
+// the field-offset namespace shares the loader module's `le` name; renaming would churn callers
+#[allow(clippy::module_inception)]
 mod le {
     // SIG @ 0x00 = "LE" (checked directly via byte compare in `is_le_header`).
     pub const BORDER: usize = 0x02; // byte order (0 = little)

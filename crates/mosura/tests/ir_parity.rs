@@ -106,7 +106,7 @@ fn cfg_block_ranges_match_ghidra() {
         if expected.is_empty() {
             continue;
         }
-        assert_eq!(mosura_block_ranges(&spec, &ctx, &fixture), expected, "block ranges differ for {name}");
+        assert_eq!(mosura_block_ranges(spec, &ctx, &fixture), expected, "block ranges differ for {name}");
     }
 }
 
@@ -132,7 +132,7 @@ fn cfg_survey_instruction_stream_gap() {
         if expected.is_empty() {
             continue;
         }
-        if mosura_block_ranges(&spec, &ctx, &fixture) == expected {
+        if mosura_block_ranges(spec, &ctx, &fixture) == expected {
             matched.push(name);
         } else {
             needs_flow.push(name);
@@ -163,7 +163,7 @@ fn heritage_produces_valid_ssa() {
         if !fixture.exists() {
             continue;
         }
-        let f = heritaged(&spec, &ctx, &fixture);
+        let f = heritaged(spec, &ctx, &fixture);
 
         // (a) every heritaged read links to a definition or a function input — no free
         //     varnodes are referenced (branch/call destinations and constants excepted).
@@ -249,7 +249,7 @@ fn rule_pool_folds_constants() {
         if !fixture.exists() {
             continue;
         }
-        let mut f = heritaged(&spec, &ctx, &fixture);
+        let mut f = heritaged(spec, &ctx, &fixture);
         let raw_ops = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
 
         // RuleEarlyRemoval reaps the ops the faithful N-ary RuleCollectTerms orphans when it
@@ -300,7 +300,7 @@ fn merge_groups_phi_versions_into_variables() {
             continue;
         }
         let dt = datatest::parse_file(&fixture).expect("fixture");
-        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
         let mut h = merge(&f);
 
@@ -360,7 +360,7 @@ fn merged_variables_have_no_internal_interference() {
             continue;
         }
         let dt = datatest::parse_file(&fixture).expect("fixture");
-        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
         let mut h = merge(&f);
         let covers = all_covers(&f);
@@ -417,7 +417,7 @@ fn structuring_collapses_reducible_cfgs() {
             continue;
         }
         let dt = datatest::parse_file(&fixture).expect("fixture");
-        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         mosura::decompile::cfg::build_cfg(&mut f);
         let s = structure(&f);
         let active = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).count();
@@ -438,7 +438,7 @@ fn stack_recovery_collapses_the_frame() {
     use mosura::decompile::{pipeline, printc::print_c, OpId};
     let Some((spec, ctx)) = x86_64() else { return };
     let dt = datatest::parse_file(&fixture_path("twodim")).expect("fixture");
-    let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+    let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
     pipeline::decompile(&mut f);
     // The spilled-parameter frame collapses (47 live ops without stack recovery → ~31).
     let live = (0..f.num_ops() as u32).filter(|&i| !f.op(OpId(i)).is_dead()).count();
@@ -456,7 +456,7 @@ fn raw_ir_covers_ghidra_instruction_addresses() {
     let Some(ghidra) = ghidra_ir(&fixture, "heritage") else { return };
 
     let dt = datatest::parse_file(&fixture).expect("fixture");
-    let f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+    let f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
     let mosura = f.print_raw();
 
     let g = instr_addrs(&ghidra);

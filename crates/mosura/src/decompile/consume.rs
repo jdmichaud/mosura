@@ -440,6 +440,8 @@ pub fn calc_consume(f: &mut Funcdata) {
     // fresh constants `never_consumed` mints, so collect targets first, then rewrite. A CALL def is
     // skipped (Ghidra `opUnsetOutput`s it — mosura lacks that primitive; such outputs do not arise).
     let mut targets: Vec<VarnodeId> = Vec::new();
+    // faithful port of Ghidra's per-Varnode sweep; `i` is the VarnodeId, not merely a slice index
+    #[allow(clippy::needless_range_loop)]
     for i in 0..nvn {
         let vn = VarnodeId(i as u32);
         let v = f.vn(vn);

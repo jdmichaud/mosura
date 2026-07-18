@@ -46,7 +46,7 @@ pub fn eval_const(opcode: OpCode, inputs: &[(u64, u32)], out_size: u32) -> Optio
         IntXor => a(0) ^ a(1),
         IntLeft => a(0).checked_shl(a(1) as u32).unwrap_or(0),
         IntRight => a(0).checked_shr(a(1) as u32).unwrap_or(0),
-        IntSright => (sa(0) >> (a(1) as u32).min(63)) as u64,
+        IntSright => sa(0) >> (a(1) as u32).min(63),
         IntNegate => !a(0),
         Int2comp => a(0).wrapping_neg(),
         IntZext => a(0),
@@ -300,7 +300,7 @@ impl Rule for RuleLoadVarnode {
         let Some((space, off)) = check_spacebase(data, op) else {
             return 0;
         };
-        let size = data.vn(out).size as u32;
+        let size = data.vn(out).size;
         let newvn = data.new_varnode(size, Address::new(space, off));
         data.op_set_input(op, 0, newvn);
         data.op_remove_input(op, 1);
@@ -334,7 +334,7 @@ impl Rule for RuleStoreVarnode {
         let Some((space, off)) = check_spacebase(data, op) else {
             return 0;
         };
-        let size = data.vn(valvn).size as u32;
+        let size = data.vn(valvn).size;
         data.new_output(op, size, Address::new(space, off));
         // COPY takes the stored value (STORE input 2) as its sole input.
         data.op_remove_input(op, 1);
@@ -1430,7 +1430,7 @@ fn cse_hash(f: &Funcdata, op: OpId) -> u32 {
     let mut hash: u32 = ((f.vn(out).size) << 8) | (o.code() as u32);
     for i in 0..o.num_inputs() {
         let vn = o.input(i).unwrap();
-        hash = (hash << 8) | (hash >> (u32::BITS - 8));
+        hash = hash.rotate_left(8);
         let v = f.vn(vn);
         hash ^= if v.is_constant() { v.constant_value() as u32 } else { vn.0 };
     }
@@ -1549,7 +1549,7 @@ fn build_cse_at_common(f: &mut Funcdata, template: OpId, common: BlockId) -> OpI
 ///
 /// Ghidra's `isHeritaged(outvn)` guard (`funcdata_op.cc:1436`) is omitted: it is `heritagePass(addr)
 /// >= 0`, always true for these SUBPIECE/INT_SRIGHT outputs which are minted during/after heritage,
-/// and mosura's pre-existing same-block RuleSelectCse never carried it.
+/// > and mosura's pre-existing same-block RuleSelectCse never carried it.
 fn cse_eliminate_list(f: &mut Funcdata, mut list: Vec<(u32, OpId)>, dom: &Dominators) -> Vec<VarnodeId> {
     let mut outlist = Vec::new();
     if list.is_empty() {
@@ -2016,7 +2016,7 @@ impl Rule for RulePushMulti {
             return 0;
         }
         let (res, pair) = functional_equality_level_pair(data, in1, in2);
-        if res < 0 || res > 1 {
+        if !(0..=1).contains(&res) {
             return 0;
         }
         let op1 = data.vn(in1).def.unwrap();
@@ -2909,6 +2909,9 @@ impl Rule for RuleFloatRange {
     fn oplist(&self) -> Vec<OpCode> {
         vec![OpCode::BoolAnd, OpCode::BoolOr]
     }
+    // faithful port of ruleaction.cc:1505-1508: the `cvn1 != matchvn` and `cvn1->isFree()` guards
+    // both return 0 but test distinct conditions — kept as Ghidra's else-if cascade
+    #[allow(clippy::if_same_then_else)]
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
         let vn1 = data.op(op).input(0).unwrap();
         if !data.vn(vn1).is_written() {
@@ -8196,7 +8199,7 @@ impl Rule for RuleSLess2Zero {
                     let mask = data
                         .vn(mask_vn)
                         .constant_value()
-                        .checked_shr(8 * data.vn(avn).size as u32 - 1)
+                        .checked_shr(8 * data.vn(avn).size - 1)
                         .unwrap_or(0);
                     if (mask & 1) != 0 {
                         // -1 s< (avn & 0x8..)  =>  -1 s< avn
@@ -8293,7 +8296,7 @@ impl Rule for RuleSLess2Zero {
                     let mask = data
                         .vn(mask_vn)
                         .constant_value()
-                        .checked_shr(8 * data.vn(avn).size as u32 - 1)
+                        .checked_shr(8 * data.vn(avn).size - 1)
                         .unwrap_or(0);
                     if (mask & 1) != 0 {
                         // (avn & 0x8..) s< 0  =>  avn s< 0
@@ -8517,6 +8520,9 @@ impl Rule for RuleSubCommute {
     fn oplist(&self) -> Vec<OpCode> {
         vec![OpCode::Subpiece]
     }
+    // `new_vn.unwrap()` mirrors Ghidra's non-null `newvn` deref; the compound `|| new_vn.is_none()`
+    // guard makes the else branch reachable only when `new_vn` is Some (faithful null-pointer idiom)
+    #[allow(clippy::unnecessary_unwrap)]
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
         let base = data.op(op).input(0).unwrap();
         if !data.vn(base).is_written() {
@@ -9004,13 +9010,11 @@ mod tests {
                 ops: vec![op_a],
                 in_edges: vec![BlockId(0)],
                 out_edges: vec![BlockId(3)],
-                ..Default::default()
             },
             BlockBasic {
                 ops: vec![op_b],
                 in_edges: vec![BlockId(0)],
                 out_edges: vec![BlockId(3)],
-                ..Default::default()
             },
             BlockBasic { ops: vec![add], in_edges: vec![BlockId(1), BlockId(2)], ..Default::default() },
         ]);

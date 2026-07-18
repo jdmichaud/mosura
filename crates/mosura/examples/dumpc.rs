@@ -19,7 +19,7 @@ fn main() {
     let dt = datatest::parse_file(&path).unwrap();
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
     pipeline::decompile(&mut f);
     if args.get(2).map(|s| s.as_str()) == Some("--raw") {
         print!("{}", f.print_raw());

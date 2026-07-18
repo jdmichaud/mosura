@@ -273,6 +273,8 @@ impl ParamList {
             }
         }
         let pref = if float_count > int_count { type_class::FLOAT } else { type_class::GENERAL };
+        // faithful port of Ghidra's group scan; `i` is the group/slot index passed downstream
+        #[allow(clippy::needless_range_loop)]
         for i in 0..hitlist.len() {
             match hitlist[i] {
                 None => {
@@ -839,7 +841,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         if !vn.is_input() {
             continue;
         }
-        let size = vn.size as u32;
+        let size = vn.size;
         if !pl.possible_param(vn.loc, size) {
             continue;
         }
@@ -860,7 +862,7 @@ pub fn recover_output(f: &Funcdata) -> Option<ProtoSlot> {
         let o = f.op(op);
         if o.code() == OpCode::Return && o.num_inputs() > 1 {
             let v = o.input(1)?;
-            return Some(ProtoSlot { addr: f.vn(v).loc, size: f.vn(v).size as u32 });
+            return Some(ProtoSlot { addr: f.vn(v).loc, size: f.vn(v).size });
         }
     }
     None

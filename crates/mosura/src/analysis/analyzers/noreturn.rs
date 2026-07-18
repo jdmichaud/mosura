@@ -109,7 +109,7 @@ fn strip_leading_underscores(name: &str) -> &str {
 /// arise).
 fn matches_noreturn(name: &str, names: &[&str]) -> bool {
     let stripped = strip_leading_underscores(name);
-    names.iter().any(|&n| n == stripped)
+    names.contains(&stripped)
 }
 
 /// Run the known-non-returning-function analysis: flag every symbol whose (underscore-

@@ -94,7 +94,7 @@ impl LocationMap {
                     return if map[&k].pass < pass { 2 } else { 0 };
                 }
                 addr = k;
-                size = off_in + size;
+                size += off_in;
                 if map[&k].pass < pass {
                     intersect = 1;
                     pass = map[&k].pass;
@@ -1829,6 +1829,8 @@ fn reaching_phi_input(
 }
 
 #[allow(clippy::too_many_arguments)]
+// `dom` is carried down the SSA rename recursion (faithful port of Funcdata's renaming walk)
+#[allow(clippy::only_used_in_recursion)]
 fn rename(
     f: &mut Funcdata,
     b: usize,

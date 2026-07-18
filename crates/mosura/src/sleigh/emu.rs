@@ -120,9 +120,9 @@ impl Machine {
             "INT_SCARRY" => sa(0).overflowing_add(sa(1)).1 as u64,
             "INT_SBORROW" => sa(0).overflowing_sub(sa(1)).1 as u64,
             "BOOL_NEGATE" => (a(0) == 0) as u64,
-            "BOOL_AND" => ((a(0) & 1) & (a(1) & 1)) as u64,
-            "BOOL_OR" => ((a(0) & 1) | (a(1) & 1)) as u64,
-            "BOOL_XOR" => ((a(0) & 1) ^ (a(1) & 1)) as u64,
+            "BOOL_AND" => (a(0) & 1) & (a(1) & 1),
+            "BOOL_OR" => (a(0) & 1) | (a(1) & 1),
+            "BOOL_XOR" => (a(0) & 1) ^ (a(1) & 1),
             "POPCOUNT" => a(0).count_ones() as u64,
             "LZCOUNT" => a(0).leading_zeros() as u64,
             "LOAD" => {

@@ -133,10 +133,10 @@ pub(crate) fn evaluate(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId, depth: i
     if depth != 0
         && (opc1 == OpCode::BoolAnd || opc1 == OpCode::BoolOr || opc1 == OpCode::BoolXor)
     {
-        if opc2 == OpCode::BoolAnd || opc2 == OpCode::BoolOr || opc2 == OpCode::BoolXor {
-            if opc1 == opc2
+        if (opc2 == OpCode::BoolAnd || opc2 == OpCode::BoolOr || opc2 == OpCode::BoolXor)
+            && (opc1 == opc2
                 || (opc1 == OpCode::BoolAnd && opc2 == OpCode::BoolOr)
-                || (opc1 == OpCode::BoolOr && opc2 == OpCode::BoolAnd)
+                || (opc1 == OpCode::BoolOr && opc2 == OpCode::BoolAnd))
             {
                 let mut pair1 = evaluate(
                     data,
@@ -192,7 +192,6 @@ pub(crate) fn evaluate(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId, depth: i
                     }
                 }
             }
-        }
     } else {
         // Two boolean output ops, compare them directly
         if opc1 == opc2 {

@@ -76,7 +76,7 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
     let machine = header.e_machine(endian);
     let big_endian = matches!(endian, Endianness::Big);
     let arch = (!big_endian)
-        .then(|| match machine {
+        .then_some(match machine {
             elf::EM_X86_64 => Some(("x86:LE:64:default", "gcc")),
             elf::EM_AARCH64 => Some(("AARCH64:LE:64:v8A", "default")),
             _ => None,
@@ -216,7 +216,7 @@ fn markup_elf_structures(elf: &Elf, ram: SpaceId, program: &mut Program) {
     let header = elf.elf_header();
     let base = program.image_base.offset;
     let mapped = |program: &Program, off: u64| program.memory.contains(Address::new(ram, off));
-    let mut data_ref = |program: &mut Program, from: u64, to: u64| {
+    let data_ref = |program: &mut Program, from: u64, to: u64| {
         program.reference_manager.add(Address::new(ram, from), Address::new(ram, to), RefType::Data, -1);
     };
 

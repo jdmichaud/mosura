@@ -77,6 +77,8 @@ impl Memory {
 
     /// Create a block spanning `[start, start+len-1]`. `bytes` is `None` for an
     /// uninitialized block, else must be `len` long.
+    // memory-block descriptor fields (name/range/perms/bytes) mirror Ghidra's MemoryBlock creation
+    #[allow(clippy::too_many_arguments)]
     pub fn add_block(
         &mut self,
         name: &str,

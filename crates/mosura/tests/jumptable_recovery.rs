@@ -11,6 +11,8 @@ use mosura::decompile::pipeline;
 use mosura::{datatest, paths};
 
 /// Decompile a datatest and return (faithfully-recovered tables, build-time heuristic targets).
+// (recovered tables, heuristic targets) tuple of table lists; clear as a local test helper type
+#[allow(clippy::type_complexity)]
 fn tables(name: &str) -> Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)> {
     let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
     if !sla.exists() {
@@ -20,7 +22,7 @@ fn tables(name: &str) -> Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)> {
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::datatests_dir().join(format!("{name}.xml"))).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
-    let mut f = raw_funcdata_flow_image(&spec, "func", &img, dt.chunks[0].offset, &ctx);
+    let mut f = raw_funcdata_flow_image(spec, "func", &img, dt.chunks[0].offset, &ctx);
     let mut heur: Vec<Vec<u64>> = f.switch_targets.values().cloned().collect();
     heur.sort();
     pipeline::decompile(&mut f);
@@ -94,7 +96,7 @@ fn switch_o2_register_guard_with_cold_block_below_entry() {
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::oracle_fixtures_dir().join("x86_64_switch_o2.xml")).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
-    let mut f = raw_funcdata_flow_image(&spec, "classify", &img, 0x401010, &ctx);
+    let mut f = raw_funcdata_flow_image(spec, "classify", &img, 0x401010, &ctx);
     pipeline::decompile(&mut f);
     let jts = f.jump_tables();
     assert_eq!(jts.len(), 1, "the -O2 register-guard switch must recover");

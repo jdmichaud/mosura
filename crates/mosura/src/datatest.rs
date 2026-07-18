@@ -185,7 +185,7 @@ fn parse_u32(s: &str) -> Result<u32, Error> {
 /// Parse a whitespace-delimited hex blob (the `<bytechunk>` body) into bytes.
 fn parse_hex(s: &str) -> Result<Vec<u8>, Error> {
     let digits: Vec<u8> = s.bytes().filter(u8::is_ascii_hexdigit).collect();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err(Error::Parse(format!(
             "odd number of hex digits ({})",
             digits.len()

@@ -145,7 +145,7 @@ impl RangeHint {
         if self.sstart == b.sstart {
             return true;
         }
-        b.sstart + b.size as i64 - 1 <= self.sstart + self.size as i64 - 1
+        b.sstart + b.size as i64 - 1 < self.sstart + self.size as i64
     }
 
     /// Ghidra `RangeHint::preferred`: is `self`'s data-type preferred over `b`'s?
@@ -174,11 +174,10 @@ impl RangeHint {
             if b.is_const_absorbable(self) {
                 return false;
             }
-        } else if self.range_type == RangeType::Fixed && b.range_type == RangeType::Fixed {
-            if self.size != b.size && !reconcile {
+        } else if self.range_type == RangeType::Fixed && b.range_type == RangeType::Fixed
+            && self.size != b.size && !reconcile {
                 return self.size > b.size;
             }
-        }
         type_order(&self.ty, &b.ty) == std::cmp::Ordering::Less // prefer the more specific
     }
 

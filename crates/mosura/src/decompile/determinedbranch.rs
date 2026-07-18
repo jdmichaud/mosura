@@ -90,6 +90,8 @@ fn remove_unreachable_blocks(f: &mut Funcdata) -> bool {
         return false;
     }
     // Sever the out-edges of every unreachable block (patching successor MULTIEQUALs).
+    // faithful port of Ghidra's per-block walk; `b` is the BlockId, not merely a slice index
+    #[allow(clippy::needless_range_loop)]
     for b in 0..nb {
         if reachable[b] {
             continue;
@@ -100,6 +102,8 @@ fn remove_unreachable_blocks(f: &mut Funcdata) -> bool {
         }
     }
     // Destroy the ops of the unreachable blocks (they are detached from the graph now).
+    // faithful port of Ghidra's per-block walk; `b` is the BlockId, not merely a slice index
+    #[allow(clippy::needless_range_loop)]
     for b in 0..nb {
         if reachable[b] {
             continue;

@@ -76,6 +76,8 @@ pub mod perf {
     use std::time::Duration;
 
     thread_local! {
+        // perf-timing accumulator keyed by (phase, label); type is clear as-is
+        #[allow(clippy::type_complexity)]
         static ACCUM: RefCell<HashMap<(&'static str, String), (Duration, u64)>> =
             RefCell::new(HashMap::new());
     }

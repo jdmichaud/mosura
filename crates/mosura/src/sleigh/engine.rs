@@ -635,7 +635,7 @@ impl Spec {
                 DELAY_SLOT => {
                     // Inline the p-code of the instruction in the branch's delay
                     // slot (MIPS/SPARC) — `SleighBuilder::delaySlot`.
-                    let len = node.length.max(1) as usize;
+                    let len = node.length.max(1);
                     if len < walker.buf.len() {
                         let dwalker = Walker {
                             buf: &walker.buf[len..],
@@ -984,7 +984,7 @@ fn decode_decision(el: &Element) -> Result<Decision, Error> {
                 let pat = child
                     .children
                     .iter()
-                    .find_map(|c| decode_pattern(c))
+                    .find_map(decode_pattern)
                     .ok_or_else(|| Error::Schema("PAIR without pattern".into()))?;
                 pairs.push((pat, idx));
             }
@@ -1431,6 +1431,8 @@ fn fmt_hex(v: i64) -> String {
 /// Operand context for expression evaluation (`OperandValue` resolution).
 #[derive(Clone, Copy)]
 enum Operands<'a> {
+    // ported operand-context state; matched (engine.rs) but not yet constructed
+    #[allow(dead_code)]
     None,
     /// Resolved parse-tree node (during rendering).
     Node(&'a Node),
