@@ -190,6 +190,40 @@ pub struct Structured {
     /// flag). An oriented block's body-on-false negation is already materialized positive in the IR,
     /// so the collapse rules XOR this in to flip its `negated` off. Precomputed from `Funcdata`.
     oriented: Vec<bool>,
+    /// Reverse-post-order number per leaf block — Ghidra's `FlowBlock::index` set by
+    /// [`structure_loops`] (`findSpanningTree`). Loop ordering (`compare_ends`/`compare_head`) keys on
+    /// it. Indexed by leaf block id.
+    rpo: Vec<i32>,
+    /// The loop records built by [`order_loop_bodies`] (Ghidra's `CollapseStructure::loopbody`) — head,
+    /// tails, exit block, and exit edges per loop, in nesting order. Brick 2 computes them inert (the
+    /// selectGoto driver that consumes them lands in Brick 4), so this stays unread.
+    #[allow(dead_code)]
+    loopbody: Vec<LoopBody>,
+}
+
+/// An edge tracked across graph collapse by its endpoints — Ghidra's `FloatingEdge`
+/// (blockaction.hh). Stored as leaf block indices; the current-form lookup (`getCurrentEdge`, which
+/// walks the collapse hierarchy) lands with the selectGoto driver in Brick 4 that reads these fields.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct FloatingEdge {
+    top: usize,
+    bottom: usize,
+}
+
+/// One natural loop — Ghidra's `LoopBody` (blockaction.hh). `head` is the loop head (`None` once a
+/// same-head body has been merged away by `mergeIdenticalHeads`); `tails` are the back-edge sources;
+/// `exitblock`/`exitedges` are the single structured exit and the edges leaving the body; `depth`
+/// and `immed_container` record the nesting. Block fields are leaf indices.
+#[derive(Clone, Debug)]
+struct LoopBody {
+    head: Option<usize>,
+    tails: Vec<usize>,
+    depth: i32,
+    uniquecount: usize,
+    exitblock: Option<usize>,
+    exitedges: Vec<FloatingEdge>,
+    immed_container: Option<usize>,
 }
 
 impl Structured {
@@ -635,6 +669,9 @@ impl Structured {
 /// stays byte-identical.
 fn structure_loops(s: &mut Structured, n: usize) {
     use edge_flags::*;
+    // Default the reverse-post-order index to leaf-id order; the successful spanning tree overwrites
+    // it. Keeps `s.rpo` length-`n` even if the pass bails, so loop ordering never indexes out of range.
+    s.rpo = (0..n as i32).collect();
     if n == 0 {
         return;
     }
@@ -837,6 +874,7 @@ fn structure_loops(s: &mut Structured, n: usize) {
         }
         break;
     }
+    s.rpo = index; // final reverse-post-order numbers (FlowBlock::index), for loop ordering
 
     // ---- calcLoop (block.cc:2104) — only if some edge was irreducible ----
     if irreducible_count > 0 {
@@ -872,6 +910,438 @@ fn structure_loops(s: &mut Structured, n: usize) {
     }
 }
 
+/// In-adjacency of the leaf graph with reverse index: `in_adj[t] = [(source, source-out-index), …]`,
+/// mirroring Ghidra's `FlowBlock::intothis`. The edge label is read live off `blocks[source]`.
+fn in_adjacency(s: &Structured, n: usize) -> Vec<Vec<(usize, usize)>> {
+    let mut in_adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for src in 0..n {
+        for (oi, &t) in s.blocks[src].out_edges.iter().enumerate() {
+            in_adj[t].push((src, oi));
+        }
+    }
+    in_adj
+}
+
+/// Whether the `k`-th in-edge of block `t` is unstructured — Ghidra's `FlowBlock::isGotoIn`
+/// (block.hh:346): the source's out-edge label carries `IRREDUCIBLE|GOTO`.
+fn is_goto_in(s: &Structured, in_adj: &[Vec<(usize, usize)>], t: usize, k: usize) -> bool {
+    let (src, oi) = in_adj[t][k];
+    s.blocks[src].out_labels[oi] & (edge_flags::IRREDUCIBLE | edge_flags::GOTO_EDGE) != 0
+}
+
+/// Ghidra's `LoopBody::findBase` (blockaction.cc:119): mark the head/tail nodes and every node that
+/// reaches a tail without going through the head. Returns the body (marked) and `uniquecount` (the
+/// number of distinct head+tail nodes at the front of the list).
+fn find_base(s: &mut Structured, in_adj: &[Vec<(usize, usize)>], head: usize, tails: &[usize], body: &mut Vec<usize>) -> usize {
+    s.blocks[head].set_flag(block_flags::MARK);
+    body.push(head);
+    for &tail in tails {
+        if s.blocks[tail].flags & block_flags::MARK == 0 {
+            s.blocks[tail].set_flag(block_flags::MARK);
+            body.push(tail);
+        }
+    }
+    let uniquecount = body.len();
+    let mut i = 1;
+    while i < body.len() {
+        let curblock = body[i];
+        i += 1;
+        for k in 0..in_adj[curblock].len() {
+            if is_goto_in(s, in_adj, curblock, k) {
+                continue; // don't trace back through irreducible edges
+            }
+            let bl = in_adj[curblock][k].0;
+            if s.blocks[bl].flags & block_flags::MARK != 0 {
+                continue;
+            }
+            s.blocks[bl].set_flag(block_flags::MARK);
+            body.push(bl);
+        }
+    }
+    uniquecount
+}
+
+/// Ghidra's `LoopBody::extend` (blockaction.cc:150): extend the body to every block reachable only
+/// from within the body (all in-edges accounted for) without passing through the exit block.
+fn extend(s: &mut Structured, in_adj: &[Vec<(usize, usize)>], exitblock: Option<usize>, body: &mut Vec<usize>, visitcount: &mut [i32]) {
+    let mut trial: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        let bl = body[i];
+        i += 1;
+        for j in 0..s.blocks[bl].out_edges.len() {
+            if s.blocks[bl].is_goto_out(j) {
+                continue; // don't extend through a goto edge
+            }
+            let curbl = s.blocks[bl].out_edges[j];
+            if s.blocks[curbl].flags & block_flags::MARK != 0 {
+                continue;
+            }
+            if Some(curbl) == exitblock {
+                continue;
+            }
+            let count = visitcount[curbl] + 1;
+            if count == 1 {
+                trial.push(curbl); // new possible extension
+            }
+            visitcount[curbl] = count;
+            if count == in_adj[curbl].len() as i32 {
+                s.blocks[curbl].set_flag(block_flags::MARK);
+                body.push(curbl);
+            }
+        }
+    }
+    for &t in &trial {
+        visitcount[t] = 0; // clear the transient counts
+    }
+}
+
+/// Ghidra's `LoopBody::extendToContainer` (blockaction.cc:46): mark the blocks the immediately
+/// containing loop adds to `this` loop's body. `this` loop's body is assumed already marked.
+fn extend_to_container(
+    s: &mut Structured,
+    in_adj: &[Vec<(usize, usize)>],
+    container_head: Option<usize>,
+    container_tails: &[usize],
+    this_head: Option<usize>,
+    body: &mut Vec<usize>,
+) {
+    let mut i = 0;
+    if let Some(ch) = container_head {
+        if s.blocks[ch].flags & block_flags::MARK == 0 {
+            s.blocks[ch].set_flag(block_flags::MARK);
+            body.push(ch);
+            i = 1; // don't traverse back from the container head
+        }
+    }
+    for &tail in container_tails {
+        if s.blocks[tail].flags & block_flags::MARK == 0 {
+            s.blocks[tail].set_flag(block_flags::MARK);
+            body.push(tail); // do traverse back from container tails
+        }
+    }
+    if this_head != container_head {
+        if let Some(th) = this_head {
+            for k in 0..in_adj[th].len() {
+                if is_goto_in(s, in_adj, th, k) {
+                    continue;
+                }
+                let bl = in_adj[th][k].0;
+                if s.blocks[bl].flags & block_flags::MARK != 0 {
+                    continue;
+                }
+                s.blocks[bl].set_flag(block_flags::MARK);
+                body.push(bl);
+            }
+        }
+    }
+    while i < body.len() {
+        let curblock = body[i];
+        i += 1;
+        for k in 0..in_adj[curblock].len() {
+            if is_goto_in(s, in_adj, curblock, k) {
+                continue;
+            }
+            let bl = in_adj[curblock][k].0;
+            if s.blocks[bl].flags & block_flags::MARK != 0 {
+                continue;
+            }
+            s.blocks[bl].set_flag(block_flags::MARK);
+            body.push(bl);
+        }
+    }
+}
+
+/// Ghidra's `LoopBody::findExit` (blockaction.cc:182): choose the single structured exit block,
+/// preferring an exit from a tail, then the head, then the middle; if there is a containing loop the
+/// exit must lie within it.
+fn find_exit(s: &mut Structured, in_adj: &[Vec<(usize, usize)>], loopbody: &mut [LoopBody], cur: usize, body: &[usize]) {
+    let tails = loopbody[cur].tails.clone();
+    let uniquecount = loopbody[cur].uniquecount;
+    let has_container = loopbody[cur].immed_container.is_some();
+    let mut trialexit: Vec<usize> = Vec::new();
+
+    for &tail in &tails {
+        for i in 0..s.blocks[tail].out_edges.len() {
+            if s.blocks[tail].is_goto_out(i) {
+                continue;
+            }
+            let curbl = s.blocks[tail].out_edges[i];
+            if s.blocks[curbl].flags & block_flags::MARK == 0 {
+                if !has_container {
+                    loopbody[cur].exitblock = Some(curbl);
+                    return;
+                }
+                trialexit.push(curbl);
+            }
+        }
+    }
+    for (i, &bl) in body.iter().enumerate() {
+        if i > 0 && i < uniquecount {
+            continue; // filter out tails (processed above)
+        }
+        for j in 0..s.blocks[bl].out_edges.len() {
+            if s.blocks[bl].is_goto_out(j) {
+                continue;
+            }
+            let curbl = s.blocks[bl].out_edges[j];
+            if s.blocks[curbl].flags & block_flags::MARK == 0 {
+                if !has_container {
+                    loopbody[cur].exitblock = Some(curbl);
+                    return;
+                }
+                trialexit.push(curbl);
+            }
+        }
+    }
+
+    loopbody[cur].exitblock = None;
+    if trialexit.is_empty() {
+        return;
+    }
+    // Force the exit to lie within the containing loop.
+    let ic = loopbody[cur].immed_container.unwrap();
+    let container_head = loopbody[ic].head;
+    let container_tails = loopbody[ic].tails.clone();
+    let this_head = loopbody[cur].head;
+    let mut extension: Vec<usize> = Vec::new();
+    extend_to_container(s, in_adj, container_head, &container_tails, this_head, &mut extension);
+    for &bl in &trialexit {
+        if s.blocks[bl].flags & block_flags::MARK != 0 {
+            loopbody[cur].exitblock = Some(bl);
+            break;
+        }
+    }
+    clear_marks(s, &extension);
+}
+
+/// Ghidra's `LoopBody::orderTails` (blockaction.cc:245): move the tail that has an edge straight to
+/// the exit block into the first position.
+fn order_tails(s: &Structured, loopbody: &mut [LoopBody], cur: usize) {
+    let ntails = loopbody[cur].tails.len();
+    if ntails <= 1 {
+        return;
+    }
+    let exitblock = match loopbody[cur].exitblock {
+        Some(e) => e,
+        None => return,
+    };
+    let mut prefindex = ntails;
+    for pi in 0..ntails {
+        let trial = loopbody[cur].tails[pi];
+        if s.blocks[trial].out_edges.contains(&exitblock) {
+            prefindex = pi;
+            break;
+        }
+    }
+    if prefindex >= ntails || prefindex == 0 {
+        return;
+    }
+    loopbody[cur].tails.swap(0, prefindex);
+}
+
+/// Ghidra's `LoopBody::labelExitEdges` (blockaction.cc:270): collect the edges leaving the body into
+/// `exitedges`, in removal priority order — middle exits first, then the head exit, then tail exits
+/// (less-preferred tails first), then the exits to the formal exit block.
+fn label_exit_edges(s: &Structured, loopbody: &mut [LoopBody], cur: usize, body: &[usize]) {
+    let uniquecount = loopbody[cur].uniquecount;
+    let head = loopbody[cur].head;
+    let tails = loopbody[cur].tails.clone();
+    let exitblock = loopbody[cur].exitblock;
+    let mut toexitblock: Vec<usize> = Vec::new();
+    let mut exitedges: Vec<FloatingEdge> = Vec::new();
+
+    let collect = |curblock: usize, exitedges: &mut Vec<FloatingEdge>, toexitblock: &mut Vec<usize>| {
+        for k in 0..s.blocks[curblock].out_edges.len() {
+            if s.blocks[curblock].is_goto_out(k) {
+                continue; // don't exit through goto edges
+            }
+            let bl = s.blocks[curblock].out_edges[k];
+            if Some(bl) == exitblock {
+                toexitblock.push(curblock); // postpone exit to the exit block
+                continue;
+            }
+            if s.blocks[bl].flags & block_flags::MARK == 0 {
+                exitedges.push(FloatingEdge { top: curblock, bottom: bl });
+            }
+        }
+    };
+
+    for &curblock in &body[uniquecount..] {
+        collect(curblock, &mut exitedges, &mut toexitblock); // non-head/tail nodes
+    }
+    if let Some(h) = head {
+        collect(h, &mut exitedges, &mut toexitblock);
+    }
+    for ti in (0..tails.len()).rev() {
+        let curblock = tails[ti];
+        if Some(curblock) == head {
+            continue;
+        }
+        collect(curblock, &mut exitedges, &mut toexitblock);
+    }
+    if let Some(e) = exitblock {
+        for &bl in &toexitblock {
+            exitedges.push(FloatingEdge { top: bl, bottom: e });
+        }
+    }
+    loopbody[cur].exitedges = exitedges;
+}
+
+/// Ghidra's `LoopBody::labelContainments` (blockaction.cc:327): record any loops contained in
+/// `body`, bumping their depth and updating their immediate container.
+fn label_containments(loopbody: &mut [LoopBody], cur: usize, body: &[usize], looporder: &[usize], rpo: &[i32]) {
+    let head = loopbody[cur].head;
+    let mut containlist: Vec<usize> = Vec::new();
+    for &curblock in body {
+        if Some(curblock) == head {
+            continue;
+        }
+        if let Some(si) = loop_find(loopbody, looporder, rpo, curblock) {
+            containlist.push(si);
+            loopbody[si].depth += 1;
+        }
+    }
+    let this_depth = loopbody[cur].depth;
+    for &si in &containlist {
+        let replace = match loopbody[si].immed_container {
+            None => true,
+            Some(ic) => loopbody[ic].depth < this_depth,
+        };
+        if replace {
+            loopbody[si].immed_container = Some(cur);
+        }
+    }
+}
+
+/// Ghidra's `LoopBody::mergeIdenticalHeads` (blockaction.cc:446): merge loop bodies sharing a head
+/// (their tails fold into the first; the subsumed bodies get their head cleared) and compact
+/// `looporder` to the surviving unique-head bodies.
+fn merge_identical_heads(loopbody: &mut [LoopBody], looporder: &mut Vec<usize>) {
+    let mut i = 0;
+    let mut j = 1;
+    let mut curidx = looporder[0];
+    while j < looporder.len() {
+        let nextidx = looporder[j];
+        j += 1;
+        if loopbody[nextidx].head == loopbody[curidx].head {
+            let tail0 = loopbody[nextidx].tails[0];
+            loopbody[curidx].tails.push(tail0);
+            loopbody[nextidx].head = None; // subsumed
+        } else {
+            i += 1;
+            looporder[i] = nextidx;
+            curidx = nextidx;
+        }
+    }
+    i += 1;
+    looporder.truncate(i);
+}
+
+/// Ghidra's `LoopBody::find` (blockaction.cc:1021): binary-search the head-sorted `looporder` for the
+/// loop whose head is `looptop`. Keys on the reverse-post-order index (`compare_head`).
+fn loop_find(loopbody: &[LoopBody], looporder: &[usize], rpo: &[i32], looptop: usize) -> Option<usize> {
+    if looporder.is_empty() {
+        return None;
+    }
+    let target = rpo[looptop];
+    let mut min = 0i64;
+    let mut max = looporder.len() as i64 - 1;
+    while min <= max {
+        let mid = ((min + max) / 2) as usize;
+        let h = loopbody[looporder[mid]].head.expect("looporder holds only unique-head bodies");
+        match rpo[h].cmp(&target) {
+            std::cmp::Ordering::Equal => return Some(looporder[mid]),
+            std::cmp::Ordering::Less => min = mid as i64 + 1,
+            std::cmp::Ordering::Greater => max = mid as i64 - 1,
+        }
+    }
+    None
+}
+
+/// Ghidra's `LoopBody::clearMarks` (blockaction.cc:1039).
+fn clear_marks(s: &mut Structured, body: &[usize]) {
+    for &b in body {
+        s.blocks[b].clear_flag(block_flags::MARK);
+    }
+}
+
+/// Ghidra's `CollapseStructure::labelLoops` (blockaction.cc:1126): create a `LoopBody` for every loop
+/// (identified by a back-edge into its head) and sort them by head then tail (`compare_ends`).
+fn label_loops(s: &Structured, in_adj: &[Vec<(usize, usize)>], rpo: &[i32]) -> (Vec<LoopBody>, Vec<usize>) {
+    let mut loopbody: Vec<LoopBody> = Vec::new();
+    let mut looporder: Vec<usize> = Vec::new();
+    for (bl, ins) in in_adj.iter().enumerate() {
+        for &(loopbottom, oi) in ins {
+            if s.blocks[loopbottom].out_labels[oi] & edge_flags::BACK_EDGE != 0 {
+                let idx = loopbody.len();
+                loopbody.push(LoopBody {
+                    head: Some(bl),
+                    tails: vec![loopbottom],
+                    depth: 0,
+                    uniquecount: 0,
+                    exitblock: None,
+                    exitedges: Vec::new(),
+                    immed_container: None,
+                });
+                looporder.push(idx);
+            }
+        }
+    }
+    looporder.sort_by(|&a, &b| {
+        let (ha, hb) = (rpo[loopbody[a].head.unwrap()], rpo[loopbody[b].head.unwrap()]);
+        ha.cmp(&hb).then_with(|| rpo[loopbody[a].tails[0]].cmp(&rpo[loopbody[b].tails[0]]))
+    });
+    (loopbody, looporder)
+}
+
+/// Ghidra's `CollapseStructure::orderLoopBodies` (blockaction.cc:1148): identify the loops, label
+/// their exit edges, and produce a nesting-depth partial order (deepest first). Runs on the leaf
+/// graph. Ghidra erases the subsumed (merged-away) loop bodies; mosura keeps them with `head = None`
+/// and skips them, which is equivalent since they are inert.
+fn order_loop_bodies(s: &mut Structured, n: usize) -> Vec<LoopBody> {
+    let in_adj = in_adjacency(s, n);
+    let rpo = s.rpo.clone();
+    let (mut loopbody, mut looporder) = label_loops(s, &in_adj, &rpo);
+    if loopbody.is_empty() {
+        return loopbody;
+    }
+    merge_identical_heads(&mut loopbody, &mut looporder);
+
+    // First pass: containment (depth + immediate container).
+    for cur in 0..loopbody.len() {
+        let head = match loopbody[cur].head {
+            Some(h) => h,
+            None => continue,
+        };
+        let tails = loopbody[cur].tails.clone();
+        let mut body = Vec::new();
+        loopbody[cur].uniquecount = find_base(s, &in_adj, head, &tails, &mut body);
+        label_containments(&mut loopbody, cur, &body, &looporder, &rpo);
+        clear_marks(s, &body);
+    }
+
+    // Process deepest loops first (stable → creation order breaks ties, matching Ghidra's list::sort).
+    let mut process_order: Vec<usize> = (0..loopbody.len()).filter(|&i| loopbody[i].head.is_some()).collect();
+    process_order.sort_by(|&a, &b| loopbody[b].depth.cmp(&loopbody[a].depth));
+
+    // Second pass: choose the exit and label the exit edges.
+    let mut visitcount = vec![0i32; n];
+    for &cur in &process_order {
+        let head = loopbody[cur].head.unwrap();
+        let tails = loopbody[cur].tails.clone();
+        let mut body = Vec::new();
+        loopbody[cur].uniquecount = find_base(s, &in_adj, head, &tails, &mut body);
+        find_exit(s, &in_adj, &mut loopbody, cur, &body);
+        order_tails(s, &mut loopbody, cur);
+        let exitblock = loopbody[cur].exitblock;
+        extend(s, &in_adj, exitblock, &mut body, &mut visitcount);
+        label_exit_edges(s, &mut loopbody, cur, &body);
+        clear_marks(s, &body);
+    }
+    loopbody
+}
+
 /// Structure the CFG of `f`.
 pub fn structure(f: &Funcdata) -> Structured {
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
@@ -904,13 +1374,25 @@ pub fn structure(f: &Funcdata) -> Structured {
                 .is_some_and(|op| f.op(op).is_fallthru_true())
         })
         .collect();
-    let mut s =
-        Structured { blocks, root: 0, gotos: HashMap::new(), labels: HashSet::new(), oriented };
+    let mut s = Structured {
+        blocks,
+        root: 0,
+        gotos: HashMap::new(),
+        labels: HashSet::new(),
+        oriented,
+        rpo: Vec::new(),
+        loopbody: Vec::new(),
+    };
 
     // Label loop back-edges and irreducible edges on the leaf graph before collapsing (Ghidra's
     // structureLoops, run on the CFG before ActionBlockStructure's buildCopy). Brick 1: the labels
     // are written but not yet consumed by the collapse rules, so this is byte-identical.
     structure_loops(&mut s, f.num_blocks());
+
+    // Build the loop records (Ghidra's orderLoopBodies): label each loop's exit edges and order the
+    // loops by nesting depth. Brick 2: computed inert (the selectGoto driver consuming them lands in
+    // Brick 4), so this is byte-identical.
+    s.loopbody = order_loop_bodies(&mut s, f.num_blocks());
 
     loop {
         let active: Vec<usize> = (0..s.blocks.len()).filter(|&b| s.blocks[b].active).collect();
