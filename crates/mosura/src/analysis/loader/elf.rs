@@ -79,12 +79,13 @@ pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
         .then_some(match machine {
             elf::EM_X86_64 => Some(("x86:LE:64:default", "gcc")),
             elf::EM_AARCH64 => Some(("AARCH64:LE:64:v8A", "default")),
+            elf::EM_RISCV => Some(("RISCV:LE:64:default", "gcc")),
             _ => None,
         })
         .flatten();
     let Some((language_id, compiler_spec_id)) = arch else {
         return Err(LoadError::Unsupported(format!(
-            "e_machine={machine} big_endian={big_endian} (supported: x86-64 LE, AArch64 LE)"
+            "e_machine={machine} big_endian={big_endian} (supported: x86-64 LE, AArch64 LE, RISC-V LE)"
         )));
     };
 

@@ -1,0 +1,31 @@
+# mosura-analysis-snapshot v1 lang=RISCV:LE:64:default compiler=gcc base=00010000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=riscv.elf
+block 00010000 0001011f segment_1.1
+block 00010120 00010143 .note.gnu.build-id
+block 00010144 000101f7 .text
+func 00010144 add
+func 00010172 sum_to
+func 000101c4 _start
+fnbody 00010144 00010144:00010144
+fnbody 00010172 00010172:00010172
+fnbody 000101c4 000101c4:000101c4
+entry 000101c4 _start
+entry 000111f8 __SDATA_BEGIN__
+entry 000119f8 __global_pointer$
+sym 00010144 $xrv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_zicsr2p0_zifencei2p0_zmmul1p0_zaamo1p0_zalrsc1p0 Label
+sym 00010144 add Function
+sym 00010172 sum_to Function
+sym 000119f8 __global_pointer$ Label
+sym 000111f8 __SDATA_BEGIN__ Label
+sym 000101c4 _start Function
+sym 000111f8 __BSS_END__ Label
+sym 000111f8 __bss_start Label
+sym 000111f8 __DATA_BEGIN__ Label
+sym 000111f8 _edata Label
+sym 000111f8 _end Label
+ref 00010018 000101c4 DATA
+ref 00010020 00010040 DATA
+ref 000100c0 00010120 DATA
+data 00010000 Elf64_Ehdr 64
+data 00010040 Elf64_Phdr[4] 224
+data 00010120 GnuBuildId 36

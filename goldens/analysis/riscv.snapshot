@@ -1,0 +1,101 @@
+# mosura-analysis-snapshot v1 lang=RISCV:LE:64:default compiler=gcc base=00010000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=riscv.elf
+block 00010000 0001011f segment_1.1
+block 00010120 00010143 .note.gnu.build-id
+block 00010144 000101f7 .text
+func 00010144 add
+func 00010172 sum_to
+func 000101c4 _start
+fnbody 00010144 00010144:00010171
+fnbody 00010172 00010172:000101c3
+fnbody 000101c4 000101c4:000101f7
+entry 000101c4 _start
+entry 000111f8 __SDATA_BEGIN__
+entry 000119f8 __global_pointer$
+sym 00010144 $xrv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0_zicsr2p0_zifencei2p0_zmmul1p0_zaamo1p0_zalrsc1p0 Label
+sym 00010144 add Function
+sym 00010172 sum_to Function
+sym 000119f8 __global_pointer$ Label
+sym 000111f8 __SDATA_BEGIN__ Label
+sym 000101c4 _start Function
+sym 000111f8 __BSS_END__ Label
+sym 000111f8 __bss_start Label
+sym 000111f8 __DATA_BEGIN__ Label
+sym 000111f8 _edata Label
+sym 000111f8 _end Label
+insn 00010144
+insn 00010146
+insn 00010148
+insn 0001014a
+insn 0001014c
+insn 0001014e
+insn 00010150
+insn 00010154
+insn 00010156
+insn 0001015a
+insn 0001015e
+insn 00010160
+insn 00010164
+insn 00010166
+insn 00010168
+insn 0001016a
+insn 0001016c
+insn 0001016e
+insn 00010170
+insn 00010172
+insn 00010174
+insn 00010176
+insn 00010178
+insn 0001017a
+insn 0001017c
+insn 00010180
+insn 00010184
+insn 00010188
+insn 0001018a
+insn 0001018e
+insn 00010190
+insn 00010194
+insn 00010196
+insn 0001019a
+insn 0001019e
+insn 000101a0
+insn 000101a4
+insn 000101a8
+insn 000101aa
+insn 000101ae
+insn 000101b0
+insn 000101b2
+insn 000101b6
+insn 000101ba
+insn 000101bc
+insn 000101be
+insn 000101c0
+insn 000101c2
+insn 000101c4
+insn 000101c6
+insn 000101c8
+insn 000101ca
+insn 000101cc
+insn 000101ce
+insn 000101d0
+insn 000101d4
+insn 000101d6
+insn 000101da
+insn 000101de
+insn 000101e0
+insn 000101e4
+insn 000101e6
+insn 000101ea
+insn 000101ee
+insn 000101f2
+insn 000101f4
+ref 00010018 000101c4 DATA
+ref 00010020 00010040 DATA
+ref 000100c0 00010120 DATA
+ref 00010188 000101a4 UNCONDITIONAL_JUMP
+ref 000101b2 0001018a CONDITIONAL_JUMP
+ref 000101d0 00010144 UNCONDITIONAL_CALL
+ref 000101e0 00010172 UNCONDITIONAL_CALL
+data 00010000 Elf64_Ehdr 64
+data 00010040 Elf64_Phdr[4] 224
+data 00010120 GnuBuildId 36

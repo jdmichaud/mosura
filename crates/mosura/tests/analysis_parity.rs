@@ -16,9 +16,10 @@ use mosura::analysis::{self, snapshot};
 use mosura::conformance::Tally;
 use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir};
 
-/// Committed ELF corpus (always present). `aarch64` is the first non-x86 fixture
-/// (freestanding ARM64 ELF) — validates the function-listing pipeline on AArch64.
-const MANDATORY: &[&str] = &["freestanding", "basic", "aarch64"];
+/// Committed ELF corpus (always present). `aarch64` and `riscv` are the non-x86
+/// fixtures (freestanding ARM64 / RV64GC ELFs) — validate the function-listing
+/// pipeline on those ISAs.
+const MANDATORY: &[&str] = &["freestanding", "basic", "aarch64", "riscv"];
 
 /// (name, binary path, mandatory?) — externals are user-provided, skipped if absent.
 fn corpus() -> Vec<(&'static str, PathBuf, bool)> {
@@ -183,10 +184,10 @@ fn loader_reference_parity() {
         }
     }
     eprintln!("loader-reference parity: {recall} (0 spurious)");
-    // freestanding 4/4 (exact) + basic 32/36 + aarch64 3/3 (exact) = 39. The remaining 4
-    // (basic PLT) need loader-stage PLT disassembly with INDIRECTION typing — A6 indirect-flow
-    // territory.
-    assert!(recall.passed >= 39, "loader-reference recall regressed below 39");
+    // freestanding 4/4 (exact) + basic 32/36 + aarch64 3/3 + riscv 3/3 (exact) = 42. The
+    // remaining 4 (basic PLT) need loader-stage PLT disassembly with INDIRECTION typing — A6
+    // indirect-flow territory.
+    assert!(recall.passed >= 42, "loader-reference recall regressed below 42");
 }
 
 /// A4 — disassembly parity. Every instruction mosura decodes must match a Ghidra
@@ -222,11 +223,12 @@ fn disassembly_parity() {
         }
     }
     eprintln!("disassembly parity: {recall} (0 misaligned decodes)");
-    // freestanding 40/40 + basic 106/106 + aarch64 39/39 = 185 instructions, 0 misaligned.
-    // basic reached 106/106 once the A6 PLT linear sweep (ElfDefaultGotPltMarkup.
+    // freestanding 40/40 + basic 106/106 + aarch64 39/39 + riscv 66/66 = 251 instructions, 0
+    // misaligned. basic reached 106/106 once the A6 PLT linear sweep (ElfDefaultGotPltMarkup.
     // processPLTSection) decodes the lazy-resolve stubs (PLT[0] + each entry's `push; jmp
-    // PLT[0]` tail). aarch64 (freestanding ARM64) is exact — the SLEIGH engine lifts AArch64.
-    assert!(recall.passed >= 185, "disassembly recall regressed below 185");
+    // PLT[0]` tail). aarch64 / riscv (freestanding ARM64 / RV64GC) are exact — the SLEIGH
+    // engine lifts both, including RISC-V's compressed instructions.
+    assert!(recall.passed >= 251, "disassembly recall regressed below 251");
 }
 
 /// A7 Task 6 — GNU/Itanium C++ demangler parity. On the `cppsym` fixture (namespaced +
@@ -346,11 +348,11 @@ fn function_parity() {
         }
     }
     eprintln!("function parity: {recall}");
-    // freestanding 3/3 + basic 15/16 + aarch64 3/3 = 21. basic reached 15 once A7's
-    // SharedReturnAnalyzer recovered FUN_00401020 (PLT[0]) from the resolve-tail `jmp
+    // freestanding 3/3 + basic 15/16 + aarch64 3/3 + riscv 3/3 = 24. basic reached 15 once
+    // A7's SharedReturnAnalyzer recovered FUN_00401020 (PLT[0]) from the resolve-tail `jmp
     // 0x401020` crossing the printf@plt boundary. The remaining basic miss is
-    // __gmon_start__@0x405010 (a weak external). aarch64 recovers all 3 of its functions.
-    assert!(recall.passed >= 21, "function recall regressed below 21");
+    // __gmon_start__@0x405010 (a weak external). aarch64 / riscv recover all 3 of their functions.
+    assert!(recall.passed >= 24, "function recall regressed below 24");
 }
 
 /// A4 — function-body parity. For every function mosura *and* Ghidra both have, the body
@@ -380,9 +382,9 @@ fn function_body_parity() {
         validated += matched;
     }
     eprintln!("function-body parity: {validated} exact bodies");
-    // freestanding 3 + basic 15 + aarch64 3 = 21 bodies validated exactly (basic +1:
+    // freestanding 3 + basic 15 + aarch64 3 + riscv 3 = 24 bodies validated exactly (basic +1:
     // FUN_00401020 / PLT[0] recovered by the A7 SharedReturnAnalyzer, body 00401020:0040102b).
-    assert!(validated >= 21, "function-body validation regressed below 21");
+    assert!(validated >= 24, "function-body validation regressed below 24");
 }
 
 /// A5 — references parity. mosura's analysis must never invent a reference Ghidra
@@ -433,14 +435,15 @@ fn reference_parity() {
         }
     }
     eprintln!("reference parity: {recall} (recovered code refs, 0 false positives)");
-    // Ratchet: freestanding 4/4 + basic 32/33 + aarch64 7/7 = 43 recovered. A7 Task 1
-    // (SharedReturn) added the `0x401020 → 0x403ff0 READ` inside PLT[0] (recovered once
+    // Ratchet: freestanding 4/4 + basic 32/33 + aarch64 7/7 + riscv 7/7 = 50 recovered. A7
+    // Task 1 (SharedReturn) added the `0x401020 → 0x403ff0 READ` inside PLT[0] (recovered once
     // FUN_00401020 exists) and retyped `0x40103b → 0x401020` to UNCONDITIONAL_CALL (type
     // validated in the a7_shared_return test). The remaining basic miss is `0x401004 →
     // 0x405010` (the __gmon_start__ weak-external code-ref — investigated in the A7 close-out).
-    // aarch64's 7 exec-from code refs (2 jumps + 2 calls + the 3 ELF-header DATA refs) are
-    // exact, with no spurious self-`bl` DATA ref (the inst_start PC-constant guard, symbolic.rs).
-    assert!(recall.passed >= 43, "code-reference recall regressed below 43");
+    // aarch64 / riscv each have 7 exec-from code refs (2 jumps + 2 calls + 3 ELF-header DATA),
+    // exact, with no spurious link-register return-address DATA ref: AArch64 `bl`'s inst_start
+    // and RISC-V `jal`'s inst_next PC-constant are both excluded (the PC-marker guard, symbolic.rs).
+    assert!(recall.passed >= 50, "code-reference recall regressed below 50");
 }
 
 /// A7 Task 2 — `.eh_frame_hdr` reference parity. The GCC exception-frame analyzer emits
@@ -527,13 +530,14 @@ fn data_unit_parity() {
         }
     }
     eprintln!("data-unit parity: {recall} (0 spurious)");
-    // basic 99/99 + freestanding 3/3 + aarch64 3/3 = 105 — FULL data-unit parity on the ELF
-    // corpus. .eh_frame_hdr/.eh_frame units + the ELF-loader markup: Elf64_Ehdr/Phdr/Sym/Rela/
-    // Dyn, .gnu.hash/.gnu.version/.dynstr/.interp, the GNU notes (NoteGnuProperty/Element,
+    // basic 99/99 + freestanding 3/3 + aarch64 3/3 + riscv 3/3 = 108 — FULL data-unit parity on
+    // the ELF corpus. .eh_frame_hdr/.eh_frame units + the ELF-loader markup: Elf64_Ehdr/Phdr/Sym/
+    // Rela/Dyn, .gnu.hash/.gnu.version/.dynstr/.interp, the GNU notes (NoteGnuProperty/Element,
     // GnuBuildId, NoteAbiTag), the .init_array/.fini_array + GOT/.got.plt `pointer` units, and
-    // the sized-OBJECT-symbol `undefined<size>` units (_IO_stdin_used, completed.0). aarch64
-    // (freestanding ARM64): Elf64_Ehdr + Elf64_Phdr[3] + GnuBuildId — the arch-neutral markup.
-    assert!(recall.passed >= 105, "data-unit recall regressed below 105");
+    // the sized-OBJECT-symbol `undefined<size>` units (_IO_stdin_used, completed.0). aarch64 /
+    // riscv (freestanding ARM64 / RV64GC): Elf64_Ehdr + Elf64_Phdr[3|4] + GnuBuildId — the
+    // arch-neutral markup.
+    assert!(recall.passed >= 108, "data-unit recall regressed below 108");
 }
 
 #[test]

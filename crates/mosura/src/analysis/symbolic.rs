@@ -233,6 +233,7 @@ fn process_op(
     program: &mut Program,
     vctx: &mut VarnodeContext,
     here: Address,
+    inst_next: u64,
     ram: SpaceId,
     op: &PcodeOp,
     insn_flow: Option<RefType>,
@@ -268,14 +269,23 @@ fn process_op(
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
                     make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF);
-                } else if v.space == "const" && const_is_data && v.offset != here.offset {
-                    // A `const` equal to the instruction's own address is the SLEIGH
-                    // `inst_start` program-counter marker, not a data address — it flows into
-                    // PC-relative arithmetic (e.g. AArch64 `bl` computes the link register as
-                    // `X30 = INT_ADD(inst_start, 4)`). Ghidra's `SymbolicPropogator` never
-                    // makes a reference here: `INT_ADD` (SymbolicPropogator.java:1251) only
-                    // folds the value, and references are emitted only by COPY/LOAD/STORE/
-                    // BRANCHIND/CALL/ZEXT/SEXT. So the PC marker is never a data reference.
+                } else if v.space == "const"
+                    && const_is_data
+                    && v.offset != here.offset
+                    && v.offset != inst_next
+                {
+                    // A `const` equal to the instruction's own address (`inst_start`) or its
+                    // fall-through address (`inst_next`) is a SLEIGH program-counter-location
+                    // symbol, not a scalar operand, so it is never a data address. Both arise
+                    // as a call's return address on link-register ISAs: AArch64 `bl` computes
+                    // it as `X30 = INT_ADD(inst_start, 4)` (const = inst_start == here), and
+                    // RISC-V `jal ra,target` as `ra = COPY(const inst_next)` (const = here +
+                    // ilen) — the link-register analogue of the return address x86 `call`
+                    // pushes via STORE (already excluded by `const_is_data`). Ghidra's
+                    // constant/operand reference analysis works from real instruction operands
+                    // (`instruction.getOpObjects()`) and its `SymbolicPropogator` COPY case
+                    // only references an `in[0].isAddress()` varnode (SymbolicPropogator.java:
+                    // 882), never a `const`; so these PC markers are never data references.
                     make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF);
                 }
             }
@@ -461,7 +471,7 @@ pub fn flow_constants(
                 }
                 _ => {}
             }
-            process_op(program, &mut vctx, here, ram, op, insn_flow);
+            process_op(program, &mut vctx, here, a + ilen, ram, op, insn_flow);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
                     falls = false;

@@ -34,5 +34,12 @@ g++ -nostdlib -static -no-pie -O0 -ffreestanding -fno-asynchronous-unwind-tables
 aarch64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
     -fno-unwind-tables -fno-asynchronous-unwind-tables -o aarch64.elf src/aarch64.c
 
+# Freestanding RISC-V (RV64GC) ELF — same freestanding recipe for RISCV:LE:64:default:
+# converged state is just our own functions, so the function-listing pipeline gets a clean
+# golden (no PLT/GOT). Built with the cross gcc; Ghidra auto-detects RISC-V from e_machine
+# (EM_RISCV=243).
+riscv64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
+    -fno-unwind-tables -fno-asynchronous-unwind-tables -o riscv.elf src/riscv.c
+
 echo "built:"
-for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
