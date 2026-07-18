@@ -108,6 +108,12 @@ int main(int argc, char **argv) {
   const Element *root;
   try {
     root = store.openDocument(fixture)->getRoot();
+  } catch (DecoderError &e) {
+    // XML/marshal decode failures (xml.hh:297) are NOT derived from LowlevelError,
+    // so they escape a plain catch(LowlevelError&) → terminate. Ghidra's own tools
+    // (testfunction.cc:160, consolemain.cc:89) catch DecoderError alongside it; mirror that.
+    cerr << "open " << fixture << ": " << e.explain << endl;
+    return 1;
   } catch (LowlevelError &e) {
     cerr << "open " << fixture << ": " << e.explain << endl;
     return 1;
@@ -137,6 +143,9 @@ int main(int argc, char **argv) {
       throw LowlevelError("missing xml architecture capability");
     conf = capa->buildArchitecture("capture", "", &cerr);
     conf->init(store);
+  } catch (DecoderError &e) {
+    cerr << "init: " << e.explain << endl;
+    return 1;
   } catch (LowlevelError &e) {
     cerr << "init: " << e.explain << endl;
     return 1;
@@ -170,6 +179,10 @@ int main(int argc, char **argv) {
       root->perform(*fd); // runs until the breakpoint (partial, returns <0) or completion
       fd->printRaw(cout);
       cout << endl;
+    } catch (DecoderError &e) {
+      cerr << "ir: " << e.explain << endl;
+      delete conf;
+      return 1;
     } catch (LowlevelError &e) {
       cerr << "ir: " << e.explain << endl;
       delete conf;
@@ -198,6 +211,10 @@ int main(int argc, char **argv) {
       conf->print->setOutputStream(&cout);
       conf->print->docFunction(fd);
       cout << endl;
+    } catch (DecoderError &e) {
+      cerr << "decompile: " << e.explain << endl;
+      delete conf;
+      return 1;
     } catch (LowlevelError &e) {
       cerr << "decompile: " << e.explain << endl;
       delete conf;
