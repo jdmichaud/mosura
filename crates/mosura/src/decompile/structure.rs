@@ -15,6 +15,41 @@ use super::block::BlockId;
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
 
+/// Boolean properties on a structuring edge — Ghidra's `FlowBlock::edge_flags` (block.hh:108).
+/// The label is owned by the source block's out-edge (mosura mirrors Ghidra's `BlockEdge::label`);
+/// the reverse in-edge view is derived from the recomputed predecessor lists. These labels are
+/// written by the structuring passes that land in later bricks (structureLoops sets
+/// `TREE`/`FORWARD`/`CROSS`/`BACK`/`LOOP`/`IRREDUCIBLE`; LoopBody sets `LOOP_EXIT`; selectGoto sets
+/// `GOTO`). The current collapse rules do not read them, so a default-clean (`0`) label is
+/// byte-identical.
+#[allow(dead_code)]
+pub mod edge_flags {
+    pub const GOTO_EDGE: u32 = 1; // f_goto_edge — edge is unstructured
+    pub const LOOP_EDGE: u32 = 2; // f_loop_edge — removing these edges yields a DAG
+    pub const DEFAULTSWITCH_EDGE: u32 = 4; // f_defaultswitch_edge — default edge from a switch
+    pub const IRREDUCIBLE: u32 = 8; // f_irreducible — must be removed to make the graph reducible
+    pub const TREE_EDGE: u32 = 0x10; // f_tree_edge — an edge in the spanning tree
+    pub const FORWARD_EDGE: u32 = 0x20; // f_forward_edge — jumps forward in the spanning tree
+    pub const CROSS_EDGE: u32 = 0x40; // f_cross_edge — crosses subtrees in the spanning tree
+    pub const BACK_EDGE: u32 = 0x80; // f_back_edge — a back edge defining a loop
+    pub const LOOP_EXIT_EDGE: u32 = 0x100; // f_loop_exit_edge — edge exits a loop body
+}
+
+/// Boolean properties on a structuring block — Ghidra's `FlowBlock::block_flags` (block.hh:88).
+/// Written by later bricks (`MARK`/`MARK2` are the generic graph-walk marks used by structureLoops
+/// and LoopBody; `SWITCH_OUT` marks a switch head; `INTERIOR_GOTOIN`/`OUT` and `UNSTRUCTURED_TARG`
+/// track unstructured jumps into/out of a block's interior). Unread by the current rules → the
+/// default `0` is byte-identical.
+#[allow(dead_code)]
+pub mod block_flags {
+    pub const SWITCH_OUT: u32 = 0x10; // f_switch_out — output is decided by a switch
+    pub const UNSTRUCTURED_TARG: u32 = 0x20; // f_unstructured_targ — destination of an unstructured goto
+    pub const MARK: u32 = 0x80; // f_mark — generic block mark
+    pub const MARK2: u32 = 0x100; // f_mark2 — secondary block mark
+    pub const INTERIOR_GOTOOUT: u32 = 0x400; // f_interior_gotoout — unstructured jump out of interior
+    pub const INTERIOR_GOTOIN: u32 = 0x800; // f_interior_gotoin — target of unstructured jump to interior
+}
+
 /// Whether the negation of block `bid`'s terminating CBRANCH condition folds cleanly into a single
 /// complementary comparison via [`RuleBoolNegate`](super::rules::RuleBoolNegate) — i.e. the condition
 /// varnode is written and its defining op is one of the comparisons `RuleBoolNegate` complements
@@ -77,10 +112,68 @@ pub struct FlowBlock {
     pub kind: FlowKind,
     pub components: Vec<usize>,
     pub out_edges: Vec<usize>,
+    /// Per-out-edge boolean labels — Ghidra's `BlockEdge::label` ([`edge_flags`], block.hh:108),
+    /// parallel to `out_edges`. Written by the structuring passes landing in Bricks 1-4; the current
+    /// collapse rules do not read it, so it stays clean (`0`) and the output is byte-identical.
+    pub out_labels: Vec<u32>,
+    /// Block-level boolean flags — Ghidra's `FlowBlock::flags` ([`block_flags`], block.hh:88).
+    pub flags: u32,
     pub active: bool,
     /// For `If`/`IfElse`/`WhileDo`/`DoWhile`: the body/then is reached on the condition's
     /// *false* edge, so the printed condition must be negated.
     pub negated: bool,
+}
+
+#[allow(dead_code)]
+impl FlowBlock {
+    /// Label the `i`-th out-edge with `flag` — Ghidra's `FlowBlock::setOutEdgeFlag` (block.hh:307).
+    fn set_out_edge_flag(&mut self, i: usize, flag: u32) {
+        self.out_labels[i] |= flag;
+    }
+    /// Clear `flag` from the `i`-th out-edge — Ghidra's `FlowBlock::clearOutEdgeFlag` (block.hh:308).
+    fn clear_out_edge_flag(&mut self, i: usize, flag: u32) {
+        self.out_labels[i] &= !flag;
+    }
+    /// Set a block-level flag — Ghidra's `FlowBlock::setFlag` (block.hh:280).
+    fn set_flag(&mut self, flag: u32) {
+        self.flags |= flag;
+    }
+    /// Clear a block-level flag — Ghidra's `FlowBlock::clearFlag` (block.hh:281).
+    fn clear_flag(&mut self, flag: u32) {
+        self.flags &= !flag;
+    }
+
+    /// The `i`-th out-edge is a "decision" (not irreducible/back/goto) — Ghidra's
+    /// `FlowBlock::isDecisionOut` (block.hh:336).
+    fn is_decision_out(&self, i: usize) -> bool {
+        use edge_flags::*;
+        self.out_labels[i] & (IRREDUCIBLE | BACK_EDGE | GOTO_EDGE) == 0
+    }
+    /// The `i`-th out-edge stays within the reducible loop DAG (not irreducible/back/loop-exit/goto)
+    /// — Ghidra's `FlowBlock::isLoopDAGOut` (block.hh:342).
+    fn is_loop_dag_out(&self, i: usize) -> bool {
+        use edge_flags::*;
+        self.out_labels[i] & (IRREDUCIBLE | BACK_EDGE | LOOP_EXIT_EDGE | GOTO_EDGE) == 0
+    }
+    /// The `i`-th out-edge is unstructured (goto or irreducible) — Ghidra's `FlowBlock::isGotoOut`
+    /// (block.hh:347).
+    fn is_goto_out(&self, i: usize) -> bool {
+        use edge_flags::*;
+        self.out_labels[i] & (IRREDUCIBLE | GOTO_EDGE) != 0
+    }
+    /// The `i`-th out-edge is a loop back-edge — Ghidra's `FlowBlock::isBackEdgeOut` (block.hh:331).
+    fn is_back_edge_out(&self, i: usize) -> bool {
+        self.out_labels[i] & edge_flags::BACK_EDGE != 0
+    }
+    /// This block's output is decided by a switch — Ghidra's `FlowBlock::isSwitchOut` (block.hh:326).
+    fn is_switch_out(&self) -> bool {
+        self.flags & block_flags::SWITCH_OUT != 0
+    }
+    /// There is an unstructured jump into this block's interior — Ghidra's
+    /// `FlowBlock::isInteriorGotoTarget` (block.hh:323).
+    fn is_interior_goto_target(&self) -> bool {
+        self.flags & block_flags::INTERIOR_GOTOIN != 0
+    }
 }
 
 /// The structured-block forest; `root` is the single block the CFG collapsed to (or the
@@ -205,7 +298,10 @@ impl Structured {
         let compset: HashSet<usize> = components.iter().copied().collect();
         let n = self.blocks.len();
         let preds: Vec<usize> = ins[entry].iter().copied().filter(|p| !compset.contains(p)).collect();
-        self.blocks.push(FlowBlock { kind, components, out_edges, active: true, negated: false });
+        // New composite edges start unlabeled (Brick 0: default-clean, byte-identical); the faithful
+        // edge-label propagation from the collapsed sub-blocks lands with the flag-consuming rules.
+        let out_labels = vec![0u32; out_edges.len()];
+        self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags: 0, active: true, negated: false });
         for p in preds {
             for e in self.blocks[p].out_edges.iter_mut() {
                 if compset.contains(e) {
@@ -368,6 +464,7 @@ impl Structured {
                 self.gotos.insert(eb, (et, idx == 0)); // out[0] is the false edge
                 self.labels.insert(et);
                 self.blocks[b].out_edges.remove(idx);
+                self.blocks[b].out_labels.remove(idx); // keep the parallel edge-label vec aligned
                 return true;
             }
         }
@@ -525,12 +622,18 @@ impl Structured {
 /// Structure the CFG of `f`.
 pub fn structure(f: &Funcdata) -> Structured {
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
-        .map(|b| FlowBlock {
-            kind: FlowKind::Basic(BlockId(b as u32)),
-            components: Vec::new(),
-            out_edges: f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect(),
-            active: true,
-            negated: false,
+        .map(|b| {
+            let out_edges: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
+            let out_labels = vec![0u32; out_edges.len()];
+            FlowBlock {
+                kind: FlowKind::Basic(BlockId(b as u32)),
+                components: Vec::new(),
+                out_edges,
+                out_labels,
+                flags: 0,
+                active: true,
+                negated: false,
+            }
         })
         .collect();
     // Per basic block: whether its terminating CBRANCH has been branch-oriented by
