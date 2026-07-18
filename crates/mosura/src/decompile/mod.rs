@@ -18,6 +18,7 @@ pub mod consume;
 pub mod cover;
 pub mod deadcode;
 pub mod determinedbranch;
+pub mod directwrite;
 pub mod dominator;
 pub mod double;
 pub mod expression;

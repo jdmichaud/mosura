@@ -27,6 +27,22 @@ fn is_sink(code: OpCode) -> bool {
 
 /// Remove ops whose results are never consumed.
 pub fn dead_code(f: &mut Funcdata) {
+    // Ghidra clears the `addrforce` attribute of any varnode that is not a direct write at the top
+    // of every `ActionDeadCode::apply` (coreaction.cc:3944) — so a value forced into its storage
+    // stays auto-live only if a legitimate input feeds it. mosura runs this only on the deadcode
+    // immediately following an `ActionDirectWrite` pass (the flag), because its rotated pipeline has
+    // extra deadcodes Ghidra lacks (see `Funcdata::directwrite_pending_clear`). Persistent effect:
+    // once stripped, the varnode is no longer auto-live below.
+    if f.directwrite_pending_clear {
+        for i in 0..f.num_varnodes() as u32 {
+            let vn = f.vn(VarnodeId(i));
+            if vn.is_addr_force() && !vn.is_direct_write() {
+                f.vn_mut(VarnodeId(i)).clear_addr_force();
+            }
+        }
+        f.directwrite_pending_clear = false;
+    }
+
     let n_ops = f.num_ops();
     let mut live_op = vec![false; n_ops];
     let mut live_vn = vec![false; f.num_varnodes()];

@@ -660,6 +660,17 @@ pub fn universal_action() -> ActionGroup {
                         .then(super::determinedbranch::ActionDeterminedBranch)
                         .then(super::condconst::ActionConditionalConst)
                         .then(ActionHeritage)
+                        // ActionDirectWrite ×2 (Ghidra :5497-5498, "protorecovery_a"/"_b"): mapped
+                        // to mosura's rotated cycle between ActionHeritage (:5492) and the deadcode
+                        // it feeds (:5503) — the tail DeadCode below. The pass recomputes the
+                        // `directwrite` attribute from legal inputs/constants so that DeadCode can
+                        // clear `addrforce` off any value NOT reachable from a real input (a
+                        // callee-saved-register save slot), removing the write-only chain a bare
+                        // alias classification would otherwise force-keep. The second (propagate=
+                        // false) pass re-clears and wins, so directwrite does not flow through call
+                        // INDIRECTs.
+                        .then(super::directwrite::ActionDirectWrite::new(true))
+                        .then(super::directwrite::ActionDirectWrite::new(false))
                         .then(super::deadcode::ActionDeadCode),
                 )
                 // The actfullloop tail (Ghidra coreaction.cc:5678-5689), the mosura-present members
@@ -689,8 +700,12 @@ pub fn universal_action() -> ActionGroup {
                 //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
                 //   are skipped (`output.is_some()`, cleared isOutputActive).
                 // Tail members mosura has not ported are absent here: ActionLikelyTrash (:5679),
-                // ActionDirectWrite ×2 (:5680-5681), ActionReturnSplit (:5685),
-                // ActionUnjustifiedParams (:5686) — each joins at its slot with its port.
+                // ActionReturnSplit (:5685), ActionUnjustifiedParams (:5686) — each joins at its
+                // slot with its port.
+                // - ActionDirectWrite ×2 (:5680-5681): the fullloop-tail directwrite recompute,
+                //   feeding the tail DeadCode's addrforce-clear exactly as in the mainloop.
+                .then(super::directwrite::ActionDirectWrite::new(true))
+                .then(super::directwrite::ActionDirectWrite::new(false))
                 .then(super::deadcode::ActionDeadCode)
                 .then(super::determinedbranch::ActionDoNothing)
                 .then(ActionSwitchNorm)

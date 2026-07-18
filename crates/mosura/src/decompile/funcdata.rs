@@ -81,6 +81,14 @@ pub struct Funcdata {
     /// (`AliasChecker::hasLocalAlias`, `offset >= aliasBoundary`). `None` ⇒ nothing escapes ⇒ no
     /// stack slot is guarded. Set from the alias probe before the real heritage.
     pub alias_boundary: Option<i64>,
+    /// Set by [`super::directwrite::ActionDirectWrite`], consumed (and reset) by the next
+    /// [`super::deadcode::dead_code`]: it does the `addrforce`-clear-for-`!directwrite` step
+    /// (Ghidra `ActionDeadCode`, coreaction.cc:3944) only on the deadcode immediately following a
+    /// directwrite pass — exactly the two `ActionDirectWrite`→`ActionDeadCode` pairings Ghidra has
+    /// (mainloop :5497-5503, fullloop :5680-5682). mosura's rotated pipeline has extra deadcodes
+    /// (the mid-mainloop and cleanup sweeps) that Ghidra does not; gating the clear on this flag
+    /// keeps those from stripping `addrforce` against a stale/never-computed `directwrite`.
+    pub directwrite_pending_clear: bool,
     /// Set on the throwaway `partial` clone that `build` decompiles only to recover jump tables
     /// (build.rs). The late branch-orientation stage (`ActionOrientBranches`) is skipped on it:
     /// materializing a switch guard's negation there perturbs the range analysis
@@ -119,6 +127,7 @@ impl Funcdata {
             active_inputs: std::collections::HashMap::new(),
             call_guards_active: false,
             alias_boundary: None,
+            directwrite_pending_clear: false,
             table_recovery_probe: false,
             laned: super::transform::LanedRegisterSet::default(),
         }

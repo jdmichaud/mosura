@@ -163,6 +163,20 @@ impl Varnode {
     pub fn clear_addr_force(&mut self) {
         self.flags &= !flags::ADDRFORCE;
     }
+    /// Ghidra `Varnode::isDirectWrite` (varnode.hh:247) — this value is (could be) directly affected
+    /// by a legitimate function input. Computed by [`super::directwrite::ActionDirectWrite`] and read
+    /// by `ActionDeadCode` to decide whether an `addrforce` varnode stays exempt from removal.
+    pub fn is_direct_write(&self) -> bool {
+        self.flags & flags::DIRECTWRITE != 0
+    }
+    /// Ghidra `Varnode::setDirectWrite` (varnode.hh:305).
+    pub fn set_direct_write(&mut self) {
+        self.flags |= flags::DIRECTWRITE;
+    }
+    /// Ghidra `Varnode::clearDirectWrite` (varnode.hh:306).
+    pub fn clear_direct_write(&mut self) {
+        self.flags &= !flags::DIRECTWRITE;
+    }
     pub fn is_spacebase(&self) -> bool {
         self.flags & flags::SPACEBASE != 0
     }
