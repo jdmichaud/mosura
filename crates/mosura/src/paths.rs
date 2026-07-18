@@ -37,6 +37,12 @@ pub fn goldens_dir() -> PathBuf {
     workspace_root().join("goldens")
 }
 
+/// Mosura-authored (beyond-Ghidra) compiler specs — e.g. the Watcom `watcall` cspec that no
+/// Ghidra processor ships. Resolved by [`crate::lang::resolve_cspec`] ahead of the Ghidra tree.
+pub fn specs_dir() -> PathBuf {
+    workspace_root().join("specs")
+}
+
 /// Captured disasm + raw-p-code goldens (`*.golden`).
 pub fn disasm_goldens_dir() -> PathBuf {
     goldens_dir().join("disasm")

@@ -209,17 +209,20 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     }
 
     let image_base = Address::new(ram, image_base.unwrap_or(0));
-    // 32-bit i386 protected mode. The toolchain is Watcom/DOS-4GW; Ghidra has no Watcom x86
-    // compiler spec, so we record the generic default ("gcc" is mosura's modeled SysV-ish
-    // default) — informational, as the LE path is not run through the analysis gates.
-    let mut program = Program::new(spaces, ram, "x86:LE:32:default", "gcc", image_base, false, 32);
-    program.memory = memory;
 
     // Watcom compiler detection (two-oracle — see `watcom.rs`): a DOS/4GW-bound LE is a Watcom
     // build; its C run-time startup embeds the copyright banner right after the `_cstart_`
-    // `EB 76` entry jump. Detect it and record the era as the `Compiler` info property.
-    if let Some(w) = super::watcom::detect(data) {
-        program.compiler = w.compiler_label();
+    // `EB 76` entry jump. When detected, select the beyond-Ghidra `watcom` compiler spec — the
+    // `watcall` register calling convention (`specs/x86-32-watcom.cspec`) — instead of the
+    // generic `gcc` placeholder, so prototype recovery uses the right convention. 32-bit i386
+    // protected mode (`x86:LE:32:default`).
+    let watcom = super::watcom::detect(data);
+    let compiler_spec_id = if watcom.is_some() { "watcom" } else { "gcc" };
+    let mut program =
+        Program::new(spaces, ram, "x86:LE:32:default", compiler_spec_id, image_base, false, 32);
+    program.memory = memory;
+    if let Some(w) = watcom {
+        program.compiler = w.compiler_label(); // the `Compiler` info property (era)
     }
 
     // Entry point: EIP is an offset *within* the EIP object, so the absolute entry is the

@@ -366,6 +366,61 @@ mod tests {
     }
 
     #[test]
+    fn watcall_default_is_eax_edx_ebx_ecx() {
+        // The beyond-Ghidra x86-32-watcom cspec (`__watcall`) — Watcom's register convention
+        // passes integer/pointer args in EAX, EDX, EBX, ECX (open-watcom-v2 owflat.h:519 /
+        // asmins.c:935), then the stack. Validates the mosura-authored cspec loads + decodes.
+        if crate::lang::resolve_cspec("x86:LE:32:default", "watcom").is_none() {
+            eprintln!("skip: watcom cspec / ghidra tree not present");
+            return;
+        }
+        let regs = load("x86:LE:32:default", "watcom").unwrap_or_default();
+        let (spec, _) = crate::lang::load("x86:LE:32:default").unwrap();
+        let off = |n: &str| spec.register_offset(n).unwrap();
+        assert_eq!(
+            regs,
+            vec![off("EAX"), off("EDX"), off("EBX"), off("ECX")],
+            "watcall arg registers must be EAX, EDX, EBX, ECX in order"
+        );
+    }
+
+    #[test]
+    fn watcall_convention_confirmed_against_wcc386() {
+        // EMPIRICAL oracle: the arg-register loads a real Open Watcom `wcc386` emits for a
+        // `__watcall` call — the ground truth the cspec models. These 47 bytes are the `caller`
+        // routine of oracle/analysis-corpus/src/watcall_probe.c, compiled with OW 2.0 wcc386
+        // (`~/tools/open-watcom-v2/rel/binl/wcc386 watcall_probe.c -bt=dos`), which calls
+        // callee(0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555). Disassembled by
+        // mosura's own engine, it must load the args into EAX, EDX, EBX, ECX (then push the 5th)
+        // — confirming the watcall register order the cspec (`specs/x86-32-watcom.cspec`) declares.
+        let caller: &[u8] = &[
+            0x68, 0x14, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x53, 0x51, 0x52, 0x68,
+            0x55, 0x55, 0x55, 0x55, 0xB9, 0x44, 0x44, 0x44, 0x44, 0xBB, 0x33, 0x33, 0x33, 0x33,
+            0xBA, 0x22, 0x22, 0x22, 0x22, 0xB8, 0x11, 0x11, 0x11, 0x11, 0xE8, 0x00, 0x00, 0x00,
+            0x00, 0x5A, 0x59, 0x5B, 0xC3,
+        ];
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:32:default") else {
+            eprintln!("skip: x86 sla not present");
+            return;
+        };
+        let asm: Vec<String> = spec
+            .disassemble_ctx(caller, 0x1000, &ctx)
+            .into_iter()
+            .map(|i| format!("{} {}", i.mnemonic.trim(), i.body.trim()))
+            .collect();
+        // The four register args, in watcall order, each carrying its sentinel immediate.
+        for want in ["MOV EAX,0x11111111", "MOV EDX,0x22222222", "MOV EBX,0x33333333", "MOV ECX,0x44444444"] {
+            assert!(asm.iter().any(|l| l == want), "watcall arg load {want:?} missing; got {asm:?}");
+        }
+        // And the order EAX < EDX < EBX < ECX (successive args to the four registers in turn).
+        let pos = |m: &str| asm.iter().position(|l| l == m).unwrap();
+        assert!(
+            pos("MOV EAX,0x11111111") > pos("MOV ECX,0x44444444"),
+            "wcc386 loads the registers in reverse (ECX..EAX) right before the call — order confirmed"
+        );
+    }
+
+    #[test]
     fn x86_16_default_has_no_register_args() {
         // x86-16 default_proto passes all args on the stack — no integer-arg registers, so
         // param recovery on a 16-bit binary (comcom32/war2) invents nothing (0 spurious).

@@ -42,6 +42,15 @@ pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
 /// `CompilerSpecDescription`). Used by the analysis cspec loader to load the calling
 /// conventions. Returns `None` if no matching `<compiler>` is declared.
 pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
+    // Mosura-authored (beyond-Ghidra) compiler specs first: the Watcom `watcall` cspec that no
+    // Ghidra processor ships (`specs/x86-32-watcom.cspec`). Only x86:LE:32 + "watcom" today.
+    if compiler_spec_id == "watcom" && lang_id.starts_with("x86:LE:32") {
+        let p = paths::specs_dir().join("x86-32-watcom.cspec");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
     let procs = paths::ghidra_src().join("Ghidra/Processors");
     for proc in fs::read_dir(&procs).ok()?.flatten() {

@@ -47,6 +47,30 @@ compiled binary. So the detector reports the honest era fingerprint
 | Open Watcom banner grammar | `open-watcom-v2 msgcpyrt.h` | `watcom:open:YYYY-YYYY` (unit test) |
 | `comcom32.exe` (DJGPP) | non-Watcom MZ | no match → `unknown` (no false positive) |
 
+## watcall calling convention (`specs/x86-32-watcom.cspec`)
+
+No Ghidra x86 processor ships a watcom compiler spec, so mosura authors one:
+`specs/x86-32-watcom.cspec`, resolved by `lang::resolve_cspec` ahead of the Ghidra tree for
+`(x86:LE:32*, "watcom")`. It models the default 32-bit Watcom register convention `__watcall`,
+grounded in Open Watcom source: integer/pointer args in **EAX, EDX, EBX, ECX** then the stack
+(`bld/watcom/h/owflat.h:519` `__parm [__eax] [__edx] [__ebx] [__ecx]`; `bld/wasm/c/asmins.c:935`
+`{ "eax", "edx", "ebx", "ecx" }`); return in EAX; caller-saved EAX/ECX/EDX and callee-saved
+EBX/ESI/EDI/EBP (`docs/doc/cg/cpwcc.gml`). The LE loader selects it whenever the Watcom banner
+is detected (replacing the `gcc` placeholder). Register-convention symbols carry a trailing
+underscore (`foo_`) — a symbol-decoration detail, not part of the storage model.
+
+Validated two ways. **Decode** (`cspec.rs::watcall_default_is_eax_edx_ebx_ecx`): the cspec loads
+and decodes to the EAX/EDX/EBX/ECX arg order, and the LE loader assigns `compiler_spec_id =
+"watcom"` for the Watcom fixtures. **Empirical, against the real toolchain**
+(`cspec.rs::watcall_convention_confirmed_against_wcc386`): a `__watcall` probe
+(`oracle/analysis-corpus/src/watcall_probe.c`) compiled with a real Open Watcom 2.0 `wcc386`
+(`~/tools/open-watcom-v2/rel/binl/wcc386`), disassembled by **mosura's own engine**, loads the
+five args as `mov eax,a; mov edx,b; mov ebx,c; mov ecx,d; push e` and the callee returns in EAX
+with `ret 4` (callee stack cleanup) — exactly the convention the cspec declares. The **decompiler-side** consumption (recovering war2 function
+prototypes with watcall and validating them against the warcraft2-re recovered signatures) is
+the decompiler's job — that lives in `crates/mosura/src/decompile/` and is task #9's main-agent
+handoff; the cspec is written and ready for it. The 16-bit MZ watcall variant is a follow-up.
+
 ## Coverage / follow-up
 
 The **classic Watcom C/C++ 10.x era** (`WATCOM International Corp.`, `1988-1994`) is validated

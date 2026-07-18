@@ -383,10 +383,12 @@ fn watcom_detection() {
     assert_eq!(info.compiler_label(), "watcom:1988-1994");
     assert_eq!(info.product, "C/C++");
     assert_eq!(info.bitness, "32");
-    // Through the loader dispatch (a standalone DOS/4GW LE) the Compiler property is set.
+    // Through the loader dispatch (a standalone DOS/4GW LE) the Compiler property is set, and
+    // the beyond-Ghidra `watcom` compiler spec (the watcall convention) is selected.
     let prog = mosura::analysis::loader::load(&data).expect("load watcom_hello.exe");
     assert_eq!(prog.compiler, "watcom:1988-1994", "fresh Watcom LE fixture → watcom era");
-    eprintln!("watcom_hello.exe: {} ({})", prog.compiler, info.banner);
+    assert_eq!(prog.compiler_spec_id, "watcom", "Watcom LE → watcall cspec (not the gcc placeholder)");
+    eprintln!("watcom_hello.exe: {} cspec={} ({})", prog.compiler, prog.compiler_spec_id, info.banner);
 
     // (2) WAR2.EXE ground truth (user-provided): both the LE and the default MZ dispatch detect it.
     let war2 = std::path::Path::new("/home/jd/WAR2.EXE");
