@@ -39,6 +39,10 @@ pub struct Program {
     pub language_id: String,
     /// Compiler-spec id, e.g. `gcc` (Ghidra `getCompilerSpec().getCompilerSpecID()`).
     pub compiler_spec_id: String,
+    /// The `ProgramInformation.Compiler` info property (Ghidra `Program.getCompiler()`), e.g.
+    /// `clang:unknown` — the compiler *label* the PE opinion detects (distinct from the
+    /// compiler-spec id). Defaults to `unknown` (Ghidra's default), overridden by the PE loader.
+    pub compiler: String,
     pub image_base: Address,
     pub big_endian: bool,
     /// Address size in bits (e.g. 64).
@@ -85,6 +89,9 @@ impl Program {
             default_space,
             language_id: language_id.to_string(),
             compiler_spec_id: compiler_spec_id.to_string(),
+            // Ghidra `Program.getCompiler()` defaults to "unknown"; the PE loader overrides it
+            // with the compiler-opinion label.
+            compiler: "unknown".to_string(),
             image_base,
             big_endian,
             addr_size_bits,
@@ -194,6 +201,7 @@ impl Program {
         let mut snap = Snapshot {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
+            compiler_info: self.compiler.clone(),
             base: self.image_base.offset,
             endian: if self.big_endian { "big".into() } else { "little".into() },
             addr_size: self.addr_size_bits,

@@ -83,6 +83,40 @@ fn pe_robustness_cnv() {
     eprintln!("cnv: {} functions, analysis clean", program.function_manager.function_count());
 }
 
+/// PE compiler detection — a faithful port of Ghidra `PeLoader.CompilerOpinion.getOpinion`
+/// (`loader::pe_opinion`). mosura's loader-stage snapshot must reproduce, for the corpus PE
+/// (cnv.exe, a Clang binary), BOTH the compiler-spec id (the Opinion secondary → cspec, header
+/// `compiler=`) AND the `Compiler` info property (the opinion label, header `compilerinfo=`)
+/// that the analyzeHeadless golden records. This is the only PE compiler the corpus exercises
+/// end-to-end (no MinGW/VS/Borland toolchain to build fixtures with); the rest of the opinion
+/// is a faithful line-by-line port of the source. Skipped if cnv.exe is absent (user-provided).
+#[test]
+fn pe_compiler_opinion() {
+    let path = std::path::Path::new("/home/jd/cnv.exe");
+    if !path.exists() {
+        eprintln!("skip pe_compiler_opinion: cnv.exe absent");
+        return;
+    }
+    let golden = snapshot::parse(
+        &std::fs::read_to_string(analysis_goldens_dir().join("cnv.loaded.snapshot")).unwrap(),
+    );
+    let snap = analysis::analyze_binary(path).unwrap();
+    assert_eq!(
+        snap.compiler, golden.compiler,
+        "cnv: compiler-spec id (opinion secondary → cspec) must match Ghidra"
+    );
+    assert_eq!(
+        snap.compiler_info, golden.compiler_info,
+        "cnv: Compiler info property (opinion label) must match Ghidra"
+    );
+    assert_eq!(golden.compiler, "clangwindows");
+    assert_eq!(golden.compiler_info, "clang:unknown");
+    eprintln!(
+        "cnv PE opinion: cspec={} compiler={} (faithful CompilerOpinion.getOpinion → Clang)",
+        snap.compiler, snap.compiler_info
+    );
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has

@@ -91,6 +91,11 @@ pub struct Data {
 pub struct Snapshot {
     pub lang: String,
     pub compiler: String,
+    /// The `Compiler` info property (Ghidra `Program.getCompiler()`), e.g. `clang:unknown` —
+    /// the PE compiler-opinion label, distinct from `compiler` (the compiler-spec id). Recorded
+    /// verbatim in the header `compilerinfo=` field: the PE opinion label where set, `unknown`
+    /// (Ghidra's default) elsewhere.
+    pub compiler_info: String,
     pub base: u64,
     /// `"little"` or `"big"`.
     pub endian: String,
@@ -136,9 +141,17 @@ impl Snapshot {
         let mut s = self.clone();
         s.normalize();
         let mut out = String::new();
+        // Emit the `Compiler` info property verbatim (`Program.getCompiler()`) — the PE
+        // opinion label where set, `unknown` (Ghidra's default) elsewhere. Empty only for a
+        // program built without the default (never from a loader).
+        let compilerinfo = if s.compiler_info.is_empty() {
+            String::new()
+        } else {
+            format!(" compilerinfo={}", s.compiler_info)
+        };
         out.push_str(&format!(
-            "# mosura-analysis-snapshot v1 lang={} compiler={} base={:08x} endian={} addrsize={}\n",
-            s.lang, s.compiler, s.base, s.endian, s.addr_size
+            "# mosura-analysis-snapshot v1 lang={} compiler={}{} base={:08x} endian={} addrsize={}\n",
+            s.lang, s.compiler, compilerinfo, s.base, s.endian, s.addr_size
         ));
         for b in &s.blocks {
             out.push_str(&format!("block {:08x} {:08x} {}\n", b.start, b.end, b.name));
@@ -187,6 +200,7 @@ pub fn parse(text: &str) -> Snapshot {
                     match k {
                         "lang" => snap.lang = v.to_string(),
                         "compiler" => snap.compiler = v.to_string(),
+                        "compilerinfo" => snap.compiler_info = v.to_string(),
                         "base" => snap.base = u64::from_str_radix(v, 16).unwrap_or(0),
                         "endian" => snap.endian = v.to_string(),
                         "addrsize" => snap.addr_size = v.parse().unwrap_or(0),

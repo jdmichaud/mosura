@@ -1,4 +1,4 @@
-# mosura-analysis-snapshot v1 lang=68000:BE:32:Coldfire compiler=default base=80000000 endian=big addrsize=32
+# mosura-analysis-snapshot v1 lang=68000:BE:32:Coldfire compiler=default compilerinfo=unknown base=80000000 endian=big addrsize=32
 # oracle=ghidra-12.0.3 via=analyzeHeadless source=m68k.elf
 block 80000000 80000093 segment_0.1
 block 80000094 800000b7 .note.gnu.build-id

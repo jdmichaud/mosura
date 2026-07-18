@@ -38,7 +38,13 @@ pub fn load_pe(data: &[u8]) -> Result<Program, LoadError> {
         return Err(LoadError::Unsupported(format!("PE machine={machine:#x} (A2 supports x86-64)")));
     }
     let language_id = "x86:LE:64:default";
-    let compiler_spec_id = "clangwindows"; // Ghidra's default cspec for this corpus
+    // Compiler detection — a faithful port of Ghidra `PeLoader.CompilerOpinion.getOpinion`
+    // (see `pe_opinion.rs`). The opinion's `family` is the Opinion secondary that selects the
+    // compiler spec (x86.opinion PE block), and its `label` is stored as the `Compiler` info
+    // property. For x86-64: clang→clangwindows, golang→golang, swift→swift, else→windows.
+    let opinion = super::pe_opinion::get_opinion(data, &pe);
+    let compiler_spec_id = opinion.cspec_x64();
+    let compiler_label = opinion.label();
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
@@ -106,6 +112,7 @@ pub fn load_pe(data: &[u8]) -> Result<Program, LoadError> {
         false,
         64,
     );
+    program.compiler = compiler_label.to_string(); // the Compiler info property (opinion label)
     program.memory = memory;
     recover_pe(&pe, image_base, ram, &mut program);
     Ok(program)
@@ -213,7 +220,9 @@ mod tests {
         let prog = load_pe(&data).expect("load cnv.exe");
         let snap = prog.snapshot();
         assert_eq!(snap.base, 0x1_4000_0000);
+        // The detected compiler (opinion → cspec + label), not a hardcoded value: cnv is Clang.
         assert_eq!(snap.compiler, "clangwindows");
+        assert_eq!(snap.compiler_info, "clang:unknown");
         let golden = crate::analysis::snapshot::parse(
             &std::fs::read_to_string(crate::paths::analysis_goldens_dir().join("cnv.loaded.snapshot"))
                 .unwrap(),

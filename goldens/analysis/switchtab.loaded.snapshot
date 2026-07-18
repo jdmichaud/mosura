@@ -1,4 +1,4 @@
-# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc base=00400000 endian=little addrsize=64
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc compilerinfo=unknown base=00400000 endian=little addrsize=64
 # oracle=ghidra-12.0.3 via=analyzeHeadless source=switchtab.elf
 block 00400000 0040018f segment_0.1
 block 00400190 004001b3 .note.gnu.build-id

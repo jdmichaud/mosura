@@ -40,10 +40,16 @@ public class DumpAnalysisSnapshot extends GhidraScript {
         String endian = currentProgram.getLanguage().isBigEndian() ? "big" : "little";
         int addrBits = currentProgram.getLanguage().getLanguageDescription().getSize();
         AddressSpace defaultSpace = currentProgram.getAddressFactory().getDefaultAddressSpace();
+        // The ProgramInformation "Compiler" property (Ghidra `Program.getCompiler()`), recorded
+        // verbatim as ` compilerinfo=<value>` — the PE compiler-opinion label (e.g.
+        // `clang:unknown`) where PeLoader set one, and Ghidra's default `unknown` elsewhere.
+        String compilerInfo = currentProgram.getCompiler();
+        String compilerInfoField =
+            (compilerInfo != null && !compilerInfo.isEmpty()) ? " compilerinfo=" + compilerInfo : "";
 
         try (PrintWriter w = new PrintWriter(outPath)) {
-            w.printf("# mosura-analysis-snapshot v1 lang=%s compiler=%s base=%08x endian=%s addrsize=%d%n",
-                    lang, cspec, base, endian, addrBits);
+            w.printf("# mosura-analysis-snapshot v1 lang=%s compiler=%s%s base=%08x endian=%s addrsize=%d%n",
+                    lang, cspec, compilerInfoField, base, endian, addrBits);
             w.printf("# oracle=ghidra-%s via=analyzeHeadless source=%s%n",
                     getGhidraVersion(), currentProgram.getName());
 

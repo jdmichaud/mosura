@@ -1,4 +1,4 @@
-# mosura-analysis-snapshot v1 lang=x86:LE:16:Real Mode compiler=default base=00000000 endian=little addrsize=16
+# mosura-analysis-snapshot v1 lang=x86:LE:16:Real Mode compiler=default compilerinfo=unknown base=00000000 endian=little addrsize=16
 # oracle=ghidra-12.0.3 via=analyzeHeadless source=WAR2.EXE
 block 00010000 00011bcf CODE_0
 block 00011bd0 0001990f CODE_1

@@ -1,4 +1,4 @@
-# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=clangwindows base=140000000 endian=little addrsize=64
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=clangwindows compilerinfo=clang:unknown base=140000000 endian=little addrsize=64
 # oracle=ghidra-12.0.3 via=analyzeHeadless source=cnv.exe
 block 140000000 1400003ff Headers
 block 140001000 1400b7dff .text
