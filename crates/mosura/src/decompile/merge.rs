@@ -826,17 +826,168 @@ fn merge_marker_trim(f: &mut Funcdata) {
     let mut covers = all_covers(f);
     let mut h = HighVariables::new(f.num_varnodes());
     merge_addrtied(f, &mut h, &covers);
+    // `Merge::mergeMarker` (merge.cc:889): run through all MULTIEQUAL and INDIRECT ops, forcing the
+    // merge of each input with the output; skip indirect *creations* (Ghidra `op->isIndirectCreation`).
     for op in f.op_ids() {
         let o = f.op(op);
-        if o.is_dead() || o.code() != OpCode::Multiequal {
+        if o.is_dead() || !o.is_marker() {
             continue;
         }
         let Some(out) = o.output else { continue };
+        let is_indirect = o.code() == OpCode::Indirect;
+        if is_indirect
+            && (f.vn(out).is_indirect_creation()
+                || o.input(0).is_some_and(|iv| f.vn(iv).is_constant()))
+        {
+            continue;
+        }
         if !mergeable(f, out) {
             continue;
         }
-        merge_op(f, &mut h, &mut covers, op);
+        if is_indirect {
+            merge_indirect(f, &mut h, &mut covers, op);
+        } else {
+            merge_op(f, &mut h, &mut covers, op);
+        }
     }
+}
+
+/// `Merge::mergeIndirect` (merge.cc:846) — force the merge of the input and output of an INDIRECT.
+/// A non-address-forced output merges exactly like a MULTIEQUAL ([`merge_op`] with the data input
+/// only). An address-forced output must by convention hold the value at its address BEFORE the
+/// indirect effect, so its input is never blind-trimmed: try the direct merge; failing that, snip
+/// instances of the output HighVariable that feed the affected op ([`snip_output_interference`])
+/// and retry; finally snip the INDIRECT's own input into a COPY placed just before it. (Where
+/// Ghidra's last-resort merge would throw `LowlevelError`, mosura leaves the pair un-unioned — the
+/// read-only merge gate keeps them distinct.)
+fn merge_indirect(
+    f: &mut Funcdata,
+    h: &mut HighVariables,
+    covers: &mut HashMap<VarnodeId, Cover>,
+    indop: super::op::OpId,
+) {
+    let outvn = f.op(indop).output.expect("INDIRECT has an output");
+    if !f.vn(outvn).is_addr_force() {
+        merge_op(f, h, covers, indop);
+        return;
+    }
+    let try_merge = |f: &Funcdata, h: &mut HighVariables, covers: &HashMap<VarnodeId, Cover>| -> bool {
+        let outvn = f.op(indop).output.expect("INDIRECT has an output");
+        let Some(in0) = f.op(indop).input(0) else { return true };
+        if !mergeable(f, in0) {
+            return false;
+        }
+        let (rep_out, rep_in) = (h.high(outvn), h.high(in0));
+        if rep_out == rep_in {
+            return true;
+        }
+        if !merge_test_required(f, h, rep_out, rep_in) {
+            return false;
+        }
+        // Merge::merge fails only on a Cover intersection.
+        let members = full_members_by_rep(f, h, covers);
+        let empty: Vec<VarnodeId> = Vec::new();
+        let mo = members.get(&rep_out).unwrap_or(&empty);
+        let mi = members.get(&rep_in).unwrap_or(&empty);
+        if class_intersect(f, mo, mi, covers) {
+            return false;
+        }
+        h.union(outvn.0, in0.0);
+        true
+    };
+    if try_merge(f, h, covers) {
+        return;
+    }
+    // The only thing that can go wrong with an input trim is the output being involved in the
+    // input to the op causing the indirect effect — test for (and snip) that.
+    if snip_output_interference(f, h, indop) {
+        h.extend_to(f.num_varnodes());
+        *covers = all_covers(f);
+        if try_merge(f, h, covers) {
+            return;
+        }
+    }
+    // Snip the INDIRECT itself: a COPY of the input placed just before it (allocateCopyTrim).
+    let in0 = f.op(indop).input(0).expect("INDIRECT has a data input");
+    let size = f.vn(in0).size;
+    let pc = f.op(indop).seqnum.pc;
+    let uniq = f.num_ops() as u32;
+    let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![in0]);
+    let cout = f.new_output_unique(copyop, size);
+    f.op_set_input(indop, 0, cout);
+    f.op_insert_before(copyop, indop);
+    f.copy_trims.push(copyop); // allocateCopyTrim records it (merge.cc:432)
+    h.extend_to(f.num_varnodes());
+    *covers = all_covers(f);
+    // Try the merge again; where Ghidra would throw ("Unable to merge address forced indirect"),
+    // a residual conflict is left un-unioned.
+    try_merge(f, h, covers);
+}
+
+/// `Merge::snipOutputInterference` (merge.cc:815) + `collectInputs` (merge.cc:780): collect reads,
+/// by the op causing the given INDIRECT (and the INDIRECTs stacked directly above it), of Varnodes
+/// belonging to the INDIRECT output's HighVariable; snip them by COPYing to a temporary just before
+/// the affected op — one COPY per distinct read Varnode HighVariable — and repoint the reads.
+/// Returns `true` if anything was snipped.
+fn snip_output_interference(f: &mut Funcdata, h: &mut HighVariables, indop: super::op::OpId) -> bool {
+    let Some(affect) = f.op(indop).guarded_op() else { return false };
+    let out = f.op(indop).output.expect("INDIRECT has an output");
+    let rep = h.high(out);
+    // collectInputs: the affected op, plus any INDIRECT immediately preceding it in its block.
+    let mut oplist: Vec<(super::op::OpId, usize)> = Vec::new();
+    let parent = match f.op(affect).parent {
+        Some(p) => p,
+        None => return false,
+    };
+    let ops = f.block(parent).ops.clone();
+    let Some(mut idx) = ops.iter().position(|&o| o == affect) else { return false };
+    loop {
+        let op = ops[idx];
+        for i in 0..f.op(op).num_inputs() {
+            let Some(vn) = f.op(op).input(i) else { continue };
+            if !mergeable(f, vn) {
+                continue; // annotations/constants
+            }
+            if h.high(vn) == rep {
+                oplist.push((op, i));
+            }
+        }
+        if idx == 0 {
+            break;
+        }
+        idx -= 1;
+        if f.op(ops[idx]).code() != OpCode::Indirect {
+            break;
+        }
+    }
+    if oplist.is_empty() {
+        return false;
+    }
+    // Group by the read Varnode's HighVariable (compareByHigh): one snip COPY per group, all the
+    // group's reads repointed at it.
+    oplist.sort_by_key(|&(op, slot)| {
+        let vn = f.op(op).input(slot).expect("collected read has an input");
+        (h.high(vn), vn.0)
+    });
+    let mut snip_out: Option<VarnodeId> = None;
+    let mut cur_high: Option<u32> = None;
+    for (op, slot) in oplist {
+        let vn = f.op(op).input(slot).expect("collected read has an input");
+        if cur_high != Some(h.high(vn)) {
+            let size = f.vn(vn).size;
+            let pc = f.op(op).seqnum.pc;
+            let uniq = f.num_ops() as u32;
+            let snipop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
+            let so = f.new_output_unique(snipop, size);
+            f.op_insert_before(snipop, op);
+            f.copy_trims.push(snipop);
+            cur_high = Some(h.high(vn));
+            h.extend_to(f.num_varnodes());
+            snip_out = Some(so);
+        }
+        f.op_set_input(op, slot, snip_out.expect("snip COPY exists"));
+    }
+    true
 }
 
 /// `Merge::mergeOp` (merge.cc:719) — force the merge of all input and output Varnodes for the given
