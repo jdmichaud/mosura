@@ -567,8 +567,16 @@ fn remove_do_nothing_block(f: &mut Funcdata, bb: BlockId) {
 /// `ActionDeadCode` and `ActionSwitchNorm` (coreaction.cc:5683, group "deadcontrolflow"): remove
 /// blocks that do nothing. Collapsing a marker-only join block pushes its MULTIEQUALs into the
 /// successor's (e.g. a switch's common join: the per-case values become direct inputs of the loop
-/// header phi), which is the IR shape the merge phase's cover trims key off. Ghidra removes one
-/// block per application under `rule_repeatapply`; the internal loop here is equivalent.
+/// header phi), which is the IR shape the merge phase's cover trims key off. Ghidra iterates the
+/// basic blocks in index (reverse-post) order and removes **exactly one** do-nothing block per
+/// application (coreaction.cc:3466-3486: `for(i…getBlock(i))` … `removeDoNothingBlock; return`),
+/// relying on the enclosing `actfullloop` repeatapply (coreaction.cc:5683) to revisit until none
+/// remain. The removal ORDER is load-bearing: when several do-nothing blocks feed a common phi
+/// (a switch's conditional-case join), the order they are collapsed sets the phi-slot order the
+/// merge trim keys off. mosura numbers blocks by address, so it iterates the candidates in
+/// reverse-post order explicitly (the same `dominator::postorder` RPO used elsewhere), removes one,
+/// and returns — the mainloop `restart("fullloop")` revisits. (Retires the former ascending-block-
+/// index + remove-all-in-one-apply adaptation.)
 pub struct ActionDoNothing;
 
 impl Action for ActionDoNothing {
@@ -576,24 +584,30 @@ impl Action for ActionDoNothing {
         "donothing"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        let mut count = 0;
-        loop {
-            let found = (0..data.num_blocks()).map(|b| BlockId(b as u32)).find(|&bb| {
-                if !is_do_nothing(data, bb) {
-                    return false;
-                }
-                // A do-nothing block looping to itself is an infinite loop (Ghidra warns and
-                // keeps it).
-                if data.block(bb).out_edges[0] == bb {
-                    return false;
-                }
-                unblocked_multi(data, bb, 0)
-            });
-            let Some(bb) = found else { break };
-            remove_do_nothing_block(data, bb);
-            count += 1;
+        // Ghidra `ActionDoNothing::apply` (coreaction.cc:3466): iterate blocks in index (RPO) order,
+        // remove the FIRST do-nothing block, return (the `actfullloop` repeatapply revisits). mosura
+        // numbers blocks by address, so order the candidates by reverse-post order explicitly.
+        let po = super::dominator::postorder(data);
+        let nb = data.num_blocks();
+        let mut rpo = vec![usize::MAX; nb];
+        for (i, &b) in po.iter().rev().enumerate() {
+            rpo[b] = i;
         }
-        count
+        let mut cands: Vec<usize> = (0..nb)
+            .filter(|&b| {
+                let bb = BlockId(b as u32);
+                is_do_nothing(data, bb)
+                    && !data.block(bb).out_edges.is_empty()
+                    && data.block(bb).out_edges[0] != bb
+                    && unblocked_multi(data, bb, 0)
+            })
+            .collect();
+        cands.sort_by_key(|&b| rpo[b]);
+        if let Some(&b) = cands.first() {
+            remove_do_nothing_block(data, BlockId(b as u32));
+            return 1;
+        }
+        0
     }
 }
 
