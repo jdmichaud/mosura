@@ -527,6 +527,16 @@ impl<'a> PrintC<'a> {
                 let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
                 cast_standard(&req, &cur, false, false)
             }
+            // Shift: the shifted value (slot 0) must carry the shift's signedness so the C `>>`
+            // renders as the correct kind. Ghidra `TypeOpIntRight::getInputCast` (typeop.cc) requires
+            // `TYPE_UINT` (the constructor's `inputTypeLocal`, logical `>>`); `TypeOpIntSright::
+            // getInputCast` requires `TYPE_INT` (arithmetic). Both: `castStandard(reqtype,curtype,
+            // true,true)` on slot 0 only — the shift amount (slot 1) defers to the binary default.
+            // The `intPromotionType` gate is omitted exactly as for the comparison arms above (this
+            // matches Ghidra's `castStandard` branch for operands >= 4 bytes; sub-4-byte
+            // promotion-forced casts are conservatively skipped).
+            OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
+            OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
             _ => None,
         }
         // NOTE: the `checkIntPromotionForCompare` gate (cast.cc) is omitted; it is exactly
