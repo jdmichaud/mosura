@@ -35,7 +35,7 @@ use super::funcdata::Funcdata;
 use super::merge::merge;
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::types::{meet, type_order, Datatype};
+use super::types::{type_order, Datatype};
 use super::varnode::{flags, VarnodeId};
 
 /// A Ghidra `type_metatype` tag, just enough to size a local-type seed via [`base`].
@@ -701,7 +701,17 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
             continue;
         }
         let lt = committed[v.0 as usize].clone();
-        hv.entry(id).and_modify(|t| *t = meet(t, &lt)).or_insert(lt);
+        // Ghidra `HighVariable::getTypeRepresentative` (variable.cc:377): a HighVariable's type is the
+        // MOST-SPECIFIC of its member (instance) types (`0 > typeOrderBool`), NOT a meet of them.
+        // (Type-locked members are handled by `locked_hv` above.) `type_order` is the primitive-lattice
+        // stand-in for `typeOrderBool` — bool is a distinct sub-metatype here, so the ordering matches.
+        hv.entry(id)
+            .and_modify(|t| {
+                if type_order(&lt, t) == Ordering::Less {
+                    *t = lt.clone();
+                }
+            })
+            .or_insert(lt);
     }
 
     let mut result: HashMap<VarnodeId, Datatype> = nonconst
