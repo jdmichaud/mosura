@@ -225,6 +225,13 @@ pub fn raw_funcdata_flow_image(
     let mut jumpvec: std::collections::BTreeMap<u64, super::jumptable::JumpTable> =
         std::collections::BTreeMap::new();
     let mut worklist = vec![entry];
+    // The order instructions are first decoded during flow-following — Ghidra's `PcodeOpBank`
+    // \e deadlist is in op-creation order (op.cc:947 appends at the end), NOT address order, and
+    // `FlowInfo::connectBasic` (flow.cc:1021) builds each block's in-edge list by iterating that
+    // deadlist. We record the same creation order here so `build_from_instrs` emits ops in it, and
+    // `cfg::build_cfg` builds in_edges in it (retiring the block-index in_edge sort). `decoded` stays
+    // the address-keyed lookup/dedup map (Ghidra's `optree`).
+    let mut flow_order: Vec<u64> = Vec::new();
     // Multistage flow recovery — Ghidra `FlowInfo::recoverJumpTables` / `generateOps`: follow flow,
     // then faithfully recover any indirect-branch jump tables on a simplified partial function (the
     // real `JumpBasic` recovery, see `jumptable.rs`) and feed the case targets back into the flow,
@@ -255,6 +262,7 @@ pub fn raw_funcdata_flow_image(
                 succs.push(a + ilen);
             }
             decoded.insert(a, insn);
+            flow_order.push(a); // creation order (deadlist), only reached for a newly-decoded, in-code addr
             worklist.extend(succs);
         }
         // recover jump tables on a simplified partial — but only when there's an indirect branch to
@@ -323,7 +331,11 @@ pub fn raw_funcdata_flow_image(
             ins: vec![PArg::Var(crate::sleigh::pcode::Varnode { space: "const".into(), offset: 1, size: 4 })],
         });
     }
-    let mut f = build_from_instrs(name, entry, decoded.into_values(), &spec.laned, proto_model);
+    // Emit ops in flow-decode (creation) order, not address order — Ghidra's PcodeOpBank deadlist.
+    // `flow_order` is a bijection with `decoded`'s keys (pushed once per newly-decoded in-code addr),
+    // so draining it yields every decoded instruction exactly once, in creation order.
+    let ordered: Vec<crate::sleigh::Instruction> = flow_order.iter().filter_map(|a| decoded.remove(a)).collect();
+    let mut f = build_from_instrs(name, entry, ordered, &spec.laned, proto_model);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();

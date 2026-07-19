@@ -87,10 +87,23 @@ pub fn build_cfg(f: &mut Funcdata) {
     }
 
     // out edges, by the block's last op
-    for (bi, blk) in blocks.iter_mut().enumerate() {
+    for blk in blocks.iter_mut() {
         let last_idx = blk.ops.last().unwrap().0 as usize;
         let oc = f.op(OpId(last_idx as u32)).code();
-        let fallthrough = (bi + 1 < nb).then_some(bi + 1);
+        // Fall-through = the EXECUTION-next op after the block's last op (Ghidra `fallthruOp`,
+        // flow.cc:961/970). Ops are created in flow order, so the next block INDEX (`bi + 1`) is the
+        // next block CREATED, not the execution-next one. An instruction's p-code ops are created
+        // consecutively, so OpId+1 at the SAME address is the next p-code op of THIS instruction (an
+        // intra-instruction / p-code-level branch, e.g. nan's CBRANCH) — that is the fall-through;
+        // otherwise the fall-through is the next instruction BY ADDRESS. Both are already block-start
+        // leaders (the `i+1`-after-terminator and branch-target leader rules), so `block_of` is exact.
+        let last_addr = f.op(OpId(last_idx as u32)).seqnum.pc.offset;
+        let next_idx = last_idx + 1;
+        let fallthrough = if next_idx < n && f.op(OpId(next_idx as u32)).seqnum.pc.offset == last_addr {
+            Some(block_of[next_idx]) // intra-instruction: next p-code op, same address
+        } else {
+            addr_index.range(last_addr + 1..).next().map(|(_, &idx)| block_of[idx]) // next instruction by address
+        };
         let mut outs: Vec<usize> = Vec::new();
         match oc {
             super::OpCode::Return => {}
@@ -253,13 +266,18 @@ pub fn build_cfg(f: &mut Funcdata) {
     }
 
     // Renumber reachable blocks with the entry block first, so it becomes block 0 — the dominator
-    // and heritage root. (Address order otherwise; for an entry that is already the lowest address
-    // this is a no-op.)
+    // and heritage root — then the rest in ascending start address. mosura numbers basic blocks by
+    // address (a kept adaptation); ops are now created in flow order (not address order), so the
+    // block-cut order above is flow order — we sort explicitly here to keep the block INDEX address-
+    // stable for every downstream consumer (dominators, heritage, structuring). Only the in_edge
+    // ORDER below changes (built in op-creation order = Ghidra `connectBasic`).
     let mut order: Vec<usize> = Vec::with_capacity(nb);
     if reachable[entry_block] {
         order.push(entry_block);
     }
-    order.extend((0..nb).filter(|&b| reachable[b] && b != entry_block));
+    let mut rest: Vec<usize> = (0..nb).filter(|&b| reachable[b] && b != entry_block).collect();
+    rest.sort_by_key(|&b| blocks[b].ops.first().map(|&o| f.op(o).seqnum.pc.offset).unwrap_or(u64::MAX));
+    order.extend(rest);
     let mut newid = vec![u32::MAX; nb];
     for (new, &b) in order.iter().enumerate() {
         newid[b] = new as u32;
@@ -278,8 +296,16 @@ pub fn build_cfg(f: &mut Funcdata) {
     let mut blocks = pruned;
     let nb = blocks.len();
 
-    // in edges = reverse of (pruned) out
-    for bi in 0..nb {
+    // in edges in op-CREATION order — Ghidra `FlowInfo::connectBasic` (flow.cc:1021) iterates the
+    // PcodeOpBank deadlist (creation order) and `addEdge`s (`FlowBlock::addInEdge`, block.cc:73), so a
+    // block's in-edge list — and thus its MULTIEQUAL phi-slot order (`getOutRevIndex`, heritage.cc:2533)
+    // — is ordered by WHEN each predecessor's edge was created, NOT by predecessor block index. Iterate
+    // predecessors in creation order: `order[new]` is the old (block-cut = creation) index of new block
+    // `new`, so sorting the new ids by it recovers the deadlist order. (Retires the former ascending-
+    // block-index in_edge sort, the switchloop phi-slot adaptation.)
+    let mut creation_seq: Vec<usize> = (0..nb).collect();
+    creation_seq.sort_by_key(|&new| order[new]);
+    for &bi in &creation_seq {
         for o in blocks[bi].out_edges.clone() {
             blocks[o.0 as usize].in_edges.push(BlockId(bi as u32));
         }
