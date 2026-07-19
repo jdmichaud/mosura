@@ -17,6 +17,16 @@ use super::opcode::OpCode;
 use super::space::{Address, SpaceId};
 use super::varnode::VarnodeId;
 
+/// Ghidra `max_implied_ref` (architecture.cc:1420) — the descendant-count ceiling above which
+/// `ActionMarkExplicit::baseExplicit` (coreaction.cc:3078) forces a value explicit. A value with
+/// `2..=max_implied_ref` descendants is a `multlist` member whose explicitness the term-duplication
+/// machinery decides.
+const MAX_IMPLIED_REF: usize = 2;
+/// Ghidra `max_term_duplication` (architecture.cc:1421) — a multi-use value whose expression has at
+/// most this many explicit terms stays *implied* and is duplicated at each use rather than named
+/// (`ActionMarkExplicit::processMultiplier`, coreaction.cc:3166).
+const MAX_TERM_DUPLICATION: i32 = 2;
+
 /// A union-find over Varnodes: each class is one HighVariable (one C variable).
 pub struct HighVariables {
     parent: Vec<u32>,
@@ -210,13 +220,67 @@ pub(crate) fn explicit_trailing(
             }
         }
     }
-    if vn.descend.len() != 1 {
-        return true; // 0 or >1 uses: named
+    // Ghidra `ActionMarkExplicit::baseExplicit`'s descendant-count arms (coreaction.cc:3064/3078):
+    // a value with no descendants, or more than `max_implied_ref` of them, is named.
+    let dn = vn.descend.len();
+    if dn == 0 || dn > MAX_IMPLIED_REF {
+        return true;
     }
-    // Ghidra `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) via `Merge::inflateTest`:
-    // a value can stay implied only if no def-op input's HighVariable has another instance whose
-    // live range intersects the value's own cover — otherwise the inlined expression would read a
-    // value REDEFINED between the def and the use point. Copy shadows of the input are exempt.
+    if dn > 1 {
+        // A `multlist` member (`ActionMarkExplicit`, coreaction.cc:3256): `2..=max_implied_ref`
+        // descendants. A value feeding a MULTIEQUAL/INDIRECT is the merged variable itself
+        // (baseExplicit's marker-descendant bail, :3076). A multi-use LOAD stays named — its
+        // implied-cover analysis (checkImpliedCover's LOAD-vs-STORE/CALL arms, :3384-3406) is not
+        // ported, so we conservatively never inline it (an under-approximation of Ghidra that can
+        // only leave it explicit, never emit wrong code). Otherwise the `multipleInteraction`
+        // flow-into rule (:3091) and the `processMultiplier` term count (:3166) decide, falling
+        // through to the same implied-cover test as the single-use case.
+        if vn.descend.iter().any(|&u| f.op(u).is_marker()) {
+            return true;
+        }
+        if vn.def.is_some_and(|d| f.op(d).code() == OpCode::Load) {
+            return true;
+        }
+        if is_purged_top(f, persist_of, v) {
+            return true;
+        }
+        if process_multiplier(f, persist_of, v, MAX_TERM_DUPLICATION) {
+            return true;
+        }
+        return !implied_cover_ok(f, ih_of, ih_members, covers, v);
+    }
+    // Single use (`dn == 1`): inline unless the implied-cover test fails, or it feeds a marker
+    // standing for the same variable, in which case it materializes as an assignment.
+    if !implied_cover_ok(f, ih_of, ih_members, covers, v) {
+        return true;
+    }
+    let user = vn.descend[0];
+    match f.op(user).code() {
+        OpCode::Multiequal => true,
+        OpCode::Indirect => f
+            .op(user)
+            .output
+            .is_some_and(|uout| f.vn(uout).loc == vn.loc && f.vn(uout).size == vn.size),
+        _ => false,
+    }
+}
+
+/// `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) input-cover arm, via `Merge::
+/// inflateTest`: a value can stay implied only if no def-op input's HighVariable has ANOTHER live
+/// instance whose range intersects the value's own cover — otherwise the inlined expression would
+/// read a value REDEFINED between its def and its use. Copy shadows / partial-piece copy shadows of
+/// the input are exempt. Returns `true` when the value can be implied (no cover violation).
+///
+/// The LOAD-vs-STORE and load/call-crossing arms (:3384-3406) are not ported: multi-use LOADs are
+/// kept explicit by the caller, and single-use LOADs matched Ghidra without them.
+fn implied_cover_ok(
+    f: &Funcdata,
+    ih_of: &[u32],
+    ih_members: &HashMap<u32, Vec<VarnodeId>>,
+    covers: &HashMap<VarnodeId, Cover>,
+    v: VarnodeId,
+) -> bool {
+    let vn = f.vn(v);
     if let (Some(def), Some(vcov)) = (vn.def, covers.get(&v)) {
         for slot in 0..f.op(def).num_inputs() {
             let Some(defvn) = f.op(def).input(slot) else { continue };
@@ -246,22 +310,166 @@ pub(crate) fn explicit_trailing(
                     continue;
                 }
                 if covers.get(&b).is_some_and(|bc| bc.intersects(vcov)) {
-                    return true;
+                    return false;
                 }
             }
         }
     }
-    // single use: inline, unless it feeds a marker that stands for the *same* variable, in which
-    // case it must be materialized as an assignment to that variable.
-    let user = vn.descend[0];
-    match f.op(user).code() {
-        OpCode::Multiequal => true,
-        OpCode::Indirect => f
-            .op(user)
-            .output
-            .is_some_and(|uout| f.vn(uout).loc == vn.loc && f.vn(uout).size == vn.size),
-        _ => false,
+    true
+}
+
+/// Whether `v` is a `multlist` member — Ghidra `ActionMarkExplicit::baseExplicit` returning a
+/// descendant count in `2..=max_implied_ref` (coreaction.cc:3256, the varnodes `setMark`'d). Mirrors
+/// the leading arms of [`explicit_leading`]/[`explicit_trailing`]: not a constant/input/addrtied
+/// value, written by a non-marker/non-call/non-pointer op, with no marker descendant and
+/// `2..=max_implied_ref` descendants. (mosura folds Ghidra's spacebase-PTRSUB-always-implied special
+/// case, :3066-3072, into the pointer arm, so PTRADD/PTRSUB are never members here.)
+fn is_mark_candidate(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
+    if explicit_leading(f, v).is_some() {
+        return false;
     }
+    let vn = f.vn(v);
+    let Some(def) = vn.def.filter(|_| vn.is_written()) else { return false };
+    match f.op(def).code() {
+        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind => return false,
+        OpCode::Ptradd | OpCode::Ptrsub => return false,
+        OpCode::Copy => {
+            if let Some(inv) = f.op(def).input(0) {
+                if f.vn(inv).is_persist() && persist_of[v.0 as usize] != persist_of[inv.0 as usize] {
+                    return false;
+                }
+            }
+        }
+        _ => {}
+    }
+    if vn.descend.iter().any(|&u| f.op(u).is_marker()) {
+        return false;
+    }
+    let dn = vn.descend.len();
+    dn > 1 && dn <= MAX_IMPLIED_REF
+}
+
+/// Whether `v` is already \e explicit as `processMultiplier` sees it — Ghidra's `Varnode::isExplicit`
+/// at that pipeline point: the values `baseExplicit` set explicit (its leading / marker / pointer /
+/// count arms) plus any `multipleInteraction` purged. A not-yet-decided `multlist` member or
+/// single-use candidate returns false, so the term walk recurses into its expression.
+fn is_core_explicit(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
+    if let Some(b) = explicit_leading(f, v) {
+        return b;
+    }
+    let vn = f.vn(v);
+    let Some(def) = vn.def.filter(|_| vn.is_written()) else { return true };
+    match f.op(def).code() {
+        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind => return true,
+        OpCode::Ptradd | OpCode::Ptrsub => {
+            return vn.descend.iter().any(|&u| f.op(u).code() == OpCode::Multiequal)
+        }
+        OpCode::Copy => {
+            if let Some(inv) = f.op(def).input(0) {
+                if f.vn(inv).is_persist() && persist_of[v.0 as usize] != persist_of[inv.0 as usize] {
+                    return true;
+                }
+            }
+        }
+        _ => {}
+    }
+    if vn.descend.iter().any(|&u| f.op(u).is_marker()) {
+        return true;
+    }
+    let dn = vn.descend.len();
+    if dn == 0 || dn > MAX_IMPLIED_REF {
+        return true;
+    }
+    // A single-use / `multlist` candidate is explicit only if `multipleInteraction` purged it.
+    is_purged_top(f, persist_of, v)
+}
+
+/// Ghidra `ActionMarkExplicit::multipleInteraction` (coreaction.cc:3091) from the purged Varnode's
+/// view: `v` is made explicit when it is a `multlist` member that flows (slot 0 or 1) into another
+/// member whose defining op is a boolean output, INT_ZEXT, INT_SEXT, or PTRADD (a PTRADD only purges
+/// a PTRADD input). A boolean-defined `v` is skipped (Ghidra avoids making boolean outputs explicit).
+fn is_purged_top(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
+    if !is_mark_candidate(f, persist_of, v) {
+        return false;
+    }
+    let vn = f.vn(v);
+    let v_bool = vn.def.is_some_and(|d| f.op(d).is_bool_output());
+    if v_bool {
+        return false; // "Try not to make boolean outputs explicit" (coreaction.cc:3110)
+    }
+    let topopc = vn.def.map(|d| f.op(d).code()).unwrap_or(OpCode::Copy);
+    for &u in &vn.descend {
+        let Some(uout) = f.op(u).output else { continue };
+        if !is_mark_candidate(f, persist_of, uout) {
+            continue; // the descendant op's output must itself be a `multlist` member
+        }
+        let uc = f.op(u).code();
+        if !(f.op(u).is_bool_output()
+            || matches!(uc, OpCode::IntZext | OpCode::IntSext | OpCode::Ptradd))
+        {
+            continue;
+        }
+        let maxparam = f.op(u).num_inputs().min(2);
+        for j in 0..maxparam {
+            if f.op(u).input(j) != Some(v) {
+                continue;
+            }
+            if uc == OpCode::Ptradd {
+                if topopc == OpCode::Ptradd {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Ghidra `ActionMarkExplicit::processMultiplier` (coreaction.cc:3166): depth-first over the
+/// expression feeding `vroot`, counting explicit terms (a term is an already-explicit or unwritten
+/// Varnode; spacebases are not counted). Returns true — `vroot` should be named — when the count
+/// exceeds `max` (duplicating the expression at each use would be too verbose) or the walk reaches
+/// another live `multlist` member (an ancestor that will itself be duplicated).
+fn process_multiplier(f: &Funcdata, persist_of: &[u32], vroot: VarnodeId, max: i32) -> bool {
+    // `(vn, slot, slotback)` — Ghidra's `OpStackElement` (coreaction.cc:3136): the back edges to
+    // traverse, skipping a LOAD's space input, a PTRADD's multiplier, a SEGMENTOP's selectors.
+    fn frame(f: &Funcdata, v: VarnodeId) -> (VarnodeId, usize, usize) {
+        if let Some(def) = f.vn(v).def.filter(|_| f.vn(v).is_written()) {
+            return match f.op(def).code() {
+                OpCode::Load => (v, 1, 2),
+                OpCode::Ptradd => (v, 0, 1),
+                OpCode::Segmentop => (v, 2, 3),
+                _ => (v, 0, f.op(def).num_inputs()),
+            };
+        }
+        (v, 0, 0)
+    }
+    let mut stack: Vec<(VarnodeId, usize, usize)> = vec![frame(f, vroot)];
+    let mut finalcount = 0i32;
+    while let Some(&(vncur, slot, slotback)) = stack.last() {
+        let isaterm = is_core_explicit(f, persist_of, vncur) || !f.vn(vncur).is_written();
+        if isaterm || slotback <= slot {
+            if isaterm && !f.vn(vncur).is_spacebase() {
+                finalcount += 1;
+            }
+            if finalcount > max {
+                return true;
+            }
+            stack.pop();
+        } else {
+            let op = f.vn(vncur).def.expect("written has a def");
+            let newvn = f.op(op).input(slot).expect("slot within numInput");
+            stack.last_mut().expect("nonempty").1 = slot + 1;
+            // An ancestor that is itself a live (non-purged) `multlist` member forces `vroot`
+            // explicit (coreaction.cc:3192).
+            if is_mark_candidate(f, persist_of, newvn) && !is_purged_top(f, persist_of, newvn) {
+                return true;
+            }
+            stack.push(frame(f, newvn));
+        }
+    }
+    false
 }
 
 /// The HighVariable state at Ghidra's `ActionMarkImplied` slot (coreaction.cc:5720, "this must come
@@ -1435,31 +1643,38 @@ mod tests {
         let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
         let c = f.new_const(8, 5);
 
-        // Non-interfering chain: a = c + c; a2 = a + c; b = COPY(a); rb = b + c; rb2 = b + c.
-        // `a` (2 uses, dead after the COPY) and `b` (2 uses) are both explicit and don't overlap.
-        let o1 = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        // Non-interfering chain: a = (c + c) + c; a2 = a + c; b = COPY(a); rb = b + c; rb2 = b + c.
+        // `a` has three explicit terms (> max_term_duplication), so `ActionMarkExplicit`'s
+        // `processMultiplier` keeps it explicit rather than an inlined term; it (2 uses, dead after
+        // the COPY) and `b` (2 uses) are both explicit and don't overlap.
+        let ot = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        let t = f.new_output(ot, 8, Address::new(reg, 0x48));
+        let o1 = f.new_op(OpCode::IntAdd, s(1), vec![t, c]);
         let a = f.new_output(o1, 8, Address::new(reg, 0));
-        let o1b = f.new_op(OpCode::IntAdd, s(1), vec![a, c]);
+        let o1b = f.new_op(OpCode::IntAdd, s(2), vec![a, c]);
         let _a2 = f.new_output(o1b, 8, Address::new(reg, 0x30));
-        let o2 = f.new_op(OpCode::Copy, s(2), vec![a]);
+        let o2 = f.new_op(OpCode::Copy, s(3), vec![a]);
         let b = f.new_output(o2, 8, Address::new(reg, 0x8));
-        let o3 = f.new_op(OpCode::IntAdd, s(3), vec![b, c]);
+        let o3 = f.new_op(OpCode::IntAdd, s(4), vec![b, c]);
         let _rb = f.new_output(o3, 8, Address::new(reg, 0x10));
-        let o3b = f.new_op(OpCode::IntAdd, s(4), vec![b, c]);
+        let o3b = f.new_op(OpCode::IntAdd, s(5), vec![b, c]);
         let _rb2 = f.new_output(o3b, 8, Address::new(reg, 0x38));
 
-        // Interfering chain: e = c + c; d = COPY(e); rd = e + d; rd2 = d + c. `e` is read again
-        // alongside `d`, so `e` and `d` are both live at `rd` and must NOT merge.
-        let o4 = f.new_op(OpCode::IntAdd, s(5), vec![c, c]);
+        // Interfering chain: e = (c + c) + c; d = COPY(e); rd = e + d; rd2 = d + c. `e` is read again
+        // alongside `d`, so `e` and `d` are both live at `rd` and must NOT merge. `e` also has three
+        // explicit terms so it stays explicit (a merge candidate at all).
+        let ote = f.new_op(OpCode::IntAdd, s(6), vec![c, c]);
+        let te = f.new_output(ote, 8, Address::new(reg, 0x50));
+        let o4 = f.new_op(OpCode::IntAdd, s(7), vec![te, c]);
         let e = f.new_output(o4, 8, Address::new(reg, 0x18));
-        let o5 = f.new_op(OpCode::Copy, s(6), vec![e]);
+        let o5 = f.new_op(OpCode::Copy, s(8), vec![e]);
         let d = f.new_output(o5, 8, Address::new(reg, 0x20));
-        let o6 = f.new_op(OpCode::IntAdd, s(7), vec![e, d]);
+        let o6 = f.new_op(OpCode::IntAdd, s(9), vec![e, d]);
         let _rd = f.new_output(o6, 8, Address::new(reg, 0x28));
-        let o7 = f.new_op(OpCode::IntAdd, s(8), vec![d, c]);
+        let o7 = f.new_op(OpCode::IntAdd, s(10), vec![d, c]);
         let _rd2 = f.new_output(o7, 8, Address::new(reg, 0x40));
         f.set_blocks(vec![BlockBasic {
-            ops: vec![o1, o1b, o2, o3, o3b, o4, o5, o6, o7],
+            ops: vec![ot, o1, o1b, o2, o3, o3b, ote, o4, o5, o6, o7],
             ..Default::default()
         }]);
 
