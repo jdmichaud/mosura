@@ -665,6 +665,42 @@ pub fn lookup_effect(efflist: &[EffectRecord], addr: Address, size: u32) -> u8 {
     }
 }
 
+// ---- ProtoModel (the default calling convention) ----------------------------------------------
+
+/// Ghidra `ProtoModel` (fspec.hh:1039) reduced to the surface mosura's prototype recovery and
+/// heritage call-guarding consume: the input & output parameter [`ParamList`]s and the sorted
+/// [`EffectRecord`] list. It is decoded once, at function-build time, from the compiler spec's
+/// `<default_proto>` — the faithful `ParamListStandard::decode`/`ProtoModel::decode` port in
+/// [`crate::analysis::cspec::default_proto_model`] — and carried on [`Funcdata`], replacing the old
+/// hardcoded SysV `sysv_input`/`sysv_output`/`sysv_effect_list` literals. A hand-built `Funcdata`
+/// (no compiler spec resolved) carries the [`ProtoModel::empty`] model: no parameter storage and no
+/// side effects (every range reads back `unknown_effect`).
+#[derive(Clone, Debug, Default)]
+pub struct ProtoModel {
+    pub input: Option<ParamList>,
+    pub output: Option<ParamList>,
+    pub effectlist: Vec<EffectRecord>,
+}
+
+impl ProtoModel {
+    /// The empty model — no parameter storage, no declared side effects.
+    pub fn empty() -> ProtoModel {
+        ProtoModel::default()
+    }
+
+    /// Ghidra `FuncProto::possibleInputParam` (fspec.cc:4310 → `ParamList::possibleParam`): whether
+    /// `[loc,loc+size)` is storage the convention could pass an input parameter in.
+    pub fn possible_input_param(&self, loc: Address, size: u32) -> bool {
+        self.input.as_ref().is_some_and(|pl| pl.possible_param(loc, size))
+    }
+
+    /// Ghidra `FuncProto::hasEffect` (fspec.cc:2540 → [`lookup_effect`], `ProtoModel::lookupEffect`,
+    /// fspec.cc:2472): the effect type a call under this model has on the range `[addr,addr+size)`.
+    pub fn has_effect(&self, addr: Address, size: u32) -> u8 {
+        lookup_effect(&self.effectlist, addr, size)
+    }
+}
+
 // ---- Trials -----------------------------------------------------------------------------------
 
 /// Ghidra `ParamTrial` flag bits (fspec.hh:212). The subset the faithful recovery needs.
@@ -834,7 +870,7 @@ pub struct FuncProto {
 /// which the older realism heuristic dropped.
 pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
-    let Some(pl) = sysv_input(&f.spaces) else { return Vec::new() };
+    let Some(pl) = f.proto_model.input.as_ref() else { return Vec::new() };
     let mut active = ParamActive::new(Some(reg));
     for i in 0..f.num_varnodes() as u32 {
         let vn = f.vn(VarnodeId(i));
@@ -1025,12 +1061,15 @@ mod tests {
     }
 
     /// A function with input varnodes at the given register offsets, each optionally given a use
-    /// (a descendant op) so it counts as an active parameter.
-    fn func_with_inputs(specs: &[(u64, bool)]) -> Funcdata {
+    /// (a descendant op) so it counts as an active parameter. Carries the SysV `proto_model`
+    /// [`recover_input_params`] reads; `None` (caller skips) when the Ghidra tree is absent.
+    fn func_with_inputs(specs: &[(u64, bool)]) -> Option<Funcdata> {
+        let pm = crate::decompile::build::test_sysv_proto_model()?;
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model = pm;
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         for &(off, used) in specs {
             let v = f.new_input(8, Address::new(reg, off));
@@ -1039,13 +1078,13 @@ mod tests {
                 f.new_op(OpCode::IntAdd, seq, vec![v, c]);
             }
         }
-        f
+        Some(f)
     }
 
     #[test]
     fn recovers_used_input_params_in_order() {
         // RDI and RSI used → two params, in formal (group) order RDI then RSI.
-        let f = func_with_inputs(&[(RDI, true), (RSI, true)]);
+        let Some(f) = func_with_inputs(&[(RDI, true), (RSI, true)]) else { return };
         let p = recover_input_params(&f);
         assert_eq!(p.iter().map(|s| s.addr.offset).collect::<Vec<_>>(), vec![RDI, RSI]);
     }
@@ -1054,13 +1093,13 @@ mod tests {
     fn pure_passthrough_param_is_recovered() {
         // An input register read (used) but never written is still a parameter — the case the
         // realism heuristic dropped (it required a real write).
-        let f = func_with_inputs(&[(RDI, true)]);
+        let Some(f) = func_with_inputs(&[(RDI, true)]) else { return };
         assert_eq!(recover_input_params(&f).len(), 1);
     }
 
     #[test]
     fn unused_trailing_input_is_not_a_param() {
-        let f = func_with_inputs(&[(RDI, true), (RSI, false)]);
+        let Some(f) = func_with_inputs(&[(RDI, true), (RSI, false)]) else { return };
         let p = recover_input_params(&f);
         assert_eq!(p.iter().map(|s| s.addr.offset).collect::<Vec<_>>(), vec![RDI]);
     }

@@ -1464,8 +1464,9 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     use super::fspec::effect;
     let aliased_stack = Some(spc) == stack && f.alias_boundary.is_some_and(|b| (off as i64) >= b);
     let effecttype = if spc == reg {
-        let efflist = super::fspec::sysv_effect_list(&f.spaces);
-        super::fspec::lookup_effect(&efflist, super::space::Address::new(reg, off), size)
+        // Ghidra `fc->hasEffect` — the convention's EffectRecord list (decoded from the compiler
+        // spec's `<default_proto>`, carried on the function as `proto_model`).
+        f.proto_model.has_effect(super::space::Address::new(reg, off), size)
     } else if aliased_stack || Some(spc) == ram {
         // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
         effect::UNKNOWN_EFFECT
@@ -2032,11 +2033,13 @@ mod tests {
         use super::super::op::SeqNum;
         use super::super::space::Address;
 
+        let Some(pm) = crate::decompile::build::test_sysv_proto_model() else { return };
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
         let ram = spaces.by_name("ram").unwrap();
         let stack = spaces.by_name("stack").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model = pm;
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let target = f.new_const(8, 0x400430);
         let call = f.new_op(OpCode::Call, seq, vec![target]);

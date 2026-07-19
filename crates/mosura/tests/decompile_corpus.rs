@@ -119,6 +119,39 @@ fn mixfloatint_float_param_stays_whole() {
     );
 }
 
+/// Regression for the call-spec ordering (Ghidra `Funcdata::sortCallSpecs` / `compareCallspecs`,
+/// funcdata.cc:516/504): deindirect has two sibling indirect calls that share one parameter setup
+/// (`edi=b+3`, `esi=c+5`, hoisted into the entry block before the branch). The value flows to BOTH
+/// calls (a cross-block double-use), so `ActionActiveParam` attributes it to whichever call is
+/// evaluated FIRST. Ghidra evaluates calls in block-index (dominance/RPO) order, which places the
+/// ELSE-branch call (higher address, but the block RPO indexes first) ahead of the fall-through
+/// call — so the args land on the else call, not the if call. mosura's old op-id/address-order
+/// evaluation picked the wrong (fall-through) call. Matches `oracle/capture --c` for deindirect:
+/// the else call gets `(param_2 + 3,param_3 + 5)`, the if call gets none.
+#[test]
+fn deindirect_args_land_on_correct_call() {
+    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    if !sla.exists() {
+        eprintln!("skip: x86-64.sla not found");
+        return;
+    }
+    let spec = mosura::speccache::get(&sla).unwrap();
+    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+    let path = paths::datatests_dir().join("deindirect.xml");
+    let dt = datatest::parse_file(&path).expect("parse deindirect");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    pipeline::decompile(&mut f);
+    let c = printc::print_c(&f);
+    // The parameterized call carries exactly the two hoisted args; the other indirect call is empty.
+    assert!(
+        c.contains("(*(code *)0x1006ca)(param_2 + 3, param_3 + 5)")
+            && c.contains("(*(code *)0x1006ca)()"),
+        "deindirect's shared parameter setup landed on the wrong indirect call (sortCallSpecs regression):\n{c}"
+    );
+}
+
 /// Regression for the condition-flip normalization (Ghidra `ActionNormalizeBranches` /
 /// `opFlipInPlaceTest`, funcdata_op.cc:1221): an `if`/`else` whose CBRANCH condition is in
 /// non-normal form (here `INT_NOTEQUAL(param_2, 100)`) is rendered in the positive form —

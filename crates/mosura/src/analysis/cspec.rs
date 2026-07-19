@@ -20,7 +20,7 @@
 //! `assignMap`/`fillinMap` allocator are decompiler-side and deferred (see
 //! `docs/cspec-decompiler-brief.md`).
 
-use crate::decompile::fspec::{type_class, ParamEntry, ParamList};
+use crate::decompile::fspec::{effect, type_class, EffectRecord, ParamEntry, ParamList, ProtoModel};
 use crate::decompile::space::{SpaceId, SpaceManager};
 use crate::sleigh::engine::Spec;
 
@@ -39,13 +39,171 @@ pub fn default_input_paramlist(
     let text = std::fs::read_to_string(path).ok()?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     // <compiler_spec> … <default_proto> <prototype> <input> … </input> …
-    let proto = doc
-        .descendants()
-        .find(|n| n.tag_name().name() == "default_proto")?
-        .descendants()
-        .find(|n| n.tag_name().name() == "prototype")?;
+    let proto = default_prototype(&doc)?;
     let input = proto.children().find(|n| n.tag_name().name() == "input")?;
     decode_param_list(spec, spaces, input, false)
+}
+
+/// The `<default_proto>` **output** (return) [`ParamList`] of `(language_id, compiler_spec_id)` —
+/// Ghidra `ParamListStandardOut::decode` over the `<output>` element (`fspec.cc:1776`, which just
+/// runs `ParamListStandard::decode` with `is_output`). `None` when the cspec / its default prototype
+/// / an `<output>` element can't be located.
+pub fn default_output_paramlist(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ParamList> {
+    let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let proto = default_prototype(&doc)?;
+    let output = proto.children().find(|n| n.tag_name().name() == "output")?;
+    decode_param_list(spec, spaces, output, true)
+}
+
+/// Decode the default-calling-convention [`ProtoModel`] of `(language_id, compiler_spec_id)` from
+/// its `.cspec` (Ghidra `ProtoModel::decode`, `fspec.cc:2545`). `None` when the cspec / its default
+/// prototype can't be located; otherwise the input/output ParamLists (each `None` only if that
+/// element is absent) and the effect list built exactly as `ProtoModel::decode` does:
+///   - each register `<pentry>` of an `<input killedbycall="true">`/`<output killedbycall="true">`
+///     contributes an auto `killedbycall` record (`parsePentry`, `fspec.cc:1246`) — inert for x86-64
+///     SysV, whose `<input>`/`<output>` set no such attribute;
+///   - `<unaffected>`/`<killedbycall>` children add `unaffected`/`killedbycall` records;
+///   - a prototype `<returnaddress>` (else the compiler-spec-level default `<returnaddress>`,
+///     `fspec.cc:2689`) adds a `return_address` record;
+///   - the whole list is sorted by `(space, offset)` (`EffectRecord::compareByAddress`).
+pub fn default_proto_model(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ProtoModel> {
+    let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let proto = default_prototype(&doc)?;
+
+    let mut input = None;
+    let mut output = None;
+    let mut effectlist: Vec<EffectRecord> = Vec::new();
+    let mut saw_retaddr = false;
+
+    for child in proto.children().filter(roxmltree::Node::is_element) {
+        match child.tag_name().name() {
+            "input" => {
+                input = decode_param_list(spec, spaces, child, false);
+                if child.attribute("killedbycall") == Some("true") {
+                    push_auto_killedbycall(spec, spaces, child, &mut effectlist);
+                }
+            }
+            "output" => {
+                output = decode_param_list(spec, spaces, child, true);
+                if child.attribute("killedbycall") == Some("true") {
+                    push_auto_killedbycall(spec, spaces, child, &mut effectlist);
+                }
+            }
+            "unaffected" => push_effect_records(spec, spaces, child, effect::UNAFFECTED, &mut effectlist),
+            "killedbycall" => {
+                push_effect_records(spec, spaces, child, effect::KILLEDBYCALL, &mut effectlist);
+            }
+            "returnaddress" => {
+                push_effect_records(spec, spaces, child, effect::RETURN_ADDRESS, &mut effectlist);
+                saw_retaddr = true;
+            }
+            _ => {}
+        }
+    }
+
+    // Ghidra: if the model has no <returnaddress>, use the compiler-spec-level default one
+    // (`ProtoModel::decode`, fspec.cc:2689 — `glb->defaultReturnAddr`).
+    if !saw_retaddr {
+        if let Some(ra) = doc
+            .root_element()
+            .children()
+            .find(|n| n.tag_name().name() == "returnaddress")
+        {
+            push_effect_records(spec, spaces, ra, effect::RETURN_ADDRESS, &mut effectlist);
+        }
+    }
+
+    // `sort(effectlist, EffectRecord::compareByAddress)` (fspec.cc:2693) — by (space, offset).
+    effectlist.sort_by(|a, b| a.space.0.cmp(&b.space.0).then(a.offset.cmp(&b.offset)));
+    Some(ProtoModel { input, output, effectlist })
+}
+
+/// Resolve the `<default_proto><prototype>` node of a parsed cspec document.
+fn default_prototype<'a, 'input>(
+    doc: &'a roxmltree::Document<'input>,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    doc.descendants()
+        .find(|n| n.tag_name().name() == "default_proto")?
+        .descendants()
+        .find(|n| n.tag_name().name() == "prototype")
+}
+
+/// Push a `killedbycall` [`EffectRecord`] per register `<pentry>` of a `killedbycall="true"` list —
+/// Ghidra `EffectRecord(entry, killedbycall)` (`fspec.cc:2223`, the ParamEntry's `(space,base,size)`).
+fn push_auto_killedbycall(
+    spec: &Spec,
+    spaces: &SpaceManager,
+    list_elem: roxmltree::Node,
+    effectlist: &mut Vec<EffectRecord>,
+) {
+    let reg = spaces.by_name("register");
+    for pentry in list_elem.descendants().filter(|n| n.tag_name().name() == "pentry") {
+        let group = 0; // group id is irrelevant to the EffectRecord (only space/offset/size are used)
+        if let Some(pe) = decode_pentry(spec, spaces, pentry, group) {
+            if Some(pe.space) == reg {
+                effectlist.push(EffectRecord {
+                    space: pe.space,
+                    offset: pe.addressbase,
+                    size: pe.size,
+                    effect: effect::KILLEDBYCALL,
+                });
+            }
+        }
+    }
+}
+
+/// Decode each `<register>`/`<varnode>`/`<addr>` child of an effect-group element into an
+/// [`EffectRecord`] of the group's effect type (Ghidra `EffectRecord::decode`, `fspec.cc:2256`,
+/// which reads a `VarnodeData` giving `(space, offset, size)` — a register name resolves via the
+/// sleigh register table).
+fn push_effect_records(
+    spec: &Spec,
+    spaces: &SpaceManager,
+    group_elem: roxmltree::Node,
+    effect_type: u8,
+    effectlist: &mut Vec<EffectRecord>,
+) {
+    for storage in group_elem.children().filter(roxmltree::Node::is_element) {
+        if let Some((space, offset, size)) = decode_storage(spec, spaces, storage) {
+            effectlist.push(EffectRecord { space, offset, size, effect: effect_type });
+        }
+    }
+}
+
+/// Resolve a storage element (`<register name=…>` or `<varnode/addr space=… offset=… size=…>`) to
+/// `(space, offset, size)` — the `VarnodeData` a register name / explicit address decodes to.
+fn decode_storage(
+    spec: &Spec,
+    spaces: &SpaceManager,
+    node: roxmltree::Node,
+) -> Option<(SpaceId, u64, u32)> {
+    match node.tag_name().name() {
+        "register" => {
+            let name = node.attribute("name")?;
+            Some((spaces.by_name("register")?, spec.register_offset(name)?, spec.register_size(name)?))
+        }
+        "varnode" | "addr" => {
+            let space = spaces.by_name(node.attribute("space")?)?;
+            let offset: u64 = node.attribute("offset")?.parse().ok()?;
+            let size: u32 = node.attribute("size").and_then(|s| s.parse().ok()).unwrap_or(0);
+            Some((space, offset, size))
+        }
+        _ => None,
+    }
 }
 
 /// Decode an `<input>`/`<output>` element into a [`ParamList`] (Ghidra
@@ -217,5 +375,73 @@ mod tests {
         }
         let regs = load("x86:LE:16:Real Mode", "default").unwrap_or_default();
         assert!(regs.is_empty(), "x86-16 default convention has no register args, got {regs:x?}");
+    }
+
+    // ---- A1 premise check: cspec-derived model vs the hardcoded fspec SysV lists ---------------
+
+    fn fmt_paramlist(pl: &ParamList) -> Vec<String> {
+        let mut v: Vec<String> = pl
+            .entry
+            .iter()
+            .map(|e| {
+                format!(
+                    "g{} class{} sp{} off{:#x} size{} min{} align{}",
+                    e.group, e.type_class, e.space.0, e.addressbase, e.size, e.minsize, e.alignment
+                )
+            })
+            .collect();
+        v.push(format!("resource_start={:?} is_output={}", pl.resource_start, pl.is_output));
+        v
+    }
+
+    fn fmt_efflist(el: &[EffectRecord]) -> Vec<String> {
+        el.iter()
+            .map(|e| format!("sp{} off{:#x} size{} eff{}", e.space.0, e.offset, e.size, e.effect))
+            .collect()
+    }
+
+    /// PREMISE CHECK (A1): dump the cspec-derived input/output ParamLists + effect list AND the
+    /// hardcoded `fspec::sysv_*` lists, field by field, so the lane (byte-identical vs mover) is
+    /// visible. Prints to stderr; asserts only the input list matches (the one already claimed
+    /// equal), and reports the effect-list divergence without failing.
+    #[test]
+    fn premise_dump_cspec_vs_hardcoded() {
+        use crate::decompile::fspec;
+        let Some((spec, _ctx)) = crate::lang::load("x86:LE:64:default") else {
+            eprintln!("skip: ghidra tree not present");
+            return;
+        };
+        let spaces = SpaceManager::standard();
+        let Some(pm) = default_proto_model(&spec, "x86:LE:64:default", "gcc", &spaces) else {
+            eprintln!("skip: no cspec proto model");
+            return;
+        };
+
+        let hc_in = fspec::sysv_input(&spaces).unwrap();
+        let hc_out = fspec::sysv_output(&spaces).unwrap();
+        let hc_eff = fspec::sysv_effect_list(&spaces);
+
+        eprintln!("=== INPUT: cspec vs hardcoded ===");
+        eprintln!("cspec:    {:#?}", fmt_paramlist(pm.input.as_ref().unwrap()));
+        eprintln!("hardcode: {:#?}", fmt_paramlist(&hc_in));
+        eprintln!("=== OUTPUT: cspec vs hardcoded ===");
+        eprintln!("cspec:    {:#?}", fmt_paramlist(pm.output.as_ref().unwrap()));
+        eprintln!("hardcode: {:#?}", fmt_paramlist(&hc_out));
+        eprintln!("=== EFFECT: cspec vs hardcoded ===");
+        eprintln!("cspec:    {:#?}", fmt_efflist(&pm.effectlist));
+        eprintln!("hardcode: {:#?}", fmt_efflist(&hc_eff));
+
+        eprintln!(
+            "INPUT identical:  {}",
+            fmt_paramlist(pm.input.as_ref().unwrap()) == fmt_paramlist(&hc_in)
+        );
+        eprintln!(
+            "OUTPUT identical: {}",
+            fmt_paramlist(pm.output.as_ref().unwrap()) == fmt_paramlist(&hc_out)
+        );
+        eprintln!("EFFECT identical: {}", fmt_efflist(&pm.effectlist) == fmt_efflist(&hc_eff));
+
+        // The input list is the one the existing test already asserts equal.
+        assert_eq!(fmt_paramlist(pm.input.as_ref().unwrap()), fmt_paramlist(&hc_in));
     }
 }

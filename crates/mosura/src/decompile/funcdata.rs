@@ -101,6 +101,15 @@ pub struct Funcdata {
     /// ([`crate::lang::pspec_laned_registers`]); empty ⇒ no lane splitting (the default, so a
     /// hand-built or lane-unaware Funcdata is unaffected).
     pub laned: super::transform::LanedRegisterSet,
+    /// The function's default calling convention (Ghidra `ProtoModel`, reached via
+    /// `Funcdata::getArch()->defaultfp` / `FuncCallSpecs`): the input & output parameter lists and
+    /// the call side-effect (`EffectRecord`) list, decoded from the compiler spec's `<default_proto>`
+    /// by the build caller ([`crate::analysis::cspec::default_proto_model`], a port of
+    /// `ProtoModel::decode`). This replaces the old hardcoded `fspec::sysv_*` literals — prototype
+    /// recovery (`recover_input_params`/`resolve_return`), `ActionDirectWrite`, and heritage
+    /// `guardCalls` all read it. Empty ([`super::fspec::ProtoModel::empty`]) for a hand-built
+    /// `Funcdata`, so a test graph with no compiler spec recovers no convention.
+    pub proto_model: super::fspec::ProtoModel,
 }
 
 impl Funcdata {
@@ -130,6 +139,7 @@ impl Funcdata {
             directwrite_pending_clear: false,
             table_recovery_probe: false,
             laned: super::transform::LanedRegisterSet::default(),
+            proto_model: super::fspec::ProtoModel::empty(),
         }
     }
 

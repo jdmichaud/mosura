@@ -6,12 +6,46 @@
 use crate::sleigh::engine::Spec;
 use crate::sleigh::pcode::PArg;
 
+use super::fspec::ProtoModel;
 use super::funcdata::Funcdata;
 use super::op::SeqNum;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceKind, SpaceManager};
 use super::transform::LanedRegisterSet;
 use super::varnode::VarnodeId;
+
+/// The corpus/test default language + compiler spec whose `<default_proto>` supplies the
+/// calling-convention [`ProtoModel`] the pipeline consumes. The decompiler datatests are all
+/// x86-64 SysV (`arch="x86:LE:64:default:gcc"`), and the retired `fspec::sysv_*` literals it
+/// replaces were likewise unconditionally SysV — so resolving this cspec is behaviour-preserving
+/// in scope. A `Program`-driven decompile threads its own compiler spec instead (see
+/// [`crate::analysis::decompiler`], which overrides `Funcdata::proto_model`).
+const DEFAULT_LANG_ID: &str = "x86:LE:64:default";
+const DEFAULT_COMPILER_ID: &str = "gcc";
+
+/// Resolve the default calling-convention [`ProtoModel`] for a build: the compiler spec's
+/// `<default_proto>`, decoded from the `.cspec` via the faithful
+/// [`crate::analysis::cspec::default_proto_model`] (a port of Ghidra `ProtoModel::decode`).
+/// Degrades to the empty model when the Ghidra tree / cspec is absent (a hand-built or
+/// tree-less build recovers no convention), exactly as the retired `sysv_*` builders returned
+/// `None`/empty off-tree.
+fn default_proto_model(spec: &Spec) -> ProtoModel {
+    let spaces = SpaceManager::standard();
+    crate::analysis::cspec::default_proto_model(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID, &spaces)
+        .unwrap_or_else(ProtoModel::empty)
+}
+
+/// Test-only: the SysV `<default_proto>` [`ProtoModel`] (x86-64-gcc.cspec) for the hand-built
+/// `Funcdata` unit tests whose recovery machinery now reads `Funcdata::proto_model` (directwrite /
+/// prototype recovery / guard_calls) rather than the retired `fspec::sysv_*` literals. `None` (the
+/// caller skips) when the Ghidra tree isn't present — the same gate the corpus tests use.
+#[cfg(test)]
+pub(crate) fn test_sysv_proto_model() -> Option<ProtoModel> {
+    let sla = crate::paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let spec = crate::speccache::get(&sla)?;
+    let pm = default_proto_model(spec);
+    pm.input.is_some().then_some(pm)
+}
 
 impl Funcdata {
     /// Intern a lifter space name, adding it (with a kind guessed from the name) if new.
@@ -44,6 +78,7 @@ fn build_from_instrs(
     base: u64,
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
     laned: &[(i32, u32)],
+    proto_model: ProtoModel,
 ) -> Funcdata {
     let spaces = SpaceManager::standard();
     let ram = spaces.by_name("ram").expect("standard ram space");
@@ -51,6 +86,9 @@ fn build_from_instrs(
     // The architecture's laned (vector) registers, wrapped for `ActionLaneDivide`. Sourced from the
     // processor spec's `vector_lane_sizes` via the loader ([`Spec::laned`]); empty ⇒ no lane splitting.
     f.laned = LanedRegisterSet::from_size_masks(laned.iter().copied());
+    // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
+    // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
+    f.proto_model = proto_model;
 
     let mut uniq: u32 = 0;
     for insn in instrs {
@@ -93,7 +131,13 @@ pub fn raw_funcdata(
     base: u64,
     context: &[u32],
 ) -> Funcdata {
-    build_from_instrs(name, base, spec.disassemble_ctx(bytes, base, context), &spec.laned)
+    build_from_instrs(
+        name,
+        base,
+        spec.disassemble_ctx(bytes, base, context),
+        &spec.laned,
+        default_proto_model(spec),
+    )
 }
 
 /// Lift by **flow-following** from `base` (Ghidra's `followFlow`): decode only the
@@ -145,7 +189,7 @@ pub fn raw_funcdata_flow(
         decoded.insert(a, insn);
         worklist.extend(succs);
     }
-    build_from_instrs(name, base, decoded.into_values(), &spec.laned)
+    build_from_instrs(name, base, decoded.into_values(), &spec.laned, default_proto_model(spec))
 }
 
 /// Like [`raw_funcdata_flow`] but over a multi-chunk memory image, and recovering jump
@@ -168,6 +212,9 @@ pub fn raw_funcdata_flow_image(
     let chunk_of = |a: u64| chunks.iter().find(|(b, by)| a >= *b && a < b + by.len() as u64).copied();
     let in_code = |a: u64| chunk_of(a).is_some();
 
+    // The default calling convention, decoded once from the compiler spec and shared by the
+    // jump-table recovery probe clone and the final build.
+    let proto_model = default_proto_model(spec);
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -218,7 +265,8 @@ pub fn raw_funcdata_flow_image(
         if !has_indirect {
             break;
         }
-        let mut partial = build_from_instrs(name.clone(), entry, decoded.values().cloned(), &spec.laned);
+        let mut partial =
+            build_from_instrs(name.clone(), entry, decoded.values().cloned(), &spec.laned, proto_model.clone());
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         // Ghidra `FlowInfo::recoverJumpTables` -> `newAddress` (flow.cc:806): feed the targets
         // recovered by prior passes back as the BRANCHIND's flow edges before re-simplifying. This
@@ -275,7 +323,7 @@ pub fn raw_funcdata_flow_image(
             ins: vec![PArg::Var(crate::sleigh::pcode::Varnode { space: "const".into(), offset: 1, size: 4 })],
         });
     }
-    let mut f = build_from_instrs(name, entry, decoded.into_values(), &spec.laned);
+    let mut f = build_from_instrs(name, entry, decoded.into_values(), &spec.laned, proto_model);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();

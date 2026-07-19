@@ -31,7 +31,6 @@
 //!   call-clobber INDIRECTs are never indirect-stores, so treating it as false is correct for them.
 
 use super::action::Action;
-use super::fspec::sysv_input;
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
 use super::varnode::VarnodeId;
@@ -55,7 +54,9 @@ impl Action for ActionDirectWrite {
     }
 
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        let input_list = sysv_input(&data.spaces);
+        // The convention's input list (Ghidra `FuncProto::possibleInputParam`), decoded from the
+        // compiler spec's `<default_proto>` and carried on the function.
+        let input_list = data.proto_model.input.clone();
         let n = data.num_varnodes() as u32;
         let mut worklist: Vec<VarnodeId> = Vec::new();
 
@@ -160,12 +161,25 @@ mod tests {
         SeqNum { pc: Address::new(SpaceManager::standard().by_name("ram").unwrap(), 0), uniq: 0 }
     }
 
+    /// The SysV `<default_proto>` model (x86-64-gcc.cspec) for the param-recognition tests. `None`
+    /// (test skips) when the Ghidra tree isn't present — the same gate the corpus tests use.
+    fn sysv_proto_model() -> Option<super::super::fspec::ProtoModel> {
+        let sla = crate::paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let spec = crate::speccache::get(&sla)?;
+        crate::analysis::cspec::default_proto_model(spec, "x86:LE:64:default", "gcc", &SpaceManager::standard())
+    }
+
     /// A parameter-register input is a direct write; a callee-saved register input (RBP) is not.
     #[test]
     fn param_input_is_direct_write_rbp_is_not() {
+        let Some(pm) = sysv_proto_model() else {
+            eprintln!("skip: ghidra tree not present");
+            return;
+        };
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(spaces.by_name("ram").unwrap(), 0), spaces);
+        f.proto_model = pm;
         let rdi = f.new_input(8, Address::new(reg, RDI));
         let rbp = f.new_input(8, Address::new(reg, RBP));
 
@@ -180,10 +194,15 @@ mod tests {
     /// a saved RBP does not — the exact discriminator that lets deadcode drop the RBP-save slot.
     #[test]
     fn taint_propagates_from_param_not_from_saved_rbp() {
+        let Some(pm) = sysv_proto_model() else {
+            eprintln!("skip: ghidra tree not present");
+            return;
+        };
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
         let stack = spaces.by_name("stack").unwrap();
         let mut f = Funcdata::new("t", Address::new(spaces.by_name("ram").unwrap(), 0), spaces);
+        f.proto_model = pm;
         let rdi = f.new_input(8, Address::new(reg, RDI));
         let rbp = f.new_input(8, Address::new(reg, RBP));
         // s-0x10 = COPY RDI (a parameter spill); s-0x8 = COPY RBP (the callee-saved save slot).

@@ -20,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use super::fspec::{sysv_output, trial_flags, Containment, ParamActive, ParamList};
+use super::fspec::{trial_flags, Containment, ParamActive, ParamList};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -96,7 +96,17 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
 /// argument registers, never callee-saved/unaffected storage — and mosura carries no such flag on the
 /// raw-decompile path.) The top-level "trial itself is the input" case is handled by the caller
 /// ([`check_input_trial_use`]), mirroring the `execute` early-return.
-fn realistic_faithful(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> bool {
+///
+/// `killed_by_call` carries the trial's `ParamTrial::killedbycall` flag (Ghidra's
+/// `trial->isKilledByCall()`), which every *register* trial sets ([`ParamActive::register_trial`],
+/// fspec.cc:1963): when a value flows THROUGH a call via a passthrough INDIRECT (`newIndirectOp`), a
+/// killed-by-call register trial is invalid — the callee overwrote the register, so the value at the
+/// second call is not the caller's argument (Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT,
+/// funcdata_varnode.cc:2052-2054). This drops the spurious `extraout_RSI` a preceding call's
+/// passthrough leaks into the next call's arg slot; it was inert until the faithful cspec effect list
+/// made caller-saved argument registers passthrough (`unknown_effect`) rather than killed-by-call
+/// creations.
+fn realistic_faithful(f: &Funcdata, vn: VarnodeId, killed_by_call: bool, seen: &mut HashSet<VarnodeId>) -> bool {
     let v = f.vn(vn);
     if v.is_constant() {
         return true;
@@ -110,21 +120,35 @@ fn realistic_faithful(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>
     let def = v.def.unwrap();
     match f.op(def).code() {
         OpCode::Copy | OpCode::Subpiece | OpCode::IntZext | OpCode::IntSext => {
-            f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, seen))
+            f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen))
         }
         OpCode::Multiequal => {
-            f.op(def).inrefs.clone().iter().any(|&i| realistic_faithful(f, i, seen))
+            f.op(def).inrefs.clone().iter().any(|&i| realistic_faithful(f, i, killed_by_call, seen))
         }
-        OpCode::Piece => f.op(def).input(1).is_some_and(|i| realistic_faithful(f, i, seen)),
+        OpCode::Piece => f.op(def).input(1).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen)),
         OpCode::Indirect => {
+            // Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2045-2057).
             if f.vn(vn).is_indirect_creation() || f.vn(vn).is_return_address() {
+                false // indirect-creation clobber / return-address storage — never a real value
+            } else if killed_by_call && !indirect_is_store(f, def) {
+                // A killed-by-call register trial whose value flows THROUGH a *call* passthrough is
+                // invalid (:2054). Guarded by `!isIndirectStore` (:2052): a STORE-modeling passthrough
+                // is not a call clobber — the value flows through it, so keep traversing.
                 false
             } else {
-                f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, seen))
+                f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen))
             }
         }
         _ => true,
     }
+}
+
+/// Ghidra `PcodeOp::isIndirectStore` (op.hh): whether an INDIRECT models a `CPUI_STORE` (vs. a call
+/// clobber/passthrough). mosura carries no explicit flag, so it is read from the INDIRECT's guarded
+/// (causing) op — a STORE means the value flows through the store; a CALL/CALLIND is the call
+/// passthrough the killed-by-call check in [`realistic_faithful`] rejects.
+fn indirect_is_store(f: &Funcdata, indirect: OpId) -> bool {
+    f.op(indirect).guarded_op().is_some_and(|g| f.op(g).code() == OpCode::Store)
 }
 
 /// Ghidra `trim_recurse_max` (architecture.cc:1419): how many ancestor-copy levels
@@ -645,12 +669,56 @@ pub fn recover_call_args(f: &mut Funcdata) {
 /// re-initialized after `clearActiveInput`. mosura's [`setup_active_input`] re-creates a cleared
 /// container, so a *repeating* caller would re-commit (and re-count) every pass; joining a repeating
 /// group requires porting the isInputActive once-gate along with the full pass protocol.
+/// Ghidra `Funcdata::sortCallSpecs` (funcdata.cc:516) + `compareCallspecs` (funcdata.cc:504): the
+/// call sites in dominance (block-index) order, "so that earlier calls get evaluated first. Order
+/// affects parameter analysis." This ordering is load-bearing: a value flowing to TWO calls (a
+/// cross-block double-use) is attributed to whichever call [`resolve_call_args`] evaluates FIRST —
+/// its trial commits `markActive`, and the later call's `check_call_double_use` then sees that
+/// active trial and yields the value (`checkCallDoubleUse`, funcdata_varnode.cc:1787). Ghidra keys
+/// on the structured block index (`getParent()->getIndex()`, the reverse-post-order Ghidra's
+/// `structureReset`/`findSpanningTree` assigns) then the op's within-block order. mosura numbers its
+/// `BlockId`s by ADDRESS (a non-Ghidra adaptation, cfg.rs:256), so the faithful key is the block's
+/// reverse-postorder position — the same DFS-over-out-edges RPO the spanning tree computes, from
+/// [`super::dominator::postorder`] — then [`block_pos`] within the block. deindirect/indproto share
+/// one parameter setup between two sibling calls; the else-branch call sits in the block Ghidra (and
+/// mosura's RPO) indexes FIRST though its address is HIGHER, so address-order evaluation picked the
+/// wrong call. (Ghidra sorts once in `startProcessing` after `structureReset`; mosura's CFG is stable
+/// across the mainloop, so recomputing the order per invocation yields the same fixed sequence.)
+fn call_specs_in_dominance_order(f: &Funcdata) -> Vec<OpId> {
+    let nb = f.num_blocks();
+    let po = super::dominator::postorder(f);
+    let mut rpo_num = vec![usize::MAX; nb];
+    for (i, &b) in po.iter().rev().enumerate() {
+        rpo_num[b] = i;
+    }
+    let mut calls: Vec<OpId> =
+        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+    calls.sort_by_key(|&op| {
+        let ridx = f
+            .op(op)
+            .parent
+            .and_then(|b| rpo_num.get(b.0 as usize).copied())
+            .unwrap_or(usize::MAX);
+        (ridx, block_pos(f, op))
+    });
+    calls
+}
+
 pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
     let mut count = 0u32;
-    let calls: Vec<OpId> =
-        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
-    for call in calls {
+    let calls: Vec<OpId> = call_specs_in_dominance_order(f);
+    // Set up EVERY call's trial container before checking any (Ghidra creates each `FuncCallSpecs`'
+    // `ParamActive` at heritage-time `guardCalls`, so all are `isInputActive` during
+    // `ActionActiveParam`). `check_call_double_use`/`checkCallDoubleUse` (funcdata_varnode.cc:1756)
+    // consults the OTHER call's active trials to accept a legitimate cross-call double-use — a value
+    // (e.g. piecestruct's `&xStack_18`) that append-all leaves on a second, non-consuming call must
+    // not be rejected as a competing use, which drops the real arg on the first call. mosura's old
+    // per-call setup+check loop left a not-yet-processed callee's container absent, so the double-use
+    // was spuriously rejected.
+    for &call in &calls {
         setup_active_input(f, call);
+    }
+    for call in calls {
         check_input_trial_use(f, call);
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
             build_input_from_trials(f, call);
@@ -713,9 +781,9 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     // fspec.cc:5613-5651) — so a later trial's [`check_call_double_use`] sees the verdicts of the
     // trials evaluated before it (the `isChecked`/`isActive` branch, funcdata_varnode.cc:1787).
     for ti in 0..ntrials {
-        let (checked, slot) = {
+        let (checked, slot, killed_by_call) = {
             let t = &f.active_inputs[&call].trial[ti];
-            (t.flags & trial_flags::CHECKED != 0, t.op_slot as usize)
+            (t.flags & trial_flags::CHECKED != 0, t.op_slot as usize, t.flags & trial_flags::KILLEDBYCALL != 0)
         };
         if checked {
             continue;
@@ -726,8 +794,9 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
                 let vn_is_input = f.vn(v).is_input();
                 // `AncestorRealistic::execute`: a top-level input trial is not realistic (the
                 // early-return at funcdata_varnode.cc:2211), but a written chain reaching an input via
-                // traversal is (`realistic_faithful`).
-                let realistic = !vn_is_input && realistic_faithful(f, v, &mut HashSet::new());
+                // traversal is (`realistic_faithful`). The trial's killed-by-call flag gates the
+                // passthrough-INDIRECT case (funcdata_varnode.cc:2054).
+                let realistic = !vn_is_input && realistic_faithful(f, v, killed_by_call, &mut HashSet::new());
                 if realistic {
                     let addr = f.vn(v).loc;
                     let aou = ancestor_op_use(
@@ -825,7 +894,8 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
 pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
     let mut count = 0u32;
     let reg = f.spaces.by_name("register");
-    let Some(outlist) = sysv_output(&f.spaces) else { return 0 };
+    // The convention's output (return) list, decoded from the compiler spec's `<default_proto>`.
+    let Some(outlist) = f.proto_model.output.clone() else { return 0 };
     let calls: Vec<OpId> =
         f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
     for call in calls {
@@ -1358,6 +1428,13 @@ mod tests {
         let rsi = f.new_output(ind, 8, Address::new(reg, ARG_REGS[1]));
         if creation {
             f.vn_mut(rsi).set_indirect_creation();
+        } else {
+            // A *call* passthrough: model the causing op as a CALL so `indirect_is_store` is false
+            // (Ghidra `PcodeOp::isIndirectStore` == false) and the killed-by-call reject applies.
+            let earlier_target = f.new_const(8, 0x400400);
+            let earlier_call = f.new_op(OpCode::Call, seq, vec![earlier_target]);
+            f.op_mut(ind).guarded_op = Some(earlier_call);
+            extra.insert(0, earlier_call);
         }
         let call = f.new_op(OpCode::Call, seq, vec![target, rdi, rsi]);
         let mut ops = vec![cp0];
@@ -1371,16 +1448,18 @@ mod tests {
         (f, call)
     }
 
-    /// Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2052): flow THROUGH a
-    /// call (a passthrough INDIRECT — the across-call stack-slot guard) is entered and its input(0)
-    /// traversed, so a call argument reaching the call through one is a real argument. This is
-    /// loopcomment's dropped 2nd arg: the value loaded from an aliased stack local, guarded across an
-    /// earlier call by a passthrough INDIRECT. Fails if INDIRECT is treated as wholesale unrealistic.
+    /// Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2052-2054): a
+    /// *killed-by-call* register trial whose value flows THROUGH a *call* passthrough INDIRECT is
+    /// invalid (`pop_fail`) — the callee overwrote the register, so the value is not the caller's
+    /// argument. So an RSI arg reaching the call through a call-passthrough is dropped, exactly like a
+    /// creation. (A non-killed *stack* trial, or a value through a STORE-modeling passthrough
+    /// `isIndirectStore`, is kept — that keep-path is exercised by the corpus, e.g. loopcomment's
+    /// aliased-stack-local 2nd arg, which does not regress under this reject.)
     #[test]
-    fn arg_through_passthrough_indirect_is_realistic() {
+    fn register_arg_through_call_passthrough_is_dropped() {
         let (mut f, call) = call_arg_through_indirect(false);
         resolve_call_args(&mut f);
-        assert_eq!(f.op(call).num_inputs(), 3, "[target, RDI, RSI] — RSI flows through a passthrough INDIRECT");
+        assert_eq!(f.op(call).num_inputs(), 2, "[target, RDI] — the RSI passthrough of a call clobber is not an argument");
     }
 
     /// The complementary case: an indirect *creation* (killedbycall clobber, indirect-zero input) is
@@ -1396,11 +1475,13 @@ mod tests {
     /// A CALL followed by an RAX indirect-creation clobber; `used` decides whether the clobber's
     /// value is read (so the creation survived dead-code) — modeling the post-dead-code state
     /// `resolve_call_output` consumes.
-    fn call_then_rax_creation(used: bool) -> (Funcdata, OpId, OpId) {
+    fn call_then_rax_creation(used: bool) -> Option<(Funcdata, OpId, OpId)> {
+        let pm = crate::decompile::build::test_sysv_proto_model()?;
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model = pm;
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let target = f.new_const(8, 0x400430);
         let call = f.new_op(OpCode::Call, seq, vec![target]);
@@ -1420,12 +1501,12 @@ mod tests {
         for &op in &[call, ind] {
             f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
         }
-        (f, call, ind)
+        Some((f, call, ind))
     }
 
     #[test]
     fn used_rax_creation_becomes_call_output() {
-        let (mut f, call, ind) = call_then_rax_creation(true);
+        let Some((mut f, call, ind)) = call_then_rax_creation(true) else { return };
         resolve_call_output(&mut f);
         // the call now produces RAX; the INDIRECT was destroyed
         let out = f.op(call).output.expect("call has a recovered output");
@@ -1435,7 +1516,7 @@ mod tests {
 
     #[test]
     fn unused_rax_creation_is_not_promoted() {
-        let (mut f, call, _ind) = call_then_rax_creation(false);
+        let Some((mut f, call, _ind)) = call_then_rax_creation(false) else { return };
         resolve_call_output(&mut f);
         assert!(f.op(call).output.is_none(), "an unused clobber is not a return value");
     }
@@ -1448,10 +1529,12 @@ mod tests {
         // the upper 6 bytes) that a wide read reassembles via a PIECE. `buildOutputFromTrials`' 2-trial
         // path (`findPreexistingWhole`) must set that pre-existing whole — a fresh unique, as Ghidra's
         // `u0x…9 = callind …` — to be the call output and remove the PIECE + both INDIRECTs.
+        let Some(pm) = crate::decompile::build::test_sysv_proto_model() else { return };
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model = pm;
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let target = f.new_const(8, 0x400430);
         let call = f.new_op(OpCode::Callind, seq, vec![target]);
@@ -1491,10 +1574,12 @@ mod tests {
         // RAX:RDX dual-class join, so `firstOnly` skips it and the call stays void — matching Ghidra
         // (loopcomment: `func_0x00100580(0x100924)` is void, not `iVar = func_…`). Guards the fillinMap
         // firstOnly semantics: without them a spuriously-live high-half clobber becomes a bogus return.
+        let Some(pm) = crate::decompile::build::test_sysv_proto_model() else { return };
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model = pm;
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let target = f.new_const(8, 0x400430);
         let call = f.new_op(OpCode::Call, seq, vec![target]);
