@@ -918,6 +918,18 @@ impl<'a> PrintC<'a> {
                 let in0 = a(0);
                 (format!("(int{n}){}", self.operand(in0, 14, false)), 14)
             }
+            // CPUI_CAST (Ghidra `PrintC::opTypeCast`, printc.cc:448): a cast op renders `(dt)x`
+            // where `dt = op->getOut()->getHighTypeDefFacing()` — the cast-to type carried on the
+            // output varnode. Precedence 14 (unary cast), operand at 14, exactly like the IntSext /
+            // FloatInt2float cast renders above. mosura will begin inserting these in the
+            // ActionSetCasts port (`castInput`, coreaction.cc:2655); until then SLEIGH never emits a
+            // CAST and no rule creates one, so this arm is byte-neutral scaffolding.
+            OpCode::Cast => {
+                let in0 = a(0);
+                let out = o.output.unwrap();
+                let ty = self.type_of(out);
+                (format!("({}){}", ty.name(), self.operand(in0, 14, false)), 14)
+            }
             OpCode::Load => {
                 let (addr, sz) = (a(1), self.f.vn(o.output.unwrap()).size);
                 let vty = self.type_of(o.output.unwrap());
