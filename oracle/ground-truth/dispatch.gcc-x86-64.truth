@@ -1,0 +1,10 @@
+# mosura-ground-truth v1 program=dispatch compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=dispatch.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000004010a0
+func 0000000000401000 0000000000000004 classify.cold
+func 0000000000401010 0000000000000004 op_add
+func 0000000000401020 0000000000000006 op_mul
+func 0000000000401030 0000000000000068 classify
+func 00000000004010a0 0000000000000059 _start
+switch 401049

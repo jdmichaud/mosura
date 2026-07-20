@@ -118,6 +118,7 @@ so the full test surface is auditable. All under `$REPO`:
 | Analysis snapshots | `goldens/analysis/*.snapshot` | 21 | `scripts/capture-analysis.sh` (needs `analyzeHeadless`) |
 | Capture fixtures | `oracle/fixtures/*.xml` | 31 | hand-authored / extracted |
 | Analysis corpus | `oracle/analysis-corpus/*.elf` (7) + `z80.com` + `watcom_hello.exe` | 9 | `oracle/analysis-corpus/build.sh` (needs the cross-toolchains + Watcom 10.0a) |
+| Ground-truth corpus | `oracle/ground-truth/*.<cc>-<arch>` (stripped) + `*.truth` | 2 (phase-1) | `oracle/ground-truth/build.sh` (needs the toolchains; truth derived by nm+objdump) — source-owned oracle, not Ghidra ([`ground-truth-corpus.md`](ground-truth-corpus.md)) |
 | SLEIGH decode fixture | `crates/mosura/tests/fixtures/sla/6502.sla` | 1 | committed |
 | Repo-owned cspec (beyond-Ghidra) | `specs/x86-32-watcom.cspec` | 1 | hand-authored (Open Watcom source) |
 
@@ -167,4 +168,6 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
 - Regenerate disasm goldens: `scripts/setup-oracle.sh` then `cargo xtask baseline`.
 - Regenerate analysis goldens: `scripts/build-ghidra-dist.sh` then `scripts/capture-analysis.sh`.
 - Regenerate the corpus: `oracle/analysis-corpus/build.sh` (cross-toolchains + Watcom 10.0a).
+- Regenerate the ground-truth corpus: `oracle/ground-truth/build.sh` (toolchains; truth derived
+  from the build via nm+objdump — the source-owned oracle, not Ghidra).
 - Full reproduction chain: `oracle/analysis-capture.md`.
