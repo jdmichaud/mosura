@@ -16,8 +16,10 @@
 # Modes:
 #   (default)    CI mode: materialize the pinned Ghidra + compile .sla, then run the full
 #                suite. On a CI runner the oracle tools + user binaries are simply absent.
-#   --hermetic   LOCAL proof on a machine that HAS the oracle tools / user binaries: hide them
-#                (restored on exit, even on Ctrl-C) so the run sees the same absence CI would.
+#   --hermetic   LOCAL proof on a machine that HAS the oracle tools / user binaries: reproduce
+#                CI's absence without disturbing the user's files — point the MOSURA_*_EXE
+#                locator vars at an absent path (the user binaries stay put), and move the
+#                in-repo oracle tools aside (gitignored build artifacts; restored on exit).
 #   --no-fetch   Skip the Ghidra fetch/compile; only verify an existing checkout is at the pin
 #                (assumes the .sla are already built — for a quick local re-run).
 #
@@ -41,18 +43,20 @@ for a in "$@"; do
 done
 
 # The regeneration-only artifacts that the test surface must NOT require. In real CI they are
-# simply absent; --hermetic hides the local copies (restoring them on exit). $HOME-relative so
-# there are no absolute paths here (the user-binary defaults from docs/dependencies.md).
+# simply absent. --hermetic moves the in-repo oracle tools aside (gitignored build artifacts,
+# restored on exit) — these have no locator var. The user binaries are NOT moved: --hermetic
+# points their MOSURA_*_EXE locator vars at $ABSENT instead (see below).
 HIDE_PATHS=(
   "$REPO/oracle/capture"
   "$REPO/oracle/capture_trace"
   "$REPO/build/oracle-cache"
-  # User binaries at the MOSURA_*_EXE locations (env override, else the $HOME default — the
-  # same resolution paths.rs uses), so --hermetic hides wherever the tests actually look.
-  "${MOSURA_WAR2_EXE:-$HOME/WAR2.EXE}"
-  "${MOSURA_CNV_EXE:-$HOME/cnv.exe}"
-  "${MOSURA_COMCOM32_EXE:-$HOME/.local/share/comcom32/comcom32.exe}"
 )
+
+# A guaranteed-absent location for the user-binary locator vars in --hermetic mode. Unsetting
+# them would fall back to the $HOME defaults — exactly where the files are — so the gates would
+# still run; pointing them at a nonexistent path is what makes the gates skip, without touching
+# the user's real files. Under $REPO/build (gitignored), so no absolute path is baked in.
+ABSENT="$REPO/build/hermetic-absent"
 
 HIDDEN=()
 restore() {
@@ -91,12 +95,23 @@ else
   "$SCRIPT_DIR/setup-ghidra.sh"
 fi
 
-# 2. Hermetic: hide the regeneration-only tooling so the run sees CI's absence.
-[ "$HERMETIC" -eq 1 ] && { log "hermetic mode: hiding oracle tools + user binaries"; hide; }
+# 2. Hermetic: reproduce CI's absence — move the in-repo oracle tools aside, and point the
+#    user-binary locator vars at $ABSENT (no touching the user's files).
+if [ "$HERMETIC" -eq 1 ]; then
+  log "hermetic mode: hiding in-repo oracle tools + pointing MOSURA_*_EXE at an absent path"
+  hide
+  export MOSURA_WAR2_EXE="$ABSENT/WAR2.EXE"
+  export MOSURA_CNV_EXE="$ABSENT/cnv.exe"
+  export MOSURA_COMCOM32_EXE="$ABSENT/comcom32.exe"
+fi
 
-# 3. Report the environment the suite will actually see.
+# 3. Report the environment the suite will actually see: the oracle tools + the resolved
+#    MOSURA_*_EXE user-binary locations (the hermetic overrides if set, else the $HOME defaults).
 log "environment for the test run (regeneration-only tooling should be absent):"
-for p in "${HIDE_PATHS[@]}"; do
+for p in "${HIDE_PATHS[@]}" \
+         "${MOSURA_WAR2_EXE:-$HOME/WAR2.EXE}" \
+         "${MOSURA_CNV_EXE:-$HOME/cnv.exe}" \
+         "${MOSURA_COMCOM32_EXE:-$HOME/.local/share/comcom32/comcom32.exe}"; do
   if [ -e "$p" ]; then echo "   PRESENT: $p"; else echo "   absent:  $p"; fi
 done
 
