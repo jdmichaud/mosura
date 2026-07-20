@@ -63,8 +63,12 @@ for com in "$CORPUS"/*.com; do
   echo "  wrote $name.snapshot + $name.loaded.snapshot"
 done
 
-# User-provided binaries (not committed): capture only if present. Add paths here.
-for ext in "cnv:/home/jd/cnv.exe" "comcom32:/home/jd/.local/share/comcom32/comcom32.exe" "war2:/home/jd/WAR2.EXE"; do
+# User-provided binaries (not committed): capture only if present. Located by the MOSURA_*_EXE
+# env vars with $HOME-relative defaults (docs/dependencies.md; matches paths.rs). No absolute paths.
+: "${MOSURA_CNV_EXE:=$HOME/cnv.exe}"
+: "${MOSURA_COMCOM32_EXE:=$HOME/.local/share/comcom32/comcom32.exe}"
+: "${MOSURA_WAR2_EXE:=$HOME/WAR2.EXE}"
+for ext in "cnv:$MOSURA_CNV_EXE" "comcom32:$MOSURA_COMCOM32_EXE" "war2:$MOSURA_WAR2_EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"
   if [ -f "$path" ]; then
     # cnv's converged snapshot is ~3MB (174k instructions) — too large to commit, so it

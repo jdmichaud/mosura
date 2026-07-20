@@ -94,19 +94,18 @@ file is absent**, so `cargo test` is green on a clean checkout without any of th
 recorded so a reader can confirm they have the exact artifact these gates were written
 against.
 
-| Binary | Locator (proposed env → default) | sha256 / size | Used by | What it validates |
+| Binary | Locator (env → default) | sha256 / size | Used by | What it validates |
 | --- | --- | --- | --- | --- |
 | `WAR2.EXE` (DOS/4GW-bound Watcom LE) | `MOSURA_WAR2_EXE → $HOME/WAR2.EXE` | `4789987d1c4f4c3d02ad28cd20377d58d54f51c1fd2976d842ac33861eed0f63` / 878119 B | `le_war2_analysis`, `le_war2_objects`, `watcom_detection` | native-LE analysis + Watcom detection ground truth |
 | `cnv.exe` (Clang PE) | `MOSURA_CNV_EXE → $HOME/cnv.exe` | `132b8d5c005cc0cdb6c5e7f91d326eb1339f4faf97c132c94552bc6d65dd9903` / 1075200 B | `pe_compiler_opinion` | `PeLoader.CompilerOpinion` → `clangwindows`/`clang:unknown` |
 | `comcom32.exe` (DJGPP MZ) | `MOSURA_COMCOM32_EXE → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
 
-> **Hardening gap (for #16/#17).** These three env vars are the **proposed portable
-> convention**; the test harness today still hard-codes the absolute `$HOME/…` paths
-> (`crates/mosura/tests/analysis_parity.rs`, `crates/mosura/src/analysis/mod.rs`,
-> `scripts/capture-analysis.sh`). Wiring the tests/scripts to honor `MOSURA_*_EXE` (falling
-> back to the defaults above) is a follow-up — this manifest defines the target so the code
-> can converge on it. Unlike `GHIDRA_SRC`/`GHIDRA_DIST`, which already exist in code, the
-> `MOSURA_*_EXE` vars do **not** yet exist.
+> **Implemented (task #6).** These three env vars are live, resolved by
+> `crates/mosura/src/paths.rs::{war2_exe, cnv_exe, comcom32_exe}` (env override, else the
+> `$HOME`-relative default above — the same convention as `GHIDRA_SRC`/`GHIDRA_DIST`). The
+> tests (`analysis_parity.rs`, `analysis/loader/{pe,mz}.rs`, `analysis/mod.rs`) and
+> `scripts/capture-analysis.sh` + `scripts/ci-clean-clone.sh` all honor them; no absolute path
+> is baked into code, tests, or scripts.
 
 ### In-repo test data (committed; not external)
 
@@ -146,8 +145,8 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
   **Open Watcom** build is pinned and present, but it emits the *Open Watcom Contributors*
   banner, not the classic *WATCOM International Corp.* one — a different era fingerprint — so
   it does not substitute for 10.0a as the fixture source.) Follow-up: task #14.
-- **`MOSURA_*_EXE` env vars are proposed, not yet implemented** — see the hardening-gap note
-  above (#16/#17).
+- **`MOSURA_*_EXE` env vars are implemented** (task #6) — `paths.rs::{war2_exe,cnv_exe,comcom32_exe}`;
+  tests + scripts honor them with `$HOME`-relative defaults (no hard-coded absolute paths).
 - **dosemu2 is a source/PPA build**, not a distro package, so its pin is the build-string
   version rather than an `apt` version.
 - **`warcraft2-re` origin spells `warcaft2-re`** (single `r`) in the remote URL — recorded

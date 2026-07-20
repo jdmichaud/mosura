@@ -62,3 +62,33 @@ pub fn analysis_corpus_dir() -> PathBuf {
 pub fn oracle_fixtures_dir() -> PathBuf {
     workspace_root().join("oracle/fixtures")
 }
+
+/// Locate a user-provided binary by an env var with a `$HOME`-relative default — the same
+/// override convention as [`ghidra_src`]. These are copyrighted third-party files that are
+/// **not committed**; the tests that use them skip when absent (`docs/dependencies.md`). No
+/// absolute path is baked in — the default is derived from `$HOME`.
+fn user_binary(env_var: &str, home_relative_default: &str) -> PathBuf {
+    if let Ok(p) = std::env::var(env_var) {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(home_relative_default)
+}
+
+/// `WAR2.EXE` — Warcraft II, a DOS/4GW-bound Watcom LE. `MOSURA_WAR2_EXE`, default
+/// `$HOME/WAR2.EXE`. Native-LE analysis + Watcom-detection ground truth.
+pub fn war2_exe() -> PathBuf {
+    user_binary("MOSURA_WAR2_EXE", "WAR2.EXE")
+}
+
+/// `cnv.exe` — a Clang-built PE. `MOSURA_CNV_EXE`, default `$HOME/cnv.exe`. PE
+/// `CompilerOpinion` ground truth.
+pub fn cnv_exe() -> PathBuf {
+    user_binary("MOSURA_CNV_EXE", "cnv.exe")
+}
+
+/// `comcom32.exe` — a DJGPP MZ. `MOSURA_COMCOM32_EXE`, default
+/// `$HOME/.local/share/comcom32/comcom32.exe`. Watcom no-false-positive ground truth.
+pub fn comcom32_exe() -> PathBuf {
+    user_binary("MOSURA_COMCOM32_EXE", ".local/share/comcom32/comcom32.exe")
+}

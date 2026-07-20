@@ -135,15 +135,15 @@ pub fn load_mz(data: &[u8]) -> Result<Program, LoadError> {
 mod tests {
     use super::*;
 
-    fn external(path: &str, name: &str) -> Option<Vec<u8>> {
+    fn external(path: &std::path::Path, name: &str) -> Option<Vec<u8>> {
         std::fs::read(path).ok().or_else(|| {
-            eprintln!("skip {name}: {path} not present");
+            eprintln!("skip {name}: {} not present", path.display());
             None
         })
     }
 
-    fn check(path: &str, name: &str, golden: &str) {
-        let Some(data) = external(path, name) else { return };
+    fn check(path: std::path::PathBuf, name: &str, golden: &str) {
+        let Some(data) = external(&path, name) else { return };
         let prog = load_mz(&data).unwrap_or_else(|e| panic!("load {name}: {e}"));
         let snap = prog.snapshot();
         assert_eq!(snap.addr_size, 16);
@@ -158,11 +158,11 @@ mod tests {
 
     #[test]
     fn comcom32_memory_map_matches_golden() {
-        check("/home/jd/.local/share/comcom32/comcom32.exe", "comcom32", "comcom32.loaded.snapshot");
+        check(crate::paths::comcom32_exe(), "comcom32", "comcom32.loaded.snapshot");
     }
 
     #[test]
     fn war2_memory_map_matches_golden() {
-        check("/home/jd/WAR2.EXE", "war2", "war2.loaded.snapshot");
+        check(crate::paths::war2_exe(), "war2", "war2.loaded.snapshot");
     }
 }

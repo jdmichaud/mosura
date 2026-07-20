@@ -554,9 +554,9 @@ mod a7_diag_noreturn {
     #[test]
     #[ignore]
     fn cnv_noreturn_count() {
-        let path = std::path::Path::new("/home/jd/cnv.exe");
+        let path = crate::paths::cnv_exe();
         if !path.exists() { eprintln!("no cnv"); return; }
-        let p = analyze_file(path).unwrap();
+        let p = analyze_file(&path).unwrap();
         eprintln!("cnv noreturn-flagged: {}", p.noreturn_functions.len());
         eprintln!("cnv functions: {}", p.function_manager.function_count());
         // sanity: every flagged address is in mapped memory

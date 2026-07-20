@@ -206,15 +206,15 @@ fn read_u64(memory: &Memory, addr: Address) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// cnv.exe is a user-provided PE (not committed); skip if absent.
+    /// cnv.exe is a user-provided PE (not committed); skip if absent (MOSURA_CNV_EXE).
     fn cnv() -> Option<Vec<u8>> {
-        std::fs::read("/home/jd/cnv.exe").ok()
+        std::fs::read(crate::paths::cnv_exe()).ok()
     }
 
     #[test]
     fn cnv_memory_map_matches_loader_golden() {
         let Some(data) = cnv() else {
-            eprintln!("skip: /home/jd/cnv.exe not present");
+            eprintln!("skip: cnv.exe not present ({})", crate::paths::cnv_exe().display());
             return;
         };
         let prog = load_pe(&data).expect("load cnv.exe");

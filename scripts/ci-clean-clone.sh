@@ -47,9 +47,11 @@ HIDE_PATHS=(
   "$REPO/oracle/capture"
   "$REPO/oracle/capture_trace"
   "$REPO/build/oracle-cache"
-  "$HOME/WAR2.EXE"
-  "$HOME/cnv.exe"
-  "$HOME/.local/share/comcom32/comcom32.exe"
+  # User binaries at the MOSURA_*_EXE locations (env override, else the $HOME default — the
+  # same resolution paths.rs uses), so --hermetic hides wherever the tests actually look.
+  "${MOSURA_WAR2_EXE:-$HOME/WAR2.EXE}"
+  "${MOSURA_CNV_EXE:-$HOME/cnv.exe}"
+  "${MOSURA_COMCOM32_EXE:-$HOME/.local/share/comcom32/comcom32.exe}"
 )
 
 HIDDEN=()

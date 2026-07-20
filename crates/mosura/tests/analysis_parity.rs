@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use mosura::analysis::{self, snapshot};
 use mosura::conformance::Tally;
-use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir};
+use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir, cnv_exe, comcom32_exe, war2_exe};
 
 /// Committed ELF corpus (always present). `aarch64`, `riscv`, and `m68k` are the
 /// non-x86 fixtures (freestanding ARM64 / RV64GC / big-endian 32-bit m68k ELFs) —
@@ -27,9 +27,9 @@ fn corpus() -> Vec<(&'static str, PathBuf, bool)> {
         .iter()
         .map(|n| (*n, analysis_corpus_dir().join(format!("{n}.elf")), true))
         .collect();
-    v.push(("cnv", PathBuf::from("/home/jd/cnv.exe"), false)); // PE, user-provided
-    v.push(("comcom32", PathBuf::from("/home/jd/.local/share/comcom32/comcom32.exe"), false)); // MZ
-    v.push(("war2", PathBuf::from("/home/jd/WAR2.EXE"), false)); // MZ (DOS/4GW stub), user-provided
+    v.push(("cnv", cnv_exe(), false)); // PE, user-provided (MOSURA_CNV_EXE)
+    v.push(("comcom32", comcom32_exe(), false)); // MZ (MOSURA_COMCOM32_EXE)
+    v.push(("war2", war2_exe(), false)); // MZ (DOS/4GW stub), user-provided (MOSURA_WAR2_EXE)
     v
 }
 
@@ -70,12 +70,12 @@ fn memory_map_parity() {
 #[test]
 #[ignore = "slow (~140s); run with --ignored"]
 fn pe_robustness_cnv() {
-    let path = "/home/jd/cnv.exe";
-    if !std::path::Path::new(path).exists() {
-        eprintln!("skip: {path} absent");
+    let path = cnv_exe();
+    if !path.exists() {
+        eprintln!("skip: cnv.exe absent ({})", path.display());
         return;
     }
-    let program = analysis::analyze_file(std::path::Path::new(path)).unwrap();
+    let program = analysis::analyze_file(&path).unwrap();
     assert!(program.function_manager.function_count() > 1000, "cnv should recover its functions");
     for r in program.reference_manager.references() {
         assert!(program.memory.contains(r.to), "cnv: reference to unmapped {:08x}", r.to.offset);
@@ -92,7 +92,7 @@ fn pe_robustness_cnv() {
 /// is a faithful line-by-line port of the source. Skipped if cnv.exe is absent (user-provided).
 #[test]
 fn pe_compiler_opinion() {
-    let path = std::path::Path::new("/home/jd/cnv.exe");
+    let path = cnv_exe();
     if !path.exists() {
         eprintln!("skip pe_compiler_opinion: cnv.exe absent");
         return;
@@ -100,7 +100,7 @@ fn pe_compiler_opinion() {
     let golden = snapshot::parse(
         &std::fs::read_to_string(analysis_goldens_dir().join("cnv.loaded.snapshot")).unwrap(),
     );
-    let snap = analysis::analyze_binary(path).unwrap();
+    let snap = analysis::analyze_binary(&path).unwrap();
     assert_eq!(
         snap.compiler, golden.compiler,
         "cnv: compiler-spec id (opinion secondary → cspec) must match Ghidra"
@@ -129,19 +129,19 @@ fn pe_mz_convergence_parity() {
     use std::collections::BTreeSet;
     let goldens = analysis_goldens_dir();
     // (name, path, max tolerated misaligned decodes)
-    let cases: &[(&str, &str, usize)] = &[
-        ("comcom32", "/home/jd/.local/share/comcom32/comcom32.exe", 0),
-        ("war2", "/home/jd/WAR2.EXE", 8),
-    ];
+    let cases: [(&str, PathBuf, usize); 2] =
+        [("comcom32", comcom32_exe(), 0), ("war2", war2_exe(), 8)];
     let mut evaluated = 0;
-    for &(name, path, max_misaligned) in cases {
+    for (name, path, max_misaligned) in &cases {
+        let name = *name;
+        let max_misaligned = *max_misaligned;
         let golden_path = goldens.join(format!("{name}.snapshot"));
-        if !std::path::Path::new(path).exists() || !golden_path.exists() {
+        if !path.exists() || !golden_path.exists() {
             eprintln!("  skip {name}: binary or golden absent");
             continue;
         }
         let golden = snapshot::parse(&std::fs::read_to_string(&golden_path).unwrap());
-        let snap = analysis::analyze_file(std::path::Path::new(path)).unwrap().snapshot();
+        let snap = analysis::analyze_file(path).unwrap().snapshot();
 
         let mf: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
         let gf: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
@@ -387,12 +387,12 @@ fn z80_com_parity() {
 #[test]
 fn le_war2_analysis() {
     use mosura::analysis::program::RefType;
-    let path = std::path::Path::new("/home/jd/WAR2.EXE");
+    let path = war2_exe();
     if !path.exists() {
         eprintln!("skip le_war2_analysis: WAR2.EXE absent");
         return;
     }
-    let prog = analysis::analyze_le_file(path).expect("native-LE analysis of WAR2.EXE");
+    let prog = analysis::analyze_le_file(&path).expect("native-LE analysis of WAR2.EXE");
     let ram = prog.default_space;
     let at = |o: u64| mosura::decompile::space::Address::new(ram, o);
 
@@ -484,18 +484,18 @@ fn watcom_detection() {
     eprintln!("watcom_hello.exe: {} cspec={} ({})", prog.compiler, prog.compiler_spec_id, info.banner);
 
     // (2) WAR2.EXE ground truth (user-provided): both the LE and the default MZ dispatch detect it.
-    let war2 = std::path::Path::new("/home/jd/WAR2.EXE");
+    let war2 = war2_exe();
     if war2.exists() {
-        let d = std::fs::read(war2).unwrap();
+        let d = std::fs::read(&war2).unwrap();
         assert_eq!(mosura::analysis::loader::load_le(&d).unwrap().compiler, "watcom:1988-1994");
         assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, "watcom:1988-1994");
         eprintln!("WAR2.EXE: watcom:1988-1994 (LE + MZ)");
     }
 
     // (3) No false positive: a non-Watcom MZ (DJGPP comcom32) has no Watcom banner.
-    let comcom = std::path::Path::new("/home/jd/.local/share/comcom32/comcom32.exe");
+    let comcom = comcom32_exe();
     if comcom.exists() {
-        let d = std::fs::read(comcom).unwrap();
+        let d = std::fs::read(&comcom).unwrap();
         assert!(mosura::analysis::loader::watcom::detect(&d).is_none(), "DJGPP must not match Watcom");
         assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, "unknown", "non-Watcom → unknown");
         eprintln!("comcom32 (DJGPP): no Watcom banner (compiler=unknown)");
@@ -512,12 +512,12 @@ fn watcom_detection() {
 fn le_war2_objects() {
     use mosura::analysis::loader;
     use mosura::analysis::program::SymbolType;
-    let path = std::path::Path::new("/home/jd/WAR2.EXE");
+    let path = war2_exe();
     if !path.exists() {
         eprintln!("skip le_war2_objects: WAR2.EXE not present");
         return;
     }
-    let data = std::fs::read(path).unwrap();
+    let data = std::fs::read(&path).unwrap();
     // Bound DOS/4GW exe: e_lfanew is deliberately invalid, so the LE is found by scanning,
     // not the standalone-dispatch path.
     let le_off = loader::detect_le(&data).expect("embedded LE header detected");
