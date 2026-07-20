@@ -366,30 +366,35 @@ fn z80_com_parity() {
     eprintln!("z80 .COM loader-stage: block + {} RST/NMI symbols + {} entries (exact)", gs.len(), ge.len());
 }
 
-/// war2 native-LE analysis (task #8, two-oracle). The DEFAULT war2 view stays the Ghidra
+/// war2 native-LE analysis (task #8/#2, two-oracle). The DEFAULT war2 view stays the Ghidra
 /// MZ-stub (its goldens + gates are untouched); this validates the opt-in native-LE path
 /// (`analyze_le_file`) — the 32-bit protected-mode objects (obj1 code @0x10000, obj2 data
 /// @0x80000, entry _cstart_ 0x601F8) — against the warcraft2-re RE ground truth (Ghidra has no
 /// LE loader). Validated as a clean subset: the reference invariant (every recovered reference
-/// targets mapped memory, 0 spurious) + 0 spurious COMPUTED_JUMP + the watcall cspec + entry.
+/// targets mapped memory, 0 spurious) + the recovered protected-mode switches + watcall + entry.
 /// Skipped if WAR2.EXE is absent (user-provided).
 ///
-/// SWITCH-RECOVERY FINDING (docs/le-loader-notes.md): the Ghidra war2.snapshot golden's 20
-/// COMPUTED_JUMP are artifacts of Ghidra's MZ *misinterpretation* of the 32-bit code — the
-/// warcraft2-re RE contradicts them (all 5 golden switch-sources sit in functions the RE
-/// recovered as framed loops / linear search, NOT switches: g1a598/g1b828/g1caec/g1dcc1). The
-/// *real* protected-mode computed jumps are the decompressor family's cs:-relative inline jump
-/// tables (fn_79130/793e0/7a5b0 per warcraft2-re analysis/reference/decomp.c), which mosura's
-/// flow-based discovery does not reach here — so native-LE switch recall is honestly 0, with
-/// 0 spurious. Recovering the decompressor jump tables is a filed follow-up.
+/// SWITCH RECOVERY (task #2 — the "beat Ghidra on WAR2" win): the *real* protected-mode
+/// computed jumps are the Watcom `jmp CS:[reg*4 + disp]` inline jump tables — WAR2's cs:-relative
+/// dispatches. Both the table displacement and every table entry are LE relocation ("fixup")
+/// records; `loader/le.rs` now applies them (`apply_le_fixups`), so the tables read their real
+/// absolute targets and the switch-gated code (incl. the decompressor family fn_79130/793e0/7a5b0)
+/// is discovered — function count jumps ~541 → ~1279. The switch targets are therefore anchored
+/// in the binary's *own fixup records* (Ghidra has no LE loader — its MZ-stub `war2.snapshot`
+/// 20 COMPUTED_JUMP are artifacts of misreading the 32-bit code and are not used here). The two
+/// decompressor decode-loop dispatches are asserted EXACTLY (4-way each), and the whole set is a
+/// clean subset: every COMPUTED_JUMP target is mapped, none invented.
 #[test]
 fn le_war2_analysis() {
+    use mosura::analysis::program::RefType;
     let path = std::path::Path::new("/home/jd/WAR2.EXE");
     if !path.exists() {
         eprintln!("skip le_war2_analysis: WAR2.EXE absent");
         return;
     }
     let prog = analysis::analyze_le_file(path).expect("native-LE analysis of WAR2.EXE");
+    let ram = prog.default_space;
+    let at = |o: u64| mosura::decompile::space::Address::new(ram, o);
 
     // The watcall convention (task #7) is the LE path's compiler spec.
     assert_eq!(prog.compiler_spec_id, "watcom", "native-LE war2 uses the watcall cspec");
@@ -398,21 +403,60 @@ fn le_war2_analysis() {
         prog.entry_points.iter().any(|a| a.offset == 0x601f8),
         "native-LE war2 has the _cstart_ entry 0x601F8"
     );
-    // Function discovery reached the 32-bit code (the default MZ path recovers ~none here).
+    // Function discovery reached the switch-gated 32-bit code (was ~541 before fixups; the
+    // default MZ path recovers ~none). A ratchet floor, not the exact count.
     let nfuncs = prog.function_manager.function_count();
-    assert!(nfuncs > 400, "native-LE war2 discovers its 32-bit functions, got {nfuncs}");
+    assert!(nfuncs > 1200, "native-LE war2 discovers its switch-gated functions, got {nfuncs}");
+    // The decompressor family — reachable only through the recovered cs: switches.
+    for f in [0x79130u64, 0x793e0, 0x7a5b0] {
+        assert!(
+            prog.function_manager.function_at(at(f)).is_some(),
+            "native-LE war2: decompressor fn_{f:x} discovered via recovered switch"
+        );
+    }
     // Clean subset — the no-spurious-reference invariant: every recovered reference targets
-    // mapped memory (obj1/obj2), and no spurious COMPUTED_JUMP is invented.
+    // mapped memory (obj1/obj2). No relocation or switch target may point outside the image.
     for r in prog.reference_manager.references() {
         assert!(prog.memory.contains(r.to), "native-LE war2: reference to unmapped {:08x}", r.to.offset);
     }
-    let computed_jumps = prog
+
+    // The recovered protected-mode switches (COMPUTED_JUMP), all anchored in WAR2's own fixup
+    // records. Every target mapped (0 spurious); the two decompressor decode-loop dispatches
+    // resolve EXACTLY to their fixup-relocated 4-entry tables.
+    let cj: Vec<(u64, u64)> = prog
         .reference_manager
         .references()
-        .filter(|r| r.ref_type == mosura::analysis::program::RefType::ComputedJump)
-        .count();
-    assert_eq!(computed_jumps, 0, "native-LE war2: 0 COMPUTED_JUMP (real switches unreached; 0 spurious)");
-    eprintln!("war2 native-LE: {nfuncs} functions, 0 unmapped refs, 0 spurious COMPUTED_JUMP, watcall cspec");
+        .filter(|r| r.ref_type == RefType::ComputedJump)
+        .map(|r| (r.from.offset, r.to.offset))
+        .collect();
+    assert!(cj.len() >= 40, "native-LE war2: recovered protected-mode switches, got {}", cj.len());
+    let mut dispatches: Vec<u64> = cj.iter().map(|(f, _)| *f).collect();
+    dispatches.sort();
+    dispatches.dedup();
+    assert!(dispatches.len() >= 8, "native-LE war2: distinct switch dispatches, got {}", dispatches.len());
+    let targets_of = |disp: u64| {
+        let mut t: Vec<u64> = cj.iter().filter(|(f, _)| *f == disp).map(|(_, to)| *to).collect();
+        t.sort();
+        t
+    };
+    // fn_793e0 decode-loop: `jmp CS:[ECX*4 + 0x694d0]` (fixup-relocated table @0x794d0).
+    assert_eq!(
+        targets_of(0x795d5),
+        vec![0x795e0, 0x79cb0, 0x7a400, 0x7a4a0],
+        "fn_793e0 dispatch resolves to its 4 fixup-relocated case targets"
+    );
+    // fn_7a5b0 decode-loop: `jmp CS:[ECX*4 + 0x6a6d0]` (fixup-relocated table @0x7a6d0).
+    assert_eq!(
+        targets_of(0x7a7d5),
+        vec![0x7a7e0, 0x7af10, 0x7b6c0, 0x7b7b0],
+        "fn_7a5b0 dispatch resolves to its 4 fixup-relocated case targets"
+    );
+    eprintln!(
+        "war2 native-LE: {nfuncs} functions, {} COMPUTED_JUMP from {} dispatches (0 unmapped/spurious), \
+         decompressor recovered, watcall cspec",
+        cj.len(),
+        dispatches.len()
+    );
 }
 
 /// Watcom compiler detection (two-oracle — `loader::watcom`). Beyond Ghidra (which reports

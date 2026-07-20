@@ -36,21 +36,31 @@ no LE loader) as a clean subset in `le_war2_analysis`: 541 functions discovered 
 from task #7, `_cstart_` entry 0x601F8), the no-spurious-reference invariant (every recovered
 reference targets mapped obj1/obj2 memory), and 0 spurious COMPUTED_JUMP.
 
-**Switch-recovery finding (a two-oracle discrepancy — reported, not invented around):** the
-plan called for validating "the 20 protected-mode COMPUTED_JUMP" as a clean subset, but those
-20 (in the Ghidra `war2.snapshot` golden) are **artifacts of Ghidra's MZ *misinterpretation* of
-the 32-bit code** — the warcraft2-re RE contradicts them. All five golden switch-sources
-(`0x1a607/0x1b88d/0x1ccb5/0x1ccf1/0x1de4e`) sit in functions the RE recovered as framed loops /
-linear search, **not** switches (`src/*/g1a598.c`, `g1b828.c`, `g1caec.c` "linear search of
-g_f304", `g1dcc1.c` "counted loop"). The *real* protected-mode computed jumps are the
-decompressor family's **cs:-relative inline jump tables** (`fn_79130`/`793e0`/`7a5b0`, per
-`warcraft2-re analysis/reference/decomp.c`: "cs: computed jump tables that dispatch the decode
-loops", "16-entry inline jump tables per case"). mosura's flow-based discovery does not reach
-those functions from the entry (they are invoked indirectly), so native-LE switch recall is
-honestly **0, with 0 spurious**. Recovering the decompressor jump tables — reaching those
-functions + the Watcom cs:-inline-jump-table construct — is a filed follow-up, and is
-decompiler-adjacent (the switch analyzer is a read-only bridge; the inline-table shape is the
-hard part). Since the Ghidra "20" are not real, no switch golden was authored from them.
+**Switch recovery (task #2 — the "beat Ghidra on WAR2" win, LANDED).** The *real* protected-mode
+computed jumps are the Watcom **`jmp CS:[reg*4 + disp]` inline jump tables** (`fn_79130`/`793e0`/
+`7a5b0` decompressor family and ~15 more across the image). The root cause of them not resolving
+was **unapplied LE relocations**: both the `jmp cs:[...]` table displacement *and* every table
+entry are LE fixup records that relocate by the object's `reloc_base` (obj1 `+0x10000`). With the
+raw (unrelocated) bytes, the tables read garbage and the switch-gated code — including the
+decompressor, reached only through those switches — stayed dark (function count `~541`).
+`load_le` now applies the fixups (`apply_le_fixups`, below), so the tables read their real
+absolute targets, mosura's standard `JumpBasic` recovers them, and discovery reaches `~1279`
+functions. This is grounded in **the binary's own fixup records** (Ghidra has no LE loader, so
+its MZ-stub `war2.snapshot` 20 COMPUTED_JUMP — artifacts of misreading the 32-bit code — are not
+used). Validated in `le_war2_analysis` as a clean subset (every COMPUTED_JUMP target mapped, none
+invented; the two decode-loop dispatches assert EXACTLY: `0x795d5 → {0x795e0,0x79cb0,0x7a400,
+0x7a4a0}`, `0x7a7d5 → {0x7a7e0,0x7af10,0x7b6c0,0x7b7b0}`). No decompiler/sleigh change was needed:
+post-fixup the dispatch is the standard `LOAD(ram, table+idx*4); BRANCHIND`, and the `CS` prefix
+is a correct no-op under the flat model once the base is baked into the (relocated) displacement.
+
+**LE fixups / relocations (`apply_le_fixups`).** The loader applies the LE **Fixup Page Table**
+(`LE+0x68`, `num_pages+1` u32 page→record offsets) + **Fixup Record Table** (`LE+0x6c`, packed
+`SRC FLAGS SRCOFF/CNT OBJECT TARGETOFF [ADDITIVE] [SRCOFF-list]` records). WAR2 is 100% *internal*
+(target-type 0) *32-bit-offset* (`SRC=0x07`) fixups — 17517 of them, 0 imports — each patched to
+`objects[obj].reloc_base + target_offset`. Imports/selectors are not sized/applied (no LE test
+binary uses them). This mirrors how `elf.rs` applies relocations at load; it is the beyond-Ghidra
+`--le` path, so the oracle is the binary's fixup bytes. Only the `--le` path is affected — the
+default MZ-stub / Ghidra-parity path and its `war2` goldens are byte-identical.
 
 ## Why native, not an ELF32 wrapper
 
@@ -112,9 +122,10 @@ dispatched by format, producing the LE's objects-as-blocks directly.
   detection/versioning and the watcall cspec are two-oracle extensions (tasks #8/#9),
   grounded in open-watcom-v2 source, validated vs warcraft2-re.
 - Page alignment `0x1000`. Loads as `x86:LE:32:default`, image base `0x10000`.
-- The LE loader-section region (`0x37CF4`..`0x5A6A4`) holds fixup/import/resident-name tables —
-  needed for a faithful loader (fixups), though `warcraft2-re`'s diff tool works on file
-  offsets and doesn't require it in the image.
+- The LE loader-section region (`0x37CF4`..`0x5A6A4`) holds fixup/import/resident-name tables.
+  The loader **applies the fixups** (`apply_le_fixups`, see the switch-recovery section) — they
+  relocate the internal references (incl. the cs:-relative jump tables); the fixup page/record
+  tables live here.
 
 ## Prerequisites in mosura before LE is worth doing
 

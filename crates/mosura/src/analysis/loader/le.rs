@@ -45,6 +45,8 @@ mod le {
     pub const OBJ_TABLE_OFF: usize = 0x40; // object table offset (rel. to LE header)
     pub const OBJ_COUNT: usize = 0x44; // number of object-table entries
     pub const OBJ_PAGEMAP_OFF: usize = 0x48; // object page-map offset (rel. to LE header)
+    pub const FIXUP_PAGE_TABLE_OFF: usize = 0x68; // fixup page table offset (rel. to LE header)
+    pub const FIXUP_RECORD_TABLE_OFF: usize = 0x6c; // fixup record table offset (rel. to LE header)
 }
 
 /// One LE object-table entry (24 bytes), per the LE/LX spec.
@@ -167,43 +169,62 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     let ram = spaces.add("ram", SpaceKind::Processor, 4, 1); // 32-bit address space
     let mut memory = Memory::new();
 
+    // Build each object's in-memory image (file-backed prefix + zero-filled tail), then apply
+    // the LE fixups across all objects before laying them into memory. The object occupies
+    // `virtual_size` bytes: the file-backed prefix plus a zero-filled tail (LE zero-fills
+    // object pages not present in the file). mosura's memory model has no partial block, so
+    // the object is one block of `virtual_size` with its file bytes zero-padded to size —
+    // faithful to the loaded image (the tail is zero at load); the file-backed/BSS split is a
+    // noted refinement.
+    let mut obj_bytes: Vec<Vec<u8>> = Vec::with_capacity(objects.len());
+    for obj in &objects {
+        let vsize = obj.virtual_size as usize;
+        let mut bytes = vec![0u8; vsize];
+        if vsize != 0 {
+            // File bytes backing this object: its pages are physical pages
+            // [page_index, page_index + page_count) (1-based, identity map), laid contiguously
+            // from `pages_start`. Only the file's last physical page is short.
+            let first_page = obj.page_index; // 1-based
+            let last_page = obj.page_index + obj.page_count - 1;
+            let file_start = pages_start + (first_page as usize - 1) * page_size as usize;
+            let avail = if last_page == num_pages {
+                (obj.page_count as usize - 1) * page_size as usize + last_page_bytes as usize
+            } else {
+                obj.page_count as usize * page_size as usize
+            };
+            let copy = avail.min(vsize);
+            if let Some(src) = data.get(file_start..file_start + copy) {
+                bytes[..copy].copy_from_slice(src);
+            }
+        }
+        obj_bytes.push(bytes);
+    }
+
+    // Apply the LE relocation ("fixup") records: patch each internal reference to its loaded
+    // address (source obj-relative offset + object reloc_base). WAR2's cs:-relative inline
+    // jump tables — the real protected-mode switches — are entirely constructed from these
+    // fixups (both the `jmp cs:[reg*4+disp]` displacement and every table entry), so without
+    // this pass the switch tables read garbage and the switch-gated code stays undiscovered.
+    // Ghidra has no LE loader; the oracle for this beyond-Ghidra `--le` path is the binary's
+    // own fixup records (docs/le-loader-notes.md). Mirrors how `elf.rs` applies relocations
+    // at load (`apply_external_relocations`).
+    apply_le_fixups(data, base, &objects, num_pages, page_size, &mut obj_bytes);
+
     let mut image_base: Option<u64> = None;
     for (i, obj) in objects.iter().enumerate() {
         if obj.virtual_size == 0 {
             continue;
         }
         let (r, w, x) = obj.perms();
-        // File bytes backing this object: its pages are physical pages
-        // [page_index, page_index + page_count) (1-based, identity map), laid contiguously
-        // from `pages_start`. Only the file's last physical page is short.
-        let first_page = obj.page_index; // 1-based
-        let last_page = obj.page_index + obj.page_count - 1;
-        let file_start = pages_start + (first_page as usize - 1) * page_size as usize;
-        let avail = if last_page == num_pages {
-            (obj.page_count as usize - 1) * page_size as usize + last_page_bytes as usize
-        } else {
-            obj.page_count as usize * page_size as usize
-        };
-        // The object occupies `virtual_size` bytes in memory: the file-backed prefix plus a
-        // zero-filled tail (LE zero-fills object pages not present in the file). mosura's
-        // memory model has no partial block, so the object is one block of `virtual_size`
-        // with its file bytes zero-padded to size — faithful to the loaded image (the tail
-        // is zero at load); the file-backed/BSS split is a noted refinement.
-        let vsize = obj.virtual_size as usize;
-        let mut bytes = vec![0u8; vsize];
-        let copy = avail.min(vsize);
-        if let Some(src) = data.get(file_start..file_start + copy) {
-            bytes[..copy].copy_from_slice(src);
-        }
         let name = if x { format!("obj{}_text", i + 1) } else { format!("obj{}_data", i + 1) };
         memory.add_block(
             &name,
             Address::new(ram, u64::from(obj.reloc_base)),
-            vsize as u64,
+            obj.virtual_size as u64,
             r,
             w,
             x,
-            Some(bytes),
+            Some(std::mem::take(&mut obj_bytes[i])),
         );
         image_base = Some(image_base.map_or(u64::from(obj.reloc_base), |b| b.min(u64::from(obj.reloc_base))));
     }
@@ -239,4 +260,155 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     }
 
     Ok(program)
+}
+
+/// Apply the LE relocation ("fixup") records to the object images (LE/LX spec §"Fixup Page
+/// Table" / "Fixup Record Table"). Each internal fixup relocates a reference from its stored
+/// object-relative offset to the object's loaded address (`reloc_base + target_offset`).
+///
+/// Layout (all offsets relative to the LE header at `le_base`):
+/// - **Fixup Page Table** (`LE+0x68`): `num_pages + 1` u32 entries. Page *p* (1-based) owns
+///   the records in `[FRT + FPT[p-1], FRT + FPT[p])`.
+/// - **Fixup Record Table** (`LE+0x6c`): the packed records themselves.
+///
+/// A record is `SRC(1) FLAGS(1) SRCOFF/CNT OBJECT TARGETOFF [ADDITIVE] [SRCOFF-list]`:
+/// - `SRC` low nibble = source size (`0x07` = 32-bit offset — WAR2's kind), `0x10` = the
+///   source is a *list* (a count byte replaces the single 2-byte source offset, and the list
+///   of 2-byte source offsets trails the target data).
+/// - `FLAGS` low 2 bits = target type (`0` = internal reference); `0x40` = 16-bit object
+///   number (else 8-bit); `0x10` = 32-bit target offset (else 16-bit); `0x04` = additive
+///   (a trailing 2/4-byte addend per `0x20`).
+///
+/// Only **internal** (target-type 0) fixups are applied — WAR2 is 100% internal 32-bit-offset
+/// fixups (its import table is empty). Imports/selectors are neither sized nor applied here;
+/// on encountering one the page is abandoned (no LE test binary exercises them). Ghidra has no
+/// LE loader — the oracle is the binary's own fixup bytes (docs/le-loader-notes.md).
+fn apply_le_fixups(
+    data: &[u8],
+    le_base: usize,
+    objects: &[LeObject],
+    num_pages: u32,
+    page_size: u32,
+    obj_bytes: &mut [Vec<u8>],
+) {
+    let (Some(fpt_rel), Some(frt_rel)) = (
+        u32le(data, le_base + le::FIXUP_PAGE_TABLE_OFF),
+        u32le(data, le_base + le::FIXUP_RECORD_TABLE_OFF),
+    ) else {
+        return;
+    };
+    let fpt = le_base + fpt_rel as usize;
+    let frt = le_base + frt_rel as usize;
+
+    // Virtual base of 1-based page `p` (identity page map): the owning object's reloc_base
+    // plus the page's offset within that object.
+    let page_vbase = |p: u32| -> Option<u64> {
+        objects.iter().find(|o| p >= o.page_index && p < o.page_index + o.page_count).map(|o| {
+            u64::from(o.reloc_base) + u64::from(p - o.page_index) * u64::from(page_size)
+        })
+    };
+    // Patch a relocated 32-bit value at a source virtual address into whichever object's image
+    // contains it (a fixup source can lie in any object, and may straddle a page boundary —
+    // the object image is contiguous, so an absolute-address write handles both).
+    let patch = |obj_bytes: &mut [Vec<u8>], src_vaddr: u64, value: u32| {
+        for (oi, o) in objects.iter().enumerate() {
+            let lo = u64::from(o.reloc_base);
+            if src_vaddr >= lo && src_vaddr + 4 <= lo + u64::from(o.virtual_size) {
+                let idx = (src_vaddr - lo) as usize;
+                obj_bytes[oi][idx..idx + 4].copy_from_slice(&value.to_le_bytes());
+                return;
+            }
+        }
+    };
+
+    for p in 1..=num_pages {
+        let (Some(start), Some(end)) =
+            (u32le(data, fpt + (p as usize - 1) * 4), u32le(data, fpt + p as usize * 4))
+        else {
+            break;
+        };
+        let Some(vbase) = page_vbase(p) else { continue };
+        let mut q = frt + start as usize;
+        let rec_end = frt + end as usize;
+        'page: while q + 2 <= rec_end && q + 2 <= data.len() {
+            let src = data[q];
+            let flags = data[q + 1];
+            q += 2;
+            let srctype = src & 0x0f;
+            let srclist = src & 0x10 != 0;
+
+            // Source offset(s): a single 2-byte offset, or (list flag) a count byte plus a
+            // trailing list read after the target data.
+            let mut count = 1u8;
+            let mut single_soff = 0i32;
+            if srclist {
+                if q + 1 > data.len() {
+                    break;
+                }
+                count = data[q];
+                q += 1;
+            } else {
+                if q + 2 > data.len() {
+                    break;
+                }
+                single_soff = i16::from_le_bytes([data[q], data[q + 1]]) as i32;
+                q += 2;
+            }
+
+            // Only internal (target-type 0) references have a spec-defined size here; bail the
+            // page on anything else rather than risk desyncing the record stream.
+            if flags & 0x03 != 0 {
+                break;
+            }
+            // Object number (8- or 16-bit).
+            let obj_num = if flags & 0x40 != 0 {
+                let Some(v) = u16le(data, q) else { break };
+                q += 2;
+                v as usize
+            } else {
+                if q + 1 > data.len() {
+                    break;
+                }
+                let v = data[q] as usize;
+                q += 1;
+                v
+            };
+            // Target offset: none for a 16-bit-selector source, else 16- or 32-bit.
+            let target_off = if srctype == 0x02 {
+                0u64
+            } else if flags & 0x10 != 0 {
+                let Some(v) = u32le(data, q) else { break };
+                q += 4;
+                u64::from(v)
+            } else {
+                let Some(v) = u16le(data, q) else { break };
+                q += 2;
+                u64::from(v)
+            };
+            // Additive addend (unused by WAR2): skip its 2/4 bytes.
+            if flags & 0x04 != 0 {
+                q += if flags & 0x20 != 0 { 4 } else { 2 };
+            }
+            // Source-offset list trails the target data.
+            let mut soffs: Vec<i32> = Vec::new();
+            if srclist {
+                for _ in 0..count {
+                    let Some(v) = u16le(data, q) else { break 'page };
+                    soffs.push(v as i16 as i32);
+                    q += 2;
+                }
+            } else {
+                soffs.push(single_soff);
+            }
+
+            // Apply: a 32-bit-offset internal fixup writes the relocated absolute address.
+            if srctype == 0x07 && obj_num >= 1 && obj_num <= objects.len() {
+                let target = u64::from(objects[obj_num - 1].reloc_base) + target_off;
+                for so in &soffs {
+                    let src_vaddr = (vbase as i64 + *so as i64) as u64;
+                    patch(obj_bytes, src_vaddr, target as u32);
+                }
+            }
+        }
+    }
 }
