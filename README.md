@@ -23,16 +23,19 @@ mosura reuses Ghidra's compiled SLEIGH tables and decompiler datatests, so it ru
 against a pinned Ghidra source checkout as its reference. One-time setup:
 
 ```sh
-# 1. Place a Ghidra 12.0.3 source checkout beside this repo (git tag Ghidra_12.0.3_build):
-#      <workspace>/ghidra/    reference source
-#      <workspace>/mosura/    this repo
-#
-# 2. Install prerequisites (Debian/Ubuntu) — plus a Rust toolchain (rustup):
+# 1. Install prerequisites (Debian/Ubuntu) — plus a Rust toolchain (rustup):
 sudo apt-get install -y build-essential bison flex binutils-dev libbfd-dev zlib1g-dev
 
-# 3. Build the reference oracle and compile the SLEIGH specs (one command):
-scripts/setup-oracle.sh
+# 2. Fetch the pinned Ghidra source and compile the SLEIGH specs (one command):
+scripts/setup-ghidra.sh
 ```
+
+`setup-ghidra.sh` shallow-clones the pinned Ghidra (tag `Ghidra_12.0.3_build`) beside this
+repo — `<workspace>/ghidra/`, override with `GHIDRA_SRC` — verifies it is the exact pinned
+commit, and compiles the `.sla` that `cargo test` loads (a fresh Ghidra clone ships none).
+After this, `cargo test` is self-contained. `scripts/setup-oracle.sh` additionally builds the
+Ghidra C++ oracle tools, which are needed only to *regenerate* the committed goldens, not to
+run the tests.
 
 Then decompile one of the bundled x86-64 fixtures:
 

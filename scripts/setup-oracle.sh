@@ -13,13 +13,17 @@
 # Designed to be portable: all paths are derived from this script's own location,
 # and the only external input is a standard C++ toolchain + libbfd.
 #
-# Usage:   mosura/scripts/setup-oracle.sh [--skip-specs] [--verify-only]
+# Usage:   mosura/scripts/setup-oracle.sh [--skip-specs] [--verify-only] [--sla-only]
+#            --sla-only   BUILD/TEST tier only: build sleigh_opt + compile the .sla, and stop
+#                         (no capture / decomp_dbg / datatest verify). This is the minimal step
+#                         `cargo test` needs; scripts/setup-ghidra.sh calls it after fetching.
 # Env:     GHIDRA_SRC   path to the pinned Ghidra checkout (default: <workspace>/ghidra)
 #          JOBS         parallel build jobs (default: nproc)
 #
 set -euo pipefail
 
 GHIDRA_TAG="Ghidra_12.0.3_build"   # must match the version the MCP oracle runs
+GHIDRA_COMMIT="09f14c92d3da6e5d5f6b7dea115409719db3cce1"  # the exact pin (tags can move; scripts/setup-ghidra.sh materializes it)
 
 # --- resolve paths relative to this script (portable across machines) ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,11 +41,12 @@ log() { printf '\033[1;34m[setup]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[setup:error]\033[0m %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
-SKIP_SPECS=0; VERIFY_ONLY=0
+SKIP_SPECS=0; VERIFY_ONLY=0; SLA_ONLY=0
 for a in "$@"; do
   case "$a" in
     --skip-specs)  SKIP_SPECS=1 ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --sla-only)    SLA_ONLY=1 ;;
     -h|--help)     grep '^#' "$0" | sed 's/^#\? \?//'; exit 0 ;;
     *)             die "unknown arg: $a (try --help)" ;;
   esac
@@ -51,7 +56,10 @@ check_prereqs() {
   log "checking build prerequisites"
   local missing=()
   for t in g++ make bison flex; do command -v "$t" >/dev/null || missing+=("$t"); done
-  echo '#include <bfd.h>' | g++ -E -x c++ - >/dev/null 2>&1 || missing+=("bfd.h (libbfd-dev/binutils-dev)")
+  # libbfd is only needed by the capture/oracle tools, not by sleigh_opt (the .sla compiler).
+  if [ "$SLA_ONLY" -eq 0 ]; then
+    echo '#include <bfd.h>' | g++ -E -x c++ - >/dev/null 2>&1 || missing+=("bfd.h (libbfd-dev/binutils-dev)")
+  fi
   if (( ${#missing[@]} )); then
     err "missing prerequisites: ${missing[*]}"
     err "Debian/Ubuntu:  sudo apt-get install -y build-essential bison flex binutils-dev libbfd-dev zlib1g-dev"
@@ -63,14 +71,15 @@ check_prereqs() {
 check_ghidra_src() {
   [ -d "$CPP_DIR" ] || die "Ghidra source not found (expected $CPP_DIR). Set GHIDRA_SRC or place the pinned checkout at $GHIDRA_SRC."
   if [ -d "$GHIDRA_SRC/.git" ]; then
-    local ver; ver="$(git -C "$GHIDRA_SRC" describe --tags 2>/dev/null || true)"
-    if [[ "$ver" != "$GHIDRA_TAG"* ]]; then
-      err "Ghidra checkout is at '$ver', expected '$GHIDRA_TAG'."
-      err "Pin it with:  git -C \"$GHIDRA_SRC\" checkout $GHIDRA_TAG"
-      die "oracle version must match the MCP's Ghidra (12.0.3)"
+    # Verify the EXACT pinned commit, not just the tag (tags can be moved/re-pointed).
+    local head; head="$(git -C "$GHIDRA_SRC" rev-parse HEAD 2>/dev/null || true)"
+    if [ "$head" != "$GHIDRA_COMMIT" ]; then
+      err "Ghidra checkout is at commit '${head:-<none>}', expected the pin $GHIDRA_COMMIT ($GHIDRA_TAG)."
+      err "Materialize/verify the pin with:  scripts/setup-ghidra.sh"
+      die "oracle must match the pinned Ghidra commit (12.0.3)"
     fi
   else
-    log "note: GHIDRA_SRC is not a git checkout — cannot verify it is $GHIDRA_TAG"
+    log "note: GHIDRA_SRC is not a git checkout — cannot verify it is $GHIDRA_COMMIT"
   fi
   log "Ghidra source OK ($GHIDRA_SRC)"
 }
@@ -173,6 +182,16 @@ mkdir -p "$BUILD_DIR"
 check_prereqs
 check_ghidra_src
 if [ "$VERIFY_ONLY" -eq 1 ]; then verify; exit $?; fi
+if [ "$SLA_ONLY" -eq 1 ]; then
+  # BUILD/TEST tier: just sleigh_opt + the .sla — exactly what `cargo test` loads, nothing more.
+  log "sla-only: building sleigh_opt + compiling specs (no oracle tools)"
+  make -C "$CPP_DIR" -j"$JOBS" sleigh_opt >/dev/null
+  [ -x "$CPP_DIR/sleigh_opt" ] || die "build produced no sleigh_opt"
+  tidy_ghidra_excludes
+  compile_specs
+  log "sla-only done — .sla compiled; 'cargo test' is self-contained"
+  exit 0
+fi
 build_tools
 build_capture
 build_capture_trace

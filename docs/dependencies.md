@@ -50,13 +50,22 @@ Locator column reads `ENV_VAR → default` where the default is `$REPO`- or `$HO
 | In-repo committed test data (goldens + fixtures + corpus + repo cspec) | in `$REPO` (committed) | tracked in git | this repo — see [In-repo test data](#in-repo-test-data-committed-not-external) |
 
 Notes on the Ghidra BUILD/TEST dependency:
+- **One-command acquisition (the pin).** `scripts/setup-ghidra.sh` fetches this dependency
+  reproducibly: it shallow-clones `github.com/NationalSecurityAgency/ghidra` at the pinned tag
+  into `GHIDRA_SRC` (default `$REPO/../ghidra`), **verifies `HEAD` == the pinned commit
+  `09f14c92…`** (a git commit id is a content hash, so this is the checksum), and compiles the
+  `.sla`. It is idempotent (an existing checkout at the pin is reused, never clobbered) and has
+  a `--verify-only` mode (assert the pin without fetching — for CI). A **fetch script, not a git
+  submodule**: the checkout is a sibling *outside* `$REPO`, Ghidra's full history would bloat
+  every clone, and a fresh source clone needs the post-fetch sleigh compile a submodule can't do.
 - **Data, not the whole clone.** `crates/mosura/src/lang.rs` reads the processor `.ldefs`
   (for the `slafile`/`processorspec`/`cspec` names), then loads the compiled **`.sla`** plus
   the `.pspec`/`.cspec`. Those are the only Ghidra files `cargo test` touches.
 - **The `.sla` is a build artifact, not shipped.** A fresh Ghidra clone does **not** contain
   compiled `.sla` (they are git-ignored outputs). Producing them is a one-time
-  `sleigh_opt -a` step (part of `scripts/setup-oracle.sh`; `sleigh_opt` itself builds fast
-  from the pinned cpp source, offline). After that, `cargo test` is self-contained.
+  `sleigh_opt -a` step — `setup-ghidra.sh` runs it (via `setup-oracle.sh --sla-only`, the
+  minimal sleigh_opt build + spec compile, no oracle tools); `sleigh_opt` itself builds fast
+  from the pinned cpp source, offline. After that, `cargo test` is self-contained.
 - **What breaks without it:** every disassembly/p-code/analysis test — the SLEIGH engine has
   no language tables to load. This is the single mandatory external dependency of the suite.
 
@@ -146,6 +155,9 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
 
 ## Reproduction entry points (for context)
 
+- Bootstrap the BUILD/TEST tier from a clean clone: `scripts/setup-ghidra.sh` (fetch + pin the
+  Ghidra source, compile the `.sla`), then `cargo test`. `GHIDRA_SRC` overrides the location;
+  `scripts/setup-ghidra.sh --verify-only` asserts an existing checkout is at the pin.
 - Test surface: `cargo test -p mosura` (needs only the BUILD/TEST tier).
 - Regenerate disasm goldens: `scripts/setup-oracle.sh` then `cargo xtask baseline`.
 - Regenerate analysis goldens: `scripts/build-ghidra-dist.sh` then `scripts/capture-analysis.sh`.

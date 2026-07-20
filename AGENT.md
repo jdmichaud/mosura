@@ -59,7 +59,8 @@ corpus average dipped, **stop** — re-read this section. The mandate is to conv
 not to climb the gauge. And if you've reverted the same area twice, **stop guessing and read
 the IR** (rule 5) — the mechanism is not what you think.
 
-- Ghidra source (pinned to tag `Ghidra_12.0.3_build`): `../ghidra`
+- Ghidra source (pinned to tag `Ghidra_12.0.3_build`, commit `09f14c92`): `../ghidra` —
+  fetch + pin + compile the `.sla` with `scripts/setup-ghidra.sh` (`GHIDRA_SRC` overrides).
 - Decompiler core to port: `../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp`
   (e.g. `coreaction.cc`, `printc.cc`, `printlanguage.cc`, `funcdata*.cc`, `type.cc`,
   `jumptable.cc`).
