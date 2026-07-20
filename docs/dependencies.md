@@ -158,6 +158,12 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
 - Bootstrap the BUILD/TEST tier from a clean clone: `scripts/setup-ghidra.sh` (fetch + pin the
   Ghidra source, compile the `.sla`), then `cargo test`. `GHIDRA_SRC` overrides the location;
   `scripts/setup-ghidra.sh --verify-only` asserts an existing checkout is at the pin.
+- Prove/guard the clean-clone split: `scripts/ci-clean-clone.sh` — fetches the pinned Ghidra
+  then runs the FULL suite with none of the regeneration-only tooling present, so the BUILD/TEST
+  surface can't silently grow a hard oracle/user-binary dependency (it would turn the run red).
+  `--hermetic` hides a dev machine's local oracle tools + user binaries (restored on exit) to
+  reproduce CI's absence locally. Run in CI by `.github/workflows/ci.yml` (portable; the script
+  is the authority).
 - Test surface: `cargo test -p mosura` (needs only the BUILD/TEST tier).
 - Regenerate disasm goldens: `scripts/setup-oracle.sh` then `cargo xtask baseline`.
 - Regenerate analysis goldens: `scripts/build-ghidra-dist.sh` then `scripts/capture-analysis.sh`.

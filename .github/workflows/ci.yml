@@ -1,0 +1,31 @@
+# clean-clone CI — dependency-hardening move #3 (task #5).
+#
+# Proves the mosura test surface is EXACTLY {pinned Ghidra data + committed goldens/fixtures}:
+# a fresh checkout + the pinned Ghidra (fetched by the job) runs the FULL cargo test suite
+# green with NONE of the regeneration-only tooling present — no Ghidra C++ oracle
+# (oracle/capture), analyzeHeadless, cross-toolchains, Open Watcom, dosemu2, or user binaries
+# (WAR2/cnv/comcom32). Every test that touches those must skip-if-absent, so the run stays
+# green; a new hard dependency turns it red.
+#
+# `scripts/ci-clean-clone.sh` is the portable authority — any CI can call it. GitHub Actions is
+# assumed here (the repo's likely host) but not required; the CI system is otherwise TBD.
+name: clean-clone
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  clean-clone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # sleigh_opt (the .sla compiler) needs only g++/make/bison/flex — NOT the oracle's libbfd,
+      # and none of the cross-toolchains / Watcom / dosemu2. That minimal set is the point.
+      - name: build prerequisites (sleigh_opt only)
+        run: sudo apt-get update && sudo apt-get install -y build-essential bison flex
+      # GitHub's ubuntu-latest runners ship a Rust toolchain; `cargo` is on PATH.
+      # The job: fetch + verify the pinned Ghidra, compile the .sla, run the full workspace suite.
+      # Refinement: cache <workspace>/ghidra + the compiled .sla keyed on the pinned commit to
+      # skip the clone + sleigh compile on repeat runs.
+      - name: clean-clone dev/test split
+        run: scripts/ci-clean-clone.sh
