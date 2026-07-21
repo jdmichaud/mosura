@@ -288,7 +288,7 @@ impl Analyzer for ConstantPropagationAnalyzer {
     fn priority(&self) -> AnalysisPriority {
         AnalysisPriority::REFERENCE
     }
-    fn added(&self, program: &mut Program, set: &AddressSet, _sched: &mut Scheduling) -> bool {
+    fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
         // Function entries bound each propagation walk to its own function.
         let entries: std::collections::HashSet<u64> = program
             .function_manager
@@ -296,14 +296,29 @@ impl Analyzer for ConstantPropagationAnalyzer {
             .filter(|f| f.entry_point().space == self.ram)
             .map(|f| f.entry_point().offset)
             .collect();
+        // Resolved COMPUTED_CALL destinations become functions (Ghidra
+        // `ConstantPropagationAnalyzer.findFunctionLocations` makes a function at each
+        // call-reference destination — the analog of the disassembler seeding a direct-call
+        // target). Seeding the Function analyzer re-runs disassembly + constant propagation on
+        // the new function, driving the worklist to a fixpoint. New-only (not already a
+        // function entry) so an already-known target doesn't re-trigger endlessly.
+        let mut new_funcs = AddressSet::new();
         for r in set.ranges() {
-            crate::analysis::symbolic::flow_constants(
+            let dests = crate::analysis::symbolic::flow_constants(
                 &self.spec,
                 &self.ctx,
                 program,
                 Address::new(self.ram, r.min),
                 &entries,
             );
+            for d in dests {
+                if !entries.contains(&d) {
+                    new_funcs.add_range(self.ram, d, d);
+                }
+            }
+        }
+        if !new_funcs.is_empty() {
+            sched.function_defined(&new_funcs);
         }
         true
     }

@@ -116,26 +116,26 @@ never faked).
 | gcc | x86-64 | `x86:LE:64:default` | **live** — arith, dispatch, tables, strdata, fnptr |
 | gcc | aarch64 | `AARCH64:LE:64:v8A` | **live** — arith, dispatch, tables, strdata, fnptr |
 | gcc | riscv64 | `RISCV:LE:64:default` | **live** — arith, dispatch, tables, strdata, fnptr |
-| gcc | m68k (BE) | `68000:BE:32:Coldfire` | **live** — arith, dispatch, tables (strdata/fnptr: see gap) |
+| gcc | m68k (BE) | `68000:BE:32:Coldfire` | **live** — arith, dispatch, tables, strdata, fnptr |
 | sdcc | z80 | `z80:LE:16:default` | **live** — z80prog (CP/M .COM via load_com) |
 | Open Watcom `wcc386` | x86-32 | `x86:LE:32:default` | **live** — watprog (freestanding ELF32) |
 | clang | * | — | **ABSENT toolchain** (gap, not faked) |
 | MSVC | x86/x64 | — | **ABSENT toolchain** (gap, not faked) |
 
-### m68k `strdata`/`fnptr` — a documented recall gap (surfaced BY the corpus)
+### m68k register-indirect calls — gap surfaced then CLOSED
 
-`strdata` and `fnptr` are **not** built for m68k. gcc `-O2` on m68k hoists a repeated/loop call
+The corpus first surfaced a real recall gap: gcc `-O2` on m68k hoists a repeated/loop call
 target's address into an address register and calls it register-indirect
-(`lea %pc@(fn),%aN; jsr %aN@`) — so a target reached ONLY that way (e.g. `apply` in fnptr, called
-twice; `slen`/`checksum` in strdata's loop) has no direct call site and flow analysis folds it
-into the caller. mosura does not yet resolve a register-indirect call with a **constant** target
-back to a direct call reference (Ghidra does, via constant propagation); this is an analysis-lane
-capability gap, a candidate follow-on. The direct-call programs (arith/dispatch/tables) are
-unaffected on m68k (full recall). The x86-64/aarch64/riscv64 `strdata`/`fnptr` columns validate
-these features cleanly. **Note:** a function-pointer *target reached only through the table* is
-likewise not recovered as a function on any arch (static pointer-table resolution is a separate
-capability) — `fnptr` keeps every target directly call-reachable so recall stays exact while the
-indirect dispatch is still present.
+(`lea %pc@(fn),%aN; jsr %aN@`) — so a target reached ONLY that way (`apply` in fnptr, called
+twice; `slen`/`checksum` in strdata's loop) had no direct call site. Instrumenting showed the
+constant propagator already folded the PC-relative `lea` to the constant target and emitted the
+`COMPUTED_CALL` reference, but **no function was created at the destination**. The fix (a faithful
+Ghidra `ConstantPropagationAnalyzer` port — `symbolic.rs` now seeds a function at each resolved
+COMPUTED_CALL destination in executable memory, the same treatment the disassembler gives a
+direct-call target) closed it: m68k `strdata`/`fnptr` now recover fully (0 spurious). **Note:** a
+function-pointer *target reached only through the runtime table* is still not recovered as a
+function on any arch (static pointer-table resolution is a separate capability) — `fnptr` keeps
+every target directly call-reachable so recall stays exact while the indirect dispatch is present.
 
 ## Analysis level (phase 1, `tests/ground_truth_parity.rs`)
 
@@ -183,15 +183,15 @@ the decompiler-quality metric. The probe already scaffolds the single-function m
 ## Scale-out status
 
 1. ✅ **Matrix rows enabled** (aarch64/riscv64/m68k gcc, z80 sdcc, x86-32 Watcom) — each commits
-   a stripped binary + `.truth`; the gate iterates them automatically. m68k `strdata`/`fnptr` are
-   the one documented gap (above). Adding EM_386 to the ELF loader (`x86:LE:32:default`) unlocked
-   the Watcom column.
+   a stripped binary + `.truth`; the gate iterates them automatically. Adding EM_386 to the ELF
+   loader (`x86:LE:32:default`) unlocked the Watcom column.
 2. ✅ **Program set grown** — function-pointer indirect calls (`fnptr`), dense + nested switches
    (`tables`), string/data references (`strdata`), each an arch-neutral `src/*.c` with
-   auto-derived truth.
-3. **Open follow-ons (not this task):**
-   - m68k register-indirect-call resolution (constant target → direct call ref) to close the
-     `strdata`/`fnptr` m68k gap — an analysis-lane capability.
+   auto-derived truth, on every applicable arch.
+3. ✅ **m68k register-indirect-call resolution** — the analyzer now creates a function at each
+   resolved COMPUTED_CALL destination (Ghidra `ConstantPropagationAnalyzer` parity), closing the
+   m68k `strdata`/`fnptr` gap the corpus surfaced.
+4. **Open follow-ons (not this task):**
    - clang / MSVC columns once those toolchains are installed.
    - Decompiler track (separate, handoff): compilable-emission mode → wire the recompilation-
      equivalence loop (`examples/gt_recompile_probe.rs`) into a scored gate.

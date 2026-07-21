@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=strdata compiler=gcc arch=m68k lang=68000:BE:32:Coldfire
+# derived-from=strdata.gcc-m68k.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 80000120
+func 800000b8 00000014 slen
+func 800000cc 0000001e checksum
+func 800000ea 00000036 total
+func 80000120 0000000c _start

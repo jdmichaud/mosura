@@ -126,14 +126,13 @@ else
   log "SKIP riscv64 — riscv64-linux-gnu-gcc absent (documented gap)"
 fi
 
-# m68k: DIRECT-CALL program set only (arith/dispatch/tables). strdata/fnptr are a DOCUMENTED GAP
-# on m68k: gcc -O2 hoists a repeated/loop call target's address into an address register and
-# calls it register-indirect (`lea %pc@(fn),%aN; jsr %aN@`); mosura does not yet resolve a
-# register-indirect call with a constant target back to a direct call reference, so such a
-# target — reached only indirectly — is folded into the caller (recall gap). See
-# docs/ground-truth-corpus.md. The direct-call programs are unaffected (full recall).
+# m68k: full program set. gcc -O2 on m68k hoists a repeated/loop call target's address into an
+# address register and calls it register-indirect (`lea %pc@(fn),%aN; jsr %aN@`); the constant
+# propagator resolves that constant target and the analyzer now creates a function at the
+# resolved COMPUTED_CALL destination (Ghidra ConstantPropagationAnalyzer parity — see
+# symbolic.rs / docs/ground-truth-corpus.md), so strdata/fnptr recover fully on m68k too.
 if have m68k-linux-gnu-gcc; then
-  for prog in arith dispatch tables; do
+  for prog in $ELF_PROGS_ALL; do
     build_elf "$prog" gcc m68k "68000:BE:32:Coldfire" "m68k-linux-gnu-gcc $GCC_FLAGS" "m68k-linux-gnu-"
   done
 else

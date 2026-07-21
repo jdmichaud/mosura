@@ -235,6 +235,9 @@ fn add_param_references(
 /// Interpret one p-code op: create references for resolved memory operands and update
 /// the value of the output varnode. `insn_flow` is the containing instruction's flow type
 /// (Ghidra `instruction.getFlowType()`), used to type an indirect-flow target reference.
+/// A resolved COMPUTED_CALL destination in executable memory is pushed onto `call_dests`
+/// (the caller turns these into functions — see [`flow_constants`]).
+#[allow(clippy::too_many_arguments)] // one abstract-interpreter step: full op context + dest sink
 fn process_op(
     program: &mut Program,
     vctx: &mut VarnodeContext,
@@ -243,6 +246,7 @@ fn process_op(
     ram: SpaceId,
     op: &PcodeOp,
     insn_flow: Option<RefType>,
+    call_dests: &mut Vec<u64>,
 ) {
     let opcode = OpCode::from_u32(op.opcode);
 
@@ -366,6 +370,24 @@ fn process_op(
                 if let SymValue::Const(target) = val {
                     if let Some(rt) = insn_flow {
                         make_ref(program, here, ram, target, rt, MIN_KNOWN_REF);
+                        // A resolved COMPUTED_CALL destination in executable memory is a
+                        // function: Ghidra `ConstantPropagationContextEvaluator.evaluateReference`
+                        // disassembles a non-indirect flow target in `memory.getExecuteSet()`
+                        // (ConstantPropagationContextEvaluator.java:225-240), and
+                        // `ConstantPropagationAnalyzer.findFunctionLocations`
+                        // (ConstantPropagationAnalyzer.java:281-288) makes a function at every
+                        // call-reference destination — the same treatment the disassembler already
+                        // gives a DIRECT call target. Collect it so the analyzer seeds one (a
+                        // COMPUTED_JUMP, e.g. a switch/tail-jump, is NOT a call and is excluded).
+                        if rt.is_call()
+                            && target >= MIN_KNOWN_REF
+                            && program
+                                .memory
+                                .block_at(Address::new(ram, target))
+                                .is_some_and(|b| b.is_execute())
+                        {
+                            call_dests.push(target);
+                        }
                     }
                 }
             }
@@ -415,13 +437,18 @@ fn ram_branch_target(op: &PcodeOp) -> Option<u64> {
 /// Path-sensitive with a visited set (each instruction is interpreted once, first path
 /// wins) — conservative: a reference is only made when the value is a definite constant
 /// on the interpreted path, so it never invents a wrong reference.
+///
+/// Returns the resolved COMPUTED_CALL destinations found in executable memory (Ghidra's
+/// `ContextEvaluator` destSet analog) — the caller ([`ConstantPropagationAnalyzer`]) seeds a
+/// function at each, mirroring Ghidra creating a function at a call-reference destination.
 pub fn flow_constants(
     spec: &Spec,
     ctx: &[u32],
     program: &mut Program,
     start: Address,
     entries: &HashSet<u64>,
-) {
+) -> Vec<u64> {
+    let mut call_dests: Vec<u64> = Vec::new();
     let ram = start.space;
     // The default calling convention's integer-argument registers (Ghidra
     // `getDefaultCallingConvention` + `getArgLocation`), loaded from the `.cspec` once for
@@ -489,7 +516,7 @@ pub fn flow_constants(
                 }
                 _ => {}
             }
-            process_op(program, &mut vctx, here, a + ilen, ram, op, insn_flow);
+            process_op(program, &mut vctx, here, a + ilen, ram, op, insn_flow, &mut call_dests);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
                     falls = false;
@@ -518,6 +545,9 @@ pub fn flow_constants(
             work.push((a + ilen, vctx));
         }
     }
+    call_dests.sort_unstable();
+    call_dests.dedup();
+    call_dests
 }
 
 #[cfg(test)]
@@ -616,6 +646,35 @@ mod tests {
         assert!(has(RefType::Data, 0x40_1027), "lea → DATA ref to 0x401027");
         // the LOAD through rax (resolved to the constant 0x401027) → a READ reference.
         assert!(has(RefType::Read, 0x40_1027), "load via rax → READ ref to 0x401027");
+    }
+
+    #[test]
+    fn computed_call_to_a_constant_returns_a_function_destination() {
+        // A register-indirect call whose target register was loaded to a constant (the m68k
+        // `lea %pc@(fn),%aN; jsr %aN@` form, here as x86-64 `lea rax,[rip+d]; call rax`) must
+        // (1) make a COMPUTED_CALL reference to the target and (2) return that target as a
+        // function destination, so the analyzer creates a function there.
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return;
+        };
+        // lea rax,[rip+0x20] (rax = 0x401027 = next 0x401007 + 0x20) ; call rax ; ret
+        let (mut program, ram) = program_with_code(&[
+            0x48, 0x8d, 0x05, 0x20, 0x00, 0x00, 0x00, // lea rax,[rip+0x20]
+            0xff, 0xd0, // call rax
+            0xc3, // ret
+        ]);
+        let dests = flow_constants(
+            &spec,
+            &ctx,
+            &mut program,
+            Address::new(ram, 0x401000),
+            &std::collections::HashSet::new(),
+        );
+        assert!(dests.contains(&0x40_1027), "computed-call destination returned, got {dests:x?}");
+        let has_call = program.reference_manager.references().any(|r| {
+            r.ref_type == RefType::ComputedCall && r.to.offset == 0x40_1027
+        });
+        assert!(has_call, "COMPUTED_CALL reference to 0x401027 made");
     }
 
     #[test]
