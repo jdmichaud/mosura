@@ -103,7 +103,9 @@ build_elf() {
 #     arch-neutral source per program; the per-arch process-exit shim is src/shim.h. -O2 so the
 #     dense switches become jump tables. ------------------------------------------------------
 GCC_FLAGS="-nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables"
-ELF_PROGS_ALL="arith dispatch tables strdata fnptr"
+# Core (A1) + construct-stressing (A7 bug-hunt): recursion, tail calls, sparse switch, computed
+# goto, struct-by-value/return, deep call chain, byte/string loops, float/double.
+ELF_PROGS_ALL="arith dispatch tables strdata fnptr recursion tailcall sparseswitch compgoto structval deepchain strloop floats"
 
 # x86-64 (host gcc)
 for prog in $ELF_PROGS_ALL; do

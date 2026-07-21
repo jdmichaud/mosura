@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=compgoto compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=compgoto.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000000101dc
+func 00000000000101b4 0000000000000028 cgoto
+func 00000000000101dc 000000000000003c _start
+switch 101c4

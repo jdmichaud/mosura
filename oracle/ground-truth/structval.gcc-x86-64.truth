@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=structval compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=structval.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401030
+func 0000000000401000 000000000000000a mk
+func 0000000000401010 0000000000000013 dot
+func 0000000000401030 0000000000000037 _start

@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=strloop compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=strloop.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000000101c8
+func 0000000000010144 000000000000004e word_count.constprop.0
+func 0000000000010192 0000000000000036 count_vowels.constprop.0
+func 00000000000101c8 0000000000000022 _start

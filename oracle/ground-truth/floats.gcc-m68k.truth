@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=floats compiler=gcc arch=m68k lang=68000:BE:32:Coldfire
+# derived-from=floats.gcc-m68k.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 8000011e
+func 800000b8 0000001a favg
+func 800000d2 00000020 fscale
+func 800000f2 0000002c fpoly
+func 8000011e 0000009a _start

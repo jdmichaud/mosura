@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=compgoto compiler=gcc arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=compgoto.gcc-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000004001c0
+func 0000000000400180 0000000000000034 cgoto
+func 00000000004001c0 0000000000000060 _start
+switch 400190

@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=floats compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=floats.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000010190
+func 0000000000010144 0000000000000012 favg
+func 0000000000010156 000000000000001c fscale
+func 0000000000010172 000000000000001e fpoly
+func 0000000000010190 000000000000006a _start

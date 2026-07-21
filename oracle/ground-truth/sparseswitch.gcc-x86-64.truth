@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=sparseswitch compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=sparseswitch.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401050
+func 0000000000401000 0000000000000046 classify
+func 0000000000401050 0000000000000035 _start

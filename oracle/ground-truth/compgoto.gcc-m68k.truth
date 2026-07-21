@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=compgoto compiler=gcc arch=m68k lang=68000:BE:32:Coldfire
+# derived-from=compgoto.gcc-m68k.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 800000ec
+func 800000b8 00000034 cgoto
+func 800000ec 00000064 _start
+switch 800000c6

@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=recursion compiler=gcc arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=recursion.gcc-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000004001c4
+func 0000000000400120 000000000000002c fact
+func 000000000040014c 0000000000000078 fib
+func 00000000004001c4 000000000000003c _start

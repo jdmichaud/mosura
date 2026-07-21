@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=tailcall compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=tailcall.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401030
+func 0000000000401000 0000000000000015 is_even
+func 0000000000401020 0000000000000005 is_odd
+func 0000000000401030 0000000000000026 _start

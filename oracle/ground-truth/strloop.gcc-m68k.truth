@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=strloop compiler=gcc arch=m68k lang=68000:BE:32:Coldfire
+# derived-from=strloop.gcc-m68k.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 8000014e
+func 800000b8 0000005c word_count.constprop.0
+func 80000114 0000003a count_vowels.constprop.0
+func 8000014e 00000018 _start
