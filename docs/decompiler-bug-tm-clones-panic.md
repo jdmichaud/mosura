@@ -70,3 +70,17 @@ panic never aborts the analysis pass. This is faithful to Ghidra's `DecompilerSw
 (a per-function decompile failure is caught and logged, not fatal) and is worth **keeping** as
 a safety net even after the root cause is fixed — but it is masking this crash, so the
 decompiler fix is still wanted.
+
+## Reproduction confirmed on current HEAD (2026-07-21, A7 re-check)
+
+Still reproduces on `analysis-port` @ `a8081f7` (after `b43d068`). The panic line has moved
+(decompiler evolution) but is the same bug:
+
+```
+cargo run -q --example gt_recompile_probe -- oracle/analysis-corpus/basic.elf 401080
+  -> thread 'main' panicked at crates/mosura/src/decompile/funcdata.rs:244:21:
+     index out of bounds: the len is 1 but the index is 2   (was funcdata.rs:225)
+```
+
+`decompile_function` still catches it (analysis stays green); the decompiler root cause is
+unfixed.
