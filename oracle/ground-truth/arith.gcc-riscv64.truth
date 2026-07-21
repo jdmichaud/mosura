@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=arith compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=arith.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000000101a0
+func 0000000000010144 0000000000000006 square
+func 000000000001014a 0000000000000018 cube
+func 0000000000010162 000000000000003e sum_to
+func 00000000000101a0 000000000000002a _start

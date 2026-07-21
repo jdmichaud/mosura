@@ -163,6 +163,11 @@ where
     let big_endian = geom.big_endian();
     let arch = match (machine, big_endian, geom.is64) {
         (elf::EM_X86_64, false, true) => Some(("x86:LE:64:default", "gcc")),
+        // 32-bit x86 ELF (EM_386). Ghidra's x86 ELF opinion resolves EM_386 (little, 32-bit)
+        // to `x86:LE:32:default`; the generic GNU secondary gives the "gcc" compiler spec. Used
+        // by the ground-truth corpus for the Open Watcom `wcc386 -bt=linux` column (a standard
+        // ELF32 i386 — the Watcom-ness lives in the code/runtime, not the container/e_machine).
+        (elf::EM_386, false, false) => Some(("x86:LE:32:default", "gcc")),
         (elf::EM_AARCH64, false, true) => Some(("AARCH64:LE:64:v8A", "default")),
         (elf::EM_RISCV, false, true) => Some(("RISCV:LE:64:default", "gcc")),
         (elf::EM_68K, true, false) => Some(("68000:BE:32:Coldfire", "default")),
@@ -171,7 +176,7 @@ where
     let Some((language_id, compiler_spec_id)) = arch else {
         return Err(LoadError::Unsupported(format!(
             "e_machine={machine} big_endian={big_endian} is64={} \
-             (supported: x86-64/AArch64/RISC-V LE 64-bit, m68k BE 32-bit)",
+             (supported: x86 LE 32/64-bit, AArch64/RISC-V LE 64-bit, m68k BE 32-bit)",
             geom.is64
         )));
     };

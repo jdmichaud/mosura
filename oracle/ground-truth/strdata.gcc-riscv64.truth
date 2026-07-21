@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=strdata compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=strdata.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000010240
+func 00000000000101b4 0000000000000020 slen
+func 00000000000101d4 000000000000001c checksum
+func 00000000000101f0 0000000000000050 total
+func 0000000000010240 0000000000000016 _start

@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=tables compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=tables.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000010228
+func 0000000000010144 000000000000006e dense
+func 00000000000101b2 0000000000000076 nested
+func 0000000000010228 0000000000000038 _start
+switch 1015c

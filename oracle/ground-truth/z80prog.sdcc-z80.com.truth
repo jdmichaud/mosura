@@ -1,0 +1,10 @@
+# mosura-ground-truth v1 program=z80prog compiler=sdcc arch=z80 lang=z80:LE:16:default
+# derived-from=z80prog.map + z80prog.rst via=sdcc linker map + relocated listing (NOT Ghidra)
+compiler sdcc
+entry 0100
+func 00000100 0 cpm_start
+func 00000104 0 helper
+func 00000107 0 compute
+func 00000130 0 classify
+func 00000177 0 main
+switch 00000142

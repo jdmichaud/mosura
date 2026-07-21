@@ -1,7 +1,10 @@
 /* Ground-truth corpus program (task #3): a small call graph of arithmetic helpers — a clean
  * exact oracle for function boundaries + the call graph, independent of Ghidra. Freestanding +
  * noinline so each function survives as its own boundary and is reachable by a direct call from
- * _start (100% recall on the stripped artifact). See docs/ground-truth-corpus.md. */
+ * _start (100% recall on the stripped artifact). The arithmetic is arch-neutral; the process
+ * exit is the per-arch shim (shim.h), so this one source compiles across the gcc ELF matrix.
+ * See docs/ground-truth-corpus.md. */
+#include "shim.h"
 
 __attribute__((noinline)) static int square(int x) { return x * x; }
 __attribute__((noinline)) static int cube(int x) { return square(x) * x; }
@@ -16,7 +19,5 @@ __attribute__((noinline)) static long sum_to(int n) {
 void _start(void) {
     volatile int n = 6;
     long r = sum_to(n) + cube(n);
-    register long rax asm("rax") = 60;  /* exit */
-    register long rdi asm("rdi") = r;
-    asm volatile("syscall" : : "r"(rax), "r"(rdi) : "memory");
+    sys_exit(r);
 }

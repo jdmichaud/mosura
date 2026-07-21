@@ -1,12 +1,15 @@
-//! Ground-truth parity (task #3, phase 1) — validate mosura's analysis against a self-compiled
-//! corpus whose oracle is the KNOWN source/build, NOT Ghidra (which is often wrong).
+//! Ground-truth parity (task #3) — validate mosura's analysis against a self-compiled corpus
+//! whose oracle is the KNOWN source/build, NOT Ghidra (which is often wrong).
 //!
-//! For each committed stripped binary + its build-derived `.truth` (`nm`/`objdump` of the
-//! unstripped binary — `oracle/ground-truth/build.sh`), mosura's analysis of the *stripped*
-//! artifact must be a CLEAN SUBSET of the real functions (0 spurious) with full recall of the
-//! call-reachable functions, and every real switch dispatch must be recovered. The `.truth`
-//! files + stripped binaries are committed, so this runs offline (no toolchain) — the toolchains
-//! are dev-oracle (regeneration only), per `docs/dependencies.md`.
+//! Covers the installed compiler×arch matrix (gcc x86-64/aarch64/riscv64/m68k, sdcc z80, Open
+//! Watcom x86-32) × a program set (arith, dispatch, tables, strdata, fnptr, z80prog, watprog).
+//! For each committed stripped binary + its build-derived `.truth` (the toolchain's own
+//! `nm`/`objdump` for ELF, or sdcc's linker map + relocated listing for the raw z80 .COM —
+//! `oracle/ground-truth/build.sh`), mosura's analysis of the *stripped* artifact must be a CLEAN
+//! SUBSET of the real functions (0 spurious) with full recall of the call-reachable functions,
+//! and every real switch dispatch must be recovered. The `.truth` files + stripped binaries are
+//! committed, so this runs offline (no toolchain) — the toolchains are dev-oracle (regeneration
+//! only), per `docs/dependencies.md`.
 
 use std::collections::BTreeSet;
 

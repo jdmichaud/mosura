@@ -1,0 +1,10 @@
+# mosura-ground-truth v1 program=fnptr compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=fnptr.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000000101e8
+func 00000000000101b4 0000000000000004 fn_add
+func 00000000000101b8 0000000000000004 fn_sub
+func 00000000000101bc 0000000000000006 fn_mul
+func 00000000000101c2 0000000000000004 fn_xor
+func 00000000000101c6 0000000000000022 apply
+func 00000000000101e8 0000000000000070 _start

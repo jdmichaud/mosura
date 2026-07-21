@@ -1,0 +1,9 @@
+# mosura-ground-truth v1 program=tables compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=tables.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401130
+func 0000000000401000 0000000000000004 dense.cold
+func 0000000000401010 000000000000008c dense
+func 00000000004010a0 0000000000000088 nested
+func 0000000000401130 000000000000004e _start
+switch 401029

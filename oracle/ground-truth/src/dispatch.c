@@ -1,11 +1,13 @@
-/* Ground-truth corpus program (task #3): a dense switch that compiles to a jump table
- * (BRANCHIND / computed jump), plus a few direct-called helpers — so the KNOWN source gives an
- * exact, Ghidra-independent oracle for function boundaries + the switch dispatch location.
+/* Ground-truth corpus program (task #3): a switch + a few direct-called helpers — so the KNOWN
+ * source gives an exact, Ghidra-independent oracle for function boundaries + the switch dispatch
+ * location. At -O2 the switch becomes a jump table (BRANCHIND / computed jump) on x86-64 /
+ * RISC-V / m68k; on AArch64 gcc emits a compare-branch tree for this 7-case switch (so its truth
+ * carries no switch — the derivation records what the compiler actually produced, not a wish).
  *
  * Freestanding + noinline + volatile so nothing is inlined or constant-folded away, and every
  * helper is reachable by a DIRECT call from _start (100% recall on the stripped artifact). The
- * x86-64 `_start`/syscall entry is the arch shim; the portable helpers are what scale to other
- * arches (docs/ground-truth-corpus.md). Kept tiny so the derived truth file stays reviewable. */
+ * arithmetic/switch is arch-neutral; the process exit is the per-arch shim (shim.h). */
+#include "shim.h"
 
 __attribute__((noinline)) static int op_add(int a, int b) { return a + b; }
 __attribute__((noinline)) static int op_mul(int a, int b) { return a * b; }
@@ -27,7 +29,5 @@ __attribute__((noinline)) static int classify(int x, int y) {
 void _start(void) {
     volatile int s = 5, a = 11, b = 7;
     long r = classify(s, a) + op_add(a, b) + op_mul(a, b);
-    register long rax asm("rax") = 60;  /* exit */
-    register long rdi asm("rdi") = r;
-    asm volatile("syscall" : : "r"(rax), "r"(rdi) : "memory");
+    sys_exit(r);
 }
