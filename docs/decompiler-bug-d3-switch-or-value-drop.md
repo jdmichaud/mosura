@@ -65,11 +65,28 @@ uint FUN_00401030(undefined4 param_1, uint param_2) {
 }
 ```
 
+## Broader repro (A8): the drop is NOT operation-specific
+
+A8's `fallthrough` program shows the same drop on a **plain** `return y`, so the trigger is the
+switch-case block structure, not `OR`/`0x100`. `fallthrough.gcc-x86-64` @ **0x401000**, source
+`case 2: r += y; break;` (with `r == 0` there, i.e. `return y`):
+
+```
+cargo run -q --example gt_recompile_probe -- oracle/ground-truth/fallthrough.gcc-x86-64 401000
+```
+
+mosura: `if (param_1 == 2) { return; }`  |  GHIDRA: `if (param_1 == 2) { return param_2; }`
+
+So the earlier "OR with 0x100" narrowing was incidental — mosura drops a switch case's return
+VALUE (here just `param_2`) to a bare `return;` in this block shape, regardless of the operation.
+A `case` reached by fall-through vs a jump-table case differ in the surrounding block/phi graph;
+the fix must recover the return value across that structure.
+
 ## Verdict: MIS-PORT
 
-Ghidra emits `return param_2 | 0x100;`; mosura emits `return;`. mosura loses the `INT_OR`
-result on this case path — a real divergence in the decompiler's structuring / return-value
-recovery for this shape. Fix so mosura matches Ghidra.
+Ghidra emits the case's value (`return param_2 | 0x100;` / `return param_2;`); mosura emits a bare
+`return;`, losing the result on the case path — a real divergence in the decompiler's structuring
+/ return-value recovery for this shape. Fix so mosura matches Ghidra.
 
 Secondary divergence (same function, lower severity): mosura prints the first switch param as
 `xunknown4`, Ghidra prints `undefined4` — an unknown-type **naming** divergence (mosura should
