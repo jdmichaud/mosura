@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=varargs compiler=gcc arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=varargs.gcc-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000004001e0
+func 0000000000400120 00000000000000c0 vsum
+func 00000000004001e0 000000000000003c _start

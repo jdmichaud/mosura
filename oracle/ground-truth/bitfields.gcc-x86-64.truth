@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=bitfields compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=bitfields.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401040
+func 0000000000401000 0000000000000020 pack
+func 0000000000401020 0000000000000012 pun
+func 0000000000401040 0000000000000032 _start

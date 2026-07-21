@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=fallthrough compiler=gcc arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=fallthrough.gcc-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000400180
+func 0000000000400120 0000000000000054 ft
+func 0000000000400180 000000000000004c _start

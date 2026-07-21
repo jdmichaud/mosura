@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=fallthrough compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=fallthrough.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000010180
+func 0000000000010144 000000000000003c ft
+func 0000000000010180 0000000000000034 _start

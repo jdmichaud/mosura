@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=nestedloop compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=nestedloop.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401070
+func 0000000000401000 0000000000000063 nest
+func 0000000000401070 0000000000000024 _start

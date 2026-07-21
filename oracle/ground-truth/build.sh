@@ -106,22 +106,27 @@ GCC_FLAGS="-nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind
 # Core (A1) + construct-stressing (A7 bug-hunt): recursion, tail calls, sparse switch, computed
 # goto, struct-by-value/return, deep call chain, byte/string loops, float/double.
 ELF_PROGS_ALL="arith dispatch tables strdata fnptr recursion tailcall sparseswitch compgoto structval deepchain strloop floats"
+# A8 bug-hunt round 2 — HARDER constructs, built on the DECOMPILER-validated 64-bit arches only
+# (x86-64/aarch64/riscv64), so a decompiler divergence there is a genuine port bug, not an
+# arch-support gap: varargs, bitfields+union, 64-bit arithmetic, irreducible CFG, nested loops,
+# switch fall-through, pointer/array arithmetic.
+ELF_PROGS_A8="varargs bitfields arith64 irreducible nestedloop fallthrough ptrarith"
 
 # x86-64 (host gcc)
-for prog in $ELF_PROGS_ALL; do
+for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do
   build_elf "$prog" gcc x86-64 "x86:LE:64:default" "gcc $GCC_FLAGS" ""
 done
 
 # aarch64 / riscv64: full program set (both fully recover under the standard ELF pipeline).
 if have aarch64-linux-gnu-gcc; then
-  for prog in $ELF_PROGS_ALL; do
+  for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do
     build_elf "$prog" gcc aarch64 "AARCH64:LE:64:v8A" "aarch64-linux-gnu-gcc $GCC_FLAGS" "aarch64-linux-gnu-"
   done
 else
   log "SKIP aarch64 — aarch64-linux-gnu-gcc absent (documented gap)"
 fi
 if have riscv64-linux-gnu-gcc; then
-  for prog in $ELF_PROGS_ALL; do
+  for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do
     build_elf "$prog" gcc riscv64 "RISCV:LE:64:default" "riscv64-linux-gnu-gcc $GCC_FLAGS" "riscv64-linux-gnu-"
   done
 else

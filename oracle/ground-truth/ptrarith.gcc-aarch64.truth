@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=ptrarith compiler=gcc arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=ptrarith.gcc-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000004001e0
+func 0000000000400160 000000000000003c diag
+func 00000000004001a0 0000000000000034 walk.constprop.0
+func 00000000004001e0 0000000000000074 _start

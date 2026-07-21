@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=ptrarith compiler=gcc arch=riscv64 lang=RISCV:LE:64:default
+# derived-from=ptrarith.gcc-riscv64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 00000000000101c6
+func 000000000001017c 0000000000000028 diag
+func 00000000000101a4 0000000000000022 walk.constprop.0
+func 00000000000101c6 0000000000000080 _start
