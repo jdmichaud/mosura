@@ -1,0 +1,1819 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=windows compilerinfo=gcc:unknown base=140000000 endian=little addrsize=64
+# oracle=ghidra-12.0.3 via=analyzeHeadless source=mingw_hello.exe
+block 140000000 1400005ff Headers
+block 140001000 140007dff .text
+block 140008000 1400081ff .data
+block 140009000 140009fff .rdata
+block 14000a000 14000a5ff .pdata
+block 14000b000 14000b5ff .xdata
+block 14000c000 14000cb7f .bss
+block 14000d000 14000d7ff .idata
+block 14000e000 14000e1ff .tls
+block 14000f000 14000f1ff .reloc
+block 140010000 1400107ff .debug_aranges
+block 140011000 1400231ff .debug_info
+block 140024000 1400273ff .debug_abbrev
+block 140028000 14002edff .debug_line
+block 14002f000 1400307ff .debug_frame
+block 140031000 1400313ff .debug_str
+block 140032000 1400335ff .debug_line_str
+block 140034000 14003b9ff .debug_loclists
+block 14003c000 14003c5ff .debug_rnglists
+func 140001000 FUN_140001000
+func 140001010 pre_c_init
+func 140001130 pre_cpp_init
+func 140001180 __tmainCRTStartup
+func 1400013d0 WinMainCRTStartup
+func 1400013f0 mainCRTStartup
+func 140001410 atexit
+func 140001430 __gcc_register_frame
+func 140001440 __gcc_deregister_frame
+func 140001450 printf.constprop.0
+func 1400014a0 add
+func 1400014b0 __do_global_dtors
+func 1400014f0 __do_global_ctors
+func 140001560 __main
+func 140001580 .text
+func 140001590 tls_callback_1
+func 1400015c0 tls_callback_0
+func 140001650 __tlregdtor
+func 140001660 .text
+func 140001760 _fpreset
+func 140001770 .text
+func 1400017e0 mark_section_writable
+func 140001950 _pei386_runtime_relocator
+func 140001cb0 __mingw_raise_matherr
+func 140001cf0 __mingw_setusermatherr
+func 140001d00 .text
+func 140001ec0 __mingwthr_run_key_dtors.part.0
+func 140001f30 ___w64_mingwthr_add_key_dtor
+func 140001fa0 ___w64_mingwthr_remove_key_dtor
+func 140002030 __mingw_TLScallback
+func 140002130 .text
+func 140002160 _FindPESection
+func 1400021b0 _FindPESectionByName
+func 140002250 __mingw_GetSectionForAddress
+func 1400022d0 __mingw_GetSectionCount
+func 140002310 _FindPESectionExec
+func 140002390 _GetPEImageBase
+func 1400023d0 _IsNonwritableInCurrentImage
+func 140002460 __mingw_enum_import_library_names
+func 140002570 .text
+func 1400025c0 __pformat_cvt
+func 1400026b0 __pformat_putc
+func 140002710 __pformat_wputchars
+func 1400028a0 __pformat_putchars
+func 1400029f0 __pformat_puts
+func 140002a40 __pformat_emit_inf_or_nan
+func 140002ae0 __pformat_xint.isra.0
+func 140003010 __pformat_int.isra.0
+func 1400033c0 __pformat_emit_radix_point
+func 140003510 __pformat_emit_float
+func 1400038f0 __pformat_emit_efloat
+func 1400039c0 __pformat_efloat
+func 140003a60 __pformat_float
+func 140003b40 __pformat_gfloat
+func 140003cc0 __pformat_emit_xfloat.isra.0
+func 140004180 __mingw_pformat
+func 140004c50 __rv_alloc_D2A
+func 140004c90 __nrv_alloc_D2A
+func 140004d10 __freedtoa
+func 140004d40 __quorem_D2A
+func 140004ec0 __gdtoa
+func 140006650 __rshift_D2A
+func 140006750 __trailz_D2A
+func 140006790 dtoa_lock
+func 140006870 dtoa_lock_cleanup
+func 1400068c0 __Balloc_D2A
+func 1400069b0 __Bfree_D2A
+func 140006a20 __multadd_D2A
+func 140006ae0 __i2b_D2A
+func 140006ba0 __mult_D2A
+func 140006d00 __pow5mult_D2A
+func 140006e80 __lshift_D2A
+func 140006f90 __cmp_D2A
+func 140006fe0 __diff_D2A
+func 1400071c0 __b2d_D2A
+func 1400072d0 __d2b_D2A
+func 1400073f0 __strcp_D2A
+func 140007420 strnlen
+func 140007450 wcsnlen
+func 140007480 __p__fmode
+func 140007490 __p__commode
+func 1400074a0 _lock_file
+func 140007510 _unlock_file
+func 140007570 mingw_get_invalid_parameter_handler
+func 140007580 mingw_set_invalid_parameter_handler
+func 140007590 __acrt_iob_func
+func 1400075b0 __wcrtomb_cp
+func 140007640 wcrtomb
+func 140007680 wcsrtombs
+func 140007780 __mbrtowc_cp
+func 1400078e0 mbrtowc
+func 140007950 mbsrtowcs
+func 140007a60 mbrlen
+func 140007c30 main
+func 140007c60 register_frame_ctor
+fnbody 140001000 140001000:140001000
+fnbody 140001010 140001010:140001010
+fnbody 140001130 140001130:140001130
+fnbody 140001180 140001180:140001180
+fnbody 1400013d0 1400013d0:1400013d0
+fnbody 1400013f0 1400013f0:1400013f0
+fnbody 140001410 140001410:140001410
+fnbody 140001430 140001430:140001430
+fnbody 140001440 140001440:140001440
+fnbody 140001450 140001450:140001450
+fnbody 1400014a0 1400014a0:1400014a0
+fnbody 1400014b0 1400014b0:1400014b0
+fnbody 1400014f0 1400014f0:1400014f0
+fnbody 140001560 140001560:140001560
+fnbody 140001580 140001580:140001580
+fnbody 140001590 140001590:140001590
+fnbody 1400015c0 1400015c0:1400015c0
+fnbody 140001650 140001650:140001650
+fnbody 140001660 140001660:140001660
+fnbody 140001760 140001760:140001760
+fnbody 140001770 140001770:140001770
+fnbody 1400017e0 1400017e0:1400017e0
+fnbody 140001950 140001950:140001950
+fnbody 140001cb0 140001cb0:140001cb0
+fnbody 140001cf0 140001cf0:140001cf0
+fnbody 140001d00 140001d00:140001d00
+fnbody 140001ec0 140001ec0:140001ec0
+fnbody 140001f30 140001f30:140001f30
+fnbody 140001fa0 140001fa0:140001fa0
+fnbody 140002030 140002030:140002030
+fnbody 140002130 140002130:140002130
+fnbody 140002160 140002160:140002160
+fnbody 1400021b0 1400021b0:1400021b0
+fnbody 140002250 140002250:140002250
+fnbody 1400022d0 1400022d0:1400022d0
+fnbody 140002310 140002310:140002310
+fnbody 140002390 140002390:140002390
+fnbody 1400023d0 1400023d0:1400023d0
+fnbody 140002460 140002460:140002460
+fnbody 140002570 140002570:140002570
+fnbody 1400025c0 1400025c0:1400025c0
+fnbody 1400026b0 1400026b0:1400026b0
+fnbody 140002710 140002710:140002710
+fnbody 1400028a0 1400028a0:1400028a0
+fnbody 1400029f0 1400029f0:1400029f0
+fnbody 140002a40 140002a40:140002a40
+fnbody 140002ae0 140002ae0:140002ae0
+fnbody 140003010 140003010:140003010
+fnbody 1400033c0 1400033c0:1400033c0
+fnbody 140003510 140003510:140003510
+fnbody 1400038f0 1400038f0:1400038f0
+fnbody 1400039c0 1400039c0:1400039c0
+fnbody 140003a60 140003a60:140003a60
+fnbody 140003b40 140003b40:140003b40
+fnbody 140003cc0 140003cc0:140003cc0
+fnbody 140004180 140004180:140004180
+fnbody 140004c50 140004c50:140004c50
+fnbody 140004c90 140004c90:140004c90
+fnbody 140004d10 140004d10:140004d10
+fnbody 140004d40 140004d40:140004d40
+fnbody 140004ec0 140004ec0:140004ec0
+fnbody 140006650 140006650:140006650
+fnbody 140006750 140006750:140006750
+fnbody 140006790 140006790:140006790
+fnbody 140006870 140006870:140006870
+fnbody 1400068c0 1400068c0:1400068c0
+fnbody 1400069b0 1400069b0:1400069b0
+fnbody 140006a20 140006a20:140006a20
+fnbody 140006ae0 140006ae0:140006ae0
+fnbody 140006ba0 140006ba0:140006ba0
+fnbody 140006d00 140006d00:140006d00
+fnbody 140006e80 140006e80:140006e80
+fnbody 140006f90 140006f90:140006f90
+fnbody 140006fe0 140006fe0:140006fe0
+fnbody 1400071c0 1400071c0:1400071c0
+fnbody 1400072d0 1400072d0:1400072d0
+fnbody 1400073f0 1400073f0:1400073f0
+fnbody 140007420 140007420:140007420
+fnbody 140007450 140007450:140007450
+fnbody 140007480 140007480:140007480
+fnbody 140007490 140007490:140007490
+fnbody 1400074a0 1400074a0:1400074a0
+fnbody 140007510 140007510:140007510
+fnbody 140007570 140007570:140007570
+fnbody 140007580 140007580:140007580
+fnbody 140007590 140007590:140007590
+fnbody 1400075b0 1400075b0:1400075b0
+fnbody 140007640 140007640:140007640
+fnbody 140007680 140007680:140007680
+fnbody 140007780 140007780:140007780
+fnbody 1400078e0 1400078e0:1400078e0
+fnbody 140007950 140007950:140007950
+fnbody 140007a60 140007a60:140007a60
+fnbody 140007c30 140007c30:140007c30
+fnbody 140007c60 140007c60:140007c60
+entry 1400013f0 mainCRTStartup
+entry 140001590 tls_callback_1
+entry 1400015c0 tls_callback_0
+sym 140001000 FUN_140001000 Function
+sym 140001010 pre_c_init Function
+sym 140001130 pre_cpp_init Function
+sym 140001180 __tmainCRTStartup Function
+sym 1400013d0 WinMainCRTStartup Function
+sym 1400013f0 mainCRTStartup Function
+sym 140001410 atexit Function
+sym 140001430 __gcc_register_frame Function
+sym 140001440 __gcc_deregister_frame Function
+sym 140001450 printf.constprop.0 Function
+sym 1400014a0 add Function
+sym 1400014b0 __do_global_dtors Function
+sym 1400014f0 __do_global_ctors Function
+sym 140001560 __main Function
+sym 140001580 .text Function
+sym 140001590 tls_callback_1 Function
+sym 1400015c0 tls_callback_0 Function
+sym 140001650 __tlregdtor Function
+sym 140001660 .text Function
+sym 140001760 _fpreset Function
+sym 140001770 .text Function
+sym 1400017e0 mark_section_writable Function
+sym 140001950 _pei386_runtime_relocator Function
+sym 140001cb0 __mingw_raise_matherr Function
+sym 140001cf0 __mingw_setusermatherr Function
+sym 140001d00 .text Function
+sym 140001ec0 __mingwthr_run_key_dtors.part.0 Function
+sym 140001f30 ___w64_mingwthr_add_key_dtor Function
+sym 140001fa0 ___w64_mingwthr_remove_key_dtor Function
+sym 140002030 __mingw_TLScallback Function
+sym 140002130 .text Function
+sym 140002160 _FindPESection Function
+sym 1400021b0 _FindPESectionByName Function
+sym 140002250 __mingw_GetSectionForAddress Function
+sym 1400022d0 __mingw_GetSectionCount Function
+sym 140002310 _FindPESectionExec Function
+sym 140002390 _GetPEImageBase Function
+sym 1400023d0 _IsNonwritableInCurrentImage Function
+sym 140002460 __mingw_enum_import_library_names Function
+sym 140002570 .text Function
+sym 1400025c0 __pformat_cvt Function
+sym 1400026b0 __pformat_putc Function
+sym 140002710 __pformat_wputchars Function
+sym 1400028a0 __pformat_putchars Function
+sym 1400029f0 __pformat_puts Function
+sym 140002a40 __pformat_emit_inf_or_nan Function
+sym 140002ae0 __pformat_xint.isra.0 Function
+sym 140003010 __pformat_int.isra.0 Function
+sym 1400033c0 __pformat_emit_radix_point Function
+sym 140003510 __pformat_emit_float Function
+sym 1400038f0 __pformat_emit_efloat Function
+sym 1400039c0 __pformat_efloat Function
+sym 140003a60 __pformat_float Function
+sym 140003b40 __pformat_gfloat Function
+sym 140003cc0 __pformat_emit_xfloat.isra.0 Function
+sym 140004180 __mingw_pformat Function
+sym 140004c50 __rv_alloc_D2A Function
+sym 140004c90 __nrv_alloc_D2A Function
+sym 140004d10 __freedtoa Function
+sym 140004d40 __quorem_D2A Function
+sym 140004ec0 __gdtoa Function
+sym 140006650 __rshift_D2A Function
+sym 140006750 __trailz_D2A Function
+sym 140006790 dtoa_lock Function
+sym 140006870 dtoa_lock_cleanup Function
+sym 1400068c0 __Balloc_D2A Function
+sym 1400069b0 __Bfree_D2A Function
+sym 140006a20 __multadd_D2A Function
+sym 140006ae0 __i2b_D2A Function
+sym 140006ba0 __mult_D2A Function
+sym 140006d00 __pow5mult_D2A Function
+sym 140006e80 __lshift_D2A Function
+sym 140006f90 __cmp_D2A Function
+sym 140006fe0 __diff_D2A Function
+sym 1400071c0 __b2d_D2A Function
+sym 1400072d0 __d2b_D2A Function
+sym 1400073f0 __strcp_D2A Function
+sym 140007420 strnlen Function
+sym 140007450 wcsnlen Function
+sym 140007480 __p__fmode Function
+sym 140007490 __p__commode Function
+sym 1400074a0 _lock_file Function
+sym 140007510 _unlock_file Function
+sym 140007570 mingw_get_invalid_parameter_handler Function
+sym 140007580 mingw_set_invalid_parameter_handler Function
+sym 140007590 __acrt_iob_func Function
+sym 1400075b0 __wcrtomb_cp Function
+sym 140007640 wcrtomb Function
+sym 140007680 wcsrtombs Function
+sym 140007780 __mbrtowc_cp Function
+sym 1400078e0 mbrtowc Function
+sym 140007950 mbsrtowcs Function
+sym 140007a60 mbrlen Function
+sym 140007c30 main Function
+sym 140007c60 register_frame_ctor Function
+sym 14000c07c _tls_index Label
+sym 140009790 .rdata$.refptr.__mingw_initltsdrot_force Label
+sym 1400097a0 .rdata$.refptr.__mingw_initltsdyn_force Label
+sym 1400097b0 .rdata$.refptr.__mingw_initltssuo_force Label
+sym 140009710 .rdata$.refptr.__ImageBase Label
+sym 140009780 .rdata$.refptr.__mingw_app_type Label
+sym 14000c00c managedapp Label
+sym 140009860 .rdata$.refptr._fmode Label
+sym 140009840 .rdata$.refptr._commode Label
+sym 1400096f0 .rdata$.refptr._MINGW_INSTALL_DEBUG_MATHERR Label
+sym 140009880 .rdata$.refptr._matherr Label
+sym 140009890 .rdata$.refptr._newmode Label
+sym 14000c018 envp Label
+sym 14000c020 argv Label
+sym 14000c028 argc Label
+sym 14000c004 startinfo Label
+sym 140009850 .rdata$.refptr._dowildcard Label
+sym 1400097d0 .rdata$.refptr.__native_startup_lock Label
+sym 1400097e0 .rdata$.refptr.__native_startup_state Label
+sym 14000c008 has_cctor Label
+sym 140009740 .rdata$.refptr.__dyn_tls_init_callback Label
+sym 140009870 .rdata$.refptr._gnu_exception_handler Label
+sym 1400097c0 .rdata$.refptr.__mingw_oldexcpt_handler Label
+sym 140009750 .rdata$.refptr.__imp___initenv Label
+sym 14000c010 mainret Label
+sym 140009810 .rdata$.refptr.__xc_z Label
+sym 140009800 .rdata$.refptr.__xc_a Label
+sym 140009830 .rdata$.refptr.__xi_z Label
+sym 140009820 .rdata$.refptr.__xi_a Label
+sym 1400013d4 .l_startw Label
+sym 1400013e7 .l_endw Label
+sym 1400013f4 .l_start Label
+sym 140001407 .l_end Label
+sym 140009dd0 .CRT$XCAA Label
+sym 140009de8 .CRT$XIAA Label
+sym 1400098a0 .rdata$zzz Label
+sym 140001430 .text Label
+sym 14000c030 .bss Label
+sym 14000b06c .xdata Label
+sym 14000a054 .pdata Label
+sym 1400098c0 .rdata$zzz Label
+sym 140001450 .text Label
+sym 14000b074 .xdata Label
+sym 14000a06c .pdata Label
+sym 140007c30 .text.startup Label
+sym 14000b080 .xdata.startup Label
+sym 14000a084 .pdata.startup Label
+sym 1400098e0 .rdata$zzz Label
+sym 140009700 .rdata$.refptr.__CTOR_LIST__ Label
+sym 14000c030 initialized Label
+sym 1400014b0 .text Label
+sym 14000b088 .xdata Label
+sym 14000a090 .pdata Label
+sym 140013697 .debug_info Label
+sym 140024582 .debug_abbrev Label
+sym 1400341c8 .debug_loclists Label
+sym 140010030 .debug_aranges Label
+sym 140028439 .debug_line Label
+sym 140032175 .debug_line_str Label
+sym 140009900 .rdata$zzz Label
+sym 14002f150 .debug_frame Label
+sym 140008010 .data Label
+sym 14000c040 .bss Label
+sym 140013cf8 .debug_info Label
+sym 1400246c1 .debug_abbrev Label
+sym 140010060 .debug_aranges Label
+sym 140028560 .debug_line Label
+sym 14003121f .debug_str Label
+sym 14003221a .debug_line_str Label
+sym 140009920 .rdata$zzz Label
+sym 140008020 .data Label
+sym 14000c050 .bss Label
+sym 1400142fa .debug_info Label
+sym 140024777 .debug_abbrev Label
+sym 140010080 .debug_aranges Label
+sym 1400285b6 .debug_line Label
+sym 1400322d2 .debug_line_str Label
+sym 140009940 .rdata$zzz Label
+sym 140001580 _setargv Label
+sym 14000c060 .bss Label
+sym 14000b0a0 .xdata Label
+sym 14000a0b4 .pdata Label
+sym 140014387 .debug_info Label
+sym 1400247a5 .debug_abbrev Label
+sym 1400100a0 .debug_aranges Label
+sym 1400285f0 .debug_line Label
+sym 140032329 .debug_line_str Label
+sym 140009960 .rdata$zzz Label
+sym 14002f1d8 .debug_frame Label
+sym 140001590 .text Label
+sym 140014508 .debug_info Label
+sym 1400247df .debug_abbrev Label
+sym 1400100d0 .debug_aranges Label
+sym 140028646 .debug_line Label
+sym 14003237d .debug_line_str Label
+sym 140009980 .rdata$zzz Label
+sym 140001590 __dyn_tls_dtor Label
+sym 1400015c0 __dyn_tls_init Label
+sym 1400096e0 .rdata$.refptr._CRT_MT Label
+sym 140009e18 __xd_a Label
+sym 140009e20 __xd_z Label
+sym 14000c070 .bss Label
+sym 14000b0a4 .xdata Label
+sym 14000a0c0 .pdata Label
+sym 140009e08 .CRT$XLD Label
+sym 140009e00 .CRT$XLC Label
+sym 140009020 .rdata Label
+sym 140009e20 .CRT$XDZ Label
+sym 140009e18 .CRT$XDA Label
+sym 140009e10 .CRT$XLZ Label
+sym 140009df8 .CRT$XLA Label
+sym 14000e008 .tls$ZZZ Label
+sym 140014592 .debug_info Label
+sym 14002480d .debug_abbrev Label
+sym 1400341fd .debug_loclists Label
+sym 1400100f0 .debug_aranges Label
+sym 140028680 .debug_line Label
+sym 140031237 .debug_str Label
+sym 1400323d4 .debug_line_str Label
+sym 1400099a0 .rdata$zzz Label
+sym 14002f208 .debug_frame Label
+sym 14000c080 .bss Label
+sym 140014d59 .debug_info Label
+sym 1400249f4 .debug_abbrev Label
+sym 140010120 .debug_aranges Label
+sym 140028796 .debug_line Label
+sym 14003247f .debug_line_str Label
+sym 1400099c0 .rdata$zzz Label
+sym 14000c090 .bss Label
+sym 140009dd8 .CRT$XCZ Label
+sym 140009dc8 .CRT$XCA Label
+sym 140009df0 .CRT$XIZ Label
+sym 140009de0 .CRT$XIA Label
+sym 140014de3 .debug_info Label
+sym 140024a22 .debug_abbrev Label
+sym 140010140 .debug_aranges Label
+sym 1400287d0 .debug_line Label
+sym 1400324d6 .debug_line_str Label
+sym 1400099e0 .rdata$zzz Label
+sym 140001660 _matherr Label
+sym 140009080 .rdata Label
+sym 14000b0bc .xdata Label
+sym 14000a0e4 .pdata Label
+sym 140014f5e .debug_info Label
+sym 140024a83 .debug_abbrev Label
+sym 140034314 .debug_loclists Label
+sym 140010160 .debug_aranges Label
+sym 14002880a .debug_line Label
+sym 14003252d .debug_line_str Label
+sym 140009a00 .rdata$zzz Label
+sym 14002f2b0 .debug_frame Label
+sym 140001760 fpreset Label
+sym 140001760 .text Label
+sym 14000b0d4 .xdata Label
+sym 14000a0f0 .pdata Label
+sym 140015294 .debug_info Label
+sym 140024b88 .debug_abbrev Label
+sym 140010190 .debug_aranges Label
+sym 1400288c8 .debug_line Label
+sym 1400325a7 .debug_line_str Label
+sym 140009a20 .rdata$zzz Label
+sym 14002f308 .debug_frame Label
+sym 14001532b .debug_info Label
+sym 140024bb5 .debug_abbrev Label
+sym 1400101c0 .debug_aranges Label
+sym 140028920 .debug_line Label
+sym 1400325fe .debug_line_str Label
+sym 140009a40 .rdata$zzz Label
+sym 140001770 __report_error Label
+sym 14000c0a4 maxSections Label
+sym 14000c0a8 the_secs Label
+sym 14000c0a0 was_init.0 Label
+sym 140009720 .rdata$.refptr.__RUNTIME_PSEUDO_RELOC_LIST_END__ Label
+sym 140009730 .rdata$.refptr.__RUNTIME_PSEUDO_RELOC_LIST__ Label
+sym 14000c0a0 .bss Label
+sym 1400091c0 .rdata Label
+sym 14000b0d8 .xdata Label
+sym 14000a0fc .pdata Label
+sym 1400153bd .debug_info Label
+sym 140024be3 .debug_abbrev Label
+sym 14003439f .debug_loclists Label
+sym 1400101e0 .debug_aranges Label
+sym 14003c05c .debug_rnglists Label
+sym 14002895a .debug_line Label
+sym 140031256 .debug_str Label
+sym 140032664 .debug_line_str Label
+sym 140009a60 .rdata$zzz Label
+sym 14002f338 .debug_frame Label
+sym 14000c0b0 stUserMathErr Label
+sym 140001cb0 .text Label
+sym 14000c0b0 .bss Label
+sym 14000b108 .xdata Label
+sym 14000a120 .pdata Label
+sym 140016b08 .debug_info Label
+sym 140024fbb .debug_abbrev Label
+sym 140034921 .debug_loclists Label
+sym 140010210 .debug_aranges Label
+sym 140028edd .debug_line Label
+sym 140032770 .debug_line_str Label
+sym 140009a80 .rdata$zzz Label
+sym 14002f418 .debug_frame Label
+sym 14000c0c0 .bss Label
+sym 140016dfd .debug_info Label
+sym 1400250cd .debug_abbrev Label
+sym 140010240 .debug_aranges Label
+sym 140028f8b .debug_line Label
+sym 1400327f7 .debug_line_str Label
+sym 140009aa0 .rdata$zzz Label
+sym 140001d00 _gnu_exception_handler Label
+sym 14000c0d0 .bss Label
+sym 14000b114 .xdata Label
+sym 140009320 .rdata Label
+sym 14000a138 .pdata Label
+sym 140016e85 .debug_info Label
+sym 1400250fb .debug_abbrev Label
+sym 140034993 .debug_loclists Label
+sym 140010260 .debug_aranges Label
+sym 140028fc5 .debug_line Label
+sym 14003125f .debug_str Label
+sym 14003284e .debug_line_str Label
+sym 140009ac0 .rdata$zzz Label
+sym 14002f468 .debug_frame Label
+sym 14000c100 __mingwthr_cs Label
+sym 14000c0e0 key_dtor_list Label
+sym 14000c0e8 __mingwthr_cs_init Label
+sym 140001ec0 .text Label
+sym 14000c0e0 .bss Label
+sym 14000b11c .xdata Label
+sym 14000a144 .pdata Label
+sym 140017e66 .debug_info Label
+sym 140025379 .debug_abbrev Label
+sym 140034af2 .debug_loclists Label
+sym 140010290 .debug_aranges Label
+sym 14003c0b3 .debug_rnglists Label
+sym 140029152 .debug_line Label
+sym 14003291c .debug_line_str Label
+sym 140009ae0 .rdata$zzz Label
+sym 14002f4b8 .debug_frame Label
+sym 14000c140 .bss Label
+sym 140018939 .debug_info Label
+sym 1400255da .debug_abbrev Label
+sym 1400102c0 .debug_aranges Label
+sym 1400293ca .debug_line Label
+sym 1400329fe .debug_line_str Label
+sym 140009b00 .rdata$zzz Label
+sym 140008030 .data Label
+sym 1400189c2 .debug_info Label
+sym 140025608 .debug_abbrev Label
+sym 1400102e0 .debug_aranges Label
+sym 140029404 .debug_line Label
+sym 140032a52 .debug_line_str Label
+sym 140009b20 .rdata$zzz Label
+sym 140002130 _ValidateImageBase Label
+sym 14000c150 .bss Label
+sym 14000b14c .xdata Label
+sym 14000a174 .pdata Label
+sym 140018a92 .debug_info Label
+sym 140025638 .debug_abbrev Label
+sym 140034dbd .debug_loclists Label
+sym 140010300 .debug_aranges Label
+sym 14003c0ca .debug_rnglists Label
+sym 14002943e .debug_line Label
+sym 14003126f .debug_str Label
+sym 140032ac4 .debug_line_str Label
+sym 140009b40 .rdata$zzz Label
+sym 14002f5e0 .debug_frame Label
+sym 14000c170 .bss Label
+sym 140019f64 .debug_info Label
+sym 1400258c2 .debug_abbrev Label
+sym 140010330 .debug_aranges Label
+sym 140029989 .debug_line Label
+sym 140032b66 .debug_line_str Label
+sym 140009b80 .rdata$zzz Label
+sym 140002570 __mingw_vfprintf Label
+sym 140008040 .data Label
+sym 14000b178 .xdata Label
+sym 14000a1e0 .pdata Label
+sym 14001a002 .debug_info Label
+sym 1400258f0 .debug_abbrev Label
+sym 1400351b5 .debug_loclists Label
+sym 140010350 .debug_aranges Label
+sym 1400299c3 .debug_line Label
+sym 140032bce .debug_line_str Label
+sym 140009ba0 .rdata$zzz Label
+sym 14002f708 .debug_frame Label
+sym 140008040 fpi.0 Label
+sym 1400025c0 .text Label
+sym 14000b184 .xdata Label
+sym 14000a1ec .pdata Label
+sym 140009350 .rdata Label
+sym 14001a338 .debug_info Label
+sym 1400259fb .debug_abbrev Label
+sym 140035222 .debug_loclists Label
+sym 140010380 .debug_aranges Label
+sym 14003c195 .debug_rnglists Label
+sym 140029a4c .debug_line Label
+sym 1400312c3 .debug_str Label
+sym 140032c7c .debug_line_str Label
+sym 140009bc0 .rdata$zzz Label
+sym 14002f760 .debug_frame Label
+sym 140004c50 .text Label
+sym 140008060 .data Label
+sym 14000b27c .xdata Label
+sym 14000a2ac .pdata Label
+sym 14001d44a .debug_info Label
+sym 140025eb7 .debug_abbrev Label
+sym 140037424 .debug_loclists Label
+sym 1400103b0 .debug_aranges Label
+sym 14003c3ce .debug_rnglists Label
+sym 14002bf9d .debug_line Label
+sym 140031343 .debug_str Label
+sym 140032d86 .debug_line_str Label
+sym 140009be0 .rdata$zzz Label
+sym 14002fc58 .debug_frame Label
+sym 1400097f0 .rdata$.refptr.__tens_D2A Label
+sym 140004ec0 .text Label
+sym 1400094e0 .rdata Label
+sym 14000b2ac .xdata Label
+sym 14000a2dc .pdata Label
+sym 14001d99f .debug_info Label
+sym 14002606c .debug_abbrev Label
+sym 140037804 .debug_loclists Label
+sym 1400103e0 .debug_aranges Label
+sym 14003c3ed .debug_rnglists Label
+sym 14002c2ae .debug_line Label
+sym 14003134c .debug_str Label
+sym 140032deb .debug_line_str Label
+sym 140009c00 .rdata$zzz Label
+sym 14002fd60 .debug_frame Label
+sym 140006650 .text Label
+sym 14000b2c4 .xdata Label
+sym 14000a2e8 .pdata Label
+sym 14001eb47 .debug_info Label
+sym 140026358 .debug_abbrev Label
+sym 140039cd6 .debug_loclists Label
+sym 140010410 .debug_aranges Label
+sym 14002d464 .debug_line Label
+sym 140031355 .debug_str Label
+sym 140032e8e .debug_line_str Label
+sym 140009c20 .rdata$zzz Label
+sym 14002fe10 .debug_frame Label
+sym 14000caf0 dtoa_CS_init Label
+sym 14000cb00 dtoa_CritSec Label
+sym 14000caa0 freelist Label
+sym 14000c1a0 private_mem Label
+sym 140008060 pmem_next Label
+sym 14000c180 p5s Label
+sym 140009580 p05.0 Label
+sym 140006790 .text Label
+sym 14000c180 .bss Label
+sym 14000b2d8 .xdata Label
+sym 14000a300 .pdata Label
+sym 140009580 .rdata Label
+sym 14001ee9b .debug_info Label
+sym 140026495 .debug_abbrev Label
+sym 140039ed2 .debug_loclists Label
+sym 140010440 .debug_aranges Label
+sym 14003c41a .debug_rnglists Label
+sym 14002d63c .debug_line Label
+sym 14003135e .debug_str Label
+sym 140032ef3 .debug_line_str Label
+sym 140009c40 .rdata$zzz Label
+sym 14002fea0 .debug_frame Label
+sym 140007420 .text Label
+sym 140008070 .data Label
+sym 14000cb60 .bss Label
+sym 14000b38c .xdata Label
+sym 14000a3a8 .pdata Label
+sym 140020955 .debug_info Label
+sym 140026946 .debug_abbrev Label
+sym 14003b007 .debug_loclists Label
+sym 140010470 .debug_aranges Label
+sym 14002e3f5 .debug_line Label
+sym 140033009 .debug_line_str Label
+sym 140009c60 .rdata$zzz Label
+sym 1400302a0 .debug_frame Label
+sym 140007450 .text Label
+sym 14000b390 .xdata Label
+sym 14000a3b4 .pdata Label
+sym 140020acc .debug_info Label
+sym 1400269c8 .debug_abbrev Label
+sym 14003b022 .debug_loclists Label
+sym 1400104a0 .debug_aranges Label
+sym 14002e476 .debug_line Label
+sym 140033089 .debug_line_str Label
+sym 140009c80 .rdata$zzz Label
+sym 1400302d0 .debug_frame Label
+sym 140009770 .rdata$.refptr.__imp__fmode Label
+sym 140007480 .text Label
+sym 14000b394 .xdata Label
+sym 14000a3c0 .pdata Label
+sym 140020c5a .debug_info Label
+sym 140026a4e .debug_abbrev Label
+sym 1400104d0 .debug_aranges Label
+sym 14002e50e .debug_line Label
+sym 140033109 .debug_line_str Label
+sym 140009ca0 .rdata$zzz Label
+sym 140030300 .debug_frame Label
+sym 140009760 .rdata$.refptr.__imp__commode Label
+sym 140007490 .text Label
+sym 140008080 .data Label
+sym 14000b398 .xdata Label
+sym 14000a3cc .pdata Label
+sym 140020d4d .debug_info Label
+sym 140026ac1 .debug_abbrev Label
+sym 140010500 .debug_aranges Label
+sym 14002e56c .debug_line Label
+sym 140033168 .debug_line_str Label
+sym 140009cc0 .rdata$zzz Label
+sym 140030330 .debug_frame Label
+sym 1400074a0 .text Label
+sym 140008090 .data Label
+sym 14000b39c .xdata Label
+sym 14000a3d8 .pdata Label
+sym 140020e46 .debug_info Label
+sym 140026b34 .debug_abbrev Label
+sym 14003b078 .debug_loclists Label
+sym 140010530 .debug_aranges Label
+sym 14003c4e6 .debug_rnglists Label
+sym 14002e5ca .debug_line Label
+sym 1400331cd .debug_line_str Label
+sym 140009ce0 .rdata$zzz Label
+sym 140030360 .debug_frame Label
+sym 14000cb60 handler Label
+sym 140007570 _get_invalid_parameter_handler Label
+sym 140007580 _set_invalid_parameter_handler Label
+sym 140007570 .text Label
+sym 1400080a0 .data Label
+sym 14000b3ac .xdata Label
+sym 14000a3f0 .pdata Label
+sym 140021965 .debug_info Label
+sym 140026d15 .debug_abbrev Label
+sym 14003b111 .debug_loclists Label
+sym 140010560 .debug_aranges Label
+sym 14002e71a .debug_line Label
+sym 1400332c5 .debug_line_str Label
+sym 140009d00 .rdata$zzz Label
+sym 1400303e8 .debug_frame Label
+sym 140007590 .text Label
+sym 1400080b0 .data Label
+sym 14000cb70 .bss Label
+sym 14000b3b4 .xdata Label
+sym 14000a408 .pdata Label
+sym 14002208f .debug_info Label
+sym 140026e7a .debug_abbrev Label
+sym 14003b136 .debug_loclists Label
+sym 140010590 .debug_aranges Label
+sym 14002e7bd .debug_line Label
+sym 1400333d9 .debug_line_str Label
+sym 140009d20 .rdata$zzz Label
+sym 140030430 .debug_frame Label
+sym 1400075b0 .text Label
+sym 1400080c0 .data Label
+sym 14000b3bc .xdata Label
+sym 14000a414 .pdata Label
+sym 1400222ed .debug_info Label
+sym 140026f48 .debug_abbrev Label
+sym 14003b158 .debug_loclists Label
+sym 1400105c0 .debug_aranges Label
+sym 14003c4fd .debug_rnglists Label
+sym 14002e834 .debug_line Label
+sym 140031374 .debug_str Label
+sym 14003346b .debug_line_str Label
+sym 140009d40 .rdata$zzz Label
+sym 140030470 .debug_frame Label
+sym 14000cb78 internal_mbstate.2 Label
+sym 14000cb74 internal_mbstate.1 Label
+sym 14000cb70 s_mbstate.0 Label
+sym 140007780 .text Label
+sym 14000b3e4 .xdata Label
+sym 14000a438 .pdata Label
+sym 1400228e6 .debug_info Label
+sym 140027097 .debug_abbrev Label
+sym 14003b41a .debug_loclists Label
+sym 1400105f0 .debug_aranges Label
+sym 14003c514 .debug_rnglists Label
+sym 14002ea51 .debug_line Label
+sym 140031380 .debug_str Label
+sym 14003352e .debug_line_str Label
+sym 140009d60 .rdata$zzz Label
+sym 140030558 .debug_frame Label
+sym 140007ac0 .text Label
+sym 14000cb80 .bss Label
+sym 14000d63c .idata$7 Label
+sym 14000d238 .idata$5 Label
+sym 14000d0b0 .idata$4 Label
+sym 14000d45a .idata$6 Label
+sym 140007ac8 .text Label
+sym 14000d640 .idata$7 Label
+sym 14000d240 .idata$5 Label
+sym 14000d0b8 .idata$4 Label
+sym 14000d472 .idata$6 Label
+sym 140007ad0 .text Label
+sym 14000d644 .idata$7 Label
+sym 14000d248 .idata$5 Label
+sym 14000d0c0 .idata$4 Label
+sym 14000d488 .idata$6 Label
+sym 140007ad8 .text Label
+sym 14000d648 .idata$7 Label
+sym 14000d250 .idata$5 Label
+sym 14000d0c8 .idata$4 Label
+sym 14000d49e .idata$6 Label
+sym 140007ae0 .text Label
+sym 14000d64c .idata$7 Label
+sym 14000d258 .idata$5 Label
+sym 14000d0d0 .idata$4 Label
+sym 14000d4ae .idata$6 Label
+sym 14000d650 .idata$7 Label
+sym 14000d260 .idata$5 Label
+sym 14000d0d8 .idata$4 Label
+sym 14000d4ba .idata$6 Label
+sym 140007ae8 .text Label
+sym 14000d654 .idata$7 Label
+sym 14000d268 .idata$5 Label
+sym 14000d0e0 .idata$4 Label
+sym 14000d4c8 .idata$6 Label
+sym 140007af0 .text Label
+sym 14000d658 .idata$7 Label
+sym 14000d270 .idata$5 Label
+sym 14000d0e8 .idata$4 Label
+sym 14000d4da .idata$6 Label
+sym 140007af8 .text Label
+sym 14000d65c .idata$7 Label
+sym 14000d278 .idata$5 Label
+sym 14000d0f0 .idata$4 Label
+sym 14000d4ee .idata$6 Label
+sym 140007b00 .text Label
+sym 14000d660 .idata$7 Label
+sym 14000d280 .idata$5 Label
+sym 14000d0f8 .idata$4 Label
+sym 14000d4fc .idata$6 Label
+sym 140007b08 .text Label
+sym 14000d664 .idata$7 Label
+sym 14000d288 .idata$5 Label
+sym 14000d100 .idata$4 Label
+sym 14000d506 .idata$6 Label
+sym 14000d668 .idata$7 Label
+sym 14000d290 .idata$5 Label
+sym 14000d108 .idata$4 Label
+sym 14000d512 .idata$6 Label
+sym 140007b10 .text Label
+sym 14000d66c .idata$7 Label
+sym 14000d298 .idata$5 Label
+sym 14000d110 .idata$4 Label
+sym 14000d51c .idata$6 Label
+sym 14000d670 .idata$7 Label
+sym 14000d2a0 .idata$5 Label
+sym 14000d118 .idata$4 Label
+sym 14000d526 .idata$6 Label
+sym 140007b18 .text Label
+sym 14000d674 .idata$7 Label
+sym 14000d2a8 .idata$5 Label
+sym 14000d120 .idata$4 Label
+sym 14000d532 .idata$6 Label
+sym 140007b20 .text Label
+sym 14000d678 .idata$7 Label
+sym 14000d2b0 .idata$5 Label
+sym 14000d128 .idata$4 Label
+sym 14000d53a .idata$6 Label
+sym 140007b28 .text Label
+sym 14000d67c .idata$7 Label
+sym 14000d2b8 .idata$5 Label
+sym 14000d130 .idata$4 Label
+sym 14000d544 .idata$6 Label
+sym 140007b30 .text Label
+sym 14000d680 .idata$7 Label
+sym 14000d2c0 .idata$5 Label
+sym 14000d138 .idata$4 Label
+sym 14000d54e .idata$6 Label
+sym 140007b38 .text Label
+sym 14000d684 .idata$7 Label
+sym 14000d2c8 .idata$5 Label
+sym 14000d140 .idata$4 Label
+sym 14000d556 .idata$6 Label
+sym 140007b40 .text Label
+sym 14000d688 .idata$7 Label
+sym 14000d2d0 .idata$5 Label
+sym 14000d148 .idata$4 Label
+sym 14000d560 .idata$6 Label
+sym 140007b48 .text Label
+sym 14000d68c .idata$7 Label
+sym 14000d2d8 .idata$5 Label
+sym 14000d150 .idata$4 Label
+sym 14000d568 .idata$6 Label
+sym 140007b50 .text Label
+sym 14000d690 .idata$7 Label
+sym 14000d2e0 .idata$5 Label
+sym 14000d158 .idata$4 Label
+sym 14000d572 .idata$6 Label
+sym 140007b58 .text Label
+sym 14000d694 .idata$7 Label
+sym 14000d2e8 .idata$5 Label
+sym 14000d160 .idata$4 Label
+sym 14000d57a .idata$6 Label
+sym 140007b60 .text Label
+sym 14000d698 .idata$7 Label
+sym 14000d2f0 .idata$5 Label
+sym 14000d168 .idata$4 Label
+sym 14000d582 .idata$6 Label
+sym 140007b68 .text Label
+sym 14000d69c .idata$7 Label
+sym 14000d2f8 .idata$5 Label
+sym 14000d170 .idata$4 Label
+sym 14000d58c .idata$6 Label
+sym 140007b70 .text Label
+sym 14000d6a0 .idata$7 Label
+sym 14000d300 .idata$5 Label
+sym 14000d178 .idata$4 Label
+sym 14000d59a .idata$6 Label
+sym 140007b78 .text Label
+sym 14000d6a4 .idata$7 Label
+sym 14000d308 .idata$5 Label
+sym 14000d180 .idata$4 Label
+sym 14000d5a4 .idata$6 Label
+sym 140007b80 .text Label
+sym 14000d6a8 .idata$7 Label
+sym 14000d310 .idata$5 Label
+sym 14000d188 .idata$4 Label
+sym 14000d5ae .idata$6 Label
+sym 140007b88 .text Label
+sym 14000d6ac .idata$7 Label
+sym 14000d318 .idata$5 Label
+sym 14000d190 .idata$4 Label
+sym 14000d5b8 .idata$6 Label
+sym 140007b90 .text Label
+sym 14000d6b0 .idata$7 Label
+sym 14000d320 .idata$5 Label
+sym 14000d198 .idata$4 Label
+sym 14000d5c2 .idata$6 Label
+sym 140007b98 .text Label
+sym 14000d6b4 .idata$7 Label
+sym 14000d328 .idata$5 Label
+sym 14000d1a0 .idata$4 Label
+sym 14000d5ce .idata$6 Label
+sym 140007ba0 .text Label
+sym 14000d6b8 .idata$7 Label
+sym 14000d330 .idata$5 Label
+sym 14000d1a8 .idata$4 Label
+sym 14000d5d8 .idata$6 Label
+sym 140007ba8 .text Label
+sym 14000d6bc .idata$7 Label
+sym 14000d338 .idata$5 Label
+sym 14000d1b0 .idata$4 Label
+sym 14000d5e2 .idata$6 Label
+sym 140007bb0 .text Label
+sym 14000d6c0 .idata$7 Label
+sym 14000d340 .idata$5 Label
+sym 14000d1b8 .idata$4 Label
+sym 14000d5ee .idata$6 Label
+sym 14000d0b0 hname Label
+sym 14000d238 fthunk Label
+sym 140007bc0 .text Label
+sym 14000d014 .idata$2 Label
+sym 14000d1c0 .idata$4 Label
+sym 14000d348 .idata$5 Label
+sym 14000d6c4 .idata$7 Label
+sym 14000d628 .idata$7 Label
+sym 14000d228 .idata$5 Label
+sym 14000d0a0 .idata$4 Label
+sym 14000d444 .idata$6 Label
+sym 140007bc8 .text Label
+sym 14000d624 .idata$7 Label
+sym 14000d220 .idata$5 Label
+sym 14000d098 .idata$4 Label
+sym 14000d434 .idata$6 Label
+sym 140007bd0 .text Label
+sym 14000d620 .idata$7 Label
+sym 14000d218 .idata$5 Label
+sym 14000d090 .idata$4 Label
+sym 14000d422 .idata$6 Label
+sym 140007bd8 .text Label
+sym 14000d61c .idata$7 Label
+sym 14000d210 .idata$5 Label
+sym 14000d088 .idata$4 Label
+sym 14000d414 .idata$6 Label
+sym 140007be0 .text Label
+sym 14000d618 .idata$7 Label
+sym 14000d208 .idata$5 Label
+sym 14000d080 .idata$4 Label
+sym 14000d40c .idata$6 Label
+sym 140007be8 .text Label
+sym 14000d614 .idata$7 Label
+sym 14000d200 .idata$5 Label
+sym 14000d078 .idata$4 Label
+sym 14000d3ee .idata$6 Label
+sym 140007bf0 .text Label
+sym 14000d610 .idata$7 Label
+sym 14000d1f8 .idata$5 Label
+sym 14000d070 .idata$4 Label
+sym 14000d3d8 .idata$6 Label
+sym 140007bf8 .text Label
+sym 14000d60c .idata$7 Label
+sym 14000d1f0 .idata$5 Label
+sym 14000d068 .idata$4 Label
+sym 14000d3c0 .idata$6 Label
+sym 140007c00 .text Label
+sym 14000d608 .idata$7 Label
+sym 14000d1e8 .idata$5 Label
+sym 14000d060 .idata$4 Label
+sym 14000d3ac .idata$6 Label
+sym 140007c08 .text Label
+sym 14000d604 .idata$7 Label
+sym 14000d1e0 .idata$5 Label
+sym 14000d058 .idata$4 Label
+sym 14000d390 .idata$6 Label
+sym 140007c10 .text Label
+sym 14000d600 .idata$7 Label
+sym 14000d1d8 .idata$5 Label
+sym 14000d050 .idata$4 Label
+sym 14000d380 .idata$6 Label
+sym 140007c18 .text Label
+sym 14000d5fc .idata$7 Label
+sym 14000d1d0 .idata$5 Label
+sym 14000d048 .idata$4 Label
+sym 14000d368 .idata$6 Label
+sym 140007c20 .text Label
+sym 14000d5f8 .idata$7 Label
+sym 14000d1c8 .idata$5 Label
+sym 14000d040 .idata$4 Label
+sym 14000d350 .idata$6 Label
+sym 14000d040 hname Label
+sym 14000d1c8 fthunk Label
+sym 140007c30 .text Label
+sym 14000d0a8 .idata$4 Label
+sym 14000d230 .idata$5 Label
+sym 14000d62c .idata$7 Label
+sym 140007c60 .text.startup Label
+sym 14000b424 .xdata.startup Label
+sym 14000a468 .pdata.startup Label
+sym 140009da8 .ctors.65535 Label
+sym 140009d80 .rdata$zzz Label
+sym 140009dd8 __xc_z Label
+sym 140009da0 ___RUNTIME_PSEUDO_RELOC_LIST__ Label
+sym 14000d2c0 __imp_abort Label
+sym 14000d62c __lib64_libkernel32_a_iname Label
+sym 140009db8 ___DTOR_LIST__ Label
+sym 14000d298 __imp__fmode Label
+sym 14000d248 __imp____mb_cur_max_func Label
+sym 14000d2a8 __imp__lock Label
+sym 140007c00 IsDBCSLeadByteEx Label
+sym 140007be8 SetUnhandledExceptionFilter Label
+sym 14000d014 _head_lib64_libmsvcrt_def_a Label
+sym 140009790 .refptr.__mingw_initltsdrot_force Label
+sym 140007b90 strerror Label
+sym 14000d2c8 __imp_calloc Label
+sym 140007b18 _lock Label
+sym 140008070 __imp___p__fmode Label
+sym 1400097e0 .refptr.__native_startup_state Label
+sym 140009df8 __xl_a Label
+sym 140007c10 GetLastError Label
+sym 140009da0 __rt_psrelocs_start Label
+sym 140007b00 _cexit Label
+sym 140007bb0 wcslen Label
+sym 140007ae0 __iob_func Label
+sym 140009df8 ___crt_xl_start__ Label
+sym 14000d1c8 __imp_DeleteCriticalSection Label
+sym 140009e08 __xl_d Label
+sym 1400080a8 __imp__set_invalid_parameter_handler Label
+sym 14000e008 _tls_end Label
+sym 140009700 .refptr.__CTOR_LIST__ Label
+sym 14000d2e0 __imp_fputc Label
+sym 140007bc8 VirtualQuery Label
+sym 140009de0 ___crt_xi_start__ Label
+sym 140009770 .refptr.__imp__fmode Label
+sym 14000d278 __imp__amsg_exit Label
+sym 140009df8 ___crt_xi_end__ Label
+sym 14000d290 __imp__errno Label
+sym 140009750 .refptr.__imp___initenv Label
+sym 140007b78 memcpy Label
+sym 140009880 .refptr._matherr Label
+sym 140009730 .refptr.__RUNTIME_PSEUDO_RELOC_LIST__ Label
+sym 14000c0d0 __mingw_oldexcpt_handler Label
+sym 140007b70 malloc Label
+sym 140008090 __imp__unlock_file Label
+sym 140008020 _CRT_MT Label
+sym 140007bd8 TlsGetValue Label
+sym 14000d1f8 __imp_MultiByteToWideChar Label
+sym 14000d238 __imp___C_specific_handler Label
+sym 140009da0 ___RUNTIME_PSEUDO_RELOC_LIST_END__ Label
+sym 14000d1d8 __imp_GetLastError Label
+sym 140009850 .refptr._dowildcard Label
+sym 14000c078 __mingw_initltsdrot_force Label
+sym 14000d2e8 __imp_free Label
+sym 140007ad0 ___mb_cur_max_func Label
+sym 140009780 .refptr.__mingw_app_type Label
+sym 14000c070 __mingw_initltssuo_force Label
+sym 1400095a0 __tens_D2A Label
+sym 140007bd0 VirtualProtect Label
+sym 140009e28 ___crt_xd_end__ Label
+sym 140009e18 ___crt_xp_start__ Label
+sym 14000d1f0 __imp_LeaveCriticalSection Label
+sym 140007ac0 __C_specific_handler Label
+sym 1400097c0 .refptr.__mingw_oldexcpt_handler Label
+sym 140007b30 abort Label
+sym 140009720 .refptr.__RUNTIME_PSEUDO_RELOC_LIST_END__ Label
+sym 140009e18 ___crt_xp_end__ Label
+sym 140007c18 EnterCriticalSection Label
+sym 140008030 _MINGW_INSTALL_DEBUG_MATHERR Label
+sym 140009820 .refptr.__xi_a Label
+sym 1400096e0 .refptr._CRT_MT Label
+sym 140008014 __native_dllmain_reason Label
+sym 140007b38 calloc Label
+sym 140009040 _tls_used Label
+sym 140009e18 ___crt_xd_start__ Label
+sym 14000d310 __imp_memset Label
+sym 14000d350 __IAT_end__ Label
+sym 140008098 __imp__lock_file Label
+sym 14000d308 __imp_memcpy Label
+sym 140009da0 __RUNTIME_PSEUDO_RELOC_LIST__ Label
+sym 140007b48 fprintf Label
+sym 14000d6c4 __lib64_libmsvcrt_def_a_iname Label
+sym 14000d320 __imp_strerror Label
+sym 140007be0 Sleep Label
+sym 140009890 .refptr._newmode Label
+sym 14000c080 _commode Label
+sym 1400080c0 __data_end__ Label
+sym 14000d2f0 __imp_fwrite Label
+sym 140009da0 __CTOR_LIST__ Label
+sym 14000d250 __imp___getmainargs Label
+sym 14000cb80 __bss_end__ Label
+sym 140009df0 __xi_z Label
+sym 140009660 __tinytens_D2A Label
+sym 140008010 __native_vcclrit_reason Label
+sym 140009de0 ___crt_xc_end__ Label
+sym 1400097b0 .refptr.__mingw_initltssuo_force Label
+sym 1400097d0 .refptr.__native_startup_lock Label
+sym 14000d1d0 __imp_EnterCriticalSection Label
+sym 140007b88 signal Label
+sym 14000c048 __native_startup_state Label
+sym 140009dc8 ___crt_xc_start__ Label
+sym 140007ba0 strncmp Label
+sym 140009da0 ___CTOR_LIST__ Label
+sym 140009740 .refptr.__dyn_tls_init_callback Label
+sym 14000d318 __imp_signal Label
+sym 1400097a0 .refptr.__mingw_initltsdyn_force Label
+sym 14000d228 __imp_WideCharToMultiByte Label
+sym 140009710 .refptr.__ImageBase Label
+sym 14000d328 __imp_strlen Label
+sym 1400096a0 __bigtens_D2A Label
+sym 14000d300 __imp_malloc Label
+sym 140009870 .refptr._gnu_exception_handler Label
+sym 14000d1e0 __imp_InitializeCriticalSection Label
+sym 140007ad8 __getmainargs Label
+sym 140007c08 InitializeCriticalSection Label
+sym 140007ac8 ___lc_codepage_func Label
+sym 14000d2d0 __imp_exit Label
+sym 140007b80 memset Label
+sym 14000d338 __imp_vfprintf Label
+sym 140009de8 __mingw_pcinit Label
+sym 14000d1e8 __imp_IsDBCSLeadByteEx Label
+sym 14000d258 __imp___initenv Label
+sym 14000d1c8 __IAT_start__ Label
+sym 14000d280 __imp__cexit Label
+sym 140009e10 __xl_z Label
+sym 14000d200 __imp_SetUnhandledExceptionFilter Label
+sym 14000d2b0 __imp__onexit Label
+sym 140009db8 __DTOR_LIST__ Label
+sym 140009de0 __xi_a Label
+sym 140007bc0 WideCharToMultiByte Label
+sym 140007ae8 __set_app_type Label
+sym 14000d208 __imp_Sleep Label
+sym 140007bf8 LeaveCriticalSection Label
+sym 140009dc8 __xc_a Label
+sym 14000d270 __imp___setusermatherr Label
+sym 140009e18 ___crt_xt_start__ Label
+sym 14000c0c0 _fmode Label
+sym 140007af8 _amsg_exit Label
+sym 14000d210 __imp_TlsGetValue Label
+sym 140007af0 __setusermatherr Label
+sym 140009840 .refptr._commode Label
+sym 14000d2d8 __imp_fprintf Label
+sym 140009dd0 __mingw_pcppinit Label
+sym 140008080 __imp___p__commode Label
+sym 140007bf0 MultiByteToWideChar Label
+sym 14000d218 __imp_VirtualProtect Label
+sym 140007b50 fputc Label
+sym 140009e00 __xl_c Label
+sym 14000e010 ___tls_end__ Label
+sym 14000d220 __imp_VirtualQuery Label
+sym 14000d2a0 __imp__initterm Label
+sym 14000c074 __mingw_initltsdyn_force Label
+sym 14000c050 _dowildcard Label
+sym 14000d260 __imp___iob_func Label
+sym 14000d2f8 __imp_localeconv Label
+sym 140007b68 localeconv Label
+sym 140009020 __dyn_tls_init_callback Label
+sym 14000c060 _newmode Label
+sym 140007b10 _initterm Label
+sym 140007b60 fwrite Label
+sym 14000d330 __imp_strncmp Label
+sym 140009860 .refptr._fmode Label
+sym 1400080b0 __imp___acrt_iob_func Label
+sym 1400097f0 .refptr.__tens_D2A Label
+sym 140009760 .refptr.__imp__commode Label
+sym 140002530 ___chkstk_ms Label
+sym 14000c040 __native_startup_lock Label
+sym 14000d340 __imp_wcslen Label
+sym 14000d240 __imp____lc_codepage_func Label
+sym 140007b20 _onexit Label
+sym 140009da0 __rt_psrelocs_end Label
+sym 140007b40 exit Label
+sym 1400080a0 __imp__get_invalid_parameter_handler Label
+sym 14000d2b8 __imp__unlock Label
+sym 14000d268 __imp___set_app_type Label
+sym 140007b08 _errno Label
+sym 140009800 .refptr.__xc_a Label
+sym 140007b98 strlen Label
+sym 140009830 .refptr.__xi_z Label
+sym 1400096f0 .refptr._MINGW_INSTALL_DEBUG_MATHERR Label
+sym 14000d288 __imp__commode Label
+sym 140007c20 DeleteCriticalSection Label
+sym 140009da0 __RUNTIME_PSEUDO_RELOC_LIST_END__ Label
+sym 140007b28 _unlock Label
+sym 140009810 .refptr.__xc_z Label
+sym 140009e18 ___crt_xt_end__ Label
+sym 140007ba8 vfprintf Label
+sym 140007b58 free Label
+sym 14000c090 __mingw_app_type Label
+sym 1400013f0 entry Label
+ref 1400000a8 1400013f0 DATA
+ref 1400000ac 140001000 DATA
+ref 1400000b0 140000000 DATA
+ref 140000110 14000d000 DATA
+ref 140000120 14000a000 DATA
+ref 140000130 14000f000 DATA
+ref 140000150 140009040 DATA
+ref 140000168 14000d1c8 DATA
+ref 140000194 140001000 DATA
+ref 1400001bc 140008000 DATA
+ref 1400001e4 140009000 DATA
+ref 14000020c 14000a000 DATA
+ref 140000234 14000b000 DATA
+ref 14000025c 14000c000 DATA
+ref 140000284 14000d000 DATA
+ref 1400002ac 14000e000 DATA
+ref 1400002d4 14000f000 DATA
+ref 1400002fc 140010000 DATA
+ref 140000324 140011000 DATA
+ref 14000034c 140024000 DATA
+ref 140000374 140028000 DATA
+ref 14000039c 14002f000 DATA
+ref 1400003c4 140031000 DATA
+ref 1400003ec 140032000 DATA
+ref 140000414 140034000 DATA
+ref 14000043c 14003c000 DATA
+ref 140009e00 1400015c0 DATA
+ref 140009e08 140001590 DATA
+ref 14000a000 140001000 DATA
+ref 14000a008 14000b000 DATA
+ref 14000a00c 140001010 DATA
+ref 14000a014 14000b004 DATA
+ref 14000a018 140001130 DATA
+ref 14000a020 14000b00c DATA
+ref 14000a024 140001180 DATA
+ref 14000a02c 14000b014 DATA
+ref 14000a030 1400013d0 DATA
+ref 14000a038 14000b024 DATA
+ref 14000a03c 1400013f0 DATA
+ref 14000a044 14000b044 DATA
+ref 14000a048 140001410 DATA
+ref 14000a050 14000b064 DATA
+ref 14000a054 140001430 DATA
+ref 14000a05c 14000b06c DATA
+ref 14000a060 140001440 DATA
+ref 14000a068 14000b070 DATA
+ref 14000a06c 140001450 DATA
+ref 14000a074 14000b074 DATA
+ref 14000a078 1400014a0 DATA
+ref 14000a080 14000b07c DATA
+ref 14000a084 1400014b0 DATA
+ref 14000a08c 14000b088 DATA
+ref 14000a090 1400014f0 DATA
+ref 14000a098 14000b090 DATA
+ref 14000a09c 140001560 DATA
+ref 14000a0a4 14000b09c DATA
+ref 14000a0a8 140001580 DATA
+ref 14000a0b0 14000b0a0 DATA
+ref 14000a0b4 140001590 DATA
+ref 14000a0bc 14000b0a4 DATA
+ref 14000a0c0 1400015c0 DATA
+ref 14000a0c8 14000b0ac DATA
+ref 14000a0cc 140001650 DATA
+ref 14000a0d4 14000b0b8 DATA
+ref 14000a0d8 140001660 DATA
+ref 14000a0e0 14000b0bc DATA
+ref 14000a0e4 140001760 DATA
+ref 14000a0ec 14000b0d4 DATA
+ref 14000a0f0 140001770 DATA
+ref 14000a0f8 14000b0d8 DATA
+ref 14000a0fc 1400017e0 DATA
+ref 14000a104 14000b0e4 DATA
+ref 14000a108 140001950 DATA
+ref 14000a110 14000b0f0 DATA
+ref 14000a114 140001cb0 DATA
+ref 14000a11c 14000b108 DATA
+ref 14000a120 140001cf0 DATA
+ref 14000a128 14000b110 DATA
+ref 14000a12c 140001d00 DATA
+ref 14000a134 14000b114 DATA
+ref 14000a138 140001ec0 DATA
+ref 14000a140 14000b11c DATA
+ref 14000a144 140001f30 DATA
+ref 14000a14c 14000b12c DATA
+ref 14000a150 140001fa0 DATA
+ref 14000a158 14000b138 DATA
+ref 14000a15c 140002030 DATA
+ref 14000a164 14000b144 DATA
+ref 14000a168 140002130 DATA
+ref 14000a170 14000b14c DATA
+ref 14000a174 140002160 DATA
+ref 14000a17c 14000b150 DATA
+ref 14000a180 1400021b0 DATA
+ref 14000a188 14000b154 DATA
+ref 14000a18c 140002250 DATA
+ref 14000a194 14000b160 DATA
+ref 14000a198 1400022d0 DATA
+ref 14000a1a0 14000b164 DATA
+ref 14000a1a4 140002310 DATA
+ref 14000a1ac 14000b168 DATA
+ref 14000a1b0 140002390 DATA
+ref 14000a1b8 14000b16c DATA
+ref 14000a1bc 1400023d0 DATA
+ref 14000a1c4 14000b170 DATA
+ref 14000a1c8 140002460 DATA
+ref 14000a1d0 14000b174 DATA
+ref 14000a1d4 140002570 DATA
+ref 14000a1dc 14000b178 DATA
+ref 14000a1e0 1400025c0 DATA
+ref 14000a1e8 14000b184 DATA
+ref 14000a1ec 1400026b0 DATA
+ref 14000a1f4 14000b18c DATA
+ref 14000a1f8 140002710 DATA
+ref 14000a200 14000b194 DATA
+ref 14000a204 1400028a0 DATA
+ref 14000a20c 14000b1ac DATA
+ref 14000a210 1400029f0 DATA
+ref 14000a218 14000b1b8 DATA
+ref 14000a21c 140002a40 DATA
+ref 14000a224 14000b1c4 DATA
+ref 14000a228 140002ae0 DATA
+ref 14000a230 14000b1cc DATA
+ref 14000a234 140003010 DATA
+ref 14000a23c 14000b1e4 DATA
+ref 14000a240 1400033c0 DATA
+ref 14000a248 14000b1fc DATA
+ref 14000a24c 140003510 DATA
+ref 14000a254 14000b210 DATA
+ref 14000a258 1400038f0 DATA
+ref 14000a260 14000b220 DATA
+ref 14000a264 1400039c0 DATA
+ref 14000a26c 14000b22c DATA
+ref 14000a270 140003a60 DATA
+ref 14000a278 14000b238 DATA
+ref 14000a27c 140003b40 DATA
+ref 14000a284 14000b244 DATA
+ref 14000a288 140003cc0 DATA
+ref 14000a290 14000b250 DATA
+ref 14000a294 140004180 DATA
+ref 14000a29c 14000b264 DATA
+ref 14000a2a0 140004c50 DATA
+ref 14000a2a8 14000b27c DATA
+ref 14000a2ac 140004c90 DATA
+ref 14000a2b4 14000b284 DATA
+ref 14000a2b8 140004d10 DATA
+ref 14000a2c0 14000b290 DATA
+ref 14000a2c4 140004d40 DATA
+ref 14000a2cc 14000b294 DATA
+ref 14000a2d0 140004ec0 DATA
+ref 14000a2d8 14000b2ac DATA
+ref 14000a2dc 140006650 DATA
+ref 14000a2e4 14000b2c4 DATA
+ref 14000a2e8 140006750 DATA
+ref 14000a2f0 14000b2d4 DATA
+ref 14000a2f4 140006790 DATA
+ref 14000a2fc 14000b2d8 DATA
+ref 14000a300 140006870 DATA
+ref 14000a308 14000b2e4 DATA
+ref 14000a30c 1400068c0 DATA
+ref 14000a314 14000b2ec DATA
+ref 14000a318 1400069b0 DATA
+ref 14000a320 14000b2f8 DATA
+ref 14000a324 140006a20 DATA
+ref 14000a32c 14000b300 DATA
+ref 14000a330 140006ae0 DATA
+ref 14000a338 14000b310 DATA
+ref 14000a33c 140006ba0 DATA
+ref 14000a344 14000b318 DATA
+ref 14000a348 140006d00 DATA
+ref 14000a350 14000b330 DATA
+ref 14000a354 140006e80 DATA
+ref 14000a35c 14000b340 DATA
+ref 14000a360 140006f90 DATA
+ref 14000a368 14000b354 DATA
+ref 14000a36c 140006fe0 DATA
+ref 14000a374 14000b358 DATA
+ref 14000a378 1400071c0 DATA
+ref 14000a380 14000b36c DATA
+ref 14000a384 1400072d0 DATA
+ref 14000a38c 14000b378 DATA
+ref 14000a390 1400073f0 DATA
+ref 14000a398 14000b388 DATA
+ref 14000a39c 140007420 DATA
+ref 14000a3a4 14000b38c DATA
+ref 14000a3a8 140007450 DATA
+ref 14000a3b0 14000b390 DATA
+ref 14000a3b4 140007480 DATA
+ref 14000a3bc 14000b394 DATA
+ref 14000a3c0 140007490 DATA
+ref 14000a3c8 14000b398 DATA
+ref 14000a3cc 1400074a0 DATA
+ref 14000a3d4 14000b39c DATA
+ref 14000a3d8 140007510 DATA
+ref 14000a3e0 14000b3a4 DATA
+ref 14000a3e4 140007570 DATA
+ref 14000a3ec 14000b3ac DATA
+ref 14000a3f0 140007580 DATA
+ref 14000a3f8 14000b3b0 DATA
+ref 14000a3fc 140007590 DATA
+ref 14000a404 14000b3b4 DATA
+ref 14000a408 1400075b0 DATA
+ref 14000a410 14000b3bc DATA
+ref 14000a414 140007640 DATA
+ref 14000a41c 14000b3c4 DATA
+ref 14000a420 140007680 DATA
+ref 14000a428 14000b3d0 DATA
+ref 14000a42c 140007780 DATA
+ref 14000a434 14000b3e4 DATA
+ref 14000a438 1400078e0 DATA
+ref 14000a440 14000b3f0 DATA
+ref 14000a444 140007950 DATA
+ref 14000a44c 14000b400 DATA
+ref 14000a450 140007a60 DATA
+ref 14000a458 14000b414 DATA
+ref 14000a45c 140007c30 DATA
+ref 14000a464 14000b080 DATA
+ref 14000a468 140007c60 DATA
+ref 14000a470 14000b424 DATA
+ref 14000b02c 140007ac0 DATA
+ref 14000b04c 140007ac0 DATA
+data 140000000 IMAGE_DOS_HEADER 128
+data 140000080 IMAGE_NT_HEADERS64 264
+data 140000188 IMAGE_SECTION_HEADER 40
+data 1400001b0 IMAGE_SECTION_HEADER 40
+data 1400001d8 IMAGE_SECTION_HEADER 40
+data 140000200 IMAGE_SECTION_HEADER 40
+data 140000228 IMAGE_SECTION_HEADER 40
+data 140000250 IMAGE_SECTION_HEADER 40
+data 140000278 IMAGE_SECTION_HEADER 40
+data 1400002a0 IMAGE_SECTION_HEADER 40
+data 1400002c8 IMAGE_SECTION_HEADER 40
+data 1400002f0 IMAGE_SECTION_HEADER 40
+data 140000318 IMAGE_SECTION_HEADER 40
+data 140000340 IMAGE_SECTION_HEADER 40
+data 140000368 IMAGE_SECTION_HEADER 40
+data 140000390 IMAGE_SECTION_HEADER 40
+data 1400003b8 IMAGE_SECTION_HEADER 40
+data 1400003e0 IMAGE_SECTION_HEADER 40
+data 140000408 IMAGE_SECTION_HEADER 40
+data 140000430 IMAGE_SECTION_HEADER 40
+data 140009040 IMAGE_THUNK_DATA64 40
+data 140009e00 pointer 8
+data 140009e08 pointer 8
+data 14000a000 _IMAGE_RUNTIME_FUNCTION_ENTRY[95] 1140
+data 14000b000 PEx64_UnwindInfo 4
+data 14000b004 PEx64_UnwindInfo 6
+data 14000b00c PEx64_UnwindInfo 6
+data 14000b014 PEx64_UnwindInfo 16
+data 14000b024 PEx64_UnwindInfo 12
+data 14000b044 PEx64_UnwindInfo 12
+data 14000b064 PEx64_UnwindInfo 6
+data 14000b06c PEx64_UnwindInfo 4
+data 14000b070 PEx64_UnwindInfo 4
+data 14000b074 PEx64_UnwindInfo 8
+data 14000b07c PEx64_UnwindInfo 4
+data 14000b080 PEx64_UnwindInfo 6
+data 14000b088 PEx64_UnwindInfo 6
+data 14000b090 PEx64_UnwindInfo 10
+data 14000b09c PEx64_UnwindInfo 4
+data 14000b0a0 PEx64_UnwindInfo 4
+data 14000b0a4 PEx64_UnwindInfo 6
+data 14000b0ac PEx64_UnwindInfo 10
+data 14000b0b8 PEx64_UnwindInfo 4
+data 14000b0bc PEx64_UnwindInfo 22
+data 14000b0d4 PEx64_UnwindInfo 4
+data 14000b0d8 PEx64_UnwindInfo 10
+data 14000b0e4 PEx64_UnwindInfo 12
+data 14000b0f0 PEx64_UnwindInfo 24
+data 14000b108 PEx64_UnwindInfo 6
+data 14000b110 PEx64_UnwindInfo 4
+data 14000b114 PEx64_UnwindInfo 8
+data 14000b11c PEx64_UnwindInfo 16
+data 14000b12c PEx64_UnwindInfo 12
+data 14000b138 PEx64_UnwindInfo 10
+data 14000b144 PEx64_UnwindInfo 8
+data 14000b14c PEx64_UnwindInfo 4
+data 14000b150 PEx64_UnwindInfo 4
+data 14000b154 PEx64_UnwindInfo 12
+data 14000b160 PEx64_UnwindInfo 4
+data 14000b164 PEx64_UnwindInfo 4
+data 14000b168 PEx64_UnwindInfo 4
+data 14000b16c PEx64_UnwindInfo 4
+data 14000b170 PEx64_UnwindInfo 4
+data 14000b174 PEx64_UnwindInfo 4
+data 14000b178 PEx64_UnwindInfo 12
+data 14000b184 PEx64_UnwindInfo 6
+data 14000b18c PEx64_UnwindInfo 8
+data 14000b194 PEx64_UnwindInfo 22
+data 14000b1ac PEx64_UnwindInfo 12
+data 14000b1b8 PEx64_UnwindInfo 10
+data 14000b1c4 PEx64_UnwindInfo 6
+data 14000b1cc PEx64_UnwindInfo 24
+data 14000b1e4 PEx64_UnwindInfo 24
+data 14000b1fc PEx64_UnwindInfo 18
+data 14000b210 PEx64_UnwindInfo 14
+data 14000b220 PEx64_UnwindInfo 12
+data 14000b22c PEx64_UnwindInfo 10
+data 14000b238 PEx64_UnwindInfo 10
+data 14000b244 PEx64_UnwindInfo 12
+data 14000b250 PEx64_UnwindInfo 18
+data 14000b264 PEx64_UnwindInfo 24
+data 14000b27c PEx64_UnwindInfo 8
+data 14000b284 PEx64_UnwindInfo 12
+data 14000b290 PEx64_UnwindInfo 4
+data 14000b294 PEx64_UnwindInfo 22
+data 14000b2ac PEx64_UnwindInfo 24
+data 14000b2c4 PEx64_UnwindInfo 14
+data 14000b2d4 PEx64_UnwindInfo 4
+data 14000b2d8 PEx64_UnwindInfo 12
+data 14000b2e4 PEx64_UnwindInfo 8
+data 14000b2ec PEx64_UnwindInfo 10
+data 14000b2f8 PEx64_UnwindInfo 8
+data 14000b300 PEx64_UnwindInfo 14
+data 14000b310 PEx64_UnwindInfo 8
+data 14000b318 PEx64_UnwindInfo 22
+data 14000b330 PEx64_UnwindInfo 14
+data 14000b340 PEx64_UnwindInfo 20
+data 14000b354 PEx64_UnwindInfo 4
+data 14000b358 PEx64_UnwindInfo 18
+data 14000b36c PEx64_UnwindInfo 10
+data 14000b378 PEx64_UnwindInfo 14
+data 14000b388 PEx64_UnwindInfo 4
+data 14000b38c PEx64_UnwindInfo 4
+data 14000b390 PEx64_UnwindInfo 4
+data 14000b394 PEx64_UnwindInfo 4
+data 14000b398 PEx64_UnwindInfo 4
+data 14000b39c PEx64_UnwindInfo 8
+data 14000b3a4 PEx64_UnwindInfo 8
+data 14000b3ac PEx64_UnwindInfo 4
+data 14000b3b0 PEx64_UnwindInfo 4
+data 14000b3b4 PEx64_UnwindInfo 8
+data 14000b3bc PEx64_UnwindInfo 6
+data 14000b3c4 PEx64_UnwindInfo 12
+data 14000b3d0 PEx64_UnwindInfo 20
+data 14000b3e4 PEx64_UnwindInfo 10
+data 14000b3f0 PEx64_UnwindInfo 16
+data 14000b400 PEx64_UnwindInfo 20
+data 14000b414 PEx64_UnwindInfo 14
+data 14000b424 PEx64_UnwindInfo 4
+data 14000d000 dword 4
+data 14000d004 dword 4
+data 14000d008 dword 4
+data 14000d00c dword 4
+data 14000d010 dword 4
+data 14000d014 dword 4
+data 14000d018 dword 4
+data 14000d01c dword 4
+data 14000d020 dword 4
+data 14000d024 dword 4
+data 14000d040 qword 8
+data 14000d048 qword 8
+data 14000d050 qword 8
+data 14000d058 qword 8
+data 14000d060 qword 8
+data 14000d068 qword 8
+data 14000d070 qword 8
+data 14000d078 qword 8
+data 14000d080 qword 8
+data 14000d088 qword 8
+data 14000d090 qword 8
+data 14000d098 qword 8
+data 14000d0a0 qword 8
+data 14000d0b0 qword 8
+data 14000d0b8 qword 8
+data 14000d0c0 qword 8
+data 14000d0c8 qword 8
+data 14000d0d0 qword 8
+data 14000d0d8 qword 8
+data 14000d0e0 qword 8
+data 14000d0e8 qword 8
+data 14000d0f0 qword 8
+data 14000d0f8 qword 8
+data 14000d100 qword 8
+data 14000d108 qword 8
+data 14000d110 qword 8
+data 14000d118 qword 8
+data 14000d120 qword 8
+data 14000d128 qword 8
+data 14000d130 qword 8
+data 14000d138 qword 8
+data 14000d140 qword 8
+data 14000d148 qword 8
+data 14000d150 qword 8
+data 14000d158 qword 8
+data 14000d160 qword 8
+data 14000d168 qword 8
+data 14000d170 qword 8
+data 14000d178 qword 8
+data 14000d180 qword 8
+data 14000d188 qword 8
+data 14000d190 qword 8
+data 14000d198 qword 8
+data 14000d1a0 qword 8
+data 14000d1a8 qword 8
+data 14000d1b0 qword 8
+data 14000d1b8 qword 8
+data 14000d1c8 pointer 8
+data 14000d1d0 pointer 8
+data 14000d1d8 pointer 8
+data 14000d1e0 pointer 8
+data 14000d1e8 pointer 8
+data 14000d1f0 pointer 8
+data 14000d1f8 pointer 8
+data 14000d200 pointer 8
+data 14000d208 pointer 8
+data 14000d210 pointer 8
+data 14000d218 pointer 8
+data 14000d220 pointer 8
+data 14000d228 pointer 8
+data 14000d238 pointer 8
+data 14000d240 pointer 8
+data 14000d248 pointer 8
+data 14000d250 pointer 8
+data 14000d258 pointer 8
+data 14000d260 pointer 8
+data 14000d268 pointer 8
+data 14000d270 pointer 8
+data 14000d278 pointer 8
+data 14000d280 pointer 8
+data 14000d288 pointer 8
+data 14000d290 pointer 8
+data 14000d298 pointer 8
+data 14000d2a0 pointer 8
+data 14000d2a8 pointer 8
+data 14000d2b0 pointer 8
+data 14000d2b8 pointer 8
+data 14000d2c0 pointer 8
+data 14000d2c8 pointer 8
+data 14000d2d0 pointer 8
+data 14000d2d8 pointer 8
+data 14000d2e0 pointer 8
+data 14000d2e8 pointer 8
+data 14000d2f0 pointer 8
+data 14000d2f8 pointer 8
+data 14000d300 pointer 8
+data 14000d308 pointer 8
+data 14000d310 pointer 8
+data 14000d318 pointer 8
+data 14000d320 pointer 8
+data 14000d328 pointer 8
+data 14000d330 pointer 8
+data 14000d338 pointer 8
+data 14000d340 pointer 8
+data 14000d350 word 2
+data 14000d352 TerminatedCString 22
+data 14000d368 word 2
+data 14000d36a TerminatedCString 21
+data 14000d380 word 2
+data 14000d382 TerminatedCString 13
+data 14000d390 word 2
+data 14000d392 TerminatedCString 26
+data 14000d3ac word 2
+data 14000d3ae TerminatedCString 17
+data 14000d3c0 word 2
+data 14000d3c2 TerminatedCString 21
+data 14000d3d8 word 2
+data 14000d3da TerminatedCString 20
+data 14000d3ee word 2
+data 14000d3f0 TerminatedCString 28
+data 14000d40c word 2
+data 14000d40e TerminatedCString 6
+data 14000d414 word 2
+data 14000d416 TerminatedCString 12
+data 14000d422 word 2
+data 14000d424 TerminatedCString 15
+data 14000d434 word 2
+data 14000d436 TerminatedCString 13
+data 14000d444 word 2
+data 14000d446 TerminatedCString 20
+data 14000d45a word 2
+data 14000d45c TerminatedCString 21
+data 14000d472 word 2
+data 14000d474 TerminatedCString 20
+data 14000d488 word 2
+data 14000d48a TerminatedCString 19
+data 14000d49e word 2
+data 14000d4a0 TerminatedCString 14
+data 14000d4ae word 2
+data 14000d4b0 TerminatedCString 10
+data 14000d4ba word 2
+data 14000d4bc TerminatedCString 11
+data 14000d4c8 word 2
+data 14000d4ca TerminatedCString 15
+data 14000d4da word 2
+data 14000d4dc TerminatedCString 17
+data 14000d4ee word 2
+data 14000d4f0 TerminatedCString 11
+data 14000d4fc word 2
+data 14000d4fe TerminatedCString 7
+data 14000d506 word 2
+data 14000d508 TerminatedCString 9
+data 14000d512 word 2
+data 14000d514 TerminatedCString 7
+data 14000d51c word 2
+data 14000d51e TerminatedCString 7
+data 14000d526 word 2
+data 14000d528 TerminatedCString 10
+data 14000d532 word 2
+data 14000d534 TerminatedCString 6
+data 14000d53a word 2
+data 14000d53c TerminatedCString 8
+data 14000d544 word 2
+data 14000d546 TerminatedCString 8
+data 14000d54e word 2
+data 14000d550 TerminatedCString 6
+data 14000d556 word 2
+data 14000d558 TerminatedCString 7
+data 14000d560 word 2
+data 14000d562 TerminatedCString 5
+data 14000d568 word 2
+data 14000d56a TerminatedCString 8
+data 14000d572 word 2
+data 14000d574 TerminatedCString 6
+data 14000d57a word 2
+data 14000d57c TerminatedCString 5
+data 14000d582 word 2
+data 14000d584 TerminatedCString 7
+data 14000d58c word 2
+data 14000d58e TerminatedCString 11
+data 14000d59a word 2
+data 14000d59c TerminatedCString 7
+data 14000d5a4 word 2
+data 14000d5a6 TerminatedCString 7
+data 14000d5ae word 2
+data 14000d5b0 TerminatedCString 7
+data 14000d5b8 word 2
+data 14000d5ba TerminatedCString 7
+data 14000d5c2 word 2
+data 14000d5c4 TerminatedCString 9
+data 14000d5ce word 2
+data 14000d5d0 TerminatedCString 7
+data 14000d5d8 word 2
+data 14000d5da TerminatedCString 8
+data 14000d5e2 word 2
+data 14000d5e4 TerminatedCString 9
+data 14000d5ee word 2
+data 14000d5f0 TerminatedCString 7
+data 14000d62c TerminatedCString 13
+data 14000d6c4 TerminatedCString 11
+data 14000f000 dword 4
+data 14000f004 dword 4
+data 14000f008 word 2
+data 14000f00a word 2
+data 14000f00c word 2
+data 14000f00e word 2
+data 14000f010 word 2
+data 14000f012 word 2
+data 14000f014 word 2
+data 14000f016 word 2
+data 14000f018 word 2
+data 14000f01a word 2
+data 14000f01c dword 4
+data 14000f020 dword 4
+data 14000f024 word 2
+data 14000f026 word 2
+data 14000f028 word 2
+data 14000f02a word 2
+data 14000f02c word 2
+data 14000f02e word 2
+data 14000f030 word 2
+data 14000f032 word 2
+data 14000f034 word 2
+data 14000f036 word 2
+data 14000f038 word 2
+data 14000f03a word 2
+data 14000f03c word 2
+data 14000f03e word 2
+data 14000f040 word 2
+data 14000f042 word 2
+data 14000f044 word 2
+data 14000f046 word 2
+data 14000f048 word 2
+data 14000f04a word 2
+data 14000f04c word 2
+data 14000f04e word 2
+data 14000f050 word 2
+data 14000f052 word 2
+data 14000f054 word 2
+data 14000f056 word 2
+data 14000f058 word 2
+data 14000f05a word 2
+data 14000f05c word 2
+data 14000f05e word 2
+data 14000f060 word 2
+data 14000f062 word 2
+data 14000f064 word 2
+data 14000f066 word 2
+data 14000f068 word 2
+data 14000f06a word 2
+data 14000f06c word 2
+data 14000f06e word 2

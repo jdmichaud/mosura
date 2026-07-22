@@ -117,6 +117,33 @@ fn pe_compiler_opinion() {
     );
 }
 
+/// A3 — golden-validate the **Gcc** branch of the PE CompilerOpinion against real MinGW output.
+/// `mingw_hello.exe` is our own `src/mingw_hello.c` built with `x86_64-w64-mingw32-gcc -O2`
+/// (redistributable — our source — so unlike cnv it is committed and always present). Ghidra's
+/// analyzeHeadless golden records `compiler=windows compilerinfo=gcc:unknown`: the `Gcc` family
+/// carries no size-64 secondary in the x86.opinion PE block, so it resolves to the block's
+/// default `windows` cspec, and the opinion label is `gcc:unknown`. `get_opinion` reaches `Gcc`
+/// via the disambiguation path — `e_lfanew==0x80` (GccVs) + the `…DOS mode.\r\r\n$` stub error
+/// (GccVs) + `asm==GccVsClang` + a nonzero `PointerToSymbolTable` (VS would be 0). Second
+/// non-Clang PE compiler exercised end-to-end (cnv covers Clang); the rest of the opinion stays
+/// a faithful line-by-line port.
+#[test]
+fn pe_compiler_opinion_gcc() {
+    let path = analysis_corpus_dir().join("mingw_hello.exe");
+    let golden = snapshot::parse(
+        &std::fs::read_to_string(analysis_goldens_dir().join("mingw_hello.loaded.snapshot")).unwrap(),
+    );
+    let snap = analysis::analyze_binary(&path).unwrap();
+    assert_eq!(snap.compiler, golden.compiler, "mingw: compiler-spec id (opinion secondary → cspec) must match Ghidra");
+    assert_eq!(snap.compiler_info, golden.compiler_info, "mingw: Compiler info property (opinion label) must match Ghidra");
+    assert_eq!(golden.compiler, "windows");
+    assert_eq!(golden.compiler_info, "gcc:unknown");
+    eprintln!(
+        "mingw PE opinion: cspec={} compiler={} (faithful CompilerOpinion.getOpinion → Gcc)",
+        snap.compiler, snap.compiler_info
+    );
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
