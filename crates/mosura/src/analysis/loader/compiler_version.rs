@@ -113,14 +113,22 @@ pub fn detect(data: &[u8]) -> Option<CompilerId> {
 }
 
 /// Adapt [`super::watcom::detect`] (the existing Watcom banner detector) into a [`CompilerId`].
+/// The runtime banner gives the copyright **era** (year range) — verified to be the ceiling for
+/// the banner. For Watcom **PE** output, `wlink` additionally stamps its own version in the PE
+/// optional header (OW 2.0 → 2.18), a finer structural signal; DOS/4GW **LE** output (e.g.
+/// WAR2.EXE) has no such field — there the era plus the bound extender's version are the ceiling.
 fn watcom_id(data: &[u8]) -> Option<CompilerId> {
     let w = super::watcom::detect(data)?;
     let (y0, y1) = w.year_range;
+    let evidence = match pe_linker_version(data) {
+        Some((maj, min)) => format!("{} (+ wlink {maj}.{min})", w.banner),
+        None => w.banner,
+    };
     Some(CompilerId {
         family: Family::Watcom,
         version: format!("{y0}-{y1}"),
         precision: Precision::Era,
-        evidence: w.banner,
+        evidence,
     })
 }
 
@@ -393,5 +401,17 @@ mod tests {
     #[test]
     fn non_compiler_marker_returns_none() {
         assert!(detect(b"just some bytes, no compiler marker here at all").is_none());
+    }
+
+    #[test]
+    fn pe_linker_version_reads_optional_header() {
+        // Minimal PE: e_lfanew=0x40, "PE\0\0" there, MajorLinker=5 MinorLinker=0 at +26/+27.
+        let mut d = vec![0u8; 0x80];
+        d[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        d[0x40..0x44].copy_from_slice(b"PE\0\0");
+        d[0x40 + 26] = 5;
+        d[0x40 + 27] = 0;
+        assert_eq!(super::pe_linker_version(&d), Some((5, 0)));
+        assert_eq!(super::pe_linker_version(b"not a PE at all"), None);
     }
 }
