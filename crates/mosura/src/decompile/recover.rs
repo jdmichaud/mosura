@@ -527,7 +527,7 @@ fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
 /// an adaptation — the full single-trial `characterizeAsOutput` model stays on the backlog.
 pub fn recover_return(f: &mut Funcdata) {
     let Some(reg) = f.spaces.by_name("register") else { return };
-    let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
+    let rets: Vec<OpId> = f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
         for (off, size) in [(RAX, 8), (XMM0, 8)] {
             let v = f.new_varnode(size, Address::new(reg, off));
@@ -577,7 +577,7 @@ fn setup_active_output(f: &mut Funcdata) {
     let reg = f.spaces.by_name("register");
     let mut active = ParamActive::new(reg);
     active.set_max_pass(RETURN_MAXPASS);
-    if let Some(ret) = f.op_ids().find(|&op| f.op(op).code() == OpCode::Return) {
+    if let Some(ret) = f.op_ids().find(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return) {
         let n = f.op(ret).num_inputs();
         for slot in 1..n {
             if let Some(v) = f.op(ret).input(slot) {
@@ -601,7 +601,7 @@ fn setup_active_output(f: &mut Funcdata) {
 /// per-RETURN trial loop (coreaction.cc:1933), with mosura's RETURN iteration fused into the
 /// `any()`. Checked trials contribute 0, so the count bottoms out once every trial is decided.
 fn check_output_trial_use(f: &mut Funcdata) -> u32 {
-    let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
+    let rets: Vec<OpId> = f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect();
     let ntrials = f.active_output.as_ref().map_or(0, |a| a.num_trials());
     let mut count = 0u32;
     let mut verdicts: Vec<usize> = Vec::new(); // indices of trials found realistic this pass
@@ -636,7 +636,7 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
 /// it commits the prune only once the decision is stable. (The per-RETURN realism check — rather
 /// than the shared trial flags — preserves the exact survivors of the old greedy prune.)
 fn build_return_output(f: &mut Funcdata) {
-    let rets: Vec<OpId> = f.op_ids().filter(|&op| f.op(op).code() == OpCode::Return).collect();
+    let rets: Vec<OpId> = f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect();
     for ret in rets {
         let n = f.op(ret).num_inputs();
         // slot 0 is the return address; slots 1.. are the candidate return registers. Keep the first
@@ -657,7 +657,9 @@ fn build_return_output(f: &mut Funcdata) {
 pub fn recover_call_args(f: &mut Funcdata) {
     let Some(reg) = f.spaces.by_name("register") else { return };
     let calls: Vec<OpId> =
-        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+        f.op_ids()
+        .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
     for call in calls {
         for off in ARG_REGS {
             let v = f.new_varnode(8, Address::new(reg, off));
@@ -707,7 +709,9 @@ fn call_specs_in_dominance_order(f: &Funcdata) -> Vec<OpId> {
         rpo_num[b] = i;
     }
     let mut calls: Vec<OpId> =
-        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+        f.op_ids()
+        .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
     calls.sort_by_key(|&op| {
         let ridx = f
             .op(op)
@@ -911,8 +915,16 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
     let reg = f.spaces.by_name("register");
     // The convention's output (return) list, decoded from the compiler spec's `<default_proto>`.
     let Some(outlist) = f.proto_model.output.clone() else { return 0 };
+    // Live calls only: Ghidra's `numCalls()`/`getCallSpecs(i)` loop can never see a destroyed call —
+    // `PcodeOpBank::destroy` (op.cc:989) removes the op from the per-opcode code lists (op.cc:997)
+    // and `deleteCallSpecs` (funcdata.hh:128) prunes its call spec. mosura's `op_ids()` is a flat
+    // range over the append-only op Vec (dead ops included), so every per-opcode collector here
+    // skips dead ops to keep those iteration semantics. A call destroyed with an unreachable block
+    // (blockRemoveInternal) keeps a stale `parent` — deref'ing it is the tm_clones OOB panic (D2).
     let calls: Vec<OpId> =
-        f.op_ids().filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind)).collect();
+        f.op_ids()
+        .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
     for call in calls {
         if f.op(call).output.is_some() {
             continue; // already has a recovered output
