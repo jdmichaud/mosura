@@ -140,6 +140,39 @@ mod tests {
         }
     }
 
+    /// The full Watcom **10.0–11.0 lineage**, validated against the concatenated runtime
+    /// banners pulled from every toolchain's real install ISO (the second oracle; see
+    /// `docs/watcom-detection.md`). Confirms `detect()` reads the right era from each real
+    /// banner across the lineage: the standalone `C 386` runtime is always `1988-1993`, 10.0x
+    /// tops out at `1988-1994`, and 10.5 through 11.0B add the `1988-1995` lib. No runtime
+    /// banner in the lineage exceeds 1995 — the era stamp, not the release.
+    #[test]
+    fn detects_watcom_lineage_eras() {
+        let cases: &[(&str, &str, &str, (u32, u32))] = &[
+            // 10.0 LE preprod + every 10.0x: the standalone C 386 runtime
+            ("WATCOM C 386 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1993. All rights reserved.",
+             "C", "386", (1988, 1993)),
+            // 10.0 / 10.0a: the 1994-era C/C++ runtimes
+            ("WATCOM C/C++16 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1994. All rights reserved.",
+             "C/C++", "16", (1988, 1994)),
+            ("WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1994. All rights reserved.",
+             "C/C++", "32", (1988, 1994)),
+            // 10.5 / 10.6 / 11.0 / 11.0A / 11.0B: the 1995-era lib (lineage cap)
+            ("WATCOM C/C++16 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1995. All rights reserved.",
+             "C/C++", "16", (1988, 1995)),
+            ("WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1995. All rights reserved.",
+             "C/C++", "32", (1988, 1995)),
+        ];
+        for (banner, prod, bits, years) in cases {
+            let info = detect(banner.as_bytes()).unwrap_or_else(|| panic!("no match: {banner}"));
+            assert_eq!(info.vendor, WatcomVendor::WatcomIntl);
+            assert_eq!(info.product, *prod);
+            assert_eq!(info.bitness, *bits);
+            assert_eq!(info.year_range, *years);
+            assert_eq!(info.compiler_label(), format!("watcom:{}-{}", years.0, years.1));
+        }
+    }
+
     /// The Open Watcom banner grammar (open-watcom-v2 `msgcpyrt.h`): the run-time system line
     /// + `Copyright (c) Open Watcom Contributors 2002-<CYEAR>. Portions Copyright (C) Sybase,
     /// Inc. 1988-2002.` — the year range comes from the Contributors line, not the Sybase tail.

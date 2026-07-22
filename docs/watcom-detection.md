@@ -71,11 +71,49 @@ prototypes with watcall and validating them against the warcraft2-re recovered s
 the decompiler's job — that lives in `crates/mosura/src/decompile/` and is task #9's main-agent
 handoff; the cspec is written and ready for it. The 16-bit MZ watcall variant is a follow-up.
 
-## Coverage / follow-up
+## Coverage — measured across the 10.0–11.0 lineage
 
-The **classic Watcom C/C++ 10.x era** (`WATCOM International Corp.`, `1988-1994`) is validated
-end-to-end against two real binaries + the toolchain's own runtime strings. The banner grammar
-covers the classic (`WATCOM International Corp.`) and Open Watcom (`Open Watcom Contributors`)
-vendor lines. Per-version fixtures for the full 8.0–11.0c + Open Watcom 1.x/2.0 range need
-historical toolchains not on hand (only 10.0a + the Open Watcom source are available) — a
-follow-up when those toolchains exist; the detector already recognizes their banner shapes.
+The classic-era grammar is now validated against **every Watcom C/C++ 10.0–11.0 toolchain** —
+their install ISOs streamed through `strings` (the runtime `.lib` banners are the second
+oracle; no dosemu needed, the libraries are stored plainly on the ISOs). The table below is
+the set of **concatenated runtime banners** each toolchain ships — the exact string a linked
+binary embeds and `detect()` reads:
+
+| Toolchain | `WATCOM C 386` | `WATCOM C/C++16` | `WATCOM C/C++32` | max era |
+| --- | --- | --- | --- | --- |
+| 10.0 LE preprod (Mar 1994) | `1988-1993` | — | — | **1993** |
+| 10.0 retail | `1988-1993` | `1988-1994` | `1988-1993`, `1988-1994` | **1994** |
+| 10.0a | `1988-1993` | `1988-1994` | `1988-1993`, `1988-1994` | **1994** |
+| 10.5 | — | `1988-1994`, `1988-1995` | `1988-1994`, `1988-1995` | **1995** |
+| 10.6 | — | `1988-1994`, `1988-1995` | `1988-1994`, `1988-1995` | **1995** |
+| 11.0 / 11.0A / 11.0B | — | `1988-1994`, `1988-1995` | `1988-1994`, `1988-1995` | **1995** |
+
+Findings (measured, not inferred):
+
+- **The copyright range is an era stamp on the individual runtime lib, and it accumulates** —
+  a toolchain ships its older-era libs alongside the new one, so the *max* range present is
+  the build era. No runtime banner in the whole 10.0–11.0 lineage exceeds `1988-1995`.
+- **10.5 through 11.0B are indistinguishable by runtime banner** (all carry the `1994`+`1995`
+  libs). This confirms the "era fingerprint, not release" property across the full lineage —
+  not just 10.0a. The precise release lives only in the tool banner (`wcc386` "Version 10.6").
+- **`WATCOM C 386`** (the standalone pre-C++ 386 runtime, always `1988-1993`) exists only in
+  10.0x; it is gone by 10.5.
+- Every toolchain uses the `WATCOM International Corp.` vendor line and the documented banner
+  shape, so **the detector's grammar already matches the entire 10.0–11.0 range** — now
+  measured against 8 real ISOs (`detects_watcom_lineage_eras`), not assumed.
+- **WAR2.EXE's `1988-1994` cap** is consistent with a 10.0/10.0a-era toolchain and excludes
+  10.5+ (which would make a `1988-1995` lib available) — the `warcraft2-re` cap argument, now
+  empirically grounded.
+
+## Follow-up: pre-10.0 (floppy) toolchains
+
+The 7.0 / 8.5a / 9.01 / 9.5b distributions are floppy-image sets whose runtime libraries are
+**packed** (`WATCOMC.WPK` / `.HPK`, expanded by the installer's `unpack`), so `strings` on the
+raw images sees only installer text, not the embedded runtime banner. 9.01's installer text
+does reveal an *earlier vendor wording* — `(c) Copyright by WATCOM Systems Inc. 1990-1991`
+(**"Systems Inc."**, not "International Corp.") — which the current regex would **not** match.
+Whether a 9.01-*compiled* binary actually embeds that wording (vs. the installer merely using
+it) needs the packed `.wpk` unpacked via a dosemu install to confirm; if it does, the vendor
+alternation gains a `Systems Inc.` arm plus a real fixture. Open Watcom 1.x/2.0 (`Open Watcom
+Contributors`) remains grammar-covered + unit-tested; a per-release fixture is a further
+follow-up.
