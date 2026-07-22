@@ -248,21 +248,19 @@ pub mod gcc {
     }
 
     pub fn detect(data: &[u8]) -> Option<CompilerId> {
-        let mut best: Option<(Vec<u32>, String)> = None;
+        // (version-key, version, full matched marker) — the full match keeps the real vendor
+        // (`(GNU)`, `(Debian ...)`, `(Ubuntu ...)`) for honest evidence, not a reconstruction.
+        let mut best: Option<(Vec<u32>, String, String)> = None;
         for c in re().captures_iter(data) {
             let raw = String::from_utf8_lossy(&c[1]).into_owned();
+            let full = String::from_utf8_lossy(&c[0]).into_owned();
             let key: Vec<u32> = raw.split(['.', '-']).map(|p| p.parse().unwrap_or(0)).collect();
-            if best.as_ref().is_none_or(|(bk, _)| key > *bk) {
-                best = Some((key, raw));
+            if best.as_ref().is_none_or(|(bk, ..)| key > *bk) {
+                best = Some((key, raw, full));
             }
         }
-        let (_, ver) = best?;
-        Some(CompilerId {
-            family: Family::Gcc,
-            version: ver.clone(),
-            precision: Precision::Exact,
-            evidence: format!("GCC: (GNU) {ver}"),
-        })
+        let (_, ver, evidence) = best?;
+        Some(CompilerId { family: Family::Gcc, version: ver, precision: Precision::Exact, evidence })
     }
 }
 

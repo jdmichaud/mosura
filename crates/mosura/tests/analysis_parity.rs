@@ -244,9 +244,10 @@ fn pe_compiler_opinion_msvc() {
 fn compiler_version_committed_fixtures() {
     use mosura::analysis::loader::compiler_version::{detect, Family, Precision};
     let cases: &[(&str, Family, &str, Precision)] = &[
-        ("mingw_hello.exe", Family::Gcc, "14-win32", Precision::Exact),
+        ("mingw_hello.exe", Family::Gcc, "14-win32", Precision::Exact), // GCC on PE
         ("mingw_hello32.exe", Family::Gcc, "14-win32", Precision::Exact),
-        ("watcom_hello.exe", Family::Watcom, "1988-1994", Precision::Era),
+        ("basic.elf", Family::Gcc, "14.2.0", Precision::Exact), // GCC on ELF (.comment) — same detector
+        ("watcom_hello.exe", Family::Watcom, "1988-1994", Precision::Era), // Watcom on LE/MZ
     ];
     for (name, fam, ver, prec) in cases {
         let path = analysis_corpus_dir().join(name);
