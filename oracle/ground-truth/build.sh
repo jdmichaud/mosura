@@ -206,7 +206,7 @@ fi
 #     truth small); wlink emits a Linux ELF32 i386 (EM_386 -> x86:LE:32:default). Watcom writes
 #     non-standard ELF section headers that mosura's ELF parser rejects, so host `objcopy`
 #     normalizes it into a clean GNU ELF (also the source of the truth). Truth via the ELF path.
-WATROOT="${GT_WATCOM:-$HOME/tools/open-watcom-v2/rel}"
+WATROOT="${GT_WATCOM:-$HOME/tools/open-watcom}"
 build_watcom() {
   local prog="$1"
   local stripped="$prog.watcom-x86-32" norm="$prog.watcom-x86-32.norm"

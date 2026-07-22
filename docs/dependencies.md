@@ -82,7 +82,7 @@ Notes on the Ghidra BUILD/TEST dependency:
 | riscv64 cross-gcc | `n/a` (PATH: `riscv64-linux-gnu-gcc`) | apt `gcc-14-riscv64-linux-gnu` **14.2.0-19cross1** | `riscv.elf` |
 | m68k cross-gcc | `n/a` (PATH: `m68k-linux-gnu-gcc`) | apt `gcc-14-m68k-linux-gnu` **14.2.0-19cross1** | `m68k.elf` |
 | sdcc (+ `sdasz80`/`sdldz80`/`makebin`) | `n/a` (PATH: `sdcc`) | apt `sdcc` **4.5.0+dfsg-1** | `z80.com` |
-| **Open Watcom** (source + built `wcc386`) | `WATCOM → $HOME/tools/open-watcom-v2` (`wcc386` at `$WATCOM/rel/binl/wcc386`) | git `open-watcom/open-watcom-v2` HEAD `4e566a7891` (`Current-build-4-g4e566a7891`) | empirical `watcall` cross-check + `watcall_probe.c` (runs native on Linux — no dosemu2) |
+| **Open Watcom** (built `wcc386`, native Linux) | `GT_WATCOM → $HOME/tools/open-watcom` (`wcc386` at `$GT_WATCOM/binl/wcc386`) | built from git `open-watcom/open-watcom-v2` HEAD `4e566a7891`; **source tree dropped, only the ~295 MB release retained** (grounding is committed — cspec citations + inlined banner strings) | empirical `watcall` cross-check + `watcall_probe.c` + the `narrowsw`/`watprog` ground-truth columns (runs native on Linux — no dosemu2) |
 | **Watcom 10.0a toolchain** (historical, under dosemu2) | *unpinned — see [Gaps](#gaps--honesty-notes)* | release **10.0a** (not publicly pinned) | `watcom_hello.exe` fixture + CLIB3R.LIB banner strings |
 | **dosemu2** (to run the DOS Watcom 10.0a tools) | `n/a` (PATH: `dosemu`) | `dosemu2-2.0pre9-dev-20260428-4642-gc24eb0498` (source/PPA build, not dpkg-owned) | prerequisite for the Watcom 10.0a fixture regen only |
 | **warcraft2-re** (RE ground truth, read-only) | `WARCRAFT2_RE → $HOME/projects/warcraft2-re` | git `github.com/jdmichaud/warcaft2-re` HEAD `71f8193` | reference (not executed): WAR2 objects/entry/switch ground truth for the native-LE two-oracle path |
@@ -135,6 +135,52 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
 - **Ghidra distribution** (`scripts/build-ghidra-dist.sh`): JDK 21, the bundled `./gradlew`
   wrapper, network access for the first dependency fetch, and a UTF-8 locale
   (`LC_ALL=C.UTF-8`; the build sets it — a non-ASCII jar entry trips ASCII `sun.jnu.encoding`).
+
+### Compiler-detection & version fixtures — historical toolchains (DEV-ORACLE)
+
+Used **only** to regenerate PE/MZ compiler-detection fixtures (`pe_compiler_opinion`) and the
+Watcom banner→version table (`watcom_detection`); the resulting fixtures + goldens are
+**committed**, so `cargo test` never needs any of this. All of it is a beyond-Ghidra /
+WAR2-recompilation aid, not a build/test dependency.
+
+- **Toolchain archives** live outside the repo at `MOSURA_TOOLS → $HOME/projects/tools`
+  (env-var-located, `$HOME`-relative default — no absolute path). Three families, each as raw
+  `.7z`/ISO archives, **extracted on demand** (`7z x …`) into the scratch workspace:
+  `watcom/` (9.5b, 10.0 LA preprod, 10.0a, 10.5, 10.6, 11.0, 11.0a — see `watcom/README.md`),
+  `borland_turbo_c/` (Turbo C 1.0–2.01, Borland C++ 2.0–4.52/5), `visual_studio/`
+  (MSVC 1.52, 2.0, 4.0, 5, 6.0, VS97, 2005).
+- **Runners — a compiler needs the host it targets:**
+  - **`dosemu2`** (PATH `dosemu`) runs the **DOS-hosted** compilers → 16-bit MZ / DOS-extended
+    output: the Watcom `wcc386`/`wpp386` family (all eras), Turbo C 2.0, MSVC 1.52.
+  - **`wine`** runs the **Win32-hosted** compilers → real PE output: MSVC 4.0/5/6.0, Borland
+    C++ 4.x/5.x. `dosemu` **cannot** run these (16-bit DOS only). Only the genuine MSVC/Borland
+    compilers produce the DOS-stub / `e_lfanew` / error-string tells `CompilerOpinion` keys on,
+    so wine is the faithful path for the **VisualStudio** and **Borland** detection branches.
+- **Native cross-compilers** (no wine) for the *other* `CompilerOpinion` branches:
+  `gcc-mingw-w64` → **GCC** PE; `clang` → **Clang** PE (`clang-cl` approximates MSVC but is not
+  it); `golang-go` (`GOOS=windows`) → **GOLANG**; `rustc`/rustup (`--target *-windows`) → **Rustc**.
+
+**Debian 13 (trixie) install — packages verified present in apt:**
+
+```sh
+# A2 (32-bit dynamic ELF) — already required:
+sudo apt install -y gcc-multilib libc6-dev-i386
+
+# PE detection of the provided MSVC + Borland compilers (the primary need) — wine.
+# MSVC/Borland here are 32-bit Windows apps, so i386 must be enabled for wine32:
+sudo dpkg --add-architecture i386 && sudo apt update
+sudo apt install -y wine wine64 wine32:i386 winbind          # winbind: wine runtime dep
+sudo apt install -y p7zip-full                               # extract the ISO/.7z archives
+
+# Optional — native cross-compilers for the other CompilerOpinion branches (no wine):
+sudo apt install -y gcc-mingw-w64      # GCC PE  (14.2.0; x86-64 + i686)
+sudo apt install -y clang              # Clang PE
+sudo apt install -y golang-go          # GOLANG PE (GOOS=windows go build)
+# rustc is packaged (rustc 1.85) but Windows cross-targets are easiest via rustup.
+```
+
+`dosemu2` itself is a source/PPA build (see the Watcom-10.0a gap note below), not a distro
+package.
 
 ## Gaps / honesty notes
 
