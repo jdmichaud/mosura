@@ -61,9 +61,22 @@ Three distinguishable signatures, with two boundaries: **promote → byte** betw
 (`cmp eax,5`) is **unique to the early 10.0 line** — which is exactly the WAR2 base the
 `warcraft2-re` codegen investigation identified, now confirmed through mosura's tooling.
 
-A second, independent dimension from `loop(int n){int s=0,i;for(i=0;i<n;i++)s+=i;return s;}`
-(10.0a vs OW 2.0): **register allocation** (`n` in `ebx` vs `ecx`) and **loop shape**
-(body-then-test bottom loop vs test-first). More constructs → a denser fingerprint.
+### Combined fingerprint — three constructs uniquely identify each revision
+
+No single probe separates all four revisions, but each construct draws its boundary at a
+*different* point, so the tuple is unique:
+
+| revision | `cmpbyte` | `loop` (reg / shape) | `sw` (compare order) |
+| --- | --- | --- | --- |
+| **10.0a** | `cmp eax,5` (promote) | `ebx`, jmp-to-bottom test | `1,2` |
+| **10.6** | `cmp al,5` | `ebx`, jmp-to-bottom test | `1,2` |
+| **11.0** | `cmp al,5` | `ecx`, test-first | `1,2` |
+| **OW 2.0** | `cmp al,5 ; movzx` | `ecx`, test-first | `2,1` (reversed) |
+
+Three independent boundaries at different revisions: byte-compare-promotion (**10.0a → 10.6**),
+`loop` register `ebx→ecx` + loop-shape (**10.6 → 11.0**), and `sw` compare-order + the `movzx`
+(**classic → Open Watcom**). Together they pin the revision far tighter than any one signal —
+and 10.0a's `(eax, ebx, 1,2)` tuple is the WAR2 base fingerprint.
 
 Notes: 10.5 didn't run under dosemu2 here (its `W32RUN`/`DOS4GW` loader hit a "Loader read
 error"); the four points above already bracket the transition. 11.0's DOS host lives in `BINW`
