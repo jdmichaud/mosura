@@ -1,0 +1,10 @@
+# mosura-ground-truth v1 program=narrowsw compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=narrowsw.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_
+func 08048126 0 sw_int_
+func 0804818a 0 sw_short_
+func 080481d0 0 main_
+switch 804812b
+switch 8048193

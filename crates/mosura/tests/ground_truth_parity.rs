@@ -129,3 +129,65 @@ fn ground_truth_parity() {
     assert!(evaluated > 0, "no ground-truth binaries evaluated (corpus missing?)");
     eprintln!("ground-truth parity: {evaluated} binary(ies) vs source-derived oracle (not Ghidra)");
 }
+
+/// Narrowed-switch jump-table recovery — the source-reduced repro of the unrecovered WAR2.EXE
+/// protected-mode switch dispatches (`analysis_parity::le_war2_analysis`; sites 0x513a8 / 0x58afb
+/// / 0x6af52 / 0x199b7). `narrowsw` (Open Watcom, `src/narrowsw.c`) is a differential pair Watcom
+/// compiles to jump tables — the ONLY difference is the sub-`int` narrowing of the switch variable
+/// between the guard and the table index. `sw_int` (`switch(int x)`) lowers to
+/// `cmp EAX,7; ja; jmp [EAX*4+table]`; `sw_short` (`short x=..; switch(x)`) lowers to
+/// `cmp AX,7; ja; movzx EAX,AX; jmp [EAX*4+table]`.
+/// mosura's decompiler recovers `sw_int` but NOT `sw_short`; Ghidra's decompiler recovers BOTH
+/// (confirmed on these exact bytes via the libdecomp `oracle/capture --c`). So `sw_short` is a
+/// faithful-port GAP in the DECOMPILER lane (jumptable/JumpBasic: the narrow guard variable
+/// `SUBPIECE(x,0)` is not tied to the widened table index `ZEXT`/`AND` of the same low bits) —
+/// filed in `docs/decompiler-bug-narrow-switch.md`. This test PINS the differential: the control
+/// stays recovered, and the gap is asserted as still-open so that closing it (the decompiler fix)
+/// trips this test — the signal to update the handoff + flip the sentinel. Skipped if the corpus
+/// binary is absent (regeneration-only toolchain).
+#[test]
+fn narrow_switch_recovery_gap() {
+    let bin = ground_truth_dir().join("narrowsw.watcom-x86-32");
+    if !bin.exists() {
+        eprintln!("skip narrow_switch_recovery_gap: {} absent", bin.display());
+        return;
+    }
+    let prog = analysis::analyze_file(&bin).expect("analyze narrowsw");
+    // Dispatch sites from the build-derived truth (objdump `jmp *`): sw_int @ 0x804812b,
+    // sw_short @ 0x8048193; both are disassembled BRANCHIND candidates.
+    let (sw_int_disp, sw_short_disp) = (0x0804812bu64, 0x08048193u64);
+    assert!(prog.indirect_branches.contains(&sw_int_disp), "sw_int BRANCHIND disassembled");
+    assert!(prog.indirect_branches.contains(&sw_short_disp), "sw_short BRANCHIND disassembled");
+
+    let cj_targets = |disp: u64| -> BTreeSet<u64> {
+        prog.reference_manager
+            .references()
+            .filter(|r| r.ref_type == RefType::ComputedJump && r.from.offset == disp)
+            .map(|r| r.to.offset)
+            .collect()
+    };
+
+    // CONTROL: the 32-bit-variable switch is fully recovered — 8 COMPUTED_JUMP case targets.
+    // (Regression gate: mosura must keep recovering the plain dense switch.)
+    assert_eq!(
+        cj_targets(sw_int_disp).len(),
+        8,
+        "sw_int (32-bit switch) must recover its 8-case jump table"
+    );
+
+    // GAP SENTINEL: the narrowed (16-bit) switch is NOT recovered today — mosura's decompiler
+    // produces no jump table for it (see docs/decompiler-bug-narrow-switch.md). Ghidra recovers
+    // it. When the decompiler lane closes this gap, `sw_short` will gain its 8 targets and this
+    // assertion will fail — DELETE the sentinel, assert the 8 targets like sw_int, and close the
+    // handoff. This is the faithful-port gate: the gap is the decompiler's, not the analysis lane's.
+    assert!(
+        cj_targets(sw_short_disp).is_empty(),
+        "narrow-switch decompiler gap CLOSED (sw_short now recovers {:?}) — update the handoff \
+         (docs/decompiler-bug-narrow-switch.md) and assert full recovery like sw_int",
+        cj_targets(sw_short_disp)
+    );
+    eprintln!(
+        "narrow-switch gap: sw_int recovers 8 targets (control); sw_short recovers 0 \
+         (decompiler-lane gap, Ghidra recovers) — pinned"
+    );
+}
