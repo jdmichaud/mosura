@@ -78,6 +78,22 @@ arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build cach
   committed, tests skip-if-absent via `MOSURA_VC6_EXE`/`MOSURA_BC45_EXE`. Extracted
   toolchains live in `/data/{borland,msvc}` (the compiler trees are directly on the CDs —
   no installer). Follow-up (optional): CLI/managed (.NET), Rust, Go, Swift branches.
+
+- **A3-V — compiler VERSION detection** (user-directed 2026-07-22: "handle all versions,
+  recognize which is which, exact where possible"). Beyond-Ghidra second oracle refining the
+  family opinion into a specific version. **Phase 1 (detector) `4b524c3` + Phase 2 (wired into
+  loader→program→snapshot) `ccced8d` DONE.** `loader::compiler_version` reads each family's
+  embedded marker; validated on real binaries:
+  - **MSVC** → `msvc:6.0` EXACT (Rich-header @comp.id build 8168); build→product table.
+  - **GCC** → `gcc:14-win32` EXACT (`.comment`, max across objects); **Clang** → `clang:19.1.7`.
+  - **Borland** → `borland:c++:1994` ERA (startup banner) — reads the TRUE `c++` family from the
+    binary, so the pascal/c++ question Ghidra's e_lfanew heuristic gets wrong is answered right,
+    WITHOUT diverging from the faithful opinion (both coexist; `program.compiler` untouched).
+  - **Watcom** → `watcom:1988-1994` ERA (adapts loader::watcom).
+  Honest granularity: MSVC/GCC/Clang exact; Borland/Watcom era (copyright year), not minor
+  release. **Phase 3 (NEXT): per-version lineage fixtures** — compile with each Borland (4.0/4.5/
+  4.52 + Turbo C++), MSVC (4.0/5/6/2005), Watcom (10.0–11.0) version to validate the detector
+  across the full lineage + ground the MSVC build→product table + Borland era table.
 - **A4** — Watcom per-version banner→era table. ✅ **Stage 1 DONE `1a2e83a`**: the full
   10.0–11.0 lineage measured against 8 real install ISOs (concatenated runtime banners
   via strings; `detects_watcom_lineage_eras` test + empirical table in
