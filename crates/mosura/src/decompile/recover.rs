@@ -43,7 +43,15 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
         return true;
     }
     if !v.is_written() {
-        return false; // an unwritten input — the function never set this register
+        // A value reached THROUGH the traversal that is an unwritten input is a normal parameter —
+        // Ghidra `AncestorRealistic::enterNode` returns `pop_success` for it (funcdata_varnode.cc:2040),
+        // valid unless it is a return-address storage location (`pop_fail`, :2053). The top-level case
+        // where the trial varnode ITSELF is directly an input is rejected by the caller
+        // ([`return_trial_kept`]), mirroring `AncestorRealistic::execute`'s early-return (:2205). (The
+        // `isUnaffected`/`!isDirectWrite` sub-cases Ghidra also fails, :2036/2038, are inert here — the
+        // reached inputs are the argument registers, never callee-saved/unaffected storage — matching
+        // the same approximation in [`realistic_faithful`].)
+        return !v.is_return_address();
     }
     if !seen.insert(vn) {
         return false; // a cycle contributes no fresh realism
@@ -487,6 +495,13 @@ fn overlap_bytes(f: &Funcdata, inner: VarnodeId, outer: VarnodeId) -> i64 {
 /// `ActionReturnRecovery::apply` coreaction.cc:1930-1931.
 fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
     let Some(v) = f.op(ret).input(slot) else { return false };
+    // Ghidra `AncestorRealistic::execute` (funcdata_varnode.cc:2205): if the trial varnode is ITSELF
+    // a function input, it is not a realistic return — we expect to see active movement into the
+    // return register — so reject before the traversal. (A value reached THROUGH a copy/piece chain
+    // to an input is a different case: a normal parameter, kept by [`is_realistic`].)
+    if f.vn(v).is_input() {
+        return false;
+    }
     if !is_realistic(f, v, &mut HashSet::new()) {
         return false;
     }
