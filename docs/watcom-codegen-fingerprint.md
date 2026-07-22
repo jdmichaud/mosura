@@ -41,25 +41,33 @@ directly for the modern end of the lineage.
 Three constructs chosen to expose revision-specific choices: a **byte comparison** (promotion),
 a **counted loop** (register allocation + loop shape), and a small **switch**.
 
-## Measured divergence — Watcom 10.0a vs Open Watcom 2.0 (verified)
+## The `version → fingerprint` table (measured across the lineage)
 
-`cmpbyte(unsigned char c){ return c == 5; }` — the **byte-compare-promotion** divergence
-(the same one the `warcraft2-re` A-level-patch note identified as correlating with WAR2):
+Each revision compiled the probe under dosemu (native OW 2.0 directly); `cmpbyte` disassembled
+with `wdis`. The **byte-compare-promotion** — the divergence the `warcraft2-re` A-level-patch
+note tied to WAR2 — pins the boundary:
 
-| | 10.0a | Open Watcom 2.0 |
+`cmpbyte(unsigned char c){ return c == 5; }`
+
+| Watcom revision | codegen | class |
 | --- | --- | --- |
-| compare | `cmp eax,5` (promotes byte → 32-bit) | `cmp al,5` (byte compare) |
-| result | `sete al` | `sete al ; movzx eax,al` |
+| **10.0a** (1994, WATCOM Intl) | `cmp eax,5 ; sete al` | **promote** to 32-bit compare |
+| **10.6** (1995) | `cmp al,5 ; sete al` | byte compare |
+| **11.0** (1997, Sybase) | `cmp al,5 ; sete al` | byte compare |
+| **Open Watcom 2.0** (2002+) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
 
-`loop(int n){ int s=0,i; for(i=0;i<n;i++) s+=i; return s; }`:
+Three distinguishable signatures, with two boundaries: **promote → byte** between 10.0a and
+10.6, and **+movzx** at the classic → Open Watcom transition. Crucially the promoting form
+(`cmp eax,5`) is **unique to the early 10.0 line** — which is exactly the WAR2 base the
+`warcraft2-re` codegen investigation identified, now confirmed through mosura's tooling.
 
-| | 10.0a | Open Watcom 2.0 |
-| --- | --- | --- |
-| `n` register | `ebx` | `ecx` |
-| loop shape | body-then-test (bottom test, `jl` back) | test-first |
+A second, independent dimension from `loop(int n){int s=0,i;for(i=0;i<n;i++)s+=i;return s;}`
+(10.0a vs OW 2.0): **register allocation** (`n` in `ebx` vs `ecx`) and **loop shape**
+(body-then-test bottom loop vs test-first). More constructs → a denser fingerprint.
 
-So three independent discriminators (compare width, register allocation, loop structure)
-separate two revisions the banner era cannot. Each is a bit of a codegen fingerprint.
+Notes: 10.5 didn't run under dosemu2 here (its `W32RUN`/`DOS4GW` loader hit a "Loader read
+error"); the four points above already bracket the transition. 11.0's DOS host lives in `BINW`
+(with its own `W32RUN.EXE`), 10.0a's in `BINB` (loader `W32RUN.EXE` in `BIN`).
 
 ## Direction
 
