@@ -52,6 +52,9 @@ pub enum Precision {
     Exact,
     /// The marker is an era fingerprint (a copyright year / year-range), not a precise release.
     Era,
+    /// The marker names the family but the version is **not recoverable** from the binary — e.g.
+    /// pre-Rich MSVC (VC 2.0/4.0), which stamps a runtime-library string but no version.
+    FamilyOnly,
 }
 
 /// A version identification from the embedded second-oracle marker.
@@ -139,32 +142,53 @@ pub mod msvc {
         Some(ents)
     }
 
-    /// Map a linker/compiler **build number** to the Visual Studio product. Grounded against
-    /// real Rich headers (VC6.0 = 8168). Unknown builds report `build-<n>` — the build number is
-    /// itself the exact identifier; the product name is a convenience lookup.
+    /// Map a linker/compiler **build number** to the Visual Studio product. The build number is
+    /// itself the exact identifier; the product name is a convenience lookup, and an unknown
+    /// build honestly reports `build-<n>`. `8168` is verified in-house against a real VC6.0
+    /// binary (`vc6_hello.exe`); the rest are Microsoft's published build numbers, to be
+    /// verified as those toolchains are compiled (Phase 3 lineage sweep).
     pub fn product(build: u16) -> String {
         match build {
-            8168 | 8804 => "6.0".to_string(),      // Visual C++ 6.0 (RTM / SP)
-            9782 => "5.0".to_string(),             // Visual C++ 5.0
-            9466 => "7.0".to_string(),             // VS .NET 2002
-            3077 => "7.1".to_string(),             // VS .NET 2003
-            50727 => "8.0".to_string(),            // VS 2005
-            21022 | 30729 => "9.0".to_string(),    // VS 2008 (RTM / SP1)
+            8168 | 8804 => "6.0".to_string(), // VERIFIED (VC6.0 RTM / SP)
+            // Published build numbers (not yet verified in-house):
+            9782 => "5.0".to_string(),          // Visual C++ 5.0
+            9466 => "7.0".to_string(),          // VS .NET 2002
+            3077 => "7.1".to_string(),          // VS .NET 2003
+            50727 => "8.0".to_string(),         // VS 2005
+            21022 | 30729 => "9.0".to_string(), // VS 2008 (RTM / SP1)
             b => format!("build-{b}"),
         }
     }
 
+    /// The C run-time library string every MSVC embeds (`Microsoft Visual C++ Runtime Library`)
+    /// — the family fallback for pre-Rich toolchains (VC 2.0/4.0) that carry no build id.
+    const RUNTIME_STRING: &[u8] = b"Microsoft Visual C++ Runtime Library";
+
     pub fn detect(data: &[u8]) -> Option<CompilerId> {
-        let ents = rich_entries(data)?;
-        // The largest build among the real tool entries is the toolchain's build (the linker,
-        // and the C/C++ compiler, carry the version; product_id 0/1 are import/padding markers).
-        let build = ents.iter().filter(|(pid, _, _)| *pid > 1).map(|(_, b, _)| *b).max()?;
-        Some(CompilerId {
-            family: Family::Msvc,
-            version: product(build),
-            precision: Precision::Exact,
-            evidence: format!("Rich header build {build}"),
-        })
+        // Rich header (VC6-era onward): exact build.
+        if let Some(ents) = rich_entries(data) {
+            // The largest build among the real tool entries is the toolchain build (the linker
+            // and the C/C++ compiler carry the version; product_id 0/1 are import/padding).
+            if let Some(build) = ents.iter().filter(|(pid, _, _)| *pid > 1).map(|(_, b, _)| *b).max() {
+                return Some(CompilerId {
+                    family: Family::Msvc,
+                    version: product(build),
+                    precision: Precision::Exact,
+                    evidence: format!("Rich header build {build}"),
+                });
+            }
+        }
+        // Pre-Rich MSVC (VC 2.0/4.0, ~1994-1995): the runtime-library string names the family,
+        // but the version is genuinely not stamped in the compiled binary.
+        if find_sub(data, RUNTIME_STRING).is_some() {
+            return Some(CompilerId {
+                family: Family::Msvc,
+                version: "unknown".to_string(),
+                precision: Precision::FamilyOnly,
+                evidence: "Microsoft Visual C++ Runtime Library (pre-Rich; version not stamped)".to_string(),
+            });
+        }
+        None
     }
 }
 
@@ -315,6 +339,17 @@ mod tests {
         assert_eq!(msvc::product(8168), "6.0"); // VC6.0, grounded against vc6_hello.exe
         assert_eq!(msvc::product(50727), "8.0");
         assert_eq!(msvc::product(1234), "build-1234"); // honest fallback
+    }
+
+    #[test]
+    fn msvc_pre_rich_is_family_only() {
+        // A pre-Rich MSVC (VC 2.0/4.0) binary: no Rich header, but the runtime string names the
+        // family. Grounded against a real MSVC 4.0 build (hello_vc4.exe).
+        let id = detect(b"...\x00Microsoft Visual C++ Runtime Library\x00...").expect("msvc family");
+        assert_eq!(id.family, Family::Msvc);
+        assert_eq!(id.version, "unknown");
+        assert_eq!(id.precision, Precision::FamilyOnly); // version not recoverable — honest
+        assert_eq!(id.label(), "msvc:unknown");
     }
 
     #[test]
