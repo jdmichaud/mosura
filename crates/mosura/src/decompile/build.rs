@@ -203,6 +203,25 @@ pub fn raw_funcdata_flow_image(
     entry: u64,
     context: &[u32],
 ) -> Funcdata {
+    raw_funcdata_flow_image_overrides(spec, name, chunks, entry, context, &std::collections::HashSet::new())
+}
+
+/// Like [`raw_funcdata_flow_image`] but honoring `call_return` — the instruction addresses the
+/// analysis marked with a `FlowOverride::CALL_RETURN` (shared-return tail calls: a `jmp` whose flow
+/// reference was retyped to a call by `SharedReturnAnalyzer`). At such an address the terminal
+/// `BRANCH` is rewritten to `CALL` + a trailing `RETURN` (Ghidra `Funcdata::overrideFlow`,
+/// funcdata_op.cc:997-1009), so the tail-called function's body is NOT followed as intra-function
+/// flow — mirroring Ghidra's flow-override handling (flow.cc:416/475). The isolated datatest path
+/// passes an empty set, so the corpus is byte-neutral; only the multi-function analysis bridge
+/// ([`crate::analysis::decompiler::decompile_function`]) supplies overrides.
+pub fn raw_funcdata_flow_image_overrides(
+    spec: &Spec,
+    name: impl Into<String>,
+    chunks: &[(u64, &[u8])],
+    entry: u64,
+    context: &[u32],
+    call_return: &std::collections::HashSet<u64>,
+) -> Funcdata {
     use std::collections::{BTreeMap, HashMap};
     // Resolve an address to whichever loaded chunk holds it. Flow may cross between chunks: a
     // tail-call `jmp` from one function into another (longdouble's `pass` -> `writeLongDouble`,
@@ -245,7 +264,30 @@ pub fn raw_funcdata_flow_image(
             let Some((cbase, cbytes)) = chunk_of(a) else { continue };
             let off = (a - cbase) as usize;
             let window = &cbytes[off..(off + 16).min(cbytes.len())];
-            let Some(insn) = spec.disassemble_ctx(window, a, context).into_iter().next() else { continue };
+            let Some(mut insn) = spec.disassemble_ctx(window, a, context).into_iter().next() else {
+                continue;
+            };
+            // FlowOverride::CALL_RETURN (Ghidra `overrideFlow`, funcdata_op.cc:997-1009): a
+            // shared-return tail call — a `jmp` whose flow the analysis retyped to a call
+            // (`SharedReturnAnalyzer`) — is rewritten to CALL + trailing RETURN. Applied before the
+            // fall-through/successor scan so the tail-called body is NOT followed as flow (Ghidra
+            // does not follow a call target as intra-function flow).
+            if call_return.contains(&a) {
+                if let Some(last_op) = insn.ops.last_mut() {
+                    if OpCode::from_u32(last_op.opcode) == Some(OpCode::Branch) {
+                        last_op.opcode = OpCode::Call as u32;
+                        insn.ops.push(crate::sleigh::pcode::PcodeOp {
+                            opcode: OpCode::Return as u32,
+                            out: None,
+                            ins: vec![PArg::Var(crate::sleigh::pcode::Varnode {
+                                space: "const".into(),
+                                offset: 1,
+                                size: 4,
+                            })],
+                        });
+                    }
+                }
+            }
             let ilen = insn.bytes.len() as u64;
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
             let falls = !matches!(last, Some(OpCode::Return) | Some(OpCode::Branch) | Some(OpCode::Branchind));

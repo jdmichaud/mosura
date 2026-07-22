@@ -26,7 +26,26 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         return None;
     }
     let name = format!("FUN_{:08x}", entry.offset);
-    let mut f = crate::decompile::build::raw_funcdata_flow_image(&spec, name, &chunks, entry.offset, &ctx);
+    // FlowOverride::CALL_RETURN sites (Ghidra `getFlowOverride`, flow.cc:416): the analysis's
+    // `SharedReturnAnalyzer` retypes a shared-return tail-call `jmp` reference to a call, so a
+    // call-typed flow reference marks the override. The flow builder converts only those whose
+    // instruction actually ends in a BRANCH (a `jmp`), so a normal `call` at a call-typed reference
+    // is left untouched. This is the multi-function context Ghidra decompiles with (the isolated
+    // datatest path has no such references, keeping the corpus byte-identical).
+    let call_return: std::collections::HashSet<u64> = program
+        .reference_manager
+        .references()
+        .filter(|r| r.ref_type.is_call())
+        .map(|r| r.from.offset)
+        .collect();
+    let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
+        &spec,
+        name,
+        &chunks,
+        entry.offset,
+        &ctx,
+        &call_return,
+    );
     // Per-function isolation, faithful to Ghidra's `DecompilerSwitchAnalyzer`: it decompiles each
     // candidate through a `DecompilerCallback` and a single function's decompiler failure is caught
     // and logged, never aborting the analysis pass (DecompInterface returns an error result, not a
