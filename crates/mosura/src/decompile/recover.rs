@@ -906,11 +906,13 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
         let block_ops = f.block(bid).ops.clone();
         let Some(pos) = block_ops.iter().position(|&o| o == call) else { continue };
         // collectOutputTrialVarnodes (fspec.cc:5536) fused with guardCalls' output-trial registration
-        // (heritage.cc:1469): the contiguous INDIRECT-creation run right after the call. A creation at
-        // a return register becomes a trial; checkOutputTrialUse marks it active iff live (present).
+        // (heritage.cc:1469): walk BACKWARD from the call (`op->previousOp()`, fspec.cc:5543) over the
+        // contiguous INDIRECT run right before it — the placement Ghidra's `newIndirectCreation`
+        // (`opInsertBefore`) and mosura's [`guard_calls`] both use. A creation at a return register
+        // becomes a trial; checkOutputTrialUse marks it active iff live (present).
         let mut active = ParamActive::new(reg);
         let mut vnmap: Vec<(Address, OpId, VarnodeId)> = Vec::new();
-        for &op in &block_ops[pos + 1..] {
+        for &op in block_ops[..pos].iter().rev() {
             if f.op(op).code() != OpCode::Indirect {
                 break;
             }
@@ -1489,9 +1491,11 @@ mod tests {
         let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
         let out = f.new_output(ind, 8, Address::new(reg, RAX));
         f.vn_mut(out).set_indirect_creation();
-        let mut ops = vec![call, ind];
+        // Ghidra `newIndirectCreation` splices the clobber INDIRECT BEFORE the call, and
+        // `collectOutputTrialVarnodes` walks backward from the call to find it.
+        let mut ops = vec![ind, call];
         if used {
-            // a consumer of the call's RAX result (an INT_ADD reading it)
+            // a consumer of the call's RAX result (an INT_ADD reading it), after the call
             let c = f.new_const(8, 1);
             let add = f.new_op(OpCode::IntAdd, seq, vec![out, c]);
             f.new_output(add, 8, Address::new(reg, RAX));
@@ -1555,7 +1559,9 @@ mod tests {
         let sp = f.new_const(8, 0);
         let addr = f.new_input(8, Address::new(reg, 0x38));
         let store = f.new_op(OpCode::Store, seq, vec![sp, addr, whole]);
-        let ops = vec![call, ind_lo, ind_hi, piece, store];
+        // The clobber INDIRECTs sit BEFORE the call (Ghidra `newIndirectCreation`); the reassembly
+        // PIECE + its consumer follow it — `resolve_call_output` walks backward to the two creations.
+        let ops = vec![ind_lo, ind_hi, call, piece, store];
         f.set_blocks(vec![BlockBasic { ops: ops.clone(), ..Default::default() }]);
         for &op in &ops {
             f.op_mut(op).parent = Some(crate::decompile::BlockId(0));

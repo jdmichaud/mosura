@@ -1437,8 +1437,10 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
 /// Ghidra runs this inside `guard()` (heritage.cc:1192) with `addIndirects = newAddresses()`, so it
 /// fires only for ranges NEW this pass — driven here by [`heritage_spaces`]' `new_addrs`. Each INDIRECT
 /// output joins the range's writes (picked up by the def-block scan) so phi placement accounts for the
-/// modification. INDIRECTs are spliced right after the call (matching mosura's established call-guard
-/// placement, which [`super::recover::resolve_call_output`] consumes).
+/// modification. INDIRECTs are spliced right BEFORE the call — faithful to Ghidra's `newIndirectCreation`
+/// / `newIndirectOp` (`opInsertBefore`, funcdata_op.cc:696/726); [`super::recover::resolve_call_output`]
+/// gathers the output trials by walking BACKWARD from the call, as Ghidra's `collectOutputTrialVarnodes`
+/// (fspec.cc:5543) does.
 ///
 /// The stack side is gated by [`Funcdata::alias_boundary`] (Ghidra's `AliasChecker`): only slots at or
 /// above the shallowest escaped offset are reachable by the callee, so a non-aliased local (a spilled
@@ -1494,8 +1496,11 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         }
         let Some(bid) = f.op(call).parent else { continue };
         if effecttype == effect::KILLEDBYCALL {
-            // newIndirectCreation (mosura 1-input): out@range = INDIRECT(#0), spliced after the call,
-            // output marked indirect-creation (no realistic ancestor / the clobber).
+            // newIndirectCreation (mosura 1-input): out@range = INDIRECT(#0), output marked
+            // indirect-creation (no realistic ancestor / the clobber). Ghidra `newIndirectCreation`
+            // (funcdata_op.cc:726) splices the INDIRECT BEFORE the call with `opInsertBefore`, and
+            // `collectOutputTrialVarnodes` (fspec.cc:5543) walks BACKWARD from the call to gather the
+            // output trials — `resolve_call_output` mirrors that backward scan.
             let seq = f.op(call).seqnum;
             let zero = f.new_const(size, 0);
             let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
@@ -1503,18 +1508,18 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             let out = f.new_output(ind, size, addr);
             f.vn_mut(out).set_indirect_creation();
             f.op_mut(ind).parent = Some(bid);
-            f.op_insert_after(ind, call);
+            f.op_insert_before(ind, call);
         } else if effecttype == effect::UNKNOWN_EFFECT || effecttype == effect::RETURN_ADDRESS {
             // newIndirectOp (passthrough): out@range = INDIRECT(before@range), the value flowing
-            // across. new_indirect_op splices before the call; move it to just after to match the
-            // established placement resolve_call_output consumes.
+            // across. Ghidra `newIndirectOp` (funcdata_op.cc:696) splices the INDIRECT BEFORE the call
+            // with `opInsertBefore`.
             let seq = f.op(call).seqnum;
             let before = f.new_varnode(size, addr);
             let ind = f.new_op(OpCode::Indirect, seq, vec![before]);
             f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);
             f.op_mut(ind).parent = Some(bid);
-            f.op_insert_after(ind, call);
+            f.op_insert_before(ind, call);
             if holdind {
                 f.vn_mut(out).set_addr_force();
             }
@@ -1788,6 +1793,45 @@ fn current_def(
         .or_insert_with(|| f.new_input(loc.2, super::space::Address::new(loc.0, loc.1)))
 }
 
+/// The current definition of `loc` read by op `op`, honoring Ghidra's "INDIRECTs and their op
+/// really happen AT SAME TIME" rule (`renameRecurse`, heritage.cc:2506-2517). guardCalls places a
+/// call's INDIRECT (both the killedbycall clobber-creation and the passthrough) immediately BEFORE
+/// the call, so at the call's own reads the top-of-stack version for a range is that INDIRECT's
+/// output (the post-call value). When the INDIRECT's causing op (`guarded_op`, Ghidra's `getIn(1)`
+/// iop) is this very op, the op must read the value BELOW the INDIRECT — its PRE-call value — so a
+/// register that is both an argument and killedbycall (RDI/RSI/…) feeds the call the argument, not
+/// the clobber. With only the INDIRECT on the stack, the pre-call value is the function input, so a
+/// fresh input varnode is synthesized at the stack bottom (Ghidra `stack.insert(begin,·)`).
+fn current_def_at_op(
+    f: &mut Funcdata,
+    op: OpId,
+    loc: Loc,
+    stack: &mut HashMap<Loc, Vec<VarnodeId>>,
+    inputs: &mut HashMap<Loc, VarnodeId>,
+) -> VarnodeId {
+    let Some(top) = stack.get(&loc).and_then(|s| s.last()).copied() else {
+        return *inputs
+            .entry(loc)
+            .or_insert_with(|| f.new_input(loc.2, super::space::Address::new(loc.0, loc.1)));
+    };
+    let same_time = f
+        .vn(top)
+        .def
+        .is_some_and(|d| f.op(d).code() == OpCode::Indirect && f.op(d).guarded_op() == Some(op));
+    if !same_time {
+        return top;
+    }
+    let s = stack.get(&loc).unwrap();
+    if s.len() >= 2 {
+        return s[s.len() - 2];
+    }
+    // The INDIRECT is the only def ⇒ the pre-call value is the function input; synthesize one at the
+    // stack bottom (Ghidra heritage.cc:2510-2512).
+    let inp = f.new_input(loc.2, super::space::Address::new(loc.0, loc.1));
+    stack.get_mut(&loc).unwrap().insert(0, inp);
+    inp
+}
+
 /// Like [`current_def`], but for a phi input flowing out of block `b`: when nothing defines
 /// `loc` at its exact width on this path yet a *wider* def at the same offset is current (a
 /// sub-register reaching def — e.g. a phi for `EBX` whose initializer wrote the full `RBX`),
@@ -1864,7 +1908,7 @@ fn rename(
         for slot in 0..f.op(op).num_inputs() {
             if let Some(l) = read_loc(f, op, slot) {
                 if cover.contains(&l) {
-                    let def = current_def(f, l, stack, inputs);
+                    let def = current_def_at_op(f, op, l, stack, inputs);
                     f.op_set_input(op, slot, def);
                 }
             }
@@ -2067,7 +2111,7 @@ mod tests {
         assert_eq!((f.vn(out).loc.space, f.vn(out).loc.offset, f.vn(out).size), (reg, RAX, 8));
         assert!(f.vn(f.op(inds[0]).input(0).unwrap()).is_constant(), "creation input is the indirect-zero const");
         let pos = |op: OpId| f.blocks()[0].ops.iter().position(|&o| o == op).unwrap();
-        assert_eq!(pos(inds[0]), pos(call) + 1, "creation spliced right after the call");
+        assert_eq!(pos(inds[0]), pos(call) - 1, "creation spliced right before the call (Ghidra newIndirectCreation)");
 
         // unaffected (callee-saved) register ⇒ no guard.
         guard_calls(&mut f, (reg, RBX, 8));
@@ -2100,7 +2144,7 @@ mod tests {
         let gbefore = f.op(gpass).input(0).unwrap();
         assert!(!f.vn(gbefore).is_constant() && f.vn(gbefore).loc.space == ram, "ram passthrough before-value is a free ram read");
         let ipos = |op: OpId| f.blocks()[0].ops.iter().position(|&o| o == op).unwrap();
-        assert_eq!(ipos(gpass), ipos(call) + 1, "ram passthrough spliced right after the call");
+        assert_eq!(ipos(gpass), ipos(call) - 1, "ram passthrough spliced right before the call (Ghidra newIndirectOp)");
     }
 
     /// A second range disjoint from the first is recorded independently (intersect 0), and a new
