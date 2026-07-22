@@ -270,8 +270,9 @@ fn compiler_version_committed_fixtures() {
 fn compiler_version_proprietary_fixtures() {
     use mosura::analysis::loader::compiler_version::{detect, Family};
     let cases: &[(&str, Family, &str)] = &[
-        ("MOSURA_VC6_EXE", Family::Msvc, "msvc:6.0"),           // Rich header → exact
-        ("MOSURA_VC4_EXE", Family::Msvc, "msvc:unknown"),       // pre-Rich → family only
+        ("MOSURA_VC6_EXE", Family::Msvc, "msvc:6.0"),           // VC6: Rich header → exact
+        ("MOSURA_VC5_EXE", Family::Msvc, "msvc:unknown"),       // VC5: pre-Rich → family only
+        ("MOSURA_VC4_EXE", Family::Msvc, "msvc:unknown"),       // VC4: pre-Rich → family only
         ("MOSURA_BC45_EXE", Family::Borland, "borland:c++:1994"),
     ];
     for (env, fam, label) in cases {

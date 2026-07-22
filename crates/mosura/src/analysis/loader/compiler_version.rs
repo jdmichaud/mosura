@@ -53,7 +53,8 @@ pub enum Precision {
     /// The marker is an era fingerprint (a copyright year / year-range), not a precise release.
     Era,
     /// The marker names the family but the version is **not recoverable** from the binary — e.g.
-    /// pre-Rich MSVC (VC 2.0/4.0), which stamps a runtime-library string but no version.
+    /// pre-Rich MSVC (through VC5; the Rich header is a VC6+ feature), which stamps a
+    /// runtime-library string but no version.
     FamilyOnly,
 }
 
@@ -161,7 +162,7 @@ pub mod msvc {
     }
 
     /// The C run-time library string every MSVC embeds (`Microsoft Visual C++ Runtime Library`)
-    /// — the family fallback for pre-Rich toolchains (VC 2.0/4.0) that carry no build id.
+    /// — the family fallback for pre-Rich toolchains (VC 2.0 through VC5) that carry no build id.
     const RUNTIME_STRING: &[u8] = b"Microsoft Visual C++ Runtime Library";
 
     pub fn detect(data: &[u8]) -> Option<CompilerId> {
@@ -178,8 +179,8 @@ pub mod msvc {
                 });
             }
         }
-        // Pre-Rich MSVC (VC 2.0/4.0, ~1994-1995): the runtime-library string names the family,
-        // but the version is genuinely not stamped in the compiled binary.
+        // Pre-Rich MSVC (VC 2.0 through VC5, 1994-1997; the Rich header arrives with VC6): the
+        // runtime-library string names the family, but the version is not stamped in the binary.
         if find_sub(data, RUNTIME_STRING).is_some() {
             return Some(CompilerId {
                 family: Family::Msvc,
