@@ -167,17 +167,17 @@ pub mod msvc {
 
     /// Map a linker/compiler **build number** to the Visual Studio product. The build number is
     /// itself the exact identifier; the product name is a convenience lookup, and an unknown
-    /// build honestly reports `build-<n>`. `8168` is verified in-house against a real VC6.0
-    /// binary (`vc6_hello.exe`); the rest are Microsoft's published build numbers, to be
-    /// verified as those toolchains are compiled (Phase 3 lineage sweep).
+    /// build honestly reports `build-<n>`. `8168` and `50727` are verified against real binaries
+    /// here; the rest are Microsoft's published build numbers, to be confirmed as those
+    /// toolchains are exercised.
     pub fn product(build: u16) -> String {
         match build {
-            8168 | 8804 => "6.0".to_string(), // VERIFIED (VC6.0 RTM / SP)
-            // Published build numbers (not yet verified in-house):
+            8168 | 8804 => "6.0".to_string(), // VERIFIED — self-compiled vc6_hello.exe (RTM / SP)
+            50727 => "8.0".to_string(),        // VERIFIED — real VC8 binary (VS2005 msvcr80.dll)
+            // Published build numbers (not yet confirmed against a binary here):
             9782 => "5.0".to_string(),          // Visual C++ 5.0
             9466 => "7.0".to_string(),          // VS .NET 2002
             3077 => "7.1".to_string(),          // VS .NET 2003
-            50727 => "8.0".to_string(),         // VS 2005
             21022 | 30729 => "9.0".to_string(), // VS 2008 (RTM / SP1)
             b => format!("build-{b}"),
         }
