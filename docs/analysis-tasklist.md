@@ -60,18 +60,24 @@ arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build cach
 `~/tools` relocated to `/data` (sda4, new 30G partition); root off 100%.
 - **A2** — ELF32-dynamic hardening (m68k 32-bit dynamic validation + `coverage_68k`
   variant alignment to Coldfire). UNBLOCKED (gcc-multilib installed).
-- **A3** — PE CompilerOpinion: golden-validate the non-Clang branches.
-  ✅ **Stage 1 (Gcc) DONE `34596d1`**: mingw_hello.exe (our code, committed) + Ghidra
-  golden (`compiler=windows compilerinfo=gcc:unknown`) + `pe_compiler_opinion_gcc`
-  test; mosura reproduces Ghidra exactly via the real GccVs disambiguation path.
-  (cnv.exe already covers Clang.) Golden-gen works: Ghidra 12.0.3 DEV dist at
-  `/data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_12.0.3_DEV` + JDK 21.
-  **Stage 2 (VisualStudio + Borland) — needs two things**: (a) a **PeFile32** path in
-  the loader — `get_opinion`/`pe.rs` are PeFile64-only, but the historical MSVC
-  (4.0/5/6.0) + Borland compilers emit **32-bit** PE; (b) a wine install of those
-  compilers. The PeFile32 path is self-contained analysis-lane code, immediately
-  testable with a 32-bit `i686-w64-mingw32-gcc` PE (still Gcc), and is the enabler for
-  the MSVC/Borland fixtures.
+- **A3** — PE CompilerOpinion: golden-validate the non-Clang branches. ✅ **COMPLETE.**
+  All real-world PE compiler branches now golden-validated vs Ghidra 12.0.3 (DEV dist at
+  `/data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_12.0.3_DEV` + JDK 21):
+  - **Clang** — cnv.exe (pre-existing).
+  - **Gcc** — mingw_hello.exe (64-bit, committed) `34596d1` + mingw_hello32.exe (32-bit,
+    committed) `5bbabb3`; both `windows`/`gcc:unknown`.
+  - **PeFile32 enabler** `5bbabb3`: get_opinion + helpers generic over `ImageNtHeaders`;
+    load_pe dispatches Pe32→x86:LE:32 / Pe64→x86:LE:64 into a shared generic builder;
+    `cspec_x86()` = the faithful i386 opinion block (borlandcpp/borlanddelphi/clang/golang,
+    else windows). 64-bit path byte-identical (cnv memory-map regression green).
+  - **Borland** — BC++ 4.5 (`bcc32`/`tlink32` under wine) `87b5a78`; Ghidra labels it
+    `borlanddelphi`/`borland:pascal` (e_lfanew=0x100, not source language), mosura matches.
+  - **VisualStudio** — MSVC 6.0 (`CL`/`LINK`+MSPDB60 under wine); `windows`/
+    `visualstudio:unknown` via the DanS Rich header (e_lfanew=0xd0).
+  MSVC/Borland runtimes are proprietary → binaries not committed (like cnv), goldens
+  committed, tests skip-if-absent via `MOSURA_VC6_EXE`/`MOSURA_BC45_EXE`. Extracted
+  toolchains live in `/data/{borland,msvc}` (the compiler trees are directly on the CDs —
+  no installer). Follow-up (optional): CLI/managed (.NET), Rust, Go, Swift branches.
 - **A4** — Watcom per-version banner→era table. ✅ **Stage 1 DONE `1a2e83a`**: the full
   10.0–11.0 lineage measured against 8 real install ISOs (concatenated runtime banners
   via strings; `detects_watcom_lineage_eras` test + empirical table in
