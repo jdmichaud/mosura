@@ -4,6 +4,7 @@
 //! crate — only the block-layout logic is ported.
 
 pub mod com;
+pub mod compiler_version;
 pub mod elf;
 pub mod le;
 pub mod mz;

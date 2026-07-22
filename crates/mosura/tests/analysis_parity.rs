@@ -236,6 +236,56 @@ fn pe_compiler_opinion_msvc() {
     );
 }
 
+/// Compiler **version** detection (beyond-Ghidra second oracle, `loader::compiler_version`) over
+/// the committed fixtures — validated against the version each real toolchain embeds. GCC's exact
+/// version is fixed in the committed binary (built with mingw GCC 14); Watcom's era comes from the
+/// runtime banner.
+#[test]
+fn compiler_version_committed_fixtures() {
+    use mosura::analysis::loader::compiler_version::{detect, Family, Precision};
+    let cases: &[(&str, Family, &str, Precision)] = &[
+        ("mingw_hello.exe", Family::Gcc, "14-win32", Precision::Exact),
+        ("mingw_hello32.exe", Family::Gcc, "14-win32", Precision::Exact),
+        ("watcom_hello.exe", Family::Watcom, "1988-1994", Precision::Era),
+    ];
+    for (name, fam, ver, prec) in cases {
+        let data = std::fs::read(analysis_corpus_dir().join(name)).unwrap();
+        let id = detect(&data).unwrap_or_else(|| panic!("no version marker in {name}"));
+        assert_eq!(id.family, *fam, "{name} family");
+        assert_eq!(id.version, *ver, "{name} version");
+        assert_eq!(id.precision, *prec, "{name} precision");
+        eprintln!("{name}: {} [{:?}] — {}", id.label(), id.precision, id.evidence);
+    }
+}
+
+/// Compiler version detection over the proprietary-runtime fixtures (not committed, like cnv):
+/// MSVC's **exact build** from the Rich header (`8168` → 6.0) and Borland's **era + true family**
+/// from the startup banner (`borland:c++:1994` — the C++ that Ghidra's e_lfanew heuristic misses).
+/// Set `MOSURA_VC6_EXE` / `MOSURA_BC45_EXE`; skip-if-absent.
+#[test]
+fn compiler_version_proprietary_fixtures() {
+    use mosura::analysis::loader::compiler_version::{detect, Family};
+    let cases: &[(&str, Family, &str)] = &[
+        ("MOSURA_VC6_EXE", Family::Msvc, "msvc:6.0"),
+        ("MOSURA_BC45_EXE", Family::Borland, "borland:c++:1994"),
+    ];
+    for (env, fam, label) in cases {
+        let Some(path) = std::env::var_os(env).map(PathBuf::from) else {
+            eprintln!("skip {env}: not set");
+            continue;
+        };
+        if !path.exists() {
+            eprintln!("skip {env}: {} absent", path.display());
+            continue;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let id = detect(&data).unwrap_or_else(|| panic!("no version marker via {env}"));
+        assert_eq!(id.family, *fam, "{env} family");
+        assert_eq!(id.label(), *label, "{env} label");
+        eprintln!("{env}: {} [{:?}] — {}", id.label(), id.precision, id.evidence);
+    }
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
