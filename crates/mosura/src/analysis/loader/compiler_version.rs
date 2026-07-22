@@ -105,9 +105,14 @@ fn pe_linker_version(data: &[u8]) -> Option<(u8, u8)> {
 /// family not covered here — Watcom is covered by [`super::watcom`]). MSVC's Rich header, GCC's
 /// and Clang's `.comment`, and Borland's startup banner are mutually exclusive in practice.
 pub fn detect(data: &[u8]) -> Option<CompilerId> {
+    // clang is checked BEFORE gcc: a clang-linked ELF also carries a `GCC:` `.comment` from the
+    // gcc-built glibc CRT objects (`crt1.o` …), so the `GCC:` marker is ambiguous — it is present
+    // in *both* gcc and clang binaries. The `clang version` marker is definitive (only stamped when
+    // clang compiled a translation unit). A pure gcc binary has no clang marker, so it still falls
+    // through to gcc.
     msvc::detect(data)
-        .or_else(|| gcc::detect(data))
         .or_else(|| clang::detect(data))
+        .or_else(|| gcc::detect(data))
         .or_else(|| borland::detect(data))
         .or_else(|| watcom_id(data))
 }

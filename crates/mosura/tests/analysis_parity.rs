@@ -247,6 +247,7 @@ fn compiler_version_committed_fixtures() {
         ("mingw_hello.exe", Family::Gcc, "14-win32", Precision::Exact), // GCC on PE
         ("mingw_hello32.exe", Family::Gcc, "14-win32", Precision::Exact),
         ("basic.elf", Family::Gcc, "14.2.0", Precision::Exact), // GCC on ELF (.comment) — same detector
+        ("clang_hello.elf", Family::Clang, "19.1.7", Precision::Exact), // Clang on ELF — wins over the gcc-CRT marker
         ("watcom_hello.exe", Family::Watcom, "1988-1994", Precision::Era), // Watcom on LE/MZ
     ];
     for (name, fam, ver, prec) in cases {
