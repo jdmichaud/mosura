@@ -52,9 +52,12 @@ pub enum Precision {
     Exact,
     /// The marker is an era fingerprint (a copyright year / year-range), not a precise release.
     Era,
-    /// The marker names the family but the version is **not recoverable** from the binary — e.g.
-    /// pre-Rich MSVC (through VC5; the Rich header is a VC6+ feature), which stamps a
-    /// runtime-library string but no version.
+    /// The version is **inferred from a structural field** that `link.exe` fills in — the PE
+    /// optional-header linker version — rather than a self-stamped marker. Reliable for genuine
+    /// compiler output; it distinguishes pre-Rich MSVC toolchains (VC4 → 3.0, VC5 → 5.0).
+    Inferred,
+    /// The marker names the family but the version is **not recoverable** — e.g. a stripped or
+    /// non-PE MSVC artifact with the runtime string but no linker-version field.
     FamilyOnly,
 }
 
@@ -84,6 +87,17 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// The PE optional-header linker version (`MajorLinkerVersion.MinorLinkerVersion`, at
+/// `e_lfanew + 26/27`) — the value `link.exe` writes for its own version. `None` if `data` is
+/// not a PE. A reliable toolchain discriminator (VC4 → 3.0, VC5 → 5.0, VC6 → 6.0).
+fn pe_linker_version(data: &[u8]) -> Option<(u8, u8)> {
+    let e = u32::from_le_bytes(data.get(0x3c..0x40)?.try_into().ok()?) as usize;
+    if data.get(e..e + 4)? != b"PE\0\0" {
+        return None;
+    }
+    Some((*data.get(e + 26)?, *data.get(e + 27)?))
 }
 
 /// Identify the compiler + version from the binary's embedded marker, trying each family's
@@ -180,16 +194,39 @@ pub mod msvc {
             }
         }
         // Pre-Rich MSVC (VC 2.0 through VC5, 1994-1997; the Rich header arrives with VC6): the
-        // runtime-library string names the family, but the version is not stamped in the binary.
+        // runtime-library string names the family. No self-stamped version, but the PE linker
+        // version (link.exe's own version) distinguishes the toolchains — VC4→3.0, VC5→5.0.
         if find_sub(data, RUNTIME_STRING).is_some() {
-            return Some(CompilerId {
-                family: Family::Msvc,
-                version: "unknown".to_string(),
-                precision: Precision::FamilyOnly,
-                evidence: "Microsoft Visual C++ Runtime Library (pre-Rich; version not stamped)".to_string(),
+            return Some(match pe_linker_version(data) {
+                Some((maj, min)) => CompilerId {
+                    family: Family::Msvc,
+                    version: format!("link-{maj}.{min}"),
+                    precision: Precision::Inferred,
+                    evidence: format!(
+                        "Microsoft Visual C++ Runtime Library + PE linker version {maj}.{min} ({})",
+                        linker_note(maj, min)
+                    ),
+                },
+                None => CompilerId {
+                    family: Family::Msvc,
+                    version: "unknown".to_string(),
+                    precision: Precision::FamilyOnly,
+                    evidence: "Microsoft Visual C++ Runtime Library (pre-Rich; no linker-version field)".to_string(),
+                },
             });
         }
         None
+    }
+
+    /// The likely product for a pre-Rich MSVC linker version — verified in-house against real
+    /// builds (VC4.0 → 3.0, VC5.0 → 5.0); other values are reported as-is.
+    fn linker_note(maj: u8, min: u8) -> &'static str {
+        match (maj, min) {
+            (3, 0) => "VC++ 4.0",
+            (5, 0) => "VC++ 5.0",
+            (6, 0) => "VC++ 6.0",
+            _ => "unmapped linker version",
+        }
     }
 }
 
