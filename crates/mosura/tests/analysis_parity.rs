@@ -249,11 +249,15 @@ fn compiler_version_committed_fixtures() {
         ("watcom_hello.exe", Family::Watcom, "1988-1994", Precision::Era),
     ];
     for (name, fam, ver, prec) in cases {
-        let data = std::fs::read(analysis_corpus_dir().join(name)).unwrap();
+        let path = analysis_corpus_dir().join(name);
+        let data = std::fs::read(&path).unwrap();
         let id = detect(&data).unwrap_or_else(|| panic!("no version marker in {name}"));
         assert_eq!(id.family, *fam, "{name} family");
         assert_eq!(id.version, *ver, "{name} version");
         assert_eq!(id.precision, *prec, "{name} precision");
+        // End-to-end: the loader pipeline records the same version on the snapshot.
+        let snap = analysis::analyze_binary(&path).unwrap();
+        assert_eq!(snap.compiler_version, id.label(), "{name} pipeline compilerversion");
         eprintln!("{name}: {} [{:?}] — {}", id.label(), id.precision, id.evidence);
     }
 }

@@ -96,6 +96,10 @@ pub struct Snapshot {
     /// verbatim in the header `compilerinfo=` field: the PE opinion label where set, `unknown`
     /// (Ghidra's default) elsewhere.
     pub compiler_info: String,
+    /// Beyond-Ghidra: the specific compiler **version** from the embedded marker
+    /// (`loader::compiler_version`), header `compilerversion=` field. Empty when no marker is
+    /// present (and always empty in Ghidra goldens — Ghidra does not emit it).
+    pub compiler_version: String,
     pub base: u64,
     /// `"little"` or `"big"`.
     pub endian: String,
@@ -149,9 +153,15 @@ impl Snapshot {
         } else {
             format!(" compilerinfo={}", s.compiler_info)
         };
+        // Beyond-Ghidra version marker, emitted only when detected (goldens never carry it).
+        let compilerversion = if s.compiler_version.is_empty() {
+            String::new()
+        } else {
+            format!(" compilerversion={}", s.compiler_version)
+        };
         out.push_str(&format!(
-            "# mosura-analysis-snapshot v1 lang={} compiler={}{} base={:08x} endian={} addrsize={}\n",
-            s.lang, s.compiler, compilerinfo, s.base, s.endian, s.addr_size
+            "# mosura-analysis-snapshot v1 lang={} compiler={}{}{} base={:08x} endian={} addrsize={}\n",
+            s.lang, s.compiler, compilerinfo, compilerversion, s.base, s.endian, s.addr_size
         ));
         for b in &s.blocks {
             out.push_str(&format!("block {:08x} {:08x} {}\n", b.start, b.end, b.name));
@@ -201,6 +211,7 @@ pub fn parse(text: &str) -> Snapshot {
                         "lang" => snap.lang = v.to_string(),
                         "compiler" => snap.compiler = v.to_string(),
                         "compilerinfo" => snap.compiler_info = v.to_string(),
+                        "compilerversion" => snap.compiler_version = v.to_string(),
                         "base" => snap.base = u64::from_str_radix(v, 16).unwrap_or(0),
                         "endian" => snap.endian = v.to_string(),
                         "addrsize" => snap.addr_size = v.parse().unwrap_or(0),

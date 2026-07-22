@@ -28,14 +28,27 @@ use crate::analysis::program::Program;
 /// detected by magic via [`load`].
 pub fn load_path(path: &Path, data: &[u8]) -> Result<Program, LoadError> {
     if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("com")) {
-        return com::load_com(data);
+        return Ok(with_compiler_version(data, com::load_com(data)?));
     }
     load(data)
 }
 
+/// Load `data` by container, then refine it with the beyond-Ghidra compiler-**version** marker.
+pub fn load(data: &[u8]) -> Result<Program, LoadError> {
+    Ok(with_compiler_version(data, load_container(data)?))
+}
+
+/// Record the embedded compiler-version marker (`compiler_version::detect` — container-agnostic,
+/// it scans the raw image) on the program. This *refines* the loader's family opinion and never
+/// overrides it: Ghidra's faithful CompilerOpinion label (`program.compiler`) is left untouched.
+fn with_compiler_version(data: &[u8], mut program: Program) -> Program {
+    program.compiler_version = compiler_version::detect(data).map(|id| id.label());
+    program
+}
+
 /// Detect the container format by magic and dispatch to the matching loader, mirroring
 /// Ghidra's loader-opinion selection for the formats we support.
-pub fn load(data: &[u8]) -> Result<Program, LoadError> {
+fn load_container(data: &[u8]) -> Result<Program, LoadError> {
     if data.starts_with(&[0x7f, b'E', b'L', b'F']) {
         return load_elf(data);
     }

@@ -43,6 +43,10 @@ pub struct Program {
     /// `clang:unknown` — the compiler *label* the PE opinion detects (distinct from the
     /// compiler-spec id). Defaults to `unknown` (Ghidra's default), overridden by the PE loader.
     pub compiler: String,
+    /// Beyond-Ghidra: the specific compiler **version** read from the toolchain's embedded marker
+    /// (`loader::compiler_version`), e.g. `msvc:6.0` / `gcc:14-win32` / `borland:c++:1994`. `None`
+    /// when no marker is present. Refines the family opinion in `compiler`; never replaces it.
+    pub compiler_version: Option<String>,
     pub image_base: Address,
     pub big_endian: bool,
     /// Address size in bits (e.g. 64).
@@ -92,6 +96,7 @@ impl Program {
             // Ghidra `Program.getCompiler()` defaults to "unknown"; the PE loader overrides it
             // with the compiler-opinion label.
             compiler: "unknown".to_string(),
+            compiler_version: None,
             image_base,
             big_endian,
             addr_size_bits,
@@ -202,6 +207,7 @@ impl Program {
             lang: self.language_id.clone(),
             compiler: self.compiler_spec_id.clone(),
             compiler_info: self.compiler.clone(),
+            compiler_version: self.compiler_version.clone().unwrap_or_default(),
             base: self.image_base.offset,
             endian: if self.big_endian { "big".into() } else { "little".into() },
             addr_size: self.addr_size_bits,
