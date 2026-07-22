@@ -170,6 +170,34 @@ mod tests {
         assert_eq!(classify(&byte_only), vec!["watcom:10.5/10.6", "watcom:11.0", "watcom:open"]);
     }
 
+    /// Self-compiled ground truth, committed so the matcher runs without the historical compiler:
+    /// each `<rev>.code` is the machine code our probe (`watcom_cg.c`) compiled to under a **known**
+    /// Watcom revision (extracted from the OMF object — our own functions, no proprietary runtime).
+    /// mosura disassembles the committed bytes and the matcher must classify the known revision.
+    #[test]
+    fn matches_committed_self_compiled_probes() {
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let dir = crate::paths::codegen_probes_dir().join("watcom");
+        let load = |rev: &str| {
+            let code = std::fs::read(dir.join(format!("{rev}.code")))
+                .unwrap_or_else(|e| panic!("codegen artefact {rev}.code: {e}"));
+            identify_watcom("x86:LE:32:default", &code, 0x1000)
+        };
+        // 10.0a's promoting `CMP EAX,5` + `EBX` loop → uniquely the early 10.0 line.
+        assert_eq!(load("10.0a"), vec!["watcom:10.0/10.0a"]);
+        // 10.6: byte compare but `EBX` loop.
+        assert_eq!(load("10.6"), vec!["watcom:10.5/10.6"]);
+        // 11.0: byte compare + `ECX` loop; no `MOVZX` in this probe, so it can't be split from
+        // `open` without the switch-order signal — an honest narrowing, not a misclassification.
+        let v110 = load("11.0");
+        assert!(v110.contains(&"watcom:11.0"), "11.0 → {v110:?}");
+        assert!(!v110.contains(&"watcom:10.0/10.0a"), "11.0 must exclude the promoting 10.0 line → {v110:?}");
+        // Open Watcom: byte compare + `MOVZX` zero-extend → uniquely `open`.
+        assert_eq!(load("ow2"), vec!["watcom:open"]);
+    }
+
     /// End-to-end: real encodings disassembled by mosura's engine → signals → classify. 10.0a's
     /// promoting `cmpbyte` (`CMP EAX,5 ; SETZ AL ; RET`) vs Open Watcom's (`CMP AL,5 ; SETZ AL ;
     /// MOVZX EAX,AL ; RET`).

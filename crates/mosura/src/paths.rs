@@ -58,6 +58,13 @@ pub fn analysis_corpus_dir() -> PathBuf {
     workspace_root().join("oracle/analysis-corpus")
 }
 
+/// Committed codegen-fingerprint artefacts — the probe source plus, per compiler revision, the
+/// self-compiled machine code (`<rev>.code`) the codegen matcher is gated against (so the test
+/// runs without the historical compiler on hand). See `docs/watcom-codegen-fingerprint.md`.
+pub fn codegen_probes_dir() -> PathBuf {
+    workspace_root().join("oracle/codegen-probes")
+}
+
 /// The cross-compiler self-compiled **ground-truth** corpus: stripped binaries + build-derived
 /// `.truth` files whose oracle is the source/build we own, not Ghidra (task #3;
 /// `docs/ground-truth-corpus.md`, `tests/ground_truth_parity.rs`).
