@@ -168,6 +168,41 @@ fn pe_compiler_opinion_gcc32() {
     );
 }
 
+/// A3 Stage 2 — golden-validate the **Borland** branch against a real Borland C++ 4.5 PE
+/// (`bcc32.exe`/`tlink32.exe` from the BC45 CD, run under wine). Borland's runtime is
+/// proprietary, so the binary is not committed (like `cnv.exe`): set `MOSURA_BC45_EXE` to a
+/// `bcc32`-built PE to run this; the Ghidra golden (`bc45_hello.loaded.snapshot`) is committed.
+///
+/// A faithful-port subtlety: Ghidra labels this **C++** compiler's output `borland:pascal`
+/// (cspec `borlanddelphi`), because `getOpinion` keys on `e_lfanew==0x100` (→ BorlandPascal) and
+/// the `"…must be run under Win32"` DOS-stub error, not the source language — so `return
+/// offset_choice` gives BorlandPascal. mosura's port reproduces Ghidra exactly, which is the bar.
+#[test]
+fn pe_compiler_opinion_borland() {
+    let Some(path) = std::env::var_os("MOSURA_BC45_EXE").map(PathBuf::from) else {
+        eprintln!("skip pe_compiler_opinion_borland: set MOSURA_BC45_EXE to a Borland C++ 4.5 PE");
+        return;
+    };
+    if !path.exists() {
+        eprintln!("skip pe_compiler_opinion_borland: {} absent", path.display());
+        return;
+    }
+    let golden = snapshot::parse(
+        &std::fs::read_to_string(analysis_goldens_dir().join("bc45_hello.loaded.snapshot")).unwrap(),
+    );
+    let snap = analysis::analyze_binary(&path).unwrap();
+    assert_eq!(snap.lang, golden.lang, "borland: language id must match Ghidra");
+    assert_eq!(snap.compiler, golden.compiler, "borland: compiler-spec id (i386 opinion secondary → cspec) must match Ghidra");
+    assert_eq!(snap.compiler_info, golden.compiler_info, "borland: Compiler info property must match Ghidra");
+    assert_eq!(golden.lang, "x86:LE:32:default");
+    assert_eq!(golden.compiler, "borlanddelphi");
+    assert_eq!(golden.compiler_info, "borland:pascal");
+    eprintln!(
+        "borland PE opinion: lang={} cspec={} compiler={} (faithful CompilerOpinion → BorlandPascal via e_lfanew=0x100)",
+        snap.lang, snap.compiler, snap.compiler_info
+    );
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
