@@ -144,6 +144,30 @@ fn pe_compiler_opinion_gcc() {
     );
 }
 
+/// A3 (32-bit) — the same Gcc opinion on a **32-bit** PE, exercising the new `PeFile32` loader
+/// path. `mingw_hello32.exe` is `src/mingw_hello.c` built with `i686-w64-mingw32-gcc -O2`.
+/// Ghidra's golden is `lang=x86:LE:32:default compiler=windows compilerinfo=gcc:unknown` — the
+/// i386 x86.opinion PE block resolves `Gcc` to the default `windows` cspec (via `cspec_x86`).
+/// Asserting `lang` too confirms the loader took the 32-bit dispatch, not the 64-bit one.
+#[test]
+fn pe_compiler_opinion_gcc32() {
+    let path = analysis_corpus_dir().join("mingw_hello32.exe");
+    let golden = snapshot::parse(
+        &std::fs::read_to_string(analysis_goldens_dir().join("mingw_hello32.loaded.snapshot")).unwrap(),
+    );
+    let snap = analysis::analyze_binary(&path).unwrap();
+    assert_eq!(snap.lang, golden.lang, "mingw32: language id must match Ghidra");
+    assert_eq!(snap.compiler, golden.compiler, "mingw32: compiler-spec id (i386 opinion secondary → cspec) must match Ghidra");
+    assert_eq!(snap.compiler_info, golden.compiler_info, "mingw32: Compiler info property must match Ghidra");
+    assert_eq!(golden.lang, "x86:LE:32:default");
+    assert_eq!(golden.compiler, "windows");
+    assert_eq!(golden.compiler_info, "gcc:unknown");
+    eprintln!(
+        "mingw32 PE opinion: lang={} cspec={} compiler={} (32-bit PeFile32 path → Gcc)",
+        snap.lang, snap.compiler, snap.compiler_info
+    );
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has

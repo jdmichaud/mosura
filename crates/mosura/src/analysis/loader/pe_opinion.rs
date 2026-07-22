@@ -7,7 +7,7 @@
 //! property (`PeLoader.java:163`). No invented heuristics — every branch mirrors the source.
 
 use object::pe;
-use object::read::pe::PeFile64;
+use object::read::pe::{ImageNtHeaders, PeFile};
 use object::LittleEndian as LE;
 
 /// Ghidra `PeLoader.CompilerOpinion.CompilerEnum`. The two ambiguous values (`GccVs`,
@@ -79,6 +79,21 @@ impl CompilerEnum {
             _ => "windows",
         }
     }
+
+    /// The x86-32 PE compiler-spec id — the Opinion query resolved against the x86.opinion PE
+    /// block for `primary=332` (`IMAGE_FILE_MACHINE_I386`). Unlike the AMD64 block, the i386
+    /// block carries `borlandcpp`/`borlanddelphi` secondaries (Borland is 32-bit only) and no
+    /// `swift`; `clang`/`golang` keep their secondaries, and every other family (including
+    /// `visualstudio`/`gcc`) resolves to the block's default `windows` compiler spec.
+    pub fn cspec_x86(self) -> &'static str {
+        match self.family() {
+            "clang" => "clangwindows",
+            "borlandcpp" => "borlandcpp",
+            "borlanddelphi" => "borlanddelphi",
+            "golang" => "golang",
+            _ => "windows",
+        }
+    }
 }
 
 // --- static byte/char constants (PeLoader.java:905-916) ---
@@ -123,7 +138,7 @@ fn sec_name(raw: &[u8; 8]) -> Option<&str> {
 }
 
 /// The raw on-disk bytes of the named section (`pointer_to_raw_data..+size_of_raw_data`).
-fn section_raw<'a>(data: &'a [u8], pe: &PeFile64, name: &str) -> Option<&'a [u8]> {
+fn section_raw<'a, Pe: ImageNtHeaders>(data: &'a [u8], pe: &PeFile<'_, Pe>, name: &str) -> Option<&'a [u8]> {
     for s in pe.section_table().iter() {
         if sec_name(&s.name) == Some(name) {
             let off = s.pointer_to_raw_data.get(LE) as usize;
@@ -134,18 +149,18 @@ fn section_raw<'a>(data: &'a [u8], pe: &PeFile64, name: &str) -> Option<&'a [u8]
     None
 }
 
-fn has_section(pe: &PeFile64, name: &str) -> bool {
+fn has_section<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>, name: &str) -> bool {
     pe.section_table().iter().any(|s| sec_name(&s.name) == Some(name))
 }
 
 /// `RustUtilities.isRust`: any `RUST_SIGNATURES` byte pattern occurs in the `.rdata` block.
-fn is_rust(data: &[u8], pe: &PeFile64) -> bool {
+fn is_rust<Pe: ImageNtHeaders>(data: &[u8], pe: &PeFile<'_, Pe>) -> bool {
     let Some(rdata) = section_raw(data, pe, ".rdata") else { return false };
     RUST_SIGNATURES.iter().any(|sig| find_sub(rdata, sig).is_some())
 }
 
 /// `SwiftUtils.isSwift(sectionNames)`: any section name starts with a Swift prefix.
-fn is_swift(pe: &PeFile64) -> bool {
+fn is_swift<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>) -> bool {
     pe.section_table().iter().any(|s| {
         sec_name(&s.name).is_some_and(|name| SWIFT_PREFIXES.iter().any(|p| name.starts_with(p)))
     })
@@ -153,7 +168,7 @@ fn is_swift(pe: &PeFile64) -> bool {
 
 /// `PeLoader.isGolang`: a Go build id at the start of `.text` (`GoBuildId.read`) or the Go
 /// buildinfo magic present in `.data` (`GoBuildInfo.isPresent`).
-fn is_golang(data: &[u8], pe: &PeFile64) -> bool {
+fn is_golang<Pe: ImageNtHeaders>(data: &[u8], pe: &PeFile<'_, Pe>) -> bool {
     let build_id = section_raw(data, pe, ".text").is_some_and(|t| t.starts_with(GO_BUILDID_MAGIC));
     let build_info =
         section_raw(data, pe, ".data").is_some_and(|d| find_sub(d, GO_BUILDINF_MAGIC).is_some());
@@ -171,7 +186,7 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Faithful port of `PeLoader.CompilerOpinion.getOpinion` (PeLoader.java:982). `data` is the
 /// raw PE file image; `pe` its parsed header. `program_rdata` gates the Rust check (Ghidra's
 /// `program` may be null — passing `false` skips it, as Ghidra does with a null program).
-pub fn get_opinion(data: &[u8], pe: &PeFile64) -> CompilerEnum {
+pub fn get_opinion<Pe: ImageNtHeaders>(data: &[u8], pe: &PeFile<'_, Pe>) -> CompilerEnum {
     use CompilerEnum::*;
     let e_lfanew = pe.dos_header().nt_headers_offset() as usize;
 

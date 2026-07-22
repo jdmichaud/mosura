@@ -12,8 +12,8 @@
 //! loader, so it is not produced here. PE container decoding uses the `object` crate.
 
 use object::pe;
-use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile64};
-use object::LittleEndian as LE;
+use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile, PeFile32, PeFile64};
+use object::{FileKind, LittleEndian as LE};
 
 use super::elf::LoadError;
 use crate::analysis::program::{AddressSet, Memory, Program, SymbolType};
@@ -21,37 +21,68 @@ use crate::decompile::space::{Address, SpaceId, SpaceKind, SpaceManager};
 
 /// `IMAGE_SIZEOF_NT_OPTIONAL64_HEADER` — size of the 64-bit optional header.
 const OPTIONAL64_HEADER_SIZE: u64 = 0xF0;
+/// `IMAGE_SIZEOF_NT_OPTIONAL32_HEADER` — size of the 32-bit optional header.
+const OPTIONAL32_HEADER_SIZE: u64 = 0xE0;
 /// `IMAGE_SIZEOF_FILE_HEADER`.
 const FILE_HEADER_SIZE: u64 = 0x14;
 
-/// Parse a PE image and build the [`Program`] memory map (A2).
+/// Parse a PE image and build the [`Program`] memory map (A2). Dispatches on the container kind:
+/// PE32+ → `x86:LE:64:default`, PE32 → `x86:LE:32:default`. Both share one generic builder; only
+/// the language id, optional-header size, address width, and the machine-dependent bits of the
+/// opinion (i386 vs AMD64 cspec block) and TLS layout differ.
 pub fn load_pe(data: &[u8]) -> Result<Program, LoadError> {
-    let pe = PeFile64::parse(data)?;
+    match FileKind::parse(data) {
+        Ok(FileKind::Pe64) => {
+            let pe = PeFile64::parse(data)?;
+            let machine = pe.nt_headers().file_header().machine.get(LE);
+            if machine != pe::IMAGE_FILE_MACHINE_AMD64 {
+                return Err(LoadError::Unsupported(format!("PE64 machine={machine:#x} (A2 supports x86-64)")));
+            }
+            build_program(data, &pe, "x86:LE:64:default", OPTIONAL64_HEADER_SIZE, 64, true)
+        }
+        Ok(FileKind::Pe32) => {
+            let pe = PeFile32::parse(data)?;
+            let machine = pe.nt_headers().file_header().machine.get(LE);
+            if machine != pe::IMAGE_FILE_MACHINE_I386 {
+                return Err(LoadError::Unsupported(format!("PE32 machine={machine:#x} (A2 supports x86)")));
+            }
+            build_program(data, &pe, "x86:LE:32:default", OPTIONAL32_HEADER_SIZE, 32, false)
+        }
+        other => Err(LoadError::Unsupported(format!("not an x86 PE image ({other:?})"))),
+    }
+}
+
+/// The generic PE→[`Program`] builder shared by the 32- and 64-bit paths. `optional_header_size`
+/// (`IMAGE_SIZEOF_NT_OPTIONAL{32,64}_HEADER`) sizes the `Headers` block like Ghidra's
+/// `getVirtualSize`; `addr_size_bits`/`is64` drive the address width, the compiler-spec resolution
+/// (i386 vs AMD64 opinion block), and the TLS-directory layout in [`recover_pe`].
+fn build_program<Pe: ImageNtHeaders>(
+    data: &[u8],
+    pe: &PeFile<'_, Pe>,
+    language_id: &'static str,
+    optional_header_size: u64,
+    addr_size_bits: u32,
+    is64: bool,
+) -> Result<Program, LoadError> {
     let oh = pe.nt_headers().optional_header();
     let image_base = oh.image_base();
     let size_of_headers = u64::from(oh.size_of_headers());
     let e_lfanew = u64::from(pe.dos_header().nt_headers_offset());
 
-    // x86-64 PE only for now (the corpus); 32-bit PE maps a different language id.
-    let machine = pe.nt_headers().file_header().machine.get(LE);
-    if machine != pe::IMAGE_FILE_MACHINE_AMD64 {
-        return Err(LoadError::Unsupported(format!("PE machine={machine:#x} (A2 supports x86-64)")));
-    }
-    let language_id = "x86:LE:64:default";
     // Compiler detection — a faithful port of Ghidra `PeLoader.CompilerOpinion.getOpinion`
     // (see `pe_opinion.rs`). The opinion's `family` is the Opinion secondary that selects the
-    // compiler spec (x86.opinion PE block), and its `label` is stored as the `Compiler` info
-    // property. For x86-64: clang→clangwindows, golang→golang, swift→swift, else→windows.
-    let opinion = super::pe_opinion::get_opinion(data, &pe);
-    let compiler_spec_id = opinion.cspec_x64();
+    // compiler spec (x86.opinion PE block — the i386 and AMD64 blocks differ: Borland is 32-bit
+    // only, Swift 64-bit only), and its `label` is stored as the `Compiler` info property.
+    let opinion = super::pe_opinion::get_opinion(data, pe);
+    let compiler_spec_id = if is64 { opinion.cspec_x64() } else { opinion.cspec_x86() };
     let compiler_label = opinion.label();
 
     let mut spaces = SpaceManager::standard();
-    let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+    let ram = spaces.add("ram", SpaceKind::Processor, addr_size_bits / 8, 1);
     let mut memory = Memory::new();
 
     // Headers block (Ghidra getVirtualSize, capped at file length).
-    let mut hdr_size = OPTIONAL64_HEADER_SIZE + FILE_HEADER_SIZE + 4 + e_lfanew;
+    let mut hdr_size = optional_header_size + FILE_HEADER_SIZE + 4 + e_lfanew;
     if size_of_headers > hdr_size {
         hdr_size = size_of_headers;
     }
@@ -110,11 +141,11 @@ pub fn load_pe(data: &[u8]) -> Result<Program, LoadError> {
         compiler_spec_id,
         Address::new(ram, image_base),
         false,
-        64,
+        addr_size_bits,
     );
     program.compiler = compiler_label.to_string(); // the Compiler info property (opinion label)
     program.memory = memory;
-    recover_pe(&pe, image_base, ram, &mut program);
+    recover_pe(pe, image_base, ram, &mut program, is64);
     Ok(program)
 }
 
@@ -127,7 +158,7 @@ pub fn load_pe(data: &[u8]) -> Result<Program, LoadError> {
 /// - **`.pdata`** (EXCEPTION directory, `ImageRuntimeFunctionEntries_X86`) → a `FUN_<addr>`
 ///   function + symbol at `ImageBase+BeginAddress` for each non-chained RUNTIME_FUNCTION;
 /// - **`_tls_index`** (TLS directory `AddressOfIndex`) → a `Label`.
-fn recover_pe(pe: &PeFile64, image_base: u64, ram: SpaceId, program: &mut Program) {
+fn recover_pe<Pe: ImageNtHeaders>(pe: &PeFile<'_, Pe>, image_base: u64, ram: SpaceId, program: &mut Program, is64: bool) {
     let oh = pe.nt_headers().optional_header();
     let dirs = pe.data_directories();
 
@@ -139,7 +170,9 @@ fn recover_pe(pe: &PeFile64, image_base: u64, ram: SpaceId, program: &mut Progra
         program.entry_points.push(eaddr);
     }
 
-    if let Some(dir) = dirs.get(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+    // `.pdata` (RUNTIME_FUNCTION / `ImageRuntimeFunctionEntries_X86`) is an x64-only directory;
+    // 32-bit x86 PE has no equivalent (its EXCEPTION directory, if any, is not this format).
+    if let Some(dir) = dirs.get(pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION).filter(|_| is64) {
         let base = image_base + u64::from(dir.virtual_address.get(LE));
         let count = u64::from(dir.size.get(LE)) / 12; // RUNTIME_FUNCTION is 12 bytes
         for i in 0..count {
@@ -176,8 +209,14 @@ fn recover_pe(pe: &PeFile64, image_base: u64, ram: SpaceId, program: &mut Progra
     if let Some(dir) = dirs.get(pe::IMAGE_DIRECTORY_ENTRY_TLS) {
         let va = u64::from(dir.virtual_address.get(LE));
         if va != 0 {
-            // IMAGE_TLS_DIRECTORY64.AddressOfIndex (a VA) is at offset 16.
-            if let Some(idx) = read_u64(&program.memory, Address::new(ram, image_base + va + 16)) {
+            // IMAGE_TLS_DIRECTORY.AddressOfIndex (a VA): offset 16 for the 64-bit directory
+            // (8-byte fields), offset 8 for the 32-bit one (4-byte fields).
+            let idx = if is64 {
+                read_u64(&program.memory, Address::new(ram, image_base + va + 16))
+            } else {
+                read_u32(&program.memory, Address::new(ram, image_base + va + 8)).map(u64::from)
+            };
+            if let Some(idx) = idx {
                 if idx != 0 {
                     program.symbol_table.add_symbol(Address::new(ram, idx), "_tls_index", SymbolType::Label);
                 }
