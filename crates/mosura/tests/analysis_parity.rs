@@ -203,6 +203,39 @@ fn pe_compiler_opinion_borland() {
     );
 }
 
+/// A3 Stage 2 — golden-validate the **VisualStudio** branch against a real MSVC 6.0 PE
+/// (`CL.EXE`/`LINK.EXE` from the VC98 tree, run under wine). MSVC's runtime is proprietary, so
+/// the binary is not committed (like `cnv.exe`): set `MOSURA_VC6_EXE` to a `cl`-built PE; the
+/// Ghidra golden (`vc6_hello.loaded.snapshot`) is committed. `get_opinion` reaches VisualStudio
+/// via the **"DanS" Rich header** — `link.exe` writes it at file offset 0x80, and with
+/// `e_lfanew=0xd0` (>0x80, so not the GccVs `==0x80` fast path) the `(val1 ^ val2) == 'DanS'`
+/// check fires. The i386 block resolves VisualStudio to the default `windows` cspec.
+#[test]
+fn pe_compiler_opinion_msvc() {
+    let Some(path) = std::env::var_os("MOSURA_VC6_EXE").map(PathBuf::from) else {
+        eprintln!("skip pe_compiler_opinion_msvc: set MOSURA_VC6_EXE to an MSVC 6.0 PE");
+        return;
+    };
+    if !path.exists() {
+        eprintln!("skip pe_compiler_opinion_msvc: {} absent", path.display());
+        return;
+    }
+    let golden = snapshot::parse(
+        &std::fs::read_to_string(analysis_goldens_dir().join("vc6_hello.loaded.snapshot")).unwrap(),
+    );
+    let snap = analysis::analyze_binary(&path).unwrap();
+    assert_eq!(snap.lang, golden.lang, "msvc: language id must match Ghidra");
+    assert_eq!(snap.compiler, golden.compiler, "msvc: compiler-spec id must match Ghidra");
+    assert_eq!(snap.compiler_info, golden.compiler_info, "msvc: Compiler info property must match Ghidra");
+    assert_eq!(golden.lang, "x86:LE:32:default");
+    assert_eq!(golden.compiler, "windows");
+    assert_eq!(golden.compiler_info, "visualstudio:unknown");
+    eprintln!(
+        "msvc PE opinion: lang={} cspec={} compiler={} (faithful CompilerOpinion → VisualStudio via DanS Rich header)",
+        snap.lang, snap.compiler, snap.compiler_info
+    );
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
