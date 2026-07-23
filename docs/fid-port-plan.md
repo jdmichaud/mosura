@@ -90,9 +90,23 @@ framework detail we're not obligated to replicate to identify functions.
 Each stage lands independently, gated, on `analysis-port`. Ghidra source paths are under
 `Ghidra/Features/FunctionID/src/main/java/ghidra/feature/fid/` unless noted.
 
-### Stage 0 — SLEIGH operand/mask exposure (see §0). CRITICAL PATH, cross-lane.
-Deliver the one-page API contract; get the accessor (option 1) or prove the in-lane derivation
-(option 2); spike-verify against Ghidra for a few instructions. **Blocks everything.**
+### Stage 0 — SLEIGH operand/mask exposure (see §0). ✅ LANDED `c5dbd8a`.
+Added a **purely additive** read-only accessor (0 deletions; existing `resolve`/`Instruction`
+untouched, so the decompiler is provably unperturbed — decompile_corpus 7/7 + ir_parity 9/9 +
+disasm goldens all green). `sleigh::disassemble_fingerprint` returns `InstructionFingerprint`
+{`instruction_mask`, `operands`[{`value_mask`, `objects`, `is_scalar`, `is_address`}], `is_call`} —
+faithful ports of `getInstructionMask` (OR of matched constructor-chain pattern blocks, operand
+bits cleared), `getOperandValueMask`, `getOpObjects`, `getOperandType` (isScalar/isAddress only),
+`getFlowType().isCall()` (via p-code CALL/CALLIND, = Ghidra's walkTemplates flag). Spike
+`tests/sleigh_fingerprint.rs` 7/7 (reg-reg, imm, [reg+disp], call, ret, nop; asserts
+`mask.len()==bytes.len()` and `mask & value_mask == 0`).
+**Residuals the Stage-1 FidHashDump oracle must catch** (all documented in-code, none expected to
+perturb x86 hashes): (1) branch/call target → `Scalar{addr}` not `Address` — hash-neutral for
+|val|≥256 (folds to `0xfeeddead` either way; `is_address` bit is correct); (2) direct
+`inst_start`/`inst_next` printed operands surface no opObject (not hit by x86 rel branches); (3)
+`mainSubGroups` empty-mask fallback keyed on the sub-node subtree, not Ghidra's flat name map
+(benign for x86); (4) delay-slot mask length = full consumed length (moot — no supported arch has
+delay slots). **These are exactly what byte-equality-to-Ghidra will confirm or refute.**
 
 ### Stage 1 — the hasher: `FidHashQuad` (faithful, byte-identical)
 Port `hash/MessageDigestFidHasher.java` + `hash/FunctionBodyFunctionExtentGenerator.java` +
