@@ -81,7 +81,17 @@ cp -r "$WORK/x/$bindir" "$dest/BIN"
 for d in H LIB386; do
   src="$WORK/x/${root:+$root/}$d"; [ -d "$src" ] && cp -r "$src" "$dest/$d"
 done
-echo "[watcom] staged -> C:\\$KEY  ($(ls "$dest/BIN" | wc -l) BIN files, H=$( [ -d "$dest/H" ] && echo yes || echo no ))"
+# The DOS-extender loader (W32RUN.EXE) + DOS/4GW may live in a SEPARATE BIN dir, not alongside
+# WCC386: the flat layout (10.6) keeps them in BINW with the compiler, but the nested layout
+# (10.0a) puts WCC386 in WATCOM/BINB and W32RUN/DOS4GW in WATCOM/BIN. Ensure both land in dest/BIN
+# so a single PATH entry suffices — without W32RUN the compiler aborts ("requires W32RUN.EXE").
+for exe in W32RUN.EXE DOS4GW.EXE; do
+  if [ ! -f "$dest/BIN/$exe" ] && [ ! -f "$dest/BIN/$(echo "$exe" | tr '[:upper:]' '[:lower:]')" ]; then
+    p=$(awk -v e="$exe" 'toupper($NF) ~ ("/" e "$") && $(NF-2)+0 > best { best=$(NF-2); pick=$NF } END{print pick}' "$WORK/ilist.txt")
+    [ -n "$p" ] && { pick "$p"; cp "$WORK/x/$p" "$dest/BIN/" 2>/dev/null || true; }
+  fi
+done
+echo "[watcom] staged -> C:\\$KEY  ($(ls "$dest/BIN" | wc -l) BIN files, H=$( [ -d "$dest/H" ] && echo yes || echo no ), W32RUN=$( ls "$dest/BIN"/[Ww]32[Rr][Uu][Nn].[Ee][Xx][Ee] >/dev/null 2>&1 && echo yes || echo no ))"
 
 # 5. emit a compile BAT (DOS command.com: CRLF, single '>' redirect — no 2>&1)
 bat_of() {  # $1 = C source stem (8.3, uppercased)
