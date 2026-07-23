@@ -48,7 +48,7 @@
   **full 9.01 install under dosemu** (run `INSTALL.EXE` to unpack the `.WPK`s, then compile+link). Real
   effort; deferred behind the tractable CI-fixture work above. NOTE: GT_WATCOM (`~/tools/open-watcom`)
   was deleted in the cleanup — regenerating any Watcom fixture needs it restored.
-- **A2 — ELF32-dynamic hardening**: (1) `coverage_68k` variant "alignment" — ✅ RESOLVED `<this>`:
+- **A2 — ELF32-dynamic hardening**: (1) `coverage_68k` variant "alignment" — ✅ RESOLVED `5cd9c50`:
   the premise was wrong. `coverage_68k` correctly uses `68040.sla` (= the `default` variant its
   golden was captured under); the loader's `Coldfire` pick is *faithful* (Ghidra collects the 4
   matching variants in a `HashSet` with no sort → stable iteration lands on Coldfire, verified from
