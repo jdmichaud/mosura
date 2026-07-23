@@ -154,11 +154,16 @@ where
     // (`compilerSpecID=...`) and `.ldefs` resolves: x86-64 → "gcc", AArch64 → "default",
     // RISC-V → "gcc", 68k → "default". 68k maps to the **Coldfire** variant, not "default":
     // 68000.opinion's ELF constraint (`primary="4"` = EM_68K, `endian="big" size="32"`,
-    // `compilerSpecID="default"`) specifies no processor *variant*, so Ghidra's broad
-    // language query (`QueryOpinionService.addQuery` → `getLanguageCompilerSpecPairs` with
-    // `variant=null`) returns all four 68000:BE:32 variants and the importer deterministically
-    // selects `68000:BE:32:Coldfire` (verified against the analyzeHeadless golden across
-    // repeated runs). The big-endian/32-bit read paths below are class/endian-parameterized.
+    // `compilerSpecID="default"`) specifies no processor *variant*, so all four 68000:BE:32
+    // languages match. Ghidra collects them into a `HashSet<QueryResult>`
+    // (QueryOpinionService.java) and — with no sort, and `QueryResult` not `Comparable` —
+    // `ElfLoader.findSupportedLoadSpecs` takes them in a stable iteration order that lands on
+    // `68000:BE:32:Coldfire` (confirmed empirically against analyzeHeadless across repeated
+    // runs; the selection is *not* alphabetical). This variant label is **output-neutral**:
+    // real `m68k-linux-gnu` code stays in the integer subset Coldfire and the golden's
+    // `default`(=68040) model decode identically, proven byte-for-byte across the ground-truth
+    // corpus by `coverage_68k::m68k_coldfire_matches_default_variant`. The big-endian/32-bit
+    // read paths below are class/endian-parameterized.
     let machine = header.e_machine(endian);
     let big_endian = geom.big_endian();
     let arch = match (machine, big_endian, geom.is64) {

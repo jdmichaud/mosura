@@ -30,14 +30,14 @@
 - **Review cycle**: independent sub-agent review of the arc; findings verified + fixed (`e669740`).
 
 ## ⏩ UNBLOCKED — READY / next up (user said: work these)
-- **A3-V Phase 3 — CI-runnable proprietary version fixtures** — ✅ FIRST BATCH `39a7356`.
-  Committed **marker fragments** (metadata, no runtime code): `msvc6_rich.bin` (VC6 Rich
-  header → `msvc:6.0`) + `borland45_banner.bin` (BC++4.5 banner → `borland:c++:1994`), gated by
+- **A3-V Phase 3 — CI-runnable proprietary version fixtures** — ✅ `39a7356`+`6feca33`.
+  Committed **marker fragments** (metadata, no runtime code): `msvc6_rich.bin` (VC6 → `msvc:6.0`),
+  `msvc8_rich.bin` (genuine VS2005 msvcr80.dll from the VC8 ISO → `msvc:8.0`; wine's builtin is a
+  gcc reimplementation, unusable), `borland45_banner.bin` (BC++4.5 → `borland:c++:1994`), gated by
   new `compiler_version_marker_fragments` — real-compiler-output version detection now runs in
   CI without the toolchain (robust to the disk-churn that keeps relocating it). Pre-Rich MSVC
   (VC4/5 linker-version + runtime-string) stays covered by synthetic unit tests. **Follow-on**:
-  a VS2005 Rich fragment (msvcr80.dll, `msvc:8.0`), MSVC 2.0 (2nd pre-Rich datapoint), Borland
-  4.0/4.52 era-boundary fixtures.
+  MSVC 2.0 (2nd pre-Rich datapoint), Borland 4.0/4.52 era-boundary fixtures.
 - **A4 Stage 2 — pre-10 Watcom** (7.0/8.5a/9.01/9.5b) — ⏸ NEEDS FULL 9.01 INSTALL. Extracted the
   9.01 floppy set (`/data/w901/`, Disk01-06); the DOS compiler driver `WCC386.DOS` (116 KB) + the
   packed backend/runtime (`WCC386P.WPK`, `H.WPK`) are there. The only plaintext vendor string on the
@@ -48,8 +48,15 @@
   **full 9.01 install under dosemu** (run `INSTALL.EXE` to unpack the `.WPK`s, then compile+link). Real
   effort; deferred behind the tractable CI-fixture work above. NOTE: GT_WATCOM (`~/tools/open-watcom`)
   was deleted in the cleanup — regenerating any Watcom fixture needs it restored.
-- **A2 — ELF32-dynamic hardening**: m68k 32-bit *dynamic* validation + `coverage_68k` Coldfire
-  variant alignment. Bounded, self-contained (multilib installed).
+- **A2 — ELF32-dynamic hardening**: (1) `coverage_68k` variant "alignment" — ✅ RESOLVED `<this>`:
+  the premise was wrong. `coverage_68k` correctly uses `68040.sla` (= the `default` variant its
+  golden was captured under); the loader's `Coldfire` pick is *faithful* (Ghidra collects the 4
+  matching variants in a `HashSet` with no sort → stable iteration lands on Coldfire, verified from
+  source — not alphabetical) AND **output-neutral** (coldfire≡default disasm proven byte-for-byte
+  across the ground-truth m68k corpus, 742 insns, by new `m68k_coldfire_matches_default_variant`).
+  (2) m68k 32-bit *dynamic* validation — ⏸ the cross-gcc **driver/cc1 was removed in the cleanup**
+  (only base+cpp+binutils+libc-dev remain); `gcc-14-m68k-linux-gnu` is apt-installable (needs
+  network/sudo) to build a dynamically-linked m68k ELF (all current m68k fixtures are static).
 - **R2 — env scripting**: `setup-watcom-dosemu.sh` / wine-toolchain setup, matching the project's
   setup-script convention. Recipes exist (dosemu W32RUN gotcha, wine BC45/VC6 direct-extract).
 
@@ -106,8 +113,9 @@ External toolchains restored by user under `/home/jd/projects/tools` (watcom/,
 visual_studio/, borland_turbo_c/) + installed: wine 10.0 (+i386), mingw-w64 (both
 arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build caches +
 `~/tools` relocated to `/data` (sda4, new 30G partition); root off 100%.
-- **A2** — ELF32-dynamic hardening (m68k 32-bit dynamic validation + `coverage_68k`
-  variant alignment to Coldfire). UNBLOCKED (gcc-multilib installed).
+- **A2** — ELF32-dynamic hardening. Variant "alignment" ✅ RESOLVED (was a non-issue — see the
+  UNBLOCKED section above; loader's Coldfire pick proven faithful + output-neutral). Dynamic
+  validation ⏸ blocked on restoring the m68k gcc driver (`gcc-14-m68k-linux-gnu`, apt).
 - **A3** — PE CompilerOpinion: golden-validate the non-Clang branches. ✅ **COMPLETE.**
   All real-world PE compiler branches now golden-validated vs Ghidra 12.0.3 (DEV dist at
   `/data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_12.0.3_DEV` + JDK 21):
