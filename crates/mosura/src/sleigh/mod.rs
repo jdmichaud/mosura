@@ -16,6 +16,8 @@ pub mod sla;
 
 use pcode::PcodeOp;
 
+pub use engine::{InstructionFingerprint, OpObject, OperandFingerprint};
+
 use crate::Unimplemented;
 
 /// One disassembled instruction with its lifted raw p-code (stage 1b output).
@@ -42,6 +44,23 @@ pub fn disassemble(lang_id: &str, bytes: &[u8], base: u64) -> Result<Vec<Instruc
     match crate::lang::load(lang_id) {
         Some((spec, ctx)) => Ok(spec.disassemble_ctx(bytes, base, &ctx)),
         None => Err(Unimplemented("sleigh::disassemble: language tables unavailable")),
+    }
+}
+
+/// Disassemble a byte range and, for each instruction, produce its
+/// [`InstructionFingerprint`] — the read-only, disassembly-level FID-hash ingredients
+/// (instruction/operand masks, opObjects, operand types, call-flow). Mirrors
+/// [`disassemble`]; returns [`Unimplemented`] only when the language tables are
+/// unavailable. The fingerprints are for exactly the instructions [`disassemble`]
+/// produces at the same addresses.
+pub fn disassemble_fingerprint(
+    lang_id: &str,
+    bytes: &[u8],
+    base: u64,
+) -> Result<Vec<InstructionFingerprint>, Unimplemented> {
+    match crate::lang::load(lang_id) {
+        Some((spec, ctx)) => Ok(spec.disassemble_fingerprint(bytes, base, &ctx)),
+        None => Err(Unimplemented("sleigh::disassemble_fingerprint: language tables unavailable")),
     }
 }
 

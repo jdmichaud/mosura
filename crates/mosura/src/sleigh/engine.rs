@@ -1571,3 +1571,518 @@ fn extend(val: u64, hi: u32, signed: bool) -> i64 {
         masked as i64
     }
 }
+
+// ============================================================================
+// FID fingerprint accessor (Stage 0, `docs/fid-port-plan.md` §0)
+//
+// A **read-only, additive** view of the four disassembly-level SLEIGH ingredients
+// Ghidra's FID hasher (`Ghidra/Features/FunctionID/.../MessageDigestFidHasher.java`)
+// consumes per instruction. It changes nothing about disassembly/p-code output —
+// it re-walks the SAME parse tree [`Spec::resolve`] builds (via a parallel
+// [`Spec::resolve_capture`] that additionally records the matched pattern blocks)
+// and derives the ingredients the engine already computes internally.
+//
+// The Ghidra APIs mirrored, and where their logic is ported from:
+//   getInstructionMask()      → `SleighDebugLogger.buildMasks`/`PatternGroup.getMask`
+//                               (OR of every matched constructor-chain pattern block,
+//                                minus the operand value bits).
+//   getOperandValueMask(ii)   → `SleighDebugLogger.buildOperandMask`/`combineOperandMask`.
+//   getOpObjects(ii)          → `SleighInstructionPrototype.getOpObjects` /
+//                               `OperandSymbol.printList` / `addHandleObject`.
+//   getOperandType(ii)        → `SleighInstructionPrototype.getOpType` (scalar/address bits).
+//   getFlowType().isCall()    → the CALL flag is set precisely by `CALL`/`CALLIND`
+//                               template ops (`SleighInstructionPrototype.walkTemplates`),
+//                               so it is read faithfully off the lifted p-code.
+// ============================================================================
+
+/// The FID-hash ingredients for one disassembled instruction — the Rust mirror of
+/// the four SLEIGH APIs `MessageDigestFidHasher` reads. Produced by
+/// [`Spec::disassemble_fingerprint`] alongside (and for the same instructions as)
+/// [`Spec::disassemble_ctx`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstructionFingerprint {
+    /// `prototype.getInstructionMask()`: a byte-mask (same length as the instruction
+    /// bytes) whose SET bits are opcode/addressing-mode bits fixed by the matched
+    /// constructor chain; operand *value* bits are cleared to 0.
+    pub instruction_mask: Vec<u8>,
+    /// One entry per printed operand of the (post-flowthru) mnemonic constructor, in
+    /// print order — i.e. `getNumOperands()` operands.
+    pub operands: Vec<OperandFingerprint>,
+    /// `instruction.getFlowType().isCall()`.
+    pub is_call: bool,
+}
+
+/// The per-operand FID ingredients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperandFingerprint {
+    /// `prototype.getOperandValueMask(ii)`: byte-mask (instruction length) of the
+    /// operand's value bits. `None` mirrors Ghidra's `null` (whole-instruction mask
+    /// derivation failed); a well-formed instruction always yields `Some` (possibly
+    /// all-zero, e.g. a constant operand), which the hasher still processes.
+    pub value_mask: Option<Vec<u8>>,
+    /// `instruction.getOpObjects(ii)`: the operand's resolved components, in print
+    /// order (`Scalar`/`Register`/`Address`; punctuation is dropped, as Ghidra drops
+    /// the `Character`s).
+    pub objects: Vec<OpObject>,
+    /// `OperandType.isScalar(getOperandType(ii))`.
+    pub is_scalar: bool,
+    /// `OperandType.isAddress(getOperandType(ii))`.
+    pub is_address: bool,
+}
+
+/// One `getOpObjects` component. The hasher reads only `Scalar.getSignedValue()`,
+/// `Register.getOffset()` (offset in the register space), and `Address.getOffset()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpObject {
+    Scalar { signed_value: i64 },
+    Register { space_offset: u64 },
+    Address { offset: u64 },
+}
+
+/// The pattern-mask side-information captured during [`Spec::resolve_capture`],
+/// forming a tree parallel to the [`Node`] tree: per node, the matched instruction
+/// pattern block (at absolute byte `base`), plus a child slot per operand (`Some`
+/// for sub-constructor operands). Used to build the instruction mask
+/// (`PatternGroup.getMask`) and the empty-operand-mask fallback subtree mask.
+struct FpInfo {
+    base: usize,
+    block: Option<PatternBlock>,
+    subs: Vec<Option<FpInfo>>,
+}
+
+impl OpNode {
+    /// The operand's resolved absolute byte offset (Ghidra `subState.getOffset()`).
+    fn start(&self) -> usize {
+        match self {
+            OpNode::Sub(n) => n.offset,
+            OpNode::Leaf { offset, .. } | OpNode::Expr { offset, .. } => *offset,
+        }
+    }
+}
+
+impl Pattern {
+    /// The instruction pattern block that contributes to the instruction mask
+    /// (`DisjointPattern.getBlock(false)`): the instruction half of an
+    /// instruction/combine pattern; a pure context pattern contributes nothing.
+    fn instruction_block(&self) -> Option<&PatternBlock> {
+        match self {
+            Pattern::Instruction(b) => Some(b),
+            Pattern::Combine { instr, .. } => Some(instr),
+            Pattern::Context(_) => None,
+        }
+    }
+}
+
+impl Decision {
+    /// Like [`Decision::resolve`], but also returns the matched constructor's
+    /// instruction pattern block (Ghidra records this via `addInstructionPattern`
+    /// when `DisjointPattern.isMatch` succeeds).
+    fn resolve_capture(&self, walker: &Walker, base: usize) -> Option<(usize, Option<PatternBlock>)> {
+        if self.bitsize == 0 {
+            for (pat, idx) in &self.pairs {
+                if pat.is_match(walker, base) {
+                    return Some((*idx, pat.instruction_block().cloned()));
+                }
+            }
+            return None;
+        }
+        let val = if self.context_decision {
+            walker.context_bits(self.startbit, self.bitsize)
+        } else {
+            walker.instruction_bits(base, self.startbit, self.bitsize)
+        };
+        self.children.get(val as usize)?.resolve_capture(walker, base)
+    }
+}
+
+/// OR one matched pattern block's mask bytes into `out` at `base + block.offset`,
+/// big-endian per 32-bit word (Ghidra `SleighDebugLogger.InstructionBitPattern.getBytes`).
+fn apply_pattern_block(base: usize, block: &PatternBlock, out: &mut [u8]) {
+    for (i, &word) in block.mask.iter().enumerate() {
+        let mut v = word;
+        for n in (0..4i64).rev() {
+            let idx = base as i64 + block.offset + (i as i64) * 4 + n;
+            if idx >= 0 && (idx as usize) < out.len() {
+                out[idx as usize] |= (v & 0xff) as u8;
+            }
+            v >>= 8;
+        }
+    }
+}
+
+impl Spec {
+    /// Disassemble `bytes` at `base` (as [`Spec::disassemble_ctx`]) and, for each of
+    /// the same instructions, produce its [`InstructionFingerprint`] — the four
+    /// disassembly-level ingredients Ghidra's FID hasher consumes. Read-only: this
+    /// does not affect [`Spec::disassemble_ctx`] output in any way.
+    pub fn disassemble_fingerprint(&self, bytes: &[u8], base: u64, context: &[u32]) -> Vec<InstructionFingerprint> {
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        while pos < bytes.len() {
+            let walker = Walker {
+                buf: &bytes[pos..],
+                addr: base + pos as u64,
+                context: RefCell::new(context.to_vec()),
+                next: Cell::new(0),
+            };
+            let Some((node, fp)) = self.resolve_capture(&walker, self.root_subtable, 0) else { break };
+            // Length exactly as `disassemble_ctx` computes it, so this fingerprint
+            // pairs 1:1 with that instruction (and `instruction_mask.len()` matches
+            // the instruction byte length). Delay slots (non-x86) extend the length.
+            let mut ilen = node.length.max(1);
+            if self.has_delay_slot(&node) && ilen < walker.buf.len() {
+                let dw = Walker {
+                    buf: &walker.buf[ilen..],
+                    addr: walker.addr + ilen as u64,
+                    context: RefCell::new(walker.context.borrow().clone()),
+                    next: Cell::new(0),
+                };
+                if let Some((dn, _)) = self.resolve_capture(&dw, self.root_subtable, 0) {
+                    ilen += dn.length.max(1);
+                }
+            }
+            walker.next.set(walker.addr + ilen as u64);
+
+            out.push(self.fingerprint_node(&node, &fp, &walker, ilen));
+            pos += ilen;
+        }
+        out
+    }
+
+    /// Build one instruction's fingerprint from its resolved parse tree.
+    fn fingerprint_node(&self, node: &Node, fp: &FpInfo, walker: &Walker, mask_len: usize) -> InstructionFingerprint {
+        // Instruction mask = OR of every matched pattern block in the chain
+        // (`mainGroup.getMask`), before clearing operand value bits.
+        let mut instruction_mask = vec![0u8; mask_len];
+        self.subtree_mask(fp, &mut instruction_mask);
+
+        // The instruction's printed operands are those of the mnemonic constructor
+        // (after flowthru descent), in print order after the first whitespace —
+        // Ghidra `cacheMnemonicState` + `Constructor.getOpsPrintOrder`.
+        let (mnem, mnem_fp) = self.mnemonic_node(node, fp);
+        let mctor = self.ctor_of(mnem);
+        let n = mctor.print.len();
+        let split = if mctor.first_whitespace < 0 { n } else { (mctor.first_whitespace as usize).min(n) };
+        let op_order: Vec<usize> = mctor.print[(split + 1).min(n)..]
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Operand(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+
+        let mut operands = Vec::with_capacity(op_order.len());
+        for &op_i in &op_order {
+            // getOperandValueMask(op_i): token-field value bits (`buildOperandMask`).
+            let mut value_mask = vec![0u8; mask_len];
+            self.combine_operand_mask(mnem, op_i, &mut value_mask);
+            if value_mask.iter().all(|&b| b == 0) {
+                // Empty mask fallback: "steal" the operand sub-constructor's pattern
+                // bits (`buildOperandMask`: `mainSubGroups.get(sym.getName())`).
+                if let (Some(OpNode::Sub(_)), Some(Some(subfp))) =
+                    (mnem.operands.get(op_i), mnem_fp.subs.get(op_i))
+                {
+                    let mut fb = vec![0u8; mask_len];
+                    self.subtree_mask(subfp, &mut fb);
+                    value_mask = fb;
+                }
+            }
+            // Operand value bits are excluded from the instruction mask (`clearBits`).
+            for k in 0..mask_len {
+                instruction_mask[k] &= !value_mask[k];
+            }
+
+            let mut objects = Vec::new();
+            self.collect_op_objects(mnem, op_i, walker, &mut objects);
+            let (is_scalar, is_address) = self.operand_type_bools(self.operand_handle(mnem, op_i, walker));
+
+            operands.push(OperandFingerprint { value_mask: Some(value_mask), objects, is_scalar, is_address });
+        }
+
+        // getFlowType().isCall(): the CALL flag is set exactly by CALL/CALLIND ops.
+        let ops = self.build_pcode_node(node, walker);
+        let is_call = ops.iter().any(|o| o.opcode == 7 || o.opcode == 8);
+
+        InstructionFingerprint { instruction_mask, operands, is_call }
+    }
+
+    /// Parallel to [`Spec::resolve`], additionally recording each node's matched
+    /// instruction pattern block into a parallel [`FpInfo`] tree. Kept separate so
+    /// the byte-exact disassembly path stays untouched.
+    fn resolve_capture(&self, walker: &Walker, subtable_id: usize, offset: usize) -> Option<(Node, FpInfo)> {
+        let st = self.subtable(subtable_id)?;
+        let (ctor_idx, block) = st.decision.as_ref()?.resolve_capture(walker, offset)?;
+        let ctor = st.constructors.get(ctor_idx)?;
+        for cop in &ctor.context_ops {
+            let val = self.eval(&cop.value, walker, Operands::Ctor(ctor, offset), offset) as u64;
+            walker.apply_context(cop.word, cop.shift as u32, cop.mask, val);
+        }
+        let mut operands: Vec<OpNode> = Vec::with_capacity(ctor.operand_ids.len());
+        let mut subs: Vec<Option<FpInfo>> = Vec::with_capacity(ctor.operand_ids.len());
+        for &op_id in &ctor.operand_ids {
+            let op = self.operand(op_id)?;
+            let base = if op.offsetbase < 0 {
+                offset
+            } else {
+                operands.get(op.offsetbase as usize)?.end()
+            };
+            let op_offset = (base as i64 + op.reloffset) as usize;
+            let len = op.minlen.max(0) as usize;
+            match op.subsym {
+                Some(sub) if matches!(self.symbol(sub), Some(Symbol::Subtable(_))) => {
+                    let (sub_node, sub_fp) = self.resolve_capture(walker, sub as usize, op_offset)?;
+                    operands.push(OpNode::Sub(Box::new(sub_node)));
+                    subs.push(Some(sub_fp));
+                }
+                Some(sub) => {
+                    operands.push(OpNode::Leaf { sym: sub, offset: op_offset, length: len });
+                    subs.push(None);
+                }
+                None => {
+                    operands.push(OpNode::Expr { op_id, offset: op_offset, length: len });
+                    subs.push(None);
+                }
+            }
+        }
+        let mut length = ctor.min_length.max(0) as usize + offset;
+        for o in &operands {
+            length = length.max(o.end());
+        }
+        let node = Node { subtable: subtable_id, ctor_idx, offset, length: length - offset, operands };
+        Some((node, FpInfo { base: offset, block, subs }))
+    }
+
+    /// Descend the flowthru chain to the mnemonic node (and its parallel `FpInfo`),
+    /// mirroring `render_node`'s flowthru handling / Ghidra `cacheMnemonicState`.
+    fn mnemonic_node<'n>(&self, node: &'n Node, fp: &'n FpInfo) -> (&'n Node, &'n FpInfo) {
+        let mut cur = node;
+        let mut curfp = fp;
+        loop {
+            let ctor = self.ctor_of(cur);
+            if let [Piece::Operand(idx)] = ctor.print.as_slice() {
+                if let (Some(OpNode::Sub(sub)), Some(Some(subfp))) =
+                    (cur.operands.get(*idx), curfp.subs.get(*idx))
+                {
+                    cur = sub;
+                    curfp = subfp;
+                    continue;
+                }
+            }
+            return (cur, curfp);
+        }
+    }
+
+    /// OR every matched pattern block in this node's subtree into `out`
+    /// (`PatternGroup.getMask`).
+    fn subtree_mask(&self, fp: &FpInfo, out: &mut [u8]) {
+        if let Some(block) = &fp.block {
+            apply_pattern_block(fp.base, block, out);
+        }
+        for sub in fp.subs.iter().flatten() {
+            self.subtree_mask(sub, out);
+        }
+    }
+
+    /// Set the token field's value bits into `mask`, starting at byte `pattern_offset`
+    /// (Ghidra `SleighDebugLogger.combinePatternMask`, `TokenField` case).
+    fn set_token_mask_bits(
+        &self,
+        bytestart: i64,
+        byteend: i64,
+        bitstart: i64,
+        bitend: i64,
+        pattern_offset: usize,
+        mask: &mut [u8],
+    ) {
+        let start_bit = bitstart.rem_euclid(8) as i32;
+        let end_bit = bitend.rem_euclid(8) as i32;
+        let big_endian = self.big_endian;
+        let mut i = bytestart;
+        while i <= byteend {
+            let mut first_bit = 0i32;
+            let mut last_bit = 7i32;
+            if i == byteend {
+                if big_endian {
+                    first_bit = start_bit;
+                } else {
+                    last_bit = end_bit;
+                }
+            }
+            if i == bytestart {
+                if big_endian {
+                    last_bit = end_bit;
+                } else {
+                    first_bit = start_bit;
+                }
+            }
+            let byte_mask = (((0xffi32 >> (7 - last_bit + first_bit)) << first_bit) & 0xff) as u8;
+            let idx = pattern_offset as i64 + i;
+            if idx >= 0 && (idx as usize) < mask.len() {
+                mask[idx as usize] |= byte_mask;
+            }
+            i += 1;
+        }
+    }
+
+    /// The "pattern expression" of a non-subtable defining symbol
+    /// (`TripleSymbol.getPatternExpression`): the token/expression whose bits make up
+    /// the operand's value. A fixed register (`Varnode`) or patternless symbol has
+    /// none (contributes no value bits).
+    fn symbol_pattern_expr(&self, id: u32) -> Option<&PatternExpr> {
+        match self.symbol(id)? {
+            Symbol::VarnodeList(vl) => Some(&vl.patval),
+            Symbol::Value(e) => Some(e),
+            Symbol::ValueMap { patval, .. } => Some(patval),
+            Symbol::Name { patval, .. } => Some(patval),
+            _ => None,
+        }
+    }
+
+    /// Accumulate operand `op_index`'s value bits into `mask`
+    /// (Ghidra `combineOperandMask`).
+    fn combine_operand_mask(&self, node: &Node, op_index: usize, mask: &mut [u8]) {
+        let Some(&op_id) = self.ctor_of(node).operand_ids.get(op_index) else { return };
+        let Some(op_sym) = self.operand(op_id) else { return };
+        let Some(op_node) = node.operands.get(op_index) else { return };
+        match op_sym.subsym {
+            Some(sub) if matches!(self.symbol(sub), Some(Symbol::Subtable(_))) => {
+                if let OpNode::Sub(sub_node) = op_node {
+                    self.combine_symbol_mask(sub_node, mask);
+                }
+            }
+            Some(sub) => {
+                if let Some(expr) = self.symbol_pattern_expr(sub) {
+                    self.combine_pattern_mask(expr, op_node.start(), node, mask);
+                }
+            }
+            None => {
+                if let Some(expr) = op_sym.defexp.as_ref() {
+                    self.combine_pattern_mask(expr, op_node.start(), node, mask);
+                }
+            }
+        }
+    }
+
+    /// Recurse a sub-constructor's printed operands, accumulating their value bits
+    /// (Ghidra `combineSymbolMask` / `Constructor.printList`).
+    fn combine_symbol_mask(&self, node: &Node, mask: &mut [u8]) {
+        let op_indices: Vec<usize> = self
+            .ctor_of(node)
+            .print
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Operand(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        for idx in op_indices {
+            self.combine_operand_mask(node, idx, mask);
+        }
+    }
+
+    /// Walk a pattern expression, setting token-field bits and following operand
+    /// references (Ghidra `combinePatternMask`). Context/constant/start/end/next2
+    /// leaves contribute no instruction-byte bits.
+    fn combine_pattern_mask(&self, expr: &PatternExpr, pattern_offset: usize, node: &Node, mask: &mut [u8]) {
+        match expr {
+            PatternExpr::Token { bytestart, byteend, bitstart, bitend, .. } => {
+                self.set_token_mask_bits(*bytestart, *byteend, *bitstart, *bitend, pattern_offset, mask);
+            }
+            PatternExpr::Bin(_, a, b) => {
+                self.combine_pattern_mask(a, pattern_offset, node, mask);
+                self.combine_pattern_mask(b, pattern_offset, node, mask);
+            }
+            PatternExpr::Un(_, a) => self.combine_pattern_mask(a, pattern_offset, node, mask),
+            PatternExpr::Operand(i) => self.combine_operand_mask(node, *i, mask),
+            _ => {}
+        }
+    }
+
+    /// Collect operand `op_index`'s `getOpObjects` components (Ghidra
+    /// `OperandSymbol.printList`): a sub-constructor operand recurses into its printed
+    /// pieces; any other operand contributes its own resolved handle.
+    fn collect_op_objects(&self, node: &Node, op_index: usize, walker: &Walker, out: &mut Vec<OpObject>) {
+        let Some(&op_id) = self.ctor_of(node).operand_ids.get(op_index) else { return };
+        let Some(op_sym) = self.operand(op_id) else { return };
+        match op_sym.subsym {
+            Some(sub) if matches!(self.symbol(sub), Some(Symbol::Subtable(_))) => {
+                if let Some(OpNode::Sub(sub_node)) = node.operands.get(op_index) {
+                    self.collect_constructor_objects(sub_node, walker, out);
+                }
+            }
+            // Any other operand (register/scalar/name/…) prints its own handle;
+            // `handle_to_opobject` yields `None` for a name (characters only) or an
+            // unrepresentable handle, matching Ghidra's `Character` filtering.
+            _ => {
+                if let Some(h) = self.operand_handle(node, op_index, walker) {
+                    if let Some(obj) = self.handle_to_opobject(&h) {
+                        out.push(obj);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recurse a sub-constructor's printed operands collecting their handles
+    /// (Ghidra `Constructor.printList`; literal pieces / `Character`s are dropped).
+    fn collect_constructor_objects(&self, node: &Node, walker: &Walker, out: &mut Vec<OpObject>) {
+        let op_indices: Vec<usize> = self
+            .ctor_of(node)
+            .print
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Operand(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        for idx in op_indices {
+            self.collect_op_objects(node, idx, walker, out);
+        }
+    }
+
+    /// Convert a resolved operand handle to a `getOpObjects` component
+    /// (Ghidra `addHandleObject`): register-space → `Register`, constant-space →
+    /// `Scalar`, ram-space static → `Address`, ram-space via a register pointer →
+    /// `Register`. Unique/other handles are not representable (`None`).
+    fn handle_to_opobject(&self, h: &Handle) -> Option<OpObject> {
+        match h.ptr {
+            None => {
+                if h.space == 0 {
+                    Some(OpObject::Scalar { signed_value: h.offset as i64 })
+                } else {
+                    match self.space_name(h.space) {
+                        "register" => Some(OpObject::Register { space_offset: h.offset }),
+                        "unique" => None,
+                        _ => Some(OpObject::Address { offset: h.offset }),
+                    }
+                }
+            }
+            Some(ptr) => {
+                // Dynamic handle "taking the value of a register as an address".
+                if self.space_name(ptr.space) == "register" {
+                    Some(OpObject::Register { space_offset: ptr.offset })
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// `(isScalar, isAddress)` for an operand's exported handle
+    /// (Ghidra `getOpType`): a dynamic handle is neither; a static const-space handle
+    /// is a scalar; a static register/unique handle is neither; any other static
+    /// (ram-like) handle is an address.
+    fn operand_type_bools(&self, handle: Option<Handle>) -> (bool, bool) {
+        let Some(h) = handle else { return (false, false) };
+        if h.ptr.is_some() {
+            return (false, false);
+        }
+        if h.space == 0 {
+            return (true, false);
+        }
+        match self.space_name(h.space) {
+            "register" | "unique" => (false, false),
+            _ => (false, true),
+        }
+    }
+}
