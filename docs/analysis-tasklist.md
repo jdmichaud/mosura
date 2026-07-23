@@ -3,10 +3,10 @@
 > Stopgap while the task-tracker MCP server is disconnected (the UI task panel
 > can't be written to). This file mirrors what would be in the tracker; it will
 > be moved back into the panel once that server reconnects.
-> Last updated: 2026-07-23 (`analysis-port` @ `c86bd51`).
+> Last updated: 2026-07-23 (`analysis-port` @ `bcf56a6`).
 
 ## Status snapshot
-- `analysis-port` @ `c86bd51`; **not merged to master** (H1) — 35+ commits ahead since the
+- `analysis-port` @ `bcf56a6`; **not merged to master** (H1) — 35+ commits ahead since the
   compiler-detection arc began. Suite: 489 lib + 25 analysis (+3 this session: marker fragments,
   m68k variant equivalence, m68k dynamic-link path), clippy clean.
 - Landed & in master (older): A0–A8, multi-arch listing (x86/ARM64/RISC-V/68k/Z80), PE
@@ -75,10 +75,18 @@ codegen-fingerprint corpus is 1 construct × 4 versions. **Construct enrichment 
 UNBLOCKED** (2026-07-23): all four codegen columns reproduce their committed `<rev>.code`
 byte-identically — 10.0a/10.6/11.0 via `setup-watcom-dosemu.sh`, ow2 via the native
 `/data/open-watcom-v2` wcc386. So a new probe construct can be compiled across the whole lineage
-and gated. NEXT enrichment step (ready): add construct(s) to `watcom_cg.c` that expose further
-revision-specific codegen, recompile all 4 columns, extend the matcher `Signals`/`TABLE` +
-committed artifacts + `matches_committed_self_compiled_probes`. Apply
-`war2-issues-become-source-tests` (byte-compare promotion is construct-specific).
+and gated. **Division-by-constant whole-binary anchor ✅ LANDED** `78d0c8b`+`7e3646e`+`bcf56a6`
+(sub-agent, lead-verified): probe extended with signed+unsigned `x/const`, all 4 `<rev>.{obj,code}`
+regenerated (append-only, each obj→code byte-identical). Measurement CORRECTED a premise — classic
+(10.x/11.0) inlines the divide with `MOV EDX,EAX ; SAR EDX,0x1f`, ow2 inlines with `CDQ`; NEITHER
+calls a helper (the shared `push;call` prefix is the prologue stack-probe). Sound one-sided ow2
+anchor = `MOV r,imm ; CDQ ; IDIV r` (immediate-load guard rejects variable div; `IDIV`+`CDQ` rejects
+the unsigned `XOR;DIV` form every revision shares; classic's `SAR` never matches). Robustness only
+(same classic→ow2 boundary the `movzx` signal draws) — division is just far more common in a real
+binary. Verified: CDQ=1/SAR=0 (ow2) vs CDQ=0/SAR=1 (classic) in the committed bytes; anchor never
+false-narrows real 10.0a (`whole_program_matcher_never_wrongly_excludes`). Further enrichment now
+needs the MISSING versions (10.0-beta/10.5/9.01), not more constructs — apply
+`war2-issues-become-source-tests` for the next construct.
 
 ## Active (analysis lane — mine)
 - **A1 — #3 ground-truth oracle SCALE-OUT** ✅ DONE `9d9c43f` (verified: re-derived
