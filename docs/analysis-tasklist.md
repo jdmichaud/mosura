@@ -3,14 +3,53 @@
 > Stopgap while the task-tracker MCP server is disconnected (the UI task panel
 > can't be written to). This file mirrors what would be in the tracker; it will
 > be moved back into the panel once that server reconnects.
-> Last updated: 2026-07-20.
+> Last updated: 2026-07-23 (`analysis-port` @ `e29977a`).
 
 ## Status snapshot
-- `master` @ `9b9dd7e`; `analysis-port` @ `ce1b1a4` (1 commit ahead — the #3 bootstrap).
-- Landed & in master: A0–A7, multi-arch listing (x86/ARM64/RISC-V/68k/Z80), PE
-  CompilerOpinion, Watcom detect + watcall, **WAR2 native-LE switch win**, the full
-  dependency-hardening line (manifest, Ghidra pin, CI clean-clone split, portable
-  path-vars). cspec decompiler-side (task #11) done by the decompiler agent.
+- `analysis-port` @ `e29977a`; **not merged to master** (H1) — 25+ commits ahead since the
+  compiler-detection arc began. Suite: 489 lib + 22 analysis (+ all-target 551/0), clippy clean.
+- Landed & in master (older): A0–A8, multi-arch listing (x86/ARM64/RISC-V/68k/Z80), PE
+  CompilerOpinion, Watcom detect + watcall, WAR2 native-LE switch win, dependency-hardening.
+
+## ✅ LANDED THIS SESSION (on analysis-port, awaiting H1 merge)
+- **Compiler VERSION + format detection arc — COMPLETE across the real-world set.**
+  `loader::compiler_version` (family+version, beyond-Ghidra 2nd oracle) + `loader::pe_opinion`
+  (faithful Ghidra family port) + `loader::pe` (new **PeFile32** path). Validated on real
+  binaries: **GCC** (PE 32/64 + ELF `.comment`, exact) · **Clang** (PE + ELF, exact; clang-first
+  ordering fix) · **MSVC** (Rich build exact VC6/VS2005; pre-Rich VC4/5 via linker version) ·
+  **Borland** (BC++4.5, era + true c++/pascal) · **Watcom** (era banner + wlink-PE). Format
+  matrix (PE/ELF/MZ/LE/COM) in `compiler_version.rs` module doc.
+- **Watcom codegen fingerprinting + matcher** (`codegen_fingerprint.rs`, `docs/watcom-codegen-
+  fingerprint.md`): dosemu-compiled 10.0a/10.6/11.0 + native OW2.0; measured version→fingerprint
+  table; committed self-compiled `.code` ground truth + `scripts/extract-omf-code.py`;
+  **construct-location matcher** (`identify_watcom_program`) — anchored, one-sided-at-scale
+  (honest: class not always revision; never wrong-excludes).
+- **Build self-containment**: `third_party/ghidra/` vendors the used language files + datatests
+  (checkout→vendored fallback in `paths.rs`); `sleigh_canary` fails-loud (no silent skips);
+  `verify-vendored-ghidra.sh`. Fixed a live incident (deleted checkout hollowed the suite).
+- **Review cycle**: independent sub-agent review of the arc; findings verified + fixed (`e669740`).
+
+## ⏩ UNBLOCKED — READY / next up (user said: work these)
+- **A4 Stage 2 — pre-10 Watcom** (7.0/8.5a/9.01/9.5b). Confirm whether pre-10 *compiled*
+  binaries embed `WATCOM Systems Inc. 19xx` (vs `International Corp.`; the regex would miss it);
+  extend the vendor alternation + add a fixture. **Doubles as codegen-fingerprint corpus
+  enrichment** (pre-10 revisions). Blocker was packed `.wpk` floppies — dosemu recipe now
+  proven (`docs/watcom-codegen-fingerprint.md`). HIGHEST VALUE (also addresses corpus thinness).
+- **A3-V Phase 3 — CI-runnable proprietary version fixtures**. VC4/5/6 + BC45 version checks are
+  skip-if-absent (proprietary runtime uncommittable). Commit **marker fragments** (Rich-header
+  block / linker-version PE stub / Borland banner slice — metadata, not runtime code) so they
+  gate in CI. Also: MSVC 2.0 (2nd pre-Rich datapoint), Borland 4.0/4.52 era-boundary fixtures.
+- **A2 — ELF32-dynamic hardening**: m68k 32-bit *dynamic* validation + `coverage_68k` Coldfire
+  variant alignment. Bounded, self-contained (multilib installed).
+- **R2 — env scripting**: `setup-watcom-dosemu.sh` / wine-toolchain setup, matching the project's
+  setup-script convention. Recipes exist (dosemu W32RUN gotcha, wine BC45/VC6 direct-extract).
+
+## Corpus note (user-flagged 2026-07-23)
+Fixtures grow with features but the **core corpus is thin** — narrow single-purpose fixtures, not
+construct-stressing programs. `ground-truth/` (~23 progs × 4–5 targets) is the real vehicle and
+hasn't grown this session; the codegen-fingerprint corpus is 1 construct × 4 versions. A4-S2 +
+new probe constructs are the enrichment path. Apply `war2-issues-become-source-tests` to this
+session's findings (byte-compare promotion is construct-specific).
 
 ## Active (analysis lane — mine)
 - **A1 — #3 ground-truth oracle SCALE-OUT** ✅ DONE `9d9c43f` (verified: re-derived
