@@ -26,7 +26,7 @@ fn pspec_context(path: &std::path::Path) -> Vec<(String, u64)> {
 
 #[test]
 fn aarch64_disasm_pcode_coverage() {
-    let langdir = paths::ghidra_src().join("Ghidra/Processors/AARCH64/data/languages");
+    let langdir = paths::language_dir("AARCH64");
     let sla = langdir.join("AARCH64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());

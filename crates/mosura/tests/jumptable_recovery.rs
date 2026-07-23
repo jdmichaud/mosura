@@ -14,7 +14,7 @@ use mosura::{datatest, paths};
 // (recovered tables, heuristic targets) tuple of table lists; clear as a local test helper type
 #[allow(clippy::type_complexity)]
 fn tables(name: &str) -> Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)> {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         return None;
     }
@@ -88,7 +88,7 @@ fn switch_o2_register_guard_with_cold_block_below_entry() {
     // 0x401000 — *below* the entry 0x401010, so the entry is not the lowest-address block.
     // Reachability must root at the entry, else the whole body (incl. the BRANCHIND) is pruned and
     // recovery declines. Ghidra recovers 7 COMPUTED_JUMP targets from 0x401029.
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         return;
     }

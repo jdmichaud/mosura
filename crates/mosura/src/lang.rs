@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// the compiler-spec suffix); only the language part is used.
 pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
-    let procs = paths::ghidra_src().join("Ghidra/Processors");
+    let procs = paths::processors_dir();
     for proc in fs::read_dir(&procs).ok()?.flatten() {
         let langs = proc.path().join("data/languages");
         let Ok(rd) = fs::read_dir(&langs) else { continue };
@@ -52,7 +52,7 @@ pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
     }
 
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
-    let procs = paths::ghidra_src().join("Ghidra/Processors");
+    let procs = paths::processors_dir();
     for proc in fs::read_dir(&procs).ok()?.flatten() {
         let langs = proc.path().join("data/languages");
         let Ok(rd) = fs::read_dir(&langs) else { continue };

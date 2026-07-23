@@ -16,7 +16,7 @@ use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 
 fn x86_64() -> Option<(&'static Spec, Vec<u32>)> {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());
         return None;

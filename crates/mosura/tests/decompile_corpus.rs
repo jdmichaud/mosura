@@ -30,7 +30,7 @@ fn head_sha() -> String {
 
 #[test]
 fn decompile_track_corpus_report() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -99,7 +99,7 @@ fn decompile_track_corpus_report() {
 /// float param rendered as `CONCAT44(...)`; after it is a single clean register read.
 #[test]
 fn mixfloatint_float_param_stays_whole() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -130,7 +130,7 @@ fn mixfloatint_float_param_stays_whole() {
 /// the else call gets `(param_2 + 3,param_3 + 5)`, the if call gets none.
 #[test]
 fn deindirect_args_land_on_correct_call() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -160,7 +160,7 @@ fn deindirect_args_land_on_correct_call() {
 /// predicate. Matches `oracle/capture --c` for indproto.
 #[test]
 fn indproto_if_else_uses_positive_condition() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -189,7 +189,7 @@ fn indproto_if_else_uses_positive_condition() {
 /// `oracle/capture --c`.
 #[test]
 fn orcompare_recovers_logical_or() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -224,7 +224,7 @@ fn orcompare_recovers_logical_or() {
 /// (previously mosura kept the `!(a<=b)` residual and only negated at print time).
 #[test]
 fn pointerrel_negated_condition_normalizes() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;
@@ -252,7 +252,7 @@ fn pointerrel_negated_condition_normalizes() {
 /// `CONCAT31(CONCAT21(CONCAT11(param_6,param_5),param_4),param_3)`.
 #[test]
 fn piecestruct_folds_shifts_to_concat() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: x86-64.sla not found");
         return;

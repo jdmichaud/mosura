@@ -29,7 +29,7 @@ fn pspec_context(path: &std::path::Path) -> Vec<(String, u64)> {
 
 #[test]
 fn z80_disasm_pcode_coverage() {
-    let langdir = paths::ghidra_src().join("Ghidra/Processors/Z80/data/languages");
+    let langdir = paths::language_dir("Z80");
     let sla = langdir.join("z80.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());

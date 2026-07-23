@@ -27,7 +27,7 @@ fn pspec_context(path: &std::path::Path) -> Vec<(String, u64)> {
 
 #[test]
 fn m68k_disasm_pcode_coverage() {
-    let langdir = paths::ghidra_src().join("Ghidra/Processors/68000/data/languages");
+    let langdir = paths::language_dir("68000");
     let sla = langdir.join("68040.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());

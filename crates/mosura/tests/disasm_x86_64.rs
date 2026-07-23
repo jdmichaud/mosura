@@ -6,7 +6,7 @@
 use mosura::paths;
 
 fn x86_64_langdir() -> std::path::PathBuf {
-    paths::ghidra_src().join("Ghidra/Processors/x86/data/languages")
+    paths::language_dir("x86")
 }
 
 /// Read the `<context_set>` defaults from a `.pspec`.

@@ -10,7 +10,7 @@ use mosura::{datatest, paths};
 
 /// Decompile a datatest function and return its recovered (param-offsets, return-offset).
 fn proto_of(name: &str) -> Option<(Vec<u64>, Option<u64>)> {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         return None; // no SLEIGH spec available — skip (matches the corpus gate's behaviour)
     }

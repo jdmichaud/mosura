@@ -108,6 +108,13 @@ arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build cach
 - **X1** — Faithful space-qualified default names (`FUN_ram_0104`/`EXT_ram_`,
   `showSpaceName`). Needs a `Space`-struct change in the SHARED sleigh engine —
   coordinate with the decompiler agent.
+- **X2 — vendored-ghidra fallback for decompile-lane paths (handoff).** `third_party/ghidra/`
+  now vendors the used language files + datatests; `paths::processors_dir()`/`language_dir()`/
+  `datatests_dir()` resolve checkout-first → vendored. Analysis-lane + all shared test files
+  are repointed, but `crates/mosura/src/decompile/{build,printc,directwrite,pipeline}.rs`
+  still hardcode `ghidra_src().join("Ghidra/Processors/...")` (decompiler lane — not touched).
+  Switching those to `paths::language_dir("x86")` gives the decompile tests the same
+  no-checkout fallback. Mechanical, zero behavior change with a checkout present.
 
 ## Decompiler-lane handoffs (other agent; do NOT implement on analysis-port)
 - **D1** — Recompilation-equivalence NORTH STAR: a compilable-C emitter (types

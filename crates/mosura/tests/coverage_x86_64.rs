@@ -17,7 +17,7 @@ fn norm(s: &str) -> String {
 
 #[test]
 fn x86_64_disasm_coverage() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());
         return;

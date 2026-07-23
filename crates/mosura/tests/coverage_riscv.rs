@@ -27,7 +27,7 @@ fn pspec_context(path: &std::path::Path) -> Vec<(String, u64)> {
 
 #[test]
 fn riscv_disasm_pcode_coverage() {
-    let langdir = paths::ghidra_src().join("Ghidra/Processors/RISCV/data/languages");
+    let langdir = paths::language_dir("RISCV");
     let sla = langdir.join("riscv.lp64d.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());

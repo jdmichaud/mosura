@@ -16,7 +16,7 @@ const EAX: u64 = 0x0;
 
 #[test]
 fn x86_64_pcode_computes_correct_result() {
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());
         return;
@@ -48,7 +48,7 @@ fn x86_64_pcode_computes_correct_result() {
 fn x86_64_pcode_executes_a_loop() {
     // sumto(n) = 1+2+...+n — a real loop (TEST/JLE … ADD/CMP/JNZ). Exercises the
     // interpreter's branch-following + flag-derived conditions over many iterations.
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     if !sla.exists() {
         eprintln!("skip: {} not found", sla.display());
         return;

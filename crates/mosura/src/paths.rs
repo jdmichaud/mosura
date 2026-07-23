@@ -27,9 +27,37 @@ pub fn ghidra_src() -> PathBuf {
         .join("ghidra")
 }
 
-/// Directory holding the decompiler datatests (the 79 `.xml` fixtures).
+/// The vendored Ghidra subset committed in-repo (`third_party/ghidra/` — the used languages +
+/// datatests at the pin; see its README). The fallback that makes `cargo test` self-contained.
+fn vendored_ghidra() -> PathBuf {
+    workspace_root().join("third_party/ghidra")
+}
+
+/// The `Processors` tree the SLEIGH loader reads (`.ldefs`/`.sla`/`.pspec`/`.cspec`).
+/// Resolution: `GHIDRA_SRC` env → the sibling checkout → the vendored in-repo copy, so a
+/// developer's checkout wins when present and a bare clone still works.
+pub fn processors_dir() -> PathBuf {
+    let checkout = ghidra_src().join("Ghidra/Processors");
+    if checkout.is_dir() {
+        return checkout;
+    }
+    vendored_ghidra().join("Processors")
+}
+
+/// One processor's `data/languages` dir (specs + compiled `.sla`), through the same
+/// resolution as [`processors_dir`] — e.g. `language_dir("x86")`.
+pub fn language_dir(processor: &str) -> PathBuf {
+    processors_dir().join(processor).join("data/languages")
+}
+
+/// Directory holding the decompiler datatests (the 79 `.xml` fixtures). Same resolution as
+/// [`processors_dir`]: checkout first, vendored fallback.
 pub fn datatests_dir() -> PathBuf {
-    ghidra_src().join("Ghidra/Features/Decompiler/src/decompile/datatests")
+    let checkout = ghidra_src().join("Ghidra/Features/Decompiler/src/decompile/datatests");
+    if checkout.is_dir() {
+        return checkout;
+    }
+    vendored_ghidra().join("datatests")
 }
 
 /// Directory of captured disasm / p-code goldens (committed to the repo).

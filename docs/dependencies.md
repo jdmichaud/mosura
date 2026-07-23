@@ -50,6 +50,18 @@ Locator column reads `ENV_VAR → default` where the default is `$REPO`- or `$HO
 | In-repo committed test data (goldens + fixtures + corpus + repo cspec) | in `$REPO` (committed) | tracked in git | this repo — see [In-repo test data](#in-repo-test-data-committed-not-external) |
 
 Notes on the Ghidra BUILD/TEST dependency:
+- **Vendored in-repo fallback — `cargo test` is self-contained from a bare clone.** The exact
+  subset the tests read (the used processors' `data/languages` incl. compiled `.sla`, and the
+  decompiler datatests) is committed at `third_party/ghidra/` (~9.5 MB, Apache-2.0 with Ghidra's
+  LICENSE/NOTICE alongside; provenance in its README). Resolution order (`paths.rs`):
+  `GHIDRA_SRC` env → the sibling checkout → the vendored copy, so a developer's checkout wins
+  when present and a bare clone needs **no fetch and no sleigh compile**.
+  `scripts/verify-vendored-ghidra.sh` proves the vendored copy byte-identical to the pin
+  (`--refresh` re-copies after a pin bump), and the `sleigh_canary` test **fails loudly** —
+  where other suites skip — if language tables/datatests stop resolving (added after a deleted
+  checkout silently hollowed the suite: green run, sleigh-gated tests all skipping). The
+  checkout is still required for the DEV/ORACLE tier (decompiler C++ reference, oracle tools,
+  golden regeneration).
 - **One-command acquisition (the pin).** `scripts/setup-ghidra.sh` fetches this dependency
   reproducibly: it shallow-clones `github.com/NationalSecurityAgency/ghidra` at the pinned tag
   into `GHIDRA_SRC` (default `$REPO/../ghidra`), **verifies `HEAD` == the pinned commit
