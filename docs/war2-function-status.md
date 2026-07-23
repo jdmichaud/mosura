@@ -106,6 +106,58 @@ tail).
 `E1063 Missing operand` (the `...`/CALLOTHER leak) remains the top COMPILE_FAIL feeder — Stage 2's
 primary target.
 
+## Update — 2026-07-23: Stage 2 (printc completeness — `...`/CALLOTHER leak) landed
+
+Commit `b4ac8f4` retires the `NAME(...)` catch-all leak from the emitted C: `CPUI_CALLOTHER`
+renders as its SLEIGH user-op name (`in`/`cpuid`/`rdtsc`/`swi`; Ghidra `PrintC::opCallother`),
+`CPUI_INT_SBORROW` as `SBORROW<n>(a,b)`, `CPUI_POPCOUNT` as `POPCOUNT(x)`. The `.sla` user-op
+index→name table (previously dropped) is threaded onto the `Funcdata`. Corpus byte-identical
+(0.9513/57). Details in docs/decompiler-bug-callother-ellipsis-leak.md.
+
+### New distribution (@ `b4ac8f4`)
+
+| Status | Count | Share | Δ vs Stage 1 (`e097ea8`) |
+|---|---:|---:|---|
+| EXACT | 1 | 0.1% | 0 |
+| RELOC_EXACT | 0 | 0.0% | 0 |
+| MISMATCH | 1148 | 89.3% | +92 |
+| COMPILE_FAIL | 137 | 10.7% | −92 |
+| DECOMPILE_FAIL | 0 | 0.0% | 0 |
+| **Total** | **1286** | 100% | |
+
+### What moved and why
+
+- **COMPILE_FAIL 229 → 137 (−92)**: every mover is `COMPILE_FAIL → MISMATCH` (now compiles);
+  **zero regressions** (no function that compiled at Stage 1 fails now).
+- **`E1063 Missing operand` 113 → 4**: the top COMPILE_FAIL class is essentially gone. The 4
+  residual are `MULTIEQUAL(...)`/`INDIRECT(...)` raw p-code that leaked past structuring — a
+  distinct `raw_marker` upstream class (5 functions), not CALLOTHER.
+- Smells: `callother` 66 → 0, `ellipsis` 118 → 5 (the 5 = the raw-marker residual).
+- Byte-exact bar unmoved (1/0): Stage 2 is a *compilability* fix, not codegen fidelity. MISMATCH
+  cause split essentially unchanged (codegen/regalloc 872, param-recovery 202, reg-artifact 68).
+
+### Remaining COMPILE_FAIL (137) — all upstream type-inference / CAST, the deep C-cluster foundation
+
+Instrumented the remaining first-error classes; none is a bounded printc miss — each is a value
+mosura types as pointer-where-integer (or scalar-where-pointer), which Ghidra resolves with an
+inserted CAST (`ActionSetCasts`) or a concrete `TypeCode`/`FuncProto`. Per the
+faithful-type-of-wrong-ir rule the fix is upstream IR (the type system), i.e. the C-cluster
+type-inference foundation (menu F), not the printer.
+
+| wcc386 error | Count | Representative | Root |
+|---|---:|---|---|
+| E1052 Expression has void type | 34 | `iVar = (*(code *)p)();` | indirect-call result assigned, but the `code` cast is void-returning — needs `TypeCode` carrying the recovered return type |
+| E1079 Expression must be integral | 33 | `uVar4 = pVar2 & -4;` | pointer-typed value in a bitwise op — needs an inserted `(uint)` cast |
+| E1029 Expression must be 'pointer to ...' | 17 | `**param_4 = x;` / `*extraout_RCX` | under-pointered value dereferenced (some via `extraout_`, a Stage 3 artifact) |
+| E1010 Type mismatch | 14 | — | mixed pointer/integer assignment |
+| E1080 Expression must be arithmetic | 12 | `uVar6 = -param_4;` | negation/arith on a pointer-typed value |
+| E1045 Subscript on non-array | 11 | `xVar1[-1] = param_4;` | a PTRADD-derived local typed scalar, then subscripted |
+| E1081 / E1036 / E1063(raw) / others | 16 | — | scalar-type / pointer-subtract / raw-marker |
+
+These are gated behind the type-inference foundation, consistent with the standing
+bounded-levers-exhausted verdict (cast rules exhausted; remaining gaps are upstream). Stage 3
+(the call-output trial lifecycle) addresses the `extraout_`-derived subset directly.
+
 ## Headline
 
 **1 function of 1286 recompiles byte-identically** — `FUN_00070805`, a 1-byte `ret` stub (decompiled `void FUN_00070805(void) { return; }`). No function reaches RELOC_EXACT (identical modulo link-time fixups). Every non-trivial function currently falls short of the bar, for the reasons quantified below.
@@ -208,13 +260,13 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 9 | 0x00010ff4 | FUN_00010ff4 | MISMATCH | len cand=132 orig=191; 2%match; codegen/regalloc |  |
 | 10 | 0x000110b4 | FUN_000110b4 | MISMATCH | len cand=128 orig=144; 5%match; codegen/regalloc | indirect_call |
 | 11 | 0x00011144 | FUN_00011144 | MISMATCH | len cand=194 orig=119; 1%match; codegen/regalloc | indirect_call |
-| 12 | 0x000111bc | FUN_000111bc | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 12 | 0x000111bc | FUN_000111bc | MISMATCH | len cand=220 orig=280; 4%match; codegen/regalloc | indirect_call |
 | 13 | 0x000112d4 | FUN_000112d4 | MISMATCH | len cand=46 orig=124; 2%match; codegen/regalloc | indirect_call |
 | 14 | 0x00011350 | FUN_00011350 | MISMATCH | len cand=315 orig=255; 2%match; codegen/regalloc | indirect_call |
 | 15 | 0x00011450 | FUN_00011450 | MISMATCH | len cand=612 orig=392; 4%match; codegen/regalloc | indirect_call |
 | 16 | 0x000115d8 | FUN_000115d8 | COMPILE_FAIL | E1052:Expression has void type |  |
 | 17 | 0x0001163c | FUN_0001163c | COMPILE_FAIL | E1010:Type mismatch | indirect_call |
-| 18 | 0x00011838 | FUN_00011838 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 18 | 0x00011838 | FUN_00011838 | COMPILE_FAIL | E1052:Expression has void type |  |
 | 19 | 0x0001193c | FUN_0001193c | MISMATCH | len cand=14 orig=24; 6%match; codegen/regalloc | indirect_call |
 | 20 | 0x00011954 | FUN_00011954 | MISMATCH | len cand=53 orig=1736; 0%match; codegen/regalloc | indirect_call |
 | 21 | 0x0001201c | FUN_0001201c | MISMATCH | len cand=317 orig=295; 1%match; codegen/regalloc | indirect_call |
@@ -241,12 +293,12 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 42 | 0x00012ca0 | FUN_00012ca0 | MISMATCH | len cand=58 orig=291; 3%match; codegen/regalloc | indirect_call |
 | 43 | 0x00012dc4 | FUN_00012dc4 | MISMATCH | len cand=43 orig=215; 0%match; reg-artifact | extraout,indirect_call |
 | 44 | 0x00012e9c | FUN_00012e9c | MISMATCH | len cand=34 orig=591; 12%match; codegen/regalloc | indirect_call |
-| 45 | 0x000130ec | FUN_000130ec | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 45 | 0x000130ec | FUN_000130ec | MISMATCH | len cand=85 orig=116; 5%match; codegen/regalloc |  |
 | 46 | 0x00013160 | FUN_00013160 | MISMATCH | len cand=14 orig=319; 6%match; codegen/regalloc | indirect_call |
 | 47 | 0x000132a0 | FUN_000132a0 | MISMATCH | len cand=88 orig=132; 3%match; codegen/regalloc | indirect_call |
 | 48 | 0x00013324 | FUN_00013324 | MISMATCH | len cand=515 orig=567; 2%match; codegen/regalloc | indirect_call |
 | 49 | 0x0001355c | FUN_0001355c | MISMATCH | len cand=197 orig=171; 5%match; codegen/regalloc | indirect_call |
-| 50 | 0x00013608 | FUN_00013608 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 50 | 0x00013608 | FUN_00013608 | MISMATCH | len cand=113 orig=132; 3%match; codegen/regalloc | indirect_call |
 | 51 | 0x0001368c | FUN_0001368c | MISMATCH | len cand=116 orig=128; 3%match; codegen/regalloc |  |
 | 52 | 0x0001370c | FUN_0001370c | MISMATCH | len cand=261 orig=1347; 3%match; codegen/regalloc | indirect_call |
 | 53 | 0x00013c50 | FUN_00013c50 | MISMATCH | len cand=43 orig=35; 3%match; codegen/regalloc | indirect_call |
@@ -271,17 +323,17 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 72 | 0x000166f0 | FUN_000166f0 | MISMATCH | len cand=39 orig=32; 6%match; codegen/regalloc | indirect_call |
 | 73 | 0x00016710 | FUN_00016710 | MISMATCH | len cand=85 orig=83; 0%match; codegen/regalloc |  |
 | 74 | 0x00016764 | FUN_00016764 | MISMATCH | len cand=97 orig=132; 2%match; codegen/regalloc |  |
-| 75 | 0x000167e8 | FUN_000167e8 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 75 | 0x000167e8 | FUN_000167e8 | MISMATCH | len cand=84 orig=127; 5%match; codegen/regalloc | indirect_call |
 | 76 | 0x00016868 | FUN_00016868 | MISMATCH | len cand=54 orig=59; 6%match; codegen/regalloc | indirect_call |
-| 77 | 0x000168a4 | FUN_000168a4 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
-| 78 | 0x00016934 | FUN_00016934 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
-| 79 | 0x00016988 | FUN_00016988 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
+| 77 | 0x000168a4 | FUN_000168a4 | MISMATCH | len cand=103 orig=144; 1%match; reg-artifact | extraout,indirect_call |
+| 78 | 0x00016934 | FUN_00016934 | MISMATCH | len cand=70 orig=84; 7%match; reg-artifact | extraout,indirect_call |
+| 79 | 0x00016988 | FUN_00016988 | MISMATCH | len cand=56 orig=74; 0%match; reg-artifact | extraout,indirect_call |
 | 80 | 0x000169e0 | FUN_000169e0 | MISMATCH | len cand=43 orig=76; 2%match; codegen/regalloc | indirect_call |
 | 81 | 0x00016a2c | FUN_00016a2c | MISMATCH | len cand=71 orig=127; 3%match; codegen/regalloc | indirect_call |
 | 82 | 0x00016aac | FUN_00016aac | MISMATCH | len cand=83 orig=140; 7%match; codegen/regalloc | indirect_call |
 | 83 | 0x00016b38 | FUN_00016b38 | MISMATCH | len cand=14 orig=27; 0%match; codegen/regalloc | indirect_call |
 | 84 | 0x00016b54 | FUN_00016b54 | MISMATCH | len cand=111 orig=135; 4%match; codegen/regalloc | indirect_call |
-| 85 | 0x00016bdc | FUN_00016bdc | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
+| 85 | 0x00016bdc | FUN_00016bdc | MISMATCH | len cand=162 orig=243; 2%match; reg-artifact | extraout,indirect_call |
 | 86 | 0x00016cd0 | FUN_00016cd0 | MISMATCH | len cand=92 orig=3313; 7%match; codegen/regalloc | indirect_call |
 | 87 | 0x000179d0 | FUN_000179d0 | MISMATCH | len cand=38 orig=48; 0%match; codegen/regalloc |  |
 | 88 | 0x00017a00 | FUN_00017a00 | MISMATCH | len cand=689 orig=587; 2%match; codegen/regalloc |  |
@@ -295,19 +347,19 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 96 | 0x000189b8 | FUN_000189b8 | MISMATCH | len cand=48 orig=2167; 6%match; codegen/regalloc | indirect_call |
 | 97 | 0x00019230 | FUN_00019230 | MISMATCH | len cand=84 orig=79; 4%match; codegen/regalloc |  |
 | 98 | 0x00019280 | FUN_00019280 | MISMATCH | len cand=98 orig=196; 2%match; codegen/regalloc | indirect_call |
-| 99 | 0x00019344 | FUN_00019344 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 99 | 0x00019344 | FUN_00019344 | MISMATCH | len cand=35 orig=1160; 3%match; codegen/regalloc | indirect_call |
 | 100 | 0x000197cc | FUN_000197cc | MISMATCH | @+0; 4%comparable-match; codegen/regalloc |  |
 | 101 | 0x000197e8 | FUN_000197e8 | MISMATCH | len cand=191 orig=235; 3%match; codegen/regalloc | indirect_call |
 | 102 | 0x000198d4 | FUN_000198d4 | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
 | 103 | 0x0001b750 | FUN_0001b750 | MISMATCH | len cand=27 orig=20; 15%match; codegen/regalloc |  |
 | 104 | 0x0001b764 | FUN_0001b764 | MISMATCH | len cand=167 orig=196; 1%match; codegen/regalloc |  |
 | 105 | 0x0001b828 | FUN_0001b828 | MISMATCH | len cand=99 orig=143; 6%match; codegen/regalloc |  |
-| 106 | 0x0001b8b8 | FUN_0001b8b8 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 106 | 0x0001b8b8 | FUN_0001b8b8 | MISMATCH | len cand=340 orig=384; 2%match; codegen/regalloc | indirect_call |
 | 107 | 0x0001ba38 | FUN_0001ba38 | MISMATCH | len cand=184 orig=332; 2%match; codegen/regalloc | indirect_call |
 | 108 | 0x0001bb84 | FUN_0001bb84 | MISMATCH | len cand=124 orig=267; 2%match; reg-artifact | extraout,indirect_call |
 | 109 | 0x0001bc90 | FUN_0001bc90 | MISMATCH | len cand=75 orig=160; 3%match; codegen/regalloc |  |
 | 110 | 0x0001bd30 | FUN_0001bd30 | MISMATCH | len cand=81 orig=952; 5%match; codegen/regalloc | indirect_call |
-| 111 | 0x0001c0e8 | FUN_0001c0e8 | COMPILE_FAIL | E1079:Expression must be integral | callother,ellipsis |
+| 111 | 0x0001c0e8 | FUN_0001c0e8 | COMPILE_FAIL | E1079:Expression must be integral |  |
 | 112 | 0x0001c154 | FUN_0001c154 | MISMATCH | len cand=165 orig=179; 3%match; codegen/regalloc |  |
 | 113 | 0x0001c208 | FUN_0001c208 | MISMATCH | len cand=275 orig=287; 2%match; codegen/regalloc |  |
 | 114 | 0x0001c328 | FUN_0001c328 | MISMATCH | len cand=112 orig=103; 3%match; codegen/regalloc | indirect_call |
@@ -339,20 +391,20 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 140 | 0x0001f1b0 | FUN_0001f1b0 | MISMATCH | len cand=269 orig=423; 1%match; codegen/regalloc |  |
 | 141 | 0x0001f358 | FUN_0001f358 | MISMATCH | len cand=120 orig=127; 3%match; codegen/regalloc |  |
 | 142 | 0x0001f3d8 | FUN_0001f3d8 | COMPILE_FAIL | E1079:Expression must be integral |  |
-| 143 | 0x0001f47c | FUN_0001f47c | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 143 | 0x0001f47c | FUN_0001f47c | MISMATCH | len cand=410 orig=1499; 2%match; codegen/regalloc |  |
 | 144 | 0x0001fa58 | FUN_0001fa58 | MISMATCH | len cand=251 orig=268; 5%match; codegen/regalloc |  |
 | 145 | 0x0001fb64 | FUN_0001fb64 | MISMATCH | len cand=32 orig=87; 0%match; codegen/regalloc |  |
 | 146 | 0x0001fbbc | FUN_0001fbbc | MISMATCH | len cand=55 orig=232; 0%match; codegen/regalloc | indirect_call |
 | 147 | 0x0001fca4 | FUN_0001fca4 | MISMATCH | len cand=55 orig=280; 0%match; codegen/regalloc | indirect_call |
 | 148 | 0x0001fdbc | FUN_0001fdbc | MISMATCH | len cand=894 orig=1110; 4%match; codegen/regalloc | indirect_call |
 | 149 | 0x00020220 | FUN_00020220 | MISMATCH | len cand=52 orig=56; 0%match; codegen/regalloc | indirect_call |
-| 150 | 0x00020258 | FUN_00020258 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 150 | 0x00020258 | FUN_00020258 | MISMATCH | len cand=161 orig=1144; 3%match; codegen/regalloc | indirect_call |
 | 151 | 0x000206d0 | FUN_000206d0 | MISMATCH | len cand=49 orig=51; 4%match; codegen/regalloc |  |
 | 152 | 0x00020704 | FUN_00020704 | COMPILE_FAIL | E1052:Expression has void type |  |
 | 153 | 0x000214ec | FUN_000214ec | MISMATCH | len cand=62 orig=87; 3%match; codegen/regalloc | indirect_call |
 | 154 | 0x00021544 | FUN_00021544 | MISMATCH | len cand=126 orig=1284; 2%match; codegen/regalloc | indirect_call |
 | 155 | 0x00021a48 | FUN_00021a48 | MISMATCH | len cand=51 orig=64; 7%match; codegen/regalloc | indirect_call |
-| 156 | 0x00021a90 | FUN_00021a90 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 156 | 0x00021a90 | FUN_00021a90 | MISMATCH | len cand=267 orig=243; 10%match; codegen/regalloc | indirect_call |
 | 157 | 0x00021b84 | FUN_00021b84 | MISMATCH | len cand=2884 orig=711; 2%match; codegen/regalloc | indirect_call |
 | 158 | 0x00021e4c | FUN_00021e4c | MISMATCH | len cand=244 orig=1348; 4%match; codegen/regalloc | indirect_call |
 | 159 | 0x00022390 | FUN_00022390 | MISMATCH | len cand=229 orig=235; 8%match; codegen/regalloc | indirect_call |
@@ -392,8 +444,8 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 193 | 0x0002547c | FUN_0002547c | MISMATCH | len cand=94 orig=92; 2%match; codegen/regalloc |  |
 | 194 | 0x000254d8 | FUN_000254d8 | MISMATCH | @+0; 6%comparable-match; codegen/regalloc | indirect_call |
 | 195 | 0x000254f0 | FUN_000254f0 | MISMATCH | len cand=14 orig=27; 0%match; codegen/regalloc | indirect_call |
-| 196 | 0x0002550c | FUN_0002550c | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
-| 197 | 0x00025590 | FUN_00025590 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 196 | 0x0002550c | FUN_0002550c | MISMATCH | len cand=110 orig=131; 4%match; codegen/regalloc | indirect_call |
+| 197 | 0x00025590 | FUN_00025590 | MISMATCH | len cand=8 orig=58; 0%match; codegen/regalloc |  |
 | 198 | 0x000255d0 | FUN_000255d0 | MISMATCH | len cand=57 orig=151; 2%match; codegen/regalloc |  |
 | 199 | 0x00025668 | FUN_00025668 | COMPILE_FAIL | E1079:Expression must be integral | extraout,indirect_call,int64 |
 | 200 | 0x00025804 | FUN_00025804 | MISMATCH | len cand=74 orig=116; 5%match; codegen/regalloc | indirect_call |
@@ -402,34 +454,34 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 203 | 0x00025980 | FUN_00025980 | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
 | 204 | 0x00026130 | FUN_00026130 | MISMATCH | len cand=20 orig=183; 8%match; codegen/regalloc | indirect_call |
 | 205 | 0x000261e8 | FUN_000261e8 | MISMATCH | len cand=13 orig=964; 8%match; codegen/regalloc |  |
-| 206 | 0x000265ac | FUN_000265ac | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 206 | 0x000265ac | FUN_000265ac | MISMATCH | len cand=27 orig=152; 4%match; codegen/regalloc |  |
 | 207 | 0x00026644 | FUN_00026644 | MISMATCH | len cand=117 orig=140; 3%match; codegen/regalloc | indirect_call |
 | 208 | 0x000266d0 | FUN_000266d0 | MISMATCH | len cand=85 orig=163; 2%match; codegen/regalloc | indirect_call |
 | 209 | 0x00026774 | FUN_00026774 | MISMATCH | len cand=386 orig=440; 3%match; codegen/regalloc | indirect_call |
 | 210 | 0x0002692c | FUN_0002692c | MISMATCH | len cand=439 orig=492; 3%match; codegen/regalloc | indirect_call |
 | 211 | 0x00026b18 | FUN_00026b18 | MISMATCH | len cand=7 orig=66; 0%match; codegen/regalloc |  |
 | 212 | 0x00026b60 | FUN_00026b60 | MISMATCH | len cand=10 orig=272; 10%match; codegen/regalloc |  |
-| 213 | 0x00026c70 | FUN_00026c70 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 213 | 0x00026c70 | FUN_00026c70 | MISMATCH | len cand=46 orig=116; 2%match; codegen/regalloc |  |
 | 214 | 0x00026ce4 | FUN_00026ce4 | COMPILE_FAIL | E1079:Expression must be integral |  |
-| 215 | 0x00026da8 | FUN_00026da8 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call,void_proto |
+| 215 | 0x00026da8 | FUN_00026da8 | MISMATCH | len cand=104 orig=208; 1%match; param-recovery | indirect_call,void_proto |
 | 216 | 0x00026e78 | FUN_00026e78 | MISMATCH | len cand=70 orig=120; 0%match; codegen/regalloc | indirect_call |
 | 217 | 0x00026ef0 | FUN_00026ef0 | MISMATCH | len cand=43 orig=156; 2%match; codegen/regalloc |  |
-| 218 | 0x00026f8c | FUN_00026f8c | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 218 | 0x00026f8c | FUN_00026f8c | MISMATCH | len cand=74 orig=176; 1%match; codegen/regalloc | indirect_call |
 | 219 | 0x0002703c | FUN_0002703c | MISMATCH | len cand=49 orig=112; 4%match; codegen/regalloc |  |
-| 220 | 0x000270ac | FUN_000270ac | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 220 | 0x000270ac | FUN_000270ac | MISMATCH | len cand=29 orig=415; 3%match; codegen/regalloc | indirect_call |
 | 221 | 0x0002724c | FUN_0002724c | MISMATCH | len cand=51 orig=76; 2%match; codegen/regalloc | indirect_call |
 | 222 | 0x00027298 | FUN_00027298 | MISMATCH | len cand=134 orig=935; 4%match; reg-artifact | extraout,indirect_call |
 | 223 | 0x00027640 | FUN_00027640 | COMPILE_FAIL | E1052:Expression has void type |  |
 | 224 | 0x000276e8 | FUN_000276e8 | MISMATCH | len cand=149 orig=191; 3%match; codegen/regalloc | indirect_call |
 | 225 | 0x000277a8 | FUN_000277a8 | MISMATCH | len cand=20 orig=168; 8%match; codegen/regalloc | indirect_call |
 | 226 | 0x00027850 | FUN_00027850 | MISMATCH | len cand=562 orig=340; 1%match; codegen/regalloc | indirect_call |
-| 227 | 0x000279a4 | FUN_000279a4 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 227 | 0x000279a4 | FUN_000279a4 | MISMATCH | len cand=14 orig=171; 7%match; codegen/regalloc |  |
 | 228 | 0x00027a50 | FUN_00027a50 | MISMATCH | len cand=110 orig=224; 4%match; codegen/regalloc | indirect_call |
 | 229 | 0x00027b30 | FUN_00027b30 | MISMATCH | len cand=105 orig=300; 4%match; codegen/regalloc | indirect_call |
 | 230 | 0x00027c5c | FUN_00027c5c | MISMATCH | len cand=66 orig=116; 8%match; codegen/regalloc |  |
 | 231 | 0x00027cd0 | FUN_00027cd0 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call,int64 |
 | 232 | 0x00027d60 | FUN_00027d60 | MISMATCH | len cand=282 orig=311; 3%match; reg-artifact | extraout,indirect_call |
-| 233 | 0x00027e98 | FUN_00027e98 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
+| 233 | 0x00027e98 | FUN_00027e98 | MISMATCH | len cand=123 orig=132; 2%match; reg-artifact | extraout,indirect_call |
 | 234 | 0x00027f1c | FUN_00027f1c | MISMATCH | len cand=138 orig=3531; 4%match; reg-artifact | extraout,indirect_call |
 | 235 | 0x00028ce8 | FUN_00028ce8 | MISMATCH | len cand=189 orig=175; 2%match; codegen/regalloc | indirect_call |
 | 236 | 0x00028d98 | FUN_00028d98 | MISMATCH | len cand=364 orig=467; 4%match; codegen/regalloc | indirect_call |
@@ -451,7 +503,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 252 | 0x0002a0ec | FUN_0002a0ec | MISMATCH | len cand=179 orig=127; 6%match; codegen/regalloc | indirect_call |
 | 253 | 0x0002a16c | FUN_0002a16c | MISMATCH | len cand=56 orig=2003; 2%match; codegen/regalloc | indirect_call |
 | 254 | 0x0002a940 | FUN_0002a940 | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
-| 255 | 0x0002ab58 | FUN_0002ab58 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 255 | 0x0002ab58 | FUN_0002ab58 | MISMATCH | len cand=278 orig=280; 4%match; codegen/regalloc | indirect_call |
 | 256 | 0x0002ac70 | FUN_0002ac70 | MISMATCH | len cand=45 orig=1299; 2%match; codegen/regalloc | indirect_call |
 | 257 | 0x0002b184 | FUN_0002b184 | MISMATCH | len cand=155 orig=128; 3%match; codegen/regalloc | indirect_call |
 | 258 | 0x0002b204 | FUN_0002b204 | COMPILE_FAIL | E1081:Expression must be scalar type | indirect_call |
@@ -467,14 +519,14 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 268 | 0x0002ccb8 | FUN_0002ccb8 | COMPILE_FAIL | E1010:Type mismatch |  |
 | 269 | 0x0002cd9c | FUN_0002cd9c | MISMATCH | len cand=117 orig=112; 1%match; codegen/regalloc | indirect_call |
 | 270 | 0x0002ce0c | FUN_0002ce0c | MISMATCH | len cand=107 orig=216; 4%match; codegen/regalloc | indirect_call |
-| 271 | 0x0002cee4 | FUN_0002cee4 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 271 | 0x0002cee4 | FUN_0002cee4 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call |
 | 272 | 0x0002d06c | FUN_0002d06c | MISMATCH | len cand=160 orig=152; 6%match; codegen/regalloc |  |
 | 273 | 0x0002d104 | FUN_0002d104 | MISMATCH | len cand=46 orig=44; 2%match; codegen/regalloc | indirect_call |
 | 274 | 0x0002d130 | FUN_0002d130 | MISMATCH | len cand=9 orig=8; 12%match; codegen/regalloc |  |
 | 275 | 0x0002d138 | FUN_0002d138 | MISMATCH | len cand=102 orig=743; 1%match; codegen/regalloc | indirect_call |
 | 276 | 0x0002d420 | FUN_0002d420 | MISMATCH | len cand=14 orig=15; 36%match; param-recovery | void_proto |
 | 277 | 0x0002d430 | FUN_0002d430 | MISMATCH | len cand=17 orig=15; 7%match; codegen/regalloc |  |
-| 278 | 0x0002d440 | FUN_0002d440 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 278 | 0x0002d440 | FUN_0002d440 | MISMATCH | len cand=95 orig=171; 2%match; codegen/regalloc | indirect_call |
 | 279 | 0x0002d4ec | FUN_0002d4ec | MISMATCH | len cand=55 orig=52; 2%match; param-recovery | indirect_call,void_proto |
 | 280 | 0x0002d520 | FUN_0002d520 | MISMATCH | len cand=94 orig=196; 2%match; codegen/regalloc | indirect_call |
 | 281 | 0x0002d5e4 | FUN_0002d5e4 | MISMATCH | len cand=59 orig=40; 5%match; codegen/regalloc | indirect_call |
@@ -483,7 +535,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 284 | 0x0002d6a4 | FUN_0002d6a4 | MISMATCH | len cand=62 orig=84; 2%match; codegen/regalloc | indirect_call |
 | 285 | 0x0002d6f8 | FUN_0002d6f8 | MISMATCH | len cand=61 orig=84; 7%match; codegen/regalloc | indirect_call |
 | 286 | 0x0002d74c | FUN_0002d74c | MISMATCH | len cand=121 orig=176; 3%match; codegen/regalloc | indirect_call |
-| 287 | 0x0002d7fc | FUN_0002d7fc | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 287 | 0x0002d7fc | FUN_0002d7fc | MISMATCH | len cand=740 orig=1092; 1%match; codegen/regalloc | indirect_call |
 | 288 | 0x0002dc40 | FUN_0002dc40 | MISMATCH | len cand=39 orig=52; 10%match; codegen/regalloc | indirect_call |
 | 289 | 0x0002dc74 | FUN_0002dc74 | MISMATCH | len cand=117 orig=783; 2%match; codegen/regalloc | indirect_call |
 | 290 | 0x0002df90 | FUN_0002df90 | MISMATCH | len cand=35 orig=32; 3%match; codegen/regalloc | indirect_call |
@@ -492,7 +544,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 293 | 0x0002e114 | FUN_0002e114 | MISMATCH | len cand=20 orig=108; 20%match; codegen/regalloc |  |
 | 294 | 0x0002e180 | FUN_0002e180 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call |
 | 295 | 0x0002e290 | FUN_0002e290 | MISMATCH | len cand=23 orig=100; 4%match; codegen/regalloc | indirect_call |
-| 296 | 0x0002e2f4 | FUN_0002e2f4 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 296 | 0x0002e2f4 | FUN_0002e2f4 | MISMATCH | len cand=142 orig=296; 2%match; codegen/regalloc | indirect_call |
 | 297 | 0x0002e41c | FUN_0002e41c | MISMATCH | len cand=99 orig=131; 3%match; codegen/regalloc | indirect_call |
 | 298 | 0x0002e4a0 | FUN_0002e4a0 | MISMATCH | len cand=87 orig=128; 3%match; codegen/regalloc |  |
 | 299 | 0x0002e520 | FUN_0002e520 | MISMATCH | len cand=72 orig=63; 5%match; codegen/regalloc | indirect_call |
@@ -573,9 +625,9 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 374 | 0x000345b0 | FUN_000345b0 | MISMATCH | len cand=94 orig=87; 2%match; reg-artifact | extraout,indirect_call |
 | 375 | 0x00034608 | FUN_00034608 | MISMATCH | len cand=14 orig=96; 0%match; codegen/regalloc | indirect_call |
 | 376 | 0x00034668 | FUN_00034668 | MISMATCH | len cand=45 orig=48; 42%match; param-recovery | void_proto |
-| 377 | 0x00034698 | FUN_00034698 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 377 | 0x00034698 | FUN_00034698 | MISMATCH | len cand=60 orig=176; 0%match; codegen/regalloc | indirect_call |
 | 378 | 0x00034748 | FUN_00034748 | MISMATCH | len cand=64 orig=900; 5%match; codegen/regalloc |  |
-| 379 | 0x00034ad0 | FUN_00034ad0 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 379 | 0x00034ad0 | FUN_00034ad0 | MISMATCH | len cand=65 orig=104; 9%match; codegen/regalloc |  |
 | 380 | 0x00034b38 | FUN_00034b38 | MISMATCH | len cand=26 orig=20; 5%match; param-recovery | indirect_call,void_proto |
 | 381 | 0x00034b4c | FUN_00034b4c | MISMATCH | len cand=107 orig=123; 1%match; codegen/regalloc | indirect_call |
 | 382 | 0x00034bc8 | FUN_00034bc8 | MISMATCH | len cand=232 orig=196; 1%match; codegen/regalloc | indirect_call |
@@ -629,7 +681,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 430 | 0x00036ec8 | FUN_00036ec8 | MISMATCH | len cand=31 orig=63; 3%match; codegen/regalloc | indirect_call |
 | 431 | 0x00036f08 | FUN_00036f08 | MISMATCH | len cand=31 orig=409; 3%match; codegen/regalloc | indirect_call |
 | 432 | 0x000370b0 | FUN_000370b0 | MISMATCH | len cand=41 orig=1291; 2%match; codegen/regalloc | indirect_call |
-| 433 | 0x000375bc | FUN_000375bc | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 433 | 0x000375bc | FUN_000375bc | MISMATCH | len cand=200 orig=7184; 2%match; codegen/regalloc | indirect_call |
 | 434 | 0x000391cc | FUN_000391cc | MISMATCH | len cand=4 orig=72; 0%match; param-recovery | void_proto |
 | 435 | 0x00039214 | FUN_00039214 | MISMATCH | len cand=4 orig=1664; 0%match; param-recovery | void_proto |
 | 436 | 0x000398a0 | FUN_000398a0 | MISMATCH | len cand=17 orig=715; 0%match; codegen/regalloc |  |
@@ -662,7 +714,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 463 | 0x0003e1e0 | FUN_0003e1e0 | MISMATCH | len cand=18 orig=12; 8%match; param-recovery | indirect_call,void_proto |
 | 464 | 0x0003e1ec | FUN_0003e1ec | MISMATCH | len cand=18 orig=12; 8%match; param-recovery | indirect_call,void_proto |
 | 465 | 0x0003e1f8 | FUN_0003e1f8 | MISMATCH | len cand=19 orig=136; 5%match; codegen/regalloc |  |
-| 466 | 0x0003e280 | FUN_0003e280 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 466 | 0x0003e280 | FUN_0003e280 | MISMATCH | len cand=11 orig=64; 9%match; codegen/regalloc |  |
 | 467 | 0x0003e2c0 | FUN_0003e2c0 | MISMATCH | len cand=125 orig=83; 2%match; codegen/regalloc | indirect_call |
 | 468 | 0x0003e314 | FUN_0003e314 | MISMATCH | len cand=23 orig=159; 4%match; codegen/regalloc | indirect_call |
 | 469 | 0x0003e3b4 | FUN_0003e3b4 | MISMATCH | len cand=16 orig=702; 6%match; codegen/regalloc |  |
@@ -702,13 +754,13 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 503 | 0x00041250 | FUN_00041250 | MISMATCH | len cand=57 orig=63; 19%match; codegen/regalloc |  |
 | 504 | 0x00041290 | FUN_00041290 | MISMATCH | len cand=102 orig=211; 4%match; codegen/regalloc | indirect_call |
 | 505 | 0x00041364 | FUN_00041364 | COMPILE_FAIL | E1081:Expression must be scalar type | indirect_call |
-| 506 | 0x00041808 | FUN_00041808 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 506 | 0x00041808 | FUN_00041808 | MISMATCH | len cand=263 orig=503; 1%match; codegen/regalloc | indirect_call |
 | 507 | 0x00041a00 | FUN_00041a00 | MISMATCH | len cand=10 orig=19; 10%match; codegen/regalloc |  |
 | 508 | 0x00041a14 | FUN_00041a14 | MISMATCH | len cand=70 orig=88; 1%match; codegen/regalloc | indirect_call |
-| 509 | 0x00041a6c | FUN_00041a6c | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 509 | 0x00041a6c | FUN_00041a6c | MISMATCH | len cand=30 orig=79; 7%match; codegen/regalloc |  |
 | 510 | 0x00041abc | FUN_00041abc | MISMATCH | len cand=432 orig=623; 2%match; codegen/regalloc | indirect_call |
 | 511 | 0x00041d2c | FUN_00041d2c | MISMATCH | len cand=154 orig=276; 1%match; codegen/regalloc | indirect_call |
-| 512 | 0x00041e40 | FUN_00041e40 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 512 | 0x00041e40 | FUN_00041e40 | MISMATCH | len cand=291 orig=435; 2%match; codegen/regalloc | indirect_call |
 | 513 | 0x00041ff4 | FUN_00041ff4 | MISMATCH | len cand=266 orig=251; 1%match; codegen/regalloc | indirect_call |
 | 514 | 0x000420f0 | FUN_000420f0 | MISMATCH | len cand=70 orig=272; 1%match; codegen/regalloc | indirect_call |
 | 515 | 0x00042200 | FUN_00042200 | MISMATCH | len cand=90 orig=107; 3%match; codegen/regalloc | indirect_call |
@@ -720,7 +772,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 521 | 0x0004259c | FUN_0004259c | MISMATCH | len cand=384 orig=435; 2%match; codegen/regalloc | indirect_call |
 | 522 | 0x00042750 | FUN_00042750 | MISMATCH | len cand=56 orig=343; 7%match; codegen/regalloc | indirect_call |
 | 523 | 0x000428a8 | FUN_000428a8 | MISMATCH | len cand=123 orig=295; 2%match; codegen/regalloc | indirect_call |
-| 524 | 0x000429d0 | FUN_000429d0 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
+| 524 | 0x000429d0 | FUN_000429d0 | MISMATCH | len cand=827 orig=1195; 2%match; reg-artifact | extraout,indirect_call |
 | 525 | 0x00042e7c | FUN_00042e7c | MISMATCH | len cand=52 orig=103; 4%match; codegen/regalloc | indirect_call |
 | 526 | 0x00042ee4 | FUN_00042ee4 | MISMATCH | len cand=33 orig=156; 0%match; codegen/regalloc | indirect_call |
 | 527 | 0x00042f80 | FUN_00042f80 | MISMATCH | len cand=164 orig=196; 1%match; codegen/regalloc | indirect_call |
@@ -752,7 +804,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 553 | 0x000448b4 | FUN_000448b4 | MISMATCH | len cand=65 orig=180; 3%match; codegen/regalloc |  |
 | 554 | 0x00044968 | FUN_00044968 | MISMATCH | len cand=117 orig=111; 0%match; codegen/regalloc | indirect_call |
 | 555 | 0x000449d8 | FUN_000449d8 | MISMATCH | len cand=4 orig=44; 0%match; codegen/regalloc |  |
-| 556 | 0x00044a04 | FUN_00044a04 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 556 | 0x00044a04 | FUN_00044a04 | COMPILE_FAIL | E1010:Type mismatch | indirect_call |
 | 557 | 0x0004501c | FUN_0004501c | MISMATCH | len cand=68 orig=272; 0%match; codegen/regalloc |  |
 | 558 | 0x0004512c | FUN_0004512c | MISMATCH | len cand=169 orig=236; 4%match; codegen/regalloc | indirect_call |
 | 559 | 0x00045218 | FUN_00045218 | MISMATCH | len cand=39 orig=143; 3%match; param-recovery | indirect_call,void_proto |
@@ -786,7 +838,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 587 | 0x0004a50c | FUN_0004a50c | MISMATCH | len cand=69 orig=79; 4%match; reg-artifact | extraout,indirect_call |
 | 588 | 0x0004a55c | FUN_0004a55c | MISMATCH | len cand=72 orig=5791; 4%match; reg-artifact | extraout,indirect_call |
 | 589 | 0x0004bbfc | FUN_0004bbfc | MISMATCH | len cand=14 orig=1896; 6%match; codegen/regalloc | indirect_call |
-| 590 | 0x0004c364 | FUN_0004c364 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 590 | 0x0004c364 | FUN_0004c364 | MISMATCH | len cand=51 orig=524; 4%match; codegen/regalloc | indirect_call |
 | 591 | 0x0004c570 | FUN_0004c570 | MISMATCH | len cand=29 orig=282; 3%match; codegen/regalloc | indirect_call |
 | 592 | 0x0004c690 | FUN_0004c690 | MISMATCH | len cand=14 orig=682; 7%match; param-recovery | void_proto |
 | 593 | 0x0004c940 | FUN_0004c940 | MISMATCH | len cand=61 orig=56; 2%match; codegen/regalloc | indirect_call |
@@ -831,13 +883,13 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 632 | 0x0004e830 | FUN_0004e830 | MISMATCH | len cand=35 orig=30; 7%match; param-recovery | indirect_call,void_proto |
 | 633 | 0x0004e850 | FUN_0004e850 | MISMATCH | len cand=138 orig=98; 5%match; codegen/regalloc | indirect_call |
 | 634 | 0x0004e8c0 | FUN_0004e8c0 | MISMATCH | len cand=215 orig=173; 2%match; codegen/regalloc | indirect_call |
-| 635 | 0x0004e970 | FUN_0004e970 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 635 | 0x0004e970 | FUN_0004e970 | MISMATCH | len cand=25 orig=108; 3%match; codegen/regalloc |  |
 | 636 | 0x0004e9e0 | FUN_0004e9e0 | MISMATCH | len cand=172 orig=145; 4%match; param-recovery | indirect_call,void_proto |
 | 637 | 0x0004ea80 | FUN_0004ea80 | MISMATCH | len cand=100 orig=88; 3%match; param-recovery | indirect_call,void_proto |
-| 638 | 0x0004eae0 | FUN_0004eae0 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call,void_proto |
+| 638 | 0x0004eae0 | FUN_0004eae0 | MISMATCH | len cand=783 orig=656; 7%match; param-recovery | indirect_call,void_proto |
 | 639 | 0x0004ed70 | FUN_0004ed70 | MISMATCH | len cand=292 orig=280; 8%match; param-recovery | indirect_call,void_proto |
 | 640 | 0x0004ee90 | FUN_0004ee90 | MISMATCH | len cand=212 orig=168; 10%match; codegen/regalloc | indirect_call |
-| 641 | 0x0004ef40 | FUN_0004ef40 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call,void_proto |
+| 641 | 0x0004ef40 | FUN_0004ef40 | MISMATCH | len cand=44 orig=165; 7%match; param-recovery | indirect_call,void_proto |
 | 642 | 0x0004eff0 | FUN_0004eff0 | MISMATCH | len cand=80 orig=64; 3%match; param-recovery | indirect_call,void_proto |
 | 643 | 0x0004f030 | FUN_0004f030 | MISMATCH | len cand=236 orig=173; 1%match; param-recovery | indirect_call,void_proto |
 | 644 | 0x0004f0e0 | FUN_0004f0e0 | MISMATCH | len cand=1 orig=16; 0%match; param-recovery | void_proto |
@@ -867,13 +919,13 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 668 | 0x0004fde8 | FUN_0004fde8 | MISMATCH | len cand=130 orig=123; 1%match; codegen/regalloc |  |
 | 669 | 0x0004fe64 | FUN_0004fe64 | MISMATCH | len cand=103 orig=131; 1%match; codegen/regalloc |  |
 | 670 | 0x0004fee8 | FUN_0004fee8 | MISMATCH | len cand=181 orig=300; 3%match; reg-artifact | extraout,indirect_call |
-| 671 | 0x00050014 | FUN_00050014 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
-| 672 | 0x00050108 | FUN_00050108 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 671 | 0x00050014 | FUN_00050014 | MISMATCH | len cand=31 orig=243; 3%match; codegen/regalloc | indirect_call |
+| 672 | 0x00050108 | FUN_00050108 | MISMATCH | len cand=444 orig=882; 2%match; codegen/regalloc | indirect_call |
 | 673 | 0x00050480 | FUN_00050480 | MISMATCH | len cand=14 orig=43; 0%match; codegen/regalloc | indirect_call |
 | 674 | 0x000504ac | FUN_000504ac | MISMATCH | len cand=59 orig=63; 2%match; codegen/regalloc |  |
 | 675 | 0x000504ec | FUN_000504ec | COMPILE_FAIL | E1029:Expression must be 'pointer to ...' |  |
 | 676 | 0x00050564 | FUN_00050564 | MISMATCH | len cand=64 orig=75; 0%match; codegen/regalloc | indirect_call |
-| 677 | 0x000505b0 | FUN_000505b0 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
+| 677 | 0x000505b0 | FUN_000505b0 | MISMATCH | len cand=16 orig=84; 19%match; codegen/regalloc |  |
 | 678 | 0x00050604 | FUN_00050604 | COMPILE_FAIL | E1029:Expression must be 'pointer to ...' | indirect_call |
 | 679 | 0x00050704 | FUN_00050704 | MISMATCH | @+0; 4%comparable-match; codegen/regalloc | indirect_call |
 | 680 | 0x000507d4 | FUN_000507d4 | COMPILE_FAIL | E1029:Expression must be 'pointer to ...' | indirect_call |
@@ -889,7 +941,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 690 | 0x000510b4 | FUN_000510b4 | MISMATCH | len cand=93 orig=215; 1%match; codegen/regalloc | indirect_call |
 | 691 | 0x0005118c | FUN_0005118c | MISMATCH | len cand=46 orig=32; 3%match; param-recovery | indirect_call,void_proto |
 | 692 | 0x000511ac | FUN_000511ac | MISMATCH | len cand=207 orig=235; 1%match; codegen/regalloc | indirect_call |
-| 693 | 0x00051298 | FUN_00051298 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 693 | 0x00051298 | FUN_00051298 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call |
 | 694 | 0x0005159c | FUN_0005159c | MISMATCH | len cand=158 orig=191; 4%match; codegen/regalloc | indirect_call |
 | 695 | 0x0005165c | FUN_0005165c | MISMATCH | len cand=73 orig=84; 3%match; codegen/regalloc | indirect_call |
 | 696 | 0x000516b0 | FUN_000516b0 | MISMATCH | len cand=175 orig=180; 7%match; codegen/regalloc | indirect_call |
@@ -970,20 +1022,20 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 771 | 0x00056ee8 | FUN_00056ee8 | MISMATCH | len cand=300 orig=196; 3%match; codegen/regalloc | indirect_call |
 | 772 | 0x00056fac | FUN_00056fac | MISMATCH | len cand=137 orig=136; 4%match; codegen/regalloc |  |
 | 773 | 0x00057034 | FUN_00057034 | COMPILE_FAIL | E1052:Expression has void type |  |
-| 774 | 0x000570e4 | FUN_000570e4 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 774 | 0x000570e4 | FUN_000570e4 | MISMATCH | len cand=233 orig=228; 4%match; codegen/regalloc | indirect_call |
 | 775 | 0x000571c8 | FUN_000571c8 | MISMATCH | len cand=7 orig=88; 0%match; codegen/regalloc |  |
 | 776 | 0x00057220 | FUN_00057220 | MISMATCH | len cand=180 orig=119; 1%match; codegen/regalloc | indirect_call |
 | 777 | 0x00057298 | FUN_00057298 | MISMATCH | len cand=149 orig=184; 3%match; codegen/regalloc | indirect_call |
 | 778 | 0x00057350 | FUN_00057350 | MISMATCH | len cand=7 orig=144; 0%match; codegen/regalloc |  |
-| 779 | 0x000573e0 | FUN_000573e0 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 779 | 0x000573e0 | FUN_000573e0 | MISMATCH | len cand=329 orig=291; 3%match; codegen/regalloc | indirect_call |
 | 780 | 0x00057504 | FUN_00057504 | MISMATCH | len cand=44 orig=152; 2%match; codegen/regalloc |  |
 | 781 | 0x0005759c | FUN_0005759c | MISMATCH | len cand=75 orig=128; 4%match; codegen/regalloc |  |
 | 782 | 0x0005761c | FUN_0005761c | MISMATCH | len cand=158 orig=187; 1%match; codegen/regalloc | indirect_call |
 | 783 | 0x000576d8 | FUN_000576d8 | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
 | 784 | 0x00057858 | FUN_00057858 | COMPILE_FAIL | E1079:Expression must be integral | extraout,indirect_call |
 | 785 | 0x000578e8 | FUN_000578e8 | MISMATCH | len cand=17 orig=231; 5%match; codegen/regalloc | indirect_call |
-| 786 | 0x000579d0 | FUN_000579d0 | COMPILE_FAIL | E1063:Missing operand | ellipsis |
-| 787 | 0x00057a68 | FUN_00057a68 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 786 | 0x000579d0 | FUN_000579d0 | MISMATCH | len cand=14 orig=151; 7%match; codegen/regalloc |  |
+| 787 | 0x00057a68 | FUN_00057a68 | MISMATCH | len cand=100 orig=208; 2%match; codegen/regalloc | indirect_call |
 | 788 | 0x00057b38 | FUN_00057b38 | MISMATCH | len cand=169 orig=124; 6%match; codegen/regalloc | indirect_call |
 | 789 | 0x00057bb4 | FUN_00057bb4 | MISMATCH | len cand=170 orig=260; 2%match; codegen/regalloc | indirect_call |
 | 790 | 0x00057cb8 | FUN_00057cb8 | MISMATCH | len cand=407 orig=403; 3%match; codegen/regalloc | indirect_call |
@@ -1017,7 +1069,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 818 | 0x00059060 | FUN_00059060 | MISMATCH | len cand=195 orig=172; 2%match; codegen/regalloc | indirect_call |
 | 819 | 0x0005910c | FUN_0005910c | MISMATCH | len cand=336 orig=427; 2%match; codegen/regalloc | indirect_call |
 | 820 | 0x000592c0 | FUN_000592c0 | MISMATCH | len cand=27 orig=132; 3%match; codegen/regalloc | indirect_call |
-| 821 | 0x00059344 | FUN_00059344 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 821 | 0x00059344 | FUN_00059344 | MISMATCH | len cand=360 orig=191; 3%match; codegen/regalloc | indirect_call |
 | 822 | 0x00059404 | FUN_00059404 | MISMATCH | len cand=299 orig=162; 2%match; codegen/regalloc | indirect_call |
 | 823 | 0x000594b0 | FUN_000594b0 | MISMATCH | len cand=26 orig=28; 4%match; codegen/regalloc | indirect_call |
 | 824 | 0x000594cc | FUN_000594cc | MISMATCH | len cand=63 orig=81; 5%match; codegen/regalloc | indirect_call |
@@ -1046,7 +1098,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 847 | 0x0005b810 | FUN_0005b810 | MISMATCH | len cand=46 orig=1696; 4%match; param-recovery | indirect_call,void_proto |
 | 848 | 0x0005beb0 | FUN_0005beb0 | MISMATCH | len cand=69 orig=100; 4%match; codegen/regalloc |  |
 | 849 | 0x0005bf14 | FUN_0005bf14 | MISMATCH | len cand=212 orig=4212; 3%match; codegen/regalloc | indirect_call |
-| 850 | 0x0005cf88 | FUN_0005cf88 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,void_proto |
+| 850 | 0x0005cf88 | FUN_0005cf88 | MISMATCH | len cand=16 orig=84; 0%match; param-recovery | void_proto |
 | 851 | 0x0005cfdc | FUN_0005cfdc | MISMATCH | len cand=52 orig=45; 4%match; codegen/regalloc | indirect_call |
 | 852 | 0x0005d00a | FUN_0005d00a | MISMATCH | len cand=14 orig=301; 0%match; codegen/regalloc | indirect_call |
 | 853 | 0x0005d138 | FUN_0005d138 | MISMATCH | len cand=181 orig=364; 2%match; reg-artifact | extraout,indirect_call |
@@ -1093,8 +1145,8 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 894 | 0x00060130 | FUN_00060130 | MISMATCH | len cand=128 orig=49; 2%match; codegen/regalloc | indirect_call |
 | 895 | 0x00060170 | FUN_00060170 | COMPILE_FAIL | E1080:Expression must be arithmetic | indirect_call |
 | 896 | 0x000601dc | FUN_000601dc | MISMATCH | len cand=26 orig=25; 0%match; codegen/regalloc | indirect_call |
-| 897 | 0x000601f8 | entry | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,extraout,indirect_call,void_proto |
-| 898 | 0x00060489 | FUN_00060489 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 897 | 0x000601f8 | entry | COMPILE_FAIL | E1052:Expression has void type | extraout,indirect_call,void_proto |
+| 898 | 0x00060489 | FUN_00060489 | MISMATCH | len cand=64 orig=68; 3%match; codegen/regalloc | indirect_call |
 | 899 | 0x000604cf | FUN_000604cf | MISMATCH | len cand=17 orig=48; 10%match; codegen/regalloc | indirect_call |
 | 900 | 0x00060500 | FUN_00060500 | MISMATCH | len cand=237 orig=225; 2%match; codegen/regalloc | indirect_call |
 | 901 | 0x000605f0 | FUN_000605f0 | MISMATCH | len cand=59 orig=66; 3%match; codegen/regalloc | indirect_call |
@@ -1102,12 +1154,12 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 903 | 0x000606b0 | FUN_000606b0 | MISMATCH | len cand=1 orig=6; 0%match; param-recovery | void_proto |
 | 904 | 0x000606c0 | FUN_000606c0 | MISMATCH | len cand=1 orig=6; 0%match; param-recovery | void_proto |
 | 905 | 0x000606d0 | FUN_000606d0 | MISMATCH | len cand=1 orig=184; 0%match; param-recovery | void_proto |
-| 906 | 0x00060790 | FUN_00060790 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,void_proto |
+| 906 | 0x00060790 | FUN_00060790 | MISMATCH | len cand=78 orig=203; 4%match; param-recovery | void_proto |
 | 907 | 0x00060860 | FUN_00060860 | MISMATCH | len cand=58 orig=62; 3%match; param-recovery | indirect_call,void_proto |
-| 908 | 0x000608a0 | FUN_000608a0 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 909 | 0x00060ad0 | FUN_00060ad0 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 908 | 0x000608a0 | FUN_000608a0 | COMPILE_FAIL | E1052:Expression has void type |  |
+| 909 | 0x00060ad0 | FUN_00060ad0 | MISMATCH | len cand=176 orig=226; 2%match; codegen/regalloc | indirect_call |
 | 910 | 0x00060bc0 | FUN_00060bc0 | COMPILE_FAIL | E1045:Subscript on non-array | extraout,indirect_call |
-| 911 | 0x00060ec5 | FUN_00060ec5 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,extraout,indirect_call |
+| 911 | 0x00060ec5 | FUN_00060ec5 | COMPILE_FAIL | E1052:Expression has void type | extraout,indirect_call |
 | 912 | 0x00060f10 | FUN_00060f10 | MISMATCH | len cand=259 orig=2533; 8%match; param-recovery | indirect_call,void_proto |
 | 913 | 0x00061900 | FUN_00061900 | COMPILE_FAIL | E1080:Expression must be arithmetic | extraout,indirect_call |
 | 914 | 0x00061e40 | FUN_00061e40 | MISMATCH | len cand=45 orig=55; 4%match; codegen/regalloc |  |
@@ -1136,16 +1188,16 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 937 | 0x00063dfc | FUN_00063dfc | MISMATCH | len cand=210 orig=200; 6%match; reg-artifact | extraout,indirect_call |
 | 938 | 0x00063ec4 | FUN_00063ec4 | MISMATCH | len cand=35 orig=27; 0%match; param-recovery | indirect_call,void_proto |
 | 939 | 0x00063edf | FUN_00063edf | MISMATCH | len cand=11 orig=150; 0%match; codegen/regalloc | indirect_call |
-| 940 | 0x00063f76 | FUN_00063f76 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 940 | 0x00063f76 | FUN_00063f76 | MISMATCH | len cand=77 orig=3; 0%match; thunk |  |
 | 941 | 0x00063f7b | FUN_00063f7b | MISMATCH | len cand=23 orig=18; 0%match; codegen/regalloc |  |
 | 942 | 0x00063f8d | FUN_00063f8d | MISMATCH | len cand=233 orig=202; 3%match; codegen/regalloc | indirect_call |
-| 943 | 0x00064058 | FUN_00064058 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 943 | 0x00064058 | FUN_00064058 | MISMATCH | len cand=37 orig=31; 3%match; codegen/regalloc | indirect_call |
 | 944 | 0x00064077 | FUN_00064077 | MISMATCH | len cand=1 orig=6; 0%match; param-recovery | void_proto |
 | 945 | 0x0006407d | FUN_0006407d | MISMATCH | len cand=1 orig=6; 0%match; param-recovery | void_proto |
 | 946 | 0x00064090 | FUN_00064090 | MISMATCH | len cand=105 orig=49; 0%match; reg-artifact | extraout,indirect_call |
 | 947 | 0x000640c7 | FUN_000640c7 | MISMATCH | len cand=171 orig=108; 4%match; codegen/regalloc |  |
 | 948 | 0x00064133 | FUN_00064133 | MISMATCH | len cand=95 orig=129; 0%match; codegen/regalloc | indirect_call |
-| 949 | 0x000641b4 | FUN_000641b4 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 949 | 0x000641b4 | FUN_000641b4 | MISMATCH | len cand=37 orig=31; 3%match; codegen/regalloc | indirect_call |
 | 950 | 0x000641d3 | FUN_000641d3 | MISMATCH | len cand=27 orig=41; 4%match; codegen/regalloc |  |
 | 951 | 0x000641fc | FUN_000641fc | MISMATCH | len cand=33 orig=105; 6%match; codegen/regalloc |  |
 | 952 | 0x00064270 | FUN_00064270 | MISMATCH | len cand=56 orig=79; 7%match; codegen/regalloc |  |
@@ -1160,13 +1212,13 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 961 | 0x00064d50 | FUN_00064d50 | MISMATCH | len cand=20 orig=43; 4%match; codegen/regalloc | indirect_call |
 | 962 | 0x00064d7b | FUN_00064d7b | COMPILE_FAIL | E1018:Label 'LAB_00064e45' not defined in function | indirect_call |
 | 963 | 0x00064e5e | FUN_00064e5e | MISMATCH | len cand=87 orig=131; 1%match; codegen/regalloc | indirect_call |
-| 964 | 0x00064ee1 | FUN_00064ee1 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,extraout,indirect_call |
+| 964 | 0x00064ee1 | FUN_00064ee1 | COMPILE_FAIL | E1052:Expression has void type | extraout,indirect_call |
 | 965 | 0x00064ff4 | FUN_00064ff4 | MISMATCH | len cand=23 orig=27; 7%match; param-recovery | indirect_call,void_proto |
 | 966 | 0x0006500f | FUN_0006500f | MISMATCH | len cand=39 orig=36; 0%match; codegen/regalloc | indirect_call |
-| 967 | 0x00065033 | FUN_00065033 | COMPILE_FAIL | E1045:Subscript on non-array | callother,ellipsis,indirect_call |
-| 968 | 0x0006525d | FUN_0006525d | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 967 | 0x00065033 | FUN_00065033 | COMPILE_FAIL | E1045:Subscript on non-array | indirect_call |
+| 968 | 0x0006525d | FUN_0006525d | MISMATCH | len cand=47 orig=3; 0%match; thunk | indirect_call |
 | 969 | 0x00065262 | FUN_00065262 | MISMATCH | len cand=57 orig=61; 2%match; codegen/regalloc | indirect_call |
-| 970 | 0x0006529f | FUN_0006529f | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,extraout,indirect_call |
+| 970 | 0x0006529f | FUN_0006529f | COMPILE_FAIL | E1052:Expression has void type | extraout,indirect_call |
 | 971 | 0x00065470 | FUN_00065470 | COMPILE_FAIL | E1079:Expression must be integral |  |
 | 972 | 0x000655c0 | FUN_000655c0 | MISMATCH | len cand=59 orig=56; 2%match; codegen/regalloc | indirect_call |
 | 973 | 0x000655f8 | FUN_000655f8 | MISMATCH | len cand=522 orig=148; 2%match; codegen/regalloc | indirect_call |
@@ -1191,7 +1243,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 992 | 0x00066cfc | FUN_00066cfc | MISMATCH | len cand=99 orig=83; 1%match; codegen/regalloc | indirect_call |
 | 993 | 0x00066d50 | FUN_00066d50 | MISMATCH | len cand=110 orig=88; 0%match; codegen/regalloc | indirect_call |
 | 994 | 0x00066da8 | FUN_00066da8 | MISMATCH | len cand=250 orig=255; 13%match; codegen/regalloc | indirect_call |
-| 995 | 0x00066ea8 | FUN_00066ea8 | COMPILE_FAIL | E1063:Missing operand | ellipsis,indirect_call |
+| 995 | 0x00066ea8 | FUN_00066ea8 | MISMATCH | len cand=97 orig=300; 3%match; codegen/regalloc | indirect_call |
 | 996 | 0x00066fd4 | FUN_00066fd4 | MISMATCH | len cand=7 orig=87; 0%match; codegen/regalloc |  |
 | 997 | 0x0006702c | FUN_0006702c | MISMATCH | len cand=118 orig=100; 3%match; codegen/regalloc | indirect_call |
 | 998 | 0x00067090 | FUN_00067090 | MISMATCH | len cand=36 orig=820; 0%match; codegen/regalloc | indirect_call |
@@ -1218,12 +1270,12 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1019 | 0x00067e78 | FUN_00067e78 | MISMATCH | len cand=212 orig=48; 2%match; codegen/regalloc |  |
 | 1020 | 0x00067ea8 | FUN_00067ea8 | MISMATCH | len cand=89 orig=51; 4%match; codegen/regalloc | indirect_call |
 | 1021 | 0x00067edb | FUN_00067edb | MISMATCH | len cand=142 orig=339; 3%match; codegen/regalloc | indirect_call |
-| 1022 | 0x0006802e | FUN_0006802e | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1023 | 0x00068069 | FUN_00068069 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1024 | 0x00068095 | FUN_00068095 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1025 | 0x00068327 | FUN_00068327 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1026 | 0x000683d7 | FUN_000683d7 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1027 | 0x000684b1 | FUN_000684b1 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1022 | 0x0006802e | FUN_0006802e | MISMATCH | len cand=236 orig=59; 5%match; codegen/regalloc | indirect_call |
+| 1023 | 0x00068069 | FUN_00068069 | MISMATCH | len cand=55 orig=44; 0%match; codegen/regalloc |  |
+| 1024 | 0x00068095 | FUN_00068095 | MISMATCH | len cand=27 orig=658; 0%match; codegen/regalloc |  |
+| 1025 | 0x00068327 | FUN_00068327 | MISMATCH | len cand=57 orig=176; 2%match; codegen/regalloc |  |
+| 1026 | 0x000683d7 | FUN_000683d7 | MISMATCH | len cand=330 orig=218; 3%match; codegen/regalloc | indirect_call |
+| 1027 | 0x000684b1 | FUN_000684b1 | MISMATCH | len cand=85 orig=61; 0%match; codegen/regalloc |  |
 | 1028 | 0x000684ee | FUN_000684ee | MISMATCH | len cand=10 orig=12; 0%match; codegen/regalloc |  |
 | 1029 | 0x000684fa | FUN_000684fa | MISMATCH | len cand=107 orig=71; 23%match; codegen/regalloc | indirect_call |
 | 1030 | 0x00068541 | FUN_00068541 | MISMATCH | len cand=73 orig=40; 5%match; codegen/regalloc | indirect_call |
@@ -1243,9 +1295,9 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1044 | 0x00068be3 | FUN_00068be3 | MISMATCH | len cand=965 orig=558; 3%match; param-recovery | indirect_call,void_proto |
 | 1045 | 0x00068e11 | FUN_00068e11 | MISMATCH | len cand=262 orig=163; 1%match; param-recovery | indirect_call,void_proto |
 | 1046 | 0x00068eb4 | FUN_00068eb4 | MISMATCH | len cand=152 orig=113; 4%match; param-recovery | indirect_call,void_proto |
-| 1047 | 0x00068f25 | FUN_00068f25 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1047 | 0x00068f25 | FUN_00068f25 | MISMATCH | len cand=932 orig=274; 2%match; codegen/regalloc | indirect_call |
 | 1048 | 0x00069037 | FUN_00069037 | MISMATCH | len cand=83 orig=180; 2%match; param-recovery | indirect_call,void_proto |
-| 1049 | 0x000690eb | FUN_000690eb | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1049 | 0x000690eb | FUN_000690eb | MISMATCH | len cand=22 orig=30; 14%match; codegen/regalloc |  |
 | 1050 | 0x00069109 | FUN_00069109 | MISMATCH | len cand=14 orig=29; 6%match; codegen/regalloc | indirect_call |
 | 1051 | 0x00069126 | FUN_00069126 | MISMATCH | len cand=65 orig=81; 2%match; codegen/regalloc | indirect_call |
 | 1052 | 0x00069177 | FUN_00069177 | MISMATCH | len cand=11 orig=13; 0%match; codegen/regalloc | indirect_call |
@@ -1310,7 +1362,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1111 | 0x0006e6e0 | FUN_0006e6e0 | MISMATCH | len cand=336 orig=303; 4%match; param-recovery | indirect_call,void_proto |
 | 1112 | 0x0006e810 | FUN_0006e810 | MISMATCH | len cand=53 orig=96; 28%match; param-recovery | void_proto |
 | 1113 | 0x0006e870 | FUN_0006e870 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call,int64,void_proto |
-| 1114 | 0x0006faf8 | FUN_0006faf8 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1114 | 0x0006faf8 | FUN_0006faf8 | MISMATCH | len cand=62 orig=221; 5%match; codegen/regalloc |  |
 | 1115 | 0x0006fbd5 | FUN_0006fbd5 | MISMATCH | len cand=92 orig=99; 4%match; codegen/regalloc |  |
 | 1116 | 0x0006fc38 | FUN_0006fc38 | MISMATCH | len cand=16 orig=71; 6%match; codegen/regalloc |  |
 | 1117 | 0x0006fc7f | FUN_0006fc7f | MISMATCH | len cand=142 orig=209; 1%match; codegen/regalloc | indirect_call |
@@ -1328,8 +1380,8 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1129 | 0x0007078c | FUN_0007078c | MISMATCH | len cand=44 orig=121; 0%match; codegen/regalloc | indirect_call |
 | 1130 | 0x00070805 | FUN_00070805 | EXACT | 1b | void_proto |
 | 1131 | 0x00070806 | FUN_00070806 | MISMATCH | len cand=50 orig=24; 0%match; codegen/regalloc | indirect_call |
-| 1132 | 0x0007081e | FUN_0007081e | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1133 | 0x00070834 | FUN_00070834 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1132 | 0x0007081e | FUN_0007081e | MISMATCH | len cand=66 orig=22; 0%match; codegen/regalloc | indirect_call |
+| 1133 | 0x00070834 | FUN_00070834 | MISMATCH | len cand=150 orig=195; 1%match; codegen/regalloc |  |
 | 1134 | 0x000708f7 | FUN_000708f7 | COMPILE_FAIL | E1079:Expression must be integral | indirect_call,int64 |
 | 1135 | 0x00070a4b | FUN_00070a4b | MISMATCH | len cand=15 orig=135; 0%match; codegen/regalloc | indirect_call |
 | 1136 | 0x00070ad2 | FUN_00070ad2 | MISMATCH | len cand=170 orig=16; 6%match; codegen/regalloc | indirect_call |
@@ -1347,41 +1399,41 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1148 | 0x00071383 | FUN_00071383 | MISMATCH | len cand=119 orig=555; 4%match; codegen/regalloc | indirect_call |
 | 1149 | 0x000715ae | FUN_000715ae | MISMATCH | len cand=136 orig=119; 3%match; codegen/regalloc | indirect_call |
 | 1150 | 0x00071625 | FUN_00071625 | MISMATCH | len cand=152 orig=481; 4%match; codegen/regalloc | indirect_call |
-| 1151 | 0x00071806 | FUN_00071806 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,extraout |
-| 1152 | 0x00071891 | FUN_00071891 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1153 | 0x00071a45 | FUN_00071a45 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1154 | 0x00071a7d | FUN_00071a7d | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1155 | 0x00071b96 | FUN_00071b96 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1151 | 0x00071806 | FUN_00071806 | COMPILE_FAIL | E1052:Expression has void type | extraout |
+| 1152 | 0x00071891 | FUN_00071891 | MISMATCH | len cand=234 orig=436; 3%match; codegen/regalloc | indirect_call |
+| 1153 | 0x00071a45 | FUN_00071a45 | MISMATCH | len cand=234 orig=56; 0%match; codegen/regalloc | indirect_call |
+| 1154 | 0x00071a7d | FUN_00071a7d | MISMATCH | len cand=263 orig=281; 4%match; codegen/regalloc | indirect_call |
+| 1155 | 0x00071b96 | FUN_00071b96 | MISMATCH | len cand=263 orig=281; 4%match; codegen/regalloc | indirect_call |
 | 1156 | 0x00071caf | FUN_00071caf | MISMATCH | len cand=63 orig=82; 2%match; codegen/regalloc | indirect_call |
 | 1157 | 0x00071d01 | FUN_00071d01 | COMPILE_FAIL | E1010:Type mismatch | indirect_call |
 | 1158 | 0x00071d50 | FUN_00071d50 | MISMATCH | len cand=137 orig=75; 1%match; codegen/regalloc |  |
 | 1159 | 0x00071d9b | FUN_00071d9b | MISMATCH | len cand=143 orig=79; 3%match; codegen/regalloc |  |
 | 1160 | 0x00071dea | FUN_00071dea | MISMATCH | len cand=14 orig=174; 0%match; codegen/regalloc | indirect_call |
 | 1161 | 0x00071ea0 | FUN_00071ea0 | MISMATCH | len cand=29 orig=153; 3%match; codegen/regalloc |  |
-| 1162 | 0x00071f40 | FUN_00071f40 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1163 | 0x00071fe0 | FUN_00071fe0 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1162 | 0x00071f40 | FUN_00071f40 | COMPILE_FAIL | E1052:Expression has void type |  |
+| 1163 | 0x00071fe0 | FUN_00071fe0 | MISMATCH | len cand=64 orig=56; 5%match; codegen/regalloc |  |
 | 1164 | 0x00072018 | FUN_00072018 | MISMATCH | len cand=35 orig=5; 20%match; codegen/regalloc | indirect_call |
 | 1165 | 0x0007201d | FUN_0007201d | MISMATCH | len cand=26 orig=102; 0%match; codegen/regalloc | indirect_call |
-| 1166 | 0x00072090 | FUN_00072090 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1167 | 0x000720e9 | FUN_000720e9 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1168 | 0x00072181 | FUN_00072181 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1169 | 0x000721a5 | FUN_000721a5 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1170 | 0x000721b1 | FUN_000721b1 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1166 | 0x00072090 | FUN_00072090 | MISMATCH | len cand=28 orig=89; 4%match; codegen/regalloc |  |
+| 1167 | 0x000720e9 | FUN_000720e9 | COMPILE_FAIL | E1052:Expression has void type |  |
+| 1168 | 0x00072181 | FUN_00072181 | MISMATCH | len cand=27 orig=36; 0%match; codegen/regalloc |  |
+| 1169 | 0x000721a5 | FUN_000721a5 | MISMATCH | len cand=27 orig=12; 0%match; codegen/regalloc |  |
+| 1170 | 0x000721b1 | FUN_000721b1 | MISMATCH | len cand=21 orig=111; 0%match; codegen/regalloc |  |
 | 1171 | 0x00072220 | FUN_00072220 | MISMATCH | len cand=183 orig=168; 6%match; codegen/regalloc | indirect_call |
 | 1172 | 0x000722c8 | FUN_000722c8 | MISMATCH | len cand=64 orig=87; 0%match; codegen/regalloc |  |
 | 1173 | 0x0007231f | FUN_0007231f | MISMATCH | len cand=1 orig=6; 0%match; param-recovery | void_proto |
-| 1174 | 0x00072325 | FUN_00072325 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1175 | 0x00072357 | FUN_00072357 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1174 | 0x00072325 | FUN_00072325 | MISMATCH | len cand=47 orig=50; 0%match; codegen/regalloc | indirect_call |
+| 1175 | 0x00072357 | FUN_00072357 | MISMATCH | len cand=37 orig=5; 0%match; thunk | indirect_call |
 | 1176 | 0x0007235c | FUN_0007235c | MISMATCH | len cand=64 orig=217; 2%match; codegen/regalloc | indirect_call |
 | 1177 | 0x00072436 | FUN_00072436 | MISMATCH | len cand=209 orig=166; 3%match; codegen/regalloc |  |
 | 1178 | 0x000724de | FUN_000724de | COMPILE_FAIL | E1079:Expression must be integral |  |
 | 1179 | 0x000725e9 | FUN_000725e9 | MISMATCH | len cand=65 orig=63; 0%match; codegen/regalloc |  |
-| 1180 | 0x00072628 | FUN_00072628 | COMPILE_FAIL | E1029:Expression must be 'pointer to ...' | callother,ellipsis,indirect_call |
+| 1180 | 0x00072628 | FUN_00072628 | COMPILE_FAIL | E1029:Expression must be 'pointer to ...' | indirect_call |
 | 1181 | 0x00072789 | FUN_00072789 | MISMATCH | len cand=119 orig=116; 10%match; codegen/regalloc |  |
-| 1182 | 0x000727fd | FUN_000727fd | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1183 | 0x0007284b | FUN_0007284b | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1184 | 0x0007291e | FUN_0007291e | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
-| 1185 | 0x000729cd | FUN_000729cd | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1182 | 0x000727fd | FUN_000727fd | MISMATCH | len cand=61 orig=78; 2%match; codegen/regalloc |  |
+| 1183 | 0x0007284b | FUN_0007284b | COMPILE_FAIL | E1080:Expression must be arithmetic | indirect_call |
+| 1184 | 0x0007291e | FUN_0007291e | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
+| 1185 | 0x000729cd | FUN_000729cd | MISMATCH | len cand=322 orig=324; 4%match; codegen/regalloc | indirect_call |
 | 1186 | 0x00072b11 | FUN_00072b11 | MISMATCH | len cand=100 orig=119; 3%match; codegen/regalloc | indirect_call |
 | 1187 | 0x00072b88 | FUN_00072b88 | MISMATCH | len cand=1 orig=3; 0%match; param-recovery | void_proto |
 | 1188 | 0x00072b8b | FUN_00072b8b | MISMATCH | len cand=91 orig=85; 4%match; codegen/regalloc | indirect_call |
@@ -1405,7 +1457,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1206 | 0x00073328 | FUN_00073328 | MISMATCH | len cand=18 orig=114; 6%match; param-recovery | indirect_call,void_proto |
 | 1207 | 0x0007339c | FUN_0007339c | MISMATCH | len cand=43 orig=1059; 2%match; codegen/regalloc |  |
 | 1208 | 0x000737c0 | FUN_000737c0 | MISMATCH | len cand=25 orig=22; 0%match; codegen/regalloc |  |
-| 1209 | 0x000737d6 | FUN_000737d6 | COMPILE_FAIL | E1063:Missing operand | ellipsis,extraout,indirect_call |
+| 1209 | 0x000737d6 | FUN_000737d6 | MISMATCH | len cand=406 orig=146; 1%match; reg-artifact | extraout,indirect_call |
 | 1210 | 0x00073868 | FUN_00073868 | MISMATCH | len cand=10 orig=18; 10%match; param-recovery | void_proto |
 | 1211 | 0x0007387a | FUN_0007387a | MISMATCH | len cand=10 orig=19; 10%match; param-recovery | void_proto |
 | 1212 | 0x0007388d | FUN_0007388d | MISMATCH | len cand=10 orig=39; 10%match; param-recovery | void_proto |
@@ -1418,7 +1470,7 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1219 | 0x000739d2 | FUN_000739d2 | MISMATCH | len cand=74 orig=50; 6%match; param-recovery | indirect_call,void_proto |
 | 1220 | 0x00073a04 | FUN_00073a04 | MISMATCH | len cand=282 orig=192; 6%match; codegen/regalloc | indirect_call |
 | 1221 | 0x00073ac4 | FUN_00073ac4 | MISMATCH | len cand=44 orig=2822; 2%match; param-recovery | indirect_call,void_proto |
-| 1222 | 0x000745ca | FUN_000745ca | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1222 | 0x000745ca | FUN_000745ca | MISMATCH | len cand=78 orig=311; 3%match; codegen/regalloc |  |
 | 1223 | 0x00074701 | FUN_00074701 | MISMATCH | len cand=36 orig=1274; 6%match; codegen/regalloc |  |
 | 1224 | 0x00074c00 | FUN_00074c00 | MISMATCH | len cand=101 orig=56; 2%match; codegen/regalloc | indirect_call |
 | 1225 | 0x00074c38 | FUN_00074c38 | MISMATCH | len cand=20 orig=934; 0%match; param-recovery | void_proto |
@@ -1441,35 +1493,35 @@ Sorted by address. *Detail* is length/similarity for MISMATCH, the first compile
 | 1242 | 0x00077beb | FUN_00077beb | MISMATCH | len cand=11 orig=54; 7%match; codegen/regalloc | indirect_call |
 | 1243 | 0x00077c22 | FUN_00077c22 | MISMATCH | len cand=92 orig=73; 3%match; codegen/regalloc |  |
 | 1244 | 0x00077c6b | FUN_00077c6b | MISMATCH | len cand=23 orig=27; 26%match; codegen/regalloc | indirect_call |
-| 1245 | 0x00077c86 | FUN_00077c86 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1245 | 0x00077c86 | FUN_00077c86 | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
 | 1246 | 0x00077cd2 | FUN_00077cd2 | MISMATCH | len cand=78 orig=5; 0%match; codegen/regalloc | indirect_call |
 | 1247 | 0x00077cd7 | FUN_00077cd7 | MISMATCH | len cand=73 orig=47; 0%match; codegen/regalloc | indirect_call |
-| 1248 | 0x00077d06 | FUN_00077d06 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1249 | 0x00077d23 | FUN_00077d23 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call,void_proto |
+| 1248 | 0x00077d06 | FUN_00077d06 | MISMATCH | len cand=38 orig=29; 10%match; codegen/regalloc |  |
+| 1249 | 0x00077d23 | FUN_00077d23 | MISMATCH | len cand=37 orig=151; 0%match; param-recovery | indirect_call,void_proto |
 | 1250 | 0x00077dba | FUN_00077dba | MISMATCH | len cand=52 orig=14; 0%match; reg-artifact | extraout,indirect_call,void_proto |
 | 1251 | 0x00077dcb | FUN_00077dcb | MISMATCH | len cand=89 orig=82; 2%match; codegen/regalloc | indirect_call |
-| 1252 | 0x00077e1d | FUN_00077e1d | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,indirect_call |
+| 1252 | 0x00077e1d | FUN_00077e1d | COMPILE_FAIL | E1052:Expression has void type | indirect_call |
 | 1253 | 0x00077e9e | FUN_00077e9e | MISMATCH | len cand=35 orig=55; 3%match; codegen/regalloc | indirect_call |
-| 1254 | 0x00077ed5 | FUN_00077ed5 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1255 | 0x00077f00 | FUN_00077f00 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1254 | 0x00077ed5 | FUN_00077ed5 | MISMATCH | len cand=36 orig=43; 3%match; codegen/regalloc |  |
+| 1255 | 0x00077f00 | FUN_00077f00 | MISMATCH | len cand=23 orig=101; 0%match; codegen/regalloc |  |
 | 1256 | 0x00077f65 | FUN_00077f65 | MISMATCH | len cand=11 orig=218; 64%match; param-recovery | void_proto |
-| 1257 | 0x0007803f | FUN_0007803f | COMPILE_FAIL | E1010:Type mismatch | callother,ellipsis,indirect_call |
-| 1258 | 0x000782c0 | FUN_000782c0 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1259 | 0x0007832c | FUN_0007832c | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1257 | 0x0007803f | FUN_0007803f | COMPILE_FAIL | E1010:Type mismatch | indirect_call |
+| 1258 | 0x000782c0 | FUN_000782c0 | MISMATCH | len cand=145 orig=108; 2%match; codegen/regalloc |  |
+| 1259 | 0x0007832c | FUN_0007832c | MISMATCH | len cand=71 orig=52; 4%match; codegen/regalloc |  |
 | 1260 | 0x00078360 | FUN_00078360 | MISMATCH | len cand=67 orig=28; 0%match; codegen/regalloc |  |
-| 1261 | 0x0007837c | FUN_0007837c | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1261 | 0x0007837c | FUN_0007837c | COMPILE_FAIL | E1052:Expression has void type |  |
 | 1262 | 0x00078410 | FUN_00078410 | MISMATCH | len cand=61 orig=40; 2%match; codegen/regalloc | indirect_call |
 | 1263 | 0x00078438 | FUN_00078438 | MISMATCH | len cand=15 orig=25; 0%match; codegen/regalloc |  |
 | 1264 | 0x00078451 | FUN_00078451 | MISMATCH | len cand=17 orig=46; 0%match; codegen/regalloc | indirect_call |
 | 1265 | 0x0007847f | FUN_0007847f | MISMATCH | len cand=97 orig=78; 1%match; codegen/regalloc | indirect_call |
 | 1266 | 0x000784cd | FUN_000784cd | MISMATCH | len cand=206 orig=375; 4%match; codegen/regalloc | indirect_call |
-| 1267 | 0x00078644 | FUN_00078644 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
+| 1267 | 0x00078644 | FUN_00078644 | MISMATCH | len cand=34 orig=38; 26%match; codegen/regalloc |  |
 | 1268 | 0x0007866a | FUN_0007866a | MISMATCH | len cand=152 orig=185; 4%match; codegen/regalloc | indirect_call |
 | 1269 | 0x00078724 | FUN_00078724 | COMPILE_FAIL | E1045:Subscript on non-array | void_proto |
-| 1270 | 0x00078984 | FUN_00078984 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1271 | 0x00078a74 | FUN_00078a74 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1272 | 0x00078aba | FUN_00078aba | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis |
-| 1273 | 0x00078b12 | FUN_00078b12 | COMPILE_FAIL | E1063:Missing operand | callother,ellipsis,void_proto |
+| 1270 | 0x00078984 | FUN_00078984 | MISMATCH | len cand=192 orig=240; 2%match; codegen/regalloc |  |
+| 1271 | 0x00078a74 | FUN_00078a74 | MISMATCH | len cand=46 orig=70; 0%match; codegen/regalloc |  |
+| 1272 | 0x00078aba | FUN_00078aba | MISMATCH | len cand=46 orig=87; 4%match; codegen/regalloc |  |
+| 1273 | 0x00078b12 | FUN_00078b12 | MISMATCH | len cand=44 orig=263; 7%match; param-recovery | void_proto |
 | 1274 | 0x00078c20 | FUN_00078c20 | COMPILE_FAIL | E1010:Type mismatch |  |
 | 1275 | 0x00078cc0 | FUN_00078cc0 | MISMATCH | len cand=843 orig=767; 3%match; codegen/regalloc |  |
 | 1276 | 0x00078fc0 | FUN_00078fc0 | MISMATCH | len cand=159 orig=112; 2%match; codegen/regalloc |  |
