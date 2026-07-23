@@ -18,9 +18,10 @@
 //!   choice varies per site. So at this scale the matcher (a) locates constructs with anchors so
 //!   look-alikes (a switch's `CMP EAX,1`) don't fire, and (b) treats the strategy patterns as
 //!   **one-sided positive evidence** — the *presence* of `AND EAX,0xff ; CMP EAX,imm` indicates
-//!   the 10.0 line, `SETcc ; MOVZX` indicates Open Watcom; *absence* is inconclusive, never a
-//!   wrong exclusion. It reports a class (often the era, which is what WAR2 needs), not always a
-//!   single revision. Honest by construction.
+//!   the 10.0 line, and either `SETcc ; MOVZX` or the inline constant division `MOV r,imm ; CDQ ;
+//!   IDIV r` (ow2's `cdq` sign-extension, where the classic line uses `SAR`) indicates Open
+//!   Watcom; *absence* is inconclusive, never a wrong exclusion. It reports a class (often the
+//!   era, which is what WAR2 needs), not always a single revision. Honest by construction.
 //!
 //! Signals are `Option` — `None` = "not observed", never contradicts a revision.
 
@@ -83,6 +84,12 @@ struct Votes {
     zero_extended: Vec<bool>,
     loop_bound: Vec<String>,
     sw_ascending: Vec<bool>,
+    /// One entry per **inline constant-divisor signed division** site (`MOV r,imm ; CDQ ; IDIV r`)
+    /// — Open Watcom's `cdq` sign-extension idiom, which the 10.x/11.0 line never emits (it uses
+    /// `MOV EDX,EAX ; SAR EDX,0x1f`). Purely one-sided positive evidence, so only observed sites
+    /// are recorded (there is no "not a division" vote); consumed only by the whole-binary matcher
+    /// as additional Open-Watcom evidence, never by the two-sided isolated-probe `consensus`.
+    inline_const_div: Vec<bool>,
 }
 
 /// A signal is trusted only when every site that observed it agrees; any disagreement (or no
@@ -118,6 +125,12 @@ fn scan_into(instrs: &[Instruction], v: &mut Votes) {
     let mut cmp1: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut cmp2: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for (i, ins) in instrs.iter().enumerate() {
+        // Open Watcom's inline constant-divisor signed division — anchored, one-sided (see
+        // [`inline_const_idiv_at`]). A positive site is Open-Watcom evidence for the whole-binary
+        // matcher; never a false vote, so nothing is pushed on the (overwhelmingly common) miss.
+        if inline_const_idiv_at(instrs, i) {
+            v.inline_const_div.push(true);
+        }
         let (op1, op2) = split2(&ins.body);
         match ins.mnemonic.as_str() {
             "CMP" => {
@@ -172,6 +185,33 @@ fn scan_into(instrs: &[Instruction], v: &mut Votes) {
             v.sw_ascending.push(a1 < a2);
         }
     }
+}
+
+/// True iff instruction `i` begins Open Watcom's **inline constant-divisor signed division** —
+/// the three-instruction window `MOV reg,imm ; CDQ ; IDIV reg` (same `reg`). This is ow2's
+/// sign-extension idiom (`cdq`); the classic 10.x/11.0 line emits the *same* `x/const` construct
+/// as `MOV EDX,EAX ; MOV reg,imm ; SAR EDX,0x1f ; IDIV reg` — never `cdq` — so the window is
+/// diagnostic of the Open Watcom line (measured across 10.0a/10.6/11.0/ow2, all four **inline**
+/// the divide; only the sign-extension differs — see `docs/watcom-codegen-fingerprint.md`).
+///
+/// The immediate-load guard is what makes it *constant* division and blocks the obvious false
+/// positive: ow2's *variable* division is `MOV reg,<reg> ; CDQ ; IDIV reg`, whose pre-`CDQ` move
+/// is register-to-register (no immediate), so it does not match. The unsigned constant form
+/// (`MOV reg,imm ; XOR EDX,EDX ; DIV reg`) is emitted **identically by every revision** and is
+/// deliberately not matched (its `xor edx,edx`/`div` is neither `cdq` nor `idiv`).
+fn inline_const_idiv_at(instrs: &[Instruction], i: usize) -> bool {
+    let (Some(load), Some(cdq), Some(idiv)) =
+        (instrs.get(i), instrs.get(i + 1), instrs.get(i + 2))
+    else {
+        return false;
+    };
+    let (dst, src) = split2(&load.body);
+    load.mnemonic == "MOV"
+        && is_dword_reg(dst)
+        && parse_imm(src).is_some()
+        && cdq.mnemonic == "CDQ"
+        && idiv.mnemonic == "IDIV"
+        && idiv.body.trim() == dst
 }
 
 /// True iff the dword register `reg` is masked to its low byte immediately before instruction
@@ -278,7 +318,18 @@ pub fn identify_watcom_program(program: &crate::analysis::program::Program) -> V
     // Absence of a pattern is inconclusive (returns the un-narrowed set), never a wrong exclusion.
     // The register/loop/switch artifacts are dropped entirely at this scale (see above).
     let promoted = votes.promoted.iter().any(|&p| p).then_some(true);
-    let zero_extended = votes.zero_extended.iter().any(|&z| z).then_some(true);
+    // Open Watcom evidence is one-sided and now comes from TWO independent, mutually-corroborating
+    // constructs — either suffices. The setcc zero-extension (`SETcc ; MOVZX`) and the inline
+    // constant-divisor division (`MOV r,imm ; CDQ ; IDIV r` — ow2's `cdq` sign-extension, where the
+    // 10.x/11.0 line uses `SAR`) each uniquely mark the Open Watcom line, so either present promotes
+    // the table's ow2 discriminator (`result_zero_extended`) and narrows to `watcom:open`; neither
+    // present leaves it `None` (inconclusive, never a wrong exclusion). The division anchor adds no
+    // finer classification — it draws the same classic→ow2 boundary — but division is far more
+    // common than the setcc-int construct in a real binary, so it is a more reliably-present anchor
+    // when scanning an arbitrary program (robustness; see `docs/watcom-codegen-fingerprint.md`).
+    let open_watcom =
+        votes.zero_extended.iter().any(|&z| z) || votes.inline_const_div.iter().any(|&d| d);
+    let zero_extended = open_watcom.then_some(true);
     classify(&Signals { byte_compare_promoted: promoted, result_zero_extended: zero_extended, ..Default::default() })
 }
 
@@ -326,8 +377,11 @@ mod tests {
                 .unwrap_or_else(|e| panic!("codegen artefact {rev}.code: {e}"));
             identify_watcom("x86:LE:32:default", &code, 0x1000)
         };
-        // Each probe classifies UNIQUELY — the three constructs' signals (compare width, loop
-        // register, switch order, zero-extension) draw boundaries at different revisions.
+        // Each probe classifies UNIQUELY — the three *discriminating* constructs' signals (compare
+        // width, loop register, switch order, zero-extension) draw boundaries at different
+        // revisions. (The two appended division constructs contribute no isolated-probe signal —
+        // they add a whole-binary anchor only — so appending them leaves these classifications
+        // unchanged; that append-only invariant is exactly what this test guards.)
         assert_eq!(load("10.0a"), vec!["watcom:10.0/10.0a"]); // CMP EAX,5 + EBX + ascending
         assert_eq!(load("10.6"), vec!["watcom:10.5/10.6"]); // CMP AL,5 + EBX + ascending
         assert_eq!(load("11.0"), vec!["watcom:11.0"]); // CMP AL,5 + ECX + ASCENDING switch (vs open's descending)
@@ -385,6 +439,67 @@ mod tests {
         assert!(
             cls.contains(&"watcom:10.0/10.0a"),
             "real 10.0a binary must not be excluded by a non-diagnostic byte-form compare; got {cls:?}"
+        );
+    }
+
+    /// Count the inline constant-division anchor sites [`scan_into`] records over a byte stream.
+    fn div_anchor_hits(bytes: &[u8]) -> usize {
+        let instrs = crate::sleigh::disassemble("x86:LE:32:default", bytes, 0x1000).unwrap();
+        let mut v = Votes::default();
+        scan_into(&instrs, &mut v);
+        v.inline_const_div.iter().filter(|&&d| d).count()
+    }
+
+    /// The division anchor fires on the Open Watcom probe (`MOV r,imm ; CDQ ; IDIV r`) and on NONE
+    /// of the classic revisions — they inline the same `x/const` divide but sign-extend with
+    /// `SAR EDX,0x1f`, never `cdq`. This is the append-only division construct in the committed
+    /// probes; measured across the lineage (`docs/watcom-codegen-fingerprint.md`). One-sided: its
+    /// presence is Open-Watcom evidence (via `result_zero_extended`, the table's ow2 discriminator).
+    #[test]
+    fn inline_const_div_anchor_fires_on_ow2_not_classic() {
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let dir = crate::paths::codegen_probes_dir().join("watcom");
+        let read = |rev: &str| std::fs::read(dir.join(format!("{rev}.code"))).unwrap();
+        assert_eq!(div_anchor_hits(&read("ow2")), 1, "ow2 divc = MOV ECX,7 ; CDQ ; IDIV ECX");
+        for classic in ["10.0a", "10.6", "11.0"] {
+            assert_eq!(
+                div_anchor_hits(&read(classic)),
+                0,
+                "{classic} sign-extends with SAR, not CDQ — anchor must not fire"
+            );
+        }
+        // Composition: a fired anchor is folded into the ow2 discriminator and narrows to open.
+        let narrowed = Signals { result_zero_extended: Some(true), ..Default::default() };
+        assert_eq!(classify(&narrowed), vec!["watcom:open"]);
+    }
+
+    /// The division anchor's false-positive guards, on encodings mosura's engine decodes. The
+    /// immediate-load requirement is load-bearing: it rejects **variable** division (whose divisor
+    /// is a register, not a constant) and the **unsigned** constant form (`XOR EDX,EDX ; DIV`, which
+    /// every revision emits identically), and the `cdq` requirement rejects the classic signed form.
+    #[test]
+    fn inline_const_div_anchor_rejects_lookalikes() {
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        // ow2 VARIABLE signed div: MOV ECX,EDX ; CDQ ; IDIV ECX ; RET — pre-CDQ move is reg→reg,
+        // no immediate, so it is not "constant division" and must not fire.
+        assert_eq!(div_anchor_hits(&[0x89, 0xd1, 0x99, 0xf7, 0xf9, 0xc3]), 0, "variable division");
+        // classic signed CONST div: MOV EDX,EAX ; MOV ECX,7 ; SAR EDX,0x1f ; IDIV ECX ; RET —
+        // inlines, but sign-extends with SAR (no CDQ), so it must not fire.
+        assert_eq!(
+            div_anchor_hits(&[0x89, 0xc2, 0xb9, 0x07, 0, 0, 0, 0xc1, 0xfa, 0x1f, 0xf7, 0xf9, 0xc3]),
+            0,
+            "classic SAR-form signed constant division"
+        );
+        // UNSIGNED const div (any revision): MOV ECX,0xa ; XOR EDX,EDX ; DIV ECX ; RET — the divide
+        // is DIV (not IDIV) with XOR (not CDQ); emitted identically by every revision, non-diagnostic.
+        assert_eq!(
+            div_anchor_hits(&[0xb9, 0x0a, 0, 0, 0, 0x31, 0xd2, 0xf7, 0xf1, 0xc3]),
+            0,
+            "unsigned constant division"
         );
     }
 }
