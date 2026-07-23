@@ -3,12 +3,12 @@
 > Stopgap while the task-tracker MCP server is disconnected (the UI task panel
 > can't be written to). This file mirrors what would be in the tracker; it will
 > be moved back into the panel once that server reconnects.
-> Last updated: 2026-07-23 (`analysis-port` @ `0755ada`).
+> Last updated: 2026-07-23 (`analysis-port` @ `c86bd51`).
 
 ## Status snapshot
-- `analysis-port` @ `0755ada`; **not merged to master** (H1) — 30+ commits ahead since the
-  compiler-detection arc began. Suite: 489 lib + 24 analysis (+2 this session: marker fragments,
-  m68k variant equivalence), clippy clean.
+- `analysis-port` @ `c86bd51`; **not merged to master** (H1) — 35+ commits ahead since the
+  compiler-detection arc began. Suite: 489 lib + 25 analysis (+3 this session: marker fragments,
+  m68k variant equivalence, m68k dynamic-link path), clippy clean.
 - Landed & in master (older): A0–A8, multi-arch listing (x86/ARM64/RISC-V/68k/Z80), PE
   CompilerOpinion, Watcom detect + watcall, WAR2 native-LE switch win, dependency-hardening.
 
