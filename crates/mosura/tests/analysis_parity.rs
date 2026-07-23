@@ -317,6 +317,44 @@ fn compiler_version_marker_fragments() {
     }
 }
 
+/// A2 — the loader's **dynamic-link path on big-endian 32-bit** (m68k). `m68k.elf` is
+/// freestanding/static; this is the dynamic analog of `basic.elf` (same source, cross-arch),
+/// exercising what static fixtures never do: `PT_INTERP`, `.dynamic`/`.dynsym`, `.rela.plt`
+/// (RELA + m68k `JMP_SLOT`), the `.plt` (m68k memory-indirect `jmp ([disp,PC])` thunks) and the
+/// synthetic **EXTERNAL** block. The proof that all of it composed correctly on a BE/32 target:
+/// mosura resolves the PLT thunks through the GOT to the EXTERNAL block and **names** those
+/// imports from `.dynsym` — `printf` and `__libc_start_main`. It also recovers every real source
+/// function, and creates no function in unmapped memory.
+#[test]
+fn m68k_dynamic_link_path() {
+    let p = analysis::analyze_file(&analysis_corpus_dir().join("m68k_dyn.elf"))
+        .expect("analyze dynamic m68k ELF");
+
+    let named: std::collections::BTreeMap<u64, String> = p
+        .function_manager
+        .functions()
+        .map(|f| {
+            let a = f.entry_point();
+            (a.offset, p.symbol_table.primary_at(a).map(|s| s.name().to_string()).unwrap_or_default())
+        })
+        .collect();
+    let names: std::collections::BTreeSet<&str> = named.values().map(String::as_str).collect();
+
+    // dynamic-specific: named external functions resolved from .dynsym via the PLT thunks
+    assert!(p.memory.blocks().any(|b| b.name() == "EXTERNAL"), "no EXTERNAL block");
+    for ext in ["printf", "__libc_start_main"] {
+        assert!(names.contains(ext), "missing named external {ext}; got {names:?}");
+    }
+    // every real source function is recovered
+    for src in ["main", "add", "sum_to"] {
+        assert!(names.contains(src), "missing source function {src}; got {names:?}");
+    }
+    // invariant: no function seeded in unmapped memory
+    for a in p.function_manager.functions().map(|f| f.entry_point()) {
+        assert!(p.memory.contains(a), "function at unmapped {:#x}", a.offset);
+    }
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has

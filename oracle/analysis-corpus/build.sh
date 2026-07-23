@@ -48,6 +48,13 @@ riscv64-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
 m68k-linux-gnu-gcc -nostdlib -static -no-pie -O0 -ffreestanding \
     -fno-unwind-tables -fno-asynchronous-unwind-tables -o m68k.elf src/m68k.c
 
+# Dynamically-linked m68k ELF — the big-endian/32-bit analog of basic.elf (same source), the
+# first DYNAMIC non-x86 fixture. Exercises the loader's dynamic path on big-endian 32-bit:
+# PT_INTERP, .dynamic/.dynsym, .rela.plt (RELA + m68k JMP_SLOT), the .plt (m68k memory-indirect
+# `jmp ([disp,PC])` thunks) and the synthetic EXTERNAL block — mosura resolves the PLT thunks to
+# named external functions (printf, __libc_start_main). Same -no-pie form as basic.elf.
+m68k-linux-gnu-gcc -O0 -fno-pie -no-pie -o m68k_dyn.elf src/basic.c
+
 # Zilog Z80 CP/M .COM — mosura's first non-ELF corpus fixture (a raw flat image, no
 # container). Compiled with sdcc + a minimal CP/M crt0 (call main; rst 0), linked at the
 # TPA (_CODE=0x100), converted to a flat image, and the code bytes extracted from 0x100.
@@ -67,5 +74,5 @@ dd if=z80.full.bin of=z80.com bs=1 skip=256 count=$((Z80_END-0x100)) 2>/dev/null
 rm -f z80.rel z80_crt0.rel z80.ihx z80.full.bin z80.lk z80.map z80.noi z80.rst z80.sym 2>/dev/null
 
 echo "built:"
-for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf m68k.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
+for f in freestanding.elf basic.elf switchtab.elf cppsym.elf aarch64.elf riscv.elf m68k.elf m68k_dyn.elf; do printf '  %-18s ' "$f"; file -b "$f"; done
 printf '  %-18s ' "z80.com"; file -b "z80.com"
