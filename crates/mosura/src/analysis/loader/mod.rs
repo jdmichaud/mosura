@@ -41,7 +41,9 @@ pub fn load(data: &[u8]) -> Result<Program, LoadError> {
 /// Record the embedded compiler-version marker (`compiler_version::detect` — container-agnostic,
 /// it scans the raw image) on the program. This *refines* the loader's family opinion and never
 /// overrides it: Ghidra's faithful CompilerOpinion label (`program.compiler`) is left untouched.
-fn with_compiler_version(data: &[u8], mut program: Program) -> Program {
+/// `pub(crate)` so out-of-dispatch entry points (the native-LE `analyze_le_file`) apply the same
+/// refinement.
+pub(crate) fn with_compiler_version(data: &[u8], mut program: Program) -> Program {
     program.compiler_version = compiler_version::detect(data).map(|id| id.label());
     program
 }

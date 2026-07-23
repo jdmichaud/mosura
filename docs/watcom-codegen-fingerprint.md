@@ -64,19 +64,46 @@ Three distinguishable signatures, with two boundaries: **promote → byte** betw
 ### Combined fingerprint — three constructs uniquely identify each revision
 
 No single probe separates all four revisions, but each construct draws its boundary at a
-*different* point, so the tuple is unique:
+*different* point, so the tuple is unique. All four signal columns are **implemented** in the
+matcher (`analysis::codegen_fingerprint::Signals`) and gated against the committed artefacts:
 
-| revision | `cmpbyte` | `loop` (reg / shape) | `sw` (compare order) |
+| revision | `cmpbyte` (promotion / zero-ext) | `loop` (bound reg) | `sw` (compare order) |
 | --- | --- | --- | --- |
-| **10.0a** | `cmp eax,5` (promote) | `ebx`, jmp-to-bottom test | `1,2` |
-| **10.6** | `cmp al,5` | `ebx`, jmp-to-bottom test | `1,2` |
-| **11.0** | `cmp al,5` | `ecx`, test-first | `1,2` |
-| **OW 2.0** | `cmp al,5 ; movzx` | `ecx`, test-first | `2,1` (reversed) |
+| **10.0a** | `cmp eax,5` (promote), no `movzx` | `ebx` | `1,2` ascending |
+| **10.6** | `cmp al,5`, no `movzx` | `ebx` | `1,2` ascending |
+| **11.0** | `cmp al,5` | `ecx` | `1,2` ascending |
+| **OW 2.0** | `cmp al,5 ; movzx` | `ecx` | `2,1` descending |
 
 Three independent boundaries at different revisions: byte-compare-promotion (**10.0a → 10.6**),
-`loop` register `ebx→ecx` + loop-shape (**10.6 → 11.0**), and `sw` compare-order + the `movzx`
-(**classic → Open Watcom**). Together they pin the revision far tighter than any one signal —
-and 10.0a's `(eax, ebx, 1,2)` tuple is the WAR2 base fingerprint.
+`loop` bound register `ebx→ecx` (**10.6 → 11.0**), and `sw` compare-order + the `movzx`
+(**classic → Open Watcom**). The matcher classifies each committed probe **uniquely**
+(`matches_committed_self_compiled_probes`) — and 10.0a's `(promote, ebx, ascending)` tuple is
+the WAR2 base fingerprint.
+
+### The committed ground-truth chain (fully in-repo)
+
+`oracle/codegen-probes/watcom/` holds, per revision, the compiler's **OMF object**
+(`<rev>.obj`, our probe compiled by the known toolchain) and the **flat code bytes**
+(`<rev>.code`) the matcher is gated on. The transformation between them is
+`scripts/extract-omf-code.py` (concatenates the LEDATA/LEDATA32 payloads; fixups deliberately
+unapplied — `call` targets read `e8 00 00 00 00`, which the shape signals never depend on).
+Regenerate and verify any artefact with:
+
+```sh
+python3 scripts/extract-omf-code.py oracle/codegen-probes/watcom/10.0a.obj \
+    | cmp - oracle/codegen-probes/watcom/10.0a.code   # byte-identical
+```
+
+So every link is committed: probe source → known-compiler object → extractor script → code
+bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
+dosemu recipe above).
+
+### Scope caveat — signals are probe-shaped
+
+`extract_signals` uses first-match heuristics that are sound only when the scanned region is
+the probe's constructs (on arbitrary code, a switch's `cmp eax,0x1` would read as a promoted
+byte-compare). Pointing the matcher at an unknown binary (WAR2) requires locating the
+equivalent constructs first — that construct-location pass is the open next step.
 
 Notes: 10.5 didn't run under dosemu2 here (its `W32RUN`/`DOS4GW` loader hit a "Loader read
 error"); the four points above already bracket the transition. 11.0's DOS host lives in `BINW`

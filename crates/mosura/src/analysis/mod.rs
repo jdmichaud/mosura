@@ -87,7 +87,9 @@ pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
 /// that select this land later with the CLI; today it is a library entry point.
 pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
-    let mut program = loader::load_le(&data)?;
+    // Same compiler-version refinement as every `loader::load` path — LE is Watcom's home
+    // container (the one with no header version field), so the banner-era marker matters most here.
+    let mut program = loader::with_compiler_version(&data, loader::load_le(&data)?);
     analyze(&mut program);
     Ok(program)
 }

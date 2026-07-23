@@ -177,8 +177,10 @@ pub mod msvc {
     /// toolchains are exercised.
     pub fn product(build: u16) -> String {
         match build {
-            8168 | 8804 => "6.0".to_string(), // VERIFIED — self-compiled vc6_hello.exe (RTM / SP)
-            50727 => "8.0".to_string(),        // VERIFIED — real VC8 binary (VS2005 msvcr80.dll)
+            // 8168 VERIFIED (self-compiled vc6_hello.exe, VC6 RTM); 8804 is the published SP
+            // build of the same product, riding the verified row but not itself tested here.
+            8168 | 8804 => "6.0".to_string(),
+            50727 => "8.0".to_string(), // VERIFIED — real VC8 binary (VS2005 msvcr80.dll)
             // Published build numbers (not yet confirmed against a binary here):
             9782 => "5.0".to_string(),          // Visual C++ 5.0
             9466 => "7.0".to_string(),          // VS .NET 2002
@@ -279,8 +281,17 @@ pub mod clang {
     }
 
     pub fn detect(data: &[u8]) -> Option<CompilerId> {
-        let c = re().captures(data)?;
-        let ver = String::from_utf8_lossy(&c[1]).into_owned();
+        // Max across all markers, mirroring `gcc::detect` — a binary can union several clang
+        // producers (runtime objects built by an older clang); the newest built the user code.
+        let mut best: Option<(Vec<u32>, String)> = None;
+        for c in re().captures_iter(data) {
+            let ver = String::from_utf8_lossy(&c[1]).into_owned();
+            let key: Vec<u32> = ver.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+            if best.as_ref().is_none_or(|(bk, _)| key > *bk) {
+                best = Some((key, ver));
+            }
+        }
+        let (_, ver) = best?;
         Some(CompilerId {
             family: Family::Clang,
             version: ver.clone(),
@@ -388,6 +399,39 @@ mod tests {
         assert_eq!(msvc::product(8168), "6.0"); // VC6.0, grounded against vc6_hello.exe
         assert_eq!(msvc::product(50727), "8.0");
         assert_eq!(msvc::product(1234), "build-1234"); // honest fallback
+    }
+
+    /// The Rich-header XOR decode, under CI with no proprietary binary: build a synthetic masked
+    /// block laid out exactly as `link.exe` writes it (masked `DanS` + 3 pad dwords + @comp.id
+    /// entries at 0x80, then clear-text `Rich` + the 4-byte key) and assert `rich_entries`
+    /// recovers the entries and `detect` maps the max real build (prodid > 1) to the product.
+    #[test]
+    fn msvc_rich_header_synthetic_decode() {
+        let key = [0xDE, 0xAD, 0xBE, 0xEF];
+        // (prodid, build, count): a padding-style entry (prodid 1 — ignored by detect) + the
+        // real compiler entry with VC6's verified build.
+        let entries: &[(u16, u16, u32)] = &[(1, 0, 41), (0x0a, 8168, 3)];
+        let mut plain = Vec::new();
+        plain.extend_from_slice(b"DanS");
+        plain.extend_from_slice(&[0u8; 12]); // three padding dwords
+        for &(pid, build, count) in entries {
+            plain.extend_from_slice(&(((pid as u32) << 16) | build as u32).to_le_bytes());
+            plain.extend_from_slice(&count.to_le_bytes());
+        }
+        let mut img = vec![0u8; 0x80];
+        img.extend(plain.iter().enumerate().map(|(i, b)| b ^ key[i % 4]));
+        img.extend_from_slice(b"Rich");
+        img.extend_from_slice(&key);
+        img.extend_from_slice(&[0u8; 32]); // trailing padding up to the PE header
+
+        let ents = msvc::rich_entries(&img).expect("synthetic Rich block decodes");
+        assert_eq!(ents, vec![(1, 0, 41), (0x0a, 8168, 3)]);
+        let id = detect(&img).expect("msvc detected from Rich header");
+        assert_eq!(id.family, Family::Msvc);
+        assert_eq!(id.label(), "msvc:6.0");
+        assert_eq!(id.precision, Precision::Exact);
+        // No Rich marker → rich_entries refuses.
+        assert!(msvc::rich_entries(&img[..0x80]).is_none());
     }
 
     #[test]
