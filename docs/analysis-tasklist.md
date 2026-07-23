@@ -30,15 +30,24 @@
 - **Review cycle**: independent sub-agent review of the arc; findings verified + fixed (`e669740`).
 
 ## ⏩ UNBLOCKED — READY / next up (user said: work these)
-- **A4 Stage 2 — pre-10 Watcom** (7.0/8.5a/9.01/9.5b). Confirm whether pre-10 *compiled*
-  binaries embed `WATCOM Systems Inc. 19xx` (vs `International Corp.`; the regex would miss it);
-  extend the vendor alternation + add a fixture. **Doubles as codegen-fingerprint corpus
-  enrichment** (pre-10 revisions). Blocker was packed `.wpk` floppies — dosemu recipe now
-  proven (`docs/watcom-codegen-fingerprint.md`). HIGHEST VALUE (also addresses corpus thinness).
-- **A3-V Phase 3 — CI-runnable proprietary version fixtures**. VC4/5/6 + BC45 version checks are
-  skip-if-absent (proprietary runtime uncommittable). Commit **marker fragments** (Rich-header
-  block / linker-version PE stub / Borland banner slice — metadata, not runtime code) so they
-  gate in CI. Also: MSVC 2.0 (2nd pre-Rich datapoint), Borland 4.0/4.52 era-boundary fixtures.
+- **A3-V Phase 3 — CI-runnable proprietary version fixtures** — ✅ FIRST BATCH `39a7356`.
+  Committed **marker fragments** (metadata, no runtime code): `msvc6_rich.bin` (VC6 Rich
+  header → `msvc:6.0`) + `borland45_banner.bin` (BC++4.5 banner → `borland:c++:1994`), gated by
+  new `compiler_version_marker_fragments` — real-compiler-output version detection now runs in
+  CI without the toolchain (robust to the disk-churn that keeps relocating it). Pre-Rich MSVC
+  (VC4/5 linker-version + runtime-string) stays covered by synthetic unit tests. **Follow-on**:
+  a VS2005 Rich fragment (msvcr80.dll, `msvc:8.0`), MSVC 2.0 (2nd pre-Rich datapoint), Borland
+  4.0/4.52 era-boundary fixtures.
+- **A4 Stage 2 — pre-10 Watcom** (7.0/8.5a/9.01/9.5b) — ⏸ NEEDS FULL 9.01 INSTALL. Extracted the
+  9.01 floppy set (`/data/w901/`, Disk01-06); the DOS compiler driver `WCC386.DOS` (116 KB) + the
+  packed backend/runtime (`WCC386P.WPK`, `H.WPK`) are there. The only plaintext vendor string on the
+  floppies is the "as is" *license* text (`WATCOM Systems Inc. 1990-1991`); the actual **runtime
+  banner** a compiled binary would embed is **inside the packed `.WPK`** — invisible to `strings`,
+  and 9.01 may not even use the 10.0+ `... Run-Time system. (c) Copyright by ...` banner format.
+  Resolving the vendor-wording question (and enriching the codegen corpus with a 9.01 probe) needs a
+  **full 9.01 install under dosemu** (run `INSTALL.EXE` to unpack the `.WPK`s, then compile+link). Real
+  effort; deferred behind the tractable CI-fixture work above. NOTE: GT_WATCOM (`~/tools/open-watcom`)
+  was deleted in the cleanup — regenerating any Watcom fixture needs it restored.
 - **A2 — ELF32-dynamic hardening**: m68k 32-bit *dynamic* validation + `coverage_68k` Coldfire
   variant alignment. Bounded, self-contained (multilib installed).
 - **R2 — env scripting**: `setup-watcom-dosemu.sh` / wine-toolchain setup, matching the project's
@@ -130,9 +139,10 @@ arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build cach
     WITHOUT diverging from the faithful opinion (both coexist; `program.compiler` untouched).
   - **Watcom** → `watcom:1988-1994` ERA (adapts loader::watcom).
   Honest granularity: MSVC/GCC/Clang exact; Borland/Watcom era (copyright year), not minor
-  release. **Phase 3 (NEXT): per-version lineage fixtures** — compile with each Borland (4.0/4.5/
-  4.52 + Turbo C++), MSVC (4.0/5/6/2005), Watcom (10.0–11.0) version to validate the detector
-  across the full lineage + ground the MSVC build→product table + Borland era table.
+  release. **Phase 3 IN PROGRESS `39a7356`: CI-runnable marker fragments** — real VC6 Rich header +
+  BC++4.5 banner committed (metadata only) + `compiler_version_marker_fragments`, so the detector's
+  real-output path runs in CI without the proprietary toolchain. Remaining lineage points (VS2005
+  Rich, MSVC 2.0, Borland 4.0/4.52 era boundaries, Watcom 10.0–11.0) extend the same fixture pattern.
 - **A4** — Watcom per-version banner→era table. ✅ **Stage 1 DONE `1a2e83a`**: the full
   10.0–11.0 lineage measured against 8 real install ISOs (concatenated runtime banners
   via strings; `detects_watcom_lineage_eras` test + empirical table in
