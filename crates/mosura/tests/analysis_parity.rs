@@ -294,6 +294,28 @@ fn compiler_version_proprietary_fixtures() {
     }
 }
 
+/// A3-V Phase 3 — real-compiler version detection gated **in CI without the proprietary
+/// toolchain**. The full MSVC/Borland binaries can't be committed (proprietary runtime), so the
+/// `compiler_version_proprietary_fixtures` checks above only run on the author's machine
+/// (skip-if-absent). These committed **marker fragments** carry the exact bytes the real compiler
+/// emitted — the Rich header (build-id metadata) and the Borland startup banner (a copyright
+/// string), *no runtime code* — so the detector's real-output path always runs. The pre-Rich
+/// MSVC path (linker version + runtime string) stays covered by the synthetic unit tests in
+/// `compiler_version.rs`.
+#[test]
+fn compiler_version_marker_fragments() {
+    use mosura::analysis::loader::compiler_version::detect;
+    let dir = analysis_corpus_dir().join("markers");
+    let cases: &[(&str, &str)] = &[
+        ("msvc6_rich.bin", "msvc:6.0"),               // real VC6 Rich header (build 8168)
+        ("borland45_banner.bin", "borland:c++:1994"), // real BC++ 4.5 startup banner
+    ];
+    for (name, label) in cases {
+        let data = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("marker {name}: {e}"));
+        assert_eq!(detect(&data).map(|id| id.label()).as_deref(), Some(*label), "{name}");
+    }
+}
+
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
 /// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
