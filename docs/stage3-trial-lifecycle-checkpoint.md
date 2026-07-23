@@ -90,11 +90,34 @@ Action order (coreaction.cc:5490-5688): actmainloop { Heritage:5492 · **ActionA
   backward-scan body; prove byte-parity on corpus + deepchain + is_even/is_odd. Re-measure WAR2
   (extraout_ 93 → target lower; MISMATCH reg-artifact class).
 
-## Open questions (resolve during Brick 0/1)
+## Brick 0 finding (DONE, read-only trace @ ca4532e tree)
 
-1. Does mosura's deadcode currently keep the RAX creation alive after the RETURN's use is pruned, or
-   remove it? (Determines whether Brick 3 is needed before Brick 2 can work.) The `possibleoutput`
-   input-const flag is the suspected keep-alive; confirm its dead-code semantics.
+Instrumented `resolve_call_output` on the `tailcall.gcc-x86-64` repro (is_even @0x401000 tail-calls
+is_odd @0x401020). Current mosura output drops the return: `func_0x00401020(param_1 + -1); return;`
+(bare `return;` in a non-void function). At `resolve_call_output` time the call `call@0x401013` has
+`has_output=false` and its **immediately-preceding op is `INT_ADD`, NOT an INDIRECT creation** — i.e.
+the RAX INDIRECT-creation is **already GONE**. So the backward-INDIRECT scan finds nothing and builds
+no output.
+
+Conclusion: the creation is **deadcode-removed before `resolve_call_output`**, because
+`resolve_return` (mainloop, runs first) prunes the RETURN's RAX use too eagerly (ancestorOpUse rejects
+the indirect creation) and the now-useless creation dies in the next DeadCode. Ghidra avoids this via
+(a) the persistent `activeoutput` trial registered in guardCalls keeping the creation as a
+`possibleoutput` candidate held across DeadCode, and/or (b) the FUNCTION return recovery deferring its
+reject across passes (`ParamActive` maxpass/numpasses) until the CALL output is built and the RETURN
+then traces to a real call output (ancestorOpUse ACCEPTS a non-indirect-creation). **The fix is NOT a
+local-scan activity-criterion tweak — the creation must be kept alive (possibleoutput held) and/or the
+return-recovery reject deferred, i.e. the persistent multi-pass lifecycle.** This raises the priority
+of Brick 3 (creation liveness) and adds a return-recovery-deferral dimension.
+
+## Open questions (resolve during Brick 1)
+
+1. ~~Does deadcode keep the RAX creation alive?~~ **ANSWERED (Brick 0): NO — it is removed before
+   `resolve_call_output`.** Next: confirm whether Ghidra's keep-alive is the `possibleoutput` flag in
+   DeadCode (does a possibleoutput indirect-creation resist removal?) vs the return-recovery maxpass
+   deferral — read Ghidra `ActionDeadCode`/`Varnode::isIndirectCreation` liveness + `ParamActive`
+   maxpass on the FUNCTION return. This decides whether Brick 2's keep-alive lives in DeadCode or in
+   `resolve_return`'s deferral.
 2. `deriveOutputMap`/`build_call_output_from_trials` already exist — do they need changes for the
    persistent path, or only the trial-registration + activity-criterion move?
 3. Interaction with the two-trial `findPreexistingWhole` piece-reassembly (task6) — must be preserved.
