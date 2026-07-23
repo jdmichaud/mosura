@@ -165,3 +165,17 @@ error"); the four points above already bracket the transition. 11.0's DOS host l
 - **WAR2**: its banner era (`1988-1994`) + DOS/4GW Professional pin the **10.0 family**; the
   byte-compare-promotion shape then selects the exact base revision, which is what a byte-exact
   recompile needs. This reproduces the `warcraft2-re` result through mosura's own tooling.
+
+### Measured: div/mod/mul does NOT add classification power (2026-07-23)
+
+With all four columns recoverable (dosemu 10.0a/10.6/11.0 + native ow2), a candidate probe
+(`x/7`, `x%10`, `x*25`, `<<5`) was compiled across the lineage to test whether it discriminates
+further. It does **not**: Watcom emits a real `idiv` (not a magic-number multiply), with the
+divisor register drawing the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the existing
+`loop_bound_reg` signal, and classic-era (10.x/11.0) calling a `__i4D` helper vs ow2's inline
+`idiv` — which correlates with the existing ow2 `movzx` signal. For this probe **10.0a ≡ 10.6**
+byte-for-byte. So the current 3-construct probe already extracts the maximum classification the
+*available* version set supports; further **classification** gain needs the missing versions
+(10.0-beta ISO-layout / 10.5 dosemu "Loader read error" / 9.01 floppy-`INSTALL.EXE`), not more
+constructs. A div/mod construct would still add whole-binary-matcher **robustness** (another
+anchor to find in an arbitrary binary like WAR2) — deferred as an explicit, non-redundant call.
