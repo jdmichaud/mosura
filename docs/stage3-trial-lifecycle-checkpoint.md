@@ -110,14 +110,44 @@ local-scan activity-criterion tweak — the creation must be kept alive (possibl
 return-recovery reject deferred, i.e. the persistent multi-pass lifecycle.** This raises the priority
 of Brick 3 (creation liveness) and adds a return-recovery-deferral dimension.
 
+## Brick 0b finding (DONE, read-only) — WHY the creation is orphaned: `resolve_return` commits too early
+
+Traced the two mosura↔Ghidra mis-alignments that orphan the RAX creation:
+
+1. **`resolve_return` commits its prune in ONE shot, before the fullloop.** `RETURN_MAXPASS=0`
+   (recover.rs:544), so after a single `finish_pass` the function's `active_output` is
+   `fully_checked` → `build_return_output` runs → removes the RAX input from the RETURN
+   (`op_remove_input`, recover.rs:648) since its trial fails `return_trial_kept` (ancestorOpUse
+   rejects the indirect creation — faithful). AND `ActionResolveCalls` (pipeline.rs:565) runs
+   `resolve_return` ONCE **before** the `fullloop`. So the prune commits before the fullloop even
+   starts. The orphaned creation then dies in the fullloop's DeadCode, before `ActionActiveReturn`
+   (fullloop tail) can see it. → **is_even: `func_0x...(); return;`.**
+2. **Ghidra's `ActionReturnRecovery` is INSIDE the repeating `actmainloop` (:5500), multi-pass and
+   deferred.** It does NOT commit `buildReturnOutput` until `isFullyChecked()` (numpasses > maxpass),
+   and it runs every mainloop pass across every fullloop round. Meanwhile `ActionActiveReturn`
+   (:5688, fullloop tail) BUILDS each call's output from its persistent `activeoutput` trial in an
+   EARLY round — **before** the function-return recovery finalizes. Once the call output exists, the
+   RETURN's RAX traces to a real CALL output (no longer an indirect creation) → `ancestorOpUse`
+   ACCEPTS it → the RAX trial is kept → the RETURN keeps its input. Order: build-call-output (round N)
+   → return-keeps-it (round N+1).
+
+**Net:** the fix is the entangled multi-pass ordering — (a) each CALL gets a persistent `activeoutput`
+trial registered in `guardCalls` (so the call output is built by `ActionActiveReturn` independent of
+the RETURN's local scan), and (b) the function-return recovery must not commit its prune before the
+call outputs are built (either place `resolve_return` inside the mainloop with a deferring maxpass, or
+otherwise sequence the call-output build before the return commit). Both are needed — deferring the
+return alone still leaves `resolve_call_output` a post-hoc local scan with no persistent creation to
+find; the persistent call `activeoutput` alone still gets its creation pruned early by the return.
+
 ## Open questions (resolve during Brick 1)
 
-1. ~~Does deadcode keep the RAX creation alive?~~ **ANSWERED (Brick 0): NO — it is removed before
-   `resolve_call_output`.** Next: confirm whether Ghidra's keep-alive is the `possibleoutput` flag in
-   DeadCode (does a possibleoutput indirect-creation resist removal?) vs the return-recovery maxpass
-   deferral — read Ghidra `ActionDeadCode`/`Varnode::isIndirectCreation` liveness + `ParamActive`
-   maxpass on the FUNCTION return. This decides whether Brick 2's keep-alive lives in DeadCode or in
-   `resolve_return`'s deferral.
+1. ~~Does deadcode keep the RAX creation alive? NO (Brick 0). WHY? resolve_return commits too early
+   (Brick 0b).~~ Both ANSWERED.
+2. Minimal faithful sequencing: does moving `resolve_return` into the mainloop (Ghidra :5500) with a
+   deferring maxpass + registering the persistent call `activeoutput` in `guardCalls` suffice, or is
+   an explicit possibleoutput-holds-through-DeadCode needed too? Decide by building Brick 1 (persistent
+   call activeoutput + guardCalls registration) FIRST and re-tracing is_even before touching
+   `resolve_return`'s placement/maxpass.
 2. `deriveOutputMap`/`build_call_output_from_trials` already exist — do they need changes for the
    persistent path, or only the trial-registration + activity-criterion move?
 3. Interaction with the two-trial `findPreexistingWhole` piece-reassembly (task6) — must be preserved.
