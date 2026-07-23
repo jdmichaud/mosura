@@ -63,8 +63,12 @@ is reproducible from its compiler: **10.0a / 10.6 / 11.0** via `scripts/setup-wa
 
 ## The probe (`oracle/codegen-probes/watcom_cg.c`)
 
-Three constructs chosen to expose revision-specific choices: a **byte comparison** (promotion),
-a **counted loop** (register allocation + loop shape), and a small **switch**.
+Five constructs. Three expose revision-specific **classification** boundaries: a **byte
+comparison** (promotion), a **counted loop** (register allocation + loop shape), and a small
+**switch**. Two more — **signed** and **unsigned division by a constant** (`x/7`, `x/10u`) — add
+no classification power (see the div/mod/mul note below) but contribute a whole-binary **robustness
+anchor**: division is far more common in a real binary than the setcc-int construct, so it is a
+more reliably-present way to find Open Watcom's fingerprint when scanning an arbitrary program.
 
 ## The `version → fingerprint` table (measured across the lineage)
 
@@ -143,9 +147,11 @@ dosemu recipe above).
      code (`watcom_hello`) is full of plain `CMP AL,imm` byte compares even though 10.0a *promotes*
      the `unsigned char == const` shape. So a byte-form compare is non-diagnostic and must not
      exclude the promoting line; only the **presence** of a diagnostic pattern is evidence
-     (`AND EAX,0xff ; CMP EAX,imm` → 10.0 line; `SETcc ; MOVZX` → Open Watcom). Absence is
-     inconclusive. The register/loop/switch artifacts are dropped at this scale (register choice
-     varies per site). Result: a class (the era — what WAR2 needs), never a wrong exclusion.
+     (`AND EAX,0xff ; CMP EAX,imm` → 10.0 line; `SETcc ; MOVZX` **or** inline signed constant
+     division `MOV r,imm ; CDQ ; IDIV r` → Open Watcom — two independent, mutually-corroborating
+     ow2 anchors, either sufficient). Absence is inconclusive. The register/loop/switch artifacts
+     are dropped at this scale (register choice varies per site). Result: a class (the era — what
+     WAR2 needs), never a wrong exclusion.
 
 The remaining depth (turning a class into an exact minor revision on an arbitrary binary) needs
 matching the *same source construct* across binaries — a harder problem than pattern scanning.
@@ -166,16 +172,53 @@ error"); the four points above already bracket the transition. 11.0's DOS host l
   byte-compare-promotion shape then selects the exact base revision, which is what a byte-exact
   recompile needs. This reproduces the `warcraft2-re` result through mosura's own tooling.
 
-### Measured: div/mod/mul does NOT add classification power (2026-07-23)
+### Measured: div/mod/mul does NOT add classification power, but division IS a robustness anchor (2026-07-23)
 
 With all four columns recoverable (dosemu 10.0a/10.6/11.0 + native ow2), a candidate probe
 (`x/7`, `x%10`, `x*25`, `<<5`) was compiled across the lineage to test whether it discriminates
-further. It does **not**: Watcom emits a real `idiv` (not a magic-number multiply), with the
-divisor register drawing the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the existing
-`loop_bound_reg` signal, and classic-era (10.x/11.0) calling a `__i4D` helper vs ow2's inline
-`idiv` — which correlates with the existing ow2 `movzx` signal. For this probe **10.0a ≡ 10.6**
-byte-for-byte. So the current 3-construct probe already extracts the maximum classification the
-*available* version set supports; further **classification** gain needs the missing versions
-(10.0-beta ISO-layout / 10.5 dosemu "Loader read error" / 9.01 floppy-`INSTALL.EXE`), not more
-constructs. A div/mod construct would still add whole-binary-matcher **robustness** (another
-anchor to find in an arbitrary binary like WAR2) — deferred as an explicit, non-redundant call.
+further. It does **not**: Watcom emits a real `idiv` (not a magic-number multiply), and the
+divisor register draws the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the existing
+`loop_bound_reg` signal. For this probe **10.0a ≡ 10.6** byte-for-byte. So the 3-construct probe
+already extracts the maximum *classification* the **available** version set supports; further
+classification gain needs the missing versions (10.0-beta ISO-layout / 10.5 dosemu "Loader read
+error" / 9.01 floppy-`INSTALL.EXE`), not more constructs.
+
+**Precise re-measurement of the codegen (append-only probe, both signs, disassembled with
+mosura's own engine).** The exact per-revision codegen for `int divc(int x){return x/7;}` and
+`unsigned udivc(unsigned x){return x/10u;}`:
+
+| revision | `divc` (signed / 7) | `udivc` (unsigned / 10) |
+| --- | --- | --- |
+| **10.0a** | `MOV EDX,EAX ; MOV EBX,7 ; SAR EDX,0x1f ; IDIV EBX` | `MOV EBX,0xa ; XOR EDX,EDX ; DIV EBX` |
+| **10.6** | `MOV EDX,EAX ; MOV EBX,7 ; SAR EDX,0x1f ; IDIV EBX` | `MOV EBX,0xa ; XOR EDX,EDX ; DIV EBX` |
+| **11.0** | `MOV EDX,EAX ; MOV ECX,7 ; SAR EDX,0x1f ; IDIV ECX` | `MOV ECX,0xa ; XOR EDX,EDX ; DIV ECX` |
+| **OW 2.0** | `MOV ECX,7 ; CDQ ; IDIV ECX` | `MOV ECX,0xa ; XOR EDX,EDX ; DIV ECX` |
+
+Two corrections to earlier assumptions, both now measured (variable `x/y` and `x%7` compiled too,
+same shapes):
+
+1. **Every revision INLINES division by a constant** — none calls a `__iXD`/`__uXD` helper. (The
+   only `call` in each function body is the ubiquitous fixup-blanked stack-probe in *every*
+   prologue, `push N ; call __STK`, not a division helper — it is present in `cmpbyte`/`loop`/`sw`
+   too.) So an "inline-vs-helper" anchor is **unsound**: it would false-positive on the whole
+   classic line.
+2. The real classic→ow2 divergence is the **sign-extension idiom**: ow2 uses `CDQ`; the classic
+   10.x/11.0 line uses `MOV EDX,EAX ; … ; SAR EDX,0x1f` and **never emits `CDQ`** (confirmed for
+   variable, constant, and modulo division). The commonly-assumed "`cdq ; idiv` is universal for
+   variable division" does **not** hold for Watcom classic.
+
+So the sound, non-redundant **whole-binary anchor** is Open Watcom's inline *signed* constant
+division `MOV r,imm ; CDQ ; IDIV r` → Open-Watcom evidence, wired one-sided into
+`identify_watcom_program` (folded into the table's ow2 discriminator, composing with `SETcc ;
+MOVZX`). Guards, each measured (`inline_const_div_anchor_rejects_lookalikes`):
+
+- **variable** signed division is `MOV r,<reg> ; CDQ ; IDIV r` — the pre-`CDQ` move is
+  register-to-register, so the immediate-load requirement rejects it (this is what makes the
+  anchor "*constant* division", not bare `cdq;idiv`);
+- **unsigned** constant division is `MOV r,imm ; XOR EDX,EDX ; DIV r` — emitted **identically by
+  every revision**, so it is non-diagnostic and deliberately not matched (`DIV`/`XOR`, not
+  `IDIV`/`CDQ`);
+- the classic signed constant form uses `SAR`, not `CDQ`, so it cannot match the window.
+
+This is explicitly a **robustness / coverage** add (division is common in real binaries), **not**
+new classification power — it draws the same classic→ow2 boundary the `movzx` signal already draws.
