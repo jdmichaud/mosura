@@ -17,6 +17,16 @@
 | Date | 2026-07-23 |
 | Harness | `crates/mosura/examples/war2_survey.rs` + `war2-survey/` driver scripts (compile.sh, compare.py) |
 
+## Update — 2026-07-23: Stage 0 (panic) landed
+
+The **117 DECOMPILE_FAIL** functions below were all one bug — `Merge::trimOpInput` mis-port
+(`merge.rs:1205` OOB on an INDIRECT in the entry block). Fixed in commit `b6ec467`
+(docs/decompiler-bug-merge-indirect-trim-panic.md); re-running the survey EMIT stage now
+decompiles **all 1286 functions (`fail=0`)**. Those 117 rows are stale — they now decompile and
+will reclassify into MISMATCH/COMPILE_FAIL. Their exact recompile split is folded into the next
+full re-measure (after Stage 1, the `__watcall` prototype wiring), rather than a separate dosemu
+sweep now. The distribution table below is the pre-fix snapshot at `b0fb75b`.
+
 ## Headline
 
 **1 function of 1286 recompiles byte-identically** — `FUN_00070805`, a 1-byte `ret` stub (decompiled `void FUN_00070805(void) { return; }`). No function reaches RELOC_EXACT (identical modulo link-time fixups). Every non-trivial function currently falls short of the bar, for the reasons quantified below.
