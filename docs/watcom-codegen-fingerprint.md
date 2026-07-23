@@ -9,9 +9,28 @@ Watcom revision and feeds byte-exact recompilation (the `D1` north star).
 
 ## Reproducible setup — running a historical `wcc386` under dosemu2
 
-The historical DOS-hosted compilers run under dosemu2. The one non-obvious gotcha: the
-`BINB/WCC386.EXE` build is **W32RUN-hosted**, so `WATCOM/BIN/W32RUN.EXE` must be on the DOS
-`PATH` (without it: *"This program requires W32RUN.EXE to be in your PATH"*).
+**One command** (`scripts/setup-watcom-dosemu.sh`) stages any ISO-based revision from its archive
+into the dosemu C: drive and optionally compiles a probe — the codified, disk-cleanup-proof form of
+the manual recipe below. The extracted toolchains keep getting deleted, but the archives under
+`$WATCOM_ARCHIVES` (default `/data/tools/watcom`) survive, and this rebuilds from them:
+
+```sh
+# stage 11.0 and compile the probe → C:\watcom_c.obj
+scripts/setup-watcom-dosemu.sh 11.0 --compile oracle/codegen-probes/watcom_cg.c
+python3 scripts/extract-omf-code.py ~/.dosemu/drive_c/watcom_c.obj \
+    | cmp - oracle/codegen-probes/watcom/11.0.code    # byte-identical
+```
+
+It auto-finds the archive by version, extracts the nested ISO, locates the DOS-extender host
+(`BINW`/`BINB`, never the NT/`BIN95` stubs), normalises it to `C:\WAT<ver>\BIN` + `H` + `LIB386`,
+and emits the compile BAT. Verified end-to-end on 10.6 and 11.0 (each reproduces its committed
+`<rev>.code`). Scope: the ISO revisions (10.0/10.0a/10.5/10.6/11.0); the floppy sets
+(7.0/8.5a/9.01) ship the runtime packed in `.WPK` and need `INSTALL.EXE` first (A4 Stage 2).
+
+The manual recipe it replaces: the historical DOS-hosted compilers run under dosemu2. The one
+non-obvious gotcha is that the `BINB/WCC386.EXE` build is **W32RUN-hosted**, so
+`WATCOM/BIN/W32RUN.EXE` must be on the DOS `PATH` (without it: *"This program requires W32RUN.EXE
+to be in your PATH"*).
 
 ```sh
 # 1. extract the toolchain into the dosemu C: drive

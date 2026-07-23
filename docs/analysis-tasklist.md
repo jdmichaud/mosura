@@ -57,8 +57,12 @@
   (2) m68k 32-bit *dynamic* validation — ⏸ the cross-gcc **driver/cc1 was removed in the cleanup**
   (only base+cpp+binutils+libc-dev remain); `gcc-14-m68k-linux-gnu` is apt-installable (needs
   network/sudo) to build a dynamically-linked m68k ELF (all current m68k fixtures are static).
-- **R2 — env scripting**: `setup-watcom-dosemu.sh` / wine-toolchain setup, matching the project's
-  setup-script convention. Recipes exist (dosemu W32RUN gotcha, wine BC45/VC6 direct-extract).
+- **R2 — env scripting**: `setup-watcom-dosemu.sh` ✅ DONE `<r2>` — one command re-extracts any
+  ISO-based Watcom (10.0/10.0a/10.5/10.6/11.0) from its surviving archive into the dosemu C: drive
+  and compiles a probe; disk-cleanup-proof (archives survive, extracted trees don't). Tested
+  end-to-end on 10.6 + 11.0 (each reproduces its committed `<rev>.code` byte-identically → the
+  codegen-corpus enrichment path is UN-blocked). **Follow-on**: wine-toolchain setup script
+  (BC45/VC6 direct-extract); floppy-set Watcom (7.0/8.5a/9.01) via `INSTALL.EXE` = A4-S2.
 
 ## Corpus note (user-flagged 2026-07-23)
 Fixtures grow with features but the **core corpus is thin** — narrow single-purpose fixtures, not
