@@ -64,7 +64,10 @@ esac
 #    never the tiny BINNT/BIN95/BINP host stubs. Its dir is the toolchain BIN; H/LIB386 are
 #    siblings under the same root (root is "" for a flat ISO, "WATCOM" for a nested one).
 7z l "$ISO" > "$WORK/ilist.txt"   # spool to file; awk reads the file directly (no pipe → no SIGPIPE)
-wcc=$(awk 'toupper($NF) ~ /(BINW|BINB)\/WCC386\.EXE$/ && $(NF-2)+0 > 100000 {print $NF; exit}' "$WORK/ilist.txt")
+# Pick the LARGEST BINW/BINB WCC386.EXE — the real DOS-extender host. This beats a fixed size
+# threshold: excludes the ~9 KB BINNT/BIN95 host stubs, yet still catches 10.5's slim 64 KB build
+# (10.6's is 567 KB) without a magic constant that happens to straddle them.
+wcc=$(awk 'toupper($NF) ~ /(BINW|BINB)\/WCC386\.EXE$/ && $(NF-2)+0 > sz { sz=$(NF-2); best=$NF } END{ if (sz>20000) print best }' "$WORK/ilist.txt")
 [ -n "$wcc" ] || { echo "no DOS-host WCC386.EXE (BINW/BINB) in $ISO"; exit 1; }
 bindir=$(dirname "$wcc"); root=$(dirname "$bindir"); [ "$root" = "." ] && root=""
 echo "[watcom] host BIN = ${wcc%/*}   root = ${root:-<flat>}"
