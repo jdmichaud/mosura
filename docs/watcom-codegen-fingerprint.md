@@ -52,8 +52,14 @@ dosemu -dumb -quiet -E "CG.BAT"
 wdis -a cg.obj
 ```
 
-Native Open Watcom 2.0 (`$GT_WATCOM/binl/wcc386`, Linux-hosted) compiles the same probe
-directly for the modern end of the lineage.
+Native Open Watcom 2.0 (Linux-hosted) compiles the same probe directly for the modern end of
+the lineage — the built native compiler lives in the OW2 source tree at
+`/data/open-watcom-v2/bld/cc/386/linuxx64/binbuild/wcc386.exe` (an x86-64 ELF despite the `.exe`
+name; `WATCOM=/data/open-watcom-v2 wcc386.exe cg.c` → `cg.o`, which `extract-omf-code.py` reads).
+
+**Full corpus reproducibility — verified.** Every committed `oracle/codegen-probes/watcom/<rev>.code`
+is reproducible from its compiler: **10.0a / 10.6 / 11.0** via `scripts/setup-watcom-dosemu.sh`
+(dosemu) and **ow2** via the native compiler above — each byte-identical to the committed bytes.
 
 ## The probe (`oracle/codegen-probes/watcom_cg.c`)
 

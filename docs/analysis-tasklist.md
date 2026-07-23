@@ -55,9 +55,12 @@
   matching variants in a `HashSet` with no sort → stable iteration lands on Coldfire, verified from
   source — not alphabetical) AND **output-neutral** (coldfire≡default disasm proven byte-for-byte
   across the ground-truth m68k corpus, 742 insns, by new `m68k_coldfire_matches_default_variant`).
-  (2) m68k 32-bit *dynamic* validation — ⏸ the cross-gcc **driver/cc1 was removed in the cleanup**
-  (only base+cpp+binutils+libc-dev remain); `gcc-14-m68k-linux-gnu` is apt-installable (needs
-  network/sudo) to build a dynamically-linked m68k ELF (all current m68k fixtures are static).
+  (2) m68k 32-bit *dynamic* validation — ✅ DONE `b956c63` (user restored `gcc-14-m68k-linux-gnu`):
+  added `m68k_dyn.elf` (dynamic analog of basic.elf, same source) + test `m68k_dynamic_link_path`.
+  Exercises the BE/32 dynamic loader path — PT_INTERP, .dynamic/.dynsym, .rela.plt (RELA + m68k
+  JMP_SLOT), the m68k memory-indirect `jmp ([disp,PC])` PLT thunks and the EXTERNAL block: mosura
+  resolves the thunks through the GOT to named externals (`printf`, `__libc_start_main`), recovers
+  every source fn, and seeds nothing in unmapped memory. Faithful Ghidra external/thunk model.
 - **R2 — env scripting**: `setup-watcom-dosemu.sh` ✅ DONE `6d3f69a` — one command re-extracts any
   ISO-based Watcom (10.0/10.0a/10.5/10.6/11.0) from its surviving archive into the dosemu C: drive
   and compiles a probe; disk-cleanup-proof (archives survive, extracted trees don't). Tested
@@ -67,10 +70,15 @@
 
 ## Corpus note (user-flagged 2026-07-23)
 Fixtures grow with features but the **core corpus is thin** — narrow single-purpose fixtures, not
-construct-stressing programs. `ground-truth/` (~23 progs × 4–5 targets) is the real vehicle and
-hasn't grown this session; the codegen-fingerprint corpus is 1 construct × 4 versions. A4-S2 +
-new probe constructs are the enrichment path. Apply `war2-issues-become-source-tests` to this
-session's findings (byte-compare promotion is construct-specific).
+construct-stressing programs. `ground-truth/` (~23 progs × 4–5 targets) is the real vehicle; the
+codegen-fingerprint corpus is 1 construct × 4 versions. **Construct enrichment is now fully
+UNBLOCKED** (2026-07-23): all four codegen columns reproduce their committed `<rev>.code`
+byte-identically — 10.0a/10.6/11.0 via `setup-watcom-dosemu.sh`, ow2 via the native
+`/data/open-watcom-v2` wcc386. So a new probe construct can be compiled across the whole lineage
+and gated. NEXT enrichment step (ready): add construct(s) to `watcom_cg.c` that expose further
+revision-specific codegen, recompile all 4 columns, extend the matcher `Signals`/`TABLE` +
+committed artifacts + `matches_committed_self_compiled_probes`. Apply
+`war2-issues-become-source-tests` (byte-compare promotion is construct-specific).
 
 ## Active (analysis lane — mine)
 - **A1 — #3 ground-truth oracle SCALE-OUT** ✅ DONE `9d9c43f` (verified: re-derived
