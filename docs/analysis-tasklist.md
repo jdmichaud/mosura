@@ -30,6 +30,21 @@
   `verify-vendored-ghidra.sh`. Fixed a live incident (deleted checkout hollowed the suite).
 - **Review cycle**: independent sub-agent review of the arc; findings verified + fixed (`e669740`).
 
+## 🆕 NEW TRACK — FID (Function ID) port (user-opened 2026-07-23)
+Port Ghidra's `Features/FunctionID` (~9.2 kLOC) so mosura names statically-linked stdlib functions
+in stripped binaries (Ghidra FID / IDA FLIRT equivalent), across all supported compiler runtimes.
+Full staged plan + faithful algorithm spec (hash/match/db+ingest, `ghidra:line`-cited) +
+constants + oracle strategy in **`docs/fid-port-plan.md`**. Faithful port (byte-identical hashes);
+the one deviation is the on-disk container (mosura-native store of Ghidra's schema, not `.fidb`'s
+BufferFile format — zero fidelity lost, Ghidra ships no DBs for our runtimes anyway).
+**CRITICAL PATH = Stage 0**: FID's hash masking needs SLEIGH's `getInstructionMask`/
+`getOperandValueMask`/`getOpObjects` — data the engine has (`engine.rs` `Pattern.mask` + constructor
+tree) but does NOT surface on `sleigh::Instruction`, and `sleigh/` is the **decompiler agent's** lane.
+Needs a small additive read-only accessor (cross-lane coordination) before the faithful hasher is
+reachable. Distinct from `codegen_fingerprint`/`compiler_version` (those ID the whole-binary
+COMPILER; FID IDs a FUNCTION). Payoff milestone: Watcom clib (WAR2 north-star) + one gcc/glibc,
+both self-compiled-validated. NOT STARTED — plan awaiting user GO + Stage-0 coordination.
+
 ## ⏩ UNBLOCKED — READY / next up (user said: work these)
 - **A3-V Phase 3 — CI-runnable proprietary version fixtures** — ✅ `39a7356`+`6feca33`.
   Committed **marker fragments** (metadata, no runtime code): `msvc6_rich.bin` (VC6 → `msvc:6.0`),
