@@ -1195,25 +1195,44 @@ fn trim_slot(
     *covers = all_covers(f);
 }
 
-/// `Merge::trimOpInput` (merge.cc:692) — snip phi input `slot` into a fresh `unique` via a COPY placed
-/// at the predecessor block's end (`opInsertEnd`, at the block's stop address), then rewire the phi to
-/// read the COPY. The COPY's cover is tiny (just the block-end read), so it no longer conflicts.
+/// `Merge::trimOpInput` (merge.cc:692) — snip input `slot` into a fresh `unique` via a COPY, then
+/// rewire the op to read the COPY. The COPY's cover is tiny, so it no longer conflicts. Ghidra
+/// branches on the op: a MULTIEQUAL places the COPY at the predecessor block's end (`opInsertEnd`,
+/// at the block's stop address, `getIn(slot)`); any other marker op (an INDIRECT, whose slot-0 data
+/// input is not a phi edge) places it right before the op in the op's own block (`opInsertBefore`,
+/// at `op->getAddr()`).
 fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) {
-    // MULTIEQUAL input `slot` corresponds to `in_edges[slot]` (heritage wires `op_set_input(phi, j,
-    // ...)` with `j = in_edges.position(pred)`).
-    let parent = f.op(op).parent.expect("MULTIEQUAL has a parent block");
-    let pred = f.block(parent).in_edges[slot];
-    // Ghidra places the COPY at the predecessor block's stop address (`bb->getStop()`).
-    let pc = f.block(pred).ops.last().map(|&o| f.op(o).seqnum.pc).unwrap_or(f.addr);
-    let vn = f.op(op).input(slot).expect("trimmed slot has an input");
-    let size = f.vn(vn).size;
-    let uniq = f.num_ops() as u32;
-    let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
-    let cout = f.new_output_unique(copyop, size);
-    f.op_set_input(op, slot, cout);
-    f.op_insert_end(copyop, pred);
-    // `allocateCopyTrim` records every trim COPY (merge.cc:432) for ActionDominantCopy.
-    f.copy_trims.push(copyop);
+    if f.op(op).code() == OpCode::Multiequal {
+        // MULTIEQUAL input `slot` corresponds to `in_edges[slot]` (heritage wires `op_set_input(phi,
+        // j, ...)` with `j = in_edges.position(pred)`).
+        let parent = f.op(op).parent.expect("MULTIEQUAL has a parent block");
+        let pred = f.block(parent).in_edges[slot];
+        // Ghidra places the COPY at the predecessor block's stop address (`bb->getStop()`).
+        let pc = f.block(pred).ops.last().map(|&o| f.op(o).seqnum.pc).unwrap_or(f.addr);
+        let vn = f.op(op).input(slot).expect("trimmed slot has an input");
+        let size = f.vn(vn).size;
+        let uniq = f.num_ops() as u32;
+        let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
+        let cout = f.new_output_unique(copyop, size);
+        f.op_set_input(op, slot, cout);
+        f.op_insert_end(copyop, pred);
+        // `allocateCopyTrim` records every trim COPY (merge.cc:432) for ActionDominantCopy.
+        f.copy_trims.push(copyop);
+    } else {
+        // Ghidra's else branch (merge.cc:701/709): `pc = op->getAddr()`, `opInsertBefore(copyop,
+        // op)` — the COPY sits in the op's own block just before it. An INDIRECT reaches here (its
+        // slot-0 data input is trimmed by `merge_op` with `max == 1`); its parent may be the entry
+        // block, which has no in-edges, so the MULTIEQUAL predecessor lookup does not apply.
+        let pc = f.op(op).seqnum.pc;
+        let vn = f.op(op).input(slot).expect("trimmed slot has an input");
+        let size = f.vn(vn).size;
+        let uniq = f.num_ops() as u32;
+        let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
+        let cout = f.new_output_unique(copyop, size);
+        f.op_set_input(op, slot, cout);
+        f.op_insert_before(copyop, op);
+        f.copy_trims.push(copyop);
+    }
 }
 
 /// `Merge::trimOpOutput` (merge.cc:658) — trim the *output* HighVariable of a forced-merge op so
@@ -1660,6 +1679,44 @@ mod tests {
     use super::*;
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::{BlockBasic, BlockId, Funcdata, OpCode, SeqNum};
+
+    /// Regression for the WAR2 `FUN_00011954` panic (`merge.rs:1205` index-out-of-bounds): a
+    /// non-MULTIEQUAL marker op (an INDIRECT, whose slot-0 data input `merge_op` may force-trim)
+    /// must trim in its OWN block at `op->getAddr()` (`opInsertBefore`), not via the MULTIEQUAL
+    /// predecessor lookup `in_edges[slot]`. `Merge::trimOpInput` (merge.cc:692) branches on the op
+    /// for exactly this reason; porting only the MULTIEQUAL branch panicked when the INDIRECT sat in
+    /// the entry block, which has no in-edges.
+    #[test]
+    fn trim_op_input_on_indirect_trims_in_own_block() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0x10), uniq: 0 };
+        // A source value (slot 0, trimmed) and a cause annotation (slot 1). The INDIRECT sits in
+        // block 0 — the entry block, in_edges == [] — which is what triggered the OOB.
+        let src = f.new_const(8, 7);
+        let cause = f.new_const(8, 0);
+        let ind = f.new_op(OpCode::Indirect, seq, vec![src, cause]);
+        let _out = f.new_output(ind, 8, Address::new(reg, 0));
+        f.set_blocks(vec![BlockBasic { ops: vec![], in_edges: vec![], out_edges: vec![] }]);
+        f.op_insert_end(ind, BlockId(0));
+
+        let before = f.num_ops();
+        // Must not panic (the regression) and must add exactly one COPY.
+        trim_op_input(&mut f, ind, 0);
+        assert_eq!(f.num_ops(), before + 1, "trim inserts one COPY");
+
+        // slot 0 now reads the trim COPY, defined in block 0, placed BEFORE the INDIRECT.
+        let copy_out = f.op(ind).input(0).expect("trimmed slot rewired");
+        let copydef = f.vn(copy_out).def.expect("trim COPY has a def");
+        assert_eq!(f.op(copydef).code(), OpCode::Copy);
+        assert_eq!(f.op(copydef).parent, Some(BlockId(0)), "COPY lands in the op's own block");
+        let ops = &f.block(BlockId(0)).ops;
+        let pi = ops.iter().position(|&o| o == ind).unwrap();
+        let pc = ops.iter().position(|&o| o == copydef).unwrap();
+        assert!(pc < pi, "trim COPY is inserted before the INDIRECT (opInsertBefore)");
+    }
 
     #[test]
     fn multiequal_merges_its_versions() {

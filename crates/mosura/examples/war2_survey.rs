@@ -124,7 +124,7 @@ fn main() {
         let Some(f) = f else {
             fail += 1;
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
-            let head = head.replace('\t', " ").replace('\n', " ");
+            let head = head.replace(['\t', '\n'], " ");
             let head: String = head.chars().take(120).collect();
             writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}").unwrap();
             continue;
@@ -296,7 +296,7 @@ fn classify_ident(
     }
     // <prefix>Ram<hex> globals.
     if let Some(pos) = w.find("Ram") {
-        if pos >= 1 && pos <= 2 {
+        if (1..=2).contains(&pos) {
             let tail = &w[pos + 3..];
             if tail.len() >= 8 && tail.bytes().all(|c| c.is_ascii_hexdigit()) {
                 let pfx = w.as_bytes()[0] as char;
