@@ -2,14 +2,27 @@
 //! from a binary's disassembly (via mosura's own SLEIGH engine — dogfooding). Where the runtime
 //! banner gives only an era and no header field carries the release for DOS/4GW LE output, the
 //! generated code does: revisions differ in instruction / register choices for the same source.
+//! The `version → fingerprint` table is **measured** from self-compiled ground truth (we know
+//! which `wcc386` built each probe; see `docs/watcom-codegen-fingerprint.md`).
 //!
-//! The `version → fingerprint` table below is **measured** (self-compiled binaries are the ground
-//! truth — we know which `wcc386` built them; see `docs/watcom-codegen-fingerprint.md`). The
-//! matcher scans disassembly for the same signals and reports the consistent revision(s).
+//! Two matchers, because the signals behave differently at two scales:
 //!
-//! Signals are `Option` — `None` means "not observed in the scanned code", so an unobserved
-//! signal never contradicts a revision. Each construct draws its boundary at a different revision,
-//! so together they narrow the answer (no single one separates all four).
+//! - [`identify_watcom`] / [`extract_signals`] — a **single, known** region (the committed probe
+//!   artefacts). Here every signal is two-sided and diagnostic: you *know* the region is the
+//!   discriminating construct, so byte-form-vs-promoted, loop register, and switch order all
+//!   count, and the four revisions classify uniquely.
+//!
+//! - [`identify_watcom_program`] — a **whole unknown binary**. Instrumenting real code shows the
+//!   quirks are *construct*-specific, not compiler-wide: one `wcc386` emits both the promoting
+//!   form (for `unsigned char == const`) and plain byte compares (for other shapes), and register
+//!   choice varies per site. So at this scale the matcher (a) locates constructs with anchors so
+//!   look-alikes (a switch's `CMP EAX,1`) don't fire, and (b) treats the strategy patterns as
+//!   **one-sided positive evidence** — the *presence* of `AND EAX,0xff ; CMP EAX,imm` indicates
+//!   the 10.0 line, `SETcc ; MOVZX` indicates Open Watcom; *absence* is inconclusive, never a
+//!   wrong exclusion. It reports a class (often the era, which is what WAR2 needs), not always a
+//!   single revision. Honest by construction.
+//!
+//! Signals are `Option` — `None` = "not observed", never contradicts a revision.
 
 use crate::sleigh::Instruction;
 
@@ -58,65 +71,125 @@ fn is_cond_jump(mnem: &str) -> bool {
     matches!(mnem, "JL" | "JLE" | "JG" | "JGE" | "JB" | "JBE" | "JA" | "JAE" | "JNZ" | "JZ" | "JNS" | "JS")
 }
 
-/// Extract the codegen signals from a disassembled instruction stream.
-///
-/// The heuristics are **probe-shaped** (see the module note): "first matching instruction" is
-/// only sound when the scanned region is the probe's construct — on arbitrary code the first
-/// small-immediate `CMP` is usually *not* a byte-compare site (e.g. a switch's `CMP EAX,0x1`
-/// would read as a promoted byte compare). Locating the constructs in unknown code is the
-/// matcher's open next step.
-pub fn extract_signals(instrs: &[Instruction]) -> Signals {
-    let mut s = Signals::default();
-    // (imm == 1, imm == 2) first-occurrence positions of dword-reg CMPs, for the switch order.
-    let (mut cmp1_at, mut cmp2_at): (Option<usize>, Option<usize>) = (None, None);
+/// Every construct site's vote, before consensus. A real binary has *many* sites; a
+/// codegen-**strategy** signal (byte-compare promotion, setcc zero-extension) is the same at
+/// every site, while a register-allocation **artifact** (which register a given loop happens to
+/// use) varies site to site. [`consensus`] keeps a signal only when its votes are unanimous, so
+/// strategy signals survive and artifact signals self-cancel to `None` instead of corrupting the
+/// result — the mechanism that lets the same code match a clean probe *and* a whole binary.
+#[derive(Default)]
+struct Votes {
+    promoted: Vec<bool>,
+    zero_extended: Vec<bool>,
+    loop_bound: Vec<String>,
+    sw_ascending: Vec<bool>,
+}
+
+/// A signal is trusted only when every site that observed it agrees; any disagreement (or no
+/// observation) yields `None`, which never contradicts a revision.
+fn consensus(v: &Votes) -> Signals {
+    fn unanimous<T: Clone + PartialEq>(votes: &[T]) -> Option<T> {
+        let first = votes.first()?;
+        votes.iter().all(|x| x == first).then(|| first.clone())
+    }
+    Signals {
+        byte_compare_promoted: unanimous(&v.promoted),
+        result_zero_extended: unanimous(&v.zero_extended),
+        loop_bound_reg: unanimous(&v.loop_bound),
+        sw_cmp_ascending: unanimous(&v.sw_ascending),
+    }
+}
+
+/// Scan one disassembled instruction stream and record a vote at **every anchored construct
+/// site** — the "construct location" pass. Each signal is anchored so a look-alike does not fire:
+/// a byte compare needs a byte register or a preceding byte-mask (a plain int `CMP EAX,1` is
+/// ignored), a loop needs a *backward* conditional branch. Accumulates into `v` so a whole binary
+/// aggregates across functions.
+fn scan_into(instrs: &[Instruction], v: &mut Votes) {
+    // Pass 1: addresses that are the target of a backward branch — a loop-header test lands here
+    // (the loop's back-edge jumps to it). Covers both loop shapes: bottom-test (the test's own
+    // `Jcc` goes backward) and top-test (a later `JMP`/`Jcc` jumps back up to the test).
+    let back_targets: std::collections::HashSet<u64> = instrs
+        .iter()
+        .filter(|ins| ins.mnemonic == "JMP" || is_cond_jump(&ins.mnemonic))
+        .filter_map(|ins| parse_imm(&ins.body).filter(|&t| t < ins.address))
+        .collect();
+    // Per dword-register, the address of the first `CMP reg,1` / `CMP reg,2` (switch discriminator).
+    let mut cmp1: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut cmp2: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for (i, ins) in instrs.iter().enumerate() {
         let (op1, op2) = split2(&ins.body);
         match ins.mnemonic.as_str() {
             "CMP" => {
                 if let Some(imm) = parse_imm(op2) {
-                    // byte-compare-promotion: first CMP of a register vs a byte-range immediate.
-                    if s.byte_compare_promoted.is_none()
-                        && imm <= 0xff
-                        && (is_dword_reg(op1) || is_byte_reg(op1))
-                    {
-                        s.byte_compare_promoted = Some(is_dword_reg(op1));
-                    }
-                    // switch order: first dword-reg compares against the case constants 1 and 2.
-                    if is_dword_reg(op1) {
-                        if imm == 1 && cmp1_at.is_none() {
-                            cmp1_at = Some(i);
+                    if imm <= 0xff {
+                        // Byte compare, ANCHORED so an int compare (`CMP EAX,1`) is not counted:
+                        //  - a byte register is itself the anchor (byte form);
+                        //  - a dword register only counts when the previous instruction masks it
+                        //    to a byte (`AND reg,0xff` / `MOVZX reg,byte`), proving a byte value
+                        //    is being compared 32-bit-wide (the promotion).
+                        if is_byte_reg(op1) {
+                            v.promoted.push(false);
+                        } else if is_dword_reg(op1) && byte_masked_into(instrs, i, op1) {
+                            v.promoted.push(true);
                         }
-                        if imm == 2 && cmp2_at.is_none() {
-                            cmp2_at = Some(i);
+                    }
+                    if is_dword_reg(op1) {
+                        if imm == 1 {
+                            cmp1.entry(op1.to_string()).or_insert(ins.address);
+                        } else if imm == 2 {
+                            cmp2.entry(op1.to_string()).or_insert(ins.address);
                         }
                     }
                 }
-                // loop bound: CMP reg,reg immediately before a conditional jump (loop condition).
-                if s.loop_bound_reg.is_none()
-                    && is_dword_reg(op1)
-                    && is_dword_reg(op2)
-                    && instrs.get(i + 1).is_some_and(|n| is_cond_jump(&n.mnemonic))
-                {
-                    s.loop_bound_reg = Some(op2.to_string());
+                // Loop bound: a `CMP reg,reg` that is a loop test — its own successor branches
+                // backward (bottom-test) OR the compare is itself a backward-branch target
+                // (top-test). op2 is the limit the counter is tested against.
+                if is_dword_reg(op1) && is_dword_reg(op2) {
+                    let bottom_test = instrs.get(i + 1).is_some_and(|n| {
+                        is_cond_jump(&n.mnemonic) && parse_imm(&n.body).is_some_and(|t| t <= n.address)
+                    });
+                    if bottom_test || back_targets.contains(&ins.address) {
+                        v.loop_bound.push(op2.to_string());
+                    }
                 }
             }
-            // Zero-extension is observed AT the SETcc site (tri-valued): a following
-            // `MOVZX dword,byte` = extended (Open Watcom); any other successor = not extended
-            // (classic). No SETcc in the region leaves it unobserved (`None`).
-            m if m.starts_with("SET") && s.result_zero_extended.is_none() => {
+            // setcc zero-extension: a `MOVZX dword,byte` right after `SETcc` = extended (Open
+            // Watcom); any other successor = not extended (classic).
+            m if m.starts_with("SET") => {
                 if let Some(next) = instrs.get(i + 1) {
                     let (n1, n2) = split2(&next.body);
-                    s.result_zero_extended =
-                        Some(next.mnemonic == "MOVZX" && is_dword_reg(n1) && is_byte_reg(n2));
+                    v.zero_extended
+                        .push(next.mnemonic == "MOVZX" && is_dword_reg(n1) && is_byte_reg(n2));
                 }
             }
             _ => {}
         }
     }
-    if let (Some(p1), Some(p2)) = (cmp1_at, cmp2_at) {
-        s.sw_cmp_ascending = Some(p1 < p2);
+    // Switch order: a register compared against both 1 and 2 → ascending iff `CMP r,1` precedes.
+    for (reg, &a1) in &cmp1 {
+        if let Some(&a2) = cmp2.get(reg) {
+            v.sw_ascending.push(a1 < a2);
+        }
     }
-    s
+}
+
+/// True iff the dword register `reg` is masked to its low byte immediately before instruction
+/// `i` — `AND reg,0xff` or `MOVZX reg,<byte reg>` — i.e. a byte value is about to be compared.
+fn byte_masked_into(instrs: &[Instruction], i: usize, reg: &str) -> bool {
+    let Some(prev) = i.checked_sub(1).and_then(|p| instrs.get(p)) else { return false };
+    let (p1, p2) = split2(&prev.body);
+    p1 == reg
+        && ((prev.mnemonic == "AND" && parse_imm(p2) == Some(0xff))
+            || (prev.mnemonic == "MOVZX" && is_byte_reg(p2)))
+}
+
+/// Extract the codegen signals from a disassembled instruction stream (single region). Anchored
+/// and unanimity-gated — see [`scan_into`] / [`consensus`].
+pub fn extract_signals(instrs: &[Instruction]) -> Signals {
+    let mut v = Votes::default();
+    scan_into(instrs, &mut v);
+    consensus(&v)
 }
 
 /// One Watcom revision's measured fingerprint (`None` = the construct was not measured / does not
@@ -162,14 +235,51 @@ pub fn classify(sig: &Signals) -> Vec<&'static str> {
         .collect()
 }
 
-/// Disassemble `code` with mosura's engine and classify the Watcom revision — the end-to-end
-/// matcher. `lang_id` is e.g. `x86:LE:32:default`. `code` must be a **probe-shaped region**
-/// (the fingerprint constructs, as in the committed artefacts) — the signal heuristics are
-/// first-match and misread arbitrary code (see [`extract_signals`]); locating the constructs in
-/// an unknown binary is the open next step before this runs on a real target.
+/// Disassemble one region with mosura's engine and classify it. `lang_id` is e.g.
+/// `x86:LE:32:default`. Used for a single known region (the committed probe artefacts); for a
+/// whole binary use [`identify_watcom_program`], which locates the constructs across its functions.
 pub fn identify_watcom(lang_id: &str, code: &[u8], base: u64) -> Vec<&'static str> {
     let instrs = crate::sleigh::disassemble(lang_id, code, base).unwrap_or_default();
     classify(&extract_signals(&instrs))
+}
+
+/// Identify the Watcom revision that built a whole analyzed [`Program`] — the real matcher. It
+/// disassembles each discovered function with mosura's own engine, locates the fingerprint
+/// constructs across all of them, and aggregates by unanimity (see [`Votes`]). On a real binary
+/// the strategy signals (byte-compare promotion, setcc zero-extension) are consistent and survive,
+/// while register-allocation artifacts (the loop-bound register) vary and drop out — so the result
+/// is honest: often a *class* (e.g. the promoting 10.0 line = WAR2's era) rather than always a
+/// single revision. An empty result means "no Watcom fingerprint found" (not Watcom, or stripped
+/// of the constructs).
+pub fn identify_watcom_program(program: &crate::analysis::program::Program) -> Vec<&'static str> {
+    use crate::decompile::space::Address;
+    let mut entries: Vec<u64> =
+        program.function_manager.functions().map(|f| f.entry_point().offset).collect();
+    entries.sort_unstable();
+    let mut votes = Votes::default();
+    for (i, &entry) in entries.iter().enumerate() {
+        // Window: to the next function, capped (a function rarely exceeds this; the cap bounds
+        // stray linear disassembly past the end into padding/data).
+        let end = entries.get(i + 1).copied().unwrap_or(entry + 4096).min(entry + 4096);
+        let Some(len) = end.checked_sub(entry).map(|n| n as usize).filter(|&n| n > 0) else { continue };
+        let code = program.memory.read_window(Address::new(program.default_space, entry), len);
+        let instrs = crate::sleigh::disassemble(&program.language_id, &code, entry).unwrap_or_default();
+        scan_into(&instrs, &mut votes);
+    }
+    // Whole-binary evidence is **one-sided**, not the two-sided exclusion the isolated-probe
+    // matcher uses. Instrumenting real binaries shows the fingerprint quirks are *construct*-
+    // specific, not compiler-wide: a given `wcc386` emits BOTH the promoting form (`AND EAX,0xff ;
+    // CMP EAX,imm`, for the `unsigned char == const` shape) AND plain byte compares (`CMP AL,imm`,
+    // for other shapes) — real 10.0a code (watcom_hello) is full of the latter. So a byte-form
+    // compare is *non-diagnostic* (every version emits it) and must not exclude the promoting
+    // line; only the diagnostic PATTERNS count as evidence:
+    //   - any `AND EAX,0xff ; CMP EAX,imm` present → evidence of the 10.0 line;
+    //   - any `SETcc ; MOVZX`           present → evidence of Open Watcom.
+    // Absence of a pattern is inconclusive (returns the un-narrowed set), never a wrong exclusion.
+    // The register/loop/switch artifacts are dropped entirely at this scale (see above).
+    let promoted = votes.promoted.iter().any(|&p| p).then_some(true);
+    let zero_extended = votes.zero_extended.iter().any(|&z| z).then_some(true);
+    classify(&Signals { byte_compare_promoted: promoted, result_zero_extended: zero_extended, ..Default::default() })
 }
 
 #[cfg(test)]
@@ -224,21 +334,57 @@ mod tests {
         assert_eq!(load("ow2"), vec!["watcom:open"]); // CMP AL,5 + ECX + MOVZX + descending
     }
 
-    /// End-to-end: real encodings disassembled by mosura's engine → signals → classify. 10.0a's
-    /// promoting `cmpbyte` (`CMP EAX,5 ; SETZ AL ; RET`) vs Open Watcom's (`CMP AL,5 ; SETZ AL ;
-    /// MOVZX EAX,AL ; RET`).
+    /// End-to-end on real encodings mosura's engine decodes. 10.0a's *promoting* cmpbyte is the
+    /// anchored pattern `AND EAX,0xff ; CMP EAX,5` (the mask proves a byte is compared 32-bit);
+    /// Open Watcom's is `CMP AL,5 ; SETZ AL ; MOVZX EAX,AL`.
     #[test]
     fn disassembles_and_classifies_real_encodings() {
         if crate::lang::load("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
-        // 10.0a cmpbyte: CMP EAX,0x5 ; SETZ AL ; RET
-        let v10a = identify_watcom("x86:LE:32:default", &[0x83, 0xF8, 0x05, 0x0F, 0x94, 0xC0, 0xC3], 0x1000);
-        assert!(v10a.contains(&"watcom:10.0/10.0a"), "10.0a cmpbyte → {v10a:?}");
-        assert!(!v10a.contains(&"watcom:open"), "must exclude open (promoted) → {v10a:?}");
-        // Open Watcom cmpbyte: CMP AL,0x5 ; SETZ AL ; MOVZX EAX,AL ; RET
+        // 10.0a promoting cmpbyte: AND EAX,0xff ; CMP EAX,5 ; SETZ AL ; RET → uniquely 10.0 line.
+        let v10a = identify_watcom(
+            "x86:LE:32:default",
+            &[0x25, 0xff, 0, 0, 0, 0x83, 0xF8, 0x05, 0x0F, 0x94, 0xC0, 0xC3],
+            0x1000,
+        );
+        assert_eq!(v10a, vec!["watcom:10.0/10.0a"], "masked promoting compare → {v10a:?}");
+        // Open Watcom cmpbyte: CMP AL,0x5 ; SETZ AL ; MOVZX EAX,AL ; RET → uniquely open.
         let vopen = identify_watcom("x86:LE:32:default", &[0x3C, 0x05, 0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], 0x1000);
-        assert!(vopen.contains(&"watcom:open"), "open cmpbyte → {vopen:?}");
-        assert!(!vopen.contains(&"watcom:10.0/10.0a"), "must exclude 10.0a (byte compare) → {vopen:?}");
+        assert_eq!(vopen, vec!["watcom:open"], "byte compare + movzx → {vopen:?}");
+    }
+
+    /// The construct-location anchoring (the C1 fix): a plain int `CMP EAX,1` — a switch case or
+    /// an integer comparison — is **not** read as a promoted byte compare. Without a byte anchor
+    /// (byte register, or a preceding `AND reg,0xff` / `MOVZX`) it yields no byte-compare signal,
+    /// so it can never falsely narrow (or exclude) a revision.
+    #[test]
+    fn int_compare_is_not_a_byte_compare() {
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return;
+        }
+        // CMP EAX,0x1 ; RET — a bare int compare.
+        let bytes = [0x83, 0xF8, 0x01, 0xC3];
+        let ins = crate::sleigh::disassemble("x86:LE:32:default", &bytes, 0x1000).unwrap();
+        assert_eq!(extract_signals(&ins).byte_compare_promoted, None, "int compare must not read as a byte compare");
+        assert_eq!(identify_watcom("x86:LE:32:default", &bytes, 0x1000).len(), TABLE.len(), "no signal → nothing narrowed/excluded");
+    }
+
+    /// The whole-binary matcher over a real analyzed program. `watcom_hello.exe` is genuine 10.0a
+    /// but a tiny CRT stub *without* the diagnostic promoting/`movzx` constructs, so the one-sided
+    /// matcher is honestly **inconclusive** (the un-narrowed set) — it must never WRONGLY EXCLUDE
+    /// the true revision (the earlier two-sided logic did, on a non-diagnostic byte-form compare).
+    #[test]
+    fn whole_program_matcher_never_wrongly_excludes() {
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return;
+        }
+        let path = crate::paths::analysis_corpus_dir().join("watcom_hello.exe");
+        let program = crate::analysis::analyze_file(&path).expect("analyze watcom_hello");
+        let cls = identify_watcom_program(&program);
+        assert!(
+            cls.contains(&"watcom:10.0/10.0a"),
+            "real 10.0a binary must not be excluded by a non-diagnostic byte-form compare; got {cls:?}"
+        );
     }
 }

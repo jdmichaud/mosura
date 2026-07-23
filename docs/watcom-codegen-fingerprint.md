@@ -98,12 +98,32 @@ So every link is committed: probe source → known-compiler object → extractor
 bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
 dosemu recipe above).
 
-### Scope caveat — signals are probe-shaped
+### Two matchers — isolated probe vs whole binary
 
-`extract_signals` uses first-match heuristics that are sound only when the scanned region is
-the probe's constructs (on arbitrary code, a switch's `cmp eax,0x1` would read as a promoted
-byte-compare). Pointing the matcher at an unknown binary (WAR2) requires locating the
-equivalent constructs first — that construct-location pass is the open next step.
+`analysis::codegen_fingerprint` exposes both scales, because the signals behave differently:
+
+- **Isolated region** (`identify_watcom` / `extract_signals`) — the committed probe artefacts. You
+  *know* the region is the discriminating construct, so all four signals are two-sided and the
+  four revisions classify **uniquely** (`matches_committed_self_compiled_probes`).
+
+- **Whole binary** (`identify_watcom_program`) — locates the constructs across an analyzed
+  program's functions and aggregates. Two hard facts, both instrumented (not assumed):
+
+  1. **Anchoring.** A byte-compare site is counted only with a byte anchor — a byte register, or a
+     preceding `AND reg,0xff` / `MOVZX` — so a switch's `CMP EAX,1` or any integer compare is *not*
+     misread as a promoted byte compare. Loops are located by a *backward* branch (either the
+     test's own `Jcc`, or the compare being a back-edge target), covering both bottom-test (10.x)
+     and top-test (11.0/OW) shapes.
+  2. **One-sided evidence.** The quirks are *construct*-specific, not compiler-wide — real 10.0a
+     code (`watcom_hello`) is full of plain `CMP AL,imm` byte compares even though 10.0a *promotes*
+     the `unsigned char == const` shape. So a byte-form compare is non-diagnostic and must not
+     exclude the promoting line; only the **presence** of a diagnostic pattern is evidence
+     (`AND EAX,0xff ; CMP EAX,imm` → 10.0 line; `SETcc ; MOVZX` → Open Watcom). Absence is
+     inconclusive. The register/loop/switch artifacts are dropped at this scale (register choice
+     varies per site). Result: a class (the era — what WAR2 needs), never a wrong exclusion.
+
+The remaining depth (turning a class into an exact minor revision on an arbitrary binary) needs
+matching the *same source construct* across binaries — a harder problem than pattern scanning.
 
 Notes: 10.5 didn't run under dosemu2 here (its `W32RUN`/`DOS4GW` loader hit a "Loader read
 error"); the four points above already bracket the transition. 11.0's DOS host lives in `BINW`
