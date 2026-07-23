@@ -38,6 +38,10 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         .filter(|r| r.ref_type.is_call())
         .map(|r| r.from.offset)
         .collect();
+    // Decode under the Program's own compiler spec (Ghidra `DecompInterface` reads the
+    // Architecture's `CompilerSpec`): a Watcom LE binary resolves the `__watcall` register
+    // convention (`specs/x86-32-watcom.cspec`) rather than the datatest x86-64 SysV default,
+    // so parameters/returns are recovered instead of the whole program decompiling as `void(void)`.
     let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
         &spec,
         name,
@@ -45,6 +49,8 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         entry.offset,
         &ctx,
         &call_return,
+        &program.language_id,
+        &program.compiler_spec_id,
     );
     // Per-function isolation, faithful to Ghidra's `DecompilerSwitchAnalyzer`: it decompiles each
     // candidate through a `DecompilerCallback` and a single function's decompiler failure is caught

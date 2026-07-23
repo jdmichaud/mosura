@@ -18,21 +18,31 @@ use super::varnode::VarnodeId;
 /// calling-convention [`ProtoModel`] the pipeline consumes. The decompiler datatests are all
 /// x86-64 SysV (`arch="x86:LE:64:default:gcc"`), and the retired `fspec::sysv_*` literals it
 /// replaces were likewise unconditionally SysV — so resolving this cspec is behaviour-preserving
-/// in scope. A `Program`-driven decompile threads its own compiler spec instead (see
-/// [`crate::analysis::decompiler`], which overrides `Funcdata::proto_model`).
+/// in scope. A `Program`-driven decompile threads its own `(language_id, compiler_id)` into
+/// [`raw_funcdata_flow_image_overrides`] instead (see [`crate::analysis::decompiler`]), so a
+/// Watcom LE binary decodes under the `__watcall` cspec while the corpus stays on this default.
 const DEFAULT_LANG_ID: &str = "x86:LE:64:default";
 const DEFAULT_COMPILER_ID: &str = "gcc";
 
-/// Resolve the default calling-convention [`ProtoModel`] for a build: the compiler spec's
-/// `<default_proto>`, decoded from the `.cspec` via the faithful
+/// Resolve the calling-convention [`ProtoModel`] of `(language_id, compiler_id)`: the compiler
+/// spec's `<default_proto>`, decoded from the `.cspec` via the faithful
 /// [`crate::analysis::cspec::default_proto_model`] (a port of Ghidra `ProtoModel::decode`).
 /// Degrades to the empty model when the Ghidra tree / cspec is absent (a hand-built or
 /// tree-less build recovers no convention), exactly as the retired `sysv_*` builders returned
-/// `None`/empty off-tree.
-fn default_proto_model(spec: &Spec) -> ProtoModel {
+/// `None`/empty off-tree. `spec` must be the SLEIGH spec of `language_id` (its register table
+/// resolves the cspec's `<register name=…>` pentries).
+fn resolve_proto_model(spec: &Spec, language_id: &str, compiler_id: &str) -> ProtoModel {
     let spaces = SpaceManager::standard();
-    crate::analysis::cspec::default_proto_model(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID, &spaces)
+    crate::analysis::cspec::default_proto_model(spec, language_id, compiler_id, &spaces)
         .unwrap_or_else(ProtoModel::empty)
+}
+
+/// The corpus/datatest default [`ProtoModel`] — the x86-64 SysV (`gcc`) `<default_proto>`. Used by
+/// the isolated build paths ([`raw_funcdata`], [`raw_funcdata_flow`], [`raw_funcdata_flow_image`]),
+/// all of which lift x86-64 SysV fixtures. A `Program`-driven decompile threads its own
+/// `(language_id, compiler_id)` instead (see [`crate::analysis::decompiler`]).
+fn default_proto_model(spec: &Spec) -> ProtoModel {
+    resolve_proto_model(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID)
 }
 
 /// Test-only: the SysV `<default_proto>` [`ProtoModel`] (x86-64-gcc.cspec) for the hand-built
@@ -203,7 +213,16 @@ pub fn raw_funcdata_flow_image(
     entry: u64,
     context: &[u32],
 ) -> Funcdata {
-    raw_funcdata_flow_image_overrides(spec, name, chunks, entry, context, &std::collections::HashSet::new())
+    raw_funcdata_flow_image_overrides(
+        spec,
+        name,
+        chunks,
+        entry,
+        context,
+        &std::collections::HashSet::new(),
+        DEFAULT_LANG_ID,
+        DEFAULT_COMPILER_ID,
+    )
 }
 
 /// Like [`raw_funcdata_flow_image`] but honoring `call_return` — the instruction addresses the
@@ -214,6 +233,13 @@ pub fn raw_funcdata_flow_image(
 /// flow — mirroring Ghidra's flow-override handling (flow.cc:416/475). The isolated datatest path
 /// passes an empty set, so the corpus is byte-neutral; only the multi-function analysis bridge
 /// ([`crate::analysis::decompiler::decompile_function`]) supplies overrides.
+///
+/// `language_id`/`compiler_id` select the `.cspec` whose `<default_proto>` supplies the
+/// calling-convention [`ProtoModel`]: the datatest path passes the x86-64 SysV default, while the
+/// analysis bridge threads the `Program`'s own ids (so a Watcom LE binary decodes under the
+/// `__watcall` register model, `specs/x86-32-watcom.cspec`). `spec` must be the SLEIGH spec of
+/// `language_id` — its register table resolves the cspec's register pentries.
+#[allow(clippy::too_many_arguments)]
 pub fn raw_funcdata_flow_image_overrides(
     spec: &Spec,
     name: impl Into<String>,
@@ -221,6 +247,8 @@ pub fn raw_funcdata_flow_image_overrides(
     entry: u64,
     context: &[u32],
     call_return: &std::collections::HashSet<u64>,
+    language_id: &str,
+    compiler_id: &str,
 ) -> Funcdata {
     use std::collections::{BTreeMap, HashMap};
     // Resolve an address to whichever loaded chunk holds it. Flow may cross between chunks: a
@@ -231,9 +259,9 @@ pub fn raw_funcdata_flow_image_overrides(
     let chunk_of = |a: u64| chunks.iter().find(|(b, by)| a >= *b && a < b + by.len() as u64).copied();
     let in_code = |a: u64| chunk_of(a).is_some();
 
-    // The default calling convention, decoded once from the compiler spec and shared by the
-    // jump-table recovery probe clone and the final build.
-    let proto_model = default_proto_model(spec);
+    // The calling convention, decoded once from `(language_id, compiler_id)`'s compiler spec and
+    // shared by the jump-table recovery probe clone and the final build.
+    let proto_model = resolve_proto_model(spec, language_id, compiler_id);
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -497,6 +525,72 @@ mod tests {
         let c = crate::decompile::printc::print_c(&f);
         assert!(c.contains("switch ("), "expected a switch statement:\n{c}");
         assert!(c.contains("case 0:") && c.contains("case 10:"), "expected grouped case labels:\n{c}");
+    }
+
+    /// Stage 1 (WAR2): the analysis-path proto-model threading. The isolated datatest builders keep
+    /// resolving the x86-64 SysV `<default_proto>` (RDI,RSI,RDX,RCX,R8,R9 integer args), while the
+    /// analysis bridge threads a `Program`'s own `(language_id, compiler_id)` — so a WAR2-style
+    /// Watcom LE binary resolves the beyond-Ghidra `__watcall` register model (EAX,EDX,EBX,ECX) and
+    /// its recovery reads parameters instead of decompiling everything as `void(void)`. Asserts both
+    /// the resolution and that the built `Funcdata::proto_model` actually carries the threaded model.
+    #[test]
+    fn analysis_path_threads_compiler_convention() {
+        use crate::decompile::fspec::{type_class, ProtoModel};
+        let reg = crate::decompile::space::SpaceManager::standard().by_name("register").unwrap();
+        // GENERAL register-class arg addressbases of a resolved model's input list.
+        let gen_regs = |pm: &ProtoModel| -> Vec<u64> {
+            pm.input
+                .as_ref()
+                .map(|pl| {
+                    pl.entry
+                        .iter()
+                        .filter(|e| e.type_class == type_class::GENERAL && e.space == reg)
+                        .map(|e| e.addressbase)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Datatest default: x86-64 SysV.
+        let Some((spec64, _)) = x86_64() else { return };
+        let sysv = gen_regs(&super::default_proto_model(&spec64));
+        if sysv.is_empty() {
+            eprintln!("skip: sysv default proto absent (tree missing)");
+            return;
+        }
+        let off64 = |n: &str| spec64.register_offset(n).unwrap();
+        assert_eq!(
+            sysv,
+            vec![off64("RDI"), off64("RSI"), off64("RDX"), off64("RCX"), off64("R8"), off64("R9")],
+            "datatest default must stay x86-64 SysV"
+        );
+
+        // Analysis path with WAR2's ids: Watcom __watcall (EAX,EDX,EBX,ECX).
+        if crate::lang::resolve_cspec("x86:LE:32:default", "watcom").is_none() {
+            eprintln!("skip: watcom cspec absent");
+            return;
+        }
+        let Some((spec32, ctx32)) = crate::lang::load("x86:LE:32:default") else { return };
+        let off32 = |n: &str| spec32.register_offset(n).unwrap();
+        let want = vec![off32("EAX"), off32("EDX"), off32("EBX"), off32("ECX")];
+        assert_eq!(
+            gen_regs(&super::resolve_proto_model(&spec32, "x86:LE:32:default", "watcom")),
+            want,
+            "analysis path must resolve the __watcall register convention"
+        );
+
+        // End-to-end: the threaded ids reach the built Funcdata's proto_model (a `ret` stub).
+        let f = super::raw_funcdata_flow_image_overrides(
+            &spec32,
+            "func",
+            &[(0x10000, &[0xC3u8])],
+            0x10000,
+            &ctx32,
+            &std::collections::HashSet::new(),
+            "x86:LE:32:default",
+            "watcom",
+        );
+        assert_eq!(gen_regs(&f.proto_model), want, "built Funcdata must carry the threaded __watcall model");
     }
 
     /// Build the raw Funcdata for a real function and check the Varnode graph is
