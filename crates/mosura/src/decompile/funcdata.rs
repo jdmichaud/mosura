@@ -110,6 +110,11 @@ pub struct Funcdata {
     /// `guardCalls` all read it. Empty ([`super::fspec::ProtoModel::empty`]) for a hand-built
     /// `Funcdata`, so a test graph with no compiler spec recovers no convention.
     pub proto_model: super::fspec::ProtoModel,
+    /// User-defined p-code op index → name (Ghidra `Architecture::userops`, reached via
+    /// `Funcdata::getArch`). Copied from [`crate::sleigh::engine::Spec::userops`] by the build
+    /// caller; consumed by `PrintC::opCallother` to render a `CPUI_CALLOTHER` as `<name>(args)`
+    /// rather than leaking a raw `CALLOTHER(...)`. Empty for a hand-built `Funcdata`.
+    pub userops: std::collections::HashMap<u64, String>,
 }
 
 impl Funcdata {
@@ -140,6 +145,7 @@ impl Funcdata {
             table_recovery_probe: false,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),
+            userops: std::collections::HashMap::new(),
         }
     }
 

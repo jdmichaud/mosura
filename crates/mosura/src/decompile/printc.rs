@@ -970,6 +970,31 @@ impl<'a> PrintC<'a> {
                 let lo = self.render_var(a(1)).0;
                 (format!("CONCAT{s0}{s1}({hi},{lo})"), 16)
             }
+            // CALLOTHER (Ghidra `PrintC::opCallother`, printc.cc:673, functional display): a
+            // user-defined p-code op renders `<userop-name>(in1,..,inN)` — input 0 is the userop
+            // index constant, skipped; the name comes from the `.sla` userop table
+            // (`TypeOpCallother::getOperatorName` → `UserOpSymbol` name). A `define pcodeop` always
+            // has display 0 (functional), so this is the only form for SLEIGH userops. Fallback to
+            // Ghidra's `CALLOTHER[index]` form (identifier-safe) if the index is unresolved.
+            OpCode::Callother => {
+                let index = o.input(0).map(|v| self.f.vn(v).constant_value());
+                let name = index
+                    .and_then(|i| self.f.userops.get(&i).cloned())
+                    .unwrap_or_else(|| format!("CALLOTHER_{}", index.unwrap_or(0)));
+                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                (format!("{name}({})", args.join(",")), 16)
+            }
+            // INT_SBORROW (Ghidra `TypeOpIntSborrow::getOperatorName`, typeop.cc:1372): the signed-
+            // subtraction-overflow predicate renders `SBORROW<in0-size>(a,b)` via `opFunc`.
+            OpCode::IntSborrow => {
+                let sz = self.f.vn(a(0)).size;
+                let l = self.render_var(a(0)).0;
+                let r = self.render_var(a(1)).0;
+                (format!("SBORROW{sz}({l},{r})"), 16)
+            }
+            // POPCOUNT (Ghidra `TypeOpPopcount`, typeop.cc:2558, a `TypeOpFunc` named "POPCOUNT"):
+            // renders `POPCOUNT(x)` via `opFunc`.
+            OpCode::Popcount => (format!("POPCOUNT({})", self.render_var(a(0)).0), 16),
             other => (format!("{}(...)", other.name()), 16),
         }
     }
@@ -2040,5 +2065,32 @@ mod tests {
         // threedim has a loop — the structurer recovers a for/while, well-nested
         assert!(c.contains("while (") || c.contains("for ("), "structured loop expected:\n{c}");
         assert_eq!(c.matches('{').count(), c.matches('}').count(), "balanced braces:\n{c}");
+    }
+
+    /// Stage 2 (WAR2): a `CPUI_CALLOTHER` (user-defined p-code op) must render as its SLEIGH userop
+    /// name applied to the operands (Ghidra `PrintC::opCallother`, printc.cc:673), NOT leak the raw
+    /// `CALLOTHER(...)` catch-all that the pre-fix printer emitted (the top COMPILE_FAIL feeder in
+    /// the WAR2 survey: `E1063 Missing operand` on the `...`). The userop index→name map is threaded
+    /// from the `.sla` (`Spec::userops`) onto the `Funcdata`.
+    #[test]
+    fn callother_renders_as_userop_name() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        if !sla.exists() {
+            return;
+        }
+        let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+        let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+        // `in eax, dx ; ret` (ED C3): EAX = in(DX), returned in the SysV result register.
+        let mut f = raw_funcdata_flow(&spec, "func", &[0xED, 0xC3], 0x1000, &ctx);
+        pipeline::decompile(&mut f);
+        let c = print_c(&f);
+        assert!(c.contains("in("), "CALLOTHER should render as the `in` userop name:\n{c}");
+        assert!(!c.contains("CALLOTHER(...)"), "raw CALLOTHER catch-all must not leak:\n{c}");
+
+        // `rdtsc ; ret` (0F 31 C3): the no-argument `rdtsc` userop.
+        let mut f2 = raw_funcdata_flow(&spec, "func", &[0x0F, 0x31, 0xC3], 0x1000, &ctx);
+        pipeline::decompile(&mut f2);
+        let c2 = print_c(&f2);
+        assert!(c2.contains("rdtsc()"), "CALLOTHER should render as `rdtsc()`:\n{c2}");
     }
 }

@@ -373,6 +373,12 @@ pub struct Spec {
     /// `build` wraps these in a `LanedRegisterSet` for `ActionLaneDivide`. Kept as primitives here so
     /// the `sleigh` layer needs no dependency on the `decompile` types.
     pub laned: Vec<(i32, u32)>,
+    /// User-defined p-code op (`define pcodeop`) index → name, from the `.sla` `<userop_head>`
+    /// name + `<userop>` `index` (Ghidra `UserOpSymbol`, slghsymbol.cc:377). A `CPUI_CALLOTHER`'s
+    /// input-0 constant is this index; the decompiler's `PrintC::opCallother` (printc.cc:673) renders
+    /// the op as `<name>(args...)`, so the printer needs the index→name map to avoid leaking a raw
+    /// `CALLOTHER(...)` into the emitted C. Populated by [`Spec::from_element`].
+    pub userops: std::collections::HashMap<u64, String>,
 }
 
 impl Spec {
@@ -431,6 +437,7 @@ impl Spec {
         // bodies
         let mut context_vars = std::collections::HashMap::new();
         let mut context_words = 0usize;
+        let mut userops = std::collections::HashMap::new();
         for body in &kids[scopesize + symbolsize..] {
             let id = body.attr_int(aid::ID);
             let Some(i) = id.and_then(|v| usize::try_from(v).ok()) else { continue };
@@ -443,6 +450,12 @@ impl Spec {
                 }
             } else if body.id == eid::VARNODE_SYM && names[i] == "contextreg" {
                 context_words = (body.attr_int(aid::SIZE).unwrap_or(0) as usize).div_ceil(4);
+            } else if body.id == eid::USEROP {
+                // A user-defined p-code op: its `<userop>` `index` (ATTRIB_INDEX) is the value a
+                // CALLOTHER carries in input 0; pair it with the header name for the printer.
+                if let Some(index) = body.attr_int(aid::INDEX) {
+                    userops.insert(index as u64, names[i].clone());
+                }
             }
             symbols[i] = Some(decode_symbol(body)?);
         }
@@ -467,6 +480,7 @@ impl Spec {
             context_vars,
             context_words,
             laned: Vec::new(),
+            userops,
         })
     }
 

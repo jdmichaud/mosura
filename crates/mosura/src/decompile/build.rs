@@ -89,6 +89,7 @@ fn build_from_instrs(
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
     laned: &[(i32, u32)],
     proto_model: ProtoModel,
+    userops: &std::collections::HashMap<u64, String>,
 ) -> Funcdata {
     let spaces = SpaceManager::standard();
     let ram = spaces.by_name("ram").expect("standard ram space");
@@ -99,6 +100,9 @@ fn build_from_instrs(
     // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
     // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
     f.proto_model = proto_model;
+    // The user-op (`define pcodeop`) index→name table (Ghidra `Architecture::userops`), so
+    // `PrintC::opCallother` can render a CALLOTHER as its userop name rather than `CALLOTHER(...)`.
+    f.userops = userops.clone();
 
     let mut uniq: u32 = 0;
     for insn in instrs {
@@ -147,6 +151,7 @@ pub fn raw_funcdata(
         spec.disassemble_ctx(bytes, base, context),
         &spec.laned,
         default_proto_model(spec),
+        &spec.userops,
     )
 }
 
@@ -199,7 +204,14 @@ pub fn raw_funcdata_flow(
         decoded.insert(a, insn);
         worklist.extend(succs);
     }
-    build_from_instrs(name, base, decoded.into_values(), &spec.laned, default_proto_model(spec))
+    build_from_instrs(
+        name,
+        base,
+        decoded.into_values(),
+        &spec.laned,
+        default_proto_model(spec),
+        &spec.userops,
+    )
 }
 
 /// Like [`raw_funcdata_flow`] but over a multi-chunk memory image, and recovering jump
@@ -344,7 +356,14 @@ pub fn raw_funcdata_flow_image_overrides(
             break;
         }
         let mut partial =
-            build_from_instrs(name.clone(), entry, decoded.values().cloned(), &spec.laned, proto_model.clone());
+            build_from_instrs(
+                name.clone(),
+                entry,
+                decoded.values().cloned(),
+                &spec.laned,
+                proto_model.clone(),
+                &spec.userops,
+            );
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         // Ghidra `FlowInfo::recoverJumpTables` -> `newAddress` (flow.cc:806): feed the targets
         // recovered by prior passes back as the BRANCHIND's flow edges before re-simplifying. This
@@ -405,7 +424,7 @@ pub fn raw_funcdata_flow_image_overrides(
     // `flow_order` is a bijection with `decoded`'s keys (pushed once per newly-decoded in-code addr),
     // so draining it yields every decoded instruction exactly once, in creation order.
     let ordered: Vec<crate::sleigh::Instruction> = flow_order.iter().filter_map(|a| decoded.remove(a)).collect();
-    let mut f = build_from_instrs(name, entry, ordered, &spec.laned, proto_model);
+    let mut f = build_from_instrs(name, entry, ordered, &spec.laned, proto_model, &spec.userops);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();
