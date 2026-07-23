@@ -308,6 +308,7 @@ fn compiler_version_marker_fragments() {
     let dir = analysis_corpus_dir().join("markers");
     let cases: &[(&str, &str)] = &[
         ("msvc6_rich.bin", "msvc:6.0"),               // real VC6 Rich header (build 8168)
+        ("msvc8_rich.bin", "msvc:8.0"),               // real VS2005 Rich header (build 50727)
         ("borland45_banner.bin", "borland:c++:1994"), // real BC++ 4.5 startup banner
     ];
     for (name, label) in cases {
