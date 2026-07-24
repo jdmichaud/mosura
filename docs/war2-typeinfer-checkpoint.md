@@ -183,16 +183,28 @@ So the divergence is: mosura's `size=8 Unknown(8)` hint (from the untyped call-a
 - Therefore, with BOTH hints present Ghidra would ALSO pick size-8. Since Ghidra's result is element-2,
   **Ghidra does NOT generate the size-8 hint at all.** → **candidate (a) confirmed by necessity.**
 
-**THE BRICK (task #5, precisely scoped):** mosura spuriously types the untyped call-arg stack pointer
-(`func_0x00101000(auStack_58,...)`) as `Pointer(Unknown(8))`, so `gather_open` emits a `size=8` array
-hint Ghidra never has. Ghidra's `gatherOpen` (`ct = base->getType(); if TYPE_PTR → ptrTo else NULL`)
-gets NULL or the 2-byte element for that arg — its call-arg base is NOT `undefined8 *`. FIND where mosura
-assigns `Pointer(Unknown(8))` to that stack pointer (infertypes default pointee? the unknown-callee
-param typing? the PTRSUB output default?) and make it faithful — likely the untyped-pointer default
-pointee should be byte/unknown-array, not `Unknown(8)`. Ground against Ghidra's actual type for that arg
-(`analyzeHeadless` type dump) + a Watcom stack-array MVE (class-A general). The fix is in the
-pointer/param typing that feeds the hint, NOT type_order/preferred/gather_open's mechanism (those are
-faithful). [[task22-typespacebase-campaign]] varmap follow-on.
+**THE FIX (task #5, DECISIVELY IDENTIFIED) = port the LoadGuard/`addGuard` subsystem — which needs
+value-set analysis (mosura "Task #19"), a DEEP prerequisite → HITS THE DEPTH VALVE.**
+
+Why the spurious size-8 hint exists AND why the fix is deeper than the pointee default: the element-8
+is a self-perpetuating fixpoint (stack symbol `xunknown8[2]` → PTRSUB pointee `Unknown(8)` → size-8
+hint → `xunknown8[2]`). Ghidra breaks out of the fixpoint with an AUTHORITATIVE element-size hint from
+the ACCESS: **`MapState::addGuard`** (varmap.cc:1003) reads each indexed stack LOAD/STORE's LoadGuard —
+`step` (the array stride) + `outSize` (the access size) — and emits a definitive array RangeHint of that
+element size (2), independent of any pointer type. mosura **explicitly omits LoadGuard/addGuard**
+(varmap.rs:447 "LoadGuard array hints are faithfully omitted"; heritage.rs:1392 "the LoadGuard /
+`discoverIndexedStackPointers` subsystem (heritage.cc:915/932), which mosura lacks (**Task #19**)").
+Without it, mosura has no access-authoritative element hint and falls into the element-8 fixpoint.
+
+**Depth:** LoadGuard's `step`/range come from **value-set analysis** (`ValueSetRead`,
+`LoadGuard::establishRange`/`finalizeRange`, heritage.hh:151) — a substantial unported analysis
+subsystem (mosura Task #19). So the faithful fix chains: value-set analysis → `discoverIndexedStackPointers`
+(heritage LoadGuard creation) → `addGuard` (varmap array hint). That's a foundation the size of the
+depth-valve trigger, NOT a bounded brick. **REPORTED TO MAIN per constraint #5 — size Task #19
+explicitly before opening it.** A non-faithful shortcut (extract the stride directly from the access
+without value-set, or suppress the size-8 hint) is possible but would be an adaptation, not a port —
+flagged, not taken. The type_order/preferred/gather_open mechanics are FAITHFUL and must not be touched.
+[[task22-typespacebase-campaign]] varmap follow-on; blocked on value-set analysis (Task #19).
 
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
