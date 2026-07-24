@@ -407,3 +407,115 @@ RESULTS:
 
 VERDICT: faithful bounded fix, corpus toward-oracle, zero WAR2 impact. Partialsplit moved → GATED (gate-byte-identical
 rule); reported to main with the delta for the commit go/no-go. Next per lead: E1010/E1081 aggregate lattice.
+
+## agent war2-arraytype (2026-07-24) — E1010/E1081 FOUNDATION grounding (Brick A go/no-go pending lead gate)
+
+Next foundation after e9c0655. Isolated-oracle-first grounding complete; build gated on lead go/no-go.
+
+ISOLATED DIVERGENCES (clean datatests, oracle/capture --c):
+- pointercmp (0.933): oracle `pxStack_10 = (xunknown1 *)(param_1 + 8)`; mosura bare `pStack_10 = param_1 + 8`.
+- pointerrel (0.951): oracle `piStack_10 = (int4 *)(param_1 + 8)` + `(float4)piStack_10[-1] + fStack_18`; mosura omits
+  both the `(int4 *)` assignment cast and the `(float4)` int→float value cast.
+
+ROOT: mosura's cast layer (cast.rs `cast_standard` = faithful `CastStrategyC::castStandard`) is wired ONLY through
+printc `get_input_cast` for op INPUTS (compares/shifts/div/arith-to-integral). NO assignment/store/copy output-cast
+arm → a value assigned to a mismatched-pointer container renders bare (E1010 type-mismatch, the wcc386 reject).
+
+GHIDRA SOURCE NAMED (typeop.cc, both `castStandard(reqtype, curtype, false, true)` — care_uint_int=false,
+care_ptr_uint=true, the same signature mosura's cast_standard already implements):
+- `TypeOpCopy::getInputCast`: reqtype = out->getHighTypeDefFacing(), curtype = in0->getHighTypeReadFacing().
+  → mosura: `Copy` arm = `cast_standard(&type_of(output), &type_of(in0), false, true)`.
+- `TypeOpStore::getInputCast` (slot 2 = value): when destSize == valueType size,
+  `castStandard(pointedToType, valueType, false, true)` (pointedToType = ptrTo of the pointer operand's type).
+  → mosura: `Store, slot==2` arm = `cast_standard(&pointee_of(type_of(in1)), &type_of(in2), false, true)`.
+- (Directional getHighType{Def,Read}Facing collapse to mosura's single `type_of` — the primitive approximation;
+  fine for the concrete-pointer-mismatch case, the E1029 directional model is a separate deferred foundation.)
+
+STAGED PLAN: Brick A = Copy/Store assignment pointer cast (the E1010 compile lever; gate pointercmp/pointerrel
+toward-oracle, wrong-code hard-block). Brick B = mixed int/float value cast `(float4)` (FloatAdd/IntAdd getInputCast;
+similarity only — int+float compiles implicitly). RECOMMENDATION: GO Brick A first. AWAITING LEAD GATE before code.
+
+## agent war2-arraytype (2026-07-24) — E1010/E1081 Brick A: NO clean render-cast lever (directional-type-gated) — STOP, report
+
+Built + measured Brick A candidates (store-value cast `TypeOpStore::getInputCast` + for-init/copy cast
+`TypeOpCopy::getInputCast`), all REVERTED — tree clean at e9c0655. Decisive finding: the render-cast layer does NOT
+isolate on the datatest corpus, because mosura's SINGLE `type_of` already reconciles the very mismatches Ghidra casts.
+
+- pointercmp/pointerrel (the only datatest E1010-adjacent divergences): instrumented the for-init — mosura types BOTH
+  the loop var `phi_out` AND the init value `iv` as `Pointer(8, Unknown(1))` (identical), so `cast_standard` returns
+  None — no render-cast can fire. Ghidra casts `(xunknown1 *)(param_1 + 8)` because it keeps the ADD result
+  DEF-facing `int8` vs the loop var READ-facing pointer and reconciles via `getInputCast`. **mosura has no directional
+  type model (getHighTypeDefFacing/ReadFacing) — a single `type_of`.** So these are the E1029 DIRECTIONAL-TYPE deep
+  foundation, NOT a self-contained cast.rs extension. Both store/copy render-casts are INERT here (byte-identical).
+- The genuine render-cast-fixable E1010 (WAR2 FUN_00016598 `pRam int* = pVar3 int1*` — distinct types, a real
+  mismatch) is a GLOBAL/COPY assignment (not the store form), WAR2-ONLY (no isolated oracle), and its fix = the
+  GENERAL copy-assignment cast at the `_ =>` arm — which fires on every explicit COPY assignment corpus-wide → the
+  print-time re-inference WATCH-ITEM (broad movement), and can't be datatest-gated (byte-neutral there, WAR2-only).
+
+VERDICT: E1010/E1081 render-cast is NOT the clean self-contained cast.rs brick expected. It splits into (a)
+directional-type-gated datatest cases = the E1029 deep foundation (getHighType{Def,Read}Facing — a real type-model
+extension), and (b) a WAR2-only genuine mismatch whose only fix (general copy-cast) is ungateable on datatests +
+trips the re-inference watch-item. Neither is a bounded isolated-oracle brick. Reported to lead for re-gate; both
+E1010 and E1029 now point at the SAME directional-type foundation. Tree clean, e9c0655.
+
+## agent war2-arraytype (2026-07-24) — task #9 DEPTH-VALVE: "directional types" is UNION-ONLY, NOT the E1010 lever — STOP at plan
+
+Grounded Ghidra's directional-type model from source (varnode.cc:626-672, type.hh) BEFORE any brick plan, per the
+depth valve. DECISIVE — the scoped foundation is mis-named:
+
+- `Varnode::getHighTypeDefFacing`/`getHighTypeReadFacing` (varnode.cc:651/665) BOTH return `high->getType()` (the
+  HighVariable's type); they diverge ONLY when `ct->needsResolution()` → `ct->findResolve(def/op,slot)`.
+- `needsResolution()` (type.hh:231) = "Is this a union or a pointer to union" (`needs_resolution` flag set only for
+  TypeUnion / ptr-to-union / partial-union / array-of-size-1 — type.hh:551/945, type.cc:1052/1342/1571/1877/2427).
+- ⇒ For pointercmp/pointerrel/E1010 (ordinary pointers + ints, NO unions), def-facing == read-facing ==
+  `high->getType()`. The def/read DIRECTIONAL split is a UNION field-resolution mechanism — it does NOT produce the
+  `(xunknown1 *)(param_1+8)` cast. "Directional read/def-facing types" is NOT the E1010/E1029 lever.
+
+THE ACTUAL LEVER (re-pinned): `TypeOpCopy`/`TypeOpStore::getInputCast` compare HIGHVARIABLE types
+(`out->getHighTypeDefFacing()` vs `in->getHighTypeReadFacing()` = `high->getType()` for both). The pointercmp cast
+fires because Ghidra keeps the ADD result `param_1+8` typed **int8** in a DIFFERENT HighVariable from the loop var
+(`xunknown1 *`). mosura types the ADD result **Pointer(8,Unknown(1))** — identical to the loop var — so no cast is
+possible (instrumented: phi_out==iv==Pointer(8,Unknown(1))). mosura OVER-PROPAGATES the loop var's pointer type onto
+the arithmetic init through the phi (same over-propagation class as partialsplit). So E1010 needs either (a) the
+persistent HighVariable type model where an arithmetic result and a merged pointer variable keep distinct types
+(the C-cluster / coarse-SSA foundation — mosura resolves ONE most-specific type per HighVariable, collapsing the
+distinction), or (b) a delicate type-propagation fix (don't relay a pointer back through a MULTIEQUAL onto an
+INT_ADD arithmetic result) — corpus-wide type-core risk, same delicacy flagged for partialsplit.
+
+DEPTH VALVE TRIGGERED (as the lead anticipated): the two-type model resolves to the persistent HighVariable layer
+(read-facing type IS `high->getType()`). STOPPED at the plan — reporting scope BEFORE opening the C-cluster. The
+"directional type" brick plan would be building the wrong thing (union resolution). No code. Tree clean, e9c0655.
+
+## agent war2-arraytype (2026-07-24) — task #10 C-cluster: mechanism = IR-CAST-op model; DEPTH VALVE all-or-nothing
+
+Grounded the persistent-HighVariable/C-cluster mechanism to the ACTUAL faithful crux (source + instrumented):
+
+1. INSTRUMENTED mosura infer on pointercmp: the INT_ADD result `param_1+8` (v34) has COMMITTED (per-varnode) type
+   `Pointer(8,Unknown(1))` while its input param_1 (v218) is `Int(8)`. So the pointer is NOT from the HighVariable
+   merge/resolution — it's TYPE PROPAGATION: the loop phi (MULTIEQUAL v243, pointer) relays its pointer type BACKWARD
+   onto its input v34 (the INT_ADD result). It's a propagation issue, not a one-type-per-HighVariable issue.
+2. GHIDRA SOURCE + oracle IR: `TypeOpMulti::propagateType` (typeop.cc) has NO guard — it relays `alttype` freely. The
+   block comes from a REAL IR CAST OP: pointercmp oracle IR has `RAX = (cast) u0x10000008` where `u0x10000008 = RDI + #0x8`
+   (the ADD result, int8). Ghidra's ActionSetCasts inserted a CPUI_CAST between the INT_ADD result (int8) and the loop
+   phi (pointer); the phi's input is the CAST output (pointer), so the pointer never reaches the int8 ADD result.
+3. THE ARCHITECTURAL DIVERGENCE: **mosura has NO IR CAST ops** — cast.rs is "just the decision, not an IR pass";
+   printc realises casts at PRINT TIME. So nothing blocks the back-relay; the pointer propagates onto the arithmetic
+   result; there is no type mismatch left for any render-cast to detect. Ghidra's CPUI_CAST is a real IR node that
+   (a) is inserted by ActionSetCasts, (b) BLOCKS type propagation, (c) renders `(T)expr`.
+
+FAITHFUL FIX = port Ghidra's IR-CAST-op model (ActionSetCasts inserts CPUI_CAST ops that participate in propagation).
+This REQUIRES retiring mosura's print-time type re-inference (printc re-runs `infer()` at render time; an opaque IR
+CAST perturbs that re-inference at compare sites — the exact block flagged in [[actionsetcasts-campaign]] Brick-2 +
+[[printc-structuring-adaptation-conflicts]], a ZERO-GAUGE foundation change). 
+
+DEPTH VALVE TRIGGERED (all-or-nothing): NO faithful incremental toward-oracle first brick exists —
+- option (b) "guard the MULTIEQUAL→INT_ADD pointer back-relay" is a NON-FAITHFUL adaptation (Ghidra has no such
+  guard; it uses the CAST op) → rejected by faithful-port-only.
+- adding IR CASTs incrementally perturbs print-time re-inference corpus-wide (moves fixtures unpredictably, not
+  toward-oracle) UNTIL the re-inference retirement lands; the retirement itself is zero-gauge (no toward-oracle value
+  alone). So Stage 0 = retire print-time re-inference (zero-gauge, corpus-wide, risky) is a hard prerequisite with no
+  incremental gateable value.
+
+⇒ Per the lead's depth valve: STOPPED at the plan. The E1010/E1045/E1029/partialsplit convergence foundation is the
+IR-CAST-op model + print-time-re-inference retirement — a genuine architectural rewrite, all-or-nothing at Stage 0,
+no faithful bounded entry brick. Reported to lead for the user-level calculus decision. Tree clean, e9c0655.
