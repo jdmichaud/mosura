@@ -13,7 +13,8 @@
 
 use std::collections::BTreeSet;
 
-use mosura::analysis::{self, program::RefType};
+use mosura::analysis::{self, decompiler::decompile_function, program::RefType};
+use mosura::decompile::space::Address;
 use mosura::paths::ground_truth_dir;
 
 struct Truth {
@@ -190,4 +191,43 @@ fn narrow_switch_recovery_gap() {
         "narrow-switch gap: sw_int recovers 8 targets (control); sw_short recovers 0 \
          (decompiler-lane gap, Ghidra recovers) — pinned"
     );
+}
+
+/// WAR2 `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's
+/// DECOMPILE_FAIL class (all 117 WAR2 panics were this one bug: `merge.rs:1205` index-out-of-bounds,
+/// docs/decompiler-bug-merge-indirect-trim-panic.md, fixed in `b6ec467`). `war2gates` (Open Watcom,
+/// `src/war2gates.c`) mimics WAR2 `FUN_00011954`: `trim_shape` is three sequential register-arg
+/// calls in one block with two global stores, whose chained call-guard INDIRECTs force merge-marker's
+/// non-MULTIEQUAL trim. Pre-fix mosura (`ef65486`) panics on exactly this compiled shape; the fixed
+/// pipeline decompiles it. This is the ground-truth (self-compiled Watcom, NOT Ghidra) gate for the
+/// panic, per `war2-issues-become-source-tests`. Skipped if the corpus binary is absent
+/// (regeneration-only toolchain).
+#[test]
+fn war2_trim_shape_no_panic() {
+    let bin = ground_truth_dir().join("war2gates.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("war2gates.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip war2_trim_shape_no_panic: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let trim_shape = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "trim_shape_")
+        .map(|(a, _)| *a)
+        .expect("truth lists trim_shape_");
+
+    let prog = analysis::analyze_file(&bin).expect("analyze war2gates");
+    // decompile_function catches a pipeline panic and returns None (the A6 bridge's isolation,
+    // faithful to Ghidra's DecompilerSwitchAnalyzer). Pre-fix this function panicked at
+    // merge.rs:1205 (trimOpInput indexing in_edges[slot] for an INDIRECT in the entry block) → None;
+    // the fix ports Ghidra's non-MULTIEQUAL branch and it decompiles → Some.
+    let f = decompile_function(&prog, Address::new(prog.default_space, trim_shape));
+    assert!(
+        f.is_some(),
+        "trim_shape (WAR2 FUN_00011954 repro @ {trim_shape:#x}) must decompile without panicking \
+         — the merge.rs:1205 trimOpInput regression is back"
+    );
+    eprintln!("war2 trim-panic gate: trim_shape @ {trim_shape:#x} decompiles cleanly (pre-fix: merge.rs:1205 OOB)");
 }
