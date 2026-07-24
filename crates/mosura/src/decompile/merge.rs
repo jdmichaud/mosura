@@ -111,6 +111,23 @@ pub fn merge(f: &Funcdata) -> HighVariables {
     h
 }
 
+/// Ghidra `ActionMarkImplied` (coreaction.cc:3416) as a standalone per-varnode classification:
+/// `true` where a value is *implied* (folded inline into its use, no named declaration). This is the
+/// `Varnode::isImplied` state Ghidra's `ActionSetCasts::castOutput` reads — Ghidra runs
+/// `ActionMarkImplied` (coreaction.cc:5720) immediately before `ActionSetCasts` (5735). It is the
+/// complement of the shared [`mark_explicit`] classifier (the merge-time
+/// `ActionMarkExplicit`+`ActionMarkImplied`), evaluated on the required-merges-only HighVariable
+/// state — exactly the state Ghidra has at that slot (before the COPY/speculative merges). printc's
+/// print-time `is_explicit` layers naming-only additions on top; those are a mosura print concern
+/// Ghidra's setcasts does not see, so this bare classification is the faithful input to castOutput.
+pub fn implied_classification(f: &Funcdata) -> Vec<bool> {
+    let mut h = HighVariables::new(f.num_varnodes());
+    let covers = all_covers(f);
+    merge_addrtied(f, &mut h, &covers);
+    merge_markers(f, &mut h);
+    mark_explicit(f, &mut h, &covers).into_iter().map(|e| !e).collect()
+}
+
 /// Ghidra `ActionMarkExplicit` + `ActionMarkImplied` (coreaction.cc:3237/3416) evaluated at their
 /// pipeline slot — between the required merges and the COPY/speculative merges. Returns, per
 /// varnode, whether it is *explicit* (a named variable; a merge candidate) as opposed to *implied*

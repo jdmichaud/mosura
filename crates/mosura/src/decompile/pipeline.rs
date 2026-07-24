@@ -763,6 +763,12 @@ pub fn universal_action() -> ActionGroup {
         // was exactly this final pass done at print time; committing it in-pipeline makes the
         // committed types authoritative for the printer (and, later, for `ActionSetCasts`).
         .then(ActionInferTypes::default())
+        // Ghidra `ActionSetCasts` (coreaction.cc:5735, DEAD-LAST — after ActionMarkImplied at 5720
+        // and with no ActionInferTypes after it): insert real CPUI_CAST ops where a value's committed
+        // type and an operation's natural token/required type diverge, so printc renders `(type)expr`
+        // from IR rather than deciding casts at render time. Runs after the final ActionInferTypes so
+        // the committed types are settled. Currently the def-side `castOutput` only.
+        .then(super::setcasts::ActionSetCasts)
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

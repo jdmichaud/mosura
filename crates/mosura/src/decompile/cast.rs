@@ -50,6 +50,86 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
     }
 }
 
+/// Ghidra `CastStrategyC::arithmeticOutputStandard` (cast.cc): the "natural" C type an arithmetic
+/// op produces — the most specific ([`type_order`]) of its input read-facing types (a `bool` input
+/// counts as an `int` of its width). This is the *token* type `ActionSetCasts::castOutput` compares
+/// against the value's committed type: when propagation has relayed a pointer backward onto an
+/// integer arithmetic result (the pointercmp `param_1 + 8` = int8 result flooded to `xunknown1 *`
+/// by the loop phi), the token stays int and the committed type is the pointer, so a `CPUI_CAST`
+/// splits them — the faithful mechanism that renders `(xunknown1 *)(param_1 + 8)`.
+pub fn arithmetic_output_standard(f: &Funcdata, op: OpId) -> Datatype {
+    let o = f.op(op);
+    let mut res1 = f.vn(o.input(0).unwrap()).get_type();
+    if matches!(res1, Datatype::Bool) {
+        res1 = Datatype::Int(res1.size()); // treat boolean as if cast to an integer
+    }
+    for i in 1..o.num_inputs() {
+        let res2 = f.vn(o.input(i).unwrap()).get_type();
+        if matches!(res2, Datatype::Bool) {
+            continue;
+        }
+        if type_order(&res2, &res1) == std::cmp::Ordering::Less {
+            res1 = res2; // res2 is more specific
+        }
+    }
+    res1
+}
+
+/// Ghidra `TypeOp::getOutputToken` (typeop.cc:282) and its overrides: the data-type an op's output
+/// naturally has "as would be assigned by a C compiler parsing a grammar containing this op". Read
+/// by [`super::setcasts`]'s `castOutput` and compared to the value's committed type; a mismatch
+/// inserts a `CPUI_CAST` on the def side.
+///
+/// The ops whose token can differ from the committed type — the arithmetic/logic ops (their token
+/// is [`arithmetic_output_standard`], recomputed from the *inputs* so it ignores a back-relayed
+/// pointer), the shifts (input 0's type), `COPY` (its input's type — the assignment cast lever),
+/// `LOAD` (the pointed-to type), and `PTRADD` (its base pointer) — are ported here. Every other op's
+/// token equals its committed output type in the primitive lattice (Ghidra's base
+/// `outputTypeLocal`, which inference already settled onto the output), so it needs no output cast;
+/// the deferred output-cast cases (a pointer/float-returning `CALL`, `PTRSUB` `downChain`,
+/// `SUBPIECE`/`PIECE` composite tokens) come with the aggregate lattice.
+pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
+    let o = f.op(op);
+    let out = o.output.unwrap();
+    match o.code() {
+        // TypeOpCopy::getOutputToken — cast to the input's read-facing type (the E1010 assignment cast)
+        OpCode::Copy => f.vn(o.input(0).unwrap()).get_type(),
+        // arithmeticOutputStandard (typeop.cc:1175/1326/1388/1402/1416/1449/1482/1625)
+        OpCode::IntAdd
+        | OpCode::IntSub
+        | OpCode::IntMult
+        | OpCode::Int2comp
+        | OpCode::IntNegate
+        | OpCode::IntXor
+        | OpCode::IntAnd
+        | OpCode::IntOr => arithmetic_output_standard(f, op),
+        // shifts: input 0's type, bool→int (typeop.cc:1518/1558/1608)
+        OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright => {
+            let mut res1 = f.vn(o.input(0).unwrap()).get_type();
+            if matches!(res1, Datatype::Bool) {
+                res1 = Datatype::Int(res1.size());
+            }
+            res1
+        }
+        // TypeOpLoad::getOutputToken (typeop.cc:472): the pointer's pointee when it matches the
+        // output size, else the output's own type (a cast will reconcile the size mismatch).
+        OpCode::Load => {
+            let ct = f.vn(o.input(1).unwrap()).get_type();
+            if let Datatype::Pointer(_, pt) = &ct {
+                if pt.size() == f.vn(out).size {
+                    return (**pt).clone();
+                }
+            }
+            f.vn(out).get_type()
+        }
+        // TypeOpPtradd::getOutputToken (typeop.cc:2244): cast to the base pointer's type
+        OpCode::Ptradd => f.vn(o.input(0).unwrap()).get_type(),
+        // base TypeOp::getOutputToken = outputTypeLocal: inference already settled this onto the
+        // output, so token == committed → no cast (the deferred composite/call cases noted above).
+        _ => f.vn(out).get_type(),
+    }
+}
+
 /// Ghidra `CastStrategyC::castStandard`: the data-type `curtype` must be cast to so an op can
 /// consume it as `reqtype`, or `None` if C needs no cast.
 ///

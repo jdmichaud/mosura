@@ -565,17 +565,15 @@ impl<'a> PrintC<'a> {
         true
     }
 
-    /// Render input `slot` of `op`, wrapping it in the cast the op requires ([`get_input_cast`]).
-    /// A constant operand is never wrapped — like Ghidra's `castInput`, the literal simply adopts
-    /// the required type (so a signed compare prints `(int4)x < 10`, not `< (int4)10`) — but may
-    /// take an explicit `U` suffix ([`mark_explicit_unsigned`]).
+    /// Render input `slot` of `op`. The operand cast the op requires ([`get_input_cast`]) is now a
+    /// real `CPUI_CAST` op that [`super::setcasts::ActionSetCasts`]'s `castInput` inserted into the
+    /// IR, so it renders through the [`OpCode::Cast`] arm here — printc no longer wraps at render
+    /// time (Stage 3 of the IR-cast-model port). What stays a pure print concern is Ghidra's
+    /// `markExplicitUnsigned`: a constant that adopts an explicit `U` suffix ([`mark_explicit_unsigned`])
+    /// rather than a cast op.
     fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
         let v = self.f.op(op).input(slot).unwrap();
-        if !self.f.vn(v).is_constant() {
-            if let Some(ty) = self.get_input_cast(op, slot) {
-                return format!("({}){}", ty.name(), self.operand(v, 14, false));
-            }
-        } else if self.mark_explicit_unsigned(op, slot) {
+        if self.f.vn(v).is_constant() && self.mark_explicit_unsigned(op, slot) {
             let vn = self.f.vn(v);
             return render_const_unsigned(vn.constant_value(), vn.size);
         }
