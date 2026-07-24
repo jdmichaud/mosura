@@ -202,7 +202,21 @@ directed) proved the answer is (a): remove a SPURIOUS mosura hint, NOT add a mis
    + `ext(auStack_28,0x20)` + `return auStack_28[i]` — element-2 array DESPITE the call-clobber. Ghidra
    never types the call-arg pointer as `undefined8 *` and never generates a size-8 hint.
 
-**FAITHFUL FIX DIRECTION (awaiting main's direction gate):** mosura types the call-clobber stack pointer's
+**PIN PROGRESS (2026-07-24, per-iteration instrumented `gather_open`, reverted):** the fixpoint
+transition is `iter0: base=Unknown(8) SCALAR (def IntAdd(Pointer(Spacebase),Unknown(8)))` → `iter1:
+base=Pointer(8,Unknown(8))` (the spurious idx=false call-clobber base) vs the correct idx=true base
+`Pointer(8,Unknown(2))`. CRUCIAL: the `Unknown(8)` POINTEE is **NOT** from `spacebase_sub_pointer`
+(which returns `Unknown(1)` for a no-mapped-symbol offset, line 548; and iter0's symbol is
+`Array(Unknown(1),20)` = element-1, which would give `Unknown(1)` not `8`). So the `Unknown(8)` pointee
+comes from a DIFFERENT type-propagation source on the idx=false base — REMAINING PIN: hook the varnode
+type-assignment in infertypes to catch which rule first sets `Pointer(_,Unknown(8))` on that call-clobber
+varnode (candidates: a generic "make-pointer" default that uses `Unknown(vn.size)` as pointee instead of
+`Unknown(1)`; the INDIRECT-output typing; or a propagate_add relay). Best done fresh (delicate corpus-wide
+type core — a wrong pin risks the regression main flagged). Once pinned: correct that pointee-typing to
+match Ghidra (which types the same pointer with the array element, element-2, per the gcc MVE), regression-
+guard legit `undefined8 *` stack args, stage + gate. type_order/preferred/gatherOpen stay untouched.
+
+**FAITHFUL FIX DIRECTION (main gated (a); condition = pin exact origin first):** mosura types the call-clobber stack pointer's
 pointee as `Unknown(8)` (unconstrained-by-dereference → ptrsize default), producing a competing size-8
 array hint. Ghidra's equivalent pointer carries the array element type (2), so no size-8 hint. The fix is
 in that pointee typing — REMAINING GROUNDING: pin the exact origin of the `Unknown(8)` pointee (CALL param
