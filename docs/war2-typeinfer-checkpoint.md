@@ -279,3 +279,15 @@ Instrumented mosura's varmap hints + infertypes propagation on partialsplit end-
 4. LANDED (804d274, byte-neutral, faithful): the MISSING `TypeOpIndirect::propagateType` guard `if(op->isIndirectCreation()) return 0` — mosura lacked it, relaying stale pointee types across call-clobber creations. Inert on partialsplit (store-dominated) but a genuine missing faithful rule; MAY reduce other WAR2 COMPILE_FAILs where the INDIRECT relay is the dominant element-8 source → WAR2 re-measure on resume to confirm. Unit test added.
 
 NEXT (fresh): the deeper array-symbol-type-dominance + cast-at-mismatch fix (#3 above) — differential-first, staged, corpus-gated. Store-vs-array element resolution is the crux, not the call-clobber.
+
+## LEAD session #2 (2026-07-24, agent rate-limited) — bounded wins cleared, remaining = deep foundations
+
+LANDED (master 09f23c6): isIndirectCreation guard (804d274) + E1063 for-loop marker-leak (09f23c6, ground-truth-gated forphi.c). Both faithful, corpus-neutral, tested.
+
+REMAINING COMPILE_FAIL classes are ALL deep foundations or deep structurer bugs — NO bounded win left (confirmed):
+- **E1045 ×12 (array-element typing / partialsplit):** fully pinned to a multi-system fixpoint (store element-8 vs array-symbol dominance + cast-at-mismatch). Ghidra keeps the base `uint2*` because the array-SYMBOL type dominates the per-op store propagation and ActionSetCasts casts the 8-byte store; mosura lets store-propagation win. Fix = ordering/dominance of varmap array-symbol type over infertypes store propagation (varmap↔infertypes↔ActionSetCasts). DEEP.
+- **E1018 ×2 (goto to undefined label):** the goto-TARGET block (e.g. 0x43f3a in FUN_00043f04) is DROPPED from the structured output entirely (`LAB_..:` emitted 0×) — a structurer collapse bug excluding a reachable goto-target block (kin to D2 dead-block: likely a constant-folded/absorbed block with a surviving goto edge). DEEP structurer.
+- **E1010 ×16 + E1081 ×6:** aggregate/concrete-pointer type lattice (cast.rs "primitive lattice only; struct/enum deferred"). DEEP.
+- **E1029 ×17:** directional read/def-facing type model (mosura has none). DEEP.
+
+⇒ The campaign has cleared every shallow/bounded lever. Further COMPILE_FAIL progress requires committing to ONE deep foundation (multi-session, staged, gated). Highest-value + fully-characterized = the array-element typing (E1045+Brick2). Next best count = the aggregate lattice (E1010/E1081, ~22).
