@@ -14,6 +14,7 @@
 use std::collections::BTreeSet;
 
 use mosura::analysis::{self, decompiler::decompile_function, program::RefType};
+use mosura::decompile::printc::print_c;
 use mosura::decompile::space::Address;
 use mosura::paths::ground_truth_dir;
 
@@ -230,4 +231,38 @@ fn war2_trim_shape_no_panic() {
          — the merge.rs:1205 trimOpInput regression is back"
     );
     eprintln!("war2 trim-panic gate: trim_shape @ {trim_shape:#x} decompiles cleanly (pre-fix: merge.rs:1205 OOB)");
+}
+
+/// WAR2 for-loop raw-marker leak regression — the source-reduced repro of the E1063 class the
+/// survey exposed (e.g. FUN_0002bd14): a `for`-loop whose induction variable's entry value comes
+/// from a PHI (an earlier loop modified it), not from a def in the pre-loop block. mosura's
+/// for-recovery lacked Ghidra's `BlockWhileDo::findInitializer` (block.cc:3223) checks (a written
+/// initializer's def must be a NON-MARKER op in the pre-loop block that flows only to the loop), so
+/// it emitted the phi raw as the for-init — `for (n = MULTIEQUAL(...); ...)`, which wcc386/gcc
+/// reject. `forphi` (Open Watcom, `src/forphi.c`) `scan` reproduces the shape; pre-fix it leaks
+/// `MULTIEQUAL(...)`, the fix renders `for (; cond; iter)`. Ground-truth (self-compiled, NOT
+/// Ghidra) gate, per `war2-issues-become-source-tests`. Skipped if the corpus binary is absent.
+#[test]
+fn war2_forphi_no_marker_leak() {
+    let bin = ground_truth_dir().join("forphi.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("forphi.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip war2_forphi_no_marker_leak: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let scan = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "scan_")
+        .map(|(a, _)| *a)
+        .expect("truth lists scan_");
+    let prog = analysis::analyze_file(&bin).expect("analyze forphi");
+    let f = decompile_function(&prog, Address::new(prog.default_space, scan)).expect("scan_ decompiles");
+    let c = print_c(&f);
+    assert!(
+        !c.contains("MULTIEQUAL(") && !c.contains("INDIRECT("),
+        "raw SSA marker leaked into C (findInitializer regression) — scan_ @ {scan:#x}:\n{c}"
+    );
+    eprintln!("war2 forphi gate: scan_ renders its for-loop without a raw phi/marker init");
 }

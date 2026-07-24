@@ -228,6 +228,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom watprog
   build_watcom narrowsw   # narrowed-switch decompiler-gap repro (war2-issues-become-source-tests)
   build_watcom war2gates  # trimOpInput INDIRECT-panic repro (war2-issues-become-source-tests)
+  build_watcom forphi     # E1063 for-loop phi-init marker-leak repro (war2-issues-become-source-tests)
 else
   log "SKIP x86-32 Watcom — wcc386 absent at $WATROOT/binl (documented gap)"
 fi
