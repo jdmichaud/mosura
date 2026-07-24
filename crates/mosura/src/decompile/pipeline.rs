@@ -756,6 +756,13 @@ pub fn universal_action() -> ActionGroup {
         // same-source COPY groups the merge trimming inserted into one dominant COPY
         // (Merge::processCopyTrims/buildDominantCopy, merge.cc:1415/1151).
         .then(super::merge::ActionDominantCopy)
+        // Stage 0c (ir-cast-model): a final type-inference commit on the fully-settled graph. The
+        // mainloop's `ActionInferTypes` (:626) runs BEFORE the tail cleanup/merge actions above
+        // (which insert COPYs and reshape the graph), so the committed `Varnode::ty` was slightly
+        // stale relative to the final form printc renders. mosura's retired render-time re-inference
+        // was exactly this final pass done at print time; committing it in-pipeline makes the
+        // committed types authoritative for the printer (and, later, for `ActionSetCasts`).
+        .then(ActionInferTypes::default())
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

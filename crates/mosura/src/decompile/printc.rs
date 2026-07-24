@@ -15,7 +15,6 @@ use std::fmt::Write as _;
 use super::block::BlockId;
 use super::cast::cast_standard;
 use super::funcdata::Funcdata;
-use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -134,7 +133,6 @@ struct PrintC<'a> {
     stack_declared: std::collections::HashSet<(i64, u32)>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
-    types: HashMap<VarnodeId, Datatype>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
     for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
     /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
@@ -210,7 +208,6 @@ impl PrintC<'_> {
         // `Varnode::getType`) instead of the retired render-time re-inference. `infer_types`
         // broadcasts the HighVariable-resolved type onto every member, so this is the authoritative
         // per-varnode type (0a: 99.4% consistent with the old re-inference, mostly more refined).
-        let _ = &self.types;
         self.f.vn(v).get_type()
     }
 
@@ -1870,13 +1867,10 @@ pub fn print_c(f: &Funcdata) -> String {
         }
     }
 
-    // Parameter type-locks: Ghidra's ActionPrototypeTypes recovers a parameter's type from
-    // consistent usage (e.g. `int8 *` for modulo), and only keeps it undefined when usage is
-    // inconsistent (divopt). Forcing all parameters to undefined is unfaithful — it regresses the
-    // pointer-typed cases — so until that recovery is ported (pointee-consistency), no locks are
-    // applied and parameters are typed by inference. The typelock machinery in infer() stands
-    // ready for the recovered locks.
-    let locks: HashMap<VarnodeId, Datatype> = HashMap::new();
+    // Stage 0 (ir-cast-model): the render-time type re-inference is retired — types are read from the
+    // committed `Varnode::ty` (`type_of`), which the final in-pipeline `ActionInferTypes` pass makes
+    // authoritative. Parameter type-locks (Ghidra `ActionPrototypeTypes`) live in the in-pipeline
+    // inference now, not a print-time `locks` map.
 
     // Pre-compute the addrtied-HighVariable info. `slot_write` marks a register value that is written
     // into an addrtied stack slot across a call — it is the input of an INDIRECT whose output is the
@@ -1885,11 +1879,6 @@ pub fn print_c(f: &Funcdata) -> String {
     // variable. This is the precise across-call-slot-write pattern, not every member of a stack
     // HighVariable (which would spill intermediate register arithmetic into stray statements).
     // `high_stack_off` names the merged HighVariable by its stack frame offset.
-    let t0 = std::time::Instant::now();
-    let types = infer(f, &locks);
-    if super::action::perf::enabled() {
-        super::action::perf::record("print", "infer", t0.elapsed());
-    }
     let t0 = std::time::Instant::now();
     let mut h = merge(f);
     if super::action::perf::enabled() {
@@ -1930,7 +1919,7 @@ pub fn print_c(f: &Funcdata) -> String {
             let v = VarnodeId(i);
             if f.vn(v).loc.space == stk {
                 high_stack_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
-                if let Some(t) = types.get(&v) {
+                if let Some(t) = &f.vn(v).ty {
                     stack_prefix.entry(f.vn(v).loc.offset as i64).or_insert(type_prefix(t));
                 }
             }
@@ -1958,7 +1947,6 @@ pub fn print_c(f: &Funcdata) -> String {
         stack_declared: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,
-        types,
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         array_elem: HashMap::new(),

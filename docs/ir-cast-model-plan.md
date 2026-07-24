@@ -117,3 +117,17 @@ iterations than the single print-time pass; the fix is to ensure the FINAL commi
 print-time fixpoint — e.g. a final infer_types pass, or find the float/bool refinement the print-time
 pass applies that the committed lacks). Small + bounded (2 fixtures, Float+Bool categories). Then remove
 the dead `infer()` call. THEN Stage 1 (CPUI_CAST op).
+
+## Stage 0 COMPLETE (2026-07-24, branch) — BYTE-IDENTICAL to master
+
+0c landed: a final `ActionInferTypes` pass at the tail of `universal_action()` (pipeline.rs, after the
+merge phase) commits the settled-graph type fixpoint. printc's render-time `infer()`/`locks`/`types`
+field are REMOVED — `type_of` reads committed `Varnode::ty` only.
+
+RESULT: corpus **0.9517/57 — BYTE-IDENTICAL to master (e9c0655)**, suite 495/0, clippy 0. The
+zero-gauge foundation turned out corpus-NEUTRAL: the final in-pipeline infer pass reproduces exactly what
+the render-time re-inference computed (pointerrel/revisit churn fully recovered). The print-time
+re-inference is retired; the in-pipeline committed types are authoritative for the printer — the
+prerequisite for Stage 1-3 (IR CAST ops can now be inserted in-pipeline without perturbing a second pass).
+
+NEXT: Stage 1 — add `OpCode::Cast` + `TypeOpCast` (no propagate_type → blocks back-relay).
