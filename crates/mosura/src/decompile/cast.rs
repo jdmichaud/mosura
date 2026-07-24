@@ -9,7 +9,46 @@
 //! module is just the decision, not an IR pass. Ported for the primitive lattice; typedef/enum/
 //! struct/variable-length refinements are deferred with the aggregate types they concern.
 
-use super::types::Datatype;
+use super::funcdata::Funcdata;
+use super::op::OpId;
+use super::opcode::OpCode;
+use super::types::{type_order, Datatype};
+
+/// Ghidra `TypeOp::getInputCast` for op `op`'s input `slot`: the type the operand must be cast to,
+/// or `None` if its committed type already satisfies the op. Reads the in-pipeline committed
+/// `Varnode::ty` (authoritative after Stage 0's final `ActionInferTypes`), so it works both at
+/// render time (printc) and as the `ActionSetCasts` insertion decision. The op-specific arms mirror
+/// the `getInputCast` overrides (comparisons force signedness, shifts carry the shift's sign, SEXT
+/// wants a signed input, div/rem force their sign, and the base arithmetic/logic default casts a
+/// pointer/float fed to an integral op); everything else is transparent.
+pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
+    let o = f.op(op);
+    let in_vn = o.input(slot)?;
+    let cur = f.vn(in_vn).get_type();
+    let sz = f.vn(in_vn).size;
+    match o.code() {
+        OpCode::IntSless | OpCode::IntSlessequal => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntLess | OpCode::IntLessequal => cast_standard(&Datatype::Uint(sz), &cur, true, false),
+        OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
+        OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
+        OpCode::IntEqual | OpCode::IntNotequal => {
+            let t0 = f.vn(o.input(0)?).get_type();
+            let t1 = f.vn(o.input(1)?).get_type();
+            let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
+            cast_standard(&req, &cur, false, false)
+        }
+        OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
+        OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
+            cast_standard(&Datatype::Uint(sz), &cur, false, true)
+        }
+        OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
+            cast_standard(&Datatype::Int(sz), &cur, false, true)
+        }
+        _ => None,
+    }
+}
 
 /// Ghidra `CastStrategyC::castStandard`: the data-type `curtype` must be cast to so an op can
 /// consume it as `reqtype`, or `None` if C needs no cast.

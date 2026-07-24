@@ -13,14 +13,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
-use super::cast::cast_standard;
 use super::funcdata::Funcdata;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::Address;
 use super::structure::{structure, FlowKind, GotoRecord, Structured};
-use super::types::{type_order, Datatype};
+use super::types::Datatype;
 use super::varnode::VarnodeId;
 
 /// The exit basic block of a structured block (where its terminating CBRANCH lives).
@@ -509,61 +508,11 @@ impl<'a> PrintC<'a> {
     /// use Ghidra's lenient default and effectively never cast in the primitive lattice, so they
     /// are left transparent here.
     fn get_input_cast(&self, op: OpId, slot: usize) -> Option<Datatype> {
-        let o = self.f.op(op);
-        let in_vn = o.input(slot)?;
-        let cur = self.type_of(in_vn);
-        let sz = self.f.vn(in_vn).size;
-        match o.code() {
-            OpCode::IntSless | OpCode::IntSlessequal => {
-                cast_standard(&Datatype::Int(sz), &cur, true, true)
-            }
-            OpCode::IntLess | OpCode::IntLessequal => {
-                cast_standard(&Datatype::Uint(sz), &cur, true, false)
-            }
-            // SEXT requires a signed input of the *input* width (Ghidra `TypeOpIntSext::
-            // getInputCast`, care_uint_int=true): `(int8)(int4)param` when param is undefined.
-            OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
-            // signed/unsigned divide and remainder force their operand's signedness
-            // (Ghidra `TypeOpIntSdiv`/`Srem`/`Div`/`Rem::getInputCast`, care_uint_int=true)
-            OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
-            OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-            OpCode::IntEqual | OpCode::IntNotequal => {
-                // reqtype is the more-specific of the two operand types (Ghidra
-                // `TypeOpEqual::getInputCast`); equality does not care about signedness.
-                let t0 = self.type_of(o.input(0)?);
-                let t1 = self.type_of(o.input(1)?);
-                let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
-                cast_standard(&req, &cur, false, false)
-            }
-            // Shift: the shifted value (slot 0) must carry the shift's signedness so the C `>>`
-            // renders as the correct kind. Ghidra `TypeOpIntRight::getInputCast` (typeop.cc) requires
-            // `TYPE_UINT` (the constructor's `inputTypeLocal`, logical `>>`); `TypeOpIntSright::
-            // getInputCast` requires `TYPE_INT` (arithmetic). Both: `castStandard(reqtype,curtype,
-            // true,true)` on slot 0 only — the shift amount (slot 1) defers to the binary default.
-            // The `intPromotionType` gate is omitted exactly as for the comparison arms above (this
-            // matches Ghidra's `castStandard` branch for operands >= 4 bytes; sub-4-byte
-            // promotion-forced casts are conservatively skipped).
-            OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-            OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
-            // Generic arithmetic / logical ops that do NOT override getInputCast fall back to
-            // Ghidra's base `TypeOp::getInputCast`: `castStandard(inputTypeLocal, curtype, false,
-            // true)` (typeop.cc). For the primitive lattice (int/uint/undefined) this is
-            // transparent, but a pointer/float value fed to an integral op is cast — Ghidra's
-            // `(uint)ptr & 0xf`, `- (int)ptr`. reqtype is the op's TypeOpBinary/Unary input
-            // metatype (typeop.cc constructors): the logical ops are TYPE_UINT, the arithmetic
-            // ones TYPE_INT. care_uint_int=false (arithmetic reconciles signedness silently),
-            // care_ptr_uint=true (a same-width pointer/uint mismatch *is* cast).
-            OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
-                cast_standard(&Datatype::Uint(sz), &cur, false, true)
-            }
-            OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
-                cast_standard(&Datatype::Int(sz), &cur, false, true)
-            }
-            _ => None,
-        }
-        // NOTE: the `checkIntPromotionForCompare` gate (cast.cc) is omitted; it is exactly
-        // NO_PROMOTION (→ defer to castStandard) for operands ≥ 4 bytes, which is every operand
-        // here. Sub-4-byte promotion-forced casts are conservatively skipped.
+        // Delegates to the shared `cast::input_cast` (Ghidra `TypeOp::getInputCast`), which reads the
+        // committed `Varnode::ty` — the same decision `ActionSetCasts` will use to INSERT the CAST op
+        // in-pipeline. The `checkIntPromotionForCompare` gate (cast.cc) is omitted: NO_PROMOTION for
+        // operands >= 4 bytes (every operand here); sub-4-byte promotion-forced casts are skipped.
+        super::cast::input_cast(self.f, op, slot)
     }
 
     /// Whether constant input `slot` should print with an explicit `U` suffix (Ghidra's
