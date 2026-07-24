@@ -217,3 +217,32 @@ ROOT CAUSE of the 4 regressions = **the faithful casts SURFACE pre-existing non-
 ⇒ DEPTH-VALVE HIT (as predicted). The perturbation-class (switchloop/stackstring, partially heapstring) is the ANALOGUE of Stage 0's retirement, one level up: retire printc's print-time explicit/implied RE-CLASSIFICATION by FREEZING `ActionMarkImplied` in-pipeline before setcasts (set the IMPLIED flag; printc reads it). That reconciliation carries the same churn risk Stage 0c did (must match the current recompute byte-for-byte on the 57 already-matching fixtures) and touches merge/HighVariable — a foundation move. The type/merge divergences (partialmerge global type, heapstring register reuse) are SEPARATE deep foundations. NONE is a cast-port mis-port — the port is verified faithful to coreaction.cc/cast.cc/typeop.cc.
 
 MERGE-GATE STATUS: flagship + pointerrel toward-oracle, zero wrong-code, but 4 fixtures move AWAY (violating "every mover toward-oracle"). Held for LEAD merge-gate decision: (A) land the faithful cast port now and open the freeze-classification + type/merge divergences as follow-ons, or (B) freeze the classification on-branch first (reconciliation-risky) before proposing merge. Committed green on branch for warm-resume either way.
+
+## Stage 2.5 FREEZE LANDED (2026-07-24, branch) — LEAD chose (B); net TOWARD-ORACLE, merge-gate SATISFIED
+
+Ported Ghidra `ActionMarkExplicit`/`ActionMarkImplied` (coreaction.cc:5719-5720) as a real in-pipeline
+pass `merge::ActionMarkImplied` that SETS the EXPLICIT/IMPLIED flag on every varnode, on the FINAL
+pre-cast graph, run just before `ActionSetCasts` (matching Ghidra's 5720 < 5735 ordering). printc's
+`is_explicit` now READS the frozen flag for the cast-sensitive TRAILING chain (written/marker/use-count
++ checkImpliedCover) instead of recomputing it at print time (after the casts). The leading chain
+(constant/input/addrtied + SUBPIECE-of-addrtied copymarker) is CAST-INVARIANT so it stays computed in
+printc in its original order — its `Some(false)` copymarker case must short-circuit before `high_ram_off`
+(revisit's `iRam.._2_2_`); freezing it too was the one reconciliation churn caught + fixed.
+
+RESULT: corpus **0.9517 (baseline) → 0.9527 — NET TOWARD-ORACLE (+0.0010)**, suite 495/0 + integration
+green, clippy 0. Per-fixture vs baseline:
+- WINS: pointercmp 0.933→1.000, pointerrel 0.951→0.966, **heapstring 0.898→0.941** (the freeze RESTORED
+  the 2-use CAST as a NAMED `pVar1 = (xunknown8 *)*param_1`, near-oracle `param_1 = (xunknown8 *)*param_1`).
+  switchloop + revisit recovered to baseline (revisit was the fixed churn).
+- RESIDUAL (2, both valid C, ZERO wrong-code, CONFIRMED pre-existing-surfaced — NOT cast/freeze bugs):
+  **partialmerge 0.970→0.941** — mosura types the global `int4`, oracle `xunknown8`; given int4 the
+  `iRam = (int4)param_1` truncation cast is CORRECT (baseline UNDER-cast); a TYPE-INFERENCE divergence.
+  **stackstring 0.933→0.895** — array-vs-scalar stack-slot typing (`axStack_20[8]` vs oracle `xStack_20`);
+  the `(int8)&xStack_20` cast mosura emits is present in the oracle too (castInput faithful).
+- Anomaly scan (double-cast / `(cast)` literal / `undefined` / `))(`) = 2 false positives (indproto,
+  switchmulti: valid `(*(code *)x)()` computed calls; indproto scores 1.000). ZERO wrong-code confirmed.
+
+⇒ MERGE-GATE (lead's criteria: net toward-oracle/neutral + zero wrong-code + residuals pre-existing) is
+SATISFIED. The two residuals are pre-existing type/merge foundations (global int-vs-unknown inference;
+register-reuse merge / stack array-vs-scalar typing), independent of the cast port. Recommend MERGE to
+master + open those two as separate deep follow-ons.

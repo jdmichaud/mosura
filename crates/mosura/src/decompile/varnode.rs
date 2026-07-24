@@ -244,6 +244,11 @@ impl Varnode {
         self.flags |= flags::IMPLIED;
         self.flags &= !flags::EXPLICIT;
     }
+    /// Ghidra `Varnode::setExplicit` — this value is a named variable, not folded inline.
+    pub fn set_explicit(&mut self) {
+        self.flags |= flags::EXPLICIT;
+        self.flags &= !flags::IMPLIED;
+    }
     /// Ghidra `Varnode::getType` — the committed data-type, or `undefined<size>` if none set yet.
     pub fn get_type(&self) -> Datatype {
         self.ty.clone().unwrap_or_else(|| Datatype::default_for(self.size))

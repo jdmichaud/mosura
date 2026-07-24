@@ -186,10 +186,6 @@ struct PrintC<'a> {
     covers: HashMap<VarnodeId, super::cover::Cover>,
     /// HighVariable representative → its member Varnodes (the frozen [`Self::high_of`] classes).
     high_members: HashMap<u32, Vec<VarnodeId>>,
-    /// The required-merges-only HighVariable state ([`super::merge::merge_required_only`], Ghidra's
-    /// classes at the `ActionMarkImplied` slot) as `(rep per varnode, rep → members)` — the
-    /// instance list `Merge::inflateTest` walks in [`Self::is_explicit`]'s implied-cover arm.
-    implied_high: (Vec<u32>, HashMap<u32, Vec<VarnodeId>>),
     /// Ops marked non-printing by Ghidra's `ActionCopyMarker`
     /// ([`super::merge::copy_marker_nonprinting`]): shadow assignments and redundant COPYs.
     nonprinting: HashSet<OpId>,
@@ -237,7 +233,10 @@ impl<'a> PrintC<'a> {
         if self.slot_write[v.0 as usize] {
             return true;
         }
-        // input / addrtied (with the SUBPIECE-of-addrtied internal-copymarker sub-case).
+        // input / addrtied (with the SUBPIECE-of-addrtied internal-copymarker sub-case). This leading
+        // chain is CAST-INVARIANT (constant/input/addrtied structure, not use-counts) and its
+        // `Some(false)` copymarker case must short-circuit before `high_ram_off` (revisit's
+        // `iRam.._2_2_` high-piece), so it stays computed here rather than frozen.
         if let Some(e) = super::merge::explicit_leading(self.f, v) {
             return e;
         }
@@ -247,17 +246,12 @@ impl<'a> PrintC<'a> {
         if self.high_ram_off.contains_key(&self.high_of[v.0 as usize]) {
             return true;
         }
-        // The trailing chain (written/marker/use-count arms + `checkImpliedCover`), with printc's
-        // full-merge classes for the cross-high persistent-COPY arm and the required-merges-only
-        // classes for the implied-cover walk — the states Ghidra has at each corresponding check.
-        super::merge::explicit_trailing(
-            self.f,
-            &self.high_of,
-            &self.implied_high.0,
-            &self.implied_high.1,
-            &self.covers,
-            v,
-        )
+        // The TRAILING classification chain (written/marker/use-count + `checkImpliedCover`) is the
+        // cast-sensitive part; it is now FROZEN on the pre-cast graph by `super::merge::ActionMarkImplied`
+        // and read from the flag, so the CAST ops `ActionSetCasts` inserts don't perturb the
+        // use-count/cover classification (Ghidra order: markImplied 5720 < setCasts 5735). A CAST
+        // output setcasts creates is `setImplied` at creation, so it reads implied here.
+        vn.is_explicit()
     }
 
     /// Ghidra `PcodeOp::isMoveable` (op.cc:178): can `op` be moved down in its block to just
@@ -1914,15 +1908,6 @@ pub fn print_c(f: &Funcdata) -> String {
                 m.entry(rep).or_default().push(VarnodeId(i as u32));
             }
             m
-        },
-        implied_high: {
-            let mut ih = super::merge::merge_required_only(f);
-            let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| ih.high(VarnodeId(i))).collect();
-            let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
-            for (i, &rep) in of.iter().enumerate() {
-                m.entry(rep).or_default().push(VarnodeId(i as u32));
-            }
-            (of, m)
         },
         nonprinting: HashSet::new(),
     };

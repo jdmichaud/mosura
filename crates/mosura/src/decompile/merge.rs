@@ -1691,6 +1691,63 @@ impl super::action::Action for ActionMergeMarkerTrim {
     }
 }
 
+/// Ghidra `ActionMarkExplicit` + `ActionMarkImplied` (coreaction.cc:3237/3416) as a real
+/// in-pipeline pass that SETS the EXPLICIT/IMPLIED flag on every varnode, on the FINAL pre-cast
+/// graph. This freezes the leading/trailing classification core (the same one printc's `is_explicit`
+/// computes) BEFORE `ActionSetCasts`, matching Ghidra's ordering (markImplied 5720 < setCasts 5735):
+/// the CAST ops setcasts inserts then can't perturb the use-count/cover classification (a cast
+/// interposed between a def and its uses would otherwise flip a value from explicit to implied — the
+/// switchloop/stackstring regressions). It replicates printc's `is_explicit` core exactly — the
+/// full-merge `high_of` for the persistent-COPY arm, the required-merges-only classes for the
+/// implied-cover walk — so on fixtures where casts don't perturb, the frozen flag equals the old
+/// print-time recompute (no churn); the print-only additions (`slot_write`, `high_ram_off`) stay in
+/// printc as cast-invariant OR-terms.
+pub fn mark_explicit_flags(f: &mut Funcdata) {
+    let mut h = merge(f);
+    let high_of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
+    let covers = all_covers(f);
+    let mut ih = merge_required_only(f);
+    let ih_of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| ih.high(VarnodeId(i))).collect();
+    let mut ih_members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+    for (i, &rep) in ih_of.iter().enumerate() {
+        ih_members.entry(rep).or_default().push(VarnodeId(i as u32));
+    }
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        let explicit = if f.vn(v).is_constant() {
+            false // a constant renders as a literal, never a named variable
+        } else {
+            explicit_leading(f, v)
+                .unwrap_or_else(|| explicit_trailing(f, &high_of, &ih_of, &ih_members, &covers, v))
+        };
+        if explicit {
+            f.vn_mut(v).set_explicit();
+        } else {
+            f.vn_mut(v).set_implied();
+        }
+    }
+}
+
+/// Pipeline action wrapping [`mark_explicit_flags`] — Ghidra's `ActionMarkExplicit`/`ActionMarkImplied`
+/// (coreaction.cc:5719-5720), run just before `ActionSetCasts` so the explicit/implied classification
+/// is frozen against the casts setcasts inserts.
+pub struct ActionMarkImplied;
+
+impl super::action::Action for ActionMarkImplied {
+    fn name(&self) -> &str {
+        "markimplied"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Skip during the jump-table recovery probe: the flags are read only by printc (not run in
+        // the probe) and ActionSetCasts (gated off in the probe), so they are inert there.
+        if data.table_recovery_probe {
+            return 0;
+        }
+        mark_explicit_flags(data);
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
