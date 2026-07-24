@@ -206,7 +206,12 @@ impl PrintC<'_> {
         // downgrade to `undefined` for stripped binaries — an int/uint that inference recovers stays
         // int/uint (naming a variable `iVar`/`uVar`, and avoiding the spurious `(int4)` cast that a
         // `undefined`-typed symbol would need when widened). Absent inference gives `undefined<N>`.
-        self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
+        // Stage 0b (ir-cast-model): read the in-pipeline committed `Varnode::ty` (Ghidra
+        // `Varnode::getType`) instead of the retired render-time re-inference. `infer_types`
+        // broadcasts the HighVariable-resolved type onto every member, so this is the authoritative
+        // per-varnode type (0a: 99.4% consistent with the old re-inference, mostly more refined).
+        let _ = &self.types;
+        self.f.vn(v).get_type()
     }
 
 }

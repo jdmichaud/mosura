@@ -97,3 +97,23 @@ toward-oracle; the few committed-less-refined cases — Float, some Bool — are
 DEPTH-VALVE risk shifts to Stage 2 (ActionSetCasts inserts CAST varnodes → the graph needs re-merge +
 re-resolution; whether that stays coherent without a persistent HighVariable is the Stage-2 watch, not 0a).
 NEXT: 0b — switch printc `type_of` to `Varnode::ty`, delete the render-time `infer()`, measure branch churn.
+
+## Stage 0b DONE + 0c scope (2026-07-24, branch) — type_of reads committed Varnode::ty
+
+0b: printc `type_of` now returns `self.f.vn(v).get_type()` (the committed in-pipeline type) instead of
+the render-time re-inference (`self.types` retained but unread — the `infer()` call removal is the 0b/0c
+cleanup, deferred to avoid churn during measurement). Build green.
+
+BRANCH CORPUS: 0.9517 (e9c0655) → **0.9512** (−0.0005, expected mid-rewrite; gate is at MERGE). Movers
+(per-fixture): **pointerrel 0.951→0.937 (−0.014)**, **revisit 0.894→0.875 (−0.019)**; pointercmp /
+partialsplit / heapstring / floatconv UNCHANGED. The two movers are exactly the 0a REVERSE-mismatch cases
+(committed LESS refined than re-inference): pointerrel had `reinf=Float(4) committed=Unknown(4)` +
+`reinf=Bool committed=Unknown(1)`; revisit had the highest mismatch rate (14/250). So the committed
+in-pipeline types are NOT yet fully at the print-time fixpoint for a few Float/Bool varnodes.
+
+0c SCOPE: reconcile the churn — make the in-pipeline `infer_types` commit the more-refined Float/Bool
+types the print-time pass reached (likely: the in-pipeline pass runs at an earlier mainloop state / fewer
+iterations than the single print-time pass; the fix is to ensure the FINAL committed types match the
+print-time fixpoint — e.g. a final infer_types pass, or find the float/bool refinement the print-time
+pass applies that the committed lacks). Small + bounded (2 fixtures, Float+Bool categories). Then remove
+the dead `infer()` call. THEN Stage 1 (CPUI_CAST op).
