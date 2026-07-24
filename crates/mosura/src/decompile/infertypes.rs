@@ -339,8 +339,16 @@ impl<'a> TypeInfer<'a> {
                 }
                 Some(self.copy_like(invn, alttype))
             }
-            // INDIRECT likewise, but never along the iop-pointer edge (slot 1).
+            // INDIRECT likewise, but never along the iop-pointer edge (slot 1). No type propagates
+            // across an INDIRECT that CREATES its output (a call-clobber "created out of nothing"
+            // value) — Ghidra `TypeOpIndirect::propagateType` guards `if (op->isIndirectCreation())
+            // return 0` first (typeop.cc). Without it, a clobbered stack pointer's stale pointee type
+            // (e.g. a canary's `Unknown(8)`) relays onto the post-call version and manufactures a
+            // spurious array-element hint that outranks the real indexed access.
             Indirect => {
+                if self.f.op(op).output.is_some_and(|o| self.f.vn(o).is_indirect_creation()) {
+                    return None;
+                }
                 if inslot == 1 || outslot == 1 || (inslot != -1 && outslot != -1) {
                     return None;
                 }
@@ -845,6 +853,43 @@ mod tests {
             ti.t(sum),
             &Datatype::Pointer(8, Box::new(Datatype::Int(4))),
             "a scaled-index add keeps the element pointer type"
+        );
+    }
+
+    #[test]
+    fn no_type_propagates_across_an_indirect_creation() {
+        // Ghidra `TypeOpIndirect::propagateType` guards `if (op->isIndirectCreation()) return 0`
+        // FIRST: a value created out of nothing by a call's indirect effect must not relay a type
+        // onto/off its input. A plain (non-creation) INDIRECT still relays. (Surfaced by WAR2
+        // partialsplit: a clobbered stack pointer was inheriting a stale `Unknown(8)` pointee.)
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let ptr = Datatype::Pointer(8, Box::new(Datatype::Unknown(8)));
+
+        let build = |creation: bool| -> Datatype {
+            let mut f = Funcdata::new("t", Address::new(ram, 0), spaces.clone());
+            let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+            let data_in = f.new_varnode(8, Address::new(reg, 0x100));
+            let iop = f.new_const(8, 0); // the iop annotation (slot 1) is not on the relayed edge
+            let ind = f.new_op(OpCode::Indirect, seq, vec![data_in, iop]);
+            let out = f.new_output(ind, 8, Address::new(reg, 0x108));
+            if creation {
+                f.vn_mut(out).set_indirect_creation();
+            }
+            let locks = HashMap::new();
+            let mut ti = TypeInfer::new(&f, &locks);
+            ti.build_localtypes();
+            ti.temp[data_in.0 as usize] = ptr.clone();
+            ti.propagate_one_type(data_in);
+            ti.t(out).clone()
+        };
+
+        assert_eq!(build(false), ptr, "a plain INDIRECT relays the pointer type to its output");
+        assert_ne!(
+            build(true),
+            ptr,
+            "an INDIRECT *creation* must not relay a type (Ghidra isIndirectCreation guard)"
         );
     }
 
