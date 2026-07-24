@@ -127,6 +127,16 @@ campaign is the **PTRADD→array-index inference** (unblocks E1045 + Brick 2/Int
 together — one foundation, three payoffs), then the **directional-type model** (E1029). Ground each as
 its own staged brick, differential-first, before coding. Do NOT slap render heuristics.
 
+**PTRADD-formation first brick — GROUNDED (partialsplit IR).** The array access at 0x100041 is
+`u0x1008d = PTRSUB(RSP, -0x58)` (stack-array base) → `u0x9500 = INT_ADD(u0x1008d, scaled_index)` →
+`LOAD u0x9500`. mosura never forms a PTRADD from `array_base + scaled_index`, so `type_of(base)` is a
+plain pointer (not `Array`), `detect_arrays`/`array_elem` skip it, and `render_mem` falls to the
+pointer-cast form `*(T*)(axStack_58 + i*2)` instead of Ghidra's `auStack_58[i]`. This is the standing
+**RulePtraddUndo/PtrsubUndo** payoff (see [[task8-mainloop-repeat]] open payDOWNS). Ghidra forms the
+PTRADD via `TypeOpPtradd` + the array/pointer-bounds inference; port that formation so `INT_ADD(ptr,
+i*elemsize)` on an array-typed base becomes a PTRADD (or is recognized in render_mem). Differential-
+first: dump Ghidra's IR (`oracle/capture --ir`) at the PTRADD-formation action to name the exact rule.
+
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
   (`docs/decompiler-nonbug-e1052-void-indirect-call-faithful.md`). Full-analysis Ghidra emits the
