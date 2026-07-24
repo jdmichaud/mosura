@@ -148,3 +148,34 @@ insert via `op_insert_before` + a unique varnode carrying the required type; run
 Then Stage 3's REMOVE half: delete the print-time cast_operand/get_input_cast wrapping (printc.rs:621/509)
 so casts come only from IR CAST ops (else double-casts). The Cast RENDER already works.
 STAGE 2 IS THE CORE REMAINING WORK — a fresh action port, differential-gated on pointercmp/pointerrel/E1010.
+
+## Stage 2 PORT PLAN (grounded 2026-07-24; the core remaining work) — for warm-resume
+
+Ghidra `ActionSetCasts` (coreaction.cc): a new mosura in-pipeline action `setcasts.rs`, run AFTER the
+final `ActionInferTypes` (Stage 0c) — it needs settled types. Structure:
+
+- `apply` (coreaction.cc:2722): iterate basic blocks in DOMINANCE order, ops in block order; skip
+  `notPrinted` + existing CAST. Per op: (PTRADD/PTRSUB refit — opUndoPtradd / →COPY/INT_ADD, can defer);
+  for each input slot `resolveUnion` (union-only, stub) + `castInput`; LOAD/STORE `checkPointerIssues`
+  (defer); then `castOutput`.
+- `castInput(op,slot)` (coreaction.cc:2655) — THE CORE:
+  - `ct = getInputCast(op,slot)` — MOVE mosura's `printc::get_input_cast` (printc.rs:509) here verbatim
+    (it already returns the right required type; it just needs to run in-pipeline reading `Varnode::ty`).
+  - `ct==null` → markExplicitUnsigned/LongSize (mosura's `mark_explicit_unsigned` — a print concern;
+    can stay in printc for now, NOT part of castInput's IR change).
+  - CONSTANT operand → `vn.update_type(ct)` (the literal adopts the type; NO CAST op) — matches mosura's
+    existing "constants aren't wrapped" print rule.
+  - already-CAST input → reuse/retype (double-cast guard).
+  - else INSERT: `newop=new_op(Cast,[vnin]); vnout=new_unique_out(size); vnout.update_type(ct);
+    vnout.set_implied(); op.set_input(slot, vnout); op_insert_before(newop, op)`. (Ghidra
+    coreaction.cc:2702-2712 — the CAST comes BEFORE the op in block order.)
+- `castOutput` (coreaction.cc:2532): the def-side cast (assignment/store output) — port after castInput.
+
+COORDINATION WITH STAGE 3 (critical — do together or the corpus double-casts): once castInput inserts IR
+CASTs, printc's render-time cast wrapping (`cast_operand` printc.rs:621 calling `get_input_cast`) must be
+REMOVED so operands aren't cast twice (the IR CAST already renders via printc.rs:949). Net: `get_input_cast`
+MOVES from a print-time wrap to the IR insertion; `cast_operand` becomes a plain operand render.
+
+GATE: first corpus-MOVING stage. Expect pointercmp/pointerrel/E1010 toward-oracle (the INT_ADD result now
+holds int8 + a CAST to the pointer, blocking the back-relay via Stage-1's propagate_type(Cast)=None).
+Differential per-fixture; wrong-code hard-block; report delta to lead. Then this branch is merge-candidate.
