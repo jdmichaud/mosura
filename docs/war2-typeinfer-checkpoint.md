@@ -202,6 +202,24 @@ directed) proved the answer is (a): remove a SPURIOUS mosura hint, NOT add a mis
    + `ext(auStack_28,0x20)` + `return auStack_28[i]` — element-2 array DESPITE the call-clobber. Ghidra
    never types the call-arg pointer as `undefined8 *` and never generates a size-8 hint.
 
+**PIN — CRUCIAL REFRAME (2026-07-24, hooked infertypes type-assignment, reverted):** the
+`Pointer(Unknown(8))` is SEEDED by `TypeOpLoad`/`TypeOpStore::propagateType` — an 8-byte LOAD/STORE
+types its pointer `Pointer(Unknown(8))` (trace: `vn49 via Load from alttype=Unknown(8)`, `vn728 via
+Store`). mosura's ONLY 8-byte accesses in partialsplit are the STACK-CANARY loads (`LOAD u0xc900`,
+`u0xc900 = FS_OFFSET + 0x28`) — those correctly type the CANARY pointer `Pointer(Unknown(8))`. The
+-0x58 array base then gets `Pointer(Unknown(8))` via `vn840 Ptrsub` (the element-8 FIXPOINT) + `vn832/
+vn726 Indirect` RELAYS. **So the pointee typing is FAITHFUL (not a spurious default) — my earlier
+"correct the Unknown(8) pointee default" framing was WRONG.** The real issue is the fixpoint/propagation:
+the -0x58 base becomes `Pointer(Unknown(8))` and reinforces `Array(Unknown(8),2)`, even though iter0's
+symbol is element-1 and there is NO 8-byte access at -0x58. The exact spurious step (which INDIRECT/
+relay/fixpoint edge first makes the -0x58 base element-8, and what Ghidra does differently) needs a
+FRESH focused propagation trace — the env-gated suppress-hint probe proved (a) empirically but the
+FAITHFUL fix is here in the propagation/fixpoint, NOT a one-line pointee change. type_order/preferred/
+gatherOpen/spacebase_sub_pointer are all FAITHFUL and confirmed do-not-touch. NEXT: trace the -0x58
+base's first `Pointer(Unknown(8))` edge across iterations (hook the type-assignment filtered to the
+-0x58-mapped varnodes) + diff against Ghidra's propagation; then the faithful fix + regression-guard +
+gate. This is delicate corpus-wide type-inference core — plan/ground fully before code.
+
 **PIN PROGRESS (2026-07-24, per-iteration instrumented `gather_open`, reverted):** the fixpoint
 transition is `iter0: base=Unknown(8) SCALAR (def IntAdd(Pointer(Spacebase),Unknown(8)))` → `iter1:
 base=Pointer(8,Unknown(8))` (the spurious idx=false call-clobber base) vs the correct idx=true base
