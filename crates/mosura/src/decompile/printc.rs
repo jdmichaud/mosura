@@ -537,6 +537,20 @@ impl<'a> PrintC<'a> {
             // promotion-forced casts are conservatively skipped).
             OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
             OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
+            // Generic arithmetic / logical ops that do NOT override getInputCast fall back to
+            // Ghidra's base `TypeOp::getInputCast`: `castStandard(inputTypeLocal, curtype, false,
+            // true)` (typeop.cc). For the primitive lattice (int/uint/undefined) this is
+            // transparent, but a pointer/float value fed to an integral op is cast — Ghidra's
+            // `(uint)ptr & 0xf`, `- (int)ptr`. reqtype is the op's TypeOpBinary/Unary input
+            // metatype (typeop.cc constructors): the logical ops are TYPE_UINT, the arithmetic
+            // ones TYPE_INT. care_uint_int=false (arithmetic reconciles signedness silently),
+            // care_ptr_uint=true (a same-width pointer/uint mismatch *is* cast).
+            OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
+                cast_standard(&Datatype::Uint(sz), &cur, false, true)
+            }
+            OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
+                cast_standard(&Datatype::Int(sz), &cur, false, true)
+            }
             _ => None,
         }
         // NOTE: the `checkIntPromotionForCompare` gate (cast.cc) is omitted; it is exactly
@@ -2092,5 +2106,33 @@ mod tests {
         pipeline::decompile(&mut f2);
         let c2 = print_c(&f2);
         assert!(c2.contains("rdtsc()"), "CALLOTHER should render as `rdtsc()`:\n{c2}");
+    }
+
+    /// WAR2 E1079/E1080: a pointer-typed value fed to an integral op (`&`, `-`, …) must be cast,
+    /// not left bare (`wcc386` rejects `ptr & -4` / `-ptr`). Ghidra's base `TypeOp::getInputCast`
+    /// (`castStandard(reqtype, cur, false, true)`, care_ptr_uint=true) inserts the cast; mosura's
+    /// render-time port must too. `mov %rdi,%rax ; and $0xf,%eax ; add (%rdi),%rax ; ret`
+    /// (`48 89 f8 83 e0 0f 48 03 07 c3`, gcc -O1 of `*p + ((long)p & 0xf)`): RDI is dereferenced
+    /// (=> pointer) AND masked (=> fed to INT_AND). Pre-fix mosura emitted `param_1 & 0xf` (bare
+    /// pointer in `&` = E1079); post-fix it casts the operand.
+    #[test]
+    fn pointer_in_integral_op_is_cast() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        if !sla.exists() {
+            return;
+        }
+        let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+        let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+        let bytes = [0x48, 0x89, 0xf8, 0x83, 0xe0, 0x0f, 0x48, 0x03, 0x07, 0xc3];
+        let mut f = raw_funcdata_flow(&spec, "func", &bytes, 0x1000, &ctx);
+        pipeline::decompile(&mut f);
+        let c = print_c(&f);
+        // The pointer `param_1` fed to `&` must carry an integral cast (Ghidra `(uint)param_1`),
+        // not be left bare (`param_1 & 0xfU`, the E1079 pre-fix rendering). x86-64's 8-byte
+        // pointer casts to `uint8`; WAR2's 4-byte pointer would render `(uint)`.
+        assert!(
+            c.contains("(uint8)param_1 & 0xf"),
+            "pointer param_1 fed to `&` must be cast (E1079), got:\n{c}"
+        );
     }
 }
