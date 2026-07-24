@@ -127,15 +127,21 @@ campaign is the **PTRADD→array-index inference** (unblocks E1045 + Brick 2/Int
 together — one foundation, three payoffs), then the **directional-type model** (E1029). Ground each as
 its own staged brick, differential-first, before coding. Do NOT slap render heuristics.
 
-**PTRADD-formation first brick — GROUNDED (partialsplit IR).** The array access at 0x100041 is
+**array-index first brick — GROUNDED (partialsplit IR + oracle).** The array access at 0x100041 is
 `u0x1008d = PTRSUB(RSP, -0x58)` (stack-array base) → `u0x9500 = INT_ADD(u0x1008d, scaled_index)` →
-`LOAD u0x9500`. mosura never forms a PTRADD from `array_base + scaled_index`, so `type_of(base)` is a
-plain pointer (not `Array`), `detect_arrays`/`array_elem` skip it, and `render_mem` falls to the
-pointer-cast form `*(T*)(axStack_58 + i*2)` instead of Ghidra's `auStack_58[i]`. This is the standing
-**RulePtraddUndo/PtrsubUndo** payoff (see [[task8-mainloop-repeat]] open payDOWNS). Ghidra forms the
-PTRADD via `TypeOpPtradd` + the array/pointer-bounds inference; port that formation so `INT_ADD(ptr,
-i*elemsize)` on an array-typed base becomes a PTRADD (or is recognized in render_mem). Differential-
-first: dump Ghidra's IR (`oracle/capture --ir`) at the PTRADD-formation action to name the exact rule.
+`LOAD u0x9500`. **CORRECTION: this is NOT a PTRADD-formation gap — Ghidra's final IR for partialsplit
+has ZERO PTRADD** (verified `oracle/capture --ir | grep -c PTRADD` = 0). Ghidra renders `auStack_58[i]`
+purely because the stack local is **Array-typed** and printc's array-deref (`checkArrayDeref`) turns
+`INT_ADD(array_base, index)` under a LOAD into a subscript. mosura's gap: `type_of(base)` for the
+PTRSUB-result stack-array pointer is NOT `Array` at the INT_ADD-indexed site, so `detect_arrays`
+(printc.rs:687, which checks `type_of(base) is Array`) skips it and `render_mem` falls to
+`*(T*)(axStack_58 + i*2)`. mosura DOES render stack arrays as `axStack_NN[i]` when the LOAD address is
+the PTRSUB DIRECTLY (`render_spacebase_ptrsub`), but not when a variable index is added via INT_ADD on
+top of the PTRSUB. So the real brick = connect `render_mem`'s INT_ADD path to the stack-symbol array
+recovery (render `name[index]` when the INT_ADD base is a stack-array PTRSUB and the offset is a
+scaled index) — mirroring Ghidra's type-driven array-deref, NOT PTRADD formation. Ground the exact
+`checkArrayDeref` + stack-local Array-typing rule before coding; watch mis-fire (not every
+`INT_ADD(stack_ptr, x)` is an array access — Ghidra gates on the base's Array type).
 
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
