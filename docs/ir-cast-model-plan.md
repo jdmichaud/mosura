@@ -131,3 +131,20 @@ re-inference is retired; the in-pipeline committed types are authoritative for t
 prerequisite for Stage 1-3 (IR CAST ops can now be inserted in-pipeline without perturbing a second pass).
 
 NEXT: Stage 1 — add `OpCode::Cast` + `TypeOpCast` (no propagate_type → blocks back-relay).
+
+## Stage 1 — mostly PRE-EXISTING scaffolding (2026-07-24, branch)
+
+DISCOVERY: `OpCode::Cast = 64` (opcode.rs), `name()="CAST"`, the printc `render_op` Cast arm
+(printc.rs:949, renders `(type)operand`), and consume-analysis transparency (recover.rs:342) ALL already
+exist as byte-neutral scaffolding (printc comment: "mosura will begin inserting these in the
+ActionSetCasts port... until then no rule creates one"). So Stage 1 (op node) + Stage 3's RENDER half are
+already present. Added: explicit `propagate_type(Cast) => None` (infertypes.rs) documenting the
+propagation-BLOCK (Ghidra TypeOpCast has no propagateType → the back-relay stop, the pointercmp/E1010
+crux). Byte-identical (0.9517/57 — no Cast ops exist yet).
+
+⇒ REMAINING = Stage 2 ONLY: `ActionSetCasts` inserts CAST ops in-pipeline (coreaction.cc:2722 apply /
+2655 castInput / 2532 castOutput), MOVING the getInputCast logic from printc.rs:509 into the IR action;
+insert via `op_insert_before` + a unique varnode carrying the required type; run after ActionInferTypes.
+Then Stage 3's REMOVE half: delete the print-time cast_operand/get_input_cast wrapping (printc.rs:621/509)
+so casts come only from IR CAST ops (else double-casts). The Cast RENDER already works.
+STAGE 2 IS THE CORE REMAINING WORK — a fresh action port, differential-gated on pointercmp/pointerrel/E1010.
