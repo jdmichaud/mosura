@@ -73,3 +73,27 @@ FIRST.
 Stage 0 dominates (zero-gauge, the risk). Stages 1–3 are a standard op port once Stage 0 lands. Value
 (pointercmp/pointerrel/E1010 toward-oracle) appears only after Stage 2+3 on the branch. No incremental
 toward-oracle gate before then — that is the all-or-nothing property already escalated + funded.
+
+## Stage 0a VERDICT (2026-07-24, agent war2-arraytype) — PROCEED; persistent HighVariable NOT required
+
+Grounded 0a empirically (probe reverted): compared, over the WHOLE datatest corpus, the print-time
+re-inference (`infer(f,&locks)`, printc.rs:1884) against the in-pipeline committed `Varnode::ty`
+(populated by `infer_types`, which broadcasts the HighVariable-RESOLVED type to every member varnode).
+
+RESULT: **371 mismatches / 54320 varnodes = 0.6% (99.4% CONSISTENT).** Worst fixtures ~3-6%
+(floatcast 9/258, floatconv 4/108, heapstring 2/35, revisit 14/250). Mismatch CATEGORIES (all small,
+understandable — NOT a persistent-HighVariable gap):
+- committed=Int(N) vs reinf=Unknown(N) (majority): committed is MORE refined (accumulated over mainloop
+  iterations vs the single print-time pass) — switching to committed is generally TOWARD-oracle.
+- Bool vs Unknown(1) (both directions): boolean-value typing.
+- committed=Pointer(Spacebase) vs reinf=Unknown(8): the RSP spacebase-lock version varnodes.
+- committed=Unknown(4) vs reinf=Float(4): a few float-typed values (the reverse — committed less refined).
+
+⇒ VERDICT: **PROCEED.** The committed `Varnode::ty` is a viable AUTHORITATIVE per-varnode type source; it
+is 99.4% consistent with the re-inference AND `infer_types` already broadcasts the HighVariable-resolved
+type to all members, so committed ≈ `high->getType()` WITHOUT a persistent HighVariable object. The depth
+valve does NOT trigger at 0a. The 0.6% mismatch is the zero-gauge churn to reconcile in 0c (mostly
+toward-oracle; the few committed-less-refined cases — Float, some Bool — are the ones to watch).
+DEPTH-VALVE risk shifts to Stage 2 (ActionSetCasts inserts CAST varnodes → the graph needs re-merge +
+re-resolution; whether that stays coherent without a persistent HighVariable is the Stage-2 watch, not 0a).
+NEXT: 0b — switch printc `type_of` to `Varnode::ty`, delete the render-time `infer()`, measure branch churn.
