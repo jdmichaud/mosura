@@ -127,21 +127,42 @@ campaign is the **PTRADD→array-index inference** (unblocks E1045 + Brick 2/Int
 together — one foundation, three payoffs), then the **directional-type model** (E1029). Ground each as
 its own staged brick, differential-first, before coding. Do NOT slap render heuristics.
 
-**array-index first brick — GROUNDED (partialsplit IR + oracle).** The array access at 0x100041 is
-`u0x1008d = PTRSUB(RSP, -0x58)` (stack-array base) → `u0x9500 = INT_ADD(u0x1008d, scaled_index)` →
-`LOAD u0x9500`. **CORRECTION: this is NOT a PTRADD-formation gap — Ghidra's final IR for partialsplit
-has ZERO PTRADD** (verified `oracle/capture --ir | grep -c PTRADD` = 0). Ghidra renders `auStack_58[i]`
-purely because the stack local is **Array-typed** and printc's array-deref (`checkArrayDeref`) turns
-`INT_ADD(array_base, index)` under a LOAD into a subscript. mosura's gap: `type_of(base)` for the
-PTRSUB-result stack-array pointer is NOT `Array` at the INT_ADD-indexed site, so `detect_arrays`
-(printc.rs:687, which checks `type_of(base) is Array`) skips it and `render_mem` falls to
-`*(T*)(axStack_58 + i*2)`. mosura DOES render stack arrays as `axStack_NN[i]` when the LOAD address is
-the PTRSUB DIRECTLY (`render_spacebase_ptrsub`), but not when a variable index is added via INT_ADD on
-top of the PTRSUB. So the real brick = connect `render_mem`'s INT_ADD path to the stack-symbol array
-recovery (render `name[index]` when the INT_ADD base is a stack-array PTRSUB and the offset is a
-scaled index) — mirroring Ghidra's type-driven array-deref, NOT PTRADD formation. Ground the exact
-`checkArrayDeref` + stack-local Array-typing rule before coding; watch mis-fire (not every
-`INT_ADD(stack_ptr, x)` is an array access — Ghidra gates on the base's Array type).
+**array-index first brick — MECHANISM VERIFIED (partialsplit IR + oracle, definitive).** The array
+access at 0x100041 is `PTRSUB(RSP,-0x58)` (stack-array base) → `INT_ADD(base, index*2)` → `LOAD`.
+Ghidra renders `auStack_58[i]`. THE MECHANISM (named, verified):
+- Ghidra's FINAL IR (`oracle/capture <g> <fx> --ir -`, NOT the default which breaks at `heritage` and
+  is pre-type-inference — that earlier "zero PTRADD" reading was a WRONG-STAGE artifact) has the LOAD
+  address as a **PTRADD**: `u0x00009500 = u0x10000063 + RAX(*#0x2)` — printRaw notation: `->` is
+  PTRSUB, `+ X(*#0xN)` is PTRADD with element size N. So Ghidra DID form a PTRADD.
+- printc `checkArrayDeref` (printc.cc:353) returns true iff the LOAD/STORE pointer operand's def is
+  **PTRSUB or PTRADD** → `opLoad` sets `print_load_value` → renders `arr[i]`.
+- The PTRADD is formed by **`RulePtrArith`** (ruleaction.cc, group "ptrarith") via its **`AddTreeState`**
+  address-tree analyzer: fires on an INT_ADD with a pointer-typed operand (`getTypeReadFacing`), after
+  `hasTypeRecoveryStarted`, rewriting `ptr + index*elemsize` → `PTRADD(ptr, index, elemsize)`.
+
+**mosura ALREADY has RulePtrArith + AddTreeState + RulePushPtr ported** (`ptrarith.rs`, 747 lines). So
+the brick is NOT a new port. **ROOT CAUSE TRACED (instrumented RulePtrArith::apply_op + AddTreeState::
+apply on partialsplit, 2026-07-24):** RulePtrArith DOES fire on the array-index INT_ADD (op 298, pc
+0x100041) — it finds the pointer slot, passes evaluate_pointer_expression + verify_preferred_pointer —
+but **`AddTreeState::apply` bails at `calc_subtype`: `base_type=Unknown(8), nonmult=1, multiple=0`**.
+The chain:
+1. The stack-array base is `PTRSUB(RSP, -0x58)`; its `type_read_facing` pointee is **`Unknown(8)`**
+   (an 8-byte scalar slot) — NOT the 2-byte access element. So `AddTreeState::new` sets `size=8`
+   (ptrarith.rs:318-323, `base_type = ct.ptr_to()`).
+2. The index `RAX*2` is a multiple of 2, NOT of 8, so it lands in `nonmult` (not `multiple`).
+3. `calc_subtype` (ptrarith.rs:606) — base_type is a plain Unknown (not Struct/Array/Spacebase) with a
+   non-empty `nonmult` → `valid=false`. No PTRADD forms → render_mem emits `*(T*)(base + i*2)`.
+
+Ghidra forms the PTRADD with element size 2 (`+ RAX(*#0x2)`) because Ghidra types that stack local's
+pointee to MATCH the access (element size 2 / an array). **So the real fix is UPSTREAM: the stack-local
+/ spacebase pointer's pointee element-type inference** — mosura types the PTRSUB-result pointee as
+`Unknown(8)` where Ghidra derives the access-matching element (array). This is the
+[[task22-typespacebase-campaign]] / varmap array-element typing foundation (how a stack local's type is
+recovered from its access pattern — Ghidra's `TypeSpacebase::getSubType` + the array/element inference).
+**DEEP prerequisite — reported to main per constraint #5 (stop-and-report before opening the deepest
+type-inference layer).** NOT a render heuristic, NOT a one-liner in ptrarith.rs (forcing the element size
+there would be a non-faithful patch masking the upstream typing gap). Next: ground how Ghidra types the
+stack local's element (differential on partialsplit + a Watcom stack-array MVE) as its own campaign.
 
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
