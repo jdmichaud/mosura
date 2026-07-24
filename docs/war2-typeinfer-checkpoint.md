@@ -183,28 +183,35 @@ So the divergence is: mosura's `size=8 Unknown(8)` hint (from the untyped call-a
 - Therefore, with BOTH hints present Ghidra would ALSO pick size-8. Since Ghidra's result is element-2,
   **Ghidra does NOT generate the size-8 hint at all.** → **candidate (a) confirmed by necessity.**
 
-**THE FIX (task #5, DECISIVELY IDENTIFIED) = port the LoadGuard/`addGuard` subsystem — which needs
-value-set analysis (mosura "Task #19"), a DEEP prerequisite → HITS THE DEPTH VALVE.**
+**⚠️ SUPERSEDED — the LoadGuard/value-set conclusion below was WRONG. a/b disambiguation (main-
+directed) proved the answer is (a): remove a SPURIOUS mosura hint, NOT add a missing Ghidra one. Task #6
+(LoadGuard/value-set) is NOT needed for task #5.**
 
-Why the spurious size-8 hint exists AND why the fix is deeper than the pointee default: the element-8
-is a self-perpetuating fixpoint (stack symbol `xunknown8[2]` → PTRSUB pointee `Unknown(8)` → size-8
-hint → `xunknown8[2]`). Ghidra breaks out of the fixpoint with an AUTHORITATIVE element-size hint from
-the ACCESS: **`MapState::addGuard`** (varmap.cc:1003) reads each indexed stack LOAD/STORE's LoadGuard —
-`step` (the array stride) + `outSize` (the access size) — and emits a definitive array RangeHint of that
-element size (2), independent of any pointer type. mosura **explicitly omits LoadGuard/addGuard**
-(varmap.rs:447 "LoadGuard array hints are faithfully omitted"; heritage.rs:1392 "the LoadGuard /
-`discoverIndexedStackPointers` subsystem (heritage.cc:915/932), which mosura lacks (**Task #19**)").
-Without it, mosura has no access-authoritative element hint and falls into the element-8 fixpoint.
+**DECISIVE a/b VERDICT = (a)** — three independent proofs (2026-07-24):
+1. mosura ALREADY has the correct `size=2 Unknown(2) hi=3` hint at -0x58 (from the indexed 2-byte LOAD).
+   It's beaten by a SPURIOUS `size=8 Unknown(8) hi=-1` hint whose base pointer descends ONLY to an
+   INDIRECT (the `func_0x00101000(auStack_58,...)` call-clobber marker) and is typed `Pointer(Unknown(8))`.
+   EXPERIMENT (env-gated probe, reverted): suppress that spurious hint → mosura emits EXACTLY Ghidra's
+   `xunknown2 axStack_58[10]` + `return axStack_58[i]` (was `xunknown8[2]` + `*(T*)(base+i*2)`);
+   RulePtrArith/AddTreeState then form the PTRADD unchanged. So NO LoadGuard/value-set needed — the
+   element-2 hint already exists.
+2. Blast radius: with the spurious hint suppressed, corpus 0.9516 → 0.9518 (+0.0002, toward-oracle, 57/60)
+   — a general improvement.
+3. gcc MVE (`scratchpad/repro/arr_main.c` + `arr_ext.c`, class-A GENERAL, not Watcom): `short buf[10];
+   ext(buf,0x20); return buf[sel[1]];` with a REAL external `ext()`. Ghidra → `undefined2 auStack_28[16]`
+   + `ext(auStack_28,0x20)` + `return auStack_28[i]` — element-2 array DESPITE the call-clobber. Ghidra
+   never types the call-arg pointer as `undefined8 *` and never generates a size-8 hint.
 
-**Depth:** LoadGuard's `step`/range come from **value-set analysis** (`ValueSetRead`,
-`LoadGuard::establishRange`/`finalizeRange`, heritage.hh:151) — a substantial unported analysis
-subsystem (mosura Task #19). So the faithful fix chains: value-set analysis → `discoverIndexedStackPointers`
-(heritage LoadGuard creation) → `addGuard` (varmap array hint). That's a foundation the size of the
-depth-valve trigger, NOT a bounded brick. **REPORTED TO MAIN per constraint #5 — size Task #19
-explicitly before opening it.** A non-faithful shortcut (extract the stride directly from the access
-without value-set, or suppress the size-8 hint) is possible but would be an adaptation, not a port —
-flagged, not taken. The type_order/preferred/gather_open mechanics are FAITHFUL and must not be touched.
-[[task22-typespacebase-campaign]] varmap follow-on; blocked on value-set analysis (Task #19).
+**FAITHFUL FIX DIRECTION (awaiting main's direction gate):** mosura types the call-clobber stack pointer's
+pointee as `Unknown(8)` (unconstrained-by-dereference → ptrsize default), producing a competing size-8
+array hint. Ghidra's equivalent pointer carries the array element type (2), so no size-8 hint. The fix is
+in that pointee typing — REMAINING GROUNDING: pin the exact origin of the `Unknown(8)` pointee (CALL param
+model? INDIRECT-output default? unconstrained-pointer pointee default in infertypes? or purely the
+element-8 fixpoint self-reinforced by the index-less call-clobber hint) and correct it faithfully WITHOUT
+regressing legit `undefined8 *` stack args (the corpus-wide risk). The env-gated "skip INDIRECT-only base"
+probe is NOT the faithful fix — just the proof of (a). type_order/preferred/gatherOpen are FAITHFUL and
+must not be touched. [[task22-typespacebase-campaign]] varmap follow-on. Task #6 (LoadGuard/value-set) =
+NOT NEEDED here (delete/deprioritize).
 
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
