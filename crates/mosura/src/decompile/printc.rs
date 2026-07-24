@@ -405,9 +405,15 @@ impl<'a> PrintC<'a> {
             let prefix = type_prefix(&self.type_of(v));
             return format!("{prefix}Ram{off:016x}");
         }
-        // a value left in a caller-saved register by a call (an INDIRECT def) is Ghidra's
-        // `extraout_<reg>`
-        if is_reg {
+        // A register value CREATED by a call side effect (an INDIRECT whose output carries the
+        // `indirect_creation` flag) is Ghidra's `extraout_<reg>` (database.cc:2492 —
+        // `(flags & Varnode::indirect_creation) != 0`). A value merely RELAYED across the call by
+        // an INDIRECT (its input is the live pre-call value) is NOT a creation and is named as an
+        // ordinary local/merged variable, NOT `extraout_`. Gating on the same `is_indirect_creation`
+        // predicate ported at 804d274 (Ghidra's TypeOpIndirect creation guard) keeps a relayed
+        // pointer (e.g. a stack base carried in a register across a call) from mis-rendering as an
+        // artifact register.
+        if is_reg && vn.is_indirect_creation() {
             if let Some(def) = vn.def {
                 if self.f.op(def).code() == OpCode::Indirect {
                     if let Some(r) = reg64_name(vn.loc.offset) {
@@ -2150,5 +2156,29 @@ mod tests {
             c.contains("(uint8)param_1 & 0xf"),
             "pointer param_1 fed to `&` must be cast (E1079), got:\n{c}"
         );
+    }
+
+    /// `extraout_<reg>` names ONLY a register value CREATED by a call side effect (Ghidra
+    /// `database.cc:2492`, gated on `Varnode::indirect_creation`). A value merely RELAYED across a
+    /// call by a guarding INDIRECT (its input is the live pre-call value — e.g. a stack base carried
+    /// in a caller-clobbered register) is NOT a creation and must be named as an ordinary local, not
+    /// `extraout_`. In `partialsplit`, the else-block store target is such a relay (RDI = INDIRECT of
+    /// the RSP-derived base, `indirect_creation=false`); the isolated oracle (`oracle/capture --c`)
+    /// names it `puVar3`, never `extraout_`. Pre-fix mosura mis-rendered it `*extraout_RDI`.
+    #[test]
+    fn relayed_indirect_register_is_not_named_extraout() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        if !sla.exists() {
+            return;
+        }
+        let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
+        let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
+        let dt = datatest::parse_file(&paths::datatests_dir().join("partialsplit.xml")).unwrap();
+        let mut f = raw_funcdata_flow(&spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
+        pipeline::decompile(&mut f);
+        let c = print_c(&f);
+        // The relayed INDIRECT-output register must not surface as an `extraout_` artifact — the
+        // isolated Ghidra oracle names it a local pointer (`puVar3`), with no `extraout_` anywhere.
+        assert!(!c.contains("extraout_"), "relayed INDIRECT must not be named extraout_:\n{c}");
     }
 }

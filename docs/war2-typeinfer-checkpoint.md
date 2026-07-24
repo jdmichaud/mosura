@@ -291,3 +291,119 @@ REMAINING COMPILE_FAIL classes are ALL deep foundations or deep structurer bugs 
 - **E1029 ×17:** directional read/def-facing type model (mosura has none). DEEP.
 
 ⇒ The campaign has cleared every shallow/bounded lever. Further COMPILE_FAIL progress requires committing to ONE deep foundation (multi-session, staged, gated). Highest-value + fully-characterized = the array-element typing (E1045+Brick2). Next best count = the aggregate lattice (E1010/E1081, ~22).
+
+## agent war2-arraytype (2026-07-24) — task #5 root cause CORRECTED: the array machinery is FAITHFUL; the gap is UPSTREAM (call/return output lifecycle, menu E)
+
+Instrument-first end-to-end re-grounding of partialsplit (probes since REVERTED; tree clean `59981803`). The
+checkpoint's pinned root cause ("array-SYMBOL type must dominate per-op store propagation + cast-at-mismatch")
+is **INCOMPLETE and its prescribed fix is unnecessary.** The dominance Ghidra exhibits is AUTOMATIC — it needs
+NO new machinery — and mosura's varmap/infertypes/type_order/spacebase_sub_pointer are all faithful and already
+produce it once one upstream input is right. The complete, empirically-verified causal chain:
+
+1. **The dominance is via `Datatype::compare` (type.cc:212), which orders `submeta` BEFORE `size`.** Ghidra's
+   stack-array element is `uint2` (submeta `SUB_UINT_PLAIN`=16); the competing 8-byte store hint is `Unknown(8)`
+   (`SUB_UNKNOWN`=21). `Pointer(uint2).typeOrder(Pointer(Unknown(8)))` < 0 → the concrete element wins REGARDLESS
+   of 8>2, both in the infertypes `propagateTypeEdge` trim (`0>newtype->typeOrder`, coreaction.cc:5104) and in
+   the varmap `RangeHint::preferred` tiebreak. So the store's `Pointer(Unknown(8))` is trimmed, the base stays
+   `uint2*`, no size-8 hint is gathered. mosura's element is `Unknown(2)` (same submeta as `Unknown(8)`), so size
+   decides and the bigger unknown wins → element-8 fixpoint. **The ONLY divergence is element concreteness:
+   `uint2` vs `Unknown(2)`.**
+
+2. **Ghidra's `uint2` comes SOLELY from the loaded value being consumed by a live `INT_ZEXT`.** `Varnode::getLocalType`
+   (varnode.cc:900) takes the most-specific over the def's `outputTypeLocal` and every use's `inputTypeLocal`;
+   `TypeOpFunc::getInputLocal` (typeop.cc:371) returns `getBase(size, metain)` and `TypeOpIntZext`'s `metain =
+   TYPE_UINT` (typeop.cc:1115). So the ZEXT input seeds the loaded value `uint2`, which `TypeOpLoad::propagateType`
+   pushes to the base as `Pointer(uint2)`. **mosura already ports all of this** (`op_meta(IntZext)=(Uint,Uint)`,
+   `get_local_type`) — it simply never fires because the ZEXT is gone (see 3). CONFIRMED by probe: forcing the
+   loaded value to `Uint(2)` makes mosura emit EXACTLY Ghidra's `uint2 auStack_58[10]` + `return auStack_58[i]`.
+
+3. **mosura kills the widening `ZEXT28` because its return-consume is narrow (0xffff), which lets `RuleSubvarZext`
+   narrow the ZEXT (2→8) into a dead 2→2 COPY.** mosura's `try_return_pull` consume-guard (subvarflow.rs:545) IS
+   a faithful port of Ghidra's `tryReturnPull` (subflow.cc:238: `if ((getConsume()&~mask)!=0) return false`).
+   `gather_consumed_return` (consume.rs:257) is ALSO a faithful port of `gatherConsumedReturn` (coreaction.cc:3871)
+   — OR of `minimalmask(nzm)` over each RETURN's value. Both faithful. Measured consume on the ZEXT output = 0xffff.
+
+4. **The narrow consume is because mosura's SECOND return is VOID.** Ghidra returns `0xffff020000000100` (8-byte
+   const → `minimalmask` = full → return-consume full → ZEXT-guard BLOCKS → ZEXT stays live → element uint2).
+   mosura's second RETURN carries no value (`RETURN r0x288:8`, raw IR): the `func_0x00101008()` call clobber makes
+   the else-block's base an `extraout_RDI` artifact and the RAX at the second return holds the CALL output, not the
+   later constant, so `return_trial_kept` (realism/ancestor gate) prunes it to void. **THIS is the call/return
+   output-trial-lifecycle — the KNOWN deep menu-E foundation (persistent isOutputActive/ParamActive), and the same
+   `extraout_` class that dominates 626 WAR2 MISMATCH functions.**
+
+**VERDICT:** partialsplit's E1045 array-typing symptom is DOWNSTREAM of menu-E (call/return output recovery), not
+an array-typing-foundation gap. Without a live widening ZEXT (which needs the second return recovered), the element
+cannot be concrete, and no faithful array-typing change can help (Ghidra's element concreteness has the same single
+source). type_order/preferred/gatherOpen/spacebase_sub_pointer/RulePtrArith/AddTreeState/get_local_type/op_meta/
+gather_consumed_return/try_return_pull are ALL faithful and confirmed do-not-touch. **Task #5 as scoped (array-element
+type inference) is NOT the lever; the lever is menu-E.** A speculative bounded angle (RETURN_MAXPASS>0 keeping
+active_output set → `gatherConsumedReturn` returns full through type recovery → ZEXT survives even with the void
+second return) is the mainloop-cadence gate ([[task8-mainloop-repeat]]) and risks corpus-wide churn — NOT pursued
+without lead alignment. Reframe reported to main; proceeding to the queued E1018 structurer bug pending the menu-E
+prioritization decision.
+
+## agent war2-arraytype (2026-07-24) — task #7 menu-E GUARDRAIL evidence: general pipeline SOUND, partialsplit is multi-confounded (NOT a clean isolated divergence)
+
+Per task #7's guardrail ("PROVE isolated-oracle divergence FIRST; build a minimal Ghidra-decompilable MVE"), I built
+three gcc-x86-64 MVEs of increasing fidelity to partialsplit (scratchpad/vret*.c, System V so mosura+Ghidra recover
+the same proto). Decisive result — **mosura's general array/return/ZEXT pipeline is SOUND; the bug does NOT reproduce
+in isolation:**
+- vret.c (2 returns, post-call constant return): mosura CORRECT (`return -0xfdff`, both returns).
+- vret2.c (8-byte return, 2-byte value path + 8-byte const path): mosura CORRECT — element concrete `uint2`, both
+  returns. The widening ZEXT stays live because the real second return makes return-consume full. Exactly Ghidra.
+- vret3.c (stack `buf[16]` + call-clobber + store-and-return the same 8-byte const): mosura CORRECT —
+  `uint2 auStack_38[28]` + `(auStack_38)[i]` + both returns via a phi. The full array+concreteness+return chain works.
+
+So there is NO general array-typing, ZEXT-concreteness, or return-recovery gap. partialsplit fails only by STACKING
+several menu-E reg-artifact mechanisms that the MVEs don't jointly trigger:
+1. The stack base is carried in caller-clobbered RDI across BOTH calls as `r0x38 = INDIRECT(r0x20=RSP)` (ps IR
+   257/258). mosura keeps this as a SEPARATE `Pointer(Unknown(8))` HighVariable from the PTRSUB-derived `auStack_58`,
+   so the 8-byte store through it propagates element-8 instead of being a cast through the array pointer. Ghidra
+   unifies both as `puVar3` (`uint2*`) and casts the store.
+2. printc `name_of` (printc.rs:408) names ANY register-INDIRECT-output `extraout_<reg>` — INCLUDING this
+   value-relaying INDIRECT (relays RSP). Ghidra reserves that only for a call-CREATED (isIndirectCreation) clobber;
+   a relayed live value keeps its identity. So mosura renders the base `extraout_RDI`.
+3. The void second return (RAX at the 2nd return not carrying the returned constant) cascades from the same
+   RDI/RAX call-clobber modeling → narrow return-consume → dead ZEXT → Unknown(2) element.
+
+VERDICT for the gate: menu-E on partialsplit is a **multi-mechanism deep fix** (stack-base unification across
+call-clobber INDIRECTs + relayed-INDIRECT-vs-creation naming + the void-return), NOT a single bounded lever, and it
+does NOT isolate to one clean MVE divergence (the guardrail's precondition). A CLEANER isolated MVE that forces a
+caller-clobbered register to hold the stack base across a call and be reused post-call is needed before committing —
+gcc -O1 keeps recomputing the stack address (dead-stores the local) so it won't reproduce the exact shape. RECOMMEND:
+before any menu-E code, either (a) find/craft the isolated single-mechanism MVE (candidate: mechanism #1, stack-base
+unification, is the most direct E1045 lever — test whether unifying the INDIRECT-relayed RSP base with the stack
+symbol alone flips element-8→uint2), or (b) if that MVE can't be built, treat menu-E as genuinely deep-foundation and
+weigh vs E1010/E1081 (~22, no such isolation problem). Held for lead go/no-go. type-core/varmap/return-recovery all
+confirmed faithful throughout.
+
+## agent war2-arraytype (2026-07-24) — BRICK: extraout_ naming gated on isIndirectCreation (task #8) — GATE REQUESTED
+
+Faithful port of Ghidra `database.cc:2492` (`(flags & Varnode::indirect_creation) != 0` guards `extraout_` naming).
+mosura's `printc.rs::name_of` named ANY register whose def is an INDIRECT `extraout_<reg>`; now gates on
+`vn.is_indirect_creation()` — so a value merely RELAYED across a call by a guarding INDIRECT (input = live pre-call
+value) is named as an ordinary local, not the `extraout_` artifact. Same `is_indirect_creation` predicate as the
+804d274 TypeOpIndirect guard.
+
+GROUNDING (all read-only, guardrail satisfied before code):
+- Ghidra source: `database.cc:2492` names `extraout_` ONLY under the `indirect_creation` flag; a relay falls through
+  to the local/merged naming (Var<n> / merged-symbol) — CONFIRMED.
+- mosura divergence: printc.rs:408 gated only on `def.code()==Indirect` (any INDIRECT) — CONFIRMED.
+- Isolated oracle (partialsplit): mosura emitted `*extraout_RDI = ...` (RDI = INDIRECT(RSP-derived base),
+  `indirect_creation=false` — a relay); `oracle/capture --c partialsplit` names it `puVar3` (a local pointer), no
+  `extraout_`. Real isolated divergence.
+
+RESULTS:
+- Corpus **0.9513 → 0.9517** (+0.0004), ONLY partialsplit moved (~0.891→0.915, toward-oracle: `extraout_RDI`→`pVar4`,
+  a local pointer as in Ghidra), 57/60 maintained, ZERO regressions. Suite 495/0, clippy 0, regression test
+  `printc::tests::relayed_indirect_register_is_not_named_extraout` added.
+- **WAR2 blast radius = ZERO (hypothesis refuted).** Instrumented survey: all **208** WAR2 register-INDIRECT-output
+  emissions are `creation=true` (genuine call-created clobbers) — NONE are relays. The 93-fn WAR2 extraout_ MISMATCH
+  class is UNCHANGED (correctly named). So the "~626-fn blast radius" does not materialize; WAR2's extraout_ are
+  faithful. The fix's only observable effect is fixing the relay mis-naming (partialsplit-class), not the WAR2 tail.
+- Residual (NOT this brick): partialsplit's `pVar4` is used-before-def — the still-missing stack-base unification
+  (mechanism #1); same IR/semantics as the pre-fix `extraout_RDI`, just renamed toward the oracle. Not wrong-code
+  (IR unchanged); corpus judges it net toward-oracle.
+
+VERDICT: faithful bounded fix, corpus toward-oracle, zero WAR2 impact. Partialsplit moved → GATED (gate-byte-identical
+rule); reported to main with the delta for the commit go/no-go. Next per lead: E1010/E1081 aggregate lattice.
