@@ -13,15 +13,13 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
-use super::cast::cast_standard;
 use super::funcdata::Funcdata;
-use super::infertypes::infer;
 use super::merge::{merge, HighVariables};
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::Address;
 use super::structure::{structure, FlowKind, GotoRecord, Structured};
-use super::types::{type_order, Datatype};
+use super::types::Datatype;
 use super::varnode::VarnodeId;
 
 /// The exit basic block of a structured block (where its terminating CBRANCH lives).
@@ -134,7 +132,6 @@ struct PrintC<'a> {
     stack_declared: std::collections::HashSet<(i64, u32)>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
-    types: HashMap<VarnodeId, Datatype>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
     for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
     /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
@@ -189,10 +186,6 @@ struct PrintC<'a> {
     covers: HashMap<VarnodeId, super::cover::Cover>,
     /// HighVariable representative → its member Varnodes (the frozen [`Self::high_of`] classes).
     high_members: HashMap<u32, Vec<VarnodeId>>,
-    /// The required-merges-only HighVariable state ([`super::merge::merge_required_only`], Ghidra's
-    /// classes at the `ActionMarkImplied` slot) as `(rep per varnode, rep → members)` — the
-    /// instance list `Merge::inflateTest` walks in [`Self::is_explicit`]'s implied-cover arm.
-    implied_high: (Vec<u32>, HashMap<u32, Vec<VarnodeId>>),
     /// Ops marked non-printing by Ghidra's `ActionCopyMarker`
     /// ([`super::merge::copy_marker_nonprinting`]): shadow assignments and redundant COPYs.
     nonprinting: HashSet<OpId>,
@@ -206,7 +199,11 @@ impl PrintC<'_> {
         // downgrade to `undefined` for stripped binaries — an int/uint that inference recovers stays
         // int/uint (naming a variable `iVar`/`uVar`, and avoiding the spurious `(int4)` cast that a
         // `undefined`-typed symbol would need when widened). Absent inference gives `undefined<N>`.
-        self.types.get(&v).cloned().unwrap_or_else(|| Datatype::default_for(self.f.vn(v).size))
+        // Stage 0b (ir-cast-model): read the in-pipeline committed `Varnode::ty` (Ghidra
+        // `Varnode::getType`) instead of the retired render-time re-inference. `infer_types`
+        // broadcasts the HighVariable-resolved type onto every member, so this is the authoritative
+        // per-varnode type (0a: 99.4% consistent with the old re-inference, mostly more refined).
+        self.f.vn(v).get_type()
     }
 
 }
@@ -236,7 +233,10 @@ impl<'a> PrintC<'a> {
         if self.slot_write[v.0 as usize] {
             return true;
         }
-        // input / addrtied (with the SUBPIECE-of-addrtied internal-copymarker sub-case).
+        // input / addrtied (with the SUBPIECE-of-addrtied internal-copymarker sub-case). This leading
+        // chain is CAST-INVARIANT (constant/input/addrtied structure, not use-counts) and its
+        // `Some(false)` copymarker case must short-circuit before `high_ram_off` (revisit's
+        // `iRam.._2_2_` high-piece), so it stays computed here rather than frozen.
         if let Some(e) = super::merge::explicit_leading(self.f, v) {
             return e;
         }
@@ -246,17 +246,12 @@ impl<'a> PrintC<'a> {
         if self.high_ram_off.contains_key(&self.high_of[v.0 as usize]) {
             return true;
         }
-        // The trailing chain (written/marker/use-count arms + `checkImpliedCover`), with printc's
-        // full-merge classes for the cross-high persistent-COPY arm and the required-merges-only
-        // classes for the implied-cover walk — the states Ghidra has at each corresponding check.
-        super::merge::explicit_trailing(
-            self.f,
-            &self.high_of,
-            &self.implied_high.0,
-            &self.implied_high.1,
-            &self.covers,
-            v,
-        )
+        // The TRAILING classification chain (written/marker/use-count + `checkImpliedCover`) is the
+        // cast-sensitive part; it is now FROZEN on the pre-cast graph by `super::merge::ActionMarkImplied`
+        // and read from the flag, so the CAST ops `ActionSetCasts` inserts don't perturb the
+        // use-count/cover classification (Ghidra order: markImplied 5720 < setCasts 5735). A CAST
+        // output setcasts creates is `setImplied` at creation, so it reads implied here.
+        vn.is_explicit()
     }
 
     /// Ghidra `PcodeOp::isMoveable` (op.cc:178): can `op` be moved down in its block to just
@@ -507,61 +502,11 @@ impl<'a> PrintC<'a> {
     /// use Ghidra's lenient default and effectively never cast in the primitive lattice, so they
     /// are left transparent here.
     fn get_input_cast(&self, op: OpId, slot: usize) -> Option<Datatype> {
-        let o = self.f.op(op);
-        let in_vn = o.input(slot)?;
-        let cur = self.type_of(in_vn);
-        let sz = self.f.vn(in_vn).size;
-        match o.code() {
-            OpCode::IntSless | OpCode::IntSlessequal => {
-                cast_standard(&Datatype::Int(sz), &cur, true, true)
-            }
-            OpCode::IntLess | OpCode::IntLessequal => {
-                cast_standard(&Datatype::Uint(sz), &cur, true, false)
-            }
-            // SEXT requires a signed input of the *input* width (Ghidra `TypeOpIntSext::
-            // getInputCast`, care_uint_int=true): `(int8)(int4)param` when param is undefined.
-            OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
-            // signed/unsigned divide and remainder force their operand's signedness
-            // (Ghidra `TypeOpIntSdiv`/`Srem`/`Div`/`Rem::getInputCast`, care_uint_int=true)
-            OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
-            OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-            OpCode::IntEqual | OpCode::IntNotequal => {
-                // reqtype is the more-specific of the two operand types (Ghidra
-                // `TypeOpEqual::getInputCast`); equality does not care about signedness.
-                let t0 = self.type_of(o.input(0)?);
-                let t1 = self.type_of(o.input(1)?);
-                let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
-                cast_standard(&req, &cur, false, false)
-            }
-            // Shift: the shifted value (slot 0) must carry the shift's signedness so the C `>>`
-            // renders as the correct kind. Ghidra `TypeOpIntRight::getInputCast` (typeop.cc) requires
-            // `TYPE_UINT` (the constructor's `inputTypeLocal`, logical `>>`); `TypeOpIntSright::
-            // getInputCast` requires `TYPE_INT` (arithmetic). Both: `castStandard(reqtype,curtype,
-            // true,true)` on slot 0 only — the shift amount (slot 1) defers to the binary default.
-            // The `intPromotionType` gate is omitted exactly as for the comparison arms above (this
-            // matches Ghidra's `castStandard` branch for operands >= 4 bytes; sub-4-byte
-            // promotion-forced casts are conservatively skipped).
-            OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-            OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
-            // Generic arithmetic / logical ops that do NOT override getInputCast fall back to
-            // Ghidra's base `TypeOp::getInputCast`: `castStandard(inputTypeLocal, curtype, false,
-            // true)` (typeop.cc). For the primitive lattice (int/uint/undefined) this is
-            // transparent, but a pointer/float value fed to an integral op is cast — Ghidra's
-            // `(uint)ptr & 0xf`, `- (int)ptr`. reqtype is the op's TypeOpBinary/Unary input
-            // metatype (typeop.cc constructors): the logical ops are TYPE_UINT, the arithmetic
-            // ones TYPE_INT. care_uint_int=false (arithmetic reconciles signedness silently),
-            // care_ptr_uint=true (a same-width pointer/uint mismatch *is* cast).
-            OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
-                cast_standard(&Datatype::Uint(sz), &cur, false, true)
-            }
-            OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
-                cast_standard(&Datatype::Int(sz), &cur, false, true)
-            }
-            _ => None,
-        }
-        // NOTE: the `checkIntPromotionForCompare` gate (cast.cc) is omitted; it is exactly
-        // NO_PROMOTION (→ defer to castStandard) for operands ≥ 4 bytes, which is every operand
-        // here. Sub-4-byte promotion-forced casts are conservatively skipped.
+        // Delegates to the shared `cast::input_cast` (Ghidra `TypeOp::getInputCast`), which reads the
+        // committed `Varnode::ty` — the same decision `ActionSetCasts` will use to INSERT the CAST op
+        // in-pipeline. The `checkIntPromotionForCompare` gate (cast.cc) is omitted: NO_PROMOTION for
+        // operands >= 4 bytes (every operand here); sub-4-byte promotion-forced casts are skipped.
+        super::cast::input_cast(self.f, op, slot)
     }
 
     /// Whether constant input `slot` should print with an explicit `U` suffix (Ghidra's
@@ -614,17 +559,15 @@ impl<'a> PrintC<'a> {
         true
     }
 
-    /// Render input `slot` of `op`, wrapping it in the cast the op requires ([`get_input_cast`]).
-    /// A constant operand is never wrapped — like Ghidra's `castInput`, the literal simply adopts
-    /// the required type (so a signed compare prints `(int4)x < 10`, not `< (int4)10`) — but may
-    /// take an explicit `U` suffix ([`mark_explicit_unsigned`]).
+    /// Render input `slot` of `op`. The operand cast the op requires ([`get_input_cast`]) is now a
+    /// real `CPUI_CAST` op that [`super::setcasts::ActionSetCasts`]'s `castInput` inserted into the
+    /// IR, so it renders through the [`OpCode::Cast`] arm here — printc no longer wraps at render
+    /// time (Stage 3 of the IR-cast-model port). What stays a pure print concern is Ghidra's
+    /// `markExplicitUnsigned`: a constant that adopts an explicit `U` suffix ([`mark_explicit_unsigned`])
+    /// rather than a cast op.
     fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
         let v = self.f.op(op).input(slot).unwrap();
-        if !self.f.vn(v).is_constant() {
-            if let Some(ty) = self.get_input_cast(op, slot) {
-                return format!("({}){}", ty.name(), self.operand(v, 14, false));
-            }
-        } else if self.mark_explicit_unsigned(op, slot) {
+        if self.f.vn(v).is_constant() && self.mark_explicit_unsigned(op, slot) {
             let vn = self.f.vn(v);
             return render_const_unsigned(vn.constant_value(), vn.size);
         }
@@ -1865,13 +1808,10 @@ pub fn print_c(f: &Funcdata) -> String {
         }
     }
 
-    // Parameter type-locks: Ghidra's ActionPrototypeTypes recovers a parameter's type from
-    // consistent usage (e.g. `int8 *` for modulo), and only keeps it undefined when usage is
-    // inconsistent (divopt). Forcing all parameters to undefined is unfaithful — it regresses the
-    // pointer-typed cases — so until that recovery is ported (pointee-consistency), no locks are
-    // applied and parameters are typed by inference. The typelock machinery in infer() stands
-    // ready for the recovered locks.
-    let locks: HashMap<VarnodeId, Datatype> = HashMap::new();
+    // Stage 0 (ir-cast-model): the render-time type re-inference is retired — types are read from the
+    // committed `Varnode::ty` (`type_of`), which the final in-pipeline `ActionInferTypes` pass makes
+    // authoritative. Parameter type-locks (Ghidra `ActionPrototypeTypes`) live in the in-pipeline
+    // inference now, not a print-time `locks` map.
 
     // Pre-compute the addrtied-HighVariable info. `slot_write` marks a register value that is written
     // into an addrtied stack slot across a call — it is the input of an INDIRECT whose output is the
@@ -1880,11 +1820,6 @@ pub fn print_c(f: &Funcdata) -> String {
     // variable. This is the precise across-call-slot-write pattern, not every member of a stack
     // HighVariable (which would spill intermediate register arithmetic into stray statements).
     // `high_stack_off` names the merged HighVariable by its stack frame offset.
-    let t0 = std::time::Instant::now();
-    let types = infer(f, &locks);
-    if super::action::perf::enabled() {
-        super::action::perf::record("print", "infer", t0.elapsed());
-    }
     let t0 = std::time::Instant::now();
     let mut h = merge(f);
     if super::action::perf::enabled() {
@@ -1925,7 +1860,7 @@ pub fn print_c(f: &Funcdata) -> String {
             let v = VarnodeId(i);
             if f.vn(v).loc.space == stk {
                 high_stack_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
-                if let Some(t) = types.get(&v) {
+                if let Some(t) = &f.vn(v).ty {
                     stack_prefix.entry(f.vn(v).loc.offset as i64).or_insert(type_prefix(t));
                 }
             }
@@ -1953,7 +1888,6 @@ pub fn print_c(f: &Funcdata) -> String {
         stack_declared: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,
-        types,
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         array_elem: HashMap::new(),
@@ -1974,15 +1908,6 @@ pub fn print_c(f: &Funcdata) -> String {
                 m.entry(rep).or_default().push(VarnodeId(i as u32));
             }
             m
-        },
-        implied_high: {
-            let mut ih = super::merge::merge_required_only(f);
-            let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| ih.high(VarnodeId(i))).collect();
-            let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
-            for (i, &rep) in of.iter().enumerate() {
-                m.entry(rep).or_default().push(VarnodeId(i as u32));
-            }
-            (of, m)
         },
         nonprinting: HashSet::new(),
     };

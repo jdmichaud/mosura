@@ -410,6 +410,12 @@ impl<'a> TypeInfer<'a> {
                 }
                 self.propagate_add_in2out(alttype, op, inslot)
             }
+            // CAST does NOT propagate a type across itself — Ghidra `TypeOpCast` (typeop.cc:2209)
+            // has no `propagateType` override, so it inherits the base no-op. This is the mechanism
+            // that BLOCKS a back-relay: once `ActionSetCasts` inserts `out = CAST(in)`, the loop
+            // phi's pointer type can no longer flow through the CAST onto the INT_ADD result feeding
+            // it (the pointercmp/E1010 crux). Explicit here (not left to the `_` arm) to document it.
+            Cast => None,
             _ => None,
         }
     }

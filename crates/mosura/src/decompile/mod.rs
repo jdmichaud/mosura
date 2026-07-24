@@ -42,6 +42,7 @@ pub mod printc;
 pub mod ptrarith;
 pub mod rules;
 pub mod scope;
+pub mod setcasts;
 pub mod space;
 pub mod splitflow;
 pub mod stackvars;
