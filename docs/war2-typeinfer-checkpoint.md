@@ -172,19 +172,27 @@ mosura recovers the stack local as `xunknown8 axStack_58[2]` (element size 8); G
    res_type=1 → **the size-8 hint WINS** → `xunknown8[2]`.
 
 So the divergence is: mosura's `size=8 Unknown(8)` hint (from the untyped call-arg pointer's DEFAULT
-8-byte pointee) beats the `size=2` indexed array in the `type_order` tiebreak. Ghidra ends with element
-2 — either its call-arg pointer pointee isn't defaulted to 8, or its reconcile prefers the indexed
-(hi≥0) array. **THE BRICK: two candidate faithful fixes to ground against Ghidra (differential-first,
-DON'T rush — this is the varmap reconcile core, ripples across ALL stack functions, corpus-wide):**
-  (a) the untyped stack pointer's pointee should not default to `Unknown(8)` (an 8-byte element the
-      access never justifies) — check what Ghidra's `getType()` returns for an untyped stack-arg pointer
-      (likely `undefined1 *` / unknown-array, not `undefined8 *`); or
-  (b) `preferred`/reconcile should favor the indexed Open array (hi≥0) over a non-indexed larger-Unknown
-      hint — verify against Ghidra's `RangeHint::preferred` whether `highind` participates.
-Ground BOTH against Ghidra source + the oracle (does Ghidra's partialsplit even generate the size-8
-hint?) before touching type_order/preferred/gather_open. Add a Watcom stack-array MVE (class-A general
-check). NOT a render heuristic, NOT a forced element size in ptrarith — the fix is here in the hint
-layer. This is the [[task22-typespacebase-campaign]] varmap follow-on (task #5).
+8-byte pointee) beats the `size=2` indexed array in the `type_order` tiebreak.
+
+**DECISIVELY NARROWED (Ghidra source verified) → candidate (a), NOT (b):**
+- Ghidra's `RangeHint::preferred` (varmap.cc) is mosura's EXACT port — both end at `type->typeOrder(*b->
+  type) < 0`; `highind` does NOT participate. Candidate (b) RULED OUT.
+- Ghidra's `Datatype::compare` (type.cc) for same submeta returns `op.size - size`, so
+  `Unknown(8).typeOrder(Unknown(2)) < 0` — bigger-Unknown wins, IDENTICAL to mosura's `type_order`
+  (`b.size().cmp(&a.size())`). mosura's type_order/preferred are FAITHFUL — do NOT touch them.
+- Therefore, with BOTH hints present Ghidra would ALSO pick size-8. Since Ghidra's result is element-2,
+  **Ghidra does NOT generate the size-8 hint at all.** → **candidate (a) confirmed by necessity.**
+
+**THE BRICK (task #5, precisely scoped):** mosura spuriously types the untyped call-arg stack pointer
+(`func_0x00101000(auStack_58,...)`) as `Pointer(Unknown(8))`, so `gather_open` emits a `size=8` array
+hint Ghidra never has. Ghidra's `gatherOpen` (`ct = base->getType(); if TYPE_PTR → ptrTo else NULL`)
+gets NULL or the 2-byte element for that arg — its call-arg base is NOT `undefined8 *`. FIND where mosura
+assigns `Pointer(Unknown(8))` to that stack pointer (infertypes default pointee? the unknown-callee
+param typing? the PTRSUB output default?) and make it faithful — likely the untyped-pointer default
+pointee should be byte/unknown-array, not `Unknown(8)`. Ground against Ghidra's actual type for that arg
+(`analyzeHeadless` type dump) + a Watcom stack-array MVE (class-A general). The fix is in the
+pointer/param typing that feeds the hint, NOT type_order/preferred/gather_open's mechanism (those are
+faithful). [[task22-typespacebase-campaign]] varmap follow-on.
 
 ## OPEN QUESTIONS / CEILINGS
 - **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
