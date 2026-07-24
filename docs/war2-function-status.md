@@ -17,6 +17,36 @@
 | Date | 2026-07-23 |
 | Harness | `crates/mosura/examples/war2_survey.rs` + `war2-survey/` driver scripts (compile.sh, compare.py) |
 
+## Update — 2026-07-24: Brick 1 (pointer-in-integral-op cast) + clean-baseline correction
+
+**Measurement correction (canonical going forward):** `war2-survey/compile.sh` does NOT clean `obj/`
+between runs, so stale objects from a prior run were hiding new failures — the documented **137**
+baseline was slightly stale-undercounted. Re-measured clean (`rm -f obj/*.OBJ` before compiling),
+the **pre-fix baseline is 139** COMPILE_FAIL. All future numbers clean `obj/` first.
+
+**Brick 1 (`8a86b73`)** — ported Ghidra's base `TypeOp::getInputCast` for the non-overriding
+arithmetic/logical ops, so a pointer/float value fed to an integral op is cast (E1079/E1080/E1036).
+See `docs/decompiler-bug-ptr-in-integral-op-cast.md`. Clean-vs-clean survey:
+
+| Status | pre-fix (clean) | post-fix (clean) |
+|---|---|---|
+| EXACT | 1 | 1 |
+| MISMATCH | 1140 | 1173 |
+| COMPILE_FAIL | **139** | **112** |
+| DECOMPILE_FAIL | 0* | 0 |
+
+COMPILE_FAIL −27: E1079 33→11, E1080 12→5, E1036 3→0. Zero functions that compiled before now fail;
+a few unmask a secondary type error and stay COMPILE_FAIL in a different bucket (honest accounting).
+
+**E1052 (~35) reclassified — verified-faithful CEILING, not a defect** (see
+`docs/decompiler-nonbug-e1052-void-indirect-call-faithful.md`): full-analysis Ghidra emits the
+identical `iVar = (*(code *)p)();` for an opaque indirect call whose result is used, and that
+construct fails to compile under gcc too. Not decompiler-reachable without beating Ghidra. **True
+remaining actionable COMPILE_FAIL after Brick 1: 112 − 35 = 77.**
+
+(*The clean pre-fix run showed 6 transient `returned None` — EMIT nondeterminism, decompiled fine in
+the post-fix run; not attributable to the render-time cast change.)
+
 ## Update — 2026-07-23: Stage 0 (panic) landed
 
 The **117 DECOMPILE_FAIL** functions below were all one bug — `Merge::trimOpInput` mis-port

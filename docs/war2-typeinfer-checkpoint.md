@@ -83,10 +83,11 @@ compiler-independent (verified), so fixes land in the GENERAL path (not scoped t
 4. **E1045 (11)** — PTRADD-derived scalar subscripted. Array/pointer typing (TypeOpPtradd). Deeper.
 
 ## OPEN QUESTIONS / CEILINGS
-- **E1052 (34) = honest ceiling.** Full-analysis Ghidra emits the identical `iVar = (*(code*)p)();`
-  and that construct fails to compile under gcc too (`void value not ignored`, wcc386 E1052 class).
-  Recovering the callee return type needs deep prototype analysis; mosura already matches Ghidra.
-  NOT decompiler-reachable via faithful porting. Enumerated as a ceiling (mission asks for honesty
-  about what is NOT reachable).
+- **E1052 (~35) = honest ceiling — DOCUMENTED verified-faithful**
+  (`docs/decompiler-nonbug-e1052-void-indirect-call-faithful.md`). Full-analysis Ghidra emits the
+  identical `iVar = (*(code*)p)();` and that construct fails to compile under gcc too (`void value not
+  ignored`, wcc386 E1052 class). Recovering the callee return type needs deep prototype analysis;
+  mosura already matches Ghidra. NOT decompiler-reachable via faithful porting. **Reclassified OUT of
+  the actionable set → true remaining actionable COMPILE_FAIL after Brick 1 = 112 − 35 = 77.**
 - Whether some of the "later brick" classes (E1029/E1010/E1045) are also partly ceilings — check each
   against the reproducer + Ghidra before coding.
