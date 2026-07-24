@@ -179,3 +179,17 @@ MOVES from a print-time wrap to the IR insertion; `cast_operand` becomes a plain
 GATE: first corpus-MOVING stage. Expect pointercmp/pointerrel/E1010 toward-oracle (the INT_ADD result now
 holds int8 + a CAST to the pointer, blocking the back-relay via Stage-1's propagate_type(Cast)=None).
 Differential per-fixture; wrong-code hard-block; report delta to lead. Then this branch is merge-candidate.
+
+## ⚠️ LEAD CRUX FINDING (2026-07-24, agent rate-limited) — the tail-slot Stage-2 plan is INSUFFICIENT; corrects a load-bearing premise
+
+Empirically + Ghidra-source verified before implementing Stage 2:
+
+1. mosura OVER-PROPAGATES (typeprobe on pointercmp, post-pipeline): the `param_1+8` INT_ADD has **inputs=[Int(8),Int(8)] but output=Pointer(8,Unknown(1))**. The pointer is relayed BACKWARD from the loop phi (TypeOpMulti/COPY relay) onto the arithmetic result. So at the TAIL (where the plan slots setcasts), the ADD result is ALREADY Pointer == the pointer var it's assigned to → NO type divergence → castInput/castOutput find NOTHING to cast → **tail-slot setcasts does NOT fix pointercmp/E1010** (the flagship case).
+
+2. Ghidra keeps that ADD result **int8** (oracle renders `(xunknown1*)(param_1+8)` = a cast FROM int8 TO pointer).
+
+3. DECISIVE: Ghidra's `ActionSetCasts` is DEAD-LAST (coreaction.cc:5735, after actfullloop + ActionNameVars), with **NO ActionInferTypes after it**. So the inserted CAST canNOT block propagation via re-inference. ⇒ The agent's premise "the IR CAST blocks the back-relay" is WRONG for Ghidra's ordering. Ghidra's ADD stays int8 during INFERENCE ITSELF (propagation-meet rules), and the cast is PURELY a RENDER of the pre-existing int8→pointer mismatch.
+
+4. ⇒ REFRAME: the IR-cast rewrite (Stage 0-1, byte-identical) is a valid RENDER-faithfulness improvement (real CAST nodes vs print-time wrapping) but by itself does NOT fix E1010. The actual E1010/pointercmp lever is mosura's TYPE-PROPAGATION MEET: mosura lets a MULTIEQUAL's pointer relay OVERRIDE an INT_ADD's computed int output; Ghidra does NOT. Relevant Ghidra: TypeOpIntAdd::propagateType (`inslot==-1 → "Don't propagate pointer types this direction"`, typeop.cc) + TypeOpMulti::propagateType (relays freely) + the Datatype meet/typeOrder that keeps the locally-int ADD output int despite the phi relay. mosura's meet (infertypes.rs:311 `type_order(newtype, cur)==Less → commit`) apparently lets Pointer beat Int here where Ghidra keeps Int.
+
+NEXT (agent warm-resume): resolve WHY Ghidra's meet keeps the INT_ADD output int8 despite the free MULTIEQUAL pointer relay — compare mosura's infertypes meet/edge application against Ghidra's updateType + typeOrder for the ptr-vs-int-add-output case. That faithful propagation fix is the E1010 lever; setcasts (render) then casts the resulting int8→pointer mismatch. Stage 2 as "insert casts at the tail" alone is NOT the fix. Master untouched e9c0655; branch Stage 0-1 committed byte-identical.
