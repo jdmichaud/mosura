@@ -254,3 +254,14 @@ NOT NEEDED here (delete/deprioritize).
   the actionable set → true remaining actionable COMPILE_FAIL after Brick 1 = 112 − 35 = 77.**
 - Whether some of the "later brick" classes (E1029/E1010/E1045) are also partly ceilings — check each
   against the reproducer + Ghidra before coding.
+
+## LEAD grounding advance (2026-07-24, while war2-typeinfer rate-limited)
+
+Advanced task #5(a) read-only (no type-core edit — the delicate fix is held for the agent's fresh resume per its own recommendation). Two concrete additions:
+
+1. ORACLE TARGET NAILED (oracle/capture --c partialsplit): Ghidra emits `uint2 auStack_58 [10]` + `return (uint8)auStack_58[*(int4 *)(param_1 + 4)]` + `func_0x00101000(auStack_58,0x20,(int4)*param_1)` (Ghidra also RECOVERS the call's 3-arg prototype; mosura shows `func_0x00101000()` no-args). mosura @32ff095: `xunknown8 axStack_58[2]` + raw `*(xunknown2*)(axStack_58 + i*2)`.
+
+2. SUBTLETY that sharpens the a/b question — the 8-byte STORE is a faithful size-8 source present in BOTH tools: Ghidra's own output has `*(xunknown8 *)puVar3 = 0xffff020000000100;` (puVar3 = auStack_58), an 8-byte scalar STORE at offset 0 of the base. mosura's `propagate_load_store` value_to_ptr (infertypes.rs:438, STORE inslot==2) → `propagate_to_pointer(Unknown(8), sz)` = `Pointer(sz, Unknown(8))` — a FAITHFUL port of TypeOpStore::propagateType. So this size-8 hint is NOT mosura-only; Ghidra has the same 8-byte store yet still gets `uint2[10]`.
+   ⇒ SHARPENED OPEN QUESTION for the fix: it's not merely "mosura has a spurious size-8 hint Ghidra lacks" (the earlier (a) framing). The size-8 SCALAR-at-offset-0 store-hint (hi=-1) exists in both; the divergence is WHY Ghidra's reconcile lets the size-2 ARRAY (hi=3) win over the size-8 scalar-at-0, while mosura's picks the size-8 scalar. Either (i) Ghidra's varmap subsumes a size-8-scalar-at-0 into an array whose total span ≥8 (arrayness from the indexed access dominates a single wide scalar write at the base), or (ii) mosura generates an ADDITIONAL size-8 hint (the call-clobber INDIRECT the agent traced) that tips it. The focused instrumentation trace must log ALL open hints at -0x58 with their (size, hi, source-op) and compare to Ghidra's RangeHint set — distinguish the store-hint from the call-clobber-hint, and check whether the real fix is in gatherOpen/addRange arrayness-vs-scalar subsumption (RangeHint::merge / reconcile of overlapping array+scalar), NOT a pointee default. type_order/preferred confirmed faithful — untouched.
+
+NET: fix target confirmed against oracle; the a/b verdict needs refining (the 8-byte store is a red-herring-shared source; focus on the array-vs-scalar-at-0 reconcile + whether a call-clobber hint is the real extra). Held for fresh implementation — a rushed edit here risks corpus-wide type-core regression.
