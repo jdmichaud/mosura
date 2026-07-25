@@ -36,14 +36,19 @@ pub fn get(path: &Path) -> Option<&'static Spec> {
     // shapes), concatsplit 0.881→0.863 — the one regression, a PRE-EXISTING LaneDivide
     // do_trace/placement gap (genuine live 4-byte SUBPIECEs at mosura's pre-pool slot that
     // Ghidra's post-oppool1 stackstall slot never sees; see docs/coverage.md ActionLaneDivide).
+    // A `.pspec` that is *found* but unreadable fails the load (`?`) rather than yielding a
+    // lane-free architecture — same rule as `lang::pspec_context_sets`: Ghidra's
+    // `SleighLanguage.initialize()` propagates the spec-file I/O error instead of coming up
+    // with unset architecture metadata. A `.sla` with no matching `.ldefs` entry (no pspec to
+    // resolve) legitimately keeps the empty laned set.
     let spec = std::fs::read(path)
         .ok()
         .and_then(|bytes| Spec::from_sla(&bytes).ok())
-        .map(|mut s| {
+        .and_then(|mut s| {
             if let Some(pspec) = crate::lang::default_pspec_for_sla(path) {
-                s.laned = crate::lang::pspec_laned_size_masks(&pspec, &s);
+                s.laned = crate::lang::pspec_laned_size_masks(&pspec, &s)?;
             }
-            &*Box::leak(Box::new(s))
+            Some(&*Box::leak(Box::new(s)))
         });
     map.insert(path.to_path_buf(), spec);
     spec

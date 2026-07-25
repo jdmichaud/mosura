@@ -14,7 +14,12 @@ use crate::decompile::space::Address;
 /// decompiled [`Funcdata`] — or `None` if the language tables are unavailable. Callers
 /// then read [`Funcdata::jump_tables`] / [`Funcdata::func_proto`].
 pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata> {
-    let (spec, ctx) = crate::lang::load(&program.language_id)?;
+    // Cached (Ghidra `SleighLanguageProvider.getLanguage`): the tables and the default decode
+    // context are resolved once per process. A plain `lang::load` here re-read the `.sla`/
+    // `.pspec` for every function, and a single transient read failure silently changed *that
+    // function's* decode (an unreadable `.pspec` gave an all-zero context register = 16-bit
+    // real mode) — see `lang::load_cached`.
+    let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
     // The decompiler reads code + any jump/data tables out of the image, so pass every
     // initialized block (code reached via the entry, tables via constant addresses).
     let chunks: Vec<(u64, &[u8])> = program
@@ -43,11 +48,11 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // convention (`specs/x86-32-watcom.cspec`) rather than the datatest x86-64 SysV default,
     // so parameters/returns are recovered instead of the whole program decompiling as `void(void)`.
     let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
-        &spec,
+        spec,
         name,
         &chunks,
         entry.offset,
-        &ctx,
+        ctx,
         &call_return,
         &program.language_id,
         &program.compiler_spec_id,

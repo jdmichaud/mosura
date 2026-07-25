@@ -6,8 +6,10 @@
 use crate::decompile::transform::{LanedRegister, LanedRegisterSet};
 use crate::paths;
 use crate::sleigh::engine::Spec;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Resolve a language id to its `(.sla, .pspec)` paths. Accepts the bare 4-part id
 /// (`proc:endian:size:variant`) or one with a trailing `:cspec` (the goldens carry
@@ -78,16 +80,28 @@ pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
     None
 }
 
-/// The `<context_set>` defaults from a `.pspec` (name → value).
-pub fn pspec_context_sets(pspec: &Path) -> Vec<(String, u64)> {
-    let Ok(text) = fs::read_to_string(pspec) else { return Vec::new() };
-    let Ok(doc) = roxmltree::Document::parse(&text) else { return Vec::new() };
-    doc.descendants()
+/// The `<context_set>` defaults from a `.pspec` (name → value), or `None` when the `.pspec`
+/// itself cannot be read or parsed.
+///
+/// The `None` case matters: Ghidra `SleighLanguage.initialize()` (SleighLanguage.java:116)
+/// declares `throws DecoderException, SAXException, IOException` and reads the processor spec
+/// through `readInitialDescription`/`read(parser)`, so an I/O or XML error propagates and the
+/// `Language` fails to construct — Ghidra never comes up with an *unset* context register
+/// because the spec file was unreadable. Returning an empty `Vec` for both "unreadable" and
+/// "declares no `<context_set>`" (legitimate on an arch with no context register) made a
+/// transient read failure silently decode x86 with `addrsize=0`/`opsize=0`, i.e. in 16-bit real
+/// mode (`segment(...)` renders) — see [`load_cached`].
+pub fn pspec_context_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
+    let text = fs::read_to_string(pspec).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let sets = doc
+        .descendants()
         .filter(|n| n.tag_name().name() == "context_set")
         .flat_map(|cs| cs.children())
         .filter(|n| n.tag_name().name() == "set")
         .filter_map(|n| Some((n.attribute("name")?.to_string(), n.attribute("val")?.parse().ok()?)))
-        .collect()
+        .collect();
+    Some(sets)
 }
 
 /// Parse the `<register_data>` section of a `.pspec` into `(whole_register_size, lane_size_mask)`
@@ -98,9 +112,13 @@ pub fn pspec_context_sets(pspec: &Path) -> Vec<(String, u64)> {
 /// (`storage.decodeFromAttributes`). For x86-64, x86-64.pspec:79/111/143 give ZMM/YMM/XMM = 64/32/16,
 /// all with lane sizes `1,2,4,8`. This is the primitive form stored on [`Spec::laned`]; the decompiler
 /// wraps it in a [`LanedRegisterSet`] (see [`pspec_laned_registers`]).
-pub fn pspec_laned_size_masks(pspec: &Path, spec: &Spec) -> Vec<(i32, u32)> {
-    let Ok(text) = fs::read_to_string(pspec) else { return Vec::new() };
-    let Ok(doc) = roxmltree::Document::parse(&text) else { return Vec::new() };
+///
+/// `None` when the `.pspec` cannot be read or parsed, for the same reason as
+/// [`pspec_context_sets`]: an unreadable spec must fail the language load, not silently produce
+/// a lane-free architecture (which would silently disable lane division for the whole run).
+pub fn pspec_laned_size_masks(pspec: &Path, spec: &Spec) -> Option<Vec<(i32, u32)>> {
+    let text = fs::read_to_string(pspec).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
     let mut by_size: std::collections::BTreeMap<i32, u32> = std::collections::BTreeMap::new();
     // Only `<register>` elements inside `<register_data>` carry lane sizes (decodeRegisterData).
     for reg in doc
@@ -116,13 +134,13 @@ pub fn pspec_laned_size_masks(pspec: &Path, spec: &Spec) -> Vec<(i32, u32)> {
         lr.parse_sizes(size as i32, lanes);
         *by_size.entry(size as i32).or_insert(0) |= lr.size_bit_mask();
     }
-    by_size.into_iter().collect()
+    Some(by_size.into_iter().collect())
 }
 
 /// The laned-register set for a processor spec (Ghidra `Architecture::lanerecords`), the
 /// [`LanedRegisterSet`] wrapping of [`pspec_laned_size_masks`].
-pub fn pspec_laned_registers(pspec: &Path, spec: &Spec) -> LanedRegisterSet {
-    LanedRegisterSet::from_size_masks(pspec_laned_size_masks(pspec, spec))
+pub fn pspec_laned_registers(pspec: &Path, spec: &Spec) -> Option<LanedRegisterSet> {
+    Some(LanedRegisterSet::from_size_masks(pspec_laned_size_masks(pspec, spec)?))
 }
 
 /// Resolve the processor spec that carries a `.sla`'s register metadata. A single `.sla` can back
@@ -159,17 +177,58 @@ pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
 }
 
 /// Load the [`Spec`] + default decode context for a language id. Returns `None`
-/// when the tables aren't present (e.g. the Ghidra tree isn't set up).
+/// when the tables aren't present (e.g. the Ghidra tree isn't set up) or cannot be read.
+///
+/// Every call re-reads the `.ldefs`, `.sla` and `.pspec` from the Ghidra tree; a caller that
+/// decodes more than one function must use [`load_cached`] instead.
 pub fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     let (sla, pspec) = resolve(lang_id)?;
     let mut spec = Spec::from_sla(&fs::read(&sla).ok()?).ok()?;
     // The real-disassembly path attaches the laned (vector) registers, mirroring the cache
     // loader — see the reactivation note in `speccache::get`.
-    spec.laned = pspec_laned_size_masks(&pspec, &spec);
-    let sets = pspec_context_sets(&pspec);
+    spec.laned = pspec_laned_size_masks(&pspec, &spec)?;
+    let sets = pspec_context_sets(&pspec)?;
     let refs: Vec<(&str, u64)> = sets.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let ctx = spec.context_from_sets(&refs);
     Some((spec, ctx))
+}
+
+/// A loaded language: the SLEIGH tables plus the default decode context they are read with
+/// (Ghidra `SleighLanguage`, which carries both the decoder and the pspec's context defaults).
+pub type Language = (&'static Spec, &'static [u32]);
+
+/// [`load`], resolved once per process — the language tables and their default decode context
+/// for a language id, handed out as `&'static` (leaked; they live for the whole run anyway).
+///
+/// This is Ghidra's structure: `SleighLanguageProvider` keeps a
+/// `LinkedHashMap<LanguageID, SleighLanguage>` and `getLanguage()` builds a `SleighLanguage`
+/// once, then serves it from that map (SleighLanguageProvider.java:58/128-134). A decompile of
+/// N functions reads the `.sla`/`.pspec` once, not N times.
+///
+/// Mosura's per-function bridge ([`crate::analysis::decompiler::decompile_function`]) used
+/// plain [`load`], so a whole-program decompile re-read the tables once per function (1286×
+/// for WAR2 — every one of those reads a chance to fail). The failure was silent and
+/// *per-function*: an unreadable `.sla` yielded `None` (that function alone did not
+/// decompile), and an unreadable `.pspec` yielded an all-zero context register, decoding that
+/// one function in 16-bit real mode (`segment(...)`, `xunknown2`) while its neighbours decoded
+/// as 32-bit protected mode. With the Ghidra tree on a network mount, a transient read error
+/// therefore made the whole-program survey non-deterministic run-to-run. Resolving once makes
+/// the tables a per-process constant: every function decodes under the same context, and a
+/// tree that cannot be read fails uniformly rather than per function.
+pub fn load_cached(lang_id: &str) -> Option<Language> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Language>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().unwrap();
+    if let Some(&hit) = map.get(lang_id) {
+        return hit;
+    }
+    let loaded = load(lang_id).map(|(spec, ctx)| {
+        let spec: &'static Spec = Box::leak(Box::new(spec));
+        let ctx: &'static [u32] = Box::leak(ctx.into_boxed_slice());
+        (spec, ctx)
+    });
+    map.insert(lang_id.to_string(), loaded);
+    loaded
 }
 
 #[cfg(test)]
@@ -185,7 +244,7 @@ mod tests {
         let Some((sla, pspec)) = resolve("x86:LE:64") else { return }; // tree absent → skip
         let Ok(bytes) = fs::read(&sla) else { return };
         let Ok(spec) = Spec::from_sla(&bytes) else { return };
-        let set = pspec_laned_registers(&pspec, &spec);
+        let set = pspec_laned_registers(&pspec, &spec).expect("readable pspec");
         assert!(!set.is_empty(), "x86-64 has laned registers");
         assert_eq!(set.minimum_laned_register_size(), 16, "smallest laned reg = XMM (16 bytes)");
         for size in [16, 32, 64] {
@@ -200,6 +259,30 @@ mod tests {
         assert_eq!(spec.register_size("YMM0"), Some(32));
     }
 
+    /// An unreadable `.pspec` must NOT resolve to a context of zeros. On x86 a zero context
+    /// register means `addrsize=0`/`opsize=0` — 16-bit real mode — so the old silent
+    /// `Vec::new()` fallback turned a transient read failure into a whole function decoded in
+    /// the wrong address-size mode (`segment(...)` renders, `xunknown2` types) instead of a
+    /// failed language load. Also pins the x86-32 context to a non-zero word, so the two cases
+    /// can never be confused. Gated on the Ghidra tree being present.
+    #[test]
+    fn unreadable_pspec_fails_the_load_rather_than_zeroing_the_context() {
+        assert_eq!(pspec_context_sets(Path::new("/nonexistent/x86.pspec")), None);
+        let Some((_, pspec)) = resolve("x86:LE:32:default") else { return }; // tree absent → skip
+        let sets = pspec_context_sets(&pspec).expect("x86-32 pspec is readable");
+        for want in ["addrsize", "opsize"] {
+            assert!(sets.iter().any(|(n, _)| n == want), "x86-32 pspec sets {want}: {sets:?}");
+        }
+        let Some((spec, ctx)) = load_cached("x86:LE:32:default") else { return };
+        assert!(ctx.iter().any(|&w| w != 0), "32-bit protected mode is not the zero context");
+        // Cached: the same language id resolves to the very same leaked tables + context.
+        let (spec2, ctx2) = load_cached("x86:LE:32:default").expect("cached");
+        assert!(std::ptr::eq(spec, spec2) && std::ptr::eq(ctx, ctx2), "one load per process");
+        // And the cached context is what the uncached path computes.
+        let (_, fresh) = load("x86:LE:32:default").expect("fresh load");
+        assert_eq!(ctx, fresh.as_slice());
+    }
+
     /// The reverse `.sla`→default-`.pspec` resolver (the reactivation mechanism for the HELD-INERT
     /// laned-register loading in `speccache::get`): given `x86-64.sla` — shared by `x86:LE:64:default`
     /// and `x86:LE:64:compat32` — it must pick the `:default` variant's `x86-64.pspec`. Gated on the
@@ -212,6 +295,9 @@ mod tests {
         // And it resolves to the same laned set the forward path (resolve) produces.
         let Ok(bytes) = fs::read(&sla) else { return };
         let Ok(spec) = Spec::from_sla(&bytes) else { return };
-        assert_eq!(pspec_laned_size_masks(&pspec, &spec), vec![(16, 0x116), (32, 0x116), (64, 0x116)]);
+        assert_eq!(
+            pspec_laned_size_masks(&pspec, &spec),
+            Some(vec![(16, 0x116), (32, 0x116), (64, 0x116)])
+        );
     }
 }

@@ -1,30 +1,58 @@
-# war2_survey `--le` decode non-determinism (harness bug, NOT the decompiler)
+# war2_survey `--le` decode non-determinism — RESOLVED (harness/loader bug, NOT the decompiler)
 
-## Symptom
+## Symptom (as observed at the ir-cast-model merge gate)
 The `war2_survey` full-survey emit (`cargo run --release --example war2_survey -- WAR2.EXE <dir>`)
-decodes a handful of functions (~4 of 1286) in the WRONG address-size mode — 16-bit real-mode
-(SEGMENTOP, `*segment(seg,off)`, `xunknown2`) instead of 32-bit protected-mode (`*(xunknown4 *)(...)`).
-A 16-bit-decoded function emits `*segment(...)` (an undeclared C intrinsic) → Watcom **E1029**
-"Expression must be 'pointer to ...'" → COMPILE_FAIL. The SET of affected functions changes
-run-to-run, so the survey's per-run COMPILE_FAIL total jitters by a few.
+decoded a handful of functions (~4 of 1286) in the WRONG address-size mode — 16-bit real-mode
+(`segment(seg,off)`, `xunknown2`) instead of 32-bit protected-mode — and a handful of *others*
+came back `DECOMPILE_FAIL  returned None`. A 16-bit-decoded function emits `*segment(...)` (an
+undeclared C intrinsic) → Watcom **E1029** → COMPILE_FAIL. The affected SET changed run-to-run,
+so per-run COMPILE_FAIL / DECOMPILE_FAIL totals jittered by a few and produced PHANTOM
+regressions. `dumpwar2 <va>` (one function per process) never showed it.
 
-## Why it is NOT the decompiler
-The decompiler (type inference, ActionSetCasts, printc) runs AFTER disassembly — it cannot change
-instruction decode or address-size. Proof: the canonical single-function path
-`dumpwar2 <va>` (= `analysis::decompiler::decompile_function`) renders every affected function as
-32-bit compilable C, **identically on any commit** (verified base e9c0655 == branch ir-cast-model for
-FUN_00029870/000299d0/0002a03c). Only the `war2_survey` `--le` whole-program path produces the 16-bit
-form, and only intermittently.
+## Root cause
+`analysis::decompiler::decompile_function` called `lang::load` — which re-reads the `.ldefs`,
+the `.sla` and the `.pspec` **from disk on every call**. A whole-program survey therefore
+re-read and re-parsed the language tables 1286 times, and **every one of those reads was a
+chance to fail**: the pinned Ghidra tree lives under `~/tools` → `/data/tools`, a *network*
+mount (`jd@10.0.2.2:/home/jd/projects/tools`), so a transient read error is a real event under
+load. Both failure paths degraded **silently and per function**:
 
-## Root (hypothesis)
-`war2_survey` loads via `analyze_le_file` and decodes all 1286 functions with SHARED whole-program
-flow/discovery state. A function's decode mode (16 vs 32-bit) appears to depend on how/when it is
-first reached during that shared discovery, which is order-sensitive (likely HashMap iteration
-order) → non-deterministic across runs. Pre-existing; affects base and branch surveys equally.
+- `fs::read(<sla>)` fails → `lang::load` → `None` → `decompile_function` → `None` → the survey
+  records `DECOMPILE_FAIL  returned None` for that one function. ("returned None" and not a
+  panic location is the tell: the survey's panic hook would have named a file:line for any
+  pipeline panic, so this row can *only* come from the language load.)
+- `fs::read_to_string(<pspec>)` fails → `pspec_context_sets` returned `Vec::new()` →
+  `context_from_sets` → an **all-zero context register** → on x86 that is `addrsize=0`/
+  `opsize=0`, i.e. **16-bit real mode** (ia.sinc:1126-1134/1419+ gate `segment(...)` on
+  `addrsize=0`) → that one function renders `*segment(...)`/`xunknown2` while its neighbours
+  render 32-bit.
 
-## Practical guidance
-- The `war2_survey` COMPILE_FAIL total is a ±few-noisy metric. For a real before/after, compare
-  per-CLASS counts and confirm individual "regressions" with `dumpwar2 <va>` (canonical, deterministic)
-  before attributing them to a decompiler change.
-- Fix (future): make the `--le` survey decode deterministic (stable discovery order / per-function
-  address-size from the LE object table, not shared flow state).
+Evidence: a zero context reproduces the reported render *exactly* (same function, same
+`segment(xVar1,iVar2 + -2)` / `xunknown2` shape); the post-`analyze_le_file` analysis state
+(functions, code units, references, symbols, blocks) is bit-identical across runs; decompiling
+every function twice in one process (fresh hash seeds) diverges for 0/1286; and the failures in
+the recorded merge-gate runs cluster in *narrow index windows* (idx 432-443 in one run, 248-254
+in another) — a time-localized I/O hiccup, not a per-function property. The earlier
+HashMap-iteration-order hypothesis was wrong: nothing in the discovery path is order-sensitive.
+
+## Fix (`lang.rs`, `speccache.rs`, `analysis/decompiler.rs`)
+1. **Resolve the language once per process** — `lang::load_cached`, keyed by language id,
+   leaking the parsed `Spec` + context. This is Ghidra's own structure:
+   `SleighLanguageProvider` keeps a `LinkedHashMap<LanguageID, SleighLanguage>` and
+   `getLanguage()` builds each language once, then serves it from that map
+   (SleighLanguageProvider.java:58/128-134). `decompile_function` uses it, so every function of
+   a whole-program decompile decodes under one identical (tables, context) — deterministic by
+   construction, and no repeated network I/O (survey EMIT 239s → 54s).
+2. **No silent degradation on an unreadable spec** — `pspec_context_sets` /
+   `pspec_laned_size_masks` return `Option`: `None` = could not read/parse (the language load
+   fails), `Some(empty)` = the pspec legitimately declares no `<context_set>` / no laned
+   registers. Ghidra `SleighLanguage.initialize()` (SleighLanguage.java:116) declares
+   `throws DecoderException, SAXException, IOException` and lets a spec-file error propagate —
+   the `Language` fails to construct; it never comes up with an unset context register. A
+   tree that cannot be read now fails uniformly instead of mis-decoding one function.
+
+## Gates
+Two full emits into separate dirs are byte-identical (`diff -r A/raw B/raw` clean, manifests
+identical), and both are byte-identical to a pre-fix emit — the fix changes no output, only how
+often the tables are read. Corpus: all 60 fixture scores unchanged (0.9527, 57/60). Suite green,
+clippy clean. Regression test: `lang::tests::unreadable_pspec_fails_the_load_rather_than_zeroing_the_context`.
