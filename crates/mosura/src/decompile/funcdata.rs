@@ -95,6 +95,16 @@ pub struct Funcdata {
     /// (`JumpBasic::findSmallestNormal`) and under-recovers the table. Orientation is a render-time
     /// concern and only needs to run in the real decompile.
     pub table_recovery_probe: bool,
+    /// How far the explicit/implied classification reached — the Varnode count when
+    /// [`super::merge::ActionMarkImplied`] ran (Ghidra `ActionMarkExplicit`/`ActionMarkImplied`,
+    /// coreaction.cc:5719-5720). `None` until it does.
+    ///
+    /// Varnodes created *after* that point — the uniques `ActionSetCasts` (:5735) introduces when it
+    /// rewires an op's output through a CAST — were never classified. Ghidra sets their flag once, at
+    /// creation, and never re-derives it; so for them the flag is the whole answer, and the
+    /// recomputed classification chain must not be consulted at all (see
+    /// [`super::printc`]'s `is_explicit`).
+    pub classified_upto: Option<usize>,
     /// The function's HighVariables (Ghidra's `Merge`/`Varnode::high`), frozen by
     /// [`super::merge::ActionMergeType`] at Ghidra's merge slot — after the last merge action
     /// (`ActionMergeType`, coreaction.cc:5727) and *before* `ActionSetCasts` (:5735).
@@ -152,6 +162,7 @@ impl Funcdata {
             alias_boundary: None,
             directwrite_pending_clear: false,
             table_recovery_probe: false,
+            classified_upto: None,
             highs: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),

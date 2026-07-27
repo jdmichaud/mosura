@@ -221,6 +221,23 @@ impl<'a> PrintC<'a> {
         if vn.is_constant() {
             return false;
         }
+        // A Varnode created AFTER the classification froze — the uniques `ActionSetCasts` introduces
+        // when it rewires an op's output through a CAST — was never seen by `ActionMarkImplied`.
+        // Ghidra's `setImplied()` at that point (coreaction.cc:2594) is FINAL: `ActionMarkExplicit`
+        // ran at 5719 over the pre-cast graph, `ActionSetCasts` is 5735, and nothing re-derives
+        // explicitness afterwards. Its own flag is therefore the whole answer, and the recomputed
+        // chain below must not override it — `explicit_leading`'s `def->isCall()` arm
+        // (Ghidra `baseExplicit`, coreaction.cc:3015) is right for a REAL call output but must not
+        // claim the synthetic unique that a cast on a call's result leaves the call writing, or the
+        // call renders twice: once as its own statement and again inlined into the cast.
+        //
+        // This is an early exit, not a reordering: the arms below keep their exact relative order, so
+        // the `explicit_leading` copymarker `Some(false)` case still short-circuits ahead of
+        // `high_ram_off` as documented there. The two paths are disjoint — a post-freeze Varnode is a
+        // fresh unique, never addrtied, never a SUBPIECE of an addrtied whole.
+        if self.f.classified_upto.is_some_and(|n| v.0 as usize >= n) {
+            return vn.is_explicit();
+        }
         // a recovered stack-array base is always named (even single-use) so it renders `axStack_98`
         if self.force_explicit.contains(&v) {
             return true;

@@ -2004,6 +2004,10 @@ impl super::action::Action for ActionMarkImplied {
             return 0;
         }
         mark_explicit_flags(data);
+        // Record how far the classification reached. Ghidra classifies once, here (5719-5720), over
+        // the Varnodes that exist at this point; `ActionSetCasts` (5735) creates more and sets their
+        // flag itself, with no later pass to re-derive it.
+        data.classified_upto = Some(data.num_varnodes());
         0
     }
 }
