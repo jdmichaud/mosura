@@ -32,7 +32,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::funcdata::Funcdata;
-use super::merge::merge;
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::types::{type_order, Datatype};
@@ -712,11 +711,10 @@ fn down_chain(ptr: &Datatype, off: &mut u64, allow_wrap: bool) -> Option<Datatyp
     None // a scalar pointee has no addressable sub-component
 }
 
-/// Infer a type for every varnode: run the local-type seeding and per-varnode propagation
-/// (Ghidra `ActionInferTypes::apply`), then resolve one type per [`merge`] HighVariable so each
-/// emitted C variable is typed consistently across its SSA versions. Constant varnodes are typed
-/// too (each is its own singleton HighVariable in Ghidra), so the printer's read-facing casts see
-/// a real type rather than `undefined`.
+/// Infer a type for every varnode: local-type seeding, per-varnode propagation, and the per-varnode
+/// commit — Ghidra `ActionInferTypes::apply` (coreaction.cc:5374) through `writeBack` (:5043).
+/// The returned type is the varnode's OWN settled type; the type of the *variable* it belongs to is
+/// a separate channel derived at the merge slot ([`super::merge::high_type_read_facing`]).
 pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<VarnodeId, Datatype> {
     let mut ti = TypeInfer::new(f, locks);
     ti.build_localtypes();
@@ -727,91 +725,29 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
         }
     }
     ti.propagate_across_returns();
-    // The active constants, captured before `write_back` consumes the inference state. Ghidra's
-    // `writeBack` (coreaction.cc) commits a type onto every active varnode in `beginLoc`/`endLoc`,
-    // constants included (a constant is active — it has descendants).
-    let active_constants: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
-        .map(VarnodeId)
-        .filter(|&v| f.vn(v).is_constant() && ti.active(v))
-        .collect();
+    // Every active varnode, captured before `write_back` consumes the inference state. Ghidra's
+    // `writeBack` commits onto each varnode in `beginLoc`/`endLoc` that is not an annotation and is
+    // either written or read — constants included (a constant is active: it has descendants), which
+    // is what gives the printer's `markExplicitUnsigned`/`getInputCast` a real constant type and
+    // activates constant-typed rules like `RuleAddUnsigned`.
+    let active: Vec<VarnodeId> =
+        (0..f.num_varnodes() as u32).map(VarnodeId).filter(|&v| ti.active(v)).collect();
     let committed = ti.write_back();
 
-    // Resolve to one type per HighVariable (Ghidra commits per-varnode; the C variable's type is
-    // the meet of its members), then map every non-constant varnode to its variable's type. A
-    // type-locked member wins for the whole variable (Ghidra's symbol type-lock).
-    let mut h = merge(f);
-    let nonconst: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
-        .map(VarnodeId)
-        .filter(|&v| !f.vn(v).is_constant())
-        .collect();
-
-    let mut locked_hv: HashMap<u32, Datatype> = HashMap::new();
-    for (&v, t) in locks {
-        if !f.vn(v).is_constant() {
-            locked_hv.insert(h.high(v), t.clone());
-        }
-    }
-    let mut hv: HashMap<u32, Datatype> = HashMap::new();
-    for &v in &nonconst {
-        let id = h.high(v);
-        if locked_hv.contains_key(&id) {
-            continue;
-        }
-        let lt = committed[v.0 as usize].clone();
-        // Ghidra `HighVariable::getTypeRepresentative` (variable.cc:377): a HighVariable's type is the
-        // MOST-SPECIFIC of its member (instance) types (`0 > typeOrderBool`), NOT a meet of them.
-        // (Type-locked members are handled by `locked_hv` above.) `type_order` is the primitive-lattice
-        // stand-in for `typeOrderBool` — bool is a distinct sub-metatype here, so the ordering matches.
-        hv.entry(id)
-            .and_modify(|t| {
-                if type_order(&lt, t) == Ordering::Less {
-                    *t = lt.clone();
-                }
-            })
-            .or_insert(lt);
-    }
-
-    if typeprop_debug_on() {
-        // Which HighVariable broadcast which member's type — the resolution half of the trace.
-        let mut members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
-        for &v in &nonconst {
-            members.entry(h.high(v)).or_default().push(v);
-        }
-        let mut ids: Vec<&u32> = members.keys().collect();
-        ids.sort();
-        for id in ids {
-            let ms = &members[id];
-            if ms.len() < 2 {
-                continue;
-            }
-            let chosen = locked_hv.get(id).or_else(|| hv.get(id));
-            let list: Vec<String> =
-                ms.iter().map(|&v| format!("{}#{}={:?}", f.vn_str(v), v.0, committed[v.0 as usize])).collect();
-            eprintln!("TYPEHV hv#{id} -> {chosen:?} from [{}]", list.join(", "));
-        }
-    }
-
-    let mut result: HashMap<VarnodeId, Datatype> = nonconst
-        .into_iter()
-        .map(|v| {
-            let id = h.high(v);
-            let t = locked_hv
-                .get(&id)
-                .or_else(|| hv.get(&id))
-                .cloned()
-                .unwrap_or_else(|| committed[v.0 as usize].clone());
-            (v, t)
-        })
-        .collect();
-
-    // A constant carries its own committed type (Ghidra `writeBack` → `updateType`; a constant is
-    // its own singleton HighVariable, so its type is never meeted with the variables that read
-    // it). This is the read-facing type the printer's `markExplicitUnsigned`/`getInputCast`
-    // (cast.cc) consult, and the type that activates constant-typed rules like `RuleAddUnsigned`.
-    for v in active_constants {
-        result.insert(v, committed[v.0 as usize].clone());
-    }
-    result
+    // Ghidra `ActionInferTypes::writeBack` (coreaction.cc:5043): commit each active varnode's
+    // settled temporary type onto THAT VARNODE. Per-varnode and nothing else — Ghidra never
+    // consults a HighVariable here.
+    //
+    // The *variable's* type is a separate, derived channel (`HighVariable::getType` via
+    // `getTypeRepresentative`, variable.cc:377/400), which mosura computes at the merge slot
+    // (`merge::FrozenHighs::type_of`) from these committed types and serves to the cast/print
+    // readers through `merge::high_type_read_facing`. Resolving it here and broadcasting it back
+    // onto the members — as this function used to — destroys precisely the per-varnode information
+    // the two consumers of this channel need: the mainloop rules (`RulePtrArith`, `varmap`,
+    // `subvarflow`), which in Ghidra genuinely see un-merged per-varnode types because
+    // HighVariables do not exist until 5718-5727, and `merge_test_adjacent`'s data-type gate, which
+    // cannot separate two variables whose members have all been given the same type.
+    active.into_iter().map(|v| (v, committed[v.0 as usize].clone())).collect()
 }
 
 /// Ghidra `ActionInferTypes::apply`: recover a data-type for every varnode and *commit* it onto
