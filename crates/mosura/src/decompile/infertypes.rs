@@ -243,6 +243,7 @@ impl<'a> TypeInfer<'a> {
             let v = VarnodeId(i);
             if self.active(v) {
                 self.temp[i as usize] = self.get_local_type(v);
+                propagation_debug(self.f, v, &self.temp[i as usize], None, 0);
             }
         }
     }
@@ -309,6 +310,7 @@ impl<'a> TypeInfer<'a> {
             return false;
         };
         if type_order(&newtype, self.t(outvn)) == Ordering::Less {
+            propagation_debug(self.f, outvn, &newtype, Some(op), inslot);
             self.temp[outvn.0 as usize] = newtype;
             return !self.mark[outvn.0 as usize];
         }
@@ -609,6 +611,7 @@ impl<'a> TypeInfer<'a> {
                 continue;
             }
             self.temp[vn.0 as usize] = ct.clone();
+            propagation_debug(self.f, vn, &ct, Some(canon), 1);
             self.propagate_one_type(vn);
         }
     }
@@ -618,6 +621,33 @@ impl<'a> TypeInfer<'a> {
     fn write_back(self) -> Vec<Datatype> {
         self.temp
     }
+}
+
+/// Ghidra `ActionInferTypes::propagationDebug` (coreaction.cc:4980, `#ifdef TYPEPROP_DEBUG`): log
+/// every accepted type push — `<varnode> : <newtype> from <op> slot=<inslot>`, or `init` for a
+/// local-type seed. Gated on `MOSURA_TYPEPROP` (Ghidra's `TypeFactory::propagatedbg_on`), so it
+/// costs nothing when off. This is the instrument that NAMES the edge behind a mis-typing instead
+/// of chaining source-reading guesses.
+///
+/// Call sites mirror Ghidra's: `buildLocaltypes` (5033, `init`), `propagateTypeEdge` (5106) and
+/// `propagateAcrossReturns` (5367, `slot=1`). The `ptralias` form (5248) has no counterpart —
+/// `propagateRef`/`propagateSpacebaseRef` are not ported. Each varnode also carries its SSA
+/// index (`#<id>`), since `printRawNoMarkup`'s `<space>0x<off>:<size>` alone does not
+/// distinguish the versions of one storage location, which is exactly what a trace must show.
+fn propagation_debug(f: &Funcdata, vn: VarnodeId, newtype: &Datatype, op: Option<OpId>, inslot: i32) {
+    if !typeprop_debug_on() {
+        return;
+    }
+    match op {
+        None => eprintln!("TYPEPROP {}#{} : {newtype:?} init", f.vn_str(vn), vn.0),
+        Some(o) => eprintln!("TYPEPROP {}#{} : {newtype:?} from {} slot={inslot}", f.vn_str(vn), vn.0, f.op_str(o)),
+    }
+}
+
+fn typeprop_debug_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MOSURA_TYPEPROP").is_some())
 }
 
 /// Ghidra `TypeOp::propagateToPointer`: build a pointer (of width `sz`) to the value type.
@@ -726,6 +756,26 @@ pub fn infer(f: &Funcdata, locks: &HashMap<VarnodeId, Datatype>) -> HashMap<Varn
                 }
             })
             .or_insert(lt);
+    }
+
+    if typeprop_debug_on() {
+        // Which HighVariable broadcast which member's type — the resolution half of the trace.
+        let mut members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+        for &v in &nonconst {
+            members.entry(h.high(v)).or_default().push(v);
+        }
+        let mut ids: Vec<&u32> = members.keys().collect();
+        ids.sort();
+        for id in ids {
+            let ms = &members[id];
+            if ms.len() < 2 {
+                continue;
+            }
+            let chosen = locked_hv.get(id).or_else(|| hv.get(id));
+            let list: Vec<String> =
+                ms.iter().map(|&v| format!("{}#{}={:?}", f.vn_str(v), v.0, committed[v.0 as usize])).collect();
+            eprintln!("TYPEHV hv#{id} -> {chosen:?} from [{}]", list.join(", "));
+        }
     }
 
     let mut result: HashMap<VarnodeId, Datatype> = nonconst
