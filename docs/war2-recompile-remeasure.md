@@ -78,13 +78,19 @@ is open. Check the open one before a re-measure is used as evidence.
    `unaff_`/`in_`/`Ram` identifier as a pointer only when it appeared *indexed* (`ident[`), never
    when *dereferenced* (`*ident`), producing phantom `E1029: Expression must be 'pointer to ...'`
    against a decompiler that had typed the varnode a pointer correctly.
-3. **OPEN — the survey path disagrees with the canonical path.** On `FUN_00070f4d`, the same binary
-   and same commit render the compare operand as an integer via `dumpwar2` (the canonical
-   `decompiler::decompile_function` path) and as a *pointer* via `war2_survey`. Unconfirmed
-   hypothesis: the survey shares program/prototype/analysis state across all 1286 functions, so a
-   function's prototypes differ from a single-function decompile. Until this is understood, verify
-   any per-function claim with `dumpwar2 <va>` and treat survey totals as a population statistic,
-   not per-function truth.
+3. **STALE EXAMPLE BINARY — not a harness defect; a measurement mistake.** An apparent
+   survey-vs-canonical disagreement (`FUN_00070f4d`'s compare operand rendering as a pointer under
+   `war2_survey` and as an integer under `dumpwar2`, same binary and same commit) was neither path
+   being wrong: **`cargo build --release` does NOT rebuild `examples/`.** Running
+   `./target/release/examples/war2_survey` directly after a lib-only rebuild executes the *previous*
+   decompiler, while `cargo run --release --example dumpwar2` rebuilds first. The two dumps came
+   from different code. Verified: touch a decompiler source, `cargo build --release` recompiles the
+   lib and leaves every `target/release/examples/*` mtime unchanged. With both rebuilt the two paths
+   agree exactly.
+
+   **Always invoke the EMIT as `cargo run --release --example war2_survey ...`** (as the Stage 1
+   command above does) — never the bare binary. Same for `dumpwar2`/`dumpc` when comparing against a
+   just-changed decompiler.
 
 ## Notes
 - The scripts' `ROOT` is hard-coded — either EMIT into `war2-survey/` (recommended) or edit `ROOT`
