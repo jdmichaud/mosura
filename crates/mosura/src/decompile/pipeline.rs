@@ -769,6 +769,12 @@ pub fn universal_action() -> ActionGroup {
         // printc reads. Ghidra runs this BEFORE ActionSetCasts (5735); mosura previously recomputed it
         // at print time (after the casts), which flipped switchloop/stackstring values implied.
         .then(super::merge::ActionMarkImplied)
+        // Ghidra's merge slot (`ActionMergeType`, coreaction.cc:5727, the last of 5718-5727): freeze
+        // the HighVariables on the FINAL pre-cast graph. Every Ghidra merge action runs before
+        // `ActionSetCasts` (:5735) and each CAST varnode it inserts gets a fresh HighVariable, so a
+        // merge recomputed after the casts partitions a different varnode set. printc consumes this
+        // rather than re-deriving it — the merge analogue of the ActionMarkImplied freeze above.
+        .then(super::merge::ActionMergeType)
         // Ghidra `ActionSetCasts` (coreaction.cc:5735, DEAD-LAST — after ActionMarkImplied at 5720
         // and with no ActionInferTypes after it): insert real CPUI_CAST ops where a value's committed
         // type and an operation's natural token/required type diverge, so printc renders `(type)expr`

@@ -30,6 +30,7 @@ const MAX_IMPLIED_REF: usize = 2;
 const MAX_TERM_DUPLICATION: i32 = 2;
 
 /// A union-find over Varnodes: each class is one HighVariable (one C variable).
+#[derive(Clone)]
 pub struct HighVariables {
     parent: Vec<u32>,
 }
@@ -42,7 +43,7 @@ impl HighVariables {
     /// Grow the union-find to cover `n` varnodes: each new varnode starts as its own
     /// HighVariable (Ghidra allocates a fresh HighVariable per new Varnode). Used by the
     /// graph-mutating marker merge, whose trims create new COPY outputs mid-pass.
-    fn extend_to(&mut self, n: usize) {
+    pub(crate) fn extend_to(&mut self, n: usize) {
         let old = self.parent.len() as u32;
         self.parent.extend(old..n as u32);
     }
@@ -1890,6 +1891,35 @@ pub fn mark_explicit_flags(f: &mut Funcdata) {
         } else {
             f.vn_mut(v).set_implied();
         }
+    }
+}
+
+/// Ghidra's merge slot, `ActionMergeType` (coreaction.cc:5727) — the last of the merge actions
+/// (`ActionMergeRequired` 5718 … `ActionMergeCopy` 5722, `ActionDominantCopy` 5723,
+/// `ActionMergeAdjacent` 5726, `ActionMergeType` 5727), all of which run *before*
+/// `ActionSetCasts` (:5735). [`merge`] computes that whole sequence in one pass, so running it
+/// here and storing the result on the `Funcdata` puts mosura's HighVariables at Ghidra's slot.
+///
+/// Why it has to be frozen here: Ghidra's merging is finished before a single CAST op exists, and
+/// every CAST varnode `ActionSetCasts` inserts afterwards gets its own fresh HighVariable.
+/// Recomputing the merge at print time — over a graph that now contains those casts — partitions a
+/// *different* varnode set and can therefore reach a different answer. That is the same defect
+/// class as the explicit/implied classification being recomputed after the casts, fixed one slot
+/// over by [`ActionMarkImplied`].
+pub struct ActionMergeType;
+
+impl super::action::Action for ActionMergeType {
+    fn name(&self) -> &str {
+        "mergetype"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Skip during the jump-table recovery probe, as [`ActionMarkImplied`] does: the frozen
+        // HighVariables are read only by printc, which the probe never runs.
+        if data.table_recovery_probe {
+            return 0;
+        }
+        data.highs = Some(merge(data));
+        0
     }
 }
 

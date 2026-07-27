@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
-use super::merge::{merge, HighVariables};
+use super::merge::HighVariables;
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::Address;
@@ -1820,8 +1820,21 @@ pub fn print_c(f: &Funcdata) -> String {
     // variable. This is the precise across-call-slot-write pattern, not every member of a stack
     // HighVariable (which would spill intermediate register arithmetic into stray statements).
     // `high_stack_off` names the merged HighVariable by its stack frame offset.
+    // The HighVariables frozen by `merge::ActionMergeType` at Ghidra's merge slot (coreaction.cc:5727,
+    // before `ActionSetCasts` at :5735). Consumed, never re-derived: recomputing `merge(f)` here would
+    // run over the post-cast graph — a different varnode set than the one Ghidra merges — which is the
+    // defect this freeze exists to fix. A missing value means the pipeline did not reach that slot, and
+    // must fail loudly rather than silently fall back to the post-cast view.
     let t0 = std::time::Instant::now();
-    let mut h = merge(f);
+    let mut h = f
+        .highs
+        .clone()
+        .expect("printc requires the HighVariables frozen by ActionMergeType; run pipeline::decompile");
+    // The CAST varnodes `ActionSetCasts` inserted after the freeze are not in it. Ghidra allocates a
+    // fresh HighVariable for every new Varnode (`Funcdata::newVarnode`), so each becomes its own
+    // singleton class — which is precisely what the cast varnodes are: a cast is not the same C
+    // variable as its operand.
+    h.extend_to(f.num_varnodes());
     if super::action::perf::enabled() {
         super::action::perf::record("print", "merge", t0.elapsed());
     }

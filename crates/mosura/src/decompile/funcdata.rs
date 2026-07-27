@@ -95,6 +95,15 @@ pub struct Funcdata {
     /// (`JumpBasic::findSmallestNormal`) and under-recovers the table. Orientation is a render-time
     /// concern and only needs to run in the real decompile.
     pub table_recovery_probe: bool,
+    /// The function's HighVariables (Ghidra's `Merge`/`Varnode::high`), frozen by
+    /// [`super::merge::ActionMergeType`] at Ghidra's merge slot — after the last merge action
+    /// (`ActionMergeType`, coreaction.cc:5727) and *before* `ActionSetCasts` (:5735).
+    ///
+    /// Ghidra's merging is complete before any CAST op exists, and each CAST varnode inserted
+    /// afterwards gets its own fresh HighVariable. Recomputing the merge later — over a graph that
+    /// now contains those casts — is a different partition. So the printer consumes this frozen
+    /// state rather than re-deriving it; see [`super::printc::print_c`].
+    pub highs: Option<super::merge::HighVariables>,
     /// The architecture's laned-register records (Ghidra `Architecture::lanerecords`, reached via
     /// `Funcdata::getArch`). Consumed by `ActionLaneDivide` to decide which vector registers may be
     /// lane-split. Parsed from the `.pspec` `vector_lane_sizes` by the build caller
@@ -143,6 +152,7 @@ impl Funcdata {
             alias_boundary: None,
             directwrite_pending_clear: false,
             table_recovery_probe: false,
+            highs: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),
             userops: std::collections::HashMap::new(),
