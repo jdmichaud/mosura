@@ -64,6 +64,28 @@ was COMPILE_FAIL and is now MISMATCH with a very low byte-match, or EXACT/RELOC 
 suspect. Cross-check a sample against `oracle/capture --c` / analyzeHeadless. Faithful casts must
 not turn a right-but-uncompilable function into a wrong-but-compilable one.
 
+## ⚠️ Trust the survey path before quoting its numbers
+
+Three separate harness defects have made survey numbers wrong or unattributable. Two are fixed; one
+is open. Check the open one before a re-measure is used as evidence.
+
+1. **Decode non-determinism — FIXED** (`74cb0ae`). The whole-program `--le` survey re-read the SLEIGH
+   specs per function over a network mount; a failed `.pspec` read silently yielded addrsize=0
+   (16-bit real mode) and phantom `segment(...)` compile-fails, so per-run COMPILE_FAIL jittered.
+   `lang::load_cached` now resolves each language once per process and fails loudly on a spec-read
+   error. Detail: `docs/war2-survey-decode-nondeterminism.md`.
+2. **Synthesized-declaration gap — FIXED** (`a1d3e98`). `war2_survey.rs` declared an `extraout_`/
+   `unaff_`/`in_`/`Ram` identifier as a pointer only when it appeared *indexed* (`ident[`), never
+   when *dereferenced* (`*ident`), producing phantom `E1029: Expression must be 'pointer to ...'`
+   against a decompiler that had typed the varnode a pointer correctly.
+3. **OPEN — the survey path disagrees with the canonical path.** On `FUN_00070f4d`, the same binary
+   and same commit render the compare operand as an integer via `dumpwar2` (the canonical
+   `decompiler::decompile_function` path) and as a *pointer* via `war2_survey`. Unconfirmed
+   hypothesis: the survey shares program/prototype/analysis state across all 1286 functions, so a
+   function's prototypes differ from a single-function decompile. Until this is understood, verify
+   any per-function claim with `dumpwar2 <va>` and treat survey totals as a population statistic,
+   not per-function truth.
+
 ## Notes
 - The scripts' `ROOT` is hard-coded — either EMIT into `war2-survey/` (recommended) or edit `ROOT`
   in `compile.sh`+`compare.py` to a fresh dir.
