@@ -152,8 +152,25 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
                 Datatype::Uint(f.vn(out).size)
             }
         }
+        // `TypeOpCall`/`TypeOpCallind` have NO `getOutputToken` override, so their token is the base
+        // `TypeOp::getOutputToken` = `PcodeOp::outputTypeLocal` = `TypeOpCall::getOutputLocal`
+        // (typeop.cc:720, `TypeOpCallind` :776): the call prototype's return type when that prototype
+        // is OUTPUT-LOCKED, otherwise `TypeOp::getOutputLocal` (:261) = `undefined<size>`. mosura
+        // models no output-locked call prototypes, so only the unlocked arm is reachable and the
+        // token is simply the op-local type.
+        //
+        // This is what lets a call result take a cast at all. `castOutput` compares the token with
+        // the value's variable type, and `castStandard` accepts `undefined` where an int/uint is
+        // required but not where a pointer or float is (cast.cc:339-391) — so an integral call result
+        // stays bare while `pVar6 = func_0x0007803f();` becomes `pVar6 = (int4 *)func_0x0007803f();`,
+        // as Ghidra renders it. WAR2 FUN_000729cd fails E1010 on exactly this.
+        //
+        // CALLOTHER is deliberately NOT included: its Ghidra token consults the userop's own
+        // `getOutputLocal` (typeop.cc:865), a per-userop table mosura does not model, so claiming
+        // `undefined` for it would assert a model that has not been ported.
+        OpCode::Call | OpCode::Callind => super::infertypes::output_type_local(f, op),
         // base TypeOp::getOutputToken = outputTypeLocal: inference already settled this onto the
-        // output, so token == committed → no cast (the deferred composite/call cases noted above).
+        // output, so token == committed → no cast (the deferred composite cases noted above).
         _ => f.vn(out).get_type(),
     }
 }

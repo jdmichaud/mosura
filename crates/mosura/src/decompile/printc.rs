@@ -1433,6 +1433,25 @@ impl<'a> PrintC<'a> {
             if self.nonprinting.contains(&op) {
                 continue; // Ghidra opMarkNonPrinting (ActionCopyMarker): shadow / redundant COPY
             }
+            // Ghidra `PrintC::emitBlockBasic` (printc.cc:2703-2705): an op whose output is IMPLIED
+            // emits no statement at all — it is folded into the use that consumes it. This is
+            // uniform across opcodes, with no per-op special case; the arms below therefore render
+            // only values that materialize as their own statement.
+            //
+            // Without it a call whose result takes a cast prints twice: `ActionSetCasts` leaves the
+            // call writing an implied unique and the CAST producing the named value, so the call arm
+            // emitted `xVar = func();` for the unique AND the cast statement re-rendered the call
+            // inlined as its operand.
+            //
+            // The test is printc's own classification rather than the raw `isImplied` flag: its
+            // print-only arms can only ADD explicitness, so this skips a subset of what Ghidra skips,
+            // and it stays consistent with the classification `render_var` consults when deciding to
+            // inline versus name a value.
+            if let Some(outv) = self.f.op(op).output {
+                if !self.is_explicit(outv) {
+                    continue;
+                }
+            }
             let o = self.f.op(op);
             match o.code() {
                 OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => {}
