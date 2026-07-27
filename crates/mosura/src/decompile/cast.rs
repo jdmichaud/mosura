@@ -125,6 +125,33 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         }
         // TypeOpPtradd::getOutputToken (typeop.cc:2244): cast to the base pointer's type
         OpCode::Ptradd => high_type_read_facing(f, o.input(0).unwrap()),
+        // TypeOpSubpiece::getOutputToken (typeop.cc:2142) — "SUBPIECE prints as cast to whatever its
+        // output is": the token IS the output's own variable type, so `castOutput`'s
+        // `tokenct == outHighType` short-circuit is satisfied and a SUBPIECE never takes an output
+        // cast. Only an `unknown` output falls back, to `int` of the output's size.
+        //
+        // (The leading `findTruncation` arm — return the composite field's type when a struct/union
+        // field exactly covers the truncation — is inapplicable: mosura's `Datatype` has no struct or
+        // union metatype, so no truncation can ever be found. Deferred with the aggregate lattice.)
+        OpCode::Subpiece => {
+            let dt = high_type_read_facing(f, out);
+            if matches!(dt, Datatype::Unknown(_)) {
+                Datatype::Int(f.vn(out).size)
+            } else {
+                dt
+            }
+        }
+        // TypeOpPiece::getOutputToken (typeop.cc:2063) — the same shape: "PIECE casts to uint or int,
+        // based on output". The output's own variable type when it is integral, else `uint` of the
+        // output's size (an unknown or pointer output).
+        OpCode::Piece => {
+            let dt = high_type_read_facing(f, out);
+            if matches!(dt, Datatype::Int(_) | Datatype::Uint(_)) {
+                dt
+            } else {
+                Datatype::Uint(f.vn(out).size)
+            }
+        }
         // base TypeOp::getOutputToken = outputTypeLocal: inference already settled this onto the
         // output, so token == committed → no cast (the deferred composite/call cases noted above).
         _ => f.vn(out).get_type(),
