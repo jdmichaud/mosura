@@ -59,6 +59,23 @@ fn base(meta: Meta, size: u32) -> Datatype {
     }
 }
 
+/// Ghidra `PcodeOp::outputTypeLocal` (op.hh) → `TypeOp::getOutputLocal`: the data-type an op
+/// advertises for its output, independent of any propagation. Seeds `buildLocaltypes` and is one
+/// half of the type test [`super::merge::merge_adjacent`] applies (merge.cc:999).
+pub(crate) fn output_type_local(f: &Funcdata, op: OpId) -> Datatype {
+    let o = f.op(op);
+    let size = o.output.map(|v| f.vn(v).size).unwrap_or(1);
+    base(op_meta(o.code()).0, size)
+}
+
+/// Ghidra `PcodeOp::inputTypeLocal(slot)` (op.hh) → `TypeOp::getInputLocal`: the data-type an op
+/// advertises for the given input slot. See [`output_type_local`].
+pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype {
+    let o = f.op(op);
+    let size = o.input(slot).map(|v| f.vn(v).size).unwrap_or(1);
+    base(op_meta(o.code()).1, size)
+}
+
 /// `(metaout, metain)` for an op — the metatypes its `TypeOp` advertises for its output and its
 /// inputs (`TypeOpBinary`/`Unary`/`Func` constructors in `typeop.cc`). Everything unlisted —
 /// COPY, LOAD, STORE, MULTIEQUAL, INDIRECT, SUBPIECE, PIECE, calls — uses the `TypeOp` default of
@@ -226,15 +243,11 @@ impl<'a> TypeInfer<'a> {
     }
 
     fn output_type_local(&self, op: OpId) -> Datatype {
-        let o = self.f.op(op);
-        let size = o.output.map(|v| self.f.vn(v).size).unwrap_or(1);
-        base(op_meta(o.code()).0, size)
+        output_type_local(self.f, op)
     }
 
     fn input_type_local(&self, op: OpId, slot: usize) -> Datatype {
-        let o = self.f.op(op);
-        let size = o.input(slot).map(|v| self.f.vn(v).size).unwrap_or(1);
-        base(op_meta(o.code()).1, size)
+        input_type_local(self.f, op, slot)
     }
 
     /// Ghidra `buildLocaltypes`: seed every active varnode with its local type.

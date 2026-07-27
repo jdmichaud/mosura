@@ -8,6 +8,7 @@
 //! merged conditionals). Cover-based merging of non-interfering same-storage varnodes, and
 //! naming, are the next increments.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::block::BlockId;
@@ -15,6 +16,7 @@ use super::cover::{all_covers, Cover};
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceId};
+use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
 /// Ghidra `max_implied_ref` (architecture.cc:1420) — the descendant-count ceiling above which
@@ -107,6 +109,7 @@ pub fn merge(f: &Funcdata) -> HighVariables {
     // (unprinted), and the input's def — implied at print time — would silently vanish.
     let explicit = mark_explicit(f, &mut h, &covers);
     merge_copy(f, &mut h, &covers, &explicit);
+    merge_adjacent(f, &mut h, &covers, &explicit);
     merge_same_storage(f, &mut h, &covers, &explicit);
     h
 }
@@ -550,10 +553,76 @@ fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeI
     })
 }
 
+/// `Merge::mergeAdjacent` (merge.cc:983, the `ActionMergeAdjacent` slot at coreaction.cc:5726) —
+/// speculatively merge an op's input into its output when the op advertises the *same local type* for
+/// both, they are the same size, and their Covers don't intersect. This is where Ghidra does most of
+/// its non-forced merging: it gates on [`merge_test_adjacent`], which — unlike
+/// [`merge_test_speculative`] — permits input / persist / address-tied variables. Without it,
+/// applying the speculative refusals at [`merge_same_storage`] would leave mosura merging strictly
+/// *less* than Ghidra rather than the same.
+///
+/// Calls are skipped (merge.cc:995): a call's output is a new value, never a continuation of an input.
+fn merge_adjacent(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    covers: &HashMap<VarnodeId, Cover>,
+    explicit: &[bool],
+) {
+    for op in f.op_ids().collect::<Vec<_>>() {
+        let o = f.op(op);
+        if o.is_dead() || o.is_call() {
+            continue;
+        }
+        let Some(vn1) = o.output else { continue };
+        if !merge_test_basic(f, covers, explicit, vn1) {
+            continue;
+        }
+        let ct = super::infertypes::output_type_local(f, op);
+        for i in 0..f.op(op).num_inputs() {
+            if ct != super::infertypes::input_type_local(f, op, i) {
+                continue; // Only merge if types should be the same
+            }
+            let Some(vn2) = f.op(op).input(i) else { continue };
+            if !merge_test_basic(f, covers, explicit, vn2) {
+                continue;
+            }
+            if f.vn(vn1).size != f.vn(vn2).size {
+                continue;
+            }
+            // Ghidra merge.cc:1004: a Varnode that is neither written nor an input is \e free and
+            // has no place in a variable.
+            if f.vn(vn2).def.is_none() && !f.vn(vn2).is_input() {
+                continue;
+            }
+            let (rep_out, rep_in) = (h.high(vn1), h.high(vn2));
+            if rep_out == rep_in || !merge_test_adjacent(f, h, rep_out, rep_in) {
+                continue;
+            }
+            let out_members = members_of(f, h, covers, rep_out);
+            let in_members = members_of(f, h, covers, rep_in);
+            if !classes_interfere(&out_members, &in_members, covers) {
+                h.union(vn1.0, vn2.0);
+            }
+        }
+    }
+}
+
 /// The speculative same-storage merges (Ghidra `Merge::mergeByDatatype` / `ActionMergeType`):
 /// greedily merge HighVariables that share storage and never live simultaneously, so reused
 /// registers/slots become one variable. Candidates are gated by `mergeTestBasic` (merge.cc:341):
-/// an *implied* varnode (an expression term, per [`mark_explicit`]) is never a merge seed.
+/// an *implied* varnode (an expression term, per [`mark_explicit`]) is never a merge seed, and by
+/// [`merge_test_speculative`] (`Merge::mergeTestSpeculative`, merge.cc:220), the gate `mergeLinear`
+/// applies at this slot — required + adjacency (including data-type equality) + the speculative
+/// refusal of globals, function inputs and address-tied storage.
+///
+/// Two structural differences from Ghidra remain, both filed rather than fixed here:
+/// * Ghidra groups candidates by *exact data-type* over the whole varnode range and merges within
+///   each type group; mosura groups by *storage*. With the type gate above, mosura's grouping is a
+///   strict subset of Ghidra's (same storage AND same type ⊂ same type), so this under-merges rather
+///   than over-merges. Widening it to Ghidra's type grouping is a separate change.
+/// * `mergeLinear` (merge.cc:282) orders candidates by `compareHighByBlock` — the index of the
+///   earliest block in the variable's range. mosura keeps its own lowest-member-id order so that the
+///   effect of the gates is attributable on its own; the ordering is a separate faithfulness item.
 fn merge_same_storage(
     f: &Funcdata,
     h: &mut HighVariables,
@@ -607,6 +676,9 @@ fn merge_same_storage(
                 for j in (i + 1)..class_list.len() {
                     let rep_i = h.high(class_list[i][0]);
                     let rep_j = h.high(class_list[j][0]);
+                    if !merge_test_speculative(f, h, rep_i, rep_j) {
+                        continue;
+                    }
                     let fi = full.get(&rep_i).unwrap_or(&empty);
                     let fj = full.get(&rep_j).unwrap_or(&empty);
                     if !classes_interfere(fi, fj, covers) {
@@ -811,6 +883,99 @@ fn merge_test_required(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in
         if in_tied.is_some() && out_tied.is_none() {
             return false;
         }
+    }
+    true
+}
+
+/// `HighVariable::getTypeRepresentative` (variable.cc:377) → `HighVariable::getType` (variable.hh:174)
+/// — the data-type of a whole *variable*: the member Varnode carrying the strongest data-type, with a
+/// type-locked member always outranking an unlocked one regardless of type. This is the type
+/// [`merge_test_adjacent`] compares when deciding whether two variables may merge, and the type
+/// `HighVariable::updateType` publishes to the printer.
+///
+/// `members` is the HighVariable's instance list (Ghidra's `HighVariable::inst`); it must be
+/// non-empty, which every union-find class is.
+///
+/// Faithfully deferred: `HighVariable::stripType` (variable.cc:302) normalizes enum / partial-union /
+/// partial-struct representatives down to their stripped base. mosura's [`Datatype`] has no enum,
+/// union or partial metatype, so no representative can ever be `hasStripped()` and the call is a
+/// no-op here.
+fn high_type(f: &Funcdata, members: &[VarnodeId]) -> Datatype {
+    let mut rep = members[0];
+    for &v in &members[1..] {
+        let (rep_locked, v_locked) = (f.vn(rep).is_typelock(), f.vn(v).is_typelock());
+        if rep_locked != v_locked {
+            if v_locked {
+                rep = v;
+            }
+        } else if type_order(&f.vn(v).get_type(), &f.vn(rep).get_type()) == Ordering::Less {
+            rep = v;
+        }
+    }
+    f.vn(rep).get_type()
+}
+
+/// [`high_type`] over the Varnodes currently merged into HighVariable `rep` — Ghidra's
+/// `vn->getHigh()->getType()`.
+fn high_type_of(f: &Funcdata, h: &mut HighVariables, rep: u32) -> Datatype {
+    let members: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
+        .map(VarnodeId)
+        .filter(|&v| mergeable(f, v) && h.high(v) == rep)
+        .collect();
+    if members.is_empty() {
+        // `rep` names a constant/annotation singleton — its own type is the variable's type.
+        return f.vn(VarnodeId(rep)).get_type();
+    }
+    high_type(f, &members)
+}
+
+/// `Merge::mergeTestAdjacent` (merge.cc:175) — the required tests plus the *adjacency* tests, applied
+/// to any speculative merge. The arm that matters for mosura is the data-type equality gate
+/// (merge.cc:186, "Make sure variables have the same type"): two variables of different data-type are
+/// never merged, so an inferred `Pointer` variable can never swallow an inferred `Uint` one and
+/// broadcast its type over it.
+///
+/// Faithfully deferred — Ghidra predicates with no mosura counterpart, each unable to fire here:
+/// * `isNameLock` on both (merge.cc:181) — mosura has no name locks; nothing sets the flag.
+/// * `isIllegalInput && !isIndirectOnly` on an input member (merge.cc:194-201) — mosura models
+///   neither `illegalinput` nor `indirectonly`, so no varnode can satisfy the test.
+/// * `Symbol::isIsolated` on either side (merge.cc:202-208) — there is no symbol table at merge time
+///   (the same absence already noted on [`merge_test_required`]).
+/// * both sides holding a `VariablePiece` (merge.cc:211-212) — mosura has no VariablePiece /
+///   VariableGroup (the P4/P8 debt flagged on [`merge_addrtied`]), so `piece` is never set.
+///
+/// These are omissions of *restrictions*: each can only ever forbid a merge, so their absence makes
+/// mosura merge no less than Ghidra, never more. They are recorded rather than dropped so the debt
+/// stays visible when VariablePiece / symbols do land.
+fn merge_test_adjacent(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
+    if !merge_test_required(f, h, rep_out, rep_in) {
+        return false;
+    }
+    if rep_out == rep_in {
+        return true; // already merged; Ghidra's getType() comparison is trivially equal
+    }
+    high_type_of(f, h, rep_out) == high_type_of(f, h, rep_in)
+}
+
+/// `Merge::mergeTestSpeculative` (merge.cc:220) — the adjacency tests plus the tests that apply only
+/// to a *speculative* merge (one not forced by the data-flow graph): never speculatively merge
+/// anything with a global (`isPersist`), a function input (`isInput`), or address-tied storage
+/// (`isAddrTied`). This is the gate `mergeLinear` (merge.cc:286) applies inside `mergeByDatatype`,
+/// i.e. at [`merge_same_storage`]'s slot.
+fn merge_test_speculative(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
+    if !merge_test_adjacent(f, h, rep_out, rep_in) {
+        return false;
+    }
+    let (out_tied, out_input, out_persist) = high_props(f, h, rep_out);
+    let (in_tied, in_input, in_persist) = high_props(f, h, rep_in);
+    if out_persist || in_persist {
+        return false; // don't merge anything with a global speculatively
+    }
+    if out_input || in_input {
+        return false; // don't merge anything speculatively with input
+    }
+    if out_tied.is_some() || in_tied.is_some() {
+        return false; // don't merge anything speculatively with addrtied
     }
     true
 }
