@@ -199,11 +199,10 @@ impl PrintC<'_> {
         // downgrade to `undefined` for stripped binaries — an int/uint that inference recovers stays
         // int/uint (naming a variable `iVar`/`uVar`, and avoiding the spurious `(int4)` cast that a
         // `undefined`-typed symbol would need when widened). Absent inference gives `undefined<N>`.
-        // Stage 0b (ir-cast-model): read the in-pipeline committed `Varnode::ty` (Ghidra
-        // `Varnode::getType`) instead of the retired render-time re-inference. `infer_types`
-        // broadcasts the HighVariable-resolved type onto every member, so this is the authoritative
-        // per-varnode type (0a: 99.4% consistent with the old re-inference, mostly more refined).
-        self.f.vn(v).get_type()
+        // Ghidra reads the *variable's* type here (`vn->getHigh()->getType()`), not the type
+        // propagation committed onto the one Varnode — a C declaration names a variable. That is the
+        // frozen high-facing channel; see `merge::FrozenHighs::type_of`.
+        super::merge::high_type_read_facing(self.f, v)
     }
 
 }
@@ -1828,8 +1827,10 @@ pub fn print_c(f: &Funcdata) -> String {
     let t0 = std::time::Instant::now();
     let mut h = f
         .highs
-        .clone()
-        .expect("printc requires the HighVariables frozen by ActionMergeType; run pipeline::decompile");
+        .as_ref()
+        .expect("printc requires the HighVariables frozen by ActionMergeType; run pipeline::decompile")
+        .union_find()
+        .clone();
     // The CAST varnodes `ActionSetCasts` inserted after the freeze are not in it. Ghidra allocates a
     // fresh HighVariable for every new Varnode (`Funcdata::newVarnode`), so each becomes its own
     // singleton class — which is precisely what the cast varnodes are: a cast is not the same C

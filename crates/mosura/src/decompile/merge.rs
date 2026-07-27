@@ -1894,6 +1894,71 @@ pub fn mark_explicit_flags(f: &mut Funcdata) {
     }
 }
 
+/// The HighVariables frozen at Ghidra's merge slot, with the lookup tables the type channel needs:
+/// the union-find itself (for printc), each Varnode's representative, and each variable's member
+/// list. Ghidra keeps the equivalent as `Varnode::high` plus `HighVariable::inst`.
+#[derive(Clone)]
+pub struct FrozenHighs {
+    uf: HighVariables,
+    of: Vec<u32>,
+    members: HashMap<u32, Vec<VarnodeId>>,
+}
+
+impl FrozenHighs {
+    fn new(f: &Funcdata) -> Self {
+        let mut uf = merge(f);
+        let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| uf.high(VarnodeId(i))).collect();
+        let mut members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+        for (i, &rep) in of.iter().enumerate() {
+            let v = VarnodeId(i as u32);
+            if mergeable(f, v) {
+                members.entry(rep).or_default().push(v);
+            }
+        }
+        FrozenHighs { uf, of, members }
+    }
+
+    /// The union-find, for callers that need to compare two Varnodes' variables.
+    pub fn union_find(&self) -> &HighVariables {
+        &self.uf
+    }
+
+    /// Ghidra `Varnode::getHighTypeReadFacing`/`getHighTypeDefFacing` (varnode.cc:651/665) →
+    /// `vn->getHigh()->getType()`: the data-type of the *variable* a Varnode belongs to, as opposed
+    /// to [`super::varnode::Varnode::get_type`], the type propagation committed onto that one
+    /// Varnode. (The union-resolution half of the read/def-facing pair is deferred with the union
+    /// lattice, so the two coincide here.)
+    ///
+    /// Recomputed on each call from the members' current types rather than cached. Ghidra caches it
+    /// on `HighVariable::type` but invalidates on every `Varnode::updateType` via `typeDirty`
+    /// (varnode.cc:456, variable.cc:400), and `ActionSetCasts::castOutput` *relies* on that: it
+    /// calls `updateType` and then immediately re-reads `getHighTypeDefFacing` to see the recomputed
+    /// value (coreaction.cc:2570/2579). A cache without the dirty flag would hand back a stale type
+    /// there. The value is a pure function of the member types, so computing it fresh is
+    /// observationally identical to Ghidra's invalidate-and-recompute, and needs no flag.
+    ///
+    /// A Varnode created *after* the freeze — the CAST varnodes `ActionSetCasts` inserts — has no
+    /// entry, and its own type is the answer: Ghidra gives every new Varnode a fresh HighVariable,
+    /// so such a value is a singleton variable.
+    pub fn type_of(&self, f: &Funcdata, v: VarnodeId) -> Datatype {
+        match self.of.get(v.0 as usize).and_then(|rep| self.members.get(rep)) {
+            Some(m) => high_type(f, m),
+            None => f.vn(v).get_type(),
+        }
+    }
+}
+
+/// [`FrozenHighs::type_of`] on the function's frozen HighVariables — Ghidra's
+/// `vn->getHighTypeReadFacing(op)`. Panics if the merge slot was never reached, rather than falling
+/// back to the per-Varnode type: the two are different channels and silently substituting one for
+/// the other is the bug this split exists to remove.
+pub fn high_type_read_facing(f: &Funcdata, v: VarnodeId) -> Datatype {
+    f.highs
+        .as_ref()
+        .expect("high-facing type read before ActionMergeType froze the HighVariables")
+        .type_of(f, v)
+}
+
 /// Ghidra's merge slot, `ActionMergeType` (coreaction.cc:5727) — the last of the merge actions
 /// (`ActionMergeRequired` 5718 … `ActionMergeCopy` 5722, `ActionDominantCopy` 5723,
 /// `ActionMergeAdjacent` 5726, `ActionMergeType` 5727), all of which run *before*
@@ -1918,7 +1983,7 @@ impl super::action::Action for ActionMergeType {
         if data.table_recovery_probe {
             return 0;
         }
-        data.highs = Some(merge(data));
+        data.highs = Some(FrozenHighs::new(data));
         0
     }
 }

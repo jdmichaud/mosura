@@ -22,6 +22,7 @@ use super::action::Action;
 use super::block::BlockId;
 use super::cast::{cast_standard, input_cast, output_token};
 use super::funcdata::Funcdata;
+use super::merge::high_type_read_facing;
 use super::op::{OpId, SeqNum};
 use super::opcode::OpCode;
 use super::types::Datatype;
@@ -133,7 +134,7 @@ fn cast_input(f: &mut Funcdata, op: OpId, slot: usize, implied: &[bool]) {
 fn cast_output(f: &mut Funcdata, op: OpId, implied: &[bool]) {
     let tokenct = output_token(f, op);
     let outvn = f.op(op).output.unwrap();
-    let out_high = f.vn(outvn).get_type();
+    let out_high = high_type_read_facing(f, outvn);
     if tokenct == out_high {
         // Short-circuit: same type, no cast (union `needsResolution` handling deferred — no unions).
         return;
@@ -155,7 +156,7 @@ fn cast_output(f: &mut Funcdata, op: OpId, implied: &[bool]) {
         } else if !matches!(out_resolve, Datatype::Pointer(..)) {
             // Implied atomic (non-pointer): ignore the committed type in favor of the token.
             f.vn_mut(outvn).update_type(tokenct.clone());
-            out_resolve = f.vn(outvn).get_type();
+            out_resolve = high_type_read_facing(f, outvn);
         } else if matches!(tokenct, Datatype::Pointer(..)) {
             // Implied pointer AND pointer token: adopt the token unless the committed pointer points
             // to a composite (array/struct/union), which is preserved.
@@ -163,7 +164,7 @@ fn cast_output(f: &mut Funcdata, op: OpId, implied: &[bool]) {
                 let composite = matches!(**pt, Datatype::Array(..) | Datatype::Struct(..));
                 if !composite {
                     f.vn_mut(outvn).update_type(tokenct.clone());
-                    out_resolve = f.vn(outvn).get_type();
+                    out_resolve = high_type_read_facing(f, outvn);
                 }
             }
         }

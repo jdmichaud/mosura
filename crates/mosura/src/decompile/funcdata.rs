@@ -103,7 +103,7 @@ pub struct Funcdata {
     /// afterwards gets its own fresh HighVariable. Recomputing the merge later — over a graph that
     /// now contains those casts — is a different partition. So the printer consumes this frozen
     /// state rather than re-deriving it; see [`super::printc::print_c`].
-    pub highs: Option<super::merge::HighVariables>,
+    pub highs: Option<super::merge::FrozenHighs>,
     /// The architecture's laned-register records (Ghidra `Architecture::lanerecords`, reached via
     /// `Funcdata::getArch`). Consumed by `ActionLaneDivide` to decide which vector registers may be
     /// lane-split. Parsed from the `.pspec` `vector_lane_sizes` by the build caller

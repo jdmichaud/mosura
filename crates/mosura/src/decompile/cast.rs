@@ -12,6 +12,7 @@
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
+use super::merge::high_type_read_facing;
 use super::types::{type_order, Datatype};
 
 /// Ghidra `TypeOp::getInputCast` for op `op`'s input `slot`: the type the operand must be cast to,
@@ -24,7 +25,7 @@ use super::types::{type_order, Datatype};
 pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
     let o = f.op(op);
     let in_vn = o.input(slot)?;
-    let cur = f.vn(in_vn).get_type();
+    let cur = high_type_read_facing(f, in_vn);
     let sz = f.vn(in_vn).size;
     match o.code() {
         OpCode::IntSless | OpCode::IntSlessequal => cast_standard(&Datatype::Int(sz), &cur, true, true),
@@ -33,8 +34,8 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
         OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
         OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
         OpCode::IntEqual | OpCode::IntNotequal => {
-            let t0 = f.vn(o.input(0)?).get_type();
-            let t1 = f.vn(o.input(1)?).get_type();
+            let t0 = high_type_read_facing(f, o.input(0)?);
+            let t1 = high_type_read_facing(f, o.input(1)?);
             let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
             cast_standard(&req, &cur, false, false)
         }
@@ -59,12 +60,12 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
 /// splits them — the faithful mechanism that renders `(xunknown1 *)(param_1 + 8)`.
 pub fn arithmetic_output_standard(f: &Funcdata, op: OpId) -> Datatype {
     let o = f.op(op);
-    let mut res1 = f.vn(o.input(0).unwrap()).get_type();
+    let mut res1 = high_type_read_facing(f, o.input(0).unwrap());
     if matches!(res1, Datatype::Bool) {
         res1 = Datatype::Int(res1.size()); // treat boolean as if cast to an integer
     }
     for i in 1..o.num_inputs() {
-        let res2 = f.vn(o.input(i).unwrap()).get_type();
+        let res2 = high_type_read_facing(f, o.input(i).unwrap());
         if matches!(res2, Datatype::Bool) {
             continue;
         }
@@ -93,7 +94,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
     let out = o.output.unwrap();
     match o.code() {
         // TypeOpCopy::getOutputToken — cast to the input's read-facing type (the E1010 assignment cast)
-        OpCode::Copy => f.vn(o.input(0).unwrap()).get_type(),
+        OpCode::Copy => high_type_read_facing(f, o.input(0).unwrap()),
         // arithmeticOutputStandard (typeop.cc:1175/1326/1388/1402/1416/1449/1482/1625)
         OpCode::IntAdd
         | OpCode::IntSub
@@ -105,7 +106,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         | OpCode::IntOr => arithmetic_output_standard(f, op),
         // shifts: input 0's type, bool→int (typeop.cc:1518/1558/1608)
         OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright => {
-            let mut res1 = f.vn(o.input(0).unwrap()).get_type();
+            let mut res1 = high_type_read_facing(f, o.input(0).unwrap());
             if matches!(res1, Datatype::Bool) {
                 res1 = Datatype::Int(res1.size());
             }
@@ -114,7 +115,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         // TypeOpLoad::getOutputToken (typeop.cc:472): the pointer's pointee when it matches the
         // output size, else the output's own type (a cast will reconcile the size mismatch).
         OpCode::Load => {
-            let ct = f.vn(o.input(1).unwrap()).get_type();
+            let ct = high_type_read_facing(f, o.input(1).unwrap());
             if let Datatype::Pointer(_, pt) = &ct {
                 if pt.size() == f.vn(out).size {
                     return (**pt).clone();
@@ -123,7 +124,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
             f.vn(out).get_type()
         }
         // TypeOpPtradd::getOutputToken (typeop.cc:2244): cast to the base pointer's type
-        OpCode::Ptradd => f.vn(o.input(0).unwrap()).get_type(),
+        OpCode::Ptradd => high_type_read_facing(f, o.input(0).unwrap()),
         // base TypeOp::getOutputToken = outputTypeLocal: inference already settled this onto the
         // output, so token == committed → no cast (the deferred composite/call cases noted above).
         _ => f.vn(out).get_type(),
