@@ -216,7 +216,15 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
     let mut smells: BTreeSet<String> = BTreeSet::new();
 
     let b = c.as_bytes();
-    // Collect identifiers and whether each is immediately followed by '[' (indexed => pointer).
+    // Collect identifiers and whether each is used as a POINTER — either indexed (`ident[`) or
+    // dereferenced (`*ident`). Both forms must promote the synthesized declaration to a pointer;
+    // recognizing only the indexed form declared `unsigned int extraout_RCX;` and then compiled
+    // `*extraout_RCX = ...` into a spurious `E1029: Expression must be 'pointer to ...'` — a
+    // harness artifact counted against the decompiler (the IR types that varnode a pointer).
+    //
+    // The deref test is "immediately preceded by `*` with no space", which is exact for this
+    // emitter: printc writes a unary dereference tight (`*ptr`) and every binary operator spaced
+    // (` * `), so a multiplication can never match.
     let mut i = 0;
     while i < b.len() {
         if b[i].is_ascii_alphabetic() || b[i] == b'_' {
@@ -225,8 +233,8 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
                 i += 1;
             }
             let w = &c[s..i];
-            let indexed = i < b.len() && b[i] == b'[';
-            classify_ident(w, indexed, &self_name, &mut funcs, &mut ptr_idents, &mut scalar_idents, &mut smells);
+            let ptr_use = (i < b.len() && b[i] == b'[') || (s > 0 && b[s - 1] == b'*');
+            classify_ident(w, ptr_use, &self_name, &mut funcs, &mut ptr_idents, &mut scalar_idents, &mut smells);
         } else {
             i += 1;
         }
@@ -265,7 +273,8 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
 
 fn classify_ident(
     w: &str,
-    indexed: bool,
+    // The identifier is used as a pointer here — indexed (`ident[`) or dereferenced (`*ident`).
+    ptr_use: bool,
     self_name: &str,
     funcs: &mut HashSet<String>,
     ptr_idents: &mut HashSet<String>,
@@ -286,7 +295,7 @@ fn classify_ident(
     for (p, tag) in [("extraout_", "extraout"), ("unaff_", "unaff"), ("in_", "in_reg"), ("register0x", "register")] {
         if w.starts_with(p) {
             smells.insert(tag.into());
-            if indexed {
+            if ptr_use {
                 ptr_idents.insert(w.to_string());
             } else {
                 scalar_idents.insert((w.to_string(), 'u'));
@@ -300,7 +309,7 @@ fn classify_ident(
             let tail = &w[pos + 3..];
             if tail.len() >= 8 && tail.bytes().all(|c| c.is_ascii_hexdigit()) {
                 let pfx = w.as_bytes()[0] as char;
-                if indexed || pfx == 'p' {
+                if ptr_use || pfx == 'p' {
                     ptr_idents.insert(w.to_string());
                 } else {
                     scalar_idents.insert((w.to_string(), pfx));
@@ -314,7 +323,7 @@ fn classify_ident(
     }
     // DAT_ / _DAT_ globals.
     if w.starts_with("DAT_") || w.starts_with("_DAT_") {
-        if indexed {
+        if ptr_use {
             ptr_idents.insert(w.to_string());
         } else {
             scalar_idents.insert((w.to_string(), 'u'));
