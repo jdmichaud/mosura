@@ -17,6 +17,40 @@
 | Date | 2026-07-23 |
 | Harness | `crates/mosura/examples/war2_survey.rs` + `war2-survey/` driver scripts (compile.sh, compare.py) |
 
+## Update — 2026-07-28: VariablePiece split (`be13a04`) — 505 value drops fixed, +18 COMPILE_FAIL
+
+Full re-measure, both sides through the same harness with `obj/` cleaned each time, sides
+state-asserted by the presence of the partial-symbol render (0 files before, 20 after). Saved as
+`war2-survey/results.copymark-8c9c6bb.tsv` and `results.varpiece-be13a04.tsv`.
+
+| status | `8c9c6bb` (before) | `be13a04` (after) |
+| --- | --- | --- |
+| EXACT | 1 | 1 |
+| MISMATCH | 1214 | 1196 |
+| **COMPILE_FAIL** | **71** | **89** |
+| DECOMPILE_FAIL | 0 | 0 |
+
+**Every transition is `MISMATCH → COMPILE_FAIL`, 18 of them, and nothing moves the other way.**
+All 18 are one new error class, `E1032: Expression for '.' must be a 'structure' or 'union'` — the
+partial-symbol accessor. Total E1032 = 20 = exactly the 20 files carrying the render (2 were already
+COMPILE_FAIL under `E1052`, which drops 37 → 35 correspondingly). Every other class is unchanged:
+E1079 11, E1010 11, E1018 7, and the six singletons.
+
+**What was traded.** Those 18 functions compiled before, to the wrong bytes: 17 of the 18 matched
+the original at **0-3%**, the last at 12%. Against that, the change fixed **505 narrow writes** that
+were being emitted as full-width assignments (`uRam000000000008196c = (uint4)xVar12;` for a *1-byte*
+store — three bytes claimed and not written). A function that compiles to the wrong semantics was
+never a real pass; the byte-exact goal wants correct bytes, not compiling ones.
+
+**This is the E1052-class ceiling again, and it splits a conflation worth naming.** `._<off>_<size>_`
+is Ghidra's own artificial-field syntax (`PrintLanguage::unnamedField`, printlanguage.cc:719) — the
+decompiler is faithful here and stays. But Ghidra's output was never meant to compile, and our
+byte-exact goal needs it to. **Faithful and compilable are now separate axes.** Rendering the
+accessor in compilable form — a width-correct write through the base address, or a union — is an
+**emitter-level, beyond-Ghidra concern that belongs to the survey harness/emitter, never a reason to
+put a wrong-code render back in the decompiler.** Filed as such; it is now the thing standing
+between those 505 sites and compilability.
+
 ## Update — 2026-07-24: Brick 1 (pointer-in-integral-op cast) + clean-baseline correction
 
 **Measurement correction (canonical going forward):** `war2-survey/compile.sh` does NOT clean `obj/`
