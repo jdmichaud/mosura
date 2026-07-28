@@ -1,8 +1,11 @@
 # printc re-derivation audit — state Ghidra freezes in-pipeline
 
-Read-only audit. Four times now a faithful port has been blocked by mosura **re-deriving at print
-time** something Ghidra computes once in the pipeline and never revisits. Each was found by tripping
-over it. This converts the rest into a list.
+**Status: COMPLETE.** Four times a faithful port had been blocked by mosura **re-deriving at print
+time** something Ghidra computes once in the pipeline and never revisits, each found by tripping over
+it. This audit converted the rest into a list and then worked the list to the end: #1-#5 and #6+#7
+moved to Ghidra's slot, #8 measured to have no effect, #9 declined for a stated reason. It is kept
+as a record of the class and as the probe to reach for when the signature recurs — see *How to use
+this* at the bottom.
 
 ## The organizing fact
 
@@ -43,7 +46,13 @@ That is the whole class. Every instance below is a special case of it.
 | 3 | output token, SUBPIECE/PIECE | `TypeOpSubpiece`/`TypeOpPiece::getOutputToken`, typeop.cc:2142/2063 | `844d5b1` |
 | 4 | explicit/implied, trailing chain | `ActionMarkImplied`, 5720 | `2c32c36` — frozen, read from the flag |
 | 5 | explicit/implied, leading chain, for post-freeze Varnodes | `ActionMarkExplicit`, 5719 | `bf813d4` — `classified_upto` early exit; also closed a latent out-of-bounds at `slot_write[v.0]` |
-| 6+7 | **`nonprinting`** and the **Covers** it consumes | `ActionCopyMarker` / `Merge::markInternalCopies` (merge.cc:1444), 5729; Cover belongs to `HighVariable`, built 5717-5727 | `merge::ActionCopyMarker` at the slot — **and DEMONSTRATED**, see below |
+| 6+7 | **`nonprinting`** and the **Covers** it consumes | `ActionCopyMarker` / `Merge::markInternalCopies` (merge.cc:1444), 5729; Cover belongs to `HighVariable`, built 5717-5727 | `8c9c6bb` — `merge::ActionCopyMarker` at the slot, **and DEMONSTRATED**, see below |
+| 8 | **names** | `ActionNameVars`, 5734 | **no defect** — measured nil, see below |
+| 9 | output token, CALLOTHER | `TypeOpCallother::getOutputLocal`, typeop.cc:865 | **deliberate non-port**, see below |
+
+**The audit is complete.** Every quantity printc re-derived has been either moved to Ghidra's slot
+(#1-#5, #6+#7), measured to have no effect (#8), or declined for a stated reason (#9). Nothing here
+is abandoned or pending.
 
 ## #6+#7: demonstrated, then closed
 
@@ -79,14 +88,39 @@ Closed by moving the pass to `merge::ActionCopyMarker`, after `ActionMergeType` 
 left. Scans: 1286/1286 WAR2 functions emitted both sides, one file changed by one line, rendered
 call-expression count identical everywhere (5224); corpus byte-identical over all 62 fixtures.
 
-## Open
+## #8: measured, and the exposure is nil
 
-| # | quantity | where | Ghidra source / slot | reachable by post-freeze Varnodes? | can it override a frozen flag? |
-| --- | --- | --- | --- | --- | --- |
-| 8 | **names** | `printc.rs` `names`, `var_counter`, `name_of` | `ActionNameVars`, 5734 — **before** the casts | Partly — a CAST output is `setImplied` and unnamed, and the CAST produces the *original* Varnode which was already named, so the exposure is narrow | No |
-| 9 | output token, CALLOTHER | `cast.rs` `output_token` `_` arm | `TypeOpCallother::getOutputLocal`, typeop.cc:865 — consults the **userop's own** table | n/a | Deliberately left: mosura does not model per-userop output types, so claiming `undefined` would assert an unported model |
+printc assigns names at print time (`names`, `var_counter`, `name_of`) where Ghidra freezes them at
+`ActionNameVars` (5734), one slot before `ActionSetCasts`. The audit called the exposure "narrow";
+it is in fact **zero**, measured on both halves.
 
-#8 is real but narrow, for the reason in the table.
+**Structurally**, closed by construction rather than by luck. Across all 62 fixtures there are 38
+Varnodes created after the classification froze, and **none of them is explicit** — so none can
+reach naming. `ActionSetCasts` calls `setImplied()` on its outputs at creation (coreaction.cc:2594)
+and `bf813d4`'s `classified_upto` early exit returns that flag verbatim.
+
+**Observationally**, comparing mosura's declared locals against `oracle/capture --c` on all 60
+oracle-backed fixtures: **33 identical**, 8 differing in variable *count* (a merge/structure
+difference, not naming), 19 differing in *type prefix*, and — the discriminator — **0 differing in
+numbering**. Numbering is exactly what a naming pass run over a different graph would scramble, so
+its total absence rules out the slot as a cause.
+
+The 19 prefix differences are two *other* mechanisms, both filed as their own work rather than as
+audit residue:
+
+* the prefix follows the inferred data-type (`uVar1`/`axVar1`, `iStack_c`/`xStack_c`,
+  `pStack_10`/`pxStack_10`) — the type-inference axis;
+* symbol-kind recognition — Ghidra produces `in_FS_OFFSET` (partialsplit, piecestruct, switchhide),
+  `in_stack_00000008` (longdouble), `xRam000000000030101c` (partialunion) where mosura makes an
+  ordinary local. That is `linkSymbols`/`lookForFuncParamNames` (coreaction.cc:2930/2858), adjacent
+  to `ActionNameVars` but a different mechanism.
+
+## #9: a deliberate non-port
+
+`TypeOpCallother::getOutputLocal` (typeop.cc:865) consults the **userop's own** output table. mosura
+does not model per-userop output types, so emitting `undefined` here would assert a model that has
+not been ported. Declined on that basis, not deferred — it becomes portable if and when the userop
+output model lands.
 
 ## How to use this
 
