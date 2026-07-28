@@ -378,6 +378,42 @@ impl<'a> PrintC<'a> {
         true
     }
 
+    /// Ghidra `PrintC::pushPartialSymbol` (printc.cc:1947) → `PrintLanguage::unnamedField`
+    /// (printlanguage.cc:719): a `VariablePiece` that does not span its `VariableGroup` is not a
+    /// variable of its own — it renders off the name of the piece that spans the group.
+    ///
+    /// `allow_cast` is Ghidra's parameter of the same name. With it set, a piece starting at the
+    /// group's own offset is a truncation Ghidra writes as a cast (`CastStrategyC::isSubpieceCast`,
+    /// cast.cc:411, which accepts offset 0 and nothing else); otherwise the piece renders as the
+    /// artificial field `._<off>_<size>_`. The plain variable-occurrence path passes `false`
+    /// (printc.cc:1886) — which is what an assignment target is, and a cast is not an lvalue.
+    ///
+    /// Returning `Some` also keeps the piece out of `decls`: the group is one declared variable.
+    fn partial_symbol(&mut self, v: VarnodeId, allow_cast: bool) -> Option<String> {
+        let pieces = self.f.highs.as_ref().map(|h| h.pieces())?;
+        let (_, off, size) = pieces.at(v)?;
+        if pieces.spans_group(v) {
+            return None;
+        }
+        let base = pieces.group_base(v)?;
+        if base == v {
+            return None;
+        }
+        let ty = self.type_of(v).name();
+        let base_name = self.name_of(base);
+        Some(if off == 0 && allow_cast {
+            format!("({ty}){base_name}")
+        } else {
+            format!("{base_name}._{off}_{size}_")
+        })
+    }
+
+    /// [`Self::name_of`] for an assignment target: a partial symbol renders without the cast form,
+    /// as Ghidra's plain variable-occurrence path does (`allowCast=false`, printc.cc:1886).
+    fn lvalue_of(&mut self, v: VarnodeId) -> String {
+        self.partial_symbol(v, false).unwrap_or_else(|| self.name_of(v))
+    }
+
     /// The name of `v`'s variable, assigning one on first use.
     fn name_of(&mut self, v: VarnodeId) -> String {
         let vn = self.f.vn(v);
@@ -401,6 +437,15 @@ impl<'a> PrintC<'a> {
                     }
                 }
             }
+        }
+        // Ghidra `PrintC::pushPartialSymbol` (printc.cc:1947) → `PrintLanguage::unnamedField`
+        // (printlanguage.cc:719): a `VariablePiece` that does not span its `VariableGroup` is not a
+        // variable of its own. It renders off the group's base name — as a truncating cast when it
+        // starts at the group's own offset (`CastStrategyC::isSubpieceCast`, cast.cc:411, which
+        // accepts offset 0 only), and as the artificial field `._<off>_<size>_` otherwise. Returning
+        // here also keeps the piece out of `decls`: the group is one declared variable, not three.
+        if let Some(s) = self.partial_symbol(v, true) {
+            return s;
         }
         // a direct global — a constant-address access in `ram` — is named by its address,
         // like Ghidra's `<typeprefix>Ram<addr>` (e.g. `iRam0000000000101000`)
@@ -988,7 +1033,7 @@ impl<'a> PrintC<'a> {
     /// Render an assignment statement body (`lhs = rhs`, no terminator) for an op.
     fn render_assign(&mut self, op: OpId) -> String {
         let outv = self.f.op(op).output.unwrap();
-        let lhs = self.name_of(outv);
+        let lhs = self.lvalue_of(outv);
         let rhs = self.render_op(op).0;
         format!("{lhs} = {rhs}")
     }
@@ -1325,7 +1370,7 @@ impl<'a> PrintC<'a> {
                 if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
                     let init_s = match init_var {
                         Some(iv) => {
-                            let lhs = self.name_of(phi_out);
+                            let lhs = self.lvalue_of(phi_out);
                             let rhs = match self.f.vn(iv).def {
                                 Some(d) => self.render_op(d).0, // the initializer's expression
                                 None => self.render_var(iv).0,  // a folded constant / input
@@ -1479,7 +1524,7 @@ impl<'a> PrintC<'a> {
                     let uses = out_vn.map(|v| self.f.vn(v).descend.len());
                     match (out_vn, uses) {
                         (Some(outv), Some(n)) if n >= 1 => {
-                            let lhs = self.name_of(outv);
+                            let lhs = self.lvalue_of(outv);
                             let rhs = self.render_op(op).0;
                             let _ = writeln!(out, "{pad}{lhs} = {rhs};");
                         }
@@ -1506,7 +1551,7 @@ impl<'a> PrintC<'a> {
                                 self.high_of[outv.0 as usize] == self.high_of[inv.0 as usize]
                             });
                         if !hidden && self.is_explicit(outv) {
-                            let lhs = self.name_of(outv);
+                            let lhs = self.lvalue_of(outv);
                             let rhs = self.render_op(op).0;
                             let _ = writeln!(out, "{pad}{lhs} = {rhs};");
                         }

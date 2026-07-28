@@ -302,7 +302,7 @@ fn merge_groups_phi_versions_into_variables() {
         let dt = datatest::parse_file(&fixture).expect("fixture");
         let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
-        let mut h = merge(&f);
+        let (mut h, _pieces) = merge(&f);
 
         let mut had_phi = false;
         let mut live_vns: BTreeSet<mosura::decompile::VarnodeId> = BTreeSet::new();
@@ -362,7 +362,7 @@ fn merged_variables_have_no_internal_interference() {
         let dt = datatest::parse_file(&fixture).expect("fixture");
         let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, &ctx);
         pipeline::decompile(&mut f);
-        let mut h = merge(&f);
+        let (mut h, _pieces) = merge(&f);
         let covers = all_covers(&f);
 
         // group covered varnodes by their HighVariable

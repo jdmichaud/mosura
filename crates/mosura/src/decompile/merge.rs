@@ -97,11 +97,11 @@ fn mergeable(f: &Funcdata, v: VarnodeId) -> bool {
 /// (mosura has no `groupPartials` — the VariablePiece debt.) The addrtied-before-marker order matters
 /// now that `merge_markers` gates each union on `merge_test_required`: the marker gate must see the
 /// address-tied HighVariables already aggregated, exactly as Ghidra does.
-pub fn merge(f: &Funcdata) -> HighVariables {
+pub fn merge(f: &Funcdata) -> (HighVariables, VariablePieces) {
     let mut h = HighVariables::new(f.num_varnodes());
     let covers = all_covers(f);
-    merge_addrtied(f, &mut h, &covers);
-    merge_markers(f, &mut h);
+    let pieces = merge_addrtied(f, &mut h);
+    merge_markers(f, &mut h, &pieces);
     // The `ActionMarkExplicit` / `ActionMarkImplied` slot (coreaction.cc:5719-5720, "this must
     // come BEFORE general merging"): classify every varnode explicit-or-implied against the
     // required-merges-only state just built, so the COPY and speculative merges below can apply
@@ -109,10 +109,10 @@ pub fn merge(f: &Funcdata) -> HighVariables {
     // input would be fused back into the phi's HighVariable, the COPY would turn internal
     // (unprinted), and the input's def — implied at print time — would silently vanish.
     let explicit = mark_explicit(f, &mut h, &covers);
-    merge_copy(f, &mut h, &covers, &explicit);
-    merge_adjacent(f, &mut h, &covers, &explicit);
-    merge_same_storage(f, &mut h, &covers, &explicit);
-    h
+    merge_copy(f, &mut h, &pieces, &covers, &explicit);
+    merge_adjacent(f, &mut h, &pieces, &covers, &explicit);
+    merge_same_storage(f, &mut h, &pieces, &covers, &explicit);
+    (h, pieces)
 }
 
 /// Ghidra `ActionMarkImplied` (coreaction.cc:3416) as a standalone per-varnode classification:
@@ -127,8 +127,8 @@ pub fn merge(f: &Funcdata) -> HighVariables {
 pub fn implied_classification(f: &Funcdata) -> Vec<bool> {
     let mut h = HighVariables::new(f.num_varnodes());
     let covers = all_covers(f);
-    merge_addrtied(f, &mut h, &covers);
-    merge_markers(f, &mut h);
+    let pieces = merge_addrtied(f, &mut h);
+    merge_markers(f, &mut h, &pieces);
     mark_explicit(f, &mut h, &covers).into_iter().map(|e| !e).collect()
 }
 
@@ -170,25 +170,12 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
         return Some(true);
     }
     if vn.is_addrtied() {
-        // baseExplicit's addrtied SUBPIECE-of-addrtied sub-case: a narrow addrtied piece read from
-        // the SAME addrtied whole at the matching overlap is an internal copymarker, NOT a store —
-        // printed inline as a piece read (`(int2)glob`), not a spurious `glob = (int2)glob;`.
-        if let Some(def) = vn.def {
-            if f.op(def).code() == OpCode::Subpiece {
-                if let (Some(inv), Some(cst)) = (f.op(def).input(0), f.op(def).input(1)) {
-                    let ivn = f.vn(inv);
-                    let coff = f.vn(cst);
-                    if coff.is_constant()
-                        && ivn.is_addrtied()
-                        && ivn.loc.space == vn.loc.space
-                        && vn.loc.offset == ivn.loc.offset + coff.loc.offset
-                        && vn.loc.offset + vn.size as u64 <= ivn.loc.offset + ivn.size as u64
-                    {
-                        return Some(false);
-                    }
-                }
-            }
-        }
+        // (Ghidra's `baseExplicit` has no sub-case here. mosura used to carry a hand-rolled
+        // "SUBPIECE-of-addrtied is an internal copymarker" test at this point, standing in for the
+        // CPUI_SUBPIECE arm of `Merge::markInternalCopies` while there was no VariablePiece to
+        // express it. That arm is now ported (see [`copy_marker_nonprinting`]), which suppresses the
+        // statement at its real slot and leaves the narrow piece explicit — so it renders as a piece
+        // accessor by name, exactly as Ghidra does. The adaptation is retired.)
         return Some(true);
     }
     None
@@ -501,9 +488,8 @@ fn process_multiplier(f: &Funcdata, persist_of: &[u32], vroot: VarnodeId, max: i
 /// and over-materializes temps (divopt's inline loads).
 pub fn merge_required_only(f: &Funcdata) -> HighVariables {
     let mut h = HighVariables::new(f.num_varnodes());
-    let covers = all_covers(f);
-    merge_addrtied(f, &mut h, &covers);
-    merge_markers(f, &mut h);
+    let pieces = merge_addrtied(f, &mut h);
+    merge_markers(f, &mut h, &pieces);
     h
 }
 
@@ -519,7 +505,7 @@ pub fn merge_required_only(f: &Funcdata) -> HighVariables {
 /// and the resulting non-union are identical whether or not the output is address forced. (An
 /// indirect *creation* has a constant `#0` data input, filtered by `mergeable`, so it never merges —
 /// matching Ghidra's `isIndirectCreation` skip.)
-fn merge_markers(f: &Funcdata, h: &mut HighVariables) {
+fn merge_markers(f: &Funcdata, h: &mut HighVariables, pieces: &VariablePieces) {
     for op in f.op_ids() {
         let o = f.op(op);
         if o.is_dead() || !o.is_marker() {
@@ -535,7 +521,7 @@ fn merge_markers(f: &Funcdata, h: &mut HighVariables) {
             if let Some(inv) = o.input(j) {
                 if mergeable(f, inv) {
                     let (rep_out, rep_in) = (h.high(out), h.high(inv));
-                    if merge_test_required(f, h, rep_out, rep_in) {
+                    if merge_test_required(f, h, pieces, rep_out, rep_in) {
                         h.union(out.0, inv.0);
                     }
                 }
@@ -566,6 +552,7 @@ fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeI
 fn merge_adjacent(
     f: &Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &HashMap<VarnodeId, Cover>,
     explicit: &[bool],
 ) {
@@ -596,11 +583,13 @@ fn merge_adjacent(
                 continue;
             }
             let (rep_out, rep_in) = (h.high(vn1), h.high(vn2));
-            if rep_out == rep_in || !merge_test_adjacent(f, h, rep_out, rep_in) {
+            if rep_out == rep_in || !merge_test_adjacent(f, h, pieces, rep_out, rep_in) {
                 continue;
             }
             let out_members = members_of(f, h, covers, rep_out);
+            let out_members = pieces.extend_members(f, h, covers, &out_members);
             let in_members = members_of(f, h, covers, rep_in);
+            let in_members = pieces.extend_members(f, h, covers, &in_members);
             if !classes_interfere(&out_members, &in_members, covers) {
                 h.union(vn1.0, vn2.0);
             }
@@ -627,6 +616,7 @@ fn merge_adjacent(
 fn merge_same_storage(
     f: &Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &HashMap<VarnodeId, Cover>,
     explicit: &[bool],
 ) {
@@ -677,12 +667,14 @@ fn merge_same_storage(
                 for j in (i + 1)..class_list.len() {
                     let rep_i = h.high(class_list[i][0]);
                     let rep_j = h.high(class_list[j][0]);
-                    if !merge_test_speculative(f, h, rep_i, rep_j) {
+                    if !merge_test_speculative(f, h, pieces, rep_i, rep_j) {
                         continue;
                     }
-                    let fi = full.get(&rep_i).unwrap_or(&empty);
-                    let fj = full.get(&rep_j).unwrap_or(&empty);
-                    if !classes_interfere(fi, fj, covers) {
+                    let fi = full.get(&rep_i).unwrap_or(&empty).clone();
+                    let fj = full.get(&rep_j).unwrap_or(&empty).clone();
+                    let fi = pieces.extend_members(f, h, covers, &fi);
+                    let fj = pieces.extend_members(f, h, covers, &fj);
+                    if !classes_interfere(&fi, &fj, covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
                         let mut m = full.remove(&rep_i).unwrap_or_default();
                         m.extend(full.remove(&rep_j).unwrap_or_default());
@@ -731,36 +723,254 @@ fn members_of(
         .collect()
 }
 
-/// `Merge::mergeAddrTied` (merge.cc:609) — force-merge address-tied Varnodes sharing a storage
-/// address into one HighVariable. Ghidra force-merges the same-size versions (`mergeRangeMust`,
-/// the [`super::mergesnip`] snip having already resolved any Cover intersection) and links
-/// different-size versions into a VariableGroup (`groupWith`/VariablePiece). mosura has no
-/// VariablePiece (the P4/P8 debt), so it approximates the group by unioning *every* address-tied
-/// cover-bearing version at an address, any size — giving the storage one HighVariable whose Cover
-/// spans all its versions. That spanning Cover is what lets [`merge_copy`] tell a pre-store
-/// snapshot (which stays live across the overwriting store) apart from the stored value.
-fn merge_addrtied(f: &Funcdata, h: &mut HighVariables, _covers: &HashMap<VarnodeId, Cover>) {
-    let mut by_addr: HashMap<(SpaceId, u64), Vec<VarnodeId>> = HashMap::new();
+/// One `VariablePiece` (variable.hh:71): the HighVariable formed by the Varnodes at one exact
+/// `(address, size)`, together with where it sits inside its overlap group.
+#[derive(Clone)]
+struct Piece {
+    group: u32,
+    /// Byte offset of this piece within its group (`VariablePiece::groupOffset`).
+    offset: u32,
+    size: u32,
+    /// The Varnodes at this exact `(address, size)` — `mergeRangeMust` unions them, so they are one
+    /// HighVariable and any of them identifies it.
+    members: Vec<VarnodeId>,
+}
+
+/// One `VariableGroup` (variable.hh:44): the set of mutually overlapping pieces at a storage
+/// location, and the number of contiguous bytes the whole group covers.
+#[derive(Clone)]
+struct Group {
+    size: u32,
+    pieces: Vec<u32>,
+}
+
+/// Ghidra's `VariableGroup`/`VariablePiece` structure (variable.hh:44/71), as built by
+/// `Merge::mergeAddrTied`'s `groupWith` (variable.cc:571).
+///
+/// **The distinction this exists to draw.** Ghidra separates two things mosura used to conflate:
+/// *identity* — which C variable a Varnode belongs to, decided per `(address, size)` — from *the
+/// Cover used for interference*, which spans the byte-overlapping pieces. mosura's old size-blind
+/// `mergeAddrTied` union was an approximation **of the extended cover**, not of identity: it bought
+/// the spanning liveness by fusing a 2-byte and a 4-byte value at one address into a single C
+/// variable, which is what let an 8-byte store render as a 4-byte assignment (`partialmerge`).
+///
+/// Ghidra's caching (`intersectdirty`/`extendcoverdirty`, `markIntersectionDirty`, `combineGroups`,
+/// `adjustOffsets`) does not port: mosura's [`all_covers`]/[`classes_interfere`] recompute from
+/// scratch on every call, so `updateIntersections`/`updateCover` reduce to the two pure functions
+/// [`Self::intersecting`] and [`Self::extend_members`].
+#[derive(Clone)]
+pub struct VariablePieces {
+    /// Varnode → its piece, or `None` when it is in no overlap group.
+    piece_of: Vec<Option<u32>>,
+    pieces: Vec<Piece>,
+    groups: Vec<Group>,
+}
+
+impl VariablePieces {
+    /// No overlap groups — every HighVariable is a whole variable (Ghidra's `piece == nullptr`).
+    pub fn empty(n: usize) -> VariablePieces {
+        VariablePieces { piece_of: vec![None; n], pieces: Vec::new(), groups: Vec::new() }
+    }
+
+    fn piece(&self, v: VarnodeId) -> Option<&Piece> {
+        self.piece_of.get(v.0 as usize).copied().flatten().map(|p| &self.pieces[p as usize])
+    }
+
+    /// `VariablePiece::updateIntersections` (variable.cc:140) — exactly the pieces of the group that
+    /// byte-overlap the given one. Ghidra's early-out on `intersectdirty` is the cache; the loop is
+    /// the definition.
+    fn intersecting<'a>(&'a self, p: &'a Piece) -> impl Iterator<Item = &'a Piece> + 'a {
+        let end = p.offset + p.size;
+        self.groups[p.group as usize].pieces.iter().map(|&i| &self.pieces[i as usize]).filter(
+            move |q| {
+                !std::ptr::eq(*q, p) && end > q.offset && p.offset < q.offset + q.size
+            },
+        )
+    }
+
+    /// Does this Varnode's piece cover its whole group? Ghidra
+    /// `high->piece->getSize() != group->getSize()` (merge.cc:151-152).
+    pub fn spans_group(&self, v: VarnodeId) -> bool {
+        self.piece(v).is_some_and(|p| p.size == self.groups[p.group as usize].size)
+    }
+
+    /// `(group, offset within the group, size)` of this Varnode's piece — Ghidra's
+    /// `vn->getHigh()->piece`.
+    pub fn at(&self, v: VarnodeId) -> Option<(u32, u32, u32)> {
+        self.piece(v).map(|p| (p.group, p.offset, p.size))
+    }
+
+    /// The number of contiguous bytes the Varnode's whole group covers (`VariableGroup::getSize`).
+    pub fn group_size(&self, v: VarnodeId) -> Option<u32> {
+        self.piece(v).map(|p| self.groups[p.group as usize].size)
+    }
+
+    /// A Varnode of the piece that spans the whole group — the one whose name the printer uses as
+    /// the base of a partial symbol. `None` when no single piece covers the group.
+    pub fn group_base(&self, v: VarnodeId) -> Option<VarnodeId> {
+        let p = self.piece(v)?;
+        let g = &self.groups[p.group as usize];
+        g.pieces
+            .iter()
+            .map(|&i| &self.pieces[i as usize])
+            .find(|q| q.offset == 0 && q.size == g.size)
+            .and_then(|q| q.members.first().copied())
+    }
+
+    fn same_group(&self, a: VarnodeId, b: VarnodeId) -> bool {
+        match (self.piece(a), self.piece(b)) {
+            (Some(pa), Some(pb)) => pa.group == pb.group,
+            _ => false,
+        }
+    }
+
+    /// `VariablePiece::updateCover` (variable.cc:160) expressed over member lists: the extended
+    /// Cover of a HighVariable is its own internal Cover unioned with the internal Covers of the
+    /// pieces it intersects, and an internal Cover is the union of its members' Covers — so unioning
+    /// the *member lists* and testing pairwise is the same predicate, with no Cover algebra.
+    ///
+    /// This is what `HighIntersectTest::intersection` (variable.cc:1166) reads via `getCover()`, and
+    /// the only place Ghidra consults it: the extended Cover *prevents merges*, it never *forces a
+    /// snip*.
+    fn extend_members(
+        &self,
+        f: &Funcdata,
+        h: &mut HighVariables,
+        covers: &HashMap<VarnodeId, Cover>,
+        base: &[VarnodeId],
+    ) -> Vec<VarnodeId> {
+        // Collect the intersecting pieces first: `members_of` needs `&mut h`, which cannot be held
+        // across the borrow of `self.pieces`.
+        let mut seeds: Vec<VarnodeId> = Vec::new();
+        for &v in base {
+            let Some(p) = self.piece(v) else { continue };
+            for q in self.intersecting(p) {
+                if let Some(&m) = q.members.first() {
+                    seeds.push(m);
+                }
+            }
+        }
+        if seeds.is_empty() {
+            return base.to_vec();
+        }
+        let mut out = base.to_vec();
+        for m in seeds {
+            let rep = h.high(m);
+            for w in members_of(f, h, covers, rep) {
+                if !out.contains(&w) {
+                    out.push(w);
+                }
+            }
+        }
+        out
+    }
+
+    /// [`Self::extend_members`] applied to a whole rep → members map, so a caller that tests many
+    /// pairs (the `mergeOp` testlist, `mergeIndirect`) extends once instead of per pair.
+    fn extend_all(
+        &self,
+        f: &Funcdata,
+        h: &mut HighVariables,
+        covers: &HashMap<VarnodeId, Cover>,
+        mut members: HashMap<u32, Vec<VarnodeId>>,
+    ) -> HashMap<u32, Vec<VarnodeId>> {
+        if self.pieces.is_empty() {
+            return members;
+        }
+        for rep in members.keys().copied().collect::<Vec<u32>>() {
+            let base = members[&rep].clone();
+            let ext = self.extend_members(f, h, covers, &base);
+            members.insert(rep, ext);
+        }
+        members
+    }
+}
+
+/// `Merge::mergeAddrTied` (merge.cc:609) — force-merge address-tied Varnodes into HighVariables and
+/// build the overlap groups.
+///
+/// Ghidra walks each space's maximal overlapping range (`VarnodeBank::overlapLoc`, varnode.cc:1785 —
+/// "one subrange for each set of Varnodes with the same size and starting address") and does three
+/// distinct things with it, which must not be confused:
+///
+/// * `unifyAddress`/`eliminateIntersect` runs over the **whole overlap range** — the snip that
+///   resolves Cover intersections by splitting data-flow. In mosura that is
+///   [`super::mergesnip::ActionMergeRequired`], which already ran.
+/// * `mergeRangeMust` runs over each **same-`(address, size)` subrange only** — this is the identity
+///   merge, and it is why a 2-byte and a 4-byte value at one address are *different C variables*.
+/// * `groupWith` (variable.cc:571) links those separate HighVariables into one `VariableGroup`, with
+///   each piece's offset relative to the lowest-addressed subrange. The group only exists when the
+///   range has more than one subrange (`if (max > 2)`, merge.cc:637); a lone `(address, size)` gets
+///   no piece at all.
+///
+/// The extended Cover the group carries *prevents speculative merges*; it does not *force snips*.
+///
+/// Faithfully narrowed: Ghidra's range walk covers every non-free Varnode in the space and gates the
+/// range on the union of its flags containing `addrtied`, so a non-tied Varnode overlapping a tied
+/// one also becomes a piece. mosura gates each Varnode on `addrtied` — the same population this
+/// function has always operated on, so the change here is purely partition-vs-union. Widening the
+/// population is a separate step; it can only add pieces, which can only *forbid* merges.
+fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
+    // Ghidra `unifyAddress` gates on `!isFree` (heritaged), NOT on having a Cover: an address-forced
+    // write held to the end of the function has no explicit reader (so mosura's Cover is empty) but
+    // is still an instance of the storage's variable and must be unified, else the `guardReturns`
+    // terminal COPY stays cross-high and prints a spurious `g = g`.
+    let mut by_storage: HashMap<(SpaceId, u64, u32), Vec<VarnodeId>> = HashMap::new();
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
         let vn = f.vn(v);
-        // Ghidra `unifyAddress` gates on `!isFree` (heritaged), NOT on having a Cover: an
-        // address-forced write held to the end of the function has no explicit reader (so mosura's
-        // Cover is empty) but is still an instance of the storage's variable and must be unified,
-        // else the `guardReturns` terminal COPY stays cross-high and prints a spurious `g = g`.
         if vn.is_free() || !vn.is_addrtied() {
             continue;
         }
-        by_addr.entry((vn.loc.space, vn.loc.offset)).or_default().push(v);
+        by_storage.entry((vn.loc.space, vn.loc.offset, vn.size)).or_default().push(v);
     }
-    // Deterministic order (the union representative is the lowest-index member of each group).
-    let mut groups: Vec<Vec<VarnodeId>> = by_addr.into_values().filter(|g| g.len() >= 2).collect();
-    groups.sort_by_key(|g| g[0]);
-    for g in groups {
-        for &w in &g[1..] {
-            h.union(g[0].0, w.0);
+    // `mergeRangeMust` over each same-(address, size) subrange. Deterministic order: the union
+    // representative is the lowest-index member.
+    let mut subranges: Vec<((SpaceId, u64, u32), Vec<VarnodeId>)> = by_storage.into_iter().collect();
+    subranges.sort_by_key(|((sp, off, sz), _)| (sp.0, *off, *sz));
+    for (_, members) in &subranges {
+        for &w in &members[1..] {
+            h.union(members[0].0, w.0);
         }
     }
+
+    // `overlapLoc`: walk the subranges in (space, offset, size) order accumulating maximal
+    // overlapping ranges, then `groupWith` every range that has more than one subrange.
+    let mut pieces = VariablePieces::empty(f.num_varnodes());
+    let mut i = 0;
+    while i < subranges.len() {
+        let (sp, base_off, _) = subranges[i].0;
+        let mut max_off = base_off + subranges[i].0 .2 as u64; // exclusive end
+        let mut j = i + 1;
+        while j < subranges.len() {
+            let (sp2, off2, sz2) = subranges[j].0;
+            if sp2 != sp || off2 >= max_off {
+                break;
+            }
+            max_off = max_off.max(off2 + sz2 as u64);
+            j += 1;
+        }
+        if j - i > 1 {
+            let gid = pieces.groups.len() as u32;
+            let mut ids = Vec::new();
+            for ((_, off, sz), members) in subranges[i..j].iter() {
+                let pid = pieces.pieces.len() as u32;
+                ids.push(pid);
+                for &v in members {
+                    pieces.piece_of[v.0 as usize] = Some(pid);
+                }
+                pieces.pieces.push(Piece {
+                    group: gid,
+                    offset: (off - base_off) as u32,
+                    size: *sz,
+                    members: members.clone(),
+                });
+            }
+            pieces.groups.push(Group { size: (max_off - base_off) as u32, pieces: ids });
+        }
+        i = j;
+    }
+    pieces
 }
 
 /// `Merge::mergeOpcode(CPUI_COPY)` (merge.cc:326) — in linear block order, try to merge each
@@ -774,6 +984,7 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables, _covers: &HashMap<Varnode
 fn merge_copy(
     f: &Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &HashMap<VarnodeId, Cover>,
     explicit: &[bool],
 ) {
@@ -798,11 +1009,13 @@ fn merge_copy(
                 if rep_out == rep_in {
                     continue;
                 }
-                if !merge_test_required(f, h, rep_out, rep_in) {
+                if !merge_test_required(f, h, pieces, rep_out, rep_in) {
                     continue;
                 }
                 let mo = members_of(f, h, covers, rep_out);
+                let mo = pieces.extend_members(f, h, covers, &mo);
                 let mi = members_of(f, h, covers, rep_in);
+                let mi = pieces.extend_members(f, h, covers, &mi);
                 if classes_interfere(&mo, &mi, covers) {
                     continue; // would introduce a Cover intersection — skip
                 }
@@ -827,6 +1040,21 @@ fn merge_test_basic(
         return false;
     }
     explicit[v.0 as usize] && !f.vn(v).is_spacebase()
+}
+
+/// Ghidra's `high->piece`: the VariablePiece of a HighVariable, identified by any member Varnode
+/// that carries one. (`mergeRangeMust` puts a whole `(address, size)` subrange in one class, and
+/// [`merge_test_required`] refuses to merge two pieces of a group, so a class holds at most one
+/// piece per group.)
+fn piece_rep(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    pieces: &VariablePieces,
+    rep: u32,
+) -> Option<VarnodeId> {
+    (0..f.num_varnodes() as u32)
+        .map(VarnodeId)
+        .find(|&v| pieces.piece(v).is_some() && h.high(v) == rep)
 }
 
 /// The aggregate `(address-tied storage address, is-input, is-persist)` over every Varnode merged
@@ -854,13 +1082,33 @@ fn high_props(f: &Funcdata, h: &mut HighVariables, rep: u32) -> (Option<Address>
 }
 
 /// `Merge::mergeTestRequired` (merge.cc:102), the subset mosura models: keep an address-tied output
-/// from swallowing an address-tied input of a *different* address, and keep function inputs
-/// distinct from persistent / address-tied storage (an input must not be dragged into the internal
-/// parts of a stack structure). The typelock / extraout / protopartial / VariablePiece / symbol
-/// guards are not modeled — mosura has no type-locks, VariablePieces or symbol tables at merge time.
-fn merge_test_required(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
+/// from swallowing an address-tied input of a *different* address, keep the pieces of one
+/// VariableGroup from being merged back together, and keep function inputs distinct from persistent
+/// / address-tied storage (an input must not be dragged into the internal parts of a stack
+/// structure). The typelock / extraout / protopartial / symbol guards are not modeled — mosura has
+/// no type-locks or symbol tables at merge time.
+fn merge_test_required(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    pieces: &VariablePieces,
+    rep_out: u32,
+    rep_in: u32,
+) -> bool {
     if rep_out == rep_in {
         return true; // already merged
+    }
+    // merge.cc:147-153, the VariablePiece guard. Two pieces of the SAME group are different parts of
+    // one storage location and never merge — without this the same-address arm below would happily
+    // re-fuse the 2-byte and 4-byte versions that `mergeRangeMust` just kept apart, undoing the
+    // split. Across groups, at least one piece must represent its whole group.
+    if let (Some(po), Some(pi)) = (piece_rep(f, h, pieces, rep_out), piece_rep(f, h, pieces, rep_in))
+    {
+        if pieces.same_group(po, pi) {
+            return false;
+        }
+        if !pieces.spans_group(po) && !pieces.spans_group(pi) {
+            return false;
+        }
     }
     let (out_tied, out_input, out_persist) = high_props(f, h, rep_out);
     let (in_tied, in_input, in_persist) = high_props(f, h, rep_in);
@@ -942,18 +1190,28 @@ fn high_type_of(f: &Funcdata, h: &mut HighVariables, rep: u32) -> Datatype {
 ///   neither `illegalinput` nor `indirectonly`, so no varnode can satisfy the test.
 /// * `Symbol::isIsolated` on either side (merge.cc:202-208) — there is no symbol table at merge time
 ///   (the same absence already noted on [`merge_test_required`]).
-/// * both sides holding a `VariablePiece` (merge.cc:211-212) — mosura has no VariablePiece /
-///   VariableGroup (the P4/P8 debt flagged on [`merge_addrtied`]), so `piece` is never set.
 ///
 /// These are omissions of *restrictions*: each can only ever forbid a merge, so their absence makes
 /// mosura merge no less than Ghidra, never more. They are recorded rather than dropped so the debt
-/// stays visible when VariablePiece / symbols do land.
-fn merge_test_adjacent(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
-    if !merge_test_required(f, h, rep_out, rep_in) {
+/// stays visible when symbols do land.
+fn merge_test_adjacent(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    pieces: &VariablePieces,
+    rep_out: u32,
+    rep_in: u32,
+) -> bool {
+    if !merge_test_required(f, h, pieces, rep_out, rep_in) {
         return false;
     }
     if rep_out == rep_in {
         return true; // already merged; Ghidra's getType() comparison is trivially equal
+    }
+    // merge.cc:210-212, "Currently don't allow speculative merging of variables that are in separate
+    // overlapping collections" — stricter than the required test, which permits the cross-group
+    // whole-group case.
+    if piece_rep(f, h, pieces, rep_out).is_some() && piece_rep(f, h, pieces, rep_in).is_some() {
+        return false;
     }
     high_type_of(f, h, rep_out) == high_type_of(f, h, rep_in)
 }
@@ -963,8 +1221,14 @@ fn merge_test_adjacent(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in
 /// anything with a global (`isPersist`), a function input (`isInput`), or address-tied storage
 /// (`isAddrTied`). This is the gate `mergeLinear` (merge.cc:286) applies inside `mergeByDatatype`,
 /// i.e. at [`merge_same_storage`]'s slot.
-fn merge_test_speculative(f: &Funcdata, h: &mut HighVariables, rep_out: u32, rep_in: u32) -> bool {
-    if !merge_test_adjacent(f, h, rep_out, rep_in) {
+fn merge_test_speculative(
+    f: &Funcdata,
+    h: &mut HighVariables,
+    pieces: &VariablePieces,
+    rep_out: u32,
+    rep_in: u32,
+) -> bool {
+    if !merge_test_adjacent(f, h, pieces, rep_out, rep_in) {
         return false;
     }
     let (out_tied, out_input, out_persist) = high_props(f, h, rep_out);
@@ -1008,7 +1272,7 @@ fn merge_marker_trim(f: &mut Funcdata) {
     }
     let mut covers = all_covers(f);
     let mut h = HighVariables::new(f.num_varnodes());
-    merge_addrtied(f, &mut h, &covers);
+    let pieces = merge_addrtied(f, &mut h);
     // `Merge::mergeMarker` (merge.cc:889): run through all MULTIEQUAL and INDIRECT ops, forcing the
     // merge of each input with the output; skip indirect *creations* (Ghidra `op->isIndirectCreation`).
     for op in f.op_ids() {
@@ -1028,9 +1292,9 @@ fn merge_marker_trim(f: &mut Funcdata) {
             continue;
         }
         if is_indirect {
-            merge_indirect(f, &mut h, &mut covers, op);
+            merge_indirect(f, &mut h, &pieces, &mut covers, op);
         } else {
-            merge_op(f, &mut h, &mut covers, op);
+            merge_op(f, &mut h, &pieces, &mut covers, op);
         }
     }
 }
@@ -1046,12 +1310,13 @@ fn merge_marker_trim(f: &mut Funcdata) {
 fn merge_indirect(
     f: &mut Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &mut HashMap<VarnodeId, Cover>,
     indop: super::op::OpId,
 ) {
     let outvn = f.op(indop).output.expect("INDIRECT has an output");
     if !f.vn(outvn).is_addr_force() {
-        merge_op(f, h, covers, indop);
+        merge_op(f, h, pieces, covers, indop);
         return;
     }
     let try_merge = |f: &Funcdata, h: &mut HighVariables, covers: &HashMap<VarnodeId, Cover>| -> bool {
@@ -1064,11 +1329,12 @@ fn merge_indirect(
         if rep_out == rep_in {
             return true;
         }
-        if !merge_test_required(f, h, rep_out, rep_in) {
+        if !merge_test_required(f, h, pieces, rep_out, rep_in) {
             return false;
         }
         // Merge::merge fails only on a Cover intersection.
         let members = full_members_by_rep(f, h, covers);
+        let members = pieces.extend_all(f, h, covers, members);
         let empty: Vec<VarnodeId> = Vec::new();
         let mo = members.get(&rep_out).unwrap_or(&empty);
         let mi = members.get(&rep_in).unwrap_or(&empty);
@@ -1191,6 +1457,7 @@ fn snip_output_interference(f: &mut Funcdata, h: &mut HighVariables, indop: supe
 fn merge_op(
     f: &mut Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &mut HashMap<VarnodeId, Cover>,
     op: super::op::OpId,
 ) {
@@ -1201,25 +1468,25 @@ fn merge_op(
         let out = f.op(op).output.expect("marker op has an output");
         let Some(inv) = f.op(op).input(i) else { continue };
         let (rep_out, rep_in) = (h.high(out), h.high(inv));
-        if !merge_test_required(f, h, rep_out, rep_in) {
+        if !merge_test_required(f, h, pieces, rep_out, rep_in) {
             trim_slot(f, h, covers, op, i);
             continue;
         }
         for j in 0..i {
             let Some(invj) = f.op(op).input(j) else { continue };
             let (rep_j, rep_in) = (h.high(invj), h.high(inv));
-            if !merge_test_required(f, h, rep_j, rep_in) {
+            if !merge_test_required(f, h, pieces, rep_j, rep_in) {
                 trim_slot(f, h, covers, op, i);
                 break;
             }
         }
     }
     // Phase 2: cover restrictions — blind-sequential trims until the whole set tests clean.
-    if !merge_test_all(f, h, covers, op) {
+    if !merge_test_all(f, h, pieces, covers, op) {
         let mut nexttrim = 0;
         while nexttrim < max {
             trim_slot(f, h, covers, op, nexttrim); // trim one of the branches
-            if merge_test_all(f, h, covers, op) {
+            if merge_test_all(f, h, pieces, covers, op) {
                 break; // we successfully test merged everything
             }
             nexttrim += 1;
@@ -1250,10 +1517,12 @@ fn merge_op(
 fn merge_test_all(
     f: &Funcdata,
     h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &HashMap<VarnodeId, Cover>,
     op: super::op::OpId,
 ) -> bool {
     let members = full_members_by_rep(f, h, covers);
+    let members = pieces.extend_all(f, h, covers, members);
     let mut testlist: Vec<u32> = Vec::new();
     let out = f.op(op).output.expect("marker op has an output");
     let rep_out = h.high(out);
@@ -1452,10 +1721,10 @@ fn process_copy_trims(f: &mut Funcdata) {
         // Ghidra's state at the ActionDominantCopy slot.
         let covers = all_covers(f);
         let mut h = HighVariables::new(f.num_varnodes());
-        merge_addrtied(f, &mut h, &covers);
-        merge_markers(f, &mut h);
+        let pieces = merge_addrtied(f, &mut h);
+        merge_markers(f, &mut h, &pieces);
         let explicit = mark_explicit(f, &mut h, &covers);
-        merge_copy(f, &mut h, &covers, &explicit);
+        merge_copy(f, &mut h, &pieces, &covers, &explicit);
         let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
 
         // Walk the trigger highs in trim order; process the first unprocessed same-source group of
@@ -1635,25 +1904,74 @@ fn build_dominant_copy(
 }
 
 /// `Merge::markInternalCopies` (merge.cc:1444), the body of `ActionCopyMarker`
-/// (coreaction.cc:5729) reduced to its non-printing marks that printc does not already model: the
-/// *shadow assignment* skip (a never-read COPY output whose HighVariable has another instance live
-/// at the same point carries no new value, merge.cc:1470-1474) and the *redundant copy* marking
-/// (`processHighRedundantCopy`/`markRedundantCopies`/`checkCopyPair`, merge.cc:1345/1252/1112 —
-/// a COPY dominated by an earlier COPY from the same source with no intervening write to the
-/// HighVariable is not printed). The same-HighVariable internal-copy arm (merge.cc:1461) is
-/// printc's existing `hidden` test; the PIECE/SUBPIECE arms need VariablePiece (the P4/P8 debt).
+/// (coreaction.cc:5729): the ops that copy data *within* one variable, or repeat an earlier copy,
+/// are not printed. Ghidra switches on three opcodes and mosura now models all three —
+///
+/// * **COPY** — the *shadow assignment* skip (a never-read output whose HighVariable has another
+///   instance live at the same point carries no new value, merge.cc:1470-1474) and the *redundant
+///   copy* marking (`processHighRedundantCopy`/`markRedundantCopies`/`checkCopyPair`,
+///   merge.cc:1345/1252/1112). The same-HighVariable internal-copy arm (merge.cc:1461) is printc's
+///   existing `hidden` test.
+/// * **PIECE / SUBPIECE** (merge.cc:1487/1516) — an op that assembles a variable out of its own
+///   pieces, or extracts one, is internal to a `VariableGroup` and prints as a piece accessor at the
+///   use site instead of as a statement. Both arms also force the *source* explicit
+///   (`clearImplied`/`setExplicit`), which is what gives the accessor a name to hang off.
 ///
 /// `of` is the frozen full-merge representative per varnode and `members` its class lists —
-/// Ghidra's state at ActionCopyMarker (after all merging). Returns the set of non-printing ops.
+/// Ghidra's state at ActionCopyMarker (after all merging). Returns the non-printing ops and the
+/// Varnodes the piece arms force explicit.
 pub(crate) fn copy_marker_nonprinting(
     f: &Funcdata,
     of: &[u32],
     members: &HashMap<u32, Vec<VarnodeId>>,
     covers: &HashMap<VarnodeId, Cover>,
-) -> std::collections::HashSet<super::op::OpId> {
+    pieces: &VariablePieces,
+) -> (std::collections::HashSet<super::op::OpId>, Vec<VarnodeId>) {
     let mut nonprint: std::collections::HashSet<super::op::OpId> = std::collections::HashSet::new();
+    let mut force_explicit: Vec<VarnodeId> = Vec::new();
     if f.num_blocks() == 0 {
-        return nonprint;
+        return (nonprint, force_explicit);
+    }
+    // The PIECE and SUBPIECE arms (merge.cc:1487/1516). Both require every operand to be a piece of
+    // the SAME group, and the offsets to line up exactly, so the op only re-expresses bytes the
+    // variable already holds. Little-endian only: mosura's corpus targets are little-endian, and the
+    // big-endian offset arithmetic is written out in the source for when a big-endian target lands.
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.is_dead() {
+            continue;
+        }
+        let internal = match o.code() {
+            OpCode::Piece => (|| {
+                let (v1, v2, v3) = (o.output?, o.input(0)?, o.input(1)?);
+                let (g1, off1, _) = pieces.at(v1)?;
+                let (g2, off2, _) = pieces.at(v2)?;
+                let (g3, off3, _) = pieces.at(v3)?;
+                if g1 != g2 || g1 != g3 {
+                    return None;
+                }
+                // in(0) is the most significant half, in(1) the least — little-endian puts the
+                // least-significant piece at the output's own offset.
+                (off3 == off1 && off2 == off1 + f.vn(v3).size).then_some(vec![v2, v3])
+            })(),
+            OpCode::Subpiece => (|| {
+                let (v1, v2, cst) = (o.output?, o.input(0)?, o.input(1)?);
+                if !f.vn(cst).is_constant() {
+                    return None;
+                }
+                let (g1, off1, _) = pieces.at(v1)?;
+                let (g2, off2, _) = pieces.at(v2)?;
+                if g1 != g2 {
+                    return None;
+                }
+                (off2 + f.vn(cst).loc.offset as u32 == off1).then_some(vec![v2])
+            })(),
+            _ => None,
+        };
+        if let Some(sources) = internal {
+            nonprint.insert(op);
+            force_explicit.extend(sources);
+        }
     }
     let pos = super::cover::op_positions(f);
     // First pass: count cross-high COPYs into each high (Ghidra's copyIn1/copyIn2 marks) and mark
@@ -1715,7 +2033,7 @@ pub(crate) fn copy_marker_nonprinting(
             posn += sz;
         }
     }
-    nonprint
+    (nonprint, force_explicit)
 }
 
 /// `Merge::shadowedVarnode` (merge.cc:1272): is the given Varnode shadowed by another Varnode in
@@ -1869,7 +2187,7 @@ impl super::action::Action for ActionMergeMarkerTrim {
 /// print-time recompute (no churn); the print-only additions (`slot_write`, `high_ram_off`) stay in
 /// printc as cast-invariant OR-terms.
 pub fn mark_explicit_flags(f: &mut Funcdata) {
-    let mut h = merge(f);
+    let (mut h, _pieces) = merge(f);
     let high_of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
     let covers = all_covers(f);
     let mut ih = merge_required_only(f);
@@ -1902,11 +2220,14 @@ pub struct FrozenHighs {
     uf: HighVariables,
     of: Vec<u32>,
     members: HashMap<u32, Vec<VarnodeId>>,
+    /// The overlap groups `mergeAddrTied` built (Ghidra's `VariableGroup`/`VariablePiece`), so the
+    /// printer can render a piece that does not span its group as a partial symbol.
+    pieces: VariablePieces,
 }
 
 impl FrozenHighs {
     fn new(f: &Funcdata) -> Self {
-        let mut uf = merge(f);
+        let (mut uf, pieces) = merge(f);
         let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| uf.high(VarnodeId(i))).collect();
         let mut members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
         for (i, &rep) in of.iter().enumerate() {
@@ -1915,12 +2236,18 @@ impl FrozenHighs {
                 members.entry(rep).or_default().push(v);
             }
         }
-        FrozenHighs { uf, of, members }
+        FrozenHighs { uf, of, members, pieces }
     }
 
     /// The union-find, for callers that need to compare two Varnodes' variables.
     pub fn union_find(&self) -> &HighVariables {
         &self.uf
+    }
+
+    /// The overlap groups (Ghidra's `VariableGroup`/`VariablePiece`), for the printer's partial
+    /// symbol rendering.
+    pub fn pieces(&self) -> &VariablePieces {
+        &self.pieces
     }
 
     /// Ghidra `Varnode::getHighTypeReadFacing`/`getHighTypeDefFacing` (varnode.cc:651/665) →
@@ -2030,7 +2357,15 @@ impl super::action::Action for ActionCopyMarker {
             members.entry(rep).or_default().push(VarnodeId(i as u32));
         }
         let covers = all_covers(data);
-        data.nonprinting = Some(copy_marker_nonprinting(data, &of, &members, &covers));
+        let pieces = data.highs.as_ref().expect("frozen above").pieces().clone();
+        let (nonprint, force_explicit) =
+            copy_marker_nonprinting(data, &of, &members, &covers, &pieces);
+        // merge.cc:1500/1523 — the piece arms force their source explicit, so the accessor the use
+        // site now renders has a named variable to hang off.
+        for v in force_explicit {
+            data.vn_mut(v).set_explicit();
+        }
+        data.nonprinting = Some(nonprint);
         0
     }
 }
@@ -2122,7 +2457,7 @@ mod tests {
         let xp = f.new_output(phi, 8, Address::new(reg, 0));
         f.set_blocks(vec![BlockBasic { ops: vec![c1, c2, phi], ..Default::default() }]);
 
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         // the phi output and both written versions are one HighVariable…
         assert!(h.same(xp, x1) && h.same(xp, x2));
         // …but the constant is its own thing.
@@ -2184,7 +2519,7 @@ mod tests {
             BlockBasic { ops: vec![ret], in_edges: vec![BlockId(2)], out_edges: vec![] },
         ]);
 
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         // the iterator's versions are one HighVariable (the phi merge)…
         assert!(h.same(vphi, vinit) && h.same(vphi, vinc));
         // …and the bound, though it reuses RAX like vinit, is a DISTINCT variable: vphi is live at
@@ -2193,11 +2528,16 @@ mod tests {
         assert!(!h.same(vphi, vbound));
     }
 
-    /// `merge_addrtied` unifies every address-tied version at one storage address, ANY size (the
-    /// VariablePiece approximation) — a 4-byte and an 8-byte write to the same global become one
-    /// HighVariable, while a write to a different address stays distinct.
+    /// `merge_addrtied` is `mergeRangeMust` + `groupWith` (merge.cc:625/638): it unifies the
+    /// address-tied versions of one exact `(address, size)` — so a 4-byte and an 8-byte write to the
+    /// same global are DIFFERENT C variables — and links the overlapping ones into a VariableGroup
+    /// whose extended Cover (`VariablePiece::updateCover`, variable.cc:160) is what carries the
+    /// spanning liveness that the old size-blind union bought by fusing the two.
+    ///
+    /// This test used to assert the opposite (the size-blind approximation); it now asserts the
+    /// faithful contract: separate identity, joint interference.
     #[test]
-    fn merge_addrtied_unifies_all_sizes_at_one_address() {
+    fn merge_addrtied_separates_sizes_but_groups_them() {
         use crate::decompile::varnode::flags as vflags;
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
@@ -2213,13 +2553,33 @@ mod tests {
         for v in [g8, g4, other] {
             f.vn_mut(v).flags |= vflags::ADDRTIED | vflags::PERSIST;
         }
-        f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3], ..Default::default() }]);
+        // Give both overlapping versions a read, so each has a Cover to contribute (a Varnode with
+        // no reader has an empty internal Cover and adds nothing to the extended one).
+        let r8 = f.new_op(OpCode::Copy, seq, vec![g8]);
+        let _ = f.new_output_unique(r8, 8);
+        let r4 = f.new_op(OpCode::Copy, seq, vec![g4]);
+        let _ = f.new_output_unique(r4, 4);
+        f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3, r8, r4], ..Default::default() }]);
 
         let covers = all_covers(&f);
         let mut h = HighVariables::new(f.num_varnodes());
-        merge_addrtied(&f, &mut h, &covers);
-        assert!(h.same(g8, g4), "same-address addrtied versions unify regardless of size");
+        let pieces = merge_addrtied(&f, &mut h);
+        // Identity: per (address, size).
+        assert!(!h.same(g8, g4), "different sizes at one address are different variables");
         assert!(!h.same(g8, other), "a different address stays a distinct variable");
+        // Grouping: the two overlapping subranges are pieces of one group, the 8-byte one spanning
+        // it; the varnode at an unrelated address is in no group at all.
+        assert!(pieces.same_group(g8, g4), "the overlapping versions form one VariableGroup");
+        assert_eq!(pieces.at(g8).map(|(_, off, sz)| (off, sz)), Some((0, 8)));
+        assert_eq!(pieces.at(g4).map(|(_, off, sz)| (off, sz)), Some((0, 4)));
+        assert_eq!(pieces.group_size(g4), Some(8));
+        assert!(pieces.spans_group(g8) && !pieces.spans_group(g4));
+        assert_eq!(pieces.group_base(g4), Some(g8), "the spanning piece names the group");
+        assert!(pieces.at(other).is_none(), "a lone (address, size) gets no piece");
+        // Interference: the extended Cover of the narrow piece includes the whole's members, so a
+        // merge test sees them as jointly live even though they are separate variables.
+        let ext = pieces.extend_members(&f, &mut h, &covers, &[g4]);
+        assert!(ext.contains(&g8), "the extended Cover spans the byte-overlapping piece");
     }
 
     /// `merge_copy` (mergeOpcode COPY) merges a COPY's input and output when their Covers don't
@@ -2271,7 +2631,7 @@ mod tests {
             ..Default::default()
         }]);
 
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         assert!(h.same(a, b), "a non-interfering COPY merges its input and output");
         assert!(!h.same(e, d), "an interfering COPY (input still live) is left as a distinct variable");
     }
@@ -2301,7 +2661,7 @@ mod tests {
         let _rb2 = f.new_output(o3b, 8, Address::new(reg, 0x18));
         f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3, o3b], ..Default::default() }]);
 
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         assert!(!h.same(a, b), "an implied term must stay outside the COPY's HighVariable");
     }
 
@@ -2374,7 +2734,7 @@ mod tests {
 
         // With the conflict severed, the read-only merge keeps the phi output its own HighVariable
         // (a distinct local) rather than fusing it into the global.
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         assert!(!h.same(phi_out, g0), "phi output must not be fused into the addrtied global");
         // The slot-1 (register) input has no cover conflict, so it is untouched.
         assert_eq!(f.op(phi).input(1), Some(v1), "the non-conflicting input is left in place");
@@ -2446,7 +2806,7 @@ mod tests {
         // The output was NOT trimmed: after the slot-2 trim the set tests clean.
         assert_eq!(f.op(phi).output, Some(phi_out));
         // The conflicting value stays a distinct variable from the phi's.
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         assert!(!h.same(phi_out, v3), "v3 keeps its own HighVariable");
     }
 
@@ -2499,7 +2859,7 @@ mod tests {
         assert_eq!(f.op(def).input(0), Some(param));
         assert_eq!(f.op(def).parent, Some(BlockId(0)));
         // …and the read-only merge now unions the COPY into the phi while the input stays its own.
-        let mut h = merge(&f);
+        let (mut h, _) = merge(&f);
         assert!(h.same(phi_out, in0), "the trim COPY joins the phi's HighVariable");
         assert!(!h.same(phi_out, param), "the function input stays distinct");
     }
@@ -2667,9 +3027,10 @@ mod tests {
 
         // No unions performed, so each Varnode is its own HighVariable (rep == id).
         let mut h = HighVariables::new(f.num_varnodes());
-        assert!(!merge_test_required(&f, &mut h, glob.0, glob2.0), "two globals at different addresses");
-        assert!(!merge_test_required(&f, &mut h, glob.0, slot.0), "a global and a stack local");
-        assert!(!merge_test_required(&f, &mut h, glob.0, inp.0), "a persistent global and a function input");
-        assert!(merge_test_required(&f, &mut h, glob.0, tmp.0), "a register temp CAN become the global's value");
+        let np = VariablePieces::empty(f.num_varnodes());
+        assert!(!merge_test_required(&f, &mut h, &np, glob.0, glob2.0), "two globals at different addresses");
+        assert!(!merge_test_required(&f, &mut h, &np, glob.0, slot.0), "a global and a stack local");
+        assert!(!merge_test_required(&f, &mut h, &np, glob.0, inp.0), "a persistent global and a function input");
+        assert!(merge_test_required(&f, &mut h, &np, glob.0, tmp.0), "a register temp CAN become the global's value");
     }
 }
