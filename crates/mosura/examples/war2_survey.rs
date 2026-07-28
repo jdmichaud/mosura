@@ -205,10 +205,95 @@ fn is_ident(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
 
+/// The exact unsigned integer type of a given byte width, or `None` when the prelude has no type
+/// that is *exactly* that wide. Deliberately excludes `uint8` — the prelude maps it to `double`
+/// (Watcom 10.0a is C89 with no 64-bit integer), and storing through a `double *` is not a
+/// width-preserving integer write.
+fn exact_uint(size: u32) -> Option<&'static str> {
+    match size {
+        1 => Some("uint1"),
+        2 => Some("uint2"),
+        4 => Some("uint4"),
+        _ => None,
+    }
+}
+
+/// Parse a partial-symbol field suffix `._<off>_<size>_` at `i`, returning `(off, size, end)`.
+fn parse_field_suffix(b: &[u8], mut i: usize) -> Option<(u64, u32, usize)> {
+    if i + 1 >= b.len() || b[i] != b'.' || b[i + 1] != b'_' {
+        return None;
+    }
+    i += 2;
+    let num = |i: &mut usize| -> Option<u64> {
+        let s = *i;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        if *i == s || *i >= b.len() || b[*i] != b'_' {
+            return None;
+        }
+        let v = std::str::from_utf8(&b[s..*i]).ok()?.parse().ok()?;
+        *i += 1;
+        Some(v)
+    };
+    let off = num(&mut i)?;
+    let size = num(&mut i)?;
+    Some((off, size as u32, i))
+}
+
+/// Rewrite the decompiler's partial-symbol accessors into compilable C.
+///
+/// `base._<off>_<size>_` is Ghidra's own artificial field name for a `VariablePiece` that does not
+/// span its `VariableGroup` (`PrintLanguage::unnamedField`, printlanguage.cc:719, via
+/// `PrintC::pushPartialSymbol`, printc.cc:1947). The decompiler emitting it is FAITHFUL and is not
+/// the thing to change — but Ghidra's C was never intended to compile, and recompiling is this
+/// survey's entire purpose. Faithful and compilable are separate axes, and closing the gap belongs
+/// here in the emitter. wcc386 rejects the accessor with `E1032: Expression for '.' must be a
+/// 'structure' or 'union'`.
+///
+/// The replacement addresses exactly the same bytes: `*(uintN *)((char *)&base + off)`. Preserving
+/// the WIDTH is the entire point — the accessor exists because a 1-byte store must not be rendered
+/// as a 4-byte assignment, and a rewrite that widened the access would put that value drop straight
+/// back. A size with no exactly-matching type is left untouched so it fails loudly at compile time
+/// rather than silently widening.
+fn compilable_partial_symbols(c: &str) -> String {
+    let b = c.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < b.len() && is_ident(b[i]) {
+            i += 1;
+        }
+        match parse_field_suffix(b, i).and_then(|(off, size, end)| {
+            exact_uint(size).map(|ty| (off, ty, end))
+        }) {
+            Some((off, ty, end)) => {
+                let base = &c[s..i];
+                out.extend_from_slice(
+                    format!("(*({ty} *)((char *)&{base} + {off}))").as_bytes(),
+                );
+                i = end;
+            }
+            None => out.extend_from_slice(&b[s..i]),
+        }
+    }
+    String::from_utf8(out).expect("ASCII in, ASCII out")
+}
+
 /// Scan the decompiled C for identifier families that need a top-level declaration to form a
 /// standalone translation unit, synthesize those declarations + the typedef prelude, and return
 /// the full TU text plus a list of decompiler-artifact "smell" tags.
 fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
+    // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
+    // base of each accessor is still seen and declared (it appears as `&base`, which is not a
+    // pointer use, so it keeps its scalar declaration).
+    let c = &compilable_partial_symbols(c);
     let self_name = format!("FUN_{self_va:08x}");
     let mut funcs: HashSet<String> = HashSet::new(); // func_0x.. / FUN_.. callees -> extern fn
     let mut ptr_idents: HashSet<String> = HashSet::new(); // used with [] -> pointer-typed global

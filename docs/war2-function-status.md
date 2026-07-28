@@ -51,6 +51,48 @@ accessor in compilable form — a width-correct write through the base address, 
 put a wrong-code render back in the decompiler.** Filed as such; it is now the thing standing
 between those 505 sites and compilability.
 
+## Update — 2026-07-28b: compilable partial-symbol render (emitter) — the +18 recovered
+
+The `E1032` cost above is gone, in the emitter, with the decompiler untouched. `war2_survey.rs`
+rewrites `base._<off>_<size>_` into `*(uintN *)((char *)&base + off)` before the identifier scan.
+The decompiler's own output (`raw/`) is byte-identical across the change, and so is the corpus.
+
+| status | `8c9c6bb` (pre-VariablePiece) | `be13a04` | `be13a04` + emitter fix |
+| --- | --- | --- | --- |
+| EXACT | 1 | 1 | 1 |
+| MISMATCH | 1214 | 1196 | 1214 |
+| **COMPILE_FAIL** | **71** | **89** | **71** |
+
+**Zero transitions against the pre-VariablePiece baseline; E1032 = 0.** So the whole VariablePiece
+landing is COMPILE_FAIL-neutral while carrying its 505 wrong-code fixes.
+
+**The width guard, settled directly.** A wider-than-needed write would have put back the value drop
+the accessor exists to remove, so the widths were checked against wcc386 rather than inferred — a
+probe TU compiled with the survey's own flags (`-4r -fpi87 -s -onat`):
+
+```
+(*(uint1 *)((char *)&g + 0)) = v;   ->  a2 00000000        mov [g+0], al     1 byte
+(*(uint1 *)((char *)&g + 1)) = v;   ->  a2 01000000        mov [g+1], al     1 byte
+(*(uint2 *)((char *)&g + 2)) = v;   ->  66 a3 02000000     mov [g+2], ax     2 bytes
+g = (uint4)v;   /* the OLD form */  ->  25 ff000000 / a3   and eax,0xff      4 bytes  <- the drop
+```
+
+Only sizes with an exactly-matching unsigned type are rewritten (1/2/4); anything else is left to
+fail loudly rather than silently widen. `uint8` is excluded deliberately — the prelude maps it to
+`double`.
+
+**Length fidelity moved toward the original**: of the 18, **13 closer, 1 same, 4 further** (e.g.
+00262 `cand=529` → `450` against `orig=424`), because the narrow stores no longer carry the
+`and eax,0xff` + dword-store expansion. Raw `%match` moved both ways (8 better, 7 same, 5 worse) and
+cannot adjudicate this: at 0-12% a one-instruction width change shifts every downstream offset, so
+the byte-diff percentage is alignment noise, not a fidelity signal.
+
+**Union form evaluated and rejected on evidence, not taste.** A union-typed synthesized global
+(`union { uint4 w; uint1 b[4]; uint2 h[2]; }`, accessed `.b[1]`/`.h[1]`) compiles to **byte-identical
+code** — `a2 01000000` and `66 a3 02000000` either way, and `a0 01000000` for a read. There is no
+headroom: the address form already emits the minimal single exactly-sized instruction. The union
+would additionally have forced every whole-variable use to `.w`, so the less invasive form stands.
+
 ## Update — 2026-07-24: Brick 1 (pointer-in-integral-op cast) + clean-baseline correction
 
 **Measurement correction (canonical going forward):** `war2-survey/compile.sh` does NOT clean `obj/`
