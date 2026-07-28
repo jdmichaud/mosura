@@ -43,21 +43,48 @@ That is the whole class. Every instance below is a special case of it.
 | 3 | output token, SUBPIECE/PIECE | `TypeOpSubpiece`/`TypeOpPiece::getOutputToken`, typeop.cc:2142/2063 | `844d5b1` |
 | 4 | explicit/implied, trailing chain | `ActionMarkImplied`, 5720 | `2c32c36` — frozen, read from the flag |
 | 5 | explicit/implied, leading chain, for post-freeze Varnodes | `ActionMarkExplicit`, 5719 | `bf813d4` — `classified_upto` early exit; also closed a latent out-of-bounds at `slot_write[v.0]` |
+| 6+7 | **`nonprinting`** and the **Covers** it consumes | `ActionCopyMarker` / `Merge::markInternalCopies` (merge.cc:1444), 5729; Cover belongs to `HighVariable`, built 5717-5727 | `merge::ActionCopyMarker` at the slot — **and DEMONSTRATED**, see below |
+
+## #6+#7: demonstrated, then closed
+
+They were one item, not two: `covers` had exactly one consumer in printc, the copy-marker pass. Moving
+that pass to Ghidra's slot **changed real output**, so this class is no longer "structurally exposed,
+not yet demonstrated" — it is demonstrated, with a named mechanism.
+
+WAR2 `FUN_000722c8`, the only one of 1286 functions to move (corpus stayed byte-identical). Before:
+
+```c
+  pRam00000000000a8014 = (int4 *)pVar4;
+  pRam00000000000a8014 = pVar4;          // <- dropped
+```
+
+The mechanism, read off the IR rather than argued:
+
+- Pre-cast the function has two COPYs from the same source `u0x17200` into the `r0xa8014`
+  HighVariable — `op59 @722f6` and `op101 @722fb`. Two copy-ins ⇒ `markRedundantCopies`
+  (merge.cc:1252) ⇒ `op101`, dominated by `op59` with no intervening write, is marked non-printing.
+- `ActionSetCasts::castOutput` (coreaction.cc:2532) then **rewires `op59`**: it is given a fresh
+  post-freeze unique to write (`VarnodeId(271)`, its own singleton HighVariable) and a new
+  `CAST` takes over producing `r0xa8014`.
+- Post-cast, `op59` is therefore no longer a COPY *into* that HighVariable. The high is left with one
+  copy-in, never reaches `multiCopy`, and the redundant-copy pass never examines `op101` — so the
+  print-time recompute lost the mark and emitted the duplicate assignment.
+
+Note which op the cast rewired: not the marked one, the *dominating* one. Every arm of
+`markInternalCopies` relates an output's HighVariable to its inputs', so rewiring any participant is
+enough; the marked op's own Varnode index was below `classified_upto` and looked untouched.
+
+Closed by moving the pass to `merge::ActionCopyMarker`, after `ActionMergeType` and before
+`ActionSetCasts`, with printc consuming `Funcdata::nonprinting` via `.expect()` and no recompute path
+left. Scans: 1286/1286 WAR2 functions emitted both sides, one file changed by one line, rendered
+call-expression count identical everywhere (5224); corpus byte-identical over all 62 fixtures.
 
 ## Open
 
 | # | quantity | where | Ghidra source / slot | reachable by post-freeze Varnodes? | can it override a frozen flag? |
 | --- | --- | --- | --- | --- | --- |
-| 6 | **Covers** | `printc.rs` `covers: all_covers(f)` | Cover belongs to `HighVariable`, built 5717-5727 — **before** the casts | **Yes** — `all_covers` walks every Varnode, so CAST outputs and the rewired op outputs are included, and liveness shifts when an op's output moves to a fresh unique | No flag to override, but it feeds #7 and `check_implied_cover` |
-| 7 | **`nonprinting`** | `printc.rs` `copy_marker_nonprinting(f, high_of, high_members, covers)` | `ActionCopyMarker` / `Merge::markInternalCopies`, a pipeline action **before** `ActionNameVars` | **Yes** — computed from the post-cast graph *and* from #6's post-cast covers | It decides statement suppression, so a wrong answer both adds and drops statements |
 | 8 | **names** | `printc.rs` `names`, `var_counter`, `name_of` | `ActionNameVars`, 5734 — **before** the casts | Partly — a CAST output is `setImplied` and unnamed, and the CAST produces the *original* Varnode which was already named, so the exposure is narrow | No |
 | 9 | output token, CALLOTHER | `cast.rs` `output_token` `_` arm | `TypeOpCallother::getOutputLocal`, typeop.cc:865 — consults the **userop's own** table | n/a | Deliberately left: mosura does not model per-userop output types, so claiming `undefined` would assert an unported model |
-
-**#6 and #7 are the substantive open entries**, and they are coupled — #7 consumes #6. Both are
-reachable and perturbable *by construction*; neither has yet been shown to produce an actual
-divergence, and I am not claiming one. The honest status is "structurally exposed, not yet
-demonstrated" — the same status #1 had before `heapstring` demonstrated it, and #5 had before the
-duplicated call demonstrated it.
 
 #8 is real but narrow, for the reason in the table.
 
@@ -68,4 +95,6 @@ a mechanism. The failure signature is consistent: the port is correct, and a pri
 recomputation disagrees with a frozen decision because it is looking at the post-cast graph.
 
 Cheapest probe: does the divergence involve a Varnode with index ≥ `Funcdata::classified_upto`, or an
-op whose output `ActionSetCasts` rewired? If so, this class is the first suspect.
+op whose output `ActionSetCasts` rewired? If so, this class is the first suspect. Widen "involve" to
+the whole neighbourhood the quantity is computed from — #6+#7 was lost through a rewired op that the
+marked op merely shared a HighVariable with.

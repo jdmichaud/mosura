@@ -181,14 +181,12 @@ struct PrintC<'a> {
     /// `&self` explicitness test can compare two Varnodes' HighVariables without the `&mut` the
     /// union-find `high()` needs. Used by [`Self::is_explicit`]'s cross-high COPY arm.
     high_of: Vec<u32>,
-    /// Per-varnode liveness ([`super::cover::all_covers`]) for the `check_implied_cover` arm of
-    /// [`Self::is_explicit`] (Ghidra `ActionMarkImplied::checkImpliedCover`).
-    covers: HashMap<VarnodeId, super::cover::Cover>,
     /// HighVariable representative → its member Varnodes (the frozen [`Self::high_of`] classes).
     high_members: HashMap<u32, Vec<VarnodeId>>,
-    /// Ops marked non-printing by Ghidra's `ActionCopyMarker`
-    /// ([`super::merge::copy_marker_nonprinting`]): shadow assignments and redundant COPYs.
-    nonprinting: HashSet<OpId>,
+    /// Ops marked non-printing by Ghidra's `ActionCopyMarker` (shadow assignments and redundant
+    /// COPYs), frozen in-pipeline by [`super::merge::ActionCopyMarker`] at Ghidra's slot. Consumed,
+    /// never re-derived — the marks and the Covers behind them are decided before any CAST exists.
+    nonprinting: &'a HashSet<OpId>,
 }
 
 impl PrintC<'_> {
@@ -1951,7 +1949,6 @@ pub fn print_c(f: &Funcdata) -> String {
         force_explicit: HashSet::new(),
         param_index,
         high_of: high_of.clone(),
-        covers: super::cover::all_covers(f),
         high_members: {
             let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
             for (i, &rep) in high_of.iter().enumerate() {
@@ -1959,11 +1956,16 @@ pub fn print_c(f: &Funcdata) -> String {
             }
             m
         },
-        nonprinting: HashSet::new(),
+        // Ghidra ActionCopyMarker (Merge::markInternalCopies, coreaction.cc:5729 — after all
+        // merging, before ActionSetCasts): shadow assignments and redundant same-source COPYs are
+        // marked non-printing. Frozen at that slot by `merge::ActionCopyMarker` and consumed here;
+        // recomputing it now would run over the post-cast graph, whose COPY/PIECE/SUBPIECE outputs
+        // `castOutput` has rewired to fresh uniques in fresh HighVariables.
+        nonprinting: f
+            .nonprinting
+            .as_ref()
+            .expect("printc requires the non-printing marks frozen by ActionCopyMarker; run pipeline::decompile"),
     };
-    // Ghidra ActionCopyMarker (Merge::markInternalCopies, coreaction.cc:5729 — after all merging):
-    // shadow assignments and redundant same-source COPYs are marked non-printing.
-    p.nonprinting = super::merge::copy_marker_nonprinting(f, &p.high_of, &p.high_members, &p.covers);
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();

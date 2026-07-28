@@ -775,6 +775,12 @@ pub fn universal_action() -> ActionGroup {
         // merge recomputed after the casts partitions a different varnode set. printc consumes this
         // rather than re-deriving it — the merge analogue of the ActionMarkImplied freeze above.
         .then(super::merge::ActionMergeType)
+        // Ghidra `ActionCopyMarker` (coreaction.cc:5729, right after ActionMergeType at :5727 and
+        // ActionHideShadow at :5728): freeze the non-printing marks (`Merge::markInternalCopies`,
+        // merge.cc:1444) on the FINAL pre-cast graph. `ActionSetCasts` below rewires the outputs of
+        // the very opcodes this switches on (COPY/PIECE/SUBPIECE), so marks decided after it would
+        // be decided from a different output Varnode, HighVariable and Cover than Ghidra sees.
+        .then(super::merge::ActionCopyMarker)
         // Ghidra `ActionSetCasts` (coreaction.cc:5735, DEAD-LAST — after ActionMarkImplied at 5720
         // and with no ActionInferTypes after it): insert real CPUI_CAST ops where a value's committed
         // type and an operation's natural token/required type diverge, so printc renders `(type)expr`

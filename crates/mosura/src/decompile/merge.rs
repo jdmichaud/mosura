@@ -1988,6 +1988,53 @@ impl super::action::Action for ActionMergeType {
     }
 }
 
+/// Ghidra's `ActionCopyMarker` (coreaction.cc:5729) — `Merge::markInternalCopies` (merge.cc:1444)
+/// run as a real pipeline action, after the merges finish (`ActionMergeType`, :5727) and *before*
+/// `ActionSetCasts` (:5735), which is where Ghidra runs it.
+///
+/// Why the slot matters: `markInternalCopies` switches on COPY, PIECE and SUBPIECE, and every arm
+/// reasons about the relationship between the output Varnode's HighVariable (and Cover) and its
+/// inputs'. `ActionSetCasts::castOutput` (coreaction.cc:2532) *rewires* an op whose output needs a
+/// cast — the op is given a fresh unique to write and the new CAST produces the original Varnode —
+/// so post-cast those ops have a different output Varnode, in a fresh singleton HighVariable, with a
+/// different live range. Deciding the marks at print time therefore answers the question over a
+/// graph Ghidra never analyzed. The Covers this consumes are the same story one level down: `Cover`
+/// belongs to `HighVariable` and is built with the merges at 5717-5727, before any CAST exists.
+///
+/// [`copy_marker_nonprinting`] takes the frozen full-merge classes, so this reads
+/// [`Funcdata::highs`] rather than re-running [`merge`] — the same tables printc used to build, now
+/// built one slot earlier.
+pub struct ActionCopyMarker;
+
+impl super::action::Action for ActionCopyMarker {
+    fn name(&self) -> &str {
+        "copymarker"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Skip during the jump-table recovery probe, as [`ActionMergeType`] does — the marks are
+        // read only by printc, which the probe never runs (and `highs` is `None` there).
+        if data.table_recovery_probe {
+            return 0;
+        }
+        let mut h = data
+            .highs
+            .as_ref()
+            .expect("ActionCopyMarker requires the HighVariables frozen by ActionMergeType")
+            .union_find()
+            .clone();
+        h.extend_to(data.num_varnodes());
+        let of: Vec<u32> =
+            (0..data.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
+        let mut members: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+        for (i, &rep) in of.iter().enumerate() {
+            members.entry(rep).or_default().push(VarnodeId(i as u32));
+        }
+        let covers = all_covers(data);
+        data.nonprinting = Some(copy_marker_nonprinting(data, &of, &members, &covers));
+        0
+    }
+}
+
 /// Pipeline action wrapping [`mark_explicit_flags`] — Ghidra's `ActionMarkExplicit`/`ActionMarkImplied`
 /// (coreaction.cc:5719-5720), run just before `ActionSetCasts` so the explicit/implied classification
 /// is frozen against the casts setcasts inserts.

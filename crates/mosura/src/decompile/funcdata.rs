@@ -114,6 +114,19 @@ pub struct Funcdata {
     /// now contains those casts — is a different partition. So the printer consumes this frozen
     /// state rather than re-deriving it; see [`super::printc::print_c`].
     pub highs: Option<super::merge::FrozenHighs>,
+    /// The ops Ghidra's `ActionCopyMarker` (`Merge::markInternalCopies`, merge.cc:1444) marks
+    /// non-printing, frozen by [`super::merge::ActionCopyMarker`] at Ghidra's slot
+    /// (coreaction.cc:5729 — after the merges end at :5727, before `ActionSetCasts` at :5735).
+    /// `None` until it runs.
+    ///
+    /// Ghidra decides this before a single CAST exists. `ActionSetCasts::castOutput` does not only
+    /// *add* ops, it **rewires** them: the original op is made to write a fresh unique and the CAST
+    /// takes over producing the original Varnode. A COPY/PIECE/SUBPIECE whose output was cast
+    /// therefore has a different output Varnode — in a different HighVariable, with a different
+    /// Cover — after the casts than the one `markInternalCopies` reasons about. Recomputing the
+    /// marks at print time asks the question of a graph Ghidra never analyzed; the printer consumes
+    /// this instead (see [`super::printc::print_c`]).
+    pub nonprinting: Option<std::collections::HashSet<super::op::OpId>>,
     /// The architecture's laned-register records (Ghidra `Architecture::lanerecords`, reached via
     /// `Funcdata::getArch`). Consumed by `ActionLaneDivide` to decide which vector registers may be
     /// lane-split. Parsed from the `.pspec` `vector_lane_sizes` by the build caller
@@ -164,6 +177,7 @@ impl Funcdata {
             table_recovery_probe: false,
             classified_upto: None,
             highs: None,
+            nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),
             userops: std::collections::HashMap::new(),
