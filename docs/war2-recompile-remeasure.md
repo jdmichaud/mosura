@@ -47,6 +47,36 @@ cd /home/jd/projects/mosura/war2-survey && python3 compare.py
 Diffs each `obj/NNNNN.OBJ` against the original WAR2.EXE bytes via warcraft2-re `wardiff` (LE +
 OMF-FIXUPP reloc masking), writes `results.tsv`, prints the per-status summary.
 
+## The reference: the FIXUP-APPLIED image, not the raw on-disk bytes
+
+`compare.py` scores each object against the **LE-fixup-applied** bytes at the original base — the
+same bytes mosura decompiled (`load_le` applies LE fixups, `cbd6295`). The manifest's `orig_hex`
+column is exactly those bytes, written by the EMIT from the loaded image, so it is the reference.
+
+This replaced `wardiff.LEBinary.slice_at_linear`, which returns the **raw on-disk** bytes. For any
+operand carrying an LE fixup the two differ by the image-base delta (+0x80000 for WAR2.EXE), and
+neither side of that comparison carried a fixup record at such a site, so the RELOC_EXACT masking
+never fired and a byte-perfect recompile scored MISMATCH. Worked example: `FUN_0005f84c`
+(`mov eax,0x88d0c; ret`) compiles to `b8 0c 8d 08 00 c3`, identical to the loaded original, and the
+raw slice reads `b8 0c 8d 00 00 c3` — it was scored `MISMATCH @+3`. The fix was worth +3 EXACT on
+its own; quoting an EXACT count without saying which reference produced it is meaningless.
+
+Definitions in force:
+
+- **EXACT** — identical to the fixup-applied image. A bare literal equal to the LOADED value is
+  EXACT *at this base*; that is the definition, not a concession.
+- **RELOC_EXACT** — differs only at sites that are fixups on **both** sides: an LE relocation in the
+  original (read from the LE fixup table via `wardiff.LEBinary.fixup_byte_set_in_range`, never
+  inferred from which bytes the relocation happened to change — a 4-byte relocation whose delta
+  leaves a byte untouched is still one site) **and** a wcc386 `FIXUPP` in the candidate
+  (`seg.mask`). A candidate-only or original-only fixup masks nothing.
+- A bare literal that is wrong outside such a site stays **MISMATCH**.
+- Masked-site counts are printed per function; no mask is ever silent.
+
+The emitter-side follow-up is to render a relocated operand as a symbol reference so wcc386 emits a
+`FIXUPP` and the masking fires on both sides — that is what makes the recompiled object
+relocatable like the original.
+
 ## Reading the result / the delta
 ```
 # distribution:
@@ -78,7 +108,23 @@ is open. Check the open one before a re-measure is used as evidence.
    `unaff_`/`in_`/`Ram` identifier as a pointer only when it appeared *indexed* (`ident[`), never
    when *dereferenced* (`*ident`), producing phantom `E1029: Expression must be 'pointer to ...'`
    against a decompiler that had typed the varnode a pointer correctly.
-3. **STALE EXAMPLE BINARY — not a harness defect; a measurement mistake.** An apparent
+3. **PREMATURE COMPARE — check the summary line, not the object count.** `compile.sh` copies its
+   objects back to `obj/` only at the END of the dosemu session, so `ls obj/*.OBJ | wc -l` is 0 for
+   most of the run and then climbs quickly. Waiting on "obj count > 0" and then running `compare.py`
+   scored 179 of 1303 objects and printed a meaningless `0 EXACT / 713 MISMATCH / 590 COMPILE_FAIL`.
+   **Wait for the `compiled ok=N fail=M` line in compile.sh's own output** before running compare.
+
+4. **MANIFEST INDEX SHIFT across emits.** The EMIT regenerates `manifest.tsv`; if function discovery
+   changed, the row count changes (1286 -> 1303 after `6e1b113`) and every `idx` after the first
+   inserted function shifts. A before/after that reads `src.base/{idx}.c` against the CURRENT
+   manifest silently compares different functions — it produced a bogus "-1212 calls across 359
+   functions" (true answer: -1 in 1 function) and a bogus "226 deficit functions" (true answer: 92).
+   Key each `.c` by the `FUN_xxxxxxxx` in its own column-0 definition line, or snapshot the manifest
+   next to the `src` copy. To score an older emit, synthesize its manifest by mapping
+   `src.base/{idx}.c -> va -> the current manifest's row` (`orig_len`/`orig_hex` come from the
+   binary, so they are identical per VA in either emit).
+
+5. **STALE EXAMPLE BINARY — not a harness defect; a measurement mistake.** An apparent
    survey-vs-canonical disagreement (`FUN_00070f4d`'s compare operand rendering as a pointer under
    `war2_survey` and as an integer under `dumpwar2`, same binary and same commit) was neither path
    being wrong: **`cargo build --release` does NOT rebuild `examples/`.** Running
