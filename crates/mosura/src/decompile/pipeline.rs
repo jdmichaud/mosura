@@ -45,8 +45,11 @@ impl Action for ActionHeritage {
             // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
             super::cfg::build_cfg(data);
             super::stackvars::recover_stack(data);
-            // wire return/argument candidates before heritage links them to reaching defs
-            super::recover::recover_return(data);
+            // Open return-value recovery (Ghidra `ActionPrototypeTypes`, coreaction.cc:4651) before
+            // heritage: the candidates themselves are registered per heritaged range by
+            // `guard_returns`' `characterizeAsOutput` query. Argument candidates are still wired
+            // pre-heritage as fixed varnodes (the input side of the same adaptation, task #5).
+            super::recover::init_active_output(data);
             super::recover::recover_call_args(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
             // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are

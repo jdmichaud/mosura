@@ -27,7 +27,11 @@ use super::opcode::OpCode;
 use super::space::Address;
 use super::varnode::VarnodeId;
 
+/// x86-64 register offsets, for the hand-built SysV fixtures below. The recovery itself no longer
+/// names a register: return candidates come from the compiler spec (see [`init_active_output`]).
+#[cfg(test)]
 const RAX: u64 = 0x0;
+#[cfg(test)]
 const XMM0: u64 = 0x1200;
 
 /// SysV integer argument registers, in order: RDI, RSI, RDX, RCX, R8, R9.
@@ -509,85 +513,63 @@ fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
     ancestor_op_use(f, TRIM_RECURSE_MAX, v, ret, slot, 0, 0, addr, true, &mut HashSet::new())
 }
 
-/// Append the candidate return-convention registers (RAX, XMM0) to every RETURN op, so
-/// heritage links them to the value reaching each RETURN. Runs pre-heritage.
+/// Open return-value recovery on `f` — a port of Ghidra `Funcdata::initActiveOutput`
+/// (funcdata_varnode.cc:585), called from `ActionPrototypeTypes::apply` (coreaction.cc:4651) when the
+/// prototype's output is not locked. Creates the (empty) trial container and sets its pass budget
+/// from the convention's `getMaxOutputDelay` — the number of heritage passes that must complete
+/// before every possible return location has data-flow. Runs pre-heritage.
 ///
-/// One candidate per SysV output register class, at the full register width. Ghidra registers
-/// exactly ONE output trial per heritaged range (`Heritage::guardReturns`, heritage.cc:1652:
-/// `characterizeAsOutput` ⇒ a single `registerTrial(addr,size)`; a range overlapping the entry
-/// goes through `guardReturnsOverlapping`) — never overlapping sibling candidates. The former
-/// XMM0:4 sibling (a `float`-return accommodation, arbitrated by an `is_const_padded_piece`
-/// narrowing check Ghidra does not have) was RETIRED toward that single-trial model: it was
-/// corpus-inert dead weight whose only observable effect was materializing a dead
-/// `SUBPIECE XMM0:16 → :4` that mis-sized `ActionLaneDivide`'s lane choice (`collectLaneSizes`
-/// picks smallest-first, coreaction.cc:509). A `float` return now commits at the XMM0:8 trial,
-/// exactly as Ghidra's `buildReturnOutput` commits the registered trial; the 8→4 width
-/// narrowing is downstream IR work (the SubvariableFlow/SubfloatFlow rule family), not return
-/// recovery. The remaining fixed-candidate list (vs. per-heritaged-range registration) is still
-/// an adaptation — the full single-trial `characterizeAsOutput` model stays on the backlog.
-pub fn recover_return(f: &mut Funcdata) {
-    let Some(reg) = f.spaces.by_name("register") else { return };
-    let rets: Vec<OpId> = f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect();
-    for ret in rets {
-        for (off, size) in [(RAX, 8), (XMM0, 8)] {
-            let v = f.new_varnode(size, Address::new(reg, off));
-            f.op_append_input(ret, v);
-        }
-    }
+/// The trials themselves are registered DURING heritage, by [`super::heritage::guard_returns`]
+/// asking `characterizeAsOutput` of each heritaged range (heritage.cc:1660). Ghidra never
+/// enumerates candidate return registers, and neither does mosura any more: this RETIRES
+/// `recover_return`, which appended hardcoded x86-64 `RAX:8`/`XMM0:8` varnodes to every RETURN
+/// pre-heritage. Those constants are correct only by coincidence on the x86-64 SysV corpus — under
+/// any 32-bit convention (WAR2's `__watcall`, which returns in `EAX:4`) neither candidate matched
+/// any storage, no trial was ever usable, and EVERY function recovered a `void` return, deleting
+/// its return value as dead code.
+pub fn init_active_output(f: &mut Funcdata) {
+    let reg = f.spaces.by_name("register");
+    let mut active = ParamActive::new(reg);
+    // funcdata_varnode.cc:588 — a nonzero delay is capped at 3 passes.
+    let maxdelay = f.proto_model.max_output_delay(&f.spaces);
+    active.set_max_pass(if maxdelay > 0 { 3 } else { 0 });
+    f.active_output = Some(active);
 }
 
-/// Maximum number of evaluation passes before the trial decisions are committed structurally — a
-/// port of Ghidra's `ParamActive::maxpass` (set from `getMaxInputDelay`, fspec.cc:5335). `0` means
-/// the single pass available in today's (non-iterating) pipeline commits immediately, so the
-/// recovery stays byte-identical to the old greedy prune; the mainloop flip raises this so the
-/// commit DEFERS until heritage + simplification have stabilized across passes.
-const RETURN_MAXPASS: i32 = 0;
+/// Maximum number of evaluation passes before the call-input trial decisions are committed
+/// structurally — a port of Ghidra's `ParamActive::maxpass` (set from `getMaxInputDelay`,
+/// fspec.cc:5335). `0` means the single pass available in today's (non-iterating) pipeline commits
+/// immediately, so the recovery stays byte-identical to the old greedy prune; the mainloop flip
+/// raises this so the commit DEFERS until heritage + simplification have stabilized across passes.
 const CALL_MAXPASS: i32 = 0;
 
-/// Keep only the realistic return-value candidate on each RETURN (preferring RAX over XMM0 when both
-/// are realistic, as a function returns one value) — a port of Ghidra's `ActionReturnRecovery`
-/// (coreaction.cc:1907). The recovery is two-phase and DEFERRED through a persistent [`ParamActive`]
-/// ([`Funcdata::active_output`]): each invocation evaluates the candidate trials
-/// ([`check_output_trial_use`]) but the structural rewrite ([`build_return_output`]) only runs once
-/// the trials are *fully checked* (`numpasses > maxpass`), so a premature decision on an unstable
-/// early-pass graph can't irreversibly drop a real return. Runs post-heritage.
+/// Commit the recovered return value on every RETURN — a port of Ghidra's `ActionReturnRecovery`
+/// (coreaction.cc:1907). The candidate trials were registered during heritage by
+/// [`super::heritage::guard_returns`] (`characterizeAsOutput` over each heritaged range); this
+/// evaluates them ([`check_output_trial_use`]) and, once they are *fully checked*
+/// (`numpasses > maxpass`), maps them onto the convention's output storage
+/// ([`derive_output_map`], Ghidra `FuncProto::deriveOutputMap`) and rewrites each RETURN
+/// ([`build_return_output`]). The deferral means a premature decision on an unstable early-pass
+/// graph can't irreversibly drop a real return. Runs post-heritage.
 ///
 /// Returns the change count per Ghidra's `ActionReturnRecovery::apply` convention: +1 per
 /// not-yet-checked trial evaluated (coreaction.cc:1933) and +1 when the fully-checked trials commit
 /// the structural rewrite (coreaction.cc:1951) — so a repeating group sees work-in-progress as
 /// change, and quiescence (trials committed, container cleared) as 0.
 pub fn resolve_return(f: &mut Funcdata) -> u32 {
-    setup_active_output(f);
+    if f.active_output.is_none() {
+        return 0; // coreaction.cc:1911 — recovery already committed (or never opened)
+    }
     let mut count = check_output_trial_use(f);
     if f.active_output.as_ref().is_some_and(|a| a.is_fully_checked()) {
+        if let Some(outlist) = f.proto_model.output.clone() {
+            derive_output_map(&outlist, f.active_output.as_mut().unwrap());
+        }
         build_return_output(f);
         f.active_output = None; // Ghidra `Funcdata::clearActiveOutput`
         count += 1; // coreaction.cc:1951 — the commit is a change
     }
     count
-}
-
-/// Ghidra `Funcdata::initActiveOutput` (coreaction.cc:4651): create the output trial container once,
-/// a trial per candidate return slot. All RETURN ops carry the identical candidate layout that
-/// [`recover_return`] appended, so the trials (and their `op_slot`s) are gathered from the first.
-fn setup_active_output(f: &mut Funcdata) {
-    if f.active_output.is_some() {
-        return;
-    }
-    let reg = f.spaces.by_name("register");
-    let mut active = ParamActive::new(reg);
-    active.set_max_pass(RETURN_MAXPASS);
-    if let Some(ret) = f.op_ids().find(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return) {
-        let n = f.op(ret).num_inputs();
-        for slot in 1..n {
-            if let Some(v) = f.op(ret).input(slot) {
-                let (loc, size) = (f.vn(v).loc, f.vn(v).size);
-                let ti = active.register_trial(loc, size);
-                active.trial[ti].op_slot = slot as u32;
-            }
-        }
-    }
-    f.active_output = Some(active);
 }
 
 /// Ghidra `ActionReturnRecovery::apply` evaluation loop (coreaction.cc:1916): mark every not-yet-
@@ -630,25 +612,41 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
     count
 }
 
-/// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837) reduced to mosura's single-
-/// return-value case: keep, on each RETURN, the first candidate passing the full trial gate
-/// (RAX before XMM0, by slot order) and remove the rest. Gated behind the fully-checked trials, so
-/// it commits the prune only once the decision is stable. (The per-RETURN realism check — rather
-/// than the shared trial flags — preserves the exact survivors of the old greedy prune.)
+/// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837): rewrite each RETURN to
+/// carry exactly the recovered return value. The used trials (marked by [`derive_output_map`], in
+/// `sortTrials` order) name the RETURN input slots that hold it; every other candidate input is
+/// dropped, so the scratch-register writes that fed them die as dead code.
+///
+/// Ghidra's multi-piece branches (coreaction.cc:1848-1904 — a return split across two or more
+/// storage units, reassembled with a `PIECE` at a `constructJoinAddress` varnode) are NOT ported:
+/// they need join-space support, exactly as the same case in
+/// [`build_call_output_from_trials`] does. A multi-piece verdict therefore commits its
+/// least-significant piece only. This is reachable solely on a convention whose return storage is a
+/// register PAIR; the single-register conventions in scope (SysV `RAX`/`XMM0`, `__watcall` `EAX`)
+/// never produce one.
 fn build_return_output(f: &mut Funcdata) {
-    let rets: Vec<OpId> = f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect();
-    for ret in rets {
+    // The used trials, in trial order — Ghidra breaks at the first not-used trial (coreaction.cc:1843).
+    let used: Vec<u32> = {
+        let active = f.active_output.as_ref().unwrap();
+        (0..active.num_trials())
+            .map_while(|i| active.trial[i].is_used().then_some(active.trial[i].op_slot))
+            .collect()
+    };
+    for ret in live_returns(f) {
         let n = f.op(ret).num_inputs();
-        // slot 0 is the return address; slots 1.. are the candidate return registers. Keep the first
-        // slot that passes the full gate (realistic AND only-used-by-this-return) — consistent with
-        // the trial evaluation in [`check_output_trial_use`].
-        let keep = (1..n).find(|&slot| return_trial_kept(f, ret, slot));
+        // slot 0 is the return-address reference and is always kept (coreaction.cc:1841).
+        let keep = used.iter().copied().find(|&s| (s as usize) < n).map(|s| s as usize);
         for slot in (1..n).rev() {
             if Some(slot) != keep {
                 f.op_remove_input(ret, slot);
             }
         }
     }
+}
+
+/// The live RETURN ops of `f`, in block/op order — Ghidra's `beginOp(CPUI_RETURN)` walk.
+fn live_returns(f: &Funcdata) -> Vec<OpId> {
+    f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect()
 }
 
 /// Append the candidate integer argument registers (RDI…R9) to every CALL op, so heritage
@@ -1044,18 +1042,24 @@ fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) {
         None => {
             for t in active.trial.iter_mut() {
                 t.mark_no_use();
+                t.clear_entry();
             }
         }
         Some(be) => {
             for t in active.trial.iter_mut() {
                 if t.is_active() && outlist.entry[be].justified_contain(t.addr, t.size).is_some() {
                     t.mark_used();
+                    t.set_entry(be, outlist.entry[be].group); // fspec.cc:1658
                 } else {
                     t.mark_no_use();
+                    t.clear_entry(); // fspec.cc:1662/1665
                 }
             }
         }
     }
+    // fspec.cc:1668 — the unmatched trials sink below the used ones, so a consumer that stops at the
+    // first not-used trial still sees every used one.
+    active.sort_trials();
 }
 
 /// Ghidra `FuncCallSpecs::findPreexistingWhole` (fspec.cc:5750): if two varnodes are each the lone
@@ -1134,6 +1138,18 @@ mod tests {
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::{BlockBasic, Funcdata, OpCode, SeqNum};
 
+    /// Stand in for heritage having run: attach the SysV convention and register one output trial
+    /// per candidate input already on `ret`, exactly as [`super::heritage::guard_returns`]'
+    /// `characterizeAsOutput` branch does for each heritaged range. `None` (caller skips) when the
+    /// Ghidra tree — and so the compiler spec the candidates now come from — isn't present.
+    fn open_output_trials(f: &mut Funcdata, ret: OpId) -> Option<()> {
+        f.proto_model = crate::decompile::build::test_sysv_proto_model()?;
+        init_active_output(f);
+        let maxpass = f.active_output.as_ref().unwrap().get_max_pass();
+        f.active_output = Some(seed_active(f, ret, maxpass));
+        Some(())
+    }
+
     /// A RETURN with candidate inputs `[retaddr, RAX, XMM0]` where each named register is
     /// either a real write (an INT_ADD output) or the unwritten function input.
     fn ret_with(rax_written: bool, xmm0_written: bool) -> (Funcdata, OpId) {
@@ -1170,6 +1186,7 @@ mod tests {
     #[test]
     fn integer_return_keeps_rax() {
         let (mut f, ret) = ret_with(true, false);
+        let Some(()) = open_output_trials(&mut f, ret) else { return };
         resolve_return(&mut f);
         assert!(kept_offset(&f, ret, RAX), "RAX (written) is the return value");
     }
@@ -1177,6 +1194,7 @@ mod tests {
     #[test]
     fn float_return_keeps_xmm0() {
         let (mut f, ret) = ret_with(false, true);
+        let Some(()) = open_output_trials(&mut f, ret) else { return };
         resolve_return(&mut f);
         assert!(kept_offset(&f, ret, XMM0), "XMM0 (written) is the return value, not the unwritten RAX");
     }
@@ -1184,6 +1202,7 @@ mod tests {
     #[test]
     fn void_return_keeps_nothing() {
         let (mut f, ret) = ret_with(false, false);
+        let Some(()) = open_output_trials(&mut f, ret) else { return };
         resolve_return(&mut f);
         assert_eq!(f.op(ret).num_inputs(), 1, "neither register written ⇒ void");
     }
@@ -1191,6 +1210,7 @@ mod tests {
     #[test]
     fn both_written_prefers_rax() {
         let (mut f, ret) = ret_with(true, true);
+        let Some(()) = open_output_trials(&mut f, ret) else { return };
         resolve_return(&mut f);
         assert!(kept_offset(&f, ret, RAX), "a function returns one value; prefer RAX");
     }
@@ -1221,6 +1241,7 @@ mod tests {
         let retaddr = f.new_input(8, Address::new(reg, 0x20));
         let ret = f.new_op(OpCode::Return, seq, vec![retaddr, rax, xmm0]);
         f.set_blocks(vec![BlockBasic { ops: vec![ret], ..Default::default() }]);
+        let Some(()) = open_output_trials(&mut f, ret) else { return };
         resolve_return(&mut f);
         assert!(
             kept_offset(&f, ret, XMM0),
@@ -1652,6 +1673,8 @@ mod tests {
         // With maxpass raised (the flip configuration), one resolve pass evaluates the trials but
         // keeps every candidate — the structural commit lands only once numpasses > maxpass.
         let (mut f, ret) = ret_with(true, false); // RAX written (realistic), XMM0 not
+        let Some(pm) = crate::decompile::build::test_sysv_proto_model() else { return };
+        f.proto_model = pm;
         f.active_output = Some(seed_active(&mut f, ret, 1));
 
         resolve_return(&mut f); // pass 1: numpasses 0->1, not > 1 ⇒ no commit

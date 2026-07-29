@@ -1,4 +1,17 @@
-# Decompiler bug → decompiler agent: narrowed (`short`/`char`) switch jump table not recovered
+# Decompiler bug (CLOSED): narrowed (`short`/`char`) switch jump table not recovered
+
+> **STATUS: CLOSED.** Fixed by the faithful `Heritage::guardReturns` port (heritage.cc:1652), which
+> retired `recover_return`'s hardcoded x86-64 `RAX:8`/`XMM0:8` return candidates in favour of
+> candidates queried from the compiler spec. The `RAX:8` candidate was the cause: appended to every
+> RETURN pre-heritage, on x86-32 it is an 8-byte read at register offset 0 spanning **EAX and ECX** —
+> a range no instruction writes. It forced a spurious 8-byte heritage location whose batch
+> read-normalization rewrote the narrow accesses to EAX, severing the guard's `SUBPIECE(x,0)` from
+> the table index's `INT_AND`/`INT_ZEXT` of the same low bits. `JumpBasic` was never the problem.
+> Verified causally: re-adding that single 8-byte read on top of the port reopens the gap.
+>
+> `sw_short` now recovers all 8 targets, and **all four** predicted WAR2 dispatch sites recover
+> (see the table below). `tests/ground_truth_parity.rs::narrow_switch_recovery_gap` now asserts
+> full recovery for both functions. The rest of this document is kept as the diagnosis record.
 
 **Owner: decompiler track** (jump-table / JumpBasic recovery — `crates/mosura/src/decompile/`).
 Surfaced by the WAR2.EXE native-LE analysis (`analysis_parity::le_war2_analysis`) and reduced to a
@@ -39,10 +52,10 @@ int sw_short(int xx){ short x=(short)xx; switch (x) { case 0..7: return 11..18; 
 | function   | switch var | dispatch `BRANCHIND` | mosura recovers | Ghidra recovers |
 |------------|-----------|----------------------|-----------------|-----------------|
 | `sw_int`   | 32-bit    | `0x0804812b`         | 8 targets ✅    | 8 targets       |
-| `sw_short` | 16-bit    | `0x08048193`         | **0 targets ❌**| 8 targets ✅    |
+| `sw_short` | 16-bit    | `0x08048193`         | 0 → **8 ✅**    | 8 targets ✅    |
 
-Pinned by `tests/ground_truth_parity.rs::narrow_switch_recovery_gap` (control stays recovered; the
-gap is asserted still-open so the eventual fix trips the test).
+Pinned by `tests/ground_truth_parity.rs::narrow_switch_recovery_gap`, which now asserts full
+recovery for both functions.
 
 ### mosura (gap)
 
@@ -72,15 +85,15 @@ fixup-relocated (verified: every entry is a valid in-image code address) — the
 narrowed-selector recovery, not a loader/fixup problem and not the `CS:` segment prefix (this flat
 ELF32 reproduces it without a prefix):
 
-| WAR2 site  | selector           | guard / narrowing                    | cases |
-|------------|--------------------|--------------------------------------|-------|
-| `0x0513a8` | `*(short*)`        | `cmp AX,7; ja; and EAX,0xffff`       | 8     |
-| `0x058afb` | `(short)-3`        | `sub EAX,3; cmp AX,4; ja; and 0xffff`| 5     |
-| `0x06af52` | `*(uchar*)`        | `cmp AL,9; ja; and EAX,0xff`         | 10    |
-| `0x0199b7` | `(uchar)`          | `cmp CL,3; ja; xor EAX,EAX; mov AL,CL`| 4    |
+| WAR2 site  | selector           | guard / narrowing                    | cases | recovered now |
+|------------|--------------------|--------------------------------------|-------|---------------|
+| `0x0513a8` | `*(short*)`        | `cmp AX,7; ja; and EAX,0xffff`       | 8     | 8 ✅          |
+| `0x058afb` | `(short)-3`        | `sub EAX,3; cmp AX,4; ja; and 0xffff`| 5     | 5 ✅          |
+| `0x06af52` | `*(uchar*)`        | `cmp AL,9; ja; and EAX,0xff`         | 10    | 8             |
+| `0x0199b7` | `(uchar)`          | `cmp CL,3; ja; xor EAX,EAX; mov AL,CL`| 4    | 4 ✅          |
 
-Fixing the narrowed-selector recovery should recover all four (and any future `switch` on a
-`char`/`short`/`enum`).
+All four recover after the fix (WAR2 recovered dispatch sites 8 → 12); `0x06af52` recovers 8 of its
+10 cases, so that one site keeps a residual worth a follow-up.
 
 ## Boundary / not in this bug
 

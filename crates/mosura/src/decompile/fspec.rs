@@ -187,6 +187,30 @@ impl ParamList {
         }
     }
 
+    /// Ghidra `ParamListStandard::getBiggestContainedParam` (fspec.cc:1375): the LARGEST entry
+    /// fully contained within `[loc,loc+size)`, as `(address, size)`. Reached via
+    /// `FuncProto::getBiggestContainedOutput` (fspec.cc:4492) from `Heritage::guardReturnsOverlapping`
+    /// to truncate an over-wide heritaged range down to the return storage it swallows. (Ghidra
+    /// narrows the candidate set with a per-space `ParamEntryResolver` interval index first; the
+    /// linear scan here is that index's contents.)
+    pub fn get_biggest_contained_param(&self, loc: Address, size: u32) -> Option<(Address, u32)> {
+        loc.offset.checked_add(size as u64 - 1)?; // Ghidra's wrapping check (fspec.cc:1385)
+        self.entry
+            .iter()
+            .filter(|e| e.contained_by(loc, size))
+            .max_by_key(|e| e.size)
+            .map(|e| (Address::new(e.space, e.addressbase), e.size))
+    }
+
+    /// Ghidra `ParamList::getMaxDelay` (fspec.hh:800): the maximum heritage delay across the
+    /// entries' address spaces — how many heritage passes must complete before data-flow for every
+    /// possible parameter/return location is available. Ghidra caches it during
+    /// `ParamListStandard::decode` (fspec.cc:1521, `maxdelay = max(spc->getDelay())`); mosura
+    /// recomputes it from the space table, which is the same value.
+    pub fn max_delay(&self, spaces: &SpaceManager) -> i32 {
+        self.entry.iter().map(|e| spaces.get(e.space).delay).max().unwrap_or(0)
+    }
+
     /// Index into [`Self::entry`] of the entry containing `[loc,loc+size)` (the index form of
     /// `find_entry`, so trials can store a stable handle to their matched entry).
     fn find_entry_index(&self, loc: Address, size: u32) -> Option<usize> {
@@ -699,6 +723,33 @@ impl ProtoModel {
     pub fn has_effect(&self, addr: Address, size: u32) -> u8 {
         lookup_effect(&self.effectlist, addr, size)
     }
+
+    /// Ghidra `FuncProto::characterizeAsOutput` (fspec.cc:4336 → `ProtoModel::characterizeAsOutput`,
+    /// fspec.hh:873 → `output->characterizeAsParam`): how `[loc,loc+size)` relates to this
+    /// convention's return storage. This is the query `Heritage::guardReturns` (heritage.cc:1660)
+    /// makes of EVERY heritaged range — the return-value candidates arise BY QUERY FROM THE COMPILER
+    /// SPEC, never from a fixed register list. mosura's prototypes are never output-locked (the
+    /// locked branch, fspec.cc:4338-4353, has no counterpart yet), so this is the unlocked path.
+    pub fn characterize_as_output(&self, loc: Address, size: u32) -> Containment {
+        match self.output.as_ref() {
+            Some(pl) => pl.characterize_as_param(loc, size),
+            None => Containment::NoContainment,
+        }
+    }
+
+    /// Ghidra `FuncProto::getBiggestContainedOutput` (fspec.cc:4492 →
+    /// `ProtoModel::getBiggestContainedOutput`, fspec.hh:973): the largest return storage contained
+    /// within an over-wide range, for `Heritage::guardReturnsOverlapping`'s SUBPIECE truncation.
+    pub fn get_biggest_contained_output(&self, loc: Address, size: u32) -> Option<(Address, u32)> {
+        self.output.as_ref()?.get_biggest_contained_param(loc, size)
+    }
+
+    /// Ghidra `FuncProto::getMaxOutputDelay` (fspec.hh:1572 → `ProtoModel::getMaxOutputDelay`,
+    /// fspec.hh:998): heritage passes to wait before every possible return location has data-flow.
+    /// Feeds `Funcdata::initActiveOutput`'s `setMaxPass` (funcdata_varnode.cc:585).
+    pub fn max_output_delay(&self, spaces: &SpaceManager) -> i32 {
+        self.output.as_ref().map_or(0, |pl| pl.max_delay(spaces))
+    }
 }
 
 // ---- Trials -----------------------------------------------------------------------------------
@@ -748,10 +799,18 @@ impl ParamTrial {
     pub fn is_definitely_not_used(&self) -> bool {
         self.flags & trial_flags::DEFNOUSE != 0
     }
-    /// Record the matched entry (index into [`ParamList::entry`]) and its group (the sort key).
-    fn set_entry(&mut self, idx: usize, group: u32) {
+    /// Record the matched entry (index into [`ParamList::entry`]) and its group (the sort key) —
+    /// Ghidra `ParamTrial::setEntry` (fspec.hh:242).
+    pub(super) fn set_entry(&mut self, idx: usize, group: u32) {
         self.entry = Some(idx);
         self.slot = group;
+    }
+    /// Ghidra `ParamTrial::setEntry(0, 0)` (fspec.hh:242): the trial matches no entry. This is the
+    /// sort key that sinks it BELOW every matched trial (`ParamTrial::operator<`, fspec.cc:1893
+    /// returns entry-less last), which is what lets a consumer stop at the first unmatched trial.
+    pub(super) fn clear_entry(&mut self) {
+        self.entry = None;
+        self.slot = 0;
     }
     pub fn mark_active(&mut self) {
         self.flags |= trial_flags::ACTIVE | trial_flags::CHECKED;
@@ -835,11 +894,21 @@ impl ParamActive {
         self.trial.len() - 1
     }
 
-    /// Ghidra `ParamActive::sortTrials`: order trials into formal-parameter order — by matched
-    /// group, then by address (`ParamTrial::operator<`, fspec.cc:1893).
+    /// Ghidra `ParamActive::sortTrials`: order trials into formal-parameter order — a trial that
+    /// matched NO entry sinks below every matched one (`ParamTrial::operator<`, fspec.cc:1894-1895),
+    /// then by matched group, then by entry, then by address (fspec.cc:1896-1912). The entry-less
+    /// rule is load-bearing: it is what lets `buildReturnOutput`/`buildOutputFromTrials` stop at the
+    /// first not-used trial and still see every used one.
     pub fn sort_trials(&mut self) {
         self.trial.sort_by(|a, b| {
-            a.slot.cmp(&b.slot).then(a.addr.space.0.cmp(&b.addr.space.0)).then(a.addr.offset.cmp(&b.addr.offset))
+            a.entry
+                .is_none()
+                .cmp(&b.entry.is_none())
+                .then(a.slot.cmp(&b.slot))
+                .then(a.entry.cmp(&b.entry))
+                .then(a.addr.space.0.cmp(&b.addr.space.0))
+                .then(a.addr.offset.cmp(&b.addr.offset))
+                .then(a.size.cmp(&b.size))
         });
     }
 }

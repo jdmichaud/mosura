@@ -177,21 +177,21 @@ fn narrow_switch_recovery_gap() {
         "sw_int (32-bit switch) must recover its 8-case jump table"
     );
 
-    // GAP SENTINEL: the narrowed (16-bit) switch is NOT recovered today — mosura's decompiler
-    // produces no jump table for it (see docs/decompiler-bug-narrow-switch.md). Ghidra recovers
-    // it. When the decompiler lane closes this gap, `sw_short` will gain its 8 targets and this
-    // assertion will fail — DELETE the sentinel, assert the 8 targets like sw_int, and close the
-    // handoff. This is the faithful-port gate: the gap is the decompiler's, not the analysis lane's.
-    assert!(
-        cj_targets(sw_short_disp).is_empty(),
-        "narrow-switch decompiler gap CLOSED (sw_short now recovers {:?}) — update the handoff \
-         (docs/decompiler-bug-narrow-switch.md) and assert full recovery like sw_int",
-        cj_targets(sw_short_disp)
+    // GAP CLOSED: the narrowed (16-bit) switch now recovers its 8 case targets too, matching
+    // Ghidra. The fix was the faithful `Heritage::guardReturns` port (heritage.cc:1652), and
+    // specifically the RETIREMENT of the hardcoded x86-64 `RAX:8` return candidate that
+    // `recover_return` used to append to every RETURN pre-heritage. On x86-32 that 8-byte read at
+    // register offset 0 spans EAX *and* ECX — a range no instruction ever writes. It forced a
+    // spurious 8-byte heritage location whose batch read-normalization rewrote the narrow accesses
+    // to EAX, severing the guard's `SUBPIECE(x,0)` from the table index's `INT_AND`/`INT_ZEXT` of
+    // the same low bits, which is exactly what `JumpBasic` needs to bound the table. Verified
+    // causally: re-adding that one 8-byte read on top of the port reopens the gap.
+    assert_eq!(
+        cj_targets(sw_short_disp).len(),
+        8,
+        "sw_short (narrowed 16-bit switch) must recover its 8-case jump table"
     );
-    eprintln!(
-        "narrow-switch gap: sw_int recovers 8 targets (control); sw_short recovers 0 \
-         (decompiler-lane gap, Ghidra recovers) — pinned"
-    );
+    eprintln!("narrow-switch: sw_int and sw_short both recover 8 targets (gap closed)");
 }
 
 /// WAR2 `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's

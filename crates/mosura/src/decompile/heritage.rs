@@ -1530,32 +1530,93 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     }
 }
 
-/// Guard global (persistent) data-flow at RETURN ops (Ghidra `Heritage::guardReturns` persist branch,
-/// heritage.cc:1676-1691). A persistent global's value must persist to (past) the end of the function,
-/// so for each range whose space marks it persistent, a COPY is inserted right before every RETURN:
-/// its input renames to the store version reaching the return (giving that write a real reader — and
-/// hence a Cover), and its output is `addrForce`d and `markReturnCopy`'d so dead-code keeps it and
-/// `RulePropagateCopy` won't fold it. This is what lets `Merge::mergeAddrTied` unify the store version
-/// into the global's whole HighVariable, so the merge phase can tell a pre-store snapshot apart from
-/// the post-store value.
+/// The live RETURN ops, in block/op order — Ghidra's `beginOp(CPUI_RETURN)`..`endOp(CPUI_RETURN)`
+/// walk. (Ghidra additionally skips ops with `getHaltType() != 0`; mosura does not model special
+/// halt points, so every live RETURN is a real one.)
+fn live_returns(f: &Funcdata) -> Vec<OpId> {
+    (0..f.num_blocks() as u32)
+        .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
+        .filter(|&op| f.op(op).code() == OpCode::Return && !f.op(op).is_dead())
+        .collect()
+}
+
+/// Guard data-flow at RETURN ops where the heritaged range properly CONTAINS the return storage —
+/// a port of Ghidra `Heritage::guardReturnsOverlapping` (heritage.cc:1609). The RETURN must take an
+/// input for the potential return value, but the range is too wide, so a SUBPIECE truncates it down
+/// to the storage the convention actually returns in (e.g. a heritaged `EAX:ECX` 8-byte range on a
+/// convention that returns in `EAX:4`). One trial is registered, at the TRUNCATED location.
+fn guard_returns_overlapping(f: &mut Funcdata, addr: super::space::Address, size: u32) {
+    let Some((trunc_addr, trunc_size)) = f.proto_model.get_biggest_contained_output(addr, size) else {
+        return;
+    };
+    let ti = f.active_output.as_mut().expect("caller checked").register_trial(trunc_addr, trunc_size);
+    // Number of least-significant bytes to truncate. (Ghidra flips this for a big-endian space,
+    // heritage.cc:1624; mosura's spaces are little-endian.)
+    let offset = trunc_addr.offset - addr.offset;
+    for ret in live_returns(f) {
+        let invn = f.new_varnode(size, addr);
+        let seq = f.op(ret).seqnum;
+        let off_const = f.new_const(4, offset);
+        let subop = f.new_op(OpCode::Subpiece, seq, vec![invn, off_const]);
+        f.op_insert_before(subop, ret);
+        let retval = f.new_output(subop, trunc_size, trunc_addr);
+        f.op_append_input(ret, retval);
+        f.active_output.as_mut().unwrap().trial[ti].op_slot = (f.op(ret).num_inputs() - 1) as u32;
+    }
+}
+
+/// Guard data-flow at RETURN ops — a port of Ghidra `Heritage::guardReturns` (heritage.cc:1652).
+/// Two independent branches run for every heritaged range:
+///
+/// 1. **The return-value branch** (heritage.cc:1657-1675). While return-prototype recovery is open
+///    (`Funcdata::active_output` live), the convention is asked how this range relates to its return
+///    storage — `FuncProto::characterizeAsOutput`, i.e. the compiler spec's `<output>` pentries. A
+///    range that IS return storage (either `contains_*` code) registers ONE output trial and takes a
+///    fresh input on every RETURN, so renaming links it to the value reaching that return; a range
+///    that SWALLOWS the return storage goes through [`guard_returns_overlapping`]. A range the
+///    convention doesn't return in is left alone. **The candidates are a QUERY over the heritaged
+///    ranges, never a fixed register list** — this is what makes return recovery architecture- and
+///    convention-independent (the retired `recover_return` appended hardcoded x86-64 `RAX:8`/`XMM0:8`
+///    varnodes pre-heritage, which on any 32-bit convention match no storage at all, so every
+///    function recovered a `void` return).
+/// 2. **The persist branch** (heritage.cc:1676-1691). A persistent global's value must persist to
+///    (past) the end of the function, so a COPY is inserted right before every RETURN: its input
+///    renames to the store version reaching the return (giving that write a real reader — and hence a
+///    Cover), and its output is `addrForce`d and `markReturnCopy`'d so dead-code keeps it and
+///    `RulePropagateCopy` won't fold it. This is what lets `Merge::mergeAddrTied` unify the store
+///    version into the global's whole HighVariable, so the merge phase can tell a pre-store snapshot
+///    apart from the post-store value.
 ///
 /// Ghidra derives `persist` fresh at guard time via `queryProperties` (heritage.cc:1191). mosura's
 /// decompile corpus has no populated scope, so — like [`super::varnodeprops::mark_addrtied`] and
 /// [`guard_calls`] — persist is determined by space: an unmapped `ram` (global) location is
-/// persistent. (The active-output/return-value branch of guardReturns, heritage.cc:1658-1675, is a
-/// separate prototype-recovery concern, P6.)
+/// persistent.
 fn guard_returns(f: &mut Funcdata, range: Loc) {
     let (spc, off, size) = range;
+    let addr = super::space::Address::new(spc, off);
+
+    // 1. Return-value branch (heritage.cc:1657-1675).
+    if f.active_output.is_some() {
+        match f.proto_model.characterize_as_output(addr, size) {
+            super::fspec::Containment::NoContainment => {}
+            super::fspec::Containment::ContainedBy => guard_returns_overlapping(f, addr, size),
+            _ => {
+                let ti = f.active_output.as_mut().unwrap().register_trial(addr, size);
+                for ret in live_returns(f) {
+                    let invn = f.new_varnode(size, addr);
+                    f.op_append_input(ret, invn);
+                    f.active_output.as_mut().unwrap().trial[ti].op_slot = (f.op(ret).num_inputs() - 1) as u32;
+                }
+            }
+        }
+    }
+
+    // 2. Persist branch (heritage.cc:1676-1691).
     let Some(ram) = f.spaces.by_name("ram") else { return };
     if spc != ram {
         return; // only persistent globals get the return-copy; stack/register are not persist
     }
-    let addr = super::space::Address::new(spc, off);
-    let returns: Vec<OpId> = (0..f.num_blocks() as u32)
-        .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
-        .filter(|&op| f.op(op).code() == OpCode::Return && !f.op(op).is_dead())
-        .collect();
-    for ret in returns {
+    for ret in live_returns(f) {
         // COPY: out@(addr,size)[addrForce, returnCopy] = in@(addr,size), inserted before RETURN.
         let seq = f.op(ret).seqnum;
         let invn = f.new_varnode(size, addr);
