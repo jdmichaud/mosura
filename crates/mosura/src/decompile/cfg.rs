@@ -180,60 +180,16 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
     }
 
-    // A switch inside a loop whose loop body has a *single* exit structures cleanly into
-    // `while { switch }` (Ghidra recovers it). One with *multiple* loop exits is the case
-    // Ghidra declines ("Too many branches. Treating indirect jump as call") — it won't
-    // structure, so decline it too: drop the case edges, leaving a plain indirect jump.
-    for bi in 0..nb {
-        let last_idx = blocks[bi].ops.last().unwrap().0 as usize;
-        if f.op(OpId(last_idx as u32)).code() != super::OpCode::Branchind || blocks[bi].out_edges.is_empty() {
-            continue;
-        }
-        // the loop through this switch: blocks both reachable from bi and able to reach bi
-        let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
-        for (b, blk) in blocks.iter().enumerate() {
-            for e in &blk.out_edges {
-                preds[e.0 as usize].push(b);
-            }
-        }
-        let mut reach_bi = vec![false; nb];
-        let mut st = vec![bi];
-        reach_bi[bi] = true;
-        while let Some(x) = st.pop() {
-            for &p in &preds[x] {
-                if !std::mem::replace(&mut reach_bi[p], true) {
-                    st.push(p);
-                }
-            }
-        }
-        let mut from_bi = vec![false; nb];
-        let mut st = vec![bi];
-        from_bi[bi] = true;
-        while let Some(x) = st.pop() {
-            for e in &blocks[x].out_edges {
-                if !std::mem::replace(&mut from_bi[e.0 as usize], true) {
-                    st.push(e.0 as usize);
-                }
-            }
-        }
-        if !reach_bi.iter().enumerate().any(|(b, &r)| r && from_bi[b] && b != bi) {
-            continue; // not a switch-in-loop — a forward switch, always recovered
-        }
-        let in_loop = |b: usize| reach_bi[b] && from_bi[b];
-        let mut exit_targets = BTreeSet::new();
-        for (b, blk) in blocks.iter().enumerate() {
-            if in_loop(b) {
-                for e in &blk.out_edges {
-                    if !in_loop(e.0 as usize) {
-                        exit_targets.insert(e.0 as usize);
-                    }
-                }
-            }
-        }
-        if exit_targets.len() > 1 {
-            blocks[bi].out_edges.clear();
-        }
-    }
+    // NOTE: a "switch inside a loop with more than one loop exit -> drop the case edges" check used
+    // to live here (cb95592), justified by Ghidra's "Too many branches. Treating indirect jump as
+    // call". That message is jumptable.cc:2629, thrown by `JumpTable::recoverAddresses` when
+    // `recoverModel` finds NO jump model at all — a table that could not be recovered. It has
+    // nothing to do with loop exits, and Ghidra has no loop-exit count anywhere in jump-table
+    // recovery. The check was an invented heuristic (AGENT.md rule 4 names "a multi-exit check"
+    // as the anti-pattern) and it DESTROYED REAL CODE: clearing the edges of a fully recovered
+    // table left the case bodies unreachable, so the sweep below deleted them. WAR2 FUN_00051298
+    // rendered `switch (...) { }` with 10 of its 12 calls gone, and FUN_0006af2c lost its whole
+    // CFG (1 block, all 18 calls). Once a table is recovered its targets ARE the successors.
 
     // Reachability from the entry (block 0): Ghidra's followFlow only traces code
     // reachable from the entry, so trailing/other-function code the linear lifter swept
