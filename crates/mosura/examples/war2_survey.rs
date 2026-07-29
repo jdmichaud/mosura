@@ -24,6 +24,13 @@ use mosura::decompile::space::Address;
 // (size-8) / nearest int — those are rare (7 files) and decompiler-imperfect for a 32-bit
 // target anyway. Written to <out>/prelude.h so the compile stage can prepend it without a
 // full re-emit. Kept out of the baked src files for fast prelude iteration.
+//
+// ⚠️ THIS CONSTANT IS THE SOURCE OF TRUTH — every EMIT overwrites <out>/prelude.h from it. Editing
+// the generated prelude.h by hand "works" until the next EMIT silently reverts it. That happened:
+// the `code` typedef below was hand-fixed in the generated file, measured (COMPILE_FAIL 75 -> 29),
+// and recorded in docs + commit 26db108 as if it were the state of the tree — while this constant
+// still said `void`. The next EMIT restored `void`, the 47 E1052 failures came back, and they were
+// re-adjudicated as a decompiler ceiling. Change the prelude HERE, never there.
 const PRELUDE: &str = "\
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef double undefined8; typedef unsigned char byte;
@@ -33,7 +40,7 @@ typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsig
 typedef unsigned int xunknown3; typedef double xunknown6; typedef unsigned int xunknown5; typedef double xunknown7;
 typedef unsigned char undefined3; typedef unsigned int undefined5; typedef double undefined6; typedef double undefined7;
 typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
-typedef void (*code)(); typedef unsigned int pointer;
+typedef int (*code)(); typedef unsigned int pointer;
 typedef float float4; typedef double float8; typedef long double float10;
 typedef unsigned char uchar; typedef unsigned short ushort; typedef unsigned int uint; typedef unsigned long ulong;
 typedef unsigned char bool;
@@ -69,7 +76,20 @@ typedef unsigned char bool;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let bin = args.next().expect("usage: war2_survey <war2.exe> <out_dir>");
+    let first = args.next().expect("usage: war2_survey [--prelude-only] <war2.exe> <out_dir>");
+    // `--prelude-only <out_dir>` rewrites <out>/prelude.h from PRELUDE and exits. It exists so a
+    // prelude change never has to be hand-applied to the generated file (see PRELUDE's warning):
+    // the compile stage's header is always regenerated from the constant, in seconds, without a
+    // 6-minute re-emit.
+    if first == "--prelude-only" {
+        let out = std::path::PathBuf::from(
+            args.next().expect("usage: war2_survey --prelude-only <out_dir>"),
+        );
+        std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
+        println!("wrote {}", out.join("prelude.h").display());
+        return;
+    }
+    let bin = first;
     let out = std::path::PathBuf::from(args.next().expect("usage: war2_survey <war2.exe> <out_dir>"));
     std::fs::create_dir_all(out.join("src")).unwrap();
     std::fs::create_dir_all(out.join("raw")).unwrap();

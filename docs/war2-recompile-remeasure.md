@@ -107,6 +107,16 @@ change: the output was already byte-perfect.
 
 ### The `code` typedef in `prelude.h`
 
+⚠️ **`prelude.h` is GENERATED** — from the `PRELUDE` constant in
+`crates/mosura/examples/war2_survey.rs`, rewritten by every EMIT. Edit the constant, never the file;
+`cargo run --release --example war2_survey -- --prelude-only <survey-dir>` regenerates the header in
+seconds without a 6-minute re-emit. This paragraph previously described a hand-edit to the generated
+file: the next EMIT reverted it, the 47 E1052 failures returned, and they were re-adjudicated as a
+decompiler ceiling before the drift was found. `compile.sh` now records `prelude_sha=` in
+`.compile-complete`, `compare.py` stamps it into `results.tsv`'s header and refuses to score if
+`prelude.h` moved since the compile — so a COMPILE_FAIL number can no longer be attributed to a
+prelude the run did not use.
+
 `prelude.h` declares `typedef int (*code)();`. It was `void (*code)()`, which cost 46 functions.
 mosura renders an indirect call the way Ghidra does, `(*(code *)(ptr))()`; with a void-returning
 `code` that expression has type void, so the moment return-value recovery started producing

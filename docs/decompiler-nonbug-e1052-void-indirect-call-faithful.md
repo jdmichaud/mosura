@@ -59,10 +59,40 @@ defect.
 Making mosura emit compilable C here would require either (a) recovering the callee return type
 (deep, per-target prototype analysis Ghidra also lacks for these) or (b) a non-faithful emitter cast
 of a void expression — both forbidden by the porting mandate (mosura would **beat** full-analysis
-Ghidra = a non-faithful extension). **mosura is already faithful; E1052 is an honest CEILING, not a
-bug.** These ~34 functions are reclassified OUT of the actionable COMPILE_FAIL set: the true
-remaining actionable count after Brick 1 (clean COMPILE_FAIL 112) is **112 − 35 E1052 = 77**.
+Ghidra = a non-faithful extension). **mosura is already faithful here; the untyped return is an
+honest DECOMPILER ceiling, not a bug.**
 
 If per-target indirect-callee prototype recovery is ever built (a deep foundation, well beyond the
 type-inference/cast bricks), some of these could become typed — but that is a beat-Ghidra capability,
 not a faithful port, and is out of scope for task #1.
+
+## ⚠️ CORRECTION (2026-07-29): faithful ≠ uncompilable — E1052 is NOT a COMPILE_FAIL ceiling
+
+The verdict above was over-extended into "these functions must stay COMPILE_FAIL". That does not
+follow, and it caused 47 functions to be parked twice.
+
+"Do not fix" binds the **decompiler**. `prelude.h` is not the decompiler — it is *our* compile-support
+header, written by `crates/mosura/examples/war2_survey.rs`'s `PRELUDE` constant, and it exists
+precisely to make Ghidra-shaped C compilable under Watcom C89. It declared `typedef void (*code)();`,
+so the faithful text `iVar9 = (*(code *)p)();` was rejected as E1052. Declaring `typedef int
+(*code)();` compiles the identical, unchanged decompiler output. The decompiler's untyped-return
+ceiling is real; it just never implied an uncompilable *harness*.
+
+How the double-park happened, and the mechanization that stops it recurring: the typedef was
+hand-edited in the GENERATED `war2-survey/prelude.h`, measured (COMPILE_FAIL 75 → 29, E1052 47 → 0)
+and written up in commit `26db108` — but the `PRELUDE` constant that *generates* that file was never
+changed. The next EMIT restored `void`, the next compile produced 74 E1052 lines in
+`dos/WCCOUT.TXT`, and the 47 fresh COMPILE_FAILs were re-adjudicated against *this document* as
+"verified faithful, expected". The sampled specimen `000115d8`
+(`iVar9 = (*(code *)(*((xunknown4 *)(iVar1 + -0x10))))();`) is indeed this construct — the
+adjudication was right about the construct and wrong about the conclusion.
+
+Now: the typedef is fixed at the source; `war2_survey --prelude-only <dir>` regenerates the header
+without a re-emit; `compile.sh` records `prelude_sha=` in `.compile-complete`; and `compare.py`
+stamps it into `results.tsv`'s header and refuses to score if `prelude.h` moved since the compile.
+No COMPILE_FAIL number can be attributed to a prelude the run did not use.
+
+**Standing distinction: a verified-faithful RENDER is a decompiler ceiling. Whether that render
+COMPILES is a separate axis owned by the prelude/extern declarations, and it is legitimately
+fixable.** (Same two-axes rule as `variablepiece-extended-cover`: FAITHFUL and COMPILABLE are
+separate axes.) Before filing any COMPILE_FAIL class as a ceiling, ask which axis it is on.
