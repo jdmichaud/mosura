@@ -200,12 +200,19 @@ fn heritage_produces_valid_ssa() {
         // (c) refinement: for the clean-overlap functions, no sub-register read is left
         //     mis-linked as a function input (normalizeReadSize turns it into SUBPIECE of
         //     a wider def). twodim/threedim's single gap each is fully closed.
+        //
+        //     WRITE-MASKED varnodes are excluded, exactly as Ghidra's `collect` excludes them
+        //     (heritage.cc:326 — "should not be considered a write in heritage calculation").
+        //     `normalizeWriteSize` deliberately KEEPS the narrow write at its own address and only
+        //     sets its write-mask (heritage.cc:493), so after the per-range guard a base legitimately
+        //     carries both the narrow write and the whole-range rejoin. Counting the masked one would
+        //     report a gap on Ghidra's own IR shape.
         if name == "twodim" || name == "threedim" {
             use std::collections::{BTreeMap, BTreeSet};
             let mut written: BTreeMap<(u32, u64), BTreeSet<u32>> = BTreeMap::new();
             for i in 0..f.num_varnodes() as u32 {
                 let vn = f.vn(mosura::decompile::VarnodeId(i));
-                if vn.is_written() {
+                if vn.is_written() && !vn.is_write_mask() {
                     written.entry((vn.loc.space.0, vn.loc.offset)).or_default().insert(vn.size);
                 }
             }

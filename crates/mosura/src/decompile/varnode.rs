@@ -53,6 +53,13 @@ pub mod flags {
 /// field because `varnode_flags` (above) already fills all 32 bits. mosura carries only the subset
 /// it uses.
 pub mod addlflags {
+    /// Ghidra `Varnode::activeheritage` (varnode.hh:119): "The varnode is actively being
+    /// heritaged." Set by `Heritage::guard` (heritage.cc:1174/1181) on exactly the reads and
+    /// writes it normalized to the current range's width, and consumed+cleared by
+    /// `Heritage::renameRecurse` (heritage.cc:2496/2527), which skips every varnode without it.
+    /// This — not a location-set membership test — is how Ghidra distinguishes "free access this
+    /// round" from "already linked in an earlier pass" at the same address.
+    pub const ACTIVEHERITAGE: u32 = 0x01;
     /// Ghidra `Varnode::writemask` (varnode.hh:120): "Should not be considered a write in heritage
     /// calculation." Set by `Heritage::removeRevisitedMarkers` on the narrow varnode whose defining
     /// MULTIEQUAL/INDIRECT was rewritten to a SUBPIECE of a wider re-heritaged range, so the later
@@ -107,8 +114,27 @@ impl Varnode {
     pub fn set_write_mask(&mut self) {
         self.addlflags |= addlflags::WRITEMASK;
     }
+    /// Ghidra `Varnode::isActiveHeritage` (varnode.hh:264): is this varnode currently being traced
+    /// by the Heritage algorithm — i.e. did `guard()` normalize it into the range being renamed?
+    pub fn is_active_heritage(&self) -> bool {
+        self.addlflags & addlflags::ACTIVEHERITAGE != 0
+    }
+    /// Ghidra `Varnode::setActiveHeritage` (varnode.hh:301).
+    pub fn set_active_heritage(&mut self) {
+        self.addlflags |= addlflags::ACTIVEHERITAGE;
+    }
+    /// Ghidra `Varnode::clearActiveHeritage` (varnode.hh:302).
+    pub fn clear_active_heritage(&mut self) {
+        self.addlflags &= !addlflags::ACTIVEHERITAGE;
+    }
     pub fn is_input(&self) -> bool {
         self.flags & flags::INPUT != 0
+    }
+    /// Ghidra `Varnode::isUnaffected` (varnode.hh): the value is a callee-saved register that flows
+    /// through the function untouched. Read by the heritage cover walk (`heritage.cc:2704`), which
+    /// keeps such a register even with no reads and no writes.
+    pub fn is_unaffected(&self) -> bool {
+        self.flags & flags::UNAFFECTED != 0
     }
     pub fn is_written(&self) -> bool {
         self.flags & flags::WRITTEN != 0

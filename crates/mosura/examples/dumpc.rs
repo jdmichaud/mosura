@@ -1,7 +1,8 @@
 //! Throwaway grounding tool (Task #2, sibling of `trace.rs`): dump mosura's decompiled output for
 //! a datatest fixture — the final C by default, or the raw post-decompile IR with `--raw` (for
 //! diffing mosura's op-graph against Ghidra's `oracle/capture --c` / IR).
-//! Usage: `cargo run -q --example dumpc -- <fixture-stem> [--raw]`.
+//! Usage: `cargo run -q --example dumpc -- <fixture-stem> [--raw|--pre]` (`--pre` = the lifted
+//! p-code BEFORE any action, i.e. exactly what heritage sees).
 use mosura::decompile::{build, pipeline};
 use mosura::decompile::printc::print_c;
 use mosura::{datatest, paths};
@@ -20,6 +21,11 @@ fn main() {
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
     let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    if args.iter().any(|a| a == "--pre") {
+        // The lifted p-code BEFORE any action runs — the input heritage actually sees.
+        print!("{}", f.print_raw());
+        return;
+    }
     pipeline::decompile(&mut f);
     if args.get(2).map(|s| s.as_str()) == Some("--raw") {
         print!("{}", f.print_raw());

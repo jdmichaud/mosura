@@ -6,10 +6,13 @@
 //! get phis, which keeps block-local temporaries (the `unique` space) phi-free, as Ghidra's
 //! result is.
 //!
-//! This first pass treats each distinct `(space, offset, size)` as one SSA variable. Size
-//! *overlap* (a location read at a different width than written — sub-registers, CONCAT)
-//! is Ghidra's heritage *refinement* and is a later P1 sub-task; until then overlapping
-//! accesses are independent variables (an under-linking, not a miswiring).
+//! SSA identity is the heritaged RANGE, not the individual access width. Each pass builds a
+//! disjoint [`TaskList`] of MERGED ranges ([`LocationMap::add`] unions overlapping footprints, so an
+//! `AL` write and an `EAX` read are ONE range), and [`place_multiequals`] runs `guard()` per range
+//! to normalize every narrower access to the range's exact `(base, size)` — reads become SUBPIECEs
+//! of a whole-range read, narrow writes are widened and PIECEd back. Only after that invariant holds
+//! do phi placement and renaming run, which is why keying them on `(space, offset, size)` names the
+//! same thing Ghidra's address-keyed rename stacks do (`heritage.cc:2498`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -48,17 +51,25 @@ struct SizePass {
 
 impl LocationMap {
     /// Ghidra `LocationMap::add` (`heritage.cc:33`): mark `[off, off+size)` in `space` as heritaged
-    /// at `pass`, unioning it with any overlapping ranges already present. Returns the *intersect*
-    /// code describing the overlap with PRE-EXISTING (earlier-pass) ranges:
+    /// at `pass`, unioning it with any overlapping ranges already present.
+    ///
+    /// Returns `(base, size, intersect)` — the MERGED range the location now lives in, plus the
+    /// *intersect* code describing the overlap with PRE-EXISTING (earlier-pass) ranges:
     ///   - `0` — the range is new, or only meets ranges from the same pass;
     ///   - `1` — it partially overlaps a range from an earlier pass;
     ///   - `2` — it is wholly contained in a range from an earlier pass (already heritaged).
+    ///
+    /// The merged extent is what Ghidra's caller actually consumes: `heritage()` feeds
+    /// `(*liter).first, (*liter).second.size` — the map element's own base and size, NOT the
+    /// varnode's — into the `disjoint` task list (`heritage.cc:2708-2722`). That merge is the
+    /// mechanism by which an `AL` write and an `EAX` read become ONE heritaged range; C++ passes it
+    /// back as the map iterator, which in Rust is the `(base, size)` pair.
     ///
     /// `Address::overlap(0, base, sz)` (`address.cc:153`) is `this - base` when `base <= this <
     /// base+sz` (same space) else `-1`; the predecessor walk and forward merge mirror the C++
     /// iterator dance against the per-space `BTreeMap` (a left-overlapping new range that starts
     /// *before* an existing one is, faithfully, NOT merged — Ghidra's `++iter` skips it).
-    pub fn add(&mut self, space: SpaceId, off: u64, size: u32, pass: i32) -> i32 {
+    pub fn add(&mut self, space: SpaceId, off: u64, size: u32, pass: i32) -> (u64, u32, i32) {
         use std::ops::Bound::{Excluded, Unbounded};
         let map = self.themap.entry(space).or_default();
         let mut addr = off;
@@ -91,7 +102,9 @@ impl LocationMap {
             let off_in = addr.wrapping_sub(k);
             if off_in < ks {
                 if off_in + size <= ks {
-                    return if map[&k].pass < pass { 2 } else { 0 };
+                    // Completely contained in a previous element: the merged range IS that element
+                    // (Ghidra returns `iter` unchanged, heritage.cc:45-47).
+                    return (k, map[&k].size, if map[&k].pass < pass { 2 } else { 0 });
                 }
                 addr = k;
                 size += off_in;
@@ -123,7 +136,7 @@ impl LocationMap {
             }
         }
         map.insert(addr, SizePass { size: size as u32, pass });
-        intersect
+        (addr, size as u32, intersect)
     }
 
     /// Ghidra `LocationMap::findPass` (`heritage.cc:90`): the pass when the range covering `off` in
@@ -139,8 +152,8 @@ impl LocationMap {
     /// The merged range `(base, size)` covering `off` in `space`, or `None` if `off` is not covered.
     /// Ghidra's `disjoint` task-list entry for a heritaged location — `(*liter).first,
     /// (*liter).second.size` (`heritage.cc:2708`) — the cumulative union of every overlapping
-    /// access footprint. [`normalize_ranges`] keys the per-range width normalization on this so a
-    /// location widened on a later pass takes its cumulative width.
+    /// access footprint. [`refine_ranges`] keys its re-entry partition on this so a location widened
+    /// on a later pass takes its cumulative width.
     pub fn merged_range(&self, space: SpaceId, off: u64) -> Option<(u64, u32)> {
         let map = self.themap.get(&space)?;
         match map.range(..=off).next_back() {
@@ -152,6 +165,104 @@ impl LocationMap {
     /// Ghidra `LocationMap::clear`: reset to empty.
     pub fn clear(&mut self) {
         self.themap.clear();
+    }
+}
+
+/// Ghidra `MemRange` (`heritage.hh:60`): one address range queued for SSA conversion, carrying
+/// whether it covers addresses NEW this pass, addresses seen in a PREVIOUS pass, or both. The
+/// `new_addresses` bit is what gates `guard()`'s INDIRECT placement (`heritage.cc:2629`) — re-adding
+/// guards for an already-guarded address "confuses the renaming algorithm" (`heritage.cc:1186`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemRange {
+    /// Starting address of the range.
+    pub space: SpaceId,
+    /// Offset of the range start within `space`.
+    pub off: u64,
+    /// Number of bytes in the range.
+    pub size: u32,
+    /// Property flags — [`MemRange::NEW_ADDRESSES`] / [`MemRange::OLD_ADDRESSES`].
+    pub flags: u32,
+}
+
+impl MemRange {
+    /// `MemRange::new_addresses` — the range covers addresses not seen in previous passes.
+    pub const NEW_ADDRESSES: u32 = 1;
+    /// `MemRange::old_addresses` — the range covers addresses seen in previous passes.
+    pub const OLD_ADDRESSES: u32 = 2;
+
+    /// Ghidra `MemRange::newAddresses`.
+    pub fn new_addresses(&self) -> bool {
+        self.flags & Self::NEW_ADDRESSES != 0
+    }
+
+    /// Ghidra `MemRange::oldAddresses`.
+    pub fn old_addresses(&self) -> bool {
+        self.flags & Self::OLD_ADDRESSES != 0
+    }
+
+    /// Ghidra `MemRange::clearProperty`.
+    pub fn clear_property(&mut self, val: u32) {
+        self.flags &= !val;
+    }
+
+    /// This range as an SSA location key. After `guard()` has normalized the range, EVERY active
+    /// free access in it is exactly this `(space, base, size)` — the invariant that lets the
+    /// per-location phi/rename machinery reconstruct Ghidra's whole-range SSA.
+    fn loc(&self) -> Loc {
+        (self.space, self.off, self.size)
+    }
+}
+
+/// Ghidra `TaskList` (`heritage.hh:78`, `heritage.cc:108-136`): the disjoint list of address ranges
+/// to convert to SSA form this pass — Ghidra's `disjoint`. Ranges are fed in ADDRESS ORDER and may
+/// overlap; [`add`](TaskList::add) takes the union with the last element, so the list stays disjoint
+/// and sorted.
+#[derive(Clone, Debug, Default)]
+pub struct TaskList {
+    tasklist: Vec<MemRange>,
+}
+
+impl TaskList {
+    /// Ghidra `TaskList::add` (`heritage.cc:108`). Addresses must already be sorted: if the given
+    /// range intersects the LAST range in the list that range is extended to cover it (and the new
+    /// flags are ORed in), otherwise the range is appended. Note `Address::overlap` is `-1` for an
+    /// exactly-adjacent range, so abutting ranges are faithfully NOT merged.
+    pub fn add(&mut self, space: SpaceId, off: u64, size: u32, fl: u32) {
+        if let Some(entry) = self.tasklist.last_mut() {
+            if entry.space == space {
+                let over = off.wrapping_sub(entry.off);
+                if over < entry.size as u64 {
+                    let relsize = size as u64 + over;
+                    if relsize > entry.size as u64 {
+                        entry.size = relsize as u32;
+                    }
+                    entry.flags |= fl;
+                    return;
+                }
+            }
+        }
+        self.tasklist.push(MemRange { space, off, size, flags: fl });
+    }
+
+    /// Ghidra `TaskList::insert` (`heritage.cc:132`): splice an already-disjoint range in at `pos`.
+    /// Used by `refinement` to replace a range with its partition pieces.
+    pub fn insert(&mut self, pos: usize, space: SpaceId, off: u64, size: u32, fl: u32) {
+        self.tasklist.insert(pos, MemRange { space, off, size, flags: fl });
+    }
+
+    /// The ranges, in address order.
+    pub fn ranges(&self) -> &[MemRange] {
+        &self.tasklist
+    }
+
+    /// Ghidra `TaskList::clear`.
+    pub fn clear(&mut self) {
+        self.tasklist.clear();
+    }
+
+    /// Whether the list holds no ranges.
+    pub fn is_empty(&self) -> bool {
+        self.tasklist.is_empty()
     }
 }
 
@@ -248,97 +359,6 @@ fn write_loc(f: &Funcdata, op: OpId) -> Option<Loc> {
     Some((vn.loc.space, vn.loc.offset, vn.size))
 }
 
-/// Pass-0 batch read-normalization (Ghidra's `normalizeReadSize`, heritage.cc:382). Where a
-/// location is written at a single width `S` but also *read* at a smaller width `s` at the same
-/// offset (a sub-register: EAX of a wider RAX def), rewrite each narrow read as `SUBPIECE(W, 0)` of
-/// a full-width read `W`, so every access to the location is uniform width and SSA links it cleanly.
-/// Conservative: only locations whose writes are all one width are touched; partial writes (the
-/// PIECE / write side) and cross-offset overlap (CONCAT) are not handled, so those reads remain
-/// independent (an under-linking, never a miswiring).
-///
-/// INTERIM — this is the pass-0 batch adaptation the faithful per-range [`normalize_ranges`] will
-/// replace. It is single-write-width-keyed (bails on a range with two write widths) and read-only,
-/// so it cannot normalize a re-heritaged range's now-narrow accesses — the gap `normalize_ranges`
-/// closes for re-entry. Its RETIREMENT is coupled to the call-output-in-RAX fix (task #6): retiring
-/// it now surfaces that separate adaptation (mosura's CALLIND output lands in RAX, so a whole-range
-/// `guard()` normalize PIECEs a merge Ghidra never makes — deindirect2). Both land with mainloop S8-2.
-fn normalize_read_size(f: &mut Funcdata) {
-    let nb = f.num_blocks();
-    let mut write_sizes: HashMap<(SpaceId, u64), HashSet<u32>> = HashMap::new();
-    let mut read_sizes: HashMap<(SpaceId, u64), HashSet<u32>> = HashMap::new();
-    for b in 0..nb {
-        for op in f.blocks()[b].ops.clone() {
-            for slot in 0..f.op(op).num_inputs() {
-                if let Some((sp, off, sz)) = read_loc(f, op, slot) {
-                    read_sizes.entry((sp, off)).or_default().insert(sz);
-                }
-            }
-            if let Some((sp, off, sz)) = write_loc(f, op) {
-                write_sizes.entry((sp, off)).or_default().insert(sz);
-            }
-        }
-    }
-    // canonical width per location: a single write width that is also read narrower
-    let mut canonical: HashMap<(SpaceId, u64), u32> = HashMap::new();
-    for (k, ws) in &write_sizes {
-        if ws.len() == 1 {
-            let s = *ws.iter().next().unwrap();
-            if read_sizes.get(k).is_some_and(|rs| rs.iter().any(|&r| r < s)) {
-                canonical.insert(*k, s);
-            }
-        }
-    }
-    // A register carrying the x86-64 self-zero-extension idiom `O:W = ZEXT(O:N)` is, like
-    // Ghidra's full-register heritage range, canonical at `O:W`: writing the 32-bit register
-    // zeroes the upper bits, so `O:W` always reflects the narrow write. Narrow reads then
-    // read `SUBPIECE(O:W)` and the otherwise-parallel sub-register SSA chains unify.
-    // (8/16-bit sub-registers partial-overwrite and lack this idiom, so they are untouched.)
-    for b in 0..nb {
-        for op in f.blocks()[b].ops.clone() {
-            if f.op(op).code() != OpCode::IntZext {
-                continue;
-            }
-            if let (Some((osp, ooff, osz)), Some((isp, ioff, isz))) = (write_loc(f, op), read_loc(f, op, 0)) {
-                if osp == isp && ooff == ioff && osz > isz {
-                    canonical.insert((osp, ooff), osz);
-                }
-            }
-        }
-    }
-    if canonical.is_empty() {
-        return;
-    }
-    for b in 0..nb {
-        let ops = f.blocks()[b].ops.clone();
-        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
-        for op in ops {
-            for slot in 0..f.op(op).num_inputs() {
-                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
-                let Some(&s) = canonical.get(&(sp, off)) else { continue };
-                if sz >= s {
-                    continue;
-                }
-                // keep the self-zero-extension's own input (`O:W = ZEXT(O:N)`): rewriting it
-                // to `SUBPIECE(O:W)` would be circular and drop the narrow value it widens
-                if f.op(op).code() == OpCode::IntZext
-                    && write_loc(f, op).is_some_and(|(wsp, woff, wsz)| wsp == sp && woff == off && wsz == s)
-                {
-                    continue;
-                }
-                let seq = f.op(op).seqnum;
-                let w = f.new_varnode(s, super::space::Address::new(sp, off));
-                let zero = f.new_const(4, 0);
-                let sub = f.new_op(OpCode::Subpiece, seq, vec![w, zero]);
-                let subout = f.new_output_unique(sub, sz);
-                f.op_mut(sub).parent = Some(super::block::BlockId(b as u32));
-                f.op_set_input(op, slot, subout);
-                new_ops.push(sub); // splice the SUBPIECE in just before its reader
-            }
-            new_ops.push(op);
-        }
-        f.set_block_ops(super::block::BlockId(b as u32), new_ops);
-    }
-}
 
 /// This pass's merged ranges, the range bases that WIDENED vs their prior-pass heritage, and each
 /// merged range's maximum contained write size — the widening re-entry computation shared by
@@ -419,205 +439,38 @@ fn widening_ranges(f: &Funcdata, pass: i32) -> WideningRanges {
     (merged, widened, max_write)
 }
 
-/// Faithful port of Ghidra's per-range width normalization — `Heritage::guard`'s read/write
-/// normalize step (`heritage.cc:1172-1182`), driven for every heritaged range by
-/// `Heritage::placeMultiequals` (`heritage.cc:2608-2629`), EVERY pass. For each merged range
-/// `[base, base+size)` that this pass's eligible free accesses span, every *free read* narrower
-/// than `size` is rewritten `SUBPIECE(whole, overlap)` (`normalizeReadSize`, `heritage.cc:382`)
-/// and every *write* narrower than `size` is widened into a whole-range write reassembled by
-/// PIECE (`normalizeWriteSize`, `heritage.cc:416`, via [`normalize_write_size`]), so every access
-/// to the range is uniform `size` and the per-location SSA links it as one variable.
-///
-/// The range `size` is the cumulative `globaldisjoint` merge (`heritage.cc:2618`), queried via
-/// [`LocationMap::merged_range`] on a clone seeded with `f.globaldisjoint` (the prior passes'
-/// ranges) and this pass's free-access footprints — Ghidra's `disjoint` task list. Because it is
-/// keyed on the cumulative width, a location WIDENED on a later pass (re-heritage) re-normalizes its
-/// now-narrow accesses to the new width — e.g. revisit's RAM range `r0x100074:4`, where the 2-byte
-/// `AX` write becomes `CONCAT22(SUB42(r74:4,#2), AX)` and the 2-byte reads become `SUB42(r74:4,…)`.
-/// This is the mechanism the pass-0 batch heuristics (`normalize_read_size`'s single-write-width read
-/// hack + [`refine_overlaps`]' register-only Normalize mode) cannot reach.
-///
-/// SCOPE (S8-1): this fires ONLY on **widening re-entry** — a range already heritaged at some width
-/// in an earlier pass, now merged WIDER (Ghidra re-heritages a grown range, heritage.cc:2711). The
-/// pass-0 batch still does all first-pass normalization, and a same-width re-read of an already-
-/// heritaged range (a 2-byte `AX` inside an 8-byte `RAX` call output — deindirect2) is left to it,
-/// its retirement coupled to the call-output-in-RAX fix (task #6). No range widens without the
-/// mainloop restart, so this is a dormant no-op today (byte-identical) — it is the mainloop brick
-/// that makes S8-2's scoped re-heritage-after-pool restart correct (revisit's `r74:2`→`r74:4`).
-///
-/// Structure vs Ghidra: mosura heritages each exact `(space, offset, size)` as its own SSA
-/// location and runs this BEFORE candidate gathering (rather than inside `guard()`), so afterward
-/// every in-range access is at the merged width and the existing per-location cover / phi / rename
-/// reconstructs Ghidra's whole-range MULTIEQUAL identically. Laned/XMM ranges — Ghidra's
-/// `refinement` *partition* — are excluded here and handled by [`refine_overlaps`].
-fn normalize_ranges(f: &mut Funcdata, pass: i32) {
-    if f.num_blocks() == 0 {
-        return;
-    }
-    let infos = build_info_list(&f.spaces);
-    let eligible = |sp: SpaceId| {
-        let info = &infos[sp.0 as usize];
-        info.is_heritaged() && info.delay <= pass
-    };
-    // Merged ranges + the widening re-entry gate (shared with [`remove_revisited_markers`]): normalize
-    // only ranges that WIDENED vs a prior pass — a location already heritaged at some width, now merged
-    // wider (Ghidra re-heritages a grown range, heritage.cc:2711, and `guard()` re-normalizes its
-    // now-narrow accesses to the new width; revisit's `r74:2` grown to `r74:4`). A SAME-width re-read of
-    // an already-heritaged range (a 2-byte `AX` contained in an 8-byte `RAX` call output — deindirect2)
-    // is NOT widening and stays with the pass-0 batch. No widening happens without the mainloop restart,
-    // so this is a dormant no-op on the current pipeline (byte-identical) — the brick for S8-2.
-    let (merged, widened, max_write) = widening_ranges(f, pass);
-    if widened.is_empty() {
-        return;
-    }
-    // A range wider than 4 bytes that no single write covers is Ghidra's *refinement* (partition) case
-    // (`placeMultiequals`, heritage.cc:2610: `size > 4 && max < size`), NOT the whole-range `guard()`
-    // normalize — skipped here (mosura keeps non-laned refinement a deliberate no-op; the laned
-    // partition is [`refine_overlaps`]). Normalize fires only where `guard()` would: a single write
-    // covers the range, or the range is <= 4 bytes.
-    let is_refine_range = |sp: SpaceId, base: u64, size: u32| {
-        size > 4 && max_write.get(&(sp, base)).copied().unwrap_or(0) < size
-    };
-    // Apply normalizeReadSize / normalizeWriteSize per block, driven by the merged range width.
-    for b in 0..f.num_blocks() {
-        let ops = f.blocks()[b].ops.clone();
-        let mut new_ops: Vec<OpId> = Vec::with_capacity(ops.len());
-        let bid = super::block::BlockId(b as u32);
-        for op in ops {
-            let seq = f.op(op).seqnum;
-            // Reads: a free read narrower than its merged range becomes `SUBPIECE(whole, overlap)`
-            // of a fresh whole-range read, which the per-location rename links to the covering def.
-            for slot in 0..f.op(op).num_inputs() {
-                let Some((sp, off, sz)) = read_loc(f, op, slot) else { continue };
-                if !eligible(sp) || is_laned_register(&f.spaces, sp, off) {
-                    continue;
-                }
-                if f.vn(f.op(op).input(slot).unwrap()).is_heritage_known() {
-                    continue;
-                }
-                let Some((base, size)) = merged.merged_range(sp, off) else { continue };
-                if sz >= size || is_refine_range(sp, base, size) || !widened.contains(&(sp, base)) {
-                    continue;
-                }
-                let whole = f.new_varnode(size, super::space::Address::new(sp, base));
-                let cst = f.new_const(4, off - base);
-                let subop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
-                f.op_mut(subop).parent = Some(bid);
-                let subout = f.new_output_unique(subop, sz);
-                f.op_set_input(op, slot, subout);
-                new_ops.push(subop); // splice the SUBPIECE in just before its reader
-            }
-            // Writes: a write narrower than its merged range is widened into a whole-range write,
-            // pulling the surrounding bytes from the range's previous value and PIECE-ing them back.
-            // A write-masked output (a marker already rewritten to a SUBPIECE by
-            // [`remove_revisited_markers`]) is not a write in heritage (heritage.cc:326) — skip it.
-            let mut after: Vec<OpId> = Vec::new();
-            if let Some((sp, off, sz)) = write_loc(f, op) {
-                if eligible(sp)
-                    && !is_laned_register(&f.spaces, sp, off)
-                    && !f.vn(f.op(op).output.unwrap()).is_write_mask()
-                {
-                    if let Some((base, size)) = merged.merged_range(sp, off) {
-                        if size > sz && !is_refine_range(sp, base, size) && widened.contains(&(sp, base)) {
-                            normalize_write_size(
-                                f, op, sp, base, off, sz, size, bid, seq, &mut new_ops, &mut after,
-                            );
-                        }
-                    }
-                }
-            }
-            new_ops.push(op);
-            new_ops.extend(after);
-        }
-        f.set_block_ops(bid, new_ops);
-    }
-}
 
-/// Faithful port of Ghidra's `Heritage::removeRevisitedMarkers` (`heritage.cc:244`) together with the
-/// prior-heritage marker detection in `collect()` (`heritage.cc:327-338`). On a WIDENING re-entry
-/// pass, a WRITTEN varnode inside the widened merged range whose def is a heritage marker
-/// (MULTIEQUAL/INDIRECT) or a return-form COPY and that is NARROWER than the range is "evidence of a
-/// previous pass's heritage" of that range. Ghidra rewrites the marker op *in place* as
-/// `narrow = SUBPIECE(big, #offset)`, where `big = newVarnode(size, addr)` is a fresh FREE whole-range
-/// varnode, and sets the narrow output's write-mask so `collect()` no longer treats it as a write of
-/// the narrow location; a return-form COPY is simply unlinked (a wider return COPY is re-guarded by
-/// `guardReturns` on the widened range). The fresh `big` reads then flow through the existing
-/// [`gather_candidates`]/cover/[`rename`] into the whole-range SSA, so the narrower access reads
-/// `SUB42(whole, off)` — revisit's oracle `r74:2 = SUB42(r74:4, #0)`, the write becoming `CONCAT22`
-/// once [`normalize_ranges`] widens the real narrow writes.
+/// Faithful port of Ghidra's `Heritage::removeRevisitedMarkers` (`heritage.cc:244`), driven per
+/// range from [`place_multiequals`] (`heritage.cc:2626-2627`) with the `remove` list [`collect`]
+/// built (`heritage.cc:329-333`).
 ///
-/// mosura-shape translation: mosura heritages each exact `(space, offset, size)` as its own SSA
-/// location, so a pass-1 marker for `0x100074:2` lives at a SEPARATE location from the widened
-/// `0x100074:4` range. This bridges them — the narrower location's markers are rewritten as SUBPIECEs
-/// of a fresh whole-range read based at the widened range's base, and their outputs write-masked so
-/// the candidate/cover scan does not re-heritage the narrow location on its own (Ghidra's `collect`
-/// simply skips write-masked varnodes, `heritage.cc:326`; the `intersect == 2` cover logic then keeps
-/// the narrow location out of `new_addrs`, so no INDIRECT guards refire).
+/// A marker (MULTIEQUAL/INDIRECT) or return-form COPY left by a PREVIOUS pass's heritage of this
+/// range, narrower than the range is now, is rewritten IN PLACE as `narrow = SUBPIECE(big, #offset)`
+/// where `big = newVarnode(size, addr)` is a fresh whole-range read marked `activeHeritage`; the
+/// narrow output is write-masked so `collect` no longer counts it as a write of the narrow location.
+/// A return-form COPY is simply unlinked — `guardReturns` re-guards the widened range.
 ///
-/// SCOPE: like [`normalize_ranges`], fires ONLY on a widening re-entry (shared [`widening_ranges`]
-/// gate) and skips laned/refinement ranges — so it is a dormant no-op on the current once-pass
-/// pipeline (no range widens without the mainloop restart) and byte-identical. Runs BEFORE
-/// [`normalize_ranges`] each pass (Ghidra's `removeRevisitedMarkers` precedes `guard()`), so the fresh
-/// whole reads and write-masks are in place before the read/write normalize and the candidate scan.
-///
-/// The `info->deadremoved > 0` warning + `bumpDeadcodeDelay` branch (`heritage.cc:248`) is omitted:
-/// mosura rebuilds per-space info each pass and this brick removes no dead code, so the branch is
-/// unreachable here (documented like [`guard_calls`]' prototype-recovery gaps). A full-width marker
-/// (the `clearProperty(new_addresses)` case, `heritage.cc:334`) is left untouched — mosura's
-/// `intersect == 2` cover logic already keeps such a covered location out of `new_addrs`.
-fn remove_revisited_markers(f: &mut Funcdata, pass: i32) {
-    if f.num_blocks() == 0 {
-        return;
-    }
-    let (merged, widened, max_write) = widening_ranges(f, pass);
-    if widened.is_empty() {
-        return;
-    }
-    let is_refine_range = |sp: SpaceId, base: u64, size: u32| {
-        size > 4 && max_write.get(&(sp, base)).copied().unwrap_or(0) < size
-    };
-    // collect() marker-detection (heritage.cc:327-338): a written, non-write-masked varnode in a
-    // widened non-refinement range whose def is a marker (MULTIEQUAL/INDIRECT) or a return-form COPY,
-    // narrower than the range, is scheduled for rewrite. `(op, out, sp, base, size, offset)`.
-    let mut removals: Vec<(OpId, VarnodeId, SpaceId, u64, u32, u32)> = Vec::new();
-    for b in 0..f.num_blocks() {
-        for op in f.blocks()[b].ops.clone() {
-            let o = f.op(op);
-            if !(o.is_marker() || o.is_return_copy()) {
-                continue;
-            }
-            let Some(out) = o.output else { continue };
-            let vn = f.vn(out);
-            if vn.is_write_mask() {
-                continue;
-            }
-            let (sp, off, sz) = (vn.loc.space, vn.loc.offset, vn.size);
-            if is_laned_register(&f.spaces, sp, off) {
-                continue;
-            }
-            let Some((base, size)) = merged.merged_range(sp, off) else { continue };
-            if !widened.contains(&(sp, base)) || is_refine_range(sp, base, size) || sz >= size {
-                continue;
-            }
-            removals.push((op, out, sp, base, size, (off - base) as u32));
-        }
-    }
-    // removeRevisitedMarkers (heritage.cc:244-297): rewrite each scheduled marker in place.
-    for (op, out, sp, base, size, offset) in removals {
+/// The `info->deadremoved > 0` warning + `bumpDeadcodeDelay` branch (`heritage.cc:248-257`) is
+/// omitted: mosura removes no dead code inside heritage, so the branch is unreachable here.
+fn remove_revisited_markers_at(f: &mut Funcdata, remove: &[VarnodeId], range: &MemRange) {
+    for &out in remove {
+        let op = f.vn(out).def.expect("a collected marker output has a def");
         // Return-form COPY (heritage.cc:281): unlink in preparation for a wider re-guarded COPY.
-        if f.op(op).is_return_copy() {
+        if !f.op(op).is_marker() {
             f.op_uninsert(op);
             f.op_destroy(op);
             continue;
         }
-        // MULTIEQUAL / INDIRECT → `narrow = SUBPIECE(big, #offset)`. Capture the INDIRECT's causing op
-        // (Ghidra `getIn(1)` iop = mosura `guarded_op`) for placement before mutating.
+        // MULTIEQUAL / INDIRECT -> `narrow = SUBPIECE(big, #offset)`. Capture the INDIRECT's causing
+        // op (Ghidra `getIn(1)` iop = mosura `guarded_op`) for placement before mutating.
         let is_indirect = f.op(op).code() == OpCode::Indirect;
         let target = if is_indirect { f.op(op).guarded_op() } else { None };
         let bid = f.op(op).parent;
+        let offset = f.vn(out).loc.offset.wrapping_sub(range.off);
         f.op_uninsert(op);
-        let big = f.new_varnode(size, super::space::Address::new(sp, base));
-        let cst = f.new_const(4, offset as u64);
+        let big = f.new_varnode(range.size, super::space::Address::new(range.space, range.off));
+        f.vn_mut(big).set_active_heritage(); // heritage.cc:289
+        let cst = f.new_const(4, offset);
         f.op_set_opcode(op, OpCode::Subpiece);
         f.op_set_all_input(op, &[big, cst]);
         f.vn_mut(out).set_write_mask();
@@ -699,83 +552,75 @@ fn split_by_refinement(base: u64, part: &[u32], off: u64, sz: u32) -> Vec<(u64, 
 /// `RuleHumptyDumpty` later collapse the introduced `PIECE`/`SUBPIECE` where they tile cleanly (so a
 /// `sete dl` write rejoined into `RDX` and immediately sub-read back simplifies to the byte itself).
 ///
-/// mosura adaptation: Ghidra keeps the original narrow Varnode as the op's output and sets its
-/// write-mask; mosura instead retargets the op to a `unique` temp of its own size, so the narrow
-/// sub-register location is never heritaged on its own — only the rejoined whole-range Varnode is.
-/// All intermediates are `unique`; only the final whole-range result lives at the register address.
+/// Ghidra keeps the original narrow Varnode as the op's output and sets its write-mask
+/// (`heritage.cc:493`), so the sub-register location stays visible in the IR but is no longer a
+/// *write* as far as `collect` is concerned. The intermediate pieces live at their real addresses
+/// (`pieceaddr`, `midvn` at the range base) exactly as Ghidra places them.
 ///
 /// The CALL `newIndirectCreation` branch (`heritage.cc:434`/`455`, when the narrow write's def is a
 /// CALL with an indirect effect on the missing piece) is not ported: mosura has no indirect-creation
 /// infrastructure and no fixture writes a register sub-piece directly from a call into a guarded
 /// range. The pieces are taken from the plain `SUBPIECE`-of-old-value path (Ghidra's `else`).
-#[allow(clippy::too_many_arguments)]
-fn normalize_write_size(
-    f: &mut Funcdata,
-    op: OpId,
-    reg: SpaceId,
-    base: u64,
-    off: u64,
-    sz: u32,
-    size: u32,
-    bid: super::block::BlockId,
-    seq: super::op::SeqNum,
-    before: &mut Vec<OpId>,
-    after: &mut Vec<OpId>,
-) -> VarnodeId {
+///
+/// Little-endian only, like [`concat_pieces`]: Ghidra's `addr.isBigEndian()` branches
+/// (`heritage.cc:430`/`451`/`472`) are unrepresentable in mosura's decompiler today (task #5).
+fn normalize_write_size(f: &mut Funcdata, vn: VarnodeId, range: &MemRange) -> VarnodeId {
     use super::space::Address;
-    let overlap = (off - base) as u32; // bytes of the range below the write (Ghidra `overlap`)
-    let mostsig = size - overlap - sz; // bytes of the range above the write (Ghidra `mostsigsize`)
+    let op = f.vn(vn).def.expect("a collected write has a def");
+    let seq = f.op(op).seqnum;
+    let vnsize = f.vn(vn).size;
+    let base = Address::new(range.space, range.off);
+    let acs = f.spaces.get(range.space).addr_size;
+    let overlap = f.vn(vn).loc.offset.wrapping_sub(range.off) as u32; // range bytes below the write
+    let mostsig = range.size - (overlap + vnsize); // range bytes above the write
 
-    // op now writes a unique temp of its own size (Ghidra's write-masked `vn`).
-    let vn = f.new_output_unique(op, sz);
-
-    // High piece (`mostsigsize != 0`, heritage.cc:428): SUBPIECE the old whole-range value's high
-    // bytes (`big = newVarnode(size, addr)`; offset `overlap + vn->getSize()`).
+    // High piece (`mostsigsize != 0`, heritage.cc:428): SUBPIECE the range's *previous* whole value
+    // at offset `overlap + vn->getSize()`. The fresh whole-range read is itself marked
+    // activeHeritage (heritage.cc:442) so renaming links it to the range's reaching def.
     let mostvn = if mostsig > 0 {
-        let big = f.new_varnode(size, Address::new(reg, base));
-        let cst = f.new_const(4, (overlap + sz) as u64);
+        let pieceaddr = Address::new(range.space, range.off + (overlap + vnsize) as u64);
+        let big = f.new_varnode(range.size, base);
+        f.vn_mut(big).set_active_heritage();
+        let cst = f.new_const(acs, (overlap + vnsize) as u64);
         let subop = f.new_op(OpCode::Subpiece, seq, vec![big, cst]);
-        f.op_mut(subop).parent = Some(bid);
-        let v = f.new_output_unique(subop, mostsig);
-        before.push(subop); // SUBPIECE inserted before the write
+        let v = f.new_output(subop, mostsig, pieceaddr);
+        f.op_insert_before(subop, op);
         Some(v)
     } else {
         None
     };
 
-    // Low piece (`overlap != 0`, heritage.cc:449): SUBPIECE the old value's low bytes, then PIECE
-    // the narrow write above it (little-endian: the write is the most-significant input).
+    // Low piece (`overlap != 0`, heritage.cc:449) + the middle rejoin (:470): SUBPIECE the previous
+    // value's low bytes, then PIECE the narrow write above them.
     let midvn = if overlap > 0 {
-        let big = f.new_varnode(size, Address::new(reg, base));
-        let cst = f.new_const(4, 0);
+        let big = f.new_varnode(range.size, base);
+        f.vn_mut(big).set_active_heritage();
+        let cst = f.new_const(acs, 0);
         let subop = f.new_op(OpCode::Subpiece, seq, vec![big, cst]);
-        f.op_mut(subop).parent = Some(bid);
-        let leastvn = f.new_output_unique(subop, overlap);
-        before.push(subop);
+        let leastvn = f.new_output(subop, overlap, base);
+        f.op_insert_before(subop, op);
         let pieceop = f.new_op(OpCode::Piece, seq, vec![vn, leastvn]);
-        f.op_mut(pieceop).parent = Some(bid);
-        // The middle piece is the final whole-range write iff there is no high piece (covers `size`).
-        let mid = if mostsig == 0 {
-            f.new_output(pieceop, overlap + sz, Address::new(reg, base))
-        } else {
-            f.new_output_unique(pieceop, overlap + sz)
-        };
-        after.push(pieceop); // PIECE inserted after the write
+        let mid = f.new_output(pieceop, overlap + vnsize, base);
+        f.op_insert_after(pieceop, op);
         mid
     } else {
         vn
     };
 
-    // Final rejoin (`mostsigsize != 0`, heritage.cc:483): PIECE the high piece above the middle.
-    if let Some(mostvn) = mostvn {
+    // Final rejoin (`mostsigsize != 0`, heritage.cc:483): PIECE the high piece above the middle,
+    // inserted after the middle's own def.
+    let bigout = if let Some(mostvn) = mostvn {
         let pieceop = f.new_op(OpCode::Piece, seq, vec![mostvn, midvn]);
-        f.op_mut(pieceop).parent = Some(bid);
-        let bigout = f.new_output(pieceop, size, Address::new(reg, base));
-        after.push(pieceop);
-        bigout
+        let out = f.new_output(pieceop, range.size, base);
+        let middef = f.vn(midvn).def.expect("midvn is written");
+        f.op_insert_after(pieceop, middef);
+        out
     } else {
         midvn
-    }
+    };
+
+    f.vn_mut(vn).set_write_mask();
+    bigout // Replace small write with big write
 }
 
 /// Faithful port of Ghidra's heritage *refinement* for ranges materializing on a RE-ENTRY pass —
@@ -1129,16 +974,13 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
             _ => ranges.push((s, e)),
         }
     }
-    // 3. Per range, classify: `Refine` (a partition — no single write covers it, Ghidra's
-    //    `placeMultiequals` guard `size > 4 && max_write < size`, kept laned-only) or `Normalize`
-    //    (a single write covers the whole range, so Ghidra's `guard` normalizes every narrow read to
-    //    a `SUBPIECE` of the whole and every narrow write to a `normalizeWriteSize` `PIECE` into it).
-    //    The laned partition is what the whole-range normalize cannot express; the scalar `Normalize`
-    //    is the pass-0 batch's uniform `guard()`, retired once the faithful [`normalize_ranges`] takes
-    //    over first-pass normalization (coupled to the call-output-in-RAX fix, with mainloop S8-2).
+    // 3. Per range, classify: `Refine` (a PARTITION — no single write covers it, Ghidra's
+    //    `placeMultiequals` guard `size > 4 && max_write < size`, kept laned-only) or `Skip`.
+    //    A range a single write covers needs no partition: `guard()`'s whole-range normalize
+    //    (`heritage.cc:1172-1182`, driven per range from [`place_multiequals`]) handles it, so the
+    //    scalar `Normalize` mode this pass used to carry has no work left and is gone.
     enum Mode {
         Refine(Vec<u32>),
-        Normalize { size: u32 },
         Skip,
     }
     let modes: Vec<Mode> = ranges
@@ -1176,14 +1018,6 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                     remove13_refinement(&mut refine);
                     return Mode::Refine(refine);
                 }
-            }
-            // A range a single write fully covers: every sub-read/sub-write is normalized to the
-            // whole (Ghidra's `guard` → normalizeReadSize/normalizeWriteSize). This is the pass-0
-            // batch's scalar `Normalize` half; the faithful per-pass whole-range normalize
-            // ([`normalize_ranges`]) is wired re-entry-only for now (S8-1), so first-pass
-            // normalization stays here until the batch is retired with the call-output-in-RAX fix.
-            if size > 1 && max_write == size {
-                return Mode::Normalize { size: size as u32 };
             }
             Mode::Skip
         })
@@ -1255,34 +1089,10 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                         }
                         f.op_set_input(op, slot, preexist);
                     }
-                    &Mode::Normalize { size } => {
-                        // normalizeReadSize (heritage.cc:382): every read narrower than the covering
-                        // range becomes a SUBPIECE of the whole, so it links to the single covering
-                        // write (and to `normalizeWriteSize`'s widened narrow writes). This is the
-                        // faithful guard() read half — it subsumes the offset-keyed
-                        // `normalize_read_size` hack for every location it covers (the reads it
-                        // rewrites are no longer narrow register reads, so that pass skips them).
-                        // Ghidra applies this to EVERY free narrow read including the input of a
-                        // self-zero/sign-extension `RDX:8 = ZEXT48(EDX:4)`: the `EDX:4` read becomes
-                        // `SUBPIECE(RDX:8_prev, 0)`, linking to the *previous* whole-range write (the
-                        // widened narrow writes), not this op's own output — not circular post-SSA.
-                        if sz >= size {
-                            continue;
-                        }
-                        let whole = f.new_varnode(size, super::space::Address::new(reg, base));
-                        let cst = f.new_const(4, off - base);
-                        let subop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
-                        f.op_mut(subop).parent = Some(bid);
-                        let subout = f.new_output_unique(subop, sz);
-                        new_ops.push(subop);
-                        f.op_set_input(op, slot, subout);
-                    }
                     Mode::Skip => {}
                 }
             }
-            // Writes: a refined write splits into SUBPIECEs after the op; a partial write into a
-            // covered (`Normalize`) range is widened by `normalizeWriteSize` so it reads back the
-            // surrounding bytes and PIECEs the new whole. `after` ops are spliced after the op.
+            // Writes: a refined write splits into SUBPIECEs after the op, spliced in `after`.
             let mut after: Vec<OpId> = Vec::new();
             if let Some((sp, off, sz)) = write_loc(f, op) {
                 if sp == reg {
@@ -1302,21 +1112,6 @@ pub fn refine_overlaps(f: &mut Funcdata, dom: &Dominators) {
                                         f.new_output(subop, ps, super::space::Address::new(reg, po));
                                         after.push(subop);
                                     }
-                                }
-                            }
-                            &Mode::Normalize { size } => {
-                                // Faithful `normalizeWriteSize` (heritage.cc:1179): every write
-                                // narrower than the covering range is widened to a whole-range write,
-                                // pulling the surrounding bytes from the range's previous value. This
-                                // is guard()'s uniform write half — it keeps a narrow write (e.g.
-                                // `sete dl`) linked through the whole-range varnode instead of
-                                // orphaning it, and `RuleDumptyHump` collapses the introduced
-                                // PIECE/SUBPIECE where they tile back together.
-                                if size > sz {
-                                    normalize_write_size(
-                                        f, op, reg, base, off, sz, size, bid, seq, &mut new_ops,
-                                        &mut after,
-                                    );
                                 }
                             }
                             Mode::Skip => {}
@@ -1418,7 +1213,12 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
         }
     }
     for op in stores {
-        f.new_indirect_op(op, super::space::Address::new(spc, off), size);
+        let ind = f.new_indirect_op(op, super::space::Address::new(spc, off), size);
+        // heritage.cc:1554-1555 — both ends of the passthrough join this round's renaming.
+        let in0 = f.op(ind).input(0).expect("INDIRECT has an input");
+        f.vn_mut(in0).set_active_heritage();
+        let out = f.op(ind).output.expect("INDIRECT has an output");
+        f.vn_mut(out).set_active_heritage();
     }
 }
 
@@ -1507,6 +1307,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);
             f.vn_mut(out).set_indirect_creation();
+            f.vn_mut(out).set_active_heritage(); // heritage.cc:1531
             f.op_mut(ind).parent = Some(bid);
             f.op_insert_before(ind, call);
         } else if effecttype == effect::UNKNOWN_EFFECT || effecttype == effect::RETURN_ADDRESS {
@@ -1518,6 +1319,8 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             let ind = f.new_op(OpCode::Indirect, seq, vec![before]);
             f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);
+            f.vn_mut(before).set_active_heritage(); // heritage.cc:1524
+            f.vn_mut(out).set_active_heritage(); // heritage.cc:1525
             f.op_mut(ind).parent = Some(bid);
             f.op_insert_before(ind, call);
             if holdind {
@@ -1604,6 +1407,7 @@ fn guard_returns(f: &mut Funcdata, range: Loc) {
                 let ti = f.active_output.as_mut().unwrap().register_trial(addr, size);
                 for ret in live_returns(f) {
                     let invn = f.new_varnode(size, addr);
+                    f.vn_mut(invn).set_active_heritage(); // heritage.cc:1671
                     f.op_append_input(ret, invn);
                     f.active_output.as_mut().unwrap().trial[ti].op_slot = (f.op(ret).num_inputs() - 1) as u32;
                 }
@@ -1620,12 +1424,386 @@ fn guard_returns(f: &mut Funcdata, range: Loc) {
         // COPY: out@(addr,size)[addrForce, returnCopy] = in@(addr,size), inserted before RETURN.
         let seq = f.op(ret).seqnum;
         let invn = f.new_varnode(size, addr);
+        f.vn_mut(invn).set_active_heritage(); // heritage.cc:1688
         let copyop = f.new_op(OpCode::Copy, seq, vec![invn]);
         let out = f.new_output(copyop, size, addr);
         f.vn_mut(out).set_addr_force();
+        f.vn_mut(out).set_active_heritage(); // heritage.cc:1684
         f.op_mut(copyop).mark_return_copy();
         f.op_insert_before(copyop, ret);
     }
+}
+
+/// mosura's stand-in for Ghidra's `VarnodeLocSet` — the location-ordered set `fd->beginLoc(space)`
+/// that `Heritage::collect` (`heritage.cc:324`) range-queries. Ghidra keeps this set live on the
+/// Funcdata; mosura's varnodes are reachable only through the op graph, so the equivalent set is
+/// materialized once per [`place_multiequals`] and range-queried per [`MemRange`].
+///
+/// Entries are sorted in Ghidra's `VarnodeCompareLocDef` order (`varnode.cc:34`): address, then
+/// size, then `input` < `written` < `free`. Ghidra's final tiebreak is the def's `SeqNum` (written)
+/// or the create index (free); mosura uses the create index throughout — that tiebreak orders only
+/// the *creation* of the SUBPIECE/PIECE ops `guard()` splices in (op numbering), never which ops are
+/// created, so the two orders are semantically identical. Address order is the part that carries
+/// meaning: `guardInput` (`heritage.cc:1951`) requires its input list in address order.
+/// One [`LocSet`] entry: `(offset, size, class, create-index, varnode)`, where class is 0=input,
+/// 1=written, 2=free (Ghidra's `(f1-1) < (f2-1)` unsigned trick, which forces frees last).
+type LocEntry = (u64, u32, u8, u32, VarnodeId);
+
+#[derive(Default)]
+struct LocSet {
+    /// Per space, ascending in `VarnodeCompareLocDef` order.
+    per_space: HashMap<SpaceId, Vec<LocEntry>>,
+}
+
+impl LocSet {
+    /// Materialize the set from the op graph: every varnode that is an op output or an op input.
+    /// (Ghidra's set additionally holds free varnodes attached to no op — inputs and `unaffected`
+    /// registers with no descendants. Those are the `heritage.cc:2704` cover members mosura does not
+    /// yet see; collecting them is Stage B of task #6.)
+    fn build(f: &Funcdata) -> LocSet {
+        let mut seen: HashSet<VarnodeId> = HashSet::new();
+        let mut set = LocSet::default();
+        let mut push = |set: &mut LocSet, f: &Funcdata, vid: VarnodeId| {
+            if !seen.insert(vid) {
+                return;
+            }
+            let vn = f.vn(vid);
+            if vn.is_constant() || vn.is_annotation() {
+                return;
+            }
+            let class = if vn.is_input() {
+                0
+            } else if vn.is_written() {
+                1
+            } else {
+                2
+            };
+            set.per_space.entry(vn.loc.space).or_default().push((
+                vn.loc.offset,
+                vn.size,
+                class,
+                vid.0,
+                vid,
+            ));
+        };
+        for b in 0..f.num_blocks() {
+            for i in 0..f.blocks()[b].ops.len() {
+                let op = f.blocks()[b].ops[i];
+                if let Some(out) = f.op(op).output {
+                    push(&mut set, f, out);
+                }
+                for slot in 0..f.op(op).num_inputs() {
+                    // `read_loc` applies the same exclusions Ghidra gets for free from the
+                    // per-space set: constants live in `const`, and a direct branch/call
+                    // destination is a code address annotation, not dataflow.
+                    if read_loc(f, op, slot).is_some() {
+                        push(&mut set, f, f.op(op).input(slot).unwrap());
+                    }
+                }
+            }
+        }
+        for v in set.per_space.values_mut() {
+            v.sort_unstable();
+        }
+        set
+    }
+
+    /// The varnodes whose ADDRESS lies in `[off, off+size)` of `space`, in set order — Ghidra's
+    /// `fd->beginLoc(memrange.addr) .. fd->beginLoc(endaddr)` walk (`heritage.cc:314-324`),
+    /// including its wraparound case (`heritage.cc:317`).
+    fn in_range(&self, space: SpaceId, off: u64, size: u32) -> Vec<VarnodeId> {
+        let Some(v) = self.per_space.get(&space) else { return Vec::new() };
+        match off.checked_add(size as u64) {
+            Some(end) => {
+                let start = v.partition_point(|e| e.0 < off);
+                v[start..].iter().take_while(|e| e.0 < end).map(|e| e.4).collect()
+            }
+            // Wraparound: the range runs to the top of the space and continues at 0.
+            None => v
+                .iter()
+                .filter(|e| e.0.wrapping_sub(off) < size as u64)
+                .map(|e| e.4)
+                .collect(),
+        }
+    }
+}
+
+/// The free reads, writes, inputs and stale markers of one heritaged range — the four output
+/// vectors of Ghidra's `Heritage::collect` (`heritage.cc:307`).
+#[derive(Default)]
+struct Collected {
+    /// Free Varnodes read from the range (Ghidra `read`).
+    read: Vec<VarnodeId>,
+    /// Written Varnodes in the range (Ghidra `write`).
+    write: Vec<VarnodeId>,
+    /// Varnodes in the range already marked as function input (Ghidra `input`).
+    input: Vec<VarnodeId>,
+    /// Markers from a PREVIOUS pass's heritage that are narrower than the (now wider) range, so
+    /// they must be rewritten as SUBPIECEs of it (Ghidra `remove`).
+    remove: Vec<VarnodeId>,
+}
+
+/// Faithful port of `Heritage::collect` (`heritage.cc:307`): classify every Varnode whose address
+/// falls in `range` into free reads / writes / inputs / stale markers, and return the maximum write
+/// size (Ghidra's `maxsize`, which drives the refinement carve-out at `heritage.cc:2610`).
+///
+/// `range` is taken by `&mut` because Ghidra's collect clears the range's `new_addresses` property
+/// when it finds a FULL-width marker from a previous pass (`heritage.cc:334`: "Previous pass covered
+/// everything") — which then suppresses re-guarding at `heritage.cc:2629`.
+fn collect(f: &Funcdata, locset: &LocSet, range: &mut MemRange) -> (Collected, u32) {
+    let mut c = Collected::default();
+    let mut maxsize = 0u32;
+    for vid in locset.in_range(range.space, range.off, range.size) {
+        let vn = f.vn(vid);
+        if vn.is_write_mask() {
+            continue;
+        }
+        if vn.is_written() {
+            let op = vn.def.expect("written varnode has a def");
+            if f.op(op).is_marker() || f.op(op).is_return_copy() {
+                // Evidence of previous heritage in this range (heritage.cc:329).
+                if vn.size < range.size {
+                    c.remove.push(vid);
+                    continue;
+                }
+                range.clear_property(MemRange::NEW_ADDRESSES);
+            }
+            if vn.size > maxsize {
+                maxsize = vn.size;
+            }
+            c.write.push(vid);
+        } else if !vn.is_heritage_known() && !vn.descend.is_empty() {
+            c.read.push(vid);
+        } else if vn.is_input() {
+            c.input.push(vid);
+        }
+    }
+    (c, maxsize)
+}
+
+
+
+
+
+
+
+/// Faithful port of `Heritage::normalizeReadSize` (`heritage.cc:382`): a free read narrower than the
+/// range it belongs to is redefined as `SUBPIECE(whole, overlap)` of a fresh whole-range free read,
+/// which is returned and takes the narrow varnode's place in the range's read list.
+///
+/// The narrow varnode KEEPS its own address and becomes the SUBPIECE's output, write-masked
+/// (`heritage.cc:396-397`) — it is no longer a free read, and `collect` will skip it from now on.
+/// This is the single mechanism by which an `AL` read and an `EAX` read become one SSA variable.
+fn normalize_read_size(f: &mut Funcdata, vn: VarnodeId, op: OpId, range: &MemRange) -> VarnodeId {
+    use super::space::Address;
+    let seq = f.op(op).seqnum;
+    let whole = f.new_varnode(range.size, Address::new(range.space, range.off));
+    let overlap = f.vn(vn).loc.offset.wrapping_sub(range.off);
+    let cst = f.new_const(f.spaces.get(range.space).addr_size, overlap);
+    let newop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
+    // `opSetOutput(newop, vn)` — the OLD varnode becomes the SUBPIECE's output (heritage.cc:396).
+    f.op_set_output(newop, vn);
+    f.vn_mut(vn).set_write_mask();
+    f.op_insert_before(newop, op);
+    whole
+}
+
+/// Faithful port of `Heritage::guard` (`heritage.cc:1156`), the per-range normalization that makes
+/// phi placement and renaming work: every free read and every write in the range narrower than the
+/// range is widened to the range's exact `(base, size)`, and the resulting whole-range Varnodes are
+/// marked `activeHeritage` so `rename` picks up exactly them.
+///
+/// There is NO widening condition here and no batch pre-pass — normalization fires for EVERY
+/// heritaged range on EVERY pass, because `placeMultiequals` hands `guard()` that range's own read
+/// and write sets. (The pass-0 batch heuristics mosura carried instead could not do this: a global
+/// pre-pass has no per-range read/write sets to key on.)
+///
+/// `add_indirects` is the range's `newAddresses()` property (`heritage.cc:2629`): the INDIRECT
+/// guards go in only for a range with addresses new this pass, because "having multiple INDIRECT
+/// guards for the same address confuses the renaming algorithm" (`heritage.cc:1186`).
+fn guard(
+    f: &mut Funcdata,
+    range: &MemRange,
+    add_indirects: bool,
+    read: &mut [VarnodeId],
+    write: &mut [VarnodeId],
+) {
+    let mut slot = 0;
+    while slot < read.len() {
+        let vn = read[slot];
+        let descend = f.vn(vn).descend.clone();
+        // `removeRevisitedMarkers` may have eliminated the descendant (heritage.cc:1167).
+        let Some(&op) = descend.first() else { continue };
+        if descend.len() > 1 {
+            // Ghidra throws LowlevelError("Free varnode with multiple reads") here. mosura's op
+            // graph can legitimately hold the same free varnode in two slots of one op (a
+            // self-compare `x == x`), which Ghidra's set also admits, so take the first reader:
+            // the SUBPIECE it defines replaces the varnode for ALL its readers anyway, because
+            // `op_set_output` re-points the varnode's def rather than any single use.
+        }
+        if f.vn(vn).size < range.size {
+            read[slot] = normalize_read_size(f, vn, op, range);
+        }
+        let v = read[slot];
+        f.vn_mut(v).set_active_heritage();
+        slot += 1;
+    }
+    let mut slot = 0;
+    while slot < write.len() {
+        let vn = write[slot];
+        if f.vn(vn).size < range.size {
+            write[slot] = normalize_write_size(f, vn, range);
+        }
+        let v = write[slot];
+        f.vn_mut(v).set_active_heritage();
+        slot += 1;
+    }
+
+    // The full syntax tree may form over several stages, so we see a new free for an address that
+    // has already been guarded before (heritage.cc:1184-1198).
+    if add_indirects {
+        let loc = range.loc();
+        guard_calls(f, loc);
+        guard_returns(f, loc);
+        guard_stores(f, loc);
+    }
+}
+
+/// Faithful port of `Heritage::concatPieces` (`heritage.cc:507`): PIECE a list of Varnodes (ordered
+/// most- to least-significant) into `finalvn`. With `insertop = None` the expression is built at the
+/// start of the entry block, at the function's own address — Ghidra's `guardInput` case.
+fn concat_pieces(
+    f: &mut Funcdata,
+    vnlist: &[VarnodeId],
+    insertop: Option<OpId>,
+    finalvn: VarnodeId,
+) -> VarnodeId {
+    let mut preexist = vnlist[0];
+    let seq = match insertop {
+        Some(op) => f.op(op).seqnum,
+        None => super::op::SeqNum { pc: f.addr, uniq: 0 },
+    };
+    for i in 1..vnlist.len() {
+        let vn = vnlist[i];
+        // Little-endian input order (Ghidra's `else` at heritage.cc:542): the running high half is
+        // PIECE's least-significant input. mosura's decompiler carries no endianness flag — the
+        // big-endian branch (`heritage.cc:539`) is unrepresentable here, exactly as in
+        // [`normalize_write_size`]; it re-enables with the multi-arch work (task #5).
+        let newop = f.new_op(OpCode::Piece, seq, vec![vn, preexist]);
+        let newvn = if i == vnlist.len() - 1 {
+            f.op_set_output(newop, finalvn);
+            finalvn
+        } else {
+            f.new_output_unique(newop, f.vn(preexist).size + f.vn(vn).size)
+        };
+        match insertop {
+            Some(op) => f.op_insert_before(newop, op),
+            None => f.op_insert_begin(newop, super::block::BlockId(0)),
+        }
+        preexist = newvn;
+    }
+    preexist
+}
+
+/// Faithful port of `Heritage::guardInput` (`heritage.cc:1952`): make sure the Varnodes already
+/// marked as function input cover the range ENTIRELY, creating input Varnodes for any holes, then
+/// PIECE them all into a single whole-range Varnode so the renaming algorithm sees one Varnode.
+///
+/// This is the mechanism behind Ghidra's cover including input varnodes (`heritage.cc:2704`): a
+/// range that a callee reads at several widths is presented to rename as ONE input.
+fn guard_input(f: &mut Funcdata, range: &MemRange, input: &[VarnodeId]) {
+    use super::space::Address;
+    if input.is_empty() {
+        return;
+    }
+    // A single input that fills everything gets linked in automatically (heritage.cc:1956-1958).
+    if input.len() == 1 && f.vn(input[0]).size == range.size {
+        return;
+    }
+    let mut i = 0usize;
+    let mut cur = range.off;
+    let end = range.off.wrapping_add(range.size as u64);
+    let mut newinput: Vec<VarnodeId> = Vec::new();
+    while cur < end {
+        let vn = if i < input.len() {
+            let existing = input[i];
+            if f.vn(existing).loc.offset > cur {
+                let sz = (f.vn(existing).loc.offset - cur) as u32;
+                let hole = f.new_varnode(sz, Address::new(range.space, cur));
+                f.set_input_varnode(hole)
+            } else {
+                i += 1;
+                existing
+            }
+        } else {
+            let sz = (end - cur) as u32;
+            let tail = f.new_varnode(sz, Address::new(range.space, cur));
+            f.set_input_varnode(tail)
+        };
+        cur += f.vn(vn).size as u64;
+        newinput.push(vn);
+    }
+    if newinput.len() == 1 {
+        return; // Will get linked in automatically (heritage.cc:1996).
+    }
+    for &v in &newinput {
+        f.vn_mut(v).set_write_mask();
+    }
+    let newout = f.new_varnode(range.size, Address::new(range.space, range.off));
+    let joined = concat_pieces(f, &newinput, None, newout);
+    f.vn_mut(joined).set_active_heritage();
+}
+
+/// Faithful port of `Heritage::placeMultiequals` (`heritage.cc:2599`): ONE loop over the disjoint
+/// task list, doing all of a range's SSA preparation in Ghidra's order before moving to the next —
+/// `collect` (:2609), the refinement carve-out (:2610), the empty-range early-outs (:2619-2625),
+/// `removeRevisitedMarkers` (:2627), `guardInput` (:2628), `guard` (:2629), then phi placement
+/// (:2630-2642). Renaming happens once afterwards, over all ranges (`heritage.cc:2749-2750`).
+///
+/// THE INVARIANT THIS ESTABLISHES: after `guard()`, every `activeHeritage` Varnode of a range sits
+/// at exactly `(range.space, range.off, range.size)`. Ghidra then keys its rename stacks on the
+/// ADDRESS alone (`varstack[vn->getAddr()]`, `heritage.cc:2498`); mosura's stacks are keyed on the
+/// full `(space, offset, size)` tuple, which — given the invariant — names the same thing. That is
+/// why the phi/rename machinery below needs no change to reconstruct Ghidra's whole-range SSA:
+/// the merge happens HERE, in the cover, not in the renamer.
+fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &TaskList) -> u32 {
+    let internal = super::space::SpaceKind::Internal;
+    // The ranges actually brought into SSA form this pass — the cover the phi/rename walk uses.
+    let mut cover: Vec<MemRange> = Vec::new();
+    let mut locset = LocSet::build(f);
+    for r in disjoint.ranges() {
+        let mut memrange = *r;
+        let (mut c, _maxsize) = collect(f, &locset, &mut memrange);
+        // THE REFINEMENT CARVE-OUT (heritage.cc:2610-2616) IS NOT WIRED HERE YET. Ghidra
+        // partitions a range wider than 4 bytes that no single write covers, and its own
+        // post-heritage IR for mixfloatint confirms the split (`CONCAT44(XMM0_Db(i),XMM0_Da(i))`).
+        // The port is written and measured (held on task #6, with its per-fixture numbers): it
+        // takes stackreturn to 1.000 and restores deindirect2, but its DOWNSTREAM consumer — the
+        // param recovery that re-joins two adjacent input trials landing in one ParamEntry
+        // (`ParamListStandard::fillinMap`) — is unported, so the split params reach the printer as
+        // a CONCAT with a bogus high half. Landing it alone would be half a subsystem (AGENT.md
+        // rule 2), so it waits on that consumer. Until then `refine_overlaps` covers the laned case.
+        if c.read.is_empty() {
+            if c.write.is_empty() && c.input.is_empty() {
+                continue;
+            }
+            if f.spaces.get(memrange.space).kind == internal || memrange.old_addresses() {
+                continue;
+            }
+        }
+        if !c.remove.is_empty() {
+            remove_revisited_markers_at(f, &c.remove, &memrange);
+            locset = LocSet::build(f);
+        }
+        guard_input(f, &memrange, &c.input);
+        guard(f, &memrange, memrange.new_addresses(), &mut c.read, &mut c.write);
+        cover.push(memrange);
+    }
+    if cover.is_empty() {
+        return 0;
+    }
+    place_phis_and_rename(f, dom);
+    cover.len() as u32
 }
 
 /// Perform ONE heritage pass (Ghidra's `Heritage::heritage`, `heritage.cc:2663` — one call is one
@@ -1645,85 +1823,90 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     }
     let pass = f.heritage_pass;
     if pass == 0 {
-        // Pass-0 setup, like Ghidra's `splitmanage.split()` / refinement at `pass == 0`: the laned
-        // (XMM) partition, then the batch read-normalization that makes overlapping scalar
-        // sub-register accesses uniform width. This is the interim first-pass normalization; the
-        // faithful per-range `normalize_ranges` (below) takes it over — coupled to task #6 — with S8-2.
+        // The laned (XMM) partition. Ghidra reaches this shape through `refinement()` per range
+        // (heritage.cc:2610); mosura's hand-scoped laned partition stands in until that carve-out
+        // lands with its downstream param input-join consumer — see the module note above.
         let t0 = std::time::Instant::now();
         refine_overlaps(f, dom);
         if super::action::perf::enabled() {
             super::action::perf::record("heritage", "refine_overlaps", t0.elapsed());
         }
-        let t0 = std::time::Instant::now();
-        normalize_read_size(f);
-        if super::action::perf::enabled() {
-            super::action::perf::record("heritage", "normalize_read_size", t0.elapsed());
-        }
     }
-    // Re-entry range maintenance, at Ghidra's `placeMultiequals` order (heritage.cc:2608-2629):
-    // refinement partition FIRST (:2610-2616), then the revisited-marker rewrite (:2627), then the
-    // per-range `guard()` width normalize (:2629). Each recomputes its ranges, so the marker/
-    // normalize steps see the post-partition piece-granular footprints.
+    // The refinement partition for ranges materializing on a re-entry pass (Ghidra's `refinement`,
+    // heritage.cc:1890, called from `placeMultiequals` :2611). Hoisted ahead of the cover build so a
+    // partitioned range enters `disjoint` already piece-granular; see [`place_multiequals`].
     let t0 = std::time::Instant::now();
     refine_ranges(f, dom, pass);
     if super::action::perf::enabled() {
         super::action::perf::record("heritage", "refine_ranges", t0.elapsed());
     }
-    // Widening re-entry gate (Ghidra's `placeMultiequals` per-pass re-heritage of a grown range):
-    // probe once for any range that widened vs its prior-pass heritage. On the current once-pass
-    // pipeline nothing widens, so both the marker rewrite and the per-range normalize are dormant and
-    // this is a single footprint scan (unchanged cost). A range only widens under the S8-2 restart.
+
+    // Build `disjoint` — Ghidra's per-pass task list (`Heritage::heritage`, heritage.cc:2684-2748).
+    // For every eligible space in index order, walk its Varnodes in ADDRESS order, feed each into
+    // `globaldisjoint` and queue the MERGED range it lands in. The merge is the whole point: an `AL`
+    // write and an `EAX` read return the SAME `(base, size)`, so they become ONE task, and `guard()`
+    // then normalizes both to it.
     let t0 = std::time::Instant::now();
-    let widens = !widening_ranges(f, pass).1.is_empty();
-    if widens {
-        // Prior-heritage marker rewrite (Ghidra's `removeRevisitedMarkers`, before `guard()`): a pass's
-        // MULTIEQUAL/INDIRECT markers narrower than the now-widened range become SUBPIECEs of a fresh
-        // whole-range read (which heritages into the widened SSA below), narrow outputs write-masked.
-        // Runs BEFORE normalize_ranges so its write-masks and whole reads are in place.
-        remove_revisited_markers(f, pass);
-        // Per-pass, per-range width normalization (Ghidra's `guard()` normalizeReadSize/normalizeWriteSize):
-        // every free read / real write narrower than its widened merged range becomes a SUBPIECE / PIECE
-        // of the whole range — recomputed after the marker rewrite so it sees the post-rewrite footprints.
-        normalize_ranges(f, pass);
-    }
-    if super::action::perf::enabled() {
-        super::action::perf::record("heritage", "widening_reentry", t0.elapsed());
-    }
-    // The per-location cover heritaged this pass — Ghidra's `disjoint` task list, built from
-    // `globaldisjoint.add`. Process candidates in address order (as Ghidra's `beginLoc` does) so the
-    // disjoint cover is deterministic.
-    let t0 = std::time::Instant::now();
-    let mut candidates: Vec<(Loc, bool)> = gather_candidates(f, pass).into_iter().collect();
-    if super::action::perf::enabled() {
-        super::action::perf::record("heritage", "gather_candidates", t0.elapsed());
-    }
-    candidates.sort_by_key(|&((sp, off, sz), _)| (sp.0, off, sz));
-    let mut cover: HashSet<Loc> = HashSet::new();
-    // Locations with addresses *new* to this pass — Ghidra's `MemRange::newAddresses()`, which
-    // gates `guard()`'s `addIndirects` (`placeMultiequals`, heritage.cc:2629). A location wholly
-    // contained in an earlier pass (`intersect == 2`) re-enters the cover only via a freed read
-    // (re-heritage); its INDIRECT guards were placed on the first pass and must NOT be re-added
-    // (heritage.cc:1187: "multiple INDIRECT guards for the same address confuses renaming").
-    let mut new_addrs: HashSet<Loc> = HashSet::new();
-    for (loc, has_free) in candidates {
-        let intersect = f.globaldisjoint.add(loc.0, loc.1, loc.2, pass);
-        if intersect != 2 {
-            cover.insert(loc);
-            new_addrs.insert(loc);
-        } else if has_free {
-            cover.insert(loc);
+    let locset = LocSet::build(f);
+    let infos = build_info_list(&f.spaces);
+    let mut disjoint = TaskList::default();
+    for (i, info) in infos.iter().enumerate() {
+        if !info.is_heritaged() || pass < info.delay {
+            continue; // Not heritaged, or too soon to heritage this space (heritage.cc:2686-2687).
+        }
+        let space = SpaceId(i as u32);
+        let Some(entries) = locset.per_space.get(&space) else { continue };
+        for &(off, size, _, _, vid) in entries {
+            let vn = f.vn(vid);
+            // heritage.cc:2704 — the cover keeps a Varnode that is written, or read, or unaffected,
+            // or an input. (mosura's op-derived LocSet cannot yet see a free input / unaffected
+            // register with NO descendants; that is Stage B of task #6.)
+            if !vn.is_written() && vn.descend.is_empty() && !vn.is_unaffected() && !vn.is_input() {
+                continue;
+            }
+            if vn.is_write_mask() {
+                continue; // heritage.cc:2706
+            }
+            let (base, msize, prev) = f.globaldisjoint.add(space, off, size, pass);
+            if prev == 0 {
+                // All new location being heritaged, or intersecting with something new (:2709).
+                disjoint.add(space, base, msize, MemRange::NEW_ADDRESSES);
+            } else if prev == 2 {
+                // Completely contained in a range from a previous pass (:2711).
+                let vn = f.vn(vid);
+                if vn.is_heritage_known() {
+                    continue; // Don't heritage if we don't have to (:2712)
+                }
+                if vn.descend.is_empty() {
+                    continue; // :2713
+                }
+                // The `deadremoved` re-heritage warning + `bumpDeadcodeDelay` (:2714-2718) is a
+                // diagnostic path mosura does not model (it removes no dead code inside heritage).
+                disjoint.add(space, base, msize, MemRange::OLD_ADDRESSES);
+            } else {
+                // Partially contained in an old range, but may contain new stuff (:2722).
+                disjoint.add(
+                    space,
+                    base,
+                    msize,
+                    MemRange::OLD_ADDRESSES | MemRange::NEW_ADDRESSES,
+                );
+            }
         }
     }
+    if super::action::perf::enabled() {
+        super::action::perf::record("heritage", "build_disjoint", t0.elapsed());
+    }
     f.heritage_pass += 1;
-    if cover.is_empty() {
+    if disjoint.is_empty() {
         return 0;
     }
     let t0 = std::time::Instant::now();
-    heritage_spaces(f, dom, &cover, &new_addrs);
+    let n = place_multiequals(f, dom, &disjoint);
     if super::action::perf::enabled() {
-        super::action::perf::record("heritage", "heritage_spaces", t0.elapsed());
+        super::action::perf::record("heritage", "place_multiequals", t0.elapsed());
     }
-    cover.len() as u32
+    n
 }
 
 /// Build the SSA form for `f` to completion in one call — the convenience driver for the alias
@@ -1739,30 +1922,23 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     }
 }
 
-/// Heritage the locations in `cover` (the disjoint cover of this pass) into SSA form — the per-pass
-/// body of [`heritage`]. Locations outside `cover` are ignored: their reads are left free for a
-/// later pass, or were already linked by an earlier one. Because distinct SSA locations never
-/// interact (a read belongs to exactly one `(space, offset, size)`), heritaging only the cover
-/// reconstructs the same SSA as one combined walk over them.
-fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new_addrs: &HashSet<Loc>) {
+/// Place the MULTIEQUALs for this pass's cover and run the renaming walk — the tail of Ghidra's
+/// `placeMultiequals` (`heritage.cc:2630-2642`) plus `rename` (`:2587`).
+///
+/// Membership is the `activeHeritage` flag, not a location set: `guard()` marked exactly the
+/// Varnodes it normalized into a range (plus the whole-range reads it manufactured, and the INDIRECT
+/// / RETURN-COPY ends the three `guard_*` helpers created — `heritage.cc:1524`, `:1554`, `:1671`,
+/// `:1684`). That is precisely Ghidra's own test (`renameRecurse`, `heritage.cc:2496/2526`), and it
+/// is what makes an already-linked Varnode at the same address safe to leave alone.
+fn place_phis_and_rename(f: &mut Funcdata, dom: &Dominators) {
     let nb = f.num_blocks();
-
-    // 0. Guard CALL and STORE ops (Ghidra `guard()` with `addIndirects = newAddresses()`,
-    //    heritage.cc:1192-1195). For each range with addresses new this pass, `guard_calls` inserts
-    //    an INDIRECT per call that clobbers/passes-through it and `guard_stores` one per aliasing
-    //    STORE, so the possible modification becomes an SSA def. The new outputs are picked up as
-    //    writes by the def-block scan below (Ghidra appends them to `placeMultiequals`' `write` list
-    //    before `calcMultiequals`). Ranges sorted so op numbering is deterministic.
-    let mut guarded: Vec<Loc> = new_addrs.iter().copied().collect();
-    guarded.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
-    for l in guarded {
-        guard_calls(f, l);
-        guard_returns(f, l);
-        guard_stores(f, l);
-    }
 
     // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
     //    if some block reads it before defining it), restricted to this pass's cover.
+    //    Ghidra instead feeds `calcMultiequals` the `write` vector directly and prunes nothing; the
+    //    extra phis that produces are dead by construction and `ActionDeadCode` removes them, so the
+    //    surviving phi set is the same. Every Varnode consulted here is `activeHeritage`, so — by
+    //    the `guard()` invariant — its location IS its range.
     let mut globals: HashSet<Loc> = HashSet::new();
     let mut defblocks: HashMap<Loc, HashSet<usize>> = HashMap::new();
     for b in 0..nb {
@@ -1770,14 +1946,18 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new
         for i in 0..f.blocks()[b].ops.len() {
             let op = f.blocks()[b].ops[i];
             for slot in 0..f.op(op).num_inputs() {
-                if let Some(l) = read_loc(f, op, slot) {
-                    if cover.contains(&l) && !killed.contains(&l) {
-                        globals.insert(l);
-                    }
+                let Some(vid) = f.op(op).input(slot) else { continue };
+                if !f.vn(vid).is_active_heritage() {
+                    continue;
+                }
+                let l = (f.vn(vid).loc.space, f.vn(vid).loc.offset, f.vn(vid).size);
+                if !killed.contains(&l) {
+                    globals.insert(l);
                 }
             }
-            if let Some(l) = write_loc(f, op) {
-                if cover.contains(&l) {
+            if let Some(vid) = f.op(op).output {
+                if f.vn(vid).is_active_heritage() {
+                    let l = (f.vn(vid).loc.space, f.vn(vid).loc.offset, f.vn(vid).size);
                     killed.insert(l);
                     defblocks.entry(l).or_default().insert(b);
                 }
@@ -1807,6 +1987,10 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new
                 if placed.insert(d) {
                     let npreds = f.blocks()[d].in_edges.len();
                     let phi = f.new_multiequal(super::block::BlockId(d as u32), l.0, l.1, l.2, npreds);
+                    // heritage.cc:2635 — the MULTIEQUAL's output joins this round's renaming, so the
+                    // loop-carried value is pushed on the rename stack for the blocks it dominates.
+                    let out = f.op(phi).output.expect("MULTIEQUAL has an output");
+                    f.vn_mut(out).set_active_heritage();
                     phis.insert((d, l), phi);
                     if !defs.contains(&d) {
                         worklist.push(d);
@@ -1835,7 +2019,7 @@ fn heritage_spaces(f: &mut Funcdata, dom: &Dominators, cover: &HashSet<Loc>, new
     }
     let mut stack: HashMap<Loc, Vec<VarnodeId>> = HashMap::new();
     let mut inputs: HashMap<Loc, VarnodeId> = HashMap::new();
-    rename(f, 0, dom, &children, &phis_by_block, &mut stack, &mut inputs, cover);
+    rename(f, 0, dom, &children, &phis_by_block, &mut stack, &mut inputs);
 }
 
 /// The reaching definition for `loc`: the top of its rename stack, or a (cached) function
@@ -1893,46 +2077,6 @@ fn current_def_at_op(
     inp
 }
 
-/// Like [`current_def`], but for a phi input flowing out of block `b`: when nothing defines
-/// `loc` at its exact width on this path yet a *wider* def at the same offset is current (a
-/// sub-register reaching def — e.g. a phi for `EBX` whose initializer wrote the full `RBX`),
-/// splice a `SUBPIECE(W, 0)` at the end of block `b` and use it, so the wide initializer is
-/// linked (and kept) rather than dropped. Only fires when the exact width is absent, so the
-/// in-block def chains (where the exact width is on the stack) are untouched.
-fn reaching_phi_input(
-    f: &mut Funcdata,
-    loc: Loc,
-    b: usize,
-    stack: &HashMap<Loc, Vec<VarnodeId>>,
-    inputs: &mut HashMap<Loc, VarnodeId>,
-) -> VarnodeId {
-    if stack.get(&loc).and_then(|s| s.last()).is_some() {
-        return current_def(f, loc, stack, inputs);
-    }
-    let (sp, off, sz) = loc;
-    let cover = stack
-        .iter()
-        .filter(|((s, o, w), v)| *s == sp && *o == off && *w > sz && !v.is_empty())
-        .min_by_key(|((_, _, w), _)| *w)
-        .and_then(|(_, v)| v.last().copied());
-    let Some(w) = cover else {
-        return current_def(f, loc, stack, inputs);
-    };
-    let ops = f.blocks()[b].ops.clone();
-    let Some(&last) = ops.last() else {
-        return current_def(f, loc, stack, inputs);
-    };
-    let seq = f.op(last).seqnum;
-    let zero = f.new_const(4, 0);
-    let sub = f.new_op(OpCode::Subpiece, seq, vec![w, zero]);
-    let subout = f.new_output_unique(sub, sz);
-    f.op_mut(sub).parent = Some(super::block::BlockId(b as u32));
-    let pos = if f.op(last).code().terminates_block() { ops.len() - 1 } else { ops.len() };
-    let mut new_ops = ops;
-    new_ops.insert(pos, sub);
-    f.set_block_ops(super::block::BlockId(b as u32), new_ops);
-    subout
-}
 
 #[allow(clippy::too_many_arguments)]
 // `dom` is carried down the SSA rename recursion (faithful port of Funcdata's renaming walk)
@@ -1945,58 +2089,54 @@ fn rename(
     phis: &HashMap<usize, Vec<(Loc, OpId)>>,
     stack: &mut HashMap<Loc, Vec<VarnodeId>>,
     inputs: &mut HashMap<Loc, VarnodeId>,
-    cover: &HashSet<Loc>,
 ) {
     let mut pushed: Vec<Loc> = Vec::new();
     let ops = f.blocks()[b].ops.clone();
 
     for op in ops {
-        if f.op(op).code() == OpCode::Multiequal {
-            // a phi: its output is the new current def; inputs are filled from preds below.
-            // Phis for locations not in this pass's cover (e.g. register phis seen again while the
-            // stack pass walks) were already wired by their own pass — leave them be.
-            if let Some(l) = write_loc(f, op) {
-                if cover.contains(&l) {
-                    let out = f.op(op).output.unwrap();
-                    stack.entry(l).or_default().push(out);
-                    pushed.push(l);
+        // Ghidra `renameRecurse` (heritage.cc:2489-2530). A MULTIEQUAL's inputs come from its
+        // predecessors, not from the stack, so only its OUTPUT is processed here.
+        if f.op(op).code() != OpCode::Multiequal {
+            for slot in 0..f.op(op).num_inputs() {
+                let Some(vid) = f.op(op).input(slot) else { continue };
+                if f.vn(vid).is_heritage_known() {
+                    continue; // not free (:2495)
                 }
-            }
-            continue;
-        }
-        // rename reads in this pass's cover; reads outside it stay free (a later pass links them)
-        // or were already linked (an earlier pass).
-        for slot in 0..f.op(op).num_inputs() {
-            if let Some(l) = read_loc(f, op, slot) {
-                if cover.contains(&l) {
-                    let def = current_def_at_op(f, op, l, stack, inputs);
-                    f.op_set_input(op, slot, def);
+                if !f.vn(vid).is_active_heritage() {
+                    continue; // Not being heritaged this round (:2496)
                 }
+                f.vn_mut(vid).clear_active_heritage();
+                let l = (f.vn(vid).loc.space, f.vn(vid).loc.offset, f.vn(vid).size);
+                let def = current_def_at_op(f, op, l, stack, inputs);
+                f.op_set_input(op, slot, def);
             }
         }
-        // the output becomes the new current def
-        if let Some(l) = write_loc(f, op) {
-            if cover.contains(&l) {
-                let out = f.op(op).output.unwrap();
+        // Then push writes onto the stack (:2523-2529) — only a normalized write.
+        if let Some(out) = f.op(op).output {
+            if f.vn(out).is_active_heritage() {
+                f.vn_mut(out).clear_active_heritage();
+                let l = (f.vn(out).loc.space, f.vn(out).loc.offset, f.vn(out).size);
                 stack.entry(l).or_default().push(out);
                 pushed.push(l);
             }
         }
     }
 
-    // fill the phi argument each successor expects from this block
+    // Fill the phi argument each successor expects from this block (heritage.cc:2531-2552).
     let succs: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
     for s in succs {
         let j = f.blocks()[s].in_edges.iter().position(|e| e.0 as usize == b).unwrap();
         let phi_locs: Vec<(Loc, OpId)> = phis.get(&s).cloned().unwrap_or_default();
         for (l, phi) in phi_locs {
-            let def = reaching_phi_input(f, l, b, stack, inputs);
+            // Ghidra tests the placeholder input itself (`if (!vnin->isHeritageKnown())`); mosura's
+            // phi inputs are created free by `new_multiequal` and wired exactly once, per edge.
+            let def = current_def(f, l, stack, inputs);
             f.op_set_input(phi, j, def);
         }
     }
 
     for c in &children[b] {
-        rename(f, *c, dom, children, phis, stack, inputs, cover);
+        rename(f, *c, dom, children, phis, stack, inputs);
     }
 
     for l in pushed {
@@ -2044,21 +2184,29 @@ mod tests {
         let mut m = LocationMap::default();
 
         // A brand-new range ⇒ intersect 0; unheritaged elsewhere ⇒ find_pass -1.
-        assert_eq!(m.add(reg, 0x10, 8, 0), 0, "new range");
+        assert_eq!(m.add(reg, 0x10, 8, 0), (0x10, 8, 0), "new range");
         assert_eq!(m.find_pass(reg, 0x10), 0);
         assert_eq!(m.find_pass(reg, 0x14), 0, "interior address is covered");
         assert_eq!(m.find_pass(reg, 0x18), -1, "just past the range is uncovered");
         assert_eq!(m.find_pass(ram, 0x10), -1, "other space uncovered");
 
         // Same offset, a LATER pass, wholly contained ⇒ intersect 2 (already heritaged earlier).
-        assert_eq!(m.add(reg, 0x10, 8, 1), 2, "contained in an older-pass range");
+        assert_eq!(m.add(reg, 0x10, 8, 1), (0x10, 8, 2), "contained in an older-pass range");
         // A sub-range from a later pass is also contained ⇒ 2.
-        assert_eq!(m.add(reg, 0x12, 2, 1), 2, "sub-range contained in older range");
+        assert_eq!(
+            m.add(reg, 0x12, 2, 1),
+            (0x10, 8, 2),
+            "sub-range returns the MERGED extent, not its own footprint",
+        );
         // Same range re-added at the SAME pass ⇒ 0 (only meets same-pass coverage).
-        assert_eq!(m.add(reg, 0x10, 8, 0), 0, "same-pass re-add");
+        assert_eq!(m.add(reg, 0x10, 8, 0), (0x10, 8, 0), "same-pass re-add");
 
         // A later-pass range that extends PAST an older range partially overlaps ⇒ 1.
-        assert_eq!(m.add(reg, 0x14, 8, 2), 1, "partial overlap with older range");
+        assert_eq!(
+            m.add(reg, 0x14, 8, 2),
+            (0x10, 12, 1),
+            "partial overlap unions to [0x10,0x1c) and reports intersect 1",
+        );
         // The union now covers [0x10, 0x1c); the merged entry keeps the older pass.
         assert_eq!(m.find_pass(reg, 0x1b), 0, "merged range covers the extension, oldest pass wins");
     }
@@ -2215,23 +2363,26 @@ mod tests {
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
         let mut m = LocationMap::default();
-        assert_eq!(m.add(reg, 0x0, 4, 0), 0);
-        assert_eq!(m.add(reg, 0x10, 4, 0), 0, "disjoint new range");
+        assert_eq!(m.add(reg, 0x0, 4, 0), (0x0, 4, 0));
+        assert_eq!(m.add(reg, 0x10, 4, 0), (0x10, 4, 0), "disjoint new range");
         assert_eq!(m.find_pass(reg, 0x0), 0);
         assert_eq!(m.find_pass(reg, 0x10), 0);
         assert_eq!(m.find_pass(reg, 0x8), -1, "gap between ranges is uncovered");
         // A later-pass range starting inside the first and reaching into the gap ⇒ partial (1).
-        assert_eq!(m.add(reg, 0x2, 6, 1), 1, "overlaps the older [0,4) on the left");
+        assert_eq!(m.add(reg, 0x2, 6, 1), (0x0, 8, 1), "overlaps the older [0,4) on the left");
     }
 
-    /// `normalize_ranges` (Ghidra `guard()` normalizeReadSize/normalizeWriteSize, heritage.cc:382/416)
-    /// on the re-entry mixed-width shape: a RAM range `[0x100074, +4)` a 4-byte write covers, with a
-    /// free 2-byte read and a 2-byte write at the base. The narrow read becomes `SUBPIECE(r74:4, #0)`
-    /// and the narrow write is widened to a whole-range `PIECE(SUBPIECE(r74:4,#2), <write>)` — exactly
-    /// revisit's oracle IR (`r74:2 = SUB42(r74:4,#0)`, `r74:4 = CONCAT22(SUB42(r74:4,#2), AX)`). This
-    /// is the width unification the retired pass-0 batch could not reach on a re-heritaged RAM range.
+    /// `guard()` (Ghidra `Heritage::guard`, heritage.cc:1156) unifies the widths of a range's
+    /// accesses: the revisit shape — a RAM range `[0x100074, +4)` with a 4-byte covering write, a
+    /// free 2-byte read and a 2-byte write at the base. The narrow read is REDEFINED as
+    /// `SUBPIECE(r74:4, #0)` (keeping its own address, write-masked — `normalizeReadSize`,
+    /// heritage.cc:396) and the narrow write is widened into a whole-range
+    /// `PIECE(SUBPIECE(r74:4,#2), <write>)` (`normalizeWriteSize`, heritage.cc:416).
+    ///
+    /// There is NO widening precondition: normalization fires for every heritaged range on every
+    /// pass, because `placeMultiequals` hands `guard()` that range's own read and write sets.
     #[test]
-    fn normalize_ranges_reenters_mixed_width_range() {
+    fn guard_normalizes_mixed_width_range() {
         use super::super::block::{BlockBasic, BlockId};
         use super::super::op::SeqNum;
         use super::super::space::Address;
@@ -2243,7 +2394,7 @@ mod tests {
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
         let base = 0x100074u64;
 
-        // A 4-byte covering write `r74:4 = COPY in` (max_write == range size 4 ⇒ a Normalize range).
+        // A 4-byte covering write `r74:4 = COPY in`.
         let cov_in = f.new_input(4, Address::new(reg, 0x40));
         let op_cover = f.new_op(OpCode::Copy, seq, vec![cov_in]);
         f.new_output(op_cover, 4, Address::new(ram, base));
@@ -2254,32 +2405,37 @@ mod tests {
         let ax = f.new_output(op_read, 2, Address::new(reg, 0x0));
         // A 2-byte write at the base `r74:2 = COPY AX`.
         let op_write = f.new_op(OpCode::Copy, seq, vec![ax]);
-        f.new_output(op_write, 2, Address::new(ram, base));
+        let narrow_write = f.new_output(op_write, 2, Address::new(ram, base));
 
         f.set_blocks(vec![BlockBasic { ops: vec![op_cover, op_read, op_write], ..Default::default() }]);
         for &op in &[op_cover, op_read, op_write] {
             f.op_mut(op).parent = Some(BlockId(0));
         }
 
-        // The 2-byte location was heritaged on an earlier pass; pass 1 widens it to 4 bytes — a
-        // genuine re-entry, the only case normalize_ranges fires (S8-1 re-entry scope).
-        f.globaldisjoint.add(ram, base, 2, 0);
-        normalize_ranges(&mut f, 1); // ram is delay-1
+        let mut range = MemRange { space: ram, off: base, size: 4, flags: MemRange::NEW_ADDRESSES };
+        let locset = LocSet::build(&f);
+        let (mut c, maxsize) = collect(&f, &locset, &mut range);
+        assert_eq!(maxsize, 4, "the covering write sets collect's maxsize");
+        assert_eq!(c.read.len(), 1, "one free read in the range");
+        assert_eq!(c.write.len(), 2, "both writes are in the range");
+        guard(&mut f, &range, false, &mut c.read, &mut c.write);
 
-        // normalizeReadSize: the 2-byte read became `SUBPIECE(r74:4, #0)` and the reader is rewired.
-        let r_in = f.op(op_read).input(0).unwrap();
-        let read_sub = f.vn(r_in).def.expect("reader input now has a def");
+        // normalizeReadSize: the 2-byte read is now DEFINED by `SUBPIECE(r74:4, #0)` and write-masked.
+        let read_sub = f.vn(narrow_read).def.expect("narrow read is now a SUBPIECE output");
         assert_eq!(f.op(read_sub).code(), OpCode::Subpiece, "narrow read normalized to SUBPIECE");
+        assert!(f.vn(narrow_read).is_write_mask(), "normalized read is write-masked (heritage.cc:397)");
         let whole = f.op(read_sub).input(0).unwrap();
         assert_eq!(
             (f.vn(whole).loc.space, f.vn(whole).loc.offset, f.vn(whole).size),
             (ram, base, 4),
             "SUBPIECE reads the whole 4-byte range",
         );
+        assert!(f.vn(whole).is_active_heritage(), "the whole-range read joins this round's renaming");
         assert_eq!(f.vn(f.op(read_sub).input(1).unwrap()).loc.offset, 0, "read overlap is 0");
 
-        // normalizeWriteSize: the 2-byte write is widened to a whole-range PIECE ending at r74:4,
-        // whose high input is `SUBPIECE(r74:4, #2)` of the previous value (overlap 0, mostsig 2).
+        // normalizeWriteSize: the narrow write is write-masked and a whole-range PIECE now exists,
+        // whose high input is `SUBPIECE(r74:4, #2)` of the range's previous value.
+        assert!(f.vn(narrow_write).is_write_mask(), "narrow write is write-masked (heritage.cc:493)");
         let piece = f.blocks()[0]
             .ops
             .iter()
@@ -2295,56 +2451,12 @@ mod tests {
         let mostdef = f.vn(most).def.expect("high piece has a def");
         assert_eq!(f.op(mostdef).code(), OpCode::Subpiece, "high piece is a SUBPIECE of the old value");
         assert_eq!(f.vn(f.op(mostdef).input(1).unwrap()).loc.offset, 2, "high piece SUBPIECE at overlap 2");
-        // The original write op no longer targets the range loc directly (retargeted to a unique).
-        assert_ne!(write_loc(&f, op_write), Some((ram, base, 2)), "narrow write retargeted off the range");
     }
 
-    /// `normalize_ranges` is DORMANT with no re-entry (S8-1 scope): the same mixed-width range, but
-    /// with NO prior-pass heritage of the location, is left completely untouched — the pass-0 batch
-    /// owns first-pass normalization, so this is byte-identical on the current pipeline. (This is the
-    /// property that lets the faithful normalize land as a no-op brick for the S8-2 mainloop.)
+    /// `guard()` inserts nothing when a range's accesses already fill its width: Ghidra normalizes
+    /// only `vn->getSize() < size` (heritage.cc:1172/1179), so a uniform-width range is untouched.
     #[test]
-    fn normalize_ranges_no_reentry_is_dormant() {
-        use super::super::block::{BlockBasic, BlockId};
-        use super::super::op::SeqNum;
-        use super::super::space::Address;
-
-        let spaces = SpaceManager::standard();
-        let ram = spaces.by_name("ram").unwrap();
-        let reg = spaces.by_name("register").unwrap();
-        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
-        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let base = 0x100074u64;
-
-        let cov_in = f.new_input(4, Address::new(reg, 0x40));
-        let op_cover = f.new_op(OpCode::Copy, seq, vec![cov_in]);
-        f.new_output(op_cover, 4, Address::new(ram, base));
-        let narrow_read = f.new_varnode(2, Address::new(ram, base));
-        let addc = f.new_const(2, 0x64);
-        let op_read = f.new_op(OpCode::IntAdd, seq, vec![narrow_read, addc]);
-        let ax = f.new_output(op_read, 2, Address::new(reg, 0x0));
-        let op_write = f.new_op(OpCode::Copy, seq, vec![ax]);
-        f.new_output(op_write, 2, Address::new(ram, base));
-
-        f.set_blocks(vec![BlockBasic { ops: vec![op_cover, op_read, op_write], ..Default::default() }]);
-        for &op in &[op_cover, op_read, op_write] {
-            f.op_mut(op).parent = Some(BlockId(0));
-        }
-        let before = f.blocks()[0].ops.len();
-        // NO globaldisjoint pre-seed ⇒ no location was heritaged earlier ⇒ nothing is re-entry.
-        normalize_ranges(&mut f, 1);
-        assert_eq!(f.blocks()[0].ops.len(), before, "no ops inserted without re-entry");
-        assert!(
-            !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
-            "dormant: no normalization without re-entry",
-        );
-    }
-
-    /// `normalize_ranges` inserts nothing when a widened range's accesses already fill the new width:
-    /// a 4-byte write and 4-byte read fill a range grown to 4, so no SUBPIECE/PIECE is needed (Ghidra's
-    /// `guard()` normalizes only `vn < size`). Exercises the widening path with no narrow access.
-    #[test]
-    fn normalize_ranges_single_width_is_noop() {
+    fn guard_uniform_width_range_is_noop() {
         use super::super::block::{BlockBasic, BlockId};
         use super::super::op::SeqNum;
         use super::super::space::Address;
@@ -2368,9 +2480,11 @@ mod tests {
         for &op in &[op_cover, op_read] {
             f.op_mut(op).parent = Some(BlockId(0));
         }
-        f.globaldisjoint.add(ram, base, 2, 0); // prior heritage 2 bytes; this pass widens to 4
         let before = f.blocks()[0].ops.len();
-        normalize_ranges(&mut f, 1);
+        let mut range = MemRange { space: ram, off: base, size: 4, flags: MemRange::NEW_ADDRESSES };
+        let locset = LocSet::build(&f);
+        let (mut c, _) = collect(&f, &locset, &mut range);
+        guard(&mut f, &range, false, &mut c.read, &mut c.write);
         assert_eq!(f.blocks()[0].ops.len(), before, "no ops inserted");
         assert!(
             !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
@@ -2378,49 +2492,42 @@ mod tests {
         );
     }
 
-    /// A range no single write covers and wider than 4 bytes is Ghidra's *refinement* (partition)
-    /// case (`placeMultiequals`, heritage.cc:2610: `size > 4 && max < size`), NOT whole-range
-    /// normalize. `normalize_ranges` must skip it — it is [`refine_ranges`]' domain (which runs
-    /// FIRST and partitions the accesses so the recomputed ranges are piece-granular) — not widen
-    /// the narrow writes into bogus PIECEs (the stackreturn/impliedfield regression cause).
+    /// THE HEADLINE PROPERTY of the heritage core: a sub-register write and a containing wide read
+    /// land in ONE heritaged range. `LocationMap::add` returns the MERGED extent (heritage.cc:2708),
+    /// and `TaskList::add` keeps the task list disjoint — so an `AL:1` write and an `EAX:4` read
+    /// become a single `register:0x0:4` task rather than two independent SSA variables.
+    ///
+    /// This is the mechanism behind the multi-width AL/EAX wrong-code class: with the two split
+    /// apart, the wide read bound to a stale def and everything downstream correctly deleted real
+    /// code. Abutting-but-disjoint accesses are faithfully NOT merged (`Address::overlap` is -1 for
+    /// an exactly-adjacent range), which the `0x10:4` / `0x14:4` pair pins.
     #[test]
-    fn normalize_ranges_skips_wide_uncovered_refinement_range() {
-        use super::super::block::{BlockBasic, BlockId};
-        use super::super::op::SeqNum;
-        use super::super::space::Address;
-
+    fn merged_cover_unifies_subregister_and_containing_read() {
         let spaces = SpaceManager::standard();
-        let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
-        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
-        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let base = 0x3000u64;
+        let mut m = LocationMap::default();
+        let mut tasks = TaskList::default();
 
-        // Two adjacent 4-byte writes (base, base+4) — no single write covers the union — and a free
-        // 8-byte read spanning both, so the merged range is `[base, +8)` with max_write 4 < 8.
-        let in0 = f.new_input(4, Address::new(reg, 0x40));
-        let w0 = f.new_op(OpCode::Copy, seq, vec![in0]);
-        f.new_output(w0, 4, Address::new(ram, base));
-        let in1 = f.new_input(4, Address::new(reg, 0x48));
-        let w1 = f.new_op(OpCode::Copy, seq, vec![in1]);
-        f.new_output(w1, 4, Address::new(ram, base + 4));
-        let read8 = f.new_varnode(8, Address::new(ram, base));
-        let op_read = f.new_op(OpCode::Copy, seq, vec![read8]);
-        f.new_output(op_read, 8, Address::new(reg, 0x0));
-
-        f.set_blocks(vec![BlockBasic { ops: vec![w0, w1, op_read], ..Default::default() }]);
-        for &op in &[w0, w1, op_read] {
-            f.op_mut(op).parent = Some(BlockId(0));
-        }
-        // Prior heritage 4 bytes; this pass widens to 8 (a genuine widening re-entry) — but the
-        // widened range no single write covers, so the refinement gate must still skip it.
-        f.globaldisjoint.add(ram, base, 4, 0);
-        normalize_ranges(&mut f, 1);
-        assert!(
-            !f.blocks()[0].ops.iter().any(|&op| matches!(f.op(op).code(), OpCode::Subpiece | OpCode::Piece)),
-            "refinement range left independent (no whole-range normalize)",
+        // Address order, as the cover walk feeds them: AL:1 then EAX:4, both at register offset 0.
+        let (b0, s0, _) = m.add(reg, 0x0, 1, 0);
+        tasks.add(reg, b0, s0, MemRange::NEW_ADDRESSES);
+        let (b1, s1, _) = m.add(reg, 0x0, 4, 0);
+        assert_eq!((b1, s1), (0x0, 4), "the EAX read merges AL into a 4-byte range");
+        tasks.add(reg, b1, s1, MemRange::NEW_ADDRESSES);
+        assert_eq!(
+            tasks.ranges(),
+            &[MemRange { space: reg, off: 0x0, size: 4, flags: MemRange::NEW_ADDRESSES }],
+            "AL and EAX are ONE heritage task, not two",
         );
-        assert_eq!(write_loc(&f, w0), Some((ram, base, 4)), "narrow write NOT widened");
+
+        // Two abutting 4-byte locations stay separate (overlap is -1 for adjacency).
+        let (b2, s2, _) = m.add(reg, 0x10, 4, 0);
+        tasks.add(reg, b2, s2, MemRange::NEW_ADDRESSES);
+        let (b3, s3, _) = m.add(reg, 0x14, 4, 0);
+        tasks.add(reg, b3, s3, MemRange::NEW_ADDRESSES);
+        assert_eq!(tasks.ranges().len(), 3, "abutting ranges are NOT merged");
+        assert_eq!(tasks.ranges()[1].size, 4);
+        assert_eq!(tasks.ranges()[2].off, 0x14);
     }
 
     /// [`refine_ranges`] (Ghidra `Heritage::refinement`, heritage.cc:1890, from `placeMultiequals`
@@ -2624,7 +2731,13 @@ mod tests {
         // The 2-byte location was heritaged on an earlier pass; this pass widens to 4 — a widening
         // re-entry, the only case the brick fires (dormant otherwise).
         f.globaldisjoint.add(ram, base, 2, 0);
-        remove_revisited_markers(&mut f, 1);
+        // `collect` classifies the narrow prior-pass marker into `remove` (heritage.cc:329-333);
+        // `placeMultiequals` then hands that list to `removeRevisitedMarkers` (:2627).
+        let mut range = MemRange { space: ram, off: base, size: 4, flags: MemRange::OLD_ADDRESSES | MemRange::NEW_ADDRESSES };
+        let locset = LocSet::build(&f);
+        let (c, _) = collect(&f, &locset, &mut range);
+        assert_eq!(c.remove.len(), 1, "the narrow prior-pass marker is collect's `remove` domain");
+        remove_revisited_markers_at(&mut f, &c.remove, &range);
 
         // The MULTIEQUAL op is rewritten in place as `SUBPIECE(big, #0)`.
         assert_eq!(f.op(phi).code(), OpCode::Subpiece, "MULTIEQUAL marker rewritten to SUBPIECE");
@@ -2686,7 +2799,13 @@ mod tests {
         f.op_insert_after(ind, call);
 
         f.globaldisjoint.add(ram, base, 2, 0);
-        remove_revisited_markers(&mut f, 1);
+        // `collect` classifies the narrow prior-pass marker into `remove` (heritage.cc:329-333);
+        // `placeMultiequals` then hands that list to `removeRevisitedMarkers` (:2627).
+        let mut range = MemRange { space: ram, off: base, size: 4, flags: MemRange::OLD_ADDRESSES | MemRange::NEW_ADDRESSES };
+        let locset = LocSet::build(&f);
+        let (c, _) = collect(&f, &locset, &mut range);
+        assert_eq!(c.remove.len(), 1, "the narrow prior-pass marker is collect's `remove` domain");
+        remove_revisited_markers_at(&mut f, &c.remove, &range);
 
         assert_eq!(f.op(ind).code(), OpCode::Subpiece, "INDIRECT marker rewritten to SUBPIECE");
         let big = f.op(ind).input(0).unwrap();
@@ -2734,7 +2853,13 @@ mod tests {
         f.op_mut(use4).parent = Some(BlockId(0));
 
         f.globaldisjoint.add(ram, base, 2, 0);
-        remove_revisited_markers(&mut f, 1);
+        // `collect` classifies the narrow prior-pass marker into `remove` (heritage.cc:329-333);
+        // `placeMultiequals` then hands that list to `removeRevisitedMarkers` (:2627).
+        let mut range = MemRange { space: ram, off: base, size: 4, flags: MemRange::OLD_ADDRESSES | MemRange::NEW_ADDRESSES };
+        let locset = LocSet::build(&f);
+        let (c, _) = collect(&f, &locset, &mut range);
+        assert_eq!(c.remove.len(), 1, "the narrow prior-pass marker is collect's `remove` domain");
+        remove_revisited_markers_at(&mut f, &c.remove, &range);
 
         assert!(!f.blocks()[0].ops.contains(&rcopy), "return-copy removed from the block");
         assert!(f.op(rcopy).is_dead(), "return-copy op destroyed (dead)");
