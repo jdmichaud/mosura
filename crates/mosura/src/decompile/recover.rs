@@ -539,10 +539,21 @@ pub fn init_active_output(f: &mut Funcdata) {
 }
 
 /// Maximum number of evaluation passes before the call-input trial decisions are committed
-/// structurally — a port of Ghidra's `ParamActive::maxpass` (set from `getMaxInputDelay`,
+/// structurally — a stand-in for Ghidra's `ParamActive::maxpass` (set from `getMaxInputDelay`,
 /// fspec.cc:5335). `0` means the single pass available in today's (non-iterating) pipeline commits
 /// immediately, so the recovery stays byte-identical to the old greedy prune; the mainloop flip
 /// raises this so the commit DEFERS until heritage + simplification have stabilized across passes.
+///
+/// ⚠️ THIS IS THE ONLY DORMANT MAXPASS — the RETURN side is already faithful. Measured on the
+/// pinned x86-64 SysV model: the INPUT list is 15 entries whose max space delay is **1** (the lone
+/// `stack` overflow entry, base 0x8 size 500 align 8; every register entry is delay 0), so Ghidra's
+/// `initActiveInput` gives it `maxPass = 3` and a call needs FOUR evaluations to commit. The OUTPUT
+/// list is 4 entries, ALL register, max delay **0**, so `Funcdata::initActiveOutput`
+/// (funcdata_varnode.cc:585-592, ported verbatim in [`init_active_output`] including the `>0 => 3`
+/// cap) gives it `maxPass = 0` and it commits on pass 1. So the return side needs no repeat
+/// scheduling and gets Ghidra's own answer from the single `ActionResolveCalls`; the input side
+/// cannot, and that asymmetry is a property of the CONVENTIONS (an input stack area exists, an
+/// output one does not), not an accident of mosura's pipeline.
 const CALL_MAXPASS: i32 = 0;
 
 /// Commit the recovered return value on every RETURN — a port of Ghidra's `ActionReturnRecovery`

@@ -22,10 +22,14 @@
 # context makes Ghidra PRUNE LIVE CODE. With the callees unresolvable, guard conditions fold to
 # constants and whole blocks are declared dead — Ghidra's own output says so: FUN_00066da8 carries
 # NINE `/* WARNING: Removing unreachable block ... */` comments, then emits 2 calls where the bytes
-# contain 9. Measured against the pinned base emission, that is 3 functions / 11 calls (00066da8 +7,
-# 0006581c +3, 00066ea8 +1); each of the three carries such warnings, and every one of mosura's
-# claimed sites in them was checked against the fixup-applied image as a real `e8 rel32` at its exact
-# target.
+# contain 9. THE CORRECTED FIGURE IS 4 FUNCTIONS / 17 CALLS OF TOTAL SURPLUS — 00066da8 +7,
+# 0007baf0 +6, 0006581c +3, 00066ea8 +1 — and NOT the 17-or-18 functions this note was first drafted
+# with (see the counter warning below). Of those four, 0007baf0 is the short-slice case described at
+# the end of this header; the other three each carry Ghidra's own unreachable-block warnings. Every
+# one of mosura's claimed sites in them was checked against the fixup-applied image as a real
+# `e8 rel32` at its exact target — but note that check proves MOSURA'S side only: the attribution
+# "Ghidra under-emits here" additionally needs the Ghidra-side counter to be right, and for 14 of the
+# original 18 it was not.
 #
 # ⚠️ AND BEFORE BELIEVING ANY SURPLUS, SUSPECT THE COUNTER — that number was 17 functions / 39 calls
 # until 2026-07-29, when the extra 14 turned out to be a COUNTING BUG, not pruning. The gauge's call
