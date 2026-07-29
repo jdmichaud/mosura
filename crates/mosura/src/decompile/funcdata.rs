@@ -147,6 +147,14 @@ pub struct Funcdata {
     /// caller; consumed by `PrintC::opCallother` to render a `CPUI_CALLOTHER` as `<name>(args)`
     /// rather than leaking a raw `CALLOTHER(...)`. Empty for a hand-built `Funcdata`.
     pub userops: std::collections::HashMap<u64, String>,
+    /// Ghidra `Funcdata::opactdbg_active` — record op mutations for the action currently running.
+    /// Set by [`debug_activate`](Self::debug_activate) (a no-op unless the facility is on) and
+    /// cleared by [`debug_mod_print`](Self::debug_mod_print).
+    opactdbg_active: bool,
+    /// Ghidra `Funcdata::modify_list` / `modify_before` — the ops mutated during the current action
+    /// and their rendered \e before state.
+    modify_list: Vec<OpId>,
+    modify_before: Vec<String>,
 }
 
 impl Funcdata {
@@ -181,6 +189,9 @@ impl Funcdata {
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),
             userops: std::collections::HashMap::new(),
+            opactdbg_active: false,
+            modify_list: Vec::new(),
+            modify_before: Vec::new(),
         }
     }
 
@@ -660,6 +671,7 @@ impl Funcdata {
 
     /// Change `op`'s opcode (Ghidra's `opSetOpcode`).
     pub fn op_set_opcode(&mut self, op: OpId, opcode: OpCode) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         self.ops[op.0 as usize].opcode = opcode;
     }
 
@@ -882,6 +894,7 @@ impl Funcdata {
     /// rewrites a MULTIEQUAL into a plain op and must re-position it (via [`op_insert_begin`])
     /// out of the leading-MULTIEQUAL region.
     pub fn op_uninsert(&mut self, op: OpId) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         if let Some(b) = self.ops[op.0 as usize].parent {
             let ops = &mut self.blocks[b.0 as usize].ops;
             if let Some(pos) = ops.iter().position(|&o| o == op) {
@@ -928,6 +941,7 @@ impl Funcdata {
     /// `op`'s current output, detach `vid` from its old producer, then wire `vid.def = op`.
     /// Used by `RulePtrArith::buildTree` to hand the original ADD's output to the new tail op.
     pub fn op_set_output(&mut self, op: OpId, vid: VarnodeId) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         if self.ops[op.0 as usize].output == Some(vid) {
             return;
         }
@@ -945,6 +959,7 @@ impl Funcdata {
 
     /// Swap two input slots of `op` (Ghidra's `opSwapInput`).
     pub fn op_swap_input(&mut self, op: OpId, i: usize, j: usize) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         self.ops[op.0 as usize].inrefs.swap(i, j);
     }
 
@@ -956,6 +971,7 @@ impl Funcdata {
 
     /// Replace `op`'s entire input list (Ghidra's `opSetAllInput`), fixing descendants.
     pub fn op_set_all_input(&mut self, op: OpId, inputs: &[VarnodeId]) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let old = std::mem::take(&mut self.ops[op.0 as usize].inrefs);
         for v in old {
             if let Some(pos) = self.varnodes[v.0 as usize].descend.iter().position(|&o| o == op) {
@@ -970,6 +986,7 @@ impl Funcdata {
 
     /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
     pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let vid = self.ops[op.0 as usize].inrefs.remove(slot);
         if let Some(pos) = self.varnodes[vid.0 as usize].descend.iter().position(|&o| o == op) {
             self.varnodes[vid.0 as usize].descend.remove(pos);
@@ -1000,6 +1017,7 @@ impl Funcdata {
     /// descendant list, clear its output's def, and mark it dead. The op stays in the
     /// arena but is detached and should be removed from its block's op list separately.
     pub fn op_destroy(&mut self, op: OpId) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let inrefs = std::mem::take(&mut self.ops[op.0 as usize].inrefs);
         for v in inrefs {
             if let Some(pos) = self.varnodes[v.0 as usize].descend.iter().position(|&o| o == op) {
@@ -1034,6 +1052,7 @@ impl Funcdata {
     /// Repoint input `slot` of `op` at varnode `vid`, maintaining descendant lists
     /// (Ghidra's `opSetInput`). Used by heritage renaming.
     pub fn op_set_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let old = self.ops[op.0 as usize].inrefs[slot];
         if old == vid {
             return;
@@ -1048,6 +1067,7 @@ impl Funcdata {
     /// Insert `vid` as a new input of `op` at position `slot` (Ghidra's `opInsertInput`),
     /// shifting later inputs up and adding `op` to `vid`'s descendant list.
     pub fn op_insert_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
+        self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         self.ops[op.0 as usize].inrefs.insert(slot, vid);
         self.varnodes[vid.0 as usize].descend.push(op);
     }
@@ -1141,6 +1161,70 @@ impl Funcdata {
     /// Render a single op as one line (`0x<addr>:<uniq>: out = OPCODE inputs`), the per-op form
     /// of [`print_raw`](Self::print_raw). Used by the rule-application trace (`MOSURA_TRACE`) to
     /// capture an op's before/after state; a dead op renders as `**` (Ghidra's `printDebug`).
+    /// Ghidra's `OPACTION_DEBUG` selector (`Action::turnOnDebug`, action.hh:98). `MOSURA_OPACTION`
+    /// unset ⇒ the whole facility is off and every hook below early-outs on a single bool.
+    /// `MOSURA_OPACTION=1` (or empty) traces every action; any other value names the one action to
+    /// trace, matched against [`Action::name`](super::action::Action::name).
+    fn opaction_filter() -> Option<&'static str> {
+        static F: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        F.get_or_init(|| std::env::var("MOSURA_OPACTION").ok()).as_deref()
+    }
+
+    /// Ghidra `Funcdata::debugActivate` (funcdata.hh:596) — begin recording op mutations, if this
+    /// action is selected. Called by the action driver before `apply`.
+    pub fn debug_activate(&mut self, actionname: &str) {
+        self.opactdbg_active = match Self::opaction_filter() {
+            None => false,
+            Some("") | Some("1") => true,
+            Some(sel) => sel == actionname,
+        };
+    }
+
+    /// Ghidra `Funcdata::debugModCheck` (funcdata.cc) — cache the \e before state of `op` the FIRST
+    /// time the running action touches it. Called from every op-mutation primitive, which is what
+    /// makes this facility answer "who modified/destroyed this op?" for **actions**, not just rules:
+    /// the rule-level trace ([`super::action`]) only sees the op a rule was applied to, so an action
+    /// that destroys some *other* op — the case that cost this campaign a hand-rolled backtrace
+    /// probe — is invisible to it and visible here.
+    pub fn debug_mod_check(&mut self, op: OpId) {
+        if !self.opactdbg_active {
+            return; // the facility is off: one predictable branch, nothing else
+        }
+        if self.ops[op.0 as usize].flags & super::op::flags::MODIFIED != 0 {
+            return; // already captured for this action
+        }
+        self.ops[op.0 as usize].flags |= super::op::flags::MODIFIED;
+        let before = self.op_str(op);
+        self.modify_list.push(op);
+        self.modify_before.push(before);
+    }
+
+    /// Ghidra `Funcdata::debugModPrint` (funcdata.cc) — print the before/after pair for every op the
+    /// named action modified, then stop recording. Format mirrors Ghidra's exactly, and the
+    /// rule-level trace's, so one differ can read both.
+    pub fn debug_mod_print(&mut self, actionname: &str) {
+        if !self.opactdbg_active {
+            return;
+        }
+        self.opactdbg_active = false;
+        if self.modify_list.is_empty() {
+            return;
+        }
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut s = format!("DEBUG {n}: {actionname}\n");
+        for (i, &op) in self.modify_list.iter().enumerate() {
+            let _ = writeln!(s, "{}", self.modify_before[i]);
+            let _ = writeln!(s, "   {}", self.op_str(op));
+        }
+        for &op in &self.modify_list {
+            self.ops[op.0 as usize].flags &= !super::op::flags::MODIFIED;
+        }
+        self.modify_list.clear();
+        self.modify_before.clear();
+        print!("{s}");
+    }
+
     pub fn op_str(&self, id: OpId) -> String {
         let op = self.op(id);
         let mut s = String::new();

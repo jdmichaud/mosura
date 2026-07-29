@@ -164,6 +164,11 @@ impl Action for ActionGroup {
         loop {
             let mut round = 0;
             for a in &mut self.list {
+                // Ghidra `Action::perform` (action.cc:316-322) brackets every action's `apply` with
+                // `debugActivate()` / `debugModPrint(getName())`, so the OPACTION_DEBUG facility
+                // attributes each op mutation to the action that made it. Both calls early-out on a
+                // single bool unless `MOSURA_OPACTION` selects this action.
+                data.debug_activate(a.name());
                 if timing {
                     let t0 = std::time::Instant::now();
                     round += a.apply(data);
@@ -171,6 +176,7 @@ impl Action for ActionGroup {
                 } else {
                     round += a.apply(data);
                 }
+                data.debug_mod_print(a.name());
             }
             total += round;
             if !self.restart || round == 0 {

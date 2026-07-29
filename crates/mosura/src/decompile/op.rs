@@ -66,6 +66,12 @@ pub mod flags {
     /// `ActionRestructureVarnode::protectSwitchPaths` (coreaction.cc:2245/2257). That protection is
     /// jumptable-recovery-time only and is not modelled (`pipeline.rs:342`), so nothing sets this.
     pub const NO_INDIRECT_COLLAPSE: u32 = 0x1000;
+    /// Ghidra `PcodeOp::modified` (op.hh, an `additional_flags` bit) — transient bookkeeping for the
+    /// `OPACTION_DEBUG` facility: this op's \e before state has already been captured for the action
+    /// currently running, so the next mutation must not overwrite it. Set by
+    /// `Funcdata::debug_mod_check`, cleared by `debug_mod_print`/`debug_mod_clear`. Never read by
+    /// the pipeline.
+    pub const MODIFIED: u32 = 0x2000;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
