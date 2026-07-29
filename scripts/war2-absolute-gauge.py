@@ -10,14 +10,24 @@ WHY THIS EXISTS
 
     So this gauge is ABSOLUTE — it compares against an external reference, never against ourselves.
 
-CHOICE OF REFERENCE
-    Ghidra's own per-function decompilation of the same bytes (scripts/ghidra-decompile-war2.sh
-    --all). Do NOT substitute a linear disassembly sweep of the original bytes: a linear sweep
-    decodes padding and inline data as instructions and overstates the true call count by ~2.3x,
-    which once produced a completely wrong headline ("455 functions, 41% of calls").
+REFERENCE HIERARCHY — bytes > Ghidra > mosura
+    The AUTHORITY is the original machine code. Ghidra is the STANDING reference here only because
+    it is cheap and now available for all 1286 functions; it is a proxy, not ground truth.
 
-    Ghidra is not ground truth — the binary is — but it is a decompiler that gets these functions
-    right, so a deficit against it is a real defect with a known-good rendering to diff against.
+    ⚠️ READ THE OUTPUT CORRECTLY: "94.8% of Ghidra" is NOT "94.8% of the binary". This gauge is
+    blind to any call that BOTH tools drop — which is the very same both-sides blindness that made
+    differential scans useless, just moved up one level. A clean report here bounds the defect
+    against Ghidra and says nothing about a shared defect.
+
+    To settle a specific function, go to the bytes: a FLOW-FOLLOWING disassembly from the function
+    entry. Do NOT use a linear sweep (`objdump -D` over raw bytes) — it decodes padding and inline
+    data as instructions and overstates calls by ~2.3x, which once produced an entirely wrong
+    headline ("455 functions, 41% of calls") that had to be retracted. That was the actual defect,
+    not disassembly-as-reference per se.
+
+    Keep at least one HAND-VERIFIED fixture whose true answer is known independently, and check any
+    new counting predicate against it before quoting a number. `FUN_0001bd30` (4 real calls; Ghidra
+    4; mosura 1) caught two separate counting bugs in this file's own predicates.
 
 USAGE
     scripts/war2-absolute-gauge.py [--sweep ghidra-all.txt] [--src <dir>] [--manifest <tsv>]
@@ -110,6 +120,9 @@ def main() -> int:
 
     print("=== WAR2 ABSOLUTE GAUGE (mosura vs Ghidra, per function) ===")
     print(f"reference: {a.sweep} ({len(gh)} functions)")
+    print("reference hierarchy: bytes > Ghidra > mosura. Ghidra is a PROXY, not ground truth —")
+    print("this gauge cannot see a call that BOTH tools drop. Percentages below are OF GHIDRA,")
+    print("not of the binary; settle a specific function against a flow-following disassembly.")
     for mname, (fn, units) in METRICS.items():
         rows = []
         for va, gtext in gh.items():
