@@ -724,6 +724,31 @@ impl ProtoModel {
         lookup_effect(&self.effectlist, addr, size)
     }
 
+    /// Ghidra `FuncProto::characterizeAsInputParam` (fspec.cc:4289 →
+    /// `ProtoModel::characterizeAsInputParam`, fspec.hh:858 → `input->characterizeAsParam`): how
+    /// `[loc,loc+size)` relates to this convention's parameter storage. The input-side twin of
+    /// [`Self::characterize_as_output`], asked by `Heritage::guardCalls` (heritage.cc:1495) of every
+    /// heritaged range at every call site.
+    pub fn characterize_as_input_param(&self, loc: Address, size: u32) -> Containment {
+        match self.input.as_ref() {
+            Some(pl) => pl.characterize_as_param(loc, size),
+            None => Containment::NoContainment,
+        }
+    }
+
+    /// Ghidra `FuncProto::getBiggestContainedInputParam` (fspec.cc:4470): the largest parameter
+    /// storage contained within an over-wide range, for `guardCallOverlappingInput`'s SUBPIECE.
+    pub fn get_biggest_contained_input_param(&self, loc: Address, size: u32) -> Option<(Address, u32)> {
+        self.input.as_ref()?.get_biggest_contained_param(loc, size)
+    }
+
+    /// Ghidra `FuncProto::getMaxInputDelay` (fspec.hh:1571 → `ProtoModel::getMaxInputDelay`,
+    /// fspec.hh:990): heritage passes to wait before every possible parameter location has
+    /// data-flow. Feeds `FuncCallSpecs::initActiveInput`'s `setMaxPass` (fspec.cc:5335).
+    pub fn max_input_delay(&self, spaces: &SpaceManager) -> i32 {
+        self.input.as_ref().map_or(0, |pl| pl.max_delay(spaces))
+    }
+
     /// Ghidra `FuncProto::characterizeAsOutput` (fspec.cc:4336 → `ProtoModel::characterizeAsOutput`,
     /// fspec.hh:873 → `output->characterizeAsParam`): how `[loc,loc+size)` relates to this
     /// convention's return storage. This is the query `Heritage::guardReturns` (heritage.cc:1660)
@@ -892,6 +917,27 @@ impl ParamActive {
         }
         self.trial.push(t);
         self.trial.len() - 1
+    }
+
+    /// Ghidra `ParamActive::whichTrial` (fspec.cc:1982): the index of the first trial overlapping
+    /// `[addr,addr+sz)`, or `None`. Used by `Heritage::guardCalls` to avoid registering a second
+    /// trial for a range some earlier heritage pass already registered (heritage.cc:1499).
+    pub fn which_trial(&self, addr: Address, sz: u32) -> Option<usize> {
+        self.trial.iter().position(|t| {
+            t.addr.space == addr.space
+                && addr.offset < t.addr.offset + t.size as u64
+                && t.addr.offset < addr.offset + sz as u64
+        })
+    }
+
+    /// Ghidra `ParamActive::deleteUnusedTrials` (fspec.cc:2013): drop every trial that `fillin_map`
+    /// did not mark `used` and renumber the survivors' slots 1, 2, … — the trial list is now the
+    /// committed argument list, so a trial's slot again names where its varnode sits on the op.
+    pub fn delete_unused_trials(&mut self) {
+        self.trial.retain(|t| t.is_used());
+        for (i, t) in self.trial.iter_mut().enumerate() {
+            t.op_slot = (i + 1) as u32;
+        }
     }
 
     /// Ghidra `ParamActive::sortTrials`: order trials into formal-parameter order — a trial that

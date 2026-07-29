@@ -45,12 +45,13 @@ impl Action for ActionHeritage {
             // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
             super::cfg::build_cfg(data);
             super::stackvars::recover_stack(data);
-            // Open return-value recovery (Ghidra `ActionPrototypeTypes`, coreaction.cc:4651) before
-            // heritage: the candidates themselves are registered per heritaged range by
-            // `guard_returns`' `characterizeAsOutput` query. Argument candidates are still wired
-            // pre-heritage as fixed varnodes (the input side of the same adaptation, task #5).
+            // Open return-value and argument recovery before heritage (Ghidra
+            // `ActionPrototypeTypes`, coreaction.cc:4651, and `ActionFuncLink::funcLinkInput`,
+            // coreaction.cc:1483). Both containers start EMPTY: the candidates are registered per
+            // heritaged range during heritage, by `guard_returns`' `characterizeAsOutput` and
+            // `guard_calls`' `characterizeAsInputParam` queries over the compiler spec.
             super::recover::init_active_output(data);
-            super::recover::recover_call_args(data);
+            super::recover::init_active_input(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
             // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are
             // aliased — their address escapes to a call. This decides which slots heritage's
@@ -58,6 +59,7 @@ impl Action for ActionHeritage {
             // guarded and its loop SSA is left intact — without a calling-convention scan.
             let boundary = {
                 let mut probe = data.clone();
+                probe.call_guards_active = true; // PROBE-DIAGNOSTIC
                 let pdom = super::dominator::compute(&probe);
                 super::heritage::heritage(&mut probe, &pdom);
                 super::recover::resolve_return(&mut probe);
@@ -72,6 +74,9 @@ impl Action for ActionHeritage {
             // threading the alias boundary. The probe clone above heritaged with guarding OFF (the
             // default), so its boundary was computed on a graph free of the call INDIRECTs — as
             // Ghidra runs guardCalls only in the true heritage, not the AliasChecker probe.
+            if std::env::var_os("MOSURA_INSTR_ALIAS").is_some() {
+                eprintln!("== alias_boundary = {:?}", boundary);
+            }
             data.alias_boundary = boundary;
             data.call_guards_active = true;
             let dom = super::dominator::compute(data);
@@ -675,6 +680,16 @@ pub fn universal_action() -> ActionGroup {
                         // INDIRECTs.
                         .then(super::directwrite::ActionDirectWrite::new(true))
                         .then(super::directwrite::ActionDirectWrite::new(false))
+                        // ActionActiveParam + ActionReturnRecovery (Ghidra :5499-5500), at their
+                        // real slot: directly after the two ActionDirectWrite and before the
+                        // DeadCode below. They are members of `actmainloop` (rule_repeatapply), and
+                        // that is not decoration — `initActiveInput` sets `maxPass` to 3 whenever
+                        // the convention has a delayed resource (fspec.cc:5335), so a call needs
+                        // FOUR evaluations before `isFullyChecked` lets its argument list commit.
+                        // Run once, as the standalone instance below the heritage group used to be,
+                        // every call stays at `passes=1/3` forever and `buildInputFromTrials` is
+                        // never reached. That was invisible while mosura pinned `maxPass` to 0.
+                        .then(ActionResolveCalls)
                         .then(super::deadcode::ActionDeadCode),
                 )
                 // The actfullloop tail (Ghidra coreaction.cc:5678-5689), the mosura-present members

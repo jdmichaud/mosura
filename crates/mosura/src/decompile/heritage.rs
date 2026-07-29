@@ -1295,6 +1295,47 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             continue;
         }
         let Some(bid) = f.op(call).parent else { continue };
+
+        // Input-parameter branch (Ghidra `Heritage::guardCalls`, heritage.cc:1494-1509). While
+        // argument recovery is open for this call, ask the convention how this heritaged range
+        // relates to its PARAMETER storage — `FuncProto::characterizeAsInputParam`, i.e. the
+        // compiler spec's `<input>` pentries. A range that IS parameter storage (justified) takes a
+        // fresh input on the CALL and registers one trial, so renaming links it to the value the
+        // caller left there; a range that SWALLOWS parameter storage goes through
+        // [`guard_call_overlapping_input`]. **The candidates are a QUERY, never a fixed register
+        // list** — this retires `recover_call_args`, which appended hardcoded x86-64 `RDI..R9` at
+        // width 8 to every CALL pre-heritage. On x86-32 those offsets are not the argument
+        // registers at all: `0x10:8` spans ESP *and* EBP and `0x8:8` spans EDX *and* EBX, so every
+        // call site grew six spurious wide reads over ranges nothing writes — the same
+        // spurious-range mechanism that severed narrow-switch recovery on the return side.
+        //
+        // Ghidra's `tryregister` (heritage.cc:1461-1466): a SPACEBASE (stack) range needs the call's
+        // stack offset to translate into the callee's frame, and Ghidra declines to register a trial
+        // when that offset is unknown. mosura does not model `FuncCallSpecs::getSpacebaseOffset`
+        // yet, so every spacebase range takes Ghidra's own unknown-offset path. Register ranges —
+        // which is all `recover_call_args` ever covered — translate identically (`transAddr == addr`).
+        if f.active_inputs.contains_key(&call) && f.spaces.get(spc).kind != super::space::SpaceKind::Spacebase {
+            match f.proto_model.characterize_as_input_param(addr, size) {
+                super::fspec::Containment::ContainsJustified => {
+                    let active = f.active_inputs.get_mut(&call).unwrap();
+                    if active.which_trial(addr, size).is_none() {
+                        let ti = active.register_trial(addr, size);
+                        let invn = f.new_varnode(size, addr);
+                        // heritage.cc:1503 — the new CALL input joins THIS round's renaming, so it
+                        // binds to the value the caller left in the argument register. Without it
+                        // the varnode is not activeHeritage, `rename_recurse` skips it (:2496) and
+                        // it stays free at an argument location forever.
+                        f.vn_mut(invn).set_active_heritage();
+                        f.op_append_input(call, invn);
+                        let slot = f.op(call).num_inputs() - 1;
+                        f.active_inputs.get_mut(&call).unwrap().trial[ti].op_slot = slot as u32;
+                    }
+                }
+                super::fspec::Containment::ContainedBy => guard_call_overlapping_input(f, call, addr, size),
+                _ => {}
+            }
+        }
+
         if effecttype == effect::KILLEDBYCALL {
             // newIndirectCreation (mosura 1-input): out@range = INDIRECT(#0), output marked
             // indirect-creation (no realistic ancestor / the clobber). Ghidra `newIndirectCreation`
@@ -1331,6 +1372,39 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             }
         }
     }
+}
+
+/// Guard a call where the heritaged range properly CONTAINS the parameter storage — a port of
+/// Ghidra `Heritage::guardCallOverlappingInput` (heritage.cc:1210). The call may be taking part of
+/// this range as an argument, so a SUBPIECE truncates the range down to the storage the convention
+/// actually passes in, and that truncated piece becomes the call's new input and its trial.
+fn guard_call_overlapping_input(f: &mut Funcdata, call: OpId, addr: super::space::Address, size: u32) {
+    let Some((trunc_addr, trunc_size)) = f.proto_model.get_biggest_contained_input_param(addr, size) else {
+        return;
+    };
+    if f.active_inputs.get(&call).is_some_and(|a| a.which_trial(trunc_addr, trunc_size).is_some()) {
+        return;
+    }
+    // Bytes to truncate off the least-significant end (little-endian; Ghidra's `justifiedContain`).
+    let truncate_amount = trunc_addr.offset - addr.offset;
+    let seq = f.op(call).seqnum;
+    let whole = f.new_varnode(size, addr);
+    // heritage.cc:1226 — the SUBPIECE's whole-range READ joins this round's renaming. (Ghidra does
+    // NOT mark the truncated output: it is a written varnode, and `rename_recurse` only gates FREE
+    // varnodes on the flag.)
+    f.vn_mut(whole).set_active_heritage();
+    let off_const = f.new_const(4, truncate_amount);
+    let subop = f.new_op(OpCode::Subpiece, seq, vec![whole, off_const]);
+    if let Some(bid) = f.op(call).parent {
+        f.op_mut(subop).parent = Some(bid);
+    }
+    f.op_insert_before(subop, call);
+    let piece = f.new_output(subop, trunc_size, trunc_addr);
+    f.op_append_input(call, piece);
+    let slot = f.op(call).num_inputs() - 1;
+    let active = f.active_inputs.get_mut(&call).unwrap();
+    let ti = active.register_trial(trunc_addr, trunc_size);
+    active.trial[ti].op_slot = slot as u32;
 }
 
 /// The live RETURN ops, in block/op order — Ghidra's `beginOp(CPUI_RETURN)`..`endOp(CPUI_RETURN)`

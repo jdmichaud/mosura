@@ -36,7 +36,10 @@ const RAX: u64 = 0x0;
 #[cfg(test)]
 const XMM0: u64 = 0x1200;
 
-/// SysV integer argument registers, in order: RDI, RSI, RDX, RCX, R8, R9.
+/// SysV integer argument registers, in order: RDI, RSI, RDX, RCX, R8, R9 — for the hand-built
+/// x86-64 fixtures below. The recovery itself no longer names a register: argument candidates come
+/// from the compiler spec (see [`init_active_input`]).
+#[cfg(test)]
 const ARG_REGS: [u64; 6] = [0x38, 0x30, 0x10, 0x8, 0x80, 0x88];
 
 /// Does `vn`'s value trace back to a real write the function made (a "solid" definition),
@@ -662,20 +665,31 @@ fn live_returns(f: &Funcdata) -> Vec<OpId> {
     f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Return).collect()
 }
 
-/// Append the candidate integer argument registers (RDI…R9) to every CALL op, so heritage
-/// links them to the value each holds at the call site. Runs pre-heritage. (Mirrors
-/// `recover_return` on the input side — Ghidra's `ActionFuncLink`/`ParamActive` setup.)
-pub fn recover_call_args(f: &mut Funcdata) {
-    let Some(reg) = f.spaces.by_name("register") else { return };
-    let calls: Vec<OpId> =
-        f.op_ids()
+/// Open argument recovery on every call — a port of Ghidra `FuncCallSpecs::initActiveInput`
+/// (fspec.cc:5330), called from `ActionFuncLink::funcLinkInput` (coreaction.cc:1483) for every
+/// sub-function whose prototype is not input-locked. Creates the (empty) per-call trial container
+/// and sets its pass budget from the convention's `getMaxInputDelay`. Runs pre-heritage.
+///
+/// The trials themselves are registered DURING heritage, by [`super::heritage::guard_calls`] asking
+/// `characterizeAsInputParam` of each heritaged range at each call site (heritage.cc:1495). This
+/// RETIRES `recover_call_args`, the input-side twin of the retired `recover_return`: it appended
+/// hardcoded x86-64 `RDI…R9` varnodes at width 8 to every CALL. On x86-32 those offsets are not the
+/// argument registers at all — `0x10:8` spans ESP *and* EBP, `0x8:8` spans EDX *and* EBX, and the
+/// other four land in non-GPR register space — so every call site grew six spurious wide reads over
+/// ranges no instruction writes.
+pub fn init_active_input(f: &mut Funcdata) {
+    let reg = f.spaces.by_name("register");
+    let maxdelay = f.proto_model.max_input_delay(&f.spaces);
+    let calls: Vec<OpId> = f
+        .op_ids()
         .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
         .collect();
     for call in calls {
-        for off in ARG_REGS {
-            let v = f.new_varnode(8, Address::new(reg, off));
-            f.op_append_input(call, v);
-        }
+        let mut active = ParamActive::new(reg);
+        active.is_recover_subcall = true;
+        // fspec.cc:5335 — `maxdelay = getMaxInputDelay(); if (maxdelay > 0) maxdelay = 3;`
+        active.set_max_pass(if maxdelay > 0 { 3 } else { CALL_MAXPASS });
+        f.active_inputs.insert(call, active);
     }
 }
 
@@ -745,12 +759,21 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
     // not be rejected as a competing use, which drops the real arg on the first call. mosura's old
     // per-call setup+check loop left a not-yet-processed callee's container absent, so the double-use
     // was spuriously rejected.
-    for &call in &calls {
-        setup_active_input(f, call);
-    }
     for call in calls {
+        // Ghidra `ActionActiveParam::apply` (coreaction.cc:1739) does everything below under
+        // `if (fc->isInputActive())`. mosura's `isInputActive` is the presence of the call's entry
+        // in `active_inputs`: `init_active_input` creates it and the `clearActiveInput` below
+        // removes it. The gate used to be unnecessary because the retired `setup_active_input`
+        // re-created the container from the CALL's input slots on every pass, so a call that had
+        // already committed its arguments silently re-entered trial evaluation.
+        if !f.active_inputs.contains_key(&call) {
+            continue;
+        }
         check_input_trial_use(f, call);
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
+            // coreaction.cc:1752-1754 — deriveInputMap decides which trials are the parameters and
+            // leaves them in parameter order; buildInputFromTrials then commits that list.
+            derive_input_map(f, call);
             build_input_from_trials(f, call);
             f.active_inputs.remove(&call); // Ghidra `FuncCallSpecs::clearActiveInput`
             count += 1; // coreaction.cc:1756 — the commit is a change
@@ -761,27 +784,11 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
     count
 }
 
-/// Ghidra `FuncCallSpecs::initActiveInput` (fspec.cc:5331) + the candidate-trial registration
-/// heritage does in `guardCalls` (heritage.cc:1481): create the per-CALL trial container once, a
-/// trial per candidate argument slot (the registers [`recover_call_args`] appended).
-fn setup_active_input(f: &mut Funcdata, call: OpId) {
-    if f.active_inputs.contains_key(&call) {
-        return;
-    }
-    let reg = f.spaces.by_name("register");
-    let mut active = ParamActive::new(reg);
-    active.is_recover_subcall = true;
-    active.set_max_pass(CALL_MAXPASS);
-    let n = f.op(call).num_inputs();
-    for slot in 1..n {
-        if let Some(v) = f.op(call).input(slot) {
-            let (loc, size) = (f.vn(v).loc, f.vn(v).size);
-            let ti = active.register_trial(loc, size);
-            active.trial[ti].op_slot = slot as u32;
-        }
-    }
-    f.active_inputs.insert(call, active);
-}
+// `setup_active_input` is gone: it rebuilt each call's trial container from the CALL's input slots
+// on every pass, which only worked because `recover_call_args` had appended a fixed candidate list
+// pre-heritage. The container is now created once by [`init_active_input`] and its trials are
+// registered during heritage by `guard_calls`' `characterizeAsInputParam` query
+// (heritage.cc:1495), exactly as Ghidra does.
 
 /// Ghidra `FuncCallSpecs::checkInputTrialUse` (fspec.cc:5585) — the register (non-spacebase) branch
 /// (fspec.cc:5638-5651). Each not-yet-checked argument trial gets one of three verdicts:
@@ -866,28 +873,66 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     }
 }
 
-/// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685) reduced to mosura's case: keep the
-/// leading run of active trials (the realistic prefix from the first argument register) and remove
-/// the rest. Walking trials in `op_slot` order, the first inactive trial ends the argument list —
-/// Ghidra's `forceInactiveChain`/`forceNoUse` "no holes after a gap" rule for this convention. Gated
-/// behind fully-checked trials so the prune commits only once the decision is stable.
+/// Ghidra `FuncCallSpecs::deriveInputMap` (fspec.hh:1494 → `ProtoModel::deriveInputMap`,
+/// fspec.hh:791 → `ParamListStandard::fillinMap`, fspec.cc:1285): decide which of the accumulated
+/// trials are the actual parameters. Matches each trial to a convention entry, fills the holes,
+/// enforces the exclusion/no-hole rules per resource section, marks the survivors `used`, and —
+/// through `build_trial_map`'s `sort_trials` — leaves the trials in FORMAL PARAMETER ORDER.
+///
+/// The function and return sides have always gone through this; the call side had not, because the
+/// retired `recover_call_args` appended its fixed `RDI…R9` list in argument order and made op-slot
+/// order coincide with parameter order. It does not coincide once the candidates come from
+/// heritage, which walks the register space in ADDRESS order (`RDX` at `0x10` before `RDI` at
+/// `0x38`). (Ghidra calls `resolveModel` first, coreaction.cc:1752, to pick between the models of a
+/// `ProtoModelMerged`; mosura carries a single model per function, so there is nothing to resolve.)
+fn derive_input_map(f: &mut Funcdata, call: OpId) {
+    let Some(input) = f.proto_model.input.clone() else { return };
+    let Some(active) = f.active_inputs.get_mut(&call) else { return };
+    input.fillin_map(active);
+}
+
+/// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685): rebuild the CALL's input list from
+/// the trials [`derive_input_map`] marked `used`, in trial order — which is parameter order. A
+/// trial's `op_slot` is used only to FETCH the varnode it already refers to, never to order the
+/// arguments (that inversion is what made the old reduction depend on the retired fixed candidate
+/// list). Runs once the trials are fully checked, so the prune commits on a stable decision.
+///
+/// Two Ghidra branches are not reachable here and are not ported: the `isUnref` trial (a parameter
+/// recovered from a locked prototype with no varnode at the call — mosura's call prototypes are
+/// never input-locked, and `guard_calls` creates a varnode for every trial it registers) and the
+/// spacebase `markNotMapped` branch (fspec.cc:5736 — `guard_calls` declines to register a trial for
+/// a spacebase range at all, lacking `FuncCallSpecs::getSpacebaseOffset`).
 fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
-    let mut trials: Vec<(usize, bool)> =
-        f.active_inputs[&call].trial.iter().map(|t| (t.op_slot as usize, t.is_active())).collect();
-    trials.sort_by_key(|&(slot, _)| slot);
-    let mut keep_max = 0usize; // op slots 1..=keep_max are arguments
-    for &(slot, is_active) in &trials {
-        if is_active && slot == keep_max + 1 {
-            keep_max = slot;
-        } else {
-            break;
-        }
-    }
+    // fspec.cc:5703-5734 — the used trials, in trial order, each naming the slot it lives in.
+    let used: Vec<(usize, u32)> = f.active_inputs[&call]
+        .trial
+        .iter()
+        .filter(|t| t.is_used())
+        .map(|t| (t.op_slot as usize, t.size))
+        .collect();
     let n = f.op(call).num_inputs();
-    for slot in (1..n).rev() {
-        if slot > keep_max {
-            f.op_remove_input(call, slot);
+    let mut newparam: Vec<VarnodeId> = vec![f.op(call).input(0).expect("CALL has a target")];
+    for (slot, sz) in used {
+        if slot == 0 || slot >= n {
+            continue;
         }
+        let Some(mut vn) = f.op(call).input(slot) else { continue };
+        // fspec.cc:5720 — the varnode is wider than the parameter: truncate with a SUBPIECE.
+        if f.vn(vn).size > sz {
+            let (addr, seq) = (f.vn(vn).loc, f.op(call).seqnum);
+            let zero = f.new_const(1, 0);
+            let sub = f.new_op(OpCode::Subpiece, seq, vec![vn, zero]);
+            if let Some(bid) = f.op(call).parent {
+                f.op_mut(sub).parent = Some(bid);
+            }
+            f.op_insert_before(sub, call);
+            vn = f.new_output(sub, sz, addr);
+        }
+        newparam.push(vn);
+    }
+    f.op_set_all_input(call, &newparam); // fspec.cc:5739
+    if let Some(active) = f.active_inputs.get_mut(&call) {
+        active.delete_unused_trials(); // fspec.cc:5740
     }
 }
 
@@ -1419,7 +1464,7 @@ mod tests {
 
     /// A CALL with candidate inputs `[target, RDI, RSI, RDX, RCX, R8, R9]` where the first
     /// `written` (in SysV order) are real computed writes and the rest are scratch registers.
-    fn call_with(written: usize) -> (Funcdata, OpId) {
+    fn call_with(written: usize) -> Option<(Funcdata, OpId)> {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
@@ -1439,19 +1484,47 @@ mod tests {
         }
         let call = f.new_op(OpCode::Call, seq, inputs);
         f.set_blocks(vec![BlockBasic { ops: vec![call], ..Default::default() }]);
-        (f, call)
+        open_call_recovery(&mut f, call)?;
+        Some((f, call))
+    }
+
+    /// Put a hand-built CALL into the state the pipeline reaches just before `resolve_call_args`:
+    /// the convention loaded, and the per-call trial container that `init_active_input` creates
+    /// plus the trials `heritage`'s `guard_calls` registers. The trials are registered in the order
+    /// heritage produces them — the register space walked by ADDRESS (`RDX` at `0x10` before `RDI`
+    /// at `0x38`) — not in argument order, because that difference is exactly what the argument
+    /// recovery has to get right. `None` when the pinned .sla is absent (test skips).
+    fn open_call_recovery(f: &mut Funcdata, call: OpId) -> Option<()> {
+        f.proto_model = crate::decompile::build::test_sysv_proto_model()?;
+        let reg = f.spaces.by_name("register");
+        let mut active = ParamActive::new(reg);
+        active.set_max_pass(CALL_MAXPASS);
+        active.is_recover_subcall = true;
+        let mut slots: Vec<(usize, Address, u32)> = (1..f.op(call).num_inputs())
+            .filter_map(|slot| {
+                let v = f.op(call).input(slot)?;
+                Some((slot, f.vn(v).loc, f.vn(v).size))
+            })
+            .collect();
+        slots.sort_by_key(|&(_, loc, size)| (loc.offset, size));
+        for (slot, loc, size) in slots {
+            let ti = active.register_trial(loc, size);
+            active.trial[ti].op_slot = slot as u32;
+        }
+        f.active_inputs.insert(call, active);
+        Some(())
     }
 
     #[test]
     fn call_keeps_contiguous_written_args() {
-        let (mut f, call) = call_with(2); // RDI, RSI written; RDX.. scratch
+        let Some((mut f, call)) = call_with(2) else { return }; // RDI, RSI written; RDX.. scratch
         resolve_call_args(&mut f);
         assert_eq!(f.op(call).num_inputs(), 3, "[target, RDI, RSI] — two arguments");
     }
 
     #[test]
     fn call_with_no_set_registers_has_no_args() {
-        let (mut f, call) = call_with(0);
+        let Some((mut f, call)) = call_with(0) else { return };
         resolve_call_args(&mut f);
         assert_eq!(f.op(call).num_inputs(), 1, "only the call target remains");
     }
@@ -1459,7 +1532,7 @@ mod tests {
     /// A CALL `[target, RDI, RSI]` where RDI is a realistic write and RSI flows through an INDIRECT.
     /// `creation` selects whether that INDIRECT is an indirect *creation* (a killedbycall clobber) or
     /// a *passthrough* (the across-call stack-slot guard, `newIndirectOp`).
-    fn call_arg_through_indirect(creation: bool) -> (Funcdata, OpId) {
+    fn call_arg_through_indirect(creation: bool) -> Option<(Funcdata, OpId)> {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         let reg = spaces.by_name("register").unwrap();
@@ -1508,7 +1581,8 @@ mod tests {
         for &op in &ops {
             f.op_mut(op).parent = Some(crate::decompile::BlockId(0));
         }
-        (f, call)
+        open_call_recovery(&mut f, call)?;
+        Some((f, call))
     }
 
     /// Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2052-2054): a
@@ -1520,7 +1594,7 @@ mod tests {
     /// aliased-stack-local 2nd arg, which does not regress under this reject.)
     #[test]
     fn register_arg_through_call_passthrough_is_dropped() {
-        let (mut f, call) = call_arg_through_indirect(false);
+        let Some((mut f, call)) = call_arg_through_indirect(false) else { return };
         resolve_call_args(&mut f);
         assert_eq!(f.op(call).num_inputs(), 2, "[target, RDI] — the RSI passthrough of a call clobber is not an argument");
     }
@@ -1530,7 +1604,7 @@ mod tests {
     /// the realistic prefix). Guards the creation branch the passthrough fix must not disturb.
     #[test]
     fn arg_through_indirect_creation_is_dropped() {
-        let (mut f, call) = call_arg_through_indirect(true);
+        let Some((mut f, call)) = call_arg_through_indirect(true) else { return };
         resolve_call_args(&mut f);
         assert_eq!(f.op(call).num_inputs(), 2, "[target, RDI] — the RSI clobber is not a real argument");
     }
@@ -1703,7 +1777,7 @@ mod tests {
     fn call_arg_recovery_defers_until_fully_checked() {
         // The per-CALL trials defer identically: the prune commits only after the trials are fully
         // checked, so an unstable early pass can't irreversibly drop a real argument.
-        let (mut f, call) = call_with(2); // RDI, RSI written; RDX.. scratch
+        let Some((mut f, call)) = call_with(2) else { return }; // RDI, RSI written; RDX.. scratch
         let active = seed_active(&mut f, call, 1);
         f.active_inputs.insert(call, active);
 
