@@ -1093,7 +1093,28 @@ impl Funcdata {
             SpaceKind::Spacebase => 's',
             _ => 'r',
         };
-        format!("{c}0x{:x}:{}", vn.loc.offset, vn.size)
+        let mut s = format!("{c}0x{:x}:{}", vn.loc.offset, vn.size);
+        // Ghidra `Varnode::printRaw` (varnode.cc): after the storage, mark the varnode's role —
+        // `(i)` for a function input, `(<seqnum>)` for a written value naming its DEFINING OP, and
+        // `(free)` for one that is neither inserted in the SSA tree nor constant.
+        //
+        // The seqnum is the SSA VERSION and it is load-bearing for reading a dump: without it two
+        // different definitions of the same storage render identically (two LOADs both printing
+        // `u0x17200:4`), so "which definition feeds this op" is unreadable and a dump can be
+        // misread into the opposite of the truth. That cost a real detour this campaign.
+        if vn.is_input() {
+            s.push_str("(i)");
+        }
+        if vn.is_written() {
+            if let Some(def) = vn.def {
+                let sq = self.ops[def.0 as usize].seqnum;
+                let _ = write!(s, "(0x{:x}:{})", sq.pc.offset, sq.uniq);
+            }
+        }
+        if vn.is_free() {
+            s.push_str("(free)"); // Ghidra: `(flags & (insert|constant)) == 0`
+        }
+        s
     }
 
     /// Render the function's IR as a raw, block-less op listing (Ghidra's
@@ -1102,17 +1123,17 @@ impl Funcdata {
     pub fn print_raw(&self) -> String {
         let mut s = String::new();
         let _ = writeln!(s, "{}() raw operations:", self.name);
+        // Render every op through [`op_str`] — Ghidra `PcodeOp::printDebug` (op.cc), which prints
+        // `**` for an op that is dead or unparented.
+        //
+        // This dump lists the WHOLE ARENA, destroyed ops included. `op_destroy` clears an op's
+        // inputs and output, so a destroyed op previously rendered as a BARE OPCODE — visually
+        // identical to a live op that legitimately has no output (a STORE, a BRANCH). Counting
+        // bare opcodes as survivors reads corpses as live values, which is exactly how an
+        // investigation this campaign concluded the opposite of the truth about who was deleting
+        // real calls. The `**` marker makes the distinction impossible to miss.
         for id in self.op_ids() {
-            let op = self.op(id);
-            let _ = write!(s, "0x{:x}:{}:\t", op.seqnum.pc.offset, op.seqnum.uniq);
-            if let Some(out) = op.output {
-                let _ = write!(s, "{} = ", self.vn_str(out));
-            }
-            let _ = write!(s, "{}", op.opcode.name());
-            for &inp in &op.inrefs {
-                let _ = write!(s, " {}", self.vn_str(inp));
-            }
-            s.push('\n');
+            let _ = writeln!(s, "{}", self.op_str(id));
         }
         s
     }

@@ -90,8 +90,37 @@ mod tests {
         assert!(f.vn(one).is_constant());
         assert_eq!(f.op(add).code(), OpCode::IntAdd);
 
+        // The raw dump follows Ghidra `Varnode::printRaw`: `(i)` on an input, and `(<seqnum>)` on a
+        // written value naming its DEFINING op — the SSA version, without which two definitions of
+        // the same storage are indistinguishable in a dump.
         let raw = f.print_raw();
-        assert!(raw.contains("r0x0:4 = INT_ADD r0x4:4 #0x1:4"), "raw was:\n{raw}");
+        assert!(
+            raw.contains("r0x0:4(0x1000:0) = INT_ADD r0x4:4(i) #0x1:4"),
+            "raw was:\n{raw}"
+        );
+    }
+
+    /// A destroyed op must be visibly distinct from a live op that simply has no output.
+    /// Ghidra `PcodeOp::printDebug` prints `**`; without it a corpse (whose inputs/output
+    /// `op_destroy` cleared) renders as a bare opcode, exactly like a live STORE or BRANCH.
+    #[test]
+    fn print_raw_marks_destroyed_ops() {
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("func", Address::new(ram, 0x1000), spaces);
+
+        let a = f.new_input(4, Address::new(reg, 0x4));
+        let one = f.new_const(4, 1);
+        let seq = SeqNum { pc: Address::new(ram, 0x1000), uniq: 0 };
+        let add = f.new_op(OpCode::IntAdd, seq, vec![a, one]);
+        f.new_output(add, 4, Address::new(reg, 0x0));
+        assert!(f.print_raw().contains("INT_ADD"), "live op renders its opcode");
+
+        f.op_destroy(add);
+        let raw = f.print_raw();
+        assert!(raw.contains("0x1000:0: **"), "destroyed op must render `**`, got:\n{raw}");
+        assert!(!raw.contains("INT_ADD"), "a corpse must not render as a bare opcode:\n{raw}");
     }
 
     #[test]
