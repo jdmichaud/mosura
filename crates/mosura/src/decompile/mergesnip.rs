@@ -35,7 +35,7 @@ use super::varnode::VarnodeId;
 
 /// Ghidra `Varnode::characterizeOverlap` (`varnode.cc`): storage overlap between two varnodes —
 /// `0` none, `1` partial, `2` identical (same offset and size).
-fn characterize_overlap(f: &Funcdata, a: VarnodeId, b: VarnodeId) -> i32 {
+pub(super) fn characterize_overlap(f: &Funcdata, a: VarnodeId, b: VarnodeId) -> i32 {
     let (va, vb) = (f.vn(a), f.vn(b));
     if va.loc.space != vb.loc.space {
         return 0;

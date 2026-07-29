@@ -95,6 +95,23 @@ pub fn dead_code(f: &mut Funcdata) {
 
     // propagate backward: a consumed varnode keeps its def op, whose inputs are consumed
     while let Some(vn) = worklist.pop() {
+        // Ghidra's `case CPUI_INDIRECT` (coreaction.cc:3650-3662) additionally marks the op an
+        // INDIRECT guards (its `iop`) fully consumed when that op is an overlapping COPY. In Ghidra
+        // one sweep computes both the consume masks and the removal decision, so that single
+        // `pushConsumed(~0, indop->getOut(), …)` is what keeps the COPY from being destroyed while
+        // live INDIRECTs still point at it. mosura splits the action in two — the mask half is
+        // `consume::calc_consume`, and *this* whole-varnode sweep is the removal half — so the same
+        // branch has to be applied to this sweep's liveness, which is what the removal actually
+        // reads. Without it, dead-code destroys the guarded COPY, its INDIRECTs strand in a
+        // marker-only block, `ActionDoNothing` removes that block while their outputs are still
+        // read, and the faithful "deleting op with descendants" assert fires
+        // (Ghidra throws the same, funcdata_block.cc:311).
+        if let Some((Some(full), _src)) = super::consume::indirect_source(f, vn) {
+            if !live_vn[full.0 as usize] {
+                live_vn[full.0 as usize] = true;
+                worklist.push(full);
+            }
+        }
         let Some(def) = f.vn(vn).def else { continue };
         if live_op[def.0 as usize] {
             continue;

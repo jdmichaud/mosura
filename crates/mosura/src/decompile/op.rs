@@ -43,6 +43,18 @@ pub mod flags {
     /// for a persistent range (heritage.cc:1686, `markReturnCopy`). Its presence blocks
     /// `RulePropagateCopy` (ruleaction.cc:3933) so the COPY keeps reading the store version directly.
     pub const RETURN_COPY: u32 = 0x200;
+    /// Ghidra `PcodeOp::indirect_source` (op.hh:85): this op is the *source* of one or more
+    /// CPUI_INDIRECTs — some INDIRECT guards against its side effect, so removing it would strand
+    /// that INDIRECT.
+    ///
+    /// The flag is **transient, recomputed from scratch on every dead-code pass**: Ghidra clears it
+    /// on every alive op at the top of `ActionDeadCode::apply` (coreaction.cc:3965) and re-derives
+    /// it while the consume sweep walks each INDIRECT's `iop` back to the causing op
+    /// (coreaction.cc:3656/3661, mosura [`super::consume::indirect_source`]). It is never set by the
+    /// code that *creates* an INDIRECT, and never carried forward across a pass — so it cannot go
+    /// stale and wrongly keep a dead op alive. Read by `RuleEarlyRemoval` (ruleaction.cc:31) and by
+    /// `Funcdata::opDestroyRecursive` (funcdata_op.cc:242, a primitive mosura does not have).
+    pub const INDIRECT_SOURCE: u32 = 0x400;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -116,6 +128,19 @@ impl PcodeOp {
     /// to (past) the end of the function.
     pub fn mark_return_copy(&mut self) {
         self.flags |= flags::RETURN_COPY;
+    }
+    /// Ghidra `PcodeOp::isIndirectSource` (op.hh:202) — this op causes an INDIRECT (see
+    /// [`flags::INDIRECT_SOURCE`]).
+    pub fn is_indirect_source(&self) -> bool {
+        self.flags & flags::INDIRECT_SOURCE != 0
+    }
+    /// Ghidra `PcodeOp::setIndirectSource` (op.hh:203).
+    pub fn set_indirect_source(&mut self) {
+        self.flags |= flags::INDIRECT_SOURCE;
+    }
+    /// Ghidra `PcodeOp::clearIndirectSource` (op.hh:204).
+    pub fn clear_indirect_source(&mut self) {
+        self.flags &= !flags::INDIRECT_SOURCE;
     }
     /// Ghidra `PcodeOp::isBooleanFlip` (op.hh:191) — on a CBRANCH, the branch is taken when the
     /// condition is \e false (see [`flags::BOOLEAN_FLIP`]).

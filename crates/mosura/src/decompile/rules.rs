@@ -357,8 +357,12 @@ impl Rule for RuleEarlyRemoval {
         if data.op(op).is_call() {
             return 0; // functions are automatically consumed
         }
-        // Ghidra also guards `op->isIndirectSource()`; mosura's INDIRECTs are 1-input with no iop
-        // back-reference (Task #10), so no op is an indirect source — the guard is vacuous here.
+        // Ghidra `ruleaction.cc:31`. No longer vacuous: the dead-code consume sweep now marks the op
+        // an INDIRECT guards (`consume::indirect_source`), so destroying it here would strand a live
+        // INDIRECT. The flag is recomputed on every sweep, so it never keeps a no-longer-guarded op.
+        if data.op(op).is_indirect_source() {
+            return 0;
+        }
         let Some(out) = data.op(op).output else {
             return 0; // no output (side-effecting op: STORE/BRANCH/RETURN) — keep
         };

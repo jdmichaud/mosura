@@ -28,6 +28,7 @@
 use super::block::BlockId;
 use super::funcdata::Funcdata;
 use super::nzmask::{calc_mask, coveringmask, leastsigbit_set, minimalmask, pcode_left, pcode_right};
+use super::op::OpId;
 use super::opcode::OpCode;
 use super::varnode::VarnodeId;
 
@@ -136,9 +137,9 @@ fn consume_transfer(f: &Funcdata, vn: VarnodeId, outc: u64) -> Vec<(u64, Varnode
             pushes.push((b, in_vn(1)));
         }
         OpCode::Indirect => {
-            // Consume-value propagation is just to in(0). Ghidra's IOP branch (`setIndirectSource`
-            // and the COPY-overlap full-consume) is a dead-code-*removal* detail, not needed until
-            // consume is wired into elimination; omitted here (deadcode stays whole-varnode).
+            // The value transfer is just to in(0). The rest of Ghidra's `case CPUI_INDIRECT` — the
+            // `iop` branch — mutates (an op flag + a push), so it lives in [`indirect_source`],
+            // applied by the caller alongside these pure transfers.
             pushes.push((outc, in_vn(0)));
         }
         OpCode::Copy | OpCode::IntNegate => {
@@ -250,6 +251,46 @@ fn consume_transfer(f: &Funcdata, vn: VarnodeId, outc: u64) -> Vec<(u64, Varnode
     pushes
 }
 
+/// Ghidra `ActionDeadCode::propagateConsumed`'s `case CPUI_INDIRECT` \e iop branch
+/// (`coreaction.cc:3650-3662`), the mutating half of the case.
+///
+/// `vn` is a Varnode the backward sweep has reached. If it is written by an INDIRECT, follow that
+/// INDIRECT's `iop` annotation (mosura: [`PcodeOp::guarded_op`](super::op::PcodeOp::guarded_op)) to
+/// the op whose side effect it guards. That op is the INDIRECT's \e source, and Ghidra records the
+/// relationship **on the source op too** (`setIndirectSource`) — mosura previously marked only the
+/// INDIRECT→op direction, so nothing downstream could tell that destroying the op would strand a
+/// live INDIRECT.
+///
+/// The COPY case is the load-bearing one. When the source is a COPY whose storage overlaps the
+/// INDIRECT's output there is no true block of INDIRECT (Ghidra's comment: `RuleIndirectCollapse`
+/// will convert it to a COPY), so Ghidra *additionally* marks the COPY's output **fully consumed**.
+/// That push — not the flag — is what keeps the COPY alive through the dead-code sweep while
+/// INDIRECTs still point at it. A COPY source that does *not* overlap gets neither.
+///
+/// Returns `(fully-consumed Varnode, op to flag)`; `None` when the case does not apply.
+pub(super) fn indirect_source(f: &Funcdata, vn: VarnodeId) -> Option<(Option<VarnodeId>, OpId)> {
+    let def = f.vn(vn).def?;
+    if f.op(def).code() != OpCode::Indirect {
+        return None;
+    }
+    // Ghidra: `PcodeOp::getOpFromConst(op->getIn(1)->getAddr())`, guarded by `in(1)` being an
+    // IPTR_IOP annotation — mosura carries the same reference in `guarded_op`, so `None` here is
+    // exactly Ghidra's non-IOP `in(1)`.
+    let src = f.op(def).guarded_op()?;
+    if f.op(src).is_dead() {
+        return None; // Ghidra `if (!indop->isDead())`
+    }
+    if f.op(src).code() != OpCode::Copy {
+        return Some((None, src)); // Ghidra's `else indop->setIndirectSource();`
+    }
+    let (sout, iout) = (f.op(src).output?, f.op(def).output?);
+    if super::mergesnip::characterize_overlap(f, sout, iout) > 0 {
+        Some((Some(sout), src))
+    } else {
+        None
+    }
+}
+
 /// Ghidra `ActionDeadCode::gatherConsumedReturn` (`coreaction.cc:3871`): the bit mask consumed by
 /// the function's return values. mosura has no proto output-lock, so only the active-recovery guard
 /// applies; otherwise OR the minimal mask of each RETURN's value input. (`getReturnBytesConsumed`
@@ -320,6 +361,11 @@ pub fn calc_consume(f: &mut Funcdata) {
     // Build the seed pushes (pure reads), mirroring the ActionDeadCode::apply op scan.
     let mut seeds: Vec<(u64, VarnodeId)> = Vec::new();
     for &op in &all_ops {
+        // Ghidra clears `indirect_source` on every alive op as the first statement of this same scan
+        // (`coreaction.cc:3965`), then re-derives it during the propagation below. The flag is
+        // therefore recomputed from scratch on every pass and never carried forward — the reason it
+        // cannot go stale and wrongly protect an op that has since stopped being guarded.
+        f.op_mut(op).clear_indirect_source();
         let o = f.op(op);
         let code = o.code();
         let has_out = o.output.is_some();
@@ -430,6 +476,13 @@ pub fn calc_consume(f: &mut Funcdata) {
         let outc = f.vn(vn).consume;
         for (val, tgt) in consume_transfer(f, vn, outc) {
             push_consumed(f, val, tgt, &mut worklist, &mut in_list, &mut vacuous);
+        }
+        // The mutating half of Ghidra's `case CPUI_INDIRECT` (coreaction.cc:3650-3662).
+        if let Some((full, src)) = indirect_source(f, vn) {
+            if let Some(t) = full {
+                push_consumed(f, u64::MAX, t, &mut worklist, &mut in_list, &mut vacuous);
+            }
+            f.op_mut(src).set_indirect_source();
         }
     }
 
