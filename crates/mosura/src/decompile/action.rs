@@ -10,36 +10,48 @@ use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
 
-/// Rule-application trace (the mosura side of the Ghidra `OPACTION_DEBUG` diff, Task #2). Off by
-/// default and completely inert unless the `MOSURA_TRACE` environment variable is set, so normal
-/// decompilation (and the corpus) is byte-identical. When enabled, [`ActionPool::apply`] emits, for
-/// every rule that changes an op, a block mirroring Ghidra's `debugModPrint` format so one differ
-/// can parse both traces keyed on (rule name, op address, opcode):
+/// Bookkeeping for the ONE trace facility (the mosura side of the Ghidra `OPACTION_DEBUG` diff,
+/// Task #2). Off by default and completely inert unless `MOSURA_TRACE` or `MOSURA_OPACTION` is set,
+/// so normal decompilation (and the corpus) is byte-identical. The emitting is
+/// [`Funcdata::debug_mod_check`](super::Funcdata::debug_mod_check) /
+/// [`debug_mod_print`](super::Funcdata::debug_mod_print) — Ghidra's own — driven from two places
+/// exactly as Ghidra drives it: [`ActionGroup::apply`] around every action (`Action::perform`,
+/// action.cc:316-322) and [`ActionPool::apply`] around every rule application
+/// (`ActionPool::processOp`, action.cc:822). Both produce the same block:
 /// ```text
-/// DEBUG <n>: <rulename>
+/// DEBUG <n>: <rule-or-action name>
 /// <op before>
 ///    <op after>
 /// ```
+/// There used to be a SECOND, mosura-only emitter here that snapshotted the applied op around
+/// `Rule::apply_op`. It reported only the op the rule was handed, it numbered from its own counter,
+/// and it could not see actions at all — so an action-vs-rule ORDERING difference was invisible, and
+/// twelve of Ghidra's ACTION names sat in the differ's "rules mosura never fires" list as pure
+/// artifacts. One facility, Ghidra's, is the fix.
 mod trace {
-    use super::Funcdata;
-    use super::OpId;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::OnceLock;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    /// The next `DEBUG <n>` sequence number. Ghidra keeps ONE counter (`Funcdata::debugcount`) and
+    /// `debugModPrint` increments it for actions and rules alike, so a Ghidra trace numbers the two
+    /// in a single interleaved sequence. Reading a trace for SEQUENCE — "did the call-argument
+    /// commit land before or after the rule that deleted the op it would have let a rule narrow" —
+    /// is the whole point of the instrument, and two counters make the streams non-comparable.
+    pub fn next_seq() -> u64 {
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
     thread_local! {
         /// Set around the alias-probe rule-pool run (on a cloned Funcdata) so its firings do not
-        /// double the trace — only the real pipeline's rule applications are recorded.
+        /// double the trace — only the real pipeline's applications are recorded.
         static SUPPRESS: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// Whether `MOSURA_TRACE` is set (cached once) and we are not inside a suppressed scope.
-    pub fn enabled() -> bool {
-        static ON: OnceLock<bool> = OnceLock::new();
-        let on = *ON.get_or_init(|| std::env::var_os("MOSURA_TRACE").is_some());
-        on && !SUPPRESS.with(|s| s.get())
+    /// Whether we are inside a suppressed scope (the alias probe's throwaway clone).
+    pub fn is_suppressed() -> bool {
+        SUPPRESS.with(|s| s.get())
     }
 
     /// Run `f` with the trace suppressed (used for the alias-probe pool on a cloned function).
@@ -51,12 +63,17 @@ mod trace {
             r
         })
     }
+}
 
-    /// Emit one before/after block for a rule that just modified `op`.
-    pub fn emit(rulename: &str, op: OpId, data: &Funcdata, before: &str) {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        println!("DEBUG {n}: {rulename}\n{before}\n   {}", data.op_str(op));
-    }
+/// The next `DEBUG <n>` for a trace block, shared by the action- and rule-level call sites —
+/// Ghidra's single `Funcdata::debugcount`.
+pub fn next_debug_seq() -> u64 {
+    trace::next_seq()
+}
+
+/// Whether trace recording is currently suppressed (the alias probe's cloned Funcdata).
+pub fn trace_suppressed() -> bool {
+    trace::is_suppressed()
 }
 
 /// Run `f` (an alias-probe rule-pool pass on a cloned function) with the `MOSURA_TRACE` output
@@ -233,7 +250,6 @@ impl Action for ActionPool {
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         use std::collections::HashMap;
         let mut total = 0;
-        let tracing = trace::enabled();
         let timing = perf::enabled();
         // `perop[opc]` = the indices of rules registered for opcode `opc`, in registration
         // (= priority) order — Ghidra's `ActionPool::addRule` appending each rule to
@@ -281,7 +297,13 @@ impl Action for ActionPool {
                     }
                     let r_idx = list[rule_index];
                     rule_index += 1;
-                    let before = tracing.then(|| data.op_str(id));
+                    // Ghidra `ActionPool::processOp` (action.cc:822) brackets each `applyOp` with
+                    // `debugActivate()` / `debugModPrint(rl->getName())`, so a rule's block reports
+                    // EVERY op it touched — including ops other than the one it was handed — and
+                    // consumes the modify list, which is why the enclosing pool's own block is
+                    // empty in a Ghidra trace instead of re-reporting the same ops under the pool's
+                    // name. Both calls early-out on a single bool unless the facility is selected.
+                    data.debug_activate(self.rules[r_idx].name());
                     let changed = if timing {
                         let t0 = std::time::Instant::now();
                         let changed = self.rules[r_idx].apply_op(id, data);
@@ -290,14 +312,10 @@ impl Action for ActionPool {
                     } else {
                         self.rules[r_idx].apply_op(id, data)
                     };
+                    data.debug_mod_print(self.rules[r_idx].name());
                     round += changed;
-                    if changed > 0 {
-                        if let Some(before) = before {
-                            trace::emit(self.rules[r_idx].name(), id, data, &before);
-                        }
-                        if data.op(id).is_dead() {
-                            break; // op consumed by a rule; stop applying rules to it
-                        }
+                    if changed > 0 && data.op(id).is_dead() {
+                        break; // op consumed by a rule; stop applying rules to it
                     }
                     // On an opcode change (Ghidra: whether or not the rule reported a change),
                     // restart from the top of the new opcode's priority list.

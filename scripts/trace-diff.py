@@ -23,6 +23,11 @@ import re
 from collections import Counter
 
 # mosura Rule::name() -> Ghidra Rule getName(), where they differ.
+#
+# NOT aliasable, read the diff with this in hand: mosura's ACTION `resolvecalls` is Ghidra's
+# `activeparam` AND `returnrecovery` merged into one, so those two always appear as "ghidra fires,
+# mosura never does" and `resolvecalls` as mosura-only. A 2->1 merge has no honest alias; naming it
+# here beats inventing one.
 ALIAS = {
     "constfold": "collapseconstants",  # mosura RuleConstFold == Ghidra RuleCollapseConstants
 }

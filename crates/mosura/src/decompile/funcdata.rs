@@ -1167,12 +1167,26 @@ impl Funcdata {
     /// trace, matched against [`Action::name`](super::action::Action::name).
     fn opaction_filter() -> Option<&'static str> {
         static F: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        F.get_or_init(|| std::env::var("MOSURA_OPACTION").ok()).as_deref()
+        F.get_or_init(|| {
+            // `MOSURA_TRACE=1` is the older spelling and selects everything — there is only one
+            // facility now, so it is an alias for `MOSURA_OPACTION=1` rather than a second switch
+            // covering rules only. scripts/trace-diff.sh sets both.
+            std::env::var("MOSURA_OPACTION")
+                .ok()
+                .or_else(|| std::env::var("MOSURA_TRACE").ok().map(|_| "1".to_string()))
+        })
+        .as_deref()
     }
 
     /// Ghidra `Funcdata::debugActivate` (funcdata.hh:596) — begin recording op mutations, if this
     /// action is selected. Called by the action driver before `apply`.
     pub fn debug_activate(&mut self, actionname: &str) {
+        // The alias probe runs a rule pool on a THROWAWAY CLONE of the function; its firings are not
+        // pipeline history and must not appear in the trace (`with_suppressed_trace`).
+        if super::action::trace_suppressed() {
+            self.opactdbg_active = false;
+            return;
+        }
         self.opactdbg_active = match Self::opaction_filter() {
             None => false,
             Some("") | Some("1") => true,
@@ -1210,8 +1224,7 @@ impl Funcdata {
         if self.modify_list.is_empty() {
             return;
         }
-        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = super::action::next_debug_seq();
         let mut s = format!("DEBUG {n}: {actionname}\n");
         for (i, &op) in self.modify_list.iter().enumerate() {
             let _ = writeln!(s, "{}", self.modify_before[i]);
