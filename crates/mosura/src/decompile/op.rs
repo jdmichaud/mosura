@@ -55,6 +55,17 @@ pub mod flags {
     /// stale and wrongly keep a dead op alive. Read by `RuleEarlyRemoval` (ruleaction.cc:31) and by
     /// `Funcdata::opDestroyRecursive` (funcdata_op.cc:242, a primitive mosura does not have).
     pub const INDIRECT_SOURCE: u32 = 0x400;
+    /// Ghidra `PcodeOp::spacebase_ptr` (op.hh:101) — a LOAD/STORE through a *dynamic* pointer into a
+    /// spacebase, marked by `Funcdata::opMarkSpacebasePtr` (funcdata.hh:487) from the
+    /// `discoverIndexedStackPointers`/`LoadGuard` subsystem. mosura records no load guards (an
+    /// already-documented omission, `heritage.rs:1392`/`varmap.rs:447`), so nothing sets this and
+    /// `uses_spacebase_ptr` reads `false` — the same branch Ghidra takes with the flag unset.
+    pub const SPACEBASE_PTR: u32 = 0x800;
+    /// Ghidra `PcodeOp::no_indirect_collapse` (op.hh:224) — an INDIRECT on the data-flow path from a
+    /// constant to a switch variable, protected from collapse by
+    /// `ActionRestructureVarnode::protectSwitchPaths` (coreaction.cc:2245/2257). That protection is
+    /// jumptable-recovery-time only and is not modelled (`pipeline.rs:342`), so nothing sets this.
+    pub const NO_INDIRECT_COLLAPSE: u32 = 0x1000;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -141,6 +152,14 @@ impl PcodeOp {
     /// Ghidra `PcodeOp::clearIndirectSource` (op.hh:204).
     pub fn clear_indirect_source(&mut self) {
         self.flags &= !flags::INDIRECT_SOURCE;
+    }
+    /// Ghidra `PcodeOp::usesSpacebasePtr` (op.hh:228) — see [`flags::SPACEBASE_PTR`].
+    pub fn uses_spacebase_ptr(&self) -> bool {
+        self.flags & flags::SPACEBASE_PTR != 0
+    }
+    /// Ghidra `PcodeOp::noIndirectCollapse` (op.hh:224) — see [`flags::NO_INDIRECT_COLLAPSE`].
+    pub fn no_indirect_collapse(&self) -> bool {
+        self.flags & flags::NO_INDIRECT_COLLAPSE != 0
     }
     /// Ghidra `PcodeOp::isBooleanFlip` (op.hh:191) — on a CBRANCH, the branch is taken when the
     /// condition is \e false (see [`flags::BOOLEAN_FLIP`]).

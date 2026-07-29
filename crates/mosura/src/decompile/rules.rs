@@ -5699,6 +5699,130 @@ fn cse_find_in_block(
     None
 }
 
+/// Ghidra `RuleIndirectCollapse` (`ruleaction.cc:3157`, oppool1 slot 40 — registered between
+/// `RuleMultiCollapse` and `Rule2Comp2Mult`, `coreaction.cc:5551`): remove an INDIRECT whose
+/// indirect effect is gone.
+///
+/// An INDIRECT models "the op I point at (my `iop`) may modify this storage". Whenever that stops
+/// being true the INDIRECT is pointless and must go, or it strands: its output stays read while the
+/// op it names is destroyed, and a marker-only block full of such INDIRECTs trips
+/// `block_remove_internal_preserving`'s "deleting op with descendants" assert (Ghidra throws the
+/// same at funcdata_block.cc:311).
+///
+/// The effect is gone when the `iop` op is **dead** — the `if (!indop.is_dead())` test below is
+/// simply skipped and control reaches the collapse — or when it has been resolved to a **COPY**:
+///   * identical storage (`characterizeOverlap == 2`) — the INDIRECT *is* that copy, so become a COPY;
+///   * INDIRECT's output properly contained in the COPY's (`contains == 0`) — become a SUBPIECE;
+///   * partial overlap — Ghidra warns and declines;
+///   * **no overlap at all** — the COPY cannot affect the guarded storage, so fall through and
+///     collapse. This is the case mosura's stack-pointer recovery produces in bulk: `recover_stack`
+///     rewrites a prologue `push` into a COPY into a `stack` slot while `guardStores` INDIRECTs
+///     around it guard `ram` globals, so the two never overlap.
+///
+/// The `hasNoLocalAlias` and `usesSpacebasePtr` arms are reachable code evaluated over the
+/// attributes mosura produces; both attributes currently have no producer here (see
+/// [`Varnode::has_no_local_alias`](super::varnode::Varnode::has_no_local_alias) and
+/// [`flags::SPACEBASE_PTR`](super::op::flags::SPACEBASE_PTR)), which sends a live non-COPY `iop`
+/// down Ghidra's own `else return 0` — the conservative arm, never a collapse mosura invents.
+pub struct RuleIndirectCollapse;
+
+impl Rule for RuleIndirectCollapse {
+    fn name(&self) -> &str {
+        "indirectcollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Indirect]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        // Ghidra: `in(1)` must be an IPTR_IOP annotation, then `getOpFromConst` recovers the op.
+        // mosura's 1-input INDIRECT carries the same reference in `guarded_op`, so a missing one is
+        // exactly Ghidra's non-IOP `in(1)`.
+        let Some(indop) = data.op(op).guarded_op() else {
+            return 0;
+        };
+        let out = data.op(op).output.expect("INDIRECT has an output");
+        // Is the indirect effect gone?
+        if !data.op(indop).is_dead() {
+            if data.op(indop).code() == OpCode::Copy {
+                // STORE resolved to a COPY.
+                let vn1 = data.op(indop).output.expect("COPY has an output");
+                let res = super::mergesnip::characterize_overlap(data, vn1, out);
+                if res > 0 {
+                    // The copy has an effect of some sort.
+                    if res == 2 {
+                        // Same storage: convert the INDIRECT to a COPY of the copied value.
+                        data.op_uninsert(op);
+                        data.op_set_input(op, 0, vn1);
+                        // Ghidra `opRemoveInput(op,1)` drops the iop annotation varnode; mosura's
+                        // 1-input form has no such slot, so dropping `guarded_op` is that removal.
+                        data.op_mut(op).guarded_op = None;
+                        data.op_set_opcode(op, OpCode::Copy);
+                        data.op_insert_after(op, indop);
+                        return 1;
+                    }
+                    let is_const = data.spaces.get(data.vn(vn1).loc.space).is_constant();
+                    if data.vn(vn1).contains(data.vn(out), is_const) == 0 {
+                        // INDIRECT output is properly contained in the COPY output: become a SUBPIECE.
+                        // Little-endian truncation amount. mosura's decompile-layer `Space` carries
+                        // no endianness, so Ghidra's `isBigEndian` arm is omitted exactly as in
+                        // `double.rs:219`.
+                        let trunc = data.vn(out).loc.offset - data.vn(vn1).loc.offset;
+                        let k = data.new_const(4, trunc);
+                        data.op_uninsert(op);
+                        data.op_set_input(op, 0, vn1);
+                        // Ghidra `opSetInput(op, newConstant(4,trunc), 1)` overwrites the iop slot;
+                        // mosura's 1-input form grows the slot and drops `guarded_op` instead.
+                        data.op_insert_input(op, 1, k);
+                        data.op_mut(op).guarded_op = None;
+                        data.op_set_opcode(op, OpCode::Subpiece);
+                        data.op_insert_after(op, indop);
+                        return 1;
+                    }
+                    // Ghidra: `warning("Ignoring partial resolution of indirect")` — mosura has no
+                    // per-function warning stream, so the decline is the whole behaviour.
+                    return 0;
+                }
+                // res == 0: no overlap, so the COPY cannot touch this storage — fall through.
+            // ⚠️ INERT TODAY — DO NOT "SIMPLIFY AWAY". This arm and the next are faithful Ghidra
+            // code whose *guard attributes have no producer in mosura yet*, so control currently
+            // always falls past them to the `else return 0` below — which is precisely what Ghidra
+            // does with those attributes unset. They are live code awaiting their producer, not
+            // dead branches.
+            //
+            // `nolocalalias` (varnode.rs `flags::NOLOCALALIAS`) is set by Ghidra in
+            // `ScopeLocal`'s unaliased-symbol marking (varmap.cc:1375); mosura's `varnodeprops`
+            // models only that marking's net effect on `addrtied`/`addrforce` and never stores the
+            // attribute, so this reads `false` everywhere.
+            } else if data.vn(out).has_no_local_alias() {
+                // Ghidra tests the op-level `indirect_creation`; mosura records that property on the
+                // INDIRECT's output varnode instead (`Funcdata::mark_indirect_creation`).
+                if data.vn(out).is_indirect_creation() || data.op(op).no_indirect_collapse() {
+                    return 0;
+                }
+            // `spacebase_ptr` is set by Ghidra's `discoverIndexedStackPointers`/`LoadGuard`
+            // subsystem (heritage.cc, via `Funcdata::opMarkSpacebasePtr` funcdata.hh:487), which
+            // mosura does not model (documented at heritage.rs:1392 and varmap.rs:447), so nothing
+            // ever sets it and this reads `false` everywhere.
+            } else if data.op(indop).uses_spacebase_ptr() {
+                if data.op(indop).code() == OpCode::Store {
+                    // Ghidra consults the STORE's `LoadGuard` here and declines in both arms (a
+                    // guarded address, or a marked-but-unguarded STORE that should still become a
+                    // COPY). mosura records no load guards, so the unguarded arm is the one that
+                    // applies and it also declines — the two agree.
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+        }
+
+        let in0 = data.op(op).input(0).expect("INDIRECT has in(0)");
+        data.total_replace(out, in0);
+        data.op_destroy(op); // Get rid of the INDIRECT
+        1
+    }
+}
+
 /// Ghidra `RuleMultiCollapse` (ruleaction.cc): collapse a MULTIEQUAL whose inputs all trace to the
 /// same value. A varnode that recurs in a loop (the phi reaching itself) is skipped — treated as
 /// equal to every other branch. Inputs may match by *absolute* equality (same varnode) or by

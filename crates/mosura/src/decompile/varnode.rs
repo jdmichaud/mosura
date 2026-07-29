@@ -201,6 +201,36 @@ impl Varnode {
     pub fn is_persist(&self) -> bool {
         self.flags & flags::PERSIST != 0
     }
+    /// Ghidra `Varnode::hasNoLocalAlias` (varnode.hh:262) — no local pointer can affect this value.
+    ///
+    /// The flag bit exists ([`flags::NOLOCALALIAS`]) but mosura has no *producer* for it: Ghidra
+    /// sets it in `ScopeLocal`'s unaliased-symbol marking (`varmap.cc:1375`), a piece
+    /// [`super::varnodeprops`] models only by its net effect on `addrtied`/`addrforce` rather than
+    /// by storing the attribute. So this reads `false` everywhere today, which is exactly what
+    /// Ghidra's own code does with the attribute unset — it is not an approximation of the
+    /// predicate, it is the predicate over the attributes mosura currently produces.
+    pub fn has_no_local_alias(&self) -> bool {
+        self.flags & flags::NOLOCALALIAS != 0
+    }
+    /// Ghidra `Varnode::contains` (varnode.cc) — how this Varnode's storage contains `op`'s:
+    /// `0` fully contained, `1` `op` starts inside but runs past the end, `2` `op` starts at/after
+    /// the end, `-1` `op` starts before, `3` incomparable (different space, or constant).
+    pub fn contains(&self, op: &Varnode, is_constant_space: bool) -> i32 {
+        if self.loc.space != op.loc.space || is_constant_space {
+            return 3;
+        }
+        let (a, b) = (self.loc.offset, op.loc.offset);
+        if b < a {
+            return -1;
+        }
+        if b >= a + self.size as u64 {
+            return 2;
+        }
+        if b + op.size as u64 > a + self.size as u64 {
+            return 1;
+        }
+        0
+    }
     /// Ghidra `Varnode::isIndirectCreation` — this value is created out of nothing by an INDIRECT
     /// modeling a call's `killedbycall` clobber (it has no realistic ancestor).
     pub fn is_indirect_creation(&self) -> bool {

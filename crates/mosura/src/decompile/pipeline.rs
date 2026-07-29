@@ -184,6 +184,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleShift2Mult) // (37)
         .with(RuleShiftPiece) // (38)
         .with(RuleMultiCollapse) // (39)
+        .with(super::rules::RuleIndirectCollapse) // (40) coreaction.cc:5551
         .with(Rule2Comp2Mult) // (41)
         .with(super::rules::RuleSub2Add) // (42)
         .with(RuleCarryElim) // (43)
