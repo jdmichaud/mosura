@@ -51,9 +51,38 @@ def parse(path):
     return firings
 
 
+def read_stamp(path: str, kind: str) -> str:
+    """The provenance stamp trace-diff.sh writes as the first line of each trace.
+
+    REFUSE-ON-MISSING is the point. A trace produced from a CLEAN tree was once compared as though
+    it were the patched one, and the rule-firing deltas that fell out were reported as the patch's
+    defect when they were the baseline's. Between `git stash` and `git apply` that is a
+    one-keystroke mistake, and the rule "prove both sides of an A/B were built from the state you
+    think" had already been written down and still did not prevent it. Written rules do not
+    self-execute; this check does.
+    """
+    with open(path) as fh:
+        first = fh.readline().strip()
+    m = re.match(rf"^# {kind}-TRACE-STAMP (.+)$", first)
+    if not m:
+        sys.exit(
+            f"REFUSING: {path} carries no {kind}-TRACE-STAMP header.\n"
+            f"  It was not produced by scripts/trace-diff.sh, or predates provenance stamping.\n"
+            f"  Regenerate it — an unstamped trace cannot be attributed to a tree state."
+        )
+    return m.group(1)
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
+    gstamp = read_stamp(sys.argv[1], "GHIDRA")
+    mstamp = read_stamp(sys.argv[2], "MOSURA")
+    print(f"=== ghidra: {gstamp}")
+    print(f"=== mosura: {mstamp}")
+    if "+DIRTY" in mstamp:
+        print("=== note: the mosura side has UNCOMMITTED changes under crates/ — the sha alone does")
+        print("===       not identify this tree. Record the patch alongside any number you quote.")
     g = parse(sys.argv[1])
     m = parse(sys.argv[2])
     gnames = Counter(n for n, _ in g)

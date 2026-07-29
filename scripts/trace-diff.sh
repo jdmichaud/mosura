@@ -27,8 +27,27 @@ CAPTURE_TRACE="$MOSURA_DIR/oracle/capture_trace"
 OUT="$(mktemp -d)"
 trap '[ -n "${KEEP:-}" ] || rm -rf "$OUT"' EXIT
 
-"$CAPTURE_TRACE" "$GHIDRA_SRC" "$FIXTURE" --trace > "$OUT/ghidra.trace" 2>/dev/null
-( cd "$MOSURA_DIR" && MOSURA_TRACE=1 cargo run -q --example trace -- "$STEM" > "$OUT/mosura.trace" 2>/dev/null )
+# PROVENANCE STAMP — the mosura trace records the exact tree it was produced from.
+# This exists because a trace was once produced from a CLEAN tree and then compared as though it
+# were the patched one, and the resulting rule-firing deltas were reported as a patch's defect when
+# they were the baseline's. `git stash`/`git apply` between runs makes that a one-keystroke mistake
+# and no amount of care prevents it; the stamp does. trace-diff.py refuses to run without it.
+mosura_stamp() {
+  local sha dirty
+  sha="$(cd "$MOSURA_DIR" && git rev-parse --short HEAD 2>/dev/null || echo UNKNOWN)"
+  if (cd "$MOSURA_DIR" && ! git diff --quiet -- crates/ 2>/dev/null); then dirty="+DIRTY"; else dirty=""; fi
+  echo "# MOSURA-TRACE-STAMP sha=${sha}${dirty} fixture=${STEM} produced=$(date -Is)"
+}
+ghidra_stamp() {
+  local rev
+  rev="$(cd "$GHIDRA_SRC" && git rev-parse --short HEAD 2>/dev/null || echo PINNED)"
+  echo "# GHIDRA-TRACE-STAMP rev=${rev} fixture=${STEM} produced=$(date -Is)"
+}
+
+ghidra_stamp > "$OUT/ghidra.trace"
+"$CAPTURE_TRACE" "$GHIDRA_SRC" "$FIXTURE" --trace >> "$OUT/ghidra.trace" 2>/dev/null
+mosura_stamp > "$OUT/mosura.trace"
+( cd "$MOSURA_DIR" && MOSURA_TRACE=1 cargo run -q --example trace -- "$STEM" >> "$OUT/mosura.trace" 2>/dev/null )
 
 python3 "$SCRIPT_DIR/trace-diff.py" "$OUT/ghidra.trace" "$OUT/mosura.trace"
 [ -n "${KEEP:-}" ] && echo -e "\ntraces kept: $OUT/ghidra.trace  $OUT/mosura.trace"
