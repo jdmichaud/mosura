@@ -77,6 +77,34 @@ The emitter-side follow-up is to render a relocated operand as a symbol referenc
 `FIXUPP` and the masking fires on both sides — that is what makes the recompiled object
 relocatable like the original.
 
+### Trailing alignment padding is not the function
+
+`orig_len` in the manifest is the distance to the next function, so it includes whatever the linker
+used to align the next entry. Watcom 10.0a pads with `8b c0` (`mov eax,eax`, the classic 2-byte NOP)
+as well as 0x90/0xcc/0x00. Those bytes sit AFTER the `ret`, are unreachable, and are not the
+function — comparing against them makes a byte-perfect recompile fail on length alone. `compare.py`
+trims a trailing run of them from the ORIGINAL slice (never into or past the terminating `ret`, so
+an `8b c0` reached by control flow is untouched) and prints `padtrim=Nb` whenever it does.
+
+Worked example: `FUN_00065ed0/ed8/ee0` each have `orig_len=8` (`a1 xx xx 08 00 c3 8b c0`) and
+compile to the *identical* 6-byte object as their `orig_len=6` neighbour `FUN_00065ee8`, which
+scored RELOC_EXACT while they scored `len cand=6 orig=8`. Worth +3 RELOC_EXACT, with no decompiler
+change: the output was already byte-perfect.
+
+### Two mechanizations (procedure that no longer depends on vigilance)
+
+- **`.compile-complete` sentinel.** `compile.sh` copies its objects back to `obj/` only at the END,
+  so the object count climbs from 0 and any wait predicate keyed on it fires early. That raced
+  `compare.py` twice — once producing an absurd distribution, once a plausible one, and the
+  plausible one is the dangerous version. `compile.sh` now removes the sentinel when a run starts
+  and writes it (with `ok`/`fail`/`objects`/`stems`/`finished`) when it completes; `compare.py`
+  refuses to run without it and hard-fails if `obj/` disagrees with the recorded count.
+- **Comparator identity in the artifact.** `compare.py` prints a `COMPARATOR` string and writes it
+  as the first line of `results.tsv`, naming the reference and the fixup rules in force. Restoring a
+  stale `compare.py` from a backup silently reverted the fixup-table fix once and was caught only by
+  domain knowledge; now every artifact self-identifies and a stale comparator announces itself.
+  Bump the string on any definition change.
+
 ### The `code` typedef in `prelude.h`
 
 `prelude.h` declares `typedef int (*code)();`. It was `void (*code)()`, which cost 46 functions.
