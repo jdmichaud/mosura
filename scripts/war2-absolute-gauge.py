@@ -40,8 +40,10 @@ import os
 import re
 import sys
 
-# --- counting, with the two traps that have actually bitten us -------------------------------
-CALL = re.compile(r'\b(?:func_0x[0-9a-fA-F]+|FUN_[0-9a-fA-F]+)\s*\(')
+# --- counting, with the three traps that have actually bitten us -----------------------------
+# TRAP 3 is the reason this uses an explicit "not preceded by an identifier char" look-behind
+# instead of `\b`: see count_calls.
+CALL = re.compile(r'(?<![A-Za-z0-9_])(?:thunk_)?(?:func_0x|FUN_)[0-9a-fA-F]+\s*\(')
 
 
 def count_calls(text: str, own_va: str) -> int:
@@ -53,9 +55,18 @@ def count_calls(text: str, own_va: str) -> int:
             leading whitespace eats every INDENTED line containing a `FUN_xxxx()` CALL. That
             under-counted Ghidra as emitting 1 call for a function that emits 4. The definition
             line is at COLUMN 0 and names THIS function; require both.
+    TRAP 3 (found 2026-07-29): the predicate was `\\b(?:func_0x…|FUN_…)\\s*\\(`. In Ghidra's
+            `thunk_FUN_00067d38(...)` the character before `FUN_` is `_` — a word character — so
+            `\\b` does NOT match and every Ghidra THUNK call site was invisible. mosura never emits
+            a `thunk_` name, so the blind spot was ONE-SIDED: it inflated surplus and, worse, HID
+            deficit. At the pinned base it reported 28 fns/60 calls deficit and 18 fns/45 calls
+            surplus; the true figures are 37/69 and 4/17. Fourteen of the eighteen "Ghidra prunes
+            live code" functions were this artifact, not pruning. Any new name shape Ghidra can
+            give a callee belongs in CALL — check `grep -oE '[A-Za-z_][A-Za-z0-9_]*\\s*\\(' sweep |
+            sort | uniq -c | sort -rn` after regenerating a sweep.
     """
     own = own_va.lstrip('0') or '0'
-    own_def = re.compile(r'\bFUN_0*' + own + r'\s*\(')
+    own_def = re.compile(r'(?<![A-Za-z0-9_])(?:thunk_)?FUN_0*' + own + r'\s*\(')
     n = 0
     for line in text.split('\n'):
         if line.startswith('extern'):
@@ -64,6 +75,32 @@ def count_calls(text: str, own_va: str) -> int:
             continue
         n += len(CALL.findall(line))
     return n
+
+
+def _selftest() -> int:
+    """Negative + positive controls for count_calls. Run with --selftest."""
+    cases = [
+        # (text, own_va, expected, why)
+        ("  thunk_FUN_00067d38(in_ES);\n", "000683d7", 1, "thunk call site counts (TRAP 3)"),
+        ("void thunk_FUN_00067d38(void)\n{\n  return;\n}\n", "00067d38", 0,
+         "a thunk's OWN definition line is not a call"),
+        ("int FUN_0001bd30(void)\n{\n  FUN_00051c2c();\n}\n", "0001bd30", 1,
+         "own definition line skipped, body call counted (TRAP 2)"),
+        ("extern int func_0x0001ba38();\n", "00000000", 0, "extern declaration is not a call"),
+        ("  iVar1 = my_FUN_0001bd30(x);\n", "00000000", 0,
+         "NEGATIVE CONTROL: an unrelated identifier ending in the pattern is not a call"),
+        ("  (*pcVar1)();\n  swi(0x31);\n", "00000000", 0,
+         "NEGATIVE CONTROL: indirect call / intrinsic is not a named call site"),
+        ("  uVar1 = FUN_00012340(FUN_00012344());\n", "00000000", 2, "nested calls both count"),
+    ]
+    bad = 0
+    for text, va, want, why in cases:
+        got = count_calls(text, va)
+        ok = got == want
+        bad += not ok
+        print(f"  [{'ok ' if ok else 'FAIL'}] want={want} got={got}  {why}")
+    print("selftest: " + ("PASS" if not bad else f"{bad} FAILURES"))
+    return 1 if bad else 0
 
 
 def split_sweep(path: str) -> dict:
@@ -91,6 +128,44 @@ METRICS = {
 }
 
 
+# --- mosura side, keyed by each file's OWN definition line ------------------------------------
+# MANIFEST-IDX RULE: the survey EMIT regenerates manifest.tsv and idx->VA shifts when functions are
+# discovered, so an idx-keyed read silently compares two different functions. Key on the FUN_ in the
+# .c's own column-0 definition line and use the manifest only to CHECK that keying.
+OWN_DEF = re.compile(r'^\w[^\n]*\bFUN_([0-9a-fA-F]{8})\s*\(', re.M)
+
+
+def load_mosura(src: str, manifest: str) -> dict:
+    man = {}
+    for line in open(manifest):
+        f = line.rstrip('\n').split('\t')
+        if len(f) >= 9 and f[0] != 'idx':
+            man[f[0]] = f[1].lower()
+    out, mismatch, nodef = {}, [], 0
+    for fn in sorted(os.listdir(src)):
+        if not fn.endswith('.c'):
+            continue
+        text = open(os.path.join(src, fn)).read()
+        m = OWN_DEF.search(text)
+        if not m:
+            nodef += 1
+            continue
+        own = m.group(1).lower()
+        idx = fn[:-2]
+        if idx in man and man[idx] != own:
+            mismatch.append((fn, man[idx], own))
+        out[own] = text
+    if mismatch:
+        print(f"  ⚠️  MANIFEST/SOURCE MISMATCH on {len(mismatch)} files — the manifest is not the one"
+              f" this src dir was emitted with. Keying on the .c definition lines (correct), but"
+              f" re-emit before trusting any per-function attribution.", file=sys.stderr)
+        for r in mismatch[:5]:
+            print(f"        {r[0]}: manifest says {r[1]}, file defines {r[2]}", file=sys.stderr)
+    if nodef:
+        print(f"  note: {nodef} .c files carry no column-0 FUN_ definition line (skipped)")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sweep', default='ghidra-all.txt', help="Ghidra sweep output")
@@ -98,7 +173,12 @@ def main() -> int:
     ap.add_argument('--manifest', default=None, help="war2-survey/manifest.tsv")
     ap.add_argument('--top', type=int, default=15)
     ap.add_argument('--list-deficits', default=None, help="write deficit VAs (worst first) here")
+    ap.add_argument('--selftest', action='store_true',
+                    help="run the counting predicate's positive + negative controls and exit")
     a = ap.parse_args()
+
+    if a.selftest:
+        return _selftest()
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     survey = os.path.join(os.path.dirname(root), 'war2-survey')
@@ -111,34 +191,28 @@ def main() -> int:
             return 1
 
     gh = split_sweep(a.sweep)
-    va2idx = {}
-    for line in open(manifest):
-        f = line.rstrip('\n').split('\t')
-        if len(f) < 9 or f[0] == 'idx':
-            continue
-        va2idx[f[1]] = f[0]
+    mos = load_mosura(src, manifest)
 
     print("=== WAR2 ABSOLUTE GAUGE (mosura vs Ghidra, per function) ===")
     print(f"reference: {a.sweep} ({len(gh)} functions)")
+    print(f"mosura   : {src} ({len(mos)} functions, keyed by their own definition lines)")
     print("reference hierarchy: bytes > Ghidra > mosura. Ghidra is a PROXY, not ground truth —")
     print("this gauge cannot see a call that BOTH tools drop. Percentages below are OF GHIDRA,")
     print("not of the binary; settle a specific function against a flow-following disassembly.")
     for mname, (fn, units) in METRICS.items():
         rows = []
         for va, gtext in gh.items():
-            idx = va2idx.get(va)
-            if not idx:
+            if va not in mos:
                 continue
-            p = os.path.join(src, f'{idx}.c')
-            if not os.path.exists(p):
-                continue
-            rows.append((va, fn(gtext, va), fn(open(p).read(), va)))
+            rows.append((va, fn(gtext, va), fn(mos[va], va)))
         if not rows:
             print(f"  {mname}: no comparable functions"); continue
         tg = sum(r[1] for r in rows)
         tm = sum(r[2] for r in rows)
         deficit = sorted((r for r in rows if r[2] < r[1]), key=lambda r: r[2] - r[1])
+        surplus = sorted((r for r in rows if r[2] > r[1]), key=lambda r: r[1] - r[2])
         missing = sum(r[1] - r[2] for r in deficit)
+        extra = sum(r[2] - r[1] for r in surplus)
         pct = (100.0 * tm / tg) if tg else 0.0
         print(f"\n  [{mname}] {units}")
         print(f"    functions compared : {len(rows)}")
@@ -147,6 +221,15 @@ def main() -> int:
         print(f"    DEFICIT            : {len(deficit)} functions, {missing} {units} missing")
         for va, g, m in deficit[:a.top]:
             print(f"      {va}  ghidra={g:3d}  mosura={m:3d}  (-{g - m})")
+        # Surplus is reported because it is the shape a COUNTING BUG takes (see TRAP 3): a
+        # predicate blind to one side's naming manufactures surplus out of nothing. It is not a
+        # defect claim in either direction until it is settled against the bytes.
+        print(f"    surplus (NOT a defect claim — settle against bytes): "
+              f"{len(surplus)} functions, {extra} {units}")
+        for va, g, m in surplus[:a.top]:
+            warn = gh[va].count('Removing unreachable block')
+            print(f"      {va}  ghidra={g:3d}  mosura={m:3d}  (+{m - g})"
+                  f"   ghidra 'Removing unreachable block' x{warn}")
         if a.list_deficits and mname == 'calls':
             with open(a.list_deficits, 'w') as out:
                 out.write('\n'.join(r[0] for r in deficit) + '\n')

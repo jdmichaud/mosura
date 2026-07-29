@@ -9,9 +9,38 @@
 # The way around it: import the FUNCTION BYTES THEMSELVES as a raw binary based at their own VA
 # (BinaryLoader + x86:LE:32:default), then create + decompile the function there. Ghidra needs no
 # container and no surrounding code: a 179-byte import with entirely unresolved call targets still
-# decompiles correctly (calls simply render `func_0xNNNNNNNN()`). That property is what makes the
-# result trustworthy as an oracle — Ghidra is working with LESS context than mosura, so mosura can
-# never plead missing analysis context for a divergence.
+# decompiles correctly (calls simply render `func_0xNNNNNNNN()`). Ghidra is working with LESS
+# context than mosura, so mosura can never plead missing analysis context for a DEFICIT.
+#
+# ⚠️ MEASURED LIMIT OF THAT PROPERTY — the asymmetry only runs one way (recorded 2026-07-29,
+# @e840e56). "Less context" does NOT mean "same answer, fewer names": on a few functions the missing
+# context makes Ghidra PRUNE LIVE CODE. With the callees unresolvable, guard conditions fold to
+# constants and whole blocks are declared dead — Ghidra's own output says so: FUN_00066da8 carries
+# NINE `/* WARNING: Removing unreachable block ... */` comments, then emits 2 calls where the bytes
+# contain 9. Measured against the pinned base emission, that is 3 functions / 11 calls (00066da8 +7,
+# 0006581c +3, 00066ea8 +1); each of the three carries such warnings, and every one of mosura's
+# claimed sites in them was checked against the fixup-applied image as a real `e8 rel32` at its exact
+# target.
+#
+# ⚠️ AND BEFORE BELIEVING ANY SURPLUS, SUSPECT THE COUNTER — that number was 17 functions / 39 calls
+# until 2026-07-29, when the extra 14 turned out to be a COUNTING BUG, not pruning. The gauge's call
+# predicate began `\b(?:FUN_|func_0x)…` and Ghidra renders thunk calls as `thunk_FUN_00067d38(...)`,
+# where the char before `FUN_` is `_` — a word char — so `\b` never matched and 30 Ghidra call sites
+# were invisible. mosura emits no `thunk_` name at all, so the blind spot was ONE-SIDED: it invented
+# surplus AND hid deficit (base deficit was really 37 fns / 69 calls, reported as 28 / 60). A
+# one-sided predicate is the standing failure mode of this comparison; the fix and its negative
+# controls are in `scripts/war2-absolute-gauge.py` (TRAP 3, `--selftest`).
+#
+# CONSEQUENCE FOR ANY NUMBER DERIVED FROM THIS SWEEP: a mosura DEFICIT against it is real evidence
+# (Ghidra had less and still found more). A mosura SURPLUS is NOT evidence of a mosura defect —
+# check the counter first, then the bytes. Never quote "% of Ghidra" as a quality claim; quote the
+# deficit, and state any surplus separately with its cause.
+#
+# SEPARATE, MOSURA-SIDE: the bytes handed to Ghidra are `[entry, next-entry)` (see war2_survey.rs),
+# so if mosura's own flow runs PAST the next discovered function entry, Ghidra is given a shorter
+# slice and the comparison is not like-for-like. That is exactly 1 function today (FUN_0007baf0:
+# 512 bytes given, 1948 covered, +6 "surplus" calls that simply lie outside Ghidra's input). Check
+# `cov_hi - va` against `orig_len` in the manifest before attributing such a gap to the oracle.
 #
 # Bytes come from the survey manifest's `orig_hex` column, which is produced by
 # `cargo run --release --example war2_survey` (see docs/war2-recompile-remeasure.md).
