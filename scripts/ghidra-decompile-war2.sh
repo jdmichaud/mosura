@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Get GHIDRA's own decompilation of one or many WAR2.EXE functions.
+#
+# ⚠️ WHY THIS DOES NOT IMPORT WAR2.EXE — DO NOT "FIX" IT TO.
+# WAR2.EXE is a DOS/4GW **LE** executable. Ghidra loads only the MZ stub, so `analyzeHeadless`
+# on the .EXE cannot see a single byte of the protected-mode code we care about. That blocked
+# Ghidra-on-WAR2 for the whole byte-exact campaign.
+#
+# The way around it: import the FUNCTION BYTES THEMSELVES as a raw binary based at their own VA
+# (BinaryLoader + x86:LE:32:default), then create + decompile the function there. Ghidra needs no
+# container and no surrounding code: a 179-byte import with entirely unresolved call targets still
+# decompiles correctly (calls simply render `func_0xNNNNNNNN()`). That property is what makes the
+# result trustworthy as an oracle — Ghidra is working with LESS context than mosura, so mosura can
+# never plead missing analysis context for a divergence.
+#
+# Bytes come from the survey manifest's `orig_hex` column, which is produced by
+# `cargo run --release --example war2_survey` (see docs/war2-recompile-remeasure.md).
+#
+# Usage:
+#   scripts/ghidra-decompile-war2.sh 1bd30 [1b8b8 ...]   # named functions
+#   scripts/ghidra-decompile-war2.sh --all               # every function in the manifest
+#   scripts/ghidra-decompile-war2.sh --file vas.txt      # one hex VA per line
+#
+# Output: `===== FUNC <va> =====` followed by Ghidra's C, on stdout.
+#
+# Env: WAR2_MANIFEST (default ../war2-survey/manifest.tsv), GHIDRA_DIST, OUT.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"                     # mosura/
+MANIFEST="${WAR2_MANIFEST:-$(cd "$HERE/.." && pwd)/war2-survey/manifest.tsv}"
+GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$HERE/.." && pwd)/ghidra}"
+DIST="${GHIDRA_DIST:-$(echo /data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_*_DEV)}"
+[ -d "$DIST" ] || DIST="$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)"
+HEADLESS="$DIST/support/analyzeHeadless"
+SCRIPTS="$HERE/oracle/ghidra_scripts"
+
+[ -x "$HEADLESS" ] || { echo "ERROR: no analyzeHeadless at $HEADLESS (set GHIDRA_DIST)" >&2; exit 1; }
+[ -s "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (set WAR2_MANIFEST); regenerate with the war2_survey example" >&2; exit 1; }
+
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+export LC_ALL=C.UTF-8 LANG=C.UTF-8
+
+case "${1:-}" in
+  --all)  awk -F'\t' 'NR>1 && $9!="" {print $2}' "$MANIFEST" > "$WORK/vas.txt" ;;
+  --file) [ -n "${2:-}" ] || { echo "ERROR: --file needs a path" >&2; exit 1; }
+          tr -d ' \t' < "$2" | grep -v '^$' > "$WORK/vas.txt" ;;
+  "")     echo "ERROR: give one or more hex VAs, or --all / --file <path>" >&2; exit 1 ;;
+  *)      printf '%s\n' "$@" | sed 's/^0x//' > "$WORK/vas.txt" ;;
+esac
+
+# Build ONE sparse flat image holding every requested function at its own VA, so the whole batch is
+# a single JVM start + single import rather than one Ghidra run per function (the difference between
+# minutes and hours over 1286 functions).
+python3 - "$MANIFEST" "$WORK/vas.txt" "$WORK/image.bin" "$WORK/base.txt" <<'PY'
+import sys
+manifest, valist, imgpath, basepath = sys.argv[1:5]
+want = {l.strip().lower().lstrip('0') or '0' for l in open(valist) if l.strip()}
+fns = []
+for line in open(manifest):
+    f = line.rstrip('\n').split('\t')
+    if len(f) < 9 or f[0] == 'idx' or not f[8]:
+        continue
+    va = int(f[1], 16)
+    if f'{va:x}'.lstrip('0') not in want and f'{va:x}' not in want:
+        continue
+    fns.append((va, bytes.fromhex(f[8][:len(f[8]) // 2 * 2])))
+if not fns:
+    sys.exit("ERROR: none of the requested VAs are in the manifest")
+base = min(v for v, _ in fns)
+end = max(v + len(b) for v, b in fns)
+img = bytearray(end - base)
+for va, b in fns:
+    img[va - base:va - base + len(b)] = b
+open(imgpath, 'wb').write(img)
+open(basepath, 'w').write(hex(base))
+print(f"image: {len(fns)} functions, base {base:#x}, {len(img)} bytes", file=sys.stderr)
+PY
+
+BASE="$(cat "$WORK/base.txt")"
+OUTFILE="${OUT:-/dev/stdout}"
+# -noanalysis: the image is sparse (zero-filled between functions), so auto-analysis would spend its
+# time on padding. The script disassembles and creates each requested function explicitly, which is
+# all the decompiler needs.
+mkdir -p "$WORK/proj"   # analyzeHeadless requires the project directory to already exist
+"$HEADLESS" "$WORK/proj" cap -import "$WORK/image.bin" \
+  -loader BinaryLoader -loader-baseAddr "$BASE" -processor "x86:LE:32:default" \
+  -noanalysis -scriptPath "$SCRIPTS" \
+  -postScript DecompileFunctions.java "$WORK/vas.txt" -deleteProject 2>"$WORK/err.log" \
+  | sed -n 's/^INFO  DecompileFunctions\.java> \(.*\) (GhidraScript)  *$/\1/p' > "$WORK/out.txt" || {
+      echo "ERROR: headless failed; log tail:" >&2; tail -20 "$WORK/err.log" >&2; exit 1; }
+
+[ -s "$WORK/out.txt" ] || { echo "ERROR: no output; log tail:" >&2; tail -20 "$WORK/err.log" >&2; exit 1; }
+cat "$WORK/out.txt" > "$OUTFILE"
