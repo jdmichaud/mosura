@@ -44,6 +44,14 @@ import sys
 # TRAP 3 is the reason this uses an explicit "not preceded by an identifier char" look-behind
 # instead of `\b`: see count_calls.
 CALL = re.compile(r'(?<![A-Za-z0-9_])(?:thunk_)?(?:func_0x|FUN_)[0-9a-fA-F]+\s*\(')
+# A C function DEFINITION or declaration at column 0: only type/qualifier/pointer tokens before the
+# name. Used to prove that the column-0 lines we drop really are definitions (see TRAP 4).
+DEF_SHAPE = re.compile(
+    r'^(?:extern\s+)?[A-Za-z_][A-Za-z0-9_ \t*]*'
+    r'(?<![A-Za-z0-9_])(?:thunk_)?(?:func_0x|FUN_)[0-9a-fA-F]+\s*\(')
+# Column-0 call-pattern lines that are NOT definition-shaped. Nonzero means a NEW line shape exists
+# that TRAP 4's rule would silently discard — investigate before quoting any number.
+anomalous_col0: list = []
 
 
 def count_calls(text: str, own_va: str) -> int:
@@ -58,20 +66,36 @@ def count_calls(text: str, own_va: str) -> int:
     TRAP 3 (found 2026-07-29): the predicate was `\\b(?:func_0x…|FUN_…)\\s*\\(`. In Ghidra's
             `thunk_FUN_00067d38(...)` the character before `FUN_` is `_` — a word character — so
             `\\b` does NOT match and every Ghidra THUNK call site was invisible. mosura never emits
-            a `thunk_` name, so the blind spot was ONE-SIDED: it inflated surplus and, worse, HID
-            deficit. At the pinned base it reported 28 fns/60 calls deficit and 18 fns/45 calls
-            surplus; the true figures are 37/69 and 4/17. Fourteen of the eighteen "Ghidra prunes
-            live code" functions were this artifact, not pruning. Any new name shape Ghidra can
-            give a callee belongs in CALL — check `grep -oE '[A-Za-z_][A-Za-z0-9_]*\\s*\\(' sweep |
-            sort | uniq -c | sort -rn` after regenerating a sweep.
+            a `thunk_` name, so the blind spot was ONE-SIDED. It cost the SURPLUS side: at the
+            pinned base it reported 18 fns/45 calls of surplus where the truth is 4/17, and 14 of
+            the 18 "Ghidra prunes live code because it has no context" functions were this artifact
+            (FUN_000683d7 scored ghidra=0/mosura=2 while Ghidra's text opens `thunk_FUN_00067d38
+            (in_ES);`). Any new name shape Ghidra can give a callee belongs in CALL — check
+            `grep -oE '[A-Za-z_][A-Za-z0-9_]*\\s*\\(' sweep | sort | uniq -c | sort -rn` after
+            regenerating a sweep.
+            ⚠️ AND FIX TRAP 4 BEFORE QUOTING ANYTHING: fixing TRAP 3 ALONE inflates the deficit to
+            37 fns/69 calls at base, all of it phantom. With both fixed the deficit is bit-for-bit
+            what the blind predicate reported — same 28 functions, same 60 calls, same per-function
+            numbers; likewise 4 fns/9 calls after heritage Stage A. The two bugs cancelled per
+            function, so the campaign's gate was never wrong; only surplus and the "% of Ghidra"
+            totals were. Half-fixing a two-sided counting bug is worse than not fixing it.
+    TRAP 4 (found 2026-07-29, immediately after TRAP 3): skipping "the definition line" by matching
+            the function's OWN va assumes Ghidra names a function after the address we asked about.
+            It does not — an entry Ghidra decides is a thunk is named after its TARGET, so
+            `FUN_00051c2c` comes back as `void thunk_FUN_00067d45(void)` and THAT DEFINITION LINE
+            scored as a call: a phantom 1-call deficit on a body that calls nothing. Verified over
+            the whole corpus, on both sides, every column-0 line matching CALL is a definition or an
+            `extern` and every real call site is indented — so the rule is POSITIONAL, not
+            name-based, and `own_va` is no longer consulted. A column-0 line that matches CALL
+            without being definition-shaped is recorded in `anomalous_col0` and reported, so a new
+            shape announces itself instead of being silently discarded.
     """
-    own = own_va.lstrip('0') or '0'
-    own_def = re.compile(r'(?<![A-Za-z0-9_])(?:thunk_)?FUN_0*' + own + r'\s*\(')
+    del own_va  # kept in the signature: METRICS extractors are called uniformly with (text, va)
     n = 0
     for line in text.split('\n'):
-        if line.startswith('extern'):
-            continue
-        if line and not line[0].isspace() and own_def.search(line):
+        if line and not line[0].isspace():
+            if CALL.search(line) and not DEF_SHAPE.match(line):
+                anomalous_col0.append(line)
             continue
         n += len(CALL.findall(line))
     return n
@@ -84,6 +108,9 @@ def _selftest() -> int:
         ("  thunk_FUN_00067d38(in_ES);\n", "000683d7", 1, "thunk call site counts (TRAP 3)"),
         ("void thunk_FUN_00067d38(void)\n{\n  return;\n}\n", "00067d38", 0,
          "a thunk's OWN definition line is not a call"),
+        ("void thunk_FUN_00067d45(void)\n{\n  _DAT_0008948a = _DAT_0008948a + -1;\n}\n",
+         "00051c2c", 0,
+         "TRAP 4: definition line named after a DIFFERENT va (thunk) is still not a call"),
         ("int FUN_0001bd30(void)\n{\n  FUN_00051c2c();\n}\n", "0001bd30", 1,
          "own definition line skipped, body call counted (TRAP 2)"),
         ("extern int func_0x0001ba38();\n", "00000000", 0, "extern declaration is not a call"),
@@ -230,6 +257,13 @@ def main() -> int:
             warn = gh[va].count('Removing unreachable block')
             print(f"      {va}  ghidra={g:3d}  mosura={m:3d}  (+{m - g})"
                   f"   ghidra 'Removing unreachable block' x{warn}")
+        if anomalous_col0:
+            uniq = sorted(set(anomalous_col0))
+            print(f"    ⚠️  {len(anomalous_col0)} column-0 lines matched the call pattern without "
+                  f"being definition-shaped ({len(uniq)} distinct). TRAP 4's positional rule "
+                  f"dropped them; check whether they are call sites before trusting the counts:")
+            for line in uniq[:5]:
+                print(f"        {line[:110]}")
         if a.list_deficits and mname == 'calls':
             with open(a.list_deficits, 'w') as out:
                 out.write('\n'.join(r[0] for r in deficit) + '\n')

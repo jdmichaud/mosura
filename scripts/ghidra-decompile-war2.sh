@@ -12,6 +12,11 @@
 # decompiles correctly (calls simply render `func_0xNNNNNNNN()`). Ghidra is working with LESS
 # context than mosura, so mosura can never plead missing analysis context for a DEFICIT.
 #
+# ⚠️ AND IT DOES NOT ALWAYS ANSWER ABOUT THE VA YOU ASKED FOR: an entry Ghidra decides is a thunk
+# comes back named after its TARGET (`===== FUNC 00051c2c =====` is followed by
+# `void thunk_FUN_00067d45(void)`). Key any per-function comparison on the `===== FUNC` header, and
+# never assume the C body's name matches it.
+#
 # ⚠️ MEASURED LIMIT OF THAT PROPERTY — the asymmetry only runs one way (recorded 2026-07-29,
 # @e840e56). "Less context" does NOT mean "same answer, fewer names": on a few functions the missing
 # context makes Ghidra PRUNE LIVE CODE. With the callees unresolvable, guard conditions fold to
@@ -26,10 +31,14 @@
 # until 2026-07-29, when the extra 14 turned out to be a COUNTING BUG, not pruning. The gauge's call
 # predicate began `\b(?:FUN_|func_0x)…` and Ghidra renders thunk calls as `thunk_FUN_00067d38(...)`,
 # where the char before `FUN_` is `_` — a word char — so `\b` never matched and 30 Ghidra call sites
-# were invisible. mosura emits no `thunk_` name at all, so the blind spot was ONE-SIDED: it invented
-# surplus AND hid deficit (base deficit was really 37 fns / 69 calls, reported as 28 / 60). A
-# one-sided predicate is the standing failure mode of this comparison; the fix and its negative
-# controls are in `scripts/war2-absolute-gauge.py` (TRAP 3, `--selftest`).
+# were invisible. mosura emits no `thunk_` name at all, so the blind spot was ONE-SIDED and invented
+# surplus out of nothing. A second, opposite bug sat behind it: Ghidra names a thunk entry after its
+# TARGET, so the definition line of FUN_00051c2c reads `void thunk_FUN_00067d45(void)` and scored as
+# a call. Fixing either one alone gives a WRONG answer — TRAP 3 alone inflates the base deficit to a
+# phantom 37 fns / 69 calls. With both fixed the deficit is exactly what was always reported (base
+# 28 fns / 60 calls; 4 / 9 after heritage Stage A, same functions, same per-function counts): the
+# gate was never wrong, only the surplus and the "% of Ghidra" totals. Fix and negative controls in
+# `scripts/war2-absolute-gauge.py` (TRAPs 3-4, `--selftest`).
 #
 # CONSEQUENCE FOR ANY NUMBER DERIVED FROM THIS SWEEP: a mosura DEFICIT against it is real evidence
 # (Ghidra had less and still found more). A mosura SURPLUS is NOT evidence of a mosura defect —
