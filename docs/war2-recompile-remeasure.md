@@ -77,6 +77,18 @@ The emitter-side follow-up is to render a relocated operand as a symbol referenc
 `FIXUPP` and the masking fires on both sides — that is what makes the recompiled object
 relocatable like the original.
 
+### The `code` typedef in `prelude.h`
+
+`prelude.h` declares `typedef int (*code)();`. It was `void (*code)()`, which cost 46 functions.
+mosura renders an indirect call the way Ghidra does, `(*(code *)(ptr))()`; with a void-returning
+`code` that expression has type void, so the moment return-value recovery started producing
+`iVar9 = (*(code *)(...))();` every such caller failed with `E1052: Expression has void type`
+(plus `E1010` behind it). Ghidra's own C has the same shape and does not compile either — the
+prelude exists precisely to make it compilable, and a void callee was simply the wrong choice once
+the value is used. Measured at `6e1b113`: COMPILE_FAIL **75 -> 29**, E1052 47 -> 0, with the
+byte-clean count unchanged at 5 EXACT + 4 RELOC_EXACT. Remaining classes are E1079 (10), E1018 (9),
+E1010 (4), E1029 (2), and one each of E1090/E1081/E1080/E1063.
+
 ## Reading the result / the delta
 ```
 # distribution:
