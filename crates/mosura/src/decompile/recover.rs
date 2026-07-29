@@ -1,12 +1,14 @@
 //! Return-value recovery — a port of Ghidra's `ActionReturnRecovery` (`coreaction.cc`) +
 //! the core of `AncestorRealistic` (`funcdata_varnode.cc`).
 //!
-//! Every RETURN is given the candidate return-convention registers as inputs (RAX for
-//! integers/pointers, XMM0 for floats). After heritage links each to the value reaching
-//! that RETURN, [`is_realistic`] decides which candidate actually holds a returned value —
-//! i.e. its value traces back to a *real write the function made*, not to the unwritten
-//! passthrough register. The non-realistic candidates are removed, so dead-code keeps
-//! exactly the return value and the scratch register writes die.
+//! The candidate return storage is registered DURING heritage, not enumerated here:
+//! [`super::heritage::guard_returns`] asks the compiler spec (`FuncProto::characterizeAsOutput`,
+//! heritage.cc:1660) about every heritaged range and gives each match a trial plus an input on
+//! every RETURN. [`init_active_output`] only opens the trial container. Once heritage has linked
+//! those inputs to the value reaching each RETURN, [`is_realistic`] decides which candidate
+//! actually holds a returned value — i.e. its value traces back to a *real write the function
+//! made*, not to the unwritten passthrough register. The non-realistic candidates are removed, so
+//! dead-code keeps exactly the return value and the scratch register writes die.
 //!
 //! `is_realistic` ports `AncestorRealistic`'s essence for the return-register case (where
 //! the candidates are never directwrite parameters, so an unwritten input is not realistic);
