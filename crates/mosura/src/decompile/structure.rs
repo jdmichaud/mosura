@@ -3032,8 +3032,8 @@ pub fn structure(f: &Funcdata) -> Structured {
         let roots: Vec<usize> =
             (0..s.blocks.len()).filter(|&i| s.blocks[i].active && s.blocks[i].parent.is_none()).collect();
         eprintln!(
-            "COLLAPSE n={} order={} active_top_level_roots={} root={} roots={:?}",
-            n, s.order.len(), roots.len(), s.root, roots
+            "COLLAPSE n={} order={:?} active_top_level_roots={:?} root={}",
+            n, s.order, roots, s.root
         );
     }
 
