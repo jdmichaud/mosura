@@ -1169,6 +1169,23 @@ fn gather_candidates(f: &Funcdata, pass: i32) -> HashMap<Loc, bool> {
 /// later simplification re-introduced a free read of it). The driver loop stops once neither holds —
 /// the termination implicit in Ghidra's heritage loop (`heritage.cc:2702`, which finds no new work).
 pub fn heritage_complete(f: &Funcdata) -> bool {
+    // A space that has not yet reached its DELAY always has work outstanding, whatever the current
+    // graph happens to look like. Ghidra needs no such statement because it has no completion
+    // predicate at all: `ActionHeritage` calls `heritage()` unconditionally every mainloop iteration,
+    // and `heritage()` heritages whichever spaces satisfy `pass >= info->delay` (heritage.cc:
+    // 2686-2687). The delay is precisely a promise that the space WILL be heritaged on a later pass.
+    //
+    // The candidate-shape test below cannot see that promise, and inferring completion from graph
+    // shape is unsound while the shape is still changing: mainloop iteration 1's rule pool runs
+    // before the stack pass, so it legitimately removes ram/stack accesses that nothing anchors yet
+    // — and with those gone the test found no candidates and reported heritage FINISHED. The stack
+    // pass then never ran, and floatcast (a function whose entire body hangs off two ram globals)
+    // rendered as `void func(void) { return; }`. Ghidra's own trace for that fixture is
+    // `heritage, deadcode, earlyremoval x55, heritage, earlyremoval x4` — it takes the same removals
+    // in the same window and still runs its second pass, because the delay says so.
+    if build_info_list(&f.spaces).iter().any(|i| i.is_heritaged() && f.heritage_pass <= i.delay) {
+        return false;
+    }
     !gather_candidates(f, f.heritage_pass)
         .iter()
         .any(|(l, &has_free)| f.globaldisjoint.find_pass(l.0, l.1) == -1 || has_free)
@@ -1272,12 +1289,18 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     } else if aliased_stack || Some(spc) == ram {
         // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
         effect::UNKNOWN_EFFECT
+    } else if f.spaces.get(spc).kind == super::space::SpaceKind::Spacebase {
+        // A NON-aliased stack slot. mosura's alias-boundary adaptation suppresses the passthrough
+        // INDIRECT here (Ghidra would emit one — every stack address falls through its register-only
+        // effect list to unknown_effect); that adaptation is unchanged. What changed is that the
+        // range no longer bails out of the whole function: Ghidra decides the INDIRECT and decides
+        // the input trial SEPARATELY, and a stack slot holding an outgoing argument must still reach
+        // the trial branch below. Spelling it as `unaffected` keeps the INDIRECT suppressed, because
+        // the guarding tail only fires for unknown_effect/return_address/killedbycall.
+        effect::UNAFFECTED
     } else {
         return;
     };
-    if effecttype == effect::UNAFFECTED {
-        return;
-    }
     // holdind = (fl & addrtied): a mapped (addr-tied) range keeps its passthrough INDIRECT auto-live
     // via setAddrForce, so dead-code preserves the across-call chain and the write feeding it. Faithful
     // to `queryProperties` (heritage.cc:1191) + [`super::varnodeprops::mark_addrtied`]: an unmapped ram
@@ -1296,6 +1319,23 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         }
         let Some(bid) = f.op(call).parent else { continue };
 
+        // Ghidra heritage.cc:1457-1467 — translate the range into the CALLEE's frame before asking
+        // the convention anything about it. A register translates to itself; a SPACEBASE range must
+        // be shifted by the stack-pointer offset at this call site, and when that offset is unknown
+        // Ghidra declines to try the range as a trial at all, because it cannot say which parameter
+        // slot the range would be. The offset is what the stack-pointer placeholder recovers
+        // ([`super::fspec::create_placeholder`]); before that subsystem existed this was
+        // permanently unknown, so mosura registered zero stack trials anywhere.
+        let mut tryregister = true;
+        let mut trans_off = off;
+        if f.spaces.get(spc).kind == super::space::SpaceKind::Spacebase {
+            match super::fspec::spacebase_offset(f, call) {
+                Some(so) => trans_off = f.spaces.get(spc).wrap_offset(off.wrapping_sub(so)),
+                None => tryregister = false,
+            }
+        }
+        let trans_addr = super::space::Address::new(spc, trans_off);
+
         // Input-parameter branch (Ghidra `Heritage::guardCalls`, heritage.cc:1494-1509). While
         // argument recovery is open for this call, ask the convention how this heritaged range
         // relates to its PARAMETER storage — `FuncProto::characterizeAsInputParam`, i.e. the
@@ -1309,17 +1349,15 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         // call site grew six spurious wide reads over ranges nothing writes — the same
         // spurious-range mechanism that severed narrow-switch recovery on the return side.
         //
-        // Ghidra's `tryregister` (heritage.cc:1461-1466): a SPACEBASE (stack) range needs the call's
-        // stack offset to translate into the callee's frame, and Ghidra declines to register a trial
-        // when that offset is unknown. mosura does not model `FuncCallSpecs::getSpacebaseOffset`
-        // yet, so every spacebase range takes Ghidra's own unknown-offset path. Register ranges —
-        // which is all `recover_call_args` ever covered — translate identically (`transAddr == addr`).
-        if f.active_inputs.contains_key(&call) && f.spaces.get(spc).kind != super::space::SpaceKind::Spacebase {
-            match f.proto_model.characterize_as_input_param(addr, size) {
+        // The TRIAL address is the callee-frame `trans_addr`, but the VARNODE that carries it is at
+        // the caller-frame `addr` — the two differ by exactly the stack offset for a stack argument,
+        // and `build_input_from_trials` translates back (fspec.cc:5713) when it commits the list.
+        if tryregister && f.active_inputs.contains_key(&call) {
+            match f.proto_model.characterize_as_input_param(trans_addr, size) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();
-                    if active.which_trial(addr, size).is_none() {
-                        let ti = active.register_trial(addr, size);
+                    if active.which_trial(trans_addr, size).is_none() {
+                        let ti = active.register_trial(trans_addr, size);
                         let invn = f.new_varnode(size, addr);
                         // heritage.cc:1503 — the new CALL input joins THIS round's renaming, so it
                         // binds to the value the caller left in the argument register. Without it
@@ -1331,7 +1369,9 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                         f.active_inputs.get_mut(&call).unwrap().trial[ti].op_slot = slot as u32;
                     }
                 }
-                super::fspec::Containment::ContainedBy => guard_call_overlapping_input(f, call, addr, size),
+                super::fspec::Containment::ContainedBy => {
+                    guard_call_overlapping_input(f, call, addr, trans_addr, size)
+                }
                 _ => {}
             }
         }
@@ -1378,10 +1418,32 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
 /// Ghidra `Heritage::guardCallOverlappingInput` (heritage.cc:1210). The call may be taking part of
 /// this range as an argument, so a SUBPIECE truncates the range down to the storage the convention
 /// actually passes in, and that truncated piece becomes the call's new input and its trial.
-fn guard_call_overlapping_input(f: &mut Funcdata, call: OpId, addr: super::space::Address, size: u32) {
-    let Some((trunc_addr, trunc_size)) = f.proto_model.get_biggest_contained_input_param(addr, size) else {
+///
+/// Two addresses, as in Ghidra: `trans_addr` is the range from the CALLEE's stack perspective and is
+/// what the convention is queried with; `addr` is the same range in the caller, and is where the
+/// varnodes actually live. They coincide for a register range and differ by the call's stack offset
+/// for a spacebase range.
+///
+/// One asymmetry is Ghidra's, ported as written rather than "corrected": the containment query uses
+/// `trans_addr`, but `registerTrial` is then called with the truncated address converted BACK to the
+/// caller's perspective (heritage.cc:1232), where the `contains_justified` branch above registers
+/// its trial in callee-frame coordinates. It makes no difference for a register range, which is the
+/// only kind that reaches here today.
+fn guard_call_overlapping_input(
+    f: &mut Funcdata,
+    call: OpId,
+    addr: super::space::Address,
+    trans_addr: super::space::Address,
+    size: u32,
+) {
+    let Some((trunc_trans, trunc_size)) =
+        f.proto_model.get_biggest_contained_input_param(trans_addr, size)
+    else {
         return;
     };
+    // heritage.cc:1218-1220 — convert the truncated address to the caller's perspective.
+    let diff = trunc_trans.offset.wrapping_sub(trans_addr.offset);
+    let trunc_addr = super::space::Address::new(addr.space, addr.offset.wrapping_add(diff));
     if f.active_inputs.get(&call).is_some_and(|a| a.which_trial(trunc_addr, trunc_size).is_some()) {
         return;
     }
@@ -1891,6 +1953,20 @@ fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &TaskList) ->
 /// simplification between passes (that interleaving is the payoff). Run back-to-back via
 /// [`heritage`] the passes reproduce the full single-pass SSA — a location heritaged in an earlier
 /// pass is recorded in `globaldisjoint` and skipped, so the per-location split is output-identical.
+/// Ghidra `Heritage::deadRemovalAllowed` (heritage.cc:2829): may dead-code removal touch this space
+/// yet? A space is protected until it has actually been through heritage — before that its Varnodes
+/// are still free, nothing links them to their reaching defs, and "nothing reads this" is evidence
+/// that SSA has not been built, not that the value is dead. Ghidra's own comment at the call site
+/// (coreaction.cc:3954) is "Mark consumed if we have NOT heritaged".
+///
+/// Read by BOTH removal mechanisms, exactly as in Ghidra: `ActionDeadCode`'s pre-live seeding
+/// (coreaction.cc:3950) and `RuleEarlyRemoval` (ruleaction.cc:38, via `deadRemovalAllowedSeen` —
+/// whose extra job is latching the `deadremoved` flag for a re-heritage warning mosura does not
+/// model, so only the predicate is shared).
+pub fn dead_removal_allowed(f: &Funcdata, spc: SpaceId) -> bool {
+    f.heritage_pass > f.spaces.get(spc).deadcodedelay
+}
+
 /// Ghidra `Heritage::clearStackPlaceholders` (heritage.cc:2048): tear down every call site's
 /// stack-pointer tracker. Called once per space carrying placeholders, immediately before that space
 /// is heritaged — by then the tracker has either done its job (`RuleLoadVarnode` resolved it during

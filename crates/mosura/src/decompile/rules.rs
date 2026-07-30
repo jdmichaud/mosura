@@ -283,8 +283,9 @@ fn check_spacebase(data: &Funcdata, op: OpId) -> Option<(SpaceId, u64)> {
 /// recover_stack`'s general LOAD/STORE conversion, so `RSP [+ const]` accesses reach this pool):
 /// a stack LOAD converts to a COPY of the direct `stack`-space varnode inside the mainloop, and
 /// the next iteration's `ActionHeritage` re-entry gives the slot SSA form — Ghidra's exact
-/// in-pool resolution. The `isSpacebasePlaceholder`→`resolveSpacebaseRelative` trigger
-/// (SP-across-call) is deferred (task #22-C).
+/// in-pool resolution. The `isSpacebasePlaceholder` → `resolveSpacebaseRelative` trigger
+/// (ruleaction.cc:4295-4302) is LIVE: it is how a call site learns its stack-pointer offset, without
+/// which `Heritage::guardCalls` cannot register any stack range as a parameter trial.
 pub struct RuleLoadVarnode;
 impl Rule for RuleLoadVarnode {
     fn name(&self) -> &str {
@@ -305,6 +306,21 @@ impl Rule for RuleLoadVarnode {
         data.op_set_input(op, 0, newvn);
         data.op_remove_input(op, 1);
         data.op_set_opcode(op, OpCode::Copy);
+        // ruleaction.cc:4295-4302 — the stack-pointer placeholder trigger. This LOAD may be the
+        // artificial one `FuncCallSpecs::createPlaceholder` hung off a CALL; if so, the COPY just
+        // formed reads the fixed stack varnode the call's stack pointer resolved to, so its offset IS
+        // the stack-pointer delta at that call site. Read it out, then the subsystem removes itself.
+        // The flag is cleared first and unconditionally: it is a one-shot trigger, not a property.
+        if data.vn(out).is_spacebase_placeholder() {
+            data.vn_mut(out).clear_spacebase_placeholder();
+            if let Some(place_op) = lone_descend(data, out) {
+                // Ghidra `data.getCallSpecs(placeOp)` returns non-null exactly for a call site it
+                // holds a spec for; mosura's equivalent test is that the reader is a CALL/CALLIND.
+                if matches!(data.op(place_op).code(), OpCode::Call | OpCode::Callind) {
+                    super::fspec::resolve_spacebase_relative(data, place_op, out);
+                }
+            }
+        }
         1
     }
 }
@@ -381,9 +397,21 @@ impl Rule for RuleEarlyRemoval {
         if data.vn(out).is_auto_live() {
             return 0; // addrforce / autolive_hold — exempt
         }
-        // Ghidra: `if doesDeadcode(spc) && !deadRemovalAllowedSeen(spc) return 0`. mosura heritages
-        // every dead-code space to completion before the pool runs, so dead removal is always allowed
-        // by pool time; the guard never blocks, so it reduces to an unconditional destroy here.
+        // Ghidra ruleaction.cc:38-41 — `if (doesDeadcode(spc) && !deadRemovalAllowedSeen(spc))
+        // return 0`. This guard USED to be dropped, on the premise that "mosura heritages every
+        // dead-code space to completion before the pool runs, so it never blocks". That premise was
+        // retired along with the heritage-to-completion prime (the placeholder needs a rule pool
+        // between the register and stack passes), and the guard is now load-bearing: during mainloop
+        // iteration 1 the ram/stack spaces have NOT been heritaged, so their Varnodes are still free
+        // and "no descendants" means "SSA is not built yet", not "dead". Without it the pool early-
+        // removed floatcast's ram-global loads and the whole function body went with them.
+        //
+        // Ghidra's `…Seen` variant additionally latches `info->deadremoved = 1` for the re-heritage
+        // warning; mosura models no such diagnostic (heritage.rs says so at its own site), so only
+        // the predicate is ported.
+        if !super::heritage::dead_removal_allowed(data, data.vn(out).loc.space) {
+            return 0;
+        }
         data.op_destroy(op);
         1
     }
@@ -10724,6 +10752,12 @@ mod tests {
         // RuleEarlyRemoval: an op whose unique output has no readers is destroyed; one whose output
         // is read is kept; a written `ram` global is kept (the persist live-out guard).
         let (mut f, _) = fd();
+        // The rule now carries Ghidra's `deadRemovalAllowedSeen` guard (ruleaction.cc:38), so it
+        // declines on any space that has not been heritaged yet. A default `Funcdata` sits at
+        // heritage_pass 0, a state the pipeline never runs a rule pool in; pass 2 is the realistic
+        // one (every space past its delay) and it keeps this test exercising what it claims — the ram
+        // global is then kept by the PERSIST guard, not incidentally by the delay.
+        f.heritage_pass = 2;
         let reg = f.spaces.by_name("register").unwrap();
         let uniq = f.spaces.by_name("unique").unwrap();
         let ram = f.spaces.by_name("ram").unwrap();

@@ -93,6 +93,35 @@ pub fn dead_code(f: &mut Funcdata) {
         }
     }
 
+    // Pre-live roots — Ghidra `ActionDeadCode::apply`'s "Set pre-live registers" block
+    // (coreaction.cc:3950-3961). Every Varnode in a space whose dead-code removal is NOT yet
+    // allowed is marked FULLY CONSUMED. `Heritage::deadRemovalAllowed` (heritage.cc:2829) is
+    // `pass > deadcodedelay`, so a space stays protected until it has actually been through
+    // heritage: until then its Varnodes are still free, nothing links them to their reaching defs,
+    // and "nothing reads this" is not evidence of deadness — it is evidence that SSA has not been
+    // built yet. Ghidra's own comment on the guard is "Mark consumed if we have NOT heritaged".
+    //
+    // Ghidra tests `doesDeadcode()` rather than `isHeritaged()`; the two flags are set and cleared
+    // together at every site in space.cc (:78, :95, :359, :399, :406), so this is that predicate.
+    //
+    // Inert while mosura primed heritage to COMPLETION before the first dead-code sweep — every
+    // space was already heritaged, so the guard never fired. Reducing the prime to Ghidra's single
+    // pass (which is what gives the stack-pointer placeholder its resolution window) makes the
+    // ram/stack spaces genuinely un-heritaged during mainloop iteration 1, and this is what stops
+    // their Varnodes being deleted as "unread" in that window.
+    for i in 0..f.spaces.num_spaces() {
+        let spc = super::space::SpaceId(i as u32);
+        if !f.spaces.get(spc).is_heritaged() || super::heritage::dead_removal_allowed(f, spc) {
+            continue;
+        }
+        for v in 0..f.num_varnodes() as u32 {
+            if f.vn(VarnodeId(v)).loc.space == spc && !live_vn[v as usize] {
+                live_vn[v as usize] = true;
+                worklist.push(VarnodeId(v));
+            }
+        }
+    }
+
     // propagate backward: a consumed varnode keeps its def op, whose inputs are consumed
     while let Some(vn) = worklist.pop() {
         // Ghidra's `case CPUI_INDIRECT` (coreaction.cc:3650-3662) additionally marks the op an

@@ -1118,6 +1118,16 @@ pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
 // are free functions rather than methods. See [`CallSpec`].
 // -------------------------------------------------------------------------------------------------
 
+/// TEMPORARY INSTRUMENT (`MOSURA_PLACEHOLDER=1`): report each placeholder's fate, so the resolution
+/// rate is measured rather than assumed. The whole subsystem is inert if the placeholders never
+/// resolve, and that depends on the folding rules collapsing `(sp_input + delta) + 0` before the
+/// stack pass clears them — a claim only the running pipeline can settle.
+fn ph_log(ev: &str, call: OpId, extra: &str) {
+    if std::env::var("MOSURA_PLACEHOLDER").is_ok() {
+        eprintln!("PH {ev} call={} {extra}", call.0);
+    }
+}
+
 /// Ghidra `FuncCallSpecs::getSpacebaseOffset` (fspec.hh:1689): the stack-pointer offset at `call`
 /// relative to the incoming stack pointer, or `None` for Ghidra's `offset_unknown` — the state in
 /// which `guardCalls` refuses to register a spacebase range as a trial.
@@ -1157,6 +1167,7 @@ pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
     f.op_append_input(call, loadval); // Ghidra `opInsertInput(op,loadval,slot)` with slot == numInput
     set_stack_placeholder_slot(f, call, slot);
     f.vn_mut(loadval).set_spacebase_placeholder();
+    ph_log("create", call, &format!("slot={slot}"));
 }
 
 /// Ghidra `FuncCallSpecs::resolveSpacebaseRelative` (fspec.cc:4870): read the stack-pointer offset
@@ -1179,6 +1190,7 @@ pub fn resolve_spacebase_relative(f: &mut Funcdata, call: OpId, phvn: VarnodeId)
     // in a spacebase space; mosura models no warning header, so the diagnostic is dropped (the
     // offset is still recorded, exactly as Ghidra does after warning).
     f.call_specs.entry(call).or_default().stackoffset = Some(loc.offset);
+    ph_log("resolve", call, &format!("off={:#x}", loc.offset));
 
     if let Some(slot) = f.call_specs.get(&call).and_then(|c| c.stack_placeholder_slot) {
         if f.op(call).input(slot) == Some(phvn) {
@@ -1193,6 +1205,11 @@ pub fn resolve_spacebase_relative(f: &mut Funcdata, call: OpId, phvn: VarnodeId)
 /// stack space is about to be heritaged with the placeholder still unresolved.
 pub fn abort_spacebase_relative(f: &mut Funcdata, call: OpId) {
     let Some(slot) = f.call_specs.get(&call).and_then(|c| c.stack_placeholder_slot) else { return };
+    ph_log(
+        if spacebase_offset(f, call).is_some() { "abort-resolved" } else { "abort-UNRESOLVED" },
+        call,
+        "",
+    );
     let vn = f.op(call).input(slot);
     f.op_remove_input(call, slot);
     clear_stack_placeholder_slot(f, call);

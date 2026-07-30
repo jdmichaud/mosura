@@ -684,12 +684,26 @@ pub fn init_active_input(f: &mut Funcdata) {
         .op_ids()
         .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
         .collect();
+    // Ghidra `ActionFuncLink::funcLinkInput` (coreaction.cc:1479): a non-null `getSpacebase()` on the
+    // convention's input list is exactly the signal "this call site needs a stack-pointer
+    // placeholder" — i.e. the convention can pass parameters on the stack, so the offset of the stack
+    // pointer at each call has to be recovered before any stack range can be tried as an argument.
+    let spacebase = f.proto_model.input.as_ref().and_then(|pl| pl.get_spacebase(&f.spaces));
     for call in calls {
         let mut active = ParamActive::new(reg);
         active.is_recover_subcall = true;
         // fspec.cc:5335 — `maxdelay = getMaxInputDelay(); if (maxdelay > 0) maxdelay = 3;`
         active.set_max_pass(if maxdelay > 0 { 3 } else { CALL_MAXPASS });
+        // The container goes in FIRST: `createPlaceholder` -> `setStackPlaceholderSlot` reserves the
+        // slot on the trial container too (fspec.hh:1671), and mosura's `isInputActive` test is the
+        // presence of this entry.
         f.active_inputs.insert(call, active);
+        if let Some(sb) = spacebase {
+            // coreaction.cc:1511-1512. Ghidra's preceding input-locked branch (which would instead
+            // hang the flag on the first locked STACK parameter and skip the placeholder) is
+            // unreachable here: mosura's call prototypes are never input-locked.
+            super::fspec::create_placeholder(f, call, sb);
+        }
     }
 }
 
