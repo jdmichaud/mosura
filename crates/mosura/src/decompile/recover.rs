@@ -445,9 +445,11 @@ fn ancestor_op_use(
             let in0 = f.op(def).input(0);
             // Ghidra recurses only for an internal-space (or incidental) COPY; mosura has no
             // incidental flag, so only the internal-space case recurses. Otherwise this is a top
-            // ancestor.
-            let internal = in0
-                .is_some_and(|i| f.spaces.get(f.vn(i).loc.space).kind == super::space::SpaceKind::Internal);
+            // ancestor. The space tested is `invn`'s — the varnode being examined, which for a COPY
+            // is the DEFINED one (funcdata_varnode.cc, `invn->getSpace()->getType()==IPTR_INTERNAL`)
+            // — not the copied-from input's. The SUBPIECE arm below already reads `v.loc.space` for
+            // exactly this test; this arm read the input's space instead.
+            let internal = f.spaces.get(v.loc.space).kind == super::space::SpaceKind::Internal;
             if internal {
                 return rec(in0.unwrap(), offset, main_flags, mmark);
             }
