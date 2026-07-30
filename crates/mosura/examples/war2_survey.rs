@@ -32,6 +32,21 @@ use mosura::decompile::space::Address;
 // and recorded in docs + commit 26db108 as if it were the state of the tree — while this constant
 // still said `void`. The next EMIT restored `void`, the 47 E1052 failures came back, and they were
 // re-adjudicated as a decompiler ceiling. Change the prelude HERE, never there.
+//
+// ⚠️ WHICH ODD WIDTHS BELONG HERE — the line is Ghidra's `max_basetype_size` (10,
+// architecture.cc:1422). At or below it, `TypeFactory::getBase` (type.cc:3652) really does hand back
+// a base type of that width, and Ghidra's own WAR2 output contains `uint6` x8, `uint3` x19,
+// `int3` x50, `undefined6` x6 — so those names are FAITHFUL and their absence from a C compiler is
+// the prelude's problem, which is what the prelude exists for. ABOVE it `getBase` returns
+// `undefined1[N]` instead, so a `uint12`/`uint20`/`xunknown12` in our output is OUR defect (an
+// unported piece of heritage refinement). DO NOT add typedefs for those: it would make a
+// wrong-code-adjacent gap compile, which is the "adaptation masking its own absence" trap this
+// project keeps paying for. They stay COMPILE_FAIL so they stay visible.
+//
+// Integer metatypes take the widest integer wcc386 has (`unsigned int`/`int`) rather than the
+// width-matching `double` the unknown metatypes take, because they are USED as integers: both
+// `uint6` sites shift (`uStack_1e >> 0x10`), and shifting a double is `E1079: Expression must be
+// integral`. Every mapping here lies about width; this one at least lies compilably.
 const PRELUDE: &str = "\
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef double undefined8; typedef unsigned char byte;
@@ -41,6 +56,7 @@ typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsig
 typedef unsigned int xunknown3; typedef double xunknown6; typedef unsigned int xunknown5; typedef double xunknown7;
 typedef unsigned char undefined3; typedef unsigned int undefined5; typedef double undefined6; typedef double undefined7;
 typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
+typedef unsigned int uint6; typedef int int6; typedef unsigned int uint10; typedef int int10;
 typedef int (*code)(); typedef unsigned int pointer;
 typedef float float4; typedef double float8; typedef long double float10;
 typedef unsigned char uchar; typedef unsigned short ushort; typedef unsigned int uint; typedef unsigned long ulong;
@@ -435,6 +451,27 @@ fn classify_ident(
                 scalar_idents.insert((w.to_string(), 'u'));
             }
             return;
+        }
+    }
+    // `<prefix>Stack<hex>` — an UNMAPPED stack address, Ghidra `ScopeInternal::buildVariableName`'s
+    // addrtied form (database.cc:2483): stem, capitalized space name, `2*addrSize` hex digits, NO
+    // separator. It is the same family as the synthetic reads above — a faithful rendering that
+    // Ghidra also leaves undeclared and that therefore does not compile on its own — so it gets the
+    // same synthesized declaration. Distinguished from a MAPPED local (`xStack_18`, always declared
+    // by the decompiler) precisely by the missing `_`.
+    if let Some(pos) = w.find("Stack") {
+        if (1..=2).contains(&pos) {
+            let tail = &w[pos + 5..];
+            if tail.len() >= 8 && tail.bytes().all(|c| c.is_ascii_hexdigit()) {
+                smells.insert("unmapped-stack".into());
+                let pfx = w.as_bytes()[0] as char;
+                if ptr_use || pfx == 'p' {
+                    ptr_idents.insert(w.to_string());
+                } else {
+                    scalar_idents.insert((w.to_string(), pfx));
+                }
+                return;
+            }
         }
     }
     // <prefix>Ram<hex> globals.

@@ -10,9 +10,10 @@ directly, so each class count is independent of every other class.
 Classes (each printed with its file count and its occurrence count):
 
   (a) spacebase-leak      — the internal TYPE_SPACEBASE name reaching a declaration or a cast.
-  (b) undeclared-stack    — a `[a-z]+Stack[X]?_<hex>` identifier USED in a body with no declaration
-                            of that identifier anywhere in the file. Array element uses (`aiStack_8
-                            [i]`) count as a use of `aiStack_8`, which is what is declared.
+  (b) undeclared-stack    — a stack identifier USED in a body with no declaration of that identifier
+                            anywhere in the file, in EITHER shape (see STACK_IDENT): the mapped
+                            `xStack_18` form and the unmapped `xStack0000000c` form. Array element
+                            uses (`aiStack_8[i]`) count as a use of `aiStack_8`, which is declared.
   (b2) duplicate decls    — the same stack identifier DECLARED twice. `ScopeLocal::restructure`
                             builds a disjoint cover (one Symbol per address), so this is always a
                             defect; it only stayed legal C while two print-time name synthesizers
@@ -32,15 +33,31 @@ import re
 import sys
 from pathlib import Path
 
-# `xStack_1c`, `aiStackX_8`, `puStack_ffffffdc` — the stem is one or more lower-case letters.
-STACK_IDENT = re.compile(r"\b([a-z]+Stack X?_[0-9a-f]+)\b".replace(" ", ""))
+# Two shapes, and BOTH must be here:
+#   `xStack_1c` / `aiStackX_8` / `puStack_ffffffdc` — `ScopeLocal::buildVariableName` (varmap.cc:548),
+#      a MAPPED local: stem, `Stack`, optional caller-allocated `X`, `_`, the frame offset.
+#   `xStack0000000c` — `ScopeInternal::buildVariableName` (database.cc:2483), an UNMAPPED stack
+#      address: stem, `Stack`, then `2*addrSize` hex digits and NO separator.
+# ⚠️ The second shape was missing here and it cost a wrong headline: this scan reported the
+# undeclared-locals class as 32 -> 0 across B2 when the true figure was 32 -> 4, because B2 itself
+# introduced the no-underscore form and the pattern still required the `_`. A predicate that predates
+# a rendering cannot see it — when a change adds an output SHAPE, extend the scan in the same commit.
+STACK_IDENT = re.compile(
+    r"\b([a-z]+Stack(?:X?_[0-9a-f]+|[0-9a-f]{8,}))\b"
+)
 # A declaration line: `  <type> <name>;` or `  <type> <name> [<n>];` in the decl block.
 # ⚠️ The leading token MUST be excluded when it is a statement keyword. Without KEYWORDS below,
 # `  return xStack_38;` parses as "type `return`, name `xStack_38`" — which makes an UNDECLARED
 # local look declared, i.e. it silently undercounts the class this scan exists to count. Found by a
 # duplicate-declaration cross-check reporting 17 phantom files; the instrument was the defect.
+# The leading indent is `\s{0,2}`, not `\s{2}`: a column-0 match is the EMITTER's synthesized
+# file-scope declaration (`war2_survey.rs`'s `build_tu`, the same synthesis that covers
+# `extraout_`/`unaff_`/`in_`/`register0x`), and it declares the identifier just as a local does.
+# Requiring the indent made every synthesized declaration invisible and kept 4 files in the
+# undeclared class after they had been closed.
 DECL = re.compile(
-    r"^\s{2}([A-Za-z_][A-Za-z0-9_]*)(?:\s*\*)*\s+([a-z]+StackX?_[0-9a-f]+)\s*(\[[0-9]+\])?\s*;"
+    r"^\s{0,2}([A-Za-z_][A-Za-z0-9_]*)(?:\s*\*)*\s+"
+    r"([a-z]+Stack(?:X?_[0-9a-f]+|[0-9a-f]{8,}))\s*(\[[0-9]+\])?\s*;"
 )
 KEYWORDS = {"return", "if", "else", "while", "do", "for", "switch", "case", "break",
             "continue", "goto", "sizeof", "typedef", "extern"}
@@ -49,10 +66,16 @@ MAX_BASETYPE_SIZE = 10  # Ghidra architecture.cc:1422
 
 
 def declared_name(line):
-    """The stack local this line DECLARES, or None."""
+    """`(name, scope)` for the stack identifier this line DECLARES, or None.
+
+    `scope` is "file" for a column-0 declaration (the emitter's synthesis) and "block" for an
+    indented one (the decompiler's). The two are DIFFERENT SCOPES: a block declaration legally
+    shadows a file one, so a name appearing at both is valid C and must NOT count as a duplicate.
+    Collapsing them reported 91 files / 139 phantom duplicates.
+    """
     m = DECL.match(line)
     if m and m.group(1) not in KEYWORDS:
-        return m.group(2)
+        return m.group(2), ("block" if line[:1].isspace() else "file")
     return None
 
 
@@ -74,11 +97,14 @@ def scan(src: Path):
         n = text.count("spacebase")
         if n:
             spacebase[path.name] = n
-        declared, dupes = set(), set()
+        by_scope = {"file": set(), "block": set()}
+        dupes = set()
         for line in text.splitlines():
-            n = declared_name(line)
-            if n is not None:
-                (dupes if n in declared else declared).add(n)
+            d = declared_name(line)
+            if d is not None:
+                name, scope = d
+                (dupes if name in by_scope[scope] else by_scope[scope]).add(name)
+        declared = by_scope["file"] | by_scope["block"]
         used = set(STACK_IDENT.findall(text)) - declared
         if used:
             undeclared[path.name] = sorted(used)
