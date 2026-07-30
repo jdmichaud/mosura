@@ -162,6 +162,18 @@ METRICS = {
 OWN_DEF = re.compile(r'^\w[^\n]*\bFUN_([0-9a-fA-F]{8})\s*\(', re.M)
 
 
+def classify_layer(ir: dict, va: str, rendered: int) -> str:
+    """Which layer lost the call: the decompiler (never in the IR) or the emitter (in IR, not in C)?"""
+    n = ir.get(va.lower())
+    if n is None:
+        return 'unknown'
+    if n > rendered:
+        return 'EMITTER'
+    if n < rendered:
+        return 'unknown'   # predicates disagree — investigate the instruments, do not report a layer
+    return 'decompiler'
+
+
 def load_mosura(src: str, manifest: str) -> dict:
     man = {}
     for line in open(manifest):
@@ -169,6 +181,15 @@ def load_mosura(src: str, manifest: str) -> dict:
         if len(f) >= 9 and f[0] != 'idx':
             man[f[0]] = f[1].lower()
     out, mismatch, nodef = {}, [], 0
+    # ir_calls (manifest column 9, appended by the EMIT so no existing index shifted): CALL/CALLIND
+    # ops alive in the FINAL IR. This is what lets a deficit row name its own LAYER — see
+    # classify_layer. Absent for a manifest emitted before the column existed; then layer is unknown.
+    ir_calls = {}
+    for line in open(manifest):
+        f = line.rstrip('\n').split('\t')
+        if len(f) >= 10 and f[0] != 'idx' and f[9].isdigit():
+            ir_calls[f[1].lower()] = int(f[9])
+    globals()['IR_CALLS'] = ir_calls
     for fn in sorted(os.listdir(src)):
         if not fn.endswith('.c'):
             continue
@@ -246,8 +267,32 @@ def main() -> int:
         print(f"    Ghidra             : {tg}")
         print(f"    mosura             : {tm}   ({pct:.1f}% of Ghidra)")
         print(f"    DEFICIT            : {len(deficit)} functions, {missing} {units} missing")
+        # ⭐ LAYER ATTRIBUTION. The counts above are of the RENDER, so a shortfall alone cannot say
+        # WHICH LAYER lost the call — and this gauge is a BLOCKING gate, so mis-attributing is
+        # expensive. FUN_00077dcb is the worked example: its "missing" call is ALIVE in the final IR
+        # at 0x77e0a, inside a basic block `structure()` never places. Decompiler right, emitter
+        # wrong, and the gauge charged it to the decompiler for weeks.
+        #   ir == rendered  -> DECOMPILER: the call is absent from the IR too, never recovered.
+        #   ir >  rendered  -> EMITTER: recovered and then lost on the way to C.
+        #   ir <  rendered  -> instrument disagreement; the two predicates count different things.
+        ir = globals().get('IR_CALLS', {})
+        layer_tot = {'decompiler': 0, 'EMITTER': 0, 'unknown': 0}
+        for va, g, m in deficit:
+            layer_tot[classify_layer(ir, va, m)] += g - m
         for va, g, m in deficit[:a.top]:
-            print(f"      {va}  ghidra={g:3d}  mosura={m:3d}  (-{g - m})")
+            lay = classify_layer(ir, va, m)
+            irc = ir.get(va.lower())
+            irs = f"ir={irc:3d}" if irc is not None else "ir=  ?"
+            print(f"      {va}  ghidra={g:3d}  mosura={m:3d}  {irs}  (-{g - m})  [{lay}]")
+        if mname == 'calls':
+            print(f"    LAYER of the {missing} missing {units}: "
+                  f"decompiler={layer_tot['decompiler']}  EMITTER={layer_tot['EMITTER']}  "
+                  f"unknown={layer_tot['unknown']}")
+            if layer_tot['EMITTER']:
+                print(f"      ⚠️  {layer_tot['EMITTER']} of them are RECOVERED BUT NOT EMITTED — do not "
+                      f"price decompiler work against those; see task #5 (structure() block loss).")
+            if layer_tot['unknown']:
+                print(f"      note: 'unknown' = manifest has no ir_calls column; re-emit to classify.")
         # Surplus is reported because it is the shape a COUNTING BUG takes (see TRAP 3): a
         # predicate blind to one side's naming manufactures surplus out of nothing. It is not a
         # defect claim in either direction until it is settled against the bytes.

@@ -2033,6 +2033,29 @@ pub fn print_c(f: &Funcdata) -> String {
     if super::action::perf::enabled() {
         super::action::perf::record("print", "structure", t0.elapsed());
     }
+    // Instrument (MOSURA_BLOCKSET=1) over the shared invariant — see
+    // [`super::structure::reached_basic_blocks`]. `reached != cfg` means blocks were never emitted,
+    // which is wrong code whether or not it produced a dangling goto.
+    if std::env::var("MOSURA_BLOCKSET").is_ok() {
+        let reached = super::structure::reached_basic_blocks(&s);
+        let missing: Vec<String> = (0..f.num_blocks())
+            .filter(|b| !reached.contains(b))
+            .map(|b| {
+                match f.block(super::block::BlockId(b as u32)).ops.first() {
+                    Some(&op) => format!("blk{b}@{:#x}", f.op(op).seqnum.pc.offset),
+                    None => format!("blk{b}@empty"),
+                }
+            })
+            .collect();
+        eprintln!(
+            "BLOCKSET {}: cfg={} reached={} MISSING={} [{}]",
+            f.name,
+            f.num_blocks(),
+            reached.len(),
+            missing.len(),
+            missing.join(" ")
+        );
+    }
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
     p.detect_for_loops(&s, s.root);

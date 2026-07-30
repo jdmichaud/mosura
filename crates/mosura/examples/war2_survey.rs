@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use mosura::analysis::{self, decompiler::decompile_function};
 use mosura::decompile::funcdata::Funcdata;
 use mosura::decompile::op::flags;
+use mosura::decompile::opcode::OpCode;
 use mosura::decompile::printc::print_c;
 use mosura::decompile::space::Address;
 
@@ -126,7 +127,7 @@ fn main() {
     let mut mf = std::io::BufWriter::new(std::fs::File::create(&manifest_path).unwrap());
     writeln!(
         mf,
-        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex"
+        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached"
     )
     .unwrap();
 
@@ -146,7 +147,7 @@ fn main() {
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
             let head = head.replace(['\t', '\n'], " ");
             let head: String = head.chars().take(120).collect();
-            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}").unwrap();
+            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0").unwrap();
             continue;
         };
         ok += 1;
@@ -193,6 +194,34 @@ fn main() {
         }
         let orig_len = region.len();
 
+        // CALLS PRESENT IN THE FINAL IR. The absolute call gauge counts calls in the RENDER, which
+        // cannot distinguish "the decompiler never recovered it" from "the decompiler recovered it and
+        // the emitter lost it". Those are different defects in different layers, and the gauge — our
+        // BLOCKING gate — has been charging the second to the first: FUN_00077dcb's missing call is
+        // LIVE in its final IR at 0x77e0a, sitting in a basic block `structure()` never places. So the
+        // manifest carries the IR count too, and a deficit row classifies itself:
+        //     ir_calls == rendered  -> the shortfall is upstream of the emitter (decompiler)
+        //     ir_calls >  rendered  -> the emitter lost a recovered call
+        // Counted the same way the gauge counts: live CALL/CALLIND ops only.
+        let ir_calls = f
+            .op_ids()
+            .filter(|&id| {
+                let op = f.op(id);
+                op.flags & (flags::DEAD | flags::MARKER) == 0
+                    && matches!(op.code(), OpCode::Call | OpCode::Callind)
+            })
+            .count();
+
+        // BLOCKS: how many basic blocks the CFG has vs how many the structured tree REACHES.
+        // `reached < cfg` means blocks are never emitted — wrong code, and the ONLY gate that sees the
+        // silent case (a dropped block with no surviving in-edge produces no dangling goto and no
+        // compiler error; the C just compiles the wrong program). See
+        // `decompile::structure::reached_basic_blocks`.
+        let blocks_cfg = f.num_blocks();
+        let blocks_reached =
+            mosura::decompile::structure::reached_basic_blocks(&mosura::decompile::structure::structure(&f))
+                .len();
+
         let c = print_c(&f);
         std::fs::write(out.join("raw").join(format!("{va:08x}.c")), &c).unwrap();
 
@@ -207,7 +236,7 @@ fn main() {
         let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(
             mf,
-            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}",
+            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}",
             smells.join(","),
         )
         .unwrap();

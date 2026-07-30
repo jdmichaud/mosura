@@ -2886,6 +2886,34 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
 }
 
 /// Structure the CFG of `f`.
+/// The basic blocks the structured tree actually REACHES from its root, walking `components`.
+///
+/// This exists because the difference between this set and `0..f.num_blocks()` is a WRONG-CODE
+/// measure, and nothing else measures it. A block the tree never reaches is never emitted. If it
+/// still had a surviving in-edge the emitter renders `goto LAB_x` with no `LAB_x:` anywhere — which
+/// at least fails to compile (wcc386 `E1018`). If it had NO surviving in-edge it disappears in
+/// SILENCE: the C compiles, and it is simply the wrong program. Measured on WAR2, `FUN_00051298`
+/// loses 11 of its 50 blocks while surfacing only 2 undefined labels, so the label symptom
+/// undercounts the defect by roughly 5x.
+///
+/// `reached.len() == f.num_blocks()` is therefore the real invariant. Read by the survey (which
+/// records both counts per function in its manifest) and by printc's `MOSURA_BLOCKSET` instrument.
+pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
+    let mut reached: HashSet<usize> = HashSet::new();
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut stack = vec![s.root];
+    while let Some(n) = stack.pop() {
+        if n >= s.blocks.len() || !seen.insert(n) {
+            continue;
+        }
+        if let FlowKind::Basic(b) = s.blocks[n].kind {
+            reached.insert(b.0 as usize);
+        }
+        stack.extend(s.blocks[n].components.iter().copied());
+    }
+    reached
+}
+
 pub fn structure(f: &Funcdata) -> Structured {
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
         .map(|b| {
