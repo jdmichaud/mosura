@@ -129,7 +129,7 @@ struct PrintC<'a> {
     /// many `PTRSUB`s (and/or a direct `stack`-space varnode at the same slot) is declared exactly
     /// once — keyed by width too, so two differently-sized slots at one offset (a `recover_stack`
     /// granularity artefact, e.g. stackreturn's 8- and 4-byte `-0x10` slots) stay distinct.
-    stack_declared: std::collections::HashSet<(i64, u32)>,
+    stack_declared: std::collections::HashSet<i64>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -165,9 +165,16 @@ struct PrintC<'a> {
     /// a global's HighVariable (e.g. `iRam.. = COPY(param_1 + 1)` after `merge_copy`) is named and
     /// materialized by that global's address `iRam<addr>` — the ram analogue of `high_stack_off`.
     high_ram_off: HashMap<u32, u64>,
-    /// Signed frame offset → type prefix of the `stack` slot living there, so an address-of-local
-    /// `&<prefix>Stack_NN` carries the slot's prefix (`&iStack_28`); defaults to `x` (xunknown).
-    stack_prefix: HashMap<i64, &'static str>,
+    /// The stack space's address size in bits minus one — the sign bit a raw `stack` offset is
+    /// extended from to get a FRAME offset (Ghidra `sign_extend(start, addr.getAddrSize()*8-1)`,
+    /// varmap.cc:557). On a 32-bit target a frame slot's raw offset is the wrapped `0xffffffdc`, not
+    /// `-0x24`; without the extension nothing matches the recovered symbol cover.
+    stack_sign_bit: u32,
+    /// Frame offset → name for a slot that the recovered `ScopeLocal` cover does NOT contain. Ghidra
+    /// always has a Symbol here (`ScopeLocal` covers everything it gathered) and names it once; this
+    /// memo keeps mosura's uncovered slots to ONE name each, so the declaration site and every
+    /// reference cannot disagree the way two independent print-time synthesizers did.
+    unmapped_stack_names: HashMap<i64, String>,
     /// Varnodes forced explicit (named, not inlined) regardless of use count — the recovered
     /// stack-array base varnodes, so a single-use base still renders by its array name (`axStack_98`)
     /// instead of via its address-computation (`&xStack_98`).
@@ -493,24 +500,30 @@ impl<'a> PrintC<'a> {
             .copied()
             .or_else(|| (Some(vn.loc.space) == self.stack_space).then_some(vn.loc.offset));
         if let Some(off) = stack_off {
-            let foff = off as i64;
+            let foff = self.frame_off(off);
             // Ghidra drives ALL stack naming off the recovered `ScopeLocal` symbol table (`opPtrsub`).
             // A direct `stack`-space slot that falls inside a recovered ARRAY is that array's element
             // `axStack_<start>[index]` (the array, not a per-slot scalar, is declared) — the same
             // symbol a `PTRSUB` to this address resolves to, so the two views share one declaration.
             if let Some(sym) = self.spacebase_sym_at(foff) {
-                if let Some((elem_ty, index)) = sym.array_index(foff) {
-                    let aname =
-                        format!("a{}Stack_{:x}", type_prefix(&elem_ty), sym.start.unsigned_abs());
-                    self.declare_stack(sym.start, &aname, sym.ty.clone());
-                    let elem_name = format!("{aname}[{index}]");
+                if let Some((_, index)) = sym.array_index(foff) {
+                    self.declare_stack(sym.start, &sym.name, sym.ty.clone());
+                    let elem_name = format!("{}[{index}]", sym.name);
                     self.names.insert(id, elem_name.clone());
                     return elem_name;
                 }
             }
-            let n = format!("{prefix}Stack_{:x}", foff.unsigned_abs());
+            let n = self.stack_slot_name(foff, &ty);
             self.names.insert(id, n.clone());
-            self.declare_stack(foff, &n, ty);
+            // The DECLARATION carries the Symbol's type, not this reference's — Ghidra declares the
+            // `ScopeLocal` Symbol, and a reference of a different width renders against it
+            // (`PrintC::pushPartialSymbol`, printc.cc:1947). A slot the cover does not contain has no
+            // Symbol, so the reference's type is all there is.
+            let declared = self
+                .spacebase_sym_at(foff)
+                .filter(|s| s.start == foff)
+                .map_or(ty, |s| s.ty.clone());
+            self.declare_stack(foff, &n, declared);
             return n;
         }
         self.var_counter += 1;
@@ -633,11 +646,54 @@ impl<'a> PrintC<'a> {
         self.operand(v, prec, right)
     }
 
-    /// Ghidra names a stack local `<prefix>Stack_<offset>` by its frame offset and the type of the
-    /// slot there. The prefix comes from a `stack` slot at this offset when one exists, else `x`.
-    fn stack_slot_name(&self, off: i64) -> String {
-        let prefix = self.stack_prefix.get(&off).copied().unwrap_or("x");
-        format!("{prefix}Stack_{:x}", off.unsigned_abs())
+    /// Sign-extend a raw `stack`-space offset into a FRAME offset (Ghidra `sign_extend(start,
+    /// addr.getAddrSize()*8-1)`, varmap.cc:557). Every conversion from a Varnode's/PTRSUB's stored
+    /// offset to the signed offset the `ScopeLocal` cover is keyed by goes through here.
+    fn frame_off(&self, raw: u64) -> i64 {
+        let bit = self.stack_sign_bit;
+        if bit >= 63 {
+            raw as i64
+        } else {
+            let sh = 63 - bit;
+            ((raw << sh) as i64) >> sh
+        }
+    }
+
+    /// The name of the stack local at frame offset `off`. The name belongs to the recovered
+    /// `ScopeLocal` symbol and was built once from THAT symbol's data-type
+    /// (`varmap::build_variable_name`, Ghidra `ScopeLocal::buildVariableName` varmap.cc:548) — never
+    /// re-derived from whatever type the referencing Varnode happens to carry. `ty` is only consulted
+    /// for a slot the cover does not contain, and the result is memoized so that slot too has exactly
+    /// one name.
+    ///
+    /// An uncovered slot goes through the same `buildVariableName`, so a stack address outside the
+    /// prototype's `<localrange>` — a caller-allocated parameter slot, which `MapState` refuses to map
+    /// (varmap.cc:900) — falls through to Ghidra's `ScopeInternal` form `xStack00000004` rather than
+    /// being dressed up as a recovered local.
+    fn stack_slot_name(&mut self, off: i64, ty: &Datatype) -> String {
+        if let Some(sym) = self.spacebase_sym_at(off) {
+            if sym.start == off {
+                return sym.name;
+            }
+        }
+        if let Some(n) = self.unmapped_stack_names.get(&off) {
+            return n.clone();
+        }
+        // Unreachable: a frame offset only ever arrives here from a `stack`-space Varnode or from a
+        // spacebase `PTRSUB`, and both require the space to exist.
+        let Some(stk) = self.stack_space else { return format!("{}Stack", ty.print_name_base()) };
+        // The cover is keyed by the SIGNED frame offset; `buildVariableName` takes the Address, so
+        // fold it back into the space's own offset range (`AddrSpace::wrapOffset`, space.hh:383).
+        let raw = self.f.spaces.get(stk).wrap_offset(off as u64);
+        let n = super::varmap::build_variable_name(
+            &self.f.spaces,
+            stk,
+            raw,
+            ty,
+            &self.f.proto_model.localrange,
+        );
+        self.unmapped_stack_names.insert(off, n.clone());
+        n
     }
 
     /// If `off` is `idx * size` (a scaled array index), return `idx`.
@@ -790,9 +846,9 @@ impl<'a> PrintC<'a> {
     fn render_spacebase_ptrsub(&mut self, off: i64, deref: bool) -> String {
         match self.spacebase_sym_at(off) {
             Some(sym) => {
-                if let Some((elem_ty, index)) = sym.array_index(off) {
+                if let Some((_, index)) = sym.array_index(off) {
                     // Array symbol: `axStack_<start>` decays to a pointer (drop `&`).
-                    let name = format!("a{}Stack_{:x}", type_prefix(&elem_ty), sym.start.unsigned_abs());
+                    let name = sym.name.clone();
                     self.declare_stack(sym.start, &name, sym.ty.clone());
                     if deref {
                         format!("{name}[{index}]") // element access (Ghidra pushSymbol + [0]/[i])
@@ -802,15 +858,18 @@ impl<'a> PrintC<'a> {
                         format!("{name} + {index}") // address of an interior element
                     }
                 } else {
-                    // Scalar symbol: named by its frame offset (`&xStack_NN` / the slot value).
-                    let name = self.stack_slot_name(off);
-                    self.declare_stack(off, &name, sym.ty.clone());
+                    // Scalar symbol: the Symbol's own name (`&xStack_NN` / the slot value).
+                    let ty = sym.ty.clone();
+                    let name = self.stack_slot_name(off, &ty);
+                    self.declare_stack(off, &name, ty);
                     if deref { name } else { format!("&{name}") }
                 }
             }
-            // No mapped symbol (Ghidra `pushUnnamedLocation`): name by the raw frame slot.
+            // No mapped symbol (Ghidra `pushUnnamedLocation`): name by the raw frame slot. The slot's
+            // width is unknown here, so the name takes the `undefined1` stem Ghidra's `defaultType`
+            // carries (`MapState`'s `getBase(1,TYPE_UNKNOWN)`, varmap.cc:1261).
             None => {
-                let name = self.stack_slot_name(off);
+                let name = self.stack_slot_name(off, &Datatype::Unknown(1));
                 if deref { name } else { format!("&{name}") }
             }
         }
@@ -818,9 +877,16 @@ impl<'a> PrintC<'a> {
 
     /// Declare a recovered stack symbol at frame offset `start` exactly once (Ghidra declares the
     /// `ScopeLocal` symbols in the function body; the sort at emission orders them by frame address).
-    /// Keyed by `(start, width)` so distinct-width slots at one offset are not collapsed.
+    ///
+    /// Keyed by `start` ALONE, because `ScopeLocal::restructure` produces a DISJOINT cover — one
+    /// Symbol per stack address, of one type. Keying by `(start, width)` instead let a slot read at
+    /// two widths be declared twice, which only stayed legal C while the two print-time name
+    /// synthesizers happened to disagree about the slot's stem (`iStack_ffffffe8` alongside
+    /// `xStack_ffffffe8`). Naming from the Symbol collapsed the two names onto one and wcc386
+    /// correctly rejected the redefinition — the disagreement had been MASKING the duplicate.
+    /// Measured: 3 WAR2 functions (FUN_00041290, FUN_000441ec, FUN_0004d794).
     fn declare_stack(&mut self, start: i64, name: &str, ty: Datatype) {
-        if self.stack_declared.insert((start, ty.size())) {
+        if self.stack_declared.insert(start) {
             self.decls.push((name.to_string(), ty, Some(start)));
         }
     }
@@ -836,10 +902,11 @@ impl<'a> PrintC<'a> {
         // Spacebase: the base is the stack pointer (`is_spacebase()` — keyed on the varnode flag, not
         // `type_of`, because the RSP input's HighVariable is storage-merged with integer frame-adjust
         // versions so its printed type is not the locked `Pointer(Spacebase)`). Resolve the offset to a
-        // ScopeLocal symbol. The offset varnode is pointer-width (8 bytes on x86-64), so `off as i64`
-        // is the signed frame offset directly.
+        // ScopeLocal symbol. The offset varnode is pointer-width, so on a 32-bit target it holds the
+        // wrapped `0xffffffdc` rather than `-0x24` — [`frame_off`] applies Ghidra's sign extension.
         if self.f.vn(base).is_spacebase() {
-            return self.render_spacebase_ptrsub(off as i64, deref);
+            let foff = self.frame_off(off);
+            return self.render_spacebase_ptrsub(foff, deref);
         }
         let b = self.operand(base, 16, false);
         let inner = match self.type_of(base).ptr_to() {
@@ -1963,17 +2030,11 @@ pub fn print_c(f: &Funcdata) -> String {
     }
     let mut high_stack_off: HashMap<u32, u64> = HashMap::new();
     let mut slot_write = vec![false; f.num_varnodes()];
-    // The type prefix of each `stack` slot, keyed by its signed frame offset, so an address-of-local
-    // `&<prefix>Stack_NN` carries the slot's prefix (Ghidra `&iStack_28`).
-    let mut stack_prefix: HashMap<i64, &'static str> = HashMap::new();
     if let Some(stk) = f.spaces.by_name("stack") {
         for i in 0..f.num_varnodes() as u32 {
             let v = VarnodeId(i);
             if f.vn(v).loc.space == stk {
                 high_stack_off.entry(h.high(v)).or_insert(f.vn(v).loc.offset);
-                if let Some(t) = &f.vn(v).ty {
-                    stack_prefix.entry(f.vn(v).loc.offset as i64).or_insert(type_prefix(t));
-                }
             }
         }
         for op in f.op_ids() {
@@ -2008,7 +2069,12 @@ pub fn print_c(f: &Funcdata) -> String {
         slot_write,
         high_stack_off,
         high_ram_off,
-        stack_prefix,
+        stack_sign_bit: f
+            .spaces
+            .by_name("stack")
+            .map(|s| f.spaces.get(s).addr_size.saturating_mul(8).saturating_sub(1))
+            .unwrap_or(63),
+        unmapped_stack_names: HashMap::new(),
         force_explicit: HashSet::new(),
         param_index,
         high_of: high_of.clone(),

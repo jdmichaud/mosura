@@ -177,6 +177,11 @@ pub struct Funcdata {
 
 impl Funcdata {
     pub fn new(name: impl Into<String>, addr: Address, spaces: SpaceManager) -> Funcdata {
+        // Ghidra's `ProtoModel` constructor installs the default `<localrange>`/`<paramrange>`
+        // (fspec.cc:2353-2354), so there is no such thing as a model without stack windows. A
+        // spec-driven build overwrites this whole field; a hand-built `Funcdata` keeps it, and
+        // without it `ScopeLocal` would map no stack local at all.
+        let proto_model = super::fspec::ProtoModel::with_default_ranges(&spaces);
         Funcdata {
             name: name.into(),
             addr,
@@ -206,7 +211,7 @@ impl Funcdata {
             highs: None,
             nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),
-            proto_model: super::fspec::ProtoModel::empty(),
+            proto_model,
             stack_pointer: None,
             userops: std::collections::HashMap::new(),
             opactdbg_active: false,

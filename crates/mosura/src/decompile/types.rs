@@ -141,6 +141,19 @@ impl Datatype {
         }
     }
 
+    /// Ghidra `Datatype::printNameBase` (type.hh:273): the one-letter stem a default variable name is
+    /// built from — the FIRST CHARACTER of the data-type's name, with `TypePointer` prepending `p`
+    /// (type.hh:424) and `TypeArray` prepending `a` (type.hh:457), each recursing into what it points
+    /// at. This is what makes an `int4` local `iVar1`, an `undefined4` stack slot `xStack_24` and an
+    /// array of them `axStack_24`.
+    pub fn print_name_base(&self) -> String {
+        match self {
+            Datatype::Pointer(_, to) => format!("p{}", to.print_name_base()),
+            Datatype::Array(elem, _) => format!("a{}", elem.print_name_base()),
+            _ => self.name().chars().next().map(String::from).unwrap_or_default(),
+        }
+    }
+
     /// The C name (used in declarations and casts).
     pub fn name(&self) -> String {
         match self {

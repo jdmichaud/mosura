@@ -497,7 +497,12 @@ impl AddTreeState {
             // Otherwise consider the array forward of the offset, and pick the nearer of the two.
             let after = sb_nearest_forward(&syms, off);
             return match (before, after) {
-                (None, None) => sb_get_subtype(&syms, off).map(|(_, no)| no),
+                // Ghidra falls back to `getSubType` here (ruleaction.cc:6086), and for a
+                // TYPE_SPACEBASE that is never null — `TypeSpacebase::getSubType` returns
+                // `getBase(1,TYPE_UNKNOWN)` at newoff 0 when no symbol is mapped (type.cc:2965). So an
+                // indexed access at an UNMAPPED frame offset still folds to `PTRSUB(sp, off)` instead
+                // of leaving the raw spacebase pointer in the expression.
+                (None, None) => Some(sb_get_subtype(&syms, off).map(|(_, no)| no).unwrap_or(0)),
                 (None, Some((_, noa))) => Some(noa),
                 (Some((_, nob, _)), None) => Some(nob),
                 (Some((elb, nob, _)), Some((ela, noa))) => {

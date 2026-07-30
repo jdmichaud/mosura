@@ -19,7 +19,7 @@
 
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
-use super::space::SpaceId;
+use super::space::{Address, RangeList, SpaceId, SpaceManager};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
@@ -354,6 +354,10 @@ pub struct StackSymbol {
     pub size: u32,
     /// Recovered data-type — a scalar, or an `Array(elem, n)` for a recovered stack array.
     pub ty: Datatype,
+    /// The symbol's name, built ONCE from this symbol's own data-type by [`build_variable_name`].
+    /// Ghidra stores the name on the `Symbol` (`Scope::buildDefaultName`, database.cc:1756), so every
+    /// reference to the slot renders identically no matter what type the referencing Varnode carries.
+    pub name: String,
 }
 
 impl StackSymbol {
@@ -370,16 +374,112 @@ impl StackSymbol {
     }
 }
 
-/// Ghidra `MapState`: the collection of `RangeHint`s gathered for the stack address space.
-struct MapState {
+/// Ghidra `ScopeLocal::buildVariableName` (varmap.cc:548) for an address-tied slot in the stack
+/// space: the default name of a local, derived from its FRAME offset and its own data-type.
+///
+/// `raw_off` is the slot's stored (wrapped) stack offset; the frame offset is derived here exactly as
+/// Ghidra does (varmap.cc:556-557), then negated for a negative-growing stack (:558) so a local at
+/// `-0x24` reads `_24`.
+///
+/// ⭐ The whole `Stack_` form is gated on `getLocalRange().inRange(addr,1)` (:554). That gate is not a
+/// formality: with the default window (`ProtoModel::default_local_range`, fspec.cc:2263) a
+/// non-negative frame offset is OUTSIDE the local range, so the caller-allocated `X` marker at :566
+/// is unreachable — which is why Ghidra emits `StackX_` zero times over WAR2's 1286 functions.
+/// Out-of-range addresses fall through to [`build_internal_variable_name`], Ghidra's `return
+/// ScopeInternal::buildVariableName(...)` at :579.
+///
+/// Two pieces of Ghidra's version are called out rather than approximated: the `Y` marker for an
+/// unusual stack region (:571-574) needs `ScopeLocal`'s `minParamOffset`/`maxParamOffset`, set by
+/// `restructure` from the symbols it maps, and Ghidra emits zero `StackY_` names over WAR2.
+/// `makeNameUnique` (:577) resolves collisions against the scope's name tree; `restructure` produces
+/// a DISJOINT cover, so two symbols cannot share a start and no collision arises.
+pub fn build_variable_name(
+    spaces: &SpaceManager,
     space: SpaceId,
+    raw_off: u64,
+    ct: &Datatype,
+    localrange: &RangeList,
+) -> String {
+    let spc = spaces.get(space);
+    if !localrange.in_range(Address::new(space, raw_off), 1) {
+        return build_internal_variable_name(spaces, space, raw_off, ct);
+    }
+    // `start = byteToAddress(off, wordsize); start = sign_extend(start, addrSize*8-1);` (:556-557).
+    // Ghidra reads `stackGrowsNegative` from the prototype (`<stackpointer growth=>`, default
+    // "negative"); every target mosura decompiles declares a negative-growing stack.
+    let mut start = -sign_extend(raw_off, spc.addr_size.saturating_mul(8).saturating_sub(1));
+    let mut s = ct.print_name_base();
+    s.push_str(&capitalized(&spc.name));
+    if start <= 0 {
+        s.push('X'); // local stack space allocated by the caller
+        start = -start;
+    }
+    s.push('_');
+    s.push_str(&format!("{start:x}"));
+    s
+}
+
+/// Ghidra `ScopeInternal::buildVariableName` (database.cc:2434), the `addrtied` branch at :2483: the
+/// name of an address-tied value that no `Scope` maps — the type's `printNameBase` stem, the
+/// capitalized space name, and the RAW offset in `2*addrSize` hex digits with NO separator
+/// (`xStack00000004`, `iRam00089124`). It is what a stack address outside the local range gets, and
+/// the shape says exactly that: an unmapped machine address, not a recovered local.
+pub fn build_internal_variable_name(
+    spaces: &SpaceManager,
+    space: SpaceId,
+    raw_off: u64,
+    ct: &Datatype,
+) -> String {
+    let spc = spaces.get(space);
+    let width = 2 * spc.addr_size as usize;
+    // `byteToAddress(off, wordsize)` — the identity on every byte-addressable space mosura loads.
+    format!("{}{}{raw_off:0width$x}", ct.print_name_base(), capitalized(&spc.name))
+}
+
+/// `spacename[0] = toupper(spacename[0])` (database.cc:2487 / varmap.cc:564).
+fn capitalized(name: &str) -> String {
+    let mut c = name.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Ghidra `MapState`: the collection of `RangeHint`s gathered for the stack address space.
+struct MapState<'a> {
+    spaces: &'a SpaceManager,
+    space: SpaceId,
+    /// The stack space's address size in BITS minus one — Ghidra's `spaceid->getAddrSize()*8-1`, the
+    /// sign bit every frame offset is extended from (`MapState::addRange`, varmap.cc:905).
+    sign_bit: u32,
+    /// Ghidra `MapState::range` (varmap.cc:864-875): the `ScopeLocal`'s mapped window —
+    /// `localrange ∪ paramrange` with `paramrange` then REMOVED ("Clear possible input symbols"), so
+    /// in practice the local window alone. A hint outside it is dropped, which is why no `ScopeLocal`
+    /// symbol ever lands on a stack parameter slot.
+    range: RangeList,
+    /// The prototype's `<localrange>` alone — what `ScopeLocal::buildVariableName` (varmap.cc:554)
+    /// tests, which is NOT the same set as [`Self::range`] whenever a spec's two windows overlap.
+    localrange: &'a RangeList,
     maplist: Vec<RangeHint>,
     default_type: Datatype,
 }
 
-impl MapState {
-    fn new(space: SpaceId) -> MapState {
-        MapState { space, maplist: Vec::new(), default_type: Datatype::Unknown(1) }
+impl<'a> MapState<'a> {
+    fn new(
+        spaces: &'a SpaceManager,
+        space: SpaceId,
+        range: RangeList,
+        localrange: &'a RangeList,
+    ) -> MapState<'a> {
+        MapState {
+            spaces,
+            space,
+            sign_bit: spaces.get(space).addr_size.saturating_mul(8).saturating_sub(1),
+            range,
+            localrange,
+            maplist: Vec::new(),
+            default_type: Datatype::Unknown(1),
+        }
     }
 
     /// Ghidra `MapState::addRange`: add a hint for `sz` bytes starting at `st`.
@@ -389,8 +489,15 @@ impl MapState {
             _ => self.default_type.clone(),
         };
         let sz = ct.size() as i32;
-        // (the RangeList mapped-window `inRange` guard is faithfully omitted — no param range yet)
-        let sst = sign_extend(st, 63); // stack addrsize 8, wordsize 1 → identity
+        // `if (!range.inRange(Address(spaceid,st),sz)) return;` (varmap.cc:900).
+        if !self.range.in_range(Address::new(self.space, st), sz as u32) {
+            return;
+        }
+        // Ghidra `sign_extend(sst, spaceid->getAddrSize()*8-1)` (varmap.cc:905). A 32-bit stack keeps
+        // its offsets wrapped (`0xffffffdc`), so without the extension every frame offset compares as
+        // a large POSITIVE number: the terminating endpoint hint (sstart 0) then sorts FIRST instead
+        // of last, `restructure` emits it as a symbol and never flushes the final real one.
+        let sst = sign_extend(st, self.sign_bit); // wordsize 1 → byteToAddress is the identity
         self.maplist.push(RangeHint { start: st, size: sz, sstart: sst, ty: ct, flags: fl, range_type: rt, highind: hi });
     }
 
@@ -548,12 +655,16 @@ fn is_read_active(f: &Funcdata, vn: VarnodeId) -> bool {
 
 /// Ghidra `ScopeLocal::createEntry`: build the final Symbol type for a fitted RangeHint (an array
 /// if the range spans multiple elements) and emit it.
-fn create_entry(a: &RangeHint, out: &mut Vec<StackSymbol>) {
+fn create_entry(state: &MapState, a: &RangeHint, out: &mut Vec<StackSymbol>) {
     let ct = a.ty.clone(); // concretize() is identity for the primitive lattice
     let align = ct.align_size().max(1);
     let num = a.size as u32 / align;
     let ty = if num > 1 { Datatype::Array(Box::new(ct), num as u64) } else { ct };
-    out.push(StackSymbol { start: a.sstart, size: a.size as u32, ty });
+    // Ghidra names the Symbol here, from the Symbol's own type (`ScopeLocal::createEntry` →
+    // `addSymbol` → `buildDefaultName`), not at each reference.
+    let name =
+        build_variable_name(state.spaces, state.space, a.start, &ty, state.localrange);
+    out.push(StackSymbol { start: a.sstart, size: a.size as u32, ty, name });
 }
 
 /// Ghidra `ScopeLocal::restructure`: merge the gathered `RangeHint`s into a disjoint cover of
@@ -574,7 +685,7 @@ fn restructure(state: &mut MapState, out: &mut Vec<StackSymbol>) {
                 cur.size = (next.sstart - cur.sstart) as i32;
             }
             if cur.size > 0 && !cur.is_type_lock() {
-                create_entry(&cur, out);
+                create_entry(state, &cur, out);
             }
             cur = next;
         }
@@ -582,11 +693,29 @@ fn restructure(state: &mut MapState, out: &mut Vec<StackSymbol>) {
     // The last range is the artificial endpoint, so no entry is built for it.
 }
 
+/// The window `MapState` will accept hints in. Ghidra builds it in two steps: `ScopeLocal`'s own
+/// range tree is `localrange ∪ paramrange` (`ScopeLocal::resetLocalWindow`, varmap.cc:441-459), and
+/// `MapState`'s constructor then removes `paramrange` from its copy (varmap.cc:870-875, "Clear
+/// possible input symbols"). The union-then-subtract is not a no-op: where the two windows overlap
+/// (x86-64-gcc's `<localrange>` includes `[8,39]`, inside the default `paramrange` `[0,511]`) the
+/// subtraction wins, and a convention with no stack parameter area keeps its whole local window.
+fn map_state_range(f: &Funcdata) -> RangeList {
+    let mut rl = f.proto_model.localrange.clone();
+    for r in f.proto_model.paramrange.iter() {
+        rl.insert_range(r.spc, r.first, r.last);
+    }
+    for r in f.proto_model.paramrange.iter() {
+        rl.remove_range(r.spc, r.first, r.last);
+    }
+    rl
+}
+
 /// Recover the stack-frame Symbol layout for the function (Ghidra `ScopeLocal::restructureVarnode`
 /// → `restructure`). Returns the disjoint cover of [`StackSymbol`]s; empty if there is no stack.
 pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
     let Some(stack) = f.spaces.by_name("stack") else { return Vec::new() };
-    let mut state = MapState::new(stack);
+    let mut state =
+        MapState::new(&f.spaces, stack, map_state_range(f), &f.proto_model.localrange);
     state.gather_varnodes(f);
     state.gather_open(f);
     let mut out = Vec::new();
@@ -596,27 +725,94 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fspec::ProtoModel;
     use super::*;
+
+    /// The x86-64 default: an 8-byte `stack` space with the default `<localrange>`/`<paramrange>`.
+    fn stack_fixture() -> (SpaceManager, SpaceId, RangeList, RangeList) {
+        let spaces = SpaceManager::standard();
+        let stack = spaces.by_name("stack").unwrap();
+        let local = ProtoModel::default_local_range(&spaces, true);
+        let param = ProtoModel::default_param_range(&spaces, true);
+        (spaces, stack, local, param)
+    }
+
+    fn map_state<'a>(
+        spaces: &'a SpaceManager,
+        stack: SpaceId,
+        local: &'a RangeList,
+        param: &RangeList,
+    ) -> MapState<'a> {
+        let mut range = local.clone();
+        for r in param.iter() {
+            range.remove_range(r.spc, r.first, r.last);
+        }
+        MapState::new(spaces, stack, range, local)
+    }
 
     #[test]
     fn fixed_scalar_slots_become_typed_symbols() {
         // Two adjacent int4 slots at -0x28 and -0x24 → two scalar symbols (no spurious join).
-        let mut state = MapState::new(SpaceId(4));
+        let (spaces, stack, local, param) = stack_fixture();
+        let mut state = map_state(&spaces, stack, &local, &param);
         state.add_fixed_type(0xffffffffffffffd8, Datatype::Int(4), 0); // -0x28
         state.add_fixed_type(0xffffffffffffffdc, Datatype::Int(4), 0); // -0x24
         let mut out = Vec::new();
         restructure(&mut state, &mut out);
         assert_eq!(out, vec![
-            StackSymbol { start: -0x28, size: 4, ty: Datatype::Int(4) },
-            StackSymbol { start: -0x24, size: 4, ty: Datatype::Int(4) },
+            StackSymbol { start: -0x28, size: 4, ty: Datatype::Int(4), name: "iStack_28".into() },
+            StackSymbol { start: -0x24, size: 4, ty: Datatype::Int(4), name: "iStack_24".into() },
         ]);
+    }
+
+    /// Ghidra `ScopeLocal::buildVariableName` (varmap.cc:548-577): the frame offset is negated for a
+    /// negative-growing stack and the stem is the SYMBOL's own `printNameBase`.
+    #[test]
+    fn variable_names_match_ghidra_scopelocal() {
+        let (spaces, stack, local, _) = stack_fixture();
+        let name = |off: i64, ty: &Datatype| {
+            build_variable_name(&spaces, stack, off as u64, ty, &local)
+        };
+        assert_eq!(name(-0x24, &Datatype::Int(4)), "iStack_24");
+        assert_eq!(name(-0x16, &Datatype::Int(2)), "iStack_16");
+        assert_eq!(name(-0x18, &Datatype::Unknown(4)), "xStack_18");
+        assert_eq!(name(-0x10, &Datatype::Uint(1)), "uStack_10");
+        // pointer/array stems recurse (type.hh:424/457)
+        assert_eq!(name(-0x1c, &Datatype::Array(Box::new(Datatype::Int(4)), 4)), "aiStack_1c");
+        assert_eq!(name(-0x8, &Datatype::Pointer(4, Box::new(Datatype::Uint(4)))), "puStack_8");
+    }
+
+    /// ⭐ The caller-allocated `X` marker (varmap.cc:566) is behind the `getLocalRange().inRange`
+    /// test at varmap.cc:554, and `ProtoModel::defaultLocalRange` (fspec.cc:2263) covers only the top
+    /// 999999 bytes — the NEGATIVE offsets. So a non-negative frame offset never reaches the marker;
+    /// it takes `ScopeInternal::buildVariableName`'s unmapped-address form instead (database.cc:2483,
+    /// `2*addrSize` hex digits, no separator). This is why Ghidra emits `StackX_` and `StackY_` zero
+    /// times across WAR2's 1286 functions.
+    #[test]
+    fn nonnegative_frame_offsets_are_outside_the_local_range() {
+        let (spaces, stack, local, param) = stack_fixture();
+        assert!(local.in_range(Address::new(stack, (-0x24i64) as u64), 1));
+        assert!(!local.in_range(Address::new(stack, 0), 1));
+        assert!(!local.in_range(Address::new(stack, 8), 1));
+        assert!(param.in_range(Address::new(stack, 8), 1));
+        let name = |off: u64, ty: &Datatype| build_variable_name(&spaces, stack, off, ty, &local);
+        assert_eq!(name(0, &Datatype::Int(4)), "iStack0000000000000000");
+        assert_eq!(name(8, &Datatype::Int(4)), "iStack0000000000000008");
+        // and no hint at such an offset is ever mapped (varmap.cc:900)
+        let mut state = map_state(&spaces, stack, &local, &param);
+        state.add_fixed_type(8, Datatype::Int(4), 0);
+        state.add_fixed_type(0xffffffffffffffdc, Datatype::Int(4), 0); // -0x24
+        let mut out = Vec::new();
+        restructure(&mut state, &mut out);
+        assert_eq!(out.iter().map(|s| s.start).collect::<Vec<_>>(), vec![-0x24]);
     }
 
     #[test]
     fn open_range_with_index_recovers_an_array() {
         // loopcomment's frame: an indexed pointer + scalar [0] write at -0x1c, bounded above by the
         // next local (iStack_c at -0xc) → the open range covers 16 bytes = an array of 4 int4.
-        let mut state = MapState::new(SpaceId(4));
+        let (spaces, stack, local, param) = stack_fixture();
+        let mut state = map_state(&spaces, stack, &local, &param);
         state.add_fixed_type(0xffffffffffffffe4, Datatype::Int(4), 0); // -0x1c (the [0] element)
         state.add_range(0xffffffffffffffe4, Some(Datatype::Int(4)), 0, RangeType::Open, 3);
         state.add_fixed_type(0xfffffffffffffff4, Datatype::Int(4), 0); // -0xc (bounds the array)
@@ -626,6 +822,10 @@ mod tests {
         assert_eq!(out[0].start, -0x1c);
         assert_eq!(out[0].ty, Datatype::Array(Box::new(Datatype::Int(4)), 4));
         assert_eq!(out[0].array_index(-0x1c), Some((Datatype::Int(4), 0)));
-        assert_eq!(out[1], StackSymbol { start: -0xc, size: 4, ty: Datatype::Int(4) });
+        assert_eq!(out[0].name, "aiStack_1c");
+        assert_eq!(
+            out[1],
+            StackSymbol { start: -0xc, size: 4, ty: Datatype::Int(4), name: "iStack_c".into() }
+        );
     }
 }

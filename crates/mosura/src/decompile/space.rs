@@ -20,7 +20,7 @@ pub enum SpaceKind {
 }
 
 /// A handle to a registered [`Space`] — an index into the [`SpaceManager`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SpaceId(pub u32);
 
 /// One registered address space.
@@ -102,6 +102,118 @@ impl Space {
     }
 }
 
+/// Ghidra `Range` (`address.hh:181`): a contiguous, inclusive `[first,last]` byte range within one
+/// address space. Ordered by `(space, first, last)`, which is the ordering
+/// [`RangeList`]'s insert/remove/lookup all rely on.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Range {
+    pub spc: SpaceId,
+    pub first: u64,
+    pub last: u64,
+}
+
+/// Ghidra `RangeList` (`address.cc:383/412/468`): a set of address ranges kept as a DISJOINT,
+/// non-adjacent cover. Ghidra holds it in a `std::set<Range>`; mosura keeps the same ordering in a
+/// sorted `Vec`, so `upper_bound` is a `partition_point` and the algorithms translate line for line.
+///
+/// It exists here for the prototype model's `<localrange>`/`<paramrange>`
+/// ([`super::fspec::ProtoModel`]), which decide which stack offsets `ScopeLocal` may map at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RangeList {
+    tree: Vec<Range>,
+}
+
+impl RangeList {
+    pub fn new() -> RangeList {
+        RangeList { tree: Vec::new() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tree.is_empty()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, Range> {
+        self.tree.iter()
+    }
+
+    /// `tree.upper_bound(Range(spc,off,off))` — the index of the first range ordering strictly after
+    /// the probe. Ghidra probes with `last == first == off`, so a range starting at `off` with a
+    /// larger `last` orders AFTER the probe and is not skipped.
+    fn upper_bound(&self, spc: SpaceId, off: u64) -> usize {
+        let probe = Range { spc, first: off, last: off };
+        self.tree.partition_point(|r| *r <= probe)
+    }
+
+    /// Ghidra `RangeList::insertRange` (address.cc:383): add `[first,last]`, absorbing every range it
+    /// touches so the cover stays disjoint.
+    pub fn insert_range(&mut self, spc: SpaceId, first: u64, last: u64) {
+        let mut first = first;
+        let mut last = last;
+        let mut iter1 = self.upper_bound(spc, first);
+        // Set iter1 to the first range with `range.last >= first` — either the current one or the
+        // one before it.
+        if iter1 != 0 {
+            iter1 -= 1;
+            if self.tree[iter1].spc != spc || self.tree[iter1].last < first {
+                iter1 += 1;
+            }
+        }
+        let iter2 = self.upper_bound(spc, last);
+        for r in &self.tree[iter1..iter2] {
+            first = first.min(r.first);
+            last = last.max(r.last);
+        }
+        self.tree.drain(iter1..iter2);
+        let ins = Range { spc, first, last };
+        let at = self.tree.partition_point(|r| *r < ins);
+        self.tree.insert(at, ins);
+    }
+
+    /// Ghidra `RangeList::removeRange` (address.cc:412): eliminate `[first,last]`, narrowing or
+    /// splitting the ranges it overlaps so the cover stays disjoint.
+    pub fn remove_range(&mut self, spc: SpaceId, first: u64, last: u64) {
+        if self.tree.is_empty() {
+            return;
+        }
+        let mut iter1 = self.upper_bound(spc, first);
+        if iter1 != 0 {
+            iter1 -= 1;
+            if self.tree[iter1].spc != spc || self.tree[iter1].last < first {
+                iter1 += 1;
+            }
+        }
+        let iter2 = self.upper_bound(spc, last);
+        let mut replacement = Vec::new();
+        for r in &self.tree[iter1..iter2] {
+            if r.first < first {
+                replacement.push(Range { spc, first: r.first, last: first - 1 });
+            }
+            if r.last > last {
+                replacement.push(Range { spc, first: last + 1, last: r.last });
+            }
+        }
+        self.tree.splice(iter1..iter2, replacement);
+        self.tree.sort_unstable();
+    }
+
+    /// Ghidra `RangeList::inRange` (address.cc:468): is `[addr, addr+size)` fully contained in a
+    /// SINGLE range of this list? An empty list contains nothing.
+    pub fn in_range(&self, addr: Address, size: u32) -> bool {
+        if self.tree.is_empty() {
+            return false;
+        }
+        let iter = self.upper_bound(addr.space, addr.offset);
+        if iter == 0 {
+            return false;
+        }
+        let r = self.tree[iter - 1];
+        if r.spc != addr.space {
+            return false;
+        }
+        r.last >= addr.offset.wrapping_add(size as u64).wrapping_sub(1)
+    }
+}
+
 /// The faithful heritage delay for a space, from Ghidra's space construction. The SLEIGH
 /// compiler gives every space `delay = (type == register_space) ? 0 : 1`
 /// (`slgh_compile.cc:2708`), and the constant/unique spaces are built with delay 0
@@ -167,9 +279,20 @@ impl SpaceManager {
     /// the default matches no register — `ActionSpacebase` marks nothing, and no stack-relative
     /// access is ever turned into a `stack` Varnode. The failure is silent: not a wrong frame, no
     /// frame at all.
+    /// The space's ADDRESS SIZE is set from the same register, because Ghidra creates the space from
+    /// it: `Architecture::decodeStackPointer` takes `truncSize = point.size` (the stack-pointer
+    /// register's size, architecture.cc:1008) and passes it to `addSpacebase` (:1013), which is the
+    /// `sz` argument of `SpacebaseSpace(m,t,nm,ind,sz,base,dl,isFormal)` (translate.hh:181) — the
+    /// space's `addressSize`. Leaving it at the x86-64 default 8 on `x86:LE:32` makes every
+    /// address-size-derived quantity silently wrong on a 32-bit target: `sign_extend(off,
+    /// addrSize*8-1)` (varmap.cc:905) is then the identity, so a frame offset keeps its wrapped
+    /// `0xffffffdc` form instead of `-0x24` and the whole `ScopeLocal` cover mis-sorts;
+    /// `AddrSpace::wrapOffset` never wraps; and `normalizeWriteSize`'s SUBPIECE offset constants
+    /// (heritage.cc:444, `newConstant(addr.getAddrSize(),…)`) come out 8 bytes wide.
     pub fn set_stack_pointer(&mut self, reg: Address, size: u32) {
         let Some(stack) = self.by_name("stack") else { return };
         self.spaces[stack.0 as usize].spacebase.clear();
+        self.spaces[stack.0 as usize].addr_size = size;
         self.set_spacebase(stack, reg, size);
     }
 

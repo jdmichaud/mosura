@@ -21,7 +21,7 @@
 //! `docs/cspec-decompiler-brief.md`).
 
 use crate::decompile::fspec::{effect, type_class, EffectRecord, ParamEntry, ParamList, ProtoModel};
-use crate::decompile::space::{SpaceId, SpaceManager};
+use crate::decompile::space::{RangeList, SpaceId, SpaceManager};
 use crate::sleigh::engine::Spec;
 
 /// Build the `<default_proto>` **input** [`ParamList`] of `(language_id, compiler_spec_id)`
@@ -115,14 +115,37 @@ pub fn default_proto_model(
     let mut output = None;
     let mut effectlist: Vec<EffectRecord> = Vec::new();
     let mut saw_retaddr = false;
+    // Ghidra `ProtoModel::decode` (fspec.cc:2552): each range list is decoded if the model declares
+    // one, else defaulted at the end (fspec.cc:2696-2699).
+    let mut localrange = RangeList::new();
+    let mut paramrange = RangeList::new();
+    let mut saw_localrange = false;
+    let mut saw_paramrange = false;
 
     for child in proto.children().filter(roxmltree::Node::is_element) {
         match child.tag_name().name() {
             "input" => {
                 input = decode_param_list(spec, spaces, child, false);
+                // `input->getRangeList(stackspc,paramrange)` (fspec.cc:2609): a convention that
+                // declares a stack overflow `<pentry>` derives its parameter window from it rather
+                // than from the default.
+                if let (Some(pl), Some(stack)) = (input.as_ref(), spaces.by_name("stack")) {
+                    pl.range_list(stack, &mut paramrange);
+                    if !paramrange.is_empty() {
+                        saw_paramrange = true;
+                    }
+                }
                 if child.attribute("killedbycall") == Some("true") {
                     push_auto_killedbycall(spec, spaces, child, &mut effectlist);
                 }
+            }
+            "localrange" => {
+                saw_localrange = true;
+                push_ranges(spaces, child, &mut localrange);
+            }
+            "paramrange" => {
+                saw_paramrange = true;
+                push_ranges(spaces, child, &mut paramrange);
             }
             "output" => {
                 output = decode_param_list(spec, spaces, child, true);
@@ -156,7 +179,45 @@ pub fn default_proto_model(
 
     // `sort(effectlist, EffectRecord::compareByAddress)` (fspec.cc:2693) — by (space, offset).
     effectlist.sort_by(|a, b| a.space.0.cmp(&b.space.0).then(a.offset.cmp(&b.offset)));
-    Some(ProtoModel { input, output, effectlist })
+
+    // `if (!sawlocalrange) defaultLocalRange(); if (!sawparamrange) defaultParamRange();`
+    // (fspec.cc:2696-2699). The growth direction is the stack space's own
+    // (`stackgrowsnegative = stackspc->stackGrowsNegative()`, fspec.cc:2558), which
+    // `Architecture::decodeStackPointer` set from `<stackpointer growth=>` — default "negative".
+    let grows_negative = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "stackpointer")
+        .and_then(|n| n.attribute("growth"))
+        .is_none_or(|g| g == "negative");
+    if !saw_localrange {
+        localrange = ProtoModel::default_local_range(spaces, grows_negative);
+    }
+    if !saw_paramrange {
+        paramrange = ProtoModel::default_param_range(spaces, grows_negative);
+    }
+    Some(ProtoModel { input, output, effectlist, localrange, paramrange })
+}
+
+/// Decode the `<range>` children of a `<localrange>`/`<paramrange>` element into `res` (Ghidra
+/// `Range::decodeFromAttributes`, address.cc:316, then `RangeList::insertRange`). Only the
+/// `space`/`first`/`last` form is used by the ranges mosura reads; a `<range>` naming a register has
+/// no meaning for a stack window.
+fn push_ranges(spaces: &SpaceManager, elem: roxmltree::Node, res: &mut RangeList) {
+    for r in elem.children().filter(|n| n.tag_name().name() == "range") {
+        let Some(spc) = r.attribute("space").and_then(|s| spaces.by_name(s)) else { continue };
+        let parse = |v: &str| {
+            let v = v.trim();
+            match v.strip_prefix("0x") {
+                Some(h) => u64::from_str_radix(h, 16).ok(),
+                None => v.parse::<u64>().ok(),
+            }
+        };
+        // Ghidra defaults a missing attribute to 0, and a missing `last` to the space's highest
+        // offset (`Range::decodeFromAttributes`, address.cc:342).
+        let first = r.attribute("first").and_then(parse).unwrap_or(0);
+        let last = r.attribute("last").and_then(parse).unwrap_or_else(|| spaces.get(spc).highest());
+        res.insert_range(spc, first, last);
+    }
 }
 
 /// Resolve the `<default_proto><prototype>` node of a parsed cspec document.

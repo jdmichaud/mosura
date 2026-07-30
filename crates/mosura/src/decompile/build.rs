@@ -32,9 +32,21 @@ const DEFAULT_COMPILER_ID: &str = "gcc";
 /// `None`/empty off-tree. `spec` must be the SLEIGH spec of `language_id` (its register table
 /// resolves the cspec's `<register name=…>` pentries).
 fn resolve_proto_model(spec: &Spec, language_id: &str, compiler_id: &str) -> ProtoModel {
-    let spaces = SpaceManager::standard();
+    let mut spaces = SpaceManager::standard();
+    // The `<stackpointer>` is applied FIRST, because it is what sets the `stack` space's address
+    // size (`Architecture::decodeStackPointer` → `addSpacebase`, architecture.cc:1008/1013) and the
+    // model's default `<localrange>`/`<paramrange>` are derived from that size (fspec.cc:2263/2292).
+    // Ghidra depends on the same ordering — `<stackpointer>` precedes `<default_proto>` in the
+    // compiler spec and `decodeCompilerConfig` (architecture.cc:1257) processes them in document
+    // order. Building the ranges against the x86-64 default 8 would put every 32-bit frame offset
+    // outside the local window, and no stack local would be recovered at all.
+    if let Some((space, offset, size)) =
+        crate::analysis::cspec::default_stack_pointer(spec, language_id, compiler_id, &spaces)
+    {
+        spaces.set_stack_pointer(Address::new(space, offset), size);
+    }
     crate::analysis::cspec::default_proto_model(spec, language_id, compiler_id, &spaces)
-        .unwrap_or_else(ProtoModel::empty)
+        .unwrap_or_else(|| ProtoModel::with_default_ranges(&spaces))
 }
 
 /// The stack pointer register from the compiler spec's `<stackpointer>`

@@ -15,7 +15,7 @@
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::space::{Address, SpaceId, SpaceManager};
+use super::space::{Address, RangeList, SpaceId, SpaceManager};
 use super::varnode::VarnodeId;
 
 /// Ghidra `type_class` (fspec.hh): the resource section a parameter draws from. System V keeps
@@ -146,6 +146,19 @@ pub struct ParamList {
 }
 
 impl ParamList {
+    /// Ghidra `ParamListStandard::getRangeList` (fspec.cc:1439): the storage this convention passes
+    /// parameters in WITHIN one space, as a [`RangeList`]. `ProtoModel::decode` (fspec.cc:2609) asks
+    /// this of the stack space to derive `paramrange` from the stack overflow `<pentry>`, in
+    /// preference to [`ProtoModel::default_param_range`].
+    pub fn range_list(&self, spc: SpaceId, res: &mut RangeList) {
+        for e in &self.entry {
+            if e.space != spc {
+                continue;
+            }
+            res.insert_range(spc, e.addressbase, e.addressbase + e.size as u64 - 1);
+        }
+    }
+
     /// Ghidra `ParamListStandard::findEntry` (fspec.cc:661): the first entry whose storage
     /// contains `[loc,loc+size)`, with its justified offset. Drives `possibleParam`.
     pub fn find_entry(&self, loc: Address, size: u32) -> Option<(&ParamEntry, u64)> {
@@ -721,12 +734,80 @@ pub struct ProtoModel {
     pub input: Option<ParamList>,
     pub output: Option<ParamList>,
     pub effectlist: Vec<EffectRecord>,
+    /// Ghidra `ProtoModel::localrange` (fspec.hh:1050): the stack window a function's LOCALS may
+    /// occupy. `ScopeLocal` maps nothing outside it and names nothing outside it, so it is what makes
+    /// a frame offset a local at all. From the model's `<localrange>` when the compiler spec supplies
+    /// one, else [`Self::default_local_range`].
+    pub localrange: RangeList,
+    /// Ghidra `ProtoModel::paramrange` (fspec.hh:1051): the stack window INPUT PARAMETERS occupy.
+    /// `ScopeLocal`'s range is `localrange ∪ paramrange`, but `MapState` then removes `paramrange`
+    /// from it (varmap.cc:870-875) so parameter slots never become locals.
+    pub paramrange: RangeList,
 }
 
 impl ProtoModel {
-    /// The empty model — no parameter storage, no declared side effects.
+    /// The empty model — no parameter storage, no declared side effects. Ghidra's `ProtoModel`
+    /// CONSTRUCTOR still installs the default stack windows (fspec.cc:2353-2354), so prefer
+    /// [`Self::with_default_ranges`] wherever a [`SpaceManager`] is in hand; a model with no
+    /// `localrange` maps no stack locals at all.
     pub fn empty() -> ProtoModel {
         ProtoModel::default()
+    }
+
+    /// Ghidra `ProtoModel::ProtoModel(Architecture*)` (fspec.cc:2340): a model carrying nothing but
+    /// the two default stack windows, which every `ProtoModel` has from construction.
+    pub fn with_default_ranges(spaces: &SpaceManager) -> ProtoModel {
+        ProtoModel {
+            localrange: Self::default_local_range(spaces, true),
+            paramrange: Self::default_param_range(spaces, true),
+            ..ProtoModel::default()
+        }
+    }
+
+    /// Ghidra `ProtoModel::defaultLocalRange` (fspec.cc:2263): with the normal negative-growing
+    /// stack, locals live at NEGATIVE offsets — the top `999999` bytes of the stack space (`9999` /
+    /// `99` for a 2-byte / 1-byte space). The window is expressed in the space's own wrapped offsets,
+    /// so on a 4-byte stack it is `[0xfff0bdc1, 0xffffffff]` and every non-negative frame offset
+    /// falls OUTSIDE it. That is why Ghidra emits no `StackX_` name over WAR2's 1286 functions: the
+    /// caller-allocated marker in `ScopeLocal::buildVariableName` (varmap.cc:566) sits behind an
+    /// `inRange` test this window cannot pass.
+    pub fn default_local_range(spaces: &SpaceManager, stack_grows_negative: bool) -> RangeList {
+        let mut rl = RangeList::new();
+        let Some(stack) = spaces.by_name("stack") else { return rl };
+        let spc = spaces.get(stack);
+        let span = match spc.addr_size {
+            n if n >= 4 => 999999,
+            n if n >= 2 => 9999,
+            _ => 99,
+        };
+        if stack_grows_negative {
+            let last = spc.highest();
+            rl.insert_range(stack, last - span, last);
+        } else {
+            rl.insert_range(stack, 0, span);
+        }
+        rl
+    }
+
+    /// Ghidra `ProtoModel::defaultParamRange` (fspec.cc:2292): with the normal negative-growing
+    /// stack, stack parameters live at the POSITIVE offsets `[0, 511]` (`[0,255]` / `[0,15]` for a
+    /// 2-byte / 1-byte space).
+    pub fn default_param_range(spaces: &SpaceManager, stack_grows_negative: bool) -> RangeList {
+        let mut rl = RangeList::new();
+        let Some(stack) = spaces.by_name("stack") else { return rl };
+        let spc = spaces.get(stack);
+        let span = match spc.addr_size {
+            n if n >= 4 => 511,
+            n if n >= 2 => 255,
+            _ => 15,
+        };
+        if stack_grows_negative {
+            rl.insert_range(stack, 0, span);
+        } else {
+            let last = spc.highest();
+            rl.insert_range(stack, last - span, last);
+        }
+        rl
     }
 
     /// Ghidra `FuncProto::possibleInputParam` (fspec.cc:4310 → `ParamList::possibleParam`): whether
