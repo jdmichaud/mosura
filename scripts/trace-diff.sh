@@ -18,6 +18,14 @@
 # is therefore set here unconditionally, not offered as a flag: a diff of two different surfaces is
 # worse than no diff, because it reads as a finding.
 #
+# BOTH SIDES ARE KEYED ON THE MECHANISM, NOT THE NAME. The port renames some rules and actions, so a
+# string-keyed diff put naming artifacts in its headline column next to real findings — `collect_terms`
+# (Ghidra) and `collectterms` (mosura) as a "missing port" and an "over-firing" in the same output,
+# same rule. scripts/trace-names.py resolves each firing to the underlying class by joining the two
+# source trees on the class name, and anything it cannot resolve is reported as UNMAPPED instead of
+# falling into a findings column. On orcompare that column went 11 entries -> 2; the other 9 were one
+# naming pair, one merged action, and seven rules mosura HAS and simply does not fire here.
+#
 # Usage:   scripts/trace-diff.sh <fixture-stem>          # e.g. piecestruct, orcompare, nan
 # Env:     GHIDRA_SRC   pinned Ghidra checkout (default: <workspace>/ghidra)
 #          KEEP=1       keep the raw .trace files (printed paths) instead of a temp dir
@@ -60,6 +68,8 @@ ghidra_stamp > "$OUT/ghidra.trace"
 mosura_stamp > "$OUT/mosura.trace"
 ( cd "$MOSURA_DIR" && MOSURA_TRACE=1 MOSURA_OPACTION=1 cargo run -q --example trace -- "$STEM" >> "$OUT/mosura.trace" 2>/dev/null )
 
-python3 "$SCRIPT_DIR/trace-diff.py" "$OUT/ghidra.trace" "$OUT/mosura.trace"
+python3 "$SCRIPT_DIR/trace-diff.py" "$OUT/ghidra.trace" "$OUT/mosura.trace" \
+  --ghidra-cpp "$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/cpp" \
+  --mosura-src "$MOSURA_DIR/crates/mosura/src"
 [ -n "${KEEP:-}" ] && echo -e "\ntraces kept: $OUT/ghidra.trace  $OUT/mosura.trace"
 exit 0

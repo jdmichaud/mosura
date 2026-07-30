@@ -403,9 +403,27 @@ impl Funcdata {
     }
 
     /// A constant varnode (`const` space).
+    ///
+    /// Like Ghidra's `Funcdata::newConstant` (funcdata_varnode.cc:66) this does NOT mask `value` to
+    /// `size` — Ghidra's callers mask, because the fold's own behaviour defines the width
+    /// (`OpBehaviorIntMult::evaluateBinary` is `(in1*in2) & calc_mask(sizeout)`, opbehavior.cc:495).
+    /// A caller that forgets produces a constant varnode whose value cannot fit its own size, which
+    /// is an IR invariant violation and renders as a nonsense literal. `MOSURA_CONSTCHECK=1` reports
+    /// every such creation with a backtrace-able message; it is inert otherwise.
     pub fn new_const(&mut self, size: u32, value: u64) -> VarnodeId {
+        if size < 8 && value > (1u64 << (size * 8)) - 1 && Self::const_check_enabled() {
+            // Name the FUNCTION, not just the value: a bare total cannot say how many functions a
+            // class reaches, and per-function reach is the unit every gate here is quoted in.
+            eprintln!("CONSTCHECK\t{}\t{value:#x}\t{size}", self.name);
+        }
         let loc = Address::new(self.spaces.constant(), value);
         self.alloc_varnode(size, loc, flags::CONSTANT)
+    }
+
+    /// Whether `MOSURA_CONSTCHECK` selects the oversized-constant invariant check (cached once).
+    fn const_check_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("MOSURA_CONSTCHECK").is_some())
     }
 
     /// A fresh temporary in the `unique` space.

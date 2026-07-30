@@ -12,32 +12,46 @@ produced by:
     MOSURA_TRACE=1 cargo run -q --example trace -- <fixture-stem>   # mosura
 
 Ghidra's raw op rendering uses operator glyphs (`&`, `<`, `SBORROW8`) while mosura uses CPUI opcode
-names, so we key each firing on (rulename, instruction-address) — enough to answer "which rule fires
-where, and where do the two engines diverge". A small alias map bridges the few rules mosura named
-differently from Ghidra.
+names, so we key each firing on (mechanism, instruction-address) — enough to answer "which rule
+fires where, and where do the two engines diverge".
 
-Usage:  trace-diff.py <ghidra.trace> <mosura.trace>
+MECHANISM, NOT NAME. This diff used to key on the trace name as a bare STRING, and the port renames
+some of them, so its headline column ("rules Ghidra fires but mosura never does") mixed naming
+artifacts in with real findings — `collect_terms` (Ghidra) sat in that column while `collectterms`
+(mosura) sat in the opposite one, from the same run, same rule, and a reader had no way to tell
+that pair from a genuinely missing port. Firings are now resolved to the underlying CLASS via
+scripts/trace-names.py (a join on the class name across the two source trees, plus a small cited
+table for the classes the port renamed), so:
+
+  * pure-naming pairs collapse into SHARED, where they belong;
+  * "Ghidra fires it and mosura has no implementation" is separated from "mosura implements it and
+    it is INERT here" — the string diff reported both as the same thing, and they are different
+    defects with different fixes;
+  * a mosura mechanism covering only PART of a Ghidra class is never folded in as covered;
+  * anything that resolves to nothing is reported as UNMAPPED — an extraction defect to fix in
+    trace-names.py — and is never allowed to land in a findings column.
+
+Usage:  trace-diff.py <ghidra.trace> <mosura.trace> [--ghidra-cpp DIR] [--mosura-src DIR]
 """
-import sys
+import os
 import re
+import sys
 from collections import Counter
 
-# mosura Rule::name() -> Ghidra Rule getName(), where they differ.
-#
-# NOT aliasable, read the diff with this in hand: mosura's ACTION `resolvecalls` is Ghidra's
-# `activeparam` AND `returnrecovery` merged into one, so those two always appear as "ghidra fires,
-# mosura never does" and `resolvecalls` as mosura-only. A 2->1 merge has no honest alias; naming it
-# here beats inventing one.
-ALIAS = {
-    "constfold": "collapseconstants",  # mosura RuleConstFold == Ghidra RuleCollapseConstants
-}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import importlib.util as _ilu
+
+_spec = _ilu.spec_from_file_location(
+    "trace_names", os.path.join(os.path.dirname(os.path.abspath(__file__)), "trace-names.py"))
+trace_names = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(trace_names)
 
 HDR = re.compile(r"^DEBUG \d+: (.+)$")
 ADDR = re.compile(r"^\s*(0x[0-9a-fA-F]+):")
 
 
 def parse(path):
-    """Return a list of (rulename, addr) firings, in order."""
+    """Return a list of (tracename, addr) firings, in order."""
     firings = []
     name = None
     want_addr = False
@@ -45,7 +59,7 @@ def parse(path):
         for line in fh:
             m = HDR.match(line)
             if m:
-                name = ALIAS.get(m.group(1), m.group(1))
+                name = m.group(1)
                 want_addr = True
                 continue
             if want_addr:
@@ -78,44 +92,160 @@ def read_stamp(path: str, kind: str) -> str:
     return m.group(1)
 
 
+def opt(argv, flag):
+    return argv[argv.index(flag) + 1] if flag in argv else None
+
+
 def main():
-    if len(sys.argv) != 3:
+    argv = sys.argv[1:]
+    positional = [a for i, a in enumerate(argv)
+                  if not a.startswith("--") and (i == 0 or argv[i - 1] not in ("--ghidra-cpp", "--mosura-src"))]
+    if len(positional) != 2:
         sys.exit(__doc__)
-    gstamp = read_stamp(sys.argv[1], "GHIDRA")
-    mstamp = read_stamp(sys.argv[2], "MOSURA")
+    gstamp = read_stamp(positional[0], "GHIDRA")
+    mstamp = read_stamp(positional[1], "MOSURA")
+    nm = trace_names.build(opt(argv, "--ghidra-cpp"), opt(argv, "--mosura-src"))
+
     print(f"=== ghidra: {gstamp}")
     print(f"=== mosura: {mstamp}")
     if "+DIRTY" in mstamp:
         print("=== note: the mosura side has UNCOMMITTED changes under crates/ — the sha alone does")
         print("===       not identify this tree. Record the patch alongside any number you quote.")
-    g = parse(sys.argv[1])
-    m = parse(sys.argv[2])
-    gnames = Counter(n for n, _ in g)
-    mnames = Counter(n for n, _ in m)
+    g = parse(positional[0])
+    m = parse(positional[1])
+    print(f"=== rule-firing trace diff  (ghidra={len(g)} firings, mosura={len(m)} firings) ===")
+    print(f"=== name map: {len(nm.g.classes)} ghidra classes / {len(nm.m.classes)} mosura classes "
+          f"(scripts/trace-names.py --full to audit)\n")
 
-    print(f"=== rule-firing trace diff  (ghidra={len(g)} firings, mosura={len(m)} firings) ===\n")
+    # ── resolve every firing to a mechanism key ────────────────────────────────────────────────
+    # Key space: the Ghidra CLASS name for anything with a counterpart there, "group:<name>" for
+    # ActionGroup/ActionPool labels, "mosura:<class>" for port adaptations with no Ghidra class.
+    gkeys, mkeys = Counter(), Counter()          # key -> firings
+    gaddrs, maddrs = {}, {}                      # key -> set of addresses
+    gunmapped, munmapped = Counter(), Counter()
+    partial = {}                                 # ghidra class -> (mosura class, firings)
+    merged_of = {}                               # ghidra class -> mosura class (N:1 fold)
+    split_of = {}                                # ghidra class -> [mosura classes] (1:N fold)
+    trace_name = {}                              # key -> (ghidra name, mosura name)
 
-    only_g = sorted(set(gnames) - set(mnames))
-    only_m = sorted(set(mnames) - set(gnames))
-    both = sorted(set(gnames) & set(mnames))
+    for name, addr in g:
+        kind, key, _ = nm.canon_ghidra(name)
+        if kind == "unmapped":
+            gunmapped[name] += 1
+            continue
+        k = key if kind == "class" else f"group:{key}"
+        gkeys[k] += 1
+        gaddrs.setdefault(k, set()).add(addr)
+        trace_name.setdefault(k, [None, None])[0] = name
 
-    print("RULES GHIDRA FIRES BUT MOSURA NEVER DOES (candidate ports / missing coverage):")
-    for n in sorted(only_g, key=lambda n: -gnames[n]):
-        print(f"  {gnames[n]:4d}x  {n}")
-    print("\nRULES MOSURA FIRES BUT GHIDRA DOES NOT (over-firing / naming / adaptation):")
-    for n in sorted(only_m, key=lambda n: -mnames[n]):
-        print(f"  {mnames[n]:4d}x  {n}")
+    for name, addr in m:
+        kind, cls, keys, rel = nm.canon_mosura(name)
+        if kind == "unmapped":
+            munmapped[name] += 1
+            continue
+        if kind == "group":
+            k = f"group:{cls}"
+            gk = [k]
+        elif rel == "ADAPTATION":
+            gk = [f"mosura:{cls}"]
+        elif rel == "PARTIAL":
+            # Deliberately NOT folded: mosura covers one side effect of this Ghidra class and does
+            # not implement the class. Folding would report it as covered.
+            for gcls in keys:
+                pc, pn = partial.get(gcls, (cls, 0))
+                partial[gcls] = (pc, pn + 1)
+            continue
+        else:
+            gk = list(keys)
+            for gcls in keys:
+                if rel == "MERGE":
+                    merged_of[gcls] = cls
+                elif rel == "SPLIT":
+                    split_of.setdefault(gcls, set()).add(cls)
+        for k in gk:
+            mkeys[k] += 1
+            maddrs.setdefault(k, set()).add(addr)
+            trace_name.setdefault(k, [None, None])[1] = name
 
-    print("\nSHARED RULES — per-rule firing count (ghidra vs mosura) and address deltas:")
-    gset = set(g)
-    mset = set(m)
-    for n in sorted(both, key=lambda n: -(gnames[n] + mnames[n])):
-        g_addrs = {a for nn, a in g if nn == n}
-        m_addrs = {a for nn, a in m if nn == n}
-        gonly = sorted(g_addrs - m_addrs)
-        monly = sorted(m_addrs - g_addrs)
+    # ── instrument health first: nothing unexplained may reach a findings column ────────────────
+    problems = nm.audit()
+    if gunmapped or munmapped or problems:
+        print("⚠ INSTRUMENT PROBLEMS — resolve these before reading anything below as a finding:")
+        for side, unm in (("ghidra", gunmapped), ("mosura", munmapped)):
+            for n, c in unm.most_common():
+                print(f"  ! UNMAPPED {side} trace name {n!r} ({c}x) — no Rule/Action class and no "
+                      f"group label extracted for it. Fix scripts/trace-names.py.")
+        for p in problems:
+            print(f"  ! {p}")
+        print()
+
+    def label(k):
+        gn, mn = trace_name.get(k, [None, None])
+        if k.startswith("group:"):
+            return f"{k[6:]} (action group)"
+        if k.startswith("mosura:"):
+            return f"{mn} [{k[7:]}, port adaptation]"
+        names = gn if gn == mn or mn is None else (f"{gn}/{mn}" if gn else mn)
+        return f"{names} [{k}]"
+
+    def where(k):
+        if k.startswith("mosura:") or k.startswith("group:"):
+            return ""
+        return "  " + nm.g.where(k) if k in nm.g.classes else ""
+
+    def fold_note(k):
+        """Why a one-sided count may not mean what it looks like: a merged mosura action fires once
+        where two Ghidra actions fire, and a split one fires twice where Ghidra fires once."""
+        if k in merged_of:
+            return (f"  [mosura merges this with the rest of {merged_of[k]}; one firing covers "
+                    f"several Ghidra actions]")
+        if k in split_of:
+            return f"  [mosura splits this across {', '.join(sorted(split_of[k]))}; counts summed]"
+        return ""
+
+    only_g = sorted(set(gkeys) - set(mkeys), key=lambda k: -gkeys[k])
+    only_m = sorted(set(mkeys) - set(gkeys), key=lambda k: -mkeys[k])
+    both = sorted(set(gkeys) & set(mkeys), key=lambda k: -(gkeys[k] + mkeys[k]))
+
+    impl = {gc for keys, _ in nm.mos_to_ghidra.values() for gc in keys}
+    missing = [k for k in only_g if not k.startswith(("group:", "mosura:")) and k not in impl]
+    inert_m = [k for k in only_g if k.startswith(("group:", "mosura:")) or k in impl]
+
+    print("GHIDRA FIRES IT, MOSURA HAS NO IMPLEMENTATION AT ALL (candidate ports):")
+    for k in missing or ():
+        print(f"  {gkeys[k]:4d}x  {label(k)}{where(k)}")
+    if not missing:
+        print("  (none)")
+
+    print("\nGHIDRA FIRES IT, MOSURA IMPLEMENTS IT BUT IT IS INERT ON THIS FIXTURE:")
+    print("  (the code exists — a different defect from a missing port, and a different fix)")
+    for k in inert_m or ():
+        gn, mnm = trace_name.get(k, [None, None])
+        mos = nm.m.classes.get(k, (None, None, None, None))
+        extra = f"  mosura {mos[1]!r} {nm.m.where(k)}" if k in nm.m.classes else ""
+        print(f"  {gkeys[k]:4d}x  {label(k)}{extra}")
+    if not inert_m:
+        print("  (none)")
+
+    if partial:
+        print("\n⚠ PARTIAL COVERAGE — mosura implements only part of these Ghidra classes:")
+        for gcls, (mcls, n) in sorted(partial.items()):
+            fired = f"{n}x" if n else "never fires here"
+            print(f"  ghidra {gcls} ({nm.g.classes[gcls][1]!r}, {gkeys.get(gcls, 0)}x) "
+                  f"~ mosura {mcls} ({nm.m.classes[mcls][1]!r}, {fired}) — NOT counted as covered")
+
+    print("\nMOSURA FIRES IT, GHIDRA DOES NOT (over-firing / port adaptations):")
+    for k in only_m or ():
+        print(f"  {mkeys[k]:4d}x  {label(k)}{fold_note(k)}")
+    if not only_m:
+        print("  (none)")
+
+    print("\nSHARED — per-mechanism firing count (ghidra vs mosura) and address deltas:")
+    for k in both:
+        gonly = sorted(gaddrs.get(k, set()) - maddrs.get(k, set()))
+        monly = sorted(maddrs.get(k, set()) - gaddrs.get(k, set()))
         flag = "" if (not gonly and not monly) else "  <-- diverges"
-        print(f"  {n:20s} ghidra={gnames[n]:3d} mosura={mnames[n]:3d}{flag}")
+        print(f"  {label(k):46s} ghidra={gkeys[k]:3d} mosura={mkeys[k]:3d}{flag}{fold_note(k)}")
         if gonly:
             print(f"        ghidra-only @ {', '.join(f'{a:#x}' for a in gonly)}")
         if monly:

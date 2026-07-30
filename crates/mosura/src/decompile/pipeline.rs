@@ -494,7 +494,10 @@ impl Action for ActionStartTypes {
 /// `-c` (leaving a COPY, per RuleCollapseConstants) and `RulePropagateCopy` threads it onward, so
 /// the negated constant actually reaches the INT_ADD before pointer arithmetic / cleanup runs.
 pub fn ptrarith_pool() -> ActionPool {
-    ActionPool::new("ptrarith")
+    // Label distinct from RulePtrArith's own `ptrarith`: the OPACTION_DEBUG trace prints actions and
+    // rules in one format, so a pool sharing a rule's name makes a firing unattributable (and
+    // `MOSURA_OPACTION=<name>` ambiguous). scripts/trace-names.py audits for that collision.
+    ActionPool::new("ptrarithpool")
         .with(RuleConstFold)
         .with(RulePropagateCopy)
         // Ghidra actprop2 order (coreaction.cc:5664/5666): RulePushPtr normalizes a pointer to the
@@ -833,7 +836,8 @@ pub fn universal_action() -> ActionGroup {
 /// [`RuleCondNegate`]: super::rules::RuleCondNegate
 /// [`RuleIntLessEqual`]: super::rules::RuleIntLessEqual
 fn condnegate_pool() -> ActionPool {
-    ActionPool::new("condnegate")
+    // Label distinct from RuleCondNegate's own `condnegate` — see `ptrarith_pool`.
+    ActionPool::new("condnegatepool")
         .with(super::rules::RuleCondNegate)
         .with(RuleBoolNegate)
         .with(super::rules::RuleIntLessEqual)
