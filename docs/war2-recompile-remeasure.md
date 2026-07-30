@@ -170,6 +170,34 @@ was COMPILE_FAIL and is now MISMATCH with a very low byte-match, or EXACT/RELOC 
 suspect. Cross-check a sample against `oracle/capture --c` / analyzeHeadless. Faithful casts must
 not turn a right-but-uncompilable function into a wrong-but-compilable one.
 
+### ⚠️ The scan takes POSITIONAL args — "the delta was right by luck, not method"
+
+`scripts/war2-wrongcode-scan.py <new-src> <baseline-src>`. There is **no `--src` flag.** Passing
+`--src <dir>` makes `--src` the *new* directory: it does not exist, so it scans as empty and reports
+**0 for every class**, and the printed delta then reads `18 -> 0 ✅ improved` no matter what the real
+output contains. That happened on 2026-07-30 and the answer was correct anyway — which is the whole
+point of recording it. **The delta was right by luck, not method.** An instrument that reports zero
+because it read nothing is indistinguishable from one that reports zero because nothing is wrong;
+check the first report names the directory you meant before believing the second.
+
+Companion rule already standing: a recurring "artifact" in a diff instrument is a defect in the
+instrument until proven cosmetic.
+
+### The `falls-off-end` class (added 2026-07-30, BLOCKING)
+
+A non-void function whose body can reach the closing brace with no `return` — one control path
+returns garbage. It was found **by hand while reading output, not by any gate**, having sat in
+`FUN_00070d83` the whole time; the cause was a `BlockGoto` keyed on its source's exit *basic block*
+instead of the composite node Ghidra wraps, so the goto was emitted inside a nested `if`.
+
+Two tails are excluded because the end is genuinely unreachable **and Ghidra emits the same shape** —
+`} while( true );`, and a trailing `switch` that has a `default:` arm. The second exclusion exists
+because `FUN_00056c3c` was counted as a member until Rule Zero was applied *to the finding itself*:
+Ghidra's output for it is the identical switch with the identical missing terminal return, so it was
+never a defect. **Apply Rule Zero to your own new gate's hits before quoting a count** — a fresh scan
+inflates as easily as it detects, and the scan's docstring keeps an explicit `UNCOVERED` list so its
+silence is never read as "no wrong code."
+
 ## ⚠️ Trust the survey path before quoting its numbers
 
 Three separate harness defects have made survey numbers wrong or unattributable. Two are fixed; one

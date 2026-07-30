@@ -17,6 +17,47 @@
 # `void thunk_FUN_00067d45(void)`). Key any per-function comparison on the `===== FUNC` header, and
 # never assume the C body's name matches it.
 #
+# ⛔⛔ THE WORST LIMITATION, AND IT IS NOT ABOUT CALL COUNTS (recorded 2026-07-30). THIS RECIPE CAN
+# CHANGE THE BLOCK STRUCTURE OF ANY FUNCTION THAT CALLS ANYTHING, so an UNFORCED run is NOT valid
+# ground truth for a structural comparison.
+#
+# The image holds only the requested functions, so every callee's prototype falls back to the
+# database default — NO PARAMETERS. Ghidra's dead-code pass then deletes every register the callee
+# "does not read", and deleting a register deletes the instructions that computed it, which deletes
+# BASIC BLOCKS, which changes what the structurer can collapse. Worked example, FUN_00077dcb:
+# FUN_00063c35 defaulted to no params ⇒ EDX died ⇒ `xor %edx,%edx` (0x77e08) and the `cmp $0x88daa`
+# test (0x77e01) were deleted ⇒ Ghidra had 6 basic blocks and a clean `while` where mosura (whole
+# program, EDX live) had 8 and three gotos. THE TWO SIDES WERE DECOMPILING DIFFERENT PROGRAMS.
+#
+# That comparison was read as a mosura structuring defect for THREE SESSIONS. CFG granularity,
+# `is_complex`, `select_goto` scoring and the collapse termination test were each hunted and each
+# turned out faithful. Forcing the callee's storage made Ghidra reproduce mosura's partition BLOCK FOR
+# BLOCK — all 8, same spans, same edge sets — and emit three gotos of its own.
+#
+# ⚠️ CONSEQUENCE FOR THE RECORD: **EVERY PRIOR STRUCTURAL CONCLUSION DRAWN FROM AN UNFORCED RUN IS
+# SUSPECT** — not merely the one above. Blocks, edges, gotos, labels, conditions, loop shape: if the
+# claim is structural and the callees were not forced, it has not been measured. Re-measure before
+# quoting it. Note which direction the bias runs: the pruning makes GHIDRA'S output look BETTER
+# STRUCTURED, so it reads as our bug, which is why it survived so long.
+#
+# ⭐ MANDATORY RECIPE FOR ANY STRUCTURAL COMPARISON — force the callee storage, callees FIRST in the
+# VA list (functions are created in list order, so a callee after its caller still renders
+# `func_0x...` with a default prototype and nothing changes):
+#
+#   GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='63c35=EDX' \
+#     scripts/ghidra-decompile-war2.sh 63cbf 722c8 63c35 77dcb
+#
+# And to diff the PARTITIONS rather than the C — Ghidra's own `HighFunction::getBasicBlocks`, i.e. the
+# very `BlockBasic` list `CollapseStructure` runs on, plus per-block p-code:
+#
+#   GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb
+#
+# Its mosura counterpart is `MOSURA_CFG=1`, which prints the same fields, so the two diff
+# line-for-line. Before these two scripts existed there was NO WAY to compare partitions at all — a
+# granularity divergence could only be seen as its third-order symptom (extra gotos, an uncollapsed
+# graph), which is precisely how it got misdiagnosed three different ways. Both are permanent parts of
+# the recipe, not one-off debugging aids.
+#
 # ⚠️ MEASURED LIMIT OF THAT PROPERTY — the asymmetry only runs one way (recorded 2026-07-29,
 # @e840e56). "Less context" does NOT mean "same answer, fewer names": on a few functions the missing
 # context makes Ghidra PRUNE LIVE CODE. With the callees unresolvable, guard conditions fold to

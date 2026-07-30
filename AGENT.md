@@ -22,6 +22,57 @@ tokens and *punishes* faithful algorithms that produce correct-but-different out
 optimizes *away* from Ghidra, and approximations don't compose. Mirror Ghidra's data
 model and `Action`/`Rule` pipeline so faithfulness *is* the metric.
 
+### Rule Zero, and its second clause (both bought with sessions, not hours)
+
+**Rule Zero: before diagnosing why mosura's X differs from Ghidra's, READ GHIDRA'S OUTPUT FOR
+THAT SPECIMEN.** It is usually already on disk (`war2-survey/ghidra-all.txt`, sections
+`===== FUNC <va> =====`), costs one `awk`, and bounds the whole question. Four instrument
+passes and five hypotheses were spent inside a rule Ghidra fires zero times on the fixture
+because nobody looked first.
+
+**Second clause — necessary is not sufficient: CONFIRM THE ORACLE DECOMPILED THE SAME
+PROGRAM.** Reading Ghidra's output proves nothing if Ghidra was asked a different question.
+The WAR2 per-function oracle imports only the requested bytes, so absent callees default to
+*no parameters*; Ghidra's dead-code pass then deletes registers mosura correctly keeps live,
+and deleting a register deletes the instructions that computed it — **which deletes basic
+blocks and changes the block structure.** "Ghidra: 0 gotos, mosura: 3" was two different
+programs, and it was read as our structuring defect for three sessions while CFG
+granularity, `is_complex`, `select_goto` scoring and the collapse termination test were each
+hunted and each found faithful.
+
+So for any **structural** comparison — blocks, edges, gotos, labels, conditions, loop shape —
+forcing the callee storage is **mandatory, not optional**:
+
+```sh
+GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='63c35=EDX' \
+  scripts/ghidra-decompile-war2.sh 63cbf 722c8 63c35 77dcb   # callees FIRST in the list
+GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb   # Ghidra's partition
+```
+
+`DumpBlocks.java` prints Ghidra's own `HighFunction::getBasicBlocks` — the `BlockBasic` list
+`CollapseStructure` runs on — and `MOSURA_CFG=1` prints the same fields, so the two partitions
+diff line-for-line. Full ledger of the recipe's limits in `scripts/ghidra-decompile-war2.sh`'s
+header; note the bias direction, because it is what made this survive: the pruning makes
+*Ghidra's* output look better structured, so it reads as our bug.
+
+### A death certificate is only valid for the evidence it was measured on
+
+When you kill a hypothesis, **record what you measured it against**, because if that
+measurement is later invalidated the hypothesis comes back. Two worked examples from one
+arc:
+
+- "The missing `PrintC::emitBlockGraph` loop is not the defect — there is no multi-component
+  case here to emit." True of the 6-block graph it was measured on, false of the real
+  8-block graph. The loop *was* the entire defect. It was recoverable only because the
+  certificate said which graph it was measured on.
+- "`rule_short_circuit` never declines on `is_complex`." The trace it was read from belonged
+  to a **different function**. The conclusion survived; the evidence did not.
+
+Corollary, and it has its own line because it is a standing trap: **a per-specimen instrument
+must filter by function, or the operator must.** A bare `MOSURA_STRUCT=1` / `MOSURA_CFG=1`
+dump interleaves *every* function `analyze_le_file` decompiles — callees included — so always
+segment the output by its `CFG <name>` header before reading a single line of it.
+
 ### The decision rule (read this before you revert anything)
 
 The C-similarity (`ccompare`) is a **coarse gauge, never the gate.** It erases names,
