@@ -17,6 +17,49 @@
 | Date | 2026-07-23 |
 | Harness | `crates/mosura/examples/war2_survey.rs` + `war2-survey/` driver scripts (compile.sh, compare.py) |
 
+## Update — 2026-07-30: heritage core landed (`c0ac350`) — 467 of 1303 functions changed their C, zero calls moved
+
+**Read this before attributing any WAR2 delta measured after `c0ac350`.** The spacebase
+(stack-trial) half of the heritage core landed, and with it four faithful ports of a single
+ordering cluster (`RuleEarlyRemoval`'s `deadRemovalAllowedSeen` guard, `ActionDeadCode`'s pre-live
+seeding, a retired invented `heritage_complete` predicate, and `guardReturnsOverlapping`'s missing
+`setActiveHeritage`). Those are architecture-independent, so they moved WAR2's rendering broadly
+even though the placeholder subsystem itself is still inert here.
+
+| check | result |
+| --- | --- |
+| functions whose emitted C changed | **467 of 1303** |
+| call sites, per function | **identical** — 0 functions lose a call, 0 gain (audit over all 1303, keyed by each `.c`'s own `FUN_` definition line) |
+| total call sites | 3974 → 3974 |
+| absolute deficit vs Ghidra | unchanged by MEMBERSHIP: `{00079130 -4, 00068902 -3, 00051298 -1, 0006529f -1, 00077dcb -1}` = 5 fns / 10 calls |
+| byte-clean 12 (5 EXACT + 7 RELOC_EXACT) | all **byte-identical C** — recompiled objects cannot move |
+| empty switch / empty while / `while(true){}` | 0 / 0 / 0 (two `empty for` renders exist and are present identically in the baseline — pre-existing) |
+
+**Why the number is large and why it is not a regression.** A render change is not a defect
+signal on its own: none of the gates moved. The cluster changed *when* things happen (the rule
+pool now runs between the register and stack heritage passes, as Ghidra's does) rather than *what*
+is recovered, so expression shape, temporaries and naming shift widely while the recovered call
+graph does not move at all.
+
+**The trap this note exists to prevent.** 467 changed functions is a large surface, and the next
+WAR2 measurement that regresses will be tempting to blame on it. Diff against the durable
+post-land base, not against anything older:
+
+- `war2-survey/src.landed-c0ac350/` + `manifest.landed-c0ac350.tsv` — the post-land emission.
+- `war2-survey/src.stageB-08ca850/` + `manifest.stageB-08ca850.tsv` — the pre-land state, kept only
+  to explain this table.
+
+**Method note worth reusing:** byte-stability of the byte-clean set was proven by *source
+identity* (diff each function's emitted `.c` by VA) rather than by re-running compile+compare.
+Identical C means an identical object, which is a stronger claim than the round-trip and carries
+no dosemu variance to argue about.
+
+**Still open, stated so "battery green" does not imply otherwise:** `FUN_00077dcb` did not recover
+its call. Stage B lost it 1→0 and the spacebase half was expected to heal it; it did not. The
+gauge is BLOCKING-clean because nothing was *lost* relative to the pre-land state, but the
+recovery has not happened. It is a stack-arg-shaped loss whose machinery stays inert until the
+`<stackpointer>` hardcode falls, so it is re-checked first thing after that retirement.
+
 ## Update — 2026-07-28: VariablePiece split (`be13a04`) — 505 value drops fixed, +18 COMPILE_FAIL
 
 Full re-measure, both sides through the same harness with `obj/` cleaned each time, sides
