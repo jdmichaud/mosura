@@ -105,6 +105,45 @@ change: the output was already byte-perfect.
   domain knowledge; now every artifact self-identifies and a stale comparator announces itself.
   Bump the string on any definition change.
 
+### ⚠️ The wcc386 flags are BUILD REPRODUCTION, not type modelling (`wcc_flags=`, 2026-07-30)
+
+`compile.sh` now stamps `wcc_flags=` into `.compile-complete` beside `prelude_sha`, for the same
+reason and bought the same way: a flag change silently re-baselines every number, so the run has to
+carry the flags it used.
+
+The episode worth keeping is the decision it recorded. When `char` replaced `int1` in the emitted C
+(`d3c3bfb`), the prelude's `typedef signed char int1` stopped applying, and wcc386 without `-j`
+treats plain `char` as **unsigned**. Ghidra's `TypeChar` is `TYPE_INT` — signed — so `-j` looked
+obviously correct, and it was added.
+
+**It was then reverted, on measurement.** The A/B (same `src/`, recompile only):
+
+| | `-j` off | `-j` on |
+| --- | --- | --- |
+| status totals | 5 EXACT / 11 RELOC_EXACT / 1238 MISMATCH / 49 CFAIL | **identical** |
+| functions generating different bytes | — | **149 of 1303** |
+| recompiled length EQUALS the original | **25** | 22 |
+| length distance to the original | — | 56 closer, **92 further** |
+| byte-clean set | 16 | 16, same members |
+
+Two lessons, and the second overturned the first:
+
+1. **A TOTAL CAN HIDE A PER-FUNCTION TRUTH.** The status totals were byte-identical while 149
+   functions produced different code. "The flag changes nothing" would have passed on the summary
+   line alone. Check per-function movement whenever a change could touch codegen — an unchanged
+   total is not evidence of an unchanged population.
+2. **THE HARNESS FLAGS ANSWER "HOW WAS THE ORIGINAL BUILT?", NOT "WHAT DOES OUR TYPE MEAN?"** Those
+   are different questions and conflating them is what made `-j` look right. mosura's `char` meaning
+   a signed 1-byte int is a fact about the *decompiler*, and it stands. Whether *Watcom* treated
+   `char` as signed when Blizzard built WAR2 is a fact about *that build*, and the evidence says it
+   did not: `-j` costs 3 exact-length matches and moves 92 functions further from the original
+   against 56 closer. The flag set (`-4r -fpi87 -s -of+ -onatx` / `-onat`, chosen per the original
+   prologue) exists to reproduce the original build; a flag justified by our type model rather than
+   by that binary is a category error.
+
+So: **no `-j`.** The goal is exactness with the original binary; Ghidra-faithfulness is the method
+for the decompiler, not a lever on the compiler that stands in for Blizzard's.
+
 ### The `code` typedef in `prelude.h`
 
 ⚠️ **`prelude.h` is GENERATED** — from the `PRELUDE` constant in
