@@ -1296,8 +1296,26 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// Emit a structured block (and its children) as C.
+    /// Emit a structured block (and its children) as C, then any unconditional `goto` the collapse
+    /// cut from this node — `PrintC::emitBlockGoto` (printc.cc:2767) prints
+    /// `bl->getBlock(0)` with `no_branch` and follows it with `emitGotoStatement`, so the goto sits
+    /// AFTER the whole body at the body's own indentation, not inside it.
     fn emit_structured(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) {
+        self.emit_structured_body(s, idx, indent, out);
+        let Some(records) = s.node_gotos.get(&idx) else { return };
+        let pad = "  ".repeat(indent);
+        for r in records {
+            // Ghidra's `emitGotoStatement` (printc.cc:2303): `break` for `f_break_goto` (scopeBreak
+            // reclassified a loop-exit goto), else `goto LABEL`.
+            if r.is_break {
+                let _ = writeln!(out, "{pad}break;");
+            } else {
+                let _ = writeln!(out, "{pad}goto {};", self.lab_name(r.target));
+            }
+        }
+    }
+
+    fn emit_structured_body(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         let fb = &s.blocks[idx];
         let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);

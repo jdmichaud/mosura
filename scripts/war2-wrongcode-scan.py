@@ -18,6 +18,15 @@ CLASSES
                       Cause seen so far: a block was removed while branches into it survived.
     empty-switch      `switch (...) { }` — the dispatch was destroyed; every case is gone.
     empty-while-true  `while (true) { }` — an infinite empty loop, i.e. a deleted loop body.
+    falls-off-end     a NON-VOID function whose body can reach the closing brace without a
+                      `return` — one control path returns garbage instead of doing what the
+                      machine code does. This one is the reason for the rule above: it was found
+                      by hand while reading output, NOT by this scan, and it had been sitting in
+                      two functions the whole time. Cause seen so far: a `BlockGoto` was keyed on
+                      its source's exit BASIC BLOCK instead of on the composite node Ghidra's
+                      `newBlockGoto` wraps (block.cc:1702), so the goto was emitted inside a
+                      nested `if` and the composite's other path fell through to nothing.
+                      A body ending `} while( true );` is NOT counted — the end is unreachable.
 
   INFORMATIONAL (NOT a defect signal — do not gate on these)
     empty-for         `for (...) { }`. A skip-whitespace / pointer-walk loop does all its work in
@@ -28,6 +37,8 @@ CLASSES
                       regression was caught before it was reported; do not re-buy it.
 
 UNCOVERED — known wrong-code shapes this scan does NOT detect (file them, don't assume absence)
+    - a goto emitted at the WRONG NESTING LEVEL that still leaves a `return` reachable at the end
+      (falls-off-end sees only the variant where nothing terminates the body)
     - a label defined but never reachable (dead block kept rather than dropped)
     - `case` values that duplicate or that no longer cover the recovered jump-table targets
     - a variable read before any assignment (mosura emits these; the compiler catches some)
@@ -58,9 +69,47 @@ INFO_SHAPES = {
 }
 
 
+FN_HEAD = re.compile(r'^(\S.*?)\b(FUN_[0-9a-fA-F]+)\s*\(')
+
+
+def falls_off_end(text: str) -> list:
+    """Non-void functions in `text` whose body can reach the closing brace with no `return`.
+
+    Brace-counted rather than regex-matched: the shape is a property of the LAST statement at the
+    body's own depth, which no single pattern can see. A `} while( true );` tail is excluded — the
+    loop never exits, so the end of the body is unreachable and Ghidra emits the same thing.
+    """
+    bad = []
+    lines = text.split('\n')
+    i = 0
+    while i < len(lines):
+        m = FN_HEAD.match(lines[i])
+        if not (m and i + 1 < len(lines) and lines[i + 1].strip() == '{'):
+            i += 1
+            continue
+        ret, name, depth, body, j = m.group(1).strip(), m.group(2), 0, [], i + 1
+        while j < len(lines):
+            depth += lines[j].count('{') - lines[j].count('}')
+            body.append(lines[j])
+            j += 1
+            if depth == 0:
+                break
+        i = j
+        if ret in ('void', ''):
+            continue                                   # falling off a void function is legal
+        inner = [l.strip() for l in body[1:-1] if l.strip()]
+        if not inner:
+            continue
+        last = inner[-1]
+        if last.startswith(('return', 'goto')) or last.endswith('break;') or last.startswith('} while'):
+            continue
+        bad.append(name)
+    return bad
+
+
 def scan(src: str) -> dict:
     """{class: {va: count}} — keyed by the FUN_ each .c defines, never the manifest idx."""
-    out = {k: {} for k in list(BLOCKING_SHAPES) + list(INFO_SHAPES) + ['undefined-label']}
+    out = {k: {} for k in list(BLOCKING_SHAPES) + list(INFO_SHAPES) + ['undefined-label', 'falls-off-end']}
     for path in sorted(glob.glob(os.path.join(src, '*.c'))):
         text = open(path, errors='replace').read()
         m = OWN_DEF.search(text)
@@ -69,6 +118,9 @@ def scan(src: str) -> dict:
         missing = sorted({t for t in GOTO.findall(text)} - defined)
         if missing:
             out['undefined-label'][key] = missing
+        off = falls_off_end(text)
+        if off:
+            out['falls-off-end'][key] = off
         for cls, rx in {**BLOCKING_SHAPES, **INFO_SHAPES}.items():
             n = len(rx.findall(text))
             if n:
@@ -85,10 +137,10 @@ def total(d: dict) -> int:
 
 def report(name: str, res: dict) -> None:
     print(f"\n=== {name} ===")
-    for cls in ['undefined-label'] + list(BLOCKING_SHAPES):
+    for cls in ['undefined-label', 'falls-off-end'] + list(BLOCKING_SHAPES):
         d = res[cls]
         print(f"  [BLOCKING] {cls:18} {total(d):4}  in {len(d)} functions")
-        if cls == 'undefined-label':
+        if cls in ('undefined-label', 'falls-off-end'):
             for va, labs in sorted(d.items()):
                 print(f"                 {va}: {' '.join(labs)}")
     for cls in INFO_SHAPES:
@@ -107,7 +159,7 @@ def main() -> int:
     report(os.path.basename(sys.argv[2].rstrip('/')) + " (baseline)", base)
     print("\n=== DELTA (baseline -> new) ===")
     grew = []
-    for cls in ['undefined-label'] + list(BLOCKING_SHAPES):
+    for cls in ['undefined-label', 'falls-off-end'] + list(BLOCKING_SHAPES):
         b, n = total(base[cls]), total(new[cls])
         flag = ''
         if n > b:

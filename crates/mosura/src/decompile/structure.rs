@@ -256,6 +256,17 @@ pub struct Structured {
     /// [`rule_block_goto`](Self::rule_block_goto) consuming `GOTO`/`IRREDUCIBLE`-marked edges
     /// (Ghidra's `BlockGoto`/`BlockIfGoto`/`BlockMultiGoto` wrappers, blockaction.cc:1450).
     pub gotos: HashMap<BlockId, Vec<GotoRecord>>,
+    /// The UNCONDITIONAL cut edges, keyed by the STRUCTURED NODE they were cut from — Ghidra's
+    /// `BlockGoto`, which `newBlockGoto` (block.cc:1702) builds as a wrapper NODE around the whole
+    /// source block, so `emitBlockGoto` prints the body and then the `goto` AFTER it.
+    ///
+    /// Keying these on the source's exit *basic block* (where [`gotos`](Self::gotos) keeps the
+    /// conditional `BlockIfGoto` records, correctly — a condition is emitted at its own block) is
+    /// only equivalent while that block is the last thing printed. It is for a leaf and for a
+    /// `List`; it is NOT for an `If`, whose exit basic block sits inside the then-arm. Getting that
+    /// wrong buries the goto in a nested block and leaves the composite's other path falling off the
+    /// end of the function — five WAR2 functions, of which `FUN_00077dcb` is the worked example.
+    pub node_gotos: HashMap<usize, Vec<GotoRecord>>,
     /// Basic blocks that are goto targets (get a label).
     pub labels: HashSet<BlockId>,
     /// Per basic block: whether its terminating CBRANCH was branch-oriented (Ghidra's `fallthru_true`
@@ -949,7 +960,16 @@ impl Structured {
             return;
         };
         let negated = conditional && ((i == 0) ^ self.is_oriented(b));
-        self.gotos.entry(eb).or_default().push(GotoRecord { target: et, negated, conditional, is_break: false });
+        let rec = GotoRecord { target: et, negated, conditional, is_break: false };
+        if conditional {
+            // `BlockIfGoto` (block.cc:1799): the goto belongs to the condition, which is emitted at
+            // the source's exit basic block.
+            self.gotos.entry(eb).or_default().push(rec);
+        } else {
+            // `BlockGoto` (block.cc:1702) / `BlockMultiGoto` (block.cc:1720): the wrapper is the
+            // whole source node, so the goto follows that node's entire body.
+            self.node_gotos.entry(b).or_default().push(rec);
+        }
         self.labels.insert(et);
     }
 
@@ -1671,6 +1691,7 @@ impl Structured {
     /// for surviving `f_goto_goto` edges — so the label set is rebuilt from the non-break gotos.
     fn scope_break(&mut self) {
         let mut loopexit: HashMap<BlockId, Option<BlockId>> = HashMap::new();
+        let mut node_loopexit: HashMap<usize, Option<BlockId>> = HashMap::new();
         // `BlockGraph::scopeBreak` (block.cc:1270) over the TOP-LEVEL list, exactly as the `List`
         // arm of the walk does over a composite's: each component exits into the next sibling, the
         // last into this graph's own `curexit` — which is -1 for the root (`scopeBreak(-1,-1)`,
@@ -1678,7 +1699,7 @@ impl Structured {
         for i in 0..self.roots.len() {
             let sub_exit =
                 if i + 1 < self.roots.len() { self.entry_basic(self.roots[i + 1]) } else { None };
-            self.scope_break_walk(self.roots[i], sub_exit, None, &mut loopexit);
+            self.scope_break_walk(self.roots[i], sub_exit, None, &mut loopexit, &mut node_loopexit);
         }
         for (src, records) in self.gotos.iter_mut() {
             if let Some(&cle) = loopexit.get(src) {
@@ -1689,8 +1710,19 @@ impl Structured {
                 }
             }
         }
+        // A `BlockGoto`'s scopeBreak (block.cc:2866) tests the same `curloopexit`, taken at the
+        // WRAPPED NODE's position in the tree rather than at its exit basic block's.
+        for (node, records) in self.node_gotos.iter_mut() {
+            if let Some(&cle) = node_loopexit.get(node) {
+                for r in records.iter_mut() {
+                    if Some(r.target) == cle {
+                        r.is_break = true;
+                    }
+                }
+            }
+        }
         self.labels.clear();
-        for records in self.gotos.values() {
+        for records in self.gotos.values().chain(self.node_gotos.values()) {
             for r in records {
                 if !r.is_break {
                     self.labels.insert(r.target);
@@ -1703,7 +1735,16 @@ impl Structured {
     /// recording the `curloopexit` in effect at each leaf basic block into `loopexit` so
     /// [`scope_break`](Self::scope_break) can flip that leaf's gotos. `curexit` is the block emitted
     /// immediately after this subtree; `curloopexit` is the innermost enclosing loop's exit.
-    fn scope_break_walk(&self, idx: usize, curexit: Option<BlockId>, curloopexit: Option<BlockId>, loopexit: &mut HashMap<BlockId, Option<BlockId>>) {
+    fn scope_break_walk(
+        &self,
+        idx: usize,
+        curexit: Option<BlockId>,
+        curloopexit: Option<BlockId>,
+        loopexit: &mut HashMap<BlockId, Option<BlockId>>,
+        node_loopexit: &mut HashMap<usize, Option<BlockId>>,
+    ) {
+        // The scope in effect where THIS node is emitted, for any `BlockGoto` wrapping it.
+        node_loopexit.insert(idx, curloopexit);
         let kind = self.blocks[idx].kind.clone();
         let comps = self.blocks[idx].components.clone();
         match kind {
@@ -1716,46 +1757,46 @@ impl Structured {
             FlowKind::List => {
                 for i in 0..comps.len() {
                     let sub_exit = if i + 1 < comps.len() { self.entry_basic(comps[i + 1]) } else { curexit };
-                    self.scope_break_walk(comps[i], sub_exit, curloopexit, loopexit);
+                    self.scope_break_walk(comps[i], sub_exit, curloopexit, loopexit, node_loopexit);
                 }
             }
             // BlockIf::scopeBreak (block.cc:3075): condition has multiple exits (curexit=-1); the
             // arms share this block's curexit.
             FlowKind::If => {
-                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
-                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit);
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit, node_loopexit);
+                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit, node_loopexit);
             }
             FlowKind::IfElse => {
-                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
-                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit);
-                self.scope_break_walk(comps[2], curexit, curloopexit, loopexit);
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit, node_loopexit);
+                self.scope_break_walk(comps[1], curexit, curloopexit, loopexit, node_loopexit);
+                self.scope_break_walk(comps[2], curexit, curloopexit, loopexit, node_loopexit);
             }
             // BlockWhileDo::scopeBreak (block.cc:3324): a new loop scope — curloopexit becomes this
             // loop's curexit; the body exits back into the condition (the loop top).
             FlowKind::WhileDo => {
-                self.scope_break_walk(comps[0], None, curexit, loopexit);
+                self.scope_break_walk(comps[0], None, curexit, loopexit, node_loopexit);
                 let top = self.entry_basic(comps[0]);
-                self.scope_break_walk(comps[1], top, curexit, loopexit);
+                self.scope_break_walk(comps[1], top, curexit, loopexit, node_loopexit);
             }
             // BlockDoWhile::scopeBreak (block.cc:3434): new loop scope, curloopexit becomes curexit.
             FlowKind::DoWhile => {
-                self.scope_break_walk(comps[0], None, curexit, loopexit);
+                self.scope_break_walk(comps[0], None, curexit, loopexit, node_loopexit);
             }
             // BlockInfLoop::scopeBreak (block.cc:3462): exits into itself, curloopexit becomes curexit.
             FlowKind::InfLoop => {
                 let top = self.entry_basic(comps[0]);
-                self.scope_break_walk(comps[0], top, curexit, loopexit);
+                self.scope_break_walk(comps[0], top, curexit, loopexit, node_loopexit);
             }
             // BlockCondition::scopeBreak (block.cc:3034): both sides, no fixed exit.
             FlowKind::CondAnd | FlowKind::CondOr => {
-                self.scope_break_walk(comps[0], None, curloopexit, loopexit);
-                self.scope_break_walk(comps[1], None, curloopexit, loopexit);
+                self.scope_break_walk(comps[0], None, curloopexit, loopexit, node_loopexit);
+                self.scope_break_walk(comps[1], None, curloopexit, loopexit, node_loopexit);
             }
             // BlockSwitch::scopeBreak (block.cc:3613): new scope; cases share the switch exit.
             FlowKind::Switch => {
-                self.scope_break_walk(comps[0], None, curexit, loopexit);
+                self.scope_break_walk(comps[0], None, curexit, loopexit, node_loopexit);
                 for &case in &comps[1..] {
-                    self.scope_break_walk(case, curexit, curexit, loopexit);
+                    self.scope_break_walk(case, curexit, curexit, loopexit, node_loopexit);
                 }
             }
         }
@@ -3150,6 +3191,7 @@ pub fn structure(f: &Funcdata) -> Structured {
         blocks,
         roots: Vec::new(),
         gotos: HashMap::new(),
+        node_gotos: HashMap::new(),
         labels: HashSet::new(),
         oriented,
         complex,
@@ -3534,7 +3576,9 @@ mod tests {
         let s = structure(&cfg(5, &[(0, 1), (0, 2), (0, 3), (1, 2), (2, 4), (3, 4)]));
         assert_eq!(active(&s), 1);
         assert!(kinds(&s).contains(&FlowKind::Switch), "kinds: {:?}", kinds(&s));
-        let recs = s.gotos.get(&BlockId(1)).expect("fallthru edge cut at case 1");
+        // An unconditional cut is a `BlockGoto`, keyed on the NODE it wraps (here the leaf for
+        // block 1, whose node index is its block index) — not on a basic block. See `node_gotos`.
+        let recs = s.node_gotos.get(&1).expect("fallthru edge cut at case 1");
         assert!(!recs[0].conditional, "fallthru goto is unconditional");
         assert_eq!(recs[0].target, BlockId(2));
         assert!(s.labels.contains(&BlockId(2)));
@@ -3580,6 +3624,7 @@ mod tests {
             blocks,
             roots: Vec::new(),
             gotos: HashMap::new(),
+            node_gotos: HashMap::new(),
             labels: HashSet::new(),
             oriented: vec![false; nb],
             complex: vec![false; nb],
