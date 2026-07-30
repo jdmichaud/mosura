@@ -529,7 +529,7 @@ impl Rule for RuleTrivialShift {
 /// `RuleShift2Mult` (Ghidra): `V << c` → `V * 2^c`, but only when the shift is involved in an
 /// arithmetic expression (its operand's def, or one of its uses, is INT_ADD/INT_SUB/INT_MULT) — so
 /// a left-shift that is really a scaled multiply joins the surrounding arithmetic and combines:
-/// `(q * 0xf) << 2` → `q * 0xf * 4` → (RuleMultMult) `q * 0x3c`, which `RuleModOpt` can then fold.
+/// `(q * 0xf) << 2` → `q * 0xf * 4` → (`RuleAddMultCollapse`) `q * 0x3c`, which `RuleModOpt` folds.
 /// A shift by ≥ 32 is left alone (anything that big is unlikely to be an arithmetic multiply).
 pub struct RuleShift2Mult;
 
@@ -2334,45 +2334,16 @@ impl Rule for RuleIdempotent {
     }
 }
 
-/// Fold a chained constant multiply: `(x * c1) * c2` → `x * (c1*c2)`. Ghidra normalises
-/// multiplies this way; it also lets `(x/6)*3*2` collapse to `(x/6)*6` so the modulo form
-/// is recognised.
-pub struct RuleMultMult;
-
-impl Rule for RuleMultMult {
-    fn name(&self) -> &str {
-        "multmult"
-    }
-    fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntMult]
-    }
-    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        if data.op(op).num_inputs() != 2 {
-            return 0;
-        }
-        let (a, b) = (data.op(op).input(0).unwrap(), data.op(op).input(1).unwrap());
-        for (inner_v, c2_v) in [(a, b), (b, a)] {
-            if !data.vn(c2_v).is_constant() {
-                continue;
-            }
-            let c2 = data.vn(c2_v).constant_value();
-            let Some(inner) = data.vn(inner_v).def else { continue };
-            if data.op(inner).code() != OpCode::IntMult || data.op(inner).num_inputs() != 2 {
-                continue;
-            }
-            let (i0, i1) = (data.op(inner).input(0).unwrap(), data.op(inner).input(1).unwrap());
-            for (x, c1_v) in [(i0, i1), (i1, i0)] {
-                if data.vn(c1_v).is_constant() {
-                    let size = data.vn(data.op(op).output.unwrap()).size;
-                    let prod = data.new_const(size, data.vn(c1_v).constant_value().wrapping_mul(c2));
-                    data.op_set_all_input(op, &[x, prod]);
-                    return 1;
-                }
-            }
-        }
-        0
-    }
-}
+// `RuleMultMult` (mosura invention, `(x*c1)*c2` -> `x*(c1*c2)`) was deleted here. Ghidra does this
+// fold in `RuleAddMultCollapse` (ruleaction.cc:4093), whose oplist is `{ CPUI_INT_ADD,
+// CPUI_INT_MULT }` and which computes the product through `OpBehaviorIntMult::evaluateBinary` —
+// `(in1*in2) & calc_mask(sizeout)`, opbehavior.cc:495. mosura already ports that rule faithfully,
+// mask included. The invention was a second, UNMASKED copy: it built its constant with a bare
+// `wrapping_mul` at u64 width, so `(x*0xff)*0xff` in a 1-byte INT_MULT became `x * 0xfe01` — a
+// constant varnode that cannot fit its own size (correct is 0xfe01 & 0xff = 1, the identity).
+// Measured before deletion: the sole creator of oversized constants in 136 of 1303 WAR2 functions.
+// The lesson worth keeping is that it was invisible for as long as it was because the rule NAMED
+// itself after no Ghidra class; `scripts/trace-names.py` now reports exactly that as ADAPTATION.
 
 /// `RuleBoolNegate`: a negated comparison is the complementary comparison —
 /// `!(a == b)` → `a != b`, `!(a < b)` → `b <= a`, etc. Comparisons are 0/1, so the rewrite

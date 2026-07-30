@@ -7,7 +7,7 @@ use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleLessNotEqual, RuleRangeMeld, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
-    RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleMultMult, RuleHumptyDumpty,
+    RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
     RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
@@ -134,15 +134,15 @@ impl Action for ActionSwitchNorm {
 /// match Ghidra's `addRule` registration sequence — which *is* the per-opcode priority
 /// (`ActionPool::addRule` appends each rule to `perop[opcode]`, so registration order = the order
 /// [`ActionPool::apply`] tries rules for a given opcode). The parenthesised number after each rule is
-/// its index in the canonical oppool1 list. The three mosura-only rules with no Ghidra counterpart
-/// (RuleMultMult, RuleIdempotent, RuleRangeAnd) are slotted next to their closest Ghidra sibling.
+/// its index in the canonical oppool1 list. The two mosura-only rules with no Ghidra counterpart
+/// (RuleIdempotent, RuleRangeAnd) are slotted next to their closest Ghidra sibling; run
+/// `scripts/trace-names.py` for the live list (they are what it reports as ADAPTATION).
 pub fn default_rule_pool() -> ActionPool {
     ActionPool::new("oppool")
         .with(RuleEarlyRemoval) // (1)
         .with(RuleTermOrder) // (2)
         .with(RuleSelectCse) // (3)
         .with(RuleCollectTerms) // (4)
-        .with(RuleMultMult) // mosura extra — term collection over MULT, next to CollectTerms
         // RulePullsubMulti (coreaction.cc:5516): pull a SUBPIECE truncation up through a MULTIEQUAL —
         // the faithful clean phi-narrowing mosura lacked. On a dual-width selector heritaged wide
         // (switchloop's r0x8), it narrows the switch-merge phis in one step where SubVariableFlow
