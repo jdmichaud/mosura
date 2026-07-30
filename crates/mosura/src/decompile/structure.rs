@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::block::BlockId;
 use super::funcdata::Funcdata;
+use super::op::OpId;
 use super::opcode::OpCode;
 
 /// Boolean properties on a structuring edge — Ghidra's `FlowBlock::edge_flags` (block.hh:108).
@@ -227,11 +228,30 @@ impl FlowBlock {
     }
 }
 
-/// The structured-block forest; `root` is the single block the CFG collapsed to (or the
-/// entry, if the CFG was irreducible and could not fully collapse).
+/// `FlowBlock::getIndex` (block.hh:160) on the collapsed graph: a leaf's reverse-post-order number,
+/// and for a composite the MINIMUM index over its components — `BlockGraph::addBlock` (block.cc:862)
+/// narrows `index` to `min(index, bl->index)` as each component is absorbed. The entry component is
+/// the one whose index is 0, which is what `compareFinalOrder` tests first.
+fn block_index_of(blocks: &[FlowBlock], rpo: &[i32], b: usize) -> i32 {
+    match blocks[b].kind {
+        FlowKind::Basic(bid) => rpo[bid.0 as usize],
+        _ => blocks[b].components.iter().map(|&c| block_index_of(blocks, rpo, c)).min().unwrap_or(0),
+    }
+}
+
+/// The structured-block forest. `roots` is Ghidra's `BlockGraph::list` after the collapse — the
+/// TOP-LEVEL COMPONENTS, in printing order.
+///
+/// It is a list and not a single node because a collapse that cannot reduce the graph to one node is
+/// NORMAL, not an error: `CollapseStructure::collapseAll` (blockaction.cc:1877) stops at
+/// `isolated_count < graph.getSize()` with `getSize()` = `list.size()`, `BlockGraph::orderBlocks`
+/// (block.hh:430) guards its sort with `if (list.size()!=1)`, and `PrintC::emitBlockGraph`
+/// (printc.cc:2746) emits every element. Treating the result as one root instead silently drops
+/// every component but the entry's — measured on WAR2 `FUN_00077dcb`, where Ghidra (given the same
+/// liveness) produces the same two components and prints both.
 pub struct Structured {
     pub blocks: Vec<FlowBlock>,
-    pub root: usize,
+    pub roots: Vec<usize>,
     /// The unstructured branches, keyed by the basic block whose exit emits them — filled by
     /// [`rule_block_goto`](Self::rule_block_goto) consuming `GOTO`/`IRREDUCIBLE`-marked edges
     /// (Ghidra's `BlockGoto`/`BlockIfGoto`/`BlockMultiGoto` wrappers, blockaction.cc:1450).
@@ -308,6 +328,64 @@ impl Structured {
             _ => self.entry_basic(*self.blocks[idx].components.first()?),
         }
     }
+    fn block_index(&self, idx: usize) -> i32 {
+        block_index_of(&self.blocks, &self.rpo, idx)
+    }
+
+    /// `FlowBlock::lastOp` — the op whose opcode [`compare_final_order`](Self::compare_final_order)
+    /// tests for `RETURN`. The default is none (block.hh:239, inherited by the loops, the switch and
+    /// a bare `BlockGraph`); `BlockBasic` gives its last op (block.cc:2344), `BlockList` the LAST
+    /// component's (block.cc:2960), `BlockCondition` the SECOND component's (block.cc:3016), and
+    /// `BlockIf` the first component's only in the one-component if-goto form (block.cc:3119) —
+    /// which mosura never builds, because an if-goto's cut edge is recorded in `gotos` instead.
+    fn last_op(&self, idx: usize, f: &Funcdata) -> Option<OpId> {
+        match self.blocks[idx].kind {
+            FlowKind::Basic(bid) => f.block(bid).ops.last().copied(),
+            FlowKind::List => self.last_op(*self.blocks[idx].components.last()?, f),
+            FlowKind::CondAnd | FlowKind::CondOr => self.last_op(*self.blocks[idx].components.get(1)?, f),
+            FlowKind::If if self.blocks[idx].components.len() == 1 => {
+                self.last_op(self.blocks[idx].components[0], f)
+            }
+            _ => None,
+        }
+    }
+
+    /// `FlowBlock::compareFinalOrder` (block.cc:709): the entry component (index 0) first, components
+    /// ending in `RETURN` last, everything else by index.
+    ///
+    /// Ghidra's predicate is not a total order when BOTH sides end in `RETURN` — it answers `false`
+    /// each way, which `std::sort` tolerates and Rust's `sort_by` panics on. Falling back to the index
+    /// there is the only consistent reading and cannot change a Ghidra-reachable outcome, since two
+    /// `RETURN`-terminated components would be mutually unordered in Ghidra too.
+    fn compare_final_order(&self, a: usize, b: usize, f: &Funcdata) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let (ia, ib) = (self.block_index(a), self.block_index(b));
+        if ia == 0 {
+            return Ordering::Less;
+        }
+        if ib == 0 {
+            return Ordering::Greater;
+        }
+        let ends_in_return = |n: usize| self.last_op(n, f).map(|o| f.op(o).code() == OpCode::Return);
+        match (ends_in_return(a), ends_in_return(b)) {
+            (Some(true), Some(false)) | (Some(true), None) => Ordering::Greater,
+            (Some(false), Some(true)) | (None, Some(true)) => Ordering::Less,
+            _ => ia.cmp(&ib),
+        }
+    }
+
+    /// `BlockGraph::orderBlocks` (block.hh:430): put the top-level components into printing order —
+    /// `if (list.size()!=1) sort(list.begin(),list.end(),compareFinalOrder)`. Run by
+    /// `ActionFinalStructure` (blockaction.cc:2191) before `finalizePrinting`/`scopeBreak`.
+    fn order_roots(&mut self, f: &Funcdata) {
+        if self.roots.len() < 2 {
+            return;
+        }
+        let mut roots = std::mem::take(&mut self.roots);
+        roots.sort_by(|&a, &b| self.compare_final_order(a, b, f));
+        self.roots = roots;
+    }
+
     /// The exit basic block of a structured block (where its terminating branch lives).
     fn exit_basic(&self, idx: usize) -> Option<BlockId> {
         match &self.blocks[idx].kind {
@@ -325,7 +403,9 @@ impl Structured {
     /// [`ActionOrientBranches`] to materialize the negation in the IR.
     pub fn branch_negations(&self, f: &Funcdata) -> Vec<BlockId> {
         let mut out = Vec::new();
-        self.collect_negations(self.root, f, &mut out);
+        for &r in &self.roots {
+            self.collect_negations(r, f, &mut out);
+        }
         out
     }
 
@@ -993,7 +1073,9 @@ impl Structured {
     /// flip in the IR.
     pub fn if_else_splits(&self) -> Vec<BlockId> {
         let mut out = Vec::new();
-        self.collect_if_else_splits(self.root, &mut out);
+        for &r in &self.roots {
+            self.collect_if_else_splits(r, &mut out);
+        }
         out
     }
 
@@ -1589,7 +1671,15 @@ impl Structured {
     /// for surviving `f_goto_goto` edges — so the label set is rebuilt from the non-break gotos.
     fn scope_break(&mut self) {
         let mut loopexit: HashMap<BlockId, Option<BlockId>> = HashMap::new();
-        self.scope_break_walk(self.root, None, None, &mut loopexit);
+        // `BlockGraph::scopeBreak` (block.cc:1270) over the TOP-LEVEL list, exactly as the `List`
+        // arm of the walk does over a composite's: each component exits into the next sibling, the
+        // last into this graph's own `curexit` — which is -1 for the root (`scopeBreak(-1,-1)`,
+        // blockaction.cc:2193).
+        for i in 0..self.roots.len() {
+            let sub_exit =
+                if i + 1 < self.roots.len() { self.entry_basic(self.roots[i + 1]) } else { None };
+            self.scope_break_walk(self.roots[i], sub_exit, None, &mut loopexit);
+        }
         for (src, records) in self.gotos.iter_mut() {
             if let Some(&cle) = loopexit.get(src) {
                 for r in records.iter_mut() {
@@ -2441,13 +2531,8 @@ struct TraceDag<'a> {
 }
 
 impl<'a> TraceDag<'a> {
-    /// `FlowBlock::getIndex` (block.hh:160): the reverse-post-order number; a composite `BlockGraph`
-    /// takes the minimum index over its components (`BlockGraph::addBlock`, block.cc:862).
     fn block_index(&self, b: usize) -> i32 {
-        match self.blocks[b].kind {
-            FlowKind::Basic(bid) => self.rpo[bid.0 as usize],
-            _ => self.blocks[b].components.iter().map(|&c| self.block_index(c)).min().unwrap_or(0),
-        }
+        block_index_of(self.blocks, self.rpo, b)
     }
 
     /// `FlowBlock::isLoopDAGIn` (block.hh:345): the `k`-th in-edge of `bl` stays within the reducible
@@ -2942,7 +3027,7 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
 pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
     let mut reached: HashSet<usize> = HashSet::new();
     let mut seen: HashSet<usize> = HashSet::new();
-    let mut stack = vec![s.root];
+    let mut stack = s.roots.clone();
     while let Some(n) = stack.pop() {
         if n >= s.blocks.len() || !seen.insert(n) {
             continue;
@@ -3063,7 +3148,7 @@ pub fn structure(f: &Funcdata) -> Structured {
     let n = f.num_blocks();
     let mut s = Structured {
         blocks,
-        root: 0,
+        roots: Vec::new(),
         gotos: HashMap::new(),
         labels: HashSet::new(),
         oriented,
@@ -3097,15 +3182,34 @@ pub fn structure(f: &Funcdata) -> Structured {
     // Collapse everything (Ghidra's CollapseStructure::collapseAll).
     s.collapse_all();
 
-    // The root is the entry block's collapsed form (the single isolated block, when the graph
-    // fully collapsed).
-    s.root = if n == 0 { 0 } else { s.current_form(0) };
+    // The top-level components are what `self.order` already holds: mosura maintains it exactly as
+    // Ghidra maintains `BlockGraph::list` (`install` does `order.retain(not-a-component)` then
+    // `order.push(composite)`, matching `identifyInternal`+`addBlock`, block.cc:940/862). A fully
+    // reduced graph leaves one entry; an irreducible one leaves several, and ALL of them are real
+    // structure that must be printed.
+    s.roots = s.order.clone();
+    debug_assert!(
+        {
+            let mut active: Vec<usize> = (0..s.blocks.len())
+                .filter(|&i| s.blocks[i].active && s.blocks[i].parent.is_none())
+                .collect();
+            let mut got = s.roots.clone();
+            active.sort_unstable();
+            got.sort_unstable();
+            active == got
+        },
+        "collapse order {:?} is not the active parentless set — `roots` would drop live structure",
+        s.order
+    );
+    // Ghidra's `ActionFinalStructure` (blockaction.cc:2191) orders the list before printing.
+    s.order_roots(f);
     if std::env::var("MOSURA_COLLAPSE").is_ok() {
-        let roots: Vec<usize> =
-            (0..s.blocks.len()).filter(|&i| s.blocks[i].active && s.blocks[i].parent.is_none()).collect();
         eprintln!(
-            "COLLAPSE n={} order={:?} active_top_level_roots={:?} root={}",
-            n, s.order, roots, s.root
+            "COLLAPSE n={} order={:?} roots={:?} indices={:?}",
+            n,
+            s.order,
+            s.roots,
+            s.roots.iter().map(|&r| s.block_index(r)).collect::<Vec<_>>()
         );
     }
 
@@ -3226,7 +3330,9 @@ mod tests {
                 walk(s, c, k);
             }
         }
-        walk(s, s.root, &mut k);
+        for &r in &s.roots {
+            walk(s, r, &mut k);
+        }
         k
     }
 
@@ -3267,7 +3373,7 @@ mod tests {
     fn sequence_becomes_a_list() {
         let s = structure(&cfg(3, &[(0, 1), (1, 2)]));
         assert_eq!(active(&s), 1);
-        assert_eq!(s.blocks[s.root].kind, FlowKind::List);
+        assert_eq!(s.blocks[s.roots[0]].kind, FlowKind::List);
     }
 
     #[test]
@@ -3472,7 +3578,7 @@ mod tests {
         }
         Structured {
             blocks,
-            root: 0,
+            roots: Vec::new(),
             gotos: HashMap::new(),
             labels: HashSet::new(),
             oriented: vec![false; nb],

@@ -2085,12 +2085,21 @@ pub fn print_c(f: &Funcdata) -> String {
     }
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
-    p.detect_for_loops(&s, s.root);
+    for &root in &s.roots {
+        p.detect_for_loops(&s, root);
+    }
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
     // signature + declarations + body, as Ghidra does.
     let t0 = std::time::Instant::now();
     let mut body = String::new();
-    p.emit_structured(&s, s.root, 1, &mut body);
+    // `PrintC::emitBlockGraph` (printc.cc:2746), reached from printc.cc:2660 with
+    // `fd->getStructure()`: emit EVERY top-level component, not just the entry's. A collapse that
+    // could not reduce the graph to a single node is normal (see [`Structured::roots`]); emitting
+    // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
+    // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
+    for &root in &s.roots {
+        p.emit_structured(&s, root, 1, &mut body);
+    }
     if super::action::perf::enabled() {
         super::action::perf::record("print", "emit", t0.elapsed());
     }
