@@ -2033,28 +2033,55 @@ pub fn print_c(f: &Funcdata) -> String {
     if super::action::perf::enabled() {
         super::action::perf::record("print", "structure", t0.elapsed());
     }
-    // Instrument (MOSURA_BLOCKSET=1) over the shared invariant — see
-    // [`super::structure::reached_basic_blocks`]. `reached != cfg` means blocks were never emitted,
-    // which is wrong code whether or not it produced a dangling goto.
-    if std::env::var("MOSURA_BLOCKSET").is_ok() {
+    // ⛔ THE STRUCTURED-TREE INVARIANT: every basic block the CFG has must be REACHED by the tree,
+    // because a block the tree does not reach is never emitted. This is a HARD GATE, not a warning,
+    // and it is deliberately the strongest one in the project — losing a block is worse than a panic
+    // BECAUSE a panic is loud. A dropped block that still has an in-edge at least fails to compile
+    // (`goto LAB_x` with no `LAB_x:`, wcc386 E1018). A dropped block with NO surviving in-edge
+    // produces no goto, no compiler error, and a program that builds and is simply WRONG.
+    //
+    // `debug_assert` puts it on every corpus fixture and every unit test automatically. All 68 corpus
+    // scans are clean (MISSING=0), so this holds today on x86-64; the known failures are x86-32/WAR2
+    // functions, enumerated as an accepted baseline in task #5 and driven to zero under C1. The
+    // assert is NOT scoped to only-clean functions to keep anything quiet — see
+    // [`super::structure::reached_basic_blocks`].
+    //
+    // Release builds compile the assert out, so the WAR2 survey does not abort; it records
+    // `blocks_cfg`/`blocks_reached` per function instead, which is how the population is censused.
+    // `MOSURA_BLOCKSET=1` enumerates the missing blocks in any build.
+    if cfg!(debug_assertions) || std::env::var("MOSURA_BLOCKSET").is_ok() {
         let reached = super::structure::reached_basic_blocks(&s);
-        let missing: Vec<String> = (0..f.num_blocks())
-            .filter(|b| !reached.contains(b))
-            .map(|b| {
-                match f.block(super::block::BlockId(b as u32)).ops.first() {
+        if reached.len() != f.num_blocks() {
+            let missing: Vec<String> = (0..f.num_blocks())
+                .filter(|b| !reached.contains(b))
+                .map(|b| match f.block(super::block::BlockId(b as u32)).ops.first() {
                     Some(&op) => format!("blk{b}@{:#x}", f.op(op).seqnum.pc.offset),
                     None => format!("blk{b}@empty"),
-                }
-            })
-            .collect();
-        eprintln!(
-            "BLOCKSET {}: cfg={} reached={} MISSING={} [{}]",
-            f.name,
-            f.num_blocks(),
-            reached.len(),
-            missing.len(),
-            missing.join(" ")
-        );
+                })
+                .collect();
+            let msg = format!(
+                "structured tree lost {} of {} basic blocks in {}: [{}] — these are never emitted, \
+                 so any in-edge renders as a goto to an undefined label and any block without one \
+                 vanishes silently. See task #5 / structure::reached_basic_blocks.",
+                missing.len(),
+                f.num_blocks(),
+                f.name,
+                missing.join(" ")
+            );
+            if std::env::var("MOSURA_BLOCKSET").is_ok() {
+                eprintln!(
+                    "BLOCKSET {}: cfg={} reached={} MISSING={} [{}]",
+                    f.name,
+                    f.num_blocks(),
+                    reached.len(),
+                    missing.len(),
+                    missing.join(" ")
+                );
+            }
+            debug_assert!(false, "{}", msg);
+        } else if std::env::var("MOSURA_BLOCKSET").is_ok() {
+            eprintln!("BLOCKSET {}: cfg={} reached={} MISSING=0 []", f.name, f.num_blocks(), reached.len());
+        }
     }
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
