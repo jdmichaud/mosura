@@ -76,6 +76,22 @@ pub(crate) fn output_type_local(f: &Funcdata, op: OpId) -> Datatype {
 pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype {
     let o = f.op(op);
     let size = o.input(slot).map(|v| f.vn(v).size).unwrap_or(1);
+    // A shift's AMOUNT operand is the one place Ghidra opts out of the char preference:
+    // `TypeOpIntLeft/IntRight/IntSright::getInputLocal` return `getBaseNoChar(size,TYPE_INT)` for
+    // slot 1 (typeop.cc:1514/1539/1604), so a 1-byte shift count stays `int1` instead of becoming
+    // `char`. Ported for completeness with the `char` core type; MEASURED INERT on WAR2 today —
+    // re-emitting all 1303 functions with and without it changes ZERO files, because mosura's
+    // `cast.rs` has no cast rule for a shift's slot 1, so nothing consumes this seed yet. Recorded
+    // with what it was measured against, since a later cast rule for that slot would revive it.
+    //
+    // Death certificate for the hypothesis it was written to test: the extra casts around shifts in
+    // FUN_00078c20 are NOT from this. Ghidra emits `(char)uVar4 << (-(-cVar3 - 8U) & 0x1f)` — one
+    // cast — because its `cVar3` is DECLARED `char`, so negating it needs no cast. mosura types the
+    // same value `uint1`, so `INT_2COMP`'s required `getBase(1,TYPE_INT)` = `char` forces one. The
+    // difference is upstream TYPE INFERENCE landing uint where Ghidra lands char, not a cast rule.
+    if slot == 1 && matches!(o.code(), OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright) {
+        return Datatype::Int(size);
+    }
     base(op_meta(o.code()).1, size)
 }
 
