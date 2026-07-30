@@ -799,6 +799,13 @@ impl Structured {
     /// only Ghidra's print carrier; mosura's carrier is the [`GotoRecord`]).
     fn rule_block_goto(&mut self, b: usize, _ins: &[Vec<(usize, usize)>]) -> bool {
         let sizeout = self.out(b).len();
+        if std::env::var("MOSURA_STRUCT").is_ok() {
+            for i in 0..sizeout {
+                if self.blocks[b].is_goto_out(i) {
+                    eprintln!("  STRUCT rule_block_goto CUTS: blk{b} -> blk{} (sizeout={sizeout})", self.out(b)[i]);
+                }
+            }
+        }
         for i in 0..sizeout {
             if self.blocks[b].is_goto_out(i) {
                 if self.blocks[b].is_switch_out() {
@@ -1107,6 +1114,14 @@ impl Structured {
     /// `FlowBlock::setGotoBranch` (block.cc:305): mark out-edge `i` of `b` unstructured and set
     /// the interior-goto flags on source and target.
     fn set_goto_branch(&mut self, b: usize, i: usize) {
+        if std::env::var("MOSURA_STRUCT").is_ok() {
+            let tgt = self.out(b)[i];
+            let ins = self.in_edges();
+            eprintln!(
+                "  STRUCT select_goto marks GOTO: blk{b}(outs={}) -> blk{tgt}(ins={}, outs={}) | order={:?}",
+                self.out(b).len(), ins[tgt].len(), self.out(tgt).len(), self.order
+            );
+        }
         self.blocks[b].set_out_edge_flag(i, edge_flags::GOTO_EDGE);
         self.blocks[b].set_flag(block_flags::INTERIOR_GOTOOUT);
         let t = self.blocks[b].out_edges[i];
@@ -1835,6 +1850,9 @@ fn structure_loops(s: &mut Structured, n: usize) {
                     if visitcount[x] > visitcount[yprime] || visitcount[x] + numdesc[x] <= visitcount[yprime] {
                         irreducible_count += 1;
                         let is_tree = s.blocks[y].out_labels[revidx] & TREE_EDGE != 0;
+                        if std::env::var("MOSURA_STRUCT").is_ok() {
+                            eprintln!("  STRUCT structure_loops marks IRREDUCIBLE: blk{y} -> out[{revidx}]");
+                        }
                         s.blocks[y].set_out_edge_flag(revidx, IRREDUCIBLE);
                         if is_tree {
                             needrebuild = true; // an irreducible tree edge forces a rebuild
