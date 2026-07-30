@@ -72,6 +72,12 @@ pub struct Funcdata {
     /// `recover::resolve_call_args`; an entry is removed once its trials commit
     /// (`clearActiveInput`). Persisting it lets the prune DEFER instead of committing greedily.
     pub active_inputs: std::collections::HashMap<OpId, super::fspec::ParamActive>,
+    /// The rest of Ghidra's per-CALL `FuncCallSpecs` state (see [`super::fspec::CallSpec`]) — the
+    /// stack-pointer offset at the call site and the placeholder's input slot. Separate from
+    /// [`active_inputs`](Self::active_inputs) because it must outlive the trial container: the
+    /// offset is read by `guardCalls` on every later heritage pass, long after the arguments
+    /// commit and the `ParamActive` is dropped.
+    pub call_specs: std::collections::HashMap<OpId, super::fspec::CallSpec>,
     /// Master gate for heritage call-effect guarding (Ghidra runs `Heritage::guardCalls` only in the
     /// true heritage). The pipeline sets it before the real heritage; the AliasChecker probe clone
     /// leaves it `false`, so `alias_boundary` is computed on a graph without the call INDIRECTs.
@@ -179,6 +185,7 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             active_inputs: std::collections::HashMap::new(),
+            call_specs: std::collections::HashMap::new(),
             call_guards_active: false,
             alias_boundary: None,
             directwrite_pending_clear: false,
@@ -1034,6 +1041,79 @@ impl Funcdata {
             self.varnodes[out.0 as usize].flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN);
         }
         self.mark_dead(op);
+    }
+
+    /// Ghidra `Funcdata::newSpacebasePtr` (funcdata.cc:275): a fresh (free) Varnode naming the
+    /// register that points into the given spacebase space — RSP for the x86-64 `stack` space.
+    /// Free, not the input version: the rules resolve it to whatever SSA value reaches this point,
+    /// which is exactly how the placeholder measures the stack-pointer delta at a call site.
+    pub fn new_spacebase_ptr(&mut self, space: super::space::SpaceId) -> Option<VarnodeId> {
+        let &(reg, size) = self.spaces.get(space).spacebase.first()?;
+        Some(self.new_varnode(size, reg))
+    }
+
+    /// Ghidra `Funcdata::createStackRef` (funcdata_op.cc:459): build `spacebase_ptr + off` as the
+    /// address expression for a stack access, inserted before/after `op`. Ghidra's `SegmentOp`
+    /// wrapping is omitted for the same reason `RuleLoadVarnode` omits its unwrapping — mosura's
+    /// x86-64 lift emits no `CPUI_SEGMENTOP`; it re-enables faithfully with a segmented target.
+    pub fn create_stack_ref(
+        &mut self,
+        space: super::space::SpaceId,
+        off: u64,
+        op: OpId,
+        stackptr: Option<VarnodeId>,
+        insertafter: bool,
+    ) -> Option<VarnodeId> {
+        let stackptr = match stackptr {
+            Some(v) => v,
+            None => self.new_spacebase_ptr(space)?,
+        };
+        let addrsize = self.vn(stackptr).size;
+        let seq = self.op(op).seqnum;
+        // Ghidra `AddrSpace::byteToAddress` (space.hh:169): the caller passes a BYTE offset, the
+        // constant added to the spacebase register is in the space's addressable units. Identity on
+        // every space mosura currently registers (all wordSize 1), but ported rather than assumed —
+        // a word-addressed target would otherwise silently scale wrong.
+        let ws = self.spaces.get(space).wordsize as u64;
+        let off = if ws == 1 { off } else { off / ws };
+        let cst = self.new_const(addrsize, off);
+        let addop = self.new_op(OpCode::IntAdd, seq, vec![stackptr, cst]);
+        let addout = self.new_output_unique(addop, addrsize);
+        if insertafter {
+            self.op_insert_after(addop, op);
+        } else {
+            self.op_insert_before(addop, op);
+        }
+        Some(addout)
+    }
+
+    /// Ghidra `Funcdata::opStackLoad` (funcdata_op.cc:541): a LOAD of `sz` bytes from `space + off`,
+    /// expressed the way the lifter would (a LOAD off the spacebase's CONTAINER space), returning
+    /// the loaded value. The LOAD goes immediately after the address computation regardless of
+    /// `insertafter`, which Ghidra spells out.
+    pub fn op_stack_load(
+        &mut self,
+        space: super::space::SpaceId,
+        off: u64,
+        sz: u32,
+        op: OpId,
+        stackref: Option<VarnodeId>,
+        insertafter: bool,
+    ) -> Option<VarnodeId> {
+        let container = self.spaces.get(space).contain?;
+        let addout = self.create_stack_ref(space, off, op, stackref, insertafter)?;
+        let seq = self.op(op).seqnum;
+        // Ghidra `newVarnodeSpace` (funcdata_varnode.cc:190): the LOAD's slot-0 annotation is the
+        // data space's INDEX as a constant — the same encoding `check_spacebase` reads back out of
+        // input(0). Width 8 is Ghidra's own `sizeof(spc)` (a host pointer), and it is what mosura's
+        // lifter already emits for every LOAD/STORE space annotation (`build.rs:124`); matching it
+        // keeps a manufactured LOAD indistinguishable from a lifted one.
+        let spacevn = self.new_const(8, container.0 as u64);
+        let loadop = self.new_op(OpCode::Load, seq, vec![spacevn, addout]);
+        let res = self.new_output_unique(loadop, sz);
+        let addop = self.vn(addout).def.expect("createStackRef defines addout");
+        self.op_insert_after(loadop, addop);
+        Some(res)
     }
 
     /// Give `op` a fresh `unique`-space output of `size`; returns it.

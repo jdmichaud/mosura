@@ -1891,6 +1891,25 @@ fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &TaskList) ->
 /// simplification between passes (that interleaving is the payoff). Run back-to-back via
 /// [`heritage`] the passes reproduce the full single-pass SSA — a location heritaged in an earlier
 /// pass is recorded in `globaldisjoint` and skipped, so the per-location split is output-identical.
+/// Ghidra `Heritage::clearStackPlaceholders` (heritage.cc:2048): tear down every call site's
+/// stack-pointer tracker. Called once per space carrying placeholders, immediately before that space
+/// is heritaged — by then the tracker has either done its job (`RuleLoadVarnode` resolved it during
+/// the rule pool and it removed itself) or it never will, and either way the artificial CALL input
+/// must not be present while the stack space is renamed.
+///
+/// The walk is over the live CALL ops in block order rather than over `call_specs`' keys: the map is
+/// a `HashMap`, and this function creates and destroys ops, so iterating it would make op numbering —
+/// and therefore the output — depend on hash order.
+pub fn clear_stack_placeholders(f: &mut Funcdata) {
+    let calls: Vec<OpId> = (0..f.num_blocks() as u32)
+        .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
+        .filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
+        .collect();
+    for call in calls {
+        super::fspec::abort_spacebase_relative(f, call);
+    }
+}
+
 pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     if f.num_blocks() == 0 {
         return 0;
@@ -1920,9 +1939,22 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     // `globaldisjoint` and queue the MERGED range it lands in. The merge is the whole point: an `AL`
     // write and an `EAX` read return the SAME `(base, size)`, so they become ONE task, and `guard()`
     // then normalizes both to it.
+    let infos = build_info_list(&f.spaces);
+    // Ghidra `Heritage::heritage` (heritage.cc:2688-2689): a space that carries call placeholders has
+    // them cleared just before that space enters SSA construction. Hoisted ahead of the `LocSet`
+    // build below: Ghidra walks each space's locations lazily, AFTER clearing that space, while
+    // mosura collects every space's locations up front — so the clear has to precede the collection
+    // for both to see the same graph.
+    //
+    // Ghidra latches `info->hasCallPlaceholders = false` so this happens once; mosura rebuilds the
+    // info list each pass, so it re-runs on every pass at or after the delay. That is harmless
+    // because `abort_spacebase_relative` is a no-op once the slot has been released.
+    if infos.iter().any(|info| info.is_heritaged() && pass >= info.delay && info.has_call_placeholders)
+    {
+        clear_stack_placeholders(f);
+    }
     let t0 = std::time::Instant::now();
     let locset = LocSet::build(f);
-    let infos = build_info_list(&f.spaces);
     let mut disjoint = TaskList::default();
     for (i, info) in infos.iter().enumerate() {
         if !info.is_heritaged() || pass < info.delay {

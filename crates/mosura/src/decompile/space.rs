@@ -64,6 +64,42 @@ impl Space {
     pub fn is_heritaged(&self) -> bool {
         matches!(self.kind, SpaceKind::Processor | SpaceKind::Internal | SpaceKind::Spacebase)
     }
+
+    /// Ghidra `AddrSpace::highest` (`space.hh:100`, computed in the constructor as
+    /// `calcMask(addressSize)`, then scaled to bytes when `wordsize > 1`): the largest byte offset
+    /// this space can hold.
+    pub fn highest(&self) -> u64 {
+        let mask =
+            if self.addr_size >= 8 { u64::MAX } else { (1u64 << (self.addr_size * 8)) - 1 };
+        if self.wordsize > 1 {
+            mask * self.wordsize as u64 + (self.wordsize as u64 - 1)
+        } else {
+            mask
+        }
+    }
+
+    /// Ghidra `AddrSpace::wrapOffset` (`space.hh:383`): fold `off` into this space's offset range.
+    /// This is how a stack offset stays meaningful after the signed subtraction that translates it
+    /// between the caller's and the callee's frame — on a 32-bit space `ESP - 0x10` must wrap to a
+    /// 32-bit offset, not sit as a 64-bit near-`u64::MAX` value that matches no stack range.
+    pub fn wrap_offset(&self, off: u64) -> u64 {
+        let highest = self.highest();
+        if off <= highest {
+            return off;
+        }
+        // `highest + 1` is the modulus. It overflows to 0 exactly when the space spans the whole
+        // 64-bit range, and then the comparison above has already returned — Ghidra relies on the
+        // same thing, but in Rust the unreachable `% 0` would still be a panic, so it is explicit.
+        let Some(m) = (highest as i64).checked_add(1) else { return off };
+        if m == 0 {
+            return off;
+        }
+        let mut res = (off as i64) % m; // remainder is signed, as in Ghidra
+        if res < 0 {
+            res += m;
+        }
+        res as u64
+    }
 }
 
 /// The faithful heritage delay for a space, from Ghidra's space construction. The SLEIGH

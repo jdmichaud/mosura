@@ -13,6 +13,7 @@
 //! (`AncestorRealistic`) and the driving actions live alongside it as they are ported.
 
 use super::funcdata::Funcdata;
+use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceId, SpaceManager};
 use super::varnode::VarnodeId;
@@ -200,6 +201,22 @@ impl ParamList {
             .filter(|e| e.contained_by(loc, size))
             .max_by_key(|e| e.size)
             .map(|e| (Address::new(e.space, e.addressbase), e.size))
+    }
+
+    /// Ghidra `ParamListStandard::getSpacebase` (fspec.hh:639): the stack space this convention
+    /// passes overflow parameters in, or `None` when it has no stack resource. A non-`None` answer is
+    /// exactly Ghidra's "we need a stack-pointer placeholder" signal at each call site
+    /// (`ActionFuncLink::funcLinkInput`, coreaction.cc:1479).
+    ///
+    /// Ghidra caches this during `decode` (fspec.cc:1243-1245: every `<pentry>` whose space is a
+    /// spacebase overwrites the field, so the LAST such entry wins); mosura recomputes it from the
+    /// entry list, which is the same value — the same way [`Self::max_delay`] recomputes `maxdelay`.
+    pub fn get_spacebase(&self, spaces: &SpaceManager) -> Option<SpaceId> {
+        self.entry
+            .iter()
+            .rev()
+            .find(|e| spaces.get(e.space).kind == super::space::SpaceKind::Spacebase)
+            .map(|e| e.space)
     }
 
     /// Ghidra `ParamList::getMaxDelay` (fspec.hh:800): the maximum heritage delay across the
@@ -853,6 +870,24 @@ impl ParamTrial {
     }
 }
 
+/// The per-CALL state Ghidra keeps on `FuncCallSpecs` (fspec.hh:1651-1652) that must OUTLIVE the
+/// trial container. mosura has no `FuncCallSpecs` object — a call's trials live in
+/// [`Funcdata::active_inputs`](super::funcdata::Funcdata::active_inputs), keyed by the CALL op, and
+/// that entry is REMOVED when the arguments commit (`clearActiveInput`). The stack offset must
+/// survive that: `Heritage::guardCalls` reads it on every later heritage pass, and `hasEffect`
+/// (fspec.cc:5940) reads it too. So it gets its own map, keyed the same way.
+#[derive(Clone, Debug, Default)]
+pub struct CallSpec {
+    /// Ghidra `FuncCallSpecs::stackoffset` (fspec.hh:1651): "Relative offset of stack-pointer at
+    /// time of this call". `None` is Ghidra's `offset_unknown` (fspec.hh:1677, the 0xBADBEEF
+    /// sentinel) — the state in which `guardCalls` refuses to register a spacebase range as a
+    /// parameter trial, because it cannot express the range in the callee's frame.
+    pub stackoffset: Option<u64>,
+    /// Ghidra `FuncCallSpecs::stackPlaceholderSlot` (fspec.hh:1652): which CALL input slot holds the
+    /// artificial stack-pointer tracker. `None` is Ghidra's `-1` (unused/released).
+    pub stack_placeholder_slot: Option<usize>,
+}
+
 /// Ghidra `ParamActive` (fspec.hh:285): the set of trials accumulated while recovering one
 /// direction's parameters, plus the pass bookkeeping.
 #[derive(Clone, Debug, Default)]
@@ -871,11 +906,52 @@ pub struct ParamActive {
     maxpass: i32,
     /// Ghidra `ParamActive::isfullychecked` (fspec.hh:291): all trials examined, no new ones expected.
     isfullychecked: bool,
+    /// Ghidra `ParamActive::stackplaceholder` (fspec.hh:288): which CALL input slot holds the stack
+    /// placeholder. `-1` = none yet, `-2` = it has been found and released (Ghidra's
+    /// `freePlaceholderSlot` sentinel). Ghidra's companion `slotbase` is deliberately NOT ported:
+    /// it exists to PREDICT the input index a trial will land on, and mosura's callers read the
+    /// index back off the op after appending, which is the same number by construction.
+    stackplaceholder: i32,
 }
 
 impl ParamActive {
     pub fn new(reg_space: Option<SpaceId>) -> ParamActive {
-        ParamActive { trial: Vec::new(), reg_space, is_recover_subcall: false, numpasses: 0, maxpass: 0, isfullychecked: false }
+        ParamActive {
+            trial: Vec::new(),
+            reg_space,
+            is_recover_subcall: false,
+            numpasses: 0,
+            maxpass: 0,
+            isfullychecked: false,
+            stackplaceholder: -1,
+        }
+    }
+
+    /// Ghidra `ParamActive::setPlaceholderSlot` (fspec.hh:310): record which CALL input slot the
+    /// artificial stack-pointer tracker occupies.
+    pub fn set_placeholder_slot(&mut self, slot: usize) {
+        self.stackplaceholder = slot as i32;
+    }
+
+    /// Ghidra `ParamActive::freePlaceholderSlot` (fspec.cc:1995): the placeholder input has been
+    /// removed from the CALL, so every trial sitting at a HIGHER input slot shifts down one.
+    ///
+    /// ⭐ AND `maxpass = 0`, which is not bookkeeping — it is the point of the whole mechanism.
+    /// Ghidra's comment: "If we've found the placeholder, then the -next- time we analyze
+    /// parameters, we will have given all locations the chance to show up, so we prevent any
+    /// analysis after -next-." Resolving the placeholder is what tells the decompiler the stack
+    /// offset, which is what lets `guardCalls` register the STACK trials; once those exist there is
+    /// nothing further to wait for, so the argument list commits on the very next
+    /// `ActionActiveParam` instead of burning the remaining passes. That is what keeps the commit
+    /// EARLY ENOUGH for the narrowing rules to still have something to narrow (task #9).
+    pub fn free_placeholder_slot(&mut self) {
+        for t in &mut self.trial {
+            if t.op_slot as i32 > self.stackplaceholder {
+                t.op_slot -= 1;
+            }
+        }
+        self.stackplaceholder = -2;
+        self.maxpass = 0;
     }
 
     pub fn num_trials(&self) -> usize {
@@ -1022,6 +1098,118 @@ pub fn recover_output(f: &Funcdata) -> Option<ProtoSlot> {
 /// Ghidra `Funcdata::getFuncProto`: the recovered prototype (input params + return storage).
 pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
     FuncProto { params: recover_input_params(f), output: recover_output(f) }
+}
+
+// -------------------------------------------------------------------------------------------------
+// The stack-pointer placeholder (Ghidra `FuncCallSpecs`, fspec.cc:4844-4920)
+//
+// A call site cannot register a STACK location as a parameter trial until it knows the stack
+// pointer's offset AT THAT CALL, because a trial's address is expressed in the CALLEE's frame while
+// heritage hands it the CALLER's (`Heritage::guardCalls`, heritage.cc:1461-1466). Ghidra measures
+// that offset with an artificial extra CALL input: a 1-byte LOAD off a FREE reference to the
+// spacebase register. Heritage links the free reference to whatever stack-pointer value reaches the
+// call; the constant-folding rules collapse it to `<sp_input> + delta`; then `RuleLoadVarnode`
+// recognises the spacebase form, converts the LOAD to a COPY of a fixed stack slot, and the
+// `spacebase_placeholder` flag on its output fires this subsystem, whose whole job is to read
+// `delta` back out and then delete the machinery it rode in on.
+//
+// mosura has no `FuncCallSpecs` object, so the per-call state lives in
+// [`Funcdata::call_specs`](super::funcdata::Funcdata::call_specs) keyed by the CALL op, and these
+// are free functions rather than methods. See [`CallSpec`].
+// -------------------------------------------------------------------------------------------------
+
+/// Ghidra `FuncCallSpecs::getSpacebaseOffset` (fspec.hh:1689): the stack-pointer offset at `call`
+/// relative to the incoming stack pointer, or `None` for Ghidra's `offset_unknown` — the state in
+/// which `guardCalls` refuses to register a spacebase range as a trial.
+pub fn spacebase_offset(f: &Funcdata, call: OpId) -> Option<u64> {
+    f.call_specs.get(&call).and_then(|c| c.stackoffset)
+}
+
+/// Ghidra `FuncCallSpecs::setStackPlaceholderSlot` (fspec.hh:1671): record the slot, and tell the
+/// trial container to reserve it so no trial claims that input index.
+fn set_stack_placeholder_slot(f: &mut Funcdata, call: OpId, slot: usize) {
+    f.call_specs.entry(call).or_default().stack_placeholder_slot = Some(slot);
+    // Ghidra's `if (isinputactive)`; mosura's `isInputActive` is the presence of the call's entry.
+    if let Some(active) = f.active_inputs.get_mut(&call) {
+        active.set_placeholder_slot(slot);
+    }
+}
+
+/// Ghidra `FuncCallSpecs::clearStackPlaceholderSlot` (fspec.hh:1673): release the slot and let the
+/// trial container shift every higher trial down one (and reset its pass budget — see
+/// [`ParamActive::free_placeholder_slot`], where that reset is the point).
+fn clear_stack_placeholder_slot(f: &mut Funcdata, call: OpId) {
+    if let Some(c) = f.call_specs.get_mut(&call) {
+        c.stack_placeholder_slot = None;
+    }
+    if let Some(active) = f.active_inputs.get_mut(&call) {
+        active.free_placeholder_slot();
+    }
+}
+
+/// Ghidra `FuncCallSpecs::createPlaceholder` (fspec.cc:4849): hang the artificial stack-pointer
+/// tracker off `call` as an extra input — a 1-byte LOAD from offset 0 of `spacebase`, built off a
+/// FREE spacebase-register reference so heritage resolves it to the value reaching this call site.
+pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
+    let slot = f.op(call).num_inputs();
+    // Ghidra passes `(Varnode *)0` for the stack reference and `false` for insertafter.
+    let Some(loadval) = f.op_stack_load(spacebase, 0, 1, call, None, false) else { return };
+    f.op_append_input(call, loadval); // Ghidra `opInsertInput(op,loadval,slot)` with slot == numInput
+    set_stack_placeholder_slot(f, call, slot);
+    f.vn_mut(loadval).set_spacebase_placeholder();
+}
+
+/// Ghidra `FuncCallSpecs::resolveSpacebaseRelative` (fspec.cc:4870): read the stack-pointer offset
+/// at `call` off the now-resolved placeholder. `phvn` is the placeholder varnode, which
+/// `RuleLoadVarnode` has just turned into the output of a COPY from a fixed stack varnode — so the
+/// COPY's input names the offset directly.
+///
+/// Ghidra's two branches after recording the offset are: the placeholder is still in its own slot ⇒
+/// [`abort_spacebase_relative`] tears it down (the offset is all it was for); or the prototype is
+/// input-locked and a locked STACK parameter carried the flag instead, in which case the offset is
+/// taken relative to that parameter's address. mosura's call prototypes are never input-locked
+/// (`build_input_from_trials` documents the same gap), so only the first branch is reachable and the
+/// locked branch is not ported — Ghidra's fall-through there is a `LowlevelError` throw, and
+/// reaching it would mean locked prototypes had appeared without this being revisited.
+pub fn resolve_spacebase_relative(f: &mut Funcdata, call: OpId, phvn: VarnodeId) {
+    let Some(def) = f.vn(phvn).def else { return };
+    let Some(refvn) = f.op(def).input(0) else { return };
+    let loc = f.vn(refvn).loc;
+    // Ghidra warns "This function may have set the stack pointer" when the resolved reference is not
+    // in a spacebase space; mosura models no warning header, so the diagnostic is dropped (the
+    // offset is still recorded, exactly as Ghidra does after warning).
+    f.call_specs.entry(call).or_default().stackoffset = Some(loc.offset);
+
+    if let Some(slot) = f.call_specs.get(&call).and_then(|c| c.stack_placeholder_slot) {
+        if f.op(call).input(slot) == Some(phvn) {
+            abort_spacebase_relative(f, call);
+        }
+    }
+}
+
+/// Ghidra `FuncCallSpecs::abortSpacebaseRelative` (fspec.cc:4911): remove the placeholder input from
+/// `call` and destroy the op that produced it. Called both on success (the offset has been read, the
+/// tracker has served its purpose) and from [`super::heritage::clear_stack_placeholders`] when the
+/// stack space is about to be heritaged with the placeholder still unresolved.
+pub fn abort_spacebase_relative(f: &mut Funcdata, call: OpId) {
+    let Some(slot) = f.call_specs.get(&call).and_then(|c| c.stack_placeholder_slot) else { return };
+    let vn = f.op(call).input(slot);
+    f.op_remove_input(call, slot);
+    clear_stack_placeholder_slot(f, call);
+    // Ghidra: remove the op producing the placeholder as well, but only if nothing else reads it and
+    // it is a `unique`-space written value (i.e. really the manufactured LOAD/COPY, not a varnode the
+    // rest of the graph depends on).
+    if let Some(vn) = vn {
+        let v = f.vn(vn);
+        if v.descend.is_empty()
+            && f.spaces.get(v.loc.space).kind == super::space::SpaceKind::Internal
+            && v.is_written()
+        {
+            if let Some(def) = v.def {
+                f.op_destroy(def);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

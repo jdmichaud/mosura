@@ -65,6 +65,15 @@ pub mod addlflags {
     /// MULTIEQUAL/INDIRECT was rewritten to a SUBPIECE of a wider re-heritaged range, so the later
     /// candidate/cover scan does not re-collect it as an independent location.
     pub const WRITEMASK: u32 = 0x02;
+    /// Ghidra `Varnode::spacebase_placeholder` (varnode.hh:129): "This varnode is inserted
+    /// artificially to track a register." It marks the output of the LOAD that
+    /// `FuncCallSpecs::createPlaceholder` (fspec.cc:4849) hangs off a CALL as an extra input. The
+    /// flag is a TRIGGER, not a property: `RuleLoadVarnode` (ruleaction.cc:4295) clears it the
+    /// moment the LOAD resolves to a concrete stack varnode and calls `resolveSpacebaseRelative`,
+    /// which is how the decompiler learns the stack-pointer delta at that call site — the thing
+    /// `Heritage::guardCalls` needs before it can express a stack range in the CALLEE's frame and
+    /// register it as a parameter trial. Bit value matches Ghidra's.
+    pub const SPACEBASE_PLACEHOLDER: u32 = 0x400;
 }
 
 /// An SSA value. Created via [`Funcdata`](super::funcdata::Funcdata); never constructed
@@ -113,6 +122,19 @@ impl Varnode {
     /// Ghidra `Varnode::setWriteMask`.
     pub fn set_write_mask(&mut self) {
         self.addlflags |= addlflags::WRITEMASK;
+    }
+    /// Ghidra `Varnode::isSpacebasePlaceholder` (varnode.hh:261): is this varnode the artificial
+    /// stack-pointer tracker a CALL carries until `RuleLoadVarnode` resolves it?
+    pub fn is_spacebase_placeholder(&self) -> bool {
+        self.addlflags & addlflags::SPACEBASE_PLACEHOLDER != 0
+    }
+    /// Ghidra `Varnode::setSpacebasePlaceholder`.
+    pub fn set_spacebase_placeholder(&mut self) {
+        self.addlflags |= addlflags::SPACEBASE_PLACEHOLDER;
+    }
+    /// Ghidra `Varnode::clearSpacebasePlaceholder` (varnode.hh) — the trigger fires exactly once.
+    pub fn clear_spacebase_placeholder(&mut self) {
+        self.addlflags &= !addlflags::SPACEBASE_PLACEHOLDER;
     }
     /// Ghidra `Varnode::isActiveHeritage` (varnode.hh:264): is this varnode currently being traced
     /// by the Heritage algorithm — i.e. did `guard()` normalize it into the range being renamed?
