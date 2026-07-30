@@ -18,6 +18,14 @@ pub enum Datatype {
     Spacebase(SpaceId),
     /// `undefined<N>` — a value of known width but unknown interpretation.
     Unknown(u32),
+    /// Ghidra `TypeChar` (type.hh:356) — a 1-byte `TYPE_INT` carrying the `chartype` flag, with
+    /// `sub_metatype = SUB_INT_CHAR`. It is a DISTINCT core type from `int1`, and it is the DEFAULT
+    /// one: `cacheCoreTypes` installs it as `typecache[1][TYPE_INT]` under the comment "Char is
+    /// preferred over other int types" (type.cc:3228), so `getBase(1,TYPE_INT)` answers `char` while
+    /// `int1` is `type_nochar` (:3220), reachable only through `getBaseNoChar` (type.hh:830).
+    /// [`Datatype::Int(1)`](Self::Int) remains that opt-out; Ghidra calls it from three shift-amount
+    /// sites (typeop.cc:1514/1539/1604) that mosura has not ported.
+    Char,
     /// Signed integer of N bytes.
     Int(u32),
     /// Unsigned integer of N bytes.
@@ -40,7 +48,7 @@ impl Datatype {
             Datatype::Void => 0,
             // Ghidra `TypeSpacebase` is size 0 (open-ended, `Datatype(0,1,TYPE_SPACEBASE)`).
             Datatype::Spacebase(_) => 0,
-            Datatype::Bool => 1,
+            Datatype::Bool | Datatype::Char => 1,
             Datatype::Unknown(n) | Datatype::Int(n) | Datatype::Uint(n) | Datatype::Float(n) => *n,
             Datatype::Pointer(n, _) => *n,
             Datatype::Array(elem, count) => elem.size() * *count as u32,
@@ -57,7 +65,7 @@ impl Datatype {
             // Ghidra `TYPE_SPACEBASE = 16`, between `TYPE_VOID = 17` and `TYPE_UNKNOWN = 15`.
             Datatype::Spacebase(_) => 1,
             Datatype::Unknown(_) => 2,
-            Datatype::Int(_) | Datatype::Uint(_) => 3,
+            Datatype::Char | Datatype::Int(_) | Datatype::Uint(_) => 3,
             Datatype::Bool => 4,
             Datatype::Float(_) => 5,
             Datatype::Pointer(..) => 6,
@@ -80,6 +88,9 @@ impl Datatype {
             Datatype::Bool => 10,         // SUB_BOOL
             Datatype::Uint(_) => 16,      // SUB_UINT_PLAIN
             Datatype::Int(_) => 17,       // SUB_INT_PLAIN
+            // SUB_INT_CHAR is 19 — LESS specific than SUB_INT_PLAIN, so propagation prefers a plain
+            // `int1` over a `char` when both reach a Varnode (type.hh:108).
+            Datatype::Char => 19,         // SUB_INT_CHAR
             Datatype::Unknown(_) => 21,   // SUB_UNKNOWN
             Datatype::Spacebase(_) => 22, // SUB_SPACEBASE
             Datatype::Void => 23,         // SUB_VOID
@@ -91,9 +102,34 @@ impl Datatype {
         Datatype::Unknown(size)
     }
 
+    /// Ghidra `TypeFactory::getBase(s, TYPE_INT)` (type.cc:3631): the signed-integer core type of
+    /// `size` bytes. At size 1 that is [`Datatype::Char`], NOT `int1` — `cacheCoreTypes` installs the
+    /// chartype as `typecache[1][TYPE_INT]` because "Char is preferred over other int types"
+    /// (type.cc:3228). Every site that mirrors a Ghidra `getBase(_, TYPE_INT)` must come through
+    /// here; the opt-out is `getBaseNoChar` (type.hh:830), which Ghidra calls only for a shift's
+    /// amount operand (typeop.cc:1514/1539/1604) and which mosura spells `Datatype::Int(1)` directly.
+    pub fn base_int(size: u32) -> Datatype {
+        if size == 1 {
+            Datatype::Char
+        } else {
+            Datatype::Int(size)
+        }
+    }
+
     /// Ghidra `TYPE_PTR` test.
     pub fn is_pointer(&self) -> bool {
         matches!(self, Datatype::Pointer(..))
+    }
+
+    /// Ghidra `getMetatype() == TYPE_INT`. [`Datatype::Char`] IS `TYPE_INT` (`TypeChar` is a
+    /// `TypeBase(1,TYPE_INT,…)`, type.hh:356), so every predicate that Ghidra writes against the
+    /// METATYPE must accept it. mosura's predicates match on the enum VARIANT, which is the same
+    /// thing only as long as one variant per metatype exists — adding `Char` broke that, and the
+    /// first casualty was `isSubpieceCast`, which stopped recognising a 1-byte truncation as a cast
+    /// and printed `SUB81(x,0)` where Ghidra prints `(char)x`. Use this at any site whose Ghidra
+    /// original tests `TYPE_INT`.
+    pub fn is_int_meta(&self) -> bool {
+        matches!(self, Datatype::Int(_) | Datatype::Char)
     }
 
     /// Ghidra `TypePointer::getPtrTo` — the pointed-at type.
@@ -170,6 +206,7 @@ impl Datatype {
             Datatype::Spacebase(_) => "spacebase".into(),
             // Ghidra's core name for an undefined value of N bytes (`sleigh_arch.cc` core types).
             Datatype::Unknown(n) => format!("xunknown{n}"),
+            Datatype::Char => "char".into(),
             Datatype::Int(n) => format!("int{n}"),
             Datatype::Uint(n) => format!("uint{n}"),
             Datatype::Bool => "bool".into(),
@@ -196,9 +233,8 @@ pub fn meet(a: &Datatype, b: &Datatype) -> Datatype {
         std::cmp::Ordering::Less => b.clone(),
         std::cmp::Ordering::Equal => match (a, b) {
             // same metatype: int/uint conflict resolves to signed int
-            (Datatype::Uint(n), Datatype::Int(_)) | (Datatype::Int(n), Datatype::Uint(_)) => {
-                Datatype::Int(*n)
-            }
+            (Datatype::Uint(n), b) if b.is_int_meta() => Datatype::base_int(*n),
+            (a, Datatype::Uint(n)) if a.is_int_meta() => Datatype::base_int(*n),
             _ => a.clone(),
         },
     }
@@ -233,6 +269,27 @@ mod tests {
     /// Ghidra `Datatype::printNameBase` (type.hh:273) with the `TypePointer`/`TypeArray` overrides
     /// (:424/:457): each wrapper contributes its own letter AND recurses, so the stem of a `uint4 *`
     /// is `pu`, not `p`. `TypeSpacebase` carries no name and contributes nothing (:733).
+    /// Ghidra `TypeFactory::getBase(s,TYPE_INT)` prefers the chartype at size 1 (type.cc:3228), so
+    /// the DEFAULT 1-byte signed integer is `char`, not `int1`. `int1` survives as `type_nochar`
+    /// (:3220) for `getBaseNoChar`. Confirmed like-for-like against `oracle/capture --c` on the
+    /// `partialsplit` datatest, which declares `char cVar1; char *pcVar2;` and casts `(char)`.
+    #[test]
+    fn base_int_prefers_char_at_size_one() {
+        assert_eq!(Datatype::base_int(1), Datatype::Char);
+        assert_eq!(Datatype::base_int(2), Datatype::Int(2));
+        assert_eq!(Datatype::base_int(4), Datatype::Int(4));
+        assert_eq!(Datatype::Char.name(), "char");
+        assert_eq!(Datatype::Char.size(), 1);
+        assert_eq!(Datatype::Char.print_name_base(), "c");
+        // `char` IS TYPE_INT, so every metatype predicate accepts it (type.hh:356)...
+        assert!(Datatype::Char.is_int_meta());
+        assert_eq!(Datatype::Char.metatype(), Datatype::Int(1).metatype());
+        // ...but it is a DISTINCT, less specific sub-metatype: SUB_INT_CHAR 19 > SUB_INT_PLAIN 17,
+        // so a plain int1 wins propagation against it (type.hh:108).
+        assert_eq!(Datatype::Char.submeta(), 19);
+        assert_eq!(type_order(&Datatype::Int(1), &Datatype::Char), std::cmp::Ordering::Less);
+    }
+
     #[test]
     fn print_name_base_recurses_like_ghidra() {
         assert_eq!(Datatype::Int(4).print_name_base(), "i");

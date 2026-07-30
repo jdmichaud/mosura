@@ -51,7 +51,11 @@ enum Meta {
 fn base(meta: Meta, size: u32) -> Datatype {
     match meta {
         Meta::Unknown => Datatype::Unknown(size),
-        Meta::Int => Datatype::Int(size),
+        // `getBase(1,TYPE_INT)` answers `char`, not `int1`: `cacheCoreTypes` installs the chartype
+        // core type as `typecache[1][TYPE_INT]` — "Char is preferred over other int types"
+        // (type.cc:3228) — leaving `int1` as `type_nochar` (:3220), which only `getBaseNoChar`
+        // reaches (type.hh:830, called from the three shift-amount sites typeop.cc:1514/1539/1604).
+        Meta::Int => Datatype::base_int(size),
         Meta::Uint => Datatype::Uint(size),
         Meta::Bool => Datatype::Bool,
         Meta::Float => Datatype::Float(size),
@@ -370,7 +374,7 @@ impl<'a> TypeInfer<'a> {
             }
             // A signed compare relays *signedness* between its two operands (input↔input).
             IntSless | IntSlessequal => {
-                if inslot == -1 || outslot == -1 || !matches!(alttype, Datatype::Int(_)) {
+                if inslot == -1 || outslot == -1 || !alttype.is_int_meta() {
                     return None;
                 }
                 Some(alttype.clone())
@@ -801,7 +805,7 @@ mod tests {
         pipeline::decompile(&mut f);
         let types = infer(&f, &HashMap::new());
         assert!(
-            types.values().any(|t| matches!(t, Datatype::Int(_))),
+            types.values().any(|t| t.is_int_meta()),
             "a signed comparison should seed a signed int type"
         );
     }

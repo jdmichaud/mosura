@@ -28,10 +28,10 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
     let cur = high_type_read_facing(f, in_vn);
     let sz = f.vn(in_vn).size;
     match o.code() {
-        OpCode::IntSless | OpCode::IntSlessequal => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntSless | OpCode::IntSlessequal => cast_standard(&Datatype::base_int(sz), &cur, true, true),
         OpCode::IntLess | OpCode::IntLessequal => cast_standard(&Datatype::Uint(sz), &cur, true, false),
-        OpCode::IntSext => cast_standard(&Datatype::Int(sz), &cur, true, false),
-        OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntSext => cast_standard(&Datatype::base_int(sz), &cur, true, false),
+        OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::base_int(sz), &cur, true, true),
         OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
         OpCode::IntEqual | OpCode::IntNotequal => {
             let t0 = high_type_read_facing(f, o.input(0)?);
@@ -40,12 +40,12 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
             cast_standard(&req, &cur, false, false)
         }
         OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-        OpCode::IntSright if slot == 0 => cast_standard(&Datatype::Int(sz), &cur, true, true),
+        OpCode::IntSright if slot == 0 => cast_standard(&Datatype::base_int(sz), &cur, true, true),
         OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
             cast_standard(&Datatype::Uint(sz), &cur, false, true)
         }
         OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
-            cast_standard(&Datatype::Int(sz), &cur, false, true)
+            cast_standard(&Datatype::base_int(sz), &cur, false, true)
         }
         _ => None,
     }
@@ -62,7 +62,7 @@ pub fn arithmetic_output_standard(f: &Funcdata, op: OpId) -> Datatype {
     let o = f.op(op);
     let mut res1 = high_type_read_facing(f, o.input(0).unwrap());
     if matches!(res1, Datatype::Bool) {
-        res1 = Datatype::Int(res1.size()); // treat boolean as if cast to an integer
+        res1 = Datatype::base_int(res1.size()); // treat boolean as if cast to an integer
     }
     for i in 1..o.num_inputs() {
         let res2 = high_type_read_facing(f, o.input(i).unwrap());
@@ -108,7 +108,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright => {
             let mut res1 = high_type_read_facing(f, o.input(0).unwrap());
             if matches!(res1, Datatype::Bool) {
-                res1 = Datatype::Int(res1.size());
+                res1 = Datatype::base_int(res1.size());
             }
             res1
         }
@@ -136,7 +136,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         OpCode::Subpiece => {
             let dt = high_type_read_facing(f, out);
             if matches!(dt, Datatype::Unknown(_)) {
-                Datatype::Int(f.vn(out).size)
+                Datatype::base_int(f.vn(out).size)
             } else {
                 dt
             }
@@ -146,7 +146,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         // output's size (an unknown or pointer output).
         OpCode::Piece => {
             let dt = high_type_read_facing(f, out);
-            if matches!(dt, Datatype::Int(_) | Datatype::Uint(_)) {
+            if dt.is_int_meta() || matches!(dt, Datatype::Uint(_)) {
                 dt
             } else {
                 Datatype::Uint(f.vn(out).size)

@@ -74,10 +74,15 @@ impl RangeHint {
         if b.size < self.size {
             return false;
         }
-        if !matches!(self.ty, Datatype::Int(_) | Datatype::Uint(_) | Datatype::Bool | Datatype::Float(_)) {
+        // `type->getMetatype()` against TYPE_INT/UINT/BOOL/FLOAT (varmap.cc:39-41) — a METATYPE
+        // test, so `char` (TYPE_INT) is included.
+        if !(self.ty.is_int_meta()
+            || matches!(self.ty, Datatype::Uint(_) | Datatype::Bool | Datatype::Float(_)))
+        {
             return false;
         }
-        if !matches!(b.ty, Datatype::Unknown(_) | Datatype::Int(_) | Datatype::Uint(_)) {
+        // `b->type->getMetatype()` against TYPE_UNKNOWN/INT/UINT (varmap.cc:42-44).
+        if !(b.ty.is_int_meta() || matches!(b.ty, Datatype::Unknown(_) | Datatype::Uint(_))) {
             return false;
         }
         let mut end = self.sstart;
@@ -136,7 +141,7 @@ impl RangeHint {
             return false;
         }
         // For structures and unknown-element arrays, test if b looks like a partial/combined type
-        matches!(b.ty, Datatype::Unknown(_) | Datatype::Int(_) | Datatype::Uint(_))
+        b.ty.is_int_meta() || matches!(b.ty, Datatype::Unknown(_) | Datatype::Uint(_))
     }
 
     /// Ghidra `RangeHint::contain`: assuming `self` starts no later than `b` and they intersect,
@@ -244,7 +249,8 @@ impl RangeHint {
             }
             let compatible = matches!(a_t, Datatype::Unknown(_))
                 || matches!(b_t, Datatype::Unknown(_))
-                || matches!((a_t, b_t), (Datatype::Int(_), Datatype::Uint(_)) | (Datatype::Uint(_), Datatype::Int(_)))
+                || (a_t.is_int_meta() && matches!(b_t, Datatype::Uint(_)))
+                || (matches!(a_t, Datatype::Uint(_)) && b_t.is_int_meta())
                 || a_t == b_t;
             if !compatible {
                 return false;

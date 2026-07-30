@@ -67,13 +67,13 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
     }
     if !matches!(
         intype,
-        Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..)
+        Datatype::Int(_) | Datatype::Char | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..)
     ) {
         return false;
     }
     if !matches!(
         outtype,
-        Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..) | Datatype::Float(_)
+        Datatype::Int(_) | Datatype::Char | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Pointer(..) | Datatype::Float(_)
     ) {
         return false;
     }
@@ -83,7 +83,7 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
                 return true; // Cast from far pointer to near pointer
             }
         }
-        if !matches!(outtype, Datatype::Int(_) | Datatype::Uint(_)) {
+        if !(outtype.is_int_meta() || matches!(outtype, Datatype::Uint(_))) {
             return false; // other casts don't make sense for pointers
         }
     }
