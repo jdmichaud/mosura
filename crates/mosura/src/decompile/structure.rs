@@ -464,6 +464,16 @@ impl Structured {
             }
         }
         self.blocks.push(FlowBlock { kind, components, out_edges, out_labels, flags, active: true, negated: false, parent: None, cond_flip: (false, false) });
+        // `MOSURA_STRUCT=1` — every composite the collapse installs, in order. A decline-only trace
+        // says which rules refused; this says which ones FIRED, which is what identifies the node
+        // indices the goto selections later talk about (they are all composites).
+        if std::env::var("MOSURA_STRUCT").is_ok() {
+            let b = &self.blocks[n];
+            eprintln!(
+                "  STRUCT install blk{} {:?} components={:?} outs={:?} labels={:?}",
+                n, b.kind, b.components, b.out_edges, b.out_labels
+            );
+        }
         for p in preds {
             for e in self.blocks[p].out_edges.iter_mut() {
                 if compset.contains(e) {
@@ -2945,7 +2955,38 @@ pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
     reached
 }
 
+/// `MOSURA_CFG=1` — dump the basic-block partition handed to the structurer: per block its
+/// address span, live op count, in/out edges, and terminating opcode. The counterpart of
+/// `oracle/ghidra_scripts/DumpBlocks.java`, which prints the same fields from Ghidra's
+/// `HighFunction::getBasicBlocks`, so the two partitions diff line-for-line. Answers "do we cut
+/// the CFG where Ghidra cuts it?" — the question that a structuring-side instrument cannot,
+/// because by then the granularity is already fixed.
+fn dump_cfg_partition(f: &Funcdata) {
+    eprintln!("CFG {} nblocks={}", f.name, f.num_blocks());
+    for b in 0..f.num_blocks() {
+        let blk = f.block(BlockId(b as u32));
+        let start = blk.ops.first().map(|&o| f.op(o).seqnum.pc.offset);
+        let stop = blk.ops.last().map(|&o| f.op(o).seqnum.pc.offset);
+        let live = blk.ops.iter().filter(|&&o| !f.op(o).is_dead()).count();
+        let last = blk.ops.last().map(|&o| format!("{:?}", f.op(o).code())).unwrap_or_default();
+        eprintln!(
+            "CFG blk{} start={} stop={} ops={} live={} ins={:?} outs={:?} last={}",
+            b,
+            start.map(|a| format!("{a:#x}")).unwrap_or_else(|| "-".into()),
+            stop.map(|a| format!("{a:#x}")).unwrap_or_else(|| "-".into()),
+            blk.ops.len(),
+            live,
+            blk.in_edges.iter().map(|e| e.0).collect::<Vec<_>>(),
+            blk.out_edges.iter().map(|e| e.0).collect::<Vec<_>>(),
+            last,
+        );
+    }
+}
+
 pub fn structure(f: &Funcdata) -> Structured {
+    if std::env::var("MOSURA_CFG").is_ok() {
+        dump_cfg_partition(f);
+    }
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
         .map(|b| {
             let out_edges: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();

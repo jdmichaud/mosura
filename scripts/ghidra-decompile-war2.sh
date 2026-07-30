@@ -75,6 +75,13 @@ DIST="${GHIDRA_DIST:-$(echo /data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_*
 [ -d "$DIST" ] || DIST="$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)"
 HEADLESS="$DIST/support/analyzeHeadless"
 SCRIPTS="$HERE/oracle/ghidra_scripts"
+# Which oracle question to ask. `DecompileFunctions.java` (default) prints Ghidra's C — that is what
+# ghidra-all.txt holds. `DumpBlocks.java` prints Ghidra's BASIC-BLOCK PARTITION + per-block p-code,
+# which the C cannot show: a CFG-granularity divergence only reaches the C as extra gotos.
+POSTSCRIPT="${GHIDRA_POSTSCRIPT:-DecompileFunctions.java}"
+# Extra whitespace-separated arguments appended after the VA-list file, for scripts that take more
+# (e.g. `GHIDRA_POSTSCRIPT_ARGS='63c35=EDX'` with DecompileWithForcedParams.java).
+read -r -a POSTSCRIPT_ARGS <<<"${GHIDRA_POSTSCRIPT_ARGS:-}"
 
 [ -x "$HEADLESS" ] || { echo "ERROR: no analyzeHeadless at $HEADLESS (set GHIDRA_DIST)" >&2; exit 1; }
 [ -s "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (set WAR2_MANIFEST); regenerate with the war2_survey example" >&2; exit 1; }
@@ -127,8 +134,8 @@ mkdir -p "$WORK/proj"   # analyzeHeadless requires the project directory to alre
 "$HEADLESS" "$WORK/proj" cap -import "$WORK/image.bin" \
   -loader BinaryLoader -loader-baseAddr "$BASE" -processor "x86:LE:32:default" \
   -noanalysis -scriptPath "$SCRIPTS" \
-  -postScript DecompileFunctions.java "$WORK/vas.txt" -deleteProject 2>"$WORK/err.log" \
-  | sed -n 's/^INFO  DecompileFunctions\.java> \(.*\) (GhidraScript)  *$/\1/p' > "$WORK/out.txt" || {
+  -postScript "$POSTSCRIPT" "$WORK/vas.txt" "${POSTSCRIPT_ARGS[@]}" -deleteProject 2>"$WORK/err.log" \
+  | sed -n "s/^INFO  ${POSTSCRIPT//./\\.}> \(.*\) (GhidraScript)  *$/\1/p" > "$WORK/out.txt" || {
       echo "ERROR: headless failed; log tail:" >&2; tail -20 "$WORK/err.log" >&2; exit 1; }
 
 [ -s "$WORK/out.txt" ] || { echo "ERROR: no output; log tail:" >&2; tail -20 "$WORK/err.log" >&2; exit 1; }
