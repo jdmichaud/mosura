@@ -17,6 +17,44 @@
 | Date | 2026-07-23 |
 | Harness | `crates/mosura/examples/war2_survey.rs` + `war2-survey/` driver scripts (compile.sh, compare.py) |
 
+## Update — 2026-07-30b: the ladder, ISOLATED per change — and where the byte-clean count really stands
+
+⚠️ **Two claims that circulated earlier are dead. Do not repeat either.** "The heritage core cost 24
+COMPILE_FAILs" came from a delta measured against a baseline that predated the heritage core, so it
+was heritage-core+A3 combined. "A3 eliminated the 48-function E1052 class" is also wrong — that is the
+**heritage core's** win. Both are corrected below from three isolated measurements now on disk.
+
+| state | EXACT | RELOC_EXACT | **byte-clean** | MISMATCH | COMPILE_FAIL | file |
+| --- | --- | --- | --- | --- | --- | --- |
+| pre-heritage-core | 5 | 7 | **12** | 1213 | 78 | `results.base-pre-heritage-core.tsv` |
+| heritage core (`c0ac350`) | 5 | 7 | **12** | 1246 | **45** | `results.c0ac350.tsv` |
+| + A3 stackpointer (`9439fcf`) | 5 | 10 | **15** | 1186 | **102** | `results.9439fcf.tsv` |
+
+**The heritage core paid down RECOVERY debt.** COMPILE_FAIL **−33**, and the entire 48-function
+`E1052 Expression has void type` class went to zero — that is the void-return recovery failure, gone.
+Byte-clean flat.
+
+**A3 exposed RENDERING debt that was always there.** COMPILE_FAIL **+57**, byte-clean **+3**. All 57
+are one area: `E1011` (undeclared symbol) 4 → 60, in three sub-classes — 20 × the internal
+`spacebase` type name leaking into a declaration, 26 × stack locals used but never declared, 14 ×
+synthesized non-C width names (`uint6`, `uint10`, `uint20`, `xunknown12`, …). None is a recovery
+failure; all are naming/declaration mechanics in the emitter. They became visible only because A3
+made the stack machinery actually run on x86-32 — the debt predates A3 and A3 is its invoice, not its
+author. Settling it is what shows A3's true ledger.
+
+⚠️ Class counts here are **first-error-per-function** — see the ladder caveat in
+`docs/war2-recompile-remeasure.md`. The `E1018` 11 → 7 in the A3 column is really **−1**: one label
+fixed, three masked by the new earlier `E1011`.
+
+### Where the byte-clean count actually stands
+
+All 15 byte-clean functions are **single-basic-block** (`cfg=1`) — verified via the survey's
+`blocks_cfg`/`blocks_reached` columns. That is itself the explanation for why they are byte-clean:
+they are functions the structurer cannot damage. The 15 is real, but **its growth path runs directly
+through the block-loss fix** — no multi-block function can reliably join the set until `reached == cfg`
+holds everywhere. Binary-wide that invariant currently fails on 10 of 1303 functions (45 of 13328
+basic blocks lost); see the block-loss census below.
+
 ## Update — 2026-07-30: heritage core landed (`c0ac350`) — 467 of 1303 functions changed their C, zero calls moved
 
 **Read this before attributing any WAR2 delta measured after `c0ac350`.** The spacebase
@@ -55,10 +93,40 @@ Identical C means an identical object, which is a stronger claim than the round-
 no dosemu variance to argue about.
 
 **Still open, stated so "battery green" does not imply otherwise:** `FUN_00077dcb` did not recover
-its call. Stage B lost it 1→0 and the spacebase half was expected to heal it; it did not. The
-gauge is BLOCKING-clean because nothing was *lost* relative to the pre-land state, but the
-recovery has not happened. It is a stack-arg-shaped loss whose machinery stays inert until the
-`<stackpointer>` hardcode falls, so it is re-checked first thing after that retirement.
+its call. Stage B lost it 1→0 and the spacebase half was expected to heal it; it did not, and the A3
+stackpointer retirement did not either — so that expectation was **wrong, not premature**; do not
+retry the stack angle. Root-caused instead (see below): the call is ALIVE in the final IR and the
+*emitter* loses it.
+
+### Block-loss census — the invariant `reached == cfg`, binary-wide
+
+The structurer builds a node per basic block but the tree it returns can reach only a SUBSET;
+unreached blocks are never emitted. Measured across all 1303 functions via the survey's
+`blocks_cfg`/`blocks_reached`:
+
+| | |
+|---|---|
+| functions with `reached < cfg` | **10 of 1303** (0.8%) |
+| basic blocks lost | **45 of 13328** (0.34%) |
+| worst | `00051298` −11 · `00068902` −10 · `0006529f` −5 · `0006d870` −5 · `0001081c` −4 · `00077dcb` −4 |
+
+**Root cause** (`MOSURA_COLLAPSE=1`): `collapse_all` finishes with TWO active top-level components and
+`structure()` keeps only the entry block's (`root = current_form(0)`), orphaning the other. The
+termination test `isolated_count < order.len()` is satisfied by two components once `order` has shrunk
+to 2, so the collapse does not think it failed — which is why this was silent. Ghidra's
+`CollapseStructure::collapseAll` reduces to a SINGLE node, so a goto there always finds its label.
+Lands with the persistent-BlockGraph work (C1); the oracle is `active_top_level_roots == 1` and
+`reached == cfg`.
+
+**The ten are exactly the ten undefined-label functions.** The label symptom undercounted the *blocks*
+(18 labels vs 45 blocks) but identified 100% of the affected *functions* — there is no population of
+additional functions losing blocks invisibly.
+
+**Layer attribution of the call deficit** (the gauge now reads the manifest's `ir_calls` = live
+CALL/CALLIND in the final IR): deficit 5 functions / 10 calls splits **decompiler 4, EMITTER 6**. Only
+`00079130` is a genuine recovery gap; `00068902`, `00051298`, `0006529f` and `00077dcb` recovered the
+call and lost it in emission. A render-side count alone cannot name the layer that lost a call — quote
+the split, not the bare deficit.
 
 ## Update — 2026-07-28: VariablePiece split (`be13a04`) — 505 value drops fixed, +18 COMPILE_FAIL
 

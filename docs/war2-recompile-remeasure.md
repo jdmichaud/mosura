@@ -138,6 +138,32 @@ awk -F'\t' '$4=="COMPILE_FAIL"{e=$5; sub(/:.*/,"",e); c[e]++} END {for(x in c) p
 Baselines for reference: post-Stage-1 = 229 COMPILE_FAIL; post-Brick-1 (pointer casts) clean = 112;
 DECOMPILE_FAIL = 0 since the Stage-0 panic fix. Total = 1286.
 
+### ⚠️ The class counts are FIRST-ERROR-PER-FUNCTION, not errors-present
+
+wcc386 stops at a function's first error, so `results.tsv`'s error class is **the first error in that
+function**, not the set of its errors. Every per-class count is therefore conditional on no *earlier*
+class growing — and when one class grows it silently HIDES others. This is not a footnote on the
+measurement; it is a different measurement than "how many functions have error X".
+
+Worked example (2026-07-30). The isolated A3 delta showed `E1018` (undefined label) going 11 → 7,
+which reads as "four labels fixed". Checking each function: **one** was genuinely fixed (`00064d7b`)
+and **three were MASKED** by a new earlier `E1011 spacebase` — `00051298`, `0006529f` and `00068902`
+all still carry their undefined labels. The real delta was −1, not −4. `E1011` had grown by 56 that
+round, which is exactly what buried them.
+
+**Rule: a SOURCE SCAN is authoritative for any class we track; the ladder is a coarse total that
+answers only "can it compile".** Give each tracked class a source predicate where one is expressible:
+
+| class | source predicate |
+| --- | --- |
+| undefined labels (`E1018`) | `scripts/war2-wrongcode-scan.py` — and prefer the stronger `reached == cfg` invariant it is a subset of |
+| `spacebase` type leak (`E1011`) | `grep -l 'spacebase' src/*.c` |
+| synthesized non-C widths (`E1011`) | grep for `uint6`/`int6`/`uint10`/`uint12`/`uint20`/`xunknown12` |
+| undeclared stack locals (`E1011`) | declared-vs-used diff over `[xaiupf]Stack_<hex>` per file |
+
+Same family as the manifest-idx trap and the reference-sides trap: state what the predicate literally
+tests. A count you cannot reproduce from source is a count that can move without the defect moving.
+
 ## Wrong-code scan (required when new functions compile)
 When a change makes functions newly COMPILE, confirm none compiles to WRONG bytes: a function that
 was COMPILE_FAIL and is now MISMATCH with a very low byte-match, or EXACT/RELOC that regressed, is
