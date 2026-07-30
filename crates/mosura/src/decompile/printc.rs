@@ -54,17 +54,6 @@ fn operand_oriented(f: &super::funcdata::Funcdata, s: &Structured, idx: usize) -
         .is_some_and(|cbr| f.op(cbr).is_fallthru_true())
 }
 
-/// Ghidra's one-letter type prefix for a variable/global name.
-fn type_prefix(t: &Datatype) -> &'static str {
-    match t {
-        Datatype::Int(_) => "i",
-        Datatype::Uint(_) => "u",
-        Datatype::Bool => "b",
-        Datatype::Float(_) => "f",
-        Datatype::Pointer(..) => "p",
-        _ => "x",
-    }
-}
 
 /// Ghidra `CastStrategyC::isSubpieceCast` (`cast.cc`): a SUBPIECE prints as a C truncation cast
 /// `(outtype)x` (rather than the functional `SUB<n><m>(x,off)`) exactly when it slices at offset 0
@@ -454,16 +443,21 @@ impl<'a> PrintC<'a> {
         if let Some(s) = self.partial_symbol(v, true) {
             return s;
         }
-        // a direct global — a constant-address access in `ram` — is named by its address,
-        // like Ghidra's `<typeprefix>Ram<addr>` (e.g. `iRam0000000000101000`)
+        // A direct global — a constant-address access in `ram` — is named by its address:
+        // Ghidra `ScopeInternal::buildVariableName`'s persist branch (database.cc:2455), the type's
+        // `printNameBase` stem + the capitalized space name + the address.
+        // (Ghidra's field width there is `2*addr.getAddrSize()` (:2466), which is 8 on a 4-byte ram
+        // space; mosura's hardcoded 16 is a separate filed item, deliberately not moved here so this
+        // change's delta stays attributable. `varmap::build_internal_variable_name` is the same
+        // Ghidra function ported for the stack space and is where both should end up.)
         if Some(vn.loc.space) == self.ram_space {
-            let (off, prefix) = (vn.loc.offset, type_prefix(&self.type_of(v)));
+            let (off, prefix) = (vn.loc.offset, self.type_of(v).print_name_base());
             return format!("{prefix}Ram{off:016x}");
         }
         // a value merged into a global's HighVariable (e.g. the `param_1 + 1` that `merge_copy`
         // unified with `iRam..`) is named by that global's address, too.
         if let Some(&off) = self.high_ram_off.get(&self.h.high(v)) {
-            let prefix = type_prefix(&self.type_of(v));
+            let prefix = self.type_of(v).print_name_base();
             return format!("{prefix}Ram{off:016x}");
         }
         // A register value CREATED by a call side effect (an INDIRECT whose output carries the
@@ -487,11 +481,15 @@ impl<'a> PrintC<'a> {
         if let Some(n) = self.names.get(&id) {
             return n.clone();
         }
-        // Ghidra names a local by its type prefix (`xVar`/`iVar`/`uVar`/`fVar`/`pVar`); a local in
-        // the recovered `stack` space is named by its frame offset (`xStack_28`) instead of a
-        // running counter.
+        // Ghidra names an ordinary local `<printNameBase>Var<index>` — `ScopeInternal::
+        // buildVariableName`'s final branch (database.cc:2517: `ct->printNameBase(s); s << "Var" <<
+        // dec << index++;`). The stem is `Datatype::printNameBase` (type.hh:273), which PREPENDS `p`
+        // per pointer level (:424) and `a` per array level (:457) and then RECURSES into what is
+        // pointed at, so a `char *` local is `pcVar1` and a `uint *` local is `puVar1`. A local in the
+        // recovered `stack` space is named by its frame offset (`xStack_28`) instead of a running
+        // counter.
         let ty = self.type_of(v);
-        let prefix = type_prefix(&ty);
+        let prefix = ty.print_name_base();
         // Name by the frame offset when this varnode is (or is merged with) a `stack` slot, so a
         // register version merged into the slot shares the slot's `xStack_NN` name.
         let stack_off = self

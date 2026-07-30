@@ -144,12 +144,19 @@ impl Datatype {
     /// Ghidra `Datatype::printNameBase` (type.hh:273): the one-letter stem a default variable name is
     /// built from — the FIRST CHARACTER of the data-type's name, with `TypePointer` prepending `p`
     /// (type.hh:424) and `TypeArray` prepending `a` (type.hh:457), each recursing into what it points
-    /// at. This is what makes an `int4` local `iVar1`, an `undefined4` stack slot `xStack_24` and an
-    /// array of them `axStack_24`.
+    /// at. This is what makes an `int4` local `iVar1`, a `char *` local `pcVar1`, an `undefined4`
+    /// stack slot `xStack_24` and an array of them `axStack_24`.
+    ///
+    /// Ghidra's base case is guarded — `if (!name.empty()) s << name[0];` — and `TypeSpacebase` is
+    /// constructed with NO name (`Datatype(0,1,TYPE_SPACEBASE)`, type.hh:733/736), so it contributes
+    /// nothing and a pointer to it is a bare `pVar1`. mosura's [`Self::name`] answers `"spacebase"`
+    /// for the C declaration form, which is a rendering mosura emits and Ghidra does not; that string
+    /// must not leak into a variable stem as well.
     pub fn print_name_base(&self) -> String {
         match self {
             Datatype::Pointer(_, to) => format!("p{}", to.print_name_base()),
             Datatype::Array(elem, _) => format!("a{}", elem.print_name_base()),
+            Datatype::Spacebase(_) => String::new(),
             _ => self.name().chars().next().map(String::from).unwrap_or_default(),
         }
     }
@@ -222,6 +229,35 @@ pub fn type_order(a: &Datatype, b: &Datatype) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ghidra `Datatype::printNameBase` (type.hh:273) with the `TypePointer`/`TypeArray` overrides
+    /// (:424/:457): each wrapper contributes its own letter AND recurses, so the stem of a `uint4 *`
+    /// is `pu`, not `p`. `TypeSpacebase` carries no name and contributes nothing (:733).
+    #[test]
+    fn print_name_base_recurses_like_ghidra() {
+        assert_eq!(Datatype::Int(4).print_name_base(), "i");
+        assert_eq!(Datatype::Unknown(4).print_name_base(), "x");
+        assert_eq!(
+            Datatype::Pointer(4, Box::new(Datatype::Uint(4))).print_name_base(),
+            "pu"
+        );
+        assert_eq!(
+            Datatype::Array(Box::new(Datatype::Int(4)), 4).print_name_base(),
+            "ai"
+        );
+        // wrappers nest
+        assert_eq!(
+            Datatype::Pointer(4, Box::new(Datatype::Pointer(4, Box::new(Datatype::Int(1)))))
+                .print_name_base(),
+            "ppi"
+        );
+        // a pointer to the internal spacebase type is a BARE `p` — the pointee has no name
+        assert_eq!(
+            Datatype::Pointer(4, Box::new(Datatype::Spacebase(crate::decompile::space::SpaceId(4))))
+                .print_name_base(),
+            "p"
+        );
+    }
 
     #[test]
     fn type_order_matches_ghidra_submeta_ordering() {
