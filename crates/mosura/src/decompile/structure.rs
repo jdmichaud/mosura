@@ -3028,6 +3028,14 @@ pub fn structure(f: &Funcdata) -> Structured {
     // The root is the entry block's collapsed form (the single isolated block, when the graph
     // fully collapsed).
     s.root = if n == 0 { 0 } else { s.current_form(0) };
+    if std::env::var("MOSURA_COLLAPSE").is_ok() {
+        let roots: Vec<usize> =
+            (0..s.blocks.len()).filter(|&i| s.blocks[i].active && s.blocks[i].parent.is_none()).collect();
+        eprintln!(
+            "COLLAPSE n={} order={} active_top_level_roots={} root={} roots={:?}",
+            n, s.order.len(), roots.len(), s.root, roots
+        );
+    }
 
     // Reclassify loop-exit gotos as breaks (Ghidra's ActionFinalStructure → BlockGraph::scopeBreak,
     // blockaction.cc:2193), run over the fully-collapsed tree.
