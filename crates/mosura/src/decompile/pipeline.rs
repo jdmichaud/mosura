@@ -567,10 +567,24 @@ impl Action for ActionConsume {
 /// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
 pub fn universal_action() -> ActionGroup {
     ActionGroup::once("decompile")
-        // Iterating heritage: re-run ActionHeritage to completion (register pass, then stack
-        // pass). Ghidra's mainloop is a single restart group; here heritage is its own restart
-        // group, the foundation for folding the rest of the pipeline into the loop next.
-        .then(ActionGroup::restart("heritage").then(ActionHeritage))
+        // ONE priming heritage pass — Ghidra has no pre-mainloop ActionHeritage at all, and this
+        // single invocation is what makes mosura's rotation of `actmainloop` an EXACT rotation.
+        // Ghidra runs ActionHeritage at the HEAD of the mainloop (coreaction.cc:5492), so its
+        // sequence is `H [rest] H [rest] …`; mosura moved ActionHeritage to the tail, so priming with
+        // exactly one invocation reproduces the same sequence. Wrapping the prime in a restart group
+        // instead ran heritage TO COMPLETION first — `H H [rest] H [rest] …` — which is a different
+        // pipeline, and specifically one with NO rule pool between the register pass and the stack
+        // pass.
+        //
+        // That gap is not cosmetic: it is the entire window the stack-pointer placeholder lives in.
+        // ActionFuncLink hangs a placeholder LOAD off every call, heritage's REGISTER pass links its
+        // free spacebase reference to the value reaching the call, the pools fold that to
+        // `<sp_input> + delta` and RuleLoadVarnode reads `delta` out — and then the STACK pass
+        // consumes it (`clear_stack_placeholders`, then guardCalls registering stack trials against
+        // the now-known offset). With both passes back-to-back the placeholder was cleared before any
+        // rule could ever resolve it, so no call site could learn its stack offset and mosura
+        // registered zero STACK input trials anywhere.
+        .then(ActionHeritage)
         .then(ActionResolveCalls)
         // ★ The two-phase fullloop (task #8 Brick C1): Ghidra `actfullloop` (rule_repeatapply,
         // coreaction.cc:5487) wrapping `actmainloop` (rule_repeatapply, :5489) with
