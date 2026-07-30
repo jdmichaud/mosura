@@ -39,6 +39,10 @@ CLASSES
 UNCOVERED — known wrong-code shapes this scan does NOT detect (file them, don't assume absence)
     - a goto emitted at the WRONG NESTING LEVEL that still leaves a `return` reachable at the end
       (falls-off-end sees only the variant where nothing terminates the body)
+    - a trailing `switch` with a `default:` arm that FALLS THROUGH rather than returning — excluded
+      from falls-off-end to avoid the FUN_00056c3c false positive, so this variant is invisible
+    - a trailing `while (cond)` / `for (;;)` whose condition is provably always true (only the
+      literal `while( true )` tail is recognised)
     - a label defined but never reachable (dead block kept rather than dropped)
     - `case` values that duplicate or that no longer cover the recovered jump-table targets
     - a variable read before any assignment (mosura emits these; the compiler catches some)
@@ -76,8 +80,14 @@ def falls_off_end(text: str) -> list:
     """Non-void functions in `text` whose body can reach the closing brace with no `return`.
 
     Brace-counted rather than regex-matched: the shape is a property of the LAST statement at the
-    body's own depth, which no single pattern can see. A `} while( true );` tail is excluded — the
-    loop never exits, so the end of the body is unreachable and Ghidra emits the same thing.
+    body's own depth, which no single pattern can see.
+
+    Two tails do NOT count, because the end of the body is unreachable and GHIDRA EMITS THE SAME:
+      - `} while( true );` — the loop never exits.
+      - a trailing `switch` that has a `default:` arm — every value is covered, so if the arms all
+        return, so does the function. FUN_00056c3c is the worked example; Ghidra's output for it is
+        the same switch with the same missing terminal return. Excluding it is what keeps this
+        predicate from crying wolf on a shape that is correct.
     """
     bad = []
     lines = text.split('\n')
@@ -97,11 +107,24 @@ def falls_off_end(text: str) -> list:
         i = j
         if ret in ('void', ''):
             continue                                   # falling off a void function is legal
-        inner = [l.strip() for l in body[1:-1] if l.strip()]
-        if not inner:
+        inner = body[1:-1]                             # drop the body's own braces
+        stripped = [l.strip() for l in inner if l.strip()]
+        if not stripped:
             continue
-        last = inner[-1]
+        last = stripped[-1]
         if last.startswith(('return', 'goto')) or last.endswith('break;') or last.startswith('} while'):
+            continue
+        # The construct the body's final `}` closes: walk depth 0 (relative to the body) and keep the
+        # last statement that opened a block there.
+        depth, tail_opener, tail_from = 0, None, 0
+        for k, l in enumerate(inner):
+            if depth == 0 and l.strip():
+                opener = l.strip()
+            depth += l.count('{') - l.count('}')
+            if depth == 1 and '{' in l:
+                tail_opener, tail_from = opener, k
+        if tail_opener and tail_opener.startswith('switch') \
+                and any(x.strip().startswith('default:') for x in inner[tail_from:]):
             continue
         bad.append(name)
     return bad
