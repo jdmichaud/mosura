@@ -73,6 +73,33 @@ pub fn default_output_paramlist(
 ///   - a prototype `<returnaddress>` (else the compiler-spec-level default `<returnaddress>`,
 ///     `fspec.cc:2689`) adds a `return_address` record;
 ///   - the whole list is sorted by `(space, offset)` (`EffectRecord::compareByAddress`).
+/// Decode the compiler spec's `<stackpointer>` element (Ghidra `CompilerSpec::decode`,
+/// `compiler.cc`: `<stackpointer register="ESP" space="ram"/>`) into the stack pointer register's
+/// `(space, offset, size)`.
+///
+/// **Why this is read from the spec and not hardcoded.** Ghidra's `ia.sinc` defines two register
+/// files for x86: under `@ifdef IA64` the 8-byte `[RAX RCX RDX RBX RSP RBP RSI RDI]` puts RSP at
+/// `0x20`, while the `@else` 4-byte `[EAX ECX EDX EBX ESP EBP ESI EDI]` — the file `x86:LE:32` uses
+/// — puts **ESP at `0x10`**, with `0x20` past the general-purpose block entirely. A constant that is
+/// right for one is silently wrong for the other, and "silently" is the word: a stack-pointer offset
+/// that matches no register does not fail, it just never propagates, so stack-frame recovery yields
+/// nothing at all and every frame slot degenerates into an offset from an unmodelled register.
+pub fn default_stack_pointer(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<(SpaceId, u64, u32)> {
+    let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let sp = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "stackpointer")?;
+    let name = sp.attribute("register")?;
+    Some((spaces.by_name("register")?, spec.register_offset(name)?, spec.register_size(name)?))
+}
+
 pub fn default_proto_model(
     spec: &Spec,
     language_id: &str,

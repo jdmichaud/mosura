@@ -137,10 +137,14 @@ impl SpaceManager {
         let register = m.add("register", SpaceKind::Processor, 4, 1);
         m.add("unique", SpaceKind::Internal, 4, 1);
         let stack = m.add("stack", SpaceKind::Spacebase, 8, 1);
-        // Register the x86-64 stack pointer RSP `(register:0x20, 8)` as the `stack` space's spacebase
-        // register (Ghidra reads this from the compiler spec's `<stackpointer>`; mosura hardcodes it,
-        // the same RSP=0x20 the pre-pool `stackvars` recovery already uses). This is what
-        // `ActionSpacebase` (`Funcdata::spacebase`) looks up to mark the input RSP `is_spacebase()`.
+        // The DEFAULT spacebase register for the `stack` space: x86-64's RSP `(register:0x20, 8)`.
+        // Ghidra reads this from the compiler spec's `<stackpointer>`, and so does mosura whenever a
+        // spec is available — [`Self::set_stack_pointer`] replaces this default from
+        // `analysis::cspec::default_stack_pointer`. It stays here as the fallback for a hand-built
+        // `SpaceManager` with no spec. This registration is what `ActionSpacebase`
+        // (`Funcdata::spacebase`) looks up to mark the input stack pointer `is_spacebase()`, and
+        // hence what lets `RuleLoadVarnode`/`RuleStoreVarnode` turn a stack-relative access into a
+        // `stack`-space Varnode at all.
         m.set_spacebase(stack, Address::new(register, 0x20), 8);
         // The `stack` spacebase is a placeholder into `ram` (Ghidra `SpacebaseSpace` `contain`),
         // so `correctSpacebase` accepts a stack-relative LOAD/STORE only off the `ram` data space.
@@ -153,6 +157,20 @@ impl SpaceManager {
     /// `spacebaselist`, populated from the compiler spec). `reg`/`size` describe the register.
     pub fn set_spacebase(&mut self, space: SpaceId, reg: Address, size: u32) {
         self.spaces[space.0 as usize].spacebase.push((reg, size));
+    }
+
+    /// Replace the `stack` space's spacebase register with the one the compiler spec declares
+    /// (`<stackpointer>`), as Ghidra does when it builds the address spaces for a target.
+    ///
+    /// Without this the default x86-64 `RSP=(register:0x20, 8)` is used on every target. On
+    /// `x86:LE:32` the stack pointer is ESP at `0x10` (Ghidra `ia.sinc`'s `@else` register file), so
+    /// the default matches no register — `ActionSpacebase` marks nothing, and no stack-relative
+    /// access is ever turned into a `stack` Varnode. The failure is silent: not a wrong frame, no
+    /// frame at all.
+    pub fn set_stack_pointer(&mut self, reg: Address, size: u32) {
+        let Some(stack) = self.by_name("stack") else { return };
+        self.spaces[stack.0 as usize].spacebase.clear();
+        self.set_spacebase(stack, reg, size);
     }
 
     /// Record the physical space a virtual `Spacebase` space is a placeholder into (Ghidra

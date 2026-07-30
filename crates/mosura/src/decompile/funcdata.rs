@@ -148,6 +148,18 @@ pub struct Funcdata {
     /// `guardCalls` all read it. Empty ([`super::fspec::ProtoModel::empty`]) for a hand-built
     /// `Funcdata`, so a test graph with no compiler spec recovers no convention.
     pub proto_model: super::fspec::ProtoModel,
+    /// The stack pointer register, decoded from the compiler spec's `<stackpointer>` (Ghidra
+    /// `CompilerSpec::decode`; reached in the decompiler as `glb->translate->getSpacebase`). Stack
+    /// recovery, the alias probe and `ActionDirectWrite` all key on it.
+    ///
+    /// It is spec-sourced rather than a constant because the offset is target-specific and getting
+    /// it wrong fails *silently*: x86-64 puts RSP at `0x20`, but `x86:LE:32`'s register file puts
+    /// ESP at `0x10` (Ghidra `ia.sinc`, the `@else` branch), and a seed that matches no register
+    /// simply never propagates — stack recovery then yields zero stack Varnodes and every frame slot
+    /// renders as an offset from an unmodelled register. `None` for a hand-built `Funcdata` with no
+    /// compiler spec, which disables the stack-pointer-keyed passes exactly as an empty
+    /// `proto_model` disables prototype recovery.
+    pub stack_pointer: Option<super::space::Address>,
     /// User-defined p-code op index → name (Ghidra `Architecture::userops`, reached via
     /// `Funcdata::getArch`). Copied from [`crate::sleigh::engine::Spec::userops`] by the build
     /// caller; consumed by `PrintC::opCallother` to render a `CPUI_CALLOTHER` as `<name>(args)`
@@ -195,6 +207,7 @@ impl Funcdata {
             nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model: super::fspec::ProtoModel::empty(),
+            stack_pointer: None,
             userops: std::collections::HashMap::new(),
             opactdbg_active: false,
             modify_list: Vec::new(),

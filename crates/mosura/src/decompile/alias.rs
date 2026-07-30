@@ -23,18 +23,22 @@ use super::funcdata::Funcdata;
 use super::opcode::OpCode;
 use super::varnode::VarnodeId;
 
-const RSP: u64 = 0x20; // x86-64 register RSP, the entry stack pointer
+/// Ghidra `AliasChecker::findSpacebaseInput` looks up the spacebase register from the compiler
+/// spec; mosura carries it on [`Funcdata::stack_pointer`]. Formerly `const RSP: u64 = 0x20`, an
+/// x86-64 constant that silently matched no register on `x86:LE:32` (ESP is `0x10` there) — see
+/// [`super::stackvars`].
+fn is_stack_pointer_input(f: &Funcdata, v: VarnodeId) -> bool {
+    let vn = f.vn(v);
+    vn.is_input() && f.stack_pointer.is_some_and(|sp| vn.loc == sp)
+}
 
 /// Ghidra `AliasChecker::gatherAdditiveBase`/`gatherOffset`: the entry-stack-relative offsets whose
 /// address escapes as a value (a pointer can reach them).
 pub fn aliased_stack_offsets(f: &Funcdata) -> HashSet<i64> {
     let mut aliased = HashSet::new();
-    let Some(reg) = f.spaces.by_name("register") else { return aliased };
     // The entry stack-pointer input varnode (Ghidra `findSpacebaseInput`).
-    let Some(sp) = (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| {
-        let vn = f.vn(v);
-        vn.is_input() && vn.loc.space == reg && vn.loc.offset == RSP
-    }) else {
+    let Some(sp) = (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| is_stack_pointer_input(f, v))
+    else {
         return aliased;
     };
 
@@ -150,11 +154,9 @@ pub struct AddBase {
 /// is a Varnode that has at least one \e non-additive use (its stack address escapes there).
 pub fn gather_additive_base(f: &Funcdata) -> Vec<AddBase> {
     let mut addbase: Vec<AddBase> = Vec::new();
-    let Some(reg) = f.spaces.by_name("register") else { return addbase };
-    let Some(startvn) = (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| {
-        let vn = f.vn(v);
-        vn.is_input() && vn.loc.space == reg && vn.loc.offset == RSP
-    }) else {
+    let Some(startvn) =
+        (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| is_stack_pointer_input(f, v))
+    else {
         return addbase;
     };
 

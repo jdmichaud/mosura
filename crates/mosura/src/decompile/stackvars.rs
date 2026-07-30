@@ -26,7 +26,15 @@ use super::opcode::OpCode;
 use super::space::{Address, SpaceId};
 use super::varnode::VarnodeId;
 
-const RSP: u64 = 0x20; // x86-64 register RSP, the entry stack pointer
+/// Ghidra `CompilerSpec`'s `<stackpointer>` register, carried on [`Funcdata::stack_pointer`]. This
+/// used to be `const RSP: u64 = 0x20`, an x86-64 constant — which made this whole pass INERT on
+/// `x86:LE:32`, where the register file puts ESP at `0x10` (Ghidra `ia.sinc`, `@else` branch) and
+/// `0x20` is past the general-purpose block. A seed matching no register does not fail loudly; it
+/// simply never propagates, so no stack Varnode is ever created and every frame slot renders as an
+/// offset from an unmodelled register.
+fn stack_pointer(f: &Funcdata) -> Option<(SpaceId, u64)> {
+    f.stack_pointer.map(|a| (a.space, a.offset))
+}
 
 type Loc = (SpaceId, u64);
 
@@ -72,10 +80,10 @@ fn symbolic_value(f: &Funcdata, o: &super::op::PcodeOp, sval: &HashMap<Loc, i64>
 /// marks the stack pointer `unaffected`).
 fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, OpId, i64)> {
     let mut out = HashMap::new();
-    let Some(reg) = f.spaces.by_name("register") else { return out };
+    let Some(sp) = stack_pointer(f) else { return out };
     let is_rsp = |v: VarnodeId, f: &Funcdata| {
         let vn = f.vn(v);
-        vn.loc.space == reg && vn.loc.offset == RSP
+        (vn.loc.space, vn.loc.offset) == sp
     };
     let calls: Vec<_> = f
         .op_ids()
@@ -130,9 +138,12 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, OpId, i64)> {
 /// other stack LOAD/STORE is left for the in-pool `RuleLoadVarnode`/`RuleStoreVarnode`
 /// spacebase-register branch (see the module docs).
 pub fn recover_stack(f: &mut Funcdata) {
-    let (Some(reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
+    let (Some(_reg), Some(stack)) = (f.spaces.by_name("register"), f.spaces.by_name("stack")) else {
         return;
     };
+    // No compiler spec ⇒ no stack pointer ⇒ nothing to recover, exactly as an empty `proto_model`
+    // recovers no prototype.
+    let Some(sp) = stack_pointer(f) else { return };
     let nblk = f.num_blocks();
     if nblk == 0 {
         return;
@@ -140,7 +151,7 @@ pub fn recover_stack(f: &mut Funcdata) {
     let call_restores = call_push_restores(f);
     let retaddr_stores: std::collections::HashSet<OpId> =
         call_restores.values().map(|&(store, _, _)| store).collect();
-    let entry_sval = HashMap::from([((reg, RSP), 0i64)]);
+    let entry_sval = HashMap::from([(sp, 0i64)]);
     let mut sval_out: Vec<Option<HashMap<Loc, i64>>> = vec![None; nblk];
 
     // Process blocks in reverse postorder so each block's forward-edge predecessors are processed
@@ -192,7 +203,7 @@ pub fn recover_stack(f: &mut Funcdata) {
                         let base = f.op(push).input(0).unwrap();
                         f.op_set_opcode(push, OpCode::Copy);
                         f.op_set_all_input(push, &[base]);
-                        if let Some(v) = sval.get_mut(&(reg, RSP)) {
+                        if let Some(v) = sval.get_mut(&sp) {
                             *v += amt;
                         }
                     }
