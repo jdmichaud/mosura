@@ -722,8 +722,12 @@ impl Structured {
     /// orientations `(i=0,j=1)`/`(i=1,j=0)` carry no flip and reproduce the previous 2-case fold
     /// byte-for-byte; the swapped `(i=0,j=0)`/`(i=1,j=1)` orientations are the newly-recovered folds.
     fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+        let dbg = std::env::var("MOSURA_STRUCT").is_ok();
         if self.out(b).len() != 2 {
             return false;
+        }
+        if dbg {
+            eprintln!("  STRUCT short_circuit TRY blk{b} outs={:?}", self.out(b));
         }
         if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
@@ -734,6 +738,12 @@ impl Structured {
         for i in 0..2 {
             let orblock = self.out(b)[i]; // the second condition (Ghidra's orblock)
             if orblock == b || ins[orblock].len() != 1 || self.out(orblock).len() != 2 {
+                if dbg {
+                    eprintln!(
+                        "  STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: shape (ins={}, outs={})",
+                        ins[orblock].len(), self.out(orblock).len()
+                    );
+                }
                 continue;
             }
             if self.blocks[orblock].is_interior_goto_target() {
@@ -746,6 +756,9 @@ impl Structured {
                 continue; // don't use a loop branch to reach the second condition
             }
             if self.is_complex(orblock) {
+                if std::env::var("MOSURA_STRUCT").is_ok() {
+                    eprintln!("  STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: is_complex");
+                }
                 continue; // second condition block must print as a pure expression
             }
             let clauseblock = self.out(b)[1 - i];
