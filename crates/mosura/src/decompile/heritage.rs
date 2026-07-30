@@ -1499,6 +1499,14 @@ fn guard_returns_overlapping(f: &mut Funcdata, addr: super::space::Address, size
         let subop = f.new_op(OpCode::Subpiece, seq, vec![invn, off_const]);
         f.op_insert_before(subop, ret);
         let retval = f.new_output(subop, trunc_size, trunc_addr);
+        // heritage.cc:1684 — `invn->setActiveHeritage()`. The whole-range read this manufactures must
+        // join THIS round's renaming, or `rename_recurse` skips it (:2496) and it stays FREE at a
+        // register location forever. A free ancestor then stops `ancestorOpUse` dead
+        // (`if (!invn->isInput()) return false`, funcdata_varnode.cc), so the return trial is never
+        // marked active, the RETURN loses its value, and every op feeding it is correctly dead-coded:
+        // floatcast rendered `void func(void) { return; }`. Invisible while heritage ran to
+        // completion before anything else, because the SECOND pass linked the varnode anyway.
+        f.vn_mut(invn).set_active_heritage();
         f.op_append_input(ret, retval);
         f.active_output.as_mut().unwrap().trial[ti].op_slot = (f.op(ret).num_inputs() - 1) as u32;
     }
