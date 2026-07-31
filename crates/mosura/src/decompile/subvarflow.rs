@@ -1505,16 +1505,200 @@ impl<'a> SubvariableFlow<'a> {
     }
 
     // --- The sign-extension tracers ---------------------------------------------------------
-    // subflow.cc traceForwardSext:867 / traceBackwardSext:960. Only `RuleSubvarSext` constructs a
-    // flow with `sextrestrictions`, and that rule is not registered (rules.rs, pipeline.rs:280), so
-    // these are unreachable: a `sextrestrictions` trace never succeeds and never runs in the
-    // pipeline. They land WITH that rule, not before it.
+    // The `sextrestrictions` mode, reached only from `RuleSubvarSext`. The logical value is assumed
+    // (and checked) to be SIGN-extended into its container rather than zero-extended, which changes
+    // which ops preserve it: INT_SRIGHT now does, and the comparisons all do at both widths.
 
-    fn trace_forward_sext(&mut self, _rvn: usize) -> bool {
-        false
+    /// Ghidra `SubvariableFlow::traceForwardSext` (`subflow.cc:867`).
+    fn trace_forward_sext(&mut self, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
+        let mask = self.rvnodes[rvn].mask;
+        let mut dcount = 0i32;
+        let mut hcount = 0i32;
+        let mut callcount = 0i32;
+
+        let descend = self.fd.vn(vn).descend.clone();
+        for idx in 0..descend.len() {
+            let op = descend[idx];
+            let out_opt = self.fd.op(op).output;
+            if let Some(o) = out_opt {
+                if self.fd.vn(o).is_mark() && !self.fd.op(op).is_call() {
+                    continue;
+                }
+            }
+            dcount += 1;
+            let slot = self.fd.op(op).inrefs.iter().position(|&v| v == vn).unwrap();
+            let opc = self.fd.op(op).code();
+            subvar_debug(&format!("  fwdS {}", self.fd.op_str(op)));
+            match opc {
+                OpCode::Copy
+                | OpCode::Multiequal
+                | OpCode::IntNegate
+                | OpCode::IntXor
+                | OpCode::IntOr
+                | OpCode::IntAnd => {
+                    let outvn = out_opt.expect("op has output");
+                    let n = self.fd.op(op).num_inputs() as i32;
+                    let rop = self.create_op_down(opc, n, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                // The logical value extended into an even larger container.
+                OpCode::IntSext => {
+                    let outvn = out_opt.expect("op has output");
+                    let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntSright => {
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.fd.vn(in1).is_constant() {
+                        return false; // Only constant shifts, as Ghidra
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let rop = self.create_op_down(OpCode::IntSright, 2, op, rvn, 0);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false; // Keep the same mask size
+                    }
+                    let in1sz = self.fd.vn(in1).size;
+                    self.add_constant(Some(rop), calc_mask(in1sz), 1, in1); // Preserve the shift amount
+                    hcount += 1;
+                }
+                OpCode::Subpiece => {
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if self.fd.vn(in1).constant_value() != 0 {
+                        return false; // Only allow proper truncation
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let outsz = self.fd.vn(outvn).size;
+                    if outsz > self.flowsize {
+                        return false;
+                    }
+                    if outsz == self.flowsize {
+                        self.add_terminal_patch(op, rvn); // Flow ends: SUBPIECE becomes a COPY
+                    } else {
+                        self.add_terminal_patch_same_op(op, rvn, 0); // SUBPIECE truncates even more
+                    }
+                    hcount += 1;
+                }
+                // On sign-extended values the unsigned comparisons are equivalent at both sizes,
+                // and everything else works because both sides are sign extended.
+                OpCode::IntLess
+                | OpCode::IntLessequal
+                | OpCode::IntSless
+                | OpCode::IntSlessequal
+                | OpCode::IntEqual
+                | OpCode::IntNotequal => {
+                    let othervn = self.fd.op(op).input(1 - slot).unwrap();
+                    if !self.create_compare_bridge(op, rvn, slot, othervn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Call | OpCode::Callind => {
+                    callcount += 1;
+                    let slot = if callcount > 1 {
+                        self.get_repeat_slot(op, vn, slot, idx, &descend)
+                    } else {
+                        slot as i32
+                    };
+                    if !self.try_call_pull(op, rvn, slot) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Return => {
+                    if !self.try_return_pull(op, rvn, slot) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Branchind => {
+                    if !self.try_switch_pull(op, rvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                _ => return false,
+            }
+        }
+        if dcount != hcount {
+            // Must account for all descendants of an input.
+            if self.fd.vn(vn).is_input() {
+                return false;
+            }
+        }
+        true
     }
-    fn trace_backward_sext(&mut self, _rvn: usize) -> bool {
-        false
+
+    /// Ghidra `SubvariableFlow::traceBackwardSext` (`subflow.cc:960`).
+    fn trace_backward_sext(&mut self, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
+        let mask = self.rvnodes[rvn].mask;
+        let Some(op) = self.fd.vn(vn).def else {
+            return true; // If vn is input
+        };
+        let opc = self.fd.op(op).code();
+        subvar_debug(&format!("  backS {}", self.fd.op_str(op)));
+        match opc {
+            OpCode::Copy
+            | OpCode::Multiequal
+            | OpCode::IntNegate
+            | OpCode::IntXor
+            | OpCode::IntAnd
+            | OpCode::IntOr => {
+                let n = self.fd.op(op).num_inputs() as i32;
+                let rop = self.create_op(opc, n, rvn);
+                for i in 0..n as usize {
+                    let ini = self.fd.op(op).input(i).unwrap();
+                    if !self.create_link(Some(rop), mask, i as i32, ini) {
+                        return false; // Same inputs and mask
+                    }
+                }
+                true
+            }
+            OpCode::IntZext => {
+                let in0 = self.fd.op(op).input(0).unwrap();
+                if self.fd.vn(in0).size < self.flowsize {
+                    // A zero extension from a SMALLER size still acts as a signed extension.
+                    self.add_push(op, rvn);
+                    return true;
+                }
+                false
+            }
+            OpCode::IntSext => {
+                let in0 = self.fd.op(op).input(0).unwrap();
+                if self.flowsize != self.fd.vn(in0).size {
+                    return false;
+                }
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                self.create_link(Some(rop), mask, 0, in0)
+            }
+            OpCode::IntSright => {
+                // A sign-extended logical value arithmetically right-shifted is the logical value
+                // shifted by the same amount.
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.fd.vn(in1).is_constant() {
+                    return false;
+                }
+                let rop = self.create_op(OpCode::IntSright, 2, rvn);
+                let in0 = self.fd.op(op).input(0).unwrap();
+                if !self.create_link(Some(rop), mask, 0, in0) {
+                    return false; // Keep the same mask
+                }
+                if self.rops[rop].input.len() == 1 {
+                    let in1sz = self.fd.vn(in1).size;
+                    self.add_constant(Some(rop), calc_mask(in1sz), 1, in1); // Preserve the shift amount
+                }
+                true
+            }
+            OpCode::Call | OpCode::Callind => self.try_call_return_push(op, rvn),
+            _ => false,
+        }
     }
 
     /// Ghidra `SubvariableFlow::doTrace` (`subflow.cc:1410`): trace the logical value through the
@@ -2296,6 +2480,46 @@ mod tests {
         let arvn = *s.varmap.get(&a).unwrap();
         assert!(s.trace_forward(arvn));
         assert_eq!(s.rvnodes[*s.varmap.get(&sum).expect("output linked")].mask, 0xff);
+    }
+
+    #[test]
+    fn sext_tracers_follow_sign_extension() {
+        // traceBackwardSext INT_SEXT (subflow.cc:985): the flow reaches the pre-extension value,
+        // but ONLY when the extension is from exactly the logical size.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(1, Address::new(reg, 0x10));
+        let op = f.new_op(OpCode::IntSext, seq, vec![x]);
+        let w = f.new_output(op, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
+        let mut s = SubvariableFlow::new(&mut f, w, 0xff, false, true, false);
+        let wrvn = *s.varmap.get(&w).unwrap();
+        assert!(s.trace_backward_sext(wrvn));
+        assert_eq!(s.rops[s.rvnodes[wrvn].def.unwrap()].opc, OpCode::Copy);
+        assert_eq!(s.rvnodes[*s.varmap.get(&x).expect("pre-extension value linked")].mask, 0xff);
+
+        // A sign-extended value arithmetically right-shifted keeps BOTH the logical value and the
+        // shift amount (subflow.cc:991) — INT_SRIGHT survives as itself, unlike in the zext mode
+        // where the same op has to be re-masked.
+        // `v` must NOT be a function input: `set_replacement` refuses to assume an input is sign
+        // extended into a wider container (subflow.cc:97, "Cannot assume input is sign extended"),
+        // so an input operand would make this decline for a reason that has nothing to do with the
+        // arm under test.
+        let (mut f, reg, ram) = mkfd();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let vin = f.new_input(4, Address::new(reg, 0x10));
+        let vcp = f.new_op(OpCode::Copy, seq, vec![vin]);
+        let v = f.new_output(vcp, 4, Address::new(reg, 0x20));
+        let amt = f.new_const(4, 3);
+        let op = f.new_op(OpCode::IntSright, seq, vec![v, amt]);
+        let r = f.new_output(op, 4, Address::new(reg, 0x18));
+        recompute_consume(&mut f);
+        let mut s = SubvariableFlow::new(&mut f, r, 0xff, false, true, false);
+        let rrvn = *s.varmap.get(&r).unwrap();
+        assert!(s.trace_backward_sext(rrvn));
+        let rop = s.rvnodes[rrvn].def.unwrap();
+        assert_eq!(s.rops[rop].opc, OpCode::IntSright);
+        assert_eq!(s.rops[rop].input.len(), 2, "the shift amount must be preserved as input 1");
     }
 
     #[test]

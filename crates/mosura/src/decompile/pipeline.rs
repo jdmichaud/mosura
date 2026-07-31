@@ -20,7 +20,8 @@ use super::rules::{
     RuleSubNormal, RuleSubRight, RuleOrConsume, RuleEqual2Constant,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
-    RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarShift, RuleSubvarZext,
+    RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
+    RuleSubvarZext,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -277,10 +278,9 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::rules::RulePiece2Sext) // (104)
         .with(RulePopcountBoolXor) // (105)
         .with(RuleOrCompare) // (109)
-        // SubVariableFlow driving rules (coreaction.cc:5621-5627). RuleSubvarSext (5628) deferred —
-        // sign-extension tracer still stubbed. RuleAndDistribute (5537) stays OUT (RuleHumptyOr
-        // ping-pong hang). RuleSubZext is now wired at slot 74 above (its wide-return regressors were
-        // cleared by the mainloop + subvar return-narrowing + Piece2Zext).
+        // SubVariableFlow driving rules (coreaction.cc:5621-5628). RuleAndDistribute (5537) stays OUT
+        // (RuleHumptyOr ping-pong hang). RuleSubZext is now wired at slot 74 above (its wide-return
+        // regressors were cleared by the mainloop + subvar return-narrowing + Piece2Zext).
         .with(RuleSubvarAnd) // (110)
         .with(RuleSubvarSubpiece) // (111)
         // RuleSplitFlow (coreaction.cc:5623): split an artificially-joined wide value — a high SUBPIECE
@@ -298,6 +298,10 @@ pub fn default_rule_pool() -> ActionPool {
         // no longer eats the subvar `EAX = COPY(u)` at the RETURN (5a8ac03 ports isReturnCopy), so the
         // narrowed return lands at the register EAX and recover.rs records it faithfully.
         .with(RuleSubvarZext) // (116)
+        // RuleSubvarSext (117, coreaction.cc:5628): the sign-extension twin, driving the
+        // `sextrestrictions` tracers. Its `aggressive` argument comes from the compiler spec's
+        // `<aggressivetrim signext=>`, not a constant.
+        .with(RuleSubvarSext) // (117)
         .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
         // The double-precision LOAD/STORE recombiners sit at Ghidra's oppool1 tail (coreaction.cc:

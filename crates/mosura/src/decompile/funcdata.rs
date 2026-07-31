@@ -160,6 +160,12 @@ pub struct Funcdata {
     /// compiler spec, which disables the stack-pointer-keyed passes exactly as an empty
     /// `proto_model` disables prototype recovery.
     pub stack_pointer: Option<super::space::Address>,
+    /// Ghidra `Architecture::aggressive_ext_trim` (`architecture.hh:176`), decoded from the compiler
+    /// spec's `<aggressivetrim signext=>`. `RuleSubvarSext::reset` (`subflow.cc:1745`) reads it and
+    /// passes it as `SubvariableFlow`'s `aggressive` argument. `false` is Ghidra's default
+    /// (`architecture.cc:156`) and the answer for every x86 spec; see
+    /// [`crate::analysis::cspec::aggressive_ext_trim`] for why it is read rather than assumed.
+    pub aggressive_ext_trim: bool,
     /// User-defined p-code op index → name (Ghidra `Architecture::userops`, reached via
     /// `Funcdata::getArch`). Copied from [`crate::sleigh::engine::Spec::userops`] by the build
     /// caller; consumed by `PrintC::opCallother` to render a `CPUI_CALLOTHER` as `<name>(args)`
@@ -213,6 +219,7 @@ impl Funcdata {
             laned: super::transform::LanedRegisterSet::default(),
             proto_model,
             stack_pointer: None,
+            aggressive_ext_trim: false,
             userops: std::collections::HashMap::new(),
             opactdbg_active: false,
             modify_list: Vec::new(),

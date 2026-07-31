@@ -100,6 +100,28 @@ pub fn default_stack_pointer(
     Some((spaces.by_name("register")?, spec.register_offset(name)?, spec.register_size(name)?))
 }
 
+/// Decode the compiler spec's `<aggressivetrim signext="true"/>` (Ghidra
+/// `Architecture::decodeAggressiveTrim`, `architecture.cc:1121`) into `aggressive_ext_trim` — the
+/// flag `RuleSubvarSext::reset` (`subflow.cc:1745`) passes as `SubvariableFlow`'s `aggressive`
+/// argument, relaxing the checks that decide whether a sign-extended value may be trimmed.
+///
+/// Ghidra's default is `false` (`architecture.cc:156`), and the element appears only in compiler
+/// specs for 32-bit ABIs running on 64-bit registers — AARCH64_ilp32, the MIPS64-32 variants,
+/// ppc_64_32. **No x86 compiler spec sets it**, so on every target mosura currently builds this
+/// answers `false`. It is read rather than assumed anyway, because "the value happens to be the
+/// default on today's targets" is the exact shape of the hardcoding that made stack recovery inert
+/// on x86:LE:32 — the cost of reading it is one XML lookup and the cost of assuming it is a silent
+/// wrong answer the first time a MIPS or AARCH64 target is built.
+pub fn aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
+    let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return false };
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Ok(doc) = roxmltree::Document::parse(&text) else { return false };
+    doc.descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "aggressivetrim")
+        .and_then(|n| n.attribute("signext"))
+        .is_some_and(|v| v == "true")
+}
+
 pub fn default_proto_model(
     spec: &Spec,
     language_id: &str,

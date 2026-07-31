@@ -4531,8 +4531,8 @@ impl Rule for RulePiece2Sext {
 // SubVariableFlow driving rules — Ghidra `subflow.cc:1547-1721`. Each spots a
 // seed (a wide Varnode from which only a narrow logical sub-value is used),
 // builds a `SubvariableFlow`, then `do_trace()` + `do_replacement()` to shrink
-// the flow. `aggressive` is always false — mosura has no `Varnode::isPtrFlow`.
-// (RuleSubvarSext deferred — its sign-extension tracer is still a Stage-4 stub.)
+// the flow. `aggressive` is false for the ZEXT-side rules — mosura has no
+// `Varnode::isPtrFlow`; `RuleSubvarSext` reads its own from the compiler spec.
 // ---------------------------------------------------------------------------
 
 /// Ghidra `RuleSubvarAnd` (subflow.cc:1553): `V & c` where the AND output is consumed exactly by the
@@ -4750,6 +4750,39 @@ impl Rule for RuleSubvarZext {
         let invn = data.op(op).input(0).unwrap();
         let mask = super::nzmask::calc_mask(data.vn(invn).size);
         let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, false, false, false);
+        if !subflow.do_trace() {
+            return 0;
+        }
+        subflow.do_replacement();
+        1
+    }
+}
+
+/// Ghidra `RuleSubvarSext` (subflow.cc:1723): the twin of [`RuleSubvarZext`] for SIGN extension —
+/// the output of `INT_SEXT(v)` is a narrow value sign-padded into a wide register, so trace the
+/// logical `v`-width value with `sextrestrictions` set. That mode is what makes INT_SRIGHT and the
+/// signed comparisons preserve the logical value, which the zero-extension mode cannot assume.
+///
+/// `aggressive` comes from the compiler spec's `<aggressivetrim signext=>` via
+/// `RuleSubvarSext::reset` (subflow.cc:1742) — `false` on every x86 target, but read rather than
+/// assumed (see [`crate::analysis::cspec::aggressive_ext_trim`]). Unlike `RuleSubvarZext`, whose
+/// `aggressive` argument is `Varnode::isPtrFlow` and therefore still blocked on `RulePtrFlow`, this
+/// one's source is available, so the rule lands with Ghidra's real argument rather than a constant.
+pub struct RuleSubvarSext;
+
+impl Rule for RuleSubvarSext {
+    fn name(&self) -> &str {
+        "subvar_sext"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntSext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let vn = data.op(op).output.unwrap();
+        let invn = data.op(op).input(0).unwrap();
+        let mask = super::nzmask::calc_mask(data.vn(invn).size);
+        let aggressive = data.aggressive_ext_trim;
+        let mut subflow = super::subvarflow::SubvariableFlow::new(data, vn, mask, aggressive, true, false);
         if !subflow.do_trace() {
             return 0;
         }

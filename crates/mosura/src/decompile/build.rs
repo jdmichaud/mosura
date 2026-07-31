@@ -62,19 +62,36 @@ fn resolve_stack_pointer(
     Some((Address::new(space, offset), size))
 }
 
-/// The corpus/datatest default [`ProtoModel`] — the x86-64 SysV (`gcc`) `<default_proto>`. Used by
-/// the isolated build paths ([`raw_funcdata`], [`raw_funcdata_flow`], [`raw_funcdata_flow_image`]),
-/// all of which lift x86-64 SysV fixtures. A `Program`-driven decompile threads its own
-/// `(language_id, compiler_id)` instead (see [`crate::analysis::decompiler`]).
-fn default_proto_model(spec: &Spec) -> ProtoModel {
-    resolve_proto_model(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID)
+/// Everything a [`Funcdata`] takes from the COMPILER SPEC, travelling together because it is one
+/// decode of one `.cspec` and because splitting it is how a target-specific value ends up hardcoded:
+/// each field here is wrong-by-default on some target mosura can build.
+#[derive(Clone)]
+struct CspecSettings {
+    /// `<default_proto>` — the calling convention (input/output ParamLists + call effects).
+    proto_model: ProtoModel,
+    /// `<stackpointer>` — the spacebase register and its size.
+    stack_pointer: Option<(Address, u32)>,
+    /// `<aggressivetrim signext=>` — `RuleSubvarSext`'s `aggressive` argument.
+    aggressive_ext_trim: bool,
 }
 
-/// The corpus/datatest default stack pointer — x86-64 SysV's `<stackpointer register="RSP"/>`,
-/// which resolves to the same `0x20` the retired constant hardcoded (see
-/// [`crate::analysis::cspec::default_stack_pointer`] for why it must not stay a constant).
-fn default_stack_pointer(spec: &Spec) -> Option<(Address, u32)> {
-    resolve_stack_pointer(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID)
+impl CspecSettings {
+    /// Decode all of it for `(language_id, compiler_id)`.
+    fn resolve(spec: &Spec, language_id: &str, compiler_id: &str) -> CspecSettings {
+        CspecSettings {
+            proto_model: resolve_proto_model(spec, language_id, compiler_id),
+            stack_pointer: resolve_stack_pointer(spec, language_id, compiler_id),
+            aggressive_ext_trim: crate::analysis::cspec::aggressive_ext_trim(language_id, compiler_id),
+        }
+    }
+
+    /// The corpus/datatest default — the x86-64 SysV (`gcc`) compiler spec, used by the isolated
+    /// build paths ([`raw_funcdata`], [`raw_funcdata_flow`], [`raw_funcdata_flow_image`]), which all
+    /// lift x86-64 SysV fixtures. A `Program`-driven decompile threads its own ids into
+    /// [`raw_funcdata_flow_image_overrides`] instead (see [`crate::analysis::decompiler`]).
+    fn default_for(spec: &Spec) -> CspecSettings {
+        CspecSettings::resolve(spec, DEFAULT_LANG_ID, DEFAULT_COMPILER_ID)
+    }
 }
 
 /// Test-only: the SysV `<default_proto>` [`ProtoModel`] (x86-64-gcc.cspec) for the hand-built
@@ -85,7 +102,7 @@ fn default_stack_pointer(spec: &Spec) -> Option<(Address, u32)> {
 pub(crate) fn test_sysv_proto_model() -> Option<ProtoModel> {
     let sla = crate::paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
     let spec = crate::speccache::get(&sla)?;
-    let pm = default_proto_model(spec);
+    let pm = CspecSettings::default_for(spec).proto_model;
     pm.input.is_some().then_some(pm)
 }
 
@@ -120,15 +137,14 @@ fn build_from_instrs(
     base: u64,
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
     laned: &[(i32, u32)],
-    proto_model: ProtoModel,
-    stack_pointer: Option<(Address, u32)>,
+    cspec: CspecSettings,
     userops: &std::collections::HashMap<u64, String>,
 ) -> Funcdata {
     let mut spaces = SpaceManager::standard();
     // The `stack` space's spacebase register, from the compiler spec's `<stackpointer>`. This is
     // what `ActionSpacebase` marks and what lets a stack-relative access become a `stack` Varnode;
     // leaving the x86-64 default in place on another target yields no stack frame at all.
-    if let Some((sp, size)) = stack_pointer {
+    if let Some((sp, size)) = cspec.stack_pointer {
         spaces.set_stack_pointer(sp, size);
     }
     let ram = spaces.by_name("ram").expect("standard ram space");
@@ -138,10 +154,13 @@ fn build_from_instrs(
     f.laned = LanedRegisterSet::from_size_masks(laned.iter().copied());
     // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
     // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
-    f.proto_model = proto_model;
+    f.proto_model = cspec.proto_model;
     // The stack pointer register from the compiler spec's `<stackpointer>`; keyed on by stack
     // recovery, the alias probe and ActionDirectWrite. Target-specific, hence never a constant.
-    f.stack_pointer = stack_pointer.map(|(a, _)| a);
+    f.stack_pointer = cspec.stack_pointer.map(|(a, _)| a);
+    // The compiler spec's `<aggressivetrim signext=>`, which `RuleSubvarSext` passes as
+    // SubvariableFlow's `aggressive` argument (Ghidra `Architecture::aggressive_ext_trim`).
+    f.aggressive_ext_trim = cspec.aggressive_ext_trim;
     // The user-op (`define pcodeop`) index→name table (Ghidra `Architecture::userops`), so
     // `PrintC::opCallother` can render a CALLOTHER as its userop name rather than `CALLOTHER(...)`.
     f.userops = userops.clone();
@@ -192,8 +211,7 @@ pub fn raw_funcdata(
         base,
         spec.disassemble_ctx(bytes, base, context),
         &spec.laned,
-        default_proto_model(spec),
-        default_stack_pointer(spec),
+        CspecSettings::default_for(spec),
         &spec.userops,
     )
 }
@@ -252,8 +270,7 @@ pub fn raw_funcdata_flow(
         base,
         decoded.into_values(),
         &spec.laned,
-        default_proto_model(spec),
-        default_stack_pointer(spec),
+        CspecSettings::default_for(spec),
         &spec.userops,
     )
 }
@@ -317,8 +334,7 @@ pub fn raw_funcdata_flow_image_overrides(
 
     // The calling convention, decoded once from `(language_id, compiler_id)`'s compiler spec and
     // shared by the jump-table recovery probe clone and the final build.
-    let proto_model = resolve_proto_model(spec, language_id, compiler_id);
-    let stack_pointer = resolve_stack_pointer(spec, language_id, compiler_id);
+    let cspec = CspecSettings::resolve(spec, language_id, compiler_id);
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -406,8 +422,7 @@ pub fn raw_funcdata_flow_image_overrides(
                 entry,
                 decoded.values().cloned(),
                 &spec.laned,
-                proto_model.clone(),
-                stack_pointer,
+                cspec.clone(),
                 &spec.userops,
             );
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
@@ -471,7 +486,7 @@ pub fn raw_funcdata_flow_image_overrides(
     // so draining it yields every decoded instruction exactly once, in creation order.
     let ordered: Vec<crate::sleigh::Instruction> = flow_order.iter().filter_map(|a| decoded.remove(a)).collect();
     let mut f =
-        build_from_instrs(name, entry, ordered, &spec.laned, proto_model, stack_pointer, &spec.userops);
+        build_from_instrs(name, entry, ordered, &spec.laned, cspec, &spec.userops);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();
@@ -619,7 +634,7 @@ mod tests {
 
         // Datatest default: x86-64 SysV.
         let Some((spec64, _)) = x86_64() else { return };
-        let sysv = gen_regs(&super::default_proto_model(&spec64));
+        let sysv = gen_regs(&super::CspecSettings::default_for(&spec64).proto_model);
         if sysv.is_empty() {
             eprintln!("skip: sysv default proto absent (tree missing)");
             return;
