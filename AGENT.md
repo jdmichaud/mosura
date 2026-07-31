@@ -73,6 +73,40 @@ must filter by function, or the operator must.** A bare `MOSURA_STRUCT=1` / `MOS
 dump interleaves *every* function `analyze_le_file` decompiles — callees included — so always
 segment the output by its `CFG <name>` header before reading a single line of it.
 
+### An inherited gate is a claim with an author and a date
+
+"Blocked behind X", "gated on Y", "cast rules exhausted", "deferred with the Z lattice" — none of
+these is a property of the code. Each is a **claim someone made at a commit**, and claims decay: the
+prerequisite lands, the ground moves, or the search behind the word "exhausted" was never run.
+**Three such gates were falsified in three days**, each by one read-only grounding pass, and in two
+of them the agent citing the gate was the agent who had cited it to the lead an hour earlier.
+
+Three rules, each bought:
+
+1. **A GATE IS NOT RETIRED BY SATISFYING IT — someone has to go back and kill the note.**
+   `docs/ir-cast-model-plan.md` said "Stage 0 COMPLETE" in its own text while work elsewhere was
+   still being declined as "blocked behind retiring print-time re-inference". The prerequisite had
+   landed months earlier. When you satisfy a prerequisite, hunt the notes that cite it.
+
+2. **A GATE NOTE THAT COVERS MULTIPLE ITEMS RETIRES NONE OF THEM WHEN ONE IS EXAMINED.** One
+   sentence in `setcasts.rs` deferred four things "with the composite/union lattice they concern".
+   The four answers turned out to be: genuinely gated (`resolveUnion`), wrongly described AND
+   measurably inert (`checkPointerIssues` — 0 occurrences in Ghidra's own WAR2 output), a live
+   unported gap needing no lattice at all (the PTRADD refit — 59 measured firings, every one a
+   pointer to a primitive), and one still open (the PTRSUB refit). **The bundling is HOW it
+   survived**: examining any single item left the sentence standing, so the sentence kept being
+   quoted. ⇒ **One claim per item, or the note is unfalsifiable in practice.**
+
+3. **AN "EXHAUSTED" VERDICT IS A CLAIM ABOUT A SEARCH, AND IT DECAYS EVERY TIME THE GROUND MOVES
+   UNDER IT.** "Cast rules exhausted" was written while `cast_standard` carried a live defect worth
+   302 casts. And when you falsify part of such a claim, **say which part** — falsifying the
+   parenthetical while explicitly refusing to claim the main sentence is what keeps the remainder
+   trustworthy.
+
+⇒ Before accepting any inherited "this is blocked", ground the specific token READ-ONLY. It costs
+one pass and it has paid three times. And when you write a deferral yourself: one item, one reason,
+and a **revival condition** that says what would make it wrong.
+
 ### The decision rule (read this before you revert anything)
 
 The C-similarity (`ccompare`) is a **coarse gauge, never the gate.** It erases names,
