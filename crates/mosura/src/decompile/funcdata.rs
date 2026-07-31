@@ -795,7 +795,7 @@ impl Funcdata {
 
     /// The lone op reading `vn`, or `None` if it has zero or several readers (Ghidra
     /// `Varnode::loneDescend`).
-    fn lone_descend(&self, vn: VarnodeId) -> Option<OpId> {
+    pub(crate) fn lone_descend(&self, vn: VarnodeId) -> Option<OpId> {
         let d = &self.varnodes[vn.0 as usize].descend;
         (d.len() == 1).then(|| d[0])
     }

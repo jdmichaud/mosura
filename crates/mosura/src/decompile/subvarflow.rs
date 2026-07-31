@@ -15,14 +15,17 @@
 //! (`def`, `output`, `input`) are `Option<usize>` indices. Constants and new outputs live in
 //! `rvnodes` too but are not in `varmap` (matching Ghidra's separate `newvarlist`).
 //!
-//! STAGE 2 (this file): the subgraph machinery + `do_replacement` (Stage 1) plus the forward/backward
-//! opcode tracers ([`SubvariableFlow::trace_forward`]/[`SubvariableFlow::trace_backward`]) for the
-//! CORE opcodes (COPY, INT_AND/OR/XOR/NEGATE, INT_ZEXT/SEXT, SUBPIECE, PIECE, INT_LEFT/RIGHT/SRIGHT,
-//! MULTIEQUAL, INT_EQUAL/NOTEQUAL). The CALL/RETURN/BRANCHIND(switch)/FLOAT_INT2FLOAT pulls, the
-//! remaining arithmetic arms (INT_ADD/MULT/DIV/REM), and the sign-extension tracers
-//! ([`SubvariableFlow::trace_forward_sext`]/[`SubvariableFlow::trace_backward_sext`]) remain
-//! Stage-4 work and abort the trace. No driving rule is wired yet (Stage 3), so `do_trace` is only
-//! reachable from tests — the subsystem is corpus-neutral.
+//! [`SubvariableFlow::trace_forward`] and [`SubvariableFlow::trace_backward`] now cover EVERY opcode
+//! arm of Ghidra's `traceForward`/`traceBackward` (`subflow.cc:373`/`665`). They did not always: the
+//! arithmetic arms (INT_ADD/MULT/DIV/REM), the comparisons, the boolean/CBRANCH edges, and the
+//! BRANCHIND/FLOAT_INT2FLOAT/call-return pulls were once left to the `default` abort, and that gap —
+//! not the type model — is what pinned mosura's 1-byte values at 4 bytes.
+//!
+//! Still deferred, and both need their own driving code rather than an arm here: the sign-extension
+//! tracers ([`SubvariableFlow::trace_forward_sext`]/[`SubvariableFlow::trace_backward_sext`]), which
+//! only `RuleSubvarSext` reaches and which is not registered; and the `aggressive` flag, which
+//! `RuleSubvarZext` should take from `Varnode::isPtrFlow` — a flag mosura's Varnode does not carry
+//! because `RulePtrFlow` is not ported. Both are unreachable today, so neither can affect output.
 
 use std::collections::HashMap;
 
@@ -643,6 +646,114 @@ impl<'a> SubvariableFlow<'a> {
         -1
     }
 
+    /// Ghidra `Varnode::isZeroExtended` (`varnode.cc:958`): can we prove the bytes above the low
+    /// `base_size` are zero? Lives here rather than on `Varnode` because it is the only caller; the
+    /// `size > sizeof(uintb)` arm asks the defining op, since an over-8-byte varnode has no nzmask.
+    fn is_zero_extended(&self, vn: VarnodeId, base_size: u32) -> bool {
+        let size = self.fd.vn(vn).size;
+        if base_size >= size {
+            return false;
+        }
+        if size > 8 {
+            let Some(def) = self.fd.vn(vn).def else { return false };
+            if self.fd.op(def).code() != OpCode::IntZext {
+                return false;
+            }
+            let in0 = self.fd.op(def).input(0).unwrap();
+            return self.fd.vn(in0).size <= base_size;
+        }
+        (self.fd.vn(vn).get_nzmask() >> (8 * base_size)) == 0
+    }
+
+    /// Ghidra `SubvariableFlow::addBooleanPatch` (`subflow.cc:1203`): a bit of the logical value flows
+    /// into an operator taking a boolean input. Terminates the subgraph along that edge, leaving the
+    /// operator itself untouched — deliberately NOT counted as a modification, so a trace made only of
+    /// boolean patches still fails `do_trace`'s `pullcount == 0` test.
+    fn add_boolean_patch(&mut self, pullop: OpId, rvn: usize, slot: i32) {
+        self.patchlist.push(PatchRecord { ty: PatchType::Parameter, patch_op: pullop, in1: Some(rvn), in2: None, slot });
+    }
+
+    /// Ghidra `SubvariableFlow::trySwitchPull` (`subflow.cc:319`): the logical value is a BRANCHIND's
+    /// switch variable — trim it to its logical size. Ghidra's comment mentions querying the JumpTable
+    /// but the code does not; the test is purely on the mask and the consumed bits.
+    fn try_switch_pull(&mut self, op: OpId, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("real varnode");
+        let mask = self.rvnodes[rvn].mask;
+        if (mask & 1) == 0 {
+            return false; // Logical value must be justified
+        }
+        if (self.fd.vn(vn).get_consume() & !mask) != 0 {
+            return false; // Something outside the mask is consumed — can't trim
+        }
+        self.patchlist.push(PatchRecord { ty: PatchType::Parameter, patch_op: op, in1: Some(rvn), in2: None, slot: 0 });
+        self.pullcount += 1; // A true terminal modification
+        true
+    }
+
+    /// Ghidra `SubvariableFlow::tryInt2FloatPull` (`subflow.cc:341`): the logical value is zero-padded
+    /// into a FLOAT_INT2FLOAT, making the conversion unsigned. Keep the conversion but record a patch
+    /// that re-inserts an INT_ZEXT so it stays unsigned. When the existing `INT_ZEXT -> FLOAT_INT2FLOAT`
+    /// pair already has the preferred shape this is NOT counted as a modification, so the trace needs
+    /// another terminal patch to be worth doing.
+    fn try_int2float_pull(&mut self, op: OpId, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("real varnode");
+        let mask = self.rvnodes[rvn].mask;
+        if (mask & 1) == 0 {
+            return false; // Logical value must be justified
+        }
+        if (self.fd.vn(vn).get_nzmask() & !mask) != 0 {
+            return false; // Everything outside the logical value must be zero
+        }
+        if self.fd.vn(vn).size == self.flowsize {
+            return false; // There must be some (zero) extension
+        }
+        let mut pull_modification = true;
+        if let Some(def) = self.fd.vn(vn).def {
+            if self.fd.op(def).code() == OpCode::IntZext
+                && self.fd.vn(vn).size == preferred_zext_size(self.flowsize)
+                && self.fd.lone_descend(vn) == Some(op)
+            {
+                pull_modification = false;
+            }
+        }
+        self.patchlist.push(PatchRecord { ty: PatchType::Int2Float, patch_op: op, in1: Some(rvn), in2: None, slot: 0 });
+        if pull_modification {
+            self.pullcount += 1;
+        }
+        true
+    }
+
+    /// Ghidra `SubvariableFlow::tryCallReturnPush` (`subflow.cc:293`): the logical value is the return
+    /// value of a CALL/CALLIND — push the narrow value out of the call itself.
+    ///
+    /// mosura adaptations, both established in-tree: `getCallSpecs()==null` cannot hold for a
+    /// CALL/CALLIND op (only CALLOTHER lacks a spec, and it is a different opcode), and mosura models
+    /// no output lock on calls — the same two gates `try_call_pull` already omits. Ghidra's
+    /// `isOutputActive()` gate ("don't trim while figuring out the return value") maps to *the call
+    /// having no output yet*: `resolve_call_output` skips a call once `output.is_some()`, which is the
+    /// documented stand-in for Ghidra's cleared `isOutputActive`. Reaching this arm at all means the
+    /// call IS the def of a varnode, i.e. it already has an output, so the gate is satisfied by
+    /// construction rather than merely dropped.
+    fn try_call_return_push(&mut self, op: OpId, rvn: usize) -> bool {
+        let vn = self.rvnodes[rvn].vn.expect("real varnode");
+        let mask = self.rvnodes[rvn].mask;
+        if !self.aggressive && (self.fd.vn(vn).get_consume() & !mask) != 0 {
+            return false; // Something outside the mask is consumed — don't truncate
+        }
+        if (mask & 1) == 0 {
+            return false; // The logical value must be the least significant part
+        }
+        if self.bitsize < 8 {
+            return false; // The logical value must be at least a byte
+        }
+        if self.fd.op(op).output.is_none() {
+            return false; // isOutputActive — return-value recovery still in flight
+        }
+        self.add_push(op, rvn);
+        // No `pullcount` bump: this is a push, NOT a pull (subflow.cc:308).
+        true
+    }
+
     /// Ghidra `SubvariableFlow::addExtensionPatch` (`subflow.cc:1221`): op pads the logical value with
     /// zero bits, shifted left by `sa` (bits); `sa == -1` means shift by the mask's least-set bit.
     /// Not a true modification (the output keeps the expanded size).
@@ -674,13 +785,11 @@ impl<'a> SubvariableFlow<'a> {
         true
     }
 
-    // --- Stage 2 tracers (core opcodes) ----------------------------------------------------
+    // --- The tracers -----------------------------------------------------------------------
 
     /// Ghidra `SubvariableFlow::traceForward` (`subflow.cc:373`): trace the logical value through its
     /// descendant ops one level, extending the subgraph. Returns false to abort the whole transform.
-    /// The RETURN pull (`try_return_pull`) and the CALL/CALLIND pull (`try_call_pull`) are handled; the
-    /// BRANCHIND/FLOAT_INT2FLOAT pulls and the INT_MULT/ADD/DIV/REM/LESS/bool/CBRANCH arms are Stage-4
-    /// work: they fall to the `default` abort.
+    /// Every arm of Ghidra's switch is covered; `default` aborts as it does there.
     fn trace_forward(&mut self, rvn: usize) -> bool {
         let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
         let mask = self.rvnodes[rvn].mask;
@@ -751,6 +860,61 @@ impl<'a> SubvariableFlow<'a> {
                 OpCode::IntZext | OpCode::IntSext => {
                     let outvn = out_opt.expect("op has output");
                     let rop = self.create_op_down(OpCode::Copy, 1, op, rvn, 0);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntMult => {
+                    if (mask & 1) == 0 {
+                        return false; // Cannot account for carry
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let othervn = self.fd.op(op).input(1 - slot).unwrap();
+                    // The other multiplicand's trailing zeroes shift the logical value left.
+                    // Ghidra reads `leastsigbit_set(nzmask)` straight, which is -1 for a provably-zero
+                    // operand and then shifts by a negative amount — undefined in C++ and unreachable
+                    // in practice (a zero nzmask means the product is zero, which the nzmask rules
+                    // collapse first). mosura floors it at 0 like `add_constant` already does, so the
+                    // degenerate case is a plain unshifted trace instead of a garbage mask.
+                    let sa = leastsigbit_set(self.fd.vn(othervn).get_nzmask()).max(0) & !7;
+                    if self.bitsize + sa > 8 * self.fd.vn(vn).size as i32 {
+                        return false;
+                    }
+                    let rop = self.create_op_down(OpCode::IntMult, 2, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask << (sa as u32), -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntDiv | OpCode::IntRem => {
+                    if (mask & 1) == 0 {
+                        return false; // Logical value must be least sig bits
+                    }
+                    if (self.bitsize & 7) != 0 {
+                        return false; // Must be a whole number of bytes
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let in0 = self.fd.op(op).input(0).unwrap();
+                    let in1 = self.fd.op(op).input(1).unwrap();
+                    if !self.is_zero_extended(in0, self.flowsize) {
+                        return false;
+                    }
+                    if !self.is_zero_extended(in1, self.flowsize) {
+                        return false;
+                    }
+                    let rop = self.create_op_down(opc, 2, op, rvn, slot);
+                    if !self.create_link(Some(rop), mask, -1, outvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::IntAdd => {
+                    if (mask & 1) == 0 {
+                        return false; // Cannot account for carry
+                    }
+                    let outvn = out_opt.expect("op has output");
+                    let rop = self.create_op_down(OpCode::IntAdd, 2, op, rvn, slot);
                     if !self.create_link(Some(rop), mask, -1, outvn) {
                         return false;
                     }
@@ -902,6 +1066,27 @@ impl<'a> SubvariableFlow<'a> {
                     }
                     hcount += 1;
                 }
+                OpCode::IntLess | OpCode::IntLessequal => {
+                    let othervn = self.fd.op(op).input(1 - slot).unwrap(); // OTHER side of comparison
+                    let vn_nz = self.fd.vn(vn).get_nzmask();
+                    if !self.aggressive && (vn_nz | mask) != mask {
+                        return false; // Everything but the logical variable must definitely be zero
+                    }
+                    if self.fd.vn(othervn).is_constant() {
+                        if (mask | self.fd.vn(othervn).constant_value()) != mask {
+                            return false; // Must compare only bits of the logical variable
+                        }
+                    } else {
+                        let oth_nz = self.fd.vn(othervn).get_nzmask();
+                        if !self.aggressive && (mask | oth_nz) != mask {
+                            return false; // unused bits of the other side must be zero
+                        }
+                    }
+                    if !self.create_compare_bridge(op, rvn, slot, othervn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
                 OpCode::IntNotequal | OpCode::IntEqual => {
                     let othervn = self.fd.op(op).input(1 - slot).unwrap(); // OTHER side of comparison
                     if self.bitsize != 1 {
@@ -974,8 +1159,41 @@ impl<'a> SubvariableFlow<'a> {
                     }
                     hcount += 1;
                 }
-                // Stage-4 arms — BRANCHIND/FLOAT_INT2FLOAT pulls, INT_MULT/ADD/DIV/REM,
-                // INT_LESS/LESSEQUAL, bool ops, CBRANCH: abort the trace (Ghidra `default`).
+                OpCode::Branchind => {
+                    if !self.try_switch_pull(op, rvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                // A bit flowing into a boolean operator: patch the edge but do NOT count it as a
+                // handled descendant — Ghidra omits the `hcount += 1` here deliberately
+                // (subflow.cc:632-639, addBooleanPatch "this is not a true modification"), unlike
+                // the CBRANCH arm below which does count.
+                OpCode::BoolNegate | OpCode::BoolAnd | OpCode::BoolOr | OpCode::BoolXor => {
+                    if self.bitsize != 1 {
+                        return false;
+                    }
+                    if mask != 1 {
+                        return false;
+                    }
+                    self.add_boolean_patch(op, rvn, slot as i32);
+                }
+                OpCode::FloatInt2float => {
+                    if !self.try_int2float_pull(op, rvn) {
+                        return false;
+                    }
+                    hcount += 1;
+                }
+                OpCode::Cbranch => {
+                    if self.bitsize != 1 || slot != 1 {
+                        return false;
+                    }
+                    if mask != 1 {
+                        return false;
+                    }
+                    self.add_boolean_patch(op, rvn, 1);
+                    hcount += 1;
+                }
                 _ => return false,
             }
         }
@@ -990,7 +1208,9 @@ impl<'a> SubvariableFlow<'a> {
 
     /// Ghidra `SubvariableFlow::traceBackward` (`subflow.cc:665`): trace the logical value backward
     /// through its defining op one level. Returns true if traced (or `vn` is an input), false to
-    /// abort. INT_ADD/SRIGHT/MULT/DIV/REM and CALL/CALLIND(push) are Stage-4 work: they abort.
+    /// abort. Every arm of Ghidra's switch is covered; `default` aborts as it does there. Ghidra's
+    /// `break` and its `return false` both land on the same trailing `return false`, so both map to
+    /// `false` here.
     fn trace_backward(&mut self, rvn: usize) -> bool {
         let vn = self.rvnodes[rvn].vn.expect("traced node shadows a real Varnode");
         let mask = self.rvnodes[rvn].mask;
@@ -1065,6 +1285,78 @@ impl<'a> SubvariableFlow<'a> {
                 }
                 true
             }
+            OpCode::IntAdd => {
+                if (mask & 1) == 0 {
+                    return false; // Cannot account for carry
+                }
+                // A single-bit add is an XOR.
+                let opc = if mask == 1 { OpCode::IntXor } else { OpCode::IntAdd };
+                let rop = self.create_op(opc, 2, rvn);
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.create_link(Some(rop), mask, 0, in0) {
+                    return false;
+                }
+                if !self.create_link(Some(rop), mask, 1, in1) {
+                    return false;
+                }
+                true
+            }
+            OpCode::IntMult => {
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in1 = self.fd.op(op).input(1).unwrap();
+                let sa = leastsigbit_set(mask);
+                if sa != 0 {
+                    let sa2 = leastsigbit_set(self.fd.vn(in1).get_nzmask());
+                    if sa2 < sa {
+                        return false; // Cannot deal with carries into the logical multiply
+                    }
+                    let newmask = mask >> (sa as u32);
+                    let rop = self.create_op(OpCode::IntMult, 2, rvn);
+                    if !self.create_link(Some(rop), newmask, 0, in0) {
+                        return false;
+                    }
+                    if !self.create_link(Some(rop), mask, 1, in1) {
+                        return false;
+                    }
+                } else {
+                    // A single-bit multiply is an AND.
+                    let opc = if mask == 1 { OpCode::IntAnd } else { OpCode::IntMult };
+                    let rop = self.create_op(opc, 2, rvn);
+                    if !self.create_link(Some(rop), mask, 0, in0) {
+                        return false;
+                    }
+                    if !self.create_link(Some(rop), mask, 1, in1) {
+                        return false;
+                    }
+                }
+                true
+            }
+            OpCode::IntDiv | OpCode::IntRem => {
+                if (mask & 1) == 0 {
+                    return false;
+                }
+                if (self.bitsize & 7) != 0 {
+                    return false; // Must be a whole number of bytes
+                }
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.is_zero_extended(in0, self.flowsize) {
+                    return false;
+                }
+                if !self.is_zero_extended(in1, self.flowsize) {
+                    return false;
+                }
+                let rop = self.create_op(opc, 2, rvn);
+                if !self.create_link(Some(rop), mask, 0, in0) {
+                    return false;
+                }
+                if !self.create_link(Some(rop), mask, 1, in1) {
+                    return false;
+                }
+                true
+            }
+            OpCode::Call | OpCode::Callind => self.try_call_return_push(op, rvn),
             OpCode::IntLeft => {
                 let in1 = self.fd.op(op).input(1).unwrap();
                 if !self.fd.vn(in1).is_constant() {
@@ -1116,6 +1408,29 @@ impl<'a> SubvariableFlow<'a> {
                     self.add_new_constant(Some(rop), 0, 0);
                     return true;
                 }
+                if (newmask >> (sa as u32)) != mask {
+                    return false; // subvariable is truncated by shift
+                }
+                let rop = self.create_op(OpCode::Copy, 1, rvn);
+                if !self.create_link(Some(rop), newmask, 0, in0) {
+                    return false;
+                }
+                true
+            }
+            // Identical to INT_RIGHT except for the `newmask == 0` shortcut, which INT_SRIGHT must
+            // NOT have: an arithmetic shift fills the vacated bits with the sign bit, not zero.
+            OpCode::IntSright => {
+                let in1 = self.fd.op(op).input(1).unwrap();
+                if !self.fd.vn(in1).is_constant() {
+                    return false; // Dynamic shift
+                }
+                let sa = self.fd.vn(in1).constant_value() as i64;
+                if sa >= 64 {
+                    return false; // Beyond precision of mask
+                }
+                let in0 = self.fd.op(op).input(0).unwrap();
+                let in0_size = self.fd.vn(in0).size;
+                let newmask = (mask << (sa as u32)) & calc_mask(in0_size);
                 if (newmask >> (sa as u32)) != mask {
                     return false; // subvariable is truncated by shift
                 }
@@ -1185,14 +1500,15 @@ impl<'a> SubvariableFlow<'a> {
                 self.add_new_constant(Some(rop), 0, 0);
                 true
             }
-            // Stage-4 arms — INT_ADD/SRIGHT/MULT/DIV/REM and CALL/CALLIND(push): abort the trace.
             _ => false,
         }
     }
 
-    // --- Stage 4 stubs ---------------------------------------------------------------------
-    // The sign-extension tracers (subflow.cc traceForwardSext:867 / traceBackwardSext) land with
-    // RuleSubvarSext in Stage 4; until then they abort, so a `sextrestrictions` trace never succeeds.
+    // --- The sign-extension tracers ---------------------------------------------------------
+    // subflow.cc traceForwardSext:867 / traceBackwardSext:960. Only `RuleSubvarSext` constructs a
+    // flow with `sextrestrictions`, and that rule is not registered (rules.rs, pipeline.rs:280), so
+    // these are unreachable: a `sextrestrictions` trace never succeeds and never runs in the
+    // pipeline. They land WITH that rule, not before it.
 
     fn trace_forward_sext(&mut self, _rvn: usize) -> bool {
         false
@@ -1928,31 +2244,73 @@ mod tests {
         assert_eq!(s.rvnodes[yrvn].mask, 0xff << 16);
     }
 
-    #[test]
-    fn deferred_arithmetic_arms_abort() {
-        // INT_ADD is Stage-4: backward aborts (fresh graph per part — direct trace_* leaves marks).
+    /// `sum = <opc>(a, b)` where `a`/`b` are 4-byte COPY outputs, not function inputs. That detail is
+    /// load-bearing: `set_replacement` refuses a sub-byte logical value on an INPUT varnode
+    /// (subflow.cc:112, "Dont create input flag") and refuses any input whose mask excludes bit 0, so
+    /// building the operands as inputs would make every assertion here pass or fail for the wrong
+    /// reason. Each assertion needs its OWN graph — `trace_*` leaves `mark` bits behind (only
+    /// `do_trace` clears them), so a reused one would poison the next trace.
+    fn arith_flow(opc: OpCode) -> (Funcdata, VarnodeId, VarnodeId, VarnodeId) {
         let (mut f, reg, ram) = mkfd();
         let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let a = f.new_input(4, Address::new(reg, 0x10));
-        let b = f.new_input(4, Address::new(reg, 0x14));
-        let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
+        let ain = f.new_input(4, Address::new(reg, 0x10));
+        let bin = f.new_input(4, Address::new(reg, 0x14));
+        let acp = f.new_op(OpCode::Copy, seq, vec![ain]);
+        let a = f.new_output(acp, 4, Address::new(reg, 0x20));
+        let bcp = f.new_op(OpCode::Copy, seq, vec![bin]);
+        let b = f.new_output(bcp, 4, Address::new(reg, 0x24));
+        let op = f.new_op(opc, seq, vec![a, b]);
         let sum = f.new_output(op, 4, Address::new(reg, 0x18));
         recompute_consume(&mut f);
+        (f, a, b, sum)
+    }
+
+    #[test]
+    fn arithmetic_arms_trace_both_directions() {
+        // INT_ADD backward keeps the ADD for a multi-bit logical value (subflow.cc:720).
+        let (mut f, a, b, sum) = arith_flow(OpCode::IntAdd);
         let mut s = SubvariableFlow::new(&mut f, sum, 0xff, false, false, false);
         let srvn = *s.varmap.get(&sum).unwrap();
-        assert!(!s.trace_backward(srvn)); // INT_ADD not among the core backward arms
+        assert!(s.trace_backward(srvn));
+        assert_eq!(s.rops[s.rvnodes[srvn].def.unwrap()].opc, OpCode::IntAdd);
+        assert_eq!(s.rvnodes[*s.varmap.get(&a).unwrap()].mask, 0xff);
+        assert_eq!(s.rvnodes[*s.varmap.get(&b).unwrap()].mask, 0xff);
 
-        // Forward through the ADD from an input also aborts.
-        let (mut f, reg, ram) = mkfd();
-        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
-        let a = f.new_input(4, Address::new(reg, 0x10));
-        let b = f.new_input(4, Address::new(reg, 0x14));
-        let op = f.new_op(OpCode::IntAdd, seq, vec![a, b]);
-        let _sum = f.new_output(op, 4, Address::new(reg, 0x18));
-        recompute_consume(&mut f);
+        // On a SINGLE BIT the add becomes an XOR — nothing can carry out of one bit.
+        let (mut f, _, _, sum) = arith_flow(OpCode::IntAdd);
+        let mut s = SubvariableFlow::new(&mut f, sum, 1, false, false, false);
+        let srvn = *s.varmap.get(&sum).unwrap();
+        assert!(s.trace_backward(srvn));
+        assert_eq!(s.rops[s.rvnodes[srvn].def.unwrap()].opc, OpCode::IntXor);
+
+        // By the same argument a single-bit multiply is an AND (subflow.cc:781).
+        let (mut f, _, _, sum) = arith_flow(OpCode::IntMult);
+        let mut s = SubvariableFlow::new(&mut f, sum, 1, false, false, false);
+        let srvn = *s.varmap.get(&sum).unwrap();
+        assert!(s.trace_backward(srvn));
+        assert_eq!(s.rops[s.rvnodes[srvn].def.unwrap()].opc, OpCode::IntAnd);
+
+        // INT_ADD forward from an operand reaches the sum at the same mask (subflow.cc:456).
+        let (mut f, a, _, sum) = arith_flow(OpCode::IntAdd);
         let mut s = SubvariableFlow::new(&mut f, a, 0xff, false, false, false);
         let arvn = *s.varmap.get(&a).unwrap();
+        assert!(s.trace_forward(arvn));
+        assert_eq!(s.rvnodes[*s.varmap.get(&sum).expect("output linked")].mask, 0xff);
+    }
+
+    #[test]
+    fn add_arms_refuse_when_logical_value_is_not_least_significant() {
+        // subflow.cc:457/721 — a mask excluding bit 0 cannot account for the carry coming in from
+        // below, so both directions decline.
+        let (mut f, a, _, _) = arith_flow(OpCode::IntAdd);
+        let mut s = SubvariableFlow::new(&mut f, a, 0xff00, false, false, false);
+        let arvn = *s.varmap.get(&a).unwrap();
         assert!(!s.trace_forward(arvn));
+
+        let (mut f, _, _, sum) = arith_flow(OpCode::IntAdd);
+        let mut s = SubvariableFlow::new(&mut f, sum, 0xff00, false, false, false);
+        let srvn = *s.varmap.get(&sum).unwrap();
+        assert!(!s.trace_backward(srvn));
     }
 
     #[test]
