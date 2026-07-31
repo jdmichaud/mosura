@@ -115,7 +115,19 @@ def main():
     m = parse(positional[1])
     print(f"=== rule-firing trace diff  (ghidra={len(g)} firings, mosura={len(m)} firings) ===")
     print(f"=== name map: {len(nm.g.classes)} ghidra classes / {len(nm.m.classes)} mosura classes "
-          f"(scripts/trace-names.py --full to audit)\n")
+          f"(scripts/trace-names.py --full to audit)")
+    # WHAT THIS INSTRUMENT CANNOT SEE. Ghidra's OPACTION_DEBUG is a p-code-OP mutation log:
+    # debugModCheck(PcodeOp*) records ops into modify_list and debugModPrint returns early on
+    # `if (modify_list.empty())` (funcdata.cc:1012/1035). An action that mutates only VARNODE state
+    # -- datatypes via updateType, flags, cover/merge decisions -- never enters that list, so it
+    # never prints, ON EITHER SIDE. ActionInferTypes is the case that cost a pass: it fires zero
+    # times in both traces on every fixture, which reads as agreement and is really invisibility.
+    # A blind spot that looks like a clean result is the worst kind, so the instrument says so
+    # itself rather than leaving it in a memory someone has to have read.
+    print("=== ⚠ BLIND SPOT: this is an OP-MUTATION log. Actions that change only VARNODE state")
+    print("===   (ActionInferTypes and the type/cast/naming family) mutate no ops and therefore")
+    print("===   NEVER appear here, on either side. Their absence is not evidence of agreement.")
+    print("===   Do not read a typing conclusion out of this diff; use a type-decision log.\n")
 
     # ── resolve every firing to a mechanism key ────────────────────────────────────────────────
     # Key space: the Ghidra CLASS name for anything with a counterpart there, "group:<name>" for

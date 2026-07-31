@@ -2320,6 +2320,17 @@ impl Rule for RuleDumptyHump {
 // WAR2 functions byte-identical, which is what proves RuleTrivialArith already covered the other
 // five opcodes.
 //
+// AND THE INT_SUB HALF WAS NOT IDLE — the deletion commit's message said it "never fires on WAR2",
+// which was WRONG. A non-transforming observer probe counted it: `INT_SUB(a,a)` occurs 90 times
+// across 32 WAR2 functions. Deleting it is still byte-identical because `RuleSub2Add`
+// (ruleaction.cc:4012) rewrites EVERY subtraction `V - W` into `V + W*-1` unconditionally, so
+// `a - a` becomes `a + a*-1` and the term-collection rules fold it to 0 down the faithful path.
+// A trace of FUN_000601f8 names `sub2add` as the consumer of those ops, so this is measured too.
+// That is very likely WHY Ghidra can leave `case CPUI_INT_SUB:` commented out: with RuleSub2Add
+// eliminating INT_SUB up front, the case would be dead code in Ghidra's own pipeline. The lesson
+// is the general one -- "removing X changes no output" does NOT license "X never ran"; those are
+// different claims and only the first one was measured.
+//
 // Ghidra's RuleTrivialArith is also STRICTLY WIDER than what was deleted: it folds the comparison
 // opcodes to boolean constants, and it accepts CSE-equivalent inputs via `isCseMatch`, not only
 // syntactically identical ones. mosura's port takes the identical-inputs case only and leaves the
