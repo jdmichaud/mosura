@@ -446,19 +446,24 @@ impl<'a> PrintC<'a> {
         // A direct global — a constant-address access in `ram` — is named by its address:
         // Ghidra `ScopeInternal::buildVariableName`'s persist branch (database.cc:2455), the type's
         // `printNameBase` stem + the capitalized space name + the address.
-        // (Ghidra's field width there is `2*addr.getAddrSize()` (:2466), which is 8 on a 4-byte ram
-        // space; mosura's hardcoded 16 is a separate filed item, deliberately not moved here so this
-        // change's delta stays attributable. `varmap::build_internal_variable_name` is the same
-        // Ghidra function ported for the stack space and is where both should end up.)
+        //
+        // This DELEGATES rather than formatting here, and the delegation is the fix: the field width
+        // is `2*addr.getAddrSize()` (:2466) — 16 on an 8-byte ram space, 8 on a 4-byte one — and this
+        // site hardcoded 16, which is right on x86-64 by coincidence and wrong on every 32-bit
+        // target. `varmap::build_internal_variable_name` is the SAME Ghidra function, already ported
+        // for the stack space and already reading the width off the space. The faithful mechanism was
+        // in the tree the whole time, so the correction is a deletion, not a second implementation.
         if Some(vn.loc.space) == self.ram_space {
-            let (off, prefix) = (vn.loc.offset, self.type_of(v).print_name_base());
-            return format!("{prefix}Ram{off:016x}");
+            let ty = self.type_of(v);
+            return super::varmap::build_internal_variable_name(&self.f.spaces, vn.loc.space, vn.loc.offset, &ty);
         }
         // a value merged into a global's HighVariable (e.g. the `param_1 + 1` that `merge_copy`
         // unified with `iRam..`) is named by that global's address, too.
         if let Some(&off) = self.high_ram_off.get(&self.h.high(v)) {
-            let prefix = self.type_of(v).print_name_base();
-            return format!("{prefix}Ram{off:016x}");
+            if let Some(ram) = self.ram_space {
+                let ty = self.type_of(v);
+                return super::varmap::build_internal_variable_name(&self.f.spaces, ram, off, &ty);
+            }
         }
         // A register value CREATED by a call side effect (an INDIRECT whose output carries the
         // `indirect_creation` flag) is Ghidra's `extraout_<reg>` (database.cc:2492 —

@@ -62,6 +62,14 @@ fn resolve_stack_pointer(
     Some((Address::new(space, offset), size))
 }
 
+/// The `ram` (default data) space's address size, read off the SLEIGH spec — Ghidra's
+/// `getDefaultDataSpace()->getAddrSize()`. This is a LANGUAGE property, not a compiler-spec one,
+/// which is why it travels beside [`CspecSettings`] rather than inside it. 0 (an absent/degenerate
+/// spec) leaves `SpaceManager::standard()`'s seed untouched.
+fn default_ram_addr_size(spec: &Spec) -> u32 {
+    spec.spaces.get(spec.default_space).map_or(0, |s| s.size as u32)
+}
+
 /// Everything a [`Funcdata`] takes from the COMPILER SPEC, travelling together because it is one
 /// decode of one `.cspec` and because splitting it is how a target-specific value ends up hardcoded:
 /// each field here is wrong-by-default on some target mosura can build.
@@ -138,9 +146,14 @@ fn build_from_instrs(
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
     laned: &[(i32, u32)],
     cspec: CspecSettings,
+    ram_addr_size: u32,
     userops: &std::collections::HashMap<u64, String>,
 ) -> Funcdata {
     let mut spaces = SpaceManager::standard();
+    // The `ram` (default data) space's address size, from the SLEIGH spec — Ghidra's
+    // `getDefaultDataSpace()->getAddrSize()`. Applied BEFORE the `<stackpointer>` below, because the
+    // stack space is contained in ram and the local/param ranges are derived from these sizes.
+    spaces.set_ram_addr_size(ram_addr_size);
     // The `stack` space's spacebase register, from the compiler spec's `<stackpointer>`. This is
     // what `ActionSpacebase` marks and what lets a stack-relative access become a `stack` Varnode;
     // leaving the x86-64 default in place on another target yields no stack frame at all.
@@ -212,6 +225,7 @@ pub fn raw_funcdata(
         spec.disassemble_ctx(bytes, base, context),
         &spec.laned,
         CspecSettings::default_for(spec),
+        default_ram_addr_size(spec),
         &spec.userops,
     )
 }
@@ -271,6 +285,7 @@ pub fn raw_funcdata_flow(
         decoded.into_values(),
         &spec.laned,
         CspecSettings::default_for(spec),
+        default_ram_addr_size(spec),
         &spec.userops,
     )
 }
@@ -335,6 +350,7 @@ pub fn raw_funcdata_flow_image_overrides(
     // The calling convention, decoded once from `(language_id, compiler_id)`'s compiler spec and
     // shared by the jump-table recovery probe clone and the final build.
     let cspec = CspecSettings::resolve(spec, language_id, compiler_id);
+    let ram_addr_size = default_ram_addr_size(spec);
     let name: String = name.into();
     let mut decoded: BTreeMap<u64, crate::sleigh::Instruction> = BTreeMap::new();
     let mut switch_targets: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -423,6 +439,7 @@ pub fn raw_funcdata_flow_image_overrides(
                 decoded.values().cloned(),
                 &spec.laned,
                 cspec.clone(),
+                ram_addr_size,
                 &spec.userops,
             );
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
@@ -486,7 +503,7 @@ pub fn raw_funcdata_flow_image_overrides(
     // so draining it yields every decoded instruction exactly once, in creation order.
     let ordered: Vec<crate::sleigh::Instruction> = flow_order.iter().filter_map(|a| decoded.remove(a)).collect();
     let mut f =
-        build_from_instrs(name, entry, ordered, &spec.laned, cspec, &spec.userops);
+        build_from_instrs(name, entry, ordered, &spec.laned, cspec, ram_addr_size, &spec.userops);
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();

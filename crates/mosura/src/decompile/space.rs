@@ -289,6 +289,27 @@ impl SpaceManager {
     /// `0xffffffdc` form instead of `-0x24` and the whole `ScopeLocal` cover mis-sorts;
     /// `AddrSpace::wrapOffset` never wraps; and `normalizeWriteSize`'s SUBPIECE offset constants
     /// (heritage.cc:444, `newConstant(addr.getAddrSize(),…)`) come out 8 bytes wide.
+    /// Set the `ram` (default data) space's address size from the SLEIGH spec, as Ghidra reads
+    /// `getDefaultDataSpace()->getAddrSize()`.
+    ///
+    /// [`SpaceManager::standard`] seeds `ram` at **8**, which is right for x86-64 and silently wrong
+    /// for every 32-bit target. The LOADERS already get this right — `loader/le.rs` registers ram at
+    /// 4, `com.rs` at 2, `pe.rs` from the header — but the decompile path builds a FRESH
+    /// `SpaceManager::standard()` and discarded that, so nothing downstream ever saw the real size.
+    /// This is the third instance of the hardcoded-x86-64 class, after the `<stackpointer>` (RSP 0x20
+    /// vs ESP 0x10) and the hardcoded return storage, and it has the same signature: correct by
+    /// coincidence on an all-x86-64 corpus, wrong on x86-32, and invisible to that corpus.
+    ///
+    /// It is not cosmetic. `Space::highest` masks every offset to `addr_size`, `LaneDivide`'s default
+    /// lane width branches on `addr_size != 4`, and `ScopeInternal::buildVariableName`'s field width
+    /// is `2*addr.getAddrSize()` — so the name of every global on a 32-bit target depends on it.
+    pub fn set_ram_addr_size(&mut self, size: u32) {
+        let Some(ram) = self.by_name("ram") else { return };
+        if size > 0 {
+            self.spaces[ram.0 as usize].addr_size = size;
+        }
+    }
+
     pub fn set_stack_pointer(&mut self, reg: Address, size: u32) {
         let Some(stack) = self.by_name("stack") else { return };
         self.spaces[stack.0 as usize].spacebase.clear();
