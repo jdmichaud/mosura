@@ -15,8 +15,33 @@
 //! `(xunknown1 *)(param_1 + 8)`: a loop phi back-relayed a pointer type onto an `INT_ADD` whose
 //! natural (input-derived) token type is `int8`, so a `CPUI_CAST` splits the int arithmetic result
 //! from the pointer value it is assigned to. Input casts run first (coreaction.cc:2757, "output may
-//! depend on input"). The PTRADD/PTRSUB refit, LOAD/STORE `checkPointerIssues`, `insertPtrsubZero`
-//! and union resolution are deferred with the composite/union lattice they concern.
+//! depend on input").
+//!
+//! ⚠️ THE REMAINDER IS FOUR SEPARATE ITEMS WITH FOUR DIFFERENT ANSWERS, and they were previously
+//! recorded as one line ("deferred with the composite/union lattice they concern"). That single
+//! sentence was doing what an inherited gate always does — making an unexamined claim look settled.
+//! Grounded read-only at `13bd6e1`:
+//!
+//! · `resolveUnion` (coreaction.cc:2755) — **GENUINELY GATED.** It resolves a `TypeUnion` field
+//!   against the accessing op; mosura's lattice has no union type at all, so there is nothing to
+//!   resolve and no way to write the port. This one really does land with the union lattice.
+//!
+//! · `checkPointerIssues` (LOAD/STORE, coreaction.cc:2765) — **NOT GATED, AND MEASURED INERT.** It is
+//!   NOT a lattice consumer: it mutates no IR and inserts no cast, it only calls `data.warning()` for
+//!   a LOAD/STORE whose pointer type disagrees with the accessed size or address space. Everything it
+//!   needs (`Pointer`, `getPtrTo()->getSize()`) mosura already has. But over all 1286 WAR2 functions,
+//!   Ghidra's own output contains **zero** of either warning it can emit — no "Load/Store size is
+//!   inaccurate", no "refers to '<space>' but pointer attribute is '<space>'". Porting it would add
+//!   code that provably does nothing on our target. Recorded as a certificate rather than built.
+//!   REVIVAL CONDITION: a target where those warnings appear in Ghidra's output.
+//!
+//! · PTRADD refit (`opUndoPtradd`, coreaction.cc:2740) and PTRSUB refit (:2748) — **REACH
+//!   UNMEASURED.** These DO mutate IR (a PTRADD whose pointer no longer fits becomes plain
+//!   arithmetic; a non-matching PTRSUB becomes COPY or INT_ADD), so unlike the two above they can
+//!   change output. Whether they are gated is genuinely open: `getPtrTo()->getAlignSize()` and
+//!   `isPtrsubMatching` are alignment/sub-field questions that are trivial for a pointer-to-primitive
+//!   and only need the composite lattice for pointers into structs and arrays. **Do not quote them as
+//!   gated without measuring first** — count the PTRADD/PTRSUB ops that would actually refit.
 
 use super::action::Action;
 use super::block::BlockId;
