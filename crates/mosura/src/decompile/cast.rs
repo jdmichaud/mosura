@@ -215,11 +215,17 @@ pub fn cast_standard(
     if reqbase.size() != curbase.size() {
         return Some(reqtype.clone()); // always cast a change in size
     }
+    // ⚠️ EVERY TEST BELOW IS A METATYPE TEST IN GHIDRA (`getMetatype()`), so it must go through
+    // [`Datatype::is_int_meta`] rather than matching the `Int` variant. `char` is a `TYPE_INT`
+    // (`TypeChar` is a `TypeBase(1,TYPE_INT,…)`, type.hh:356) but a separate mosura variant, so a
+    // variant match silently drops it into the catch-all and casts where Ghidra does not. That is
+    // what emitted `(char)(x == 0) * '\x02'` for Ghidra's `(x == 0) * '\x02'`: `reqbase` was `char`,
+    // `curbase` was `bool`, and Ghidra's TYPE_INT arm returns "no cast" for a boolean (cast.cc:372).
     match reqbase {
         Unknown(_) => None, // anything is acceptable as undefined
         Uint(_) => {
             let acceptable = if !care_uint_int {
-                matches!(curbase, Unknown(_) | Int(_) | Uint(_) | Bool)
+                curbase.is_int_meta() || matches!(curbase, Unknown(_) | Uint(_) | Bool)
             } else {
                 matches!(curbase, Uint(_) | Bool) || (isptr && matches!(curbase, Unknown(_)))
             };
@@ -231,11 +237,11 @@ pub fn cast_standard(
             }
             Some(reqtype.clone())
         }
-        Int(_) => {
+        t if t.is_int_meta() => {
             let acceptable = if !care_uint_int {
-                matches!(curbase, Unknown(_) | Int(_) | Uint(_) | Bool)
+                curbase.is_int_meta() || matches!(curbase, Unknown(_) | Uint(_) | Bool)
             } else {
-                matches!(curbase, Int(_) | Bool) || (isptr && matches!(curbase, Unknown(_)))
+                curbase.is_int_meta() || matches!(curbase, Bool) || (isptr && matches!(curbase, Unknown(_)))
             };
             if acceptable {
                 None
@@ -273,6 +279,32 @@ mod tests {
         assert_eq!(cast_standard(&Datatype::Int(4), &Datatype::Unknown(4), false, true), None);
         assert_eq!(cast_standard(&Datatype::Int(4), &Datatype::Uint(4), false, true), None);
         assert_eq!(cast_standard(&Datatype::Uint(4), &Datatype::Int(4), false, true), None);
+    }
+
+    /// `char` is a TYPE_INT (type.hh:356), so every metatype test in `cast_standard` must accept it
+    /// on BOTH sides. Matching the `Int` variant instead sent `char` to the catch-all and cast where
+    /// Ghidra does not — the `(char)(x == 0) * '\x02'` on `orcompare`.
+    #[test]
+    fn char_is_type_int_on_both_sides() {
+        // reqbase `char`, curbase `bool`: Ghidra's TYPE_INT arm returns no cast (cast.cc:372).
+        assert_eq!(cast_standard(&Datatype::Char, &Datatype::Bool, true, true), None);
+        assert_eq!(cast_standard(&Datatype::Char, &Datatype::Bool, false, true), None);
+        // reqbase `char`, curbase a same-size signed int: still TYPE_INT vs TYPE_INT, no cast.
+        assert_eq!(cast_standard(&Datatype::Char, &Datatype::Int(1), true, true), None);
+        // curbase `char` where the requirement is TYPE_INT — the other direction of the same test.
+        assert_eq!(cast_standard(&Datatype::Int(1), &Datatype::Char, true, true), None);
+        // ... and where the requirement is TYPE_UINT, which cares: `char` is INT, so it DOES cast
+        // when signedness matters and does not when it doesn't (cast.cc:345/354).
+        assert_eq!(cast_standard(&Datatype::Uint(1), &Datatype::Char, false, true), None);
+        assert_eq!(
+            cast_standard(&Datatype::Uint(1), &Datatype::Char, true, true),
+            Some(Datatype::Uint(1))
+        );
+        // A size change still always casts, char or not (cast.cc:337).
+        assert_eq!(
+            cast_standard(&Datatype::Int(4), &Datatype::Char, true, true),
+            Some(Datatype::Int(4))
+        );
     }
 
     #[test]
