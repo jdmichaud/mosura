@@ -135,6 +135,38 @@ the IR** (rule 5) — the mechanism is not what you think.
 
 ## The oracle
 
+### ⭐ WHICH ORACLE ANSWERS WHICH QUESTION — check this BEFORE quoting a difference
+
+There are two Ghidra oracles and **they disagree BY CONSTRUCTION**. Routing a question to the
+wrong one has now falsified two approved framings, and both times the fix we were about to build
+would have **invented a Java-layer behaviour into a C++ port**:
+
+| oracle | what it is | answers |
+|---|---|---|
+| `oracle/capture --c` | the **C++ decompiler** alone, on an XML fixture. No Program, no symbol table. | how the decompiler **renders** something: names it generates, types, casts, literals, structure |
+| `war2-survey/ghidra-all.txt` | **analyzeHeadless** — the full Ghidra, Java layer included, with a populated **symbol table** | what the whole tool produces on a real binary: recovered functions, call targets, applied symbols |
+
+**mosura ports the C++ decompiler.** So for any question about what the decompiler itself emits,
+`oracle/capture --c` is the reference and analyzeHeadless is the WRONG oracle — its output carries
+names and types the Java layer authored, which the decompiler merely receives and prints verbatim.
+
+**Ghidra's own source is the proof:** `ghidra_arch.hh:169` exists solely to recognise names "of form
+FUN_.. or DAT_.." — i.e. the Java layer mints those, and the decompiler knows them as foreign.
+
+The two worked examples, both of which cost a grounding pass and nearly cost a wrong port:
+
+- **`undefined<N>` vs `xunknown<N>`** (task #9). `undefined4` comes from Ghidra's **Java** type
+  manager; the C++ `TypeFactory` builds `xunknown4`. `xunknown<N>` IS the faithful port — the
+  approved framing said the opposite.
+- **`DAT_0008127a` vs `cRam0008127a`** (task #14). `DAT_` is a Java **symbol-table** name.
+  `ScopeInternal::buildVariableName` (database.cc:2454) builds `<printNameBase stem><Space><addr>`,
+  and `oracle/capture --c` emits exactly mosura's form, character for character. Porting toward
+  `DAT_` would have been an invention — **and it would have retyped every global**, because the
+  survey's declaration synthesis keys the C type off the identifier's first letter.
+
+⇒ **STATE WHICH ORACLE YOU ARE QUOTING, every time.** If a "difference vs Ghidra" involves a NAME or
+a TYPE NAME, suspect the Java layer first and re-ask `oracle/capture --c` before writing anything.
+
 `scripts/setup-oracle.sh` (needs the pinned `ghidra/` + a C++ toolchain) builds
 `oracle/capture`:
 
