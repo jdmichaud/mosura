@@ -8,7 +8,7 @@ use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
     RuleIdentityEl, RuleLessEqual, RuleLessNotEqual, RuleRangeMeld, RuleBoolNegate, RuleBooleanNegate,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleHumptyDumpty,
-    RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
+    RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy,
     RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
     RuleSborrow, RuleScarry, RuleSelectCse, RuleShift2Mult, RuleTermOrder, RuleTrivialArith, RuleTrivialShift,
     RuleAndMask, RulePopcountBoolXor, RuleSlessToLess, RuleZextSless, RuleBoolZext,
@@ -134,9 +134,9 @@ impl Action for ActionSwitchNorm {
 /// match Ghidra's `addRule` registration sequence — which *is* the per-opcode priority
 /// (`ActionPool::addRule` appends each rule to `perop[opcode]`, so registration order = the order
 /// [`ActionPool::apply`] tries rules for a given opcode). The parenthesised number after each rule is
-/// its index in the canonical oppool1 list. The one remaining mosura-only rule with no Ghidra
-/// counterpart (RuleRangeAnd) is slotted next to its closest Ghidra sibling; run
-/// `scripts/trace-names.py` for the live list (it is what that reports as ADAPTATION).
+/// its index in the canonical oppool1 list. Every rule here now corresponds to a Ghidra class —
+/// `scripts/trace-names.py` reports an empty ADAPTATION list, and that is the invariant to keep:
+/// a new rule with no Ghidra class named is the thing this pool must not grow again.
 pub fn default_rule_pool() -> ActionPool {
     ActionPool::new("oppool")
         .with(RuleEarlyRemoval) // (1)
@@ -173,7 +173,6 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleIdentityEl) // (16)
         .with(RuleOrMask) // (17)
         .with(RuleAndMask) // (18)
-        .with(RuleRangeAnd) // mosura extra — AND with a range mask, next to AndMask
         .with(RuleOrConsume) // (19)
         .with(RuleOrCollapse) // (20)
         .with(RuleAndOrLump) // (21)

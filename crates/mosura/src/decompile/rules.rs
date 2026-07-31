@@ -5141,47 +5141,6 @@ impl Rule for RuleOrMask {
     }
 }
 
-/// Merge `(x != c) && (x ≤ c)` into the strict comparison `x < c` (and the swapped /
-/// signed forms): the disequality removes the equality case from `≤`. A range collapse
-/// Ghidra applies so a span check reads as one comparison rather than a `&&` of two.
-pub struct RuleRangeAnd;
-
-impl Rule for RuleRangeAnd {
-    fn name(&self) -> &str {
-        "rangeand"
-    }
-    fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::BoolAnd]
-    }
-    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        let (i0, i1) = (data.op(op).input(0), data.op(op).input(1));
-        let (Some(i0), Some(i1)) = (i0, i1) else { return 0 };
-        for (ne_v, le_v) in [(i0, i1), (i1, i0)] {
-            let (Some(ne), Some(le)) = (data.vn(ne_v).def, data.vn(le_v).def) else { continue };
-            if data.op(ne).code() != OpCode::IntNotequal {
-                continue;
-            }
-            let strict = match data.op(le).code() {
-                OpCode::IntLessequal => OpCode::IntLess,
-                OpCode::IntSlessequal => OpCode::IntSless,
-                _ => continue,
-            };
-            let (na, nb) = (data.op(ne).input(0).unwrap(), data.op(ne).input(1).unwrap());
-            let (la, lb) = (data.op(le).input(0).unwrap(), data.op(le).input(1).unwrap());
-            // the `!=` must be on the same pair as the `<=` (either order)
-            let same = (same_value(data, na, la) && same_value(data, nb, lb))
-                || (same_value(data, na, lb) && same_value(data, nb, la));
-            if !same {
-                continue;
-            }
-            data.op_set_opcode(op, strict);
-            data.op_set_all_input(op, &[la, lb]);
-            return 1;
-        }
-        0
-    }
-}
-
 /// Ghidra `RuleSub2Add` (`ruleaction.cc:4012`, the "analysis" group): eliminate INT_SUB —
 /// `V - W  =>  V + W * -1`. `getOpList` is `{INT_SUB}` and it fires *unconditionally* on every
 /// subtraction (not scoped to a pointer base). The canonical additive form lets the
@@ -9516,7 +9475,7 @@ mod tests {
     }
 
     #[test]
-    fn rangeand_merges_disequality_into_strict() {
+    fn rangemeld_merges_disequality_into_strict() {
         let (mut f, ram) = fd();
         let reg = f.spaces.by_name("register").unwrap();
         let uniq = f.spaces.by_name("unique").unwrap();
@@ -9530,10 +9489,14 @@ mod tests {
         let and = f.new_op(OpCode::BoolAnd, seq, vec![neout, leout]);
         f.new_output(and, 1, Address::new(reg, 0));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![ne, le, and], ..Default::default() }]);
-        ActionPool::new("p").with(RuleRangeAnd).apply(&mut f);
-        // (x != 9) && (9 s<= x)  =>  9 s< x
+        ActionPool::new("p").with(RuleRangeMeld).apply(&mut f);
+        // (x != 9) && (9 s<= x)  =>  9 s< x. Ghidra's RuleRangeMeld re-expresses the intersected
+        // CircleRange through `translate2_op`, which MINTS the bound as a fresh constant rather
+        // than reusing the operand varnode — so assert the value, not varnode identity.
         assert_eq!(f.op(and).code(), OpCode::IntSless);
-        assert_eq!(f.op(and).input(0), Some(c));
+        let bound = f.op(and).input(0).unwrap();
+        assert!(f.vn(bound).is_constant());
+        assert_eq!(f.vn(bound).constant_value(), 9);
         assert_eq!(f.op(and).input(1), Some(x));
     }
 
