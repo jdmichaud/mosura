@@ -35,13 +35,18 @@
 //!   code that provably does nothing on our target. Recorded as a certificate rather than built.
 //!   REVIVAL CONDITION: a target where those warnings appear in Ghidra's output.
 //!
-//! · PTRADD refit (`opUndoPtradd`, coreaction.cc:2740) and PTRSUB refit (:2748) — **REACH
-//!   UNMEASURED.** These DO mutate IR (a PTRADD whose pointer no longer fits becomes plain
-//!   arithmetic; a non-matching PTRSUB becomes COPY or INT_ADD), so unlike the two above they can
-//!   change output. Whether they are gated is genuinely open: `getPtrTo()->getAlignSize()` and
-//!   `isPtrsubMatching` are alignment/sub-field questions that are trivial for a pointer-to-primitive
-//!   and only need the composite lattice for pointers into structs and arrays. **Do not quote them as
-//!   gated without measuring first** — count the PTRADD/PTRSUB ops that would actually refit.
+//! · PTRADD refit (`opUndoPtradd`, coreaction.cc:2740) — ⭐ **MEASURED: NOT GATED, AND NOT INERT.
+//!   THIS IS A LIVE UNPORTED GAP.** `MOSURA_PTRFIT=1` over all 1303 WAR2 functions: **3371
+//!   PTRADD/PTRSUB ops reach this action (2835 + 536), and 59 PTRADDs meet Ghidra's refit guard** —
+//!   its pointee size differs from the element-size constant, so Ghidra undoes the PTRADD back to
+//!   plain arithmetic while mosura keeps it and renders pointer arithmetic instead.
+//!   **AND NOT ONE OF THE 59 NEEDS THE COMPOSITE LATTICE.** Every one is a pointer to a PRIMITIVE or
+//!   not a pointer at all: `Pointer(4,Int..)` x34, `Pointer(4,Uint..)` x18, `Pointer(4,Unknown..)`
+//!   x4, bare `Unknown(4)` x3. The recorded reason for deferring it was wrong on both counts.
+//!
+//! · PTRSUB refit (:2748) — reach is 536 ops, but the VERDICT still needs `isPtrsubMatching`, whose
+//!   sub-field walk is a genuine composite-lattice consumer. Reach measured; gating not settled.
+//!   Do not assume it follows the PTRADD answer.
 
 use super::action::Action;
 use super::block::BlockId;
@@ -76,6 +81,43 @@ impl Action for ActionSetCasts {
     }
 }
 
+/// `MOSURA_PTRFIT=1` — count the PTRADD/PTRSUB ops reaching `ActionSetCasts` and how many meet
+/// Ghidra's refit guard. READ-ONLY: it evaluates the condition and prints, it never refits.
+///
+/// This exists because the refits were filed as "gated on the composite lattice" and that was an
+/// unmeasured claim. The cheapest discriminator is not the guard's semantics at all — it is whether
+/// any PTRADD/PTRSUB even SURVIVES to this action, which runs dead-last. A zero count settles the
+/// question without modelling `getAlignSize`/`isPtrsubMatching` at all.
+fn ptrfit_probe(data: &Funcdata, op: OpId) {
+    let o = data.op(op);
+    match o.code() {
+        OpCode::Ptradd => {
+            // Ghidra coreaction.cc:2740 — refit unless in0 is a pointer whose pointee size equals
+            // the element-size constant in slot 2 (wordSize is 1 on every space mosura loads, so
+            // `addressToByteInt` is the identity).
+            let ct = high_type_read_facing(data, o.input(0).unwrap());
+            let sz = data.vn(o.input(2).unwrap()).constant_value();
+            let fits = matches!(&ct, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
+            eprintln!("PTRFIT ptradd fits={fits} elem_sz={sz} ptr={ct:?}");
+        }
+        OpCode::Ptrsub => {
+            // coreaction.cc:2748 — refit unless in0's type accepts the slot-1 offset as a sub-field.
+            // Only the pointer-metatype half is evaluated here; `isPtrsubMatching`'s sub-field walk
+            // needs the composite lattice, so a `ptr_off0=false` row is REACH, not a verdict.
+            let ct = high_type_read_facing(data, o.input(0).unwrap());
+            let off = data.vn(o.input(1).unwrap()).constant_value();
+            eprintln!("PTRFIT ptrsub is_ptr={} off={off} ty={ct:?}", ct.is_pointer());
+        }
+        _ => {}
+    }
+}
+
+fn ptrfit_probe_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MOSURA_PTRFIT").is_some())
+}
+
 fn apply(data: &mut Funcdata) {
     // Ghidra reads `Varnode::isImplied`, set by `ActionMarkImplied` just before this action.
     let implied = super::merge::implied_classification(data);
@@ -91,7 +133,12 @@ fn apply(data: &mut Funcdata) {
             if o.is_marker() || o.is_dead() || o.code() == OpCode::Cast {
                 continue;
             }
-            // (PTRADD/PTRSUB refit + LOAD/STORE checkPointerIssues deferred with the composite lattice.)
+            // The PTRADD/PTRSUB refits are not ported; `MOSURA_PTRFIT=1` measures whether they would
+            // ever fire before anyone writes them (see this module's header). Read-only: it evaluates
+            // Ghidra's own guard and counts, it does not refit.
+            if ptrfit_probe_on() {
+                ptrfit_probe(data, op);
+            }
             // "Do input casts first, as output may depend on input" (coreaction.cc:2757): a castInput
             // that casts an operand changes the type castOutput's `getOutputToken` then reads.
             for slot in 0..data.op(op).num_inputs() {
