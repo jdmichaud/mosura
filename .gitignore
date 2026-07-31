@@ -15,6 +15,7 @@ Cargo.lock.bak
 /oracle/capture
 # rule-application trace tool (binary built by setup-oracle.sh; source is tracked)
 /oracle/capture_trace
+/oracle/capture_typeprop
 /oracle/*.o
 
 # Generated test goldens are committed deliberately; nothing here.

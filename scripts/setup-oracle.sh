@@ -126,9 +126,31 @@ build_capture_trace() {
   # binary compiled with the IDENTICAL switches (-DCPUI_DEBUG -D__TERMINAL__) so the oracle's
   # capture tool stays 100% untouched and the ABI matches the library (the d5ae08d lesson).
   log "building rule-application trace tool (oracle/capture_trace)"
+  # (build_capture_typeprop below builds the TYPE-side twin; same library, same switches.)
   g++ -std=c++11 -DCPUI_DEBUG -D__TERMINAL__ -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture_trace" "$MOSURA_DIR/oracle/capture_trace.cc" \
     -Wl,--whole-archive "$CPP_DIR/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
   [ -x "$MOSURA_DIR/oracle/capture_trace" ] || die "capture_trace tool did not build"
+}
+
+build_capture_typeprop() {
+  # The TYPE-PROPAGATION trace tool (task #11): emits Ghidra's TYPEPROP_DEBUG
+  # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (MOSURA_TYPEPROP=1)
+  # via scripts/typeprop-diff.sh.
+  #
+  # WHY IT IS SEPARATE FROM capture_trace: that tool drives OPACTION_DEBUG, which is a p-code-OP
+  # mutation log and is therefore STRUCTURALLY BLIND to type inference -- ActionInferTypes assigns
+  # datatypes to VARNODES and mutates no ops, so it never prints there, on either side. Ghidra ships
+  # TYPEPROP_DEBUG as a second channel for exactly that reason.
+  #
+  # No special flags: types.h:88-91 auto-defines TYPEPROP_DEBUG from CPUI_DEBUG, exactly as it does
+  # OPACTION_DEBUG, so the hook is already inside the same libdecomp_dbg.a and the IDENTICAL
+  # switches (-DCPUI_DEBUG -D__TERMINAL__) keep the ABI matched (the d5ae08d lesson). The extra
+  # requirement is purely at RUNTIME: TypeFactory::propagatedbg_on defaults to false, and the tool
+  # sets it.
+  log "building type-propagation trace tool (oracle/capture_typeprop)"
+  g++ -std=c++11 -DCPUI_DEBUG -D__TERMINAL__ -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture_typeprop" "$MOSURA_DIR/oracle/capture_typeprop.cc" \
+    -Wl,--whole-archive "$CPP_DIR/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
+  [ -x "$MOSURA_DIR/oracle/capture_typeprop" ] || die "capture_typeprop tool did not build"
 }
 
 tidy_ghidra_excludes() {
@@ -195,6 +217,7 @@ fi
 build_tools
 build_capture
 build_capture_trace
+build_capture_typeprop
 if [ "$SKIP_SPECS" -eq 0 ]; then compile_specs; else log "skipping spec compile (--skip-specs)"; fi
 write_env
 verify
