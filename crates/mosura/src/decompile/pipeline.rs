@@ -6,7 +6,7 @@ use super::action::{Action, ActionGroup, ActionPool, OncePerFunc};
 use super::funcdata::Funcdata;
 use super::rules::{
     Rule2Comp2Sub, RuleAddUnsigned, RuleCollectTerms, RuleEarlyRemoval, RuleConstFold, RuleEqual2Zero,
-    RuleIdentityEl, RuleLessEqual, RuleLessNotEqual, RuleRangeMeld, RuleBoolNegate, RuleBooleanNegate, RuleIdempotent,
+    RuleIdentityEl, RuleLessEqual, RuleLessNotEqual, RuleRangeMeld, RuleBoolNegate, RuleBooleanNegate,
     RuleMultiCollapse, RuleMultNegOne, RuleSubExtComm, RuleHumptyDumpty,
     RuleAndZext, RuleDumptyHump, RuleOrCompare, RulePropagateCopy, RuleRangeAnd,
     RuleLogic2Bool, RuleOrMask, RuleShiftAnd, RuleShiftCompare, RuleShiftPiece, RuleZextEliminate,
@@ -134,9 +134,9 @@ impl Action for ActionSwitchNorm {
 /// match Ghidra's `addRule` registration sequence — which *is* the per-opcode priority
 /// (`ActionPool::addRule` appends each rule to `perop[opcode]`, so registration order = the order
 /// [`ActionPool::apply`] tries rules for a given opcode). The parenthesised number after each rule is
-/// its index in the canonical oppool1 list. The two mosura-only rules with no Ghidra counterpart
-/// (RuleIdempotent, RuleRangeAnd) are slotted next to their closest Ghidra sibling; run
-/// `scripts/trace-names.py` for the live list (they are what it reports as ADAPTATION).
+/// its index in the canonical oppool1 list. The one remaining mosura-only rule with no Ghidra
+/// counterpart (RuleRangeAnd) is slotted next to its closest Ghidra sibling; run
+/// `scripts/trace-names.py` for the live list (it is what that reports as ADAPTATION).
 pub fn default_rule_pool() -> ActionPool {
     ActionPool::new("oppool")
         .with(RuleEarlyRemoval) // (1)
@@ -171,7 +171,6 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::rules::RuleSignShift) // (14)
         .with(super::rules::RuleTestSign) // (15)
         .with(RuleIdentityEl) // (16)
-        .with(RuleIdempotent) // mosura extra — trivial idempotent AND/OR/XOR/SUB folds
         .with(RuleOrMask) // (17)
         .with(RuleAndMask) // (18)
         .with(RuleRangeAnd) // mosura extra — AND with a range mask, next to AndMask

@@ -2309,30 +2309,23 @@ impl Rule for RuleDumptyHump {
     }
 }
 
-/// `a & a`, `a | a` → `a`; `a ^ a`, `a - a` → `0` (one varnode). Ghidra's identity folds; with
-/// CSE merging duplicate `SUBPIECE`s, `SUBPIECE(x) ^ SUBPIECE(x)` becomes `s ^ s` → `0`.
-pub struct RuleIdempotent;
-
-impl Rule for RuleIdempotent {
-    fn name(&self) -> &str {
-        "idempotent"
-    }
-    fn oplist(&self) -> Vec<OpCode> {
-        vec![OpCode::IntAnd, OpCode::IntOr, OpCode::BoolAnd, OpCode::BoolOr, OpCode::IntXor, OpCode::IntSub]
-    }
-    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        if data.op(op).num_inputs() != 2 || data.op(op).input(0) != data.op(op).input(1) {
-            return 0;
-        }
-        let a = data.op(op).input(0).unwrap();
-        let out_size = data.vn(data.op(op).output.unwrap()).size;
-        let to_zero = matches!(data.op(op).code(), OpCode::IntXor | OpCode::IntSub);
-        let repl = if to_zero { data.new_const(out_size, 0) } else { a };
-        data.op_set_opcode(op, OpCode::Copy);
-        data.op_set_all_input(op, &[repl]);
-        1
-    }
-}
+// `RuleIdempotent` (mosura invention: `a&a`/`a|a` -> `a`, `a^a`/`a-a` -> `0`) was deleted here.
+// Ghidra does all of this in `RuleTrivialArith` (ruleaction.cc:2362), whose oplist already carries
+// INT_AND, INT_OR, BOOL_AND, BOOL_OR and INT_XOR with identical semantics, and which mosura ports
+// above. The invention added exactly one opcode Ghidra does not fold: INT_SUB — and Ghidra does not
+// fold it by DECISION, not omission, since `case CPUI_INT_SUB:` sits commented out in that switch
+// (ruleaction.cc:2394) right beside the INT_XOR case that is live.
+//
+// The redundancy was MEASURED, not argued: restricting this rule to `[IntSub]` alone left all 1303
+// WAR2 functions byte-identical, which is what proves RuleTrivialArith already covered the other
+// five opcodes.
+//
+// Ghidra's RuleTrivialArith is also STRICTLY WIDER than what was deleted: it folds the comparison
+// opcodes to boolean constants, and it accepts CSE-equivalent inputs via `isCseMatch`, not only
+// syntactically identical ones. mosura's port takes the identical-inputs case only and leaves the
+// CSE case to RuleSelectCse (see the note in RuleTrivialArith); the four FLOAT_* comparison opcodes
+// of Ghidra's oplist are likewise not yet ported. Both are pre-existing port gaps in the faithful
+// rule, and both are the right place to close this family — not a second rule alongside it.
 
 // `RuleMultMult` (mosura invention, `(x*c1)*c2` -> `x*(c1*c2)`) was deleted here. Ghidra does this
 // fold in `RuleAddMultCollapse` (ruleaction.cc:4093), whose oplist is `{ CPUI_INT_ADD,
@@ -9516,7 +9509,7 @@ mod tests {
         for op in [s1, s2, x] {
             f.op_mut(op).parent = Some(BlockId(0));
         }
-        ActionPool::new("p").with(RuleSelectCse).with(RuleIdempotent).apply(&mut f);
+        ActionPool::new("p").with(RuleSelectCse).with(RuleTrivialArith).apply(&mut f);
         // CSE collapses the duplicate SUBPIECEs, so the xor becomes `s ^ s` → 0
         assert_eq!(f.op(x).code(), OpCode::Copy);
         assert!(f.vn(f.op(x).input(0).unwrap()).is_constant());
