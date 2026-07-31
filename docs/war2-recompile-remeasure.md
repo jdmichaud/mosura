@@ -175,7 +175,41 @@ awk -F'\t' '$4=="COMPILE_FAIL"{e=$5; sub(/:.*/,"",e); c[e]++} END {for(x in c) p
 # before/after delta: diff the class counts vs results.prev.tsv
 ```
 Baselines for reference: post-Stage-1 = 229 COMPILE_FAIL; post-Brick-1 (pointer casts) clean = 112;
-DECOMPILE_FAIL = 0 since the Stage-0 panic fix. Total = 1286.
+DECOMPILE_FAIL = 0 since the Stage-0 panic fix. Total = 1286 (now 1303).
+
+### ⭐ VALIDATE THE BASELINE FILE BEFORE YOU DIFFERENCE AGAINST IT
+
+A mislabelled baseline has already cost this project real numbers — `results.prev-c0ac350.tsv`
+actually predated the heritage core, which made a combined delta read as a single item's and put
+three wrong figures into a report. Naming files carefully is not enough, because the failure is
+silent. **There is a positive check, and it is cheap: every function whose emitted C did NOT change
+must have the SAME status in both results files.** If the baseline is the wrong file, functions you
+never touched disagree, and the count is non-zero immediately.
+
+```sh
+# 1. the set of functions whose C actually changed (key on the FUN_ name, never the manifest idx)
+: > /tmp/changed.txt
+for f in war2-survey/src/*.c; do
+  b=<baseline-src-dir>/$(basename "$f")
+  cmp -s "$f" "$b" || grep -oE 'FUN_[0-9a-f]+' "$f" | head -1 >> /tmp/changed.txt
+done
+sort -u /tmp/changed.txt > /tmp/changed.names.txt
+
+# 2. status by name, both sides
+awk -F'\t' 'NR>2 {print $3"\t"$4}' <baseline-results.tsv> | sort > /tmp/st.before
+awk -F'\t' 'NR>2 {print $3"\t"$4}' war2-survey/results.tsv  | sort > /tmp/st.after
+
+# 3. THE CHECK — disagreements among UNCHANGED functions. Must be 0.
+join /tmp/st.before /tmp/st.after | awk '$2!=$3' | grep -vFf /tmp/changed.names.txt | wc -l
+```
+
+Run it before quoting any delta, and report the number of unchanged functions it covered — that is
+what makes the delta believable rather than merely stated. Worked examples from the SubvariableFlow
+arc: 1220 / 910 / 1284 / 1238 unchanged functions, 0 disagreements each time.
+
+The same pass gives you the per-function movement the gates actually require: `join` the two status
+files and print the rows that differ. **Report those rows, not the totals** — "COMPILE_FAIL 49 → 46"
+is compatible with three functions fixed and also with twenty fixed and seventeen broken.
 
 ### ⚠️ The class counts are FIRST-ERROR-PER-FUNCTION, not errors-present
 

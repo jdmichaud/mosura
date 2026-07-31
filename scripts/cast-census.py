@@ -8,6 +8,20 @@ and the definition itself is nowhere in the tree, so those absolute numbers cann
 compared against by anyone else. Task #1's rule is instruments, not hand-rolled counts. This is the
 instrument; from here the numbers are comparable across sessions because the definition is.
 
+⛔ THE EARLIER ABSOLUTES ARE VOID — DO NOT DIFFERENCE AGAINST THEM. The lead confirmed the original
+recipe is LOST: 10060 (`5c9afe2`) and 10344 (`4dc2897`) were produced by a session whose context is
+gone. "Same definition both sides" was carrying the whole claim — the DELTAS within those sessions
+were sound, the ABSOLUTES were never reproducible by anyone else, and subtracting one of them from a
+number this script prints would be comparing two different definitions and calling it a regression.
+This script's output is the canonical definition from `e517104` on; the anchor future deltas measure
+against is **9031** over the 1303-function WAR2 emit at that commit.
+
+⭐ AND THE GENERAL RULE THIS COST US, which applies to every gate, not just this one: AN INSTRUMENT
+MUST BE REPRODUCIBLE BY SOMEONE WHO WAS NOT THERE. A gate whose recipe lives only in the operator is
+not a gate. This is the third face of the same coin as "state what a predicate literally tests" and
+"state which oracle you are quoting". Anything gated on that is not in the tree as a script is in
+exactly this position.
+
 WHAT COUNTS. A cast is a parenthesised type name in OPERAND POSITION: `(type)` or `(type *)` (any
 number of stars) immediately followed by something a value can start with. The position test is what
 separates a cast from a parameter list or a parenthesised subexpression, and it is why a bare

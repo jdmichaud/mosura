@@ -1,5 +1,22 @@
 # IR-CAST-op model — staged rewrite plan (branch `ir-cast-model` off e9c0655)
 
+> ## ✅ STAGE 0 IS DONE, SO NOTHING IS "GATED BEHIND RETIRING PRINT-TIME RE-INFERENCE" ANY MORE
+>
+> Verified read-only at `e517104`: `printc::type_of` reads `merge::high_type_read_facing` (the
+> committed `Varnode::ty` channel) and printc contains no `infer()` call, no `locks`, no `types`
+> field. `ActionSetCasts` is a real IR action, ported with both `cast_input` (Ghidra `castInput`,
+> coreaction.cc:2655) and `cast_output` (`castOutput`, :2532), and WIRED as the final pipeline action
+> (`pipeline.rs:827`).
+>
+> **This matters because that retired prerequisite was still being quoted as a live gate.** Work was
+> filed as "hold — blocked behind retiring print-time type re-inference" and was declined on that
+> basis; the blocker had already landed. If you find a note anywhere saying cast work waits on this,
+> the note is stale, not the code.
+>
+> What IS still deferred in `setcasts.rs`, and it is a different and genuine foundation — the
+> composite/union lattice: the PTRADD/PTRSUB refit, LOAD/STORE `checkPointerIssues`,
+> `insertPtrsubZero`, and union resolution. Say *that* when declining cast work, not the retired one.
+
 Owner: war2-arraytype. PLAN-FIRST (lead gates this before any code). Funds the convergence foundation
 (E1010 + E1045 + E1029 + partialsplit): replace mosura's print-time cast-decision + print-time
 re-inference with Ghidra's IR-CAST-op model, where `ActionSetCasts` inserts real `CPUI_CAST` ops that

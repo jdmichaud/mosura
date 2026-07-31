@@ -2,6 +2,19 @@
 
 **The bar:** a function counts as *properly decompiled* only if its emitted C, recompiled with the same compiler the game was built with, reproduces the original machine code **byte for byte**.
 
+> ## ⛔ EVERY NUMBER BELOW THIS LINE IS STALE — it is a `b0fb75b` snapshot
+>
+> Per the standing rule that a recorded number is stale unless its sha equals HEAD, this file is a
+> point-in-time survey and has NOT been regenerated since. Do not quote it. At `e517104` the same
+> measurement gives **byte-clean 16 (5 EXACT + 11 RELOC_EXACT), COMPILE_FAIL 46, DECOMPILE_FAIL 0,
+> of 1303 functions** — against this file's 1 EXACT / 0 RELOC_EXACT / 227 COMPILE_FAIL /
+> 117 DECOMPILE_FAIL of 1286. Regenerate with `docs/war2-recompile-remeasure.md` before citing.
+>
+> **Two GATE CLAIMS in this file have been falsified since it was written. Both are corrected in
+> place below; this notice exists because a gate is the kind of claim people act on without
+> re-checking.** An inherited "gated behind X" is a claim with an author and a date, not a property
+> of the code — ground the specific token read-only before accepting one.
+
 ## Provenance
 
 | | |
@@ -374,6 +387,23 @@ type-inference foundation (menu F), not the printer.
 These are gated behind the type-inference foundation, consistent with the standing
 bounded-levers-exhausted verdict (cast rules exhausted; remaining gaps are upstream). Stage 3
 (the call-output trial lifecycle) addresses the `extraout_`-derived subset directly.
+
+> **⛔ CORRECTION (`e517104`) — "cast rules exhausted" IS FALSIFIED. Read what is and is not
+> falsified, because the two halves of that sentence have different answers.**
+>
+> FALSIFIED: the parenthetical. A cast rule was live and defective when this was written —
+> `cast_standard` dispatched on the `Int` enum VARIANT where Ghidra switches on the METATYPE
+> (cast.cc:300), so `Datatype::Char` (a `TYPE_INT`, type.hh:356) fell through its catch-all and cast
+> unconditionally. Fixing it moved 65 WAR2 functions and removed 302 casts, and it required no type
+> inference work whatsoever. "Cast rules exhausted" was an assertion about a search that had not been
+> completed — the `is_int_meta` sweep from `d3c3bfb` had missed that function.
+>
+> NOT FALSIFIED, and deliberately not claimed: the main sentence about **these specific error
+> classes**. That fix produced 0 recompile status moves, so it says nothing about whether E1052 /
+> E1079 / E1029 / E1010 are gated behind type inference. Those remain open and untested.
+>
+> The lesson is the shape of the error, not the size of the fix: an "exhausted" verdict is a claim
+> about a search, and it decays every time the ground moves under it.
 
 ## Headline
 

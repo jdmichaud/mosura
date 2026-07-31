@@ -128,6 +128,29 @@ impl Datatype {
     /// first casualty was `isSubpieceCast`, which stopped recognising a 1-byte truncation as a cast
     /// and printed `SUB81(x,0)` where Ghidra prints `(char)x`. Use this at any site whose Ghidra
     /// original tests `TYPE_INT`.
+    ///
+    /// ⭐ THE WORD "first" ABOVE WAS A TELL THAT A SET EXISTED, AND NOBODY ENUMERATED IT. The second
+    /// casualty went unnoticed for four more type-layer commits: `cast_standard` matched the `Int`
+    /// variant, so `Char` fell through its `_` catch-all and cast unconditionally — worth 302 casts
+    /// across 64 WAR2 functions and one corpus fixture stuck below 1.000 (fixed in `e517104`).
+    ///
+    /// THE SWEEP IS NOW COMPLETE AND ENUMERATED, so the next variant addition gets a checklist
+    /// instead of an archaeology problem. Every site that must know `Char` is an int, verified:
+    ///   · `cast.rs`   `cast_standard` reqbase arm + all three `curbase` acceptability sets, and
+    ///                 the `input_cast` unsigned test (`cast.rs:149`)
+    ///   · `varmap.rs` the five type-compatibility predicates (`:79`, `:85`, `:144`, `:252`, `:253`)
+    ///   · `printc.rs` the unsigned-render test (`:86`), and the two variant lists at `:70`/`:76`
+    ///                 which spell `Datatype::Char` out explicitly
+    ///   · `infertypes.rs` the propagation guards at `:393` and `:824`
+    ///   · `types.rs`  this predicate, plus [`type_order`]'s two int/uint meet arms
+    /// And every per-variant site in this file that must answer for `Char` at all: `size` (1),
+    /// `metatype` (grouped with Int/Uint), `submeta` (SUB_INT_CHAR = 19, deliberately LESS specific
+    /// than SUB_INT_PLAIN), `name` ("char").
+    /// Checked and correctly NOT metatype predicates: `printc.rs`'s declaration printer (a `_` arm
+    /// that just prints `ty.name()`) and `infertypes.rs`'s `Option` match.
+    ///
+    /// ⇒ WHEN YOU ADD A DATATYPE VARIANT: walk this list, and extend it. A variant match is not a
+    ///   metatype test, and the failure is silent — the wrong answer compiles and renders.
     pub fn is_int_meta(&self) -> bool {
         matches!(self, Datatype::Int(_) | Datatype::Char)
     }
