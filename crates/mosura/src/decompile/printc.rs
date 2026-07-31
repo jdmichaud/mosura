@@ -539,8 +539,18 @@ impl<'a> PrintC<'a> {
             // A float-typed constant prints as a C float literal (Ghidra `pushConstant` →
             // `push_float`, printc.cc): `0.0`, `1.5`, `INFINITY`/`NAN` — not the raw integer bits.
             // Constant typing (ActionInferTypes now types constants) supplies the float type.
-            if let Datatype::Float(sz) = self.type_of(v) {
+            let dt = self.type_of(v);
+            if let Datatype::Float(sz) = dt {
                 return (super::float::push_float(vn.constant_value(), sz), 16);
+            }
+            // A `char`-typed constant prints as a C character literal (Ghidra `pushConstant`'s
+            // `isCharPrint()` test, printc.cc:1751 → `pushCharConstant`). This is the same switch
+            // the float arm above stands for; `char` is simply the other metatype that does not
+            // print as a plain integer.
+            if matches!(dt, Datatype::Char) {
+                if let Some(s) = push_char_constant(vn.constant_value(), vn.size) {
+                    return (s, 16);
+                }
             }
             return (render_const(vn.constant_value(), vn.size), 16);
         }
@@ -1899,6 +1909,71 @@ fn most_natural_base(val: u64) -> u32 {
     }
 }
 
+/// Ghidra `PrintC::pushCharConstant` (`printc.cc:1606`): render a `char`-typed constant as a C
+/// character literal. `None` means "print it as an integer instead", which is Ghidra's own fallback
+/// and not a mosura opt-out.
+///
+/// WHICH OF GHIDRA'S BRANCHES ARE UNREACHABLE HERE, and why — none of them is dropped, each is
+/// structurally absent. Every one of Ghidra's early exits is gated on a `displayFormat` obtained
+/// from a `Symbol` or a `HighVariable`'s type (printc.cc:1611-1621): mosura models neither, so
+/// `displayFormat` is 0 on every constant. That leaves exactly two live branches:
+///   · a 1-byte value `>= 0x80` is NOT a unicode code-point — it is part of some multi-byte or
+///     code-page encoding — so Ghidra prints it as an integer (printc.cc:1629). `None` here.
+///   · everything else is a code-point, single-quoted, escaped by `printUnicode` (printc.cc:1426).
+/// The equate path (`pushEquate`) and the wide-char `L` prefix are likewise unreachable: mosura has
+/// no equate symbols, and its `Datatype::Char` is 1 byte by construction.
+fn push_char_constant(val: u64, size: u32) -> Option<String> {
+    let masked = if size == 0 || size >= 8 { val } else { val & ((1u64 << (8 * size)) - 1) };
+    if size == 1 && masked >= 0x80 {
+        return None; // Not a code-point — Ghidra pushes it as an integer.
+    }
+    Some(format!("'{}'", print_unicode(masked as u32)))
+}
+
+/// Ghidra `PrintC::printUnicode` (`printc.cc:1426`) + `PrintLanguage::unicodeNeedsEscape`
+/// (`printlanguage.cc:411`): the named C escapes, then a generic `\xNN` for anything else that
+/// needs escaping, then the character itself.
+fn print_unicode(cp: u32) -> String {
+    let needs_escape = if cp < 0x20 {
+        true // C0 control characters
+    } else if cp < 0x7f {
+        matches!(cp, 92 | 0x22 | 0x27) // back-slash, double quote, single quote
+    } else if cp < 0x100 {
+        cp <= 0xa0 // DEL + the C1 control characters; A1-FF are printable
+    } else {
+        true // mosura's char constants never reach here (1 byte); Ghidra escapes by code-point class
+    };
+    if !needs_escape {
+        return char::from_u32(cp).map(String::from).unwrap_or_else(|| char_hex_escape(cp));
+    }
+    match cp {
+        0 => "\\0".into(),
+        7 => "\\a".into(),
+        8 => "\\b".into(),
+        9 => "\\t".into(),
+        10 => "\\n".into(),
+        11 => "\\v".into(),
+        12 => "\\f".into(),
+        13 => "\\r".into(),
+        92 => "\\\\".into(),
+        0x22 => "\\\"".into(),
+        0x27 => "\\'".into(),
+        _ => char_hex_escape(cp),
+    }
+}
+
+/// Ghidra `PrintC::printCharHexEscape` (`printc.cc:1512`): `\xNN` / `\xNNNN` / `\xNNNNNNNN`,
+/// zero-padded to the width the code-point needs.
+fn char_hex_escape(cp: u32) -> String {
+    if cp < 256 {
+        format!("\\x{cp:02x}")
+    } else if cp < 65536 {
+        format!("\\x{cp:04x}")
+    } else {
+        format!("\\x{cp:08x}")
+    }
+}
+
 fn render_const(val: u64, size: u32) -> String {
     let signed = if size == 0 || size >= 8 {
         val as i64
@@ -2343,5 +2418,41 @@ mod tests {
         // The relayed INDIRECT-output register must not surface as an `extraout_` artifact — the
         // isolated Ghidra oracle names it a local pointer (`puVar3`), with no `extraout_` anywhere.
         assert!(!c.contains("extraout_"), "relayed INDIRECT must not be named extraout_:\n{c}");
+    }
+
+    /// Ghidra `PrintC::pushCharConstant` / `printUnicode` (printc.cc:1606/1426). The escape table is
+    /// exactly the kind of thing that is wrong in one entry and never noticed, so it is pinned here
+    /// rather than only observed through a fixture.
+    #[test]
+    fn char_constants_render_as_c_character_literals() {
+        // The named C escapes, in Ghidra's order.
+        for (val, want) in [
+            (0u64, "'\\0'"),
+            (7, "'\\a'"),
+            (8, "'\\b'"),
+            (9, "'\\t'"),
+            (10, "'\\n'"),
+            (11, "'\\v'"),
+            (12, "'\\f'"),
+            (13, "'\\r'"),
+            (92, "'\\\\'"),
+            (0x22, "'\\\"'"),
+            (0x27, "'\\\''"),
+        ] {
+            assert_eq!(push_char_constant(val, 1).as_deref(), Some(want), "val={val:#x}");
+        }
+        // A control character with no named escape falls to the generic hex form, zero-padded.
+        assert_eq!(push_char_constant(1, 1).as_deref(), Some("'\\x01'"));
+        assert_eq!(push_char_constant(0x1f, 1).as_deref(), Some("'\\x1f'"));
+        // DEL is a C1-adjacent control character and is escaped (printlanguage.cc:426).
+        assert_eq!(push_char_constant(0x7f, 1).as_deref(), Some("'\\x7f'"));
+        // Printable ASCII prints as itself.
+        assert_eq!(push_char_constant(0x41, 1).as_deref(), Some("'A'"));
+        assert_eq!(push_char_constant(0x20, 1).as_deref(), Some("' '"));
+        assert_eq!(push_char_constant(0x7e, 1).as_deref(), Some("'~'"));
+        // At 0x80 and above a single byte is not a code-point — Ghidra prints an integer instead,
+        // and `None` is how that decision comes back here (printc.cc:1629).
+        assert_eq!(push_char_constant(0x80, 1), None);
+        assert_eq!(push_char_constant(0xff, 1), None);
     }
 }
