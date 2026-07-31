@@ -4531,8 +4531,22 @@ impl Rule for RulePiece2Sext {
 // SubVariableFlow driving rules — Ghidra `subflow.cc:1547-1721`. Each spots a
 // seed (a wide Varnode from which only a narrow logical sub-value is used),
 // builds a `SubvariableFlow`, then `do_trace()` + `do_replacement()` to shrink
-// the flow. `aggressive` is false for the ZEXT-side rules — mosura has no
-// `Varnode::isPtrFlow`; `RuleSubvarSext` reads its own from the compiler spec.
+// the flow.
+//
+// ⭐ `aggressive` IS FALSE FOR THE ZEXT-SIDE RULES ON EVERY TARGET GHIDRA WOULD RUN THEM ON, and
+// that is a verified equivalence rather than a gap. Ghidra passes `Varnode::isPtrFlow()`, a flag
+// set ONLY by `RulePtrFlow` (ruleaction.cc:9038) — whose `getOpList` returns EMPTY unless
+// `glb->getDefaultDataSpace()->isTruncated()` (:9047, "Only stick ourselves into pool if
+// aggresiveness is turned on"). A space is truncated only via `<truncate_space>` in a processor's
+// `.ldefs`, which in the pinned tree appears for exactly three families — AARCH64, PowerPC and
+// MIPS, the same three that carry `<aggressivetrim>`, because both exist for 32-bit ABIs on 64-bit
+// registers. NO x86 `.ldefs` truncates a space, so on `x86:LE:64` and `x86:LE:32` RulePtrFlow never
+// enters a pool, `isPtrFlow` is never set, and Ghidra's own argument is `false`.
+// ⇒ Porting RulePtrFlow today would add a rule with an empty oplist plus a Varnode flag nothing
+//   sets. DEATH CERTIFICATE, and here is what revives it: the first target mosura builds whose
+//   `.ldefs` carries `<truncate_space>`. At that point this constant becomes WRONG and RulePtrFlow
+//   must land with it. `RuleSubvarSext` is the opposite case and shows the contrast — its
+//   `aggressive` comes from a spec attribute that exists today, so it reads it.
 // ---------------------------------------------------------------------------
 
 /// Ghidra `RuleSubvarAnd` (subflow.cc:1553): `V & c` where the AND output is consumed exactly by the
@@ -4608,7 +4622,9 @@ impl Rule for RuleSubvarSubpiece {
         }
         let sa = sa_c as u32;
         let mask = super::nzmask::calc_mask(flowsize) << (8 * sa);
-        let aggressive = false; // Ghidra: outvn->isPtrFlow(); mosura has no isPtrFlow
+        // Ghidra: `outvn->isPtrFlow()`. False on every x86 target — see the certificate on the
+        // SubVariableFlow rule block above; it names the condition that would make it wrong.
+        let aggressive = false;
         if !aggressive {
             if (data.vn(vn).get_consume() & mask) != data.vn(vn).get_consume() {
                 return 0;

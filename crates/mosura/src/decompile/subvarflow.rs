@@ -21,11 +21,13 @@
 //! BRANCHIND/FLOAT_INT2FLOAT/call-return pulls were once left to the `default` abort, and that gap —
 //! not the type model — is what pinned mosura's 1-byte values at 4 bytes.
 //!
-//! Still deferred, and both need their own driving code rather than an arm here: the sign-extension
-//! tracers ([`SubvariableFlow::trace_forward_sext`]/[`SubvariableFlow::trace_backward_sext`]), which
-//! only `RuleSubvarSext` reaches and which is not registered; and the `aggressive` flag, which
-//! `RuleSubvarZext` should take from `Varnode::isPtrFlow` — a flag mosura's Varnode does not carry
-//! because `RulePtrFlow` is not ported. Both are unreachable today, so neither can affect output.
+//! The sign-extension tracers ([`SubvariableFlow::trace_forward_sext`]/
+//! [`SubvariableFlow::trace_backward_sext`]) and their driving `RuleSubvarSext` are ported and
+//! registered too, so the subsystem is complete. The one thing Ghidra has here that mosura does not
+//! is `Varnode::isPtrFlow`, which supplies `RuleSubvarZext`'s `aggressive` argument — and that is a
+//! verified equivalence, not a gap: the rule that sets the flag has an empty oplist on any target
+//! whose data space is not truncated, which is every x86 target. The certificate, with the condition
+//! that would revive it, is on the SubVariableFlow rule block in `rules.rs`.
 
 use std::collections::HashMap;
 
