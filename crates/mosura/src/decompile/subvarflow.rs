@@ -167,6 +167,12 @@ impl<'a> SubvariableFlow<'a> {
             s.valid = false;
             return s;
         }
+        subvar_debug(&format!(
+            "SUBVAR seed root={} mask={mask:#x} bitsize={} flowsize={} aggr={aggr} sext={sext} big={big}",
+            s.fd.vn_str(root),
+            s.bitsize,
+            s.flowsize,
+        ));
         s.create_link(None, mask, 0, root);
         s
     }
@@ -446,16 +452,27 @@ impl<'a> SubvariableFlow<'a> {
     /// next worklist node by tracing one level backward then forward.
     fn process_next_work(&mut self) -> bool {
         let rvn = self.worklist.pop().unwrap();
+        subvar_debug_node(self.fd, "work", rvn, &self.rvnodes);
         if self.sextrestrictions {
             if !self.trace_backward_sext(rvn) {
+                subvar_debug("  ABORT trace_backward_sext (unported stage-4 stub)");
                 return false;
             }
-            return self.trace_forward_sext(rvn);
+            let ok = self.trace_forward_sext(rvn);
+            if !ok {
+                subvar_debug("  ABORT trace_forward_sext (unported stage-4 stub)");
+            }
+            return ok;
         }
         if !self.trace_backward(rvn) {
+            subvar_debug("  ABORT in trace_backward");
             return false;
         }
-        self.trace_forward(rvn)
+        let ok = self.trace_forward(rvn);
+        if !ok {
+            subvar_debug("  ABORT in trace_forward");
+        }
+        ok
     }
 
     // --- Stage 2 helpers used by the tracers -----------------------------------------------
@@ -683,6 +700,7 @@ impl<'a> SubvariableFlow<'a> {
             dcount += 1; // Count this descendant
             let slot = self.fd.op(op).inrefs.iter().position(|&v| v == vn).unwrap();
             let opc = self.fd.op(op).code();
+            subvar_debug(&format!("  fwd  {}", self.fd.op_str(op)));
             match opc {
                 OpCode::Copy | OpCode::Multiequal | OpCode::IntNegate | OpCode::IntXor => {
                     let outvn = out_opt.expect("op has output");
@@ -980,6 +998,7 @@ impl<'a> SubvariableFlow<'a> {
             return true; // If vn is input
         };
         let opc = self.fd.op(op).code();
+        subvar_debug(&format!("  back {}", self.fd.op_str(op)));
         match opc {
             OpCode::Copy | OpCode::Multiequal | OpCode::IntNegate | OpCode::IntXor => {
                 let n = self.fd.op(op).num_inputs() as i32;
@@ -1205,11 +1224,21 @@ impl<'a> SubvariableFlow<'a> {
         }
 
         if !retval {
+            subvar_debug("SUBVAR result=ABORT");
             return false;
         }
         if self.pullcount == 0 {
+            subvar_debug("SUBVAR result=NO-PULL (traced clean but no terminal modification)");
             return false;
         }
+        subvar_debug(&format!(
+            "SUBVAR result=OK flowsize={} nodes={} ops={} patches={} pulls={}",
+            self.flowsize,
+            self.rvnodes.len(),
+            self.rops.len(),
+            self.patchlist.len(),
+            self.pullcount
+        ));
         true
     }
 
@@ -1322,6 +1351,39 @@ impl<'a> SubvariableFlow<'a> {
             }
         }
     }
+}
+
+/// `MOSURA_SUBVAR=1` — trace every `SubvariableFlow` attempt: the seed (root/mask/flowsize), each
+/// op the tracer dispatches on, and the outcome (`OK` / `NO-PULL` / `ABORT`, with the direction).
+///
+/// ⚠️ THIS IS A ONE-SIDED PROBE AND THAT IS DELIBERATE. Ghidra has no `SubvariableFlow` debug
+/// channel; `OPACTION_DEBUG` logs only p-code mutations that actually happened, so a flow that
+/// ABORTS is invisible in it — on either side. The question "how far did the narrowing get before
+/// it gave up, and on which op" is therefore not answerable by a trace diff at all, which is why
+/// the width divergence survived two instruments that both correctly named this subsystem. Ghidra's
+/// side is read from the transform it *did* perform (the `subvar_zext` block in its trace names
+/// every replacement varnode); this names the op mosura stopped at.
+fn subvar_debug(msg: &str) {
+    if subvar_debug_on() {
+        eprintln!("{msg}");
+    }
+}
+
+fn subvar_debug_node(fd: &Funcdata, tag: &str, rvn: usize, rvnodes: &[ReplaceVarnode]) {
+    if !subvar_debug_on() {
+        return;
+    }
+    let node = &rvnodes[rvn];
+    match node.vn {
+        Some(v) => eprintln!(" {tag} {} mask={:#x}", fd.vn_str(v), node.mask),
+        None => eprintln!(" {tag} <new> mask={:#x}", node.mask),
+    }
+}
+
+fn subvar_debug_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MOSURA_SUBVAR").is_some())
 }
 
 /// Ghidra `TypeOpFloatInt2Float::preferredZextSize` (`typeop.cc`).
