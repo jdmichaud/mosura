@@ -5,13 +5,48 @@
 //!
 //! Gated on `Funcdata::has_type_recovery_started` and run after `ActionInferTypes` has committed
 //! data-types onto varnodes (`Varnode::get_type`). The pointer type is the read-facing type
-//! (`getTypeReadFacing`), which for mosura's primitive lattice equals the committed type.
+//! (`getTypeReadFacing`), which equals the committed type here.
 //!
-//! Faithfully deferred (Ghidra has them; not reached by the primitive-lattice corpus): the
-//! `TypePointerRel` relative-pointer alternate form (`initAlternateForm`); the
-//! `distributeIntMultAdd`/`collapseIntMultMult` distribution path (declined when needed); the
-//! `nearestArrayedComponent` array-hint refinement inside a struct (falls back to `getSubType`);
-//! and the union `inheritResolution`/`isTypeRecoveryExceeded`/`setStopTypePropagation` bookkeeping.
+//! ⚠️ **AUDITED — THIS PARAGRAPH USED TO BUNDLE FOUR DEFERRALS UNDER ONE REASON, AND THREE OF THE
+//! FOUR WERE WRONG.** The original, kept verbatim so the error stays legible and the reader can
+//! calibrate the rest of this file: *"Faithfully deferred (Ghidra has them; not reached by the
+//! primitive-lattice corpus): the `TypePointerRel` relative-pointer alternate form
+//! (`initAlternateForm`); the `distributeIntMultAdd`/`collapseIntMultMult` distribution path
+//! (declined when needed); the `nearestArrayedComponent` array-hint refinement inside a struct
+//! (falls back to `getSubType`); and the union
+//! `inheritResolution`/`isTypeRecoveryExceeded`/`setStopTypePropagation` bookkeeping."*
+//!
+//! **The shared reason was itself false when written.** `Datatype::Array` and `Datatype::Struct`
+//! landed in `154b022` at 15:15 on 2026-06-25; this header is `86bd58f`, 19:20 the same day — four
+//! hours later, with `154b022` an ancestor. The lattice was not "primitive" at the time of writing.
+//!
+//! Split, one item per line, verified against the tree:
+//!
+//!   - **`TypePointerRel` / `initAlternateForm` — ACCURATE, genuinely deferred.** There is no
+//!     `TypePointerRel` variant, so [`AddTreeState::init_alternate_form`] is a stub returning false
+//!     and says so at its definition; Ghidra's call-site scaffold IS ported (the second `apply`
+//!     attempt below). Its real reason is a missing variant, not corpus reach.
+//!     *Revival:* a relative-pointer variant in [`Datatype`].
+//!   - **`distributeIntMultAdd` — ⚠️ PORTED AND LIVE, just not from here.**
+//!     `rules.rs::distribute_int_mult_add` (funcdata_op.cc:1071) exists and is called from a rule
+//!     (rules.rs:738/741). What is actually deferred is `AddTreeState`'s *use* of the distribution
+//!     path — it declines, see `check_mult_term` — which is a WIRING decision, not a missing port.
+//!     `collapseIntMultMult` is the only genuinely absent half.
+//!   - **`nearestArrayedComponent` — ⚠️ HALF PORTED, IN THIS FILE.** Ghidra has TWO pairs:
+//!     `TypeStruct` (type.cc:1669/1698) and `TypeSpacebase` (type.cc:2971/3020). The **spacebase**
+//!     pair is ported as `sb_nearest_backward`/`sb_nearest_forward` below and is LIVE (called from
+//!     `apply`). Only the `TypeStruct` pair is unported — and since `Datatype::Struct` exists, it is
+//!     not lattice-blocked either, merely unwritten.
+//!   - **union bookkeeping — ⚠️ ONE OF THREE PORTED, AND MIS-GROUPED.**
+//!     `isTypeRecoveryExceeded`/`setTypeRecoveryExceeded` are ported (`funcdata.rs`) and LIVE
+//!     (`pipeline.rs`), and in Ghidra they are a general type-recovery pass counter, not union
+//!     bookkeeping at all. `inheritResolution` and `setStopTypePropagation` are genuinely absent,
+//!     and those two really are gated on a union metatype, which does not exist here.
+//!
+//! Two of the three refutations sit in THIS FILE, 250 and 340 lines below the sentence that denied
+//! them. That is the bundling failure's signature: a multi-item note is written once and never
+//! revisited, so it fossilises at its commit no matter what lands afterwards — including in the
+//! same file. See AGENT.md's bundling rule.
 
 use super::action::Rule;
 use super::funcdata::Funcdata;

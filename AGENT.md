@@ -116,6 +116,39 @@ the note named. Four items, four different answers, **none of them the one the s
 The bundling is not incidental to that; it is the mechanism, because examining any single item left
 the sentence standing.
 
+### FALSE WHEN WRITTEN is a different failure from STALE — and it needs a different check
+
+Every rule above treats a bad note as a claim that **decayed**. These did not. They were **never
+true**:
+
+- `cast.rs` deferred `findTruncation` because "mosura's `Datatype` has no struct or union
+  metatype." `Datatype::Struct` landed `154b022` on **2026-06-25**; that comment is `844d5b1`,
+  **2026-07-27** — a month later, with `Struct` already consumed by three modules.
+- `ptrarith.rs`'s header called the lattice "primitive" in `86bd58f` at **19:20 on 2026-06-25**.
+  `Array` and `Struct` landed in `154b022` at **15:15 the same day**, an ancestor of it. Four hours.
+
+**The countermeasure differs, and that is the whole point.** A decayed claim is caught by
+re-checking against *today's* tree. A false-when-written claim survives that check just as happily
+— it looks like ordinary drift — and is caught only by checking the claim against the tree **as of
+its own date**: `git blame` for the note's commit, then `git log --format=%ad -1 <commit>` on
+whatever it asserts is absent, then `git merge-base --is-ancestor`. Two commands.
+
+⇒ When a deferral rests on "X does not exist", **date X**. And correct it **additively**, keeping
+the original wording inline — the error has to stay legible or the next reader cannot calibrate how
+much to trust the surrounding text.
+
+### Measure a rule where the rule runs
+
+`ActionSetCasts` runs once, dead-last, on settled IR — a probe there sees a fixed picture. A
+**mainloop rule** is re-applied to a graph that changes under it, so a probe on settled IR would
+describe a state the rule never sees. The reach of `RulePtraddUndo` was therefore measured with a
+probe **shaped as a `Rule`, registered in Ghidra's own `actprop` slot**, returning 0 — which keeps
+it inert, because an `ActionPool` fixpoint counts changes and a rule reporting none cannot perturb
+the pool's order or termination.
+
+Same family as "confirm the oracle decompiled the same program": **prove the instrument observed
+the state you are reasoning about.** For a rule, that means running as one.
+
 ### A bare count cannot answer the only question a gate asks
 
 Every gate in this project is quoted in **functions**: which ones regressed, which ones are
