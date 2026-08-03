@@ -154,6 +154,28 @@ written and simply decays when someone ports it.
 a deferral yourself, prefer naming the function you did not port over characterising the lattice —
 the first ages honestly, the second can be false before the commit lands.
 
+### A RETRACTION MUST REACH EVERY COPY OF THE CLAIM — the commit is not enough
+
+Additive correction keeps an error legible. It does **not** stop a stale copy being quoted, because
+the copy is somewhere else. Worked example from this session, and the reader it caught was the lead:
+
+1. Task text filed `collapseIntMultMult` as "genuinely unported **and independent of the struct
+   question**".
+2. Measurement retracted the independence — its only caller is the loop you would have had to port
+   anyway, so porting it alone is dead code. **The retraction went into the commit message and into a
+   successor task.**
+3. The **original task text was never touched**, so the next reader — reading the task, not the
+   commit — quoted the retracted claim back as established, and issued an instruction based on it.
+
+The commit is the audit trail; **the task, the doc comment and the plan are what people actually
+read.** A retraction that lands only in the trail is a retraction that did not happen for practical
+purposes.
+
+⇒ **When you retract, patch the claim where it was WRITTEN, not only where it was found wrong.**
+Mark it at the point it appears (`❌ RETRACTED (<sha>) — was: "…"`, then the correction), so the
+stale sentence cannot be read without its refutation. Grep for the claim's own words before
+declaring the retraction done; a claim usually has more copies than you remember writing.
+
 ### …but OVER-SPLITTING invents independence, exactly as bundling hides difference
 
 The rule above is "one item, one reason" — and applying it mechanically produced its own error. After
