@@ -750,3 +750,63 @@ impl AddTreeState {
         true
     }
 }
+
+/// Ghidra's `RulePtraddUndo` (ruleaction.cc:6910): "Remove PTRADD operations with mismatched
+/// data-type information." A Varnode can be given an incorrect type mid-simplification, producing
+/// an incorrect PTRADD conversion; once the right type is found the PTRADD must go back to an
+/// INT_ADD.
+///
+/// The guard has three exits into [`Funcdata::op_undo_ptradd`], and they are not one class:
+///   - the base is **not a pointer** at all;
+///   - it is a pointer whose **pointee size disagrees** with the element size in slot 2;
+///   - it **fits**, but the index is a **constant zero** (`ptr + 0*elem`).
+/// The first two are the mis-scaling class the dead-last `ActionSetCasts` refit also catches
+/// (`8d9e42c`); the third is unique to this rule.
+///
+/// ⚠️ **THIS DOES NOT CLOSE A MEASURED GAP AND MUST NOT BE DESCRIBED AS DOING SO.** Measured
+/// read-only before it was written, with a rule-shaped probe in this exact pool slot: **0 firings
+/// across all 79 x86-64 datatests**, and on WAR2 **32 firings in 4 functions** (20 not-a-pointer,
+/// 12 size-mismatch, **zero** constant-zero-index) — and all 4 functions are already among the 14
+/// the `ActionSetCasts` refit rewrites, a strict subset. Since that refit repairs these before
+/// printing, the rendered C may not move at all.
+///
+/// What is NOT a subset is the **timing**, and that is the reason to port it: this runs in the
+/// **mainloop**, so the recovered INT_ADD/INT_MULT goes on to participate in simplification and
+/// type propagation, whereas the refit rewrites only for rendering. Ghidra runs both, and the two
+/// compose rather than race: for a size-mismatch the base is still a pointer, so `RulePtrArith`
+/// (actprop2, coreaction.cc:5666) may rebuild a PTRADD — carrying the **correct** element size read
+/// from the current type, which is the repair; where the base is not a pointer `RulePtrArith`
+/// declines and the integer form stands.
+pub struct RulePtraddUndo;
+
+impl Rule for RulePtraddUndo {
+    fn name(&self) -> &str {
+        "ptradd_undo"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Ptradd]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if !data.has_type_recovery_started() {
+            return 0;
+        }
+        let size = data.vn(data.op(op).input(2).unwrap()).constant_value();
+        let dt = type_read_facing(data, data.op(op).input(0).unwrap());
+        // Ghidra compares `getAlignSize()` against `addressToByteInt(size, wordSize)`. Both are
+        // identities here: `alignSize == size` for every type mosura models (the base `Datatype`
+        // constructor, type.hh:215 — only composites round up and there is no composite metatype),
+        // and `wordSize` is 1 on every space mosura loads.
+        if let Datatype::Pointer(_, pt) = &dt {
+            if pt.size() as u64 == size {
+                // Still a pointer, and of the correct size — keep it unless the index is a
+                // constant zero, which makes the PTRADD a no-op scaling nothing.
+                let ind = data.op(op).input(1).unwrap();
+                if !data.vn(ind).is_constant() || data.vn(ind).constant_value() != 0 {
+                    return 0;
+                }
+            }
+        }
+        data.op_undo_ptradd(op, false);
+        1
+    }
+}

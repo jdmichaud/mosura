@@ -304,6 +304,14 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubvarSext) // (117)
         .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
+        // Ghidra's actprop slot for RulePtraddUndo (coreaction.cc:5638), immediately after the
+        // float group — NOT actprop2, where RulePushPtr/RulePtrArith live (:5664/5666). The
+        // separation is load-bearing: this rule undoes a mis-typed PTRADD here, and RulePtrArith
+        // may legitimately rebuild one later in the pass with the element size read from the
+        // current type. RulePtrsubUndo (:5639) is NOT ported — its call site sits inside
+        // `removeLocalAddRecurse`, a helper of a much larger subsystem, so the two are not the
+        // same size of job and are deliberately not bundled.
+        .with(super::ptrarith::RulePtraddUndo)
         // The double-precision LOAD/STORE recombiners sit at Ghidra's oppool1 tail (coreaction.cc:
         // 5643-5644, after RulePiecePathology :5642 — not ported). RuleDoubleStore is dormant until
         // a PRECISLO/PRECISHI marker port lands (ActionParamDouble / SplitVarnode markings); the

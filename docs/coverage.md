@@ -260,7 +260,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleIgnoreNan | PORTED |
 | RuleUnsigned2Float | MISSING |
 | RuleInt2FloatCollapse | MISSING |
-| RulePtraddUndo | MISSING |
+| RulePtraddUndo | PORTED |
 | RulePtrsubUndo | MISSING |
 | RuleSegment | N/A (segmented arch) |
 | RulePiecePathology | MISSING |
