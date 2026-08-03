@@ -88,17 +88,25 @@ impl Action for ActionSetCasts {
 /// unmeasured claim. The cheapest discriminator is not the guard's semantics at all — it is whether
 /// any PTRADD/PTRSUB even SURVIVES to this action, which runs dead-last. A zero count settles the
 /// question without modelling `getAlignSize`/`isPtrsubMatching` at all.
+///
+/// Every row carries the FUNCTION NAME. A bare count cannot answer the only question a gate asks —
+/// *which* functions does this reach — and AGENT.md's standing rule is that a per-specimen
+/// instrument must filter by function or the operator must. Without the name the 59 misfitting
+/// PTRADDs could not be intersected with the byte-clean set, which is the pre-check that decides
+/// whether the refit can regress a byte-exact function.
 fn ptrfit_probe(data: &Funcdata, op: OpId) {
     let o = data.op(op);
     match o.code() {
         OpCode::Ptradd => {
             // Ghidra coreaction.cc:2740 — refit unless in0 is a pointer whose pointee size equals
             // the element-size constant in slot 2 (wordSize is 1 on every space mosura loads, so
-            // `addressToByteInt` is the identity).
+            // `addressToByteInt` is the identity, and `getAlignSize() == getSize()` for every type
+            // mosura models: the base `Datatype` constructor sets `alignSize = s`, type.hh:215, and
+            // only composites — which mosura has no metatype for — can round it up).
             let ct = high_type_read_facing(data, o.input(0).unwrap());
             let sz = data.vn(o.input(2).unwrap()).constant_value();
             let fits = matches!(&ct, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
-            eprintln!("PTRFIT ptradd fits={fits} elem_sz={sz} ptr={ct:?}");
+            eprintln!("PTRFIT\t{}\tptradd\tfits={fits}\telem_sz={sz}\tptr={ct:?}", data.name);
         }
         OpCode::Ptrsub => {
             // coreaction.cc:2748 — refit unless in0's type accepts the slot-1 offset as a sub-field.
@@ -106,7 +114,7 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
             // needs the composite lattice, so a `ptr_off0=false` row is REACH, not a verdict.
             let ct = high_type_read_facing(data, o.input(0).unwrap());
             let off = data.vn(o.input(1).unwrap()).constant_value();
-            eprintln!("PTRFIT ptrsub is_ptr={} off={off} ty={ct:?}", ct.is_pointer());
+            eprintln!("PTRFIT\t{}\tptrsub\tis_ptr={}\toff={off}\tty={ct:?}", data.name, ct.is_pointer());
         }
         _ => {}
     }
@@ -133,11 +141,29 @@ fn apply(data: &mut Funcdata) {
             if o.is_marker() || o.is_dead() || o.code() == OpCode::Cast {
                 continue;
             }
-            // The PTRADD/PTRSUB refits are not ported; `MOSURA_PTRFIT=1` measures whether they would
-            // ever fire before anyone writes them (see this module's header). Read-only: it evaluates
-            // Ghidra's own guard and counts, it does not refit.
+            // `MOSURA_PTRFIT=1` still measures the guard for BOTH ops (the PTRSUB refit is not
+            // ported), and it runs BEFORE the refit below so its rows describe the input IR.
             if ptrfit_probe_on() {
                 ptrfit_probe(data, op);
+            }
+            // "Check for PTRADD that no longer fits its pointer" (coreaction.cc:2740). A PTRADD
+            // carries the element size it was built with in slot 2; if the base's type has since
+            // become something else — not a pointer at all, or a pointer to a differently-sized
+            // type — the op is scaling by a stride its own operand no longer has, so Ghidra undoes
+            // it to plain integer arithmetic rather than render a lie.
+            //
+            // `getAlignSize()` is `getSize()` for every type mosura models (the base `Datatype`
+            // constructor sets `alignSize = s`, type.hh:215; only composites round it up, and there
+            // is no composite metatype here), and `addressToByteInt(sz, wordSize)` is the identity
+            // because `wordSize` is 1 on every space mosura loads. So the guard below is Ghidra's,
+            // not a simplification of it.
+            if data.op(op).code() == OpCode::Ptradd {
+                let ct = high_type_read_facing(data, data.op(op).input(0).unwrap());
+                let sz = data.vn(data.op(op).input(2).unwrap()).constant_value();
+                let fits = matches!(&ct, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
+                if !fits {
+                    data.op_undo_ptradd(op, true);
+                }
             }
             // "Do input casts first, as output may depend on input" (coreaction.cc:2757): a castInput
             // that casts an operand changes the type castOutput's `getOutputToken` then reads.

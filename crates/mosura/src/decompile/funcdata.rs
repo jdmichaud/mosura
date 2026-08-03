@@ -676,6 +676,53 @@ impl Funcdata {
         self.ops[negateop.0 as usize].output.unwrap()
     }
 
+    /// Ghidra `Funcdata::opUndoPtradd` (funcdata_op.cc:579): convert a `CPUI_PTRADD` back into the
+    /// equivalent `CPUI_INT_ADD`, inserting a `CPUI_INT_MULT` when the element size is not 1.
+    ///
+    /// A PTRADD is `base + index * elemsize` with the element size a constant in slot 2; an INT_ADD
+    /// is plain `base + offset`. So undoing one must fold the scale back into the offset: a constant
+    /// index multiplies out in place, a non-constant one gains a real INT_MULT op.
+    ///
+    /// `finalize` mirrors Ghidra's parameter — set by the `ActionSetCasts` refit (coreaction.cc:2745)
+    /// because that action runs dead-last, after `ActionMarkImplied`, so any op created there must
+    /// arrive already typed and already marked implied or it would render as a bare statement that
+    /// nothing marked up. The rule call sites (ruleaction.cc:6925/7115) pass false and let the
+    /// mainloop retype what they build; those two are not ported.
+    pub fn op_undo_ptradd(&mut self, op: OpId, finalize: bool) {
+        let mult_vn = self.op(op).input(2).expect("PTRADD has 3 inputs");
+        let mult_size = self.vn(mult_vn).constant_value();
+        self.op_remove_input(op, 2);
+        self.op_set_opcode(op, OpCode::IntAdd);
+        if mult_size == 1 {
+            return; // no multiplier, we are done
+        }
+        let off_vn = self.op(op).input(1).expect("INT_ADD has 2 inputs");
+        let off_size = self.vn(off_vn).size;
+        if self.vn(off_vn).is_constant() {
+            // Ghidra masks with `calc_mask(offVn->getSize())`: the fold's width is the offset's own
+            // width, and an unmasked product is an oversized constant — the IR invariant
+            // `new_const`'s `MOSURA_CONSTCHECK` exists to catch.
+            let new_val = mult_size
+                .wrapping_mul(self.vn(off_vn).constant_value())
+                & super::nzmask::calc_mask(off_size);
+            let new_off = self.new_const(off_size, new_val);
+            if finalize {
+                let ct = super::merge::high_type_read_facing(self, off_vn);
+                self.vn_mut(new_off).update_type(ct);
+            }
+            self.op_set_input(op, 1, new_off);
+            return;
+        }
+        let mult_op = self.new_op_before(op, OpCode::IntMult, vec![off_vn, mult_vn]);
+        let add_vn = self.op(mult_op).output.expect("new_op_before gives an output");
+        if finalize {
+            let ct = self.vn(mult_vn).get_type();
+            self.vn_mut(add_vn).update_type(ct);
+            self.vn_mut(add_vn).flags |= flags::IMPLIED;
+        }
+        self.op_set_input(op, 1, add_vn);
+    }
+
     /// Ghidra `Funcdata::newExtendedConstant` (funcdata_varnode.cc:462): materialize a constant of
     /// `size` bytes holding the (up to 128-bit) value `val`, inserted just before `op`. Up to 8
     /// bytes it is a plain constant; wider, it is built as an `INT_ZEXT` of the low 8 bytes (when
