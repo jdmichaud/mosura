@@ -154,6 +154,29 @@ written and simply decays when someone ports it.
 a deferral yourself, prefer naming the function you did not port over characterising the lattice —
 the first ages honestly, the second can be false before the commit lands.
 
+### A DECLARED VARIANT IS NOT AN INHABITED LATTICE
+
+Correcting a substrate claim is itself a substrate claim, and it can be wrong the same way. Having
+found "mosura's `Datatype` has no struct metatype" false — `Datatype::Struct` was added a month
+before that note — the audit then asserted the struct work was "not lattice-blocked, merely
+unwritten." **That was wrong, and it shipped in two commits before the census caught it.**
+
+`Datatype::Struct` is declared at `types.rs:42` and read in five modules — and **constructed
+nowhere**. Every occurrence is a `matches!`, a match arm, or a field read. The variant is
+**uninhabited**, so *0 of 37* corpus SUBPIECEs and *0 of 1704* WAR2 SUBPIECEs carry a struct-typed
+input, and every `TypeStruct::*` port would be inert.
+
+⇒ **"Does the variant exist?" is the wrong question. Ask "does anything CONSTRUCT one?"** — one
+grep, and it is the difference between a lattice you have and a lattice you can spell:
+
+```sh
+grep -rn "Datatype::Struct(" crates/mosura/src/decompile/   # a constructor, or only consumers?
+```
+
+And note the shape of the mistake, because it is the tempting one: the correction was *more* correct
+than what it replaced and still wrong, so it read as progress. **A refutation earns no exemption
+from the standard it just enforced.**
+
 ### Measure a rule where the rule runs
 
 `ActionSetCasts` runs once, dead-last, on settled IR — a probe there sees a fixed picture. A

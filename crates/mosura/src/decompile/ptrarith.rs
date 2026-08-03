@@ -35,8 +35,14 @@
 //!   - **`nearestArrayedComponent` — ⚠️ HALF PORTED, IN THIS FILE.** Ghidra has TWO pairs:
 //!     `TypeStruct` (type.cc:1669/1698) and `TypeSpacebase` (type.cc:2971/3020). The **spacebase**
 //!     pair is ported as `sb_nearest_backward`/`sb_nearest_forward` below and is LIVE (called from
-//!     `apply`). Only the `TypeStruct` pair is unported — and since `Datatype::Struct` exists, it is
-//!     not lattice-blocked either, merely unwritten.
+//!     `apply`). Only the `TypeStruct` pair is unported.
+//!     ⚠️ **CORRECTION to this line's own first draft**, which said "and since `Datatype::Struct`
+//!     exists, it is not lattice-blocked either, merely unwritten." That read the existence of a
+//!     VARIANT as the existence of a lattice. `Datatype::Struct` is **never constructed anywhere**
+//!     — declared at types.rs:42, consumed in five modules, built by none — so the `TypeStruct`
+//!     pair would be **inert** if ported, exactly like `findTruncation` (see `cast.rs`). It IS
+//!     blocked, just not by the missing variant everyone kept naming. Revival: something must
+//!     PRODUCE a struct type.
 //!   - **union bookkeeping — ⚠️ ONE OF THREE PORTED, AND MIS-GROUPED.**
 //!     `isTypeRecoveryExceeded`/`setTypeRecoveryExceeded` are ported (`funcdata.rs`) and LIVE
 //!     (`pipeline.rs`), and in Ghidra they are a general type-recovery pass counter, not union

@@ -17,9 +17,13 @@
 //!     (cast.cc) are unreachable and unported. Revival: a typedef variant.
 //!   - **enum** — no `Datatype` variant. Ghidra treats an enum as TYPE_UINT/TYPE_INT in every
 //!     `castStandard` branch, so its absence changes no decision today. Revival: an enum variant.
-//!   - **struct** — ⚠️ **NOT ABSENT.** `Datatype::Struct(size, fields)` exists since `154b022`
-//!     (2026-06-25). This clause was wrong; see the `findTruncation` correction in
-//!     [`output_token`]. What is absent is UNION (no `Datatype::Union`).
+//!   - **struct** — ⚠️ **THE VARIANT IS NOT ABSENT, BUT IT IS UNINHABITED.** `Datatype::Struct(size,
+//!     fields)` has existed since `154b022` (2026-06-25), so the original "no struct metatype" was
+//!     false when written. But **nothing in the tree ever CONSTRUCTS one**: every occurrence across
+//!     `types.rs`, `varmap.rs`, `ptrarith.rs`, `setcasts.rs` and this file is a consumer — a
+//!     `matches!`, a match arm, a field read. Measured consequence: **0 of 37 corpus SUBPIECEs and
+//!     0 of 1704 WAR2 SUBPIECEs have a struct-typed input.** So every `TypeStruct::*` port is inert
+//!     until struct types are PRODUCED, not merely declarable. Union is absent outright.
 //!   - **variable-length** — no `is_variable_length` anywhere in `decompile/`, so `castStandard`'s
 //!     `isVariableLength() && isptr && hasSameVariableBase()` escape (cast.cc:336) is unported and
 //!     a size change there always casts. Revival: the flag, with `hasSameVariableBase`.
@@ -248,10 +252,30 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         // `154b022` on 2026-06-25; this comment was written in `844d5b1` on 2026-07-27, a month
         // later, and `Datatype::Struct` is already consumed by ptrarith.rs, setcasts.rs and
         // varmap.rs. What is genuinely absent is UNION — there is no `Datatype::Union` variant.
-        // So the arm is not "inapplicable"; its struct half rests on a lattice we have.
-        // Whether `findTruncation` is portable on that half alone is UNMEASURED and is deliberately
-        // NOT claimed here — no reach census has been run for it. That is the open item; the false
-        // premise is what is being retired, not the deferral.
+        //
+        // ⚠️ SECOND CORRECTION, AND IT IS OF THE FIRST ONE. The paragraph above went on to say "its
+        // struct half rests on a lattice we have", and that was MY over-correction: it read the
+        // EXISTENCE OF A VARIANT as the existence of a lattice. The census has now been run and the
+        // answer is the opposite.
+        //
+        //   1. Does the struct path need union? **NO.** `TypeStruct::findTruncation` (type.cc:1624)
+        //      is a pure field lookup — `getFieldIter` binary-searches the field containing the
+        //      offset, then rejects when `newoff + sz` spans past that field's end. The union
+        //      versions (`TypeUnion` :2185, `TypePartialUnion` :2440) are separate virtual overrides
+        //      on separate classes. So the original "struct OR union" framing was wrong twice over.
+        //   2. What is its reach? **ZERO.** 0 of 37 corpus SUBPIECEs and 0 of 1704 WAR2 SUBPIECEs
+        //      have a struct-typed input 0.
+        //   3. Why zero? **`Datatype::Struct` IS NEVER CONSTRUCTED.** Declared at types.rs:42 and
+        //      read in five modules, but nothing anywhere builds one. The variant is UNINHABITED.
+        //
+        // So the deferral STANDS, now for a measured reason rather than a false one: porting
+        // `findTruncation` would be inert. **Revival condition: something must PRODUCE a
+        // `Datatype::Struct`** — struct type recovery, or a symbol table supplying composite types.
+        // Re-check in one command: `grep -rn "Datatype::Struct(" src/decompile/` and look for a
+        // constructor rather than a `matches!`/match-arm/field-read.
+        //
+        // The general lesson, which cost this session a wrong claim in two landed commits: **a
+        // declared variant is not an inhabited lattice.** See AGENT.md.
         OpCode::Subpiece => {
             let dt = high_type_read_facing(f, out);
             if matches!(dt, Datatype::Unknown(_)) {
