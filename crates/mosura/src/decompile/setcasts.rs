@@ -106,7 +106,20 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
             let ct = high_type_read_facing(data, o.input(0).unwrap());
             let sz = data.vn(o.input(2).unwrap()).constant_value();
             let fits = matches!(&ct, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
-            eprintln!("PTRFIT\t{}\tptradd\tfits={fits}\telem_sz={sz}\tptr={ct:?}", data.name);
+            // Both CHANNELS, because they answer different questions and the difference is the
+            // whole reason `RulePtraddUndo` reaches sites this refit does not. Ghidra reads
+            // `getTypeReadFacing` (the VARNODE's type) in the mainloop rule and
+            // `getHighTypeReadFacing` (the merged HIGHVARIABLE's) here — not as a choice, but
+            // because HighVariables DO NOT EXIST during the mainloop (`Funcdata::highs` is None
+            // until `ActionMergeType`, and reading it earlier panics by construction). So a row
+            // where the two disagree is a site where MERGING changed the verdict.
+            let vt = data.vn(o.input(0).unwrap()).get_type();
+            let vt_fits = matches!(&vt, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
+            let chan = if vt_fits == fits { "same" } else { "CHANNELS_DISAGREE" };
+            eprintln!(
+                "PTRFIT\t{}\tptradd\tfits={fits}\tvn_fits={vt_fits}\t{chan}\telem_sz={sz}\tptr={ct:?}\tvn_ty={vt:?}",
+                data.name
+            );
         }
         OpCode::Ptrsub => {
             // coreaction.cc:2748 — refit unless in0's type accepts the slot-1 offset as a sub-field.
