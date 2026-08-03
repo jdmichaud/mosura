@@ -154,6 +154,21 @@ written and simply decays when someone ports it.
 a deferral yourself, prefer naming the function you did not port over characterising the lattice —
 the first ages honestly, the second can be false before the commit lands.
 
+### …but OVER-SPLITTING invents independence, exactly as bundling hides difference
+
+The rule above is "one item, one reason" — and applying it mechanically produced its own error. After
+auditing the bundles, this session filed the leftovers as three separate items to avoid re-bundling
+them. One of the three, `collapseIntMultMult`, **is not a separable item at all**: its only caller in
+Ghidra is inside the `while (valid && distributeOp != 0)` loop (ruleaction.cc:6463/6464), where it
+exists solely to collapse `(x * #c) * #d` produced by `distributeIntMultAdd`. Porting it alone would
+be **dead code**. The filing asserted "whether AddTreeState should stop declining is a separate
+question from porting the missing helper" — and that separability was never checked.
+
+⇒ The rule is not "always split". It is **decompose along the dependency structure, and verify the
+decomposition**: two things are separate items only if **each can land alone and mean something**.
+Before splitting, ask who calls what. Before bundling, ask whether one reason really covers both.
+Both directions are claims, and both need the same evidence.
+
 ### A DECLARED VARIANT IS NOT AN INHABITED LATTICE
 
 Correcting a substrate claim is itself a substrate claim, and it can be wrong the same way. Having

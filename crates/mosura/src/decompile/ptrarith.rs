@@ -29,9 +29,20 @@
 //!     *Revival:* a relative-pointer variant in [`Datatype`].
 //!   - **`distributeIntMultAdd` — ⚠️ PORTED AND LIVE, just not from here.**
 //!     `rules.rs::distribute_int_mult_add` (funcdata_op.cc:1071) exists and is called from a rule
-//!     (rules.rs:738/741). What is actually deferred is `AddTreeState`'s *use* of the distribution
-//!     path — it declines, see `check_mult_term` — which is a WIRING decision, not a missing port.
-//!     `collapseIntMultMult` is the only genuinely absent half.
+//!     (rules.rs:738/741) — Ghidra calls it from three places (ruleaction.cc:131/133 and :6458) and
+//!     mosura ported the rule callers, not the `AddTreeState` one. What is deferred is
+//!     `AddTreeState`'s *use* of the distribution path — a WIRING decision, not a missing port.
+//!     **CENSUSED and INERT:** across the 79 datatests and WAR2's 1303 functions the path is a
+//!     candidate exactly **once** (one WAR2 function) and **declines zero times** — the
+//!     `preventDistribution` retry resolves it without the deferred code. So the original
+//!     parenthetical "(declined when needed)" describes something that has never once been needed.
+//!     `MOSURA_DISTRIB=1` counts both the candidate and the decline; a zero at the decline site
+//!     alone would not distinguish "never needed" from "never a candidate".
+//!     ⚠️ **AND `collapseIntMultMult` IS NOT A SEPARABLE ITEM** — an error in this audit's own
+//!     follow-up filing, which listed it as one. Its ONLY caller in Ghidra is inside the
+//!     `while (valid && distributeOp != 0)` loop (ruleaction.cc:6463/6464), where it exists purely
+//!     to collapse `(x * #c) * #d` produced by the distribute. Porting it alone would be dead code.
+//!     The distribution path and its collapse are ONE item; see AGENT.md on over-splitting.
 //!   - **`nearestArrayedComponent` — ⚠️ HALF PORTED, IN THIS FILE.** Ghidra has TWO pairs:
 //!     `TypeStruct` (type.cc:1669/1698) and `TypeSpacebase` (type.cc:2971/3020). The **spacebase**
 //!     pair is ported as `sb_nearest_backward`/`sb_nearest_forward` below and is LIVE (called from
@@ -428,6 +439,13 @@ impl AddTreeState {
                     if let Some(def) = f.vn(vnterm).def {
                         if f.op(def).code() == OpCode::IntAdd {
                             if self.distribute_op.is_none() {
+                                // `MOSURA_DISTRIB=1` also counts the CANDIDATE, not just the
+                                // decline. A zero at the decline site means nothing on its own —
+                                // it could equally mean the mechanism is never a candidate. Both
+                                // numbers together say which.
+                                if distrib_probe_on() {
+                                    eprintln!("DISTRIB\t{}\tcandidate", f.name);
+                                }
                                 self.distribute_op = Some(op);
                             }
                             return self.span_add_tree(f, def, val);
@@ -799,6 +817,13 @@ impl AddTreeState {
         }
         if self.distribute_op.is_some() {
             // Ghidra would distributeIntMultAdd + collapseIntMultMult here; deferred → decline.
+            // `MOSURA_DISTRIB=1` counts this decline per function, READ-ONLY. A decline here means
+            // RulePtrArith returns 0 and the pointer arithmetic is NOT converted, so the C renders
+            // `*(T *)(p + k)` where Ghidra would reach `p[i]` / `p->field` — that is the deferral's
+            // actual cost, and it is invisible in any gate we run.
+            if distrib_probe_on() {
+                eprintln!("DISTRIB\t{}\tdecline", f.name);
+            }
             return false;
         }
         self.build_tree(f);
@@ -864,4 +889,11 @@ impl Rule for RulePtraddUndo {
         data.op_undo_ptradd(op, false);
         1
     }
+}
+
+/// Whether `MOSURA_DISTRIB` selects the distribution-path decline census (cached once).
+fn distrib_probe_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MOSURA_DISTRIB").is_some())
 }
