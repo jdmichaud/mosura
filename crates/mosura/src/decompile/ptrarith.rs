@@ -47,6 +47,20 @@
 //! them. That is the bundling failure's signature: a multi-item note is written once and never
 //! revisited, so it fossilises at its commit no matter what lands afterwards — including in the
 //! same file. See AGENT.md's bundling rule.
+//!
+//! **Dated per item, which separates the two failure modes rather than lumping them** (this header
+//! is `86bd58f`, 2026-06-25 19:20):
+//!
+//! | claim | ported by | verdict |
+//! |---|---|---|
+//! | `distributeIntMultAdd` | `cd0fd9e` 2026-07-07 (+12d) | accurate when written, **fossilised** |
+//! | `nearestArrayedComponent` (spacebase) | `8d29ed8` 2026-07-12 (+17d) | accurate when written, **fossilised** |
+//! | `isTypeRecoveryExceeded` | `cde89ac` 2026-07-12 (+17d) | accurate when written, **fossilised** |
+//! | "primitive-lattice" (the shared reason) | — | **FALSE WHEN WRITTEN**, by 4 hours |
+//!
+//! So the three *items* were honest and decayed; only the *shared reason* was born wrong — and it
+//! is the one that characterises the LATTICE rather than naming a function. That is the general
+//! split now recorded in AGENT.md: substrate claims can be false immediately, function claims decay.
 
 use super::action::Rule;
 use super::funcdata::Funcdata;

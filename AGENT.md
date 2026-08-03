@@ -137,6 +137,23 @@ whatever it asserts is absent, then `git merge-base --is-ancestor`. Two commands
 the original wording inline — the error has to stay legible or the next reader cannot calibrate how
 much to trust the surrounding text.
 
+**Which deferrals to date-check FIRST — the split, once every audited note was dated per item:**
+
+| claim, dated against its own commit | count | outcome |
+|---|---|---|
+| cites a **substrate** ("the lattice has no struct", "the primitive-lattice corpus") | 2 | **both FALSE WHEN WRITTEN** — by 4 hours and by a month |
+| cites a **specific named function** ("`collapseIntMultMult` is deferred") | 5 | all **accurate when written**, refuted 3–17 days later |
+| accurate then and now | 2 | — |
+
+That is not a coincidence, and it is the practical rule: **a deferral citing a SUBSTRATE is at risk
+of being false immediately**, because the substrate is edited by other people on other timelines and
+the author never re-checks it. A deferral citing a **specific function** is usually true when
+written and simply decays when someone ports it.
+
+⇒ **Date the substrate claims first.** They are the ones that can be born wrong. And when you write
+a deferral yourself, prefer naming the function you did not port over characterising the lattice —
+the first ages honestly, the second can be false before the commit lands.
+
 ### Measure a rule where the rule runs
 
 `ActionSetCasts` runs once, dead-last, on settled IR — a probe there sees a fixed picture. A
