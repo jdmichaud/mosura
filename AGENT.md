@@ -192,6 +192,27 @@ And note the shape of the mistake, because it is the tempting one: the correctio
 than what it replaced and still wrong, so it read as progress. **A refutation earns no exemption
 from the standard it just enforced.**
 
+#### The three modes, and the one kind of deferral that ages safely
+
+A claim about a substrate can be wrong in three ways, and the first two checks miss the third:
+
+| mode | how it fails | check |
+|---|---|---|
+| **decayed** | true when written, overtaken later | re-check against today's tree |
+| **born wrong** | false at the moment of writing | date it against its own commit |
+| **true but vacuous** | the thing exists and is never produced | grep for a **constructor**, not the variant |
+
+All eight audited deferrals fall in this table except one: `inheritResolution` /
+`setStopTypePropagation`, gated on a union metatype. `Datatype::Union` **has no variant at all** —
+blocked one level earlier than `Struct`, so there is nothing about it that could be true-but-vacuous,
+and nothing for a later commit to quietly satisfy. **It is the only deferral in the family whose
+stated reason survived examination, and it survived because it names something that does not exist
+in any form.**
+
+⇒ That is the same writing rule arriving from the opposite direction: **name the function you did not
+port, or the variant that does not exist — never characterise the lattice.** A lattice claim has
+three ways to rot; a name has none, because a name is grep-checkable and an adjective is not.
+
 ### Measure a rule where the rule runs
 
 `ActionSetCasts` runs once, dead-last, on settled IR — a probe there sees a fixed picture. A
