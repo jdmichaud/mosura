@@ -6,8 +6,23 @@
 //!
 //! Ghidra realises casts as inserted `CPUI_CAST` ops (`ActionSetCasts`); mosura's [`super::printc`]
 //! applies the same decision at render time (as it already does for SUBPIECE/SEXT casts), so this
-//! module is just the decision, not an IR pass. Ported for the primitive lattice; typedef/enum/
-//! struct/variable-length refinements are deferred with the aggregate types they concern.
+//! module is just the decision, not an IR pass.
+//!
+//! ⚠️ The tail of this paragraph used to bundle four deferrals into one clause — "typedef/enum/
+//! struct/variable-length refinements are deferred with the aggregate types they concern" — which
+//! is the shape that let a sibling note in `setcasts.rs` survive being wrong about all four of ITS
+//! items. Split, with what is actually true of each as of `9f1c577`:
+//!
+//!   - **typedef** — no `Datatype` variant. `castStandard`'s two `getTypedef()` descent loops
+//!     (cast.cc) are unreachable and unported. Revival: a typedef variant.
+//!   - **enum** — no `Datatype` variant. Ghidra treats an enum as TYPE_UINT/TYPE_INT in every
+//!     `castStandard` branch, so its absence changes no decision today. Revival: an enum variant.
+//!   - **struct** — ⚠️ **NOT ABSENT.** `Datatype::Struct(size, fields)` exists since `154b022`
+//!     (2026-06-25). This clause was wrong; see the `findTruncation` correction in
+//!     [`output_token`]. What is absent is UNION (no `Datatype::Union`).
+//!   - **variable-length** — no `is_variable_length` anywhere in `decompile/`, so `castStandard`'s
+//!     `isVariableLength() && isptr && hasSameVariableBase()` escape (cast.cc:336) is unported and
+//!     a size change there always casts. Revival: the flag, with `hasSameVariableBase`.
 
 use super::funcdata::Funcdata;
 use super::op::OpId;
@@ -166,9 +181,25 @@ pub fn arithmetic_output_standard(f: &Funcdata, op: OpId) -> Datatype {
 /// pointer), the shifts (input 0's type), `COPY` (its input's type — the assignment cast lever),
 /// `LOAD` (the pointed-to type), and `PTRADD` (its base pointer) — are ported here. Every other op's
 /// token equals its committed output type in the primitive lattice (Ghidra's base
-/// `outputTypeLocal`, which inference already settled onto the output), so it needs no output cast;
-/// the deferred output-cast cases (a pointer/float-returning `CALL`, `PTRSUB` `downChain`,
-/// `SUBPIECE`/`PIECE` composite tokens) come with the aggregate lattice.
+/// `outputTypeLocal`, which inference already settled onto the output), so it needs no output cast.
+///
+/// ⚠️ THIS SENTENCE USED TO READ: "the deferred output-cast cases (a pointer/float-returning `CALL`,
+/// `PTRSUB` `downChain`, `SUBPIECE`/`PIECE` composite tokens) come with the aggregate lattice."
+/// **Two of its three items were already ported, in this very function**, and the sentence kept
+/// being true-looking because examining any one item left it standing — the same bundling failure
+/// as the four-item note in `setcasts.rs`, from the same commit (`c11f25e`). Split, one item per
+/// line, each with its own status:
+///
+///   - `CALL` / `CALLIND` — **PORTED** (`d07680c`). See the arm below; it is what lets a call result
+///     take a cast at all, and it needed no aggregate lattice.
+///   - `SUBPIECE` / `PIECE` — **PORTED** (`844d5b1`, typeop.cc:2142/2063). Arms below.
+///   - `PTRSUB` `downChain` — **genuinely still open**, and it is the only one of the three that was
+///     ever about the aggregate lattice: `TypeOpPtrsub::getOutputToken` walks into a composite to
+///     name the field being addressed, and there is no composite metatype here.
+///     *Revival condition:* a struct/union metatype in [`Datatype`] makes this portable; until then
+///     a `PTRSUB` output takes no cast. Note this is NOT the same question as the `ActionSetCasts`
+///     PTRSUB **refit**, which is gated on the `ScopeLocal` symbol query instead — two different
+///     PTRSUB deferrals with two different reasons, deliberately not bundled.
 pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
     let o = f.op(op);
     let out = o.output.unwrap();
@@ -210,9 +241,17 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         // `tokenct == outHighType` short-circuit is satisfied and a SUBPIECE never takes an output
         // cast. Only an `unknown` output falls back, to `int` of the output's size.
         //
-        // (The leading `findTruncation` arm — return the composite field's type when a struct/union
-        // field exactly covers the truncation — is inapplicable: mosura's `Datatype` has no struct or
-        // union metatype, so no truncation can ever be found. Deferred with the aggregate lattice.)
+        // ⚠️ CORRECTION (additive — the original claim is kept so the error is legible). This read:
+        // "The leading `findTruncation` arm ... is inapplicable: mosura's `Datatype` has no struct or
+        // union metatype, so no truncation can ever be found. Deferred with the aggregate lattice."
+        // **THE PREMISE WAS FALSE WHEN IT WAS WRITTEN.** `Datatype::Struct(size, fields)` landed in
+        // `154b022` on 2026-06-25; this comment was written in `844d5b1` on 2026-07-27, a month
+        // later, and `Datatype::Struct` is already consumed by ptrarith.rs, setcasts.rs and
+        // varmap.rs. What is genuinely absent is UNION — there is no `Datatype::Union` variant.
+        // So the arm is not "inapplicable"; its struct half rests on a lattice we have.
+        // Whether `findTruncation` is portable on that half alone is UNMEASURED and is deliberately
+        // NOT claimed here — no reach census has been run for it. That is the open item; the false
+        // premise is what is being retired, not the deferral.
         OpCode::Subpiece => {
             let dt = high_type_read_facing(f, out);
             if matches!(dt, Datatype::Unknown(_)) {
