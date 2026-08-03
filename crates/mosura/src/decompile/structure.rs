@@ -3113,6 +3113,16 @@ pub fn structure(f: &Funcdata) -> Structured {
     if std::env::var("MOSURA_CFG").is_ok() {
         dump_cfg_partition(f);
     }
+    // `MOSURA_STRUCT=1` emits one header per function before any of its trace lines. Without it the
+    // trace is UNSEGMENTABLE: `analyze_le_file` structures every function it recovers (1639 of them
+    // on WAR2), the trace lines carry only block numbers, and block numbers repeat across
+    // functions — so a per-specimen question could only be answered by correlating against the
+    // dump ORDER, which is exactly the kind of guess this project treats as a fabricated
+    // measurement. `MOSURA_CFG` already prints `CFG <name>`; this is the same key for the other
+    // half of the pair, so the two dumps segment identically.
+    if std::env::var("MOSURA_STRUCT").is_ok() {
+        eprintln!("STRUCT {} nblocks={}", f.name, f.num_blocks());
+    }
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
         .map(|b| {
             let out_edges: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
