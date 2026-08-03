@@ -32,6 +32,11 @@ WHAT IT DOES NOT COUNT, deliberately, so the number is not read as more than it 
     when it appears without a star — `(foo)x` is ambiguous in C without the declarations
   - implicit conversions, which are the interesting half of any cast comparison against Ghidra and
     are invisible in the text
+  - ⚠️ A CAST THAT ENDS A LINE. The scan is per line and the position test looks ahead for the
+    start of an operand, which a line end does not provide. This is why the count is only valid
+    mosura-vs-mosura: Ghidra line-wraps and mosura does not, so a Ghidra-vs-mosura comparison
+    under-counts Ghidra every time. `threedim` read 8 vs 6 and drove a task assignment; whole-file
+    it is 8 vs 8 with the identical multiset. See CAVEAT below, printed on every run.
 So this measures CAST TOKENS EMITTED, and its job is delta detection between two emits of the same
 corpus — not a claim about how many conversions the program performs.
 
@@ -74,10 +79,30 @@ def census(srcdir: Path) -> tuple[int, dict[str, int]]:
     return total, per_file
 
 
+CAVEAT = (
+    "⚠️  VALID for mosura-vs-mosura DELTAS. *NOT* valid as a mosura-vs-GHIDRA count:\n"
+    "    this scan reads PER LINE, and its position test is a lookahead for the start of an\n"
+    "    operand — so a cast that ENDS a line is not counted. Ghidra's pretty-printer wraps\n"
+    "    long expressions and mosura's emitter does not, so comparing these numbers to Ghidra\n"
+    "    under-counts GHIDRA, always in the same direction.\n"
+    "    Worked example: `threedim` reads 8 (mosura) vs 6 (Ghidra) here and was carried as a\n"
+    "    real divergence — it drove a task assignment. Re-counted over the whole file instead\n"
+    "    of line by line it is 8 vs 8, with the identical cast multiset. There was no\n"
+    "    difference. To re-check one: run CAST.finditer over path.read_text() rather than over\n"
+    "    each line, keep the KEYWORD and preceding-character filters, and compare the token\n"
+    "    LISTS — equal totals can still be different casts."
+)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
+    # Printed on EVERY run, before any number. A known systematic bias that lives only in the
+    # operator's head is the failure mode this project has a rule for: an instrument must be
+    # reproducible — and honest — for someone who was not there. One line of output cannot stop
+    # the wrong comparison, but it makes it impossible to make without seeing why it is wrong.
+    print(CAVEAT, file=sys.stderr)
     new_total, new_per = census(Path(sys.argv[1]))
     print(f"cast census: {new_total} in {sys.argv[1]}")
     if len(sys.argv) < 3:

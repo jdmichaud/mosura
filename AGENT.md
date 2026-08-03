@@ -107,6 +107,42 @@ Three rules, each bought:
 one pass and it has paid three times. And when you write a deferral yourself: one item, one reason,
 and a **revival condition** that says what would make it wrong.
 
+**Postscript, and it is the rule's strongest evidence: that one sentence deferred FOUR things, and
+it was wrong about every one of them.** `resolveUnion` — genuinely gated, but for a different
+reason. `checkPointerIssues` — wrongly described *and* measurably inert. The PTRADD refit — live,
+needing no lattice at all, and porting it caught a rendering that was arithmetically false (below).
+The PTRSUB refit — inert, and gated on the `ScopeLocal` **symbol query**, not the composite lattice
+the note named. Four items, four different answers, **none of them the one the sentence asserted**.
+The bundling is not incidental to that; it is the mechanism, because examining any single item left
+the sentence standing.
+
+### A bare count cannot answer the only question a gate asks
+
+Every gate in this project is quoted in **functions**: which ones regressed, which ones are
+byte-clean, which ones lost a call. So an instrument that prints a **total** cannot feed one. The
+`MOSURA_PTRFIT` probe counted 59 misfitting PTRADDs and could not say *where* — and the pre-check
+that decided the refit was safe to land was intersecting those 59 with the byte-clean 16, which is
+a **set operation on function names**. Adding the function name to each row was the difference
+between a number and a gate.
+
+Same coin as "a total can hide a per-function truth" and "check SET MEMBERSHIP, not totals" — but
+pointed at the instrument rather than the reading: **if a probe does not name its function, fix the
+probe before you quote it.**
+
+### An instrument's known bias belongs IN THE INSTRUMENT
+
+`scripts/cast-census.py` reads **per line**, and its position test looks ahead for the start of an
+operand — so a cast that *ends* a line is uncounted. Ghidra's pretty-printer wraps and mosura's
+emitter does not, so **every mosura-vs-Ghidra cast count under-counts Ghidra**. That bias produced
+a specimen (`threedim`, "8 vs 6" — whole-file it is **8 vs 8 with the identical multiset**), a lead
+ruling, and a preference for which fixture to take first. One of the two signs that made the
+specimen look well-guarded was fabricated by the tool.
+
+The bias was left in place deliberately — fixing it would move the 9031 anchor and void every delta
+measured against it — so the script now **prints the caveat on every run**. A known bias that lives
+only in the operator's head is the same failure as a recipe that lives only in the operator's head.
+⇒ **When you decline to fix a bias, make the instrument say so out loud.**
+
 ### The decision rule (read this before you revert anything)
 
 The C-similarity (`ccompare`) is a **coarse gauge, never the gate.** It erases names,
