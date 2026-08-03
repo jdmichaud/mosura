@@ -20,8 +20,25 @@ use super::types::{type_order, Datatype};
 /// `Varnode::ty` (authoritative after Stage 0's final `ActionInferTypes`), so it works both at
 /// render time (printc) and as the `ActionSetCasts` insertion decision. The op-specific arms mirror
 /// the `getInputCast` overrides (comparisons force signedness, shifts carry the shift's sign, SEXT
-/// wants a signed input, div/rem force their sign, and the base arithmetic/logic default casts a
-/// pointer/float fed to an integral op); everything else is transparent.
+/// wants a signed input, div/rem force their sign, and the integral logic ops require uint/int).
+///
+/// ⚠️ THE `_` ARM IS GHIDRA'S BASE `TypeOp::getInputCast` (typeop.cc:295), NOT "no cast". It used to
+/// answer `None` — "everything else is transparent" — and that is the opposite of what Ghidra
+/// asserts: a `TypeOp` uses the base unless it *declares* an override, and of the 25 that do, only
+/// `TypeOpCpoolref`/`TypeOpNew` override it to "never needs casting" (typeop.hh:867/878). The
+/// placeholder came in with the first cast commit (`79f5406`, which wired only the comparisons) and
+/// was never a decision about the other ops. What it cost, measured READ-ONLY before it was changed:
+/// **3 casts over the 79 x86-64 datatests and 693 over WAR2's 1303 functions** — and every one of
+/// the 693 is the same shape, a POINTER operand consumed by integer arithmetic and needing `(int4)`.
+/// (To re-derive: make this arm `{ let r = super::infertypes::input_type_local(f, op, slot);
+/// if let Some(c) = cast_standard(&r, &cur, false, true) { eprintln!("BASECAST {:?} slot={slot}
+/// req={r:?} cur={cur:?} -> {c:?}", o.code()); } None }` and re-run the emit — it evaluates the
+/// rule and prints without casting.) All three corpus specimens were checked against
+/// `oracle/capture --c` (the C++ decompiler — the right oracle for a rendering question) and Ghidra
+/// emits every one of them:
+///   - `pointerrel`  `fStack_18 = (float4)piStack_10[-1] + fStack_18;`   FLOAT_ADD slot 0
+///   - `partialsplit` `*(xunknown4 *)((int8)puVar3 + 8) = 0;`             INT_ADD   slot 0
+///   - `stackstring`  `func_0x00101000((int8)&xStack_20 + 4);`            INT_ADD   slot 0
 pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
     let o = f.op(op);
     let in_vn = o.input(slot)?;
@@ -47,7 +64,70 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
         OpCode::IntSub | OpCode::IntMult | OpCode::Int2comp => {
             cast_standard(&Datatype::base_int(sz), &cur, false, true)
         }
-        _ => None,
+        // ── Ghidra overrides `getInputCast` to "Never needs casting" (typeop.hh:867/878) ──
+        OpCode::Cpoolref | OpCode::New => None,
+
+        // ── Ghidra DOES declare a `getInputCast` override for these and it is NOT ported. They
+        // must not fall through to the base arm: the base is not their rule, so applying it would
+        // invent a behaviour rather than defer one. One line, one revival condition — port the
+        // named override and delete the opcode from this arm.
+        //   COPY          typeop.cc:397   (the assignment cast)
+        //   LOAD / STORE  typeop.cc:440/520 (pointer-vs-pointee reconciliation)
+        //   INT_ZEXT      typeop.cc:1131
+        //   FLOAT_INT2FLOAT typeop.cc (TypeOpFloatInt2Float, typeop.hh:711)
+        //   PIECE / SUBPIECE typeop.hh:779/794
+        //   PTRADD / PTRSUB  typeop.hh:820/833  (deferred with their refits, see setcasts.rs)
+        //   SEGMENTOP     typeop.hh:854
+        OpCode::Copy
+        | OpCode::Load
+        | OpCode::Store
+        | OpCode::IntZext
+        | OpCode::FloatInt2float
+        | OpCode::Piece
+        | OpCode::Subpiece
+        | OpCode::Ptradd
+        | OpCode::Ptrsub
+        | OpCode::Segmentop => None,
+
+        // ── These DO use the base `getInputCast`, but they also override `getInputLocal`, and
+        // mosura's [`super::infertypes::input_type_local`] does not model those overrides — it
+        // answers the `TypeOp` default (`xunknown<size>`) for all of them. Feeding the base arm a
+        // required type we know to be wrong would be an invention with a cast attached, so they are
+        // held here instead. It is INERT today (an `xunknown` requirement casts nothing, so this arm
+        // and the base arm agree on current output); it is listed so that fixing `op_meta` does not
+        // silently switch these on. Revival condition: port the named `getInputLocal`, then move the
+        // opcode down to the base arm.
+        //   CBRANCH   typeop.cc:TypeOpCbranch::getInputLocal — slot 1 is BOOL, slot 0 a `code *`
+        //   CALLIND   TypeOpCallind::getInputLocal — slot 0 is a `code *`
+        //   CALLOTHER TypeOpCallother::getInputLocal — per-userop table, not modelled
+        //   RETURN    TypeOpReturn::getInputLocal — the enclosing prototype's output type
+        //   INDIRECT  TypeOpIndirect::getInputLocal — slot 1 is a `code *`
+        //   INSERT / EXTRACT — Ghidra's metatypes are (UNKNOWN,INT) / (INT,INT) (typeop.cc), which
+        //     `op_meta` lacks entirely; x86 never lifts either, so this is unmeasurable here.
+        // (CALL is deliberately NOT in this list: `TypeOpCall::getInputLocal` returns a parameter
+        // type only when that parameter is TYPE-LOCKED, and mosura models no type-locked call
+        // prototypes, so its fallback to `TypeOp::getInputLocal` is the whole reachable behaviour —
+        // the same argument already documented for `output_token`'s CALL arm.)
+        OpCode::Cbranch
+        | OpCode::Callind
+        | OpCode::Callother
+        | OpCode::Return
+        | OpCode::Indirect
+        | OpCode::Insert
+        | OpCode::Extract => None,
+
+        // ── the base `TypeOp::getInputCast` (typeop.cc:295) ──
+        // INT_ADD, INT_LEFT, INT_SBORROW/SCARRY/CARRY, the FLOAT ops, BOOL ops, CALL, CAST and the
+        // shifts' slot ≠ 0 (whose overrides delegate here explicitly, typeop.cc:1555/1597).
+        _ => {
+            // `if (vn->isAnnotation()) return (Datatype *)0;` (typeop.cc:298) — an annotation
+            // carries no dataflow, so it never takes a cast. Ghidra tests this in the base only,
+            // which is exactly this arm.
+            if f.vn(in_vn).is_annotation() {
+                return None;
+            }
+            cast_standard(&super::infertypes::input_type_local(f, op, slot), &cur, false, true)
+        }
     }
 }
 
@@ -304,6 +384,36 @@ mod tests {
         assert_eq!(
             cast_standard(&Datatype::Int(4), &Datatype::Char, true, true),
             Some(Datatype::Int(4))
+        );
+    }
+
+    /// The two shapes the base `TypeOp::getInputCast` (typeop.cc:295) newly reaches, as
+    /// `castStandard` sees them. Both were verified end-to-end against `oracle/capture --c`:
+    /// FLOAT_ADD on an `int4` load is `pointerrel`'s `(float4)piStack_10[-1]`, and INT_ADD on a
+    /// pointer is `stackstring`'s `(int8)&xStack_20` — the single class behind all 693 WAR2
+    /// firings. `care_uint_int=false, care_ptr_uint=true` are the base's fixed arguments.
+    #[test]
+    fn base_input_cast_casts_pointer_to_int_and_int_to_float() {
+        // FLOAT_ADD requires float; an int operand is not acceptable (the `_` arm, cast.cc:391).
+        assert_eq!(
+            cast_standard(&Datatype::Float(4), &Datatype::Int(4), false, true),
+            Some(Datatype::Float(4))
+        );
+        // INT_ADD requires int; a same-size POINTER is not in the TYPE_INT acceptable set
+        // (cast.cc:372 lists UNKNOWN/INT/UINT/BOOL only), so it casts.
+        assert_eq!(
+            cast_standard(&Datatype::base_int(8), &Datatype::Pointer(8, Box::new(Datatype::Unknown(8))), false, true),
+            Some(Datatype::base_int(8))
+        );
+        // ...and the guard that keeps the other 3300+ pointer-free INT_ADDs bare: an int/uint/
+        // undefined operand reconciles silently, so this arm did NOT flood the corpus with casts.
+        assert_eq!(cast_standard(&Datatype::base_int(4), &Datatype::Uint(4), false, true), None);
+        assert_eq!(cast_standard(&Datatype::base_int(4), &Datatype::Unknown(4), false, true), None);
+        // An `xunknown` REQUIREMENT accepts anything — this is why the ops whose `getInputLocal`
+        // override mosura does not model stay inert even though they reach the base rule.
+        assert_eq!(
+            cast_standard(&Datatype::Unknown(4), &Datatype::Pointer(4, Box::new(Datatype::Int(1))), false, true),
+            None
         );
     }
 
