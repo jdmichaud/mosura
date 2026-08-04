@@ -333,9 +333,11 @@ impl<'a> TypeInfer<'a> {
         if self.locks.contains_key(&outvn) {
             return false; // Ghidra: can't propagate through a typelock
         }
-        // Only propagate a boolean into a value that can hold only 0/1. Ghidra tests the non-zero
-        // mask; lacking that here, we approximate with single-byte storage (the bool's own width).
-        if matches!(alttype, Datatype::Bool) && self.f.vn(outvn).size > 1 {
+        // Only propagate a boolean into a value provably 0/1 (Ghidra `ActionInferTypes::
+        // propagateTypeEdge`, coreaction.cc:5095-5096: `if (alttype->getMetatype()==TYPE_BOOL)
+        // if (outvn->getNZMask() > 1) return false`). ActionNonzeroMask keeps `nzm` fresh in the
+        // same mainloop, so the non-zero mask is available here — no width approximation needed.
+        if matches!(alttype, Datatype::Bool) && self.f.vn(outvn).get_nzmask() > 1 {
             return false;
         }
         let Some(newtype) = self.propagate_type(op, invn, outvn, inslot, outslot, &alttype) else {
@@ -635,8 +637,10 @@ impl<'a> TypeInfer<'a> {
             if self.f.vn(vn).size != base_size {
                 continue;
             }
-            // Ghidra: don't propagate bool unless the value is provably 0/1; approximate with width.
-            if is_bool && self.f.vn(vn).size > 1 {
+            // Ghidra `ActionInferTypes::propagateAcrossReturns` (coreaction.cc:5363): "Don't
+            // propagate bool if value is not necessarily 0 or 1" — `if (isBool && vn->getNZMask()
+            // > 1) continue;`. The non-zero mask is faithful here (ActionNonzeroMask maintains it).
+            if is_bool && self.f.vn(vn).get_nzmask() > 1 {
                 continue;
             }
             if *self.t(vn) == ct {
