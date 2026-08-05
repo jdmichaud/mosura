@@ -1215,15 +1215,25 @@ impl<'a> PrintC<'a> {
         cond_idx: usize,
         body_idx: usize,
     ) -> Option<(Option<VarnodeId>, OpId, VarnodeId)> {
-        let head = exit_basic(s, cond_idx)?;
-        let cbranch = self
-            .f
-            .block(head)
-            .ops
-            .iter()
-            .rev()
-            .copied()
-            .find(|&op| self.f.op(op).code() == OpCode::Cbranch)?;
+        // `BlockWhileDo::finalTransform` derives its two anchors INDEPENDENTLY (block.cc:3362-3372):
+        //     FlowBlock *copyBl = getFrontLeaf();
+        //     BlockBasic *head = (BlockBasic *)copyBl->subBlock(0);   // the loop's FRONT leaf
+        //     PcodeOp *cbranch = getBlock(0)->lastOp();               // the condition's LAST op
+        // `head` is where the loop-carried MULTIEQUAL lives and whose in-edges index `slot`; the
+        // cbranch is the exit test. They are the same basic block ONLY when the condition is a
+        // single basic block — for a short-circuit condition `BlockCondition::lastOp`
+        // (block.cc:3016) is block(1)'s last op, so the test sits in the second operand while the
+        // phi stays in the first. Deriving both from the exit block fused them and lost the
+        // for-loop on every compound condition: on FUN_00013edc the `uVar2` phi is in the front
+        // leaf at 0x13f31 (which carries the `puVar1 != 0` test) while the `uVar2 < 8` CBRANCH is
+        // in the block at 0x13f35, which holds no MULTIEQUAL at all.
+        let head = entry_basic(s, cond_idx)?;
+        // Ghidra takes the typed `lastOp` and requires it to BE the CBRANCH (block.cc:3372),
+        // rather than scanning backwards for the nearest one.
+        let cbranch = self.structured_last_op(s, cond_idx)?;
+        if self.f.op(cbranch).code() != OpCode::Cbranch {
+            return None;
+        }
         // The body must have a typed last op; its block is the loop tail, flowing only to head.
         let mut last = self.structured_last_op(s, body_idx)?;
         let tail = self.f.op(last).parent?;
