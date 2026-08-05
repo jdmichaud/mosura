@@ -394,3 +394,80 @@ fn for_recovery_backtracks_past_wrong_phi() {
     );
     eprintln!("loopphi gate: cbound_walk_ recovered its for-loop past the bound's phi");
 }
+
+/// An INDIRECT call must not clobber the loop variable. mosura has no `ActionDefaultParams`
+/// (coreaction.hh:659 / coreaction.cc:2311), so no call site gets its own prototype and
+/// `Heritage::guardCalls` asks the CONTAINING FUNCTION's model what a call kills instead of the
+/// CALL's. When that kills the induction variable's register, the loop-head MULTIEQUAL's tail
+/// input becomes an INDIRECT — a marker — and the real update, left with no consumer but the call
+/// argument it also feeds, is inlined and emitted as no statement at all. The loop then cannot
+/// terminate. WAR2's FUN_00057034 is the specimen; `walk` (Open Watcom, `src/callclob.c`) is the
+/// shape. NOTE the infinite-loop scan predicate cannot certify this — FUN_00057034's condition
+/// reads a global bound, inside that predicate's documented blind spot — so this reads the
+/// emitted loop directly.
+#[test]
+#[ignore = "BLOCKED: the ELF loader hard-codes compiler_spec_id=\"gcc\" for every EM_386 binary \
+(analysis/loader/elf.rs:175), so this Watcom-built MVE is decompiled under __cdecl and cannot \
+exercise the __watcall cspec it was written to gate. The LE path DOES detect Watcom from the \
+runtime banner (loader/le.rs:240) — the same banner this program embeds. Un-ignore once the ELF \
+loader consults watcom::detect. The defect it gates is real and fixed on WAR2: FUN_00057034's \
+loop now emits its update."]
+fn indirect_call_does_not_clobber_loop_variable() {
+    let bin = ground_truth_dir().join("callclob.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("callclob.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip indirect_call_does_not_clobber_loop_variable: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let walk = truth.funcs.iter().find(|(_, n)| n == "walk_").map(|(a, _)| *a).expect("truth lists walk_");
+    let prog = analysis::analyze_file(&bin).expect("analyze callclob");
+    let f = decompile_function(&prog, Address::new(prog.default_space, walk)).expect("walk_ decompiles");
+    let c = print_c(&f);
+
+    // Find the loop header and the induction variable it tests.
+    let header = c
+        .lines()
+        .find(|l| {
+            let t = l.trim_start();
+            (t.starts_with("for (") || t.starts_with("while (")) && !t.contains("true")
+        })
+        .unwrap_or_else(|| panic!("walk_ recovered no counted loop:\n{c}"));
+    let iv = regex_ident_before_lt(header)
+        .unwrap_or_else(|| panic!("could not read the induction variable from: {header}\n{c}"));
+
+    // THE DEFECT: the update exists only as a call argument, so nothing assigns `iv` in the loop.
+    let body: String = c
+        .lines()
+        .skip_while(|l| !std::ptr::eq(*l, header) && *l != header)
+        .skip(1)
+        .take_while(|l| !l.trim_start().starts_with('}'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let assigned_in_header = header.contains(&format!("{iv} = "));
+    let assigned_in_body = body.contains(&format!("{iv} = "));
+    assert!(
+        assigned_in_header || assigned_in_body,
+        "the loop variable `{iv}` is never assigned in the loop — the update was folded into a \
+         call argument and no statement was emitted, so this loop cannot terminate. An indirect \
+         call must not clobber it (ActionDefaultParams unported) — walk_ @ {walk:#x}\n\
+         header: {header}\nbody:\n{body}\n\n{c}"
+    );
+    eprintln!("callclob gate: `{iv}` is updated inside the loop — {header}");
+}
+
+/// `x` from a loop header of the form `... (x < ...)` / `... (x != ...)`.
+fn regex_ident_before_lt(header: &str) -> Option<String> {
+    let cond = if header.trim_start().starts_with("for (") {
+        header.split(';').nth(1)?
+    } else {
+        let s = header.find('(')? + 1;
+        let e = header.rfind(')')?;
+        header.get(s..e)?
+    };
+    let pos = cond.find(" < ").or_else(|| cond.find(" != "))?;
+    let lhs = cond[..pos].trim().trim_start_matches('(').trim();
+    let id: String = lhs.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    let id: String = id.chars().rev().collect();
+    if id.is_empty() { None } else { Some(id) }
+}

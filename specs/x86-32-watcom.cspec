@@ -11,11 +11,40 @@
       and `bld/wasm/c/asmins.c:935` (`{ "eax", "edx", "ebx", "ecx" }`).
     - Integer/pointer return in EAX (docs/doc/cg/cpwcc.gml: a struct return passes a pointer
       in EAX; a scalar returns in AX/EAX).
-    - Caller-saved (killed by call): EAX, ECX, EDX — cpwcc.gml: "For the 32-bit compiler,
-      registers EAX, ECX and EDX are not saved and restored when a call is made."
-    - Callee-saved (preserved / unaffected): EBX, ESI, EDI, EBP, ESP (and DF) — everything
-      not in the killed set; note EBX is BOTH an argument register AND preserved (the callee
-      saves/restores it), matching the warcraft2-re observation that Watcom saves EBX/ESI/EDI.
+    - Caller-saved (killed by call): EAX ONLY.
+    - Callee-saved (preserved / unaffected): ECX, EDX, EBX, ESI, EDI, EBP, ESP (and DF) — the
+      argument registers included. A register carrying an argument is still restored by the
+      callee under this convention.
+
+      ⚠️ THIS LIST PREVIOUSLY READ "EAX, ECX, EDX", justified by a REAL quote from
+      cpwcc.gml — "registers EAX, ECX and EDX are not saved and restored when a call is made".
+      That quote is correct but describes the WRONG CONVENTION: it appears at cpwcc.gml:1785
+      and :1813, inside the STACK-based convention notes ("Arguments are pushed on the stack
+      from right to left … The called routine will remove the arguments"), i.e. __stdcall-like
+      and __syscall; the occurrence at :1521 is in the __cdecl block. This spec models
+      __watcall, the REGISTER convention. Do not re-derive the old list from that sentence.
+
+      The register convention is grounded in the COMPILER'S OWN OUTPUT instead (self-compiled
+      wcc386 -bt=linux -s -oc, objdump; see oracle/ground-truth/src/callclob.c and its gate):
+
+        * a loop counter is kept LIVE ACROSS AN INDIRECT CALL, never spilled — impossible if
+          the callee could destroy it. With 1/2/4 arguments the counter lands in EDX/ECX/ESI
+          respectively: the argument count changes WHICH register is chosen, never the
+          assumption that it survives.
+        * the decisive evidence is on the CALLEE side — a function that uses EDX emits
+          `push edx` in its prologue (`53 51 52 56 57 55` = ebx,ecx,edx,esi,edi,ebp). It
+          preserves EDX for its caller, which is what callee-saved means. Every function
+          observed also pushes ECX when it uses it.
+        * only EAX is left unpreserved, and EAX is the return register.
+
+      Corroborated independently by warcraft2-re/analysis/toolchain.md (~line 590): WAR2
+      functions save ECX in their prologues project-wide, implying a
+      `#pragma aux DEFAULT … modify exact [eax]` build — everything preserved except EAX.
+
+      The symptom of the old list was WRONG CODE: a spurious killedbycall on the counter's
+      register made Heritage::guardCalls insert an INDIRECT that took over the loop phi's tail
+      input, so the update's only surviving consumer became a call argument and the loop
+      emitted with no update at all — a loop that cannot terminate.
 
   Register-convention symbols carry a *trailing* underscore (`foo_`) vs the leading underscore
   of the stack `__cdecl` convention (cpwcc.gml) — a symbol-decoration detail, not part of the
@@ -80,12 +109,12 @@
         <register name="ESI"/>
         <register name="EDI"/>
         <register name="EBX"/>
+        <register name="ECX"/>
+        <register name="EDX"/>
         <register name="DF"/>
       </unaffected>
       <killedbycall>
         <register name="EAX"/>
-        <register name="ECX"/>
-        <register name="EDX"/>
       </killedbycall>
     </prototype>
   </default_proto>

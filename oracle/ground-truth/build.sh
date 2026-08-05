@@ -233,6 +233,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom loopcomma  # while-condition statement must print INSIDE the parens (comma_separate)
   build_watcom forcomma   # the same, on emitForLoop's header (printc.cc:2974) — loopcomma's sibling
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
+  build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
 else
   log "SKIP x86-32 Watcom — wcc386 absent at $WATROOT/binl (documented gap)"
 fi
