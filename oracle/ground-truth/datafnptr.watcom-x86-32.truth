@@ -1,0 +1,14 @@
+# mosura-ground-truth v1 program=datafnptr compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=datafnptr.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_
+func 08048106 0 deep_helper_
+func 08048110 0 tab_h0_
+func 0804811d 0 tab_h1_
+func 08048127 0 tab_h2_
+func 0804812e 0 tab_h3_
+func 0804813c 0 dispatch_
+func 0804814f 0 solo_target_
+func 08048158 0 fire_solo_
+func 0804815f 0 main_

@@ -236,6 +236,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom forcomma   # the same, on emitForLoop's header (printc.cc:2974) — loopcomma's sibling
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
+  build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
   # tailjmp: the SHARED-RETURN TAIL-CALL analysis repro (a function reachable only via `jmp`).
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite
   # under test (src/tailjmp.c property 1).
