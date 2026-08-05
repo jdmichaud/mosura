@@ -208,7 +208,7 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     // Ghidra has no LE loader; the oracle for this beyond-Ghidra `--le` path is the binary's
     // own fixup records (docs/le-loader-notes.md). Mirrors how `elf.rs` applies relocations
     // at load (`apply_external_relocations`).
-    apply_le_fixups(data, base, &objects, num_pages, page_size, &mut obj_bytes);
+    let fixups = apply_le_fixups(data, base, &objects, num_pages, page_size, &mut obj_bytes);
 
     let mut image_base: Option<u64> = None;
     for (i, obj) in objects.iter().enumerate() {
@@ -246,6 +246,25 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
         program.compiler = w.compiler_label(); // the `Compiler` info property (era)
     }
 
+    // Record the fixups as the program's relocation table (Ghidra `RelocationTable`, populated
+    // by every Ghidra loader that has relocation records). `apply_le_fixups` used to patch the
+    // bytes and throw the records away, which left `AddressTable.getEntry`'s
+    // `isValidRelocationAddress` check (AddressTable.java:1131/:1434) with nothing to consult —
+    // it had to be STUBBED to always-true in the address-table port. This restores it.
+    //
+    // `isRelocatable` is true here in Ghidra's own sense (RelocationTable.java:116 — "relocations
+    // for a relocatable binary", as opposed to an ELF executable's already-resolved ones): a
+    // bound LE is relocated at load by the extender, so the premise the filter relies on —
+    // "if it is relocatable, then there should be no pointers in memory, other than relocatable
+    // ones" (AddressTable.java:1439) — holds exactly. Every absolute address the linker stored
+    // is in this table by construction.
+    if !fixups.is_empty() {
+        program.relocation_table.set_relocatable(true);
+        for (src, target) in &fixups {
+            program.relocation_table.add(Address::new(ram, *src), *target);
+        }
+    }
+
     // Entry point: EIP is an offset *within* the EIP object, so the absolute entry is the
     // object's virtual base + EIP (docs/le-loader-notes.md: 0x10000 + 0x501F8 = 0x601F8).
     if eip_object >= 1 && (eip_object as usize) <= objects.len() {
@@ -279,6 +298,10 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
 ///   number (else 8-bit); `0x10` = 32-bit target offset (else 16-bit); `0x04` = additive
 ///   (a trailing 2/4-byte addend per `0x20`).
 ///
+/// Returns every applied fixup as `(source slot address, relocated target address)` — the
+/// records Ghidra's loaders put in the program's `RelocationTable`. The caller stores them
+/// there; `AddressTable.getEntry`'s `isValidRelocationAddress` filter consumes them.
+///
 /// Only **internal** (target-type 0) fixups are applied — WAR2 is 100% internal 32-bit-offset
 /// fixups (its import table is empty). Imports/selectors are neither sized nor applied here;
 /// on encountering one the page is abandoned (no LE test binary exercises them). Ghidra has no
@@ -290,12 +313,13 @@ fn apply_le_fixups(
     num_pages: u32,
     page_size: u32,
     obj_bytes: &mut [Vec<u8>],
-) {
+) -> Vec<(u64, u64)> {
+    let mut applied: Vec<(u64, u64)> = Vec::new();
     let (Some(fpt_rel), Some(frt_rel)) = (
         u32le(data, le_base + le::FIXUP_PAGE_TABLE_OFF),
         u32le(data, le_base + le::FIXUP_RECORD_TABLE_OFF),
     ) else {
-        return;
+        return applied;
     };
     let fpt = le_base + fpt_rel as usize;
     let frt = le_base + frt_rel as usize;
@@ -407,8 +431,10 @@ fn apply_le_fixups(
                 for so in &soffs {
                     let src_vaddr = (vbase as i64 + *so as i64) as u64;
                     patch(obj_bytes, src_vaddr, target as u32);
+                    applied.push((src_vaddr, target));
                 }
             }
         }
     }
+    applied
 }

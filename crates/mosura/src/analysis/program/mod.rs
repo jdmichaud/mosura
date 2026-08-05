@@ -16,6 +16,7 @@ pub mod function;
 pub mod listing;
 pub mod memory;
 pub mod reference;
+pub mod relocation;
 pub mod symbol;
 
 pub use address_set::{AddressRange, AddressSet};
@@ -23,6 +24,7 @@ pub use function::{Function, FunctionManager};
 pub use listing::{CodeUnit, Listing};
 pub use memory::{Memory, MemoryBlock};
 pub use reference::{RefType, Reference, ReferenceManager};
+pub use relocation::{Relocation, RelocationTable};
 pub use symbol::{Symbol, SymbolTable, SymbolType};
 
 use crate::analysis::snapshot::{self, Snapshot};
@@ -59,6 +61,11 @@ pub struct Program {
     /// addresses analysis seeds disassembly from. Populated by the loader.
     pub entry_points: Vec<Address>,
     pub reference_manager: ReferenceManager,
+    /// The loader's relocation records (Ghidra `Program.getRelocationTable`). Empty and
+    /// non-relocatable unless a loader populates it — in that state every consumer's filter is
+    /// inert, so the ELF/PE/COM paths behave exactly as they did before it existed. Today only
+    /// the LE loader fills it, from the binary's own fixup table.
+    pub relocation_table: RelocationTable,
     /// Offsets of disassembled indirect branches (`BRANCHIND`) — switch candidates the
     /// decompiler-driven switch analyzer (A6) decompiles to recover jump tables; recorded
     /// by the disassembler so the analyzer only decompiles functions that need it.
@@ -106,6 +113,7 @@ impl Program {
             listing: Listing::new(),
             entry_points: Vec::new(),
             reference_manager: ReferenceManager::new(),
+            relocation_table: RelocationTable::new(),
             indirect_branches: std::collections::HashSet::new(),
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),

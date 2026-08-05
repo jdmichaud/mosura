@@ -418,10 +418,19 @@ impl AddressTable {
     }
 }
 
-/// `isValidRelocationAddress` (:1434). mosura's loaders apply relocations into the image and
-/// keep no relocation table, so `RelocationTable.isRelocatable()` is false and the check
-/// passes — exactly as it does in Ghidra for a fully-relocated (non-`ET_REL`) program.
-fn is_valid_relocation_address(_program: &Program, _target: Address) -> bool {
+/// `isValidRelocationAddress(program, target)` (AddressTable.java:1434) — *"If the program is
+/// relocatable, and this address is not one of the relocations, [it] can't be a pointer"*.
+///
+/// This was STUBBED to always-true when the address table was first ported, because no mosura
+/// loader populated a relocation table. The LE loader now does, from the binary's own fixup
+/// records, so the real check runs. For every other format the table is empty and
+/// non-relocatable, so this returns true exactly as the stub did — Ghidra's own semantics
+/// (RelocationTable.java:116) and the reason ELF/PE behaviour is unchanged.
+fn is_valid_relocation_address(program: &Program, target: Address) -> bool {
+    let table = &program.relocation_table;
+    if table.is_relocatable() && table.size() != 0 && !table.has_relocation(target) {
+        return false;
+    }
     true
 }
 
