@@ -43,6 +43,32 @@
 //! reaches a call to some known function. The strict one is used anyway because it is the correct
 //! match to the evidence; it simply does not discriminate here.
 //!
+//! # Known defects, measured on WAR2 — do not let the headline number launder these
+//!
+//! **Over-decoding: 7322 extra instruction starts in 255 contiguous runs** (104.4% of Ghidra's
+//! instruction bytes in the code object), i.e. ~168-255 seeds each decoding a long stretch of
+//! data as code. It creates almost no bad functions, but it is real. The discriminator has not
+//! been found: `mustTerminate=true` was the candidate and is measurably dead (see above), and
+//! the flow-disassembler bounds are also measured not to address it.
+//!
+//! **Three intrusions into known function bodies**, and they are NOT the benign 1-5 byte
+//! Watcom prologue shift — they are deep:
+//!
+//! ```text
+//!   00010bb1  +37 into FUN_00010b8c        (source-done)   mosura-only
+//!   000604c4  +59 into __do_exit_with_msg__ (crt-known)     Ghidra has it too
+//!   00064c1c  +65 into FUN_00064bdb        (source-done)   Ghidra has it too
+//! ```
+//!
+//! A function entered 37-65 bytes into another one has a wrong extent and can never recompile
+//! byte-exact, so these are extent-corruption seeds. Two of the three are shared with Ghidra;
+//! `00010bb1` is mosura's own. For scale, Ghidra intrudes into 106 known bodies to mosura's 3 —
+//! but that is a reason to fix these three, not to excuse them.
+//!
+//! **51 functions in neither oracle** — see `docs/war2-relocation-seed-candidates.md`. All sit
+//! in inter-function gaps (median gap 422 bytes), so they are plausible unrecorded functions
+//! rather than damage, but they are unadjudicated.
+//!
 //! # What it does NOT do
 //!
 //! It creates no functions. Each validated target goes to the same downstream path the
