@@ -176,48 +176,63 @@ pub fn analyze(program: &mut Program) {
 /// `SharedReturnAnalysisCmd.applyTo` driven by `SharedReturnAnalyzer`). If it creates a new
 /// function (a contiguous-function boundary-crossing tail call, e.g. `basic`'s PLT[0]),
 /// recover that function's references and recompute bodies so the new code is fully analyzed.
+///
+/// **To a fixpoint.** In Ghidra `SharedReturnAnalyzer` is a `FUNCTION_ANALYZER`
+/// (SharedReturnAnalyzer.java:65) and its `createFunction` goes through
+/// `AutoAnalysisManager.createFunction`, so every function it creates raises a
+/// FUNCTION_ANALYSIS event that re-enters the analyzer with the new function as the "added"
+/// set — a tail call into a function that itself ends in a tail call is chased all the way
+/// down. mosura runs this pass outside the manager loop (it must follow `plt_linear_sweep`
+/// and the first `compute_function_bodies`; see `shared_return.rs`'s module note), so the
+/// re-entry is the explicit loop here: each round feeds the previous round's new functions
+/// back in as the added set, after their references and bodies have been recovered.
 fn shared_return_pass(program: &mut Program) {
     use crate::analysis::analyzer::Analyzer;
     use crate::analysis::program::AddressSet;
     let Some(sr) = analyzers::shared_return::SharedReturnAnalyzer::for_program(program) else {
         return;
     };
-    // The "added" set is every current function (the destination functions to examine).
-    let mut all_funcs = AddressSet::new();
+    // The first round's "added" set is every current function (the destination functions to
+    // examine); each later round's is only what the previous round created.
+    let mut added = AddressSet::new();
     for f in program.function_manager.functions() {
         let e = f.entry_point();
-        all_funcs.add_range(e.space, e.offset, e.offset);
+        added.add_range(e.space, e.offset, e.offset);
     }
-    let before: std::collections::HashSet<(u32, u64)> = program
-        .function_manager
-        .functions()
-        .map(|f| (f.entry_point().space.0, f.entry_point().offset))
-        .collect();
-    let mut sched = crate::analysis::manager::Scheduling::default();
-    sr.added(program, &all_funcs, &mut sched);
-    // If new functions were created (e.g. PLT[0]), recover the references of *only the new*
-    // functions (the constant propagator emits the READ at `0x401020 → 0x403ff0`) and
-    // recompute bodies. Re-running the propagator over already-analyzed functions would
-    // re-introduce the raw flow references that later analyzers (external-jump) had already
-    // retyped, so the new-function set is isolated here.
-    let new_entries: Vec<crate::decompile::space::Address> = program
-        .function_manager
-        .functions()
-        .map(|f| f.entry_point())
-        .filter(|e| !before.contains(&(e.space.0, e.offset)))
-        .collect();
-    if !new_entries.is_empty() {
+    loop {
+        let before: std::collections::HashSet<(u32, u64)> = program
+            .function_manager
+            .functions()
+            .map(|f| (f.entry_point().space.0, f.entry_point().offset))
+            .collect();
+        let mut sched = crate::analysis::manager::Scheduling::default();
+        sr.added(program, &added, &mut sched);
+        // If new functions were created (e.g. PLT[0]), recover the references of *only the new*
+        // functions (the constant propagator emits the READ at `0x401020 → 0x403ff0`) and
+        // recompute bodies. Re-running the propagator over already-analyzed functions would
+        // re-introduce the raw flow references that later analyzers (external-jump) had already
+        // retyped, so the new-function set is isolated here.
+        let new_entries: Vec<crate::decompile::space::Address> = program
+            .function_manager
+            .functions()
+            .map(|f| f.entry_point())
+            .filter(|e| !before.contains(&(e.space.0, e.offset)))
+            .collect();
+        if new_entries.is_empty() {
+            return; // fixpoint
+        }
+        let mut next = AddressSet::new();
+        for e in &new_entries {
+            next.add_range(e.space, e.offset, e.offset);
+        }
         if let Some(cp) = analyzers::ConstantPropagationAnalyzer::for_program(program) {
-            let mut set = AddressSet::new();
-            for e in &new_entries {
-                set.add_range(e.space, e.offset, e.offset);
-            }
             let mut s = crate::analysis::manager::Scheduling::default();
-            cp.added(program, &set, &mut s);
+            cp.added(program, &next, &mut s);
         }
         if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
             analyzers::compute_function_bodies(&spec, &ctx, program);
         }
+        added = next;
     }
 }
 

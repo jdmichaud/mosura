@@ -31,11 +31,13 @@
 //! via `function_defined`, re-triggering disassembly + reference recovery to a fixpoint.
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
-use crate::analysis::flowtype::{default_jump_or_call_flow_type, modified_flow_type, FlowOverride};
+use crate::analysis::flowtype::{
+    default_jump_or_call_flow_type, has_fallthrough, is_terminator_flow, modified_flow_type,
+    FlowOverride,
+};
 use crate::analysis::manager::Scheduling;
 use crate::analysis::priority::AnalysisPriority;
 use crate::analysis::program::{AddressSet, Program, RefType, SymbolType};
-use crate::decompile::opcode::OpCode;
 use crate::decompile::space::{Address, SpaceId};
 use crate::sleigh::engine::Spec;
 
@@ -82,6 +84,21 @@ impl SharedReturnAnalyzer {
             found = Some((r.to, r.ref_type));
         }
         found
+    }
+
+    /// The flow reference `applyTo`'s contiguous-function scan reads out of an instruction
+    /// (SharedReturnAnalysisCmd.java:100-110). It is deliberately NOT
+    /// [`single_flow_reference_from`]: its "ignore points with multiple flows" `break` fires
+    /// *after* `flow`/`destAddr` have been assigned and never clears them, so a second flow
+    /// reference stops the scan but leaves the **first** one in play. Kept as its own method so
+    /// the difference from the helper Ghidra uses in `processFunctionJumpReferences` is
+    /// explicit rather than accidental.
+    fn first_flow_reference_from(&self, program: &Program, from: Address) -> Option<(Address, RefType)> {
+        program
+            .reference_manager
+            .refs_from(from)
+            .find(|r| r.ref_type.is_flow())
+            .map(|r| (r.to, r.ref_type))
     }
 
     /// `SharedReturnAnalysisCmd.processFunctionJumpReferences` — apply `CALL_RETURN` to the
@@ -149,6 +166,56 @@ impl SharedReturnAnalyzer {
         }
     }
 
+    /// `SharedReturnAnalysisCmd`'s `checkAboveFunction` + `checkBelowFunction`
+    /// (SharedReturnAnalysisCmd.java:297,312), applied to each destination function in
+    /// ASCENDING address order — Ghidra drives them from `symbolTable.getSymbols(set,
+    /// FUNCTION, true)`, and the order matters because `checkBelowFunction` **deletes** a
+    /// single-range body from the set that earlier iterations may have added.
+    ///
+    /// - above: `[prevFunction.entry, fnAddr]`, or `[space.min, fnAddr]` when there is none.
+    /// - below: the body first, but only if it is discontiguous (`numAddressRanges > 1`);
+    ///   then `[fnAddr, nextFunction.entry - 1]` (or `[fnAddr, space.max]`); then, if the body
+    ///   IS a single range, that body is deleted again — a contiguous function's own
+    ///   instructions are not scanned on its own account (a later function's `checkAbove` may
+    ///   still bring them back).
+    fn build_jump_scan_set(&self, program: &Program, entries: &[Address]) -> AddressSet {
+        let mut scan = AddressSet::new();
+        let mut sorted: Vec<Address> = entries.to_vec();
+        sorted.sort_by_key(|a| a.offset);
+        for entry in sorted {
+            // checkAboveFunction
+            let above_lo = program
+                .function_manager
+                .function_before(entry)
+                .map(|f| f.entry_point().offset)
+                .unwrap_or(0);
+            scan.add_range(self.ram, above_lo, entry.offset);
+
+            // checkBelowFunction
+            let body = program
+                .function_manager
+                .function_at(entry)
+                .map(|f| f.body().clone())
+                .unwrap_or_default();
+            let body_ranges = body.ranges().count();
+            if body_ranges > 1 {
+                scan = scan.union(&body);
+            }
+            let below_hi = program
+                .function_manager
+                .function_after(entry)
+                .map(|f| f.entry_point().offset - 1)
+                .unwrap_or(u64::MAX);
+            if below_hi >= entry.offset {
+                scan.add_range(self.ram, entry.offset, below_hi);
+            }
+            if body_ranges <= 1 {
+                scan = scan.subtract(&body);
+            }
+        }
+        scan
+    }
+
     /// `SharedReturnAnalysisCmd.createFunction` — if a function already exists at `entry`,
     /// (re-)process its jump references; otherwise create it. Ghidra's
     /// `checkIfCouldHaveFallThruTo` guard (do not create if the entry has a real
@@ -182,31 +249,32 @@ impl SharedReturnAnalyzer {
         }
     }
 
-    /// `SharedReturnAnalysisCmd.checkIfCouldHaveFallThruTo` — true if `location` has (or
-    /// could later have) a real fall-through predecessor, or is a lone terminator
-    /// instruction. We approximate `getFallFrom`/`getFallThrough` with the previous
-    /// instruction: if the instruction immediately before `location` falls through to it,
-    /// it must not be split into a new function.
+    /// `SharedReturnAnalysisCmd.checkIfCouldHaveFallThruTo` (SharedReturnAnalysisCmd.java:275)
+    /// — true if `location` has (or could later have) a real fall-through predecessor, or is
+    /// itself a terminator instruction. Ghidra's three arms, in order:
+    ///
+    /// 1. `getInstructionAt(location) == null` → true ("if there is no instruction yet,
+    ///    function may not be created yet").
+    /// 2. `instr.getFallFrom()`'s instruction falls through to `location` → true.
+    ///    `InstructionDB.getFallFrom` (InstructionDB.java:211) is `getInstructionContaining
+    ///    (location - alignment)` (x86 has no delay slots, alignment 1) filtered by
+    ///    `fallThrough == location`; Ghidra then re-checks that same instruction's
+    ///    fall-through, so the two tests collapse into one.
+    /// 3. `instr.getFlowType() == RefType.TERMINATOR` → true ("a single instruction that is
+    ///    terminal consider as having a possible future fallthru to").
+    ///
+    /// **Nothing else.** In particular there is no "location lies inside some function's
+    /// body" arm: a tail-call destination is *always* inside the jumping function's body
+    /// (flow follows the `jmp` into it), so such a gate vetoes every shared-return
+    /// destination — which is precisely what kept WAR2's `FUN_00067f40` / `FUN_00072301` /
+    /// `FUN_00079330` (and 28 more) from being created. `oracle/ground-truth/src/tailjmp.c`
+    /// is the self-compiled repro.
     fn could_have_fall_thru_to(&self, program: &Program, location: Address) -> bool {
         if program.listing.code_unit_at(location).is_none() {
-            // "if there is no instruction yet, function may not be created yet" → true.
             return true;
         }
-        // A location strictly inside an existing function's (contiguous) body necessarily has
-        // a real fall-through predecessor — that fall-through is what made the body
-        // contiguous in the first place. This is the structural form of Ghidra's
-        // getFallFrom→getFallThrough check: Ghidra's CreateFunctionCmd keeps functions
-        // contiguous (subtractBodyFromExisting), and SharedReturnAnalysisCmd's
-        // checkIfCouldHaveFallThruTo refuses to split such an interior point. (Reading it off
-        // the body rather than re-decoding the predecessor is also robust to languages whose
-        // single-instruction relift differs from the in-context disassembly.)
-        if let Some(containing) = program.function_manager.function_containing(location) {
-            if containing.entry_point() != location {
-                return true;
-            }
-        }
-        // Otherwise, fall back to decoding the predecessor: if the instruction immediately
-        // before `location` abuts it and falls through, it must not be split into a function.
+        // getFallFrom(): the instruction abutting `location` from below whose fall-through is
+        // `location`.
         if location.offset > 0 {
             if let Some((prev_addr, prev_len)) = program
                 .listing
@@ -219,20 +287,36 @@ impl SharedReturnAnalyzer {
                 }
             }
         }
-        false
+        self.instruction_is_terminator(program, location)
     }
 
-    /// Whether the instruction at `addr` falls through to its next address — the
-    /// disassembler's flow classification (a terminal `RETURN`/`BRANCH`/`BRANCHIND` does
-    /// not). Decodes the instruction with the SLEIGH engine (same as `Disassembler`).
-    fn instruction_falls_through(&self, program: &Program, addr: Address) -> bool {
+    /// Decode the instruction at `addr` with the SLEIGH engine (same as `Disassembler`).
+    fn decode(&self, program: &Program, addr: Address) -> Option<crate::sleigh::Instruction> {
         let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        let Some(insn) = self.spec.disassemble_ctx(&window, addr.offset, &self.ctx).into_iter().next()
-        else {
+        self.spec.disassemble_ctx(&window, addr.offset, &self.ctx).into_iter().next()
+    }
+
+    /// `Instruction.getFallThrough() != null` for the instruction at `addr` — Ghidra reads it
+    /// off the instruction's prototype flow type, so this goes through
+    /// [`crate::analysis::flowtype::has_fallthrough`] rather than looking at the last p-code
+    /// op. The difference is not cosmetic: `rep movs` lifts to an internal loop whose LAST op
+    /// is a p-code-relative `BRANCH`, so the last-op reading calls it an unconditional jump
+    /// and reports no fall-through — which made `checkIfCouldHaveFallThruTo` miss the veto and
+    /// split WAR2's `FUN_00012e68` at the `rep movsw` boundary.
+    fn instruction_falls_through(&self, program: &Program, addr: Address) -> bool {
+        let Some(insn) = self.decode(program, addr) else {
             return false;
         };
-        let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-        !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind))
+        has_fallthrough(&insn.ops, addr.offset, addr.offset + insn.bytes.len() as u64)
+    }
+
+    /// Whether the instruction at `addr` has Ghidra flow type `RefType.TERMINATOR`
+    /// (`crate::analysis::flowtype::is_terminator_flow`) — a `ret`, or a no-fall-through
+    /// instruction with no real destination (`hlt`).
+    fn instruction_is_terminator(&self, program: &Program, addr: Address) -> bool {
+        self.decode(program, addr).is_some_and(|insn| {
+            is_terminator_flow(&insn.ops, addr.offset, addr.offset + insn.bytes.len() as u64)
+        })
     }
 }
 
@@ -272,51 +356,43 @@ impl Analyzer for SharedReturnAnalyzer {
             self.process_function_jump_references(program, *entry, &mut retypes);
         }
 
-        // Part 2 — assumeContiguousFunctions: for each new function, scan the unconditional
-        // jumps around its boundaries; a jump crossing a neighbouring function's entry is a
-        // shared-return tail call into a new function at the destination.
+        // Part 2 — assumeContiguousFunctions: scan the unconditional jumps around each
+        // destination function's boundaries; a jump crossing a neighbouring function's entry
+        // is a shared-return tail call into a new function at the destination.
         if self.assume_contiguous_functions {
-            // Build the jump-scan set: the gaps above/below each new function (Ghidra
-            // checkAboveFunction/checkBelowFunction). We then examine every jump-reference
-            // source in that set.
-            let mut scan = AddressSet::new();
-            for entry in &new_function_entries {
-                // checkAboveFunction: [prevFunction.entry, entry] (or [min, entry]).
-                let above_lo = program
-                    .function_manager
-                    .function_before(*entry)
-                    .map(|f| f.entry_point().offset)
-                    .unwrap_or(0);
-                scan.add_range(self.ram, above_lo, entry.offset);
-                // checkBelowFunction: [entry, nextFunction.entry - 1] (or [entry, max]).
-                let below_hi = program
-                    .function_manager
-                    .function_after(*entry)
-                    .map(|f| f.entry_point().offset - 1)
-                    .unwrap_or(u64::MAX);
-                if below_hi >= entry.offset {
-                    scan.add_range(self.ram, entry.offset, below_hi);
-                }
-            }
+            let scan = self.build_jump_scan_set(program, &new_function_entries);
 
-            // For each source instruction in the scan set with a single unconditional jump
-            // flow, apply the forward/backward boundary-crossing test.
+            // getReferenceSourceIterator(jumpScanSet, true) — every reference SOURCE address in
+            // the scan set, ASCENDING. The order is load-bearing: the two cursors below are
+            // carried across iterations, so a source's verdict depends on the ones before it.
             let mut src_offsets: Vec<u64> = program
                 .reference_manager
                 .references()
-                .filter(|r| r.ref_type.is_flow())
                 .map(|r| r.from)
                 .filter(|a| a.space == self.ram && scan.contains(*a))
                 .map(|a| a.offset)
                 .collect();
             src_offsets.sort_unstable();
             src_offsets.dedup();
-            let sources: Vec<Address> = src_offsets.into_iter().map(|o| Address::new(self.ram, o)).collect();
 
-            for src in sources {
-                // A single flow out of src that is an UNCONDITIONAL jump.
-                let Some((dest, flow)) = self.single_flow_reference_from(program, src) else {
-                    continue;
+            // `functionAfterSrc` / `functionBeforeSrc`, with Java's three states modelled as
+            // `None` (null — never queried), `Some(None)` (Address.NO_ADDRESS — queried, no
+            // such function) and `Some(Some(a))` (an entry point). These are **caches that
+            // change the answer**, not an optimisation: `functionBeforeSrc` is re-queried only
+            // once the walk has passed `functionAfterSrc`, so while it is frozen it holds the
+            // function-before of an EARLIER address — always lower than a fresh query — and
+            // `destAddr < functionBeforeSrc` therefore fails where a fresh query would pass.
+            // Re-querying both on every source (which is what a "cleaned-up" version does)
+            // over-creates: on WAR2 it invents functions at three shared epilogues
+            // (0x51e12 / 0x53254 / 0x78039) that Ghidra's own
+            // `SharedReturnAnalysisCmd`, run one-shot over the whole program, does not create.
+            let mut function_after_src: Option<Option<u64>> = None;
+            let mut function_before_src: Option<Option<u64>> = None;
+
+            for off in src_offsets {
+                let src = Address::new(self.ram, off);
+                let Some((dest, flow)) = self.first_flow_reference_from(program, src) else {
+                    continue; // destAddr == null || flow == null
                 };
                 if !flow.is_jump_like()
                     || matches!(flow, RefType::ConditionalJump | RefType::ConditionalComputedJump)
@@ -324,21 +400,66 @@ impl Analyzer for SharedReturnAnalyzer {
                     continue; // !flow.isJump() || !flow.isUnConditional()
                 }
                 if src.space != dest.space {
-                    continue;
+                    continue; // can't handle flows between different spaces/overlays
                 }
+                let fn_after = |p: &Program, a: Address| {
+                    p.function_manager.function_after(a).map(|f| f.entry_point().offset)
+                };
+                let fn_before = |p: &Program, a: Address| {
+                    p.function_manager.function_before(a).map(|f| f.entry_point().offset)
+                };
+
                 if src.offset < dest.offset {
-                    // forward jump: createFunction if destAddr >= function-after(src).
-                    if let Some(next) = program.function_manager.function_after(src) {
-                        if dest.offset >= next.entry_point().offset {
-                            self.create_function(program, dest, &mut new_functions, &mut retypes);
+                    // ---- forward jump ----
+                    if function_after_src == Some(None) {
+                        continue; // no function after srcAddr
+                    }
+                    if function_after_src.is_none()
+                        || function_after_src.unwrap().unwrap() <= src.offset
+                    {
+                        match fn_after(program, src) {
+                            Some(e) => function_after_src = Some(Some(e)),
+                            None => {
+                                function_after_src = Some(None);
+                                continue; // no function after srcAddr
+                            }
                         }
                     }
+                    if dest.offset >= function_after_src.unwrap().unwrap() {
+                        self.create_function(program, dest, &mut new_functions, &mut retypes);
+                    }
                 } else {
-                    // backward jump: createFunction if destAddr < function-before(src).
-                    if let Some(prev) = program.function_manager.function_before(src) {
-                        if dest.offset < prev.entry_point().offset {
-                            self.create_function(program, dest, &mut new_functions, &mut retypes);
+                    // ---- backward jump ----
+                    // prime lastFunctionAfterSrc if not previously set
+                    if function_after_src.is_none() {
+                        function_after_src = Some(fn_after(program, src));
+                    }
+                    if function_before_src == Some(None) {
+                        if function_after_src == Some(None) {
+                            continue; // no functions exist - rare
                         }
+                        if src.offset < function_after_src.unwrap().unwrap() {
+                            continue; // we have not passed next function - no function before
+                        }
+                        function_before_src = None; // must re-query
+                        function_after_src = Some(fn_after(program, src));
+                    }
+                    // if we have not passed lastFunctionAfter then no change to
+                    // lastFunctionBefore
+                    let keep = function_before_src.is_some()
+                        && (function_after_src == Some(None)
+                            || src.offset < function_after_src.unwrap().unwrap());
+                    if !keep {
+                        match fn_before(program, src) {
+                            Some(e) => function_before_src = Some(Some(e)),
+                            None => {
+                                function_before_src = Some(None);
+                                continue; // no function before srcAddr
+                            }
+                        }
+                    }
+                    if dest.offset < function_before_src.unwrap().unwrap() {
+                        self.create_function(program, dest, &mut new_functions, &mut retypes);
                     }
                 }
             }

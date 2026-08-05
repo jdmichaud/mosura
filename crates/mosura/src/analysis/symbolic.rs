@@ -492,7 +492,7 @@ pub fn flow_constants(
         // resolved indirect-flow target. The shared-return flow override has not been
         // applied yet (that analyzer runs after constant propagation), so this is the base
         // type — a tail-call PLT `jmp *[GOT]` is COMPUTED_JUMP here, re-typed later.
-        let insn_flow = crate::analysis::flowtype::flow_type(&insn.ops);
+        let insn_flow = crate::analysis::flowtype::flow_type(&insn.ops, a, a + ilen);
 
         let mut falls = true;
         let mut branch_targets: Vec<u64> = Vec::new();
