@@ -238,7 +238,7 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     // generic `gcc` placeholder, so prototype recovery uses the right convention. 32-bit i386
     // protected mode (`x86:LE:32:default`).
     let watcom = super::watcom::detect(data);
-    let compiler_spec_id = if watcom.is_some() { "watcom" } else { "gcc" };
+    let compiler_spec_id = super::watcom::compiler_spec_id(data);
     let mut program =
         Program::new(spaces, ram, "x86:LE:32:default", compiler_spec_id, image_base, false, 32);
     program.memory = memory;

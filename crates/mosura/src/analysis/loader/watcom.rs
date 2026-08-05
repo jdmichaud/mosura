@@ -82,6 +82,19 @@ fn banner_regex() -> &'static Regex {
 /// Returns `None` if no banner is present (not a Watcom binary, or the runtime was stripped).
 /// Scans the raw file bytes so it works from any container path (LE / MZ / PE), matching the
 /// fact that the banner is embedded verbatim in the compiled image.
+/// The x86-32 compiler-spec id implied by the binary's run-time banner: `"watcom"` when
+/// [`detect`] matches, else the generic `"gcc"` placeholder.
+///
+/// Both 32-bit x86 loaders decide this the same way and must keep doing so. The container
+/// cannot answer it — an ELF32 i386 built by `wcc386 -bt=linux` is header-identical to a gcc
+/// one, and an LE is a bare DOS/4GW image — so the linked C run-time's copyright banner is the
+/// only in-band evidence of the calling convention. Choosing wrong is not cosmetic: `__watcall`
+/// passes arguments in EAX/EDX/EBX/ECX and preserves every register but EAX, while `__cdecl`
+/// passes on the stack, so prototype recovery and the entire call-effect model differ.
+pub fn compiler_spec_id(data: &[u8]) -> &'static str {
+    if detect(data).is_some() { "watcom" } else { "gcc" }
+}
+
 pub fn detect(data: &[u8]) -> Option<WatcomInfo> {
     let caps = banner_regex().captures(data)?;
     let get = |n: &str| caps.name(n).map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned());

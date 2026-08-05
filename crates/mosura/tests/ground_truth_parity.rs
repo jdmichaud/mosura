@@ -406,12 +406,6 @@ fn for_recovery_backtracks_past_wrong_phi() {
 /// reads a global bound, inside that predicate's documented blind spot — so this reads the
 /// emitted loop directly.
 #[test]
-#[ignore = "BLOCKED: the ELF loader hard-codes compiler_spec_id=\"gcc\" for every EM_386 binary \
-(analysis/loader/elf.rs:175), so this Watcom-built MVE is decompiled under __cdecl and cannot \
-exercise the __watcall cspec it was written to gate. The LE path DOES detect Watcom from the \
-runtime banner (loader/le.rs:240) — the same banner this program embeds. Un-ignore once the ELF \
-loader consults watcom::detect. The defect it gates is real and fixed on WAR2: FUN_00057034's \
-loop now emits its update."]
 fn indirect_call_does_not_clobber_loop_variable() {
     let bin = ground_truth_dir().join("callclob.watcom-x86-32");
     let truth_path = ground_truth_dir().join("callclob.watcom-x86-32.truth");
