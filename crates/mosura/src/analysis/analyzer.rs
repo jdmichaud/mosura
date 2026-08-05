@@ -27,6 +27,11 @@ pub enum AnalyzerType {
     FunctionSignatures,
     /// Runs on newly created data.
     Data,
+    /// Subscribes to no program-change channel: it runs only when another analyzer hands it a
+    /// set explicitly (Ghidra `AutoAnalysisManager.scheduleOneTimeAnalysis`,
+    /// AutoAnalysisManager.java:226 — used by
+    /// [`PossibleDelayedFunctionCreator`](crate::analysis::analyzers::function_start::PossibleDelayedFunctionCreator)).
+    OneTime,
 }
 
 /// An auto-analysis pass (Ghidra `Analyzer`).

@@ -25,13 +25,15 @@ pub struct Scheduling {
     pending: Vec<AddressSet>,
     priority: Vec<i32>,
     ty: Vec<AnalyzerType>,
+    names: Vec<String>,
 }
 
 impl Scheduling {
-    fn register(&mut self, priority: i32, ty: AnalyzerType) {
+    fn register(&mut self, priority: i32, ty: AnalyzerType, name: &str) {
         self.pending.push(AddressSet::new());
         self.priority.push(priority);
         self.ty.push(ty);
+        self.names.push(name.to_string());
     }
 
     /// Route an added-location set to every analyzer consuming `ty`.
@@ -60,6 +62,19 @@ impl Scheduling {
         self.notify(AnalyzerType::Byte, set);
     }
 
+    /// Hand a set directly to one named analyzer (Ghidra
+    /// `AutoAnalysisManager.scheduleOneTimeAnalysis(analyzer, set)`, AutoAnalysisManager.java:226)
+    /// — the route for an analyzer that subscribes to no change channel. A no-op when that
+    /// analyzer is not registered, matching Ghidra's "the caller holds the instance" contract:
+    /// nothing else can trigger it, so nothing is silently dropped elsewhere.
+    pub fn schedule_one_time(&mut self, name: &str, set: &AddressSet) {
+        for i in 0..self.names.len() {
+            if self.names[i] == name {
+                self.pending[i] = self.pending[i].union(set);
+            }
+        }
+    }
+
     /// The index of the highest-priority (lowest value) analyzer with pending work.
     fn next_task(&self) -> Option<usize> {
         (0..self.pending.len())
@@ -85,12 +100,25 @@ impl AutoAnalysisManager {
         AutoAnalysisManager::default()
     }
 
-    /// Register an analyzer if it applies to the program (Ghidra `canAnalyze`).
+    /// Register an analyzer if it applies to the program (Ghidra `canAnalyze`) and it is enabled.
+    ///
+    /// **Enablement** is Ghidra's own model: every analyzer has an on/off option under
+    /// `Program.ANALYSIS_PROPERTIES` keyed by its name (`AbstractAnalyzer.setDefaultEnablement`),
+    /// and that is how `analyzeHeadless` is told to skip one — a `-preScript` that flips the
+    /// option. mosura has no per-program options database, so the same switch is read from
+    /// `MOSURA_DISABLE_ANALYZERS`, a comma-separated list of analyzer names. It exists for the
+    /// same reason Ghidra's does: measuring one analyzer's contribution means running with it off.
     pub fn add_analyzer(&mut self, analyzer: Box<dyn Analyzer>, program: &Program) {
         if !analyzer.can_analyze(program) {
             return;
         }
-        self.sched.register(analyzer.priority().0, analyzer.analysis_type());
+        if let Some(list) = std::env::var_os("MOSURA_DISABLE_ANALYZERS") {
+            let list = list.to_string_lossy().to_string();
+            if list.split(',').any(|n| n.trim() == analyzer.name()) {
+                return;
+            }
+        }
+        self.sched.register(analyzer.priority().0, analyzer.analysis_type(), analyzer.name());
         self.analyzers.push(analyzer);
     }
 
@@ -101,11 +129,23 @@ impl AutoAnalysisManager {
 
     /// Run the worklist to a fixpoint: repeatedly run the highest-priority analyzer with
     /// pending work; each run may schedule more (Ghidra `startAnalysis` loop).
+    /// `MOSURA_ANALYSIS_TRACE=1` prints one line per analyzer invocation (name, added-set size,
+    /// wall time). The worklist is a fixpoint, so a mis-scheduled analyzer shows up as an endless
+    /// repeating cycle rather than as a wrong answer — this makes that visible directly.
     pub fn run(&mut self, program: &mut Program) {
+        let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();
         while let Some(i) = self.sched.next_task() {
             let set = self.sched.take(i);
             let analyzer = &self.analyzers[i];
-            analyzer.added(program, &set, &mut self.sched);
+            if trace {
+                let t = std::time::Instant::now();
+                let n = set.num_addresses();
+                let r = set.ranges().count();
+                analyzer.added(program, &set, &mut self.sched);
+                eprintln!("[trace] {:>40} set={n} ranges={r} took={:?}", analyzer.name(), t.elapsed());
+            } else {
+                analyzer.added(program, &set, &mut self.sched);
+            }
         }
     }
 }

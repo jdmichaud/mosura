@@ -1,0 +1,1155 @@
+//! `FunctionStartAnalyzer` — a port of
+//! `Features/BytePatterns/.../ghidra/app/analyzers/FunctionStartAnalyzer.java` together with its
+//! three siblings (`FunctionStartPreFuncAnalyzer`, `FunctionStartPostAnalyzer`,
+//! `FunctionStartDataPostAnalyzer`) and the pattern-file lookup in `Patterns.java`.
+//!
+//! This is the only discovery route in the pipeline that needs **no inbound edge**. Every other
+//! pass follows something: a direct call, a shared-return `jmp`, a run of pointers in data, an LE
+//! fixup slot. This one recognises a function by the *shape of its prologue bytes*, matching a
+//! processor/compiler-specific pattern file
+//! (`Processors/<proc>/data/patterns/*.xml`) with the [`bytesearch`](crate::analysis::bytesearch)
+//! engine. On WAR2 it is worth 243 functions that nothing else reaches.
+//!
+//! Ghidra registers the same analyzer four times, differing only in *when* it runs and over
+//! *what* set — see [`FunctionStartKind`]. A pattern can carry a pre-requisite ("must follow
+//! defined data", "must follow an instruction"), which is false on the first sweep and true once
+//! the surrounding program has been laid down; the later passes are what re-check them.
+//!
+//! # Beyond-Ghidra: the Watcom pattern set
+//!
+//! `patternconstraints.xml` maps `(language, compiler)` to a pattern file and has **no `watcom`
+//! entry** — Ghidra ships no Watcom compiler spec at all. Ghidra only reaches WAR2's prologues
+//! because auto-detect labels the warcraft2-re ELF wrapper `gcc`; mosura's loader correctly says
+//! `watcom`, so a strictly faithful port would contribute exactly zero here. The
+//! `(language, compiler) -> file` lookup below is a faithful port; the *mapping entry* for
+//! `watcom`, and the pattern file it names, are mosura's, living in `specs/patterns/` — Ghidra's
+//! own extension point (`Application.findModuleSubDirectories("data/patterns")` merges the
+//! constraint files of every module, so an added module dir is how Ghidra itself is extended).
+//! Their oracle is the warcraft2-re expert tracker, not Ghidra. See `specs/patterns/README.md`.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use crate::analysis::analyzer::{Analyzer, AnalyzerType};
+use crate::analysis::bytesearch::pattern::{read_patterns, Match, Pattern, PatternFactory};
+use crate::analysis::bytesearch::{
+    DittedBitSequence, MemoryBytePatternSearcher, SequenceSearchState,
+};
+use crate::analysis::manager::Scheduling;
+use crate::analysis::priority::AnalysisPriority;
+use crate::analysis::program::{AddressSet, CodeUnit, Program, RefType, SymbolType};
+use crate::analysis::pseudo_disassembler::PseudoDisassembler;
+use crate::decompile::space::Address;
+
+/// `FunctionStartAction.MUST_HAVE_VALID_INSTRUCTIONS_NO_MIN` (:203).
+const MUST_HAVE_VALID_INSTRUCTIONS_NO_MIN: i32 = -1;
+/// `FunctionStartAction.VALID_INSTRUCTIONS_NO_MAX` (:204).
+const VALID_INSTRUCTIONS_NO_MAX: i32 = -1;
+/// `FunctionStartAction.NO_VALID_INSTRUCTIONS_REQUIRED` (:205).
+const NO_VALID_INSTRUCTIONS_REQUIRED: i32 = 0;
+
+/// Longest code unit probed for when asking "is this address inside an existing one"
+/// (`getCodeUnitContaining`); mosura's listing is a start-address map, so containment is a
+/// bounded backward probe. Matches `analyzers::MAX_CODE_UNIT_LEN`.
+const MAX_CODE_UNIT_LEN: u64 = 16;
+
+/// Which of Ghidra's four registrations this instance is. They share `FunctionStartAnalyzer`'s
+/// whole body and differ only in name, analyzer type, priority, and which pattern-constraints
+/// file they read.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FunctionStartKind {
+    /// `FunctionStartPreFuncAnalyzer` (:24) — "Function Start Pre Search", a BYTE analyzer at
+    /// `BLOCK_ANALYSIS.before()`, driven by `prepatternconstraints.xml`: patterns "better found
+    /// before any code is disassembled".
+    PreSearch,
+    /// `FunctionStartAnalyzer` (:99) — "Function Start Search", a BYTE analyzer at
+    /// `CODE_ANALYSIS.after().after()`.
+    Search,
+    /// `FunctionStartPostAnalyzer` (:24) — "Function Start Search After Code", an INSTRUCTION
+    /// analyzer at `DATA_TYPE_PROPOGATION.before().before()`; runs only when some pattern has a
+    /// code or data pre-requisite.
+    AfterCode,
+    /// `FunctionStartDataPostAnalyzer` (:24) — "Function Start Search After Data", a DATA
+    /// analyzer at the same priority; runs only when some pattern has a data pre-requisite.
+    AfterData,
+}
+
+impl FunctionStartKind {
+    fn name(self) -> &'static str {
+        match self {
+            FunctionStartKind::PreSearch => "Function Start Pre Search",
+            FunctionStartKind::Search => "Function Start Search",
+            FunctionStartKind::AfterCode => "Function Start Search After Code",
+            FunctionStartKind::AfterData => "Function Start Search After Data",
+        }
+    }
+
+    fn analyzer_type(self) -> AnalyzerType {
+        match self {
+            FunctionStartKind::PreSearch | FunctionStartKind::Search => AnalyzerType::Byte,
+            FunctionStartKind::AfterCode => AnalyzerType::Instruction,
+            FunctionStartKind::AfterData => AnalyzerType::Data,
+        }
+    }
+
+    fn priority(self) -> AnalysisPriority {
+        match self {
+            FunctionStartKind::PreSearch => AnalysisPriority::BLOCK.before(),
+            FunctionStartKind::Search => AnalysisPriority::CODE.after().after(),
+            FunctionStartKind::AfterCode | FunctionStartKind::AfterData => {
+                AnalysisPriority::DATA_TYPE_PROPAGATION.before().before()
+            }
+        }
+    }
+
+    /// `Patterns.DEFAULT_PATTERNCONSTRAINTS_XML` (:32) vs
+    /// `FunctionStartPreFuncAnalyzer.initializePatternDecisionTree` (:37).
+    fn constraints_file(self) -> &'static str {
+        match self {
+            FunctionStartKind::PreSearch => "prepatternconstraints.xml",
+            _ => "patternconstraints.xml",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Match actions (FunctionStartAnalyzer's inner classes)
+// ---------------------------------------------------------------------------------------------
+
+/// `FunctionStartAction` (:201) — the attributes of a `<funcstart>`/`<possiblefuncstart>` tag.
+#[derive(Clone, Debug)]
+pub struct FunctionStartAction {
+    /// `afterName` (:207) — the required predecessor kind (`function`/`instruction`/`data`/
+    /// `pointer`/`defined`).
+    after_name: Option<String>,
+    /// `validCodeMin` (:208).
+    valid_code_min: i32,
+    /// `validCodeMax` (:209).
+    valid_code_max: i32,
+    /// `label` (:210).
+    label: Option<String>,
+    /// `isThunk` (:211).
+    is_thunk: bool,
+    /// `noreturn` (:212).
+    noreturn: bool,
+    /// `sectionNamePattern` (:213) — required memory-block name, as a full-match regex.
+    section_name_pattern: Option<regex::Regex>,
+    /// `validFunction` (:214) — `validcode="function"`.
+    valid_function: bool,
+    /// `contiguous` (:215).
+    contiguous: bool,
+}
+
+impl Default for FunctionStartAction {
+    fn default() -> FunctionStartAction {
+        FunctionStartAction {
+            after_name: None,
+            valid_code_min: NO_VALID_INSTRUCTIONS_REQUIRED,
+            valid_code_max: VALID_INSTRUCTIONS_NO_MAX,
+            label: None,
+            is_thunk: false,
+            noreturn: false,
+            section_name_pattern: None,
+            valid_function: false,
+            contiguous: true,
+        }
+    }
+}
+
+/// `MatchAction` (MatchAction.java:24) — Ghidra's four implementations, all inner classes of
+/// `FunctionStartAnalyzer`, as one enum.
+#[derive(Clone, Debug)]
+pub enum Action {
+    /// `CodeBoundaryAction` (:173) — "there is code here": schedule disassembly, and protect it.
+    CodeBoundary,
+    /// `FunctionStartAction` (:201) — "a function starts here".
+    FunctionStart(Box<FunctionStartAction>),
+    /// `PossibleFunctionStartAction` (:683) — "a function *probably* starts here": deferred to
+    /// [`PossibleDelayedFunctionCreator`], which re-checks once disassembly has settled.
+    PossibleFunctionStart(Box<FunctionStartAction>),
+    /// `ContextAction` (:709) — set a context register at the match. mosura's SLEIGH driver takes
+    /// one fixed context vector per language (the same accommodation
+    /// [`PseudoDisassembler`](crate::analysis::pseudo_disassembler) documents), so this is parsed
+    /// and recorded but inert. No x86 pattern file uses `<setcontext>`; it is an ARM/MIPS device.
+    SetContext { name: String, value: u64 },
+}
+
+/// Parses `<funcstart>`/`<possiblefuncstart>` attributes (`restoreXmlAttributes`, :566) and, as a
+/// side effect, records which *kinds* of pre-requisite the file uses — the flags that decide
+/// whether the After-Code / After-Data analyzers run at all (:576-589).
+#[derive(Default)]
+struct Factory {
+    /// `hasDataConstraints` (:72).
+    has_data_constraints: bool,
+    /// `hasCodeConstraints` (:73).
+    has_code_constraints: bool,
+    /// `hasFunctionStartConstraints` (:74).
+    has_function_start_constraints: bool,
+}
+
+impl Factory {
+    fn restore_xml_attributes(&mut self, el: roxmltree::Node) -> FunctionStartAction {
+        let mut a = FunctionStartAction::default();
+        for attr in el.attributes() {
+            let name = attr.name().to_ascii_lowercase();
+            let value = attr.value();
+            match name.as_str() {
+                "after" => {
+                    a.after_name = Some(value.to_string());
+                    if value.starts_with("func") || value.starts_with("inst") {
+                        self.has_code_constraints = true;
+                    } else if value.starts_with("data") || value.starts_with("ptr") {
+                        self.has_data_constraints = true;
+                    } else if value.starts_with("def") {
+                        self.has_code_constraints = true;
+                        self.has_data_constraints = true;
+                    }
+                    // Ghidra logs an error for any other value and leaves the constraint set; the
+                    // `checkAfterName` chain then matches none of its arms and passes.
+                }
+                "validcode" => {
+                    if value == "0" || value == "false" {
+                        a.valid_code_min = NO_VALID_INSTRUCTIONS_REQUIRED;
+                    } else if value.eq_ignore_ascii_case("true")
+                        || value.eq_ignore_ascii_case("subroutine")
+                    {
+                        a.valid_code_min = MUST_HAVE_VALID_INSTRUCTIONS_NO_MIN;
+                    } else if value.eq_ignore_ascii_case("function") {
+                        a.valid_function = true;
+                        self.has_function_start_constraints = true;
+                        a.valid_code_min = NO_VALID_INSTRUCTIONS_REQUIRED;
+                    } else {
+                        a.valid_code_min = value.parse().unwrap_or(NO_VALID_INSTRUCTIONS_REQUIRED);
+                    }
+                    if a.valid_code_max == VALID_INSTRUCTIONS_NO_MAX {
+                        a.valid_code_max = a.valid_code_min;
+                    }
+                }
+                "validcodemax" => {
+                    a.valid_code_max = value.parse().unwrap_or(VALID_INSTRUCTIONS_NO_MAX);
+                    if a.valid_code_min == NO_VALID_INSTRUCTIONS_REQUIRED {
+                        a.valid_code_min = MUST_HAVE_VALID_INSTRUCTIONS_NO_MIN;
+                    }
+                }
+                "contiguous" => a.contiguous = !value.eq_ignore_ascii_case("false"),
+                "label" => a.label = Some(value.to_string()),
+                "thunk" => a.is_thunk = true,
+                // Java `Pattern.matches` is a FULL match, so the anchors are part of the port.
+                "section" => a.section_name_pattern = regex::Regex::new(&format!("^(?:{value})$")).ok(),
+                "noreturn" => a.noreturn = true,
+                _ => {}
+            }
+        }
+        a
+    }
+}
+
+impl PatternFactory for Factory {
+    type Action = Action;
+
+    /// `getMatchActionByName(nm)` (:957).
+    fn match_action_by_name(&mut self, node: roxmltree::Node) -> Option<Action> {
+        match node.tag_name().name() {
+            "funcstart" => {
+                Some(Action::FunctionStart(Box::new(self.restore_xml_attributes(node))))
+            }
+            "possiblefuncstart" => {
+                Some(Action::PossibleFunctionStart(Box::new(self.restore_xml_attributes(node))))
+            }
+            "codeboundary" => Some(Action::CodeBoundary),
+            "setcontext" => Some(Action::SetContext {
+                name: node.attribute("name").unwrap_or("").to_string(),
+                value: node
+                    .attribute("value")
+                    .and_then(|v| {
+                        let t = v.trim();
+                        match t.strip_prefix("0x") {
+                            Some(h) => u64::from_str_radix(h, 16).ok(),
+                            None => t.parse().ok(),
+                        }
+                    })
+                    .unwrap_or(0),
+            }),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pattern file lookup (Patterns.java + the ProgramDecisionTree constraints)
+// ---------------------------------------------------------------------------------------------
+
+/// `Application.findModuleSubDirectories("data/patterns")` (Patterns.java:42) — every module's
+/// pattern directory. Ghidra walks its installed modules; mosura's equivalents are the SLEIGH
+/// processor tree (`<processors>/<proc>/data/patterns`) and its own `specs/patterns`, which is
+/// where the beyond-Ghidra Watcom mapping lives (see the module note).
+fn pattern_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(crate::paths::processors_dir()) {
+        let mut procs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path().join("data/patterns"))
+            .filter(|p| p.is_dir())
+            .collect();
+        procs.sort();
+        dirs.extend(procs);
+    }
+    let mosura = crate::paths::specs_dir().join("patterns");
+    if mosura.is_dir() {
+        dirs.push(mosura);
+    }
+    dirs
+}
+
+/// `LanguageConstraint.isSatisfied` (LanguageConstraint.java:33) — colon-separated tokens compared
+/// pairwise, with `*` matching any one token; both ids must have the same token count.
+fn language_matches(constraint: &str, language_id: &str) -> bool {
+    let a: Vec<&str> = constraint.split(':').collect();
+    let b: Vec<&str> = language_id.split(':').collect();
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| *x == "*" || x == y)
+}
+
+/// `CompilerConstraint.isSatisfied` (CompilerConstraint.java:26) — `id` is an exact match on the
+/// compiler-spec id. (`name`, the `compilerName.contains(program.getCompiler())` arm, needs the
+/// program's *toolchain* string, which mosura's `Program` does not carry; no pattern-constraints
+/// file in the tree uses it.)
+fn compiler_matches(node: roxmltree::Node, compiler_spec_id: &str) -> bool {
+    match node.attribute("id") {
+        Some(id) => id == compiler_spec_id,
+        None => false,
+    }
+}
+
+/// `Patterns.findPatternFiles(program, decisionTree)` (:73) — the pattern files whose
+/// `(language, compiler)` path in the merged decision tree is satisfied by this program.
+fn find_pattern_files(program: &Program, constraints_file: &str) -> Vec<PathBuf> {
+    let dirs = pattern_dirs();
+    let mut names: Vec<String> = Vec::new();
+    for dir in &dirs {
+        let path = dir.join(constraints_file);
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
+        for lang in doc.root_element().children().filter(|n| n.is_element()) {
+            if lang.tag_name().name() != "language" {
+                continue;
+            }
+            if !language_matches(lang.attribute("id").unwrap_or(""), &program.language_id) {
+                continue;
+            }
+            for comp in lang.children().filter(|n| n.is_element()) {
+                match comp.tag_name().name() {
+                    "compiler" if compiler_matches(comp, &program.compiler_spec_id) => {
+                        for pf in comp.children().filter(|n| n.is_element()) {
+                            if pf.tag_name().name() == "patternfile" {
+                                if let Some(t) = pf.text() {
+                                    names.push(t.trim().to_string());
+                                }
+                            }
+                        }
+                    }
+                    // A `<patternfile>` directly under `<language>` is the node-level default the
+                    // decision tree falls back to when no child constraint matched (DecisionTree
+                    // class doc); none of the shipped files use one, but the shape is free.
+                    "patternfile" if !lang.children().any(|c| c.is_element() && c.tag_name().name() == "compiler" && compiler_matches(c, &program.compiler_spec_id)) => {
+                        if let Some(t) = comp.text() {
+                            names.push(t.trim().to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    // `Patterns.getPatternFile(patternDirs, name)` (:88) — first directory that has it wins.
+    let mut out = Vec::new();
+    for name in names {
+        if let Some(p) = dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file()) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
+// The analyzer
+// ---------------------------------------------------------------------------------------------
+
+/// `FunctionStartAnalyzer` (:47).
+pub struct FunctionStartAnalyzer {
+    kind: FunctionStartKind,
+    patterns: Vec<Pattern<Action>>,
+    root: SequenceSearchState,
+    /// `executableBlocksOnly` (:67) — the `Search Data Blocks` option's default is `false`, i.e.
+    /// executable blocks only (:56, :892).
+    executable_blocks_only: bool,
+    pdis: Option<PseudoDisassembler>,
+}
+
+impl FunctionStartAnalyzer {
+    /// Build one registration, or `None` when it does not apply — `canAnalyze` (:765) plus the
+    /// subclasses' extra tests (`FunctionStartPostAnalyzer.canAnalyze`:33,
+    /// `FunctionStartDataPostAnalyzer.canAnalyze`:33).
+    pub fn for_program(program: &Program, kind: FunctionStartKind) -> Option<FunctionStartAnalyzer> {
+        let files = find_pattern_files(program, kind.constraints_file());
+        if files.is_empty() {
+            return None; // `Patterns.hasPatternFiles` is false
+        }
+        let mut factory = Factory::default();
+        let mut patterns: Vec<Pattern<Action>> = Vec::new();
+        for f in &files {
+            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            if let Err(e) = read_patterns(&text, &mut patterns, &mut factory) {
+                // Ghidra `readPatterns` (:938) logs and returns null — the analyzer is disabled.
+                eprintln!("mosura: pattern file error ({}): {e}", f.display());
+                return None;
+            }
+        }
+        if patterns.is_empty() {
+            return None; // `initialize` (:929)
+        }
+        match kind {
+            FunctionStartKind::AfterCode => {
+                if !factory.has_code_constraints && !factory.has_data_constraints {
+                    return None;
+                }
+            }
+            FunctionStartKind::AfterData => {
+                if !factory.has_data_constraints {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        let mut seqs: Vec<DittedBitSequence> = patterns.iter().map(|p| p.seq.clone()).collect();
+        let root = SequenceSearchState::build_state_machine(&mut seqs);
+        Some(FunctionStartAnalyzer {
+            kind,
+            patterns,
+            root,
+            executable_blocks_only: true,
+            pdis: PseudoDisassembler::for_program(program),
+        })
+    }
+}
+
+/// The analyzer's running state (`funcResult`/`potentialFuncResult`/… , :81-86). Ghidra keeps
+/// these as mutable analyzer fields and comments that "these should go away after analysis"; here
+/// they are a local of one `added` call, which is what that comment asks for.
+#[derive(Default)]
+struct RunState {
+    /// `funcResult` (:81) — discovered function starts.
+    func_result: AddressSet,
+    /// `potentialFuncResult` (:82).
+    potential_func_result: AddressSet,
+    /// `disassemResult` (:83).
+    disassem_result: AddressSet,
+    /// `codeLocations` (:84).
+    code_locations: AddressSet,
+    /// `postreqFailedResult` (:85).
+    postreq_failed_result: AddressSet,
+}
+
+impl Analyzer for FunctionStartAnalyzer {
+    fn name(&self) -> &str {
+        self.kind.name()
+    }
+    fn analysis_type(&self) -> AnalyzerType {
+        self.kind.analyzer_type()
+    }
+    fn priority(&self) -> AnalysisPriority {
+        self.kind.priority()
+    }
+
+    /// `added(program, set, monitor, log)` (:795).
+    fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
+        refresh_function_bodies(program);
+        let mut st = RunState::default();
+        // `checkForExecuteBlock(program) && executableBlocksOnly` (:807).
+        let has_execute = program.memory.blocks().any(|b| b.is_execute());
+        let mut searcher = MemoryBytePatternSearcher::new(&self.root, &self.patterns);
+        searcher.set_search_executable_only(has_execute && self.executable_blocks_only);
+
+        let pdis = self.pdis.as_ref();
+        searcher.search(program, Some(set), &mut |program, addr, m: &Match<Action>| {
+            for action in &m.pattern.actions {
+                apply_action(action, program, addr, &mut st, pdis);
+            }
+        });
+
+        // :836 — disassemble known function starts now, delay the possible ones. mosura has one
+        // disassembly channel (the `Disassembler` at `DISASSEMBLY`), so both go there; Ghidra's
+        // split only changes *when* within the queue.
+        if !st.disassem_result.is_empty() {
+            sched.code_defined(&st.disassem_result);
+        }
+        // :846 `setProtectedLocations(codeLocations)` — mosura has no analyzer that clears code,
+        // so there is nothing to protect it from; the set is still computed above so the port
+        // stays structurally complete.
+        let _ = &st.code_locations;
+
+        if !st.potential_func_result.is_empty() {
+            // :848 — a pattern may have said this is definitely a function start, so it is not
+            // "potential" any more.
+            let potential = st.potential_func_result.subtract(&st.func_result);
+            // :853 — kick off a later analyzer to create the functions after the fallout from
+            // disassembly has settled.
+            sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &potential);
+        }
+
+        if !st.func_result.is_empty() {
+            // :857 — `analysisManager.createFunction(funcResult, false)`.
+            create_functions(program, &st.func_result, sched);
+        }
+        true
+    }
+}
+
+/// Apply one match action (the `apply` methods of the four inner classes).
+fn apply_action(
+    action: &Action,
+    program: &mut Program,
+    addr: Address,
+    st: &mut RunState,
+    pdis: Option<&PseudoDisassembler>,
+) {
+    match action {
+        // `CodeBoundaryAction.apply` (:176).
+        Action::CodeBoundary => match code_unit_containing(program, addr) {
+            CuKind::UndefinedData => {
+                st.disassem_result.add(addr);
+                st.code_locations.add(addr);
+            }
+            CuKind::Instruction => st.code_locations.add(addr),
+            CuKind::DefinedData => {}
+            CuKind::None => {}
+        },
+        // `FunctionStartAction.apply` (:218).
+        Action::FunctionStart(a) => {
+            if !check_pre_requisites(a, program, addr, st, pdis) {
+                return;
+            }
+            let mut result = std::mem::take(&mut st.func_result);
+            apply_action_to_set(a, program, addr, &mut result, st);
+            st.func_result = result;
+        }
+        // `PossibleFunctionStartAction.apply` (:685).
+        Action::PossibleFunctionStart(a) => {
+            if !check_pre_requisites(a, program, addr, st, pdis) {
+                return;
+            }
+            let mut result = std::mem::take(&mut st.potential_func_result);
+            apply_action_to_set(a, program, addr, &mut result, st);
+            st.potential_func_result = result;
+        }
+        // `ContextAction.apply` (:723) — see [`Action::SetContext`].
+        Action::SetContext { .. } => {}
+    }
+}
+
+/// What `Listing.getCodeUnitContaining(addr)` returns, reduced to the three cases the actions
+/// distinguish. Ghidra's listing yields an *undefined* `Data` unit for any mapped byte that has
+/// nothing defined at it, which is the "nothing here yet" case.
+enum CuKind {
+    Instruction,
+    DefinedData,
+    UndefinedData,
+    None,
+}
+
+fn code_unit_containing(program: &Program, addr: Address) -> CuKind {
+    if !program.memory.contains(addr) {
+        return CuKind::None;
+    }
+    match program.listing.code_unit_containing(addr, MAX_CODE_UNIT_LEN) {
+        Some((start, _)) => match program.listing.code_unit_at(start) {
+            Some(CodeUnit::Instruction { .. }) => CuKind::Instruction,
+            Some(CodeUnit::Data { .. }) => CuKind::DefinedData,
+            None => CuKind::UndefinedData,
+        },
+        None => CuKind::UndefinedData,
+    }
+}
+
+/// `FunctionStartAction.checkPreRequisites(program, addr)` (:229).
+fn check_pre_requisites(
+    a: &FunctionStartAction,
+    program: &Program,
+    addr: Address,
+    st: &mut RunState,
+    pdis: Option<&PseudoDisassembler>,
+) -> bool {
+    // :231 — required section name.
+    if let Some(re) = &a.section_name_pattern {
+        match program.memory.block_at(addr) {
+            None => return false,
+            Some(b) => {
+                if !re.is_match(b.name()) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // :247 — `validcode="function"`: there must already be a function here.
+    //
+    // NOT PORTED, and why: Ghidra also drops an `AddressSetPropertyMap` breadcrumb here (:252) so
+    // that `FunctionStartFuncAnalyzer` — a fifth registration, at `FUNCTION_ANALYSIS.before()
+    // .before()` — can re-check only these addresses once functions exist. Every shipped
+    // `validcode="function"` pattern (the six x86 `__i686.get_pc_thunk.*` entries) does nothing
+    // but apply a LABEL: `applyActionToSet` reaches an instruction that is already in a function,
+    // so it adds nothing to any result set. The omission therefore cannot change the function set,
+    // only the naming of six gcc PIC thunks.
+    if a.valid_function && program.function_manager.function_at(addr).is_none() {
+        st.postreq_failed_result.add(addr);
+        return false;
+    }
+
+    if !check_after_name(a, program, addr) {
+        st.postreq_failed_result.add(addr);
+        return false;
+    }
+
+    // :263 — do we require some number of valid instructions?
+    if a.valid_code_min != 0 {
+        let Some(pd) = pdis else { return false };
+        // Ghidra constructs a fresh `PseudoDisassembler` here (:264), so the bound starts at the
+        // default; mosura shares one instance, so it is set on every path.
+        pd.set_max_instructions(if a.valid_code_max > 0 {
+            a.valid_code_max as usize
+        } else {
+            crate::analysis::pseudo_disassembler::DEFAULT_MAX_INSTRUCTIONS
+        });
+        if a.valid_code_min == MUST_HAVE_VALID_INSTRUCTIONS_NO_MIN {
+            // :274 — follow branches too, and the flow must terminate.
+            return pd.check_valid_subroutine(program, addr, true, true, a.contiguous).0;
+        }
+        // :281 — disassemble only fall-through; must reach `validCodeMin` instructions.
+        let (mut isvalid, instr_count) =
+            pd.check_valid_subroutine(program, addr, true, false, a.contiguous);
+        if (instr_count as i32) < a.valid_code_min {
+            isvalid = false;
+        }
+        return isvalid;
+    }
+
+    true
+}
+
+/// `FunctionStartAction.applyActionToSet(program, addr, resultSet, match)` (:293).
+fn apply_action_to_set(
+    a: &FunctionStartAction,
+    program: &mut Program,
+    addr: Address,
+    result_set: &mut AddressSet,
+    st: &mut RunState,
+) {
+    // :296 — `addr.getOffset() % language.getInstructionAlignment()`. mosura's SLEIGH layer does
+    // not surface `instructionAlignment`; every language that ships a pattern file is x86, whose
+    // alignment is 1, so the test is exact here and would need the field only for a future
+    // fixed-width-instruction pattern set.
+    let alignment: u64 = 1;
+    if !addr.offset.is_multiple_of(alignment) {
+        return;
+    }
+
+    let func_containing = program.function_manager.function_containing(addr).map(|f| f.entry_point());
+
+    match code_unit_containing(program, addr) {
+        CuKind::UndefinedData => {
+            st.disassem_result.add(addr);
+            st.code_locations.add(addr);
+            result_set.add(addr);
+        }
+        CuKind::Instruction => {
+            if func_containing.is_none() {
+                // :317 — could this already be in a function, or part of another code flow?
+                if !check_already_in_function_above(program, addr) {
+                    result_set.add(addr);
+                }
+            }
+            st.code_locations.add(addr);
+        }
+        CuKind::DefinedData | CuKind::None => {}
+    }
+
+    // :331 — make the function non-returning.
+    if let Some(entry) = func_containing {
+        if a.noreturn {
+            program.noreturn_functions.insert((entry.space.0, entry.offset));
+        }
+        // :335 `CreateThunkFunctionCmd` — no pattern file in the tree sets `thunk="…"`, and
+        // mosura has no thunk model, so this arm is recorded rather than executed.
+        let _ = a.is_thunk;
+    }
+
+    // :342 — the pattern wants a name here, make it.
+    if let Some(label) = &a.label {
+        set_function_label(program, addr, label);
+    }
+}
+
+/// `setFunctionLabel(program, addr, labelStr)` (:354).
+fn set_function_label(program: &mut Program, addr: Address, label: &str) {
+    if program.symbol_table.symbols_at(addr).any(|s| s.name().contains(label)) {
+        return;
+    }
+    program.symbol_table.add_with_primary(addr, label, SymbolType::Label, true);
+}
+
+/// `checkAfterName(program, addr)` (:383) — "check that this pattern occurs after something
+/// defined".
+fn check_after_name(a: &FunctionStartAction, program: &Program, addr: Address) -> bool {
+    let Some(name) = &a.after_name else { return true };
+    if addr.offset == 0 {
+        return true; // `addr.previous() == null`
+    }
+    let addr_to_check = Address::new(addr.space, addr.offset - 1);
+    // :389 — the previous address is not in memory, so `addr` must be at the start of a block.
+    if !program.memory.contains(addr_to_check) {
+        return true;
+    }
+    // :394 — or this is the start of a defined memory block.
+    match program.memory.block_at(addr) {
+        None => return true,
+        Some(b) => {
+            if b.start() == addr {
+                return true;
+            }
+        }
+    }
+
+    if name.starts_with("func") {
+        // :403 — if this place is already in a function, we shouldn't start one.
+        let Some(func_above) = function_above(program, addr) else { return false };
+        !check_already_in_function_above_with(program, addr, Some(func_above))
+    } else if name.starts_with("inst") {
+        matches!(code_unit_containing(program, addr_to_check), CuKind::Instruction)
+    } else if name.starts_with("data") {
+        matches!(code_unit_containing(program, addr_to_check), CuKind::DefinedData)
+    } else if name.starts_with("ptr") {
+        pure_data_references_only(program, addr)
+    } else if name.starts_with("def") {
+        match code_unit_containing(program, addr_to_check) {
+            CuKind::Instruction => !check_already_in_function_above(program, addr),
+            CuKind::DefinedData => true,
+            _ => pure_data_references_only(program, addr),
+        }
+    } else {
+        true
+    }
+}
+
+/// `pureDataReferencesOnly(program, addrToCheck)` (:458).
+fn pure_data_references_only(program: &Program, addr: Address) -> bool {
+    let mut any = false;
+    for r in program.reference_manager.refs_to(addr) {
+        any = true;
+        let t = r.ref_type;
+        if t.is_flow() {
+            return false;
+        }
+        if matches!(t, RefType::Read | RefType::Write) {
+            return false;
+        }
+        if t == RefType::Data {
+            continue;
+        }
+        return false;
+    }
+    any
+}
+
+/// `getFunctionAbove(program, addr)` (:540) — the function containing `addr - 1`.
+fn function_above(program: &Program, addr: Address) -> Option<Address> {
+    if addr.offset == 0 {
+        return None;
+    }
+    program
+        .function_manager
+        .function_containing(Address::new(addr.space, addr.offset - 1))
+        .map(|f| f.entry_point())
+}
+
+/// `checkAlreadyInFunctionAbove(program, addr)` (:485).
+fn check_already_in_function_above(program: &Program, addr: Address) -> bool {
+    let above = function_above(program, addr);
+    check_already_in_function_above_with(program, addr, above)
+}
+
+/// `checkAlreadyInFunctionAbove(program, addr, funcAbove)` (:494) — true when `addr` is already
+/// part of the function immediately above it. Being in a *different* function is deliberately
+/// not enough: that is the shape of a shared return, i.e. a genuine separate function.
+fn check_already_in_function_above_with(
+    program: &Program,
+    addr: Address,
+    func_above: Option<Address>,
+) -> bool {
+    if addr.offset == 0 {
+        return false; // `addrBefore == null`
+    }
+    let addr_before = Address::new(addr.space, addr.offset - 1);
+    if let Some(above) = func_above {
+        return program
+            .function_manager
+            .function_containing(addr)
+            .is_some_and(|f| f.entry_point() == above);
+    }
+
+    // :512 — no function above, but an instruction that falls through into here makes this part
+    // of that flow, not a start.
+    if let Some((start, len)) = program.listing.code_unit_containing(addr_before, MAX_CODE_UNIT_LEN)
+    {
+        if matches!(program.listing.code_unit_at(start), Some(CodeUnit::Instruction { .. }))
+            && start.offset + len == addr.offset
+        {
+            return true;
+        }
+    }
+    // :517 — any reference to here other than a pure (non-read/write) data reference means some
+    // other flow already owns this location.
+    for r in program.reference_manager.refs_to(addr) {
+        let t = r.ref_type;
+        if t.is_data() && !matches!(t, RefType::Read | RefType::Write) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------------------------
+// Function creation (CreateFunctionCmd)
+// ---------------------------------------------------------------------------------------------
+
+/// `CreateFunctionCmd.applyTo` (CreateFunctionCmd.java:148) for a set of entry points, with
+/// `findEntryPoint=false`.
+///
+/// The ascending iteration (:158 `origEntries.getAddresses(true)`) and the
+/// `OverlappingFunctionException` at :380 together give a property this port depends on: when two
+/// patterns fire inside one function — the true entry and, a few bytes in, the `push ebp;
+/// mov ebp,esp` the Watcom save-first prologue also contains — the LOWER address is created first,
+/// its computed body covers the higher one, and the second creation is REFUSED because Ghidra's
+/// listing forbids overlapping function bodies. mosura's `FunctionManager` has no such invariant,
+/// so the rule is applied explicitly here: an entry that falls inside a body created earlier in
+/// this same command is skipped.
+fn create_functions(program: &mut Program, entries: &AddressSet, sched: &mut Scheduling) {
+    let ram = program.default_space;
+    let starts: Vec<u64> =
+        entries.ranges().flat_map(|r| r.min..=r.max).collect::<BTreeSet<u64>>().into_iter().collect();
+    let mut known: BTreeSet<u64> =
+        program.function_manager.functions().map(|f| f.entry_point().offset).collect();
+    let mut created = AddressSet::new();
+    let mut bodies = AddressSet::new();
+    for off in starts {
+        let addr = Address::new(ram, off);
+        if !program.memory.contains(addr) {
+            continue;
+        }
+        // The overlapping-body refusal (see the doc comment).
+        if bodies.contains(addr) {
+            continue;
+        }
+        // Only a function this command actually creates counts as created. Ghidra's command
+        // raises `functionAdded` per created function (`CreateFunctionCmd.applyTo` counts
+        // `didCreate`); reporting an already-existing entry as new instead re-triggers every
+        // FUNCTION analyzer, whose `codeDefined` re-triggers this analyzer, forever.
+        if program.function_manager.function_at(addr).is_some() {
+            known.insert(off);
+            bodies = bodies.union(&flow_body(program, addr, &known));
+            continue;
+        }
+        let name = format!("FUN_{off:08x}");
+        program.function_manager.create_function(addr, &name, AddressSet::new());
+        if !program.symbol_table.has_symbol_at(addr) {
+            program.symbol_table.add_with_primary(addr, &name, SymbolType::Function, true);
+        }
+        known.insert(off);
+        bodies = bodies.union(&flow_body(program, addr, &known));
+        created.add(addr);
+    }
+    if !created.is_empty() {
+        // The new functions still need disassembly + the follow-on function analyzers, which is
+        // what `functionDefined` drives (mosura's `FunctionCreator` re-seeds the disassembler).
+        sched.function_defined(&created);
+    }
+}
+
+/// The address set an entry's flow covers — `CreateFunctionCmd`'s automatic body computation,
+/// using the same intra-function walk as
+/// [`compute_function_bodies`](super::compute_function_bodies): fall-through plus branch targets,
+/// never calls, stopping at another function's entry.
+fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> AddressSet {
+    use crate::decompile::opcode::OpCode;
+    let mut body = AddressSet::new();
+    // `load_cached`, not `load`: the uncached one re-reads and re-parses the whole `.sla` on
+    // every call, and this runs once per proposed function start.
+    let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) else {
+        body.add(entry);
+        return body;
+    };
+    let ram = program.default_space;
+    let mut visited: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut work = vec![entry.offset];
+    while let Some(a) = work.pop() {
+        if !visited.insert(a) {
+            continue;
+        }
+        if a != entry.offset && entries.contains(&a) {
+            continue;
+        }
+        let window = program.memory.read_window(Address::new(ram, a), MAX_CODE_UNIT_LEN as usize);
+        let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else { continue };
+        let ilen = insn.bytes.len() as u64;
+        if ilen == 0 {
+            continue;
+        }
+        body.add_range(ram, a, a + ilen - 1);
+        let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
+        let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+        for op in &insn.ops {
+            if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
+                if let Some(crate::sleigh::pcode::PArg::Var(v)) = op.ins.first() {
+                    if v.space == "ram" && v.offset != a {
+                        work.push(v.offset);
+                    }
+                }
+            }
+        }
+        if falls {
+            work.push(a + ilen);
+        }
+    }
+    if body.is_empty() {
+        body.add(entry);
+    }
+    body
+}
+
+/// Bring every function's body up to date before asking `getFunctionContaining`.
+///
+/// **Why this exists.** In Ghidra a function's body is computed when the function is created and
+/// is therefore always current; `FunctionStartAction.applyActionToSet` (:302) and
+/// `PossibleDelayedFunctionCreator` (:1007) both lean on `getFunctionContaining` to refuse a
+/// proposal that lands *inside* a function that already exists — which is what stops the
+/// `push ebp; mov ebp,esp` inside a Watcom save-first prologue from becoming a second entry a few
+/// bytes into every such function. mosura computes bodies once, after the whole worklist has
+/// converged (`analyze` -> `compute_function_bodies`), so during analysis every body is EMPTY and
+/// that guard silently never fires.
+///
+/// Measured, not assumed. On `fnpattern.watcom-x86-32`, Ghidra creates one extra entry
+/// (`08048136`, the orphan's `55`) and refuses `lead_fn_+5`, `trail_fn_+5` and `main_+5` because
+/// each is inside an existing function; mosura created all four. On `dispatch.gcc-m68k` and
+/// `tables.gcc-m68k` Ghidra's function set is IDENTICAL with the Function Start Search analyzers
+/// on and off, while mosura gained 3 and 8 entries. (`compgoto.gcc-m68k` is the case where Ghidra
+/// really does gain three — 2 functions with the search off, 5 with it on — so that one is a
+/// Ghidra property, not a port defect.)
+fn refresh_function_bodies(program: &mut Program) {
+    if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
+        super::compute_function_bodies(spec, ctx, program);
+    }
+}
+
+/// `PossibleDelayedFunctionCreator` (FunctionStartAnalyzer.java:987) — "one time analyzer used to
+/// delay function creation until disassembly has settled". A `possiblefuncstart` match only
+/// *proposes* a start; this pass, running after data analysis, drops any proposal that turned out
+/// to be referenced conditionally or to lie inside a function that meanwhile appeared.
+pub struct PossibleDelayedFunctionCreator;
+
+impl PossibleDelayedFunctionCreator {
+    pub const NAME: &'static str = "Function Start Search delayed";
+}
+
+impl Analyzer for PossibleDelayedFunctionCreator {
+    fn name(&self) -> &str {
+        PossibleDelayedFunctionCreator::NAME
+    }
+    fn analysis_type(&self) -> AnalyzerType {
+        // Ghidra schedules this one explicitly (`scheduleOneTimeAnalysis`, :854) rather than
+        // subscribing it to a program-change channel.
+        AnalyzerType::OneTime
+    }
+    fn priority(&self) -> AnalysisPriority {
+        // `AnalysisPriority.DATA_ANALYSIS.after()` (:990).
+        AnalysisPriority::DATA.after()
+    }
+
+    /// `added(addedProgram, addedSet, …)` (:994).
+    fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
+        refresh_function_bodies(program);
+        let ram = program.default_space;
+        let mut function_starts = AddressSet::new();
+        for off in set.ranges().flat_map(|r| r.min..=r.max).collect::<BTreeSet<u64>>() {
+            let address = Address::new(ram, off);
+            // :1001 — if there are any conditional references, then this can't be a function start.
+            if program.reference_manager.refs_to(address).any(|r| {
+                matches!(r.ref_type, RefType::ConditionalJump | RefType::ConditionalCall)
+            }) {
+                continue;
+            }
+            // :1006 — a function containing the potential start appeared during analysis.
+            if let Some(f) = program.function_manager.function_containing(address) {
+                let _ = f; // (Ghidra bookmarks the overlap; mosura has no bookmark model.)
+                continue;
+            }
+            function_starts.add(address);
+        }
+        // :1022 — `new CreateFunctionCmd(functionStarts, false).applyTo(...)`.
+        if !function_starts.is_empty() {
+            create_functions(program, &function_starts, sched);
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_constraint_tokenises_and_wildcards() {
+        assert!(language_matches("x86:LE:32:default", "x86:LE:32:default"));
+        assert!(!language_matches("x86:LE:64:default", "x86:LE:32:default"));
+        assert!(language_matches("x86:LE:32:*", "x86:LE:32:default"));
+        // Token counts must agree — a prefix is not a match.
+        assert!(!language_matches("x86:LE:32", "x86:LE:32:default"));
+    }
+
+    /// The pattern-file lookup must resolve for the two configurations this track turns on:
+    /// x86-32 + `gcc` (the faithful Ghidra mapping, which the ground-truth Watcom ELF column
+    /// lands on) and x86-32 + `watcom` (mosura's own mapping, which WAR2 lands on).
+    #[test]
+    fn pattern_files_resolve_for_x86_32() {
+        use crate::decompile::space::{SpaceKind, SpaceManager};
+        let mk = |cspec: &str| {
+            let mut spaces = SpaceManager::standard();
+            let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+            Program::new(
+                spaces,
+                ram,
+                "x86:LE:32:default",
+                cspec,
+                Address::new(ram, 0x1000),
+                false,
+                32,
+            )
+        };
+        let gcc = find_pattern_files(&mk("gcc"), "patternconstraints.xml");
+        assert_eq!(
+            gcc.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>(),
+            vec!["x86gcc_patterns.xml"],
+            "the faithful (x86:LE:32:default, gcc) -> x86gcc_patterns.xml mapping must resolve"
+        );
+        let watcom = find_pattern_files(&mk("watcom"), "patternconstraints.xml");
+        assert_eq!(
+            watcom
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec!["x86watcom_patterns.xml"],
+            "mosura's beyond-Ghidra (x86:LE:32:default, watcom) mapping must resolve"
+        );
+    }
+
+    /// Every function-start address a pattern file proposes for one byte sequence.
+    fn marks(file: &std::path::Path, bytes: &[u8]) -> BTreeSet<u64> {
+        let text = std::fs::read_to_string(file).unwrap();
+        let mut factory = Factory::default();
+        let mut pats: Vec<Pattern<Action>> = Vec::new();
+        read_patterns(&text, &mut pats, &mut factory).unwrap();
+        let mut seqs: Vec<DittedBitSequence> = pats.iter().map(|p| p.seq.clone()).collect();
+        let machine = SequenceSearchState::build_state_machine(&mut seqs);
+        let mut hits = Vec::new();
+        machine.apply(bytes, bytes.len(), &mut hits);
+        hits.iter()
+            .filter(|h| {
+                pats[h.seq_index].actions.iter().any(|a| {
+                    matches!(a, Action::FunctionStart(_) | Action::PossibleFunctionStart(_))
+                })
+            })
+            .map(|h| h.offset + pats[h.seq_index].mark_offset as u64)
+            .collect()
+    }
+
+    /// THE PROLOGUE SHIFT, and the property the Watcom pattern set exists for.
+    ///
+    /// The bytes are WAR2's `FUN_00016ed4` verbatim (`53 51 52 56 57 55 89 e5 83 ec 04 …` — push
+    /// ebx/ecx/edx/esi/edi, push ebp, mov ebp,esp, sub esp,4), preceded by the previous function's
+    /// `ret`. Watcom's save-first prologue puts a run of register saves BEFORE the frame setup;
+    /// `x86gcc_patterns.xml`'s `0x5589e583ec` anchors at the `55`, i.e. **five bytes past the true
+    /// entry**. Verified against the real image for all 104 shifted entries Ghidra reports on
+    /// WAR2: 104/104, distances 1-5, no exceptions.
+    ///
+    /// The assertion is a differential on the two real, committed pattern files — it fails if the
+    /// Watcom file loses its push-run family, or if the mark lands anywhere but the first push.
+    #[test]
+    fn save_first_prologue_marks_the_first_push() {
+        let bytes = [
+            0xc3, // the previous function's RET
+            0x53, 0x51, 0x52, 0x56, 0x57, // push ebx/ecx/edx/esi/edi   <- the true entry, +1
+            0x55, 0x89, 0xe5, // push ebp ; mov ebp,esp                 <- +6
+            0x83, 0xec, 0x04, // sub esp,4
+            0x89, 0xc3, 0x31, 0xd2, // mov ebx,eax ; xor edx,edx
+        ];
+        let gcc = crate::paths::processors_dir().join("x86/data/patterns/x86gcc_patterns.xml");
+        let watcom = crate::paths::specs_dir().join("patterns/x86watcom_patterns.xml");
+
+        let g = marks(&gcc, &bytes);
+        assert!(
+            !g.contains(&1),
+            "x86gcc_patterns.xml unexpectedly marks the true entry — the whole premise of the \
+             Watcom pattern set is that it does not"
+        );
+        assert!(
+            g.contains(&6),
+            "x86gcc_patterns.xml must anchor at the `55` (5 bytes late); got {g:?}"
+        );
+
+        let w = marks(&watcom, &bytes);
+        assert!(
+            w.contains(&1),
+            "the Watcom pattern set must mark the FIRST PUSH — the true entry; got {w:?}"
+        );
+        assert_eq!(
+            w.iter().copied().min(),
+            Some(1),
+            "and it must be the LOWEST proposal, because `create_functions` resolves overlapping \
+             proposals in favour of the lowest address; got {w:?}"
+        );
+    }
+
+    /// The overlap rule that makes a family of shifted-by-one push-run patterns safe to state.
+    /// A 5-push prologue matches the 5-push pattern at the entry, the 4-push pattern one byte in,
+    /// and so on; `CreateFunctionCmd` iterates ascending and Ghidra's listing refuses a function
+    /// whose body overlaps an existing one, so exactly one function is created, at the lowest
+    /// address. Without this, every save-first function would come back as up to five functions.
+    #[test]
+    fn create_functions_keeps_only_the_lowest_of_overlapping_entries() {
+        use crate::analysis::manager::Scheduling;
+        use crate::decompile::space::{SpaceKind, SpaceManager};
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return;
+        }
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p =
+            Program::new(spaces, ram, "x86:LE:32:default", "watcom", base, false, 32);
+        // push ebx; push ecx; push ebp; mov ebp,esp; sub esp,4; mov ebp,esp... ; leave; ret
+        let code =
+            vec![0x53, 0x51, 0x55, 0x89, 0xe5, 0x83, 0xec, 0x04, 0x31, 0xc0, 0xc9, 0xc3];
+        p.memory.add_block(".text", base, code.len() as u64, true, false, true, Some(code));
+
+        let mut entries = AddressSet::new();
+        entries.add(base); // the true entry
+        entries.add(Address::new(ram, 0x40_1001)); // the 1-push pattern, one byte in
+        entries.add(Address::new(ram, 0x40_1002)); // the frame-first pattern, two bytes in
+        let mut sched = Scheduling::default();
+        create_functions(&mut p, &entries, &mut sched);
+
+        let got: Vec<u64> =
+            p.function_manager.functions().map(|f| f.entry_point().offset).collect();
+        assert_eq!(got, vec![0x40_1000], "only the lowest entry may become a function");
+    }
+}

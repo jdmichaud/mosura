@@ -370,6 +370,12 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite
   # under test (src/tailjmp.c property 1).
   build_watcom tailjmp ""
+  # fnpattern: the FUNCTION START SEARCH repro (a function reachable by NOTHING — no call, no
+  # jump, no stored pointer — so only its prologue BYTE PATTERN can find it). `-of+` (generate
+  # traceable stack frames) is load-bearing: it is what makes wcc386 emit the FRAME-FIRST prologue
+  # `push ebp; mov ebp,esp; …` that the resolved pattern set anchors on exactly. See
+  # src/fnpattern.c property 1 for the two prologue shapes and why this one is the gateable one.
+  build_watcom fnpattern "-of+ -oc"
 else
   log "SKIP x86-32 Watcom — wcc386 absent at $WATROOT/binl (documented gap)"
 fi

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mosura's own pattern-constraints module (BEYOND-GHIDRA — see x86watcom_patterns.xml's header
+  and specs/patterns/README.md).
+
+  Ghidra merges the `patternconstraints.xml` of EVERY module that has a `data/patterns`
+  subdirectory into one decision tree (Patterns.java:42-55), so adding a module dir is Ghidra's
+  own extension point rather than a modification of its files. This one contributes exactly one
+  node: (x86:LE:32:default, watcom) -> x86watcom_patterns.xml. Ghidra ships no Watcom compiler
+  spec at all, so this constraint can never collide with one of its nodes
+  (`DecisionNode.getOrCreateNodeForContraint` reuses a node only for an EQUAL constraint, and
+  `setProperty` throws on a second value for the same node).
+-->
+<patternconstraints>
+
+  <language id="x86:LE:32:default">
+    <compiler id="watcom">
+      <patternfile>x86watcom_patterns.xml</patternfile>
+    </compiler>
+  </language>
+
+</patternconstraints>

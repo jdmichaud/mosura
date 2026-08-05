@@ -11,8 +11,9 @@ sibling checkout is absent (SLEIGH-gated tests used to `return` early without ta
   `.slaspec` sources (the compile `setup-ghidra.sh` performs); everything else is byte-verbatim
   from the checkout.
 - **Contents**: `Processors/{x86,AARCH64,RISCV,68000,Z80}/data/languages/` (the six language
-  families mosura loads: specs + compiled `.sla`) and `datatests/` (the decompiler conformance
-  fixtures). `LICENSE`/`NOTICE` are Ghidra's own (Apache-2.0) — this subset is redistributed
+  families mosura loads: specs + compiled `.sla`), `Processors/{x86,AARCH64,RISCV,68000}/data/patterns/`
+  (the **Function Start Search** byte patterns — Z80 ships none), and `datatests/` (the decompiler
+  conformance fixtures). `LICENSE`/`NOTICE` are Ghidra's own (Apache-2.0) — this subset is redistributed
   under that license, unmodified.
 - **Resolution order** (`crates/mosura/src/paths.rs`): `GHIDRA_SRC` env → the sibling checkout
   (`<workspace>/../ghidra`) → this vendored copy. A developer with a checkout sees the checkout;

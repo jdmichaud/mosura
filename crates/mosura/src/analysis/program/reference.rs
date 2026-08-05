@@ -63,6 +63,13 @@ impl RefType {
     pub fn is_flow(self) -> bool {
         !matches!(self, RefType::Data | RefType::Read | RefType::Write | RefType::Param)
     }
+    /// Ghidra `RefType.isData()` (`DataRefType.isData`, DataRefType.java:41) — true for the
+    /// `DataRefType` family. `PARAM` is one (`RefType.java:387` constructs it as a `DataRefType`
+    /// with no read/write flags), which is why it is here and not merely "not flow": `INDIRECTION`
+    /// is neither data nor flow in Ghidra.
+    pub fn is_data(self) -> bool {
+        matches!(self, RefType::Data | RefType::Read | RefType::Write | RefType::Param)
+    }
     /// Ghidra `RefType.isJump()` — a jump-class flow (the family `OperandReferenceAnalyzer`
     /// re-types on an external jump).
     pub fn is_jump_like(self) -> bool {

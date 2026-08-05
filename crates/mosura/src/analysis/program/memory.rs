@@ -117,6 +117,18 @@ impl Memory {
     /// Read up to `len` consecutive initialized bytes starting at `addr`, stopping at the
     /// first uncovered/uninitialized byte (a decode window for the disassembler).
     pub fn read_window(&self, addr: Address, len: usize) -> Vec<u8> {
+        // Fast path: the whole window lies inside one initialized block, so it is a slice copy.
+        // The byte-at-a-time loop below is a per-byte block lookup, which is fine for a 16-byte
+        // decode window and quadratic for the block-sized reads the byte-pattern searcher makes.
+        if let Some(b) = self.block_at(addr) {
+            if let Some(bytes) = b.bytes.as_ref() {
+                let start = (addr.offset - b.start.offset) as usize;
+                let end = start.saturating_add(len).min(bytes.len());
+                if start <= end {
+                    return bytes[start..end].to_vec();
+                }
+            }
+        }
         let mut out = Vec::with_capacity(len);
         for i in 0..len as u64 {
             match self.byte_at(Address::new(addr.space, addr.offset + i)) {

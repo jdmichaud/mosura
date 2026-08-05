@@ -8,6 +8,7 @@ pub mod address_table;
 pub mod demangler;
 pub mod eh_frame;
 pub mod external_jump;
+pub mod function_start;
 pub mod noreturn;
 pub mod relocation_seed;
 pub mod shared_return;
@@ -80,6 +81,13 @@ impl Analyzer for Disassembler {
         // Seeds are the start of each pending range (function/branch entry addresses).
         let mut work: Vec<u64> = set.ranges().map(|r| r.min).collect();
         let mut call_targets = AddressSet::new();
+        // The extent this walk actually laid down. Ghidra's `codeDefined` event carries the whole
+        // newly-disassembled address set, which is what an INSTRUCTION analyzer's "added" set is
+        // (`AutoAnalysisManager.codeDefined`); mosura previously only ever notified *seed*
+        // addresses, so an INSTRUCTION analyzer saw entry points rather than code. The
+        // "Function Start Search After Code" pass re-checks patterns whose pre-requisite is
+        // "follows an instruction", so it needs the real extent.
+        let mut decoded = AddressSet::new();
         let mut decoded_any = false;
         // Ghidra `Disassembler.getInitializedMemory` (Disassembler.java:387) — the walk's
         // universe. Note `restrictToExecuteMemory` defaults to **false** (:384), so it is
@@ -184,6 +192,7 @@ impl Analyzer for Disassembler {
                 continue;
             }
             program.listing.define(addr, CodeUnit::Instruction { length: ilen as u32 });
+            decoded.add_range(ram, a, a + ilen - 1);
             decoded_any = true;
             if falls {
                 // :1140 (`endBlockEarly`) — do not follow fall-through out of initialized memory.
@@ -195,6 +204,13 @@ impl Analyzer for Disassembler {
         }
         if !call_targets.is_empty() {
             sched.function_defined(&call_targets);
+        }
+        // Ghidra's disassembly analyzer is itself an INSTRUCTION analyzer, so it is re-notified by
+        // its own output too; a second pass over already-decoded addresses skips every one of them
+        // at the `code_unit_containing` guard above and adds nothing to `decoded`, which is what
+        // terminates the loop.
+        if !decoded.is_empty() {
+            sched.code_defined(&decoded);
         }
         decoded_any
     }

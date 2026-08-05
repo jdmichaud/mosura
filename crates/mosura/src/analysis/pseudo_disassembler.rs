@@ -31,7 +31,7 @@ use crate::sleigh::pcode::PArg;
 use crate::sleigh::Instruction;
 
 /// `PseudoDisassembler.DEFAULT_MAX_INSTRUCTIONS` (:56).
-const DEFAULT_MAX_INSTRUCTIONS: usize = 4000;
+pub const DEFAULT_MAX_INSTRUCTIONS: usize = 4000;
 
 /// `PseudoDisassembler.MAX_REPEAT_BYTES_LIMIT` (:68) — "only let 4 consecutive instructions
 /// with the same repeated bytes".
@@ -93,28 +93,33 @@ impl RepeatInstructionByteTracker {
 
 /// Ghidra `PseudoDisassembler`, bound to one program's language tables.
 pub struct PseudoDisassembler {
-    spec: Spec,
-    ctx: Vec<u32>,
+    spec: &'static Spec,
+    ctx: &'static [u32],
     ram: SpaceId,
     /// `setRespectExecuteFlag` (:113). Ghidra's field default is `false`; every caller in the
     /// address-table path leaves it at the default, so the execute-set checks at :851 and :962
     /// are inert there. Kept as a field so the flag, and the code it gates, stay visible.
     respect_execute_flag: bool,
-    /// `setMaxInstructions` (:96).
-    max_instructions: usize,
+    /// `setMaxInstructions` (:96). Ghidra's is a mutable field on an object its callers construct
+    /// fresh per check (`new PseudoDisassembler(program)` at FunctionStartAnalyzer.java:264);
+    /// mosura's analyzers hold one instance behind `&self`, so the mutability is a `Cell` and
+    /// callers set it explicitly for every check rather than relying on a fresh default.
+    max_instructions: std::cell::Cell<usize>,
 }
 
 impl PseudoDisassembler {
     /// Build the pseudo-disassembler, or `None` if the SLEIGH tables for the program's
     /// language are unavailable.
     pub fn for_program(program: &Program) -> Option<PseudoDisassembler> {
-        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        // `load_cached` (Ghidra `SleighLanguageProvider`'s language map): the uncached `load`
+        // re-reads and re-parses the whole `.sla`, and several analyzers construct one of these.
+        let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
         Some(PseudoDisassembler {
             spec,
             ctx,
             ram: program.default_space,
             respect_execute_flag: false,
-            max_instructions: DEFAULT_MAX_INSTRUCTIONS,
+            max_instructions: std::cell::Cell::new(DEFAULT_MAX_INSTRUCTIONS),
         })
     }
 
@@ -122,10 +127,17 @@ impl PseudoDisassembler {
         self.respect_execute_flag = respect;
     }
 
+    /// `setMaxInstructions(maxNumInstructions)` (:96) — stop the walk after this many
+    /// instructions. `FunctionStartAnalyzer`'s `validcodemax` sets it (FunctionStartAnalyzer.java
+    /// :272, :278) so a pattern's validity check costs a bounded decode, not a whole subroutine.
+    pub fn set_max_instructions(&self, max: usize) {
+        self.max_instructions.set(max);
+    }
+
     /// Decode one instruction without committing it (`PseudoDisassembler.disassemble`, :146).
     fn disassemble(&self, program: &Program, addr: Address) -> Option<Instruction> {
         let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        let insn = self.spec.disassemble_ctx(&window, addr.offset, &self.ctx).into_iter().next()?;
+        let insn = self.spec.disassemble_ctx(&window, addr.offset, self.ctx).into_iter().next()?;
         if insn.bytes.is_empty() {
             return None;
         }
@@ -154,28 +166,38 @@ impl PseudoDisassembler {
         entry_point: Address,
         allow_existing_code: bool,
     ) -> bool {
-        self.check_valid_subroutine(program, entry_point, allow_existing_code, true)
+        self.check_valid_subroutine(program, entry_point, allow_existing_code, true, false).0
     }
 
     /// `isValidCode(entryPoint)` (:372) — "check that this entry point leads to valid code:
     /// may have multiple entries into the body; the intent is that it be valid code, not nice
     /// code; hit no bad instructions". `checkValidSubroutine(entryPoint, true, false)`.
     pub fn is_valid_code(&self, program: &Program, entry_point: Address) -> bool {
-        self.check_valid_subroutine(program, entry_point, true, false)
+        self.check_valid_subroutine(program, entry_point, true, false, false).0
     }
 
     /// `checkValidSubroutine(entryPoint, procContext, allowExistingInstructions, mustTerminate,
-    /// requireContiguous=false)` (:650).
-    fn check_valid_subroutine(
+    /// requireContiguous)` (:650), returning the verdict together with
+    /// `getLastCheckValidInstructionCount()` (:103) — "the last number of disassembled
+    /// instructions, or the number of initial *contiguous* instructions if requireContiguous".
+    /// `FunctionStartAnalyzer` needs both: a `validcode="N"` pattern demands the walk be valid
+    /// *and* to have produced at least N instructions (FunctionStartAnalyzer.java:281-285).
+    pub fn check_valid_subroutine(
         &self,
         program: &Program,
         entry_point: Address,
         allow_existing_instructions: bool,
         must_terminate: bool,
-    ) -> bool {
+        require_contiguous: bool,
+    ) -> (bool, usize) {
+        // `contiguousSet` (:653) — with `requireContiguous` only instructions that extend the
+        // FIRST range are counted, so the set stays a single range and `(min,max)` models it
+        // exactly; without it the guard is vacuous and the count is simply every instruction.
+        let mut contiguous: Option<(u64, u64)> = None;
+        let mut count: usize = 0;
         // `if (!entryPoint.isMemoryAddress()) return false;`
         if !program.memory.contains(entry_point) {
-            return false;
+            return (false, 0);
         }
         let mut body = AddressSet::new();
         let mut instr_starts = AddressSet::new();
@@ -192,12 +214,12 @@ impl PseudoDisassembler {
         // (`memory.getLong(entryPoint) == 0`; a short read is the MemoryAccessException arm).
         let head = program.memory.read_window(entry_point, 8);
         if head.len() < 8 || head.iter().all(|&b| b == 0) {
-            return false;
+            return (false, count);
         }
 
         let mut repeat_tracker = RepeatInstructionByteTracker::new(MAX_REPEAT_BYTES_LIMIT);
 
-        for _ in 0..self.max_instructions {
+        for _ in 0..self.max_instructions.get() {
             let Some(t) = target else { break };
 
             let Some(insn) = self.disassemble(program, t) else {
@@ -206,7 +228,7 @@ impl PseudoDisassembler {
                 let block = program.memory.block_at(t);
                 match block {
                     Some(b) if !b.is_initialized() && b.name() == "EXTERNAL" => {}
-                    _ => return false,
+                    _ => return (false, count),
                 }
                 target_list.retain(|a| *a != t);
                 target = next_target(&body, &mut untried_target_list);
@@ -214,13 +236,27 @@ impl PseudoDisassembler {
                 continue;
             };
 
-            // ":726 — check if we are getting into bad instruction runs"
-            if repeat_tracker.exceeds_repeat_byte_pattern(&insn) {
-                return false;
-            }
-
             let ilen = insn.bytes.len() as u64;
             let max_addr = Address::new(self.ram, t.offset + ilen - 1);
+            // ":719 — count valid instructions encountered; if checking contiguous, only count
+            // one that merges into the first range (`firstRange.max.isSuccessor(target)`).
+            let extends = match contiguous {
+                None => true,
+                Some((_, mx)) => !require_contiguous || mx + 1 == t.offset,
+            };
+            if extends {
+                contiguous = Some(match contiguous {
+                    None => (t.offset, max_addr.offset),
+                    Some((mn, mx)) => (mn.min(t.offset), mx.max(max_addr.offset)),
+                });
+                count += 1;
+            }
+
+            // ":726 — check if we are getting into bad instruction runs"
+            if repeat_tracker.exceeds_repeat_byte_pattern(&insn) {
+                return (false, count);
+            }
+
             let next_addr = Address::new(self.ram, t.offset + ilen);
             body.add_range(self.ram, t.offset, max_addr.offset);
             instr_starts.add(t);
@@ -268,7 +304,7 @@ impl PseudoDisassembler {
                         // ":806 — if the jump target is the same as the fall-through.
                         // (Instructions with delay slots are allowed; x86 has none.)
                         if fall_thru == Some(*a) {
-                            return false;
+                            return (false, count);
                         }
                         // ":812 — if this code jumps to an existing function, allow it.
                         if program.function_manager.function_at(*a).is_some() {
@@ -307,7 +343,7 @@ impl PseudoDisassembler {
                     if self.respect_execute_flag && !exec_set.is_empty() && !exec_set.contains(*f) {
                         if let Some(block) = program.memory.block_at(*f) {
                             if block.is_read() && block.name() != "EXTERNAL" {
-                                return false;
+                                return (false, count);
                             }
                         }
                     }
@@ -324,16 +360,16 @@ impl PseudoDisassembler {
         for t in target_list {
             if body.contains(t) {
                 if !instr_starts.contains(t) {
-                    return false;
+                    return (false, count);
                 }
-            } else if self.max_instructions == 0 {
+            } else if self.max_instructions.get() == 0 {
                 remaining.push(t);
             }
         }
 
         // ":899 — if the target list is empty, and we are at a terminal instruction.
         if remaining.is_empty() && (did_terminate || !must_terminate || did_call_valid_subroutine) {
-            return self.check_pseudo_body(
+            let ok = self.check_pseudo_body(
                 program,
                 entry_point,
                 &body,
@@ -342,8 +378,9 @@ impl PseudoDisassembler {
                 did_call_valid_subroutine,
                 &exec_set,
             );
+            return (ok, count);
         }
-        false
+        (false, count)
     }
 
     /// `checkPseudoBody` (:953) — the body of the followed flow must not break any rules.

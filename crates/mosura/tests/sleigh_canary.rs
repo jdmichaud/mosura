@@ -34,6 +34,60 @@ fn all_used_languages_load() {
     );
 }
 
+/// The **Function Start Search** pattern files must resolve too, and this is the test that makes
+/// their absence a red X rather than a silent no-op.
+///
+/// `FunctionStartAnalyzer::for_program` returns `None` when no pattern file matches the program's
+/// `(language, compiler)` — correct behaviour for a language Ghidra ships no patterns for, and
+/// indistinguishable from "the pattern files went missing". A missing `data/patterns` directory
+/// would therefore disable byte-pattern function discovery entirely while every other test stayed
+/// green: the exact failure mode this file exists for.
+#[test]
+fn function_start_pattern_files_resolve() {
+    let dir = paths::processors_dir();
+    // Every (constraints file, referenced pattern file) the x86 module declares must exist. x86 is
+    // the module this port's two live configurations use; the others are checked for presence only.
+    for (proc_name, constraints) in [
+        ("x86", "patternconstraints.xml"),
+        ("x86", "prepatternconstraints.xml"),
+        ("AARCH64", "patternconstraints.xml"),
+        ("RISCV", "patternconstraints.xml"),
+        ("68000", "patternconstraints.xml"),
+    ] {
+        let pdir = dir.join(proc_name).join("data/patterns");
+        let cpath = pdir.join(constraints);
+        let text = std::fs::read_to_string(&cpath).unwrap_or_else(|e| {
+            panic!(
+                "Function Start Search constraints {} unreadable ({e}). processors_dir()={} — \
+                 neither the sibling Ghidra checkout nor third_party/ghidra resolved its \
+                 data/patterns. Byte-pattern function discovery is SILENTLY OFF right now.",
+                cpath.display(),
+                dir.display()
+            )
+        });
+        let mut referenced = 0;
+        for line in text.lines() {
+            let Some(rest) = line.split("<patternfile>").nth(1) else { continue };
+            let Some(name) = rest.split("</patternfile>").next() else { continue };
+            let f = pdir.join(name.trim());
+            assert!(f.is_file(), "{} names a missing pattern file {}", cpath.display(), f.display());
+            referenced += 1;
+        }
+        assert!(referenced > 0, "{} references no pattern file", cpath.display());
+    }
+
+    // mosura's own (beyond-Ghidra) Watcom module — the one WAR2 lands on. See specs/patterns/.
+    let mosura = paths::specs_dir().join("patterns");
+    for f in ["patternconstraints.xml", "x86watcom_patterns.xml"] {
+        assert!(
+            mosura.join(f).is_file(),
+            "mosura's Watcom pattern module is missing {} — a Watcom binary would silently get \
+             NO function-start patterns at all",
+            mosura.join(f).display()
+        );
+    }
+}
+
 /// The decompiler conformance fixtures must resolve too (checkout or vendored copy).
 #[test]
 fn datatests_resolve() {

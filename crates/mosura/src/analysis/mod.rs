@@ -15,6 +15,7 @@
 
 pub mod analyzer;
 pub mod analyzers;
+pub mod bytesearch;
 pub mod codegen_fingerprint;
 pub mod cspec;
 pub mod decompiler;
@@ -138,6 +139,27 @@ pub fn analyze(program: &mut Program) {
     if let Some(rs) = analyzers::relocation_seed::RelocationSeedAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(rs), program);
     }
+    // Function Start Search — Ghidra's byte-pattern function discovery, registered four times at
+    // four points in the pipeline (`FunctionStartAnalyzer` + its Pre/AfterCode/AfterData
+    // subclasses). The only route that needs NO inbound edge to a function: it recognises a
+    // prologue by its bytes. Each registration is `None` when no pattern file matches the
+    // program's (language, compiler), so this is inert on every architecture Ghidra ships no
+    // patterns for.
+    for kind in [
+        analyzers::function_start::FunctionStartKind::PreSearch,
+        analyzers::function_start::FunctionStartKind::Search,
+        analyzers::function_start::FunctionStartKind::AfterCode,
+        analyzers::function_start::FunctionStartKind::AfterData,
+    ] {
+        if let Some(fs) = analyzers::function_start::FunctionStartAnalyzer::for_program(program, kind)
+        {
+            mgr.add_analyzer(Box::new(fs), program);
+        }
+    }
+    // The delayed creator the `possiblefuncstart` matches are handed to
+    // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854). Registered unconditionally: it
+    // subscribes to no change channel, so with nothing scheduled into it it never runs.
+    mgr.add_analyzer(Box::new(analyzers::function_start::PossibleDelayedFunctionCreator), program);
 
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`

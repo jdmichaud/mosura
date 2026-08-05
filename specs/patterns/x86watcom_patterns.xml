@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  x86watcom_patterns.xml — function-start byte patterns for Open Watcom / x86-32.
+
+  BEYOND-GHIDRA. Ghidra ships no Watcom compiler spec and therefore no Watcom pattern file;
+  `Processors/x86/data/patterns/patternconstraints.xml` has entries for windows, borlandcpp,
+  borlanddelphi and gcc only. Its ORACLE is not Ghidra: it is the warcraft2-re expert function
+  tracker (analysis/decomp-tracker.csv, 2120 hand-verified functions) plus the self-compiled
+  `fnpattern.watcom-x86-32` ground-truth program. The FORMAT and the engine that reads it are a
+  faithful port (ghidra.util.bytesearch); only the contents of this file are mosura's.
+
+  WHY IT EXISTS — the measured finding. Watcom emits a SAVE-FIRST prologue: a run of 1..5
+  register-save pushes BEFORE the frame setup, e.g. WAR2 0x16ed4 =
+
+      53 51 52 56 57   55 89 e5   83 ec 04
+      push ebx/ecx/edx/esi/edi  push ebp; mov ebp,esp  sub esp,4
+
+  Ghidra's x86gcc file has no pattern that starts at such a run; its `0x5589e583ec` anchors at the
+  `55`, N bytes PAST the true entry. Measured over the tracker with mosura's own engine:
+  x86gcc_patterns.xml produces 1002 function-start addresses on WAR2 — 275 exactly on a tracker
+  entry and 662 INSIDE a tracker function body, every one of them 1-6 bytes in. (The same
+  measurement rules out x86win_patterns.xml on the evidence rather than on the a-priori
+  "Watcom is DOS-era" argument: 60 exact, 337 in-body of which 328 are deeper than 8 bytes,
+  because its `__break` pattern fires on every `int 3` filler.)
+
+  1600 of the 2120 tracker functions (75.5%) have the shape <push-run 0..5> `55` <mov ebp,esp>.
+  The push-run length distribution is 0:283 1:222 2:300 3:333 4:280 5:182.
+
+  TWO ENCODINGS OF `mov ebp,esp`. Watcom emits both `89 e5` (1556 functions) and `8b ec`
+  (44 functions); the gcc file knows only `89 e5`.
+
+  `01010...`, NOT `0x5.`, for a push. `0x5.` also covers POP (0x58-0x5f), so it would match the
+  tail of the PREVIOUS function's epilogue. This is the same discrimination x86gcc_patterns.xml
+  makes for the same reason.
+
+  OVERLAPPING MATCHES ARE EXPECTED AND HARMLESS. On a 5-push prologue the 5-push pattern matches
+  at the entry, the 4-push pattern one byte in, and so on. `CreateFunctionCmd` iterates entries in
+  ASCENDING address order and Ghidra's listing refuses a function whose body overlaps an existing
+  one, so the LOWEST match — the true entry — wins and the rest are refused. That rule is ported
+  in `function_start.rs::create_functions`; it is what makes a family of shifted-by-one patterns
+  safe to state directly.
+-->
+<patternlist>
+
+  <!-- =========================================================================================
+       (1) THE SAVE-FIRST FAMILY — mosura's, and the reason this file exists.
+       A run of 1..5 register-save pushes, then `push ebp; mov ebp,esp`. The match is marked at
+       the FIRST PUSH, which is the true function entry.
+       ========================================================================================= -->
+
+  <pattern>
+     <data>01010... 0x5589e5</data> <!-- PUSH reg : PUSH EBP : MOV EBP,ESP -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 0x5589e5</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 0x5589e5</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 01010... 0x5589e5</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 01010... 01010... 0x5589e5</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
+  <!-- The `8b ec` encoding of `mov ebp,esp` (44 tracker functions). -->
+  <pattern>
+     <data>01010... 0x558bec</data> <!-- PUSH reg : PUSH EBP : MOV EBP,ESP (8b encoding) -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 0x558bec</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 0x558bec</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 01010... 0x558bec</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>01010... 01010... 01010... 01010... 01010... 0x558bec</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
+  <!-- =========================================================================================
+       (2) THE FRAME-FIRST FAMILY — the 283 tracker functions with NO leading push run.
+       These are x86gcc_patterns.xml's own `possiblefuncstart` patterns, which apply unchanged
+       because the shape (`push ebp; mov ebp,esp; sub esp,N`) is not gcc-specific, plus the
+       `8b ec` twin Watcom also emits.
+       ========================================================================================= -->
+
+  <pattern>
+     <data>0x5589e583ec</data> <!-- PUSH EBP : MOV EBP,ESP : SUB ESP, -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e581ec....0000</data> <!-- PUSH EBP : MOV EBP,ESP : SUB ESP,#bigconst -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec83ec</data> <!-- the 8b encoding of the same -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec81ec....0000</data>
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
+  <!-- =========================================================================================
+       (3) THE ESP-FRAME FAMILY — verbatim from x86gcc_patterns.xml. Watcom's optimized codegen
+       drops the frame pointer entirely and addresses locals off ESP, which is exactly the shape
+       these cover. They carry Ghidra's own pre-requisites: something defined immediately before
+       (i.e. the previous function's end) and six valid fall-through instructions.
+       ========================================================================================= -->
+
+  <pattern>
+     <data> 0x83 0xec  0.....00  100010.1 01...100 ..100100 0.....00 </data> <!-- SUB ESP,C ; MOV [ESP+v],reg | MOV reg,[ESP+v] -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x81 0xec  ......00 0000.... 0x00 0x00  100010.1 01...100 ..100100 0.....00 </data> <!-- SUB ESP,bigC ; MOV ... -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x5. 0x83 0xec  0.....00  100010.1 01...100 ..100100 0.....00 </data> <!-- PUSH reg ; SUB ESP,C ; MOV ... -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x5. 0x81 0xec  ......00 0000.... 0x00 0x00 </data> <!-- PUSH reg ; SUB ESP,bigC -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x5. 0x5. 100000.1 0xec  ......00  </data> <!-- PUSH reg x2 ; SUB ESP,C -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x5. 0x5. 0x5. 100000.1 0xec  ......00  </data> <!-- PUSH reg x3 ; SUB ESP,C -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+  <pattern>
+     <data> 0x5. 0x5. 0x5. 0x5. 100000.1 0xec  ......00  </data> <!-- PUSH reg x4 ; SUB ESP,C -->
+     <funcstart after="defined" validcode="6" />
+  </pattern>
+
+  <!-- =========================================================================================
+       (4) THE PAIRED FAMILY — a bare `push ebp; mov ebp,esp` is only 24 bits of check, too weak
+       to stand alone, so (exactly as x86gcc_patterns.xml does) it is paired with the filler that
+       ENDS the preceding function. The prepatterns are Watcom's: `ret`, `nop`, `jmp`, and
+       `mov eax,eax` — Watcom's own two-byte alignment NOP, which precedes 320 of the 2120
+       tracker entries (measured; `c3` precedes 660 and `90` 396).
+       ========================================================================================= -->
+
+  <patternpairs totalbits="32" postbits="16">
+    <prepatterns>
+      <data>0x90</data>         <!-- NOP filler -->
+      <data>0xc3</data>         <!-- RET -->
+      <data>0xe9........</data> <!-- JMP rel32 -->
+      <data>0xeb..</data>       <!-- JMP rel8 -->
+      <data>0x8bc0</data>       <!-- MOV EAX,EAX — Watcom's 2-byte alignment NOP -->
+      <data>0xcc</data>         <!-- INT3 filler -->
+    </prepatterns>
+    <postpatterns>
+      <data>0x5589e5</data> <!-- PUSH EBP : MOV EBP,ESP -->
+      <data>0x558bec</data> <!-- the 8b encoding -->
+      <codeboundary/>
+      <possiblefuncstart/>
+    </postpatterns>
+  </patternpairs>
+
+</patternlist>

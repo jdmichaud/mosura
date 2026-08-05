@@ -6,6 +6,9 @@
 # self-contained. Its integrity contract: byte-verbatim files from the checkout at the pin,
 # plus the deterministic .sla compile of that pin. This script enforces the contract:
 #
+# Covers, per processor: data/languages (SLEIGH specs + compiled .sla) and data/patterns (the
+# Function Start Search byte patterns; absent for Z80, which ships none).
+#
 #   verify (default):  diff every vendored file against the checkout. Refuses to run if the
 #                      checkout is not at the pinned commit (a diff against the wrong pin
 #                      proves nothing). Exit 1 on any difference.
@@ -26,9 +29,13 @@ at="$(git -C "$GHIDRA_SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
 if [ "${1:-}" = "--refresh" ]; then
   echo "[vendored] refreshing from the pin-verified checkout …"
   for p in "${PROCESSORS[@]}"; do
-    rm -rf "$VENDORED/Processors/$p/data/languages"
+    rm -rf "$VENDORED/Processors/$p/data/languages" "$VENDORED/Processors/$p/data/patterns"
     mkdir -p "$VENDORED/Processors/$p/data"
     cp -r "$GHIDRA_SRC/Ghidra/Processors/$p/data/languages" "$VENDORED/Processors/$p/data/"
+    # data/patterns is the Function Start Search input; not every processor ships one (Z80 does not).
+    if [ -d "$GHIDRA_SRC/Ghidra/Processors/$p/data/patterns" ]; then
+      cp -r "$GHIDRA_SRC/Ghidra/Processors/$p/data/patterns" "$VENDORED/Processors/$p/data/"
+    fi
   done
   rm -rf "$VENDORED/datatests"
   cp -r "$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/datatests" "$VENDORED/datatests"
@@ -40,7 +47,13 @@ fi
 fail=0
 for p in "${PROCESSORS[@]}"; do
   diff -r "$GHIDRA_SRC/Ghidra/Processors/$p/data/languages" "$VENDORED/Processors/$p/data/languages" \
-    || { echo "MISMATCH: $p"; fail=1; }
+    || { echo "MISMATCH: $p languages"; fail=1; }
+  if [ -d "$GHIDRA_SRC/Ghidra/Processors/$p/data/patterns" ]; then
+    diff -r "$GHIDRA_SRC/Ghidra/Processors/$p/data/patterns" "$VENDORED/Processors/$p/data/patterns" \
+      || { echo "MISMATCH: $p patterns"; fail=1; }
+  elif [ -d "$VENDORED/Processors/$p/data/patterns" ]; then
+    echo "MISMATCH: $p patterns vendored but absent from the pin"; fail=1
+  fi
 done
 diff -r "$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/datatests" "$VENDORED/datatests" \
   || { echo "MISMATCH: datatests"; fail=1; }
