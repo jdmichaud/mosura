@@ -18,6 +18,17 @@ CLASSES
                       Cause seen so far: a block was removed while branches into it survived.
     empty-switch      `switch (...) { }` — the dispatch was destroyed; every case is gone.
     empty-while-true  `while (true) { }` — an infinite empty loop, i.e. a deleted loop body.
+    infinite-while    a `while (cond) { ... }` with a NON-EMPTY body where nothing in `cond` can
+                      change and the body cannot exit early. Distinct from empty-while-true: the
+                      body does real work, it just never stops. Both known members lost their
+                      loop update the same way — it was folded into a CALL ARGUMENT
+                      (`func(..., iVar3 + -1)`) and no assignment was emitted, because the
+                      update's only consumer is that argument and the phi's tail input is the
+                      call's INDIRECT clobber. See task #14 for the IR.
+                      Retro-measured across three stamped images: 11 -> 1 -> 1. e760926
+                      (comma_separate) eliminated TEN of these, which is a far better account of
+                      that port than the reach figure reported at the time; the survivor is
+                      FUN_0001dd38's inner loop.
     use-before-def    a declared local READ before its first assignment, in text order. Added
                       2026-08-05 after this scan sat GREEN through two separate loop-shape
                       defects it structurally could not see (e760926's hoisted while-condition
@@ -108,6 +119,69 @@ DECL = re.compile(r'^\s*[A-Za-z_]\w*\s*\**\s*\**\s*([A-Za-z_]\w*)\s*(\[[^\]]*\])
 # Uninitialized BY CONSTRUCTION, not defects: Ghidra's names for a value arriving in a register,
 # and formal parameters. Counting these would bury the real findings under the prototype gap.
 EXEMPT_LOCAL = re.compile(r'^(param_\d+|in_[A-Z]|extraout_|unaff_)')
+
+
+IDENT = re.compile(r'[A-Za-z_]\w*')
+C_KEYWORDS = {'if', 'while', 'for', 'return', 'break', 'goto', 'switch', 'case', 'default', 'do',
+              'else', 'sizeof', 'code', 'int', 'char', 'uint', 'void', 'unsigned'}
+
+
+def infinite_whiles(text: str) -> list:
+    """`while (cond) { non-empty body }` where NOTHING in `cond` can change. Returns `FUN_`s.
+
+    SOUNDNESS is the whole design, because the loose version of this predicate is a false-positive
+    machine — it returned 18 hits of which nearly all were the CORRECT comma form
+    (`while (iVar1 = func(), iVar1 == 0)`), which updates in the condition every iteration.
+    Three exclusions make what remains provable:
+
+      - an assignment IN THE CONDITION updates each iteration -> not infinite;
+      - a memory dereference (`*`, `[`) or a global (`...Ram<hex>`) in the condition can be changed
+        by any call in the body, so it cannot be proved from the text;
+      - `break` / `return` / `goto` in the body means it can exit regardless of the condition.
+
+    What is left is a condition built only from non-address-taken LOCALS, and a C local cannot
+    change except by an assignment visible in the source. If none of them is assigned in the body,
+    the loop provably does not terminate.
+
+    ⚠️ KNOWN BLIND SPOT, and it is the motivating case: FUN_00057034's
+    `while (iVar3 < (int4)(uRam000a71b3 + 1))` is invisible here because the bound is a GLOBAL,
+    so the second exclusion drops it even though `iVar3` is just as dead. Proving that one needs
+    the IR (the phi's tail input is the call's INDIRECT, not the update), not the text. Do not
+    read a 0 from this predicate as "no infinite loops".
+    """
+    out, lines = [], text.split('\n')
+    fn = None
+    for i, l in enumerate(lines):
+        m = FN_HEAD.match(l)
+        if m:
+            fn = m.group(2)
+        mm = re.match(r'^\s*while \((.*)\) \{\s*$', l)
+        if not mm:
+            continue
+        cond = mm.group(1)
+        if re.fullmatch(r'\s*(?:true|1)\s*', cond):
+            continue                                   # `while (true)` is empty-while-true's class
+        if re.search(r'=(?!=)', cond) or re.search(r'[*\[]', cond):
+            continue
+        names = {n for n in IDENT.findall(cond) if n not in C_KEYWORDS}
+        if not names or any(re.search(r'Ram[0-9A-Fa-f]', n) for n in names):
+            continue
+        depth, body = 0, []
+        for k in range(i, len(lines)):
+            depth += lines[k].count('{') - lines[k].count('}')
+            if k > i:
+                body.append(lines[k])
+            if depth == 0:
+                break
+        btxt = '\n'.join(body[:-1])
+        if not btxt.strip():
+            continue                                   # empty body is empty-while's class
+        if re.search(r'\b(?:break|return|goto)\b', btxt):
+            continue
+        if any(re.search(r'(?<![\w])' + re.escape(n) + r'\s*=(?!=)', btxt) for n in names):
+            continue
+        out.append(f'{fn}:while({cond.strip()[:40]})')
+    return out
 
 
 def uninitialized_reads(text: str) -> tuple:
@@ -234,7 +308,7 @@ def falls_off_end(text: str) -> list:
 def scan(src: str) -> dict:
     """{class: {va: count}} — keyed by the FUN_ each .c defines, never the manifest idx."""
     out = {k: {} for k in list(BLOCKING_SHAPES) + list(INFO_SHAPES)
-           + ['undefined-label', 'falls-off-end', 'use-before-def', 'uninit-read']}
+           + ['undefined-label', 'falls-off-end', 'use-before-def', 'infinite-while', 'uninit-read']}
     for path in sorted(glob.glob(os.path.join(src, '*.c'))):
         text = open(path, errors='replace').read()
         m = OWN_DEF.search(text)
@@ -246,6 +320,9 @@ def scan(src: str) -> dict:
         off = falls_off_end(text)
         if off:
             out['falls-off-end'][key] = off
+        inf = infinite_whiles(text)
+        if inf:
+            out['infinite-while'][key] = inf
         ubd, uninit = uninitialized_reads(text)
         if ubd:
             out['use-before-def'][key] = [f'{fn}:{v}' for fn, v in ubd]
@@ -284,10 +361,10 @@ def members(d: dict) -> set:
 
 def report(name: str, res: dict) -> None:
     print(f"\n=== {name} ===")
-    for cls in ['undefined-label', 'falls-off-end', 'use-before-def'] + list(BLOCKING_SHAPES):
+    for cls in ['undefined-label', 'falls-off-end', 'use-before-def', 'infinite-while'] + list(BLOCKING_SHAPES):
         d = res[cls]
         print(f"  [BLOCKING] {cls:18} {total(d):4}  in {len(d)} functions")
-        if cls in ('undefined-label', 'falls-off-end'):
+        if cls in ('undefined-label', 'falls-off-end', 'infinite-while'):
             for va, labs in sorted(d.items()):
                 print(f"                 {va}: {' '.join(labs)}")
     for cls in list(INFO_SHAPES) + ['uninit-read']:
@@ -306,7 +383,7 @@ def main() -> int:
     report(os.path.basename(sys.argv[2].rstrip('/')) + " (baseline)", base)
     print("\n=== DELTA (baseline -> new) ===")
     grew = []
-    for cls in ['undefined-label', 'falls-off-end', 'use-before-def'] + list(BLOCKING_SHAPES):
+    for cls in ['undefined-label', 'falls-off-end', 'use-before-def', 'infinite-while'] + list(BLOCKING_SHAPES):
         b, n = total(base[cls]), total(new[cls])
         flag = ''
         if n > b:
