@@ -132,6 +132,31 @@ impl PseudoDisassembler {
         Some(insn)
     }
 
+    /// `isValidSubroutine(entryPoint, allowExistingCode)` (:338) — the STRICT verdict:
+    /// `checkValidSubroutine(entryPoint, allowExistingCode, mustTerminate=true)`. The flow must
+    /// actually reach a return (or call a known function); it is not enough for the bytes to
+    /// decode.
+    ///
+    /// Ghidra picks between this and [`is_valid_code`](Self::is_valid_code) by **how much
+    /// corroboration the candidate has**, and the distinction is load-bearing:
+    ///
+    /// - A target that is one entry of a pointer *run*, where every other entry also had to
+    ///   validate, is already corroborated — `AddressTable.getFunctionEntries` (:785) uses the
+    ///   permissive `isValidCode`.
+    /// - An **isolated** pointer has no such corroboration — `OperandReferenceAnalyzer` :434
+    ///   uses `pdis.isValidSubroutine(target, instr == null)`, i.e. this one.
+    ///
+    /// On x86 that difference is enormous: with `mustTerminate=false` almost any byte sequence
+    /// "is valid code", because almost any byte sequence decodes.
+    pub fn is_valid_subroutine(
+        &self,
+        program: &Program,
+        entry_point: Address,
+        allow_existing_code: bool,
+    ) -> bool {
+        self.check_valid_subroutine(program, entry_point, allow_existing_code, true)
+    }
+
     /// `isValidCode(entryPoint)` (:372) — "check that this entry point leads to valid code:
     /// may have multiple entries into the body; the intent is that it be valid code, not nice
     /// code; hit no bad instructions". `checkValidSubroutine(entryPoint, true, false)`.
