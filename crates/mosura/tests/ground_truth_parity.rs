@@ -266,3 +266,44 @@ fn war2_forphi_no_marker_leak() {
     );
     eprintln!("war2 forphi gate: scan_ renders its for-loop without a raw phi/marker init");
 }
+
+/// A while-condition that carries a STATEMENT must print inside the parentheses, not above the
+/// loop. Ghidra's `PrintC::emitBlockWhileDo` non-overflow arm sets `comma_separate` around
+/// `condBlock->emit(this)` (printc.cc:3046-3054), so the condition block's statements join with
+/// `, ` inside the parens and re-execute every iteration. Hoisting them above the `while` runs
+/// them once: in `loopcomma`'s list walk that is a use-before-def and a test that can never
+/// change — wrong code, not formatting. `walk` (Open Watcom, `src/loopcomma.c`) is the shape.
+#[test]
+fn loop_comma_condition_inline() {
+    let bin = ground_truth_dir().join("loopcomma.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("loopcomma.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip loop_comma_condition_inline: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let walk = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "walk_")
+        .map(|(a, _)| *a)
+        .expect("truth lists walk_");
+    let prog = analysis::analyze_file(&bin).expect("analyze loopcomma");
+    let f = decompile_function(&prog, Address::new(prog.default_space, walk))
+        .expect("walk_ decompiles");
+    let c = print_c(&f);
+
+    // The loop-test load must be part of the condition. Locate the `while (` header and require
+    // the assignment to sit inside its parentheses.
+    let header = c
+        .lines()
+        .find(|l| l.trim_start().starts_with("while ("))
+        .unwrap_or_else(|| panic!("walk_ recovered no while-loop — structuring regression:\n{c}"));
+    assert!(
+        header.contains('=') && header.contains(','),
+        "while-condition statement was HOISTED above the loop (comma_separate regression): the \
+         header carries no assignment, so the loop test cannot update — walk_ @ {walk:#x}\n\
+         header: {header}\n{c}"
+    );
+    eprintln!("loopcomma gate: walk_ prints its condition statement inside the parens — {header}");
+}
