@@ -267,6 +267,33 @@ names.** Adding the name to each row was the difference between a number and a g
 
 ⇒ **If a probe does not name its function, fix the probe before you quote it.**
 
+### An identical total across a real change means the PREDICATE is broken
+
+The reassuring reading of "the number didn't move" is that the code didn't move. The other
+reading is that the instrument is measuring something that was never going to move, and it is
+the more likely one whenever the change under test provably touched the population.
+
+This happened **three times in one day** (2026-08-05), in three different shapes:
+
+- A use-before-def detector counted the *declaration* `int4 iVar1;` as a read of `iVar1`. It
+  flagged 1072 of 1303 functions and returned **exactly 5347 on four different emit images** —
+  including two that differed by a landed fix. Scanning from the first statement instead: 938 /
+  930 / 931 / 921, and the movement was the whole signal.
+- "The 40 missed for-loops ARE the 40 false comma-whiles, one defect with two symptoms" was
+  inferred from both sets having 40 members. Measured properly, **the intersection was 12.**
+  Two populations of equal size, largely disjoint.
+- A manifest row count read while the emit was still writing looked plausible and was wrong.
+
+⇒ **Equal totals are a hypothesis to disprove, not a result.** Before reporting "no change",
+either (a) show the SET, not the count — `members()` in `scripts/war2-wrongcode-scan.py` exists
+because keying a delta on the *function* rather than the individual finding let one function
+trade `pcVar4` for `pcVar3` and score as a wash; or (b) exhibit one input the predicate *should*
+have flagged and show it flagged. A predicate that cannot move is not a stable measurement, it
+is a broken one, and it will read as corroboration for as long as nobody checks.
+
+Sibling of *A bare count cannot answer the only question a gate asks*, above, and of §7's
+counting traps.
+
 ### A null result must distinguish the reasons it could be null
 
 Counting only *declines* cannot separate "never needed" from "never a candidate". Count both.

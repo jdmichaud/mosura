@@ -42,14 +42,24 @@ int loopcomma_hits;
  *      condition block holds only the branch — the gate would then pass vacuously;
  *   3. the loaded value is USED IN THE BODY. If its only use is the comparison, the compiler
  *      folds it into the test (`while (*p != want)`) and no statement is left to comma-separate;
- *   4. the walked pointer is a GLOBAL, so the loop is not recovered as a `for`. Ghidra's
- *      for-recovery needs a loop-carried MULTIEQUAL in the head (`findLoopVariable`); a variable
- *      living in memory is re-loaded each iteration and has no register phi, so no `for` is
- *      formed and the loop stays a WhileDo. With a local pointer this compiles to
- *      `for (p = p; ...; p = p->next)` and routes through `PrintC::emitForLoop`
- *      (printc.cc:2974) — a different site whose own comma_separate is not ported yet.
- *      Neither a pointer chase nor reordering the body defeats for-recovery: Watcom schedules
- *      the advance last regardless of source order. Only the global does.
+ *   4. the walked pointer is a GLOBAL, so THIS loop is not recovered as a `for` and stays a
+ *      WhileDo. With a local pointer it compiles to `for (p = p; ...; p = p->next)` and routes
+ *      through `PrintC::emitForLoop` (printc.cc:2974) — a different site, which is what
+ *      `forcomma.c` exists to reach. Neither a pointer chase nor reordering the body defeats
+ *      for-recovery: Watcom schedules the advance last regardless of source order. Only the
+ *      global does, here.
+ *
+ *      ⚠️ THE EFFECT IS REAL; THE MECHANISM ORIGINALLY WRITTEN HERE WAS NOT, and the correction
+ *      matters because this comment is what a future edit will reason from. It used to say a
+ *      global "lives in memory, is re-loaded each iteration and has no register phi, so no `for`
+ *      is formed". That is too strong: ram IS heritaged, a global CAN carry a loop-carried
+ *      MULTIEQUAL in the head, and Ghidra recovers for-loops over plainly global induction
+ *      variables — WAR2 has five, e.g. FUN_000130ec's
+ *          for (DAT_0008f19b = 0; DAT_0008f19b < 8; DAT_0008f19b = DAT_0008f19b + 1)
+ *      So "global => never a for" is false in general. Why THIS global stays a WhileDo is not
+ *      established (aliasing through the body's stores is the obvious suspect, unverified).
+ *      Treat property 4 as an OBSERVED property of this program — the gate re-proves it on every
+ *      run — and not as a rule about globals.
  */
 struct node *loopcomma_cur;
 

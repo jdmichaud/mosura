@@ -46,12 +46,21 @@ int forcomma_hits;
  *      folds it into the test (`while (*p != want)`) and no statement is left to comma-separate;
  *   4. ⭐ the walked pointer is a LOCAL (here a parameter), so the loop IS recovered as a `for`.
  *      This is the exact inverse of loopcomma.c's property 4. Ghidra's `findLoopVariable`
- *      (block.cc:3164) needs a loop-carried MULTIEQUAL in the head; a local pointer has a
- *      register phi across the back-edge and `p = p->next` is a valid tail iterate, so
+ *      (block.cc:3164) needs a loop-carried MULTIEQUAL in the head; a local pointer has one
+ *      across the back-edge and `p = p->next` is a valid tail iterate, so
  *      `BlockWhileDo::finalTransform` converts the loop and printing routes through
- *      `PrintC::emitForLoop`. A GLOBAL pointer lives in memory, is re-loaded each iteration, has
- *      no register phi, and the loop stays a WhileDo — the gate would then pass vacuously against
- *      the already-fixed `emitBlockWhileDo` and test nothing.
+ *      `PrintC::emitForLoop`. Swapping in a GLOBAL pointer is what loopcomma.c does and its loop
+ *      stays a WhileDo — the gate would then pass vacuously against the already-fixed
+ *      `emitBlockWhileDo` and test nothing. That is why the assertion below CHECKS for a `for`
+ *      and panics with the whole C if it finds a `while`, rather than trusting this paragraph.
+ *
+ *      ⚠️ Do NOT read that as "a global cannot be a for-loop". This comment originally said a
+ *      global has no register phi so no `for` is formed; that is false — ram is heritaged, and
+ *      Ghidra recovers for-loops over global induction variables (WAR2 has five, e.g.
+ *      `for (DAT_0008f19b = 0; DAT_0008f19b < 8; DAT_0008f19b = DAT_0008f19b + 1)`). The
+ *      local-vs-global swap is a reliable lever ON THESE TWO PROGRAMS, established by measurement
+ *      and re-proved by the gates; it is not a general rule, and the mechanism behind it is not
+ *      established. See loopcomma.c's property 4 for the same correction.
  *
  * Note the iterate statement `p = p->next` reads `p` DIRECTLY. That matters:
  * `BlockWhileDo::testIterateForm` (block.cc:3287) truncates its operand walk at every explicit
