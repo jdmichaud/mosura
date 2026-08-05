@@ -21,6 +21,22 @@ use crate::decompile::space::{Address, SpaceId};
 use crate::sleigh::engine::Spec;
 use crate::sleigh::pcode::PArg;
 
+/// Longest code unit the flow walk back-probes for when testing whether an address lies inside
+/// an existing one (Ghidra queries an interval-indexed listing; mosura probes backward). Covers
+/// the longest x86 instruction and the pointer/scalar data units the markup analyzers create.
+const MAX_CODE_UNIT_LEN: u64 = 16;
+
+/// Ghidra `Disassembler.getInitializedMemory` (Disassembler.java:387): the loaded + initialized
+/// address set, with an uninitialized `EXTERNAL` block excluded (it is uninitialized here, so it
+/// never enters the set in the first place).
+fn initialized_memory(program: &Program) -> AddressSet {
+    let mut set = AddressSet::new();
+    for b in program.memory.blocks().filter(|b| b.is_initialized()) {
+        set.add_range(b.start().space, b.start().offset, b.end().offset);
+    }
+    set
+}
+
 /// Recursive-descent disassembler (Ghidra's disassembly analyzer + `followFlow`):
 /// from each seeded address it decodes instructions with the SLEIGH engine, following
 /// fall-through and static branch targets within the function, laying down
@@ -64,10 +80,23 @@ impl Analyzer for Disassembler {
         let mut work: Vec<u64> = set.ranges().map(|r| r.min).collect();
         let mut call_targets = AddressSet::new();
         let mut decoded_any = false;
+        // Ghidra `Disassembler.getInitializedMemory` (Disassembler.java:387) — the walk's
+        // universe. Note `restrictToExecuteMemory` defaults to **false** (:384), so it is
+        // LOADED+INITIALIZED memory that bounds disassembly, not executable memory.
+        let initialized = initialized_memory(program);
         while let Some(a) = work.pop() {
             let addr = Address::new(ram, a);
-            if program.listing.code_unit_at(addr).is_some() {
-                continue; // already disassembled
+            // Ghidra Disassembler.java:612-626. An Instruction already at this address means it
+            // was previously disassembled — skip silently. Defined Data at the address, or an
+            // *offcut* position inside any existing code unit, is a conflict Ghidra marks and
+            // skips. mosura tested only `code_unit_at` (the exact start), so a walk could lay an
+            // instruction across a defined data object; `code_unit_containing` closes that.
+            if program.listing.code_unit_containing(addr, MAX_CODE_UNIT_LEN).is_some() {
+                continue;
+            }
+            // :913 — a block start outside initialized memory is a memory-constraint error.
+            if !initialized.contains(addr) {
+                continue;
             }
             let window = program.memory.read_window(addr, 16); // max x86-64 instruction length
             let Some(insn) = self.spec.disassemble_ctx(&window, a, &self.ctx).into_iter().next() else {
@@ -146,10 +175,21 @@ impl Analyzer for Disassembler {
                     _ => {}
                 }
             }
+            // Ghidra `Listing.addInstructions` refuses a unit that overlaps an existing one
+            // (`CodeUnitInsertionException`); the block-start conflict check (:620-626) is the
+            // same rule seen from the other end. Without this a walk starting in undefined bytes
+            // can still run *into* a defined object.
+            if (1..ilen).any(|k| program.listing.code_unit_at(Address::new(ram, a + k)).is_some()) {
+                continue;
+            }
             program.listing.define(addr, CodeUnit::Instruction { length: ilen as u32 });
             decoded_any = true;
             if falls {
-                work.push(a + ilen);
+                // :1140 (`endBlockEarly`) — do not follow fall-through out of initialized memory.
+                let ft = a + ilen;
+                if initialized.contains(Address::new(ram, ft)) {
+                    work.push(ft);
+                }
             }
         }
         if !call_targets.is_empty() {
@@ -322,5 +362,120 @@ impl Analyzer for ConstantPropagationAnalyzer {
             sched.function_defined(&new_funcs);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod disassembler_bounds_tests {
+    use super::*;
+    use crate::analysis::manager::Scheduling;
+    use crate::analysis::program::CodeUnit;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    /// Build a one-block x86-64 program whose `.text` holds `bytes` at `0x401000`.
+    fn program_with(bytes: Vec<u8>, execute: bool, initialized: bool) -> Program {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        let len = bytes.len() as u64;
+        p.memory.add_block(".text", base, len, true, false, execute, initialized.then_some(bytes));
+        p
+    }
+
+    fn run_disassembler(p: &mut Program, seed: u64) {
+        let Some(d) = Disassembler::for_program(p) else { return };
+        let ram = p.default_space;
+        let mut set = AddressSet::new();
+        set.add_range(ram, seed, seed);
+        let mut sched = Scheduling::default();
+        d.added(p, &set, &mut sched);
+    }
+
+    /// THE BOUND (Ghidra `Disassembler`, Disassembler.java:612-626): the flow walk must not
+    /// decode over an existing code unit. Ghidra skips a block start that already holds an
+    /// Instruction, and treats *defined Data* at the address — or an offcut position inside any
+    /// code unit — as a conflict it marks and skips.
+    ///
+    /// mosura's exact-start `code_unit_at` check already covers the case where the fall-through
+    /// lands precisely ON a data unit's first byte. What it did NOT cover is the offcut case
+    /// below, which is the one that matters — measured, not assumed: this test passed before the
+    /// fix, the next one did not.
+    ///
+    /// The fixture is deliberately synthetic rather than compiled: with the analyzer ordering
+    /// mosura has (Disassembler at priority 300, AddressTableAnalyzer at 899) the walk always
+    /// runs *before* any data is defined, so a compiled binary cannot present this state to the
+    /// disassembler at all. Laying the data unit down directly is the only way to test the bound.
+    ///
+    /// The walk here falls through to an address that is NOT a code-unit start but lies in the
+    /// path of one: the decoded instruction would OVERLAP a defined data object. Ghidra rejects
+    /// that twice over — the block-start conflict check treats an offcut position inside any code
+    /// unit as a conflict (:620-626), and `listing.addInstructions` refuses an overlapping unit.
+    /// mosura tested only `code_unit_at` (the exact start), so it laid the instruction down on
+    /// top of the data.
+    ///
+    /// Layout: `xor eax,eax` at 0x401000 falls through to 0x401002, where an 8-byte `mov`
+    /// decodes and would run to 0x401009 — straight through a data object defined at 0x401004.
+    #[test]
+    fn walk_does_not_overlap_defined_data() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let bytes = vec![
+            0x31, 0xc0, // 0x401000: xor eax,eax  (falls through)
+            0x48, 0x8b, 0x04, 0x25, 0x00, 0x10, 0x40, 0x00, // 0x401002: an 8-byte mov
+            0x90, // 0x40100a
+        ];
+        let mut p = program_with(bytes, true, true);
+        let ram = p.default_space;
+        // A data object starting INSIDE the instruction that would be decoded at 0x401002.
+        p.listing.define(
+            Address::new(ram, 0x40_1004),
+            CodeUnit::Data { length: 6, type_name: "undefined *".into() },
+        );
+        p.defined_data.push((Address::new(ram, 0x40_1004), "undefined *".into(), 6));
+
+        run_disassembler(&mut p, 0x40_1000);
+
+        let overlapping: Vec<(u64, u32)> = p
+            .listing
+            .code_units()
+            .filter_map(|(a, u)| match u {
+                CodeUnit::Instruction { length } => Some((a.offset, *length)),
+                _ => None,
+            })
+            .filter(|(a, len)| *a < 0x40_100a && a + u64::from(*len) > 0x40_1004)
+            .collect();
+        assert!(
+            overlapping.is_empty(),
+            "the walk laid instruction(s) {overlapping:x?} across the defined data object at \
+             0x401004..0x40100a — Ghidra treats an offcut position inside a code unit as a \
+             conflict (Disassembler.java:620-626) and refuses the overlapping unit"
+        );
+    }
+
+    /// THE OTHER BOUND (Disassembler.java:913 block start, :1140 `endBlockEarly` fall-through):
+    /// the walk proceeds only within LOADED + INITIALIZED memory (`getInitializedMemory`, :387;
+    /// note `restrictToExecuteMemory` defaults to **false**, Disassembler.java:384, so it is
+    /// initialized memory that bounds it, not executable memory).
+    ///
+    /// Here the fall-through leaves the initialized block entirely. mosura stopped by accident —
+    /// `read_window` returns nothing past the block, so the decode failed — but nothing asserted
+    /// it, and the accident does not hold for a walk running from one initialized block into an
+    /// adjacent one. This pins the intent.
+    #[test]
+    fn walk_stops_at_end_of_initialized_memory() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return;
+        }
+        // `xor eax,eax` then `nop` — the walk falls through off the end of the block.
+        let mut p = program_with(vec![0x31, 0xc0, 0x90], true, true);
+        let ram = p.default_space;
+        run_disassembler(&mut p, 0x40_1000);
+        assert!(p.listing.code_unit_at(Address::new(ram, 0x40_1002)).is_some(), "nop decoded");
+        assert!(
+            p.listing.code_unit_at(Address::new(ram, 0x40_1003)).is_none(),
+            "the walk ran past the end of initialized memory"
+        );
     }
 }
