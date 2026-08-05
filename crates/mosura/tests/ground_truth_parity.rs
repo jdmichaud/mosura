@@ -22,12 +22,20 @@ struct Truth {
     program: String,
     compiler: String,
     funcs: Vec<(u64, String)>, // (entry addr, name) — from the symbol table
-    switches: Vec<u64>,        // indirect-jump dispatch addresses — from objdump
+    /// Entries of [`Truth::funcs`] whose reachability class is `dataptr`: the build step found
+    /// the address NOWHERE in the disassembly of an executable section, and DID find it stored
+    /// as a pointer-sized word in a data section. They are reachable only through a function
+    /// pointer in data — see [`data_pointer_function_discovery`] and `build.sh`'s
+    /// `derive_truth_elf`. A `.truth` generated before that field existed lists none, which
+    /// leaves it exactly as it was.
+    data_pointer_only: BTreeSet<u64>,
+    switches: Vec<u64>, // indirect-jump dispatch addresses — from objdump
 }
 
 fn parse_truth(text: &str) -> Truth {
     let (mut program, mut compiler) = (String::new(), String::new());
     let (mut funcs, mut switches) = (Vec::new(), Vec::new());
+    let mut data_pointer_only = BTreeSet::new();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("# mosura-ground-truth") {
             for tok in rest.split_whitespace() {
@@ -42,12 +50,15 @@ fn parse_truth(text: &str) -> Truth {
             let addr = u64::from_str_radix(it.next().unwrap(), 16).unwrap();
             let _size = it.next();
             let name = it.next().unwrap_or("").to_string();
+            if it.next() == Some("dataptr") {
+                data_pointer_only.insert(addr);
+            }
             funcs.push((addr, name));
         } else if let Some(rest) = line.strip_prefix("switch ") {
             switches.push(u64::from_str_radix(rest.trim(), 16).unwrap());
         }
     }
-    Truth { program, compiler, funcs, switches }
+    Truth { program, compiler, funcs, data_pointer_only, switches }
 }
 
 #[test]
@@ -87,28 +98,30 @@ fn ground_truth_parity() {
             truth.program
         );
 
-        // (2) Full recall of the call-reachable functions. Two documented classes of truth symbol
-        // are NOT expected back as separate functions:
+        // (2) Full recall of the **call-reachable** functions — which is what this assertion has
+        // always covered, and the two classes below fall outside it by construction, not by
+        // exception. Both are derived from the build artifact, never named here:
         //
         //  - `<fn>.cold` — gcc splits cold paths into these and reaches them by a *jump*, not a
         //    *call*; on the stripped artifact flow analysis correctly folds them into the parent.
-        //  - `datafnptr`'s `tab_h*` — the ADDRESS-TABLE targets, reachable only through the
-        //    function-pointer run in `.data`. Ghidra disassembles them and deliberately creates
-        //    no function there: `AddressTableAnalyzer.processAddressTable` builds `validFuncSet`
-        //    and leaves the `createFunction` call commented out ("For Now, Never make functions
-        //    from address tables", AddressTableAnalyzer.java:282-296), as do
-        //    `OperandReferenceAnalyzer.createFunctions` (:614) and its `DataOperandReference`
-        //    sibling (:39). Verified on this exact binary: Ghidra ends with 6 functions and not
-        //    one of them is a `tab_h*`. A faithful mosura must match, because
-        //    `analysis_parity`'s "0 spurious functions vs Ghidra" gate is the thing that keeps
-        //    data-driven analysis from inventing functions at every address-shaped data word.
-        //    What these four DO carry is gated by `data_pointer_function_discovery`.
-        let address_table_target =
-            |n: &str| truth.program == "datafnptr" && n.starts_with("tab_h");
+        //  - reachability class `dataptr` (`build.sh`'s `derive_truth_elf`) — the address appears
+        //    nowhere in the disassembly of an executable section and does appear as a stored
+        //    pointer in data. There is no call to reach it by. Ghidra, given the same binary,
+        //    deliberately creates no function at such a target either: `AddressTableAnalyzer`
+        //    :281,294 ("For Now, Never make functions from address tables"),
+        //    `OperandReferenceAnalyzer.createFunctions` :617 ("don't ever create functions from
+        //    pointed to code"), `DataOperandReferenceAnalyzer.createFunctions` :39 ("don't ever
+        //    create a function from a data pointer") — all three are no-op bodies. Verified on
+        //    `datafnptr`: Ghidra ends with six functions and none is a pointer-table target.
+        //    Demanding them here would require mosura to invent functions Ghidra does not, which
+        //    is exactly what `analysis_parity`'s "0 spurious vs Ghidra" gate forbids.
+        //
+        // The properties a `dataptr` symbol DOES carry — its code is disassembled, and whatever
+        // that code calls becomes a function — are asserted by `data_pointer_function_discovery`.
         let primary: BTreeSet<u64> = truth
             .funcs
             .iter()
-            .filter(|(_, n)| !n.ends_with(".cold") && !address_table_target(n))
+            .filter(|(a, n)| !n.ends_with(".cold") && !truth.data_pointer_only.contains(a))
             .map(|(a, _)| *a)
             .collect();
         let missing: Vec<_> = primary.difference(&mine).map(|a| format!("{a:08x}")).collect();
@@ -134,9 +147,10 @@ fn ground_truth_parity() {
             );
         }
 
-        let cold = truth.funcs.len() - primary.len();
+        let cold = truth.funcs.iter().filter(|(_, n)| n.ends_with(".cold")).count();
+        let dataptr = truth.data_pointer_only.len();
         eprintln!(
-            "  [{}] funcs {}/{} recovered (0 spurious; {cold} .cold folded), {}/{} switch recovered, compiler(truth)={}, mosura(cspec)={}",
+            "  [{}] funcs {}/{} recovered (0 spurious; {cold} .cold folded, {dataptr} data-pointer-only), {}/{} switch recovered, compiler(truth)={}, mosura(cspec)={}",
             truth.program,
             mine.len(),
             primary.len(),
@@ -323,6 +337,26 @@ fn data_pointer_function_discovery() {
             .map(|(a, _)| *a)
             .unwrap_or_else(|| panic!("truth lists {name}"))
     };
+    // (0) The build step's own reachability derivation must agree with the shape this test
+    // assumes. `derive_truth_elf` marks a symbol `dataptr` when its address appears nowhere in
+    // the disassembly of an executable section and does appear as a stored pointer in data —
+    // i.e. exactly "no call can reach it". If a compiler change ever gives one of these a code
+    // reference, the program has stopped reproducing the defect and this test must be revisited
+    // rather than silently passing. `deep_helper_` is deliberately NOT in this set: it is
+    // `code`-reachable (from `tab_h0`), so the generic recall assertion still demands it, which
+    // is what makes the cascade a hard gate.
+    let dataptr_names: BTreeSet<&str> = truth
+        .funcs
+        .iter()
+        .filter(|(a, _)| truth.data_pointer_only.contains(a))
+        .map(|(_, n)| n.as_str())
+        .collect();
+    assert_eq!(
+        dataptr_names,
+        ["tab_h0_", "tab_h1_", "tab_h2_", "tab_h3_", "solo_target_"].into_iter().collect(),
+        "datafnptr no longer has exactly the five data-pointer-only symbols this test is about"
+    );
+
     let prog = analysis::analyze_file(&bin).expect("analyze datafnptr");
     let ram = prog.default_space;
     let at = |o: u64| Address::new(ram, o);

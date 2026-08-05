@@ -48,15 +48,67 @@ derive_truth_elf() {
     # `T`. `nm -S` gives `addr [size] type name` — the size column is present (gcc) or absent
     # (Watcom emits no sizes), so the type field is detected by position. Hex math (which mawk
     # cannot do) is in python; exec ranges come from objdump -h CODE sections.
-    local exec_ranges
+    #
+    # Each `func` line carries a 4th field, its REACHABILITY CLASS, derived here and never
+    # hand-written:
+    #   code     — the symbol's address appears somewhere in the disassembly of an executable
+    #              section (a call/jump target, or any operand mentioning it). This is the
+    #              population `ground_truth_parity`'s recall assertion covers.
+    #   dataptr  — the address appears NOWHERE in code, and DOES appear as a stored
+    #              pointer-sized word inside a non-executable ALLOC section. The function is
+    #              reachable only through a function pointer in data.
+    # The distinction is the ASSERTION'S OWN CONTRACT, not an exception: a `dataptr` symbol is
+    # by construction not call-reachable, and Ghidra deliberately creates no function at such a
+    # target (AddressTableAnalyzer.java:281,294 "For Now, Never make functions from address
+    # tables"; OperandReferenceAnalyzer.java:617 "don't ever create functions from pointed to
+    # code"; DataOperandReferenceAnalyzer.java:39 "don't ever create a function from a data
+    # pointer"). The code-mention test deliberately OVER-approximates (a plain immediate equal
+    # to the address counts): over-approximation keeps a symbol IN the recall set, which is the
+    # safe direction — it can never weaken a gate. Word size and endianness come from the ELF
+    # header's EI_CLASS/EI_DATA, so this stays arch-neutral.
+    # Truth files generated before this field exist without it; the test defaults them to `code`,
+    # i.e. exactly the previous behaviour.
+    local exec_ranges data_ranges code_refs
     exec_ranges=$("$objdump" -h "$bin" | awk '/^[ ]+[0-9]+ / { name=$2; sz=$3; vma=$4; getline fl; if (fl ~ /CODE/) print vma, sz }')
-    "$nm" -S --defined-only "$bin" | GT_EXEC_RANGES="$exec_ranges" python3 -c '
-import os, sys
+    data_ranges=$("$objdump" -h "$bin" | awk '/^[ ]+[0-9]+ / { sz=$3; vma=$4; off=$6; getline fl; if (fl ~ /ALLOC/ && fl ~ /CONTENTS/ && fl !~ /CODE/) print vma, sz, off }')
+    code_refs=$("$objdump" -d "$bin" | sed -n 's/^[ ]*[0-9a-f]*:\t[^\t]*\t//p')
+    "$nm" -S --defined-only "$bin" | GT_EXEC_RANGES="$exec_ranges" GT_DATA_RANGES="$data_ranges" \
+        GT_CODE_REFS="$code_refs" GT_BIN="$bin" python3 -c '
+import os, re, sys
 ranges = []
 for ln in os.environ.get("GT_EXEC_RANGES", "").splitlines():
     p = ln.split()
     if len(p) == 2:
         v = int(p[0], 16); s = int(p[1], 16); ranges.append((v, v + s))
+
+# Every hex token in the operand column of the disassembly: the over-approximate "mentioned in
+# code" set (call/jump targets, pc-relative annotations, and plain immediates alike).
+mentioned = set()
+for tok in re.findall(r"\b(?:0x)?([0-9a-f]{4,16})\b", os.environ.get("GT_CODE_REFS", "")):
+    try:
+        mentioned.add(int(tok, 16))
+    except ValueError:
+        pass
+
+# Every pointer-sized word stored in a non-executable ALLOC section, read straight out of the
+# file at the section`s file offset. EI_CLASS/EI_DATA give the word size and byte order.
+stored = set()
+try:
+    blob = open(os.environ["GT_BIN"], "rb").read()
+    psize = 8 if blob[4] == 2 else 4
+    order = "big" if blob[5] == 2 else "little"
+    for ln in os.environ.get("GT_DATA_RANGES", "").splitlines():
+        p = ln.split()
+        if len(p) != 3:
+            continue
+        vma = int(p[0], 16); size = int(p[1], 16); off = int(p[2], 16)
+        for i in range(0, max(0, size - psize + 1)):
+            w = int.from_bytes(blob[off + i:off + i + psize], order)
+            if w:
+                stored.add(w)
+except (OSError, IndexError, KeyError):
+    pass
+
 out = []
 for ln in sys.stdin:
     f = ln.split()
@@ -68,7 +120,8 @@ for ln in sys.stdin:
         continue
     addr = int(addr_s, 16)
     if typ.lower() in ("t", "w") and any(a <= addr < b for a, b in ranges):
-        out.append("func %s %s %s" % (addr_s, size, name))
+        cls = "dataptr" if (addr not in mentioned and addr in stored) else "code"
+        out.append("func %s %s %s %s" % (addr_s, size, name, cls))
 print("\n".join(sorted(out)))'
     # Switch dispatches: indirect jumps. Union of every matrix arch`s mnemonic (all in the
     # objdump mnemonic column, preceded by a tab): x86 `jmp *`, RISC-V `jr`, AArch64 `br`,
