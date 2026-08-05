@@ -60,6 +60,7 @@ pub mod block_flags {
     pub const MARK2: u32 = 0x100; // f_mark2 — secondary block mark
     pub const INTERIOR_GOTOOUT: u32 = 0x400; // f_interior_gotoout — unstructured jump out of interior
     pub const INTERIOR_GOTOIN: u32 = 0x800; // f_interior_gotoin — target of unstructured jump to interior
+    pub const WHILEDO_OVERFLOW: u32 = 0x8000; // f_whiledo_overflow — whiledo condition too big for while(cond)
 }
 
 /// Whether the negation of block `bid`'s terminating CBRANCH condition folds cleanly into a single
@@ -188,6 +189,16 @@ impl FlowBlock {
     /// Clear a block-level flag — Ghidra's `FlowBlock::clearFlag` (block.hh:281).
     fn clear_flag(&mut self, flag: u32) {
         self.flags &= !flag;
+    }
+
+    /// This `WhileDo`'s condition block is too big to print inside `while (…)` — Ghidra's
+    /// `BlockWhileDo::hasOverflowSyntax` (block.hh:705).
+    pub fn has_overflow_syntax(&self) -> bool {
+        self.flags & block_flags::WHILEDO_OVERFLOW != 0
+    }
+    /// Ghidra's `BlockWhileDo::setOverflowSyntax` (block.hh:706).
+    fn set_overflow_syntax(&mut self) {
+        self.set_flag(block_flags::WHILEDO_OVERFLOW);
     }
 
     /// The `i`-th out-edge is a "decision" (not irreducible/back/goto) — Ghidra's
@@ -1147,7 +1158,28 @@ impl Structured {
 
     /// `ruleBlockWhileDo` (blockaction.cc:1518): one arm is a single-in/single-out block that
     /// loops back to `b`. Any break or continue must already have collapsed as a goto.
-    /// (Ghidra's `isComplex` overflow-syntax variant is a deferred print-side refinement.)
+    ///
+    /// When the condition block is [`is_complex`](Self::is_complex) it cannot be folded into
+    /// `while (…)`, so Ghidra sets `f_whiledo_overflow` (blockaction.cc:1538-1546) and printc
+    /// emits the loop as `while( true ) { <cond stmts> if (cond) break; <body> }`. That flips
+    /// which edge the *printed* condition describes: the normal form prints the CONTINUE
+    /// condition (true → body), the overflow form prints the BREAK condition (true → exit).
+    /// Hence Ghidra negates on `(i==0) != overflow` rather than on `i==0`.
+    ///
+    /// ❌ RETRACTED (this commit) — this comment previously read: "(Ghidra's `isComplex`
+    /// overflow-syntax variant is a deferred print-side refinement.)" It is not print-side and
+    /// it was not a refinement: without it the condition block's statements are emitted ONCE
+    /// ahead of the loop instead of on every iteration, which is wrong code. Ghidra takes the
+    /// overflow branch on **98 sites across 71** of the 1286 WAR2 functions in
+    /// `war2-survey/ghidra-all.txt`.
+    ///
+    /// ⚠️ Counting trap, because the obvious grep is wrong: `grep 'while( true )'` returns 146
+    /// lines, and they are TWO constructs. `while( true ) {` (98/71) is this overflow syntax
+    /// (`PrintC::emitBlockWhileDo`, printc.cc:3017); `} while( true );` (48/47) is `BlockInfLoop`
+    /// (`PrintC::emitBlockInfLoop`, printc.cc:3097), which has no `f_whiledo_overflow` anywhere
+    /// near it and which mosura already ports as [`FlowKind::InfLoop`]. The merged figure
+    /// "146 sites / 110 functions" (110 being the distinct-function UNION) is not this item's
+    /// reach — match the brace side, not the keyword.
     fn rule_while_do(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
         if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
             return false;
@@ -1173,8 +1205,15 @@ impl Structured {
                 continue; // clause must loop back to b
             }
             let exit = self.out(b)[1 - i];
+            // blockaction.cc:1538 — the condition block is too big to fold into `while (…)`.
+            let overflow = self.is_complex(b);
             let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
-            self.blocks[n].negated = (i == 0) ^ self.is_oriented(b);
+            // blockaction.cc:1539 `if ((i==0)!=overflow)`: the normal form prints the CONTINUE
+            // condition, the overflow form the BREAK condition, so overflow inverts the sense.
+            self.blocks[n].negated = ((i == 0) != overflow) ^ self.is_oriented(b);
+            if overflow {
+                self.blocks[n].set_overflow_syntax(); // blockaction.cc:1544
+            }
             return true;
         }
         false

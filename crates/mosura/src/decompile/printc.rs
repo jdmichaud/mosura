@@ -1241,7 +1241,12 @@ impl<'a> PrintC<'a> {
 
     /// Find all `for`-loops in the structure tree and record their parts.
     fn detect_for_loops(&mut self, s: &Structured, idx: usize) {
-        if let FlowKind::WhileDo = s.blocks[idx].kind {
+        // `BlockWhileDo::finalTransform` (block.cc:3358) bails on `hasOverflowSyntax()` before
+        // looking for a loop variable: the overflow form has no `while (…)` header to hoist an
+        // initializer or iterator into, so there is no for-loop to recover.
+        let is_plain_whiledo =
+            matches!(s.blocks[idx].kind, FlowKind::WhileDo) && !s.blocks[idx].has_overflow_syntax();
+        if is_plain_whiledo {
             let comps = s.blocks[idx].components.clone();
             if let Some((init_var, iterate, phi_out)) = self.for_parts(s, comps[0], comps[1]) {
                 self.for_loops.insert(idx, (init_var, iterate, phi_out));
@@ -1463,6 +1468,49 @@ impl<'a> PrintC<'a> {
                 }
             }
             FlowKind::If | FlowKind::IfElse => self.emit_if(s, idx, indent, out, false),
+            // Ghidra `PrintC::emitBlockWhileDo` overflow branch (printc.cc:3017): a condition
+            // block too complex to fold into `while (…)` is printed as an infinite loop whose
+            // condition statements run at the TOP OF THE BODY, followed by the break test —
+            //     while( true ) { <cond stmts> if (<break cond>) break; <body> }
+            // so they re-execute every iteration. `negated` already carries the break sense
+            // (structure.rs `rule_while_do`, blockaction.cc:1539). `BlockWhileDo::finalTransform`
+            // (block.cc:3358) declines the for-loop rewrite here, so `for_loops` is not consulted.
+            FlowKind::WhileDo if s.blocks[idx].has_overflow_syntax() => {
+                let bpad = "  ".repeat(indent + 1);
+                let _ = writeln!(out, "{pad}while( true ) {{");
+                self.emit_structured(s, comps[0], indent + 1, out);
+                let cond = self.render_condition(s, comps[0], negated);
+                let _ = writeln!(out, "{bpad}if ({cond}) break;");
+                self.emit_structured(s, comps[1], indent + 1, out);
+                let _ = writeln!(out, "{pad}}}");
+            }
+            // ⚠️ NOT YET PORTED, and it is WRONG CODE, not a cosmetic gap:
+            // `PrintC::emitBlockWhileDo`'s non-overflow branch (printc.cc:3046-3053) emits the
+            // condition block INSIDE the parens under the `comma_separate` mod
+            // (`setMod(comma_separate); condBlock->emit(this)`, consumed at printc.cc:2707/2716
+            // for the `, ` separator and printc.cc:2291 to drop the `;`), so its statements
+            // re-execute every iteration. The arm below emits `comps[0]` ABOVE the `while` line
+            // instead, running them ONCE.
+            //
+            // Measured absolutely on both sides: Ghidra emits the comma form on 55 sites / 37
+            // functions of WAR2; mosura emits it 0 times out of 233 while-loops. Specimen
+            // `FUN_00016764` — Ghidra `while (iVar1 = *piVar2, in_EAX != iVar1) { piVar2 =
+            // (int *)(iVar1 + 0x60); }`, a linked-list walk; mosura hoists `iVar1 = *piVar2;`
+            // above the loop AND above `piVar2`'s own initialization, so it is a use-before-def
+            // as well as a walk that can never advance.
+            //
+            // NOT reachable from `f_whiledo_overflow`: these condition blocks are by definition
+            // NOT complex (a complex one takes the overflow arm above), so the port that added
+            // that arm cannot fix any of them. ❌ RETRACTED — this note first cited `FUN_0002a940`
+            // as the specimen and task #1 cited it as the overflow port's own wrong-code
+            // demonstration; its condition block is a `CondAnd` that `BlockCondition::isComplex`
+            // (block.hh:635) reports NOT complex, so the overflow arm never fires there and that
+            // function belongs to THIS defect, not to the overflow one.
+            //
+            // REVIVAL CONDITION: this is wrong the moment `emit_basic` can render a block's
+            // statements as a comma-separated expression list — `comma_separate` has no mosura
+            // equivalent today (`grep -rn comma_separate crates/mosura/src/` is empty), and it
+            // touches every plain `while`/`for` header, which is why it is not bundled here.
             FlowKind::WhileDo => {
                 self.emit_structured(s, comps[0], indent, out);
                 if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
