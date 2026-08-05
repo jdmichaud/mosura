@@ -91,6 +91,55 @@ typedef unsigned char bool;
 #define POPCOUNT(x) (0)
 ";
 
+/// The commit that produced an emit: `<short-sha>` or `<short-sha>-dirty`. Falls back to
+/// `nogit` only if git is unavailable — an unstamped artifact is still marked as unstamped
+/// rather than silently claiming to be reproducible.
+fn git_stamp() -> String {
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(sha) = sha else { return "nogit".to_string() };
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    if dirty { format!("{sha}-dirty") } else { sha }
+}
+
+/// Point an unsuffixed name (`src`, `raw`, `manifest.tsv`) at the current stamp, so the
+/// consumers keep working while the stamped artifact is what actually persists.
+///
+/// A pre-existing REAL file or directory is MOVED ASIDE to `<name>.pre-stamping`, never deleted
+/// and never left in place. Deleting it would destroy the baseline this change exists to protect;
+/// leaving it in place would be worse than the old behaviour, because compile.sh reads the
+/// unsuffixed `src/` and would silently keep compiling the stale copy.
+fn link_latest(link: &std::path::Path, target: &str) {
+    match std::fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::remove_file(link).unwrap(),
+        Ok(_) => {
+            let aside = link.with_file_name(format!(
+                "{}.pre-stamping",
+                link.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(
+                !aside.exists(),
+                "{} already exists — resolve it by hand; refusing to overwrite a baseline",
+                aside.display()
+            );
+            std::fs::rename(link, &aside).unwrap();
+            eprintln!("note: moved pre-stamping {} -> {}", link.display(), aside.display());
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next().expect("usage: war2_survey [--prelude-only] <war2.exe> <out_dir>");
@@ -108,9 +157,54 @@ fn main() {
     }
     let bin = first;
     let out = std::path::PathBuf::from(args.next().expect("usage: war2_survey <war2.exe> <out_dir>"));
-    std::fs::create_dir_all(out.join("src")).unwrap();
-    std::fs::create_dir_all(out.join("raw")).unwrap();
+    let force = args.any(|a| a == "--force");
+
+    // Artifacts are STAMPED with the commit that produced them: `src.<stamp>/`, `raw.<stamp>/`,
+    // `manifest.<stamp>.tsv`, with the unsuffixed names as symlinks to the current stamp.
+    //
+    // This exists because the emit used to write those three paths directly and truncate them, so
+    // every measurement destroyed the state it would have been compared against. The only defence
+    // was the operator remembering to copy a snapshot aside first — and the evidence that it does
+    // not work is still in war2-survey/: 21 hand-made snapshot directories in five different
+    // naming conventions, of which 8 (`src.prev`, `src.base`, `src.b2-half`, …) name no commit at
+    // all and are therefore useless as a baseline for any claim.
+    //
+    // A `-dirty` stamp marks an emit no commit can reproduce. That is the whole point: it is the
+    // class those 8 orphans belong to, made visible in the filename instead of discovered later.
+    let stamp = git_stamp();
+    let src_dir = out.join(format!("src.{stamp}"));
+    let raw_dir = out.join(format!("raw.{stamp}"));
+    let manifest_path = out.join(format!("manifest.{stamp}.tsv"));
+
+    // A re-emit at the same clean commit is a no-op, not a silent rewrite. `-dirty` is exempt: an
+    // uncommitted tree is expected to be re-emitted repeatedly while iterating.
+    if src_dir.exists() && !stamp.ends_with("-dirty") && !force {
+        eprintln!(
+            "{} already exists — that commit has been emitted.\n\
+             Re-run with --force to overwrite it, or commit first for a new stamp.",
+            src_dir.display()
+        );
+        std::process::exit(2);
+    }
+
+    // CLEAR the stamped dirs first. `create_dir_all` alone leaves earlier files in place, so a
+    // re-emit that produces fewer functions — or renumbers them — blends two runs into one
+    // directory that is a snapshot of neither. That is not hypothetical: the pre-stamping
+    // `war2-survey/src/` holds .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
+    // Only reachable for a new stamp (nothing to clear), a `-dirty` stamp, or --force.
+    for d in [&src_dir, &raw_dir] {
+        if d.exists() {
+            std::fs::remove_dir_all(d).unwrap();
+        }
+    }
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&raw_dir).unwrap();
     std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
+    // compile.sh reads <out>/src/$n.c and <out>/manifest.tsv; compare.py reads <out>/manifest.tsv.
+    // Pointing the bare names at the current stamp keeps both working unchanged.
+    link_latest(&out.join("src"), &format!("src.{stamp}"));
+    link_latest(&out.join("raw"), &format!("raw.{stamp}"));
+    link_latest(&out.join("manifest.tsv"), &format!("manifest.{stamp}.tsv"));
 
     eprintln!("loading WAR2 via analyze_le_file ...");
     let prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
@@ -139,8 +233,12 @@ fn main() {
     // Next-entry map (same code object) → function byte extent [entry, next_entry).
     let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
 
-    let manifest_path = out.join("manifest.tsv");
     let mut mf = std::io::BufWriter::new(std::fs::File::create(&manifest_path).unwrap());
+    // Stamp the manifest itself, so a .tsv that has been copied away from its directory still
+    // says which tree produced it. Both consumers skipped exactly one line (compile.sh's
+    // `tail -n +2`, compare.py's `header = next(fh)`), so they were changed to drop `#` lines
+    // first — otherwise this line pushes the column header into the data.
+    writeln!(mf, "# war2_survey emit @ {stamp}").unwrap();
     writeln!(
         mf,
         "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached"
@@ -239,7 +337,7 @@ fn main() {
                 .len();
 
         let c = print_c(&f);
-        std::fs::write(out.join("raw").join(format!("{va:08x}.c")), &c).unwrap();
+        std::fs::write(raw_dir.join(format!("{va:08x}.c")), &c).unwrap();
 
         // Synthesize a standalone TU and detect decompiler-artifact "smells".
         let thunk = matches!(region.first(), Some(0xe9) | Some(0xeb)) && orig_len <= 8;
@@ -247,7 +345,7 @@ fn main() {
         if thunk {
             smells.push("thunk".into());
         }
-        std::fs::write(out.join("src").join(format!("{idx:05}.c")), &tu).unwrap();
+        std::fs::write(src_dir.join(format!("{idx:05}.c")), &tu).unwrap();
 
         let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(
