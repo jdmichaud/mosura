@@ -51,19 +51,26 @@
 //! been found: `mustTerminate=true` was the candidate and is measurably dead (see above), and
 //! the flow-disassembler bounds are also measured not to address it.
 //!
-//! **Three intrusions into known function bodies**, and they are NOT the benign 1-5 byte
-//! Watcom prologue shift — they are deep:
+//! **Three entries inside known function bodies**, at depths 37/59/65 bytes — NOT the benign
+//! 1-5 byte Watcom prologue shift. Investigated rather than assumed, and the evidence says they
+//! are secondary ENTRY POINTS, not extent corruption:
 //!
 //! ```text
-//!   00010bb1  +37 into FUN_00010b8c        (source-done)   mosura-only
-//!   000604c4  +59 into __do_exit_with_msg__ (crt-known)     Ghidra has it too
-//!   00064c1c  +65 into FUN_00064bdb        (source-done)   Ghidra has it too
+//!   00010bb1  +37 into FUN_00010b8c         6 inbound UNCONDITIONAL_CALLs, NO fixup slot
+//!   000604c4  +59 into __do_exit_with_msg__ 9 inbound UNCONDITIONAL_CALLs, NO fixup slot
+//!             (crt-known; Ghidra has it too)
+//!   00064c1c  +65 into FUN_00064bdb         2 UNCONDITIONAL_CALLs + 2 DATA (Ghidra has it too;
+//!             mosura had it BEFORE this pass existed)
 //! ```
 //!
-//! A function entered 37-65 bytes into another one has a wrong extent and can never recompile
-//! byte-exact, so these are extent-corruption seeds. Two of the three are shared with Ghidra;
-//! `00010bb1` is mosura's own. For scale, Ghidra intrudes into 106 known bodies to mosura's 3 —
-//! but that is a reason to fix these three, not to excuse them.
+//! Two of the three have no relocation slot pointing at them at all, so this pass did not put
+//! them there — they are ordinary direct-call targets, called from 6 and 9 distinct sites. An
+//! address called from nine places is a real entry point; `__do_exit_with_msg__ + 59` is the
+//! shape of a Watcom CRT alternate entry that skips the message setup. `00064c1c` predates this
+//! pass entirely (present in the analyzer-only configuration).
+//!
+//! So the tracker records one function where the binary has two entries, and only `00010bb1` is
+//! mosura-only — and it too is call-reached, not seeded here.
 //!
 //! **51 functions in neither oracle** — see `docs/war2-relocation-seed-candidates.md`. All sit
 //! in inter-function gaps (median gap 422 bytes), so they are plausible unrecorded functions

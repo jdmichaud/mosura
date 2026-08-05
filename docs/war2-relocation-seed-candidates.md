@@ -8,6 +8,11 @@
   WITHOUT `-processor`, which would force compiler spec `windows` and cost 201 functions), nor
 - the expert tracker `warcraft2-re/analysis/decomp-tracker.csv` (2120 functions).
 
+**The three entries that land inside a known function body are documented in the analyzer's
+module doc and are NOT part of this list** — they were investigated and turn out to be
+secondary entry points reached by direct calls (6 and 9 call sites for two of them), not
+artifacts of this pass.
+
 **They are not known to be wrong.** Every one sits in a gap *between* tracker functions, never
 inside one (the 3 that do land inside a known body are listed separately, in the analyzer's
 module doc). Gap sizes between the surrounding tracker functions: min 6 B, median 422 B, max
