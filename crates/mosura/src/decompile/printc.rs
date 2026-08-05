@@ -183,6 +183,13 @@ struct PrintC<'a> {
     /// COPYs), frozen in-pipeline by [`super::merge::ActionCopyMarker`] at Ghidra's slot. Consumed,
     /// never re-derived — the marks and the Covers behind them are decided before any CAST exists.
     nonprinting: &'a HashSet<OpId>,
+    /// Ghidra's `comma_separate` print modifier (`PrintLanguage::modifiers`, printlanguage.hh:154 —
+    /// "Statements within condition"). While set, a block's statements are emitted INSIDE the
+    /// enclosing parentheses: joined by `, ` with no line break (`PrintC::emitBlockBasic`,
+    /// printc.cc:2707/2716) and with no terminating `;` (`PrintC::emitStatement`, printc.cc:2291).
+    /// Set/cleared around a condition-block emit exactly where Ghidra does `pushMod();
+    /// setMod(comma_separate); … popMod();`.
+    comma_separate: bool,
 }
 
 impl PrintC<'_> {
@@ -1163,6 +1170,37 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// Is the loop variable involved as an input in the iterator statement? — Ghidra
+    /// `BlockWhileDo::testIterateForm` (block.cc:3287).
+    ///
+    /// Walks the iterate statement's operand tree looking for a Varnode in the loop variable's
+    /// HighVariable, **truncating at every explicit Varnode**: an explicit operand is a named
+    /// variable in its own right, so the loop variable reached only *through* one is not what this
+    /// statement iterates. That truncation is the whole test. On `FUN_00016764`'s list walk the
+    /// iterate statement is `piVar2 = (int *)(iVar1 + 0x60)` where `iVar1 = *piVar2` is explicit —
+    /// the walk stops at `iVar1`, never reaches `piVar2`, and Ghidra prints a plain `while` with a
+    /// comma-separated condition instead of a `for`.
+    fn test_iterate_form(&self, loop_var: VarnodeId, iterate: OpId) -> bool {
+        let high = self.high_of[loop_var.0 as usize];
+        let mut path = vec![(iterate, 0usize)];
+        while let Some((op, slot)) = path.pop() {
+            let Some(&vn) = self.f.op(op).inrefs.get(slot) else { continue };
+            path.push((op, slot + 1));
+            if self.f.vn(vn).is_annotation() {
+                continue;
+            }
+            if self.high_of[vn.0 as usize] == high {
+                return true;
+            }
+            if self.is_explicit(vn) {
+                continue; // Truncate at explicit
+            }
+            let Some(def) = self.f.vn(vn).def else { continue };
+            path.push((def, 0));
+        }
+        false
+    }
+
     /// If the WhileDo with header `cond_idx` and body `body_idx` is a `for`-loop, return its
     /// `(initializer, iterator)` ops — Ghidra `BlockWhileDo::finalTransform` (block.cc:3356) +
     /// `findLoopVariable` (block.cc:3164) + `findInitializer` (block.cc:3223): the body's typed
@@ -1210,6 +1248,14 @@ impl<'a> PrintC<'a> {
         }
         if iterate != last && !self.is_moveable(iterate, last) {
             return None; // not the final statement and not moveable there (findLoopVariable)
+        }
+        // `BlockWhileDo::testIterateForm` (block.cc:3287), run by `finalizePrinting` after
+        // `finalTransform` has already accepted the loop variable: the LOOP VARIABLE ITSELF must be
+        // an input of the iterate statement. `findLoopVariable` above only established that the
+        // exit test reaches the phi — the iterate op it picked up on the way may compute the next
+        // value from something else entirely, and then there is no `for` to print.
+        if !self.test_iterate_form(phi_out, iterate) {
+            return None;
         }
         // findInitializer: only a two-in head has one; the other phi input's def must sit in the
         // pre-loop block that flows only into the loop. (A folded-constant initializer has no def
@@ -1286,16 +1332,29 @@ impl<'a> PrintC<'a> {
                 format!("{a} {conn} {b}")
             }
             _ => {
+                // Under `comma_separate` this leaf IS a `BlockBasic` being emitted inside the
+                // parens (`PrintC::emitBlockBasic`, printc.cc:2699-2720): its statements print
+                // first, comma-separated, and the CBRANCH is simply the last statement of the
+                // block — which is the condition expression rendered below. Ghidra never needs
+                // to splice them because the branch is an op like any other; mosura renders the
+                // condition separately, so the join is explicit here. Emitted BEFORE the
+                // condition, matching both Ghidra's op order and the order the hoisting arm used
+                // (so no variable's first-use naming moves).
+                let mut stmts = String::new();
+                if self.comma_separate {
+                    self.emit_structured(s, idx, 0, &mut stmts);
+                }
                 let cvar = exit_basic(s, idx)
                     .and_then(|bid| {
                         self.f.block(bid).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Cbranch)
                     })
                     .and_then(|cbr| self.f.op(cbr).input(1));
-                match cvar {
+                let cond = match cvar {
                     Some(v) if neg => self.render_negated(v),
                     Some(v) => self.render_var(v).0,
                     None => if neg { "!(1)".into() } else { "1".into() },
-                }
+                };
+                if stmts.is_empty() { cond } else { format!("{stmts}, {cond}") }
             }
         }
     }
@@ -1310,6 +1369,29 @@ impl<'a> PrintC<'a> {
     /// than wrapped in `!(...)`: `!(!x)` cancels, `==`/`!=` flip, `&&`/`||` De Morgan.
     fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
         self.render_cond_expr(s, cond_idx, negated)
+    }
+
+    /// The condition of a loop whose condition block is emitted INSIDE the parentheses — Ghidra
+    /// `pushMod(); setMod(comma_separate); condBlock->emit(this); popMod();`
+    /// (`PrintC::emitBlockWhileDo`, printc.cc:3046-3053).
+    ///
+    /// The returned string is everything Ghidra puts between the parens: the condition block's own
+    /// statements, comma-separated, followed by the branch condition. The caller must therefore NOT
+    /// also emit the condition block above the loop — that hoist is the defect this replaces. It
+    /// ran the statements ONCE, before the loop, so a loop whose test re-reads memory each
+    /// iteration could never advance, and on `FUN_00016764` it moved a load above the initialization
+    /// of the very pointer it dereferences (a use-before-def).
+    ///
+    /// A `CondAnd`/`CondOr` condition needs no special case here: the mod is a printer-wide
+    /// modifier, so it is inherited by both operand blocks exactly as in
+    /// `PrintC::emitBlockCondition`'s `comma_separate` arm (printc.cc:2843-2869), which emits
+    /// block 0 under the incoming mods and sets `comma_separate` again for block 1.
+    fn render_condition_comma(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
+        let saved = self.comma_separate;
+        self.comma_separate = true;
+        let cond = self.render_cond_expr(s, cond_idx, negated);
+        self.comma_separate = saved;
+        cond
     }
 
     /// Render the logical negation of boolean `v`, folding double negation and flipping
@@ -1484,36 +1566,15 @@ impl<'a> PrintC<'a> {
                 self.emit_structured(s, comps[1], indent + 1, out);
                 let _ = writeln!(out, "{pad}}}");
             }
-            // ⚠️ NOT YET PORTED, and it is WRONG CODE, not a cosmetic gap:
-            // `PrintC::emitBlockWhileDo`'s non-overflow branch (printc.cc:3046-3053) emits the
-            // condition block INSIDE the parens under the `comma_separate` mod
-            // (`setMod(comma_separate); condBlock->emit(this)`, consumed at printc.cc:2707/2716
-            // for the `, ` separator and printc.cc:2291 to drop the `;`), so its statements
-            // re-execute every iteration. The arm below emits `comps[0]` ABOVE the `while` line
-            // instead, running them ONCE.
-            //
-            // Measured absolutely on both sides: Ghidra emits the comma form on 55 sites / 37
-            // functions of WAR2; mosura emits it 0 times out of 233 while-loops. Specimen
-            // `FUN_00016764` — Ghidra `while (iVar1 = *piVar2, in_EAX != iVar1) { piVar2 =
-            // (int *)(iVar1 + 0x60); }`, a linked-list walk; mosura hoists `iVar1 = *piVar2;`
-            // above the loop AND above `piVar2`'s own initialization, so it is a use-before-def
-            // as well as a walk that can never advance.
-            //
-            // NOT reachable from `f_whiledo_overflow`: these condition blocks are by definition
-            // NOT complex (a complex one takes the overflow arm above), so the port that added
-            // that arm cannot fix any of them. ❌ RETRACTED — this note first cited `FUN_0002a940`
-            // as the specimen and task #1 cited it as the overflow port's own wrong-code
-            // demonstration; its condition block is a `CondAnd` that `BlockCondition::isComplex`
-            // (block.hh:635) reports NOT complex, so the overflow arm never fires there and that
-            // function belongs to THIS defect, not to the overflow one.
-            //
-            // REVIVAL CONDITION: this is wrong the moment `emit_basic` can render a block's
-            // statements as a comma-separated expression list — `comma_separate` has no mosura
-            // equivalent today (`grep -rn comma_separate crates/mosura/src/` is empty), and it
-            // touches every plain `while`/`for` header, which is why it is not bundled here.
             FlowKind::WhileDo => {
-                self.emit_structured(s, comps[0], indent, out);
                 if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
+                    // ⚠️ STILL HOISTS. `PrintC::emitForLoop` (printc.cc:2974) sets the SAME
+                    // `comma_separate` mod around its `condBlock->emit(this)` as the `while` arm
+                    // below, so a for-header whose condition block carries statements has the same
+                    // defect. Deliberately NOT bundled with the `while` port: the for-header also
+                    // suppresses the initializer/iterate ops, so it needs its own specimen and its
+                    // own measurement. Filed separately.
+                    self.emit_structured(s, comps[0], indent, out);
                     let init_s = match init_var {
                         Some(iv) => {
                             let lhs = self.lvalue_of(phi_out);
@@ -1531,7 +1592,25 @@ impl<'a> PrintC<'a> {
                     self.emit_structured(s, comps[1], indent + 1, out);
                     let _ = writeln!(out, "{pad}}}");
                 } else {
-                    let cond = self.render_condition(s, comps[0], negated);
+                    // `PrintC::emitBlockWhileDo` opens with `emitAnyLabelStatement(bl)`
+                    // (printc.cc:3013) and `BlockWhileDo::markLabelBumpUp` (block.cc:3316) marks
+                    // the sub-blocks — "whiledos steal lower blocks labels" — so a label on the
+                    // loop's front leaf prints ABOVE the `while`, not from inside the condition
+                    // block. Without the steal the label lands inside the parentheses once the
+                    // condition is emitted there (`LAB_000590d2:` in FUN_00059060). The other two
+                    // arms head with the same call, but their condition block is still emitted
+                    // outside the parens, so stealing there would only move whitespace.
+                    if let Some(b) = entry_basic(s, comps[0]) {
+                        if self.labels.remove(&b) {
+                            let name = self.lab_name(b);
+                            let _ = writeln!(out, "{}{}:", "  ".repeat(indent.saturating_sub(1)), name);
+                        }
+                    }
+                    // `PrintC::emitBlockWhileDo`'s non-overflow branch (printc.cc:3046-3053):
+                    // the condition block is emitted INSIDE the parens under `comma_separate`,
+                    // so its statements re-execute every iteration. There is no separate emit of
+                    // `comps[0]` above the `while` — see [`Self::render_condition_comma`].
+                    let cond = self.render_condition_comma(s, comps[0], negated);
                     let _ = writeln!(out, "{pad}while ({cond}) {{");
                     self.emit_structured(s, comps[1], indent + 1, out);
                     let _ = writeln!(out, "{pad}}}");
@@ -1615,6 +1694,10 @@ impl<'a> PrintC<'a> {
         if self.labels.contains(&b) {
             let _ = writeln!(out, "{}{}:", "  ".repeat(indent.saturating_sub(1)), self.lab_name(b));
         }
+        // Ghidra's per-block `separator` (printc.cc:2694): the `, ` of `comma_separate` goes
+        // BETWEEN two statements of one basic block, never before the first — and it is local to
+        // `emitBlockBasic`, so two blocks emitted back to back do not get one.
+        let mut separator = false;
         for op in self.f.block(b).ops.clone() {
             if self.suppressed.contains(&op) {
                 continue; // emitted in a for-loop header (initializer / iterator)
@@ -1642,16 +1725,14 @@ impl<'a> PrintC<'a> {
                 }
             }
             let o = self.f.op(op);
-            match o.code() {
-                OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => {}
+            let stmt: Option<String> = match o.code() {
+                OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => None,
                 OpCode::Return => match o.input(1) {
                     Some(v) => {
                         let e = self.render_var(v).0; // wired return value (inlined when single-use)
-                        let _ = writeln!(out, "{pad}return {e};");
+                        Some(format!("return {e}"))
                     }
-                    None => {
-                        let _ = writeln!(out, "{pad}return;");
-                    }
+                    None => Some("return".to_string()),
                 },
                 OpCode::Store => {
                     let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
@@ -1659,7 +1740,7 @@ impl<'a> PrintC<'a> {
                     let vty = self.type_of(vv);
                     let lhs = self.render_mem(addr, sz, &vty).0;
                     let val = self.render_var(vv).0;
-                    let _ = writeln!(out, "{pad}{lhs} = {val};");
+                    Some(format!("{lhs} = {val}"))
                 }
                 OpCode::Call | OpCode::Callind => {
                     // a call is a statement (it has a side effect). Its return value is always a
@@ -1672,15 +1753,16 @@ impl<'a> PrintC<'a> {
                         (Some(outv), Some(n)) if n >= 1 => {
                             let lhs = self.lvalue_of(outv);
                             let rhs = self.render_op(op).0;
-                            let _ = writeln!(out, "{pad}{lhs} = {rhs};");
+                            Some(format!("{lhs} = {rhs}"))
                         }
                         _ => {
                             let e = self.render_op(op).0;
-                            let _ = writeln!(out, "{pad}{e};");
+                            Some(e)
                         }
                     }
                 }
                 _ => {
+                    let mut stmt = None;
                     if let Some(outv) = o.output {
                         // A COPY or SUBPIECE between two Varnodes of the SAME HighVariable is a hidden
                         // internal copy (Ghidra `Merge::markInternalCopies` → `opMarkNonPrinting`,
@@ -1699,10 +1781,26 @@ impl<'a> PrintC<'a> {
                         if !hidden && self.is_explicit(outv) {
                             let lhs = self.lvalue_of(outv);
                             let rhs = self.render_op(op).0;
-                            let _ = writeln!(out, "{pad}{lhs} = {rhs};");
+                            stmt = Some(format!("{lhs} = {rhs}"));
                         }
                     }
+                    stmt
                 }
+            };
+            // Ghidra `PrintC::emitBlockBasic`'s separator logic (printc.cc:2706-2720) +
+            // `emitStatement` (printc.cc:2288): under `comma_separate` statements are joined by
+            // `, ` inside the enclosing parens and carry no `;`; otherwise each takes its own
+            // `tagLine`-prefixed, `;`-terminated line.
+            if let Some(stmt) = stmt {
+                if self.comma_separate {
+                    if separator {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&stmt);
+                } else {
+                    let _ = writeln!(out, "{pad}{stmt};");
+                }
+                separator = true;
             }
         }
         // Unstructured branches cut from this block by the collapse driver, in cut order —
@@ -2220,6 +2318,7 @@ pub fn print_c(f: &Funcdata) -> String {
             .nonprinting
             .as_ref()
             .expect("printc requires the non-printing marks frozen by ActionCopyMarker; run pipeline::decompile"),
+        comma_separate: false,
     };
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
