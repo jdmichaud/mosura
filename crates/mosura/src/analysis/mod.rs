@@ -139,28 +139,6 @@ pub fn analyze(program: &mut Program) {
     if let Some(rs) = analyzers::relocation_seed::RelocationSeedAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(rs), program);
     }
-    // Function Start Search — Ghidra's byte-pattern function discovery, registered four times at
-    // four points in the pipeline (`FunctionStartAnalyzer` + its Pre/AfterCode/AfterData
-    // subclasses). The only route that needs NO inbound edge to a function: it recognises a
-    // prologue by its bytes. Each registration is `None` when no pattern file matches the
-    // program's (language, compiler), so this is inert on every architecture Ghidra ships no
-    // patterns for.
-    for kind in [
-        analyzers::function_start::FunctionStartKind::PreSearch,
-        analyzers::function_start::FunctionStartKind::Search,
-        analyzers::function_start::FunctionStartKind::AfterCode,
-        analyzers::function_start::FunctionStartKind::AfterData,
-    ] {
-        if let Some(fs) = analyzers::function_start::FunctionStartAnalyzer::for_program(program, kind)
-        {
-            mgr.add_analyzer(Box::new(fs), program);
-        }
-    }
-    // The delayed creator the `possiblefuncstart` matches are handed to
-    // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854). Registered unconditionally: it
-    // subscribes to no change channel, so with nothing scheduled into it it never runs.
-    mgr.add_analyzer(Box::new(analyzers::function_start::PossibleDelayedFunctionCreator), program);
-
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
     // check — a data export like `__bss_start` is not a function); call targets found
@@ -212,6 +190,55 @@ pub fn analyze(program: &mut Program) {
     // tail jumps already exist when each PLT function is created; mosura disassembles the PLT
     // in the deferred `plt_linear_sweep`, so the shared-return scan must follow it.
     shared_return_pass(program);
+
+    // Function Start Search — Ghidra's byte-pattern function discovery: the only route that needs
+    // NO inbound edge to a function, since it recognises a prologue by its bytes. Registered four
+    // times, once per pipeline point (`FunctionStartAnalyzer` + its Pre/AfterCode/AfterData
+    // subclasses). Each is `None` when no pattern file matches the program's (language, compiler),
+    // so this is inert wherever Ghidra ships no patterns.
+    //
+    // **Ordering is load-bearing and must stay AFTER `shared_return_pass`.** Ghidra runs
+    // `SharedReturnAnalyzer` at `CODE_ANALYSIS.before().before()` (SharedReturnAnalyzer.java:70)
+    // and `FunctionStartAnalyzer` at `CODE_ANALYSIS.after().after()`
+    // (FunctionStartAnalyzer.java:111) — shared-return strictly first. That is not incidental: it
+    // is what puts PLT[0] in a function before the pattern scan, so the scan's "already inside a
+    // function" guard (FunctionStartAnalyzer.java:403) rejects a match at PLT[0]+6. mosura defers
+    // the PLT sweep and the shared-return scan out of the manager loop (see their notes above), so
+    // running the pattern scan inside that loop inverts Ghidra's order and creates a spurious
+    // function mid-PLT-stub — `basic.elf` 0x401026, caught by `analysis_parity`'s 0-spurious gate.
+    let mut fs_mgr = AutoAnalysisManager::new();
+    let mut any = false;
+    for kind in [
+        analyzers::function_start::FunctionStartKind::PreSearch,
+        analyzers::function_start::FunctionStartKind::Search,
+        analyzers::function_start::FunctionStartKind::AfterCode,
+        analyzers::function_start::FunctionStartKind::AfterData,
+    ] {
+        if let Some(fs) = analyzers::function_start::FunctionStartAnalyzer::for_program(program, kind)
+        {
+            fs_mgr.add_analyzer(Box::new(fs), program);
+            any = true;
+        }
+    }
+    if any {
+        // The delayed creator the `possiblefuncstart` matches are handed to
+        // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854).
+        fs_mgr.add_analyzer(
+            Box::new(analyzers::function_start::PossibleDelayedFunctionCreator),
+            program,
+        );
+        // Ghidra's `AutoAnalysisManager.blockAdded` fires for every loader block — that is how a
+        // BYTE_ANALYZER gets the whole image as its "added" set.
+        let mut fs_blocks = AddressSet::new();
+        for b in program.memory.blocks() {
+            fs_blocks.add_range(b.start().space, b.start().offset, b.end().offset);
+        }
+        fs_mgr.scheduling().block_added(&fs_blocks);
+        fs_mgr.run(program);
+        if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
+            analyzers::compute_function_bodies(&spec, &ctx, program);
+        }
+    }
 
     // A7 Task 6: GNU/Itanium C++ demangler (Ghidra GnuDemanglerAnalyzer, a BYTE_ANALYZER at
     // ~DATA_TYPE_PROPAGATION priority — i.e. late). Applies the demangled name to each
