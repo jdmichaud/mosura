@@ -317,62 +317,141 @@ where
     Ok(program)
 }
 
+/// `ElfProgramBuilder.findLoadAddress(fileOffset, headerSize)` (ElfProgramBuilder.java:3043) —
+/// the loaded address of the file range `[file_offset, file_offset + header_size - 1]`: the
+/// first non-`SHT_NOBITS` section whose file range covers it, else the first `PT_LOAD` segment
+/// whose file range covers it. `None` when the range is not loaded anywhere — Ghidra then puts
+/// the markup in the non-loaded `OTHER` space (markupElfHeader:1170-1177), which mosura's
+/// default-space program does not carry, so the markup is simply skipped.
+///
+/// This is not a detail. The previous code assumed file offset 0 loads at the image base,
+/// which holds for a gcc-linked ELF (first `PT_LOAD` has `p_offset == 0`) but not for an Open
+/// Watcom `wlink` image, whose first `PT_LOAD` starts at file offset 0x100: there the ELF
+/// header is not loaded at all, and marking it up at the image base laid a 52-byte
+/// `Elf32_Ehdr` straight over the first function.
+fn find_load_address<H>(
+    elf: &ElfFile<H>,
+    ram: SpaceId,
+    program: &Program,
+    file_offset: u64,
+    header_size: u64,
+) -> Option<u64>
+where
+    H: FileHeader<Endian = Endianness>,
+{
+    let endian = elf.endian();
+    let mapped = |off: u64| program.memory.contains(Address::new(ram, off));
+    let header_end_offset = file_offset + header_size.max(1) - 1;
+
+    // "Locate possible load of Elf header within section (i.e., start of file)" (:3047).
+    for section in elf.sections() {
+        let sh = section.elf_section_header();
+        if sh.sh_type(endian) == elf::SHT_NOBITS {
+            continue;
+        }
+        let start_offset: u64 = sh.sh_offset(endian).into();
+        let size: u64 = sh.sh_size(endian).into();
+        if size == 0 {
+            continue;
+        }
+        if file_offset >= start_offset && header_end_offset < start_offset + size {
+            let sh_addr: u64 = sh.sh_addr(endian).into();
+            if sh_addr != 0 {
+                let a = sh_addr + (file_offset - start_offset);
+                if mapped(a) {
+                    return Some(a);
+                }
+            }
+        }
+    }
+
+    // "Locate possible load of Elf header within segment" (:3064).
+    for ph in elf.elf_program_headers() {
+        if ph.p_type(endian) == elf::PT_NULL {
+            continue;
+        }
+        let start_offset: u64 = ph.p_offset(endian).into();
+        let size: u64 = ph.p_filesz(endian).into();
+        if size == 0 {
+            continue;
+        }
+        if file_offset >= start_offset && header_end_offset < start_offset + size {
+            let a: u64 = ph.p_vaddr(endian).into();
+            let a = a + (file_offset - start_offset);
+            if mapped(a) && ph.p_type(endian) == elf::PT_LOAD {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
 /// Mark up the ELF header + program-header table with the DATA references Ghidra's loader
 /// emits (`ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`): `e_entry` → entry,
 /// `e_phoff` → the program-header table, and each loaded segment's `p_vaddr` → its load
-/// address. The header sits at the image base (where file offset 0 loads).
+/// address. Both structures are located with [`find_load_address`], never assumed.
 fn markup_elf_structures<H>(elf: &ElfFile<H>, geom: Geom, ram: SpaceId, program: &mut Program)
 where
     H: FileHeader<Endian = Endianness>,
 {
     let endian = elf.endian();
     let header = elf.elf_header();
-    let base = program.image_base.offset;
     let mapped = |program: &Program, off: u64| program.memory.contains(Address::new(ram, off));
     let data_ref = |program: &mut Program, from: u64, to: u64| {
         program.reference_manager.add(Address::new(ram, from), Address::new(ram, to), RefType::Data, -1);
     };
 
-    // ElfN_Ehdr: e_entry @ 0x18 in both classes; e_phoff @ 0x20 (Elf64) / 0x1c (Elf32).
-    let e_entry: u64 = header.e_entry(endian).into();
-    if e_entry != 0 && mapped(program, e_entry) {
-        data_ref(program, base + 0x18, e_entry);
-    }
     let e_phoff: u64 = header.e_phoff(endian).into();
     let phentsize = u64::from(header.e_phentsize(endian));
-    let phdr_vaddr = base + e_phoff; // file offset e_phoff loads at base + e_phoff
-    if e_phoff != 0 && mapped(program, phdr_vaddr) {
-        data_ref(program, base + geom.e_phoff_field(), phdr_vaddr);
+    let e_phnum = u64::from(header.e_phnum(endian));
+    // `markupElfHeader` (:1167) / `markupProgramHeaders` (:1202).
+    let ehdr_addr = find_load_address(elf, ram, program, 0, u64::from(geom.ehdr_len()));
+    let phdr_addr = if e_phoff != 0 && e_phnum != 0 {
+        find_load_address(elf, ram, program, e_phoff, e_phnum * geom.phdr_len())
+    } else {
+        None
+    };
+
+    // ElfN_Ehdr: e_entry @ 0x18 in both classes; e_phoff @ 0x20 (Elf64) / 0x1c (Elf32).
+    if let Some(ehdr) = ehdr_addr {
+        let e_entry: u64 = header.e_entry(endian).into();
+        if e_entry != 0 && mapped(program, e_entry) {
+            data_ref(program, ehdr + 0x18, e_entry);
+        }
+        if let Some(phdr) = phdr_addr {
+            data_ref(program, ehdr + geom.e_phoff_field(), phdr);
+        }
     }
 
     // Each program header's p_vaddr (@ 0x10 in Elf64_Phdr / 0x08 in Elf32_Phdr) → its load
     // address. Skip PT_NULL and offset-0 segments (the latter is the file-start LOAD —
     // Ghidra's `p_offset == 0` skip), and segments whose target isn't loaded.
-    for (i, ph) in elf.elf_program_headers().iter().enumerate() {
-        if ph.p_type(endian) == elf::PT_NULL || ph.p_offset(endian).into() == 0 {
-            continue;
-        }
-        let pvaddr: u64 = ph.p_vaddr(endian).into();
-        if pvaddr != 0 && mapped(program, pvaddr) {
-            data_ref(program, phdr_vaddr + i as u64 * phentsize + geom.p_vaddr_field(), pvaddr);
+    if let Some(phdr) = phdr_addr {
+        for (i, ph) in elf.elf_program_headers().iter().enumerate() {
+            if ph.p_type(endian) == elf::PT_NULL || ph.p_offset(endian).into() == 0 {
+                continue;
+            }
+            let pvaddr: u64 = ph.p_vaddr(endian).into();
+            if pvaddr != 0 && mapped(program, pvaddr) {
+                data_ref(program, phdr + i as u64 * phentsize + geom.p_vaddr_field(), pvaddr);
+            }
         }
     }
 
     // Defined-data markup (Ghidra `ElfProgramBuilder.markupElfHeader`/`markupProgramHeaders`):
-    // create the `ElfN_Ehdr` struct at the image base and the `ElfN_Phdr[e_phnum]` array at
-    // `e_phoff`, at their loaded addresses, only when the structure lies in loaded memory
-    // (Ghidra's `headerAddr` reachability check). The datatype names + lengths are Ghidra's
-    // fixed structures: Ehdr = 64 (Elf64) / 52 (Elf32) bytes, Phdr = 56 / 32 bytes each.
+    // the `ElfN_Ehdr` struct and the `ElfN_Phdr[e_phnum]` array, at their loaded addresses,
+    // only when the structure lies in loaded memory (Ghidra's `headerAddr` null check). The
+    // datatype names + lengths are Ghidra's fixed structures: Ehdr = 64 (Elf64) / 52 (Elf32)
+    // bytes, Phdr = 56 / 32 bytes each.
     let prefix = geom.struct_prefix();
-    if mapped(program, base) {
-        program.defined_data.push((Address::new(ram, base), format!("{prefix}_Ehdr"), geom.ehdr_len()));
+    if let Some(ehdr) = ehdr_addr {
+        program.defined_data.push((Address::new(ram, ehdr), format!("{prefix}_Ehdr"), geom.ehdr_len()));
     }
-    let e_phnum = u64::from(header.e_phnum(endian));
-    if e_phoff != 0 && e_phnum != 0 && mapped(program, phdr_vaddr) {
+    if let Some(phdr) = phdr_addr {
         let len = (e_phnum * geom.phdr_len()) as u32;
         program
             .defined_data
-            .push((Address::new(ram, phdr_vaddr), format!("{prefix}_Phdr[{e_phnum}]"), len));
+            .push((Address::new(ram, phdr), format!("{prefix}_Phdr[{e_phnum}]"), len));
     }
 
     // Section-table defined-data markup (Ghidra `ElfProgramBuilder` symbol/relocation-table

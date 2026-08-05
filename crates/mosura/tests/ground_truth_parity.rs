@@ -87,11 +87,30 @@ fn ground_truth_parity() {
             truth.program
         );
 
-        // (2) Full recall of the call-reachable functions. gcc splits cold paths into `<fn>.cold`
-        // symbols reached by a *jump*, not a *call*; on the stripped artifact, flow analysis
-        // correctly folds those into the parent, so they are not expected as separate functions.
-        let primary: BTreeSet<u64> =
-            truth.funcs.iter().filter(|(_, n)| !n.ends_with(".cold")).map(|(a, _)| *a).collect();
+        // (2) Full recall of the call-reachable functions. Two documented classes of truth symbol
+        // are NOT expected back as separate functions:
+        //
+        //  - `<fn>.cold` — gcc splits cold paths into these and reaches them by a *jump*, not a
+        //    *call*; on the stripped artifact flow analysis correctly folds them into the parent.
+        //  - `datafnptr`'s `tab_h*` — the ADDRESS-TABLE targets, reachable only through the
+        //    function-pointer run in `.data`. Ghidra disassembles them and deliberately creates
+        //    no function there: `AddressTableAnalyzer.processAddressTable` builds `validFuncSet`
+        //    and leaves the `createFunction` call commented out ("For Now, Never make functions
+        //    from address tables", AddressTableAnalyzer.java:282-296), as do
+        //    `OperandReferenceAnalyzer.createFunctions` (:614) and its `DataOperandReference`
+        //    sibling (:39). Verified on this exact binary: Ghidra ends with 6 functions and not
+        //    one of them is a `tab_h*`. A faithful mosura must match, because
+        //    `analysis_parity`'s "0 spurious functions vs Ghidra" gate is the thing that keeps
+        //    data-driven analysis from inventing functions at every address-shaped data word.
+        //    What these four DO carry is gated by `data_pointer_function_discovery`.
+        let address_table_target =
+            |n: &str| truth.program == "datafnptr" && n.starts_with("tab_h");
+        let primary: BTreeSet<u64> = truth
+            .funcs
+            .iter()
+            .filter(|(_, n)| !n.ends_with(".cold") && !address_table_target(n))
+            .map(|(a, _)| *a)
+            .collect();
         let missing: Vec<_> = primary.difference(&mine).map(|a| format!("{a:08x}")).collect();
         assert!(
             missing.is_empty(),
@@ -258,6 +277,116 @@ fn tail_jump_shared_return() {
     eprintln!(
         "tailjmp gate: tail_lo_ (backward) + fwd_landing_ (forward) recovered as shared-return \
          tail calls, both inbound jumps retyped UNCONDITIONAL_CALL"
+    );
+}
+
+/// DATA-POINTER function discovery — the source-reduced repro of the second WAR2 auto-analysis
+/// gap (`war2-survey/analysis-gap/REPORT.md` §7): code reachable ONLY through a function pointer
+/// stored in data is never disassembled, so neither it nor anything it calls ever becomes a
+/// function. On WAR2 that is 24.7% of the code object — 109,338 bytes in 23 regions >2KB whose
+/// only inbound edges from outside are `DATA` references, and 783 of 815 missing functions with
+/// no reference in mosura's reference set at all.
+///
+/// `datafnptr` (Open Watcom, `src/datafnptr.c` + `src/datafnptr_cstart.asm`) has two arms:
+/// ARM A a RUN of four function pointers in writable `.data` (`g_table`, dispatched
+/// `call [edx*4+g_table]` with an index constant propagation cannot resolve), ARM B a LONE
+/// pointer (`g_solo`, `call [g_solo]`). Nothing calls any target directly.
+///
+/// PRE-FIX (`8a13977`) `ground_truth_parity` reported
+/// `datafnptr: mosura missed call-reachable functions: ["08048106", "08048110", "0804811d",
+/// "08048127", "0804812e"]` — the four table targets plus `deep_helper`, the helper that only
+/// `tab_h0` calls. ARM B was ALREADY green (mosura's ConstantPropagationAnalyzer reads the lone
+/// pointer and emits a COMPUTED_CALL), which is what isolates the gap to the indexed table.
+///
+/// The fix is the faithful port of Ghidra `AddressTableAnalyzer` + `AddressTable` +
+/// `PseudoDisassembler.isValidCode`. This test pins the MECHANISM, in both directions:
+///  1. the four table targets are DISASSEMBLED and carry a `DATA` reference from their slot;
+///  2. `deep_helper` becomes a function — the CASCADE, i.e. the direct-call discovery that runs
+///     inside the newly decoded code (Ghidra `FunctionAnalyzer`, "Subroutine References");
+///  3. NO function is created at any table target — Ghidra creates none either, and inventing
+///     them is precisely the false-positive failure mode a data-driven analyzer has.
+#[test]
+fn data_pointer_function_discovery() {
+    use mosura::analysis::program::CodeUnit;
+    let bin = ground_truth_dir().join("datafnptr.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("datafnptr.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip data_pointer_function_discovery: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let entry_of = |name: &str| -> u64 {
+        truth
+            .funcs
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(a, _)| *a)
+            .unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let prog = analysis::analyze_file(&bin).expect("analyze datafnptr");
+    let ram = prog.default_space;
+    let at = |o: u64| Address::new(ram, o);
+
+    // (1) ARM A — every address-table target is disassembled, and reached by a DATA reference
+    // out of the pointer slot that holds it (the reference `AddressTable.makeTable` creates).
+    for name in ["tab_h0_", "tab_h1_", "tab_h2_", "tab_h3_"] {
+        let target = entry_of(name);
+        assert!(
+            matches!(prog.listing.code_unit_at(at(target)), Some(CodeUnit::Instruction { .. })),
+            "{name} @ {target:#x} was never disassembled — it is reachable ONLY through the \
+             function-pointer table in .data (Ghidra AddressTableAnalyzer)"
+        );
+        let inbound: Vec<(u64, &'static str)> =
+            prog.reference_manager.refs_to(at(target)).map(|r| (r.from.offset, r.ref_type.name())).collect();
+        assert!(
+            inbound.iter().any(|(_, k)| *k == "DATA"),
+            "{name} @ {target:#x}: no DATA reference from its table slot, got {inbound:x?}"
+        );
+        // (3) …and NO function was created at it — matching Ghidra exactly.
+        assert!(
+            prog.function_manager.function_at(at(target)).is_none(),
+            "{name} @ {target:#x}: a function was created at an address-table target. Ghidra \
+             never does (AddressTableAnalyzer.processAddressTable:282-296) — this is the \
+             false-positive failure mode that breaks analysis_parity's 0-spurious gate"
+        );
+    }
+
+    // (2) THE CASCADE — `deep_helper` is called only from `tab_h0`, i.e. only from inside the
+    // data-reachable subgraph. It must come back as a function, by the ordinary direct-call
+    // route, now that the code calling it is decoded.
+    let deep = entry_of("deep_helper_");
+    assert!(
+        prog.function_manager.function_at(at(deep)).is_some(),
+        "deep_helper @ {deep:#x} must be recovered: it is called ONLY from tab_h0, which is \
+         itself reachable only through the data pointer table. This is the WAR2 shape — 1547 \
+         UNCONDITIONAL_CALL references into functions mosura never decoded"
+    );
+    let callers: Vec<u64> = prog
+        .reference_manager
+        .refs_to(at(deep))
+        .filter(|r| r.ref_type.name() == "UNCONDITIONAL_CALL")
+        .map(|r| r.from.offset)
+        .collect();
+    assert!(
+        !callers.is_empty(),
+        "deep_helper @ {deep:#x}: recovered, but with no inbound direct call — it can only have \
+         arrived by some route other than decoding tab_h0"
+    );
+
+    // ARM B — the CONTROL. A lone pointer (no run, so no address table) is resolved by the
+    // constant propagator, and was already green before this port; asserted so the two arms
+    // stay distinguishable if either mechanism regresses.
+    let solo = entry_of("solo_target_");
+    assert!(
+        prog.function_manager.function_at(at(solo)).is_some(),
+        "solo_target @ {solo:#x} (ARM B, lone data pointer) must stay recovered via the \
+         constant propagator's COMPUTED_CALL"
+    );
+
+    eprintln!(
+        "datafnptr gate: 4 address-table targets disassembled (0 functions created at them), \
+         deep_helper @ {deep:#x} recovered by cascade, solo_target @ {solo:#x} by constant \
+         propagation"
     );
 }
 

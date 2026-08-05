@@ -34,6 +34,10 @@ impl CodeUnit {
 #[derive(Clone, Default, Debug)]
 pub struct Listing {
     units: HashMap<(u32, u64), (Address, CodeUnit)>,
+    /// Ordered index of instruction start addresses — the backing for Ghidra's
+    /// `Listing.getInstructionAfter`, which `AddressTable.getEntry` calls once per candidate
+    /// table (a scan of the hash map is O(listing) and WAR2 holds >100k instructions).
+    instruction_starts: std::collections::BTreeSet<(u32, u64)>,
 }
 
 impl Listing {
@@ -42,7 +46,20 @@ impl Listing {
     }
 
     pub fn define(&mut self, addr: Address, unit: CodeUnit) {
+        if matches!(unit, CodeUnit::Instruction { .. }) {
+            self.instruction_starts.insert((addr.space.0, addr.offset));
+        }
         self.units.insert((addr.space.0, addr.offset), (addr, unit));
+    }
+
+    /// The first instruction starting strictly after `addr`, in `addr`'s space (Ghidra
+    /// `Listing.getInstructionAfter`).
+    pub fn instruction_after(&self, addr: Address) -> Option<Address> {
+        self.instruction_starts
+            .range((addr.space.0, addr.offset + 1)..)
+            .next()
+            .filter(|(s, _)| *s == addr.space.0)
+            .map(|(s, o)| Address::new(crate::decompile::space::SpaceId(*s), *o))
     }
 
     pub fn code_unit_at(&self, addr: Address) -> Option<&CodeUnit> {

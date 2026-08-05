@@ -213,6 +213,55 @@ pub fn is_terminator_flow(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> b
     classify(ops, inst_start, inst_next) == FlowKind::Terminator
 }
 
+/// The `FlowType` predicate surface of an instruction — `RefType.isTerminal()` /
+/// `isJump()` / `isCall()` / `isComputed()` / `isConditional()` / `hasFallthrough()`, i.e. the
+/// `setIsTerminal`/`setIsJump`/… columns of `RefType`'s flow-type table
+/// (RefType.java:95-286).
+///
+/// [`flow_type`] cannot serve this: it returns `None` for the arms mosura's [`RefType`] enum
+/// does not name (`FALL_THROUGH`, `TERMINATOR`, `JUMP_TERMINATOR`, `CONDITIONAL_TERMINATOR`,
+/// `INVALID`) — and those arms carry real predicates (`TERMINATOR` is terminal;
+/// `JUMP_TERMINATOR` is terminal *and* a jump). `PseudoDisassembler.checkValidSubroutine`
+/// branches on exactly these predicates for every instruction it follows, terminators
+/// included, so it needs the whole table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct FlowProps {
+    pub terminal: bool,
+    pub jump: bool,
+    pub call: bool,
+    pub computed: bool,
+    pub conditional: bool,
+    pub fallthrough: bool,
+}
+
+/// The [`FlowProps`] of the instruction lifted to `ops`.
+pub fn flow_props(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> FlowProps {
+    let kind = classify(ops, inst_start, inst_next);
+    let fallthrough = kind.has_fallthrough();
+    match kind {
+        // FALL_THROUGH / INVALID: `setHasFall()` only (RefType.java:101,119,127).
+        FlowKind::FallThrough | FlowKind::Invalid => FlowProps { fallthrough, ..Default::default() },
+        // TERMINATOR: `setIsTerminal()` (RefType.java:172).
+        FlowKind::Terminator => FlowProps { terminal: true, fallthrough, ..Default::default() },
+        // CONDITIONAL_TERMINATOR: `setHasFall().setIsTerminal().setIsConditional()` (:194).
+        FlowKind::ConditionalTerminator => {
+            FlowProps { terminal: true, conditional: true, fallthrough, ..Default::default() }
+        }
+        // JUMP_TERMINATOR: `setIsJump().setIsTerminal()` (RefType.java:283).
+        FlowKind::JumpTerminator => {
+            FlowProps { terminal: true, jump: true, fallthrough, ..Default::default() }
+        }
+        FlowKind::Ref(r) => FlowProps {
+            terminal: is_terminal(r),
+            jump: is_jump(r),
+            call: is_call(r),
+            computed: is_computed(r),
+            conditional: is_conditional(r),
+            fallthrough,
+        },
+    }
+}
+
 /// `FlowOverride.getModifiedFlowType` — apply a flow override to a base flow type. Faithful
 /// port of the `CALL_RETURN` arm (the only override mosura's analyzers set). Returns the
 /// (possibly modified) flow type.

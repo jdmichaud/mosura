@@ -23,6 +23,7 @@ pub mod loader;
 pub mod manager;
 pub mod priority;
 pub mod program;
+pub mod pseudo_disassembler;
 pub mod snapshot;
 pub mod symbolic;
 
@@ -120,6 +121,14 @@ pub fn analyze(program: &mut Program) {
     // A6: external-jump flow override — a PLT tail-call `jmp *[GOT]` into the EXTERNAL block
     // becomes COMPUTED_CALL_TERMINATOR (Ghidra OperandReferenceAnalyzer.checkForExternalJump).
     mgr.add_analyzer(Box::new(analyzers::external_jump::ExternalJumpAnalyzer::new()), program);
+    // Address tables — runs of pointers in data whose targets are code (Ghidra
+    // AddressTableAnalyzer, a BYTE_ANALYZER at DATA_TYPE_PROPOGATION.before()). It creates no
+    // function; it disassembles the pointed-to code, and the call targets *inside* that code
+    // become functions the ordinary way. This is the only route into a subgraph whose sole
+    // inbound edges are DATA references (war2-survey/analysis-gap/REPORT.md §7).
+    if let Some(at) = analyzers::address_table::AddressTableAnalyzer::for_program(program) {
+        mgr.add_analyzer(Box::new(at), program);
+    }
 
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
@@ -137,6 +146,14 @@ pub fn analyze(program: &mut Program) {
         }
     }
     mgr.scheduling().function_defined(&seed);
+    // Seed the BYTE analyzers with the loaded blocks — Ghidra's `AutoAnalysisManager.blockAdded`
+    // fires for every block the loader lays down, which is how a BYTE_ANALYZER like
+    // `AddressTableAnalyzer` gets the whole image as its "added" set.
+    let mut blocks = AddressSet::new();
+    for b in program.memory.blocks() {
+        blocks.add_range(b.start().space, b.start().offset, b.end().offset);
+    }
+    mgr.scheduling().block_added(&blocks);
     mgr.run(program);
 
     // ELF GOT/PLT markup (Ghidra `ElfDefaultGotPltMarkup.processLinkageTable`, invoked by

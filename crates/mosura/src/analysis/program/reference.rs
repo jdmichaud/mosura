@@ -95,11 +95,20 @@ pub struct ReferenceManager {
     /// (the program can hold tens of thousands of references — a per-add scan/sort is
     /// quadratic). Iteration order is imposed by the snapshot, not maintained here.
     seen: std::collections::HashSet<(u32, u64, u32, u64, i32, i32)>,
+    /// Ordered index of every reference **destination** `(space, offset)` — the backing for
+    /// Ghidra's `getReferenceDestinationIterator` / `getReferenceCountTo`, which the address-table
+    /// and pseudo-disassembler ports call once per candidate address. A linear scan of `refs`
+    /// there is quadratic on a real binary (WAR2 holds >20k references).
+    dests: std::collections::BTreeSet<(u32, u64)>,
 }
 
 impl ReferenceManager {
     pub fn new() -> ReferenceManager {
-        ReferenceManager { refs: Vec::new(), seen: std::collections::HashSet::new() }
+        ReferenceManager {
+            refs: Vec::new(),
+            seen: std::collections::HashSet::new(),
+            dests: std::collections::BTreeSet::new(),
+        }
     }
 
     /// Add a reference, idempotent on `(from, to, op_index, ref_type)`.
@@ -107,7 +116,35 @@ impl ReferenceManager {
         let key = (from.space.0, from.offset, to.space.0, to.offset, op_index, ref_type as i32);
         if self.seen.insert(key) {
             self.refs.push(Reference { from, to, ref_type, op_index });
+            self.dests.insert((to.space.0, to.offset));
         }
+    }
+
+    /// True if any reference targets `to` (Ghidra `getReferenceCountTo(to) > 0`).
+    pub fn has_reference_to(&self, to: Address) -> bool {
+        self.dests.contains(&(to.space.0, to.offset))
+    }
+
+    /// The first reference destination at or after `from`, restricted to `from`'s space
+    /// (Ghidra `getReferenceDestinationIterator(from, true).next()`).
+    pub fn next_destination_from(&self, from: Address) -> Option<Address> {
+        self.dests
+            .range((from.space.0, from.offset)..)
+            .next()
+            .filter(|(s, _)| *s == from.space.0)
+            .map(|(s, o)| Address::new(crate::decompile::space::SpaceId(*s), *o))
+    }
+
+    /// Every reference destination inside `set`, ascending (Ghidra
+    /// `getReferenceDestinationIterator(set, true)`).
+    pub fn destinations_in(&self, set: &crate::analysis::program::AddressSet) -> Vec<Address> {
+        let mut out = Vec::new();
+        for r in set.ranges() {
+            for (s, o) in self.dests.range((r.space.0, r.min)..=(r.space.0, r.max)) {
+                out.push(Address::new(crate::decompile::space::SpaceId(*s), *o));
+            }
+        }
+        out
     }
 
     /// Change the type of the reference `from → to` (the effect of a flow override, which
@@ -137,6 +174,11 @@ impl ReferenceManager {
         self.seen.retain(|k| {
             !(k.0 == from.space.0 && k.1 == from.offset && k.2 == to.space.0 && k.3 == to.offset && k.5 == ref_type as i32)
         });
+        // `to` may still be the destination of a surviving reference, so the index is rebuilt
+        // rather than punched (removal is rare — only the parameter analysis' operand claim).
+        if !self.refs.iter().any(|r| r.to == to) {
+            self.dests.remove(&(to.space.0, to.offset));
+        }
     }
 
     /// True if any reference `from → to` exists (any type/op index).
