@@ -1,0 +1,13 @@
+# mosura-ground-truth v1 program=tailjmp compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=tailjmp.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_
+func 08048106 0 fwd_jumper_
+func 0804810b 0 gap_fn_
+func 0804810f 0 fwd_landing_
+func 08048116 0 tail_lo_
+func 0804812b 0 mid_
+func 08048135 0 jump_back_
+func 0804813e 0 between_
+func 08048145 0 main_

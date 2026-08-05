@@ -194,6 +194,73 @@ fn narrow_switch_recovery_gap() {
     eprintln!("narrow-switch: sw_int and sw_short both recover 8 targets (gap closed)");
 }
 
+/// Shared-return TAIL-CALL function discovery — the source-reduced repro of the WAR2 auto-analysis
+/// gap (`war2-survey/analysis-gap/REPORT.md`): a function reachable ONLY by an unconditional `jmp`
+/// is never created, and its whole call sub-tree is lost with it. `tailjmp` (Open Watcom,
+/// `src/tailjmp.c` + `src/tailjmp_cstart.asm`, built WITHOUT `-oc` so the `call X; ret` -> `jmp X`
+/// rewrite survives) carries both arms of Ghidra `SharedReturnAnalysisCmd.applyTo`'s
+/// `assumeContiguousFunctions` rule: `tail_lo_` reached by a BACKWARD jump past its caller's own
+/// entry (WAR2 0x69032->0x67f40, 0x77dc1->0x72301, 0x7a66b->0x79330), and `fwd_landing_` reached by
+/// a FORWARD jump over `gap_fn_`'s entry (WAR2 0x601f8->0x60270).
+///
+/// Pre-fix (`b9d8466`) mosura missed BOTH — `ground_truth_parity` reported
+/// `tailjmp: mosura missed call-reachable functions: ["0804810f", "08048116"]`. The cause was an
+/// invented gate in `SharedReturnAnalyzer::could_have_fall_thru_to` ("a location inside an existing
+/// function's body must have a fall-through predecessor"), which has no counterpart in Ghidra and
+/// vetoes every tail-call destination, since flow follows the `jmp` and the destination therefore
+/// always lands inside the JUMPING function's body.
+///
+/// The recall half is already covered by `ground_truth_parity`; this test pins the MECHANISM —
+/// that the destinations came from the shared-return rule, i.e. that the jump was also given
+/// Ghidra's `FlowOverride.CALL_RETURN` and so its reference reads `UNCONDITIONAL_CALL`. Without
+/// that retype the functions could only have appeared by some non-Ghidra route.
+#[test]
+fn tail_jump_shared_return() {
+    let bin = ground_truth_dir().join("tailjmp.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("tailjmp.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip tail_jump_shared_return: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let entry_of = |name: &str| -> u64 {
+        truth
+            .funcs
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(a, _)| *a)
+            .unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let prog = analysis::analyze_file(&bin).expect("analyze tailjmp");
+    let ram = prog.default_space;
+
+    for (name, arm) in [("tail_lo_", "backward"), ("fwd_landing_", "forward")] {
+        let entry = entry_of(name);
+        assert!(
+            prog.function_manager.function_at(Address::new(ram, entry)).is_some(),
+            "{name} @ {entry:#x} ({arm} tail-call arm) must be recovered — it is reachable ONLY by \
+             the shared-return `jmp` (SharedReturnAnalysisCmd assumeContiguousFunctions)"
+        );
+        // Every inbound reference is the tail-call jump, and each must carry the CALL_RETURN
+        // override's reference type (RefType.CALL_TERMINATOR flow -> UNCONDITIONAL_CALL reference).
+        let inbound: Vec<(u64, &'static str)> = prog
+            .reference_manager
+            .refs_to(Address::new(ram, entry))
+            .map(|r| (r.from.offset, r.ref_type.name()))
+            .collect();
+        assert!(!inbound.is_empty(), "{name}: no inbound reference at all");
+        assert!(
+            inbound.iter().all(|(_, t)| *t == "UNCONDITIONAL_CALL"),
+            "{name} @ {entry:#x}: the tail-call jump must be retyped by FlowOverride.CALL_RETURN \
+             (UNCONDITIONAL_CALL), got {inbound:x?}"
+        );
+    }
+    eprintln!(
+        "tailjmp gate: tail_lo_ (backward) + fwd_landing_ (forward) recovered as shared-return \
+         tail calls, both inbound jumps retyped UNCONDITIONAL_CALL"
+    );
+}
+
 /// WAR2 `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's
 /// DECOMPILE_FAIL class (all 117 WAR2 panics were this one bug: `merge.rs:1205` index-out-of-bounds,
 /// docs/decompiler-bug-merge-indirect-trim-panic.md, fixed in `b6ec467`). `war2gates` (Open Watcom,
