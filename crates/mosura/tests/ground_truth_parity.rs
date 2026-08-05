@@ -307,3 +307,53 @@ fn loop_comma_condition_inline() {
     );
     eprintln!("loopcomma gate: walk_ prints its condition statement inside the parens — {header}");
 }
+
+/// The same rule on the OTHER emitter: a FOR-header whose condition block carries a STATEMENT must
+/// print it between the two semicolons, not above the loop. `PrintC::emitForLoop` (printc.cc:2974)
+/// sets the same `comma_separate` mod around `condBlock->emit(this)` that `emitBlockWhileDo`'s
+/// non-overflow arm sets (printc.cc:3046-3054), and for the same reason — the statement re-executes
+/// every iteration. `loopcomma` deliberately keeps its walked pointer GLOBAL so it stays a WhileDo;
+/// `forcomma` makes it a LOCAL so a `for` is recovered and this emitter is reached. Hoisting here
+/// loads the node key once and then copies that one value forever while the pointer walks away
+/// from it — wrong code, not formatting. `walk` (Open Watcom, `src/forcomma.c`) is the shape.
+#[test]
+fn for_comma_condition_inline() {
+    let bin = ground_truth_dir().join("forcomma.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("forcomma.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip for_comma_condition_inline: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let walk = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "walk_")
+        .map(|(a, _)| *a)
+        .expect("truth lists walk_");
+    let prog = analysis::analyze_file(&bin).expect("analyze forcomma");
+    let f = decompile_function(&prog, Address::new(prog.default_space, walk))
+        .expect("walk_ decompiles");
+    let c = print_c(&f);
+
+    // The loop MUST come back as a `for` — with a `while` this program would be re-testing the
+    // already-fixed `emitBlockWhileDo` and the gate would pass vacuously (forcomma.c property 4).
+    let header = c
+        .lines()
+        .find(|l| l.trim_start().starts_with("for ("))
+        .unwrap_or_else(|| {
+            panic!("walk_ recovered no for-loop — this gate tests emitForLoop and cannot run:\n{c}")
+        });
+    // The condition is the middle of the three clauses; the loaded value must be assigned there.
+    let cond = header
+        .split(';')
+        .nth(1)
+        .unwrap_or_else(|| panic!("for-header has no condition clause:\n{header}"));
+    assert!(
+        cond.contains('=') && cond.contains(','),
+        "for-condition statement was HOISTED above the loop (emitForLoop comma_separate gap): the \
+         condition clause carries no assignment, so the loop test cannot update — walk_ @ \
+         {walk:#x}\nheader: {header}\n{c}"
+    );
+    eprintln!("forcomma gate: walk_ prints its condition statement inside the for-header — {header}");
+}

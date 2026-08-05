@@ -1568,13 +1568,20 @@ impl<'a> PrintC<'a> {
             }
             FlowKind::WhileDo => {
                 if let Some((init_var, iterate, phi_out)) = self.for_loops.get(&idx).copied() {
-                    // ⚠️ STILL HOISTS. `PrintC::emitForLoop` (printc.cc:2974) sets the SAME
-                    // `comma_separate` mod around its `condBlock->emit(this)` as the `while` arm
-                    // below, so a for-header whose condition block carries statements has the same
-                    // defect. Deliberately NOT bundled with the `while` port: the for-header also
-                    // suppresses the initializer/iterate ops, so it needs its own specimen and its
-                    // own measurement. Filed separately.
-                    self.emit_structured(s, comps[0], indent, out);
+                    // `PrintC::emitForLoop` (printc.cc:2966-2986) emits, in order: the label
+                    // statement, the (optional) initializer, `;`, the CONDITION BLOCK, `;`, the
+                    // iterate statement — the whole header under one `setMod(comma_separate)`
+                    // (printc.cc:2974). So the condition block's statements print between the two
+                    // semicolons, exactly as they do inside a `while (…)`; there is no emit of
+                    // `comps[0]` above the loop. Hoisting them ran them once: `forcomma`'s walk
+                    // loaded the node key once and then copied that one value forever while the
+                    // pointer walked away from it.
+                    if let Some(b) = entry_basic(s, comps[0]) {
+                        if self.labels.remove(&b) {
+                            let name = self.lab_name(b);
+                            let _ = writeln!(out, "{}{}:", "  ".repeat(indent.saturating_sub(1)), name);
+                        }
+                    }
                     let init_s = match init_var {
                         Some(iv) => {
                             let lhs = self.lvalue_of(phi_out);
@@ -1586,7 +1593,7 @@ impl<'a> PrintC<'a> {
                         }
                         None => String::new(),
                     };
-                    let cond = self.render_condition(s, comps[0], negated);
+                    let cond = self.render_condition_comma(s, comps[0], negated);
                     let iter_s = self.render_assign(iterate);
                     let _ = writeln!(out, "{pad}for ({init_s}; {cond}; {iter_s}) {{");
                     self.emit_structured(s, comps[1], indent + 1, out);
