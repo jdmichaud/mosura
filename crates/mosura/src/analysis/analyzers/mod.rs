@@ -9,6 +9,7 @@ pub mod demangler;
 pub mod eh_frame;
 pub mod external_jump;
 pub mod noreturn;
+pub mod relocation_seed;
 pub mod shared_return;
 pub mod switch;
 

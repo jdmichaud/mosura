@@ -1,0 +1,11 @@
+# mosura-ground-truth v1 program=lestruct compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=lestruct.map + the LE object table via=wlink linker map (build artifact, NOT Ghidra)
+compiler watcom
+entry 00010000
+func 00010000 0 _cstart_ code
+func 00010006 0 deep_le_ code
+func 00010010 0 h0_ dataptr
+func 0001001d 0 h1_ dataptr
+func 00010027 0 h2_ dataptr
+func 0001002e 0 run_ code
+func 00010041 0 main_ code

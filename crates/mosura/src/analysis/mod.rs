@@ -129,6 +129,15 @@ pub fn analyze(program: &mut Program) {
     if let Some(at) = analyzers::address_table::AddressTableAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(at), program);
     }
+    // BEYOND-GHIDRA (oracle: the warcraft2-re tracker + the `lestruct` ground-truth MVE, never
+    // Ghidra, which cannot do this): seed disassembly at the loader's relocation targets. The
+    // LE->ELF conversion Ghidra is fed bakes in the patched values and discards the fixup
+    // records, so an isolated code pointer stored between non-pointer struct fields is invisible
+    // to any run-of-pointers heuristic but named exactly by the fixup table. Runs AFTER the
+    // address-table analyzer and adds only seeds it did not produce.
+    if let Some(rs) = analyzers::relocation_seed::RelocationSeedAnalyzer::for_program(program) {
+        mgr.add_analyzer(Box::new(rs), program);
+    }
 
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`

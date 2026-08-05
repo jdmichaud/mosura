@@ -84,7 +84,14 @@ fn ground_truth_parity() {
             continue;
         }
         let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
-        let prog = analysis::analyze_file(&bin).expect("analyze ground-truth binary");
+        // The `.watcom-le` column is a bound MZ+LE (DOS-extender) executable. `analyze_file`
+        // dispatches a bound exe down the Ghidra-parity MZ-stub path, which is the right default
+        // (Ghidra has no LE loader); the LE objects are reached through `analyze_le_file`.
+        let prog = if bin.extension().is_some_and(|x| x == "watcom-le") {
+            analysis::analyze_le_file(&bin).expect("analyze LE ground-truth binary")
+        } else {
+            analysis::analyze_file(&bin).expect("analyze ground-truth binary")
+        };
 
         let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
         let mine: BTreeSet<u64> =
@@ -421,6 +428,85 @@ fn data_pointer_function_discovery() {
         "datafnptr gate: 4 address-table targets disassembled (0 functions created at them), \
          deep_helper @ {deep:#x} recovered by cascade, solo_target @ {solo:#x} by constant \
          propagation"
+    );
+}
+
+/// DATA-POINTER seeding from the LOADER'S RELOCATION RECORDS — the LE-format gate for the
+/// beyond-Ghidra `RelocationSeedAnalyzer`.
+///
+/// `lestruct.watcom-le` (Open Watcom, `wlink format os2 le`) stores each function pointer ALONE,
+/// inside a `struct node { int tag; handler fn; }`, so three mechanisms are closed at once and
+/// only the linker's fixup table can find the targets: no two pointer-sized words are ever
+/// adjacent (no run for `AddressTable.getEntry` to accumulate), the tags are below
+/// `MINIMUM_SAFE_ADDRESS`, and `g_nodes[i & 3].fn(x)` is opaque to constant propagation. It is
+/// the ONLY Linear Executable in the corpus, and the only fixture carrying relocation records.
+///
+/// PRE-FIX (`3002257`) mosura recovered only `[_cstart_, run_, main_]` with 17 code units and
+/// `0x10006..0x1002d` — `deep_le`, `h0`, `h1`, `h2` — entirely undisassembled.
+///
+/// NOTE the obvious version of this MVE does NOT work: `datafnptr` rebuilt as an LE passes
+/// unfixed, because the address-table analyzer handles a pointer RUN in LE memory exactly as it
+/// does in ELF. That negative result is why `lestruct.c` exists and why it looks the way it does.
+///
+/// The assertions mirror `data_pointer_function_discovery`: the pointed-to code is DISASSEMBLED,
+/// no function is created at any of it (Ghidra's discipline for every data-derived address), and
+/// the helper reachable only from inside that code IS created by cascade.
+#[test]
+fn data_pointer_le_seeding() {
+    use mosura::analysis::program::CodeUnit;
+    let bin = ground_truth_dir().join("lestruct.watcom-le");
+    let truth_path = ground_truth_dir().join("lestruct.watcom-le.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip data_pointer_le_seeding: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let entry_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).expect("truth lists the symbol")
+    };
+
+    // The build step's own reachability derivation must still describe the shape this test is
+    // about — see `derive_truth_elf`'s LE sibling in build.sh, whose two documented limitations
+    // this assertion is what pins.
+    let dataptr: BTreeSet<&str> = truth
+        .funcs
+        .iter()
+        .filter(|(a, _)| truth.data_pointer_only.contains(a))
+        .map(|(_, n)| n.as_str())
+        .collect();
+    assert_eq!(
+        dataptr,
+        ["h0_", "h1_", "h2_"].into_iter().collect(),
+        "lestruct no longer has exactly the three data-pointer-only symbols this test is about"
+    );
+
+    let prog = analysis::analyze_le_file(&bin).expect("analyze lestruct.watcom-le");
+    let ram = prog.default_space;
+    let at = |o: u64| Address::new(ram, o);
+
+    for name in ["h0_", "h1_", "h2_"] {
+        let t = entry_of(name);
+        assert!(
+            matches!(prog.listing.code_unit_at(at(t)), Some(CodeUnit::Instruction { .. })),
+            "{name} @ {t:#x} was never disassembled — it is stored as an ISOLATED pointer inside a \
+             struct, so no pointer-run heuristic can reach it and only the LE fixup table names it"
+        );
+        assert!(
+            prog.function_manager.function_at(at(t)).is_none(),
+            "{name} @ {t:#x}: a function was created at a data-pointer target — Ghidra never does \
+             (AddressTableAnalyzer.java:281,294) and neither may we"
+        );
+    }
+
+    let deep = entry_of("deep_le_");
+    assert!(
+        prog.function_manager.function_at(at(deep)).is_some(),
+        "deep_le @ {deep:#x} must be recovered: it is called ONLY from h0, which is itself \
+         reachable only through a stored pointer. This is the cascade the whole mechanism is for"
+    );
+    eprintln!(
+        "lestruct gate: 3 isolated data pointers disassembled (0 functions created at them), \
+         deep_le @ {deep:#x} recovered by cascade"
     );
 }
 

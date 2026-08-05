@@ -279,6 +279,81 @@ build_watcom() {
   strip -o "$stripped" "$norm"
   rm -f "$prog.obj" "$prog"_cstart.o "$prog.watcom-x86-32.raw" "$norm"
 }
+# --- Open Watcom / LE column: the DOS-extender Linear Executable, mosura`s `load_le` path. -----
+#     `wlink format os2 le` emits a bound MZ+LE with a real fixup table — the same container
+#     family as WAR2.EXE, and the ONLY format in this corpus that carries relocation records.
+#     LE has no symbol table, so (like the z80 column) the truth comes from the LINKER MAP:
+#     wlink prints `SSSS:OOOOOOOO  name`, and the LE object table gives each segment`s base.
+#
+#     Reachability class: a code symbol is `dataptr` when its OFFSET WITHIN ITS OBJECT is stored
+#     as a 32-bit word inside a NON-EXECUTABLE object. It is the offset, not the address: the LE
+#     file image is PRE-RELOCATION, so a stored pointer holds the object-relative offset and the
+#     fixup record supplies the object base at load. Comparing offsets is therefore exact for
+#     internal fixups and needs no fixup-table parsing. Zero words are skipped (they would match
+#     the first symbol of the object).
+#     Two limitations, both harmless here and both pinned by the gate: this omits the ELF
+#     derivation`s "mentioned in code" half (there is no objdump for LE), so it is only sound for
+#     a fixture where no stored-pointer target is ALSO called; and a stored offset meant for a
+#     different object could collide. `lestruct` satisfies both by construction, and
+#     `data_pointer_le_seeding` asserts the resulting class set EXACTLY, so any drift trips it.
+#   $1 program
+build_watcom_le() {
+  local prog="$1"
+  local out="$prog.watcom-le" truth="$prog.watcom-le.truth"
+  log "$prog [wcc386/LE]"
+  export WATCOM="$WATROOT" INCLUDE="$WATROOT/lh" PATH="$WATROOT/binl:$PATH"
+  wcc386 "src/$prog.c" -bt=dos -s -oc -fo="$prog.obj" >/dev/null 2>&1
+  wasm "src/${prog}_cstart.asm" -fo="$prog"_cstart.o >/dev/null 2>&1
+  wlink format os2 le option quiet option nodefaultlib option map \
+    file "$prog"_cstart.o file "$prog.obj" name "$out" >/dev/null 2>&1
+  {
+    echo "# mosura-ground-truth v1 program=$prog compiler=watcom arch=x86-32 lang=x86:LE:32:default"
+    echo "# derived-from=$prog.map + the LE object table via=wlink linker map (build artifact, NOT Ghidra)"
+    echo "compiler watcom"
+    GT_MAP="$prog.map" GT_BIN="$out" python3 -c '
+import os, re, struct
+d = open(os.environ["GT_BIN"], "rb").read()
+le = struct.unpack_from("<I", d, 0x3c)[0]
+nobj = struct.unpack_from("<I", d, le + 0x44)[0]
+ot = le + struct.unpack_from("<I", d, le + 0x40)[0]
+objs = []   # (base, vsize, executable)
+for i in range(nobj):
+    vs, rb, fl = struct.unpack_from("<III", d, ot + i * 24)[:3]
+    objs.append((rb, vs, bool(fl & 0x4)))
+print("entry %08x" % objs[0][0])
+# every pointer-sized word stored in a non-executable object
+stored = set()
+psize = struct.unpack_from("<I", d, le + 0x28)[0]
+npages = struct.unpack_from("<I", d, le + 0x14)[0]
+lastb = struct.unpack_from("<I", d, le + 0x2c)[0]
+total = (npages - 1) * psize + lastb
+start = len(d) - total
+for i in range(nobj):
+    rb, vs, ex = objs[i]
+    pi, pc = struct.unpack_from("<II", d, ot + i * 24 + 12)
+    off = start + (pi - 1) * psize
+    if ex:
+        continue
+    blob = d[off:off + min(vs, pc * psize)]
+    for k in range(0, max(0, len(blob) - 3)):
+        stored.add(int.from_bytes(blob[k:k+4], "little"))
+out = []
+for ln in open(os.environ["GT_MAP"], errors="replace"):
+    m = re.match(r"^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{8})[ +*]+([A-Za-z_][A-Za-z0-9_]*)\s*$", ln)
+    if not m:
+        continue
+    seg, off_, name = int(m.group(1), 16), int(m.group(2), 16), m.group(3)
+    if seg < 1 or seg > len(objs) or not objs[seg - 1][2]:
+        continue          # code symbols only
+    va = objs[seg - 1][0] + off_
+    cls = "dataptr" if off_ in stored else "code"   # offsets: the image is pre-relocation
+    out.append("func %08x 0 %s %s" % (va, name, cls))
+print("\n".join(sorted(out)))'
+  } > "$truth"
+  rm -f "$prog.obj" "$prog"_cstart.o "$prog.map"
+  log "  derived $truth ($(grep -c "^func " "$truth") funcs)"
+}
+
 if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom watprog
   build_watcom narrowsw   # narrowed-switch decompiler-gap repro (war2-issues-become-source-tests)
@@ -290,6 +365,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
+  build_watcom_le lestruct # the LE column: a pointer stored ALONE, findable only via the fixup table
   # tailjmp: the SHARED-RETURN TAIL-CALL analysis repro (a function reachable only via `jmp`).
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite
   # under test (src/tailjmp.c property 1).
