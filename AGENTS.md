@@ -7,15 +7,12 @@ mosura's output is validated against it.
 **Master plan: [`docs/port-plan.md`](docs/port-plan.md). Live status: [`TODO.md`](TODO.md).**
 
 > **Before quoting a number, retiring a claim, or trusting an instrument, read
-> [`docs/measurement-rules.md`](docs/measurement-rules.md).** Every rule in it was bought by a
-> real error here. You do not need it to start work; you need it the moment you are about to
-> assert something measured.
+> [`docs/measurement-rules.md`](docs/measurement-rules.md).** Not needed to start work; needed
+> the moment you are about to assert something measured.
 
 ## Operating directives
 
-These come from the project owner and outrank convenience. They are here because they were
-previously only in one agent's private notes, and the one most often broken — a single agent —
-was nowhere in the repo at all.
+These come from the project owner and outrank convenience.
 
 1. **Exactness with the BINARY is the goal, not agreement with Ghidra's output.** Ghidra
    faithfulness is the *method*; the original binary's bytes are the target. The corpus is a
@@ -45,11 +42,10 @@ Cases that feel "ambiguous" (is a function void? what width is an argument? hex 
 decimal?) are decided by concrete code in Ghidra; find it and port it.
 
 **Validate against Ghidra's intermediate IR, exactly, stage by stage** — not a fuzzy
-final-C similarity score. Hard lesson (see `port-plan.md` §0): optimizing the
-token-skeleton similarity score rewards approximations that coincidentally match Ghidra's
-tokens and *punishes* faithful algorithms that produce correct-but-different output — it
-optimizes *away* from Ghidra, and approximations don't compose. Mirror Ghidra's data
-model and `Action`/`Rule` pipeline so faithfulness *is* the metric.
+final-C similarity score. Optimizing a token-skeleton similarity score rewards approximations
+that coincidentally match Ghidra's tokens and *punishes* faithful algorithms that produce
+correct-but-different output: it optimizes *away* from Ghidra, and approximations don't compose.
+Mirror Ghidra's data model and `Action`/`Rule` pipeline so faithfulness *is* the metric.
 
 **No adaptation is grandfathered.** Any deviation from Ghidra's actual logic — however it was
 justified earlier — is cancelled the moment it stands between us and a faithful port. A past
@@ -90,9 +86,7 @@ one. Do not let it drive decisions. Concretely:
    answer Ghidra computes" is that species, however local it looks.**
 5. **GROUND BEFORE YOU CODE — dump the actual IR and Ghidra's actual `--c` first.** The most
    expensive failure mode is *guessing the mechanism*: building a fix on what you assume the IR
-   contains or what you remember Ghidra emits, then reverting when it doesn't. A whole session
-   was lost guessing a cast mechanism five times — every premise was wrong, and reading the IR
-   first would have shown it in minutes.
+   contains or what you remember Ghidra emits, then reverting when it doesn't.
 
 New code is **always** a faithful port, never a hypothesis to test-and-revert. **A revert of
 newly-written code is a process failure** — stop and investigate why non-faithful code was
@@ -125,8 +119,7 @@ There are **two** Ghidra oracles and they disagree by construction. `oracle/capt
 C++ decompiler alone — it answers *how the decompiler renders something*. `war2-survey/
 ghidra-all.txt` is analyzeHeadless, Java layer included — it answers *what the whole tool
 produces on a real binary*. **mosura ports the C++ decompiler**, so rendering questions go to
-`capture --c`. Routing a question to the wrong one has falsified two approved framings; the
-worked examples and the full rule are in
+`capture --c`. Full rule and worked examples:
 [`docs/measurement-rules.md` §2](docs/measurement-rules.md).
 
 `scripts/setup-oracle.sh` (needs the pinned `ghidra/` + a C++ toolchain) builds `oracle/capture`:
