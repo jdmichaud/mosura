@@ -26,7 +26,15 @@ These come from the project owner and outrank convenience.
    Report status, not choices.
 5. **Retiring inventions is the primary track.** Non-Ghidra code is what has been holding the
    binary work back; it comes before new feature work. Finish an in-flight task before pivoting.
-6. **Compiler quirks go through the cspec, never an `if (target)` in the decompiler core.**
+6. **An issue found on a survey binary becomes an MVE first — then you solve the MVE.**
+   When decompiling a real binary surfaces a defect, do not fix it against that binary. Write a
+   minimal self-compiled program in `oracle/ground-truth/src/` that surfaces the same defect,
+   gate it in `tests/ground_truth_parity.rs`, and fix *that*. The survey binary is temporary and
+   cannot be shipped; a gate built on it dies with it, and until then it is unreproducible by
+   anyone who lacks the binary. The MVE must be shown to FAIL before the fix and pass after —
+   a gate that never caught the bug is decoration. Record the properties the program depends on
+   in its own source, so it is not later "simplified" into something that no longer reproduces.
+7. **Compiler quirks go through the cspec, never an `if (target)` in the decompiler core.**
    Reduce a suspected quirk to a minimal example, compile it with several compilers, and if the
    behaviour is compiler-specific, scope it behind the existing compiler/version detection so one
    compiler's specifics are not generalised. If the cspec route becomes limiting: shoehorn it in
