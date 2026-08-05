@@ -3,7 +3,7 @@
 mosura — a Rust **port of Ghidra's logic** (SLEIGH disassembler + p-code interpreter +
 decompiler), validated against Ghidra as a golden oracle.
 
-- **How to work on this project** → [`AGENT.md`](AGENT.md): the porting principle, the
+- **How to work on this project** → [`AGENTS.md`](AGENTS.md): the porting principle, the
   oracle, the verification/quality bar, layout, and conventions.
 - **What's left to do** → [`TODO.md`](TODO.md).
 - **The plan to 100%** → [`docs/roadmap-100.md`](docs/roadmap-100.md): multi-arch, staged
@@ -20,7 +20,7 @@ source — is correct by construction and authoritative. It stays. The corpus is
 not the target: when a faithful port appears to move the corpus the "wrong" way, that is
 evidence that some **non-Ghidra** code is wrong — an invented heuristic, an approximation, a
 mis-port, or a still-missing faithful piece. Change that code so Ghidra's real logic composes.
-Only non-Ghidra code is ever in question. See [`AGENT.md`](AGENT.md).
+Only non-Ghidra code is ever in question. See [`AGENTS.md`](AGENTS.md).
 
 No adaptation is grandfathered. Any deviation from Ghidra's actual logic or structure —
 however it was justified or "accepted" earlier — is canceled the moment it stands between us
