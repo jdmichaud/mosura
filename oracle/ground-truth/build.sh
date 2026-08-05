@@ -232,6 +232,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom switchcall # EMPTY SWITCH BODY repro -- recovered table, dropped case bodies (war2-issues-become-source-tests)
   build_watcom loopcomma  # while-condition statement must print INSIDE the parens (comma_separate)
   build_watcom forcomma   # the same, on emitForLoop's header (printc.cc:2974) — loopcomma's sibling
+  build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
 else
   log "SKIP x86-32 Watcom — wcc386 absent at $WATROOT/binl (documented gap)"
 fi

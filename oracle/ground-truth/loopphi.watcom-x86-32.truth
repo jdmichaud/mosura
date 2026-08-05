@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=loopphi compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=loopphi.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_
+func 08048106 0 cbound_walk_
+func 08048135 0 main_

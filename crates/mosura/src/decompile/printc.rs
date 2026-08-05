@@ -1125,28 +1125,69 @@ impl<'a> PrintC<'a> {
         format!("{lhs} = {rhs}")
     }
 
-    /// Walk back (≤4 levels, Ghidra's `findLoopVariable`) from the condition variable to a
-    /// MULTIEQUAL defined in the loop header `head`.
-    fn find_loop_phi(&self, cond_var: VarnodeId, head: BlockId) -> Option<OpId> {
-        let mut stack = vec![(cond_var, 0u32)];
-        let mut seen: HashSet<OpId> = HashSet::new();
-        while let Some((v, depth)) = stack.pop() {
-            let Some(def) = self.f.vn(v).def else { continue };
-            if !seen.insert(def) {
+    /// Find the loop variable: a MULTIEQUAL in the loop head `head` whose tail-slot input is a
+    /// usable iterate statement in `tail` — Ghidra `BlockWhileDo::findLoopVariable`
+    /// (block.cc:3164). Returns `(phi, iterate)`.
+    ///
+    /// ⭐ THE SEARCH AND THE VALIDATION ARE ONE LOOP, and that is the whole point. Reaching a head
+    /// phi is NOT enough to commit to it: Ghidra checks that phi's tail-slot input immediately and
+    /// `continue`s the walk when it is a marker, is not defined in the tail, or cannot be moved to
+    /// the end. mosura previously returned the FIRST head phi and validated only that one, so a
+    /// single unusable candidate anywhere on the walk lost the `for`.
+    ///
+    /// The unusable candidate is not exotic. When the loop BOUND is a global the body modifies, the
+    /// bound is heritaged, carries its own phi in the head, and — because the walk is LIFO over
+    /// `INT_LESS(i, bound)` — is reached BEFORE the register induction variable. Instrumenting the
+    /// WAR2 specimens printed the selected phi's storage as `space="ram"` in all seven: mosura was
+    /// validating `DAT_000948b6`, the loop bound, as the induction variable.
+    ///
+    /// The walk is Ghidra's bounded 4-deep DFS over operands (`path[4]`, `count == 3` refuses to
+    /// descend further), truncating at calls and markers, with no visited-set — the depth bound is
+    /// what terminates it.
+    fn find_loop_variable(
+        &self,
+        cond_var: VarnodeId,
+        head: BlockId,
+        tail: BlockId,
+        last: OpId,
+        slot: usize,
+    ) -> Option<(OpId, OpId)> {
+        let def = self.f.vn(cond_var).def?;
+        if self.f.op(def).is_call() || self.f.op(def).is_marker() {
+            return None;
+        }
+        let mut path: Vec<(OpId, usize)> = vec![(def, 0)];
+        while let Some(&mut (cur, ref mut ind)) = path.last_mut() {
+            let i = *ind;
+            *ind += 1;
+            let Some(&next) = self.f.op(cur).inrefs.get(i) else {
+                path.pop();
                 continue;
-            }
-            let o = self.f.op(def);
-            if o.code() == OpCode::Multiequal {
-                if o.parent == Some(head) {
-                    return Some(def);
+            };
+            let Some(defop) = self.f.vn(next).def else { continue };
+            if self.f.op(defop).code() == OpCode::Multiequal {
+                if self.f.op(defop).parent != Some(head) {
+                    continue;
                 }
-                continue; // don't trace through a phi
-            }
-            if depth >= 4 || matches!(o.code(), OpCode::Call | OpCode::Callind) {
-                continue;
-            }
-            for &inp in &o.inrefs.clone() {
-                stack.push((inp, depth + 1));
+                let Some(itvn) = self.f.op(defop).input(slot) else { continue };
+                let Some(iterate) = self.f.vn(itvn).def else { continue };
+                if self.f.op(iterate).parent == Some(tail) {
+                    if self.f.op(iterate).is_marker() {
+                        continue; // no iteration in the tail — keep looking
+                    }
+                    if !self.is_moveable(iterate, last) {
+                        continue; // not the final statement — keep looking
+                    }
+                    return Some((defop, iterate));
+                }
+            } else {
+                if path.len() == 4 {
+                    continue;
+                }
+                if self.f.op(defop).is_call() || self.f.op(defop).is_marker() {
+                    continue;
+                }
+                path.push((defop, 0));
             }
         }
         None
@@ -1246,19 +1287,11 @@ impl<'a> PrintC<'a> {
             last = *self.f.block(tail).ops.get(pos.checked_sub(1)?)?;
         }
         let cond_var = self.f.op(cbranch).input(1)?;
-        let phi = self.find_loop_phi(cond_var, head)?;
-        let phi_out = self.f.op(phi).output?;
-        // findLoopVariable: the modification comes in from the tail block — the phi input at the
-        // tail's slot, defined in the tail, and the tail's final statement.
+        // `findLoopVariable` (block.cc:3164) searches for the phi and validates its tail-slot
+        // iterate in ONE walk, continuing past any candidate that fails — see the function.
         let slot = self.f.block(head).in_edges.iter().position(|&p| p == tail)?;
-        let itvn = self.f.op(phi).input(slot)?;
-        let iterate = self.f.vn(itvn).def?;
-        if self.f.op(iterate).parent != Some(tail) || self.f.op(iterate).is_marker() {
-            return None;
-        }
-        if iterate != last && !self.is_moveable(iterate, last) {
-            return None; // not the final statement and not moveable there (findLoopVariable)
-        }
+        let (phi, iterate) = self.find_loop_variable(cond_var, head, tail, last, slot)?;
+        let phi_out = self.f.op(phi).output?;
         // `BlockWhileDo::testIterateForm` (block.cc:3287), run by `finalizePrinting` after
         // `finalTransform` has already accepted the loop variable: the LOOP VARIABLE ITSELF must be
         // an input of the iterate statement. `findLoopVariable` above only established that the

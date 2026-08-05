@@ -357,3 +357,40 @@ fn for_comma_condition_inline() {
     );
     eprintln!("forcomma gate: walk_ prints its condition statement inside the for-header — {header}");
 }
+
+/// For-recovery must not give up on the FIRST loop-head phi it finds. Ghidra's
+/// `BlockWhileDo::findLoopVariable` (block.cc:3164) `continue`s past a head MULTIEQUAL whose
+/// tail-slot input is a marker / not in the tail / not moveable, and keeps walking; mosura's
+/// `find_loop_phi` returned the first one and `for_parts` validated only that. A loop whose BOUND
+/// is a global the body modifies puts a wrong candidate first on the walk — the bound is
+/// heritaged, gets a head phi, and the LIFO operand walk reaches it before the register induction
+/// variable. Instrumenting the WAR2 specimens showed the selected phi was `space="ram"` (the
+/// bound) in all 7. `cbound_walk` (Open Watcom, `src/loopphi.c`) is the shape; its call is
+/// deliberately DIRECT so the separate indirect-call clobber defect cannot also decline the loop.
+#[test]
+fn for_recovery_backtracks_past_wrong_phi() {
+    let bin = ground_truth_dir().join("loopphi.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("loopphi.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip for_recovery_backtracks_past_wrong_phi: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let walk = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "cbound_walk_")
+        .map(|(a, _)| *a)
+        .expect("truth lists cbound_walk_");
+    let prog = analysis::analyze_file(&bin).expect("analyze loopphi");
+    let f = decompile_function(&prog, Address::new(prog.default_space, walk))
+        .expect("cbound_walk_ decompiles");
+    let c = print_c(&f);
+    assert!(
+        c.lines().any(|l| l.trim_start().starts_with("for (")),
+        "the counted loop was not recovered as a `for`: find_loop_phi settled for the first \
+         loop-head phi — the RAM loop BOUND — instead of continuing past it to the register \
+         induction variable (Ghidra findLoopVariable, block.cc:3164) — cbound_walk_ @ {walk:#x}\n{c}"
+    );
+    eprintln!("loopphi gate: cbound_walk_ recovered its for-loop past the bound's phi");
+}
