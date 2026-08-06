@@ -111,6 +111,39 @@ pub(crate) fn falls_through(
     true
 }
 
+/// Does a body walk follow this flow reference? — Ghidra `FollowFlow.shouldFollowFlow`
+/// (FollowFlow.java:715) under `CreateFunctionCmd.getFunctionBody`'s `dontFollow` set
+/// (CreateFunctionCmd.java:622):
+///
+/// ```java
+/// FlowType[] dontFollow = { RefType.COMPUTED_CALL, RefType.CONDITIONAL_CALL,
+///     RefType.UNCONDITIONAL_CALL, RefType.INDIRECTION };
+/// ```
+///
+/// **`COMPUTED_JUMP` is deliberately NOT in that list**, which is why a switch's case bodies are
+/// inside Ghidra's function body: `getFlowsFromInstruction` (:743) reads
+/// `instr.getReferencesFrom()` and follows every flow reference this predicate admits.
+///
+/// ⚠️ THE STRUCTURAL DIFFERENCE THIS DOES NOT CLOSE. Ghidra's walk is **reference-driven** — it
+/// asks the listing what an instruction references. mosura's is **opcode-driven**: it derives
+/// static targets from the p-code. The two agree on ordinary branches and disagree wherever
+/// analysis has overridden a reftype (an `UNCONDITIONAL_CALL` ref can sit on a `jmp`); consulting
+/// references here is additive, so it closes the computed-jump gap without changing any flow the
+/// opcode walk already followed. Converting the walk to be reference-driven outright is a separate
+/// change with a much wider blast radius — see `docs/function-discovery-backlog.md` §9.
+pub(crate) fn follows_flow_ref(t: RefType) -> bool {
+    if !t.is_flow() {
+        return false;
+    }
+    !matches!(
+        t,
+        RefType::ComputedCall
+            | RefType::ConditionalCall
+            | RefType::UnconditionalCall
+            | RefType::Indirection
+    )
+}
+
 impl Analyzer for Disassembler {
     fn name(&self) -> &str {
         "Disassembly"
@@ -333,6 +366,17 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
                     if let Some(t) = Disassembler::static_target(op).filter(|&t| t != a) {
                         work.push(t);
                     }
+                }
+            }
+            // The flow references this instruction carries — how Ghidra's `FollowFlow` finds
+            // every target, and the only route to a computed jump's cases (the p-code for a
+            // `BRANCHIND` names no static target; the jump table lives in the reference set).
+            // The flow references this instruction carries — how Ghidra's `FollowFlow` finds
+            // every target, and the only route into a computed jump's cases (the p-code for a
+            // `BRANCHIND` names no static target; the jump table lives in the reference set).
+            for r in program.reference_manager.refs_from(Address::new(ram, a)) {
+                if follows_flow_ref(r.ref_type) && r.to.space == ram && r.to.offset != a {
+                    work.push(r.to.offset);
                 }
             }
             if falls {

@@ -980,6 +980,17 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
                 }
             }
         }
+        // …and the flow references, which is how a computed jump's cases are reached. Shares
+        // `super::follows_flow_ref` with `compute_function_bodies` rather than restating Ghidra's
+        // `dontFollow` set a second time — these two walks have drifted apart before.
+        // …and the flow references, which is how a computed jump's cases are reached. Shares
+        // `super::follows_flow_ref` with `compute_function_bodies` rather than restating Ghidra's
+        // `dontFollow` set a second time — these two walks have drifted apart before.
+        for r in program.reference_manager.refs_from(Address::new(ram, a)) {
+            if super::follows_flow_ref(r.ref_type) && r.to.space == ram && r.to.offset != a {
+                work.push(r.to.offset);
+            }
+        }
         if falls {
             work.push(a + ilen);
         }
@@ -1530,4 +1541,6 @@ mod tests {
             p.function_manager.functions().map(|f| f.entry_point().offset).collect();
         assert_eq!(got, vec![0x40_1000], "only the lowest entry may become a function");
     }
+
+
 }
