@@ -213,7 +213,7 @@ prologue shape, and the corpus must gate each:
 | **stack checking** | default vs `-s` | **without `-s` Watcom emits a stack-probe call in the prologue** — a different entry shape entirely. WAR2 used `-s`; most binaries do not |
 | **optimization** | `-od` / `-onat` / `-onatx` / `-ox` | frame-pointer omission, and whether saves are hoisted |
 | **compiler version** | 9.0x, 10.0/10.0a, 10.5, 10.6, 11.0, OW 1.x, OW 2.0 | measured divergence already: OW2 emits frame-first where WAR2-era emits save-first |
-| **target** | `-bt=dos/os2/linux/nt` | affects the runtime and entry conventions |
+| **target** | `-bt=dos/os2/linux/nt` | ⛔ MEASURED INERT — identical object bytes across all four; affects the runtime/format, not codegen (cell 5) |
 | **FP model** | `-fpi87` / `-fpi` / `-fpc` | inline x87 vs emulated calls in the body |
 
 **Tooling already exists for this** — no blocker:
@@ -406,6 +406,33 @@ asserting 17/17 would fail forever. The finding is the deliverable.
 are frameless-optimized with no inbound edge, they are **unrecoverable by pattern work of any
 kind** and further pattern effort aimed at them is wasted. That is a cheap thing to check and it
 would bound the remaining discovery work.
+
+### ✅ CELL 5 CHECKED — target (`-bt=`): **INERT for codegen. No fixture, no patterns.**
+
+Measured 2026-08-06 the cheapest way available — compare the OBJECT, not the linked binary, so the
+target's runtime and startup are out of the comparison entirely:
+
+```
+wcc386 wp.c -bt={linux,dos,os2,nt} -s <opts>   ->  1 distinct object md5, every time
+  -of+        4 targets -> 1 hash      (identical, byte for byte)
+  -onatx      4 targets -> 1 hash
+  -od         4 targets -> 1 hash
+  -4s -of+    4 targets -> 1 hash
+```
+
+**`-bt=` cannot change the entry shape because it does not change the emitted code at all** for
+32-bit flat-model compilation. It selects the run-time library and the executable format — i.e.
+what the *linker* pulls in and what `_cstart_` looks like — not what `wcc386` generates per
+function. Four targets × four option sets, always one hash.
+
+That is a stronger result than a fixture would have given: it is not "we checked some prologues and
+they matched", it is "the compiler emits identical bytes", which settles every prologue in the
+translation unit at once. The §5 table listed this axis as "maybe — affects the runtime and entry
+conventions"; the runtime half is true and irrelevant to a pattern set, the codegen half is false.
+
+⚠️ Scope of the claim: 32-bit flat model (`wcc386`). A 16-bit compiler (`wcc`) has real memory
+models and this would need re-measuring there — but 16-bit is outside the language mosura targets
+(`x86:LE:32:default`).
 
 ### Two prerequisites every matrix cell inherits (learned building §4's cell)
 
