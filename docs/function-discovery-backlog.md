@@ -85,6 +85,62 @@ gap is 42.
 **Do not reopen without a fresh measurement.** The remaining 7 ("no code unit ends here") are a
 thread into §6, not into this item.
 
+## 2b. THE 42, SPLIT BY REPLAYING THEIR BYTES THROUGH THE PATTERN FILE (2026-08-06)
+
+The lead's per-entry diagnostics (`war2-survey/analysis-gap/the38.tsv`) ruled out the two obvious
+explanations for the shaped-but-missing entries: **0 of 33 lie inside a mosura function body**
+(not the containment guard) and **0 of 33 are covered by another code unit** (not offcut), while
+29 of 33 have an instruction decoded at exactly the right address.
+
+That framed the question as "what *declines* them?". **Replaying each entry's bytes through the
+real pattern file answers it differently, and splits the set in two** — no WAR2 run needed, the
+bytes are in the TSV:
+
+```
+ANCHORED by the pattern file (mark at offset 0)   19
+NOT ANCHORED                                       23
+```
+
+**⭐ 15 of the 33 "shaped" entries are NOT ANCHORED, and nothing declines them — no pattern
+matches.** Every one is `55 89 e5` followed by ordinary code:
+
+```
+55 89 e5 31 c0    xor eax,eax     x3        55 89 e5 e8 ..    call            x4
+55 89 e5 b8 ..    mov eax,imm32   x5        55 89 e5 80 3d    cmp byte ptr    x1
+55 89 e5 66 c7    mov word ptr    x1        55 89 e5 8b 15    mov r,[abs32]   x1
+```
+
+These are **exactly the §2 residual** — the bare frame-first prologue that would need a naked
+24-bit `0x5589e5`, which the lead RULED OUT on 2026-08-06 and which the unit test
+`frame_first_family_covers_the_bare_prologue` pins. (`8b 15` is `mod=00`, so x86gcc #6's
+`01...101` correctly does not match it; #6 wants `mov r,[ebp+disp8]`.) **So they are an owned
+decision, not a defect**, and the "what declines them" question does not apply to them at all.
+
+**⭐ The real shaped-but-declined set is 19, not 33** — 14 save-first, 4 saves+`sub esp`, and
+`00074bdb`. For these the pattern DOES fire at offset 0 and no function is created, which is the
+genuine open question.
+
+⚠️ **`00074bdb` was misclassified as `frameless` by the diagnostics.** Its bytes are
+`55 8b ec 53 56 57 8b 45` — frame-first in the **`8b ec`** encoding of `mov ebp,esp`, which Watcom
+emits for 44 tracker functions. The classifier keyed on `89 e5` only. Worth fixing before the
+shape counts are quoted again.
+
+### What to measure next (needs WAR2 — lead)
+
+For the **19 anchored** addresses only, the two paths differ and the diagnostics should separate
+them:
+
+- the 14 save-first + `00074bdb` are `possiblefuncstart`, so they reach
+  `PossibleDelayedFunctionCreator`, which drops a proposal with **any conditional reference to it**
+  (`function_start.rs:1058`, Ghidra's own rule at `:1001`). **Inbound reference types for those 15
+  addresses is the decisive dump** — a spurious `jcc` into the entry would veto it;
+- the 4 `saves+sub` are family (3) `funcstart after="defined" validcode="6"`, and all four have
+  **no code unit at the entry**, so they are gated by the pre-requisite plus
+  `PseudoDisassembler::check_valid_subroutine` rather than by the delayed creator. Different
+  mechanism, different fix.
+
+Do **not** merge the two halves in one measurement; they fail differently by construction.
+
 ## 2. Bare frame-first prologue is unmatched (17 functions) — ✅ CLOSED `556cdb3`; residual RULED OUT
 
 `55 89 e5` **without** a following `sub esp`. Our set inherited Ghidra's gcc anchors
