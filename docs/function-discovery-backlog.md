@@ -229,7 +229,14 @@ fixture whose truth comes from the compiler (symbol table for ELF, linker map fo
 `oracle/codegen-probes/watcom/<rev>.{obj,code}` already are, so CI never needs the historical
 toolchain.
 
-### ⭐ CELL 1 MEASURED — stack checking (`-s` vs default): a NEW PROLOGUE SHIFT, 10 bytes
+### ⭐ CELL 1 ✅ LANDED `a59a886` — stack checking (`-s` vs default): a NEW PROLOGUE SHIFT, 10 bytes
+
+**This cell is the demonstrated case for the standing scope rule, not an assertion of it.** WAR2
+could never have shown this defect: WAR2 was built with `-s`, and `-s` is not the default, so the
+entire stack-probe family is invisible from that binary alone. The failure mode was also *wrong
+address* rather than *missing* — the same class that motivated this whole pattern file — so it
+silently produced wrong extents, which block byte-exact recompilation. That is exactly the user's
+point that WAR2 is one example among many.
 
 Measured on native OW2, 2026-08-06, **before writing any pattern** (the shapes, then the set).
 
