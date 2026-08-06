@@ -8,8 +8,12 @@ against all kinds of binaries, and we must be able to identify functions produce
 compilers under all options that affect function shape**. The test suite has to reflect that.* So
 every item below is judged on whether it generalises, not on whether it moves the WAR2 number.
 
-Current WAR2 state @ `556cdb3` (the diagnostic, not the goal): **2900 functions; 2078 of the expert
-tracker's 2120 = 98.0%; 42 genuinely missing; 872 not-in-tracker; 923 not-in-Ghidra.**
+Current WAR2 state @ `be85c85` (the diagnostic, not the goal): **3018 functions; 2108 of the expert
+tracker's 2120 = 99.4%; 12 genuinely missing; 3 entries inside a tracker body (unchanged).**
+
+Previous state @ `556cdb3`: 2900 / 2078 / 42 missing / 3 inside. Both rows were measured with the
+**same harness in the same session**, and the harness reproduced the `556cdb3` row to the digit
+before the new row was believed — so the delta is a code change, not a scoring change.
 
 ⚠️ Every number in this file is STALE unless stamped with a commit that is an ancestor of HEAD. A
 WAR2 run is ~224s and only the lead runs it; do not quote an unstamped figure.
