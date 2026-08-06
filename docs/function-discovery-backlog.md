@@ -939,7 +939,43 @@ Also pending from their reply: **Watcom's own shipped `CLIB3R.LIB` is save-first
 `__CMain`, verified inside WAR2 with 0 unmasked mismatches). So a frame-first-only pattern set
 misses Watcom CRT code in **any** binary — independent support for §5.
 
-## 8. Function bodies UNDER-extend at a computed jump (§1's opposite twin)
+## 8. Function bodies UNDER-extend at a computed jump — ✅ FIXED `6abd1ae`, CONFIRMED ON WAR2
+
+**Landed and measured.** Fixture: **53 of 53** computed-jump targets lay outside their containing
+body before (narrowsw 16/16, switchcall 14/14, dispatch 7/7, tables 12/12, compgoto 4/4 — total,
+across two compilers and two architectures); **0 of 53** after. Gate
+`switch_case_bodies_are_inside_the_function_body`, vacuity-checked.
+
+**WAR2 before/after, with the prediction made BEFORE the run** (*"extents grow, `INSIDE` unchanged"*):
+
+```
+                  funcs  matched  missing  inside   body_bytes    not_tracker_term
+  0acd3a0 before   3018     2108       12       3      380,247    899/900
+  6abd1ae after    3018     2108       12       3      392,081    899/900
+                                                       +11,834  (+3.1%)
+```
+
+**Exactly one number moved, the one predicted to move.** ~88.5% of WAR2's code object is now inside
+a function body, up from ~85.8%. This lands on the campaign's actual goal rather than on a function
+count: a function with the wrong extent cannot be byte-exactly recompiled, and every one of those
+case bodies was previously outside its function.
+
+⚠️ **The root cause is sharper than this item's original framing** (which was mine): it is not
+merely "the walk doesn't follow `Branchind`". *Both* walks are **opcode-driven**, and a `BRANCHIND`
+names no static target at all — the jump table lives in the **reference set**, which neither walk
+consulted. Fixed with Ghidra's own `dontFollow` predicate (`follows_flow_ref`), stated once and
+shared by both walks rather than restated twice.
+
+**Deliberately NOT fixed, deferred to §9:** Ghidra's walk is reference-driven throughout, mosura's
+is opcode-driven, and they diverge wherever a reftype has been overridden (see
+[[reftype-is-post-override-not-the-instruction]]). Consulting references for computed jumps is
+purely additive — it closes this gap without altering any flow the opcode walk already followed —
+so the outright conversion belongs in its own change with its own gate. Recorded on
+`follows_flow_ref`.
+
+### Original statement of the item
+
+
 
 Split out of §1 at the lead's request (2026-08-06): §1 is "bodies run past the real end", this is
 "bodies stop short of it". Opposite signs, so **never fix them in the same change** — a WAR2 delta
