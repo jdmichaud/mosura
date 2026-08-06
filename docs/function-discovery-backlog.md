@@ -125,7 +125,56 @@ genuine open question.
 emits for 44 tracker functions. The classifier keyed on `89 e5` only. Worth fixing before the
 shape counts are quoted again.
 
-### What to measure next (needs WAR2 — lead)
+### The conditional-reference hypothesis is REFUTED, and the code names the surviving path
+
+Ref dump on the 15 (lead, 2026-08-06): **not one carries a conditional reference.** 11 of 15 are
+referenced only from data (`obj2_data` — function-pointer table members), 1 from a parameter, and
+**3 have no inbound reference at all** (`0002a1f0`, `0002a274`, `0002a75c`). So
+`PossibleDelayedFunctionCreator`'s drop rule (`function_start.rs:1058`) is not the veto, and the
+hoped-for tie-back to over-decode via a spurious `jcc` is not there.
+
+**The Data references are a red herring by construction.** In
+`check_already_in_function_above_with` the reference loop does
+`if t.is_data() && !matches!(t, Read | Write) { continue; }` — a plain `Data` ref is explicitly
+*skipped*, never a veto. So the 11 data-referenced entries are in exactly the same position as the
+3 with no references at all: **all 15 reach the same arm.**
+
+**The surviving path, read from the code rather than guessed.** All 15 measure
+`inside_mosura_fn=False` (so `function_containing(addr)` is `None`) and `cu_at_entry=True`. In
+`check_already_in_function_above_with`:
+
+- **if a function contains `addr-1`** → returns `function_containing(addr).is_some_and(…)` →
+  `None` → **false** → the proposal is NOT vetoed, and something else must drop it;
+- **if no function contains `addr-1`** → the fall-through arm (Ghidra `:512`) fires: *"an
+  instruction that falls through into here makes this part of that flow, not a start"* → **true**
+  → **the proposal is refused.**
+
+That arm is a faithful port and is correct in general. It goes wrong only when the preceding
+instruction **should not have fallen through**.
+
+⭐ **And there is a known reason for exactly that on WAR2:** a `call` to a non-returning function
+falls through, because `noreturn::analyze` **never runs on WAR2** — the LE loader names its blocks
+`objN_text`/`objN_data`, so the analyzer returns early (`noreturn.rs:128-137`) and flags nothing.
+That is the same inertness recorded at §9 divergence #1: the `falls_through` fix landed at
+`0de3523` is correct and is **switched off on this target**. If the instruction ending at these
+entries is a `call`, the chain is: no-return inert → decoder runs past the call → an instruction
+ends exactly at the entry → `check_already_in_function_above` refuses the proposal → the function
+is never created. **Hypothesis, not conclusion** — it needs the dump below.
+
+### The decisive dump (needs WAR2 — lead), 3 columns per entry
+
+For the 3 with no references first (no confounders), then the other 12:
+
+1. **is there a mosura function containing `entry - 1`?** — this selects which arm runs, and the
+   TSV's `host` column answers it for the entry, not for `entry-1`;
+2. **does a mosura instruction END exactly at `entry`?** — the arm's literal condition;
+3. **what is that instruction?** — specifically whether it is a `call` (`e8`/`ff /2`), which is
+   what would tie this to the no-return inertness above.
+
+If (1) is *no* and (2) is *yes*, the mechanism is settled. If (3) is a `call`, the fix already
+exists and only needs `noreturn` to run on an LE image.
+
+### Superseded: what to measure next (needs WAR2 — lead)
 
 For the **19 anchored** addresses only, the two paths differ and the diagnostics should separate
 them:
