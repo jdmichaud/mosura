@@ -271,11 +271,42 @@ candidates are dead **by measurement** — do not retry them:
 - the address-table "code target vs function start" thread — refuted (the relocation run at the
   suspect site is a dispatch/vtable, targets scattered across many functions).
 
-**⭐ NEW THREAD (2026-08-06, from §1's histogram):** of the 51 entries examined there, **7 had NO
-code unit ending immediately before them** — i.e. mosura's listing has no instruction boundary
-there at all, in a region it nonetheless decoded. That is an over-decode fingerprint and it is 7
-concrete addresses to start from, which is more than this item has ever had. Ask them from the
-lead's histogram run before re-deriving.
+**⛔ RETRACTED — the "7 concrete addresses" thread was mine and it was wrong.** I recorded the 7
+entries with "no code unit ending immediately before them" as an over-decode fingerprint. The
+addresses, once dumped, are not one:
+
+```
+0001dcc1  55 89 e5 83 ec 04 31 db   mosura fn 0001dcbc  delta 5
+000484b8  55 89 e5 83 ec 10 31 d2   mosura fn 000484b4  delta 4
+0004dabf  55 89 e5 83 ec 0c 8d 4d   mosura fn 0004dabc  delta 3
+00057951  55 89 e5 81 ec d0 00 00   mosura fn 0005794c  delta 5
+000592dd  55 89 e5 83 ec 04 b9 08   mosura fn 000592d8  delta 5
+000599fc  55 89 e5 83 ec 04 89 c3   mosura fn 000599f8  delta 4
+00060270  fb 83 e4 fc 89 e3 89 1d   mosura fn 000601f8  delta 120
+```
+
+**Six are the entry-shift artifact again** — tracker at the `push ebp`, mosura at the true
+save-first entry — i.e. members of the 50, not a distinct class. They landed in the "no code unit
+ends here" bucket only because the bucketing keyed on *a code unit ending exactly at the tracker
+entry*, and mosura's decode there starts earlier and spans it. **The classifier produced the
+bucket, not the binary.**
+
+**The 7th is real but is also not §6.** `00060270` sits inside `_cstart_` (`000601f8`, WAR2's LE
+entry thunk per `seed_labels.py`); `fb 83 e4 fc 89 e3` is mid-CRT-init code, not a prologue. It is
+the one genuinely-absent function of the 51 and the gap report's seed table reaches it by
+`UNCONDITIONAL_JUMP` from `000601f8`. One tail-jump-from-the-entry-thunk case, worth one look, not
+a class.
+
+**So §6's evidence is unchanged: 7,322 starts and 255 runs, and nothing else.**
+
+### ⚠️ Both of those figures are DIFFERENTIAL — do not treat them as primitive
+
+"7,322 extra starts" and "104.4% of Ghidra's code coverage" are outputs of a comparison against
+Ghidra's decode. Per [[absolute-vs-differential-wrongcode]] that is exactly the shape that hides a
+defect present on both sides, and — as the entry-shift artifact showed twice — it is also the shape
+that manufactures a difference that is not a defect on either side. **Before spending a round on
+§6, replace its magnitude with an ABSOLUTE, self-contained measure.** Proposed spec in
+`docs/over-decode-measure.md`.
 
 ## 7. Handed to warcraft2-re, awaiting their verdict
 
