@@ -274,12 +274,18 @@ WATROOT="${GT_WATCOM:-$HOME/tools/open-watcom}"
 #     $1 program  $2 optional wcc386 flags, replacing the default `-oc` (which DISABLES Watcom's
 #     `call X; ret` -> `jmp X` rewrite — pass "" to let tail calls through, as `tailjmp` needs).
 build_watcom() {
-  local prog="$1" ccopt="${2--oc}"
+  # $3 = the stack-checking flag, default `-s` (suppress the stack-overflow probe). It is a
+  # SEPARATE parameter from $2 because it changes the ENTRY SHAPE, not the body: without it
+  # wcc386 opens every framed function with `push <framesize>; call __CHK`, which shifts the
+  # true entry ahead of everything the pattern set anchors on (docs/function-discovery-backlog
+  # §5 cell 1). A cell that drops it must also supply a `__CHK` stub in its `_cstart` asm, or
+  # wlink fails `E2028: __CHK is an undefined reference`.
+  local prog="$1" ccopt="${2--oc}" sflag="${3--s}"
   local stripped="$prog.watcom-x86-32" norm="$prog.watcom-x86-32.norm"
   log "$prog [wcc386/x86-32]"
   # binl on PATH so wlink finds its config file (wlink.lnk, which defines `system linux`).
   export WATCOM="$WATROOT" INCLUDE="$WATROOT/lh" PATH="$WATROOT/binl:$PATH"
-  wcc386 "src/$prog.c" -bt=linux -s $ccopt -fo="$prog.obj" >/dev/null 2>&1
+  wcc386 "src/$prog.c" -bt=linux $sflag $ccopt -fo="$prog.obj" >/dev/null 2>&1
   wasm "src/${prog}_cstart.asm" -fo="$prog"_cstart.o >/dev/null 2>&1
   wlink system linux option quiet option nodefaultlib \
     file "$prog"_cstart.o file "$prog.obj" name "$prog.watcom-x86-32.raw" >/dev/null 2>&1
@@ -394,6 +400,12 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # p_leaf_ = `53 51 52 56 57 55 89 e5` — WAR2 0x16ed4's shape exactly. This is the only gate on
   # the save-first family, i.e. on 62 of the pattern file's 73 patterns.
   build_watcom wprologue_sf "-4r -fpi87 -od"
+  # wprobe: §5 CELL 1 — stack checking. The SAME `-od` line as wprologue_sf with `-s` REMOVED
+  # (third parameter ""), which makes wcc386 open every framed function with
+  # `push <framesize>; call __CHK`. That shifts the true entry TEN BYTES ahead of what the
+  # save-first family anchors on — the same class of defect that this pattern file was created
+  # to fix, reintroduced by a flag WAR2 happened to use and most binaries do not.
+  build_watcom wprobe "-4r -fpi87 -od" ""
   build_watcom tailjmp ""
   # fnpattern: the FUNCTION START SEARCH repro (a function reachable by NOTHING — no call, no
   # jump, no stored pointer — so only its prologue BYTE PATTERN can find it). `-of+` (generate

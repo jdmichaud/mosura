@@ -661,4 +661,81 @@
     </postpatterns>
   </patternpairs>
 
+  <!-- =========================================================================================
+       (5) THE STACK-PROBE FAMILY — functions compiled WITHOUT `-s`.
+       `-s` suppresses Watcom's stack-overflow probe. WAR2 was built with it; most binaries are
+       NOT, because it is not the default. Without it wcc386 opens every framed function with
+
+           68 <framesize:imm32>   e8 <rel32 to __CHK>
+
+       and where that sits depends on the frame mode (measured on native Open Watcom v2, and
+       gated by `wprobe.watcom-x86-32`):
+
+           -of+        55 89 e5  68 .. e8 ..                     frame, THEN probe
+           -od / -oc   68 .. e8 ..  53 51 52 56 57  55 89 e5     probe FIRST, at offset 0
+
+       WHY IT MATTERS: these functions are not invisible, they are anchored at the WRONG ADDRESS.
+       On `wprobe`, `probe_orphan_fn_` truly starts at the `68` and family (1) matches TEN BYTES
+       later, at the first callee-save push. That is precisely the defect this whole file exists
+       to fix — `x86gcc_patterns.xml` anchoring at the `55`, five bytes late — reintroduced one
+       level up with the probe as the new prefix. A wrong entry is a wrong extent, and a wrong
+       extent can never recompile byte-exact.
+
+       PRECISION. `push imm32; call rel32` is NOT distinctive on its own — it is every cdecl call
+       with one immediate argument, and stated bare it would match constantly. So the probe-first
+       form carries Ghidra's own guards for a weak-but-real anchor, the same ones family (3) uses:
+       `after="defined"` (something must already be laid down immediately before, i.e. the end of
+       the previous function) and `validcode="6"` (six valid fall-through instructions, checked by
+       the PseudoDisassembler). It is also `possiblefuncstart`, so it additionally goes through
+       the delayed creator, which drops any proposal that turns out to be conditionally
+       referenced or inside a function. The byte AFTER the probe is constrained to a callee-save
+       push or `push ebp` — Watcom emits nothing else there.
+
+       The frame-then-probe form needs no such guard: `55 89 e5` ahead of the probe is already a
+       strong anchor, so it is stated like the rest of family (2).
+
+       Overlapping matches resolve as everywhere else in this file: family (1) still matches ten
+       bytes in, `CreateFunctionCmd` iterates ascending, and the LOWEST match — the true entry —
+       wins. That is the same mechanism that made the save-first family safe.
+       ========================================================================================= -->
+
+  <!-- frame-then-probe (`-of+`): the frame setup already anchors it. -->
+  <pattern>
+     <data>0x5589e568........e8</data> <!-- PUSH EBP : MOV EBP,ESP : PUSH imm32 : CALL -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec68........e8</data> <!-- the 8b encoding of the same -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
+  <!-- probe-first (`-od`/`-oc`): the probe IS the entry, so the mark is at the `68`. Guarded,
+       because `push imm32; call rel32` alone is an ordinary code sequence. -->
+  <pattern>
+     <data>0x68........e8........53</data> <!-- probe ; push ebx -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+  <pattern>
+     <data>0x68........e8........51</data> <!-- probe ; push ecx -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+  <pattern>
+     <data>0x68........e8........52</data> <!-- probe ; push edx -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+  <pattern>
+     <data>0x68........e8........56</data> <!-- probe ; push esi -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+  <pattern>
+     <data>0x68........e8........57</data> <!-- probe ; push edi -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+  <pattern>
+     <data>0x68........e8........55</data> <!-- probe ; push ebp (no callee-saves) -->
+     <possiblefuncstart after="defined" validcode="6"/>
+  </pattern>
+
 </patternlist>

@@ -1,0 +1,22 @@
+# mosura-ground-truth v1 program=wprobe compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=wprobe.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048110 0 sink_ code
+func 08048111 0 __CHK code
+func 08048112 0 p_leaf_ code
+func 08048140 0 p_push1_ code
+func 08048180 0 p_push2_ code
+func 080481cd 0 p_push3_ code
+func 08048225 0 p_push4_ code
+func 08048288 0 p_push5_ code
+func 080482f7 0 p_push6_ code
+func 08048370 0 p_frame_ code
+func 080483d7 0 p_bigframe_ code
+func 08048449 0 p_frame_saves_ code
+func 080484de 0 p_thru_ code
+func 08048510 0 p_global_ code
+func 08048548 0 main_ code
+func 08048666 0 probe_orphan_fn_ code
+func 08048738 0 probe_trail_fn_ code

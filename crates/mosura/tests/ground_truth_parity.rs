@@ -184,6 +184,14 @@ fn ground_truth_parity() {
         // fire on them; its two `switch` entries are likewise the PLT's `jmp *[GOT]` stubs. The
         // fixture's own gate asserts the property it exists for — that every body lies within the
         // extent the compiler recorded — which is strictly stronger than a start-address compare.
+        // `wprobe` has the same routing problem as `wprologue_sf`: its subject is the
+        // `(x86:LE:32:default, watcom)` pattern file, which this loop cannot reach, so analyzed
+        // as gcc it is expected to be red (the stack probe shifts every entry by ten bytes).
+        // `watcom_stack_probe_shape_spec` gates it through the correct compiler spec.
+        if bin.file_name().is_some_and(|n| n == "wprobe.watcom-x86-32") {
+            eprintln!("  skip wprobe: gated by watcom_stack_probe_shape_spec (cspec=watcom)");
+            continue;
+        }
         if bin.file_name().is_some_and(|n| n == "noret.gcc-x86-64") {
             eprintln!("  skip noret: gated by noreturn_call_bounds_the_body (dynamic ELF, PLT)");
             continue;
@@ -1013,6 +1021,135 @@ fn watcom_prologue_shape_spec() {
     assert!(
         spurious.is_empty(),
         "wprologue PRECISION: pattern set invented entries that are not functions: {spurious:?}"
+    );
+}
+
+/// §5 CELL 1 — **stack checking**: a function compiled without `-s` starts at its stack probe,
+/// and the pattern set must anchor there rather than ten bytes later.
+///
+/// # Why this cell exists
+///
+/// `-s` suppresses Watcom's stack-overflow probe. WAR2 was built with it; **most binaries are
+/// not, because it is not the default** — so this is the axis most likely to matter on a binary
+/// that is not WAR2, which is the standing scope rule's whole point. Without `-s`, wcc386 opens
+/// every framed function with `push <framesize>; call __CHK`:
+///
+/// ```text
+/// -of+        55 89 e5  68 <imm32>  e8 <rel32>                   frame, THEN probe
+/// -od / -oc   68 <imm32> e8 <rel32>  53 51 52 56 57  55 89 e5    probe FIRST, at offset 0
+/// ```
+///
+/// # The defect, and why it is worse than a miss
+///
+/// These functions are not invisible — they are found at the **wrong address**. Measured on this
+/// fixture before the stack-probe family existed, with the true entries missed and entries
+/// created exactly ten bytes into each:
+///
+/// ```text
+/// MISSED ["08048112", "08048666"]   EXTRA ["0804811c", "08048670"]
+/// ```
+///
+/// `08048666` is `probe_orphan_fn_`; the `08048670` beside it is family (1) matching at the first
+/// callee-save push, past the probe. That is precisely the defect this pattern file was created
+/// to fix — `x86gcc_patterns.xml` anchoring at the `55`, five bytes late — reintroduced one level
+/// up. A wrong entry is a wrong extent, and a wrong extent can never recompile byte-exact, so
+/// this costs more than a missing function does.
+#[test]
+fn watcom_stack_probe_shape_spec() {
+    let bin = ground_truth_dir().join("wprobe.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("wprobe.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip watcom_stack_probe_shape_spec: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let known: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+    let orphan = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "probe_orphan_fn_")
+        .map(|(a, _)| *a)
+        .expect("truth lists probe_orphan_fn_");
+
+    let run = |analyzers_off: bool| -> BTreeSet<u64> {
+        let prev_c = std::env::var("MOSURA_X86_32_CSPEC").ok();
+        let prev_a = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
+        // The corpus cannot reach the `watcom` pattern file on its own — no ground-truth binary
+        // carries a Watcom run-time banner. See `watcom_save_first_shape_spec` for the detail.
+        std::env::set_var("MOSURA_X86_32_CSPEC", "watcom");
+        if analyzers_off {
+            std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
+        }
+        let p = analysis::analyze_file(&bin).expect("analyze wprobe");
+        match prev_c {
+            Some(v) => std::env::set_var("MOSURA_X86_32_CSPEC", v),
+            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
+        }
+        match prev_a {
+            Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
+            None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
+        }
+        assert_eq!(p.compiler_spec_id, "watcom", "MOSURA_X86_32_CSPEC did not take effect");
+        p.function_manager.functions().map(|f| f.entry_point().offset).collect()
+    };
+
+    // (0) The orphan really is unreferenced, so recall is a statement about the pattern set and
+    // not about some other discovery route.
+    let probe = {
+        std::env::set_var("MOSURA_X86_32_CSPEC", "watcom");
+        let p = analysis::analyze_file(&bin).expect("analyze wprobe");
+        std::env::remove_var("MOSURA_X86_32_CSPEC");
+        p
+    };
+    let inbound: Vec<(u64, &'static str)> = probe
+        .reference_manager
+        .refs_to(Address::new(probe.default_space, orphan))
+        .map(|r| (r.from.offset, r.ref_type.name()))
+        .collect();
+    assert!(
+        inbound.is_empty(),
+        "probe_orphan_fn_ @ {orphan:#x} has inbound references {inbound:x?} — it must be \
+         reachable ONLY by its prologue byte pattern"
+    );
+
+    // (1) RECALL + PRECISION on a fully-known binary.
+    let mine = run(false);
+    let missed: Vec<String> = known.difference(&mine).map(|a| format!("{a:08x}")).collect();
+    assert!(
+        missed.is_empty(),
+        "wprobe RECALL: the pattern set missed stack-probe prologues: {missed:?}"
+    );
+    let spurious: Vec<String> = mine.difference(&known).map(|a| format!("{a:08x}")).collect();
+    assert!(
+        spurious.is_empty(),
+        "wprobe PRECISION: entries that are not functions: {spurious:?}. `push imm32; call rel32` \
+         is an ordinary code sequence, so the probe-first patterns carry `after=\"defined\"` + \
+         `validcode=\"6\"`; a hit here means those guards are not holding"
+    );
+
+    // (2) THE ANCHOR IS THE PROBE, not the push run ten bytes in. This is the property the cell
+    // exists for, and it is what a naive "did we find a function near here" check would miss.
+    for d in 1..12u64 {
+        assert!(
+            !mine.contains(&(orphan + d)),
+            "an entry was created at probe_orphan_fn_ + {d} — the pattern anchored past the \
+             stack probe, which is the shift this cell exists to prevent"
+        );
+    }
+
+    // (3) ATTRIBUTION — with the byte-pattern search off the orphan is gone, so its recovery
+    // belongs to the pattern set.
+    assert!(
+        !run(true).contains(&orphan),
+        "probe_orphan_fn_ is recovered with the byte-pattern search disabled — this fixture no \
+         longer isolates that analyzer"
+    );
+
+    eprintln!(
+        "wprobe gate: {}/{} recovered, 0 spurious; orphan {orphan:#x} anchored AT its stack \
+         probe (not +10) and absent when the byte-pattern search is off",
+        mine.len(),
+        known.len()
     );
 }
 
