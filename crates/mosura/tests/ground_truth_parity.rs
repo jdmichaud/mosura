@@ -166,6 +166,22 @@ fn ground_truth_parity() {
             eprintln!("  skip noret: gated by noreturn_call_bounds_the_body (dynamic ELF, PLT)");
             continue;
         }
+        // `nfprologue`'s three functions are UNREFERENCED — nothing calls them and their addresses
+        // are stored nowhere — so the only route to them is a prologue byte pattern, and the shape
+        // they carry is deliberately NOT covered (see specs/patterns/x86watcom_patterns.xml family
+        // (6): it was written, measured on WAR2 at a 26% terminator rate against a ~99.8% baseline,
+        // and backed out). This loop's recall assertion demands "call-reachable" functions, which
+        // these are not — the truth classifier calls them `code` only because it has two classes
+        // and they are not `dataptr`. Skipped here and gated by
+        // `no_frame_prologue_shape_is_uncovered`, exactly as `noret` is gated by its own test.
+        //
+        // ⚠️ NOT a general licence: this is the only fixture whose functions are unreachable BY
+        // DESIGN. Do not extend the skip to a fixture that merely fails — that is the difference
+        // between recording a known gap and hiding a regression.
+        if bin.file_name().is_some_and(|n| n == "nfprologue.watcom-x86-32") {
+            eprintln!("  skip nfprologue: gated by no_frame_prologue_shape_is_uncovered (uncovered shape)");
+            continue;
+        }
         let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
         // The `.watcom-le` column is a bound MZ+LE (DOS-extender) executable. `analyze_file`
         // dispatches a bound exe down the Ghidra-parity MZ-stub path, which is the right default
