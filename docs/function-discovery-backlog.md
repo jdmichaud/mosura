@@ -498,6 +498,20 @@ generic `ground_truth_parity` loop itself:
 PLT stubs and `EXTERNAL` slot are real functions that an `nm`-derived truth cannot express. A
 different problem with a different fix.
 
+**What became of the `overrides` module, checked rather than assumed.** It did not disappear, and
+here is the exact reason:
+
+- `force_x86_32_cspec` now has **one caller in the whole crate** — `analyze_file_as` — and is
+  `pub(crate)` so a future test cannot reach around the public API and reintroduce ad-hoc routing.
+  It went from a test backdoor to private plumbing for a documented entry point.
+- `disable_analyzers` remains, and always will: it is the **analyzer-ablation** switch (Ghidra's
+  own `ANALYSIS_PROPERTIES` model), the only way to attribute a discovery to the analyzer that
+  made it. Nothing to do with compiler routing, and it is what proves a fixture's recall is not
+  vacuous. Removing it would delete the measurement, not the workaround.
+
+So the module survives with its two halves on opposite footings: the cspec half is now
+implementation detail, the ablation half is a permanent measuring instrument.
+
 ⚠️ **Production detection is unchanged and should stay that way.** A real Watcom binary links a
 real CRT and carries the banner, so detection already works where evidence exists. The corpus was
 always the artificial case.

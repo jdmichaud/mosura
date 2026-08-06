@@ -76,7 +76,12 @@ pub fn disable_analyzers(list: &str) -> OverrideGuard {
 
 /// Force the x86-32 compiler spec for analyses on *this thread* until the guard drops.
 /// `None` restores detection.
-pub fn force_x86_32_cspec(cspec: Option<&str>) -> OverrideGuard {
+///
+/// **`pub(crate)` deliberately.** Its one caller is [`analyze_file_as`](crate::analysis::
+/// analyze_file_as), which is the supported way to declare a compiler spec. Keeping it crate-
+/// private means a future test cannot reach around that API and reintroduce the ad-hoc routing
+/// this module was created to clean up.
+pub(crate) fn force_x86_32_cspec(cspec: Option<&str>) -> OverrideGuard {
     set(&X86_32_CSPEC, cspec)
 }
 

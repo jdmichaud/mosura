@@ -1049,19 +1049,15 @@ fn watcom_stack_probe_shape_spec() {
         // The corpus cannot reach the `watcom` pattern file on its own — no ground-truth binary
         // carries a Watcom run-time banner. See `watcom_save_first_shape_spec` for the detail.
         // Per-thread overrides, NOT `std::env`: see `analysis::overrides`.
-        let _c = overrides::force_x86_32_cspec(Some("watcom"));
         let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
-        let p = analysis::analyze_file(&bin).expect("analyze wprobe");
+        let p = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze wprobe");
         assert_eq!(p.compiler_spec_id, "watcom", "MOSURA_X86_32_CSPEC did not take effect");
         p.function_manager.functions().map(|f| f.entry_point().offset).collect()
     };
 
     // (0) The orphan really is unreferenced, so recall is a statement about the pattern set and
     // not about some other discovery route.
-    let probe = {
-        let _c = overrides::force_x86_32_cspec(Some("watcom"));
-        analysis::analyze_file(&bin).expect("analyze wprobe")
-    };
+    let probe = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze wprobe");
     let inbound: Vec<(u64, &'static str)> = probe
         .reference_manager
         .refs_to(Address::new(probe.default_space, orphan))
@@ -1259,19 +1255,16 @@ fn watcom_save_first_shape_spec() {
 
     // Route the binary through a compiler spec, run the analysis, return the function set.
     let entries = |cspec: Option<&str>, analyzers_off: bool| -> (BTreeSet<u64>, String) {
-        let _c = overrides::force_x86_32_cspec(cspec);
         let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
-        let p = analysis::analyze_file(&bin).expect("analyze wprologue_sf");
+        let p = analysis::analyze_file_as(&bin, cspec).expect("analyze wprologue_sf");
         let cspec = p.compiler_spec_id.clone();
         (p.function_manager.functions().map(|f| f.entry_point().offset).collect(), cspec)
     };
 
     // (0) The fixture still reproduces the shape: NOTHING references the orphan. If a compiler
     // change ever gives it an inbound edge, recall stops being a statement about the pattern set.
-    let probe = {
-        let _c = overrides::force_x86_32_cspec(Some("watcom"));
-        analysis::analyze_file(&bin).expect("analyze wprologue_sf")
-    };
+    let probe =
+        analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze wprologue_sf");
     let inbound: Vec<(u64, &'static str)> = probe
         .reference_manager
         .refs_to(Address::new(probe.default_space, orphan))
