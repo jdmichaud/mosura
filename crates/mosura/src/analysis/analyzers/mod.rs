@@ -59,11 +59,56 @@ impl Disassembler {
 
     /// Offset of a `ram`-space first input of a flow op (a static target), if any.
     fn static_target(op: &crate::sleigh::pcode::PcodeOp) -> Option<u64> {
-        match op.ins.first() {
-            Some(PArg::Var(v)) if v.space == "ram" => Some(v.offset),
-            _ => None,
+        static_target(op)
+    }
+}
+
+/// Offset of a `ram`-space first input of a flow op (a static target), if any.
+pub(crate) fn static_target(op: &crate::sleigh::pcode::PcodeOp) -> Option<u64> {
+    match op.ins.first() {
+        Some(PArg::Var(v)) if v.space == "ram" => Some(v.offset),
+        _ => None,
+    }
+}
+
+/// Does control fall through past `insn` — Ghidra's `Instruction.getFallThrough()`.
+///
+/// **One definition, three callers, deliberately.** This decision is made by the disassembler's
+/// linear walk, by [`compute_function_bodies`], and by
+/// `function_start::flow_body`. It used to be written out at each site, and
+/// the copies drifted: the disassembler consulted `is_noreturn` (citing Ghidra's `followFlow`)
+/// while both body walks derived the answer from the opcode alone, so a body walked straight past
+/// a `call <noreturn>` into whatever followed — six bytes of alignment padding in
+/// `noret.gcc-x86-64`, and in general into the next function. Gated by
+/// `ground_truth_parity::noreturn_call_bounds_the_body`.
+///
+/// Ghidra's rule: flow continues unless the instruction ends the flow (return / unconditional
+/// branch / indirect jump), **or** it is a direct call to a function marked no-return
+/// (`NoReturnFunctionAnalyzer`, whose result `FollowFlow` reads through
+/// `Instruction.getFallThrough()`). An indirect call's target is not known here, so it is left
+/// falling through — as Ghidra does.
+pub(crate) fn falls_through(
+    program: &Program,
+    insn: &crate::sleigh::Instruction,
+    ram: SpaceId,
+) -> bool {
+    let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
+    if matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind)) {
+        return false;
+    }
+    if matches!(last, Some(OpCode::Call)) {
+        let target = insn.ops.iter().rev().find_map(|o| {
+            matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call))
+                .then(|| static_target(o))
+                .flatten()
+        });
+        if let Some(t) = target {
+            if program.is_noreturn(Address::new(ram, t)) {
+                return false;
+            }
         }
     }
+    true
 }
 
 impl Analyzer for Disassembler {
@@ -115,26 +160,13 @@ impl Analyzer for Disassembler {
             if ilen == 0 {
                 continue;
             }
-            // Control falls through unless the instruction ends in a return / unconditional
-            // branch / indirect jump (Ghidra's flow classification).
+            // Control falls through unless the instruction ends the flow, or is a direct call to
+            // a no-return function (`falls_through` — the single definition all three walks use).
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-            let mut falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            let falls = falls_through(program, &insn, ram);
             // Record indirect branches as switch candidates for the A6 switch analyzer.
             if matches!(last, Some(OpCode::Branchind)) {
                 program.indirect_branches.insert(a);
-            }
-            // A call to a function flagged "No Return" (Ghidra NoReturnFunctionAnalyzer) does
-            // not fall through — stop linear decode of the bytes after the call (Ghidra's
-            // followFlow consults Function.isNoReturn). Direct `call <target>` only; an
-            // indirect call's target isn't known here.
-            if let Some(OpCode::Call) = last {
-                if let Some(t) = insn.ops.iter().rev().find_map(|o| {
-                    matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call)).then(|| Self::static_target(o)).flatten()
-                }) {
-                    if program.is_noreturn(Address::new(ram, t)) {
-                        falls = false;
-                    }
-                }
             }
             // Flow references (Ghidra creates these as the instruction is laid down).
             for op in &insn.ops {
@@ -295,8 +327,7 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
                 continue;
             }
             body.add_range(ram, a, a + ilen - 1); // inclusive [a, a+ilen)
-            let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-            let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+            let falls = falls_through(program, &insn, ram);
             for op in &insn.ops {
                 if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
                     if let Some(t) = Disassembler::static_target(op).filter(|&t| t != a) {

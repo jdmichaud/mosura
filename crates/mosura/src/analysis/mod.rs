@@ -174,6 +174,17 @@ pub fn analyze(program: &mut Program) {
     // the closure (re-seeding each gap, following flow) matches Ghidra's `disassemble` loop.
     plt_linear_sweep(&mut mgr, program);
 
+    // Re-run the no-return analysis now that functions and references exist. The call above
+    // happens before disassembly, which is right for flagging *symbols* but leaves
+    // `analyze`'s PLT-thunk propagation dead: that loop walks
+    // `function_manager.functions()`, and at that point there are none. So a
+    // `call <plt stub>` — which is how every call to a dynamically-imported `abort`/`exit`
+    // actually looks — saw an unflagged target and kept falling through. Ghidra has no such
+    // gap: `NoReturnFunctionAnalyzer` runs at FUNCTION_ANALYSIS priority, after functions
+    // exist, and a thunk inherits its thunked function's no-return via `Function.isThunk`.
+    // Runs before `compute_function_bodies` so the body walk sees the completed set.
+    analyzers::noreturn::analyze(program);
+
     // Compute function bodies once disassembly has converged (Ghidra `Function.getBody`).
     if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
         analyzers::compute_function_bodies(&spec, &ctx, program);

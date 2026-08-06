@@ -1,0 +1,9 @@
+# mosura-ground-truth v1 program=noret compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=noret.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401050
+func 0000000000401020 000000000000001a a_dies code
+func 0000000000401040 000000000000000a b_next code
+func 0000000000401050 0000000000000024 _start code
+switch 401006
+switch 401010

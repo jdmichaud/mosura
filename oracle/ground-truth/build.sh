@@ -170,6 +170,17 @@ for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do
   build_elf "$prog" gcc x86-64 "x86:LE:64:default" "gcc $GCC_FLAGS" ""
 done
 
+# noret: the ONE dynamically-linked binary in the corpus, and the only thing that makes
+# `analyzers/noreturn.rs` run at all. That analyzer picks its name list off the memory map and
+# returns early unless a `.dynsym`, `.plt` or `EXTERNAL` block exists — and every other artifact
+# here is freestanding (`-nostdlib -static`, `option nodefaultlib`) or a bare LE image, so
+# `noreturn_functions` is EMPTY on all of them and the analyzer had zero coverage anywhere.
+# Hence `-nostartfiles` and NO `-static`: `abort` must arrive as a real .dynsym/.plt import.
+# Everything else matches the freestanding recipe (own `_start`, no libc startup).
+# See src/noret.c for the four properties the program depends on.
+build_elf noret gcc x86-64 "x86:LE:64:default" \
+  "gcc -nostartfiles -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables" ""
+
 # aarch64 / riscv64: full program set (both fully recover under the standard ELF pipeline).
 if have aarch64-linux-gnu-gcc; then
   for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do

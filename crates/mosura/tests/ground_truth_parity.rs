@@ -177,6 +177,17 @@ fn ground_truth_parity() {
             eprintln!("  skip wprologue_sf: gated by watcom_save_first_shape_spec (cspec=watcom)");
             continue;
         }
+        // `noret` is the corpus's only DYNAMICALLY-linked binary — deliberately, since it is the
+        // only way to make `analyzers::noreturn` run at all (see `noreturn_call_bounds_the_body`).
+        // That brings PLT stubs and an `EXTERNAL` slot, which are real functions Ghidra creates
+        // too but which a `nm`-derived truth cannot express, so this loop's "0 spurious" would
+        // fire on them; its two `switch` entries are likewise the PLT's `jmp *[GOT]` stubs. The
+        // fixture's own gate asserts the property it exists for — that every body lies within the
+        // extent the compiler recorded — which is strictly stronger than a start-address compare.
+        if bin.file_name().is_some_and(|n| n == "noret.gcc-x86-64") {
+            eprintln!("  skip noret: gated by noreturn_call_bounds_the_body (dynamic ELF, PLT)");
+            continue;
+        }
         let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
         // The `.watcom-le` column is a bound MZ+LE (DOS-extender) executable. `analyze_file`
         // dispatches a bound exe down the Ghidra-parity MZ-stub path, which is the right default
@@ -1002,6 +1013,95 @@ fn watcom_prologue_shape_spec() {
     assert!(
         spurious.is_empty(),
         "wprologue PRECISION: pattern set invented entries that are not functions: {spurious:?}"
+    );
+}
+
+/// A function body must END at a call that never returns — and this is the only fixture in the
+/// corpus that can say so, because it is the only one where `analyzers/noreturn.rs` runs at all.
+///
+/// # The coverage hole this closes
+///
+/// `noreturn::analyze` selects its name list from the memory map and returns early unless a
+/// `.dynsym`, `.plt` or `EXTERNAL` block exists (`noreturn.rs:128-137`). Every other artifact here
+/// is freestanding — the gcc columns link `-nostdlib -static`, the Watcom columns
+/// `option nodefaultlib` — and WAR2 is a DOS/4GW LE image with `objN_text`/`objN_data` objects.
+/// Measured on all of them: **`noreturn_functions` is empty**. So an entire analyzer had zero
+/// coverage on every target, and a test asserting any no-return behaviour would have passed
+/// whether or not the code beneath it worked. `src/noret.c` is built dynamically for this reason
+/// alone.
+///
+/// # The defect it pins
+///
+/// Ghidra asks `Instruction.getFallThrough()` (`FollowFlow.java:556`), which is null after a call
+/// to a non-returning function, so a body stops there. mosura's `compute_function_bodies` derived
+/// fall-through from the p-code opcode alone, with no `is_noreturn` consultation — even though the
+/// *disassembler's* walk 170 lines above it in the same file does exactly that and cites Ghidra
+/// for it (`analyzers/mod.rs:130`). Two copies of one walk; one had lost the rule. Measured before
+/// the fix: `a_dies`'s body ran to `0x40103f`, six bytes of inter-function alignment padding past
+/// its real end at `0x401039`.
+///
+/// The extents are the **compiler's own** — `nm -S` sizes carried in the truth file — so this
+/// asserts mosura's computed body against the build, not against a hand-written address.
+#[test]
+fn noreturn_call_bounds_the_body() {
+    let bin = ground_truth_dir().join("noret.gcc-x86-64");
+    let truth_path = ground_truth_dir().join("noret.gcc-x86-64.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip noreturn_call_bounds_the_body: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let prog = analysis::analyze_file(&bin).expect("analyze noret");
+    let ram = prog.default_space;
+
+    // (0) ANTI-VACUITY, and the reason this fixture exists. If nothing is flagged no-return then
+    // `falls` is identical with and without the rule under test, and every assertion below would
+    // pass on unfixed code. Assert the mechanism is live before asserting its effect.
+    let flagged: Vec<String> =
+        prog.noreturn_functions.iter().map(|(_, o)| format!("{o:08x}")).collect();
+    assert!(
+        !flagged.is_empty(),
+        "no function is flagged no-return, so this fixture cannot test anything — has the \
+         dynamic-link recipe or `noreturn::analyze`'s block-name gate changed?"
+    );
+    let abort_at: Vec<u64> = prog
+        .symbol_table
+        .symbols()
+        .filter(|s| s.name() == "abort")
+        .map(|s| s.address().offset)
+        .collect();
+    assert!(!abort_at.is_empty(), "the `abort` import is not in the symbol table");
+    assert!(
+        abort_at.iter().any(|a| prog.is_noreturn(Address::new(ram, *a))),
+        "`abort` @ {abort_at:x?} is not flagged no-return, but {flagged:?} are — the fixture's \
+         own no-return call is not the one being exercised"
+    );
+
+    // (1) THE PROPERTY. Every function's computed body must lie within the extent the compiler
+    // recorded for it. `a_dies` is the one that can fail: its last flow is `call abort`, and a
+    // body that walks past it runs into the alignment padding that belongs to no function.
+    let mut over: Vec<String> = Vec::new();
+    for &(entry, size) in &truth.sizes {
+        if size == 0 {
+            continue;
+        }
+        let Some(f) = prog.function_manager.function_at(Address::new(ram, entry)) else { continue };
+        let last = entry + size - 1;
+        if let Some(max) = f.body().ranges().map(|r| r.max).max() {
+            if max > last {
+                over.push(format!("{entry:08x}: body ends {max:08x}, compiler says {last:08x}"));
+            }
+        }
+    }
+    assert!(
+        over.is_empty(),
+        "function bodies extend past the extent the compiler recorded: {over:?}"
+    );
+    eprintln!(
+        "noret gate: {} no-return flagged (abort @ {abort_at:x?}); all {} bodies within their \
+         compiler-recorded extents",
+        flagged.len(),
+        truth.sizes.len()
     );
 }
 

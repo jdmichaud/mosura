@@ -941,8 +941,8 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
             continue;
         }
         body.add_range(ram, a, a + ilen - 1);
-        let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-        let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+        // The one definition of Ghidra's `Instruction.getFallThrough()` — see `falls_through`.
+        let falls = super::falls_through(program, &insn, ram);
         for op in &insn.ops {
             if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
                 if let Some(crate::sleigh::pcode::PArg::Var(v)) = op.ins.first() {
