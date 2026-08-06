@@ -49,7 +49,15 @@ with `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIREC
 **twice** — `analyzers/mod.rs::compute_function_bodies` and
 `analyzers/function_start.rs::flow_body` — and they must not drift apart.
 
-**⭐ 1. The no-return fall-through, and it is a DRIFT INSIDE mosura, not a missing port.**
+**⛔ 1. The no-return fall-through — a real drift, but REFUTED as the cause of the 51.**
+Measured before building anything: `noreturn::analyze` selects its name list from the memory map
+and **returns early unless a `.dynsym`, `.plt` or `EXTERNAL` block exists** (`noreturn.rs:128-137`).
+WAR2 is a DOS/4GW LE image whose loader names its blocks `objN_text`/`objN_data` (`loader/le.rs:219`)
+— none of the three. Confirmed empirically on all four fast fixtures, including the LE path WAR2
+uses: **`noreturn_flagged = 0` everywhere** (fnpattern, wprologue, wprologue_sf, lestruct). With
+nothing flagged, `falls` is identical with and without the check, so this cannot account for a
+single one of the 51. It is still a genuine defect for ELF/PE targets and still worth closing —
+but not here, and not as this item's fix. Detail of the drift, for whoever does close it:
 Ghidra asks `currentInstr.getFallThrough()` (`FollowFlow.java:556`), which is null after a call to
 a non-returning function. mosura's *disassembler* does exactly this and consults
 `program.is_noreturn` (`analyzers/mod.rs:130`, comment: "Ghidra's followFlow consults
@@ -60,9 +68,9 @@ Function.isNoReturn"). But `compute_function_bodies`, **170 lines further down t
 let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
 ```
 
-with no no-return check — and `flow_body` has the same omission. So the decoder correctly stops
-after `call <noreturn>`, and the body walk then steps straight over it into the next function.
-That is precisely the reported shape: 51 swallowed entries, zero in open space.
+with no no-return check — and `flow_body` has the same omission. So on a target where the analyzer
+*does* run, the decoder stops after `call <noreturn>` and the body walk steps over it. On WAR2 the
+analyzer never runs, so this is latent, not active.
 
 **2. The listing, not a re-decode.** Ghidra continues only if
 `getListing().getInstructionAt(nextAddress) != null` (`FollowFlow.java:566`) — it walks *defined
@@ -74,10 +82,45 @@ so it flows through alignment padding and data that were never code.
 (`CreateFunctionCmd.java:616`). mosura decodes fresh instead; its one-byte fallback fires only when
 the walk yields nothing at all.
 
+**⭐ 4. THE LIVE CANDIDATE — the body walk reads the OPCODE where Ghidra reads the REFERENCE TYPE.**
+Ghidra's `dontFollow` list is expressed in `RefType`s, and a **tail call** (`jmp <function>`) carries
+an `UNCONDITIONAL_CALL` reftype after `SharedReturnAnalyzer` has run — so `FollowFlow` refuses to
+follow it. mosura's walk instead re-derives the decision from the raw p-code opcode: an unconditional
+`jmp` is `OpCode::Branch`, so `falls` is false (correct) **but the branch target is still pushed onto
+the worklist**, and if that target is a function mosura has not yet discovered, the walk runs through
+the whole callee and swallows it. This is exactly the class recorded in
+[[reftype-is-post-override-not-the-instruction]]: *reftypes are analysis OUTPUT; re-deriving flow
+from the instruction discards every override the analyzers computed.* It also needs no no-return
+flag, which is what makes it the surviving candidate after #1 was refuted.
+
 **Opposite direction, worth noting so a fix does not overshoot:** `FollowFlow` follows
 COMPUTED_JUMP by default (`followComputedJump = true`, :42) — computed-jump targets are *in* a
 Ghidra body. mosura follows only `Branch`/`Cbranch` static targets and never a `Branchind` target,
 so switch-case bodies are too *small*. Do not "fix" that in the same change as the over-extension.
+
+### The MVE passes unfixed, and why (2026-08-06)
+
+The obvious formulation — "does any function's body contain another function's entry, or run past
+the next entry?" — was built and run against all four fast fixtures. **Zero on every one**
+(fnpattern 5 funcs, wprologue 15, wprologue_sf 17, lestruct 4). Predicted by the lead, and it is
+vacuous for a structural reason worth stating: over-extension is only *observable* when the
+swallowed function is one mosura does not otherwise know, and on these fixtures mosura recovers
+100% of the truth set — so there is nothing missing to be swallowed. A fixture reproducing this
+needs a function reachable ONLY through the swallowing predecessor's flow.
+
+### The one measurement that discriminates (needs a WAR2 run — lead only)
+
+Candidates #2 and #4 both predict the reported shape and cannot be told apart from here. One
+histogram settles it: **for each of the 51 swallowed entries, what is the last instruction of the
+swallowing body before that entry, and how did the walk reach it?**
+
+```
+jcc / plain fall-through into the entry   -> the fall-through class (#2, or a missing terminator)
+jmp <the swallowed entry>                 -> the tail-call / reftype class (#4)
+bytes that Ghidra never decoded as code   -> §6's over-decode is UPSTREAM of §1, and they are one defect
+```
+
+That last outcome would merge §1 and §6, which is why the histogram is worth a run on its own.
 
 ## 2. Bare frame-first prologue is unmatched (17 functions) — ✅ CLOSED `556cdb3`; residual RULED OUT
 
