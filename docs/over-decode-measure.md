@@ -27,8 +27,14 @@ Each check below is decidable from the loaded image plus mosura's listing alone.
 | **A1** | an instruction start inside a memory block whose container marks it **non-executable** | the LE object table (`le.rs:219`, `objN_text` vs `objN_data`) and the ELF section flags are the *producer's own* statement of what is code. Decoding there is wrong with no oracle needed. |
 | **A2** | an instruction start that is **offcut** — strictly inside another instruction's extent | a byte cannot be both mid-instruction and an instruction start. Pure self-consistency. Expected 0; if it is not 0 that is the defect, found without any comparison. |
 | **A3** | a flow edge (fall-through, branch, call) whose **target is offcut** w.r.t. an existing instruction | same, for flow rather than starts. Also expected 0. |
-| **A4** | an instruction whose bytes **overlap a relocation/fixup slot** | an LE fixup names a 32-bit slot as a relocated pointer. Code overlapping one is decoding a pointer. WAR2-specific but principled, and mosura already parses the fixup table (`war2-le-fixups-root-cause`). |
+| **A4** | a relocation/fixup **target** that lands *inside* an instruction rather than at one | the fixup table names, per slot, the address it resolves to; where that address is in an executable object the file itself says "this is code", so no instruction starting there means our decode is misaligned. mosura already parses the table (`war2-le-fixups-root-cause`). |
 | **A5** | an instruction start with **no inbound flow edge and no seed**, i.e. unreachable from any function entry | not wrong on its own — a legitimate seed produces these — but it is the *entry set* for Part B, and it should be small. |
+
+⚠️ **A4 was first specified as "an instruction overlapping a fixup slot" and that was WRONG** —
+LE fixups routinely patch operands *inside* instructions (a `call rel32` displacement, WAR2's own
+`jmp cs:[reg*4+disp]` and its table entries), so that form fires on every correctly-decoded
+relocated call in the image. Caught by reading `le.rs` before shipping it, not by running it. The
+target-side formulation above is the one implemented.
 
 **A1 and A4 are the magnitude.** They are the honest replacement for "7,322 extra starts": bytes
 mosura decoded that the file itself says are not code. If A1+A4 is near zero while the differential
@@ -70,8 +76,11 @@ magnitude independently.
 
 The measure must be validated where the answer is already known, on the fast fixtures:
 
-- `lestruct.watcom-le` — the LE column, so A1 (object table) and A4 (fixups) both have real inputs;
-  its data object is `obj2_data` and nothing in it should decode.
+- `lestruct.watcom-le` — the LE column, so A1 (object table) and A4 (fixups) both have real
+  inputs; its data object is `obj2_data` and nothing in it should decode. **Measured: A1-A5 all 0,
+  with 9 relocations feeding A4** — so A4 has live input there, not just a zero.
+  ⚠️ Only the LE loader populates `relocation_table`, so A4 reads `0 (of 0 relocations)` on every
+  ELF fixture. That is inertness, not cleanliness — do not quote it as coverage.
 - `noret.gcc-x86-64` — a dynamic ELF with `.plt`, `.got.plt` and `.bss`, so A1 has ELF-side inputs.
 - `wprologue_sf.watcom-x86-32` — 17 functions of dense Watcom code with inter-function padding,
   where A2/A3 should be 0 and A1 should be 0.

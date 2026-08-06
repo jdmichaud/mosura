@@ -49,6 +49,29 @@ fn a3_offcut_flow(edges: &[(u64, u64)], insns: &Insns) -> Vec<(u64, u64)> {
     edges.iter().copied().filter(|&(_, t)| offcut(t)).collect()
 }
 
+/// **A4** — a relocation/fixup TARGET that lands inside an instruction rather than at one.
+///
+/// The image's own fixup table names, for each slot, the address it resolves to. Where that
+/// address is in an executable object it is a code address by the producer's own statement, so if
+/// our decode has no instruction *starting* there, our decode is misaligned at that point.
+/// Absolute: the file supplies both the address and the claim that it is code.
+///
+/// NOT "an instruction overlapping a fixup slot", which is what `docs/over-decode-measure.md`
+/// first specified and which is wrong: LE fixups routinely patch operands *inside* instructions
+/// (a `call rel32` displacement, WAR2's `jmp cs:[reg*4+disp]`), so that form fires on every
+/// correctly-decoded relocated call in the image.
+fn a4_offcut_reloc_targets(targets: &[u64], insns: &Insns, exec: &[(u64, u64)]) -> Vec<u64> {
+    targets
+        .iter()
+        .copied()
+        .filter(|&t| exec.iter().any(|&(s, e)| t >= s && t <= e))
+        .filter(|&t| match insns.binary_search_by(|(a, _)| a.cmp(&t)) {
+            Ok(_) => false,
+            Err(i) => i > 0 && t < insns[i - 1].0 + insns[i - 1].1,
+        })
+        .collect()
+}
+
 /// Merge `(start, len)` pairs into contiguous runs.
 fn runs(mut a: Vec<(u64, u64)>) -> Vec<(u64, u64, usize)> {
     a.sort();
@@ -98,7 +121,25 @@ fn self_test() {
         "A3 must stay silent on flow to a real start"
     );
 
-    println!("self-test: A1, A2, A3 each detect a planted violation and stay silent when clean");
+    // A4: a fixup target landing mid-instruction, inside the executable range.
+    let insns = [(0x1000, 8), (0x1008, 4)];
+    assert_eq!(
+        a4_offcut_reloc_targets(&[0x1004], &insns, &[(0x1000, 0x1fff)]),
+        vec![0x1004],
+        "A4 must flag a fixup target landing mid-instruction"
+    );
+    assert!(
+        a4_offcut_reloc_targets(&[0x1008], &insns, &[(0x1000, 0x1fff)]).is_empty(),
+        "A4 must stay silent when the target is a real instruction start"
+    );
+    assert!(
+        a4_offcut_reloc_targets(&[0x1004], &insns, &[(0x8000, 0x8fff)]).is_empty(),
+        "A4 must ignore targets outside executable memory (that is A1's job)"
+    );
+
+    println!(
+        "self-test: A1, A2, A3, A4 each detect a planted violation and stay silent when clean"
+    );
 }
 
 fn main() {
@@ -176,6 +217,18 @@ fn main() {
     println!("A3 flow into mid-instruction {}", a3.len());
     for (f, t) in a3.iter().take(20) {
         println!("     {f:08x} -> {t:08x}");
+    }
+
+    let reloc_targets: Vec<u64> =
+        prog.relocation_table.relocations().map(|r| r.value).collect();
+    let a4 = a4_offcut_reloc_targets(&reloc_targets, &insns, &exec);
+    println!(
+        "A4 fixup target mid-instruction {} (of {} relocations)",
+        a4.len(),
+        reloc_targets.len()
+    );
+    for t in a4.iter().take(20) {
+        println!("     {t:08x}");
     }
 
     // A5 — starts with no inbound flow and no fall-through predecessor: the seed set, and the
