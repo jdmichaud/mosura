@@ -983,6 +983,23 @@ fn function_start_pattern_search() {
 /// back with the fix and without it. If a toolchain change ever undoes the decoded-but-not-a-
 /// function state, this test says so instead of passing for the wrong reason.
 ///
+/// ⭐ AND IT HAS ALREADY EARNED ITS KEEP — READ THIS BEFORE EDITING ANY PATTERN FILE.
+/// **A new byte pattern can turn an unrelated, still-passing gate into a test of the wrong
+/// branch.** Measured, same day this test was written: a candidate no-frame pattern
+/// (`0x52 0x8b 00...101`, a run-length-1 form of family (6)) matched `tab_h3_` — the
+/// address-table target this fixture needs to stay decoded-but-NOT-a-function — and created a
+/// function there. Nothing looked wrong: `tab_h3_` is a REAL function, so `ground_truth_parity`'s
+/// 0-spurious assertion passed, every other gate passed, and this test would have passed too. But
+/// with a function above it, `getFunctionAbove` returns `Some`, `checkAlreadyInFunctionAbove`
+/// answers from its FIRST arm, and the fall-through logic this test exists to pin is never
+/// executed. Assertion (1) is what caught it, and it is why the family carries a minimum run
+/// length of 2.
+///
+/// The general shape, which is not specific to patterns: **a change that adds discovery anywhere
+/// can silently move an unrelated test onto a different code path, and a green suite will not tell
+/// you.** The only defence is a test that asserts the state its subject depends on, not just its
+/// subject's result.
+///
 /// PRE-FIX (`be85c85` reverted, measured on this binary): `orphan_fn_` @0804812c is absent from
 /// the function set, while `tab_h0_..tab_h3_` stay decoded-and-in-no-function identically.
 #[test]
@@ -1094,14 +1111,96 @@ fn above_function_guard_tests_fall_through() {
     );
 }
 
-/// THE NO-FRAME PROLOGUE FAMILY (family (6) of `specs/patterns/x86watcom_patterns.xml`) — a
-/// callee-save push run followed by neither a frame setup nor a stack adjust, which is what
-/// `wcc386` emits BY DEFAULT (`-of+` is the flag that turns the frame pointer ON).
+/// §8 — A FUNCTION BODY MUST INCLUDE ITS SWITCH CASE BODIES (the computed-jump flow).
 ///
-/// ⚠️ THE GAP THIS GATES IS THE FOLLOW-ON, NOT "NO FRAME". Family (3) already covers a push run
-/// followed by `sub esp` — measured against the 7 no-frame entries the WAR2 triage collected,
-/// 4 match it at offset 0 — and `retorphan`'s `56 57 55 83 ec 14` is recovered by it. What had no
-/// pattern is the push run followed by something else, and that is what these three orphans pin:
+/// Ghidra's body walk is `CreateFunctionCmd.getFunctionBody` -> `FollowFlow`, and
+/// `FollowFlow.getFlowsFromInstruction` (FollowFlow.java:743) reads `instr.getReferencesFrom()`
+/// and follows every flow reference that survives `shouldFollowFlow` (:715). The `dontFollow` set
+/// `CreateFunctionCmd` passes (:622) is
+///
+/// ```java
+/// { RefType.COMPUTED_CALL, RefType.CONDITIONAL_CALL, RefType.UNCONDITIONAL_CALL,
+///   RefType.INDIRECTION }
+/// ```
+///
+/// — **`COMPUTED_JUMP` is not in it**, so a recovered switch's case bodies are inside Ghidra's
+/// function body.
+///
+/// mosura's two body walks were opcode-driven and pushed a target only for `Branch`/`Cbranch`
+/// with a *static* p-code target. A `BRANCHIND` names no static target — the jump table lives in
+/// the REFERENCE set, which the walks never consulted — so every case body fell outside.
+///
+/// PRE-FIX, measured over these same fixtures: **53 of 53** computed-jump targets outside the
+/// containing body (narrowsw 16/16, switchcall 14/14, dispatch 7/7, tables 12/12, compgoto 4/4).
+/// Not a partial gap — total, across two compilers and two architectures. A wrong extent can
+/// never recompile byte-exact, which is why this one bears on the campaign's actual goal.
+///
+/// `sparseswitch` is in the list deliberately even though it recovers no computed jump here: it
+/// keeps the fixture set honest about which programs actually exercise the path, so a future
+/// change that stops recovering the tables shows up as `0 targets` rather than as a silent pass.
+#[test]
+fn switch_case_bodies_are_inside_the_function_body() {
+    let cases: &[(&str, Option<&str>)] = &[
+        ("narrowsw.watcom-x86-32", Some("watcom")),
+        ("switchcall.watcom-x86-32", Some("watcom")),
+        ("dispatch.gcc-x86-64", None),
+        ("tables.gcc-x86-64", None),
+        ("sparseswitch.gcc-x86-64", None),
+        ("compgoto.gcc-x86-64", None),
+    ];
+    let mut total = 0usize;
+    let mut checked_fixtures = 0usize;
+    for (name, cspec) in cases {
+        let bin = ground_truth_dir().join(name);
+        if !bin.exists() {
+            eprintln!("skip {name}: absent");
+            continue;
+        }
+        let prog = analysis::analyze_file_as(&bin, *cspec).expect("analyze");
+        let ram = prog.default_space;
+        checked_fixtures += 1;
+        let mut outside: Vec<String> = Vec::new();
+        let mut here = 0usize;
+        for f in prog.function_manager.functions() {
+            let entry = f.entry_point();
+            for a in f.body().ranges().flat_map(|r| r.min..=r.max) {
+                for r in prog.reference_manager.refs_from(Address::new(ram, a)) {
+                    if !matches!(
+                        r.ref_type,
+                        RefType::ComputedJump | RefType::ConditionalComputedJump
+                    ) {
+                        continue;
+                    }
+                    here += 1;
+                    if !f.body().contains(r.to) {
+                        outside.push(format!("{:08x} -> {:08x}", entry.offset, r.to.offset));
+                    }
+                }
+            }
+        }
+        total += here;
+        assert!(
+            outside.is_empty(),
+            "{name}: {} of {here} computed-jump targets lie OUTSIDE the body of the function that \
+             jumps to them: {outside:?} — Ghidra's `dontFollow` omits COMPUTED_JUMP, so the case \
+             bodies belong to the function",
+            outside.len()
+        );
+    }
+    assert!(checked_fixtures > 0, "no switch fixture was available — this gate measured nothing");
+    assert!(
+        total > 0,
+        "not one computed-jump reference was found across {checked_fixtures} fixtures; the switch \
+         tables have stopped being recovered, so this gate can no longer fail"
+    );
+    eprintln!("§8 gate: {total} computed-jump targets, all inside their function's body");
+}
+
+/// THE NO-FRAME PROLOGUE SHAPE IS UNCOVERED, DELIBERATELY — a refutation, kept as a gate.
+///
+/// `nfprologue.watcom-x86-32` holds three functions reachable by nothing but their prologue bytes,
+/// in the shape `wcc386` emits BY DEFAULT (`-of+` is what turns the frame pointer on): a
+/// callee-save push run followed by neither a frame setup nor a stack adjust.
 ///
 /// ```text
 /// nf_stackarg_   56 57 55 8b 6c 24 10    push esi,edi,ebp ; mov ebp,[esp+0x10]
@@ -1109,17 +1208,32 @@ fn above_function_guard_tests_fall_through() {
 /// nf_absload_    53 51 52 8b 0d <abs32>  push ebx,ecx,edx ; mov ecx,[abs32]
 /// ```
 ///
-/// The first is WAR2 `0004de58` to the register nibble, the third is WAR2 `00064427` with a longer
-/// run — so this is the tracker's own shape, not an approximation of it.
+/// A pattern family covering exactly these two follow-ons was written, recovered all three here,
+/// and was **backed out** — see `specs/patterns/x86watcom_patterns.xml` family (6) for the full
+/// account. On WAR2 it added 53 functions, recovered none of the entries it was written for, moved
+/// `MATCHED` against the expert tracker by zero, and only **26%** of its additions ended in a
+/// terminator against a ~99.8% baseline from two other populations. The mechanism, measured: it
+/// also matches ordinary mid-function code (`push ecx,edx ; mov eax,[esp+8]` — stack arguments for
+/// a call; `push esi,edi ; mov eax,[abs32]` — pushes then a global read), because unlike every
+/// other family in that file it has no FRAME-SETUP anchor, and "some pushes then a memory access"
+/// occurs everywhere in a real binary.
 ///
-/// PRE-FAMILY BEHAVIOUR (measured on this exact binary, family (6) removed): all three are absent
-/// from the function set. Nothing references them, so no other route can reach them.
+/// ⚠️ SO THIS TEST ASSERTS THE ORPHANS ARE **NOT** FOUND. That is not an aspiration to fix by
+/// re-adding the family — it is the record of a measured refutation, so the next person to notice
+/// the gap finds the reason before repeating the work. If you cover this shape, cover it with an
+/// anchor that distinguishes a prologue from mid-function code, and re-measure the terminator rate
+/// on WAR2 before believing it.
+///
+/// The deeper lesson, and the reason the fixture is kept rather than deleted: **the corpus could
+/// not see this defect.** Over the 16 committed Watcom binaries the family produced zero marks
+/// outside this very fixture — they are small freestanding programs with almost no stack-passed
+/// arguments and few globals. A self-compiled gate measures the shapes its author thought of.
 #[test]
-fn no_frame_prologue_family() {
+fn no_frame_prologue_shape_is_uncovered() {
     let bin = ground_truth_dir().join("nfprologue.watcom-x86-32");
     let truth_path = ground_truth_dir().join("nfprologue.watcom-x86-32.truth");
     if !bin.exists() || !truth_path.exists() {
-        eprintln!("skip no_frame_prologue_family: {} absent", bin.display());
+        eprintln!("skip no_frame_prologue_shape_is_uncovered: {} absent", bin.display());
         return;
     }
     let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
@@ -1137,46 +1251,29 @@ fn no_frame_prologue_family() {
     let at = |o: u64| Address::new(ram, o);
 
     for (name, a, want) in &orphans {
-        // (0) The fixture still reproduces the shape. A compiler change that reintroduces a frame
-        // setup (or drops the push run) must fail loudly rather than silently gate nothing.
+        // The fixture still reproduces the shape — if a compiler change reintroduces a frame setup
+        // or drops the push run, this stops characterising anything and must fail loudly.
         let got = prog.memory.read_window(at(*a), want.len());
         assert_eq!(
             &got[..], *want,
-            "{name} @ {a:#x} no longer starts with the no-frame shape this fixture exists to pin;              got {got:02x?} — rebuild with default flags, NOT `-of+`"
+            "{name} @ {a:#x} no longer starts with the no-frame shape this fixture characterises;              got {got:02x?} — rebuild with default flags, NOT `-of+`"
         );
-        // (1) Nothing references it, so only its prologue bytes can find it.
+        // Nothing references it, so only a prologue pattern could ever find it.
         let inbound: Vec<(u64, &'static str)> = prog
             .reference_manager
             .refs_to(at(*a))
             .map(|r| (r.from.offset, r.ref_type.name()))
             .collect();
         assert!(inbound.is_empty(), "{name} @ {a:#x} has inbound references {inbound:x?}");
-        // (2) It came back, at the EXACT entry.
+        // THE RECORDED GAP.
         assert!(
-            prog.function_manager.function_at(at(*a)).is_some(),
-            "{name} @ {a:#x} must be recovered by the no-frame family — nothing else reaches it"
-        );
-        for d in 1..8u64 {
-            assert!(
-                prog.function_manager.function_at(at(a + d)).is_none(),
-                "a function was created at {name} + {d} — the pattern anchored past the true entry"
-            );
-        }
-    }
-
-    // (3) ATTRIBUTION — with the byte-pattern analyzers off all three go back to missing.
-    let without = {
-        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
-        analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze nfprologue")
-    };
-    for (name, a, _) in &orphans {
-        assert!(
-            without.function_manager.function_at(at(*a)).is_none(),
-            "{name} is recovered with the byte-pattern search disabled — this fixture is no longer \
-             isolating that analyzer"
+            prog.function_manager.function_at(at(*a)).is_none(),
+            "{name} @ {a:#x} IS now recovered — the no-frame shape has been covered by something.              That may be right, but it is a change of position: re-measure the WAR2 terminator              rate (the backed-out family scored 26% against a ~99.8% baseline) before keeping it,              and update this test deliberately rather than deleting the assertion"
         );
     }
-    eprintln!("nfprologue gate: 3/3 no-frame orphans recovered by prologue byte pattern alone");
+    eprintln!(
+        "nfprologue: 3/3 no-frame orphans deliberately NOT recovered (family (6) refuted on WAR2)"
+    );
 }
 
 /// The **prologue-shape specification** for the beyond-Ghidra Watcom function-start pattern set
