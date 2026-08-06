@@ -2,5 +2,5 @@
 # derived-from=nestedloop.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 0000000000401070
-func 0000000000401000 0000000000000063 nest
-func 0000000000401070 0000000000000024 _start
+func 0000000000401000 0000000000000063 nest code
+func 0000000000401070 0000000000000024 _start code

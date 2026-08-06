@@ -2,6 +2,6 @@
 # derived-from=forphi.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
 compiler watcom
 entry 08048100
-func 08048100 0 _cstart_
-func 08048106 0 scan_
-func 0804811b 0 main_
+func 08048100 0 _cstart_ code
+func 08048106 0 scan_ code
+func 0804811b 0 main_ code

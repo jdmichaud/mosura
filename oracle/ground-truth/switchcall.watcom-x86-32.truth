@@ -2,13 +2,13 @@
 # derived-from=switchcall.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
 compiler watcom
 entry 08048100
-func 08048100 0 _cstart_
-func 08048106 0 helper_a_
-func 0804810e 0 helper_b_
-func 08048118 0 helper_c_
-func 08048142 0 sw_call_int_
-func 080481ea 0 sw_call_short_
-func 08048283 0 sw_call_byte_
-func 08048388 0 main_
+func 08048100 0 _cstart_ code
+func 08048106 0 helper_a_ code
+func 0804810e 0 helper_b_ code
+func 08048118 0 helper_c_ code
+func 08048142 0 sw_call_int_ code
+func 080481ea 0 sw_call_short_ code
+func 08048283 0 sw_call_byte_ code
+func 08048388 0 main_ code
 switch 804814f
 switch 80481f9

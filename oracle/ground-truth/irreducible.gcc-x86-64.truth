@@ -2,5 +2,5 @@
 # derived-from=irreducible.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 0000000000401040
-func 0000000000401000 0000000000000031 sm
-func 0000000000401040 0000000000000040 _start
+func 0000000000401000 0000000000000031 sm code
+func 0000000000401040 0000000000000040 _start code

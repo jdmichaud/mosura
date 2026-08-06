@@ -2,6 +2,6 @@
 # derived-from=compgoto.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 0000000000401030
-func 0000000000401000 000000000000002c cgoto
-func 0000000000401030 0000000000000055 _start
+func 0000000000401000 000000000000002c cgoto code
+func 0000000000401030 0000000000000055 _start code
 switch 40100a

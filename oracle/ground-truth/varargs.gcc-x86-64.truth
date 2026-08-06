@@ -2,5 +2,5 @@
 # derived-from=varargs.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 00000000004010b0
-func 0000000000401000 00000000000000a6 vsum
-func 00000000004010b0 0000000000000041 _start
+func 0000000000401000 00000000000000a6 vsum code
+func 00000000004010b0 0000000000000041 _start code

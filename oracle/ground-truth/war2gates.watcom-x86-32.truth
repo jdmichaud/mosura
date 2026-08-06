@@ -2,11 +2,11 @@
 # derived-from=war2gates.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
 compiler watcom
 entry 08048100
-func 08048100 0 _cstart_
-func 08048106 0 trim_shape_
-func 08048136 0 port_io_
-func 0804814b 0 add3_
-func 08048155 0 take1_
-func 0804815c 0 give1_
-func 08048163 0 give2_
-func 08048178 0 main_
+func 08048100 0 _cstart_ code
+func 08048106 0 trim_shape_ code
+func 08048136 0 port_io_ code
+func 0804814b 0 add3_ code
+func 08048155 0 take1_ code
+func 0804815c 0 give1_ code
+func 08048163 0 give2_ code
+func 08048178 0 main_ code

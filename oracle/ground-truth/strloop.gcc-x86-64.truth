@@ -2,6 +2,6 @@
 # derived-from=strloop.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 00000000004010d0
-func 0000000000401000 0000000000000063 word_count.constprop.0
-func 0000000000401070 0000000000000052 count_vowels.constprop.0
-func 00000000004010d0 0000000000000019 _start
+func 0000000000401000 0000000000000063 word_count.constprop.0 code
+func 0000000000401070 0000000000000052 count_vowels.constprop.0 code
+func 00000000004010d0 0000000000000019 _start code

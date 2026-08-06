@@ -2,5 +2,5 @@
 # derived-from=sparseswitch.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 0000000000401050
-func 0000000000401000 0000000000000046 classify
-func 0000000000401050 0000000000000035 _start
+func 0000000000401000 0000000000000046 classify code
+func 0000000000401050 0000000000000035 _start code
