@@ -229,6 +229,56 @@ fixture whose truth comes from the compiler (symbol table for ELF, linker map fo
 `oracle/codegen-probes/watcom/<rev>.{obj,code}` already are, so CI never needs the historical
 toolchain.
 
+### ⭐ CELL 1 MEASURED — stack checking (`-s` vs default): a NEW PROLOGUE SHIFT, 10 bytes
+
+Measured on native OW2, 2026-08-06, **before writing any pattern** (the shapes, then the set).
+
+**Without `-s` every framed function begins with a stack probe.** `wcc386` emits
+`push <framesize>; call __CHK` — and where it sits depends on the frame mode:
+
+```
+-of+          55 89 e5  68 <imm32>  e8 <rel32>        frame, THEN probe
+-od / -oc     68 <imm32>  e8 <rel32>  53 51 52 56 57  55 89 e5    <- probe FIRST, at offset 0
+-onatx        (omitted for small frames — no probe at all)
+```
+
+**These functions are not invisible. They are found at the WRONG ADDRESS**, which is worse.
+`p_frame_` at `08048366` under `-od`:
+
+```
+08048366  68 48 00 00 00   push 0x48        <- THE TRUE ENTRY
+0804836b  e8 97 fd ff ff   call __CHK
+08048370  53 51 52 56 57   push ebx/ecx/edx/esi/edi   <- our save-first family matches HERE, +10
+08048375  55 89 e5         push ebp; mov ebp,esp
+```
+
+This is **the same defect that motivated this entire pattern file** — `x86gcc_patterns.xml`
+anchoring at the `55`, five bytes late — reappearing one level up with the stack probe as the new
+prefix. A wrong entry means a wrong extent, so it also blocks byte-exact recompilation (§1's
+argument, which survives §1's refutation).
+
+Not one of the file's 99 patterns starts with `0x68`, so nothing anchors the true entry today.
+
+**Why WAR2 never showed this:** WAR2 was built with `-s`. **Most binaries are not** — `-s` is not
+the default — so this is the clearest evidence yet for the standing scope rule.
+
+**Proposed shape, NOT yet written** (precision hazard first): the naive anchor
+`0x68 ........ 0xe8 ........` is `push imm32; call rel32`, which is an extremely common ordinary
+code sequence — every cdecl call with one immediate argument. It must NOT be stated bare. Two
+candidate forms, both to be measured:
+- probe-first: `0x68 ........ 0xe8 ........` followed by a callee-save push or `0x55`, marking the
+  `68` — 15 bytes with 8 wildcarded;
+- frame-then-probe: `0x5589e5 0x68 ........ 0xe8 ........`, which is already strongly anchored.
+
+The overlap rule then does the rest: with both the probe pattern (true entry) and the save-first
+pattern (+10) matching, `create_functions` keeps the LOWEST — exactly how the save-first family
+fixed the original shift.
+
+**Build note for this cell:** `build_watcom` hardcodes `-s`, so a no-`-s` cell needs it moved into
+the overridable options, and the link needs a `__CHK` stub in the `_cstart` asm — without one
+`wlink` fails with `E2028: __CHK is an undefined reference`, which is itself the proof that the
+axis changes code generation.
+
 ### Two prerequisites every matrix cell inherits (learned building §4's cell)
 
 **(a) A cell cannot reach the Watcom pattern file by default.** The `(language, compiler)` decision
