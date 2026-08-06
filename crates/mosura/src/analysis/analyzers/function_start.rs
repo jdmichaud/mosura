@@ -832,12 +832,25 @@ fn check_already_in_function_above_with(
             .is_some_and(|f| f.entry_point() == above);
     }
 
-    // :512 — no function above, but an instruction that falls through into here makes this part
-    // of that flow, not a start.
+    // :512 — no function above, but an instruction that FALLS THROUGH into here makes this part
+    // of that flow, not a start. Ghidra:
+    //
+    //     Instruction instr = getListing().getInstructionContaining(addrBefore);
+    //     if (instr != null && addr.equals(instr.getFallThrough())) { return true; }
+    //
+    // ⚠️ The fall-through test is the whole rule, and this port used to omit it — it vetoed on
+    // ADJACENCY, i.e. on any instruction merely *ending* at `addr`. `getFallThrough()` is null
+    // after a `ret`, so Ghidra does not veto a prologue that follows an epilogue and mosura did.
+    // Measured on WAR2: 6 tracker functions sit immediately after a `pop…pop; ret` with no
+    // function recognised above them, were proposed by the pattern set, and were refused here.
+    // The comment above this code already said "falls through"; the code did not implement it.
+    // Same drift class as `falls_through`'s own creation: a decision stated once and re-derived
+    // incorrectly elsewhere, which is why this consults the shared helper rather than restating.
     if let Some((start, len)) = program.listing.code_unit_containing(addr_before, MAX_CODE_UNIT_LEN)
     {
         if matches!(program.listing.code_unit_at(start), Some(CodeUnit::Instruction { .. }))
             && start.offset + len == addr.offset
+            && instruction_falls_through(program, start)
         {
             return true;
         }
@@ -852,6 +865,21 @@ fn check_already_in_function_above_with(
         return true;
     }
     false
+}
+
+
+/// Does the instruction at `start` fall through — Ghidra's `Instruction.getFallThrough() != null`.
+///
+/// The listing stores only a length, so the instruction is re-decoded to ask. Conservative on
+/// failure: an instruction we cannot decode is treated as falling through, which preserves the
+/// previous (over-strict) refusal rather than inventing a new function on a decode failure.
+fn instruction_falls_through(program: &Program, start: Address) -> bool {
+    let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) else { return true };
+    let window = program.memory.read_window(start, MAX_CODE_UNIT_LEN as usize);
+    match spec.disassemble_ctx(&window, start.offset, ctx).into_iter().next() {
+        Some(insn) => super::falls_through(program, &insn, start.space),
+        None => true,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
