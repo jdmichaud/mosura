@@ -1663,3 +1663,177 @@ fn watcom_save_first_shape_spec() {
         shifted
     );
 }
+
+/// ⭐ THE LISTING GATE — a recovered function's body must be IN THE LISTING.
+///
+/// Ghidra's whole function model assumes this. `CreateFunctionCmd.getFunctionBody`
+/// (CreateFunctionCmd.java:616) reads `getInstructionAt(entry)` and walks the listing from there;
+/// `checkAfterName`'s `"instruction"` and `"defined"` prerequisites
+/// (FunctionStartAnalyzer.java) ask the listing what is at an address. Where mosura creates a
+/// function whose bytes were never disassembled, every one of those queries answers `None` and
+/// the tool is silently blind in that region — which is how `docs/function-discovery-backlog.md`
+/// §9 #2 and #3 came to be filed as two separate divergences when they are one symptom, and why
+/// the `retboundary` fixture could not fail.
+///
+/// The gate is deliberately stated over TRUTH FUNCTIONS ONLY, and both exclusions are principled
+/// rather than fitted to what currently passes:
+///
+///  1. **An entry outside INITIALIZED memory.** Ghidra creates a degenerate, un-disassembled
+///     function at a call target in an uninitialized block — `noret.gcc-x86-64`'s `EXTERNAL`
+///     stub at 0x404000 is exactly that, and it agrees with Ghidra. There is nothing to
+///     disassemble, so demanding an instruction there would be demanding a divergence.
+///  2. **Entries that are not in the ground truth at all.** Those are governed by
+///     [`byte_pattern_carve_out`], which already records why they exist: on the m68k/aarch64
+///     columns mosura does not recover the jump tables, so it mints functions at case-body
+///     addresses that Ghidra does not. They are 13 of the 19 uncovered entries in this corpus.
+///     Demanding that mosura disassemble a function it should never have created would be
+///     demanding MORE wrong work, and would wire this gate to a defect that belongs to jump-table
+///     recovery. Recovering them is `analysis_parity`'s 0-spurious job, not this test's.
+///
+/// ⚠️ **`#[ignore]`d AND EXPECTED-RED — this is deliberate, do not "fix" it.** The fix exists
+/// (`held-patches/listing-command-channel.patch`), builds, and turns this green, but it is BLOCKED
+/// (see `docs/function-discovery-backlog.md` §9 #5). The test is committed in its FAILING state,
+/// ignored so the workspace stays green, so that its ability to fail is proved **by git history**
+/// rather than by a revert-check someone has to trust. Un-ignore it in the same commit that lands
+/// the fix; it should go 5 -> 0 in one visible step.
+///
+/// ⚠️ ANTI-VACUITY. This must be RED at the commit that introduces it, on five addresses whose
+/// causes are already measured and distinct — do not let it be "fixed" by narrowing the
+/// population. Verbatim output at `2c534db`, `cargo test --release -p mosura --test
+/// ground_truth_parity recovered_functions_are_in_the_listing`:
+///
+/// ```text
+/// 5 recovered ground-truth function(s) of 386 have bytes that were never disassembled
+/// into the listing:
+///   fnpattern.watcom-x86-32 @08048120 orphan_fn_: entry_instruction=false body=89B
+///        bytes_with_no_code_unit=89
+///   retorphan.watcom-x86-32 @0804812c orphan_fn_: entry_instruction=false body=88B
+///        bytes_with_no_code_unit=88
+///   wprobe.watcom-x86-32 @08048112 p_leaf_: entry_instruction=false body=46B
+///        bytes_with_no_code_unit=46
+///   wprobe.watcom-x86-32 @08048666 probe_orphan_fn_: entry_instruction=false body=210B
+///        bytes_with_no_code_unit=210
+///   wprologue_sf.watcom-x86-32 @080485e3 sf_orphan_fn_: entry_instruction=false body=158B
+///        bytes_with_no_code_unit=158
+/// ```
+///
+/// Causes, per address: `08048120`, `0804812c`, `08048666`, `080485e3` are **cause A**;
+/// `08048112` is **cause B**. It NAMES its violations rather than reporting a boolean, so each
+/// fix's contribution is visible and the second change cannot be credited with the first's effect.
+///
+/// **Cause A** — `analysis::analyze` builds a SECOND `AutoAnalysisManager` for the byte-pattern
+/// passes (mod.rs:246) in which neither `Disassembler` nor `FunctionCreator` is registered, so
+/// their `code_defined` reaches no disassembler and their `function_defined` reaches **zero**
+/// consumers. Ghidra has one manager per program (`AutoAnalysisManager.getAnalysisManager`,
+/// :949) and the analyzer schedules COMMANDS onto it (`disassemble` :1128 / `createFunction`
+/// :1132), which execute regardless of who subscribes; expressing them as change notifications
+/// is what lets them evaporate.
+///
+/// **Cause B** — `Disassembler::added` and `FunctionCreator::added` iterate `set.ranges()` and
+/// take only `r.min`, so adjacent requested addresses collapse. `wprobe` has three functions at
+/// three consecutive addresses (`08048110 sink_`, `08048111 __CHK`, `08048112 p_leaf_`); the
+/// last is dropped and never disassembled, even though `main_` calls it directly
+/// (`0804856c: e8 a1 fb ff ff  call 0x8048112`). Ghidra iterates ADDRESSES
+/// (`CreateFunctionCmd.java:158` `origEntries.getAddresses(true)`) and DRAINS each range one
+/// address at a time (`DisassembleCommand.java:235-266`).
+///
+/// The two need separate commits: A changes which functions are DISCOVERED, B changes which
+/// bytes are DECODED, and bundling them makes a WAR2 delta unattributable per function.
+#[test]
+#[ignore = "expected-RED: the fix is held in held-patches/listing-command-channel.patch, \
+            blocked by docs/function-discovery-backlog.md §9 #5 (inline-parameter thunk)"]
+fn recovered_functions_are_in_the_listing() {
+    let dir = ground_truth_dir();
+    if !dir.exists() {
+        eprintln!("skip recovered_functions_are_in_the_listing: {} absent", dir.display());
+        return;
+    }
+    let mut truths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "truth"))
+        .collect();
+    truths.sort();
+
+    let (mut examined, mut evaluated) = (0usize, 0usize);
+    let mut violations: Vec<String> = Vec::new();
+    for truth_path in truths {
+        let bin = truth_path.with_extension("");
+        if !bin.exists() {
+            continue;
+        }
+        let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+        let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+        let declared = (truth.compiler == "watcom"
+            && bin.extension().is_some_and(|x| x == "watcom-x86-32"))
+        .then_some("watcom");
+        let prog = if bin.extension().is_some_and(|x| x == "watcom-le") {
+            analysis::analyze_le_file(&bin).expect("analyze LE ground-truth binary")
+        } else {
+            analysis::analyze_file_as(&bin, declared).expect("analyze ground-truth binary")
+        };
+        evaluated += 1;
+        let ram = prog.default_space;
+
+        // Exclusion 1, computed from the memory map — never from a name.
+        let initialized: Vec<(u64, u64)> = prog
+            .memory
+            .blocks()
+            .filter(|b| b.is_initialized())
+            .map(|b| (b.start().offset, b.end().offset))
+            .collect();
+        let is_initialized =
+            |o: u64| initialized.iter().any(|&(lo, hi)| lo <= o && o <= hi);
+
+        for f in prog.function_manager.functions() {
+            let entry = f.entry_point();
+            // Exclusion 2 — see the doc comment.
+            if !truth_addrs.contains(&entry.offset) || !is_initialized(entry.offset) {
+                continue;
+            }
+            examined += 1;
+            let entry_cu = prog.listing.code_unit_at(entry).is_some();
+            let body = f.body();
+            let uncovered = body
+                .ranges()
+                .flat_map(|r| r.min..=r.max)
+                .filter(|&o| {
+                    prog.listing.code_unit_containing(Address::new(ram, o), 16).is_none()
+                })
+                .count();
+            if entry_cu && uncovered == 0 {
+                continue;
+            }
+            let name = truth
+                .funcs
+                .iter()
+                .find(|(a, _)| *a == entry.offset)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_default();
+            violations.push(format!(
+                "{} @{:08x} {name}: entry_instruction={entry_cu} body={}B \
+                 bytes_with_no_code_unit={uncovered}",
+                bin.file_name().unwrap().to_string_lossy(),
+                entry.offset,
+                body.num_addresses(),
+            ));
+        }
+    }
+    assert!(evaluated > 0, "no ground-truth binaries evaluated (corpus missing?)");
+    assert!(
+        examined > 0,
+        "the population is empty — this gate would pass vacuously; check the truth filter"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} recovered ground-truth function(s) of {examined} have bytes that were never \
+         disassembled into the listing:\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+    eprintln!(
+        "listing gate: {examined} recovered ground-truth functions across {evaluated} binaries, \
+         every body fully in the listing"
+    );
+}
