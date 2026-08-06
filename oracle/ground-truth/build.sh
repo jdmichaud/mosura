@@ -375,6 +375,14 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # ESP, producing prologues that look nothing like the target (measured: `53 51 83 ec` and
   # `53 51 52 56 b8`, no `89 e5` anywhere).
   build_watcom wprologue "-of+"
+  # wprologue_sf: the SAVE-FIRST twin — the SAME source (src/wprologue_sf.c is a one-line include
+  # of src/wprologue.c, so the two can never drift), with `-of+` REMOVED. That flag is the whole
+  # difference: it demands a *traceable* frame, pinning `55 89 e5` to offset 0; a frame needed only
+  # for *addressing* (which `-od` forces, every local spilled) is emitted AFTER the register saves.
+  # Result, measured on native Open Watcom v2: all 15 functions save-first, run lengths 2..5, e.g.
+  # p_leaf_ = `53 51 52 56 57 55 89 e5` — WAR2 0x16ed4's shape exactly. This is the only gate on
+  # the save-first family, i.e. on 62 of the pattern file's 73 patterns.
+  build_watcom wprologue_sf "-4r -fpi87 -od"
   build_watcom tailjmp ""
   # fnpattern: the FUNCTION START SEARCH repro (a function reachable by NOTHING — no call, no
   # jump, no stored pointer — so only its prologue BYTE PATTERN can find it). `-of+` (generate

@@ -91,7 +91,34 @@ fn banner_regex() -> &'static Regex {
 /// only in-band evidence of the calling convention. Choosing wrong is not cosmetic: `__watcall`
 /// passes arguments in EAX/EDX/EBX/ECX and preserves every register but EAX, while `__cdecl`
 /// passes on the stack, so prototype recovery and the entire call-effect model differ.
+///
+/// # `MOSURA_X86_32_CSPEC` — the test hook, and why it has to exist
+///
+/// The banner is a **run-time** string: it is in the C run-time the linker pulls in, not in
+/// anything the compiler emits per translation unit. The ground-truth corpus links
+/// `option nodefaultlib` with a hand-written `_cstart_` (it is a freestanding corpus, and this
+/// toolchain root ships `binl/` only — there are no libraries to link), so **no ground-truth
+/// binary carries the banner and every one of them detects as `gcc`** — verified, not assumed:
+/// `wprologue`, `wprologue_sf` and `fnpattern` all report `cspec=gcc`, which
+/// `src/fnpattern.c` property 1 already noted.
+///
+/// The consequence is that the `(x86:LE:32:default, watcom)` half of the pattern-file decision
+/// tree — i.e. the whole of `specs/patterns/x86watcom_patterns.xml` — was unreachable from the
+/// corpus, so a gate written against a Watcom-compiled fixture silently measured Ghidra's
+/// `x86gcc_patterns.xml` instead. This override lets a test route the same binary through both,
+/// which is what `ground_truth_parity::watcom_save_first_shape_spec` does.
+///
+/// Deliberately narrow: only the two ids that this function can otherwise return are accepted,
+/// so a typo cannot select a nonexistent spec; anything else falls through to detection. When
+/// unset — which is every non-test path — behaviour is bit-for-bit what it was.
 pub fn compiler_spec_id(data: &[u8]) -> &'static str {
+    if let Ok(forced) = std::env::var("MOSURA_X86_32_CSPEC") {
+        match forced.as_str() {
+            "watcom" => return "watcom",
+            "gcc" => return "gcc",
+            _ => {}
+        }
+    }
     if detect(data).is_some() { "watcom" } else { "gcc" }
 }
 

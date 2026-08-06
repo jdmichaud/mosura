@@ -164,6 +164,19 @@ fn ground_truth_parity() {
             eprintln!("  skip {}: stripped binary absent", truth_path.display());
             continue;
         }
+        // `wprologue_sf` is the one fixture whose subject is a pattern file this loop cannot
+        // reach. Its entire purpose is the `(x86:LE:32:default, watcom)` branch of the
+        // pattern-file decision tree — `specs/patterns/x86watcom_patterns.xml` — and a
+        // CRT-less ELF carries no Watcom run-time banner, so `loader::watcom::compiler_spec_id`
+        // correctly reports `gcc` here and the loop would measure `x86gcc_patterns.xml` instead.
+        // Analyzed as gcc it is *expected* to be red: the save-first prologue shift puts a
+        // spurious entry 2 bytes into the orphan and misses the true entry. That shift is the
+        // defect the Watcom set exists to fix, so it is asserted — in both directions — by
+        // `watcom_save_first_shape_spec`, which routes the binary through both compiler specs.
+        if bin.file_name().is_some_and(|n| n == "wprologue_sf.watcom-x86-32") {
+            eprintln!("  skip wprologue_sf: gated by watcom_save_first_shape_spec (cspec=watcom)");
+            continue;
+        }
         let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
         // The `.watcom-le` column is a bound MZ+LE (DOS-extender) executable. `analyze_file`
         // dispatches a bound exe down the Ghidra-parity MZ-stub path, which is the right default
@@ -989,5 +1002,149 @@ fn watcom_prologue_shape_spec() {
     assert!(
         spurious.is_empty(),
         "wprologue PRECISION: pattern set invented entries that are not functions: {spurious:?}"
+    );
+}
+
+/// The **save-first** half of the prologue-shape specification — and the only gate anywhere on
+/// `specs/patterns/x86watcom_patterns.xml`, whose 62 save-first patterns are 85% of that file.
+///
+/// # Why this did not exist before, and what had to change for it to
+///
+/// Two independent things made the save-first family ungateable, and both are measured here
+/// rather than argued:
+///
+/// 1. **No corpus binary could reach the Watcom pattern file.** The pattern-file decision tree is
+///    keyed on `(language, compiler)`, and `loader::watcom::compiler_spec_id` decides the compiler
+///    from the *run-time* copyright banner — a string in the C run-time, not in compiler output.
+///    The corpus links `option nodefaultlib` with a hand-written `_cstart_`, so no ground-truth
+///    binary carries the banner and every one detects as `gcc`. Verified: `wprologue`,
+///    `wprologue_sf` and `fnpattern` all report `cspec=gcc`. Any gate written against a
+///    Watcom-compiled fixture was therefore silently measuring Ghidra's `x86gcc_patterns.xml`.
+///    `MOSURA_X86_32_CSPEC` (see that function's docs) routes the same binary through both.
+///
+/// 2. **Recall was vacuous.** Every function in `wprologue.c` is called from `main`, so the
+///    reference-driven analyzers recover all of them and the pattern set is never load-bearing.
+///    Measured on this fixture before `sf_orphan_fn_` was added: 15/15 recall and 0 spurious with
+///    the byte-pattern analyzers switched OFF. `src/wprologue_sf.c` therefore adds an ORPHAN — a
+///    save-first function nothing references — the way `fnpattern.c` does for frame-first.
+///
+/// # What it asserts
+///
+/// The four legs below are the measured behaviour of the fixture, and each is a different claim:
+///
+/// | routing | result |
+/// | --- | --- |
+/// | `watcom` (the correct spec) | 17/17 recall, 0 spurious |
+/// | `watcom`, byte-pattern analyzers off | the orphan is GONE — the recovery is theirs |
+/// | `gcc` (Ghidra's own set) | misses the orphan, and creates an entry 2 bytes in |
+///
+/// That last row is the **prologue shift**, reproduced end to end on a self-compiled binary for
+/// the first time. `src/fnpattern.c` property 1 records that it "CANNOT be gated by this corpus"
+/// and falls back to a byte-level differential over the two pattern files; with the routing hook
+/// it can be, through the real analysis pipeline, on a binary where every function is known.
+#[test]
+fn watcom_save_first_shape_spec() {
+    let bin = ground_truth_dir().join("wprologue_sf.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("wprologue_sf.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip watcom_save_first_shape_spec: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let known: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+    let orphan = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "sf_orphan_fn_")
+        .map(|(a, _)| *a)
+        .expect("truth lists sf_orphan_fn_");
+
+    // Route the binary through a compiler spec, run the analysis, return the function set.
+    let entries = |cspec: Option<&str>, analyzers_off: bool| -> (BTreeSet<u64>, String) {
+        let prev_c = std::env::var("MOSURA_X86_32_CSPEC").ok();
+        let prev_a = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
+        match cspec {
+            Some(c) => std::env::set_var("MOSURA_X86_32_CSPEC", c),
+            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
+        }
+        if analyzers_off {
+            std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
+        }
+        let p = analysis::analyze_file(&bin).expect("analyze wprologue_sf");
+        match prev_c {
+            Some(v) => std::env::set_var("MOSURA_X86_32_CSPEC", v),
+            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
+        }
+        match prev_a {
+            Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
+            None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
+        }
+        let cspec = p.compiler_spec_id.clone();
+        (p.function_manager.functions().map(|f| f.entry_point().offset).collect(), cspec)
+    };
+
+    // (0) The fixture still reproduces the shape: NOTHING references the orphan. If a compiler
+    // change ever gives it an inbound edge, recall stops being a statement about the pattern set.
+    let (_, _) = entries(Some("watcom"), false);
+    let probe = analysis::analyze_file(&bin).expect("analyze wprologue_sf");
+    let inbound: Vec<(u64, &'static str)> = probe
+        .reference_manager
+        .refs_to(Address::new(probe.default_space, orphan))
+        .map(|r| (r.from.offset, r.ref_type.name()))
+        .collect();
+    assert!(
+        inbound.is_empty(),
+        "sf_orphan_fn_ @ {orphan:#x} has inbound references {inbound:x?} — it is supposed to be \
+         reachable ONLY by its save-first prologue byte pattern"
+    );
+
+    // (1) The Watcom pattern set: full recall and nothing invented.
+    let (mine, cspec) = entries(Some("watcom"), false);
+    assert_eq!(cspec, "watcom", "MOSURA_X86_32_CSPEC did not take effect");
+    let missed: Vec<String> = known.difference(&mine).map(|a| format!("{a:08x}")).collect();
+    assert!(
+        missed.is_empty(),
+        "wprologue_sf RECALL: the Watcom pattern set missed real save-first prologues: {missed:?}"
+    );
+    let spurious: Vec<String> = mine.difference(&known).map(|a| format!("{a:08x}")).collect();
+    assert!(
+        spurious.is_empty(),
+        "wprologue_sf PRECISION: the Watcom pattern set invented entries that are not \
+         functions: {spurious:?}"
+    );
+
+    // (2) THE ATTRIBUTION — with the byte-pattern analyzers off the orphan goes back to missing,
+    // so its recovery belongs to them and not to some other pass.
+    let (without, _) = entries(Some("watcom"), true);
+    assert!(
+        !without.contains(&orphan),
+        "sf_orphan_fn_ is recovered even with the byte-pattern search disabled — this fixture is \
+         no longer isolating that analyzer"
+    );
+
+    // (3) THE PROLOGUE SHIFT. Ghidra's own x86gcc set has no pattern that starts at a push run,
+    // so its `0x5589e5…` anchors at the `push ebp` INSIDE the prologue: it misses the true entry
+    // and marks one N bytes in. This is the defect the whole Watcom pattern file exists to fix,
+    // and asserting it here keeps the file's justification measured rather than remembered.
+    let (as_gcc, cspec) = entries(Some("gcc"), false);
+    assert_eq!(cspec, "gcc");
+    assert!(
+        !as_gcc.contains(&orphan),
+        "x86gcc_patterns.xml unexpectedly marks the save-first entry {orphan:#x} — the premise of \
+         the Watcom pattern set is that it does not"
+    );
+    let shifted: Vec<u64> = (1..8).map(|d| orphan + d).filter(|a| as_gcc.contains(a)).collect();
+    assert!(
+        !shifted.is_empty(),
+        "x86gcc_patterns.xml marked neither the entry nor anything just past it; the shift this \
+         fixture demonstrates has changed shape and its documentation needs revisiting"
+    );
+
+    eprintln!(
+        "wprologue_sf gate: cspec=watcom {}/{} recovered, 0 spurious; orphan {orphan:#x} absent \
+         with the byte-pattern search off; cspec=gcc misses it and marks {:x?} instead",
+        mine.len(),
+        known.len(),
+        shifted
     );
 }
