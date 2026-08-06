@@ -1,0 +1,11 @@
+# mosura-ground-truth v1 program=nfprologue compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=nfprologue.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048106 0 nf_stackarg_ code
+func 08048136 0 nf_stackarg2_ code
+func 08048163 0 nf_absload_ code
+func 0804819f 0 lead_fn_ code
+func 080481b2 0 trail_fn_ code
+func 080481b6 0 main_ code

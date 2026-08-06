@@ -1094,6 +1094,91 @@ fn above_function_guard_tests_fall_through() {
     );
 }
 
+/// THE NO-FRAME PROLOGUE FAMILY (family (6) of `specs/patterns/x86watcom_patterns.xml`) — a
+/// callee-save push run followed by neither a frame setup nor a stack adjust, which is what
+/// `wcc386` emits BY DEFAULT (`-of+` is the flag that turns the frame pointer ON).
+///
+/// ⚠️ THE GAP THIS GATES IS THE FOLLOW-ON, NOT "NO FRAME". Family (3) already covers a push run
+/// followed by `sub esp` — measured against the 7 no-frame entries the WAR2 triage collected,
+/// 4 match it at offset 0 — and `retorphan`'s `56 57 55 83 ec 14` is recovered by it. What had no
+/// pattern is the push run followed by something else, and that is what these three orphans pin:
+///
+/// ```text
+/// nf_stackarg_   56 57 55 8b 6c 24 10    push esi,edi,ebp ; mov ebp,[esp+0x10]
+/// nf_stackarg2_  56 57 8b 7c 24 0c       push esi,edi     ; mov edi,[esp+0xc]
+/// nf_absload_    53 51 52 8b 0d <abs32>  push ebx,ecx,edx ; mov ecx,[abs32]
+/// ```
+///
+/// The first is WAR2 `0004de58` to the register nibble, the third is WAR2 `00064427` with a longer
+/// run — so this is the tracker's own shape, not an approximation of it.
+///
+/// PRE-FAMILY BEHAVIOUR (measured on this exact binary, family (6) removed): all three are absent
+/// from the function set. Nothing references them, so no other route can reach them.
+#[test]
+fn no_frame_prologue_family() {
+    let bin = ground_truth_dir().join("nfprologue.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("nfprologue.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip no_frame_prologue_family: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let addr_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let orphans = [
+        ("nf_stackarg_", addr_of("nf_stackarg_"), &[0x56u8, 0x57, 0x55, 0x8b][..]),
+        ("nf_stackarg2_", addr_of("nf_stackarg2_"), &[0x56, 0x57, 0x8b, 0x7c][..]),
+        ("nf_absload_", addr_of("nf_absload_"), &[0x53, 0x51, 0x52, 0x8b][..]),
+    ];
+
+    let prog = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze nfprologue");
+    let ram = prog.default_space;
+    let at = |o: u64| Address::new(ram, o);
+
+    for (name, a, want) in &orphans {
+        // (0) The fixture still reproduces the shape. A compiler change that reintroduces a frame
+        // setup (or drops the push run) must fail loudly rather than silently gate nothing.
+        let got = prog.memory.read_window(at(*a), want.len());
+        assert_eq!(
+            &got[..], *want,
+            "{name} @ {a:#x} no longer starts with the no-frame shape this fixture exists to pin;              got {got:02x?} — rebuild with default flags, NOT `-of+`"
+        );
+        // (1) Nothing references it, so only its prologue bytes can find it.
+        let inbound: Vec<(u64, &'static str)> = prog
+            .reference_manager
+            .refs_to(at(*a))
+            .map(|r| (r.from.offset, r.ref_type.name()))
+            .collect();
+        assert!(inbound.is_empty(), "{name} @ {a:#x} has inbound references {inbound:x?}");
+        // (2) It came back, at the EXACT entry.
+        assert!(
+            prog.function_manager.function_at(at(*a)).is_some(),
+            "{name} @ {a:#x} must be recovered by the no-frame family — nothing else reaches it"
+        );
+        for d in 1..8u64 {
+            assert!(
+                prog.function_manager.function_at(at(a + d)).is_none(),
+                "a function was created at {name} + {d} — the pattern anchored past the true entry"
+            );
+        }
+    }
+
+    // (3) ATTRIBUTION — with the byte-pattern analyzers off all three go back to missing.
+    let without = {
+        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
+        analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze nfprologue")
+    };
+    for (name, a, _) in &orphans {
+        assert!(
+            without.function_manager.function_at(at(*a)).is_none(),
+            "{name} is recovered with the byte-pattern search disabled — this fixture is no longer \
+             isolating that analyzer"
+        );
+    }
+    eprintln!("nfprologue gate: 3/3 no-frame orphans recovered by prologue byte pattern alone");
+}
+
 /// The **prologue-shape specification** for the beyond-Ghidra Watcom function-start pattern set
 /// (`specs/patterns/x86watcom_patterns.xml`). That file has no Ghidra oracle — Ghidra ships no
 /// Watcom compiler spec — so this fixture is its oracle.

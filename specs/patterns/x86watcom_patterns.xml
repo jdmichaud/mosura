@@ -745,4 +745,584 @@
      <possiblefuncstart after="defined" validcode="6"/>
   </pattern>
 
+
+  <!-- =========================================================================================
+       (6) THE NO-FRAME FAMILY — a callee-save push run followed by neither a frame setup NOR a
+       stack adjust. This is what `wcc386` emits BY DEFAULT: `-of+` is the flag that turns the
+       frame pointer ON, so the shape is missing from every default-built Watcom binary, not just
+       from WAR2 (which was built `-of+` and therefore mostly hides it).
+
+       ⚠️ THE GAP IS THE FOLLOW-ON, NOT "NO FRAME" — do not widen this family on the belief that
+       no-frame prologues are unmodelled. They are. Family (3) above already covers a push run
+       followed by `sub esp` in BOTH encodings (`100000.1` matches 0x81 and 0x83), and it is what
+       recovers `retorphan`'s `56 57 55 83 ec 14`. Measured against the 7 no-frame entries the WAR2
+       triage collected: 4 of them match family (3) at offset 0 already. What had no pattern at all
+       is the push run followed by something OTHER than a stack adjust, and that is all this family
+       adds:
+
+           <ordered push run> 100010.1 01...100 ..100100 0.....00   mov r32,[esp+disp8]
+           <ordered push run> 0x8b 00...101 0x........             mov r32,[abs32]
+
+       Both operand encodings are lifted from patterns this file already states — the `[esp+disp8]`
+       form is family (3)'s own, and the `[abs32]` modrm is the `00...101` disp32 form.
+
+       THE RUN IS ORDER-CONSTRAINED, and that is what makes this safe to state. The run is an
+       ordered subsequence of `ebx (0x53) ecx (0x51) edx (0x52) esi (0x56) edi (0x57)`, optionally
+       followed by `push ebp (0x55)` — the same rigid Watcom ordering family (1) enforces on the
+       same measured evidence (1317 conforming / 0 nonconforming across WAR2's save-first
+       functions). Without the ordering a bare `56 57` would match every mid-function push pair.
+
+       ⚠️ MINIMUM RUN LENGTH IS 2, AND THAT IS NOT A ROUND NUMBER — it is the family's own
+       precision argument applied honestly. The ordering constraint is what earns this family its
+       keep, and **at run length 1 the ordering carries no information at all** (every single push
+       is trivially "in order"), leaving `0x52 0x8b 00...101` — three bytes, one of them a modrm.
+       That is not a hypothetical: the length-1 form was stated first and it fired on
+       `retorphan`'s `tab_h3_` (`52 8b 15 <abs32>`), creating a function at an address-table target
+       that must stay decoded-but-NOT-a-function — which silently turned
+       `above_function_guard_tests_fall_through` into a test of the wrong branch. That gate's
+       anti-vacuity assertion is what caught it. Measured consequence of the cut: over the 16
+       pre-existing Watcom binaries the length-1 patterns produced ALL 5 of the family's marks, so
+       removing them takes the family to **zero** matches outside its own fixture.
+
+       THE COST, stated plainly: WAR2 `00064427` (`52 8b 15 84 90 08 00`) is a length-1 run and is
+       therefore NOT covered. It is one tracker entry, and the shape that recovering it requires is
+       the same shape that demonstrably damages a neighbouring gate.
+
+       26 subsequences (length 2-5) x with/without a trailing `push ebp` x 2 follow-ons = 104.
+
+       PRECISION, measured rather than argued (precision is unmeasurable on WAR2 — the tracker
+       covers 71.4% of the object). Over the 16 Watcom ground-truth binaries that PREDATE this
+       family's own fixture — where every function is known from the compiler's own symbol table —
+       the whole family fires **5 times**, 3 of them exactly on a real entry; `ground_truth_parity`'s 0-spurious assertion and
+       `watcom_prologue_shape_spec` both stay green with it in. Its recall gate is
+       `nfprologue.watcom-x86-32`, whose three orphans are reachable by nothing else.
+
+       DELIBERATELY NOT COVERED: a push run followed by a register-to-register `mov`
+       (`56 57 55 89 d6`). It occurs, but `89 xx` is ubiquitous mid-function and this file has no
+       Ghidra oracle to check a pattern that wide against. Also not covered: `enter imm,0`
+       (WAR2 `00072f08`) — no available Open Watcom v2 build emits `enter`, so it cannot be gated
+       from source, and `enter` IS a frame setup, so it belongs with the framed shapes anyway.
+       ========================================================================================= -->
+
+  <pattern>
+     <data>0x5152 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515255 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5156 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515655 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5157 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515755 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5256 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x525655 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5257 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x525755 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535155 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535255 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5356 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535655 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5357 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5657 100010.1 01...100 ..100100 0.....00</data> <!-- push esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x565755 100010.1 01...100 ..100100 0.....00</data> <!-- push esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515256 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525655 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515257 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525755 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515657 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x525657 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x52565755 100010.1 01...100 ..100100 0.....00</data> <!-- push edx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515255 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535156 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515655 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535157 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535256 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525655 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535257 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535657 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525657 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ecx/edx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515256 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/esi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351525655 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/esi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515257 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351525755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515657 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525657 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/edx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351525657 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/esi/edi ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152565755 100010.1 01...100 ..100100 0.....00</data> <!-- push ebx/ecx/edx/esi/edi/ebp ; mov r32,[esp+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51528b 00...101 0x........</data> <!-- push ecx/edx ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152558b 00...101 0x........</data> <!-- push ecx/edx/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51568b 00...101 0x........</data> <!-- push ecx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5156558b 00...101 0x........</data> <!-- push ecx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51578b 00...101 0x........</data> <!-- push ecx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5157558b 00...101 0x........</data> <!-- push ecx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x52568b 00...101 0x........</data> <!-- push edx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5256558b 00...101 0x........</data> <!-- push edx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x52578b 00...101 0x........</data> <!-- push edx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5257558b 00...101 0x........</data> <!-- push edx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53518b 00...101 0x........</data> <!-- push ebx/ecx ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351558b 00...101 0x........</data> <!-- push ebx/ecx/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53528b 00...101 0x........</data> <!-- push ebx/edx ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352558b 00...101 0x........</data> <!-- push ebx/edx/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53568b 00...101 0x........</data> <!-- push ebx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5356558b 00...101 0x........</data> <!-- push ebx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53578b 00...101 0x........</data> <!-- push ebx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5357558b 00...101 0x........</data> <!-- push ebx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x56578b 00...101 0x........</data> <!-- push esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5657558b 00...101 0x........</data> <!-- push esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152568b 00...101 0x........</data> <!-- push ecx/edx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515256558b 00...101 0x........</data> <!-- push ecx/edx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152578b 00...101 0x........</data> <!-- push ecx/edx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515257558b 00...101 0x........</data> <!-- push ecx/edx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5156578b 00...101 0x........</data> <!-- push ecx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515657558b 00...101 0x........</data> <!-- push ecx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5256578b 00...101 0x........</data> <!-- push edx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x525657558b 00...101 0x........</data> <!-- push edx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351528b 00...101 0x........</data> <!-- push ebx/ecx/edx ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152558b 00...101 0x........</data> <!-- push ebx/ecx/edx/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351568b 00...101 0x........</data> <!-- push ebx/ecx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535156558b 00...101 0x........</data> <!-- push ebx/ecx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351578b 00...101 0x........</data> <!-- push ebx/ecx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535157558b 00...101 0x........</data> <!-- push ebx/ecx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352568b 00...101 0x........</data> <!-- push ebx/edx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535256558b 00...101 0x........</data> <!-- push ebx/edx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352578b 00...101 0x........</data> <!-- push ebx/edx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535257558b 00...101 0x........</data> <!-- push ebx/edx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5356578b 00...101 0x........</data> <!-- push ebx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535657558b 00...101 0x........</data> <!-- push ebx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515256578b 00...101 0x........</data> <!-- push ecx/edx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525657558b 00...101 0x........</data> <!-- push ecx/edx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152568b 00...101 0x........</data> <!-- push ebx/ecx/edx/esi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515256558b 00...101 0x........</data> <!-- push ebx/ecx/edx/esi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152578b 00...101 0x........</data> <!-- push ebx/ecx/edx/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515257558b 00...101 0x........</data> <!-- push ebx/ecx/edx/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535156578b 00...101 0x........</data> <!-- push ebx/ecx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515657558b 00...101 0x........</data> <!-- push ebx/ecx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535256578b 00...101 0x........</data> <!-- push ebx/edx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525657558b 00...101 0x........</data> <!-- push ebx/edx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515256578b 00...101 0x........</data> <!-- push ebx/ecx/edx/esi/edi ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351525657558b 00...101 0x........</data> <!-- push ebx/ecx/edx/esi/edi/ebp ; mov r32,[abs32] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
 </patternlist>

@@ -389,6 +389,12 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # routes discovery through `checkAlreadyInFunctionAbove`. Under `-of+` the unguarded frame-first
   # family matches instead and the guard is never consulted (src/retorphan.c property 2).
   build_watcom retorphan
+  # nfprologue: the NO-FRAME PROLOGUE repro — a callee-save push run followed by neither a frame
+  # setup nor a stack adjust, which is what wcc386 emits BY DEFAULT (`-of+` turns the frame pointer
+  # ON). Default flags are REQUIRED: `-of+` replaces every shape here with `55 89 e5 …`. Note the
+  # gap is the FOLLOW-ON, not "no frame" — family (3) already covers push-run + `sub esp`
+  # (src/nfprologue.c header).
+  build_watcom nfprologue
   build_watcom_le lestruct # the LE column: a pointer stored ALONE, findable only via the fixup table
   # tailjmp: the SHARED-RETURN TAIL-CALL analysis repro (a function reachable only via `jmp`).
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite
