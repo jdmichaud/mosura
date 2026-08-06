@@ -8,15 +8,26 @@ against all kinds of binaries, and we must be able to identify functions produce
 compilers under all options that affect function shape**. The test suite has to reflect that.* So
 every item below is judged on whether it generalises, not on whether it moves the WAR2 number.
 
-Current WAR2 state (the diagnostic, not the goal): **2898 functions; 2026 of the expert tracker's
-2120 (95.6%); 94 missing; 3 in-body entries, all shown to be legitimate secondary entry points.**
+Current WAR2 state @ `556cdb3` (the diagnostic, not the goal): **2900 functions; 92 missing vs the
+expert tracker's 2120; 3 in-body entries at depths [37,59,65], all shown to be legitimate secondary
+entry points; 872 not-in-tracker; 923 not-in-Ghidra.** (Was 2898 / 94 missing @ `4d28561`.)
+
+⚠️ Every number in this file is STALE unless stamped with a commit that is an ancestor of HEAD. A
+WAR2 run is ~224s and only the lead runs it; do not quote an unstamped figure.
+
+**The remaining 92, split — this is the number that sets priority:**
+
+```
+51  inside an over-extended mosura body   <- §1; NO pattern can ever reach these
+41  in open space                          <- of which 15 are bare frame-first (§2)
+```
 
 ---
 
-## 1. Function bodies over-extend (BIGGEST, and a byte-exactness defect)
+## 1. Function bodies over-extend (BIGGEST, and a byte-exactness defect) — ⭐ NEXT
 
-**50 of the 94 remaining missing functions are swallowed by a neighbouring function's computed
-body** — all 50 lie inside a mosura body, **zero** in open space. The pattern matches them; the
+**51 of the 92 remaining missing functions are swallowed by a neighbouring function's computed
+body** — all 51 lie inside a mosura body, **zero** in open space. The pattern matches them; the
 "already inside a function" guard (`FunctionStartAnalyzer.java:403`) then correctly refuses.
 
 So the defect is not discovery, it is **`compute_function_bodies` running past the real end into
@@ -24,11 +35,51 @@ the next function**. That also means those neighbours carry wrong extents — an
 wrong extent can never recompile byte-exact however good the decompiler becomes. Same class as the
 3 tracked in-body entries.
 
-Next step: compare mosura's body computation against Ghidra's flow/termination rules
-(`Function.getBody`, and how Ghidra bounds a body at a following function's entry). Not yet
-investigated.
+**Why it outranks everything else here:** it is 51 of 92 against §2's 15, it is the only item that
+no pattern work can ever reach, and it is the only one that is *also* a byte-exactness defect
+rather than only a discovery one. §2's residual is explicitly parked behind it.
 
-## 2. Bare frame-first prologue is unmatched (17 functions) — ⏳ PARTLY CLOSED, needs a WAR2 run
+### Grounding (READ-ONLY, 2026-08-06) — Ghidra's actual mechanism, and three named divergences
+
+Ghidra's path is `CreateFunctionCmd.getFunctionBody(program, entry, includeOtherFunctions=false,
+monitor)` → `new FollowFlow(program, entry, dontFollow, false, false, true).getFlowAddressSet()`,
+with `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIRECTION}`.
+(`Ghidra/Features/Base/.../CreateFunctionCmd.java:613`,
+`Ghidra/Framework/SoftwareModeling/.../block/FollowFlow.java`.) mosura's equivalent walk exists
+**twice** — `analyzers/mod.rs::compute_function_bodies` and
+`analyzers/function_start.rs::flow_body` — and they must not drift apart.
+
+**⭐ 1. The no-return fall-through, and it is a DRIFT INSIDE mosura, not a missing port.**
+Ghidra asks `currentInstr.getFallThrough()` (`FollowFlow.java:556`), which is null after a call to
+a non-returning function. mosura's *disassembler* does exactly this and consults
+`program.is_noreturn` (`analyzers/mod.rs:130`, comment: "Ghidra's followFlow consults
+Function.isNoReturn"). But `compute_function_bodies`, **170 lines further down the same file**
+(:298), recomputes `falls` from the opcode alone:
+
+```rust
+let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+```
+
+with no no-return check — and `flow_body` has the same omission. So the decoder correctly stops
+after `call <noreturn>`, and the body walk then steps straight over it into the next function.
+That is precisely the reported shape: 51 swallowed entries, zero in open space.
+
+**2. The listing, not a re-decode.** Ghidra continues only if
+`getListing().getInstructionAt(nextAddress) != null` (`FollowFlow.java:566`) — it walks *defined
+instructions*. mosura re-disassembles raw bytes through a 16-byte window and continues regardless,
+so it flows through alignment padding and data that were never code.
+
+**3. No instruction at the entry ⇒ a one-byte body.** `getFunctionBody` returns
+`new AddressSet(entry, entry)` when the listing has no instruction at the entry
+(`CreateFunctionCmd.java:616`). mosura decodes fresh instead; its one-byte fallback fires only when
+the walk yields nothing at all.
+
+**Opposite direction, worth noting so a fix does not overshoot:** `FollowFlow` follows
+COMPUTED_JUMP by default (`followComputedJump = true`, :42) — computed-jump targets are *in* a
+Ghidra body. mosura follows only `Branch`/`Cbranch` static targets and never a `Branchind` target,
+so switch-case bodies are too *small*. Do not "fix" that in the same change as the over-extension.
+
+## 2. Bare frame-first prologue is unmatched (17 functions) — ✅ CLOSED `556cdb3`; residual RULED OUT
 
 `55 89 e5` **without** a following `sub esp`. Our set inherited Ghidra's gcc anchors
 (`0x5589e583ec`, `0x5589e581ec....0000`) which require it — but per the warcraft2-re census
@@ -49,8 +100,33 @@ before it — `55 89 e5 40` (inc eax), `55 89 e5 e8` (call), both present in `wp
 those needs a naked 24-bit `0x5589e5`, which **no Ghidra x86 pattern file states**; every one of
 Ghidra's frame-first patterns either adds discriminating bytes or is paired with the filler that
 ends the previous function. The unit test pins the residual so adding one is a deliberate act.
-**Needs a WAR2 run** to say how many of the 17 the four completed patterns recover, and whether the
-naked form is worth its precision cost — precision for it is unmeasurable anywhere else (§5).
+
+**Measured on WAR2 @ `556cdb3` (lead, 224s):** the four completed patterns recover **2**, and cost
+**nothing** in precision — exactly what restoring what Ghidra already ships and validated should
+look like.
+
+```
+functions            2898 -> 2900   (+2)
+missing vs tracker     94 -> 92
+bare frame-first miss  17 -> 15
+IN-BODY intrusions      3 -> 3      unchanged, identical depths [37,59,65]
+not-in-tracker        872 -> 872    no new spurious
+not-in-Ghidra         923 -> 923
+```
+
+**RULING (lead, 2026-08-06): do NOT add the naked `0x5589e5`.** All 15 remaining *are* in open
+space, so a naked pattern could in principle take them — but that is the wrong order of work. Of
+the 92 still missing, **51 are behind §1** (an over-extended body, which no pattern can ever
+reach) against 41 in open space. Spending a 24-bit pattern with unmeasurable precision on 15, while
+51 sit behind a defect that *also* produces wrong extents and therefore blocks byte-exact
+recompilation, is backwards. The independent argument stands too: no Ghidra x86 pattern file states
+a bare `0x5589e5`, so writing one is an invention, and our fixtures are far too small to bound the
+false-positive rate of a 3-byte match on a 443 KB image.
+
+**Revisit only after §1.** Fixing the bodies changes what is reachable, so some of the 15 may
+resolve on their own, and the false-positive question can then be asked against a clean baseline.
+Leave `frame_first_family_covers_the_bare_prologue`'s residual assertion exactly as it is — it is
+what makes adding the naked pattern a deliberate act rather than a drift.
 
 ## 3. Tighten the pattern with two measured invariants (free precision) — ✅ LANDED
 
