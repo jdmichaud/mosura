@@ -1080,15 +1080,54 @@ with no no-return check — and `flow_body` has the same omission. So on a targe
 *does* run, the decoder stops after `call <noreturn>` and the body walk steps over it. On WAR2 the
 analyzer never runs, so this is latent, not active.
 
-**2. The listing, not a re-decode.** Ghidra continues only if
-`getListing().getInstructionAt(nextAddress) != null` (`FollowFlow.java:566`) — it walks *defined
-instructions*. mosura re-disassembles raw bytes through a 16-byte window and continues regardless,
-so it flows through alignment padding and data that were never code.
+### ~~2. The listing, not a re-decode~~ / ~~3. No instruction at the entry ⇒ a one-byte body~~
+### ⭐ STRUCK AND REPLACED — they are ONE symptom, and #3's literal port is a REGRESSION
 
-**3. No instruction at the entry ⇒ a one-byte body.** `getFunctionBody` returns
-`new AddressSet(entry, entry)` when the listing has no instruction at the entry
-(`CreateFunctionCmd.java:616`). mosura decodes fresh instead; its one-byte fallback fires only when
-the walk yields nothing at all.
+Both items were measured across the 194 functions of the gcc-x86-64 + watcom-x86-32 corpus
+(2026-08-06). They are not two divergences. **They fire on exactly the same six functions**, and in
+every case the undefined-byte count equals the ENTIRE body:
+
+```
+functions examined                                  194
+#3 no defined instruction at the entry                6
+#2 bodies covering UNDEFINED bytes                    6   (592 bytes)
+
+fnpattern.watcom-x86-32   @08048120   body  89B   <- byte-pattern-discovered orphan
+retorphan.watcom-x86-32   @0804812c   body  88B   <- byte-pattern-discovered orphan
+wprobe.watcom-x86-32      @08048112   body  46B
+wprobe.watcom-x86-32      @08048666   body 210B
+wprologue_sf.watcom-x86-32@080485e3   body 158B
+noret.gcc-x86-64          @00404000   body   1B   <- already degenerate, agrees with Ghidra
+```
+
+⚠️ **PORTING #3 LITERALLY WOULD COLLAPSE FIVE REAL 46-210 BYTE FUNCTIONS TO ONE BYTE EACH.** It is
+not merely inert — as stated it is actively wrong, and it would land the day §8 established that a
+wrong extent is what blocks byte-exact recompilation. Do not re-derive it from
+`CreateFunctionCmd.java:616` and port it in good faith; the Ghidra line is correct **for Ghidra**,
+whose listing is populated at those addresses. Ours is not, and that is the whole of the difference.
+
+**THE REAL ITEM — pattern-discovered functions are absent from the listing.** Five of the six are
+recovered by the byte-pattern search, and their bytes were never disassembled into the listing.
+Ghidra's `FunctionStartAnalyzer` schedules disassembly for its matches and the manager disassembles
+at function creation, so by the time `getFunctionBody` runs there IS an instruction at the entry and
+`getInstructionAt != null` covers the whole function — **both #2 and #3 are vacuous by construction
+in Ghidra.** Fix the listing and they dissolve; port them without fixing it and the tree gets worse.
+
+This is a **discovery** defect, not bookkeeping. Anything reading the listing is blind in those
+regions, including `checkAfterName`'s `"instruction"` and `"defined"` prerequisites — which is
+exactly why the `retboundary` fixture could not fail on 2026-08-06 (`code_unit_containing(entry-1)`
+was `None`), and it is **plausibly** why the four WAR2 entries at §"the 12" report
+`pred=None`/`at_addr=None` — **a hypothesis, not a measured link.** Those four are candidates that
+were never *created*, so pattern-discovered-function disassembly does not apply to them directly;
+the claim needs their PREDECESSORS to be undecoded *because* neighbouring pattern-discovered
+functions went undisassembled, and nobody has measured that. Ghidra's own answer on those four
+addresses is the observation that settles it.
+**Same root cause, three symptoms, two of which were met and treated separately before anyone
+connected them.**
+
+Gate for the replacement item: the six addresses above. Unlike #2 and #3, that is a test that can
+fail. The seed exists — `create_functions` calls `sched.function_defined(&created)` — so the open
+question is where the scheduled disassembly is dropped; measure that before writing anything.
 
 **⭐ 4. THE LIVE CANDIDATE — the body walk reads the OPCODE where Ghidra reads the REFERENCE TYPE.**
 Ghidra's `dontFollow` list is expressed in `RefType`s, and a **tail call** (`jmp <function>`) carries
