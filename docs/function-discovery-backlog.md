@@ -656,24 +656,45 @@ measurable on a self-compiled binary where every function is known — that is w
 ### §5 cell 6 — compiler VERSION: **MEASURED INERT for entry shape** (lead, dosemu)
 
 The last axis, and the one that needed dosemu. Same probe (`src/wprologue.c`), same flags
-(`-4r -fpi87 -s -od`), compiled by three historical Watcom releases under dosemu2:
+(`-4r -fpi87 -s -od`), compiled by four historical Watcom releases under dosemu2:
 
-| version | code bytes | md5 (first 16) | save-first prologues |
-| --- | ---: | --- | ---: |
-| 10.0a | 1214 | `a9cdf26b9b3be55f` | 13 |
-| 10.6  | 1214 | `a9cdf26b9b3be55f` | 13 |
-| 11.0  | 1202 | `cb970f6a5a28a9e6` | 13 |
+| version | year | code bytes | md5 (first 16) | save-first | frame-first |
+| --- | --- | ---: | --- | ---: | ---: |
+| 9.01  | 1992 | 1214 | `ab520f9cbf196669` | 13 | 13 |
+| 10.0a | 1994 | 1214 | `a9cdf26b9b3be55f` | 13 | 13 |
+| 10.6  | 1995 | 1214 | `a9cdf26b9b3be55f` | 13 | 13 |
+| 11.0  | 1997 | 1202 | `cb970f6a5a28a9e6` | 13 | 13 |
 
 **10.0a and 10.6 are BYTE-IDENTICAL.** 11.0 first diverges at offset `0x75` — `fc` vs `f8`, a
 stack-slot assignment inside a *body*, not a prologue — and emits the same 13 prologues with the
 same push runs (`53 51 52 56 57 55 89 e5`, `53 51 56 57 55 89 e5`, `51 56 57 55 89 e5`,
 `56 57 55 89 e5`).
 
-So across **10.0a → 10.6 → 11.0 → Open Watcom v2**, no release produces an entry shape another does
-not. Every difference this project has found traces to **flags**, never the version: frame-first vs
-save-first is `-of+`, the ten-byte shift is `-s`, and the push order is identical across two
-decades. **No per-version fixture is warranted** under the §5 stop rule — one per release would
-multiply maintenance while gating identical shapes.
+**9.01 (2026-08-06, lead) extends the axis back to the first 386 generation and does not break it.**
+Same 1214 code bytes as 10.0a and **exactly 6 differing bytes**, every one the same substitution
+(`0x05` ↔ `0x28`) at `0x24b, 0x25a, 0x2a6, 0x2ba, 0x32b, 0x33a`. All six are a **SIB base/index swap
+in array addressing inside a body**:
+
+```
+9.01    249:  89 54 05 d4     mov %edx,-0x2c(%ebp,%eax,1)
+10.0a   249:  89 54 28 d4     mov %edx,-0x2c(%eax,%ebp,1)
+```
+
+Same effective address, base and index exchanged — a pure encoding choice, in `p_frame` /
+`p_bigframe` / `p_frame_saves` bodies, **zero bytes in any prologue**. Prologue counts are identical
+(13 save-first, 13 frame-first). The 10.0a row was **regenerated from scratch** for this comparison
+and reproduced `a9cdf26b9b3be55f` to the digit, so the table is self-verifying rather than recalled.
+
+So across **9.01 → 10.0a → 10.6 → 11.0 → Open Watcom v2** — 1992 to the present, the entire lifetime
+of the compiler — no release produces an entry shape another does not. Every difference this project
+has found traces to **flags**, never the version: frame-first vs save-first is `-of+`, the ten-byte
+shift is `-s`, and the push order is identical across three decades. **No per-version fixture is
+warranted** under the §5 stop rule — one per release would multiply maintenance while gating
+identical shapes.
+
+⚠️ 9.01 is a **floppy set**, not an ISO, so `setup-watcom-dosemu.sh` does not cover it; it needs
+`INSTALL.EXE` under dosemu. The working procedure and its two traps are in
+`docs/watcom-codegen-fingerprint.md` — this is the path to 7.0 / 8.5a / 9.5b as well.
 
 ⚠️ Scope: this is the **entry** shape, which is all the pattern set sees. 11.0's body codegen does
 differ (12 bytes shorter here), so nothing reasoning about bodies may cite this row.

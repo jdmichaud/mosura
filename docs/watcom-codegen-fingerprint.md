@@ -25,7 +25,46 @@ It auto-finds the archive by version, extracts the nested ISO, locates the DOS-e
 (`BINW`/`BINB`, never the NT/`BIN95` stubs), normalises it to `C:\WAT<ver>\BIN` + `H` + `LIB386`,
 and emits the compile BAT. Verified end-to-end on 10.6 and 11.0 (each reproduces its committed
 `<rev>.code`). Scope: the ISO revisions (10.0/10.0a/10.5/10.6/11.0); the floppy sets
-(7.0/8.5a/9.01) ship the runtime packed in `.WPK` and need `INSTALL.EXE` first (A4 Stage 2).
+(7.0/8.5a/9.01/9.5b) ship everything packed in `.WPK` and need `INSTALL.EXE` first — see the next
+section, which is now a *worked* procedure rather than a task note.
+
+### Floppy-set revisions (7.0 / 8.5a / 9.01 / 9.5b) — run the vendor installer
+
+Everything on these disks is Watcom-packed, **including the files whose extension suggests
+otherwise**: `WCC386.DOS` starts `03 24 01 01`, not `MZ`. There is no unpacker on this machine
+(`bld/wpack` in the OW2 tree does not build against glibc — `dos.h`, `direct.h`, `sys/utime.h`), so
+the only route is the vendor's own `INSTALL.EXE`, driven from a stdin answer file. Verified on 9.01
+2026-08-06; it produced `bin/wcc386.exe` (181,192 bytes, 28 May 1992) plus `wcc386p.exe` and
+`dos4gw.exe`.
+
+```sh
+DC=~/.dosemu/drive_c
+rm -rf /tmp/w901src && mkdir -p /tmp/w901src            # all six floppies flattened into one dir
+for d in /data/w901/d0*/; do cp -n "$d"* /tmp/w901src/; done
+# continue=y | doshost=y os2host=n dosx=y | pls=n ecs=n dos4g=y ads=n | win3tgt=n os2tgt=n
+#            help=n nlm=n wprof=n pen=n     (CRLF, one per line, pad with extra n)
+printf 'y\r\ny\r\nn\r\ny\r\nn\r\nn\r\ny\r\nn\r\nn\r\nn\r\nn\r\nn\r\nn\r\nn\r\n' > "$DC/ANS.TXT"
+printf '@echo off\r\nlredir M: /tmp/w901src >C:\\LRED.TXT\r\nM:\\INSTALL M: C:\\WAT901 <C:\\ANS.TXT >C:\\INSOUT.TXT\r\n' \
+    > "$DC/MKW901.BAT"
+( cd "$DC" && timeout 400 dosemu -dumb -quiet -E MKW901.BAT </dev/null )
+```
+
+**Three traps, each of which silently produces a wrong or absent toolchain:**
+
+1. **`INSTALL.EXE` demands a drive ROOT** — `INSTALL C:\W901SRC ...` is rejected as *"invalid"*.
+   `lredir` must map the staging dir to its own letter. Its syntax here is a **plain unix path**
+   (`lredir M: /tmp/w901src`), not the `LINUX\FS\...` form; `D:` and `E:` are already taken by
+   dosemu2 itself. dosemu2 also gates which paths may be mapped — hence the one-line `~/.dosemurc`
+   carrying `$_lredir_paths`. The path must have no dot components: `~/.dosemu/...` is refused
+   outright, which is why the staging dir lives in `/tmp`.
+2. **An undocumented `Do you wish to continue (y/n)?` precedes the 17 questions in `INSTALL.SCR`.**
+   It eats answer #1 and shifts the whole file by one. The first attempt here silently installed the
+   **OS/2-hosted** compiler (`NE` header, `DOSCALLS`/`VIOCALLS` imports) — which fails with *"This
+   program cannot be run in DOS mode"*, an error that reads like a missing extender and is not.
+   **Always confirm the host from the binary** (`xxd -s 0x3c`), never from the answers you intended.
+3. **`if %dosx ask ...` means four questions appear only when DOS-extender support is accepted**, so
+   a wrong answer earlier changes *how many* questions follow. Read `C:\INSOUT.TXT` back and check
+   which questions were actually asked — the installer echoes them.
 
 The manual recipe it replaces: the historical DOS-hosted compilers run under dosemu2. The one
 non-obvious gotcha is that the `BINB/WCC386.EXE` build is **W32RUN-hosted**, so
