@@ -319,6 +319,44 @@ the overridable options, and the link needs a `__CHK` stub in the `_cstart` asm 
 `wlink` fails with `E2028: __CHK is an undefined reference`, which is itself the proof that the
 axis changes code generation.
 
+### ✅ CELL 2 CHECKED — calling convention (`-4s` stack vs `-4r` register): **NO NEW SHAPE, no fixture**
+
+Measured 2026-08-06, then **deliberately not turned into a fixture** — the stop rule is that a cell
+gets a fixture only if it exposes a shape we would otherwise miss, because a corpus that grows
+without adding discriminating power is a maintenance cost dressed as coverage.
+
+A `wcall` fixture was actually built (`wprologue.c` + orphan, `-4s`) and measured across all three
+optimization settings, then deleted:
+
+```
+-4s -of+    17/17 recovered, 0 spurious      (16 with the byte-pattern search off)
+-4s -od     17/17 recovered, 0 spurious      (16 with it off)
+-4s -oc     17/17 recovered, 0 spurious      (16 with it off)
+```
+
+Full recall with **no new patterns**. The convention changes callee-save *pressure* — and so the
+length of the push run — but not the *shape* of the entry, and the existing families already span
+the lengths:
+
+```
+-4s -of+   55 89 e5 8b 45 08      frame + frame-relative load     x86gcc #6
+           55 89 e5 53 8b 5d 08   frame + ONE save + load         family (4), filler-paired
+           55 89 e5 53 56 57 …    frame + saves                   x86gcc #5 (53,56,57 conforming)
+-4s -od    53 56 57 55 89 e5 …    save-first, conforming run      family (1)
+```
+
+The `16 with the search off` column matters: the orphan is pattern-discovered in every variant, so
+this is a real measurement of the pattern set and not a vacuous pass.
+
+**What the axis DOES move is the symbol interface, not the prologue.** Under `-4s` wcc386 emits
+**bare** symbol names — `main`, not `main_` — so a `-4s` cell cannot share a `_cstart` stub with
+any `-4r` cell. That is a build-time obstacle worth knowing before someone tries; it is not a
+pattern-set gap.
+
+**Consequence for §5's ranking:** the convention axis was listed as "yes, changes the entry shape".
+Measured, it does not. Cross-checked against all three optimization settings, so this is not a
+single-cell accident.
+
 ### Two prerequisites every matrix cell inherits (learned building §4's cell)
 
 **(a) A cell cannot reach the Watcom pattern file by default.** The `(language, compiler)` decision
