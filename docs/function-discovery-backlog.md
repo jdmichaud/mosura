@@ -15,7 +15,47 @@ Previous state @ `556cdb3`: 2900 / 2078 / 42 missing / 3 inside. Both rows were 
 **same harness in the same session**, and the harness reproduced the `556cdb3` row to the digit
 before the new row was believed — so the delta is a code change, not a scoring change.
 
-### ⭐ THE 12, TRIAGED @ `be85c85` — a THIRD prologue family, and it is the DEFAULT one
+### ⚠️ THE "THIRD FAMILY" CLAIM BELOW IS RETRACTED — corrected 2026-08-06, same day
+
+**4 of the 7 already match the committed pattern file at offset 0.** The claim that this shape is
+"not modelled at all" was derived from *my prologue shape classifier*, not from replaying the bytes
+through `x86watcom_patterns.xml` with the real matcher. Replayed through `SequenceSearchState` — the
+engine the analyzer actually uses — `0004e19d`, `000671a8`, `00067204` and `0006734c` all match
+**family (3), the ESP-frame family**, whose 2/3/4-push variants (`0x5. 0x5. 100000.1 0xec ......00`)
+cover `<push run> + sub esp` in *both* the `83` and `81` encodings because `100000.1` matches both.
+That family is `x86gcc_patterns.xml`'s own, carried over verbatim, and its header comment already
+says it exists for exactly this: *"Watcom's optimized codegen drops the frame pointer entirely and
+addresses locals off ESP."*
+
+**The no-frame family is therefore not missing, and it is already gated** — `retorphan`'s orphan
+(`4665c2b`) is `56 57 55 83 ec 14`, this very shape, built with default flags and recovered.
+
+So for those 4 the question is **not "what pattern do we add" but "why does a pattern that matches
+at offset 0 produce no function"** — the candidates are all downstream of the match: `after="defined"`
+(`checkAfterName`), `validcode="6"` (six valid fall-through instructions), or `applyActionToSet`
+finding DefinedData. **A fourth family would leave all of that untouched and recover none of the 4.**
+
+⚠️ **And that is a different defect class from the one triaged here.** If `after="defined"` or
+`validcode="6"` is declining matched candidates, it is doing so *everywhere in the binary*, not just
+at these 4 — so do not close the 12 on the assumption a pattern covers them, and treat the 900 as
+possibly under-counted for the same reason.
+
+Two further corrections to the table below:
+- **`00072f08` DOES set up a frame.** `enter 0x1c,0` *is* `push ebp ; mov ebp,esp ; sub esp,0x1c` in
+  one instruction. It is unmatched because no pattern mentions `c8`, not because it lacks a frame.
+- **`00064427` is a one-byte push run** (`52`) plus an absolute load — it shares only the "no frame"
+  property, and a pattern wide enough for it (`0x5.` + `8b 15`) is a much weaker anchor needing its
+  own precision argument.
+
+**The genuine unmodelled gap is 3 sub-shapes, not a family**: push-run + `mov r32,[esp+disp8]`
+(stack-arg load, no `sub esp`), push + `mov r32,[abs32]`, and push-run + `enter`. All three are
+reproducible on self-compiled code except `enter`, which no Open Watcom v2 build emits.
+
+The methodological lesson is the same one A3 taught the same day: **a shape classifier tells you what
+bytes look like; only the matcher tells you what the pattern file covers.** Replay through the
+matcher before declaring a gap. See [[could-it-have-come-out-otherwise]].
+
+### ~~⭐ THE 12, TRIAGED @ `be85c85` — a THIRD prologue family, and it is the DEFAULT one~~ (see retraction above)
 
 Full per-entry dump (bytes, refs, containment) taken 2026-08-06. **7 of the 12 share one shape that
 the pattern set does not model at all**: a callee-save push run followed by a stack adjust or a
