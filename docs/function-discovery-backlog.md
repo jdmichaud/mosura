@@ -28,13 +28,29 @@ Next step: compare mosura's body computation against Ghidra's flow/termination r
 (`Function.getBody`, and how Ghidra bounds a body at a following function's entry). Not yet
 investigated.
 
-## 2. Bare frame-first prologue is unmatched (17 functions)
+## 2. Bare frame-first prologue is unmatched (17 functions) — ⏳ PARTLY CLOSED, needs a WAR2 run
 
 `55 89 e5` **without** a following `sub esp`. Our set inherited Ghidra's gcc anchors
 (`0x5589e583ec`, `0x5589e581ec....0000`) which require it — but per the warcraft2-re census
 **81% of framed WAR2 functions have no `sub esp`** (save-first 891 without / 426 with; frame-first
 187 without / 52 with). Needs the precision guards in §3 to avoid over-matching, since bare
 `55 89 e5` is a common 3-byte sequence.
+
+**Landed:** this was not a missing *invention*, it was an incomplete *inheritance*. Ghidra ships
+**six** frame-first patterns and this file had taken two — the two that require `sub esp`. The four
+left behind (`0x5589e5..83ec`, `0x5589e5....83ec`, `0x5589e5 01010... 01010...`,
+`0x5589e58b 01...101`) are exactly the bare shape. All six are now stated, in both `mov ebp,esp`
+encodings, with #5 tightened to Watcom's save order (the saves *after* a frame setup obey the same
+order as the ones before — measured on both `-of+` fixtures). 73 → 99 patterns. Gated by
+`function_start.rs::frame_first_family_covers_the_bare_prologue`; fixture function sets unmoved.
+
+**Still open, and deliberately:** a frame setup followed by ordinary code with no recognised filler
+before it — `55 89 e5 40` (inc eax), `55 89 e5 e8` (call), both present in `wprologue`. Covering
+those needs a naked 24-bit `0x5589e5`, which **no Ghidra x86 pattern file states**; every one of
+Ghidra's frame-first patterns either adds discriminating bytes or is paired with the filler that
+ends the previous function. The unit test pins the residual so adding one is a deliberate act.
+**Needs a WAR2 run** to say how many of the 17 the four completed patterns recover, and whether the
+naked form is worth its precision cost — precision for it is unmeasurable anywhere else (§5).
 
 ## 3. Tighten the pattern with two measured invariants (free precision) — ✅ LANDED
 

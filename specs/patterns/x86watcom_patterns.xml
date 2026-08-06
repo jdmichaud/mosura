@@ -399,12 +399,47 @@
   </pattern>
 
   <!-- =========================================================================================
-       (2) THE FRAME-FIRST FAMILY — the 283 tracker functions with NO leading push run.
-       These are x86gcc_patterns.xml's own `possiblefuncstart` patterns, which apply unchanged
-       because the shape (`push ebp; mov ebp,esp; sub esp,N`) is not gcc-specific, plus the
-       `8b ec` twin Watcom also emits.
+       (2) THE FRAME-FIRST FAMILY — a frame setup at offset 0, with the register saves (if any)
+       AFTER it. 239 of WAR2's 1556 framed functions, and the ONLY shape modern Open Watcom emits
+       under `-of+`.
+
+       THIS IS x86gcc_patterns.xml's OWN FRAME-FIRST SET, COMPLETED. `push ebp; mov ebp,esp` is
+       not a gcc idiom, so Ghidra's patterns for it carry over unchanged — but this file
+       originally took only the two that require a following `sub esp`, and Ghidra ships six.
+       The four that were left behind are exactly the BARE frame-first prologue, i.e. the shape
+       with no `sub esp` at all:
+
+           x86gcc #3  0x5589e5..83ec              frame, 1 filler byte, sub esp
+           x86gcc #4  0x5589e5....83ec            frame, 2 filler bytes, sub esp
+           x86gcc #5  0x5589e5 01010... 01010...  frame, then two register saves
+           x86gcc #6  0x5589e58b 01...101         frame, then `mov r32,[ebp+disp8]`
+
+       and that omission is measurable: per the warcraft2-re census **81% of framed WAR2
+       functions have no `sub esp`** (save-first 891 without / 426 with, frame-first 187 / 52), so
+       a set that demands one cannot see most of them. Bare `55 89 e5` is only 24 bits of check
+       and Ghidra never states it alone anywhere in its x86 set — every one of its frame-first
+       patterns adds discriminating bytes, or is paired with the filler that ends the previous
+       function (family 4 below). This file does the same: nothing here is a naked `0x5589e5`.
+
+       #5 IS TIGHTENED WITH WATCOM'S SAVE ORDER, exactly as family (1) is, and on the same
+       evidence — the saves that FOLLOW a frame setup obey the same rigid `ebx ecx edx esi edi`
+       order as the ones that precede it. Measured on both committed `-of+` fixtures, every
+       frame-first run in them conforms: `wprologue` emits `52`, `51`, `56`, `56 57`, `53 51`,
+       `51 56 57`, `53 51 52 56`; `fnpattern` emits `52`, `56 57`. So Ghidra's `01010...`
+       (0x50-0x57, any order) becomes the 10 ordered pairs — strictly tighter than the pattern
+       Ghidra already ships and accepts standalone on gcc.
+
+       Each of the six is stated twice, for `89 e5` and for Watcom's `8b ec` encoding.
+
+       STILL NOT COVERED, deliberately: a frame setup followed by ordinary code and NOT preceded
+       by recognised filler — `55 89 e5 40` (inc eax), `55 89 e5 e8` (call), both of which occur
+       in `wprologue`. Covering those needs a naked `0x5589e5`, which no Ghidra pattern file
+       states; it would be an invention, and an unmeasurable one until precision can be checked
+       on a binary where every function is known.
        ========================================================================================= -->
 
+  <!-- ==== `89 e5` encoding of `mov ebp,esp` ======================================= -->
+  <!-- x86gcc #1/#2: with `sub esp` -->
   <pattern>
      <data>0x5589e583ec</data> <!-- PUSH EBP : MOV EBP,ESP : SUB ESP, -->
      <codeboundary/>
@@ -415,13 +450,152 @@
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
+  <!-- x86gcc #3/#4: `sub esp` after 1-2 other bytes -->
   <pattern>
-     <data>0x558bec83ec</data> <!-- the 8b encoding of the same -->
+     <data>0x5589e5..83ec</data> <!-- PUSH EBP : MOV EBP,ESP : 1 byte : SUB ESP, -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>0x558bec81ec....0000</data>
+     <data>0x5589e5....83ec</data> <!-- PUSH EBP : MOV EBP,ESP : 2 bytes : SUB ESP, -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- x86gcc #5, tightened to Watcom's save order: frame, then two saves -->
+  <pattern>
+     <data>0x5589e55351</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/ecx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55352</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55356</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55357</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55152</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55156</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55157</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55256</data> <!-- PUSH EBP : MOV EBP,ESP : push edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55257</data> <!-- PUSH EBP : MOV EBP,ESP : push edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5589e55657</data> <!-- PUSH EBP : MOV EBP,ESP : push esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- x86gcc #6: frame, then a frame-relative load -->
+  <pattern>
+     <data>0x5589e58b 01...101</data> <!-- PUSH EBP : MOV EBP,ESP : MOV r32,[EBP+disp8] -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+
+  <!-- ==== `8b ec` encoding of `mov ebp,esp` ======================================= -->
+  <!-- x86gcc #1/#2: with `sub esp` -->
+  <pattern>
+     <data>0x558bec83ec</data> <!-- PUSH EBP : MOV EBP,ESP : SUB ESP, -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec81ec....0000</data> <!-- PUSH EBP : MOV EBP,ESP : SUB ESP,#bigconst -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- x86gcc #3/#4: `sub esp` after 1-2 other bytes -->
+  <pattern>
+     <data>0x558bec..83ec</data> <!-- PUSH EBP : MOV EBP,ESP : 1 byte : SUB ESP, -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec....83ec</data> <!-- PUSH EBP : MOV EBP,ESP : 2 bytes : SUB ESP, -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- x86gcc #5, tightened to Watcom's save order: frame, then two saves -->
+  <pattern>
+     <data>0x558bec5351</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/ecx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5352</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5356</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5357</data> <!-- PUSH EBP : MOV EBP,ESP : push ebx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5152</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5156</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5157</data> <!-- PUSH EBP : MOV EBP,ESP : push ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5256</data> <!-- PUSH EBP : MOV EBP,ESP : push edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5257</data> <!-- PUSH EBP : MOV EBP,ESP : push edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x558bec5657</data> <!-- PUSH EBP : MOV EBP,ESP : push esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- x86gcc #6: frame, then a frame-relative load -->
+  <pattern>
+     <data>0x558bec8b 01...101</data> <!-- PUSH EBP : MOV EBP,ESP : MOV r32,[EBP+disp8] -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>

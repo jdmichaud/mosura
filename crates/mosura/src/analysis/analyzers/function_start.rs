@@ -1259,6 +1259,66 @@ mod tests {
         assert!(six.contains(&2), "the conforming 5-run inside it must still mark; got {six:?}");
     }
 
+    /// THE BARE FRAME-FIRST PROLOGUE — a frame setup with **no `sub esp`**, which is 81% of
+    /// WAR2's framed functions (save-first 891 without / 426 with, frame-first 187 / 52).
+    ///
+    /// The Watcom file originally took two of `x86gcc_patterns.xml`'s six frame-first patterns —
+    /// the two that require `sub esp`. The four left behind are precisely the bare shape. This
+    /// pins all six, in both encodings of `mov ebp,esp`, and pins the two boundaries of the
+    /// family: the push pair obeys Watcom's save order, and a *naked* `0x5589e5` is still not a
+    /// pattern (no Ghidra x86 file states one; it would be an unmeasurable invention).
+    ///
+    /// Like [`save_first_family_enforces_watcoms_push_order`], no ground-truth fixture can see
+    /// this: every function in them is reachable by a call or by family (4)'s filler pairing, so
+    /// their recall and precision are identical with and without these patterns.
+    #[test]
+    fn frame_first_family_covers_the_bare_prologue() {
+        let watcom = crate::paths::specs_dir().join("patterns/x86watcom_patterns.xml");
+        // `5b` (pop ebx) is deliberately NOT one of family (4)'s prepatterns, so nothing here is
+        // matched by the filler pairing and every hit is the frame-first family's own doing.
+        let probe = |tail: &[u8], mov: &[u8]| -> BTreeSet<u64> {
+            let mut bytes = vec![0x5bu8, 0x55];
+            bytes.extend_from_slice(mov);
+            bytes.extend_from_slice(tail);
+            marks(&watcom, &bytes)
+        };
+
+        for mov in [&[0x89u8, 0xe5][..], &[0x8b, 0xec][..]] {
+            // x86gcc #1/#2 — with `sub esp` (the two this file already had).
+            assert!(probe(&[0x83, 0xec, 0x10], mov).contains(&1), "#1 sub esp,imm8");
+            assert!(probe(&[0x81, 0xec, 0x40, 0x06, 0x00, 0x00], mov).contains(&1), "#2 imm32");
+            // x86gcc #3/#4 — `sub esp` one or two bytes later. NEW.
+            assert!(probe(&[0x53, 0x83, 0xec, 0x10], mov).contains(&1), "#3 one byte then sub");
+            assert!(probe(&[0x53, 0x51, 0x83, 0xec, 0x10], mov).contains(&1), "#4 two then sub");
+            // x86gcc #5 — frame, then two register saves, NO `sub esp`. NEW, and the shape
+            // `wprologue` itself emits (`55 89 e5 56 57`, `55 89 e5 53 51`).
+            assert!(probe(&[0x56, 0x57, 0x8b, 0x45, 0xfc], mov).contains(&1), "#5 esi,edi");
+            assert!(probe(&[0x53, 0x51, 0x8b, 0x45, 0xfc], mov).contains(&1), "#5 ebx,ecx");
+            // x86gcc #6 — frame, then a frame-relative load, NO `sub esp`. NEW.
+            assert!(probe(&[0x8b, 0x45, 0xfc], mov).contains(&1), "#6 mov r32,[ebp+disp8]");
+            // #5 obeys Watcom's save order here too — the saves AFTER a frame setup are the same
+            // rigid sequence as the ones before it (measured on both `-of+` fixtures).
+            assert!(
+                !probe(&[0x57, 0x56, 0x8b, 0x45, 0xfc], mov).contains(&1),
+                "a reordered save pair (edi before esi) must not mark a frame-first start"
+            );
+        }
+
+        // THE RESIDUAL, pinned deliberately. A frame setup followed by ordinary code, with no
+        // recognised filler before it, is NOT matched — `55 89 e5 40` (inc eax) and
+        // `55 89 e5 e8` (call) both occur in `wprologue`. Covering them needs a naked 24-bit
+        // `0x5589e5`, which no Ghidra x86 pattern file states. If that ever changes, change this
+        // assertion deliberately rather than discovering the over-match on a real binary.
+        for tail in [&[0x40u8, 0x89, 0xec, 0x5d, 0xc3][..], &[0xe8, 0x74, 0xfe, 0xff, 0xff][..]] {
+            let m = probe(tail, &[0x89, 0xe5]);
+            assert!(
+                !m.contains(&1),
+                "a naked `55 89 e5` followed by {tail:02x?} is matched — the frame-first family \
+                 has grown a 24-bit pattern; got {m:?}"
+            );
+        }
+    }
+
     /// The overlap rule that makes a family of shifted-by-one push-run patterns safe to state.
     /// A 5-push prologue matches the 5-push pattern at the entry, the 4-push pattern one byte in,
     /// and so on; `CreateFunctionCmd` iterates ascending and Ghidra's listing refuses a function
