@@ -93,10 +93,9 @@ the whole callee and swallows it. This is exactly the class recorded in
 from the instruction discards every override the analyzers computed.* It also needs no no-return
 flag, which is what makes it the surviving candidate after #1 was refuted.
 
-**Opposite direction, worth noting so a fix does not overshoot:** `FollowFlow` follows
-COMPUTED_JUMP by default (`followComputedJump = true`, :42) — computed-jump targets are *in* a
-Ghidra body. mosura follows only `Branch`/`Cbranch` static targets and never a `Branchind` target,
-so switch-case bodies are too *small*. Do not "fix" that in the same change as the over-extension.
+**Opposite direction:** split out as **§8** so neither extent defect hides the other. Do not fix
+the two in one change — a WAR2 delta mixing an over-extension fix with an under-extension fix is
+uninterpretable per function.
 
 ### The MVE passes unfixed, and why (2026-08-06)
 
@@ -121,6 +120,30 @@ bytes that Ghidra never decoded as code   -> §6's over-decode is UPSTREAM of §
 ```
 
 That last outcome would merge §1 and §6, which is why the histogram is worth a run on its own.
+
+### ⛔ Two blockers on fixing divergence #1, both measured (2026-08-06)
+
+Recorded because a fix to #1 is authorized and would otherwise be landed against a prediction that
+cannot come true.
+
+1. **It is inert on WAR2, so its WAR2 delta is 0, not 51.** `examples/war2_survey.rs:210` loads the
+   target with `analyze_le_file` — the LE loader, blocks `objN_text`/`objN_data` — so
+   `noreturn::analyze` returns early (`noreturn.rs:128-137`) and flags nothing. The reasoning that
+   #1 "explains the distribution" (all 51 swallowed, zero in open space, because each predecessor
+   ends in `call <noreturn>`) requires at least one flagged no-return function; there are none.
+2. **No existing fast fixture can gate it.** Every ground-truth binary measures
+   `noreturn_flagged = 0`. The gcc x86-64 column is statically linked and freestanding — `readelf
+   -S` shows `.text` and no `.dynsym`/`.plt` — and the Watcom column links `option nodefaultlib`.
+   So the analyzer never runs anywhere in the corpus, and an MVE asserting "the body stops at the
+   call" would pass with the fix reverted. That is vacuity instance eight, exactly as predicted.
+
+**Therefore #1 needs a NEW fixture before it can be fixed at all**: a dynamically-linked ELF (so a
+`.plt`/`.dynsym` exists) calling a listed no-return name (`abort`/`exit`/`_exit`) as a function's
+last flow, with a second function immediately after. That fixture is worth having independently —
+it is the only thing that would gate `noreturn.rs` at all, which is today completely ungated.
+
+**And it still does not explain the 51.** #2 and #4 remain the live candidates for WAR2; the
+histogram above is still the measurement that decides.
 
 ## 2. Bare frame-first prologue is unmatched (17 functions) — ✅ CLOSED `556cdb3`; residual RULED OUT
 
@@ -316,6 +339,23 @@ either a recall win to keep or a precision problem to fix.
 Also pending from their reply: **Watcom's own shipped `CLIB3R.LIB` is save-first** (`write_`,
 `__CMain`, verified inside WAR2 with 0 unmasked mismatches). So a frame-first-only pattern set
 misses Watcom CRT code in **any** binary — independent support for §5.
+
+## 8. Function bodies UNDER-extend at a computed jump (§1's opposite twin)
+
+Split out of §1 at the lead's request (2026-08-06): §1 is "bodies run past the real end", this is
+"bodies stop short of it". Opposite signs, so **never fix them in the same change** — a WAR2 delta
+mixing the two cannot be attributed per function.
+
+Ghidra's `FollowFlow` follows computed jumps by default (`followComputedJump = true`,
+`FollowFlow.java:42`; `CreateFunctionCmd`'s `dontFollow` list contains COMPUTED_**CALL** and
+INDIRECTION but **not** COMPUTED_JUMP), so a switch's case bodies are inside the Ghidra body.
+mosura's walk pushes a target only for `Branch`/`Cbranch` and never for `Branchind`
+(`analyzers/mod.rs:300-306`, `function_start.rs::flow_body`), so every recovered switch's case
+bodies are outside the body unless some other edge happens to reach them.
+
+Not yet measured. The natural gauge is a fixture with a recovered jump table — `narrowsw`,
+`switchcall`, `dispatch`, `tables` — asserting the case bodies are inside the function's extent.
+Note the same wrong-extent-blocks-byte-exactness argument as §1 applies here.
 
 ---
 
