@@ -962,6 +962,25 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
     body
 }
 
+thread_local! {
+    /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
+    static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    /// Addresses this run has already asked the disassembler for — see the dedupe in `added()`.
+    static SCHEDULED: std::cell::RefCell<AddressSet> =
+        std::cell::RefCell::new(AddressSet::new());
+    /// Addresses this run has already handed to the delayed creator — see the dedupe in `added()`.
+    static PROPOSED: std::cell::RefCell<AddressSet> =
+        std::cell::RefCell::new(AddressSet::new());
+}
+
+/// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
+/// inherits the previous program's state (the harness analyses many programs per thread).
+pub fn reset_body_refresh_memo() {
+    BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
+    SCHEDULED.with(|s| *s.borrow_mut() = AddressSet::new());
+    PROPOSED.with(|s| *s.borrow_mut() = AddressSet::new());
+}
+
 /// Bring every function's body up to date before asking `getFunctionContaining`.
 ///
 /// **Why this exists.** In Ghidra a function's body is computed when the function is created and
@@ -993,25 +1012,6 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
 /// needed exactly when the count has moved since the last one. The marker is thread-local, which
 /// is also the correct granularity — the test harness analyses different programs on different
 /// threads.
-thread_local! {
-    /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
-    static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-    /// Addresses this run has already asked the disassembler for — see the dedupe in `added()`.
-    static SCHEDULED: std::cell::RefCell<AddressSet> =
-        std::cell::RefCell::new(AddressSet::new());
-    /// Addresses this run has already handed to the delayed creator — see the dedupe in `added()`.
-    static PROPOSED: std::cell::RefCell<AddressSet> =
-        std::cell::RefCell::new(AddressSet::new());
-}
-
-/// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
-/// inherits the previous program's state (the harness analyses many programs per thread).
-pub fn reset_body_refresh_memo() {
-    BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
-    SCHEDULED.with(|s| *s.borrow_mut() = AddressSet::new());
-    PROPOSED.with(|s| *s.borrow_mut() = AddressSet::new());
-}
-
 fn refresh_function_bodies(program: &mut Program) {
     let n = program.function_manager.functions().count();
     if BODIES_FRESH_AT.with(|c| c.get()) == n {
