@@ -956,7 +956,13 @@ across two compilers and two architectures); **0 of 53** after. Gate
 ```
 
 **Exactly one number moved, the one predicted to move.** ~88.5% of WAR2's code object is now inside
-a function body, up from ~85.8%. This lands on the campaign's actual goal rather than on a function
+a function body, up from ~85.8%.
+
+⚠️ **The suite was RED at `6abd1ae`** — `nfprologue` was still asserting recall of three orphans that
+`50bea92` had correctly made unrecoverable, so the corpus loop failed from the moment of the backout.
+Fixed in `2a2f705`. **The WAR2 figures above are unaffected**: the failure is a fixture-recall
+assertion in the corpus loop and touches no analysis path `analyze_le_file` uses. Recorded rather
+than silently re-stamped, because "confirmed on WAR2" was written here before that was known. This lands on the campaign's actual goal rather than on a function
 count: a function with the wrong extent cannot be byte-exactly recompiled, and every one of those
 case bodies was previously outside its function.
 
@@ -992,7 +998,41 @@ Not yet measured. The natural gauge is a fixture with a recovered jump table —
 `switchcall`, `dispatch`, `tables` — asserting the case bodies are inside the function's extent.
 Note the same wrong-extent-blocks-byte-exactness argument as §1 applies here.
 
-## 9. Three real divergences in mosura's body walk (surfaced by §1, independent of it)
+## 9. Divergences in mosura's body walk
+
+### ⭐ #4 MEASURED 2026-08-06 — premise confirmed, but the "faithful" conversion is NOT SAFE
+
+Measured across every gcc-x86-64 and watcom-x86-32 fixture, over all opcode-derived branch targets
+inside function bodies:
+
+```
+opcode-derived branch targets                    372
+  reftype is a CALL kind (#4's tail call)          5
+  with NO matching flow reference at all         211
+```
+
+**#4 is real** — 5 sites where the walk pushes a target whose reftype is `UNCONDITIONAL_CALL`
+(`tailjmp.watcom-x86-32` ×2, the fixture built for exactly this; `tailcall.gcc-x86-64` ×2;
+`tables.gcc-x86-64` ×1). Ghidra's `dontFollow` refuses those; mosura's opcode path takes them.
+
+⚠️ **But 211 of 372 branch targets carry no flow reference at all.** mosura's reference manager does
+not record ordinary intra-function branches the way Ghidra's does. So **converting the walk to be
+reference-driven — the "faithful" shape, and what §8 deferred here — would shrink bodies by more
+than half the branch edges.** That conversion is not safely available until the reference set is
+complete, which is a far larger job than this item's framing implies. Anyone attempting it on the
+strength of that framing should read this first.
+
+**The scoped fix that IS available:** keep the opcode path, but refuse a target when a reference
+from that instruction to it carries a call-type reftype. That applies Ghidra's `dontFollow` rule to
+the opcode path and consults references only to **veto**, so it does not depend on the reference set
+being complete.
+
+⚠️ **Open question gating even that:** `compute_function_bodies` already stops at a known function's
+entry, so if the tail-call target is itself a discovered function the divergence is **masked** and
+the change would be inert. Measure that before writing it — an inert change cannot have a gate that
+fails. (Asked and answered in advance this time, unlike family (6).)
+
+### The original three (surfaced by §1, independent of it)
 
 §1 dissolved, but these did not: each is a genuine difference from Ghidra's body computation,
 found by reading both sides, and each survives the refutation on its own merits. **None of them
