@@ -1347,6 +1347,156 @@ mod tests {
         }
     }
 
+    /// THE ABOVE-FUNCTION GUARD TESTS FALL-THROUGH, NOT ADJACENCY (`checkAlreadyInFunctionAbove`
+    /// :512) — the local gate for `be85c85`, whose only gate until now was a WAR2 run.
+    ///
+    /// Ghidra:
+    ///
+    /// ```java
+    /// Instruction instr = getListing().getInstructionContaining(addrBefore);
+    /// if (instr != null && addr.equals(instr.getFallThrough())) { return true; }
+    /// ```
+    ///
+    /// `getFallThrough()` is null after a `ret`, so an epilogue immediately followed by the next
+    /// function's prologue is NOT a veto. This port vetoed on mere adjacency and so refused every
+    /// pattern-only function that begins one byte past a `c3` — 6 tracker functions on WAR2.
+    ///
+    /// THE ARM UNDER TEST IS THE `funcAbove == None` ONE. When a function *is* recognised above,
+    /// the first arm returns `function_containing(addr) == above` and this code never runs; the
+    /// third case below pins that, so the test cannot silently drift onto the other arm.
+    ///
+    /// Both signs are asserted: `ret` must not veto, `nop` (which does fall through) must.
+    #[test]
+    fn above_guard_vetoes_on_fall_through_not_on_adjacency() {
+        use crate::analysis::program::FunctionManager;
+        use crate::decompile::space::{SpaceKind, SpaceManager};
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return;
+        }
+        // `<one byte of preceding instruction> | 53 83 ec 10 …` — the orphan entry is base+1.
+        let build = |last: u8| {
+            let mut spaces = SpaceManager::standard();
+            let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+            let base = Address::new(ram, 0x40_1000);
+            let mut p = Program::new(spaces, ram, "x86:LE:32:default", "watcom", base, false, 32);
+            let code = vec![last, 0x53, 0x83, 0xec, 0x10, 0x5b, 0xc3];
+            p.memory.add_block(".text", base, code.len() as u64, true, false, true, Some(code));
+            // The preceding byte is a DECODED instruction that is in no function — the state the
+            // address-table analyzer leaves behind (it disassembles a pointer target and
+            // deliberately creates no function there).
+            p.listing.define(base, CodeUnit::Instruction { length: 1 });
+            (p, ram, Address::new(ram, 0x40_1001))
+        };
+
+        // `c3` = RET. Its fall-through is null, so Ghidra does not veto.
+        let (p, _ram, orphan) = build(0xc3);
+        assert!(
+            !check_already_in_function_above_with(&p, orphan, None),
+            "a RET above must NOT veto a function start — `getFallThrough()` is null after it"
+        );
+
+        // `90` = NOP. It really does fall through into `addr`, so Ghidra vetoes.
+        let (p, _ram, orphan) = build(0x90);
+        assert!(
+            check_already_in_function_above_with(&p, orphan, None),
+            "a NOP above DOES fall through into the address, so the guard must still veto — \
+             the fix must not have deleted the rule"
+        );
+
+        // The other arm: with a function recognised above, `funcAbove` decides and the
+        // fall-through test is never consulted. `addr` is not in that function, so no veto.
+        let (mut p, ram, orphan) = build(0x90);
+        let above = Address::new(ram, 0x40_1000);
+        p.function_manager = FunctionManager::new();
+        p.function_manager.create_function(above, "above", AddressSet::new());
+        assert!(
+            !check_already_in_function_above_with(&p, orphan, Some(above)),
+            "with a function above, the guard asks only whether `addr` is inside THAT function"
+        );
+    }
+
+    /// The same defect at the ANALYZER level, on the path WAR2 actually took: a
+    /// `funcstart after="defined"` pattern (family (3) of `x86watcom_patterns.xml`, the ESP-frame
+    /// family) whose predecessor is a decoded `ret` belonging to no function.
+    ///
+    /// `checkAfterName`'s `"defined"` arm (:437) reaches `checkAlreadyInFunctionAbove` whenever the
+    /// byte before the candidate is an instruction, so the pre-requisite itself is what the
+    /// adjacency bug rejected — the candidate never even had to be disassembled first. That is the
+    /// shape the previous fixture attempt (`retboundary`) could not reach: it needed the preceding
+    /// block DECODED but NOT a function, which is exactly what `AddressTableAnalyzer` produces
+    /// (`AddressTableAnalyzer.java:282` "For Now, Never make functions from address tables") and
+    /// what a single-entry pointer table never triggers.
+    ///
+    /// Layout — a leaf reached only through data, then the orphan one byte later:
+    ///
+    /// ```text
+    /// 401000  8b 44 24 04     mov  eax,[esp+4]     leaf, decoded, in NO function
+    /// 401004  6b c0 0b        imul eax,eax,11      (matches no pattern in the file)
+    /// 401007  c3              ret                  <- ends exactly at the orphan
+    /// 401008  53              push ebx             <- THE ORPHAN. Family (3) pattern
+    /// 401009  83 ec 10        sub  esp,0x10           `0x5. 0x83 0xec … 100010.1 01...100
+    /// 40100c  89 44 24 04     mov  [esp+4],eax         ..100100 0.....00`, after="defined"
+    /// ```
+    #[test]
+    fn after_defined_start_survives_a_ret_that_belongs_to_no_function() {
+        use crate::analysis::manager::Scheduling;
+        use crate::decompile::space::{SpaceKind, SpaceManager};
+        if crate::lang::load("x86:LE:32:default").is_none() {
+            return;
+        }
+        let build = |last: u8| {
+            let mut spaces = SpaceManager::standard();
+            let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+            let base = Address::new(ram, 0x40_1000);
+            let mut p = Program::new(spaces, ram, "x86:LE:32:default", "watcom", base, false, 32);
+            #[rustfmt::skip]
+            let code = vec![
+                0x8b, 0x44, 0x24, 0x04,       // mov eax,[esp+4]
+                0x6b, 0xc0, 0x0b,             // imul eax,eax,11
+                last,                         // ret (or nop, for the twin)
+                // --- the orphan, at +8 ---
+                0x53,                         // push ebx
+                0x83, 0xec, 0x10,             // sub esp,0x10
+                0x89, 0x44, 0x24, 0x04,       // mov [esp+4],eax
+                0x89, 0x44, 0x24, 0x08,       // mov [esp+8],eax
+                0x8b, 0x44, 0x24, 0x04,       // mov eax,[esp+4]
+                0x83, 0xc4, 0x10,             // add esp,0x10   (>= validcode="6" by here)
+                0x5b,                         // pop ebx
+                0xc3,                         // ret
+            ];
+            let len = code.len() as u64;
+            p.memory.add_block(".text", base, len, true, false, true, Some(code));
+            // The leaf, decoded and in no function — `AddressTableAnalyzer`'s output shape.
+            p.listing.define(base, CodeUnit::Instruction { length: 4 });
+            p.listing.define(Address::new(ram, 0x40_1004), CodeUnit::Instruction { length: 3 });
+            p.listing.define(Address::new(ram, 0x40_1007), CodeUnit::Instruction { length: 1 });
+            let mut set = AddressSet::new();
+            set.add_range(ram, base.offset, base.offset + len - 1);
+            (p, ram, set)
+        };
+
+        let run = |last: u8| -> bool {
+            reset_body_refresh_memo();
+            let (mut p, ram, set) = build(last);
+            let a = FunctionStartAnalyzer::for_program(&p, FunctionStartKind::AfterCode)
+                .expect("the watcom pattern file must resolve for (x86:LE:32:default, watcom)");
+            let mut sched = Scheduling::default();
+            a.added(&mut p, &set, &mut sched);
+            p.function_manager.function_at(Address::new(ram, 0x40_1008)).is_some()
+        };
+
+        assert!(
+            run(0xc3),
+            "an ESP-frame prologue one byte past a RET must become a function — the RET does not \
+             fall through, so `checkAlreadyInFunctionAbove` must not veto its `after=\"defined\"`"
+        );
+        assert!(
+            !run(0x90),
+            "one byte past a NOP the SAME prologue must still be refused: that instruction really \
+             does fall through into it, so it is part of that flow, not a new function"
+        );
+    }
+
     /// The overlap rule that makes a family of shifted-by-one push-run patterns safe to state.
     /// A 5-push prologue matches the 5-push pattern at the entry, the 4-push pattern one byte in,
     /// and so on; `CreateFunctionCmd` iterates ascending and Ghidra's listing refuses a function

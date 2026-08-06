@@ -382,6 +382,13 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
+  # retorphan: the ABOVE-FUNCTION GUARD repro (`be85c85`) — a pattern-only function one byte past
+  # a `ret` that belongs to NO function. The corpus default `-oc` is REQUIRED and is the opposite
+  # choice from `fnpattern`: it makes the orphan's prologue `56 57 55 83 ec 14`, matched only by
+  # the ESP-frame family, every member of which carries `after="defined"` — the prerequisite that
+  # routes discovery through `checkAlreadyInFunctionAbove`. Under `-of+` the unguarded frame-first
+  # family matches instead and the guard is never consulted (src/retorphan.c property 2).
+  build_watcom retorphan
   build_watcom_le lestruct # the LE column: a pointer stored ALONE, findable only via the fixup table
   # tailjmp: the SHARED-RETURN TAIL-CALL analysis repro (a function reachable only via `jmp`).
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite

@@ -955,6 +955,145 @@ fn function_start_pattern_search() {
 }
 
 
+/// THE ABOVE-FUNCTION GUARD MUST TEST FALL-THROUGH, NOT ADJACENCY — the local gate for `be85c85`
+/// (`FunctionStartAnalyzer.java:512`), whose only gate until now was a WAR2 run.
+///
+/// ```java
+/// Instruction instr = program.getListing().getInstructionContaining(addrBefore);
+/// if (instr != null && addr.equals(instr.getFallThrough())) { return true; }
+/// ```
+///
+/// `getFallThrough()` is null after a `ret`, so Ghidra does not veto a prologue that merely
+/// FOLLOWS an epilogue. mosura vetoed on any instruction ENDING at the address and so refused
+/// 6 WAR2 tracker functions outright (the fix moved that run 2900 -> 3018 functions, 42 -> 12
+/// missing, body intrusions unchanged at 3).
+///
+/// `retorphan` (Open Watcom, `src/retorphan.c`, built with the corpus default `-oc`) puts the
+/// three conditions the guard's second arm needs in one program, which is the hard part and what
+/// defeated the earlier `retboundary` attempt:
+///
+///  1. an instruction ending EXACTLY at the candidate entry AND ALREADY DECODED — `tab_h3_`'s
+///     `ret`, decoded because `AddressTableAnalyzer` disassembles a pointer run's targets;
+///  2. NO function above it — because that same analyzer deliberately creates none
+///     (AddressTableAnalyzer.java:282), and `tab_h3_`'s own bytes match no prologue pattern;
+///  3. the candidate reachable ONLY by the byte-pattern search.
+///
+/// Assertion (1) below is the ANTI-VACUITY check: `retboundary` failed precisely because the
+/// preceding block was never decoded at all, so the arm under test never ran and the orphan came
+/// back with the fix and without it. If a toolchain change ever undoes the decoded-but-not-a-
+/// function state, this test says so instead of passing for the wrong reason.
+///
+/// PRE-FIX (`be85c85` reverted, measured on this binary): `orphan_fn_` @0804812c is absent from
+/// the function set, while `tab_h0_..tab_h3_` stay decoded-and-in-no-function identically.
+#[test]
+fn above_function_guard_tests_fall_through() {
+    use mosura::analysis::program::CodeUnit;
+
+    let bin = ground_truth_dir().join("retorphan.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("retorphan.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip above_function_guard_tests_fall_through: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let addr_of = |name: &str| -> u64 {
+        truth
+            .funcs
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(a, _)| *a)
+            .unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let orphan = addr_of("orphan_fn_");
+    let tab_h3 = addr_of("tab_h3_");
+
+    // The corpus routes `.watcom-x86-32` through the build's own `compiler` field, so the gate
+    // measures the file the run actually uses (`x86watcom_patterns.xml`), not the gcc one.
+    let prog = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze retorphan");
+    let ram = prog.default_space;
+    let at = |o: u64| Address::new(ram, o);
+
+    // (0) The fixture still reproduces the shape: nothing references the orphan, so no other
+    // discovery route can reach it, and the byte before it is a `ret` (fall-through = null).
+    let inbound: Vec<(u64, &'static str)> = prog
+        .reference_manager
+        .refs_to(at(orphan))
+        .map(|r| (r.from.offset, r.ref_type.name()))
+        .collect();
+    assert!(
+        inbound.is_empty(),
+        "orphan_fn_ @ {orphan:#x} has inbound references {inbound:x?} — it must be reachable ONLY \
+         by its prologue byte pattern"
+    );
+    assert_eq!(
+        prog.memory.byte_at(at(orphan - 1)),
+        Some(0xc3),
+        "the byte before orphan_fn_ must be `c3` (RET) — the instruction whose fall-through is \
+         null is the whole premise"
+    );
+
+    // (1) ANTI-VACUITY — the arm under test is only reached when the preceding instruction is
+    // DECODED and belongs to NO function. Both halves are asserted; either one silently going
+    // false is what made the previous attempt at this fixture measure nothing.
+    let (start, len) = prog
+        .listing
+        .code_unit_containing(at(orphan - 1), 16)
+        .expect("the instruction before orphan_fn_ must be DECODED — otherwise the fall-through \
+                 arm of checkAlreadyInFunctionAbove never runs and this test measures nothing");
+    assert!(
+        matches!(prog.listing.code_unit_at(start), Some(CodeUnit::Instruction { .. }))
+            && start.offset + len == orphan,
+        "the code unit before orphan_fn_ must be an INSTRUCTION ending exactly at {orphan:#x}; \
+         got start {:#x} len {len}",
+        start.offset
+    );
+    assert!(
+        prog.function_manager.function_containing(at(orphan - 1)).is_none(),
+        "the `ret` before orphan_fn_ is inside a function — `getFunctionAbove` is then `Some` and \
+         the first arm answers instead, so the fall-through test is never consulted"
+    );
+    assert!(
+        prog.function_manager.function_at(at(tab_h3)).is_none(),
+        "a function was created at tab_h3_ @ {tab_h3:#x}; address tables must never make functions \
+         (AddressTableAnalyzer.java:282) and its prologue must match no pattern"
+    );
+
+    // (2) It came back as a function, at the EXACT entry.
+    assert!(
+        prog.function_manager.function_at(at(orphan)).is_some(),
+        "orphan_fn_ @ {orphan:#x} must be recovered — the `ret` above it does not fall through, so \
+         `checkAlreadyInFunctionAbove` must not veto its `after=\"defined\"` pre-requisite"
+    );
+    for d in 1..12u64 {
+        assert!(
+            prog.function_manager.function_at(at(orphan + d)).is_none(),
+            "a function was created at orphan_fn_ + {d} — the pattern anchored past the true entry"
+        );
+    }
+
+    // (3) ATTRIBUTION — with the byte-pattern analyzers off the orphan goes back to missing, while
+    // the decoded-but-not-a-function state above it survives. That splits the two mechanisms: the
+    // decode is the address table's, the function is the pattern search's.
+    let without = {
+        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
+        analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze retorphan")
+    };
+    assert!(
+        without.function_manager.function_at(at(orphan)).is_none(),
+        "orphan_fn_ is recovered with the byte-pattern search disabled — this fixture is no longer \
+         isolating that analyzer"
+    );
+    assert!(
+        without.listing.code_unit_containing(at(orphan - 1), 16).is_some(),
+        "the `ret` above the orphan is decoded only when the pattern search runs — the preceding \
+         block is supposed to be decoded by the ADDRESS TABLE analyzer, independently"
+    );
+    eprintln!(
+        "retorphan gate: orphan_fn_ @ {orphan:#x} recovered one byte past a `ret` that belongs to \
+         no function (decoded by the address table, 0 inbound refs, exact entry)"
+    );
+}
+
 /// The **prologue-shape specification** for the beyond-Ghidra Watcom function-start pattern set
 /// (`specs/patterns/x86watcom_patterns.xml`). That file has no Ghidra oracle — Ghidra ships no
 /// Watcom compiler spec — so this fixture is its oracle.

@@ -1,0 +1,13 @@
+# mosura-ground-truth v1 program=retorphan compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=retorphan.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048106 0 tab_h0_ dataptr
+func 08048110 0 tab_h1_ dataptr
+func 08048117 0 tab_h2_ dataptr
+func 0804811e 0 tab_h3_ dataptr
+func 0804812c 0 orphan_fn_ code
+func 08048184 0 dispatch_ code
+func 08048197 0 trail_fn_ code
+func 0804819b 0 main_ code
