@@ -22,6 +22,7 @@ pub mod decompiler;
 pub mod flowtype;
 pub mod loader;
 pub mod manager;
+pub mod overrides;
 pub mod priority;
 pub mod program;
 pub mod pseudo_disassembler;

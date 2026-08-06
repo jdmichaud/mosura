@@ -29,6 +29,13 @@
   TWO ENCODINGS OF `mov ebp,esp`. Watcom emits both `89 e5` (1556 functions) and `8b ec`
   (44 functions); the gcc file knows only `89 e5`.
 
+  ⚠️ WILDCARD WIDTH: a `.` INSIDE a `0x` token is a NIBBLE, a standalone `........` token is one
+  BYTE. So an imm32 wildcard is `0x68........e8` (8 nibbles), NOT `0x68 ........ 0xe8` — the
+  latter wildcards a single byte and the pattern then matches nothing. Both forms parse, both
+  load, and the engine reports no error; the family (5) patterns were written the wrong way first
+  and were silently inert until re-measured. WELL-FORMED IS NOT CORRECT: after editing this file,
+  check that the pattern you changed still MATCHES something you know it should.
+
   `01010...`, NOT `0x5.`, for a push. `0x5.` also covers POP (0x58-0x5f), so it would match the
   tail of the PREVIOUS function's epilogue. This is the same discrimination x86gcc_patterns.xml
   makes for the same reason.

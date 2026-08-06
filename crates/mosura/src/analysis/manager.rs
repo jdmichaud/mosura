@@ -108,12 +108,14 @@ impl AutoAnalysisManager {
     /// option. mosura has no per-program options database, so the same switch is read from
     /// `MOSURA_DISABLE_ANALYZERS`, a comma-separated list of analyzer names. It exists for the
     /// same reason Ghidra's does: measuring one analyzer's contribution means running with it off.
+    /// Read through [`overrides`](crate::analysis::overrides) so an in-process caller sets it for
+    /// its own thread; the environment variable remains the fallback.
     pub fn add_analyzer(&mut self, analyzer: Box<dyn Analyzer>, program: &Program) {
         if !analyzer.can_analyze(program) {
             return;
         }
-        if let Some(list) = std::env::var_os("MOSURA_DISABLE_ANALYZERS") {
-            let list = list.to_string_lossy().to_string();
+        // Per-thread (see `analysis::overrides`): `std::env` here raced concurrent tests.
+        if let Some(list) = crate::analysis::overrides::disabled_analyzers() {
             if list.split(',').any(|n| n.trim() == analyzer.name()) {
                 return;
             }

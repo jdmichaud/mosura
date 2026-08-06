@@ -111,8 +111,14 @@ fn banner_regex() -> &'static Regex {
 /// Deliberately narrow: only the two ids that this function can otherwise return are accepted,
 /// so a typo cannot select a nonexistent spec; anything else falls through to detection. When
 /// unset — which is every non-test path — behaviour is bit-for-bit what it was.
+///
+/// Read through [`overrides`](crate::analysis::overrides), which is **per thread**. It was read
+/// from `std::env` directly and that raced: `cargo test` runs a binary's tests on parallel
+/// threads in one process, so one test's routing leaked into another test's analysis and two
+/// unrelated tests failed. Verifying the hook was inert *when unset* did not catch it, because
+/// the hazard was concurrent mutation rather than the unset case.
 pub fn compiler_spec_id(data: &[u8]) -> &'static str {
-    if let Ok(forced) = std::env::var("MOSURA_X86_32_CSPEC") {
+    if let Some(forced) = crate::analysis::overrides::x86_32_cspec() {
         match forced.as_str() {
             "watcom" => return "watcom",
             "gcc" => return "gcc",

@@ -14,6 +14,7 @@
 use std::collections::BTreeSet;
 
 use mosura::analysis::{self, decompiler::decompile_function, program::RefType};
+use mosura::analysis::overrides;
 use mosura::decompile::printc::print_c;
 use mosura::decompile::space::Address;
 use mosura::paths::ground_truth_dir;
@@ -108,17 +109,14 @@ fn byte_pattern_carve_out(
     }
     // Which of these does the byte-pattern search account for? Re-analyze with it off.
     let without: BTreeSet<u64> = {
-        let prev = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
-        std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
+        // Per-thread, NOT `std::env` — see `analysis::overrides`. Mutating the process
+        // environment here leaked into whatever another test was analysing in parallel.
+        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
         let p = if bin.extension().is_some_and(|x| x == "watcom-le") {
             analysis::analyze_le_file(bin).expect("analyze")
         } else {
             analysis::analyze_file(bin).expect("analyze")
         };
-        match prev {
-            Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
-            None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
-        }
         p.function_manager.functions().map(|f| f.entry_point().offset).collect()
     };
 
@@ -962,13 +960,10 @@ fn function_start_pattern_search() {
 
     // (3) THE ATTRIBUTION — with the byte-pattern analyzers off it goes back to missing, so the
     // recovery is theirs and not some other pass's.
-    let prev = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
-    std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
-    let without = analysis::analyze_file(&bin).expect("analyze fnpattern");
-    match prev {
-        Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
-        None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
-    }
+    let without = {
+        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
+        analysis::analyze_file(&bin).expect("analyze fnpattern")
+    };
     assert!(
         without.function_manager.function_at(at(orphan)).is_none(),
         "orphan_fn_ is recovered even with the byte-pattern search disabled — this fixture is no \
@@ -1072,23 +1067,12 @@ fn watcom_stack_probe_shape_spec() {
         .expect("truth lists probe_orphan_fn_");
 
     let run = |analyzers_off: bool| -> BTreeSet<u64> {
-        let prev_c = std::env::var("MOSURA_X86_32_CSPEC").ok();
-        let prev_a = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
         // The corpus cannot reach the `watcom` pattern file on its own — no ground-truth binary
         // carries a Watcom run-time banner. See `watcom_save_first_shape_spec` for the detail.
-        std::env::set_var("MOSURA_X86_32_CSPEC", "watcom");
-        if analyzers_off {
-            std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
-        }
+        // Per-thread overrides, NOT `std::env`: see `analysis::overrides`.
+        let _c = overrides::force_x86_32_cspec(Some("watcom"));
+        let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
         let p = analysis::analyze_file(&bin).expect("analyze wprobe");
-        match prev_c {
-            Some(v) => std::env::set_var("MOSURA_X86_32_CSPEC", v),
-            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
-        }
-        match prev_a {
-            Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
-            None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
-        }
         assert_eq!(p.compiler_spec_id, "watcom", "MOSURA_X86_32_CSPEC did not take effect");
         p.function_manager.functions().map(|f| f.entry_point().offset).collect()
     };
@@ -1096,10 +1080,8 @@ fn watcom_stack_probe_shape_spec() {
     // (0) The orphan really is unreferenced, so recall is a statement about the pattern set and
     // not about some other discovery route.
     let probe = {
-        std::env::set_var("MOSURA_X86_32_CSPEC", "watcom");
-        let p = analysis::analyze_file(&bin).expect("analyze wprobe");
-        std::env::remove_var("MOSURA_X86_32_CSPEC");
-        p
+        let _c = overrides::force_x86_32_cspec(Some("watcom"));
+        analysis::analyze_file(&bin).expect("analyze wprobe")
     };
     let inbound: Vec<(u64, &'static str)> = probe
         .reference_manager
@@ -1298,32 +1280,19 @@ fn watcom_save_first_shape_spec() {
 
     // Route the binary through a compiler spec, run the analysis, return the function set.
     let entries = |cspec: Option<&str>, analyzers_off: bool| -> (BTreeSet<u64>, String) {
-        let prev_c = std::env::var("MOSURA_X86_32_CSPEC").ok();
-        let prev_a = std::env::var("MOSURA_DISABLE_ANALYZERS").ok();
-        match cspec {
-            Some(c) => std::env::set_var("MOSURA_X86_32_CSPEC", c),
-            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
-        }
-        if analyzers_off {
-            std::env::set_var("MOSURA_DISABLE_ANALYZERS", BYTE_PATTERN_ANALYZERS);
-        }
+        let _c = overrides::force_x86_32_cspec(cspec);
+        let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
         let p = analysis::analyze_file(&bin).expect("analyze wprologue_sf");
-        match prev_c {
-            Some(v) => std::env::set_var("MOSURA_X86_32_CSPEC", v),
-            None => std::env::remove_var("MOSURA_X86_32_CSPEC"),
-        }
-        match prev_a {
-            Some(v) => std::env::set_var("MOSURA_DISABLE_ANALYZERS", v),
-            None => std::env::remove_var("MOSURA_DISABLE_ANALYZERS"),
-        }
         let cspec = p.compiler_spec_id.clone();
         (p.function_manager.functions().map(|f| f.entry_point().offset).collect(), cspec)
     };
 
     // (0) The fixture still reproduces the shape: NOTHING references the orphan. If a compiler
     // change ever gives it an inbound edge, recall stops being a statement about the pattern set.
-    let (_, _) = entries(Some("watcom"), false);
-    let probe = analysis::analyze_file(&bin).expect("analyze wprologue_sf");
+    let probe = {
+        let _c = overrides::force_x86_32_cspec(Some("watcom"));
+        analysis::analyze_file(&bin).expect("analyze wprologue_sf")
+    };
     let inbound: Vec<(u64, &'static str)> = probe
         .reference_manager
         .refs_to(Address::new(probe.default_space, orphan))
