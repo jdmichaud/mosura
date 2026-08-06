@@ -652,6 +652,35 @@ whole version axis rather than needing a per-cell measurement.
 (the tracker covers 71.4% of the code object, so a hit in a gap is undecidable). Precision is only
 measurable on a self-compiled binary where every function is known — that is what the matrix is for.
 
+
+### §5 cell 6 — compiler VERSION: **MEASURED INERT for entry shape** (lead, dosemu)
+
+The last axis, and the one that needed dosemu. Same probe (`src/wprologue.c`), same flags
+(`-4r -fpi87 -s -od`), compiled by three historical Watcom releases under dosemu2:
+
+| version | code bytes | md5 (first 16) | save-first prologues |
+| --- | ---: | --- | ---: |
+| 10.0a | 1214 | `a9cdf26b9b3be55f` | 13 |
+| 10.6  | 1214 | `a9cdf26b9b3be55f` | 13 |
+| 11.0  | 1202 | `cb970f6a5a28a9e6` | 13 |
+
+**10.0a and 10.6 are BYTE-IDENTICAL.** 11.0 first diverges at offset `0x75` — `fc` vs `f8`, a
+stack-slot assignment inside a *body*, not a prologue — and emits the same 13 prologues with the
+same push runs (`53 51 52 56 57 55 89 e5`, `53 51 56 57 55 89 e5`, `51 56 57 55 89 e5`,
+`56 57 55 89 e5`).
+
+So across **10.0a → 10.6 → 11.0 → Open Watcom v2**, no release produces an entry shape another does
+not. Every difference this project has found traces to **flags**, never the version: frame-first vs
+save-first is `-of+`, the ten-byte shift is `-s`, and the push order is identical across two
+decades. **No per-version fixture is warranted** under the §5 stop rule — one per release would
+multiply maintenance while gating identical shapes.
+
+⚠️ Scope: this is the **entry** shape, which is all the pattern set sees. 11.0's body codegen does
+differ (12 bytes shorter here), so nothing reasoning about bodies may cite this row.
+
+**§5 is COMPLETE — one axis of six moved the entry shape:** stack checking, the one WAR2's own build
+flags hid.
+
 ## 6. Over-decode — ⛔ CLOSED 2026-08-06, NOT A DEFECT
 
 **mosura decodes nothing it should not.** Measured absolutely on WAR2 @ `77c8351`, with the
