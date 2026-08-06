@@ -327,7 +327,17 @@ with `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIREC
 **twice** — `analyzers/mod.rs::compute_function_bodies` and
 `analyzers/function_start.rs::flow_body` — and they must not drift apart.
 
-**⛔ 1. The no-return fall-through — a real drift, but REFUTED as the cause of the 51.**
+**✅ 1. The no-return fall-through — LANDED `0de3523`. Real drift; NOT the cause of the 51.**
+Fixed by de-duplication: all three walks now share `analyzers::falls_through`, so the copies
+cannot drift again. Gated by `ground_truth_parity::noreturn_call_bounds_the_body` against a new
+dynamically-linked fixture, `noret.gcc-x86-64` — the only corpus binary that makes
+`noreturn::analyze` run at all. **WAR2 delta 0 by construction** (see below). Landing it exposed a
+SECOND defect, invisible until the fixture existed: `noreturn::analyze` ran once before
+disassembly, leaving its PLT-thunk propagation dead (it walks `function_manager.functions()`, and
+there are none yet), so only the EXTERNAL `abort` was flagged and never the PLT stub — which is
+how every call to a dynamically-imported no-return function actually looks. Re-run after the
+worklist converges; flagged 1 -> 2. Fix #1 alone left the gate RED.
+Original refutation, kept because it is why this carries no WAR2 prediction:
 Measured before building anything: `noreturn::analyze` selects its name list from the memory map
 and **returns early unless a `.dynsym`, `.plt` or `EXTERNAL` block exists** (`noreturn.rs:128-137`).
 WAR2 is a DOS/4GW LE image whose loader names its blocks `objN_text`/`objN_data` (`loader/le.rs:219`)
@@ -373,7 +383,7 @@ flag, which is what makes it the surviving candidate after #1 was refuted.
 
 ### Landing conditions for any of them
 
-- **#1 cannot be gated by the corpus today.** Every ground-truth binary measures
+- **#1 is DONE (`0de3523`).** The rest of this bullet is kept as the record of what it took: Every ground-truth binary measures
   `noreturn_flagged = 0`: the gcc x86-64 column is static/freestanding (`readelf -S`: `.text`, no
   `.dynsym`/`.plt`), the Watcom column links `option nodefaultlib`, and WAR2 goes through
   `analyze_le_file` (`examples/war2_survey.rs:210`) whose blocks are `objN_text`/`objN_data`. So
