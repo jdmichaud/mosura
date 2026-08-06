@@ -15,6 +15,42 @@ Previous state @ `556cdb3`: 2900 / 2078 / 42 missing / 3 inside. Both rows were 
 **same harness in the same session**, and the harness reproduced the `556cdb3` row to the digit
 before the new row was believed — so the delta is a code change, not a scoring change.
 
+### ⭐ THE 12, ANSWERED BY THE GHIDRA ORACLE 2026-08-06 — 8 are a RECALL GAP, not a scope question
+
+Asked Ghidra directly rather than reasoning about what it would do: `analyzeHeadless` whole-image on
+`warcraft2-re/tmp/WAR2_reloc.elf`, **no `-processor`** (that flag forces cspec `windows` on an ELF
+and costs 201 functions). Validity: `TOTAL 2145`, reproducing the recorded baseline exactly;
+`COMPILER_SPEC gcc`, `LANGUAGE x86:LE:32:default` by auto-detect.
+
+```
+  0004de58  YES   <- every mosura guard arm PASSES and no function appears: a defect with no
+                     remaining faithful explanation. Sharpest lead in the track.
+  0004e19d  YES   <- REFUTES "declined faithfully; Ghidra declines them identically"
+  00060270  YES      00064427  YES      00067f40  YES
+  00070aa6  YES      00072f08  YES      00077619  YES
+  ------------------------------------------------------------------------------
+  000671a8   no   <- mosura and Ghidra AGREE
+  00067204   no      0006734c   no
+  00064bdb   no   <- the pointer table: TWO oracles agree, the TRACKER is wrong
+```
+
+**8 of the 12 are functions Ghidra finds and mosura does not — a straight recall gap against the
+oracle, not a beyond-Ghidra scope question.** Earlier framing of the remaining gap as needing a
+deliberate departure from Ghidra (with no oracle to check against) was wrong for two thirds of it.
+
+**The four "matched but declined" split 1/3, so neither blanket claim made today was right.**
+`0004e19d` is a real defect; `000671a8` / `00067204` / `0006734c` genuinely agree with Ghidra. The
+honest statement is *"one was a defect, three agree"*. ⚠️ This is the
+[[oracle-same-question-not-just-same-tool]] trap in its exact form: our rule is a faithful port, and
+we inferred Ghidra's *answer* from it while Ghidra's **program state** differed. The rule being
+faithful never implied the outcome would match.
+
+`00064bdb` is now confirmed wrong in the tracker from two independent sides — mosura marks it
+`DefinedData`, Ghidra creates no function, and its bytes are a dword pointer table.
+
+**Consequence for priority:** the listing-population item is now backed by an **oracle disagreement
+on 8 real addresses**, not only by six corpus fixtures.
+
 ### ⚠️ THE "THIRD FAMILY" CLAIM BELOW IS RETRACTED — corrected 2026-08-06, same day
 
 **4 of the 7 already match the committed pattern file at offset 0.** The claim that this shape is
@@ -118,8 +154,8 @@ So measure a property the pattern set does **not** key on: does the computed bod
 data table generally does not. Run it over both populations with the same code:
 
 ```
-IN-TRACKER (expert-verified)   2111/2118 end in a terminator   99.7%
-NOT-IN-TRACKER (pattern-only)   899/900  end in a terminator   99.9%
+IN-TRACKER (expert-verified)   2111/2118 end in a terminator   99.7%   <- SUPERSEDED
+NOT-IN-TRACKER (pattern-only)   899/900  end in a terminator   99.9%   <- SUPERSEDED
 SUSPECT (no inbound ref AND no terminator):  1
 ```
 
