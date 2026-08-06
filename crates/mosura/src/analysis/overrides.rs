@@ -24,6 +24,23 @@
 //!
 //! The environment variables still work, as the fallback, so setting one in a shell to measure a
 //! single run behaves exactly as before. Only the in-process path changed.
+//!
+//! # ⚠️ The two halves are NOT the same kind of thing — do not "tidy away" the second
+//!
+//! [`force_x86_32_cspec`] is **implementation detail**: it has exactly one caller,
+//! [`analyze_file_as`](crate::analysis::analyze_file_as), and is `pub(crate)` so a test cannot
+//! reach around that API. If the corpus ever carries in-band compiler evidence it becomes
+//! unnecessary and should go.
+//!
+//! [`disable_analyzers`] is **a permanent measuring instrument, not a workaround.** It is the
+//! analyzer-ablation switch — Ghidra's own model, where `analyzeHeadless` is told to skip an
+//! analyzer by flipping its `Program.ANALYSIS_PROPERTIES` option — and running with one analyzer
+//! off is the only way to attribute a discovery to the analyzer that made it. On this project
+//! that check has repeatedly been the difference between a gate that measures something and a
+//! gate that cannot fail: a fixture reporting full recall with the byte-pattern analyzers
+//! switched OFF is not testing the pattern set at all, and only ablation reveals it. **Deleting
+//! this removes a measurement, not a hack.** See [[pattern-gate-cspec-routing]] in the project
+//! notes and `ground_truth_parity`'s attribution assertions.
 
 use std::cell::RefCell;
 
