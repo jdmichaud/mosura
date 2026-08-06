@@ -1,0 +1,388 @@
+diff --git a/crates/mosura/src/analysis/analyzers/address_table.rs b/crates/mosura/src/analysis/analyzers/address_table.rs
+index 79f26b1..20f9fb4 100644
+--- a/crates/mosura/src/analysis/analyzers/address_table.rs
++++ b/crates/mosura/src/analysis/analyzers/address_table.rs
+@@ -818,9 +818,10 @@ impl Analyzer for AddressTableAnalyzer {
+             sched.block_added(&left);
+         }
+ 
+-        // :288 — "disassemble valid code" (`mgr.disassemble`).
++        // :288 — "disassemble valid code" (`mgr.disassemble`) — a COMMAND, which is what the
++        // Ghidra line already says; it was routed through the `codeDefined` notification.
+         if !dis_set.is_empty() {
+-            sched.code_defined(&dis_set);
++            sched.disassemble(&dis_set);
+         }
+         true
+     }
+diff --git a/crates/mosura/src/analysis/analyzers/function_start.rs b/crates/mosura/src/analysis/analyzers/function_start.rs
+index 30e933d..fec900b 100644
+--- a/crates/mosura/src/analysis/analyzers/function_start.rs
++++ b/crates/mosura/src/analysis/analyzers/function_start.rs
+@@ -478,29 +478,19 @@ impl Analyzer for FunctionStartAnalyzer {
+             }
+         });
+ 
+-        // :836 — disassemble known function starts now, delay the possible ones. mosura has one
+-        // disassembly channel (the `Disassembler` at `DISASSEMBLY`), so both go there; Ghidra's
+-        // split only changes *when* within the queue.
++        // :836-844 — disassemble known function starts now, delay the possible ones. Both are
++        // `analysisManager.disassemble(...)`, i.e. a scheduled `DisassembleCommand`; Ghidra's
++        // split only changes *when* within the queue, and mosura has one disassembly command.
++        //
++        // The thread-local dedupe that used to stand here is RETIRED. It existed because this
++        // request was raised as `code_defined`, which re-notified the `Instruction`-typed
++        // `AfterCode`/`AfterData` registrations — including on a `codeboundary` match over bytes
++        // that never decode, which was therefore re-proposed on every re-entry forever (measured
++        // on WAR2: `AfterCode` re-running indefinitely at ~22ms a turn, always
++        // `disasm=375 funcs=4`). A command is delivered to the disassembler and echoes nothing
++        // back to the requester, so the cycle has no driver left to hold off.
+         if !st.disassem_result.is_empty() {
+-            // Only schedule addresses this search has not already asked for. Ghidra's manager
+-            // drops a request whose address it has already disassembled; mosura's re-fires the
+-            // INSTRUCTION-typed registrations (`AfterCode`/`AfterData`) whenever *any* code unit
+-            // is added, so a location that never becomes an instruction — a `codeboundary` match
+-            // on bytes that fail to decode — is re-proposed on every re-entry, re-triggering the
+-            // pass with an identical result set forever. Measured on WAR2 before this guard:
+-            // `AfterCode` re-ran indefinitely at ~22ms a turn, always `disasm=375 funcs=4`.
+-            // Deduping against what we have already requested makes the pass converge without
+-            // changing which addresses are ever requested.
+-            let fresh = SCHEDULED.with(|s| {
+-                let mut s = s.borrow_mut();
+-                let fresh = st.disassem_result.subtract(&s);
+-                *s = s.union(&fresh);
+-                fresh
+-            });
+-            st.disassem_result = fresh;
+-        }
+-        if !st.disassem_result.is_empty() {
+-            sched.code_defined(&st.disassem_result);
++            sched.disassemble(&st.disassem_result);
+         }
+         // :846 `setProtectedLocations(codeLocations)` — mosura has no analyzer that clears code,
+         // so there is nothing to protect it from; the set is still computed above so the port
+@@ -514,22 +504,18 @@ impl Analyzer for FunctionStartAnalyzer {
+             // :853 — kick off a later analyzer to create the functions after the fallout from
+             // disassembly has settled.
+             //
+-            // Ghidra's `scheduleOneTimeAnalysis` is exactly that — one time. mosura's re-queues on
+-            // every call, so proposing the same addresses again re-runs the delayed creator, whose
+-            // work re-triggers this INSTRUCTION-typed pass, which proposes them again: a lockstep
+-            // ping-pong. Measured on `fnpattern.watcom-x86-32` before this guard —
+-            // `MOSURA_ANALYSIS_TRACE=1` showed 570,619 invocations each of "Function Start Search
+-            // delayed" and "Function Start Search After Code" in 15 seconds, against 6 of
+-            // Disassembly. Propose each address at most once per run, which is what "one time"
+-            // means; it changes nothing about *which* addresses are ever proposed.
+-            let fresh = PROPOSED.with(|s| {
+-                let mut s = s.borrow_mut();
+-                let fresh = potential.subtract(&s);
+-                *s = s.union(&fresh);
+-                fresh
+-            });
+-            if !fresh.is_empty() {
+-                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &fresh);
++            // The `PROPOSED` thread-local that used to stand here is RETIRED for the same reason
++            // as `SCHEDULED` above: the delayed creator's work re-triggered this
++            // `Instruction`-typed pass, which proposed the same addresses again, in a lockstep
++            // ping-pong (measured on `fnpattern.watcom-x86-32`: 570,619 invocations each of
++            // "Function Start Search delayed" and "Function Start Search After Code" in 15
++            // seconds, against 6 of Disassembly). The creator's own :1006 guard — "a function
++            // containing the potential start appeared during analysis" — is what makes a
++            // re-proposal a no-op once the function exists, and that guard only works when the
++            // function was actually created and its bytes decoded, which is exactly what the
++            // command route now delivers.
++            if !potential.is_empty() {
++                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &potential);
+             }
+         }
+ 
+@@ -1004,20 +990,12 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
+ thread_local! {
+     /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
+     static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+-    /// Addresses this run has already asked the disassembler for — see the dedupe in `added()`.
+-    static SCHEDULED: std::cell::RefCell<AddressSet> =
+-        std::cell::RefCell::new(AddressSet::new());
+-    /// Addresses this run has already handed to the delayed creator — see the dedupe in `added()`.
+-    static PROPOSED: std::cell::RefCell<AddressSet> =
+-        std::cell::RefCell::new(AddressSet::new());
+ }
+ 
+ /// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
+ /// inherits the previous program's state (the harness analyses many programs per thread).
+ pub fn reset_body_refresh_memo() {
+     BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
+-    SCHEDULED.with(|s| *s.borrow_mut() = AddressSet::new());
+-    PROPOSED.with(|s| *s.borrow_mut() = AddressSet::new());
+ }
+ 
+ /// Bring every function's body up to date before asking `getFunctionContaining`.
+diff --git a/crates/mosura/src/analysis/analyzers/mod.rs b/crates/mosura/src/analysis/analyzers/mod.rs
+index 8d8254d..5fd89eb 100644
+--- a/crates/mosura/src/analysis/analyzers/mod.rs
++++ b/crates/mosura/src/analysis/analyzers/mod.rs
+@@ -149,15 +149,56 @@ impl Analyzer for Disassembler {
+         "Disassembly"
+     }
+     fn analysis_type(&self) -> AnalyzerType {
+-        AnalyzerType::Instruction
++        // ⚠️ NOT `Instruction`. Ghidra subscribes disassembly to no change channel whatsoever —
++        // it is only ever a `DisassembleCommand` scheduled onto the manager
++        // (`AutoAnalysisManager.disassemble`, :1128), and `AutoAnalysisManager.codeDefined`
++        // (:262-272) announces instructions that were laid down, to *other* analyzers.
++        // Subscribing this to `Instruction` made it re-receive its own decoded extent, which is
++        // how seed addresses came to share an accumulator with decoded code — see
++        // [`Scheduling::disassemble`]. Requests arrive by name through that command instead.
++        AnalyzerType::OneTime
+     }
+     fn priority(&self) -> AnalysisPriority {
+         AnalysisPriority::DISASSEMBLY
+     }
+     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
+         let ram = self.ram;
+-        // Seeds are the start of each pending range (function/branch entry addresses).
+-        let mut work: Vec<u64> = set.ranges().map(|r| r.min).collect();
++        // Ghidra `DisassembleCommand.doDisassembly` (DisassembleCommand.java:235-266) drains each
++        // range one address at a time — `while (!subRangeSet.isEmpty()) { Address nextAddr =
++        // subRangeSet.getMinAddress(); … subRangeSet.delete(nextAddr, nextAddr); … }` — and
++        // branches on how much of the range is left:
++        //
++        // ```java
++        // subRangeSet.delete(nextAddr, nextAddr);                    // :245
++        // …
++        // long addrsLeft = subRangeSet.getNumAddresses();            // :261
++        // if (addrsLeft <= 4) { seedSet.add(nextAddr); continue; }   // :262
++        // ```
++        //
++        // ⚠️ `addrsLeft` is counted AFTER `nextAddr` has been deleted (:245), so the cut admits a
++        // range of FIVE addresses, not four: `addrsLeft == r.max - r.min`.
++        //
++        // **A SHORT range contributes every one of its addresses as a seed; a LONG one is
++        // disassembled by FLOW from its minimum**, with the decoded extent then deleted from the
++        // range (:288-297). Taking `r.min` for every range implemented only the second half, so
++        // two requested entries that happen to be adjacent collapsed into one: `wprobe`'s `__CHK`
++        // @`08048111` swallowed `p_leaf_` @`08048112`, whose 46-byte body then never entered the
++        // listing even though `main_` calls it directly.
++        //
++        // ⚠️ Seeding every address of a LONG range instead is not a harmless generalisation — it
++        // walks into inter-function padding. Measured on the war2 MZ stub: 8 misaligned decodes
++        // (the tracked bound) became 53, with 0 spurious functions, i.e. pure over-decode. The
++        // `<= 4` cut is the line that governs it, and it is Ghidra's.
++        const MAX_ADDRS_LEFT: u64 = 4; // `addrsLeft <= 4` (:262)
++        let mut work: Vec<u64> = set
++            .ranges()
++            .flat_map(|r| {
++                // `addrsLeft` after deleting the range's minimum.
++                let addrs_left = r.max - r.min;
++                let last = if addrs_left <= MAX_ADDRS_LEFT { r.max } else { r.min };
++                r.min..=last
++            })
++            .collect();
+         let mut call_targets = AddressSet::new();
+         // The extent this walk actually laid down. Ghidra's `codeDefined` event carries the whole
+         // newly-disassembled address set, which is what an INSTRUCTION analyzer's "added" set is
+@@ -268,12 +309,14 @@ impl Analyzer for Disassembler {
+             }
+         }
+         if !call_targets.is_empty() {
+-            sched.function_defined(&call_targets);
++            // A COMMAND: make a function at each call target (Ghidra `createFunction`, :1132).
++            sched.create_function(&call_targets);
+         }
+-        // Ghidra's disassembly analyzer is itself an INSTRUCTION analyzer, so it is re-notified by
+-        // its own output too; a second pass over already-decoded addresses skips every one of them
+-        // at the `code_unit_containing` guard above and adds nothing to `decoded`, which is what
+-        // terminates the loop.
++        // The genuine `codeDefined` NOTIFICATION (AutoAnalysisManager.java:262-272): these
++        // instructions were actually laid down. It carries the decoded EXTENT, and it is consumed
++        // by the `Instruction` analyzers that re-check byte patterns whose pre-requisite is
++        // "follows an instruction". This is the only place mosura raises it, and nothing
++        // subscribes disassembly to it — see [`Scheduling::disassemble`].
+         if !decoded.is_empty() {
+             sched.code_defined(&decoded);
+         }
+@@ -307,8 +350,13 @@ impl Analyzer for FunctionCreator {
+     }
+     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
+         let mut to_disasm = AddressSet::new();
+-        for r in set.ranges() {
+-            let addr = Address::new(self.ram, r.min);
++        let mut created = AddressSet::new();
++        // EVERY address, not each range's minimum — Ghidra's `CreateFunctionCmd` iterates
++        // `origEntries.getAddresses(true)` (CreateFunctionCmd.java:158). Two entries that happen
++        // to be adjacent coalesce into one `AddressSet` range, and taking `r.min` created a
++        // function at only the first of them and scheduled only that one for disassembly.
++        for off in set.ranges().flat_map(|r| r.min..=r.max) {
++            let addr = Address::new(self.ram, off);
+             // Ghidra creates a function at a direct call target as long as it lies in the
+             // program's memory — even uninitialized data (a degenerate, un-disassembled
+             // stub); but not at an unmapped address (e.g. a 16-bit offset below the loaded
+@@ -317,14 +365,29 @@ impl Analyzer for FunctionCreator {
+             if !program.memory.contains(addr) {
+                 continue;
+             }
+-            let name = format!("FUN_{:08x}", r.min);
++            let is_new = program.function_manager.function_at(addr).is_none();
++            let name = format!("FUN_{off:08x}");
+             program.function_manager.create_function(addr, &name, AddressSet::new());
+             if !program.symbol_table.has_symbol_at(addr) {
+                 program.symbol_table.add_with_primary(addr, &name, SymbolType::Function, true);
+             }
+-            to_disasm.add_range(self.ram, r.min, r.min);
++            to_disasm.add_range(self.ram, off, off);
++            if is_new {
++                created.add_range(self.ram, off, off);
++            }
++        }
++        // A COMMAND, not a notification: these entries still need decoding.
++        sched.disassemble(&to_disasm);
++        // ...and the NOTIFICATION that they now exist, which is what every other FUNCTION
++        // analyzer (constant propagation, the decompiler switch analyzer, the address-table
++        // analyzer) subscribes to. Ghidra raises it from the program change event a created
++        // function produces — `handleFunctionAddedOrBodyChanged` → `functionDefined`
++        // (AutoAnalysisManager.java:392-395). **Only functions this call actually created**:
++        // re-announcing an existing entry re-triggers every FUNCTION analyzer, whose follow-on
++        // work re-enters this one, and the worklist never reaches a fixpoint.
++        if !created.is_empty() {
++            sched.function_defined(&created);
+         }
+-        sched.code_defined(&to_disasm);
+         true
+     }
+ }
+diff --git a/crates/mosura/src/analysis/analyzers/relocation_seed.rs b/crates/mosura/src/analysis/analyzers/relocation_seed.rs
+index 565e9ba..f9630d1 100644
+--- a/crates/mosura/src/analysis/analyzers/relocation_seed.rs
++++ b/crates/mosura/src/analysis/analyzers/relocation_seed.rs
+@@ -151,7 +151,7 @@ impl Analyzer for RelocationSeedAnalyzer {
+             seeds.add_range(t.space, t.offset, t.offset);
+         }
+         if !seeds.is_empty() {
+-            sched.code_defined(&seeds);
++            sched.disassemble(&seeds);
+         }
+         true
+     }
+diff --git a/crates/mosura/src/analysis/analyzers/switch.rs b/crates/mosura/src/analysis/analyzers/switch.rs
+index e8e89a6..014dc89 100644
+--- a/crates/mosura/src/analysis/analyzers/switch.rs
++++ b/crates/mosura/src/analysis/analyzers/switch.rs
+@@ -64,7 +64,7 @@ impl Analyzer for DecompilerSwitchAnalyzer {
+         }
+         // The case targets are reachable code (only through the table) — disassemble them.
+         if !case_targets.is_empty() {
+-            sched.code_defined(&case_targets);
++            sched.disassemble(&case_targets);
+         }
+         true
+     }
+diff --git a/crates/mosura/src/analysis/manager.rs b/crates/mosura/src/analysis/manager.rs
+index ea9967d..439e17c 100644
+--- a/crates/mosura/src/analysis/manager.rs
++++ b/crates/mosura/src/analysis/manager.rs
+@@ -16,6 +16,13 @@
+ use crate::analysis::analyzer::{Analyzer, AnalyzerType};
+ use crate::analysis::program::{AddressSet, Program};
+ 
++/// The analyzer that executes a [`Scheduling::disassemble`] command — mosura's stand-in for
++/// Ghidra's `DisassembleCommand`, which is a free-standing command object rather than an analyzer.
++pub const DISASSEMBLY_COMMAND: &str = "Disassembly";
++/// The analyzer that executes a [`Scheduling::create_function`] command — mosura's stand-in for
++/// Ghidra's `CreateFunctionCmd`.
++pub const FUNCTION_COMMAND: &str = "Function";
++
+ /// Per-analyzer scheduling state + the fact-routing notifiers, handed to an analyzer's
+ /// [`Analyzer::added`] so it can enqueue follow-on work.
+ #[derive(Default)]
+@@ -62,6 +69,43 @@ impl Scheduling {
+         self.notify(AnalyzerType::Byte, set);
+     }
+ 
++    /// Schedule disassembly at each address of `set` — Ghidra
++    /// `AutoAnalysisManager.disassemble(AddressSetView)` (AutoAnalysisManager.java:1128), which is
++    /// `schedule(new DisassembleCommand(targetSet, null, true), getDisassemblyPriority())` (:860).
++    ///
++    /// ⚠️ **A COMMAND, NOT A NOTIFICATION — the distinction is load-bearing.** Ghidra's
++    /// `codeDefined` (:262-272) announces that instructions were *actually laid down*; it is
++    /// raised from real listing changes and Ghidra's own comment at :385 notes that disassembly
++    /// deliberately does not go through change events. Nothing in Ghidra subscribes disassembly to
++    /// `codeDefined` at all.
++    ///
++    /// mosura expressed both as `code_defined`, and that one substitution produced three defects
++    /// at once (`docs/function-discovery-backlog.md` §9):
++    ///
++    ///  1. a request was only delivered to analyzers registered in *that* manager, so every
++    ///     request the byte-pattern passes made evaporated — their manager has no disassembler;
++    ///  2. requests were unioned into the same accumulator as the decoded EXTENT the disassembler
++    ///     notifies back to itself, so seeds and decoded code shared one [`AddressSet`], adjacent
++    ///     seeds coalesced into one range, and only the range minimum survived — `wprobe`'s
++    ///     `p_leaf_` @`08048112` was dropped because `__CHK` sits at `08048111`;
++    ///  3. a request echoed back to the requester, so the `Instruction`-typed pattern passes
++    ///     re-fired forever and had to be held off with thread-local dedupes.
++    ///
++    /// This carries SEED addresses only and never mixes with a decoded extent, which is what makes
++    /// per-address iteration safe at the far end.
++    pub fn disassemble(&mut self, set: &AddressSet) {
++        self.schedule_one_time(DISASSEMBLY_COMMAND, set);
++    }
++
++    /// Schedule function creation at each address of `set` — Ghidra
++    /// `AutoAnalysisManager.createFunction(AddressSetView, boolean)`
++    /// (AutoAnalysisManager.java:1132) → `schedule(new CreateFunctionCmd(targetSet, …), …)`.
++    /// A command, for the same reasons as [`Scheduling::disassemble`]; `function_defined` remains
++    /// the notification that functions *were created*.
++    pub fn create_function(&mut self, set: &AddressSet) {
++        self.schedule_one_time(FUNCTION_COMMAND, set);
++    }
++
+     /// Hand a set directly to one named analyzer (Ghidra
+     /// `AutoAnalysisManager.scheduleOneTimeAnalysis(analyzer, set)`, AutoAnalysisManager.java:226)
+     /// — the route for an analyzer that subscribes to no change channel. A no-op when that
+diff --git a/crates/mosura/src/analysis/mod.rs b/crates/mosura/src/analysis/mod.rs
+index 5999491..674ea1b 100644
+--- a/crates/mosura/src/analysis/mod.rs
++++ b/crates/mosura/src/analysis/mod.rs
+@@ -180,6 +180,12 @@ pub fn analyze(program: &mut Program) {
+             seed.add_range(e.space, e.offset, e.offset);
+         }
+     }
++    // A NOTIFICATION, correctly: the loader has already created these functions (the set is built
++    // from `function_manager.functions()` above), so this is Ghidra's `functionDefined` for
++    // loader-created functions, and it is what puts them in front of every FUNCTION analyzer —
++    // constant propagation, the decompiler switch analyzer, the address-table analyzer — not just
++    // the one that disassembles them. The entry points that are NOT yet functions are created by
++    // `FunctionCreator` when it receives this same set.
+     mgr.scheduling().function_defined(&seed);
+     // Seed the BYTE analyzers with the loaded blocks — Ghidra's `AutoAnalysisManager.blockAdded`
+     // fires for every block the loader lays down, which is how a BYTE_ANALYZER like
+@@ -258,6 +264,21 @@ pub fn analyze(program: &mut Program) {
+         }
+     }
+     if any {
++        // ⭐ THE COMMAND EXECUTORS MUST BE HERE. `FunctionStartAnalyzer` asks the manager to
++        // disassemble its matches and create its functions (:836-859, through
++        // `AutoAnalysisManager.getAnalysisManager(program)` — a per-program SINGLETON, :949). In
++        // Ghidra there is exactly one manager, so those commands always have something to execute
++        // them. mosura runs the pattern passes in a second manager (see the ordering note above),
++        // and while these two were absent from it every request the pattern search made was
++        // silently dropped: `function_defined` reached ZERO consumers, so a pattern-discovered
++        // function was never disassembled, never constant-propagated, and its callees were never
++        // discovered. That is the whole of `docs/function-discovery-backlog.md` §9's replacement
++        // item — 5 corpus functions with 100% of their bodies missing from the listing, gated by
++        // `ground_truth_parity::recovered_functions_are_in_the_listing`.
++        if let Some(d) = analyzers::Disassembler::for_program(program) {
++            fs_mgr.add_analyzer(Box::new(d), program);
++        }
++        fs_mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
+         // The delayed creator the `possiblefuncstart` matches are handed to
+         // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854).
+         fs_mgr.add_analyzer(
+@@ -383,7 +404,7 @@ fn plt_linear_sweep(mgr: &mut crate::analysis::manager::AutoAnalysisManager, pro
+         // Seed this gap and let the flow disassembler (+ follow-on analyzers) run.
+         let mut s = AddressSet::new();
+         s.add_range(ram, a, a);
+-        mgr.scheduling().code_defined(&s);
++        mgr.scheduling().disassemble(&s);
+         mgr.run(program);
+         // Advance: if the gap decoded, step past it; otherwise move on by one byte.
+         let len = program.listing.code_unit_at(Address::new(ram, a)).map(|c| c.length()).unwrap_or(0);

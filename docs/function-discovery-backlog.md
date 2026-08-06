@@ -1270,6 +1270,76 @@ Gate for the replacement item: the six addresses above. Unlike #2 and #3, that i
 fail. The seed exists — `create_functions` calls `sched.function_defined(&created)` — so the open
 question is where the scheduled disassembly is dropped; measure that before writing anything.
 
+#### ⭐ ANSWERED 2026-08-06 — see **CAUSE A** and **CAUSE B** at the top of this file
+
+The question this paragraph poses ("where is the scheduled disassembly dropped?") is answered there:
+a Ghidra COMMAND queue modelled as a change channel, plus `r.min`-only range iteration. Not repeated
+here. What follows is only what is NOT in those two sections: the built fix, its gate, and the
+blocker that stopped it landing.
+
+##### The fix EXISTS, BUILDS, and TURNS THE GATE GREEN — and is deliberately NOT committed
+
+`held-patches/listing-command-channel.patch` (388 lines, applies cleanly to `2c534db`). Five steps:
+
+1. `Scheduling::disassemble()` / `create_function()`, name-routed to the `"Disassembly"` and
+   `"Function"` executors — Ghidra's commands (`:1128` / `:1132` -> `schedule` `:860`). Seed sets
+   only; they never mix with a decoded extent.
+2. **`Disassembler` stops subscribing to `Instruction`.** Nothing in Ghidra subscribes disassembly
+   to `codeDefined`; it is only ever a scheduled command. The self-notification that the old
+   comments called "what terminates the loop" was the loop's *cause*. It still EMITS
+   `code_defined(decoded)` — the genuine notification `AfterCode` consumes.
+3. Both executors iterate every address of their set, ⚠️ **bounded by Ghidra's short-range branch**:
+
+   ```java
+   subRangeSet.delete(nextAddr, nextAddr);                    // :245 — deleted FIRST
+   long addrsLeft = subRangeSet.getNumAddresses();            // :261
+   if (addrsLeft <= 4) { seedSet.add(nextAddr); continue; }   // :262
+   ```
+
+   `addrsLeft` is counted AFTER the delete, so the cut admits a range of **five** addresses, not
+   four: `addrs_left == r.max - r.min`. (First cut of this port had `< 4` and would have silently
+   dropped four of any five adjacent entries — the very bug being fixed.) A SHORT range contributes
+   every address as a seed; a LONG one is flow-disassembled from its minimum. **Seeding every
+   address of a LONG range instead is not a safe generalisation: measured, it turns the war2 MZ
+   over-decode count from 8 to 53 on its own.**
+4. `Disassembler` + `FunctionCreator` registered in `fs_mgr`. `FunctionCreator` also raises
+   `function_defined` for the functions it ACTUALLY created (Ghidra's
+   `handleFunctionAddedOrBodyChanged` -> `functionDefined`, `:392-395`) — "actually" is load-bearing;
+   re-announcing an existing entry never reaches a fixpoint.
+5. **`SCHEDULED` and `PROPOSED` DELETED**, no replacement. Convergence verified by running, not
+   assumed: the re-fire loop does not return, because a command echoes nothing to its requester.
+
+Result: `recovered_functions_are_in_the_listing` **5 -> 0**; full workspace suite green *except* the
+blocker below. The loader seed stays `function_defined` — that set is built from functions the
+loader already created, so it is genuinely a notification, and converting it to a command starves
+every other FUNCTION analyzer (caught by `a6_tests` immediately).
+
+##### ⛔ BLOCKER — §9 #5, the inline-parameter thunk. The fix produces WRONG CODE on the war2 MZ stub
+
+`analysis_parity::pe_mz_convergence_parity` goes **8 -> 53** misaligned decodes. Attributed by
+experiment: disabling only the four byte-pattern analyzers makes it pass, so all 45 are the pattern
+search's disassembly finally happening. The mechanism, and why it BLOCKS rather than moves a bound,
+is §9 #5 below — mosura destroys a real instruction Ghidra has. A faithful port lands and only wrong
+code blocks it; this is that exception.
+
+##### Gate
+
+`ground_truth_parity::recovered_functions_are_in_the_listing`, committed **`#[ignore]`d and RED** so
+its ability to fail is proved by git history rather than by a revert-check. Population 386,
+violations 5, exclusions computed (not by name), `examined > 0` so it cannot pass on an empty
+population. It NAMES its violations, so each cause's contribution stays separately visible.
+
+##### Residual: the same `r.min` mis-port is in THREE more analyzers — NOT fixed, NOT gated
+
+- `ConstantPropagationAnalyzer` (`analyzers/mod.rs:439`)
+- `DecompilerSwitchAnalyzer` (`switch.rs:46`)
+- `SharedReturnAnalyzer` (`shared_return.rs:342`)
+
+Each skips adjacent entries exactly as `FunctionCreator` did, so on any binary with consecutive
+function entries they silently run on the first only. ⚠️ The last two treat `r.min` as a function
+ENTRY, so per-address iteration there needs an "is a function entry" guard (`SharedReturnAnalyzer`
+already has one, `switch.rs` does not) — a blind widening would decompile at non-entry addresses.
+
 **⭐ 4. THE LIVE CANDIDATE — the body walk reads the OPCODE where Ghidra reads the REFERENCE TYPE.**
 Ghidra's `dontFollow` list is expressed in `RefType`s, and a **tail call** (`jmp <function>`) carries
 an `UNCONDITIONAL_CALL` reftype after `SharedReturnAnalyzer` has run — so `FollowFlow` refuses to
@@ -1280,6 +1350,87 @@ the whole callee and swallows it. This is exactly the class recorded in
 [[reftype-is-post-override-not-the-instruction]]: *reftypes are analysis OUTPUT; re-deriving flow
 from the instruction discards every override the analyzers computed.* It also needs no no-return
 flag, which is what makes it the surviving candidate after #1 was refuted.
+
+**⭐ 5. INLINE CALL PARAMETERS ARE DECODED AS CODE — measured 2026-08-06, and it CORRUPTS the
+listing.** The same class as #4, found on the war2 MZ stub while attributing the listing fix's
+effect there. The image has a thunk family at `0x13a38 / 0x13a47 / 0x13a4c / 0x13a51`, each a
+`CALL 0x13a56`, and the dispatcher pops its own return address and reads a word THROUGH it:
+
+```
+00013a56  5b        POP BX                    ; BX = the RETURN ADDRESS
+00013a57  2e8b0f    MOV CX, word ptr CS:[BX]  ; read the word the call is FOLLOWED BY
+…
+00013a69  ff2ef20a  JMPF [0xaf2]
+```
+
+So every call site in this family is followed by a **2-byte inline parameter, not code**, and
+control resumes 2 bytes further on. Ghidra's listing resumes exactly there. mosura's `falls_through`
+re-derives fall-through from the opcode, has no way to express "resumes at return+2", and decodes
+the parameter word as an instruction:
+
+```
+00015171  M G  e8dde8    CALL 0x13a51
+00015174  M .  5b        POP BX          <- the inline parameter, decoded as code
+00015176  M G  ff46e2    INC word ptr [BP + -0x1e]   <- both agree again, 2 bytes later
+```
+
+It is not merely extra. Where the parameter bytes are `be 39`, mosura's 3-byte decode at `00013a54`
+spans `00013a56` and **destroys `POP BX` — the dispatcher's own entry, which Ghidra HAS.** That
+settles the direction of the error without an oracle run.
+
+Worth 45 of the 53 code units by which the listing fix moved `pe_mz_convergence_parity`'s war2
+over-decode count (8 -> 53); 3 of the 9 clusters are inside functions the pattern search newly
+reached, so before that fix these bytes were never decoded at all. **The listing fix did not cause
+this; it stopped hiding it.** Closing it needs a fall-through override model, which mosura does not
+have. (The ninth cluster, `00018f26`, is a `0000` padding over-run and is NOT explained by this.)
+
+The four cluster comparisons, `M` = mosura, `G` = the committed Ghidra golden `war2.snapshot`:
+
+```
+00013a51  M G  e80200    CALL 0x13a56
+00013a54  M .  be395b    MOV SI,0x5b39   <- the inline parameter, spanning 3a54..3a56
+00013a56  . G  5b        POP BX          <- THE DISPATCHER'S OWN ENTRY. Ghidra has it; mosura
+                                            does not — the bogus decode SWALLOWED it.
+00015171  M G  e8dde8    CALL 0x13a51
+00015174  M .  5b        POP BX          <- parameter word
+00015176  M G  ff46e2    INC word ptr [BP + -0x1e]   <- both agree again, 2 bytes later
+000154b2  M G  e883e5    CALL 0x13a38
+000154b5  M .  5b        POP BX
+000154b7  M .  8946fc    MOV word ptr [BP + -0x4],AX
+00017514  M G  e821c5    CALL 0x13a38
+00017517  M .  5b        POP BX
+```
+
+**The swallowed `POP BX` at `00013a56` is what makes this a BLOCKER rather than a tolerance
+question.** It is not extra code; it is a real instruction Ghidra has and mosura destroys, and it is
+the entry of the routine being called. A faithful port lands and only wrong code blocks it — this
+is that exception. A raised bound that quotes the defect it holds is a reasonable record for an
+extent-neutral regression; it is not acceptable for a destroyed instruction, which is the exact
+failure byte-exact recompilation is defined against.
+
+##### ⚠️ The oracle probe on these addresses was run against a DIFFERENT IMAGE — do not re-use it
+
+An oracle run reported, for probes `00013a4a` / `000154b5` / `00017517` / `00017525`, that Ghidra
+has instructions **starting earlier** (`00013a48`, `000154b1`, `00017512`, `00017522`) and containing
+the probe — which would have made these genuinely misaligned decodes inside Ghidra instructions.
+**It was run on the warcraft2-re ELF32 wrapper of the LE body; every measurement above is on the
+16-bit MZ STUB** (`pe_mz_convergence_parity` uses `analyze_file`, which keeps a bound exe on the
+Ghidra-parity MZ-stub path). Different images, different address spaces.
+
+Checked rather than assumed — decoding those four start addresses in the MZ image:
+
+```
+00013a48: 0c00    len=2  covers 13a48..13a49   OR AL,0x0        <- does NOT reach probe 13a4a
+000154b1: 04e8    len=2  covers 154b1..154b2   ADD AL,0xe8      <- does NOT reach 154b5
+00017512: 0050e8  len=3  covers 17512..17514   ADD [BX+SI-0x18],DL  <- does NOT reach 17517
+00017522: 226892  len=3  covers 17522..17524   AND CH,[BX+SI-0x6e]  <- does NOT reach 17525
+```
+
+Not one of them covers its probe, so the report cannot describe this image. (`0004de58` is an
+LE-body tracker address and has no meaning in the MZ stub at all.) This is
+[[oracle-same-question-not-just-same-tool]] and [[war2-exact-reference-mismatch]]: same tool, same
+offsets, different binary. **The HOLD decision does not depend on it** — the swallowed `POP BX`
+above is measured wholly within the MZ image against its own committed golden, and stands alone.
 
 ### Landing conditions for any of them
 
@@ -1292,6 +1443,33 @@ flag, which is what makes it the surviving candidate after #1 was refuted.
   having regardless, since `noreturn.rs` is **currently ungated entirely**.
 - **One change per measurable effect.** #1, #2, #4 and §8 point in different directions; bundling
   any two makes a WAR2 delta unattributable per function.
+
+### ⭐ NEXT ITEM — a FALL-THROUGH OVERRIDE MODEL. This is what unblocks the listing fix.
+
+**The honest size of the remaining work, and it is not a tweak.** mosura has no way to express "this
+call resumes at return+2". `falls_through` (`analyzers/mod.rs:90`) re-derives fall-through from the
+p-code opcode plus one `is_noreturn` check; Ghidra's `Instruction.getFallThrough()` returns **what
+analysis decided** — a per-instruction override the analyzers computed. Same class as #4 and
+[[reftype-is-post-override-not-the-instruction]]: *re-deriving flow from the instruction discards
+every override the analyzers computed.*
+
+Until it exists, §9 #5 stands and the listing fix (`held-patches/listing-command-channel.patch`)
+cannot land: decoding those bytes without it produces wrong code, not merely extra code.
+
+Scope, in the order a next session should take it:
+
+1. Carry a fall-through override on the code unit (Ghidra: `Instruction.setFallThrough` /
+   `getFallThrough`, and `FollowFlow` reading it) rather than recomputing from the opcode. Read
+   Ghidra's actual model before designing one — do not invent a mosura-shaped equivalent.
+2. Then find what SETS it for this idiom. The war2 MZ thunks are recognised by the callee popping
+   its own return address; that is an analysis result, not a decode result, so the setter is an
+   analyzer, not the disassembler.
+3. An MVE first, per directive 6 — a self-compiled program whose callee pops the return address and
+   resumes past an inline word. `oracle/ground-truth/src/` has no such fixture, and one is needed
+   before any fix, since the only current repro is a survey binary that cannot be shipped.
+
+⚠️ Do **not** attempt this by special-casing the `0x13a56` shape. A pattern that matches one
+dispatcher is the anti-pattern this project names explicitly.
 
 ---
 
