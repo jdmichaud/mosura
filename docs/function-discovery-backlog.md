@@ -15,6 +15,62 @@ Previous state @ `556cdb3`: 2900 / 2078 / 42 missing / 3 inside. Both rows were 
 **same harness in the same session**, and the harness reproduced the `556cdb3` row to the digit
 before the new row was believed — so the delta is a code change, not a scoring change.
 
+### ⭐ THE 12, TRIAGED @ `be85c85` — a THIRD prologue family, and it is the DEFAULT one
+
+Full per-entry dump (bytes, refs, containment) taken 2026-08-06. **7 of the 12 share one shape that
+the pattern set does not model at all**: a callee-save push run followed by a stack adjust or a
+stack-argument load, with **no frame setup** — no `89 e5`, no `8b ec`, no `push ebp`:
+
+```
+0004de58   56 57 55 8b 4c 24 10      push esi,edi,ebp ; mov ecx,[esp+0x10]
+0004e19d   56 57 55 81 ec c0 02 00   push esi,edi,ebp ; sub esp,0x2c0
+00064427   52 8b 15 84 90 08 00      push edx         ; mov edx,[0x89084]
+000671a8   56 57 83 ec 10            push esi,edi     ; sub esp,0x10
+00067204   51 56 57 83 ec 10         push ecx,esi,edi ; sub esp,0x10
+0006734c   51 52 83 ec 10            push ecx,edx     ; sub esp,0x10
+00072f08   51 52 c8 1c 00 00         push ecx,edx     ; enter 0x1c,0
+```
+
+Both families we DO model end in a frame setup: save-first is `<pushes> 89 e5`, frame-first is
+`55 89 e5`. **This one never sets up a frame at all** — and that is not an exotic case, it is what
+`wcc386` emits **by default**, since `-of+` is what turns the frame pointer ON. The
+`QUESTION-for-warcraft2-re-agent.md` table recorded it a week ago without recognising it as a
+family: *"Watcom 10.0a, default flags | no `55 89 e5` at all (frame pointer omitted)"*.
+
+Under the standing scope rule this is the **highest-value remaining gap in the whole track**: it is
+the default configuration of every Watcom compiler, so it is missing from every default-built
+Watcom binary, not just from WAR2. WAR2 mostly hides it because WAR2 was built with `-of+`.
+
+⚠️ **Precision is the whole difficulty and must be measured, not argued.** `51 52 83 ec 10` is a
+weak anchor — a two-byte push run plus a common `sub esp` — where the modelled families get a
+distinctive `89 e5` to key on. This one is only safe if the follow-on (`83 ec` / `81 ec` / `c8` /
+a `[esp+N]` load) is part of the pattern, and only a **self-compiled** fixture can tell us the
+false-positive rate, because precision is unmeasurable on WAR2 (§5).
+
+**The other 5 are not one story:**
+- `00064bdb` — the bytes are a **dword pointer table** (`a9 4c 06 00`, `b6 4c 06 00`, `17 4d 06 00`
+  = `0x00064ca9`, `0x00064cb6`, `0x00064d17`), so the tracker's entry sits in switch-table data.
+  Likely the same embedded-table shape as A3's `0006ecb4`.
+- `00077619` — reached by a **ConditionalJump** and starts `3b 35 ... 73 3e` (`cmp`/`jae`); that is
+  a branch target, not an entry.
+- `00060270` (`fb 83 e4 fc 89 e3` — `sti ; and esp,~3 ; mov ebx,esp`) and `00067f40`
+  (`53 56 57 06 9c fa 1e 07` — pushes then `push es ; pushf ; cli ; push ds ; pop es`) are
+  real-mode/interrupt-flavoured startup code.
+- `00070aa6` — a genuine 11-byte leaf (`call ; mov [abs],eax ; ret`), no inbound reference.
+
+### The 900 mosura has that the tracker does not (@ `be85c85`)
+
+```
+save-first 779 · frame-first 101 · no-frame 11 · push-run-only 9      465 with NO inbound reference
+```
+
+86.6% save-first, against the tracker's own 84.6% of framed functions — the same
+distribution-matching argument that supported the earlier 872, so these remain *consistent with*
+being real. ⚠️ Not comparable to that 872 as a set: this count is shift-tolerant on both sides and
+the earlier one was not. And 465 with no inbound reference at all is a large pattern-only
+population — **consistency with a distribution is not corroboration**, and nothing in this run
+independently confirms them.
+
 ⚠️ Every number in this file is STALE unless stamped with a commit that is an ancestor of HEAD. A
 WAR2 run is ~224s and only the lead runs it; do not quote an unstamped figure.
 
