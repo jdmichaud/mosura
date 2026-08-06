@@ -64,12 +64,34 @@ false-positive rate, because precision is unmeasurable on WAR2 (§5).
 save-first 779 · frame-first 101 · no-frame 11 · push-run-only 9      465 with NO inbound reference
 ```
 
-86.6% save-first, against the tracker's own 84.6% of framed functions — the same
-distribution-matching argument that supported the earlier 872, so these remain *consistent with*
-being real. ⚠️ Not comparable to that 872 as a set: this count is shift-tolerant on both sides and
-the earlier one was not. And 465 with no inbound reference at all is a large pattern-only
-population — **consistency with a distribution is not corroboration**, and nothing in this run
-independently confirms them.
+86.6% save-first, against the tracker's own 84.6% of framed functions. ⚠️ Not comparable to the
+earlier 872 as a set: this count is shift-tolerant on both sides and that one was not.
+
+**That distribution argument is weak on its own and was never enough** — the pattern set keys on
+prologue shape, so "the entries it finds have the expected prologue shapes" is close to circular,
+and 465 of the 900 have no inbound reference at all.
+
+### ⭐ INDEPENDENT CORROBORATION @ `be85c85` — they end like functions
+
+So measure a property the pattern set does **not** key on: does the computed body end in a
+**terminator** (`ret`/`retf`/`jmp rel`/`jmp indirect`)? Real functions do. An entry minted inside a
+data table generally does not. Run it over both populations with the same code:
+
+```
+IN-TRACKER (expert-verified)   2111/2118 end in a terminator   99.7%
+NOT-IN-TRACKER (pattern-only)   899/900  end in a terminator   99.9%
+SUSPECT (no inbound ref AND no terminator):  1
+```
+
+**The pattern-only population is indistinguishable from the expert-verified one** — marginally
+better, in fact. The single suspect is `0002ad98`, whose bytes are `56 55 89 e5 89 d6 89 ca` —
+`push esi ; push ebp ; mov ebp,esp ; mov esi,edx ; mov ecx,edx`, a well-formed save-first prologue.
+
+What makes this evidence and not another distribution argument is the **control**: the same measure
+run over the 2118 functions an expert byte-matched establishes what "real" scores, so the number has
+something to fail against. On its own, "99.9% end in a `ret`" would be nearly vacuous — most byte
+runs reach a `c3` eventually. ⚠️ It corroborates that these are *functions*; it says nothing about
+whether their **boundaries** are right, which is a separate measurement.
 
 ⚠️ Every number in this file is STALE unless stamped with a commit that is an ancestor of HEAD. A
 WAR2 run is ~224s and only the lead runs it; do not quote an unstamped figure.
