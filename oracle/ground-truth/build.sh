@@ -369,6 +369,12 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # tailjmp: the SHARED-RETURN TAIL-CALL analysis repro (a function reachable only via `jmp`).
   # Built WITHOUT `-oc` on purpose — `-oc` suppresses the very `call X; ret` -> `jmp X` rewrite
   # under test (src/tailjmp.c property 1).
+  # wprologue: the prologue-SHAPE spec for the watcom function-start patterns. `-of+`
+  # (traceable stack frames) is REQUIRED — it is what makes wcc386 emit the `push ebp; mov ebp,esp`
+  # frame WAR2 is full of. Without it the compiler omits the frame pointer and addresses locals off
+  # ESP, producing prologues that look nothing like the target (measured: `53 51 83 ec` and
+  # `53 51 52 56 b8`, no `89 e5` anywhere).
+  build_watcom wprologue "-of+"
   build_watcom tailjmp ""
   # fnpattern: the FUNCTION START SEARCH repro (a function reachable by NOTHING — no call, no
   # jump, no stored pointer — so only its prologue BYTE PATTERN can find it). `-of+` (generate

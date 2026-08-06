@@ -947,3 +947,47 @@ fn function_start_pattern_search() {
          (0 inbound references, exact entry, absent when the search is disabled)"
     );
 }
+
+
+/// The **prologue-shape specification** for the beyond-Ghidra Watcom function-start pattern set
+/// (`specs/patterns/x86watcom_patterns.xml`). That file has no Ghidra oracle — Ghidra ships no
+/// Watcom compiler spec — so this fixture is its oracle.
+///
+/// It exists because **precision is unmeasurable on WAR2**: the expert tracker covers 71.4% of the
+/// code object, so a pattern hit in a gap may be a real function the tracker lacks or may be noise,
+/// and the binary cannot tell them apart. Tuning the pattern against WAR2's function count is
+/// therefore chasing a number with no specification behind it. Here every function comes from the
+/// compiler's own symbol table, so both properties are decidable: the search must find **every**
+/// real entry (recall) and create **nothing else** (precision).
+///
+/// `wprologue` is built `-of+` on purpose — traceable stack frames. Without it wcc386 omits the
+/// frame pointer and addresses locals off ESP, emitting prologues (`53 51 83 ec`, `53 51 52 56 b8`)
+/// with no `89 e5` anywhere, which look nothing like the target. Note the fixture still cannot
+/// reproduce WAR2's exact shape: modern Open Watcom emits frame-FIRST (`55 89 e5` then the saves)
+/// where WAR2's Watcom 10.0a emits save-FIRST (saves then `55 89 e5`) — the artifact
+/// `warcraft2-re/analysis/function-boundary-correction.md` documents. It gates the pattern set's
+/// precision on a fully-known binary, which is what it is for; the save-first shape is specified by
+/// the 2120 measured tracker entries instead.
+#[test]
+fn watcom_prologue_shape_spec() {
+    let bin = ground_truth_dir().join("wprologue.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("wprologue.watcom-x86-32.truth");
+    if !bin.exists() {
+        eprintln!("skip watcom_prologue_shape_spec: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let prog = analysis::analyze_file(&bin).expect("analyze wprologue");
+    let mine: std::collections::BTreeSet<u64> =
+        prog.function_manager.functions().map(|f| f.entry_point().offset).collect();
+    let known: std::collections::BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+
+    let missed: Vec<String> = known.difference(&mine).map(|a| format!("{a:08x}")).collect();
+    assert!(missed.is_empty(), "wprologue RECALL: pattern set missed real prologues: {missed:?}");
+
+    let spurious: Vec<String> = mine.difference(&known).map(|a| format!("{a:08x}")).collect();
+    assert!(
+        spurious.is_empty(),
+        "wprologue PRECISION: pattern set invented entries that are not functions: {spurious:?}"
+    );
+}

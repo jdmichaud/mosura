@@ -1,0 +1,19 @@
+# mosura-ground-truth v1 program=wprologue compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=wprologue.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048106 0 sink_ code
+func 08048107 0 p_leaf_ code
+func 0804810f 0 p_push1_ code
+func 08048123 0 p_push2_ code
+func 0804813c 0 p_push3_ code
+func 08048156 0 p_push4_ code
+func 08048179 0 p_push5_ code
+func 080481ab 0 p_push6_ code
+func 080481e5 0 p_frame_ code
+func 08048213 0 p_bigframe_ code
+func 08048244 0 p_frame_saves_ code
+func 0804828a 0 p_thru_ code
+func 08048296 0 p_global_ code
+func 080482af 0 main_ code
