@@ -401,7 +401,41 @@ still carries `sub esp` (`push*; sub esp; mov [esp+v],reg`), and those forms **a
 **No fixture.** A gate asserting 12/17 would lock a defect in as expected behaviour, and one
 asserting 17/17 would fail forever. The finding is the deliverable.
 
-⚠️ **Consequence for the WAR2 gap, worth checking against the 42.** WAR2's census splits
+**⚠️ TRIGGER — revive this cell as a precision tripwire if, and only if, someone adds a frameless
+pattern that is not anchored on `sub esp`.** `wprobe` already gates the guarded
+`0x68........e8........` forms, so today's precision risk is covered and this fixture would add
+nothing. But `wnoframe` is the binary where an over-matching *frameless* form would show up
+loudest — every function in it lacks a prologue, so a pattern claiming to find frameless entries
+has nothing legitimate to match there. If you are reading this because you are about to add such a
+pattern: rebuild the cell (`wprologue.c` + a frameless orphan, `-onatx`) and gate precision on it
+before landing. The argument does not need re-deriving; the condition does.
+
+### ✅ THE BOUND WAS CHECKED AGAINST THE 42 — and it is small. Discovery is NOT finished.
+
+Measured by the lead on WAR2, 2026-08-06:
+
+```
+genuinely missing (shift-tolerant)   42
+   15  frame-first                      <- our families describe these
+   14  save-first                       <- our families describe these
+    4  saves + `sub esp`                <- our families describe these
+    9  FRAMELESS (no prologue shape)
+  with NO inbound reference in Ghidra   37
+  FRAMELESS *and* no inbound reference   4   <- structurally unrecoverable, by us OR Ghidra
+```
+
+**Only 4 of 42 are cell 3's unrecoverable class.** The other **38 carry a prologue shape our
+families already describe**, so they are declined for some *other* reason — the containment guard
+and `PseudoDisassembler` validation being the obvious suspects, unmeasured as yet. That is a live
+question, not a closed one.
+
+⚠️ **This inverts the reading three dissolved items were pointing at.** §1, §6 and cell 3 each
+turned out to be "not a defect", and the natural inference — *discovery is finished, the residue is
+structural* — is **wrong for 38 of 42**. Recorded explicitly because the inference was tempting,
+was nearly acted on, and only a measurement stopped it. Cf.
+[[absolute-vs-differential-wrongcode]]: a run of negative results is not itself evidence.
+
+Original note, superseded in degree but not in kind: WAR2's census splits
 **save-first 1317 / frame-first 239 / no-frame 564**. If any of the 42 genuinely-missing functions
 are frameless-optimized with no inbound edge, they are **unrecoverable by pattern work of any
 kind** and further pattern effort aimed at them is wasted. That is a cheap thing to check and it
