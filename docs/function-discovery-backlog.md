@@ -364,6 +364,49 @@ pattern-set gap.
 Measured, it does not. Cross-checked against all three optimization settings, so this is not a
 single-cell accident.
 
+### ⛔ CELL 3 CHECKED — optimization / frame-pointer omission: **A BOUND, not a gap. No fixture.**
+
+Measured 2026-08-06 with the orphan **deliberately frameless**, because cell 2's clean pass had
+shown that a framed orphan leaves this family untested. Under `-onatx` wcc386 omits the frame
+pointer entirely — **there is no `55 89 e5` anywhere in the binary**.
+
+```
+wnoframe (wprologue.c + a frameless orphan, -onatx):   12 / 17 recovered
+  MISSED  p_leaf_ p_push1_ p_thru_ p_global_ nf_orphan_fn_
+  with the byte-pattern search OFF:                    12   <- the patterns contribute ZERO
+```
+
+All five missed functions have **zero inbound references** — `-onatx` inlined their call sites, so
+the standalone bodies are unreferenced and only a byte pattern could reach them. Their entry bytes:
+
+```
+p_leaf_        40 c3              inc eax ; ret          <- a 2-byte function
+p_push1_       52 8d 14 40 e8     push edx ; lea ; call
+p_thru_        e9 5b fe ff ff     jmp                    <- a tail thunk, no prologue
+p_global_      52 8b 15 …         push edx ; mov edx,[abs32]
+nf_orphan_fn_  6b db 07           imul ebx,ebx,7         <- no prologue AT ALL
+```
+
+**None of these is distinguishable from mid-function code**, because that is precisely what
+frame-pointer omission does: it deletes the prologue. There is no byte sequence to anchor, and any
+pattern loose enough to match `push reg; <arithmetic>` would fire continuously inside every
+function body in the image.
+
+**So this is a BOUND on what the pattern set can ever do, not a gap to be closed.** A byte-pattern
+analyzer finds a function only when its entry has a *distinctive shape*; optimization removes the
+shape. Ghidra has the identical limitation — its frameless family (3) anchors only the subset that
+still carries `sub esp` (`push*; sub esp; mov [esp+v],reg`), and those forms **are** covered here:
+`p_frame_`, `p_bigframe_` and `p_frame_saves_` all came back.
+
+**No fixture.** A gate asserting 12/17 would lock a defect in as expected behaviour, and one
+asserting 17/17 would fail forever. The finding is the deliverable.
+
+⚠️ **Consequence for the WAR2 gap, worth checking against the 42.** WAR2's census splits
+**save-first 1317 / frame-first 239 / no-frame 564**. If any of the 42 genuinely-missing functions
+are frameless-optimized with no inbound edge, they are **unrecoverable by pattern work of any
+kind** and further pattern effort aimed at them is wasted. That is a cheap thing to check and it
+would bound the remaining discovery work.
+
 ### Two prerequisites every matrix cell inherits (learned building §4's cell)
 
 **(a) A cell cannot reach the Watcom pattern file by default.** The `(language, compiler)` decision
