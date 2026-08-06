@@ -117,3 +117,44 @@ it) needs the packed `.wpk` unpacked via a dosemu install to confirm; if it does
 alternation gains a `Systems Inc.` arm plus a real fixture. Open Watcom 1.x/2.0 (`Open Watcom
 Contributors`) remains grammar-covered + unit-tested; a per-release fixture is a further
 follow-up.
+
+### ✅ ANSWERED 2026-08-06 — confirmed, and the year range is a TRAP
+
+9.01 was installed from its floppies (`INSTALL.EXE` under dosemu — see
+`watcom-codegen-fingerprint.md`) and used to compile **and link** a DOS/4GW image (`MZ` + `LE`, the
+same format family as WAR2). Read from the produced binary, not from installer text:
+
+```
+9.01-linked image   WATCOM C Run-Time system code is provided on an "as is" basis and is
+                    (c) Copyright by WATCOM Systems Inc. 1988-1991.
+```
+
+**So a 9.01-compiled binary really does embed the `Systems Inc.` wording, and the vendor
+alternation needs the extra arm.** ⚠️ The predicted *year range* was wrong: the runtime says
+**1988-1991**, not the installer's `1990-1991`. Anchor the arm on the vendor name, not the years.
+
+Runtime banner read from each release's `clib3r.lib` (or the linked image, for 9.01):
+
+| release | embedded runtime banner |
+| --- | --- |
+| 9.01  | `WATCOM Systems Inc. 1988-1991` |
+| 10.0a | `WATCOM International Corp. 1988-1994` |
+| 10.5  | `WATCOM International Corp. 1988-1995` |
+| 10.6  | `WATCOM International Corp. 1988-1995` |
+| 11.0  | `WATCOM International Corp. 1988-1994` |
+| **WAR2.EXE** | `WATCOM International Corp. 1988-1993` |
+
+**Two things fall out, and the second is a trap:**
+
+1. **The vendor name is a real discriminator.** `Systems Inc.` → pre-10.0; `International Corp.` →
+   10.0 onward. That is the corporate rename, and it is a *categorical* signal.
+2. **⚠️ The end year is NOT monotonic and must never be used as a version ordinal.** 11.0 (1997)
+   embeds `1988-1994` while 10.5 and 10.6 (1995) embed `1988-1995`. Any "later end year ⇒ later
+   release" heuristic silently orders 11.0 *before* 10.5. The banner is an **era** stamp, exactly as
+   the top of this document says — this table is the measured proof of it.
+
+**And WAR2's `1988-1993` matches none of the four installed releases**, all of which are ≥1994. Its
+runtime therefore predates 10.0a, which is independently consistent with the codegen fingerprint
+placing it on the *early 10.0 line* (the promoting `cmp eax,5`). ⚠️ Not yet pinned to a release: the
+10.0 ISOs here are packed floppy images (`DISK04/CLIBIHP.1` …) whose `clib3r.lib` needs an install
+to extract, so **no 10.0-proper banner has been measured** — this is a bound, not an identification.
