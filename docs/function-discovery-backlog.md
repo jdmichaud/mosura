@@ -281,13 +281,20 @@ The overlap rule then does the rest: with both the probe pattern (true entry) an
 pattern (+10) matching, `create_functions` keeps the LOWEST — exactly how the save-first family
 fixed the original shift.
 
-**LANDED `a59a886`** — 8 patterns (99 → 107): two frame-then-probe forms, stated plainly because
+**LANDED `a59a886`, SUITE-VERIFIED at `18dccdc` (622 passed / 0 failed, default parallelism)** — 8 patterns (99 → 107): two frame-then-probe forms, stated plainly because
 `55 89 e5` ahead of the probe already anchors them, and six probe-first forms carrying
 `after="defined"` + `validcode="6"` + `possiblefuncstart`. Gate:
 `ground_truth_parity::watcom_stack_probe_shape_spec` — recall, precision, **that the anchor is the
 probe and not the push run ten bytes in**, and attribution via the analyzer toggle. Measured under
 `cspec=watcom` across every Watcom fixture: **zero spurious anywhere**; revert-checked, both +10
 shifts return without the family.
+
+⚠️ **Stamp cells suite-verified, not just gate-verified.** Cell 1 was landed and reported on its
+own gate; the full suite was red for two commits before anyone noticed, because the break — a
+process-global env race in the test harness, not the patterns — was invisible to the fast
+per-fixture runs the cell work uses. Fixed at `18dccdc` (see `analysis::overrides`). The standing
+practice from here is to checkpoint after **each** cell so the red window is one cell wide at
+worst.
 
 ### What the trailing-push guard buys — measured, and the fixture cannot see it
 
