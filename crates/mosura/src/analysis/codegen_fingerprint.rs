@@ -19,9 +19,10 @@
 //!   look-alikes (a switch's `CMP EAX,1`) don't fire, and (b) treats the strategy patterns as
 //!   **one-sided positive evidence** — the *presence* of `AND EAX,0xff ; CMP EAX,imm` indicates
 //!   the 10.0 line, and either `SETcc ; MOVZX` or the inline constant division `MOV r,imm ; CDQ ;
-//!   IDIV r` (ow2's `cdq` sign-extension, where the classic line uses `SAR`) indicates Open
-//!   Watcom; *absence* is inconclusive, never a wrong exclusion. It reports a class (often the
-//!   era, which is what WAR2 needs), not always a single revision. Honest by construction.
+//!   IDIV r` (the `cdq` sign-extension, where the classic 10.0a-11.0 line uses `SAR`) indicates a
+//!   revision outside that interior — **9.01 or Open Watcom, not Open Watcom alone**; *absence* is
+//!   inconclusive, never a wrong exclusion. It reports a class (often the era, which is what WAR2
+//!   needs), not always a single revision. Honest by construction.
 //!
 //! Signals are `Option` — `None` = "not observed", never contradicts a revision.
 
@@ -33,9 +34,20 @@ pub struct Signals {
     /// A byte/`char` comparison: `Some(true)` = promoted to a 32-bit compare (`CMP EAX,imm`),
     /// `Some(false)` = a byte compare (`CMP AL,imm`). The 10.0a→10.6 boundary.
     pub byte_compare_promoted: Option<bool>,
-    /// A `setcc`-into-`int` result is zero-extended: observed at the `SETcc` site — `Some(true)`
-    /// when a `MOVZX dword,byte` follows (the Open Watcom form), `Some(false)` when the `SETcc`
-    /// result flows on without one (the classic line).
+    /// A `setcc`-into-`int` result is zero-extended **with `MOVZX`**: observed at the `SETcc`
+    /// site — `Some(true)` when a `MOVZX dword,byte` follows (9.01 and Open Watcom), `Some(false)`
+    /// when the `SETcc` result flows on without one.
+    ///
+    /// ⚠️ READ THE NAME NARROWLY: this is `MOVZX`-specifically, not zero-extension in general.
+    /// 10.0a and 10.6 *do* zero-extend the `setcc` result — with `AND EAX,0xff`
+    /// (`sete al ; and eax,0ffH`, verbatim from `wdis` on the committed objects). Broadening this
+    /// detector to accept the `AND` form would flip both to `Some(true)` and collapse the table's
+    /// only discriminator between the classic interior and `{9.01, open}`. The signal is the
+    /// *choice of instruction*, which is what varies by revision; whether the value ends up
+    /// zero-extended does not.
+    ///
+    /// 11.0 answers `None` here rather than `Some(false)`: its `cmpbyte` uses a branch
+    /// (`cmp al,5 ; jne ; mov eax,1`) and emits no `SETcc` at all, so there is no site to ask.
     pub result_zero_extended: Option<bool>,
     /// The register a counted loop compares its counter against (the loop bound), e.g. `EBX` /
     /// `ECX`. The 10.6→11.0 boundary (`ebx`→`ecx`).
@@ -243,7 +255,15 @@ struct Fp {
 }
 
 /// The measured `version → fingerprint` table (see `docs/watcom-codegen-fingerprint.md`).
+///
+/// ⚠️ **9.01 IS NOT AN EXTRAPOLATION OF THE CLASSIC LINE.** It emits the `SETcc ; MOVZX`
+/// zero-extension and the `MOV r,imm ; CDQ ; IDIV r` division idiom that 10.0a/10.6/11.0 do not —
+/// the same two shapes Open Watcom emits. Those two markers therefore bracket the OUTER ENDS of
+/// the lineage, and the interior (10.0a-11.0) is what is unusual, not 9.01. Measured on
+/// `oracle/codegen-probes/watcom/9.01.obj`; before this row it classified as **no known revision**
+/// (an empty result), which reads as "not Watcom".
 const TABLE: &[Fp] = &[
+    Fp { revision: "watcom:9.01", promoted: Some(false), zero_extended: Some(true), loop_bound: Some("EBX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:10.0/10.0a", promoted: Some(true), zero_extended: Some(false), loop_bound: Some("EBX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:10.5/10.6", promoted: Some(false), zero_extended: Some(false), loop_bound: Some("EBX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:11.0", promoted: Some(false), zero_extended: Some(false), loop_bound: Some("ECX"), sw_ascending: Some(true) },
@@ -314,22 +334,31 @@ pub fn identify_watcom_program(program: &crate::analysis::program::Program) -> V
     // compare is *non-diagnostic* (every version emits it) and must not exclude the promoting
     // line; only the diagnostic PATTERNS count as evidence:
     //   - any `AND EAX,0xff ; CMP EAX,imm` present → evidence of the 10.0 line;
-    //   - any `SETcc ; MOVZX`           present → evidence of Open Watcom.
+    //   - any `SETcc ; MOVZX`           present → evidence of a revision OUTSIDE the classic
+    //                                             10.0a-11.0 interior, i.e. {9.01, open}.
     // Absence of a pattern is inconclusive (returns the un-narrowed set), never a wrong exclusion.
     // The register/loop/switch artifacts are dropped entirely at this scale (see above).
     let promoted = votes.promoted.iter().any(|&p| p).then_some(true);
-    // Open Watcom evidence is one-sided and now comes from TWO independent, mutually-corroborating
-    // constructs — either suffices. The setcc zero-extension (`SETcc ; MOVZX`) and the inline
-    // constant-divisor division (`MOV r,imm ; CDQ ; IDIV r` — ow2's `cdq` sign-extension, where the
-    // 10.x/11.0 line uses `SAR`) each uniquely mark the Open Watcom line, so either present promotes
-    // the table's ow2 discriminator (`result_zero_extended`) and narrows to `watcom:open`; neither
-    // present leaves it `None` (inconclusive, never a wrong exclusion). The division anchor adds no
-    // finer classification — it draws the same classic→ow2 boundary — but division is far more
-    // common than the setcc-int construct in a real binary, so it is a more reliably-present anchor
-    // when scanning an arbitrary program (robustness; see `docs/watcom-codegen-fingerprint.md`).
-    let open_watcom =
+    // The zero-extension evidence is one-sided and comes from TWO independent, mutually-
+    // corroborating constructs — either suffices. The setcc zero-extension (`SETcc ; MOVZX`) and
+    // the inline constant-divisor division (`MOV r,imm ; CDQ ; IDIV r` — the `cdq` sign-extension,
+    // where the 10.x/11.0 line uses `SAR`) both mark a revision OUTSIDE the classic 10.0a-11.0
+    // interior, so either present sets `result_zero_extended` and the table narrows accordingly;
+    // neither present leaves it `None` (inconclusive, never a wrong exclusion). The division anchor
+    // adds no finer classification — it draws the same boundary the `movzx` signal draws — but
+    // division is far more common than the setcc-int construct in a real binary, so it is a more
+    // reliably-present anchor when scanning an arbitrary program (robustness).
+    //
+    // ⚠️ THIS IS NOT AN "OPEN WATCOM" ANCHOR, and calling it one was wrong: **9.01 emits both
+    // shapes too** (measured on `9.01.obj` — `cmp al,5 ; sete al ; movzx eax,al` and
+    // `mov ebx,7 ; cdq ; idiv ebx`). What separates 9.01 from Open Watcom is the loop-bound
+    // register (EBX vs ECX) and the switch compare order — precisely the two register-allocation
+    // artifacts this scale drops. So on a whole binary the honest answer is the PAIR
+    // `{watcom:9.01, watcom:open}`; narrowing to `watcom:open` alone would be a wrong exclusion of
+    // exactly the kind this matcher exists to avoid. See `docs/watcom-codegen-fingerprint.md`.
+    let cdq_or_movzx =
         votes.zero_extended.iter().any(|&z| z) || votes.inline_const_div.iter().any(|&d| d);
-    let zero_extended = open_watcom.then_some(true);
+    let zero_extended = cdq_or_movzx.then_some(true);
     classify(&Signals { byte_compare_promoted: promoted, result_zero_extended: zero_extended, ..Default::default() })
 }
 
@@ -337,11 +366,12 @@ pub fn identify_watcom_program(program: &crate::analysis::program::Program) -> V
 mod tests {
     use super::*;
 
-    /// The four measured fingerprints each classify to their revision (self-compiled ground
+    /// The five measured fingerprints each classify to their revision (self-compiled ground
     /// truth — see `docs/watcom-codegen-fingerprint.md`).
     #[test]
     fn measured_fingerprints_classify_uniquely() {
         let cases: &[(&str, Signals)] = &[
+            ("watcom:9.01", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(true), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:10.0/10.0a", Signals { byte_compare_promoted: Some(true), result_zero_extended: Some(false), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:10.5/10.6", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(false), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:11.0", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(false), loop_bound_reg: Some("ECX".into()), sw_cmp_ascending: Some(true) }),
@@ -359,7 +389,10 @@ mod tests {
         let promoted_only = Signals { byte_compare_promoted: Some(true), ..Default::default() };
         assert_eq!(classify(&promoted_only), vec!["watcom:10.0/10.0a"]);
         let byte_only = Signals { byte_compare_promoted: Some(false), ..Default::default() };
-        assert_eq!(classify(&byte_only), vec!["watcom:10.5/10.6", "watcom:11.0", "watcom:open"]);
+        assert_eq!(
+            classify(&byte_only),
+            vec!["watcom:9.01", "watcom:10.5/10.6", "watcom:11.0", "watcom:open"]
+        );
     }
 
     /// Self-compiled ground truth, committed so the matcher runs without the historical compiler:
@@ -382,6 +415,13 @@ mod tests {
         // revisions. (The two appended division constructs contribute no isolated-probe signal —
         // they add a whole-binary anchor only — so appending them leaves these classifications
         // unchanged; that append-only invariant is exactly what this test guards.)
+        //
+        // 9.01 is the reason uniqueness has to be RE-checked rather than assumed: it shares the
+        // `movzx` with ow2 and the `EBX` loop bound + ascending switch with the classic line, so it
+        // is separated from every other row by exactly one signal — ow2 by the loop register and
+        // the switch order, 10.6 by the `movzx`. Adding it collapsed nothing, but a sixth revision
+        // easily could, and an empty or two-element result here is what that would look like.
+        assert_eq!(load("9.01"), vec!["watcom:9.01"]); // CMP AL,5 + MOVZX + EBX + ascending
         assert_eq!(load("10.0a"), vec!["watcom:10.0/10.0a"]); // CMP EAX,5 + EBX + ascending
         assert_eq!(load("10.6"), vec!["watcom:10.5/10.6"]); // CMP AL,5 + EBX + ascending
         assert_eq!(load("11.0"), vec!["watcom:11.0"]); // CMP AL,5 + ECX + ASCENDING switch (vs open's descending)
@@ -403,9 +443,16 @@ mod tests {
             0x1000,
         );
         assert_eq!(v10a, vec!["watcom:10.0/10.0a"], "masked promoting compare → {v10a:?}");
-        // Open Watcom cmpbyte: CMP AL,0x5 ; SETZ AL ; MOVZX EAX,AL ; RET → uniquely open.
-        let vopen = identify_watcom("x86:LE:32:default", &[0x3C, 0x05, 0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], 0x1000);
-        assert_eq!(vopen, vec!["watcom:open"], "byte compare + movzx → {vopen:?}");
+        // Byte compare + zero-extend: CMP AL,0x5 ; SETZ AL ; MOVZX EAX,AL ; RET. This is BOTH
+        // 9.01's and Open Watcom's `cmpbyte`, and this snippet carries no loop and no switch, so
+        // the pair is the correct answer — the two are separated only by the loop-bound register
+        // and the switch compare order, neither of which is present here.
+        let vmovzx = identify_watcom("x86:LE:32:default", &[0x3C, 0x05, 0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], 0x1000);
+        assert_eq!(
+            vmovzx,
+            vec!["watcom:9.01", "watcom:open"],
+            "byte compare + movzx cannot select between 9.01 and open on its own → {vmovzx:?}"
+        );
     }
 
     /// The construct-location anchoring (the C1 fix): a plain int `CMP EAX,1` — a switch case or
@@ -450,19 +497,24 @@ mod tests {
         v.inline_const_div.iter().filter(|&&d| d).count()
     }
 
-    /// The division anchor fires on the Open Watcom probe (`MOV r,imm ; CDQ ; IDIV r`) and on NONE
-    /// of the classic revisions — they inline the same `x/const` divide but sign-extend with
-    /// `SAR EDX,0x1f`, never `cdq`. This is the append-only division construct in the committed
-    /// probes; measured across the lineage (`docs/watcom-codegen-fingerprint.md`). One-sided: its
-    /// presence is Open-Watcom evidence (via `result_zero_extended`, the table's ow2 discriminator).
+    /// The division anchor fires on the revisions that sign-extend with `CDQ` — **9.01 and Open
+    /// Watcom** — and on none of the classic 10.0a-11.0 interior, which inlines the same
+    /// `x/const` divide but sign-extends with `MOV EDX,EAX ; SAR EDX,0x1f`.
+    ///
+    /// ⚠️ This test used to be called `..._fires_on_ow2_not_classic` and its composition assertion
+    /// read `vec!["watcom:open"]`. Both were wrong once 9.01 was measured: `9.01.obj` contains
+    /// `mov ebx,7 ; cdq ; idiv ebx`, so the anchor is evidence of the lineage's OUTER ENDS, not of
+    /// Open Watcom. The 10.0a/10.6/11.0 half of the claim — the half WAR2 actually rests on — is
+    /// unchanged and is still asserted below.
     #[test]
-    fn inline_const_div_anchor_fires_on_ow2_not_classic() {
+    fn inline_const_div_anchor_fires_on_the_cdq_revisions() {
         if crate::lang::load("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let dir = crate::paths::codegen_probes_dir().join("watcom");
         let read = |rev: &str| std::fs::read(dir.join(format!("{rev}.code"))).unwrap();
         assert_eq!(div_anchor_hits(&read("ow2")), 1, "ow2 divc = MOV ECX,7 ; CDQ ; IDIV ECX");
+        assert_eq!(div_anchor_hits(&read("9.01")), 1, "9.01 divc = MOV EBX,7 ; CDQ ; IDIV EBX");
         for classic in ["10.0a", "10.6", "11.0"] {
             assert_eq!(
                 div_anchor_hits(&read(classic)),
@@ -470,9 +522,10 @@ mod tests {
                 "{classic} sign-extends with SAR, not CDQ — anchor must not fire"
             );
         }
-        // Composition: a fired anchor is folded into the ow2 discriminator and narrows to open.
+        // Composition: a fired anchor is folded into `result_zero_extended`, which excludes the
+        // classic interior and leaves the two outer revisions — the honest narrowing.
         let narrowed = Signals { result_zero_extended: Some(true), ..Default::default() };
-        assert_eq!(classify(&narrowed), vec!["watcom:open"]);
+        assert_eq!(classify(&narrowed), vec!["watcom:9.01", "watcom:open"]);
     }
 
     /// The division anchor's false-positive guards, on encodings mosura's engine decodes. The
@@ -502,4 +555,5 @@ mod tests {
             "unsigned constant division"
         );
     }
+
 }

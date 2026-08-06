@@ -113,6 +113,13 @@ binary. Verified: CDQ=1/SAR=0 (ow2) vs CDQ=0/SAR=1 (classic) in the committed by
 false-narrows real 10.0a (`whole_program_matcher_never_wrongly_excludes`). Further enrichment now
 needs the MISSING versions (10.0-beta/10.5/9.01), not more constructs — apply
 `war2-issues-become-source-tests` for the next construct.
+**⚠️ CORRECTED 2026-08-06 when 9.01 arrived:** "sound one-sided **ow2** anchor" was wrong.
+9.01 emits `MOV EBX,7 ; CDQ ; IDIV EBX` *and* `SETcc ; MOVZX`, so both anchors mark the lineage's
+OUTER ENDS (`{9.01, open}`), not Open Watcom. The half that survives is the one WAR2 rests on:
+the classic 10.0a/10.6/11.0 interior emits neither. The anchor itself and its guards are unchanged;
+`identify_watcom_program` now reports the pair. Full account:
+`docs/watcom-codegen-fingerprint.md` §CORRECTION. This is the predicted "missing versions" risk
+landing as an inverted boundary rather than a mere gap.
 
 ## Active (analysis lane — mine)
 - **A1 — #3 ground-truth oracle SCALE-OUT** ✅ DONE `9d9c43f` (verified: re-derived
