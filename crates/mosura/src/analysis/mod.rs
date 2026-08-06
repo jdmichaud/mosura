@@ -82,6 +82,30 @@ pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
     Ok(program)
 }
 
+/// Load and analyse a binary, **declaring** its x86-32 compiler spec instead of detecting it.
+///
+/// # Why this exists — detection cannot answer for a freestanding binary
+///
+/// `loader::watcom::compiler_spec_id` decides `watcom` vs `gcc` from the C run-time's copyright
+/// banner, which is the only in-band evidence an ELF32 i386 carries: a `wcc386 -bt=linux` image is
+/// header-identical to a gcc one. The ground-truth corpus links `option nodefaultlib` with a
+/// hand-written `_cstart_`, so **its binaries contain no such evidence and detection correctly
+/// reports `gcc`**. That is a property of the fixtures, not a defect in detection — no amount of
+/// improving the detector can recover a fact the file does not contain.
+///
+/// What the corpus *does* have is its **build-derived truth**: `oracle/ground-truth/*.truth`
+/// carries a `compiler` field written by `build.sh` from the recipe that produced the binary,
+/// never hand-authored. So the corpus declares the compiler from the build rather than asking the
+/// image, and this is the entry point that lets it.
+///
+/// Not a test-only hook: declaring a known compiler spec is a legitimate thing for any caller with
+/// out-of-band knowledge (a build system, a project file, a user override). The switch is scoped
+/// to this call on this thread — see [`overrides`] for why that matters.
+pub fn analyze_file_as(path: &Path, x86_32_cspec: Option<&str>) -> Result<Program, AnalysisError> {
+    let _guard = overrides::force_x86_32_cspec(x86_32_cspec);
+    analyze_file(path)
+}
+
 /// Load a DOS/4GW-bound Linear Executable via the **native LE loader** and run the full
 /// auto-analysis pipeline over its 32-bit objects — the opt-in `--le` path for a bound exe
 /// (docs/le-loader-notes.md). The default container dispatch ([`analyze_file`]) keeps a bound

@@ -162,34 +162,6 @@ fn ground_truth_parity() {
             eprintln!("  skip {}: stripped binary absent", truth_path.display());
             continue;
         }
-        // `wprologue_sf` is the one fixture whose subject is a pattern file this loop cannot
-        // reach. Its entire purpose is the `(x86:LE:32:default, watcom)` branch of the
-        // pattern-file decision tree — `specs/patterns/x86watcom_patterns.xml` — and a
-        // CRT-less ELF carries no Watcom run-time banner, so `loader::watcom::compiler_spec_id`
-        // correctly reports `gcc` here and the loop would measure `x86gcc_patterns.xml` instead.
-        // Analyzed as gcc it is *expected* to be red: the save-first prologue shift puts a
-        // spurious entry 2 bytes into the orphan and misses the true entry. That shift is the
-        // defect the Watcom set exists to fix, so it is asserted — in both directions — by
-        // `watcom_save_first_shape_spec`, which routes the binary through both compiler specs.
-        if bin.file_name().is_some_and(|n| n == "wprologue_sf.watcom-x86-32") {
-            eprintln!("  skip wprologue_sf: gated by watcom_save_first_shape_spec (cspec=watcom)");
-            continue;
-        }
-        // `noret` is the corpus's only DYNAMICALLY-linked binary — deliberately, since it is the
-        // only way to make `analyzers::noreturn` run at all (see `noreturn_call_bounds_the_body`).
-        // That brings PLT stubs and an `EXTERNAL` slot, which are real functions Ghidra creates
-        // too but which a `nm`-derived truth cannot express, so this loop's "0 spurious" would
-        // fire on them; its two `switch` entries are likewise the PLT's `jmp *[GOT]` stubs. The
-        // fixture's own gate asserts the property it exists for — that every body lies within the
-        // extent the compiler recorded — which is strictly stronger than a start-address compare.
-        // `wprobe` has the same routing problem as `wprologue_sf`: its subject is the
-        // `(x86:LE:32:default, watcom)` pattern file, which this loop cannot reach, so analyzed
-        // as gcc it is expected to be red (the stack probe shifts every entry by ten bytes).
-        // `watcom_stack_probe_shape_spec` gates it through the correct compiler spec.
-        if bin.file_name().is_some_and(|n| n == "wprobe.watcom-x86-32") {
-            eprintln!("  skip wprobe: gated by watcom_stack_probe_shape_spec (cspec=watcom)");
-            continue;
-        }
         if bin.file_name().is_some_and(|n| n == "noret.gcc-x86-64") {
             eprintln!("  skip noret: gated by noreturn_call_bounds_the_body (dynamic ELF, PLT)");
             continue;
@@ -198,10 +170,17 @@ fn ground_truth_parity() {
         // The `.watcom-le` column is a bound MZ+LE (DOS-extender) executable. `analyze_file`
         // dispatches a bound exe down the Ghidra-parity MZ-stub path, which is the right default
         // (Ghidra has no LE loader); the LE objects are reached through `analyze_le_file`.
+        // Route by the truth file's `compiler` field, which `build.sh` writes from the recipe
+        // that produced the binary. Detection cannot answer this for a freestanding image — the
+        // corpus links `option nodefaultlib`, so no Watcom run-time banner exists to find and
+        // `compiler_spec_id` correctly says `gcc`. Declaring the build's own answer is what
+        // retired the by-name skips this loop used to need for `wprologue_sf` and `wprobe`.
+        let declared = (truth.compiler == "watcom" && bin.extension().is_some_and(|x| x == "watcom-x86-32"))
+            .then_some("watcom");
         let prog = if bin.extension().is_some_and(|x| x == "watcom-le") {
             analysis::analyze_le_file(&bin).expect("analyze LE ground-truth binary")
         } else {
-            analysis::analyze_file(&bin).expect("analyze ground-truth binary")
+            analysis::analyze_file_as(&bin, declared).expect("analyze ground-truth binary")
         };
 
         let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();

@@ -468,6 +468,40 @@ conventions"; the runtime half is true and irrelevant to a pattern set, the code
 models and this would need re-measuring there — but 16-bit is outside the language mosura targets
 (`x86:LE:32:default`).
 
+### ✅ PREREQUISITE (a) RESOLVED — declare the compiler from the build, don't ask the image
+
+The routing problem that generated three by-name skips and the `overrides` module is closed, and
+the resolution reframes it: **"fix corpus-wide compiler detection" was the wrong goal, because
+detection cannot succeed here even in principle.**
+
+`compiler_spec_id` decides `watcom` vs `gcc` from the C run-time's copyright banner — the only
+in-band evidence an ELF32 i386 carries, since a `wcc386 -bt=linux` image is header-identical to a
+gcc one. The corpus links `option nodefaultlib` with a hand-written `_cstart_`, so **its binaries
+contain no such evidence and detection correctly reports `gcc`.** That is a property of the
+fixtures, not a defect in the detector; no improvement to it can recover a fact the file does not
+contain.
+
+What the corpus *does* have is its **build-derived truth**: every `.truth` carries a `compiler`
+field that `build.sh` writes from the recipe which produced the binary, never hand-authored. So the
+corpus now **declares** the compiler from the build rather than interrogating the image, through
+`analysis::analyze_file_as(path, cspec)`.
+
+**Two of the three by-name skips are retired** — `wprologue_sf` and `wprobe` are now gated by the
+generic `ground_truth_parity` loop itself:
+
+```
+[wprobe]        funcs 18/18 recovered (0 spurious) … compiler(truth)=watcom, mosura(cspec)=watcom
+[wprologue_sf]  funcs 17/17 recovered (0 spurious) … compiler(truth)=watcom, mosura(cspec)=watcom
+```
+
+`noret`'s skip stays and is **not** cspec-caused: it is the only dynamically-linked fixture, so its
+PLT stubs and `EXTERNAL` slot are real functions that an `nm`-derived truth cannot express. A
+different problem with a different fix.
+
+⚠️ **Production detection is unchanged and should stay that way.** A real Watcom binary links a
+real CRT and carries the banner, so detection already works where evidence exists. The corpus was
+always the artificial case.
+
 ### Two prerequisites every matrix cell inherits (learned building §4's cell)
 
 **(a) A cell cannot reach the Watcom pattern file by default.** The `(language, compiler)` decision
