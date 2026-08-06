@@ -65,6 +65,61 @@ register `Disassembler` + `FunctionCreator` in `fs_mgr`. Collapsing the two-mana
 retirement — Ghidra has one manager per program — but `analysis/mod.rs:239-245` documents a real
 ordering constraint, so it is its own step.
 
+### ⭐⭐ CAUSE B (independent of the above) — `r.min`-only range iteration DROPS ENTRIES
+
+⚠️ **Not confined to pattern-discovered functions, and it broke the Cause-A framing.** Widening the
+entry-coverage scan to the WHOLE corpus (not just the gcc-x86-64 + watcom-x86-32 columns) gives
+**19 functions with the entire body uncovered**, not 6:
+
+```
+  5   Watcom pattern-discovered   fnpattern@08048120 retorphan@0804812c wprobe@08048666
+                                  wprologue_sf@080485e3 wprobe@08048112
+  1   noret.gcc-x86-64@00404000   block EXTERNAL, UNINITIALIZED, not in truth — Ghidra makes the
+                                  same degenerate stub. Excluded on PRINCIPLE, not by exception.
+ 13   aarch64 / m68k              <not-in-truth>, no inbound refs, 4-12 byte bodies — the already
+                                  carved-out spurious entries from unrecovered computed dispatches
+                                  (`byte_pattern_carve_out` arm 2). Pre-existing recorded gap.
+```
+
+**`wprobe@08048112` = `p_leaf_` is CALL-REACHABLE**, which is what breaks the framing:
+
+```
+refs=["UNCONDITIONAL_CALL <- 0804856c [cu=true fn=Some(08048548)]"]
+804856c:  e8 a1 fb ff ff    call 0x8048112     <- a plain direct call inside main_, decoded
+```
+
+A function reached by an ordinary `call`, from an instruction that **is** in the listing, has its
+entire body undisassembled. So *"pattern-discovered functions are absent from the listing"* was too
+narrow — it was this file's framing and the wider survey refuted it.
+
+**The mechanism.** `wprobe`'s truth has three functions at three CONSECUTIVE addresses —
+`08048110 sink_`, `08048111 __CHK`, `08048112 p_leaf_` — which coalesce into one `AddressSet` range:
+
+```
+[dbg-fncreate] TARGET 08048112 IS in the set; its range is 08048111..08048112;
+               only r.min=08048111 will be processed -> dropped=true
+```
+
+`FunctionCreator::added` (`analyzers/mod.rs:310`) does `for r in set.ranges() { ... r.min ... }` and
+`Disassembler::added` (`analyzers/mod.rs:160`) does `set.ranges().map(|r| r.min)`. **Both discard
+every address in a range except the first.** Ghidra does neither:
+
+- `CreateFunctionCmd.java:158` — `AddressIterator iter = origEntries.getAddresses(true);` — *every* address.
+- `DisassembleCommand.java:235-266` — `while (!subRangeSet.isEmpty()) { Address nextAddr = subRangeSet.getMinAddress(); ... subRangeSet.delete(nextAddr, nextAddr); ... }` — it **DRAINS** each range one address at a time.
+
+Taking the minimum once and dropping the rest is a mis-port, not a design choice. ⚠️ **Reach is wider
+than Cause A**: any two requested addresses that are adjacent collapse, *and* a requested address
+collapses into any already-notified decoded extent it abuts, since the Disassembler notifies its own
+full `decoded` extent back into the same pending set.
+
+**Two causes, one symptom — they must land as SEPARATE changes** or the WAR2 delta is unattributable.
+Cause A accounts for the four pattern-discovered orphans; Cause B accounts for `p_leaf_`.
+
+**Prediction on the record before either landed:** Cause B alone moves the listing figure (374/3018)
+non-trivially and leaves the function COUNT roughly unchanged (it changes what gets *disassembled*,
+not what gets *discovered*); Cause A alone moves the count upward *and* the listing figure.
+**Falsifiers, named in advance:** B moving the count a lot, or A not moving it at all.
+
 ### ⭐ THE 12, ANSWERED BY THE GHIDRA ORACLE 2026-08-06 — 8 are a RECALL GAP, not a scope question
 
 Asked Ghidra directly rather than reasoning about what it would do: `analyzeHeadless` whole-image on
