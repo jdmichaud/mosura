@@ -482,6 +482,24 @@ impl Analyzer for FunctionStartAnalyzer {
         // disassembly channel (the `Disassembler` at `DISASSEMBLY`), so both go there; Ghidra's
         // split only changes *when* within the queue.
         if !st.disassem_result.is_empty() {
+            // Only schedule addresses this search has not already asked for. Ghidra's manager
+            // drops a request whose address it has already disassembled; mosura's re-fires the
+            // INSTRUCTION-typed registrations (`AfterCode`/`AfterData`) whenever *any* code unit
+            // is added, so a location that never becomes an instruction — a `codeboundary` match
+            // on bytes that fail to decode — is re-proposed on every re-entry, re-triggering the
+            // pass with an identical result set forever. Measured on WAR2 before this guard:
+            // `AfterCode` re-ran indefinitely at ~22ms a turn, always `disasm=375 funcs=4`.
+            // Deduping against what we have already requested makes the pass converge without
+            // changing which addresses are ever requested.
+            let fresh = SCHEDULED.with(|s| {
+                let mut s = s.borrow_mut();
+                let fresh = st.disassem_result.subtract(&s);
+                *s = s.union(&fresh);
+                fresh
+            });
+            st.disassem_result = fresh;
+        }
+        if !st.disassem_result.is_empty() {
             sched.code_defined(&st.disassem_result);
         }
         // :846 `setProtectedLocations(codeLocations)` — mosura has no analyzer that clears code,
@@ -495,7 +513,24 @@ impl Analyzer for FunctionStartAnalyzer {
             let potential = st.potential_func_result.subtract(&st.func_result);
             // :853 — kick off a later analyzer to create the functions after the fallout from
             // disassembly has settled.
-            sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &potential);
+            //
+            // Ghidra's `scheduleOneTimeAnalysis` is exactly that — one time. mosura's re-queues on
+            // every call, so proposing the same addresses again re-runs the delayed creator, whose
+            // work re-triggers this INSTRUCTION-typed pass, which proposes them again: a lockstep
+            // ping-pong. Measured on `fnpattern.watcom-x86-32` before this guard —
+            // `MOSURA_ANALYSIS_TRACE=1` showed 570,619 invocations each of "Function Start Search
+            // delayed" and "Function Start Search After Code" in 15 seconds, against 6 of
+            // Disassembly. Propose each address at most once per run, which is what "one time"
+            // means; it changes nothing about *which* addresses are ever proposed.
+            let fresh = PROPOSED.with(|s| {
+                let mut s = s.borrow_mut();
+                let fresh = potential.subtract(&s);
+                *s = s.union(&fresh);
+                fresh
+            });
+            if !fresh.is_empty() {
+                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &fresh);
+            }
         }
 
         if !st.func_result.is_empty() {
@@ -945,10 +980,47 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
 /// on and off, while mosura gained 3 and 8 entries. (`compgoto.gcc-m68k` is the case where Ghidra
 /// really does gain three — 2 functions with the search off, 5 with it on — so that one is a
 /// Ghidra property, not a port defect.)
+/// **Memoized on the function count.** `compute_function_bodies` walks every function and
+/// re-derives its body, so it is O(all functions). This runs at the top of every `added()`, and
+/// each pass that creates functions provokes another `added()` — on a large program that is
+/// quadratic (WAR2: ~1965 functions re-walked per call). Ghidra has no such call at all: its
+/// bodies are maintained incrementally as code units are created, so this refresh is mosura's
+/// own bookkeeping and skipping a redundant one changes no Ghidra-visible behaviour.
+///
+/// Bodies here can only go stale when the function *set* changes: within the search the only
+/// mutations are function creation (`create_functions`) and scheduled disassembly, and the latter
+/// is applied by the manager's disassembly pass, which recomputes bodies itself. So a refresh is
+/// needed exactly when the count has moved since the last one. The marker is thread-local, which
+/// is also the correct granularity — the test harness analyses different programs on different
+/// threads.
+thread_local! {
+    /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
+    static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    /// Addresses this run has already asked the disassembler for — see the dedupe in `added()`.
+    static SCHEDULED: std::cell::RefCell<AddressSet> =
+        std::cell::RefCell::new(AddressSet::new());
+    /// Addresses this run has already handed to the delayed creator — see the dedupe in `added()`.
+    static PROPOSED: std::cell::RefCell<AddressSet> =
+        std::cell::RefCell::new(AddressSet::new());
+}
+
+/// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
+/// inherits the previous program's state (the harness analyses many programs per thread).
+pub fn reset_body_refresh_memo() {
+    BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
+    SCHEDULED.with(|s| *s.borrow_mut() = AddressSet::new());
+    PROPOSED.with(|s| *s.borrow_mut() = AddressSet::new());
+}
+
 fn refresh_function_bodies(program: &mut Program) {
+    let n = program.function_manager.functions().count();
+    if BODIES_FRESH_AT.with(|c| c.get()) == n {
+        return;
+    }
     if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
         super::compute_function_bodies(spec, ctx, program);
     }
+    BODIES_FRESH_AT.with(|c| c.set(n));
 }
 
 /// `PossibleDelayedFunctionCreator` (FunctionStartAnalyzer.java:987) — "one time analyzer used to

@@ -107,6 +107,7 @@ pub fn analyze(program: &mut Program) {
     // name before disassembly, so a direct call to one stops linear fall-through (Ghidra
     // NoReturnFunctionAnalyzer, FORMAT_ANALYSIS — before disassembly). Faithful name lists
     // from Ghidra's data/ElfFunctionsThatDoNotReturn + PEFunctionsThatDoNotReturn.
+    analyzers::function_start::reset_body_refresh_memo();
     analyzers::noreturn::analyze(program);
 
     let mut mgr = AutoAnalysisManager::new();
