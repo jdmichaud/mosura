@@ -274,6 +274,39 @@ The overlap rule then does the rest: with both the probe pattern (true entry) an
 pattern (+10) matching, `create_functions` keeps the LOWEST — exactly how the save-first family
 fixed the original shift.
 
+**LANDED `a59a886`** — 8 patterns (99 → 107): two frame-then-probe forms, stated plainly because
+`55 89 e5` ahead of the probe already anchors them, and six probe-first forms carrying
+`after="defined"` + `validcode="6"` + `possiblefuncstart`. Gate:
+`ground_truth_parity::watcom_stack_probe_shape_spec` — recall, precision, **that the anchor is the
+probe and not the push run ten bytes in**, and attribution via the analyzer toggle. Measured under
+`cspec=watcom` across every Watcom fixture: **zero spurious anywhere**; revert-checked, both +10
+shifts return without the family.
+
+### What the trailing-push guard buys — measured, and the fixture cannot see it
+
+The lead's condition before trusting the probe-first form. Raw byte scan for
+`68 ?? ?? ?? ?? e8` and how many are followed by a callee-save/`ebp` push:
+
+| binary | bytes | `68..e8` | +save | guard removes |
+| --- | ---: | ---: | ---: | ---: |
+| `wprobe.watcom-x86-32` | 4,492 | 15 | 15 | **0** |
+| `mingw_hello32.exe` (gcc/mingw, cdecl) | 229,835 | 1 | 0 | **1** |
+| every other x86-32 fixture | — | 0 | 0 | 0 |
+
+- **On the fixture the guard buys nothing** — all 15 sequences are real stack probes and all 15
+  pass it. That is the correct behaviour and it means **the fixture cannot demonstrate the guard's
+  precision value**, only its zero recall cost.
+- **On real-world code it removed 1 of 1**: mingw's single `push imm32; call rel32` is not
+  followed by a save push, so the guard removed exactly the false positive it exists for.
+- ⚠️ **Sample size 1.** And the reason is itself worth recording: **gcc/mingw passes arguments with
+  `mov [esp+N]`, not `push`**, so gcc-compiled cdecl code barely produces this sequence at all. The
+  codegen that would stress it is push-args — Watcom `-4s`/`-5s` or MSVC — **which the corpus does
+  not contain**. Cell 2 is therefore the right place to stress this guard, not a WAR2 run.
+
+**Standing caveat:** the probe-first form's false-positive rate is bounded by measurement on
+`wprobe` and by a single real-world case. A WAR2 run would raise confidence; cell 2 would raise it
+more, on a binary where precision is decidable.
+
 **Build note for this cell:** `build_watcom` hardcodes `-s`, so a no-`-s` cell needs it moved into
 the overridable options, and the link needs a `__CHK` stub in the `_cstart` asm — without one
 `wlink` fails with `E2028: __CHK is an undefined reference`, which is itself the proof that the
