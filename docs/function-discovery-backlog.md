@@ -779,6 +779,43 @@ A4 fixup target mid-instruction  0  (of 17511 relocations; ~3178 code-targeted)
 A5 unreachable starts            81 (runs 81)
 ```
 
+### ⭐ A3's ONE SITE, IDENTIFIED 2026-08-06 — and the "embedded switch table" framing was WRONG
+
+A3 was carried for weeks as *"a `jmp` over a case table embedded in a function body"*, with the
+follow-up filed as **"needs Watcom 10.0a under dosemu, because native OW2 places case tables before
+functions under all four opt settings."** Reading WAR2's actual bytes retires that. **The site is
+not a switch table and no compiler flag is involved.**
+
+```
+0006ec80  80 18 00 00  f4 19 00 00  80 1b 00 00  23 1d 00 00     0x1880 0x19f4 0x1b80 0x1d23
+0006eca0  e3 26 00 00  33 29 00 00  a6 2b 00 00  40 2e 00 00     0x26e3 0x2933 0x2ba6 0x2e40
+0006ecb0  00 31 00 00  e9 33 00 00  00 37 00 00  46 3a 00 00     0x3100 0x33e9 0x3700 0x3a46
+0006ece0  00 62 00 00 | 53 51 52 83 3d cc 9f 08 00 00 75 1c
+                        ^ the real function starts at 0006ece3 (save-first: push ebx,ecx,edx)
+```
+
+A **monotonically ascending lookup table** — 0x1880, 0x19f4, 0x1b80 … 0x6200, a curve of some kind
+— sitting in the code segment, ending at `0006ece3` where a real function begins.
+
+**The reported edge is a coincidence of encoding.** At `0006ecb4` the table's dword is
+`e9 33 00 00`, and `e9` is `jmp rel32`. Decoded as an instruction that is `jmp +0x33`, whose target
+is `0x6ecb4 + 5 + 0x33 = 0x6ecec` — precisely the address A3 reported, and mid-instruction because
+the real code stream there is offset differently.
+
+So A3 is **data-in-the-code-segment decoded as code**, not a compiler layout choice. The correct
+question is *why anything decoded that table*, and the correct fixture is a `const` lookup table the
+linker places in the text segment — reproducible with any compiler, no dosemu required. That is a
+strictly easier fixture than the one this item was blocked on.
+
+**`00064bdb` (§ the 12) is the same class**: its bytes are dword pointers `0x00064ca9`, `0x00064cb6`,
+`0x00064d17` — a pointer table in the code segment, with a tracker "function" recorded inside it.
+Two of the track's open items are one phenomenon.
+
+⚠️ The lesson is the recurring one: the hypothesis named a *mechanism* (compiler emits table
+mid-function) and the follow-up work was scoped to reproduce that mechanism — a dosemu compile
+matrix — when four lines of `readelf` + a byte dump refuted it. **Read the bytes at the site before
+scoping work to reproduce a shape.** See [[could-it-have-come-out-otherwise]].
+
 - **A1 = 0** — not one instruction outside what the LE object table itself marks executable;
   `obj2_data` untouched.
 - **A2 = 0** — no offcut start in 132,356 instructions.
