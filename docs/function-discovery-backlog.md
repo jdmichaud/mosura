@@ -260,53 +260,55 @@ whole version axis rather than needing a per-cell measurement.
 (the tracker covers 71.4% of the code object, so a hit in a gap is undecidable). Precision is only
 measurable on a self-compiled binary where every function is known — that is what the matrix is for.
 
-## 6. Open defect: 7,322 extra instruction starts (over-decode)
+## 6. Over-decode — ⛔ CLOSED 2026-08-06, NOT A DEFECT
 
-255 contiguous runs, 104.4% of Ghidra's code coverage — data decoded as code. It produces almost no
-bad functions (3 in-body entries) but it is real over-decoding with **no live hypothesis**. Three
-candidates are dead **by measurement** — do not retry them:
-
-- `mustTerminate=true` (`isValidSubroutine`) — measured: function sets identical, −0 +0;
-- the flow-disassembler bounds (`708ac08`) — measured: identical;
-- the address-table "code target vs function start" thread — refuted (the relocation run at the
-  suspect site is a dispatch/vtable, targets scattered across many functions).
-
-**⛔ RETRACTED — the "7 concrete addresses" thread was mine and it was wrong.** I recorded the 7
-entries with "no code unit ending immediately before them" as an over-decode fingerprint. The
-addresses, once dumped, are not one:
+**mosura decodes nothing it should not.** Measured absolutely on WAR2 @ `473c887`, with the
+tool's positive control passing first:
 
 ```
-0001dcc1  55 89 e5 83 ec 04 31 db   mosura fn 0001dcbc  delta 5
-000484b8  55 89 e5 83 ec 10 31 d2   mosura fn 000484b4  delta 4
-0004dabf  55 89 e5 83 ec 0c 8d 4d   mosura fn 0004dabc  delta 3
-00057951  55 89 e5 81 ec d0 00 00   mosura fn 0005794c  delta 5
-000592dd  55 89 e5 83 ec 04 b9 08   mosura fn 000592d8  delta 5
-000599fc  55 89 e5 83 ec 04 89 c3   mosura fn 000599f8  delta 4
-00060270  fb 83 e4 fc 89 e3 89 1d   mosura fn 000601f8  delta 120
+self-test: A1, A2, A3 each detect a planted violation and stay silent when clean
+== WAR2.EXE ==   instructions 132356   decoded bytes 387761
+  obj1_text  00010000..0007c49f  exec=true
+  obj2_data  00080000..000ab2ff  exec=false
+A1 non-executable decode      starts=0  bytes=0  runs=0
+A2 offcut starts              0
+A3 flow into mid-instruction  1     0006ecb4 -> 0006ecec
+A5 unreachable starts         81 (runs 81)
 ```
 
-**Six are the entry-shift artifact again** — tracker at the `push ebp`, mosura at the true
-save-first entry — i.e. members of the 50, not a distinct class. They landed in the "no code unit
-ends here" bucket only because the bucketing keyed on *a code unit ending exactly at the tracker
-entry*, and mosura's decode there starts earlier and spans it. **The classifier produced the
-bucket, not the binary.**
+**A1 = 0**: not one instruction outside what the LE object table itself marks executable, and
+`obj2_data` untouched. **A2 = 0**: no offcut start in 132,356 instructions.
 
-**The 7th is real but is also not §6.** `00060270` sits inside `_cstart_` (`000601f8`, WAR2's LE
-entry thunk per `seed_labels.py`); `fb 83 e4 fc 89 e3` is mid-CRT-init code, not a prologue. It is
-the one genuinely-absent function of the 51 and the gap report's seed table reaches it by
-`UNCONDITIONAL_JUMP` from `000601f8`. One tail-jump-from-the-entry-thunk case, worth one look, not
-a class.
+So "7,322 extra instruction starts / 104.4% of Ghidra's code coverage" was never over-decode on
+our side. It was measuring **Ghidra's UNDER-decode** — the differential named a difference that
+was a defect on neither side, and the item existed only because the difference was read as ours.
+Three hypotheses were killed chasing it (`mustTerminate`, the flow-disassembler bounds, the
+address-table thread) before anyone asked whether the premise was sound.
 
-**So §6's evidence is unchanged: 7,322 starts and 255 runs, and nothing else.**
+**This is the third item on this track to dissolve under measurement** — §1, the no-return
+diagnosis, and now §6 — and in every case the culprit was a differential or a derived summary,
+never the binary. The standing consequence is recorded at the top of this file and in
+[[absolute-vs-differential-wrongcode]]: **before hunting a defect stated as a differential, build
+an absolute measure and give it a positive control.** `docs/over-decode-measure.md` +
+`examples/over_decode` are that measure, and are reusable.
 
-### ⚠️ Both of those figures are DIFFERENTIAL — do not treat them as primitive
+### Residuals, both small and both real
 
-"7,322 extra starts" and "104.4% of Ghidra's code coverage" are outputs of a comparison against
-Ghidra's decode. Per [[absolute-vs-differential-wrongcode]] that is exactly the shape that hides a
-defect present on both sides, and — as the entry-shift artifact showed twice — it is also the shape
-that manufactures a difference that is not a defect on either side. **Before spending a round on
-§6, replace its magnitude with an ABSOLUTE, self-contained measure.** Proposed spec in
-`docs/over-decode-measure.md`.
+- **A3 = 1** — `0006ecb4 -> 0006ecec`, one flow edge landing mid-instruction, in 132,356
+  instructions. A genuine self-consistency violation that no comparison artifact can explain.
+  Needs the bytes at `0006ecb4..0006ecf0` to diagnose; not yet looked at.
+- **A5 = 81 unreachable starts** — probably the byte-pattern search *working*: `Function Start
+  Search` exists to create functions with no inbound flow, so it populates A5 by construction.
+  Before treating any of it as signal, ablate the four FSS analyzers and subtract. Only starts
+  that are neither pattern-discovered nor flow-reachable are interesting.
+- **A4 was NOT measured.** The run predates `77c8351` — provable from the self-test line, which
+  names only A1-A3 (the current build prints A4 too). A4 asks whether any *fixup target* lands
+  mid-instruction, which is misalignment **inside** executable memory and is therefore invisible
+  to A1. Given A3 found exactly that shape once, A4 over WAR2's full fixup table is the natural
+  next sample and costs one re-run.
+
+**Part B (provenance by ablation) deliberately NOT built.** Its precondition was "A1 shows
+something to attribute"; A1 is 0, so it would attribute nothing.
 
 ## 7. Handed to warcraft2-re, awaiting their verdict
 

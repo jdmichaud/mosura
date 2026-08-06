@@ -1,6 +1,15 @@
 # An absolute measure of over-decode (spec for §6)
 
-**Status:** spec, 2026-08-06. Written because §6's only evidence — "7,322 extra instruction starts,
+**Status:** ✅ USED AND VINDICATED, 2026-08-06 — it closed §6. Part A implemented in
+`crates/mosura/examples/over_decode.rs`; Part B deliberately never built (its precondition,
+"A1 shows something to attribute", came out false). Result on WAR2: **A1 = 0, A2 = 0**, so the
+"7,322 extra starts" differential was measuring Ghidra's under-decode, not mosura's over-decode.
+
+⚠️ **Quote the self-test line with every result.** It doubles as a build identifier: the run that
+closed §6 printed `A1, A2, A3 …`, which is how we know it predated A4 and that A4 is still
+unmeasured on WAR2.
+
+**Status of the original spec:** spec, 2026-08-06. Written because §6's only evidence — "7,322 extra instruction starts,
 255 runs, 104.4% of Ghidra's code coverage" — is **differential against Ghidra's decode**, and this
 track has now been burned twice by treating a derived summary as primitive.
 
