@@ -73,7 +73,7 @@ A third independent confirmation of the order came free: Open Watcom v2's own sa
 `wprologue.watcom-x86-32` read `53 51 52 56`, `51 56 57`, `56 57`. Fixture function sets unmoved
 (fnpattern 5, wprologue 15, lestruct 4).
 
-## 4. Save-first regression fixture (closes a real gate gap)
+## 4. Save-first regression fixture (closes a real gate gap) — ✅ LANDED `cd70db7`
 
 `oracle/ground-truth/src/wprologue.c` gates recall 15/15 and precision 0-spurious — but only for
 **frame-first**, because modern Open Watcom emits frame-first while WAR2 is save-first. The
@@ -97,6 +97,25 @@ have no `sub esp`, so its frame was traceability-only, emitted after the saves �
 `GenProlog` (`bld/cg/intel/c/i86proc.c`) never does. That unresolved difference is warcraft2-re's
 `cgflag:ecx-pre-frameptr-save` blocker (~1235 of their rows). A fixture gating the shape is all a
 regression gate needs.
+
+**Landed:** `wprologue_sf.watcom-x86-32` via `build_watcom wprologue_sf "-4r -fpi87 -od"` — Recipe
+B, on the **native** OW2 toolchain, no dosemu. `src/wprologue_sf.c` is a one-line
+`#include "wprologue.c"` so the twins cannot drift; all 15 inherited functions come out save-first,
+run lengths 2..5, `p_leaf_` = `53 51 52 56 57 55 89 e5`. (Recipe A also works natively — OW's own
+`#pragma aux __doalloca` from `bld/hdr/linux/h/malloc.h` supplies `alloca`, since the corpus
+toolchain root has `binl/` only and no headers.)
+
+Two things had to be fixed before the gate measured anything, **both of which apply to every §5
+matrix cell**:
+- the fixture needed an ORPHAN (`sf_orphan_fn_`, plus `sf_trail_fn_` called from the asm stub to
+  keep it off the section edge). Without one, recall is vacuous: every function in `wprologue.c` is
+  called from `main`, and it scored 15/15 recall + 0 spurious with the byte-pattern analyzers OFF;
+- the fixture could not reach the Watcom pattern file at all — see §5.
+
+Gate: `ground_truth_parity::watcom_save_first_shape_spec`. cspec=watcom 17/17 + 0 spurious ·
+orphan gone with the byte-pattern search off · cspec=gcc misses the entry and marks it **+2**,
+which is the prologue shift reproduced end to end on a self-compiled binary for the first time
+(`src/fnpattern.c` property 1 records that as something this corpus "CANNOT" do).
 
 ## 5. ⭐ Generalise across the Watcom matrix (STANDING SCOPE RULE)
 
@@ -125,6 +144,33 @@ fixture whose truth comes from the compiler (symbol table for ELF, linker map fo
 **recall and precision per cell**. Cells that need dosemu can be committed as artifacts the way
 `oracle/codegen-probes/watcom/<rev>.{obj,code}` already are, so CI never needs the historical
 toolchain.
+
+### Two prerequisites every matrix cell inherits (learned building §4's cell)
+
+**(a) A cell cannot reach the Watcom pattern file by default.** The `(language, compiler)` decision
+tree picks the pattern file, and `loader::watcom::compiler_spec_id` decides the compiler from the
+**run-time copyright banner** — a string in the C run-time, not in anything the compiler emits. The
+corpus links `option nodefaultlib` with a hand-written `_cstart_`, so **no ground-truth binary
+carries the banner and every one detects as `cspec=gcc`** (measured: `wprologue`, `wprologue_sf`,
+`fnpattern`). Until §4 this meant `specs/patterns/x86watcom_patterns.xml` had **zero fixture
+coverage of any kind**, and any gate written against a Watcom-compiled fixture was silently
+measuring Ghidra's `x86gcc_patterns.xml`. `MOSURA_X86_32_CSPEC=watcom|gcc` routes one binary
+through both; it is inert when unset. Every new cell needs the same routing, or a linked CRT.
+
+**(b) A cell needs an orphan, or its recall proves nothing.** If every function is call-reachable,
+the reference-driven analyzers recover them all and the pattern set is never load-bearing —
+measured on `wprologue_sf` before its orphan existed: 15/15 recall and 0 spurious with the
+byte-pattern analyzers OFF. `src/fnpattern.c` properties 2-5 are the specification for this.
+
+### The `compiler version` axis is already partly answered — in the direction that helps
+
+The rigid save order `ebx ecx edx esi edi` is **Watcom codegen, not a WAR2-era artifact**. Three
+independent sources agree: warcraft2-re's WAR2 census (1317 conforming / 0 nonconforming, Watcom
+10.0a), Watcom 10.0a under `-od` compiled directly, and **native Open Watcom v2** — whose saves in
+our own `wprologue.watcom-x86-32` read `53 51 52 56`, `51 56 57`, `56 57`, and in
+`fnpattern.watcom-x86-32` read `52`, `56 57`. Two decades of compiler versions, same order. The
+same holds for saves emitted *after* a frame setup (§2), so the ordering guard should survive the
+whole version axis rather than needing a per-cell measurement.
 
 ⚠️ Do **not** tune the pattern set against WAR2's function count. Precision is unmeasurable there
 (the tracker covers 71.4% of the code object, so a hit in a gap is undecidable). Precision is only
