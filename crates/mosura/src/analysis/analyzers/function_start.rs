@@ -1191,6 +1191,74 @@ mod tests {
         );
     }
 
+    /// WATCOM'S PUSH ORDER IS PART OF THE SPEC — the save-first family accepts a subsequence of
+    /// `ebx ecx edx esi edi` and nothing else.
+    ///
+    /// The measured invariant (warcraft2-re's census of WAR2's 1317 save-first functions: 1317
+    /// conforming, 0 nonconforming; independently reproduced by Watcom 10.0a under `-od` and by
+    /// Open Watcom v2 in `wprologue.watcom-x86-32`) is a property of the *pattern file*, and the
+    /// ground-truth fixtures cannot see it: `wprologue` and `fnpattern` are both built `-of+`, so
+    /// their prologues are frame-FIRST and this family never fires on them. This is its gate.
+    #[test]
+    fn save_first_family_enforces_watcoms_push_order() {
+        /// `ebx ecx edx esi edi` — the order Watcom's codegen emits saves in.
+        const ORDER: [u8; 5] = [0x53, 0x51, 0x52, 0x56, 0x57];
+        let watcom = crate::paths::specs_dir().join("patterns/x86watcom_patterns.xml");
+        // `c3` (the previous function's ret) then the run, then the frame setup; the entry is +1.
+        let probe = |run: &[u8], mov: &[u8]| -> BTreeSet<u64> {
+            let mut bytes = vec![0xc3u8];
+            bytes.extend_from_slice(run);
+            bytes.push(0x55);
+            bytes.extend_from_slice(mov);
+            bytes.extend_from_slice(&[0x83, 0xec, 0x04, 0x89, 0xc3, 0x31, 0xd2]);
+            marks(&watcom, &bytes)
+        };
+
+        // RECALL — all 31 non-empty ordered subsequences, in both encodings of `mov ebp,esp`.
+        for mov in [&[0x89u8, 0xe5][..], &[0x8b, 0xec][..]] {
+            for mask in 1u32..32 {
+                let run: Vec<u8> =
+                    (0..5).filter(|i| mask & (1 << i) != 0).map(|i| ORDER[i]).collect();
+                assert!(
+                    probe(&run, mov).contains(&1),
+                    "conforming save run {run:02x?} + {mov:02x?} must mark the first push"
+                );
+            }
+        }
+
+        // PRECISION (a) — reordering never occurs, so a reordered run is not a prologue.
+        for run in [
+            &[0x51u8, 0x53][..],       // ecx before ebx
+            &[0x52, 0x51][..],         // edx before ecx
+            &[0x56, 0x52][..],         // esi before edx
+            &[0x57, 0x56][..],         // edi before esi
+            &[0x53, 0x52, 0x51][..],   // ebx edx ecx
+            &[0x57, 0x53, 0x51][..],   // edi first
+        ] {
+            assert!(
+                !probe(run, &[0x89, 0xe5]).contains(&1),
+                "reordered run {run:02x?} must NOT mark a function start"
+            );
+        }
+
+        // PRECISION (b) — only the five callee-saves appear in the run. The old `01010...` form
+        // also admitted eax (0x50), esp (0x54) and a second ebp (0x55).
+        for run in [&[0x50u8, 0x53][..], &[0x54, 0x53][..], &[0x55, 0x53][..], &[0x53, 0x50][..]] {
+            assert!(
+                !probe(run, &[0x89, 0xe5]).contains(&1),
+                "run {run:02x?} contains a non-callee-save push and must NOT mark a start"
+            );
+        }
+
+        // PRECISION (c) — the run never exceeds 5, because there are only five callee-saves
+        // besides EBP. A 6-push run necessarily repeats or leaves the set, so it cannot match;
+        // the conforming 5-run one byte in still does, and `create_functions` picks the lowest
+        // match, so the extra byte does not silently move an entry.
+        let six = probe(&[0x53, 0x53, 0x51, 0x52, 0x56, 0x57], &[0x89, 0xe5]);
+        assert!(!six.contains(&1), "a 6-push run must NOT mark a function start; got {six:?}");
+        assert!(six.contains(&2), "the conforming 5-run inside it must still mark; got {six:?}");
+    }
+
     /// The overlap rule that makes a family of shifted-by-one push-run patterns safe to state.
     /// A 5-push prologue matches the 5-push pattern at the entry, the 4-push pattern one byte in,
     /// and so on; `CreateFunctionCmd` iterates ascending and Ghidra's listing refuses a function

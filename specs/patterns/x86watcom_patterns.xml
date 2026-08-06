@@ -44,59 +44,356 @@
 
   <!-- =========================================================================================
        (1) THE SAVE-FIRST FAMILY — mosura's, and the reason this file exists.
-       A run of 1..5 register-save pushes, then `push ebp; mov ebp,esp`. The match is marked at
-       the FIRST PUSH, which is the true function entry.
+       A run of 1..5 callee-save pushes IN WATCOM'S FIXED ORDER, then `push ebp; mov ebp,esp`.
+       The match is marked at the FIRST PUSH, which is the true function entry.
+
+       THE ORDER IS RIGID — measured, not assumed. warcraft2-re's census of WAR2's 1317
+       save-first functions finds the run is always a SUBSEQUENCE of
+
+           ebx (0x53)   ecx (0x51)   edx (0x52)   esi (0x56)   edi (0x57)
+
+       with **1317 conforming and 0 nonconforming**; reordering never occurs. It is a property
+       of Watcom's codegen rather than of one binary — Watcom 10.0a under `-od` reproduces the
+       same order independently, and so does modern Open Watcom v2 in this corpus's own
+       `wprologue.watcom-x86-32`, whose (frame-first) saves read `53 51 52 56`, `51 56 57`,
+       `56 57`: every one a subsequence of the same list, from a compiler two decades newer.
+
+       THE RUN NEVER EXCEEDS 5, by construction — there are only five callee-saves besides EBP,
+       so a run of 6+ before `55 89 e5` is a false positive. (`src/wprologue.c`'s note that "the
+       push run reaches 6" counts the frame setup's own `push ebp` inside the run: 5 saves + EBP
+       is the same fact.)
+
+       WHY THE ALTERNATIVES ARE ENUMERATED. This family previously accepted any `01010...`
+       (0x50-0x57) run of length 1..5, which also admits `push eax`/`push esp`/`push ebp`
+       anywhere in the run and admits every reordering. Ghidra's ditted-bit syntax matches one
+       byte per token and has no alternation, so an ordered subsequence has to be spelled out —
+       and the 31 non-empty subsequences of a 5-element list are cheap to state. Strictly
+       tighter than the run form, at zero recall cost against either oracle.
+
+       Ordered by run length, then by position in the list above; x2 for the two encodings of
+       `mov ebp,esp` (`89 e5`, 1556 tracker functions; `8b ec`, 44).
        ========================================================================================= -->
 
+  <!-- ==== `89 e5` ================================================================ -->
+  <!-- run length 1 -->
   <pattern>
-     <data>01010... 0x5589e5</data> <!-- PUSH reg : PUSH EBP : MOV EBP,ESP -->
+     <data>0x535589e5</data> <!-- push ebx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 0x5589e5</data>
+     <data>0x515589e5</data> <!-- push ecx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 0x5589e5</data>
+     <data>0x525589e5</data> <!-- push edx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 01010... 0x5589e5</data>
+     <data>0x565589e5</data> <!-- push esi -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 01010... 01010... 0x5589e5</data>
+     <data>0x575589e5</data> <!-- push edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 2 -->
+  <pattern>
+     <data>0x53515589e5</data> <!-- push ebx/ecx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525589e5</data> <!-- push ebx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53565589e5</data> <!-- push ebx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53575589e5</data> <!-- push ebx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525589e5</data> <!-- push ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51565589e5</data> <!-- push ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51575589e5</data> <!-- push ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x52565589e5</data> <!-- push edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x52575589e5</data> <!-- push edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x56575589e5</data> <!-- push esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 3 -->
+  <pattern>
+     <data>0x5351525589e5</data> <!-- push ebx/ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351565589e5</data> <!-- push ebx/ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5351575589e5</data> <!-- push ebx/ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352565589e5</data> <!-- push ebx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352575589e5</data> <!-- push ebx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5356575589e5</data> <!-- push ebx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152565589e5</data> <!-- push ecx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152575589e5</data> <!-- push ecx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5156575589e5</data> <!-- push ecx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5256575589e5</data> <!-- push edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 4 -->
+  <pattern>
+     <data>0x535152565589e5</data> <!-- push ebx/ecx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535152575589e5</data> <!-- push ebx/ecx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535156575589e5</data> <!-- push ebx/ecx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535256575589e5</data> <!-- push ebx/edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515256575589e5</data> <!-- push ecx/edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 5 -->
+  <pattern>
+     <data>0x53515256575589e5</data> <!-- push ebx/ecx/edx/esi/edi -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
 
-  <!-- The `8b ec` encoding of `mov ebp,esp` (44 tracker functions). -->
+  <!-- ==== `8b ec` ================================================================ -->
+  <!-- run length 1 -->
   <pattern>
-     <data>01010... 0x558bec</data> <!-- PUSH reg : PUSH EBP : MOV EBP,ESP (8b encoding) -->
+     <data>0x53558bec</data> <!-- push ebx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 0x558bec</data>
+     <data>0x51558bec</data> <!-- push ecx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 0x558bec</data>
+     <data>0x52558bec</data> <!-- push edx -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 01010... 0x558bec</data>
+     <data>0x56558bec</data> <!-- push esi -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>
   <pattern>
-     <data>01010... 01010... 01010... 01010... 01010... 0x558bec</data>
+     <data>0x57558bec</data> <!-- push edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 2 -->
+  <pattern>
+     <data>0x5351558bec</data> <!-- push ebx/ecx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5352558bec</data> <!-- push ebx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5356558bec</data> <!-- push ebx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5357558bec</data> <!-- push ebx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5152558bec</data> <!-- push ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5156558bec</data> <!-- push ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5157558bec</data> <!-- push ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5256558bec</data> <!-- push edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5257558bec</data> <!-- push edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x5657558bec</data> <!-- push esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 3 -->
+  <pattern>
+     <data>0x535152558bec</data> <!-- push ebx/ecx/edx -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535156558bec</data> <!-- push ebx/ecx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535157558bec</data> <!-- push ebx/ecx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535256558bec</data> <!-- push ebx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535257558bec</data> <!-- push ebx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x535657558bec</data> <!-- push ebx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515256558bec</data> <!-- push ecx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515257558bec</data> <!-- push ecx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x515657558bec</data> <!-- push ecx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x525657558bec</data> <!-- push edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 4 -->
+  <pattern>
+     <data>0x53515256558bec</data> <!-- push ebx/ecx/edx/esi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515257558bec</data> <!-- push ebx/ecx/edx/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53515657558bec</data> <!-- push ebx/ecx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x53525657558bec</data> <!-- push ebx/edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <pattern>
+     <data>0x51525657558bec</data> <!-- push ecx/edx/esi/edi -->
+     <codeboundary/>
+     <possiblefuncstart/>
+  </pattern>
+  <!-- run length 5 -->
+  <pattern>
+     <data>0x5351525657558bec</data> <!-- push ebx/ecx/edx/esi/edi -->
      <codeboundary/>
      <possiblefuncstart/>
   </pattern>

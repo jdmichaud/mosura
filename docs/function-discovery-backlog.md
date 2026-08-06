@@ -36,7 +36,7 @@ investigated.
 187 without / 52 with). Needs the precision guards in §3 to avoid over-matching, since bare
 `55 89 e5` is a common 3-byte sequence.
 
-## 3. Tighten the pattern with two measured invariants (free precision)
+## 3. Tighten the pattern with two measured invariants (free precision) — ✅ LANDED
 
 From warcraft2-re's census of 1317 save-first functions — both are zero-recall-cost:
 
@@ -48,6 +48,14 @@ From warcraft2-re's census of 1317 save-first functions — both are zero-recall
 
 Our current patterns accept any `0x50`–`0x57` run of length 1–5, so enforcing the order is strictly
 tighter at no cost.
+
+**Landed:** the save-first family is now the 31 non-empty ordered subsequences × the two `mov
+ebp,esp` encodings (62 patterns), gated by
+`function_start.rs::save_first_family_enforces_watcoms_push_order` — the ground-truth fixtures
+cannot see this property, since `wprologue` and `fnpattern` are both `-of+`, i.e. frame-first.
+A third independent confirmation of the order came free: Open Watcom v2's own saves in
+`wprologue.watcom-x86-32` read `53 51 52 56`, `51 56 57`, `56 57`. Fixture function sets unmoved
+(fnpattern 5, wprologue 15, lestruct 4).
 
 ## 4. Save-first regression fixture (closes a real gate gap)
 
