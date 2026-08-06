@@ -262,22 +262,28 @@ measurable on a self-compiled binary where every function is known — that is w
 
 ## 6. Over-decode — ⛔ CLOSED 2026-08-06, NOT A DEFECT
 
-**mosura decodes nothing it should not.** Measured absolutely on WAR2 @ `473c887`, with the
+**mosura decodes nothing it should not.** Measured absolutely on WAR2 @ `77c8351`, with the
 tool's positive control passing first:
 
 ```
-self-test: A1, A2, A3 each detect a planted violation and stay silent when clean
+self-test: A1, A2, A3, A4 each detect a planted violation and stay silent when clean
 == WAR2.EXE ==   instructions 132356   decoded bytes 387761
   obj1_text  00010000..0007c49f  exec=true
   obj2_data  00080000..000ab2ff  exec=false
-A1 non-executable decode      starts=0  bytes=0  runs=0
-A2 offcut starts              0
-A3 flow into mid-instruction  1     0006ecb4 -> 0006ecec
-A5 unreachable starts         81 (runs 81)
+A1 non-executable decode         starts=0  bytes=0  runs=0
+A2 offcut starts                 0
+A3 flow into mid-instruction     1        0006ecb4 -> 0006ecec
+A4 fixup target mid-instruction  0  (of 17511 relocations; ~3178 code-targeted)
+A5 unreachable starts            81 (runs 81)
 ```
 
-**A1 = 0**: not one instruction outside what the LE object table itself marks executable, and
-`obj2_data` untouched. **A2 = 0**: no offcut start in 132,356 instructions.
+- **A1 = 0** — not one instruction outside what the LE object table itself marks executable;
+  `obj2_data` untouched.
+- **A2 = 0** — no offcut start in 132,356 instructions.
+- **A4 = 0 against a live fixup table** — and this is the check that settles it, because it is the
+  only one where the **file itself supplies both the address and the claim that it is code**.
+  Every code-targeted fixup lands exactly on an instruction boundary in our decode. Neither inert
+  (unlike on the ELF fixtures, which have no relocation table) nor differential.
 
 So "7,322 extra instruction starts / 104.4% of Ghidra's code coverage" was never over-decode on
 our side. It was measuring **Ghidra's UNDER-decode** — the differential named a difference that
@@ -292,20 +298,24 @@ never the binary. The standing consequence is recorded at the top of this file a
 an absolute measure and give it a positive control.** `docs/over-decode-measure.md` +
 `examples/over_decode` are that measure, and are reusable.
 
+⚠️ The run above printed A4's denominator as the **total** relocation count. That overstates its
+coverage — A4 only examines fixups whose target is in executable memory (on `lestruct`: 3 of 9).
+Fixed after the fact; the current build prints `(of N CODE-TARGETED fixups; M relocations total)`.
+The conclusion is unaffected (0 offcut is 0 either way) but the denominator was wrong, and a zero
+has to carry the denominator it was measured against.
+
 ### Residuals, both small and both real
 
 - **A3 = 1** — `0006ecb4 -> 0006ecec`, one flow edge landing mid-instruction, in 132,356
   instructions. A genuine self-consistency violation that no comparison artifact can explain.
-  Needs the bytes at `0006ecb4..0006ecf0` to diagnose; not yet looked at.
+  The tool now dumps the source bytes, the instruction the target lands inside, and the offset
+  into it, so **one run diagnoses it** rather than costing a round trip for bytes.
 - **A5 = 81 unreachable starts** — probably the byte-pattern search *working*: `Function Start
   Search` exists to create functions with no inbound flow, so it populates A5 by construction.
   Before treating any of it as signal, ablate the four FSS analyzers and subtract. Only starts
   that are neither pattern-discovered nor flow-reachable are interesting.
-- **A4 was NOT measured.** The run predates `77c8351` — provable from the self-test line, which
-  names only A1-A3 (the current build prints A4 too). A4 asks whether any *fixup target* lands
-  mid-instruction, which is misalignment **inside** executable memory and is therefore invisible
-  to A1. Given A3 found exactly that shape once, A4 over WAR2's full fixup table is the natural
-  next sample and costs one re-run.
+- **A4 measured and clean** (see above). The first run predated it, which was provable from the
+  self-test line naming only A1-A3 — that line is a build identifier as well as a control.
 
 **Part B (provenance by ablation) deliberately NOT built.** Its precondition was "A1 shows
 something to attribute"; A1 is 0, so it would attribute nothing.

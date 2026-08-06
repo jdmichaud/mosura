@@ -60,16 +60,29 @@ fn a3_offcut_flow(edges: &[(u64, u64)], insns: &Insns) -> Vec<(u64, u64)> {
 /// first specified and which is wrong: LE fixups routinely patch operands *inside* instructions
 /// (a `call rel32` displacement, WAR2's `jmp cs:[reg*4+disp]`), so that form fires on every
 /// correctly-decoded relocated call in the image.
-fn a4_offcut_reloc_targets(targets: &[u64], insns: &Insns, exec: &[(u64, u64)]) -> Vec<u64> {
-    targets
+/// Returns `(offcut targets, how many targets were CODE-TARGETED)` — the second is A4's real
+/// denominator. Reporting the total relocation count instead overstates it: most fixups resolve
+/// into data and A4 never examines them. A zero has to carry the denominator it was measured
+/// against, which is the same distinction that let `noreturn.rs` sit ungated (see the module doc).
+fn a4_offcut_reloc_targets(
+    targets: &[u64],
+    insns: &Insns,
+    exec: &[(u64, u64)],
+) -> (Vec<u64>, usize) {
+    let code_targeted: Vec<u64> = targets
         .iter()
         .copied()
         .filter(|&t| exec.iter().any(|&(s, e)| t >= s && t <= e))
+        .collect();
+    let offcut = code_targeted
+        .iter()
+        .copied()
         .filter(|&t| match insns.binary_search_by(|(a, _)| a.cmp(&t)) {
             Ok(_) => false,
             Err(i) => i > 0 && t < insns[i - 1].0 + insns[i - 1].1,
         })
-        .collect()
+        .collect();
+    (offcut, code_targeted.len())
 }
 
 /// Merge `(start, len)` pairs into contiguous runs.
@@ -125,16 +138,18 @@ fn self_test() {
     let insns = [(0x1000, 8), (0x1008, 4)];
     assert_eq!(
         a4_offcut_reloc_targets(&[0x1004], &insns, &[(0x1000, 0x1fff)]),
-        vec![0x1004],
+        (vec![0x1004], 1),
         "A4 must flag a fixup target landing mid-instruction"
     );
-    assert!(
-        a4_offcut_reloc_targets(&[0x1008], &insns, &[(0x1000, 0x1fff)]).is_empty(),
-        "A4 must stay silent when the target is a real instruction start"
+    assert_eq!(
+        a4_offcut_reloc_targets(&[0x1008], &insns, &[(0x1000, 0x1fff)]),
+        (vec![], 1),
+        "A4 must stay silent when the target is a real instruction start, and still count it"
     );
-    assert!(
-        a4_offcut_reloc_targets(&[0x1004], &insns, &[(0x8000, 0x8fff)]).is_empty(),
-        "A4 must ignore targets outside executable memory (that is A1's job)"
+    assert_eq!(
+        a4_offcut_reloc_targets(&[0x1004], &insns, &[(0x8000, 0x8fff)]),
+        (vec![], 0),
+        "A4 must ignore targets outside executable memory (that is A1's job) and not count them"
     );
 
     println!(
@@ -215,16 +230,37 @@ fn main() {
 
     let a3 = a3_offcut_flow(&edges, &insns);
     println!("A3 flow into mid-instruction {}", a3.len());
-    for (f, t) in a3.iter().take(20) {
+    let hex = |a: u64, n: usize| -> String {
+        let w = prog.memory.read_window(mosura::decompile::space::Address::new(prog.default_space, a), n);
+        w.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    };
+    for &(f, t) in a3.iter().take(20) {
+        // The instruction the target lands INSIDE, so the run itself diagnoses the violation
+        // instead of costing another round trip for bytes.
+        let owner = match insns.binary_search_by(|(a, _)| a.cmp(&t)) {
+            Ok(i) => Some(insns[i]),
+            Err(i) if i > 0 => Some(insns[i - 1]),
+            Err(_) => None,
+        };
         println!("     {f:08x} -> {t:08x}");
+        println!("       src   {f:08x}: {}", hex(f, 16));
+        match owner {
+            Some((s, l)) => println!(
+                "       owner {s:08x}+{l} (target is +{} into it): {}",
+                t - s,
+                hex(s, (l as usize).max(16))
+            ),
+            None => println!("       owner: none"),
+        }
     }
 
     let reloc_targets: Vec<u64> =
         prog.relocation_table.relocations().map(|r| r.value).collect();
-    let a4 = a4_offcut_reloc_targets(&reloc_targets, &insns, &exec);
+    let (a4, code_targeted) = a4_offcut_reloc_targets(&reloc_targets, &insns, &exec);
     println!(
-        "A4 fixup target mid-instruction {} (of {} relocations)",
+        "A4 fixup target mid-instruction {} (of {} CODE-TARGETED fixups; {} relocations total)",
         a4.len(),
+        code_targeted,
         reloc_targets.len()
     );
     for t in a4.iter().take(20) {
