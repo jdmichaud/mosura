@@ -8,142 +8,82 @@ against all kinds of binaries, and we must be able to identify functions produce
 compilers under all options that affect function shape**. The test suite has to reflect that.* So
 every item below is judged on whether it generalises, not on whether it moves the WAR2 number.
 
-Current WAR2 state @ `556cdb3` (the diagnostic, not the goal): **2900 functions; 92 missing vs the
-expert tracker's 2120; 3 in-body entries at depths [37,59,65], all shown to be legitimate secondary
-entry points; 872 not-in-tracker; 923 not-in-Ghidra.** (Was 2898 / 94 missing @ `4d28561`.)
+Current WAR2 state @ `556cdb3` (the diagnostic, not the goal): **2900 functions; 2078 of the expert
+tracker's 2120 = 98.0%; 42 genuinely missing; 872 not-in-tracker; 923 not-in-Ghidra.**
 
 ⚠️ Every number in this file is STALE unless stamped with a commit that is an ancestor of HEAD. A
 WAR2 run is ~224s and only the lead runs it; do not quote an unstamped figure.
 
-**The remaining 92, split — this is the number that sets priority:**
+### ⭐ SCORE SHIFT-TOLERANTLY AGAINST THIS TRACKER — a naive entry comparison overstates the gap by 50
+
+The expert tracker records **save-first functions at the `push ebp`, i.e. MID-PROLOGUE**, with the
+callee-save run before it. That is the same `push ebp`-anchoring artifact
+`warcraft2-re/analysis/function-boundary-correction.md` documents and corrected for 132 rows — and
+50 further rows the correction pass missed. mosura sits at the TRUE entry, so an equality test on
+entry addresses scores those 50 as misses when mosura is the more correct of the two:
 
 ```
-51  inside an over-extended mosura body   <- §1; NO pattern can ever reach these
-41  in open space                          <- of which 15 are bare frame-first (§2)
+mosura 0001380c [53 51 52 56 57 55 89 e5]   tracker 00013811   delta 5
+mosura 000142e8 [53 51 52 55 89 e5 81 ec]   tracker 000142eb   delta 3
+mosura 00017850 [53 51 56 57 55 89 e5 83]   tracker 00017854   delta 4
 ```
+
+**A function counts as recovered when mosura has an entry within 1-7 bytes BEFORE the tracker's,
+with a save-first run between them.** Scoring naively:
+
+```
+                                          naive   shift-tolerant
+tracker functions                          2120            2120
+  matched                                  2028            2078
+  MISSING                                    92              42
+```
+
+The 50-function difference is not a code change — it is the same binary measured correctly. Any
+figure in this file or in a report that predates 2026-08-06 and says "92 missing" is the naive
+number. See [[war2-tracker-anchors-mid-prologue]].
 
 ---
 
-## 1. Function bodies over-extend (BIGGEST, and a byte-exactness defect) — ⭐ NEXT
 
-**51 of the 92 remaining missing functions are swallowed by a neighbouring function's computed
-body** — all 51 lie inside a mosura body, **zero** in open space. The pattern matches them; the
-"already inside a function" guard (`FunctionStartAnalyzer.java:403`) then correctly refuses.
+## 1. Function bodies over-extend — ⛔ REFUTED 2026-08-06, NOT A DEFECT
 
-So the defect is not discovery, it is **`compute_function_bodies` running past the real end into
-the next function**. That also means those neighbours carry wrong extents — and a function with a
-wrong extent can never recompile byte-exact however good the decompiler becomes. Same class as the
-3 tracked in-body entries.
+**There was no over-extension.** The item existed because 51 tracker functions mosura "missed" all
+lay inside a mosura body and none in open space — a distribution that looked diagnostic. It was an
+artifact of the naive entry comparison described at the top of this file.
 
-**Why it outranks everything else here:** it is 51 of 92 against §2's 15, it is the only item that
-no pattern work can ever reach, and it is the only one that is *also* a byte-exactness defect
-rather than only a discovery one. §2's residual is explicitly parked behind it.
-
-### Grounding (READ-ONLY, 2026-08-06) — Ghidra's actual mechanism, and three named divergences
-
-Ghidra's path is `CreateFunctionCmd.getFunctionBody(program, entry, includeOtherFunctions=false,
-monitor)` → `new FollowFlow(program, entry, dontFollow, false, false, true).getFlowAddressSet()`,
-with `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIRECTION}`.
-(`Ghidra/Features/Base/.../CreateFunctionCmd.java:613`,
-`Ghidra/Framework/SoftwareModeling/.../block/FollowFlow.java`.) mosura's equivalent walk exists
-**twice** — `analyzers/mod.rs::compute_function_bodies` and
-`analyzers/function_start.rs::flow_body` — and they must not drift apart.
-
-**⛔ 1. The no-return fall-through — a real drift, but REFUTED as the cause of the 51.**
-Measured before building anything: `noreturn::analyze` selects its name list from the memory map
-and **returns early unless a `.dynsym`, `.plt` or `EXTERNAL` block exists** (`noreturn.rs:128-137`).
-WAR2 is a DOS/4GW LE image whose loader names its blocks `objN_text`/`objN_data` (`loader/le.rs:219`)
-— none of the three. Confirmed empirically on all four fast fixtures, including the LE path WAR2
-uses: **`noreturn_flagged = 0` everywhere** (fnpattern, wprologue, wprologue_sf, lestruct). With
-nothing flagged, `falls` is identical with and without the check, so this cannot account for a
-single one of the 51. It is still a genuine defect for ELF/PE targets and still worth closing —
-but not here, and not as this item's fix. Detail of the drift, for whoever does close it:
-Ghidra asks `currentInstr.getFallThrough()` (`FollowFlow.java:556`), which is null after a call to
-a non-returning function. mosura's *disassembler* does exactly this and consults
-`program.is_noreturn` (`analyzers/mod.rs:130`, comment: "Ghidra's followFlow consults
-Function.isNoReturn"). But `compute_function_bodies`, **170 lines further down the same file**
-(:298), recomputes `falls` from the opcode alone:
-
-```rust
-let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
-```
-
-with no no-return check — and `flow_body` has the same omission. So on a target where the analyzer
-*does* run, the decoder stops after `call <noreturn>` and the body walk steps over it. On WAR2 the
-analyzer never runs, so this is latent, not active.
-
-**2. The listing, not a re-decode.** Ghidra continues only if
-`getListing().getInstructionAt(nextAddress) != null` (`FollowFlow.java:566`) — it walks *defined
-instructions*. mosura re-disassembles raw bytes through a 16-byte window and continues regardless,
-so it flows through alignment padding and data that were never code.
-
-**3. No instruction at the entry ⇒ a one-byte body.** `getFunctionBody` returns
-`new AddressSet(entry, entry)` when the listing has no instruction at the entry
-(`CreateFunctionCmd.java:616`). mosura decodes fresh instead; its one-byte fallback fires only when
-the walk yields nothing at all.
-
-**⭐ 4. THE LIVE CANDIDATE — the body walk reads the OPCODE where Ghidra reads the REFERENCE TYPE.**
-Ghidra's `dontFollow` list is expressed in `RefType`s, and a **tail call** (`jmp <function>`) carries
-an `UNCONDITIONAL_CALL` reftype after `SharedReturnAnalyzer` has run — so `FollowFlow` refuses to
-follow it. mosura's walk instead re-derives the decision from the raw p-code opcode: an unconditional
-`jmp` is `OpCode::Branch`, so `falls` is false (correct) **but the branch target is still pushed onto
-the worklist**, and if that target is a function mosura has not yet discovered, the walk runs through
-the whole callee and swallows it. This is exactly the class recorded in
-[[reftype-is-post-override-not-the-instruction]]: *reftypes are analysis OUTPUT; re-deriving flow
-from the instruction discards every override the analyzers computed.* It also needs no no-return
-flag, which is what makes it the surviving candidate after #1 was refuted.
-
-**Opposite direction:** split out as **§8** so neither extent defect hides the other. Do not fix
-the two in one change — a WAR2 delta mixing an over-extension fix with an under-extension fix is
-uninterpretable per function.
-
-### The MVE passes unfixed, and why (2026-08-06)
-
-The obvious formulation — "does any function's body contain another function's entry, or run past
-the next entry?" — was built and run against all four fast fixtures. **Zero on every one**
-(fnpattern 5 funcs, wprologue 15, wprologue_sf 17, lestruct 4). Predicted by the lead, and it is
-vacuous for a structural reason worth stating: over-extension is only *observable* when the
-swallowed function is one mosura does not otherwise know, and on these fixtures mosura recovers
-100% of the truth set — so there is nothing missing to be swallowed. A fixture reproducing this
-needs a function reachable ONLY through the swallowing predecessor's flow.
-
-### The one measurement that discriminates (needs a WAR2 run — lead only)
-
-Candidates #2 and #4 both predict the reported shape and cannot be told apart from here. One
-histogram settles it: **for each of the 51 swallowed entries, what is the last instruction of the
-swallowing body before that entry, and how did the walk reach it?**
+**The histogram that settled it** (lead, WAR2 @ `556cdb3`): of the 51, **44 had a single-byte push
+immediately before them** — `57` push edi ×23, `52` push edx ×13, `56` push esi ×8 — and 7 had no
+code unit ending there. A push is not a fall-through signature, which killed the "flow ran past the
+end" reading. Reading the bytes instead:
 
 ```
-jcc / plain fall-through into the entry   -> the fall-through class (#2, or a missing terminator)
-jmp <the swallowed entry>                 -> the tail-call / reftype class (#4)
-bytes that Ghidra never decoded as code   -> §6's over-decode is UPSTREAM of §1, and they are one defect
+bytes at tracker_entry-2:   56 57 | 55 89 e5 83 ec ...
+                            ^^^^^   ^^^^^^^^ the tracker's recorded entry
 ```
 
-That last outcome would merge §1 and §6, which is why the histogram is worth a run on its own.
+The tracker's entry is at the `55`, mid-prologue. Testing for a mosura function slightly earlier:
 
-### ⛔ Two blockers on fixing divergence #1, both measured (2026-08-06)
+```
+"swallowed" missing entries                   51
+  with a mosura function 1-7 bytes BEFORE     50   <- the SAME function, at its TRUE entry
+  genuinely absent                             1
+```
 
-Recorded because a fix to #1 is authorized and would otherwise be landed against a prediction that
-cannot come true.
+So mosura was not swallowing them — mosura was **right and the oracle was late**, and right
+*because* of the save-first pattern family (§3, §4). The 51 do not exist as a defect; the real
+gap is 42.
 
-1. **It is inert on WAR2, so its WAR2 delta is 0, not 51.** `examples/war2_survey.rs:210` loads the
-   target with `analyze_le_file` — the LE loader, blocks `objN_text`/`objN_data` — so
-   `noreturn::analyze` returns early (`noreturn.rs:128-137`) and flags nothing. The reasoning that
-   #1 "explains the distribution" (all 51 swallowed, zero in open space, because each predecessor
-   ends in `call <noreturn>`) requires at least one flagged no-return function; there are none.
-2. **No existing fast fixture can gate it.** Every ground-truth binary measures
-   `noreturn_flagged = 0`. The gcc x86-64 column is statically linked and freestanding — `readelf
-   -S` shows `.text` and no `.dynsym`/`.plt` — and the Watcom column links `option nodefaultlib`.
-   So the analyzer never runs anywhere in the corpus, and an MVE asserting "the body stops at the
-   call" would pass with the fix reverted. That is vacuity instance eight, exactly as predicted.
+**What to take from it, beyond the number:**
+- the naive comparison overstated the gap by 50 — the shift-tolerant rule at the top of this file
+  is now the scoring method, and [[war2-tracker-anchors-mid-prologue]] carries it;
+- "all 51 inside a body, zero in open space" felt like a mechanism fingerprint and was a
+  measurement artifact. A distribution can be an artifact just as a count can;
+- three separate mechanisms (no-return fall-through, opcode-vs-reftype, re-decode-vs-listing) were
+  each consistent with that distribution. Consistency with the evidence is not the same as being
+  the cause of it — see §9, where they now live on their own merits.
 
-**Therefore #1 needs a NEW fixture before it can be fixed at all**: a dynamically-linked ELF (so a
-`.plt`/`.dynsym` exists) calling a listed no-return name (`abort`/`exit`/`_exit`) as a function's
-last flow, with a second function immediately after. That fixture is worth having independently —
-it is the only thing that would gate `noreturn.rs` at all, which is today completely ungated.
-
-**And it still does not explain the 51.** #2 and #4 remain the live candidates for WAR2; the
-histogram above is still the measurement that decides.
+**Do not reopen without a fresh measurement.** The remaining 7 ("no code unit ends here") are a
+thread into §6, not into this item.
 
 ## 2. Bare frame-first prologue is unmatched (17 functions) — ✅ CLOSED `556cdb3`; residual RULED OUT
 
@@ -180,19 +120,21 @@ not-in-tracker        872 -> 872    no new spurious
 not-in-Ghidra         923 -> 923
 ```
 
-**RULING (lead, 2026-08-06): do NOT add the naked `0x5589e5`.** All 15 remaining *are* in open
-space, so a naked pattern could in principle take them — but that is the wrong order of work. Of
-the 92 still missing, **51 are behind §1** (an over-extended body, which no pattern can ever
-reach) against 41 in open space. Spending a 24-bit pattern with unmeasurable precision on 15, while
-51 sit behind a defect that *also* produces wrong extents and therefore blocks byte-exact
-recompilation, is backwards. The independent argument stands too: no Ghidra x86 pattern file states
-a bare `0x5589e5`, so writing one is an invention, and our fixtures are far too small to bound the
-false-positive rate of a 3-byte match on a 443 KB image.
+**RULING (lead, 2026-08-06): do NOT add the naked `0x5589e5`. UPHELD after §1 was refuted.**
 
-**Revisit only after §1.** Fixing the bodies changes what is reachable, so some of the 15 may
-resolve on their own, and the false-positive question can then be asked against a clean baseline.
-Leave `frame_first_family_covers_the_bare_prologue`'s residual assertion exactly as it is — it is
-what makes adding the naked pattern a deliberate act rather than a drift.
+The ruling was first argued from a premise that turned out to be false — "51 of the 92 are behind
+§1, so pattern work is the wrong order". §1 does not exist and the gap is 42, not 92, so that
+argument is void. The ruling stands on the argument that never depended on it: no Ghidra x86
+pattern file states a bare `0x5589e5` anywhere — every one of its frame-first patterns either adds
+discriminating bytes or is paired with the filler ending the previous function — so writing one is
+an invention, and the fixtures are far too small to bound the false-positive rate of a 3-byte match
+on a 443 KB image. ~15 of the 42 are bare frame-first; that is the whole prize, against an
+unmeasurable precision cost.
+
+**Revisit only with a way to measure precision** — §5's matrix, not a WAR2 count (precision is
+undecidable there: a hit in the tracker's 28.6% gap could be either). Leave
+`frame_first_family_covers_the_bare_prologue`'s residual assertion exactly as it is — it is what
+makes adding the naked pattern a deliberate act rather than a drift.
 
 ## 3. Tighten the pattern with two measured invariants (free precision) — ✅ LANDED
 
@@ -329,12 +271,25 @@ candidates are dead **by measurement** — do not retry them:
 - the address-table "code target vs function start" thread — refuted (the relocation run at the
   suspect site is a dispatch/vtable, targets scattered across many functions).
 
+**⭐ NEW THREAD (2026-08-06, from §1's histogram):** of the 51 entries examined there, **7 had NO
+code unit ending immediately before them** — i.e. mosura's listing has no instruction boundary
+there at all, in a region it nonetheless decoded. That is an over-decode fingerprint and it is 7
+concrete addresses to start from, which is more than this item has ever had. Ask them from the
+lead's histogram run before re-deriving.
+
 ## 7. Handed to warcraft2-re, awaiting their verdict
 
 `war2-survey/analysis-gap/mosura-discovered-functions.{csv,md}` — **872 functions in neither the
 tracker nor Ghidra** (763 save-first = 87.5%, matching the target's own 84.6% distribution; 71,697
 bytes against ~126,770 of measured gap). They accepted the offer. Their verdict feeds back as
 either a recall win to keep or a precision problem to fix.
+
+**⭐ SECOND THING TO HAND BACK (2026-08-06): 50 boundary corrections.** §1's refutation produced
+50 tracker rows whose recorded entry is at the `push ebp`, mid-prologue, with the save-first run
+before it — rows their own `function-boundary-correction.md` pass (which corrected 132) missed.
+mosura has each at the true entry, 1-7 bytes earlier, with the bytes to prove it. Concrete and
+actionable for them, and it is evidence flowing the other way for once: our pattern set correcting
+their oracle. The lead is folding it into the existing CSV rather than opening a new thread.
 
 Also pending from their reply: **Watcom's own shipped `CLIB3R.LIB` is save-first** (`write_`,
 `__CMain`, verified inside WAR2 with 0 unmasked mismatches). So a frame-first-only pattern set
@@ -357,6 +312,77 @@ Not yet measured. The natural gauge is a fixture with a recovered jump table —
 `switchcall`, `dispatch`, `tables` — asserting the case bodies are inside the function's extent.
 Note the same wrong-extent-blocks-byte-exactness argument as §1 applies here.
 
+## 9. Three real divergences in mosura's body walk (surfaced by §1, independent of it)
+
+§1 dissolved, but these did not: each is a genuine difference from Ghidra's body computation,
+found by reading both sides, and each survives the refutation on its own merits. **None of them
+caused §1**, so none has a WAR2 prediction attached — treat them as correctness work with the
+burden of proof on whoever lands one.
+
+Ghidra's path is `CreateFunctionCmd.getFunctionBody(program, entry, includeOtherFunctions=false,
+monitor)` → `new FollowFlow(program, entry, dontFollow, false, false, true).getFlowAddressSet()`,
+with `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIRECTION}`.
+(`Ghidra/Features/Base/.../CreateFunctionCmd.java:613`,
+`Ghidra/Framework/SoftwareModeling/.../block/FollowFlow.java`.) mosura's equivalent walk exists
+**twice** — `analyzers/mod.rs::compute_function_bodies` and
+`analyzers/function_start.rs::flow_body` — and they must not drift apart.
+
+**⛔ 1. The no-return fall-through — a real drift, but REFUTED as the cause of the 51.**
+Measured before building anything: `noreturn::analyze` selects its name list from the memory map
+and **returns early unless a `.dynsym`, `.plt` or `EXTERNAL` block exists** (`noreturn.rs:128-137`).
+WAR2 is a DOS/4GW LE image whose loader names its blocks `objN_text`/`objN_data` (`loader/le.rs:219`)
+— none of the three. Confirmed empirically on all four fast fixtures, including the LE path WAR2
+uses: **`noreturn_flagged = 0` everywhere** (fnpattern, wprologue, wprologue_sf, lestruct). With
+nothing flagged, `falls` is identical with and without the check, so this cannot account for a
+single one of the 51. It is still a genuine defect for ELF/PE targets and still worth closing —
+but not here, and not as this item's fix. Detail of the drift, for whoever does close it:
+Ghidra asks `currentInstr.getFallThrough()` (`FollowFlow.java:556`), which is null after a call to
+a non-returning function. mosura's *disassembler* does exactly this and consults
+`program.is_noreturn` (`analyzers/mod.rs:130`, comment: "Ghidra's followFlow consults
+Function.isNoReturn"). But `compute_function_bodies`, **170 lines further down the same file**
+(:298), recomputes `falls` from the opcode alone:
+
+```rust
+let falls = !matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind));
+```
+
+with no no-return check — and `flow_body` has the same omission. So on a target where the analyzer
+*does* run, the decoder stops after `call <noreturn>` and the body walk steps over it. On WAR2 the
+analyzer never runs, so this is latent, not active.
+
+**2. The listing, not a re-decode.** Ghidra continues only if
+`getListing().getInstructionAt(nextAddress) != null` (`FollowFlow.java:566`) — it walks *defined
+instructions*. mosura re-disassembles raw bytes through a 16-byte window and continues regardless,
+so it flows through alignment padding and data that were never code.
+
+**3. No instruction at the entry ⇒ a one-byte body.** `getFunctionBody` returns
+`new AddressSet(entry, entry)` when the listing has no instruction at the entry
+(`CreateFunctionCmd.java:616`). mosura decodes fresh instead; its one-byte fallback fires only when
+the walk yields nothing at all.
+
+**⭐ 4. THE LIVE CANDIDATE — the body walk reads the OPCODE where Ghidra reads the REFERENCE TYPE.**
+Ghidra's `dontFollow` list is expressed in `RefType`s, and a **tail call** (`jmp <function>`) carries
+an `UNCONDITIONAL_CALL` reftype after `SharedReturnAnalyzer` has run — so `FollowFlow` refuses to
+follow it. mosura's walk instead re-derives the decision from the raw p-code opcode: an unconditional
+`jmp` is `OpCode::Branch`, so `falls` is false (correct) **but the branch target is still pushed onto
+the worklist**, and if that target is a function mosura has not yet discovered, the walk runs through
+the whole callee and swallows it. This is exactly the class recorded in
+[[reftype-is-post-override-not-the-instruction]]: *reftypes are analysis OUTPUT; re-deriving flow
+from the instruction discards every override the analyzers computed.* It also needs no no-return
+flag, which is what makes it the surviving candidate after #1 was refuted.
+
+### Landing conditions for any of them
+
+- **#1 cannot be gated by the corpus today.** Every ground-truth binary measures
+  `noreturn_flagged = 0`: the gcc x86-64 column is static/freestanding (`readelf -S`: `.text`, no
+  `.dynsym`/`.plt`), the Watcom column links `option nodefaultlib`, and WAR2 goes through
+  `analyze_le_file` (`examples/war2_survey.rs:210`) whose blocks are `objN_text`/`objN_data`. So
+  `noreturn::analyze` never runs anywhere, and an MVE would pass with the fix reverted. Fixing #1
+  means first building a dynamically-linked ELF fixture that calls `abort`/`exit` — which is worth
+  having regardless, since `noreturn.rs` is **currently ungated entirely**.
+- **One change per measurable effect.** #1, #2, #4 and §8 point in different directions; bundling
+  any two makes a WAR2 delta unattributable per function.
+
 ---
 
 ## Corrections to earlier claims in this repo's notes
@@ -367,6 +393,11 @@ Note the same wrong-extent-blocks-byte-exactness argument as §1 applies here.
 - "94% of WAR2 prologues open with a push run" conflates families: `push ebp` is `0x55`, inside
   `0x50`–`0x57`, so frame-first and most frameless functions satisfy it too. The real split is
   **save-first 1317 / frame-first 239 / no-frame 564**; save-first is 84.6% of *framed* functions.
+- **"92 missing" / "94 missing" / "51 blocked by over-extended bodies" are all NAIVE-COMPARISON
+  figures and are wrong.** The tracker anchors save-first functions mid-prologue at the `push ebp`;
+  50 of the apparent misses are the same functions recovered at their TRUE entry. Shift-tolerant,
+  the gap is **42** and mosura is at **2078/2120 = 98.0%**. Anything reasoning from the older
+  numbers — including the original argument for prioritising §1 — is reasoning from an artifact.
 - Ghidra's cold analysis of WAR2 is **2145**, not 1944. The 1944 figure comes from passing
   `-processor "x86:LE:32:default"` to `analyzeHeadless`, which bypasses the ELF opinion and lands
   compiler spec `windows` on an ELF — worth 201 functions. Never pass `-processor` for this image.
