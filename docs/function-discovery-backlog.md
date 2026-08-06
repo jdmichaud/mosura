@@ -15,6 +15,56 @@ Previous state @ `556cdb3`: 2900 / 2078 / 42 missing / 3 inside. Both rows were 
 **same harness in the same session**, and the harness reproduced the `556cdb3` row to the digit
 before the new row was believed — so the delta is a code change, not a scoring change.
 
+### ⭐⭐ ROOT CAUSE FOUND 2026-08-06 — a COMMAND QUEUE modelled as a CHANGE CHANNEL
+
+**`FunctionStartAnalyzer.java:835-859` raises no change notification.** It calls, on the per-program
+**singleton** manager (`:949`):
+
+```java
+analysisManager.disassemble(doNowDisassembly);      // -> schedule(new DisassembleCommand(...), :1128)
+analysisManager.createFunction(funcResult, false);  // -> schedule(new CreateFunctionCmd(...),  :1132)
+```
+
+`schedule` (`:860`) pushes onto the **command queue**. `codeDefined` (`:262-272`) is a *separate*
+mechanism raised only when the listing actually changed, and Ghidra's comment at `:385` flags that
+disassembly deliberately does **not** go through change events.
+
+**mosura models both commands as change-channel notifications** (`sched.code_defined` /
+`sched.function_defined`). ⚠️ **A command executes regardless of subscribers; a notification reaches
+only analyzers registered in that manager.** `analysis/mod.rs:246` builds a *second* manager
+(`fs_mgr`) holding only the four `FunctionStartAnalyzer`s + `PossibleDelayedFunctionCreator` —
+**no `Disassembler`, no `FunctionCreator`.** Measured on `fnpattern`:
+
+```
+code_defined(08048120)  -> consumers=1, and it is "Function Start Search After Code" — no disassembler
+function_defined(...)   -> consumers=0 — FunctionCreator, Constant Propagation, Decompiler Switch,
+                                          External Jump Flow Override, Create Address Tables all miss it
+```
+
+**One substitution produces BOTH symptoms this track has been chasing separately:**
+
+1. **The listing hole.** The request evaporates. WAR2 **374/3018 (12.4%)** undisassembled body ends;
+   6 corpus functions with the *entire* body undisassembled; `retboundary` unable to fail; §9 #2/#3.
+   `analyze()` is the single common driver, so `analyze_le_file` hits the identical hole.
+2. **The infinite re-fire loop.** mosura fires `code_defined` on the **REQUEST**; Ghidra fires it on
+   the **RESULT**. Requesting disassembly at bytes that never decode re-notifies the
+   Instruction-typed `AfterCode` analyzer forever — the measured WAR2 loop. **So `SCHEDULED` and
+   `PROPOSED` are accommodations for the wrong channel, not for any Ghidra behaviour.** They
+   dissolve when the channel is corrected and do not need defending.
+
+✅ **`SCHEDULED` (`function_start.rs:494`) is EXONERATED** — `08048120` measured passing through it;
+its comment's claim is true as written. It was the lead hypothesis and it was wrong.
+
+**`consumers=0` also means a pattern-discovered function's CALLEES are never discovered** — a
+cascade, and the right shape to explain the 8 addresses Ghidra finds and mosura misses. ⚠️ Not yet
+claimed for `0004de58`; that stays open until the fix exists and the oracle is re-run.
+
+**Faithful target:** give `Scheduling` a command channel executing regardless of subscribers, matching
+`AutoAnalysisManager.schedule(cmd, priority)`. Step 1 (bounded, gated on the six corpus addresses):
+register `Disassembler` + `FunctionCreator` in `fs_mgr`. Collapsing the two-manager split is the real
+retirement — Ghidra has one manager per program — but `analysis/mod.rs:239-245` documents a real
+ordering constraint, so it is its own step.
+
 ### ⭐ THE 12, ANSWERED BY THE GHIDRA ORACLE 2026-08-06 — 8 are a RECALL GAP, not a scope question
 
 Asked Ghidra directly rather than reasoning about what it would do: `analyzeHeadless` whole-image on
