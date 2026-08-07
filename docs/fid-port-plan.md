@@ -591,12 +591,19 @@ and any measurement quoted in this doc is stale unless stamped `@sha == HEAD`.
 - **R1 — Stage-0 residuals (medium, contained).** The four documented residuals could perturb
   hashes on some encoding we have not hit. Stage 3 is designed to find exactly this, against a
   corpus far larger than we could hand-build. Contained because the fix is local to the accessor.
-- **R7 — the empty-operand-mask fallback is wrong (CONFIRMED, open).** Stage 3 pinned it: for
-  an operand SLEIGH gives no pattern bits (`mov x29,sp`), Ghidra produces an all-zero operand
-  value mask; `sleigh/engine.rs` produces a non-empty one keyed on the sub-node subtree instead
-  of Ghidra's flat name map, so the instruction mask clears bits it should keep. This is the
-  whole of the AArch64 (16/56) and m68k (12/41) gap. The fix is a small change in the **sleigh
-  lane**; until it lands those columns stay ratcheted.
+- **R7 — a constrained field's bits are given to the operand (CONFIRMED, open).** The whole of
+  the AArch64 (16/56) and m68k (12/41) hash-parity gap. Reproducer: AArch64 `mov x29,sp`
+  (`fd 03 00 91`) — Ghidra's instruction mask is `e0ffffff` with operand masks `1f000000` and
+  `00000000`; ours is `00fcffff` with `1f000000` and `e0030000`. The instruction is an alias of
+  `add Xd,sp,#0` whose constructor **constrains** Rn to 31, so those field bits are opcode-fixed
+  and must stay in the instruction mask; we route them through the operand's subtable into a
+  VarnodeList and hand them to the operand.
+
+  ⚠️ **An earlier revision of this plan blamed the empty-operand-mask fallback. That is
+  disproven** — instrumented, the fallback fires only for op0 and produces exactly Ghidra's
+  answer there; op1 never reaches it. The divergence is in `combine_operand_mask`'s recursion,
+  which is **shared with the disassembler**, so this is a sleigh-lane change to coordinate, and
+  the disasm goldens must be re-run with it.
 - **R8 — mosura's references do not record an operand index (open).** They store `op_index = -1`,
   so `getPrimaryReference(opIndex)` cannot be asked directly and `tests/fid_hash_parity.rs`
   reconstructs the operand by value. Exact for whole-scalar operands (the only ones whose
