@@ -424,8 +424,44 @@ mod tests {
         assert_eq!(load("9.01"), vec!["watcom:9.01"]); // CMP AL,5 + MOVZX + EBX + ascending
         assert_eq!(load("10.0a"), vec!["watcom:10.0/10.0a"]); // CMP EAX,5 + EBX + ascending
         assert_eq!(load("10.6"), vec!["watcom:10.5/10.6"]); // CMP AL,5 + EBX + ascending
+        assert_eq!(load("10.5"), vec!["watcom:10.5/10.6"]); // 10.5 measured, not inferred
         assert_eq!(load("11.0"), vec!["watcom:11.0"]); // CMP AL,5 + ECX + ASCENDING switch (vs open's descending)
         assert_eq!(load("ow2"), vec!["watcom:open"]); // CMP AL,5 + ECX + MOVZX + descending
+    }
+
+    /// Why `watcom:10.5/10.6` is ONE row and not two: 10.5 and 10.6 emit **byte-identical code**
+    /// for the probe. Not "no signal separates them" — the same 156 bytes.
+    ///
+    /// This row used to be an *inference*: 10.5's compiler could not be run, so it was bracketed
+    /// between the measured 10.0a and 10.6 and the pair was labelled together on the assumption
+    /// that nothing changed across it. That assumption is the exact shape this file warns about
+    /// elsewhere ("a boundary inferred from the ends of the version set you happen to have is a
+    /// boundary of your corpus, not of the compiler"), so it was settled by measurement instead:
+    /// `10.5.obj` is compiled by Watcom 10.5's own `wcc386` (see
+    /// `docs/watcom-codegen-fingerprint.md` for the recipe — the compiler had to be unpacked from
+    /// the install media's `wpack` archives first). The inference happened to be right.
+    ///
+    /// The two OBJ *containers* do differ, so this is a real second artefact rather than a copy;
+    /// only the emitted code coincides. A future revision that splits the row must therefore
+    /// produce a probe whose code actually differs — this test says what that would take.
+    #[test]
+    fn watcom_10_5_and_10_6_emit_identical_probe_code() {
+        let dir = crate::paths::codegen_probes_dir().join("watcom");
+        let read = |rev: &str| std::fs::read(dir.join(format!("{rev}.code"))).unwrap();
+        let (a, b) = (read("10.5"), read("10.6"));
+        assert_eq!(a, b, "10.5 and 10.6 probe code diverged — the combined row must be split");
+        // The containers are distinct artefacts (version records differ), so the identity above
+        // is a fact about codegen, not an accidentally duplicated file.
+        assert_ne!(
+            std::fs::read(dir.join("10.5.obj")).unwrap(),
+            std::fs::read(dir.join("10.6.obj")).unwrap(),
+            "10.5.obj is a copy of 10.6.obj — the code identity would then prove nothing"
+        );
+        // ...and it is not identical to its OTHER neighbours, so "all probes are the same" is not
+        // the reason this passes.
+        for other in ["10.0a", "11.0", "9.01", "ow2"] {
+            assert_ne!(a, read(other), "10.5 probe code matches {other} too");
+        }
     }
 
     /// End-to-end on real encodings mosura's engine decodes. 10.0a's *promoting* cmpbyte is the

@@ -211,7 +211,10 @@ python3 scripts/extract-omf-code.py oracle/codegen-probes/watcom/10.0a.obj \
 
 So every link is committed: probe source → known-compiler object → extractor script → code
 bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
-dosemu recipe above).
+dosemu recipe above, or the wine one for [10.5](#getting-the-105-compiler-to-run)).
+
+Revisions currently covered: `9.01`, `10.0a`, `10.5`, `10.6`, `11.0`, `ow2`. Every row in the
+`TABLE` has an artefact behind it — a row without one is an inference, which is what 10.5 was.
 
 ### Two matchers — isolated probe vs whole binary
 
@@ -244,9 +247,8 @@ dosemu recipe above).
 The remaining depth (turning a class into an exact minor revision on an arbitrary binary) needs
 matching the *same source construct* across binaries — a harder problem than pattern scanning.
 
-Notes: 10.5 didn't run under dosemu2 here (its `W32RUN`/`DOS4GW` loader hit a "Loader read
-error"); the five points above already bracket the transitions. 11.0's DOS host lives in `BINW`
-(with its own `W32RUN.EXE`), 10.0a's in `BINB` (loader `W32RUN.EXE` in `BIN`).
+Notes: 11.0's DOS host lives in `BINW` (with its own `W32RUN.EXE`), 10.0a's in `BINB` (loader
+`W32RUN.EXE` in `BIN`). 10.5 is now measured too — see [10.5](#105-measured-not-inferred).
 
 ## Direction
 
@@ -270,8 +272,55 @@ further. It does **not**: Watcom emits a real `idiv` (not a magic-number multipl
 divisor register draws the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the existing
 `loop_bound_reg` signal. For this probe **10.0a ≡ 10.6** byte-for-byte. So the 3-construct probe
 already extracts the maximum *classification* the **available** version set supports; further
-classification gain needs the missing versions (10.0-beta ISO-layout / 10.5 dosemu "Loader read
-error" / 9.01 floppy-`INSTALL.EXE`), not more constructs.
+classification gain needs the missing versions (10.0-beta ISO-layout / 9.01 floppy-`INSTALL.EXE`),
+not more constructs.
+
+## 10.5: measured, not inferred
+
+`watcom:10.5/10.6` was for a long time a **one-measurement row wearing two labels**: only 10.6 was
+compiled, and 10.5 was folded in because it sits between the measured 10.0a and 10.6 and nothing
+was expected to change across it. That is precisely the reasoning the CORRECTION at the end of this
+file calls a boundary of your corpus rather than of the compiler, so it was settled by measurement.
+
+The result: **10.5 and 10.6 emit byte-identical code for the probe** — the same 156 bytes, against
+162 for 10.0a, 158 for 11.0 and 150 for 9.01. The inference was right, and the combined row is now
+a measured fact. The OBJ *containers* differ (version records), so `10.5.obj` is a genuine second
+artefact and not a copy — `watcom_10_5_and_10_6_emit_identical_probe_code` asserts both halves,
+so a future revision that wants to split the row has to produce a probe whose code actually
+differs.
+
+### Getting the 10.5 compiler to run
+
+Two obstacles, neither of them dosemu's fault (the old "Loader read error" note blamed the
+emulator; the file was simply truncated):
+
+1. **The CD's C compiler is damaged.** `BINW/WCC386.EXE` is a 65,536-byte stub — and is dated a day
+   later than every other file on the disc. The real 567,558-byte binary exists only inside the
+   installer archives, as `DISKIMGS/DISK02+03/PCK00017.{1,2}`. Unpacking those needed a `wpack`
+   decoder: see [`oracle/wpack/`](../oracle/wpack/README.md).
+2. **This media is Windows-hosted, so there is no DOS compiler to run.** The unpacked binary is a
+   W32RUN (LX) image that answers `This program requires W32RUN.EXE to be in your PATH` under
+   dosemu. The way through is not DOS at all: `BINNT/WCC386.EXE` is a small **PE32 launcher** that
+   runs under **wine** and loads its sibling `BINW\WCC386.EXE` — so dropping the unpacked binary in
+   as that sibling gives a working compiler.
+
+```sh
+# 1. unpack the real compiler (see oracle/wpack/README.md for the archive-directory scan)
+cat DISKIMGS/DISK02/PCK00017.1 DISKIMGS/DISK03/PCK00017.2 > pck00017.bin
+python3 oracle/wpack/wunpack.py pck00017.bin /tmp/w105
+
+# 2. lay out BINNT (launcher) + BINW (real compiler) + H, then compile under wine.
+#    The source must be C:\WATCOM_C.C so the OBJ's THEADR matches the other revisions'.
+cp /tmp/w105/wcc386.exe  <tree>/BINW/WCC386.EXE
+cp oracle/codegen-probes/watcom_cg.c "$WINEPREFIX/drive_c/WATCOM_C.C"
+cd "$WINEPREFIX/drive_c" && INCLUDE='C:\W105\H' wine 'C:\W105\BINNT\WCC386.EXE' WATCOM_C.C
+#    -> WATCOM C32 Optimizing Compiler  Version 10.5 ... Code size: 156
+
+python3 scripts/extract-omf-code.py WATCOM_C.obj > oracle/codegen-probes/watcom/10.5.code
+```
+
+Worth keeping in mind for the other absent revisions: **the compiler being unrunnable was a
+property of the media and the host, not of the emulator.** Both blockers here were mechanical.
 
 **Precise re-measurement of the codegen (append-only probe, both signs, disassembled with
 mosura's own engine).** The exact per-revision codegen for `int divc(int x){return x/7;}` and
@@ -335,7 +384,13 @@ Consequences, all landed:
   and is a positive 10.0-line anchor, not a `movzx`/`cdq` one. Nothing about the 10.0a base
   identification rests on the corrected claim.
 
-The general lesson is the one this file already teaches about `10.5`: a boundary inferred from the
-**ends of the version set you happen to have** is a boundary of your corpus, not of the compiler.
-`movzx` looked like a clean classic→Open-Watcom transition for as long as 10.0a was the oldest
-column.
+The general lesson: a boundary inferred from the **ends of the version set you happen to have** is a
+boundary of your corpus, not of the compiler. `movzx` looked like a clean classic→Open-Watcom
+transition for as long as 10.0a was the oldest column.
+
+`10.5` was the other instance of the same shape, and it has since been
+[measured](#105-measured-not-inferred) rather than argued: its row was one measurement (10.6)
+wearing two labels. Note how the two resolved differently — filling in 9.01 **inverted** a boundary's
+meaning, filling in 10.5 **confirmed** the guess. That is the point: which way an inference falls is
+not predictable from the inference, so the only way to know is to go and measure it. Both remaining
+gaps (10.0-beta, and the 7.0/8.5a/9.5b floppy sets) are still inferences of exactly this kind.
