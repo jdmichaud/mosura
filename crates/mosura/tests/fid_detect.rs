@@ -63,3 +63,31 @@ fn detection_does_not_cross_architectures() {
         report.votes.iter().map(|v| &v.database).collect::<Vec<_>>()
     );
 }
+
+/// A raw z80 `.com` carries no header, no sections and no symbol table, and sdcc embeds no
+/// version string in compiled output — so signatures are the only evidence there is. The vote
+/// must therefore be able to answer the *family* question, not just the version.
+#[test]
+fn the_vote_answers_the_family_question() {
+    let dir = paths::workspace_root().join("oracle/fid/db");
+    if !dir.exists() {
+        return;
+    }
+
+    // A Turbo C binary we compiled: the family must come back, and be Borland.
+    let binary = std::path::PathBuf::from("/tmp/uber_tc20_cl.exe");
+    if binary.exists() {
+        let program = mosura::analysis::analyze_file(&binary).expect("analyze");
+        let report = detect_version(&program, &dir);
+        assert_eq!(report.family(), Some("Borland"), "votes: {:?}", report.votes.len());
+    }
+
+    // And it must stay silent rather than guess when nothing matches: a binary of a language
+    // no database covers produces no vote at all.
+    let unrelated = paths::ground_truth_dir().join("arith.gcc-aarch64");
+    if unrelated.exists() {
+        let program = mosura::analysis::analyze_file(&unrelated).expect("analyze");
+        let report = detect_version(&program, &dir);
+        assert_eq!(report.family(), None, "no database claims AArch64");
+    }
+}

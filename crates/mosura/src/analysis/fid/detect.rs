@@ -50,6 +50,37 @@ pub struct VersionReport {
 }
 
 impl VersionReport {
+    /// The compiler **family** the vote points at, when it points convincingly.
+    ///
+    /// For most containers the family comes from metadata — Ghidra's PE opinion, an ELF
+    /// `.comment`, a runtime banner. Some formats have none: a raw z80 `.com` is a flat image
+    /// with no header, no sections and no symbol table, so there is nothing to read. sdcc also
+    /// embeds no version string in compiled output (its `___sdcc_*` helper names live in the
+    /// `.rel` objects and are gone once linked). For those, matched signatures are the *only*
+    /// evidence available.
+    ///
+    /// Deliberately conservative, because this is beyond-Ghidra evidence: it answers only on a
+    /// clear win — at least three matched functions and twice the runner-up's score. A thin or
+    /// close result returns `None` rather than a guess.
+    ///
+    /// **Additive, never overriding.** This refines the picture the way
+    /// [`crate::analysis::loader::compiler_version`] does; it must not replace a faithful
+    /// `CompilerOpinion`.
+    pub fn family(&self) -> Option<&str> {
+        let best = self.votes.first()?;
+        if best.matched < 3 {
+            return None;
+        }
+        if self.votes.get(1).is_some_and(|second| second.score * 2.0 > best.score) {
+            // Two databases of the same family still agree on the family, even when they
+            // disagree on the version.
+            if self.votes[1].library_family != best.library_family {
+                return None;
+            }
+        }
+        Some(&best.library_family)
+    }
+
     /// The best-scoring database, if anything matched.
     pub fn best(&self) -> Option<&VersionVote> {
         self.votes.first()
