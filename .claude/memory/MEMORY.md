@@ -7,6 +7,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [memory-lives-in-the-repo](memory-lives-in-the-repo.md) — **⭐ USER RULE 2026-08-07: memory is VERSIONED IN THE REPO at `.claude/memory/`, never machine-local. Commit it.**
 - [agents-must-match-my-model-exactly](agents-must-match-my-model-exactly.md) — **⭐ USER RULE 2026-08-07: every sub-agent runs MY exact model (Opus 5, `claude-opus-5[1m]`) — pass `model: "opus"` and VERIFY the id verbatim.**
 - [always-keep-the-task-list-current](always-keep-the-task-list-current.md) — **⭐ USER RULE 2026-08-07: the task list is updated AS STATE CHANGES, never batched when asked.**
+- [perf-iterate-on-an-mve-or-a-profile](perf-iterate-on-an-mve-or-a-profile.md) — **⭐ USER RULE 2026-08-07: for PERF iterate on an MVE or a PROFILE. A cap below every hypothesis answers nothing.**
 - [probe-with-timeouts-dont-wait-for-runs](probe-with-timeouts-dont-wait-for-runs.md) — **⭐ USER RULE 2026-08-07: run it PARTIALLY and kill it with a timeout. A capped run still answers the question; never report it as a pass.**
 - [redirect-output-then-read-the-file](redirect-output-then-read-the-file.md) — **⭐ USER RULE 2026-08-07: redirect every run to a FILE, then query the file. NEVER re-run to re-read output.**
 - [i-direct-the-agent-not-the-reverse](i-direct-the-agent-not-the-reverse.md) — **⭐ USER RULE 2026-08-07: I direct the agent, I always know what it is doing, and DOUBT ⇒ kill it and restart with a known task.**
