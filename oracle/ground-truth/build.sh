@@ -382,6 +382,12 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
+  # inlineparam: the INLINE CALL PARAMETER thunk repro (docs/function-discovery-backlog.md §9 #5),
+  # the blocker holding held-patches/listing-command-channel.patch. The whole fixture is the
+  # `_cstart.asm` — the idiom needs a callee that pops its own return address and reads the word
+  # the call is followed by, which C cannot express; the `.c` only supplies `main_` and the
+  # indirect-jump target. Corpus-default flags: nothing here comes from the C compiler.
+  build_watcom inlineparam
   # retorphan: the ABOVE-FUNCTION GUARD repro (`be85c85`) — a pattern-only function one byte past
   # a `ret` that belongs to NO function. The corpus default `-oc` is REQUIRED and is the opposite
   # choice from `fnpattern`: it makes the orphan's prologue `56 57 55 83 ec 14`, matched only by

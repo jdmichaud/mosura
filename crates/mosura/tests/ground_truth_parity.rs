@@ -1695,12 +1695,13 @@ fn watcom_save_first_shape_spec() {
 /// (see `docs/function-discovery-backlog.md` §9 #5). The test is committed in its FAILING state,
 /// ignored so the workspace stays green, so that its ability to fail is proved **by git history**
 /// rather than by a revert-check someone has to trust. Un-ignore it in the same commit that lands
-/// the fix; it should go 5 -> 0 in one visible step.
+/// the fix; it should drop by five in one visible step (the other three have their own cause and
+/// their own gate — see below).
 ///
-/// ⚠️ ANTI-VACUITY. This must be RED at the commit that introduces it, on five addresses whose
-/// causes are already measured and distinct — do not let it be "fixed" by narrowing the
-/// population. Verbatim output at `2c534db`, `cargo test --release -p mosura --test
-/// ground_truth_parity recovered_functions_are_in_the_listing`:
+/// ⚠️ ANTI-VACUITY. This must be RED at the commit that introduces it, on addresses whose causes
+/// are already measured and distinct — do not let it be "fixed" by narrowing the population.
+/// Verbatim output at `2c534db`, `cargo test --release -p mosura --test ground_truth_parity
+/// recovered_functions_are_in_the_listing`:
 ///
 /// ```text
 /// 5 recovered ground-truth function(s) of 386 have bytes that were never disassembled
@@ -1720,6 +1721,23 @@ fn watcom_save_first_shape_spec() {
 /// Causes, per address: `08048120`, `0804812c`, `08048666`, `080485e3` are **cause A**;
 /// `08048112` is **cause B**. It NAMES its violations rather than reporting a boolean, so each
 /// fix's contribution is visible and the second change cannot be credited with the first's effect.
+///
+/// **Since then the population is 392 and the count is 8**, because the `inlineparam` fixture was
+/// added — the self-compiled repro of §9 #5, the blocker that holds the very patch this test is
+/// waiting for. Its three entries are a THIRD cause and belong to
+/// [`inline_call_parameters_are_not_decoded_as_code`], which is where their signal is read:
+///
+/// ```text
+///   inlineparam.watcom-x86-32 @08048115 thunk_a_: entry_instruction=true  bytes_with_no_code_unit=4
+///   inlineparam.watcom-x86-32 @0804811c thunk_b_: entry_instruction=true  bytes_with_no_code_unit=2
+///   inlineparam.watcom-x86-32 @0804812a dispatch_: entry_instruction=false bytes_with_no_code_unit=0
+/// ```
+///
+/// The two thunks are the mirror image of the `dispatch_` violation: mosura's body walk falls
+/// through their `call` into the inline parameter, so the body claims bytes the disassembler
+/// (correctly) refused to decode, while `dispatch_`'s entry is swallowed by the one parameter
+/// that did get decoded. One cause, both signs — and a flow override that stops the call falling
+/// through clears all three at once.
 ///
 /// **Cause A** — `analysis::analyze` builds a SECOND `AutoAnalysisManager` for the byte-pattern
 /// passes (mod.rs:246) in which neither `Disassembler` nor `FunctionCreator` is registered, so
@@ -1835,5 +1853,93 @@ fn recovered_functions_are_in_the_listing() {
     eprintln!(
         "listing gate: {examined} recovered ground-truth functions across {evaluated} binaries, \
          every body fully in the listing"
+    );
+}
+
+/// §9 #5, the INLINE CALL PARAMETER thunk — `docs/function-discovery-backlog.md`. The gate for
+/// the blocker that holds `held-patches/listing-command-channel.patch`, on the self-compiled
+/// `inlineparam.watcom-x86-32` rather than on the war2 MZ stub (directive 6: the survey binary
+/// cannot be shipped, so a gate built on it dies with it).
+///
+/// **The shape.** `src/inlineparam_cstart.asm` builds three thunks that each `call dispatch_` and
+/// are each followed by a 2-byte inline parameter, which `dispatch_` reads by popping its own
+/// return address. mosura's `falls_through` (`analysis/analyzers/mod.rs:90`) re-derives
+/// fall-through from the p-code opcode and has no way to know the call does not come back, so it
+/// decodes the parameter as an instruction.
+///
+/// **Two assertions, and the second is why this BLOCKS rather than moves a bound:**
+///
+/// 1. no code unit STARTS at an inline parameter — the parameter is data, not code;
+/// 2. every one of the family's entries still has a code unit AT it — the over-decode must not
+///    swallow a real instruction.
+///
+/// (2) is the war2 wrong-code condition transplanted: there the destroyed instruction is
+/// `00013a56 POP BX`, which the committed Ghidra golden `war2.snapshot` has and mosura does not.
+/// Here it is `dispatch_`'s own `pop ebx`, destroyed the same way by the same mechanism — the
+/// parameter bytes `b8 11` start a 5-byte `mov eax,imm32` that runs 3 bytes past them.
+///
+/// **Measured at the commit that introduced this test** (both violations real, neither vacuous):
+///
+/// ```text
+///   0804812a dispatch_: no code unit at the entry — swallowed by the unit at 08048128 (len 5)
+///   08048128: a code unit starts at an inline call parameter
+/// ```
+///
+/// Note only ONE of the three parameters is decoded: `0804811a` and `08048121` are refused
+/// because `thunk_b_`/`thunk_c_` were seeded as functions and disassembled at their entries
+/// first, so the over-decode would have conflicted with an existing code unit. That is the
+/// disassembler's offcut bound doing its job — and it is exactly why the *third* parameter, whose
+/// victim `dispatch_` had not been decoded yet, is the one that does the damage. A fixture with a
+/// single thunk would have hit the same race and might have passed unfixed.
+#[test]
+#[ignore = "expected-RED: the fix needs a flow-override model + FindNoReturnFunctionsAnalyzer \
+            (\"Non-Returning Functions - Discovered\"), neither of which is ported — \
+            docs/function-discovery-backlog.md §9 #5"]
+fn inline_call_parameters_are_not_decoded_as_code() {
+    let bin = ground_truth_dir().join("inlineparam.watcom-x86-32");
+    if !bin.exists() {
+        eprintln!("skip inline_call_parameters_are_not_decoded_as_code: {} absent", bin.display());
+        return;
+    }
+    let prog = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze inlineparam");
+    let ram = prog.default_space;
+
+    // The family, read from the truth so the addresses are the build's and not hand-copied.
+    let truth_path = bin.with_extension("watcom-x86-32.truth");
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let by_name = |n: &str| {
+        truth.funcs.iter().find(|(_, f)| f == n).map(|(a, _)| *a).expect("truth has {n}")
+    };
+    let family = ["thunk_a_", "thunk_b_", "thunk_c_", "dispatch_"].map(by_name);
+    // Each thunk is `call rel32` (5 bytes) + a 2-byte parameter; the parameter is at entry+5.
+    let params: Vec<u64> = family[..3].iter().map(|a| a + 5).collect();
+
+    let mut violations: Vec<String> = Vec::new();
+
+    // (2) no entry may be swallowed.
+    for (name, entry) in ["thunk_a_", "thunk_b_", "thunk_c_", "dispatch_"].iter().zip(family) {
+        let addr = Address::new(ram, entry);
+        if prog.listing.code_unit_at(addr).is_none() {
+            let by = prog
+                .listing
+                .code_unit_containing(addr, 16)
+                .map(|(a, l)| format!("swallowed by the unit at {:08x} (len {l})", a.offset))
+                .unwrap_or_else(|| "never disassembled".to_string());
+            violations.push(format!("  {entry:08x} {name}: no code unit at the entry — {by}"));
+        }
+    }
+    // (1) no inline parameter may be decoded.
+    for p in &params {
+        if prog.listing.code_unit_at(Address::new(ram, *p)).is_some() {
+            violations.push(format!("  {p:08x}: a code unit starts at an inline call parameter"));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "inlineparam.watcom-x86-32: the inline-parameter thunk family is mis-decoded \
+         ({} violation(s)):\n{}",
+        violations.len(),
+        violations.join("\n")
     );
 }
