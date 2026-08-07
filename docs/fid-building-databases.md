@@ -260,8 +260,17 @@ itself, but is not interoperable with Ghidra until R7 lands.
 
 ### sdcc (z80)
 
-The z80 runtime ships as `.rel` objects, which mosura's COM loader does not read. Build the
-probe as a `.com` and ingest that instead — a small, self-contained first proof.
+```sh
+cargo xtask fid-build --family sdcc --version 4.5.0 --variant z80 \
+    --out oracle/fid/db/sdcc-4.5.0-z80.mfid.gz /usr/share/sdcc/lib/z80/z80.lib
+```
+
+Point it straight at the library: `z80.lib` is a Unix `ar` archive of SDCC `.rel` objects — an
+**ASCII** record format, a third object container alongside ELF and OMF — and
+`loader/rel.rs` reads both the archive and the members. Relocations against external symbols
+are applied, as for OMF: without them every cross-module call targets address 0 and the
+library records **no relations at all** (0 against 376), leaving the 19% of functions that
+score below 14.6 on body size alone unidentifiable.
 
 ### Borland / Turbo C (x86-16 and x86-32)
 
@@ -305,8 +314,17 @@ are not legal C identifiers cannot be referenced from generated C. Use `objects`
 
 ### sdcc (z80)
 
-The z80 runtime ships as `.rel` objects, which mosura's COM loader does not read. Build the
-probe as a `.com` and ingest that instead — a small, self-contained first proof.
+```sh
+cargo xtask fid-build --family sdcc --version 4.5.0 --variant z80 \
+    --out oracle/fid/db/sdcc-4.5.0-z80.mfid.gz /usr/share/sdcc/lib/z80/z80.lib
+```
+
+Point it straight at the library: `z80.lib` is a Unix `ar` archive of SDCC `.rel` objects — an
+**ASCII** record format, a third object container alongside ELF and OMF — and
+`loader/rel.rs` reads both the archive and the members. Relocations against external symbols
+are applied, as for OMF: without them every cross-module call targets address 0 and the
+library records **no relations at all** (0 against 376), leaving the 19% of functions that
+score below 14.6 on body size alone unidentifiable.
 
 ### Borland / Turbo C (x86-16 and x86-32)
 

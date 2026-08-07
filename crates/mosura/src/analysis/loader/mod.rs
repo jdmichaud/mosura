@@ -10,6 +10,7 @@ pub mod le;
 pub mod mz;
 pub mod omf;
 pub mod pe;
+pub mod rel;
 pub mod pe_opinion;
 pub mod watcom;
 

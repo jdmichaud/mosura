@@ -189,6 +189,25 @@ fn expand_input(file: &Path) -> Vec<crate::analysis::program::Program> {
         }
     }
 
+    // SDCC ships its runtime as an `ar` archive of ASCII `.rel` objects.
+    if data.starts_with(b"!<arch>\n") {
+        let members = crate::analysis::loader::rel::split_archive(&data);
+        let mut out = Vec::new();
+        for member in members {
+            let Ok(text) = std::str::from_utf8(member) else { continue };
+            if !crate::analysis::loader::rel::is_rel(member) {
+                continue;
+            }
+            if let Ok(mut program) = crate::analysis::loader::rel::load_rel_object(text) {
+                crate::analysis::analyze(&mut program);
+                out.push(program);
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+
     match crate::analysis::analyze_file(file) {
         Ok(p) => vec![p],
         Err(e) => {
