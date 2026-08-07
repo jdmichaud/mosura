@@ -336,13 +336,24 @@ impl Analyzer for SharedReturnAnalyzer {
         // The trigger set is newly-created functions. Ghidra (SharedReturnJumpAnalyzer +
         // SharedReturnAnalysisCmd) processes the destination functions in `set` plus the
         // contiguous-function jump scan.
+        //
+        // `symbolTable.getSymbols(set, SymbolType.FUNCTION, true)` (SharedReturnAnalysisCmd.java:66
+        // and again at :80) — **every** FUNCTION symbol whose address lies in `set`, ASCENDING;
+        // that is exactly the function entries contained in the set. It is NOT one per range:
+        // an `AddressSet` coalesces adjacent ranges, so functions at consecutive entries
+        // (`08048110 sink_` / `08048111 __CHK` / `08048112 p_leaf_` on `wprobe.watcom-x86-32`)
+        // collapse into a single range and reading `r.min` kept only the first
+        // (`docs/function-discovery-backlog.md`, CAUSE B).
         let new_function_entries: Vec<Address> = {
-            let entries: std::collections::BTreeSet<u64> =
-                program.function_manager.functions().map(|f| f.entry_point().offset).collect();
-            set.ranges()
-                .filter(|r| entries.contains(&r.min))
-                .map(|r| Address::new(self.ram, r.min))
-                .collect()
+            let mut entries: Vec<u64> = program
+                .function_manager
+                .functions()
+                .map(|f| f.entry_point())
+                .filter(|e| e.space == self.ram && set.contains(*e))
+                .map(|e| e.offset)
+                .collect();
+            entries.sort_unstable(); // getSymbols(..., true) — ascending
+            entries.into_iter().map(|off| Address::new(self.ram, off)).collect()
         };
         if new_function_entries.is_empty() {
             return false;
@@ -515,7 +526,6 @@ mod destination_set_tests {
     /// `assume_contiguous_functions` is off so part 2 cannot supply the same effect by another
     /// route — the assertion measures the destination-set iteration and nothing else.
     #[test]
-    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
     fn every_function_entry_in_the_set_is_a_destination_not_just_the_range_minimum() {
         let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
             return; // SLEIGH tables unavailable

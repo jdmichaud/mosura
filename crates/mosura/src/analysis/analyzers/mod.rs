@@ -394,6 +394,87 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
     }
 }
 
+/// `ConstantPropagationAnalyzer.removeUninitializedBlocks` (ConstantPropagationAnalyzer.java:220)
+/// — uninitialized memory has no bytes, so it can hold no instruction and is dropped from the
+/// set before any location is chosen.
+///
+/// Ghidra also skips *byte-mapped* blocks (`block.isMapped()`, :230), because those report
+/// `isInitialized() == false` while still yielding bytes. mosura's loaders build flat images with
+/// no byte-mapped blocks, so there is no such block to skip.
+fn remove_uninitialized_blocks(program: &Program, set: &mut AddressSet) {
+    let mut uninitialized = AddressSet::new();
+    for block in program.memory.blocks() {
+        if block.is_initialized() {
+            continue;
+        }
+        uninitialized.add_range(block.start().space, block.start().offset, block.end().offset);
+    }
+    if !uninitialized.is_empty() {
+        *set = set.subtract(&uninitialized);
+    }
+}
+
+/// `ConstantPropagationAnalyzer.findLocationsRemoveFunctionBodies`
+/// (ConstantPropagationAnalyzer.java:248) — reduce `set` to the list of addresses constant
+/// propagation should *start* from, removing from `set` everything each start already accounts
+/// for. Three passes, in Ghidra's order:
+///
+/// 1. every function OVERLAPPING the set contributes its **entry point** (:259-264), and its
+///    whole body leaves the set (:268). This is the pass the `r.min` reading was missing, and the
+///    one that makes coalesced adjacent entries all survive.
+/// 2. of what remains, every reference DESTINATION that has at least one **call** reference to it
+///    becomes a start and leaves the set (:271-293).
+/// 3. of what still remains, each range's **minimum** becomes a start and leaves the set
+///    (:296-306) — the fallback, and the only one mosura previously implemented.
+///
+/// Returns the start locations, ascending.
+///
+/// ⚠️ **`getFunctionsOverlapping` is a body query and mosura's bodies are empty during analysis.**
+/// Ghidra maintains a function's body incrementally, so it is always current and always contains
+/// the entry point; mosura computes bodies in one pass *after* the worklist converges
+/// (`analyze` -> `compute_function_bodies`; see `function_start.rs:1031`), so during analysis
+/// `f.body()` is empty for nearly every function and a literal body-intersection test would return
+/// NOTHING. The entry-point test below restores exactly what Ghidra's always-populated body
+/// guarantees — that a function whose entry is in the set overlaps the set — rather than adding a
+/// condition Ghidra does not have.
+fn find_locations_remove_function_bodies(program: &Program, set: &mut AddressSet) -> Vec<Address> {
+    use std::collections::BTreeSet;
+    let mut locations: BTreeSet<(u32, u64)> = BTreeSet::new();
+
+    // 1 — functions overlapping the set: entry point in, body out.
+    let mut in_body = AddressSet::new();
+    for f in program.function_manager.functions() {
+        let entry = f.entry_point();
+        if !set.contains(entry) && f.body().intersect(set).is_empty() {
+            continue;
+        }
+        locations.insert((entry.space.0, entry.offset));
+        in_body = in_body.union(f.body());
+        in_body.add(entry);
+    }
+    *set = set.subtract(&in_body);
+
+    // 2 — call destinations in what remains.
+    let mut out_of_body = AddressSet::new();
+    for dest in program.reference_manager.destinations_in(set) {
+        if program.reference_manager.refs_to(dest).any(|r| r.ref_type.is_call()) {
+            locations.insert((dest.space.0, dest.offset));
+            out_of_body.add(dest);
+        }
+    }
+    *set = set.subtract(&out_of_body);
+
+    // 3 — the minimum of each remaining range.
+    let mut out_of_body = AddressSet::new();
+    for r in set.ranges() {
+        locations.insert((r.space.0, r.min));
+        out_of_body.add_range(r.space, r.min, r.min);
+    }
+    *set = set.subtract(&out_of_body);
+
+    locations.into_iter().map(|(s, o)| Address::new(SpaceId(s), o)).collect()
+}
+
 /// Constant-propagation reference analyzer (Ghidra `ConstantPropagationAnalyzer`): runs
 /// the [`SymbolicPropogator`](crate::analysis::symbolic) over each function to recover
 /// data references (READ/WRITE/DATA) from resolved memory operands. Runs at REFERENCE
@@ -435,15 +516,22 @@ impl Analyzer for ConstantPropagationAnalyzer {
         // target). Seeding the Function analyzer re-runs disassembly + constant propagation on
         // the new function, driving the worklist to a fixpoint. New-only (not already a
         // function entry) so an already-known target doesn't re-trigger endlessly.
+        // `added` (ConstantPropagationAnalyzer.java:178-186) copies the set, drops uninitialized
+        // memory, then reduces it to a set of START LOCATIONS with
+        // `findLocationsRemoveFunctionBodies` (:248-307). Taking `r.min` off the *raw* set
+        // implemented only that method's LAST step (:296-303) — the fallback for whatever is left
+        // once function bodies and call destinations have been removed. Applied to the raw set it
+        // drops entries: an `AddressSet` coalesces adjacent ranges, so functions at consecutive
+        // entries collapse into one range and only the first was ever propagated
+        // (`docs/function-discovery-backlog.md`, CAUSE B).
+        let mut unanalyzed = set.clone();
+        remove_uninitialized_blocks(program, &mut unanalyzed);
+        let locations = find_locations_remove_function_bodies(program, &mut unanalyzed);
+
         let mut new_funcs = AddressSet::new();
-        for r in set.ranges() {
-            let dests = crate::analysis::symbolic::flow_constants(
-                &self.spec,
-                &self.ctx,
-                program,
-                Address::new(self.ram, r.min),
-                &entries,
-            );
+        for loc in locations {
+            let dests =
+                crate::analysis::symbolic::flow_constants(&self.spec, &self.ctx, program, loc, &entries);
             for d in dests {
                 if !entries.contains(&d) {
                     new_funcs.add_range(self.ram, d, d);
@@ -590,7 +678,6 @@ mod constant_propagation_location_tests {
     /// at `0x401001` (function B) that resolves to `0x401018`. Only propagating from A stops at
     /// the `ret` and recovers nothing; the READ reference is the proof that B ran.
     #[test]
-    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
     fn adjacent_function_entries_are_all_propagated_from() {
         if crate::lang::load("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable

@@ -29,13 +29,21 @@ impl DecompilerSwitchAnalyzer {
     /// candidate's span against the recorded `indirect_branches` — decompiling every function is
     /// needlessly expensive. A function spans `[entry, next entry)`.
     ///
-    /// Extracted verbatim from `added` so the selection can be gated on its own; the two defects
-    /// the gate names are still present here.
+    /// **Every function entry in the set, ascending — not one per range.** `AddressSet` coalesces
+    /// adjacent ranges, so functions at consecutive entries collapse into a single range and
+    /// reading `r.min` analysed only the first (`docs/function-discovery-backlog.md`, CAUSE B).
+    ///
+    /// The entry filter matters on its own account too: `r.min` was used as a function entry —
+    /// handed straight to `decompile_function` — without ever checking that a function was there.
+    /// Ghidra cannot do that; `findFunctions` maps every location through `getFunctionContaining`,
+    /// so what it decompiles is always a function.
     fn find_functions(&self, program: &Program, set: &AddressSet) -> Vec<u64> {
         let entries: std::collections::BTreeSet<u64> =
             program.function_manager.functions().map(|f| f.entry_point().offset).collect();
-        set.ranges()
-            .map(|r| r.min)
+        entries
+            .iter()
+            .copied()
+            .filter(|&off| set.contains(Address::new(self.ram, off)))
             .filter(|&off| {
                 let next = entries.range((off + 1)..).next().copied().unwrap_or(u64::MAX);
                 program.indirect_branches.iter().any(|&b| b >= off && b < next)
@@ -123,7 +131,6 @@ mod find_functions_tests {
     /// in the THIRD function, which `r.min` never reaches: with the entries adjacent, the range
     /// examined for the first is `[0x401010, 0x401011)`, one byte wide.
     #[test]
-    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
     fn every_function_entry_in_the_set_is_a_candidate_not_just_the_range_minimum() {
         let mut p = program();
         for off in [0x40_1010, 0x40_1011, 0x40_1012] {
@@ -148,7 +155,6 @@ mod find_functions_tests {
     /// (DecompilerSwitchAnalyzer.java:184) maps every location through `getFunctionContaining`, so
     /// what it decompiles is always a function.
     #[test]
-    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
     fn a_range_minimum_that_is_not_a_function_entry_is_not_decompiled() {
         let mut p = program();
         make_function(&mut p, 0x40_1000); // the only function, below the set
