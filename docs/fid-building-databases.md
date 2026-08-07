@@ -118,31 +118,36 @@ several columns can live in one directory without interfering.
 
 ---
 
-## Why the format is text, and what it costs
+## Why the format is text — size and load time together
 
-Measured on Ghidra's `vs2017_x64` (40,911 functions + 116,129 relations) converted to `.mfid`:
+Both axes on the same 40,911-function database (Ghidra's `vs2017_x64`), because quoting the
+compressed size next to the uncompressed load time would be picking whichever configuration
+flatters the answer:
 
-| artifact | bytes | vs `.fidb` |
-| --- | ---: | --- |
-| Ghidra `.fidb` (packed, DEFLATE'd) | 3,849,100 | — |
-| Ghidra `.fidbf` (unpacked B-tree) | 10,682,368 | 2.8× |
-| mosura `.mfid` (plain text) | 7,153,017 | 1.9× |
-| `.mfid` + gzip -9 | 2,053,183 | 0.53× |
-| `.mfid` + zstd -19 | 1,428,081 | 0.37× |
+| artifact | on disk | load |
+| --- | ---: | ---: |
+| Ghidra `.fidb` (packed) | 3,849,100 | 67 ms |
+| Ghidra `.fidbf` (unpacked B-tree) | 10,682,368 | — |
+| mosura `.mfid` (text) | 7,153,017 | **29 ms** |
+| mosura `.mfid.gz` | **2,053,183** | 50 ms |
 
-Raw text is ~1.9× Ghidra's *packed* form — but that compares compressed against uncompressed.
-Like-for-like it is already smaller (7.2 MB of text against 10.7 MB of B-tree, which carries
-node headers and slack), and compressed it wins outright: hex digits and symbol names have far
-less entropy than an already-DEFLATE'd image.
+Read honestly, that is a **trade, not a clean win**:
 
-Git also compresses objects, so a committed `.mfid` costs roughly its gzip size in the pack.
-And because records are **sorted**, a rebuild that changes fifty functions produces a small
-delta git packs well — where a rebuilt binary B-tree is a whole new blob every time. For an
-artifact that is regenerated and reviewed, sorted text is the cheaper choice over the repo's
-life.
+- `.mfid` uncompressed is 1.9× the size of `.fidb` but loads 2.3× faster.
+- `.mfid.gz` is 1.9× *smaller* than `.fidb` and still loads faster (50 ms vs 67 ms) — but it
+  gives up most of the speed advantage the plain text had.
+- There is no configuration where text loses on load, because `.fidb` pays for both DEFLATE
+  (3.8 → 10.7 MB) *and* a B-tree walk across 651 buffers with node and chained-buffer decode,
+  while text is a linear scan with hex parsing.
 
-If a column ever produces an unreasonably large database, transparent `.mfid.zst` reading is a
-small change. Measure the column first.
+**We ship `.mfid` uncompressed**, taking the fastest load and the largest working file. Git
+compresses the stored object anyway, so the repo pays roughly the gzip figure regardless; the
+uncompressed file costs disk in a checkout, not history. Compressing it would trade the load
+advantage for bytes git was already saving.
+
+That reasoning is worth revisiting if a column produces a database large enough that the
+checkout size matters more than 20 ms — the reader would need a small change to accept
+`.mfid.gz`, and the numbers above say what it would cost.
 
 ---
 
@@ -158,7 +163,7 @@ So the practical question per runtime is how closed its version set is:
 
 | runtime | version set | outlook |
 | --- | --- | --- |
-| Open Watcom | 10.0a, 10.6, 11.0, OW2 — closed, small, all obtainable | a **complete** column is achievable |
+| Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 (+ Open Watcom 2) — closed, small, **all installed** under `~/.dosemu/drive_c/` | a **complete** column is achievable |
 | Borland, sdcc | bounded | complete columns achievable |
 | MSVC | Ghidra already ships 1998–2019 | done |
 | gcc / glibc | effectively unbounded — every distro build differs | **best-effort per toolchain**, never complete |
