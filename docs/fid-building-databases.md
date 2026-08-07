@@ -221,6 +221,16 @@ probe built by MSVC 6, against Ghidra's 1998-2019 databases:
    vsOlder_x86           8 matched  score  462   -> Visual Studio 1998
 ```
 
+Discrimination is gated across the whole set: `tests/fid_detect_versions.rs` scores every
+database against all the others on its own signatures, and all 71 win. The hard adjacent pairs
+separate clearly — `tc2.0` 4992 against `tc2.01` 4576, `watcom-10.6` 7088 against `11.0` 1739.
+
+**One genuine exception, and it is a fact about the releases rather than a limit of the
+method**: Borland C++ 4.52's 32-bit runtime is **940 of 941 functions identical** to 4.5's — it
+is a patch release that barely touched `CW32.LIB`. No signature can separate them, the two
+score exactly equal, and `is_ambiguous` says so. Their 16-bit models *do* differ (9560 against
+7210), so only the flat 32-bit column is affected.
+
 It is a **vote, not a lookup**: releases share code, so several databases match something and
 what separates them is how much. `VersionReport::is_ambiguous` flags a top-two gap under 5% —
 two adjacent point releases genuinely may be indistinguishable in a small binary, and saying so

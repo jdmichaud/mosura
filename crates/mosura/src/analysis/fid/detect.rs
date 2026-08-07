@@ -104,8 +104,6 @@ impl VersionReport {
 /// Each database is loaded and queried **on its own** — deliberately not merged into one
 /// service, because the point is to tell them apart.
 pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
-    let mut report = VersionReport::default();
-
     // Hash every function once; the same quads are scored against each database.
     let quads: Vec<_> = program
         .function_manager
@@ -113,6 +111,22 @@ pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
         .map(|f| f.entry_point())
         .filter_map(|e| hash_function(program, e))
         .collect();
+    vote(&quads, dir, &program.language_id, &program.compiler_spec_id)
+}
+
+/// Score a set of function hashes against every database in `dir` for one language.
+///
+/// Split out from [`detect_version`] so the vote can be exercised on hashes that did not come
+/// from a loaded program — in particular a database's own records, which is how the
+/// *discrimination* claim is tested: a database must out-score its neighbours on its own
+/// signatures, and that is checkable for every release without a compiler for each one.
+pub fn vote(
+    quads: &[super::hash::FidHashQuad],
+    dir: &Path,
+    language_id: &str,
+    compiler_spec_id: &str,
+) -> VersionReport {
+    let mut report = VersionReport::default();
     report.hashable_functions = quads.len();
     if quads.is_empty() {
         return report;
@@ -143,7 +157,7 @@ pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
                 .map(|s| s.into_database(name))
         };
         let Some(database) = loaded else { continue };
-        if !database.matches_program(&program.language_id, &program.compiler_spec_id) {
+        if !database.matches_program(language_id, compiler_spec_id) {
             continue;
         }
         // A database can hold several libraries — Ghidra's `vsOlder` spans Visual Studio 1998
@@ -164,7 +178,7 @@ pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
 
         let mut matched = 0usize;
         let mut score = 0.0f32;
-        for &hash in &quads {
+        for &hash in quads {
             let family = HashFamily { hash: Some(hash), ..Default::default() };
             if let Some(result) = seeker.process_matches(&family) {
                 matched += 1;
