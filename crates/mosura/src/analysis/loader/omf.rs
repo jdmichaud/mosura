@@ -63,7 +63,11 @@ use super::elf::LoadError;
 use crate::analysis::program::{Memory, Program, SymbolType};
 use crate::decompile::space::{Address, SpaceKind, SpaceManager};
 
-const LANGUAGE_ID: &str = "x86:LE:32:default";
+/// 32-bit modules (Watcom 386, Borland C++ 4.x/5 flat models).
+const LANGUAGE_ID_32: &str = "x86:LE:32:default";
+/// 16-bit modules (Turbo C, Borland C++ 2.x/3.x, and the small/compact/medium/large/huge
+/// memory-model libraries every DOS-era Borland ships). Same language the MZ loader uses.
+const LANGUAGE_ID_16: &str = "x86:LE:16:Real Mode";
 
 /// Base address for the synthesised image. An object file has no load address — its segments
 /// are position-independent until linked — so a nominal base is chosen. It cannot affect a
@@ -130,21 +134,40 @@ pub struct OmfModule {
     /// `EXTDEF` names, in declaration order (the 1-based index fixups refer to).
     pub externals: Vec<String>,
     /// Self-relative fixups targeting an external: `(segment index, offset of the displacement
-    /// field, external index)`.
-    pub external_fixups: Vec<(usize, usize, usize)>,
+    /// field, external index, field width in bytes)`.
+    pub external_fixups: Vec<(usize, usize, usize, usize)>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct OmfSegment {
     pub name: String,
     pub data: Vec<u8>,
+    /// The `P` bit of the segment's ACBP attribute: a USE32 segment. This is how a 16-bit
+    /// Turbo C object is told from a 32-bit one — the record ids do not say (and under Easy
+    /// OMF-386 they actively mislead).
+    pub use32: bool,
 }
 
 impl OmfSegment {
     /// Whether this segment holds code. Watcom and Borland both name it `_TEXT`; the
-    /// convention is a `TEXT` suffix for any code segment (`BEGTEXT`, `FAR_TEXT`, …).
+    /// convention is a `TEXT` suffix for any code segment (`BEGTEXT`, `FAR_TEXT`, …). Borland's
+    /// 16-bit memory models also emit per-module `<module>_TEXT` segments, which this covers.
     pub fn is_code(&self) -> bool {
         self.name.ends_with("TEXT") || self.name.ends_with("CODE")
+    }
+}
+
+impl OmfModule {
+    /// The Ghidra language this module's code is written for, decided by its code segments'
+    /// USE32 attribute rather than assumed. A DOS-era Borland or Turbo C library is 16-bit;
+    /// Watcom 386 and Borland's flat models are 32-bit, and a library can hold either.
+    pub fn language_id(&self) -> &'static str {
+        let any32 = self.segments.iter().any(|s| s.is_code() && s.use32);
+        if any32 {
+            LANGUAGE_ID_32
+        } else {
+            LANGUAGE_ID_16
+        }
     }
 }
 
@@ -206,7 +229,11 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                 let name = omf_index(b, at)
                     .and_then(|(idx, _)| names.get(idx.checked_sub(1)?).cloned())
                     .unwrap_or_default();
-                module.segments.push(OmfSegment { name, data: vec![0u8; length as usize] });
+                module.segments.push(OmfSegment {
+                    name,
+                    data: vec![0u8; length as usize],
+                    use32: attr & 0x01 != 0 || easy_omf_386,
+                });
             }
             // LEDATA / LEDATA32 — enumerated data at an offset within a segment.
             0xa0 | 0xa1 => {
@@ -361,16 +388,29 @@ fn parse_fixupp(
         // Target method 2 = EXTDEF index. Location 9/13 = a 32-bit offset field, which is what
         // a `call rel32` carries.
         //
-        // Under Easy OMF-386 the location codes are reinterpreted along with everything else:
-        // the nominally-16-bit offsets — 1 (plain) and 5 (loader-resolved) — denote **32-bit**
-        // offsets. Watcom 9.01 emits location 5 for its cross-module calls, so rejecting it
-        // left them unpatched: 391 functions but only 6 relations, against 426 for the same
-        // library built by 10.0a.
-        let offset32 = location == 9
-            || location == 13
-            || (easy_omf_386 && (location == 1 || location == 5));
-        if target_explicit && target_method == 2 && self_relative && offset32 {
-            module.external_fixups.push((segment, data_offset + record_offset, target_datum));
+        // Location 9/13 are 32-bit offset fields, which is what a `call rel32` carries.
+        // Locations 1 and 5 are the 16-bit plain and loader-resolved offsets — a `call rel16`,
+        // as every DOS-era Borland and Turbo C library uses.
+        //
+        // Under Easy OMF-386 the location codes are reinterpreted along with everything else,
+        // and those nominally-16-bit codes denote **32-bit** offsets. Watcom 9.01 emits
+        // location 5 for its cross-module calls, so rejecting it left them unpatched — 391
+        // functions but only 6 relations, against 426 for the same library built by 10.0a.
+        let width = match location {
+            9 | 13 => Some(4),
+            1 | 5 if easy_omf_386 => Some(4),
+            1 | 5 => Some(2),
+            _ => None,
+        };
+        if let (true, true, true, Some(width)) =
+            (target_explicit, target_method == 2, self_relative, width)
+        {
+            module.external_fixups.push((
+                segment,
+                data_offset + record_offset,
+                target_datum,
+                width,
+            ));
         }
     }
 }
@@ -428,6 +468,8 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+    // (address size stays 4 bytes: a 16-bit module's synthetic layout still uses linear
+    // offsets, and the language decides how code is decoded)
 
     // Lay each non-empty segment at its own base, so a public's address is `base + offset`.
     let mut base_of: Vec<u64> = vec![0; module.segments.len() + 1];
@@ -447,7 +489,7 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
     // docs); patching it to reach the symbol's slot restores the flow. The displacement of a
     // `call rel32` is relative to the end of its 4-byte field.
     let mut patched = 0usize;
-    for &(segment, offset, external) in &module.external_fixups {
+    for &(segment, offset, external, width) in &module.external_fixups {
         let Some(base) = base_of.get(segment).copied().filter(|b| *b != 0) else { continue };
         let Some(index) = external.checked_sub(1) else { continue };
         if index >= module.externals.len() {
@@ -456,13 +498,21 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
         let Some(seg) = segment.checked_sub(1).and_then(|i| module.segments.get_mut(i)) else {
             continue;
         };
-        if offset + 4 > seg.data.len() {
+        if offset + width > seg.data.len() {
             continue;
         }
         let target = external_base + index as u64 * EXTERNAL_SLOT;
         let site = base + offset as u64;
-        let displacement = (target as i64 - (site as i64 + 4)) as i32;
-        seg.data[offset..offset + 4].copy_from_slice(&displacement.to_le_bytes());
+        let displacement = target as i64 - (site as i64 + width as i64);
+        if width == 2 {
+            // A 16-bit displacement can only reach ±32 KB. The slots sit just past the code,
+            // so this holds for any realistic module; a fixup that cannot reach is left
+            // unpatched rather than silently wrapped into a wrong target.
+            let Ok(narrow) = i16::try_from(displacement) else { continue };
+            seg.data[offset..offset + 2].copy_from_slice(&narrow.to_le_bytes());
+        } else {
+            seg.data[offset..offset + 4].copy_from_slice(&(displacement as i32).to_le_bytes());
+        }
         patched += 1;
     }
     let _ = patched;
@@ -496,8 +546,15 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
         );
     }
 
+    let language = module.language_id();
+    let bits = if language == LANGUAGE_ID_32 { 32 } else { 16 };
+    // The compiler spec is the caller's to declare — an OMF module does not reliably say
+    // which vendor produced it, and `fid-build` knows because the operator names the library.
+    // `watcom` is the default because it is the spec mosura ships for x86-32 OMF; a 16-bit
+    // module takes `default`, matching the MZ loader.
+    let cspec = if bits == 32 { "watcom" } else { "default" };
     let image_base = Address::new(ram, OBJ_BASE);
-    let mut program = Program::new(spaces, ram, LANGUAGE_ID, "watcom", image_base, false, 32);
+    let mut program = Program::new(spaces, ram, language, cspec, image_base, false, bits);
     program.memory = memory;
 
     // Publics in a code segment are function entry points; the rest are data labels.
