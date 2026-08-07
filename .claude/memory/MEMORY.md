@@ -77,6 +77,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 
 ## Function discovery (analysis lane)
 - [command-queue-modelled-as-change-channel](command-queue-modelled-as-change-channel.md) — **⭐⭐ THE ROOT CAUSE: Ghidra's `disassemble()`/`createFunction()` are COMMAND-QUEUE pushes; we model them as change notifications, so they silently drop. Explains the 374-function listing hole AND the re-fire loop.**
+- [empty-bodies-take-the-permissive-branch](empty-bodies-take-the-permissive-branch.md) — **⭐ an empty body doesn't blur a ported body query, it INVERTS it to the permissive branch; the fix can legitimately REMOVE refs. Carries the `added()`-called-directly vacuity trap.**
 - [regenerate-before-adopting-a-classifier-change](regenerate-before-adopting-a-classifier-change.md) — **⭐ a "more principled" truth-class change would have dropped EVERY entry point from the recall gate corpus-wide; only regenerating first showed it.**
 - [self-compiled-gate-measures-your-imagination](self-compiled-gate-measures-your-imagination.md) — **⭐ 0-spurious across 17 known binaries was STRUCTURALLY BLIND; an unanchored pattern needs a POPULATION score on a real binary. Push-order does not rescue it.**
 - [decoded-not-in-function-needs-address-table](decoded-not-in-function-needs-address-table.md) — **⭐ only AddressTableAnalyzer makes code DECODED-but-in-no-function; the COMPILER FLAG is what lets the gate fail.**
