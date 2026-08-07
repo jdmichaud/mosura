@@ -340,7 +340,23 @@ Port `hash/MessageDigestFidHasher.java` + `hash/FunctionBodyFunctionExtentGenera
   are LE-hardcoded (`docs/multi-arch-plan.md`). Assert this rather than assume it, at the 68k
   column's gate.
 
-### Stage 2 — read Ghidra's `.fidb` (the "tap the database directly" ask)
+### Stage 2 — read Ghidra's `.fidb` ✅ LANDED
+`analysis/fid/{packed,bufferfile,db}.rs` + `tests/fid_packed.rs` (5/5) + `tests/fid_db_read.rs`
+(6/6). Two gates, both independent of any expectation we authored:
+- **2a, unpack** — our bytes are **byte-identical** to the `.fidbf` Ghidra's own build produces
+  from the same file. Added a ZIP CRC-32 check off the streamed entry's data descriptor; without
+  it a flipped bit inflates to same-length garbage and the corruption test passed when it should
+  not have.
+- **2b, decode** — every master-table record stores the count Ghidra wrote for that table;
+  walking the B-tree must arrive at exactly that number. Across all ten databases and every
+  primary table that is ~1.4 M records, and it lands exactly. Plus: the five FID schemas pinned
+  field-for-field, library records checked to describe the architecture their filename claims,
+  and function records required to cross-reference into the strings and libraries tables.
+
+Index tables are deliberately not decoded (var-key structures; the full-hash lookup is served by
+an in-memory index built from the functions table). Attempting one is an explicit error.
+
+The port, as landed:
 New module `analysis/fid/fidbf.rs` (unpack + buffer-file + `db` decode) and `analysis/fid/db.rs`
 (the FID schema on top). Port `Framework/FileSystem/…/store/local/ItemSerializer.java` (the packed
 wrapper, §3 step 1), `Framework/DB/…/db/buffers/LocalBufferFile.java`, the read-only slice of
