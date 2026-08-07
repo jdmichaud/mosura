@@ -29,10 +29,11 @@ fn watcom_databases_are_complete_and_coherent() {
         .collect();
     versions.sort();
 
-    // The five installed Watcom versions — a closed set we hold completely, which is what
-    // makes this column finishable at all (unlike glibc).
-    assert_eq!(versions.len(), 5, "one database per installed Watcom: {versions:?}");
-    for expected in ["9.01", "10.0a", "10.5", "10.6", "11.0"] {
+    // Every Watcom we hold — a closed set, which is what makes this column finishable at all
+    // (unlike glibc). `ow2` is built from the Open Watcom source tree rather than a shipped
+    // release; see its provenance note.
+    assert_eq!(versions.len(), 6, "one database per installed Watcom: {versions:?}");
+    for expected in ["9.01", "10.0a", "10.5", "10.6", "11.0", "ow2"] {
         assert!(
             versions.iter().any(|v| v.contains(expected)),
             "Watcom {expected} is missing from {versions:?}"

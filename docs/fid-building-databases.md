@@ -157,7 +157,7 @@ So the practical question per runtime is how closed its version set is:
 
 | runtime | version set | outlook |
 | --- | --- | --- |
-| Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 (+ Open Watcom 2) — closed, small, **all installed** under `~/.dosemu/drive_c/` | a **complete** column is achievable |
+| Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 under `~/.dosemu/drive_c/`, plus Open Watcom 2 — closed, small, all held | **complete** |
 | Borland, sdcc | bounded | complete columns achievable |
 | MSVC | Ghidra already ships 1998–2019 | done |
 | gcc / glibc | effectively unbounded — every distro build differs | **best-effort per toolchain**, never complete |
@@ -291,6 +291,24 @@ cargo xtask fid-build --family glibc --version "$(ldd --version | head -1)" --va
 built for those columns is internally consistent and will identify functions correctly against
 itself, but is not interoperable with Ghidra until R7 lands.
 
+### Open Watcom 2
+
+Built from the source tree rather than a shipped release:
+
+```sh
+cargo xtask fid-build --family Watcom --version ow2 --variant Release \
+    --out oracle/fid/db/watcom-ow2-x86-32.mfid.gz \
+    /data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib
+```
+
+⚠️ **Provenance caveat.** Every other database here comes from a runtime the vendor *shipped*,
+which is what a target binary was actually linked against. This one comes from a local build of
+a rolling source project. Real OW2 binaries are linked against official release snapshots, and
+if their code generation differs from this build's, the signatures will not match. It is worth
+having — OW2's library source moves slowly, and it closes the one version we could detect but
+not identify — but validate it against a binary built by an official OW2 release before
+trusting it.
+
 ### sdcc (z80)
 
 ```sh
@@ -363,6 +381,24 @@ map addresses) and analysis recovers 497 call references, but only 14 survive in
 relations — the loss is in ingest's child attribution, not in the linking. It also covers fewer
 functions than the library holds, since the linker drops unreferenced modules and symbols that
 are not legal C identifiers cannot be referenced from generated C. Use `objects`.
+
+### Open Watcom 2
+
+Built from the source tree rather than a shipped release:
+
+```sh
+cargo xtask fid-build --family Watcom --version ow2 --variant Release \
+    --out oracle/fid/db/watcom-ow2-x86-32.mfid.gz \
+    /data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib
+```
+
+⚠️ **Provenance caveat.** Every other database here comes from a runtime the vendor *shipped*,
+which is what a target binary was actually linked against. This one comes from a local build of
+a rolling source project. Real OW2 binaries are linked against official release snapshots, and
+if their code generation differs from this build's, the signatures will not match. It is worth
+having — OW2's library source moves slowly, and it closes the one version we could detect but
+not identify — but validate it against a binary built by an official OW2 release before
+trusting it.
 
 ### sdcc (z80)
 
