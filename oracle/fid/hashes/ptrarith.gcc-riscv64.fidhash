@@ -1,0 +1,9 @@
+# FID hash quads emitted by Ghidra's own FidService.hashFunction
+# language=RISCV:LE:64:default
+# compilerSpec=gcc
+# shortHashCodeUnitLength=4
+# columns: entry name codeUnitSize fullHash specificHashAddSize specificHash ranges(min-max[,min-max]...)
+1017c FUN_ram_0001017c 15 6397e1ea903425d6 7 4e57fea072b97f18 1017c-101a3
+101a4 FUN_ram_000101a4 12 c691f8b7fc14940c 5 6e9105ad99274775 101a4-101c5
+101c6 entry 50 c041fe1768cbe401 44 9ce2737ff241d345 101c6-10245
+# emitted=3 skipped=0

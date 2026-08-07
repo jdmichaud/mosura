@@ -197,6 +197,62 @@ impl RelocationQuery for NoRelocations {
     }
 }
 
+/// The **analysis-derived** half of `OperandType.ADDRESS`.
+///
+/// This is the subtlety that decides whether hashes match Ghidra. `getOperandType` is not a
+/// property of the encoding: `InstructionDB.getOperandType` (`:398-419`) takes the SLEIGH
+/// prototype's `getOpType` and then **ORs `OperandType.ADDRESS` in from the operand's primary
+/// reference** —
+///
+/// ```java
+/// int optype = proto.getOpType(opIndex, this);
+/// Reference ref = getPrimaryReference(opIndex);
+/// if (ref instanceof StackReference)                              optype |= ADDRESS;
+/// else if (ref instanceof ExternalReference)                      optype |= ADDRESS;
+/// else if (ref != null && ref.getToAddress().isMemoryAddress())   optype |= ADDRESS;
+/// ```
+///
+/// So a whole-operand immediate that analysis decided is an address — `LEA RAX,[0x402fe0]`,
+/// a global's address loaded into a register — reports `isScalar && isAddress`, and the hasher
+/// then **suppresses its value** (`:151-154`) instead of folding it into the specific hash.
+/// That is deliberate: where a global happens to sit must not change a function's signature.
+///
+/// SLEIGH alone cannot answer this, so the caller supplies it from the program's references.
+/// It only ever matters for operands that are a *whole* scalar — for every other operand the
+/// ADDRESS bit is read but never consulted.
+pub trait OperandAddressQuery {
+    /// Whether operand `op_index` of the instruction at `instruction_address` carries a
+    /// primary reference to a memory (or stack, or external) address.
+    ///
+    /// `objects` is that operand's `getOpObjects`, so an implementation whose references do
+    /// not record which operand they came from can identify it by value instead — see
+    /// `tests/fid_hash_parity.rs`.
+    fn operand_is_address(
+        &self,
+        instruction_address: u64,
+        op_index: usize,
+        objects: &[OpObject],
+    ) -> bool;
+}
+
+/// No reference information — the ADDRESS bit comes from SLEIGH alone.
+///
+/// Correct only when the caller knows no operand carries an address reference. For a real
+/// analyzed program use the program's reference manager; otherwise whole-scalar address
+/// operands fold their value into the specific hash and diverge from Ghidra.
+pub struct NoOperandReferences;
+
+impl OperandAddressQuery for NoOperandReferences {
+    fn operand_is_address(
+        &self,
+        _instruction_address: u64,
+        _op_index: usize,
+        _objects: &[OpObject],
+    ) -> bool {
+        false
+    }
+}
+
 /// One code unit of the extent, as the hasher consumes it.
 ///
 /// `FunctionBodyFunctionExtentGenerator` (`:45-48`) yields `listing.getInstructions(body, true)`
@@ -215,6 +271,19 @@ pub struct CodeUnitInput<'a> {
     /// instruction — or whose prototype could not yield a mask, which is Ghidra's
     /// `NullPointerException` path (`:190-197`, fill the unit with `0xa5`).
     pub fingerprint: Option<&'a InstructionFingerprint>,
+    /// `instruction.getFlowType().isCall()` (`:126`), when the caller can answer it better
+    /// than SLEIGH can.
+    ///
+    /// **Ghidra's flow type is analysis output, not decode output.** `InstructionDB.getFlowType`
+    /// (`:321`) returns `FlowOverride.getModifiedFlowType(proto.getFlowType(this), flowOverride)`,
+    /// so an analyzer that turned a tail `jmp` into a call makes `isCall()` true for an
+    /// instruction whose bytes are a jump. That call is then **subtracted from
+    /// `codeUnitSize`**, which is why re-deriving it from the instruction alone puts the size
+    /// one too high on every tail call. Same class as
+    /// [`crate::analysis::flowtype::overridden_flow_props`].
+    ///
+    /// `None` falls back to the fingerprint's SLEIGH-derived flag.
+    pub is_call: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -244,6 +313,7 @@ impl FidHasher {
         &self,
         extent: &[CodeUnitInput<'_>],
         relocations: &dyn RelocationQuery,
+        operand_addresses: &dyn OperandAddressQuery,
     ) -> Option<FidHashQuad> {
         // `:86-88` — not enough code units.
         if extent.len() < self.short_code_unit_limit {
@@ -280,16 +350,25 @@ impl FidHasher {
                     continue;
                 }
 
-                // `:126-128`
-                if fp.is_call {
+                // `:126-128` — the flow type analysis settled on, not the one the bytes imply.
+                if unit.is_call.unwrap_or(fp.is_call) {
                     call_count += 1;
                 }
 
                 // `:134-186` — one sub-hash per operand, mixed into both digests.
                 for (ii, operand) in fp.operands.iter().enumerate() {
                     // `:135-138` — a null operand mask contributes nothing at all.
-                    let Some(_operand_mask) = operand.value_mask.as_deref() else { continue };
-                    let operand_mask = _operand_mask;
+                    let Some(operand_mask) = operand.value_mask.as_deref() else { continue };
+
+                    // `OperandType.ADDRESS` = the SLEIGH prototype's bit OR'd with the one
+                    // analysis contributes from this operand's primary reference
+                    // (`InstructionDB.java:398-419`; see [`OperandAddressQuery`]).
+                    let is_address = operand.is_address
+                        || operand_addresses.operand_is_address(
+                            unit.min_address,
+                            ii,
+                            &operand.objects,
+                        );
 
                     // `:140-141` — the seed makes the sub-hash operand-order dependent while
                     // the opObjects within one operand combine commutatively.
@@ -313,7 +392,7 @@ impl FidHasher {
                                     val = i64::from(SCALAR_PLACEHOLDER);
                                 } else if operand.is_scalar {
                                     // The whole operand is the scalar.
-                                    if operand.is_address {
+                                    if is_address {
                                         val = i64::from(SCALAR_PLACEHOLDER);
                                     } else {
                                         specific_count += 1;

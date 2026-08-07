@@ -1,0 +1,10 @@
+# FID hash quads emitted by Ghidra's own FidService.hashFunction
+# language=68000:BE:32:Coldfire
+# compilerSpec=default
+# shortHashCodeUnitLength=4
+# columns: entry name codeUnitSize fullHash specificHashAddSize specificHash ranges(min-max[,min-max]...)
+800000b8 FUN_800000b8 4 e1a6832fe899a931 2 5a9e005095a2eaf8 800000b8-800000d1
+800000d2 FUN_800000d2 6 0df8e41a9b677742 1 71c38ad3cbe88d3d 800000d2-800000f1
+800000f2 FUN_800000f2 7 007db969f6956ac9 1 c1718b1b5c01218e 800000f2-8000011d
+8000011e entry 39 a29c5b0a7e73b3f4 24 ec3d53b7c3706ab8 8000011e-800001b7
+# emitted=4 skipped=0

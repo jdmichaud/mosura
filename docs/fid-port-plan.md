@@ -377,7 +377,50 @@ FID tables `db/{FunctionsTable,LibrariesTable,StringsTable,RelationsTable,Functi
   relations. No columns — presence *is* the relation.
 - Same schema is what Stage 6's native writer emits; one `FidDb` trait over both.
 
-### Stage 3 — the byte-exact hash gate (the highest-value gate in the track)
+### Stage 3 — the byte-exact hash gate ✅ LANDED (x86 at full parity; other arches ratcheted)
+`oracle/fid/FidHashDump.java` + `scripts/capture-fid-hashes.sh` → 93 committed goldens /
+**292 quads** over the self-compiled corpus, and `tests/fid_hash_parity.rs` requires mosura to
+reproduce them. The dump records each function's **body address ranges** alongside its quad, so
+the test hashes exactly the instructions Ghidra hashed — that isolates the *hasher* from
+function-boundary recovery, which is a real question but a different one.
+
+**Result: 216/292, with `gcc-x86-64` at 52/52 and `watcom-x86-32` at 83/84.** x86 is held at
+full parity (a hard assertion); every other column is a ratchet that may rise and never fall.
+
+**⭐ The finding this gate existed to produce: two of the hasher's inputs are ANALYSIS output,
+not decode output.** Both were wrong in the obvious, plausible way, and only byte-comparison
+against Ghidra could show it:
+
+1. **`OperandType.ADDRESS`.** `InstructionDB.getOperandType` (`:398-419`) takes the SLEIGH
+   prototype's `getOpType` and then ORs `ADDRESS` in **from the operand's primary reference**.
+   So `LEA RAX,[0x402fe0]` reports `isScalar && isAddress`, and the hasher *suppresses* the
+   value instead of folding it into the specific hash — deliberately, so where a global sits
+   cannot change a function's signature. Reading the bit off SLEIGH alone silently folded every
+   such address in. Fixed by [`OperandAddressQuery`], fed from the program's references.
+2. **`getFlowType().isCall()`.** `InstructionDB.getFlowType` (`:321`) is
+   `getModifiedFlowType(proto.getFlowType(this), flowOverride)` — so a tail `jmp` an analyzer
+   turned into a call *is* a call, and gets subtracted from `codeUnitSize`. Re-deriving from
+   p-code alone left the size one too high on every tail call. Fixed via `CodeUnitInput::is_call`
+   fed from [`crate::analysis::flowtype::overridden_flow_props`].
+
+Both are the class already recorded as `reftype-is-post-override-not-the-instruction`: a
+property that looks like it belongs to the instruction actually belongs to the analysis.
+
+**Stage-0 residuals, now adjudicated by real evidence:**
+- **#1 (branch/call target surfaces as `Scalar` not `Address`) — CONFIRMED HARMLESS.** Ghidra's
+  `Address` arm and our `Scalar` arm with `|val| ≥ 256` perform *identical* arithmetic and
+  neither increments `specificCount`. Verified on AArch64 `bl`.
+- **#3 (empty-operand-mask fallback) — CONFIRMED A REAL BUG, and it is the AArch64/m68k gap.**
+  For `mov x29,sp` Ghidra gives the `sp` operand an **all-zero** value mask and an instruction
+  mask of `e0ffffff`; mosura gives a non-empty mask and so clears the wrong bits, yielding
+  `00fcffff`. Every hash over such an instruction diverges. The fix is in
+  `sleigh/engine.rs`'s `mainSubGroups` fallback (the sleigh lane) — see §8 R7.
+
+Two further known gaps, both decode-side rather than hasher-side:
+`inlineparam.watcom-x86-32` (Ghidra hashes 6 code units where we decode 11 — the MZ
+inline-call-parameter class) and the `watcom-le` column (1 function).
+
+The port, as originally specified:
 Stage 1 × Stage 2 meet here. Take real MSVC-built PEs, run mosura's hasher over the functions, and
 require the quads to be **present in Ghidra's own database**. Plus a `FidHashDump` Ghidra script
 (~30 lines: emit `entry, name, codeUnitSize, fullHash, specificHashAdditionalSize, specificHash`
@@ -506,6 +549,17 @@ and any measurement quoted in this doc is stale unless stamped `@sha == HEAD`.
 - **R1 — Stage-0 residuals (medium, contained).** The four documented residuals could perturb
   hashes on some encoding we have not hit. Stage 3 is designed to find exactly this, against a
   corpus far larger than we could hand-build. Contained because the fix is local to the accessor.
+- **R7 — the empty-operand-mask fallback is wrong (CONFIRMED, open).** Stage 3 pinned it: for
+  an operand SLEIGH gives no pattern bits (`mov x29,sp`), Ghidra produces an all-zero operand
+  value mask; `sleigh/engine.rs` produces a non-empty one keyed on the sub-node subtree instead
+  of Ghidra's flat name map, so the instruction mask clears bits it should keep. This is the
+  whole of the AArch64 (16/56) and m68k (12/41) gap. The fix is a small change in the **sleigh
+  lane**; until it lands those columns stay ratcheted.
+- **R8 — mosura's references do not record an operand index (open).** They store `op_index = -1`,
+  so `getPrimaryReference(opIndex)` cannot be asked directly and `tests/fid_hash_parity.rs`
+  reconstructs the operand by value. Exact for whole-scalar operands (the only ones whose
+  ADDRESS bit reaches a hash), but recording the real index in the reference analyzers would
+  make it faithful rather than reconstructed.
 - **R2 — operand-object fidelity per architecture (medium).** Byte-identical hashes need mosura's
   Scalar/Register/Address split and signed scalar values to match Ghidra's *per language*. x86 is
   best-tested and gets the huge MSVC gate; every other arch needs its own FidHashDump goldens

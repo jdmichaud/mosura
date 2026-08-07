@@ -11,7 +11,8 @@
 //! differ in exactly one way, and assert which digest moves and which does not.
 
 use mosura::analysis::fid::hash::{
-    CodeUnitInput, FidHasher, Fnv1a64, NoRelocations, RelocationQuery, Skipper,
+    CodeUnitInput, FidHasher, Fnv1a64, NoOperandReferences, NoRelocations, RelocationQuery,
+    Skipper,
 };
 use mosura::lang;
 use mosura::sleigh::InstructionFingerprint;
@@ -126,10 +127,11 @@ fn hash_body(bytes: &[u8], relocations: &dyn RelocationQuery) -> Option<mosura::
             max_address: insn.address + insn.bytes.len() as u64 - 1,
             bytes: &insn.bytes,
             fingerprint: Some(fp),
+            is_call: None,
         })
         .collect();
 
-    FidHasher::new(Skipper::X86).hash(&units, relocations)
+    FidHasher::new(Skipper::X86).hash(&units, relocations, &NoOperandReferences)
 }
 
 /// A 4-instruction body: `push ebp; mov ebp,esp; add eax,imm8; ret`.

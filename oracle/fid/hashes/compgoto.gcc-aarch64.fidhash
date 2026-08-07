@@ -1,0 +1,8 @@
+# FID hash quads emitted by Ghidra's own FidService.hashFunction
+# language=AARCH64:LE:64:v8A
+# compilerSpec=default
+# shortHashCodeUnitLength=4
+# columns: entry name codeUnitSize fullHash specificHashAddSize specificHash ranges(min-max[,min-max]...)
+400180 FUN_00400180 13 bdba8974809d017a 5 e607d5a508d44b40 400180-4001b3
+4001c0 entry 22 8fb82be06a0658c3 17 54559ba880a1d68f 4001c0-40021f
+# emitted=2 skipped=0
