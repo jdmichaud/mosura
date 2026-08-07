@@ -148,6 +148,14 @@ pub fn analyze(program: &mut Program) {
     // A6: external-jump flow override — a PLT tail-call `jmp *[GOT]` into the EXTERNAL block
     // becomes COMPUTED_CALL_TERMINATOR (Ghidra OperandReferenceAnalyzer.checkForExternalJump).
     mgr.add_analyzer(Box::new(analyzers::external_jump::ExternalJumpAnalyzer::new()), program);
+    // "Non-Returning Functions - Discovered" (Ghidra `FindNoReturnFunctionsAnalyzer`, an
+    // INSTRUCTION_ANALYZER at `DISASSEMBLY.after()`). Distinct from `analyzers::noreturn`, which
+    // is the *Known* one and matches library names; this one infers non-return from the shape of
+    // the disassembly after each call. Inside the manager loop, as in Ghidra: its indicators want
+    // functions and references, which arrive on later rounds of the same fixpoint.
+    if let Some(nr) = analyzers::find_noreturn::FindNoReturnFunctionsAnalyzer::for_program(program) {
+        mgr.add_analyzer(Box::new(nr), program);
+    }
     // Address tables — runs of pointers in data whose targets are code (Ghidra
     // AddressTableAnalyzer, a BYTE_ANALYZER at DATA_TYPE_PROPOGATION.before()). It creates no
     // function; it disassembles the pointed-to code, and the call targets *inside* that code

@@ -1943,3 +1943,57 @@ fn inline_call_parameters_are_not_decoded_as_code() {
         violations.join("\n")
     );
 }
+
+/// `FindNoReturnFunctionsAnalyzer` — "Non-Returning Functions - **Discovered**", the analyzer
+/// that infers non-return from the shape of the disassembly after each call, as distinct from
+/// `analyzers::noreturn` ("Known"), which matches library names and is inert on every binary in
+/// this corpus.
+///
+/// This is the half of `docs/function-discovery-backlog.md` §9 #5 that IS ported: discover the
+/// target, mark it, and apply `FlowOverride.CALL_RETURN` to every call site
+/// (`setNoFallThru`, FindNoReturnFunctionsAnalyzer.java:218). What is NOT ported is the repair
+/// (`repairDamagedLocations` -> `ClearFlowAndRepairCmd`, :139), so the wrong code unit already on
+/// the ground stays there and [`inline_call_parameters_are_not_decoded_as_code`] is still RED.
+/// The two gates are deliberately separate so that stays visible.
+///
+/// **The evidence is the bad decode itself.** `dispatch_` is reached by three calls whose
+/// fall-through decodes into a 5-byte `mov eax,imm32` that runs past the next label's entry,
+/// tripping indicator :552 ("Function defined in instruction after call") at each — three
+/// indications, exactly Ghidra's default threshold.
+///
+/// Anti-vacuity: `noreturn_functions` has exactly two possible sources, and the other one
+/// (`noreturn::analyze`) measures 0 on every ground-truth binary — recorded in that module's own
+/// header. Before this analyzer existed both sets below were empty.
+#[test]
+fn discovered_noreturn_marks_the_inline_parameter_dispatcher() {
+    let bin = ground_truth_dir().join("inlineparam.watcom-x86-32");
+    if !bin.exists() {
+        eprintln!("skip discovered_noreturn_marks_the_inline_parameter_dispatcher: absent");
+        return;
+    }
+    let prog = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze inlineparam");
+    let truth_path = bin.with_extension("watcom-x86-32.truth");
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let by_name = |n: &str| {
+        truth.funcs.iter().find(|(_, f)| f == n).map(|(a, _)| *a).unwrap_or_else(|| panic!("truth has {n}"))
+    };
+    let dispatch = by_name("dispatch_");
+    let thunks = ["thunk_a_", "thunk_b_", "thunk_c_"].map(by_name);
+
+    let marked: BTreeSet<u64> = prog.noreturn_functions.iter().map(|&(_, o)| o).collect();
+    assert!(
+        marked.contains(&dispatch),
+        "dispatch_ @{dispatch:08x} was not discovered non-returning; marked = {:08x?}",
+        marked
+    );
+
+    // Every call site to it carries the override — that is `setNoFallThru`'s whole effect, and
+    // it is what stops any FUTURE fall-through decode there.
+    let overridden: BTreeSet<u64> = prog.flow_overrides.keys().map(|&(_, o)| o).collect();
+    for (name, t) in ["thunk_a_", "thunk_b_", "thunk_c_"].iter().zip(thunks) {
+        assert!(
+            overridden.contains(&t),
+            "{name}'s call to dispatch_ has no CALL_RETURN override; overridden = {overridden:08x?}"
+        );
+    }
+}

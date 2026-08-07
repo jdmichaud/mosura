@@ -8,6 +8,7 @@ pub mod address_table;
 pub mod demangler;
 pub mod eh_frame;
 pub mod external_jump;
+pub mod find_noreturn;
 pub mod function_start;
 pub mod noreturn;
 pub mod relocation_seed;
