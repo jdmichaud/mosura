@@ -789,6 +789,30 @@
        asserts the three orphans are NOT found, so the gap is recorded rather than forgotten.
        Covering it needs an anchor that distinguishes a prologue from mid-function code — which
        the byte pattern alone does not supply.
+
+       ⭐ WAR2 `0004de58` IS AN INSTANCE OF THIS GAP, and it was pursued as a separate lead before
+       that was noticed. Its bytes are
+
+           56 57 55 8b 4c 24 10    push esi ; push edi ; push ebp ; mov ecx,[esp+0x10]
+
+       — a three-register save run followed by `mov r32,[esp+disp8]`, family (6)'s shape exactly.
+       The `55` is a callee SAVE here, not a frame pointer: nothing follows it that any other
+       family anchors on.
+
+       It had been recorded as "every guard arm passes and no function appears", with `validcode=6`
+       and `create_functions`' overlapping-body refusal as the remaining suspects. **Both are
+       moot — no guard is ever consulted, because no pattern proposes the address.** Instrumented
+       directly: 336 `FunctionStart` actions fire over the whole LE image, 3 of them within ±0x300
+       of it (`0004df01`, `0004df02`, `0004dfb2`), and ZERO at `0004de58`. It also has no inbound
+       reference, no relocation pointing at it (of 17511), and `20 20 00 00 20 20 00 00` padding
+       immediately before it, so no flow reaches it either.
+
+       Nor is a Ghidra pattern file the explanation for Ghidra HAVING a function there: Ghidra
+       ships none for Watcom, and neither of the files it could route to matches these bytes —
+       every push-run family in `x86gcc_patterns.xml` requires a following `SUB ESP`
+       (`0x5. 0x5. 0x5. 100000.1 0xec`), and `x86win_patterns.xml` lists `535657` / `535556` /
+       `56578bf9` / `56578bf1` but nothing for `565755`. By what route Ghidra creates it is still
+       open and is a question for the oracle, not for this file.
        ========================================================================================= -->
 
 </patternlist>
