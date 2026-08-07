@@ -79,9 +79,41 @@ pub fn program_functions(program: &Program) -> Vec<IngestFunction> {
         .collect()
 }
 
-/// Build a database from a list of binaries (object files, static-library members, or whole
-/// programs). Every input must share one language and compiler spec — that is what a library
-/// record pins, and what keeps a match from crossing architectures.
+/// Expand each input into the programs it contains: an OMF `.LIB` becomes one program per
+/// member module, anything else is a single program.
+///
+/// This is what lets `--dir` point straight at a runtime library rather than at a directory of
+/// pre-extracted objects — Watcom and Borland ship OMF archives, and extracting them otherwise
+/// needs the vendor's own `wlib` under an emulator.
+fn expand_input(file: &Path) -> Vec<crate::analysis::program::Program> {
+    let Ok(data) = std::fs::read(file) else { return Vec::new() };
+
+    if data.first() == Some(&0xf0) {
+        let members = crate::analysis::loader::omf::split_library(&data);
+        if !members.is_empty() {
+            let mut out = Vec::new();
+            for member in members {
+                if let Ok(mut program) = crate::analysis::loader::omf::load_omf_object(member) {
+                    crate::analysis::analyze(&mut program);
+                    out.push(program);
+                }
+            }
+            return out;
+        }
+    }
+
+    match crate::analysis::analyze_file(file) {
+        Ok(p) => vec![p],
+        Err(e) => {
+            eprintln!("  skip {}: {e:?}", file.display());
+            Vec::new()
+        }
+    }
+}
+
+/// Build a database from a list of binaries (object files, OMF libraries, or whole programs).
+/// Every input must share one language and compiler spec — that is what a library record pins,
+/// and what keeps a match from crossing architectures.
 pub fn build_from_files(
     files: &[std::path::PathBuf],
     spec: &BuildSpec,
@@ -89,14 +121,7 @@ pub fn build_from_files(
     let mut ingest: Option<Ingest> = None;
     let mut language = String::new();
 
-    for file in files {
-        let program = match crate::analysis::analyze_file(file) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("  skip {}: {e:?}", file.display());
-                continue;
-            }
-        };
+    for program in files.iter().flat_map(|f| expand_input(f)) {
         if ingest.is_none() {
             language = program.language_id.clone();
             let mut new = Ingest::new(
@@ -110,8 +135,7 @@ pub fn build_from_files(
             ingest = Some(new);
         } else if program.language_id != language {
             eprintln!(
-                "  skip {}: language {} != {language} (one library, one language)",
-                file.display(),
+                "  skip a module: language {} != {language} (one library, one language)",
                 program.language_id
             );
             continue;

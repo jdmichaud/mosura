@@ -8,6 +8,7 @@ pub mod compiler_version;
 pub mod elf;
 pub mod le;
 pub mod mz;
+pub mod omf;
 pub mod pe;
 pub mod pe_opinion;
 pub mod watcom;
@@ -51,6 +52,12 @@ pub(crate) fn with_compiler_version(data: &[u8], mut program: Program) -> Progra
 /// Detect the container format by magic and dispatch to the matching loader, mirroring
 /// Ghidra's loader-opinion selection for the formats we support.
 fn load_container(data: &[u8]) -> Result<Program, LoadError> {
+    // OMF object modules (`THEADR`/`LHEADR`). Ghidra has an `OmfLoader`; ours covers the
+    // slice FID's library ingest needs — see `loader::omf`. Checked before ELF/PE/MZ because
+    // an object file carries none of their magics.
+    if matches!(data.first(), Some(0x80 | 0x82)) {
+        return omf::load_omf_object(data);
+    }
     if data.starts_with(&[0x7f, b'E', b'L', b'F']) {
         return load_elf(data);
     }

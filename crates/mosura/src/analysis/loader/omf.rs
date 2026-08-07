@@ -30,7 +30,7 @@
 
 use super::elf::LoadError;
 use crate::analysis::program::{Memory, Program, SymbolType};
-use crate::decompile::space::{Address, SpaceId, SpaceKind, SpaceManager};
+use crate::decompile::space::{Address, SpaceKind, SpaceManager};
 
 const LANGUAGE_ID: &str = "x86:LE:32:default";
 

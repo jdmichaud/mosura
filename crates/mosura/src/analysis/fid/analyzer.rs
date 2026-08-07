@@ -76,7 +76,11 @@ impl OperandAddressQuery for ProgramOperandAddresses<'_> {
 /// flow walk.
 pub fn hash_function(program: &Program, entry: Address) -> Option<FidHashQuad> {
     let function = program.function_manager.function_at(entry)?;
-    let (spec, ctx) = crate::lang::load(&program.language_id)?;
+    // `load_cached`, not `load`: the uncached path re-parses the whole `.sla` on every call,
+    // which is ~1.5 s per function and made a 394-module library ingest take ten minutes.
+    // Caching also makes the tables a per-process constant, which is the determinism argument
+    // in `lang::load_cached`'s own documentation.
+    let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
     let skipper = Skipper::for_language(&program.language_id);
 
     // Collect the body's instruction starts, ascending.
@@ -110,8 +114,8 @@ pub fn hash_function(program: &Program, entry: Address) -> Option<FidHashQuad> {
         if window.is_empty() {
             continue;
         }
-        let insn = spec.disassemble_ctx(&window, start.offset, &ctx).into_iter().next()?;
-        let fp = spec.disassemble_fingerprint(&window, start.offset, &ctx).into_iter().next()?;
+        let insn = spec.disassemble_ctx(&window, start.offset, ctx).into_iter().next()?;
+        let fp = spec.disassemble_fingerprint(&window, start.offset, ctx).into_iter().next()?;
         decoded.push((insn, fp));
     }
 
