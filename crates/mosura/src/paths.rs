@@ -105,6 +105,17 @@ pub fn oracle_fixtures_dir() -> PathBuf {
     workspace_root().join("oracle/fixtures")
 }
 
+/// Ghidra's shipped **FID signature databases** — the packed `.fidb` vendored verbatim from
+/// `NationalSecurityAgency/ghidra-data` (`third_party/ghidra-data/README.md`). External data
+/// read at runtime, not compiled in; `MOSURA_FID_DIR` points elsewhere. With no database
+/// present the FID analyzer is simply inert.
+pub fn fid_db_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("MOSURA_FID_DIR") {
+        return PathBuf::from(p);
+    }
+    workspace_root().join("third_party/ghidra-data/FunctionID")
+}
+
 /// Locate a user-provided binary by an env var with a `$HOME`-relative default — the same
 /// override convention as [`ghidra_src`]. These are copyrighted third-party files that are
 /// **not committed**; the tests that use them skip when absent (`docs/dependencies.md`). No

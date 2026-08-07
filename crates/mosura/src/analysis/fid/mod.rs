@@ -13,3 +13,4 @@
 //! - Stage 1 → [`hash`] — the `FidHashQuad` hasher.
 
 pub mod hash;
+pub mod packed;
