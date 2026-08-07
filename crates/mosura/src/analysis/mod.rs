@@ -26,6 +26,7 @@ pub mod overrides;
 pub mod priority;
 pub mod program;
 pub mod pseudo_disassembler;
+pub mod repeat_instruction;
 pub mod snapshot;
 pub mod symbolic;
 

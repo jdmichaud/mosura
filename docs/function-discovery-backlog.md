@@ -1419,7 +1419,44 @@ Worth 45 of the 53 code units by which the listing fix moved `pe_mz_convergence_
 over-decode count (8 -> 53); 3 of the 9 clusters are inside functions the pattern search newly
 reached, so before that fix these bytes were never decoded at all. **The listing fix did not cause
 this; it stopped hiding it.** Closing it needs a fall-through override model, which mosura does not
-have. (The ninth cluster, `00018f26`, is a `0000` padding over-run and is NOT explained by this.)
+have. (The ninth cluster, `00018f26`, is a `0000` padding over-run and is NOT explained by this —
+see **the ninth cluster, ANSWERED AND CLOSED** below.)
+
+##### ✅ THE NINTH CLUSTER, ANSWERED AND CLOSED — `MAX_REPEAT_PATTERN_LENGTH`
+
+Not the thunk, and not a heuristic: `Disassembler.MAX_REPEAT_PATTERN_LENGTH = 16`
+(Disassembler.java:82) driving `RepeatInstructionByteTracker`, checked at :1067. Ghidra counts
+consecutive instructions whose bytes are **all the same value** and terminates the block once the
+run exceeds 16. Nothing about the decode itself stops the walk — 50 bytes of `00` are 25 perfectly
+valid `ADD byte ptr [BX+SI],AL`.
+
+⚠️ **The framing in this file was off by two.** `00018f26` is not "a run of `0x00` bytes"; the
+zero-fill runs `00018f00`..`00018f31` (50 bytes) and `00018f26` is simply *where Ghidra's limit
+lands*. The interesting number is 16, not the address. Read through mosura's MZ-stub loader
+(`analyze_file`), not raw file offsets — an MZ image is not mapped at its file offset, and reading
+it that way makes the bytes at these addresses look like ordinary code.
+
+Measured, mosura vs the committed golden `war2.snapshot`, both starting the run at `00018f04`:
+
+```
+Ghidra   00018f04 .. 00018f24   17 instructions, then nothing until func 00018f34
+mosura   00018f04 .. 00018f32   23 filler + `87 db` at 00018f32, straight into the next function
+```
+
+**17, not 16** — the tripping instruction is KEPT. `exceedsRepeatBytePattern` only records a parse
+conflict (:1068); `processInstruction` still runs and `block.addInstruction(inst)` (:1254) still
+adds it; the block ends afterwards on `block.hasInstructionError()` (:1076). Getting that backwards
+leaves the last filler instruction undecoded on every such run.
+
+Ported in `crates/mosura/src/analysis/repeat_instruction.rs` + the `Disassembler` walk. mosura's
+listing at these addresses is now identical to the golden. Gated by
+`disassembler_bounds_tests::walk_stops_after_a_run_of_repeated_byte_instructions` (synthetic,
+x86-64 — the mechanism is architecture-independent) plus the tracker's own arithmetic tests;
+vacuity-checked by disabling the bound. No corpus regressions.
+
+Note a consequence worth knowing: `getRepeatedByte` returns a value for **any one-byte
+instruction**, so a run of 17+ `NOP`s trips the limit too. That is Ghidra's behaviour, not an
+approximation.
 
 The four cluster comparisons, `M` = mosura, `G` = the committed Ghidra golden `war2.snapshot`:
 

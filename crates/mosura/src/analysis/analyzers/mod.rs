@@ -29,6 +29,12 @@ use crate::sleigh::pcode::PArg;
 /// the longest x86 instruction and the pointer/scalar data units the markup analyzers create.
 const MAX_CODE_UNIT_LEN: u64 = 16;
 
+/// `Disassembler.MAX_REPEAT_PATTERN_LENGTH` (Disassembler.java:82) — the longest run of
+/// consecutive instructions with the same repeated byte value a block may contain before it is
+/// terminated. See [`crate::analysis::repeat_instruction`]; the limit admits one MORE instruction
+/// than its value, because the tripping instruction is still added.
+pub(crate) const MAX_REPEAT_PATTERN_LENGTH: i32 = 16;
+
 /// Ghidra `Disassembler.getInitializedMemory` (Disassembler.java:387): the loaded + initialized
 /// address set, with an uninitialized `EXTERNAL` block excluded (it is uninitialized here, so it
 /// never enters the set in the first place).
@@ -195,6 +201,15 @@ impl Analyzer for Disassembler {
         // universe. Note `restrictToExecuteMemory` defaults to **false** (:384), so it is
         // LOADED+INITIALIZED memory that bounds disassembly, not executable memory.
         let initialized = initialized_memory(program);
+        // `repeatInstructionByteTracker` (Disassembler.java:113), reset per BLOCK (:911). mosura's
+        // walk has no explicit block object: a block is a straight-line run, and because the
+        // fall-through is pushed LAST onto a LIFO worklist it is always the next address popped —
+        // so "the previous decode ended exactly here" is the same predicate as "same block".
+        let mut repeat_tracker =
+            crate::analysis::repeat_instruction::RepeatInstructionByteTracker::new(
+                MAX_REPEAT_PATTERN_LENGTH,
+            );
+        let mut prev_block_end: Option<u64> = None;
         while let Some(a) = work.pop() {
             let addr = Address::new(ram, a);
             // Ghidra Disassembler.java:612-626. An Instruction already at this address means it
@@ -283,7 +298,17 @@ impl Analyzer for Disassembler {
             program.listing.define(addr, CodeUnit::Instruction { length: ilen as u32 });
             decoded.add_range(ram, a, a + ilen - 1);
             decoded_any = true;
-            if falls {
+            // :1067 — the repeated-byte run check. Ghidra performs it BEFORE adding the
+            // instruction but only records a parse conflict; `processInstruction` adds the
+            // instruction anyway (:1254) and the block ends afterwards on
+            // `block.hasInstructionError()` (:1076). So the tripping instruction is KEPT and only
+            // its fall-through is abandoned — which is why a limit of 16 leaves 17 instructions.
+            if prev_block_end != Some(a) {
+                repeat_tracker.reset();
+            }
+            let exceeded = repeat_tracker.exceeds_repeat_byte_pattern(&insn.bytes);
+            prev_block_end = Some(a + ilen);
+            if falls && !exceeded {
                 // :1140 (`endBlockEarly`) — do not follow fall-through out of initialized memory.
                 let ft = a + ilen;
                 if initialized.contains(Address::new(ram, ft)) {
@@ -655,6 +680,59 @@ mod disassembler_bounds_tests {
             "the walk laid instruction(s) {overlapping:x?} across the defined data object at \
              0x401004..0x40100a — Ghidra treats an offcut position inside a code unit as a \
              conflict (Disassembler.java:620-626) and refuses the overlapping unit"
+        );
+    }
+
+    /// ⭐ THE THIRD BOUND — `Disassembler.MAX_REPEAT_PATTERN_LENGTH` (:82, checked at :1067).
+    /// A run of identical filler bytes decodes perfectly well as instructions, so nothing about
+    /// the decode ends the walk; Ghidra counts consecutive same-repeated-byte instructions and
+    /// terminates the block once the run exceeds 16.
+    ///
+    /// **This is the ninth over-decode cluster of `docs/function-discovery-backlog.md` §9** — the
+    /// one deliberately left unexplained because it is not the inline-parameter thunk. Measured on
+    /// the war2 MZ stub against the committed Ghidra golden: 50 bytes of `00` at `00018f00`, both
+    /// listings start the run at `00018f04`, Ghidra keeps through `00018f24` and stops, mosura ran
+    /// on through `00018f32` and into the next function at `00018f34`. 17 instructions, not 16 —
+    /// the tripping instruction is still added (`processInstruction`, :1254) and only its
+    /// fall-through is abandoned.
+    ///
+    /// Synthetic rather than the survey binary, and x86-64 rather than 16-bit, because the
+    /// mechanism is architecture-independent: `00 00` is a two-byte instruction that falls through
+    /// on both.
+    #[test]
+    fn walk_stops_after_a_run_of_repeated_byte_instructions() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return;
+        }
+        // `xor eax,eax` then 40 bytes of 0x00 — `00 00` is `ADD byte ptr [RAX],AL`, 2 bytes,
+        // falling through, so without the bound the walk consumes all 20 of them.
+        let mut bytes = vec![0x31, 0xc0];
+        bytes.extend(std::iter::repeat(0u8).take(40));
+        let mut p = program_with(bytes, true, true);
+        let ram = p.default_space;
+        run_disassembler(&mut p, 0x40_1000);
+
+        let starts: Vec<u64> = p
+            .listing
+            .code_units()
+            .filter(|(a, u)| a.space == ram && matches!(u, CodeUnit::Instruction { .. }))
+            .map(|(a, _)| a.offset)
+            .filter(|&o| o >= 0x40_1002)
+            .collect();
+        let mut starts = starts;
+        starts.sort_unstable();
+
+        // The run begins at 0x401002; a limit of 16 admits 17 instructions, the last at
+        // 0x401002 + 16*2 = 0x401022, and 0x401024 must not be decoded.
+        assert_eq!(
+            starts.len(),
+            17,
+            "expected 17 filler instructions (limit 16 + the tripping one), got {starts:08x?}"
+        );
+        assert_eq!(*starts.last().unwrap(), 0x40_1022, "last kept instruction");
+        assert!(
+            p.listing.code_unit_at(Address::new(ram, 0x40_1024)).is_none(),
+            "the walk ran past the repeated-byte limit"
         );
     }
 
