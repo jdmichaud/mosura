@@ -120,6 +120,43 @@ non-trivially and leaves the function COUNT roughly unchanged (it changes what g
 not what gets *discovered*); Cause A alone moves the count upward *and* the listing figure.
 **Falsifiers, named in advance:** B moving the count a lot, or A not moving it at all.
 
+#### ✅ CAUSE B CLOSED for the three ANALYZERS — `3c4ca64` (gates, RED) + `3bb4f82` (fix)
+
+`SharedReturnAnalyzer`, `DecompilerSwitchAnalyzer`, `ConstantPropagationAnalyzer`. (The
+`Disassembler` / `FunctionCreator` half stays in `held-patches/listing-command-channel.patch`,
+blocked on the fall-through override model — this landing does not touch it, so the two remain
+separately attributable.) Suite 629 / 0 / 3 — 625 plus the four gates, ignored count unchanged.
+
+**Reading Ghidra's source first changed what the fix is: only ONE of the three was the plain
+widening this section anticipated.**
+
+| analyzer | what Ghidra actually does | verdict |
+|---|---|---|
+| `SharedReturnAnalyzer` | `symbolTable.getSymbols(set, SymbolType.FUNCTION, true)` (SharedReturnAnalysisCmd.java:66, :80) — every function symbol in the set, ascending | the plain widening |
+| `DecompilerSwitchAnalyzer` | `findLocations` (:237) walks the *instructions* in the set; `findFunctions` (:184) maps each through `getFunctionContaining` | widening **+ a missing guard**: `r.min` was handed to `decompile_function` as a function entry with no check that a function was there |
+| `ConstantPropagationAnalyzer` | `findLocationsRemoveFunctionBodies` (:248) — three passes: every OVERLAPPING function's entry (bodies leave the set), then call-referenced destinations, and **only then** each remaining range's minimum | **not a widening at all**: mosura had implemented pass 3 alone, applied to the raw set |
+
+⚠️ **`getFunctionsOverlapping` is a body query and mosura's bodies are EMPTY during analysis**
+(`compute_function_bodies` runs after the worklist converges — `function_start.rs:1031`), so a
+literal body-intersection test returns NOTHING. Pass 1 tests the entry point as well, which is
+what Ghidra's always-populated body guarantees. This is the "same rule + same tool ≠ same answer"
+trap in its purest form: the port was right and the *program state* was different.
+
+**Two OPEN divergences this landing deliberately did not touch**, because either would make the
+Cause-B delta unattributable:
+
+1. **Both `ConstantPropagationAnalyzer` (:117) and `DecompilerSwitchAnalyzer` (:68) are
+   `INSTRUCTION_ANALYZER`s in Ghidra**; mosura registers both as `Function` analyzers. So Ghidra
+   feeds them the newly-decoded *extent* and derives function starts from it, while mosura feeds
+   them function entries and each analyzer re-derives the extent (`ConstantPropagation` never had
+   passes 1-2; `DecompilerSwitch` spans `[entry, next entry)` instead of reading the listing).
+   Priorities differ too: Ghidra `REFERENCE_ANALYSIS.before()×4` and `CODE_ANALYSIS`, mosura
+   `REFERENCE` and `REFERENCE.after()`.
+2. **`analyzeSet` (ConstantPropagationAnalyzer.java:389) is unported** — the single-threaded slog
+   over whatever `findLocations` leaves behind. It needs `flow_constants` to return its analyzed
+   set (it returns only call destinations today), since the loop deletes each result from the todo
+   set to terminate.
+
 ### ⭐ THE 12, ANSWERED BY THE GHIDRA ORACLE 2026-08-06 — 8 are a RECALL GAP, not a scope question
 
 Asked Ghidra directly rather than reasoning about what it would do: `analyzeHeadless` whole-image on
