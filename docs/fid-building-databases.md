@@ -263,9 +263,53 @@ itself, but is not interoperable with Ghidra until R7 lands.
 The z80 runtime ships as `.rel` objects, which mosura's COM loader does not read. Build the
 probe as a `.com` and ingest that instead — a small, self-contained first proof.
 
-### Borland (x86-32 PE)
+### Borland / Turbo C (x86-16 and x86-32)
 
-As Watcom: extract with `wlib` (Borland's `.LIB` is also OMF), then `fid-build`.
+Two routes, and it is worth understanding why there are two.
+
+**Objects** — ingest the library's OMF modules directly:
+
+```sh
+./scripts/build-borland-db.sh objects /path/to/CS.LIB tc2.0 cs
+```
+
+Names come from `PUBDEF`, which is authoritative. But the modules are **unlinked**: a
+cross-module call still reads `call 0000:0000`, because the real target lives in a `FIXUPP`
+record that only a linker consumes. The loader patches *self-relative* (near) fixups so those
+calls reach a named external slot; **far** calls are fixed up as segment-relative 16:16
+pointers and are not patched, so the far memory models (`cm`/`cl`/`ch`) end up with very few
+relations — 9–27 against 193–310 for the near models.
+
+That matters because relations are what carry a *small* function over the 14.6 score
+threshold. Measured on Turbo C 2.0: **27% of the small model and 22% of the large model score
+below 14.6 on their own body**, so in the far models most of that quarter is unidentifiable
+even though its signature is in the database.
+
+**Linked** — let the vendor's linker resolve everything:
+
+```sh
+./scripts/build-borland-db.sh linked /path/to/toolchain tc2.0 l
+```
+
+`cargo xtask omf-uber` generates a program referencing every C-callable public in the library,
+TCC compiles it, TLINK links it, and mosura analyses the **executable**, where every call is
+real. This needs no relocation patching at all — the tool that is supposed to resolve those
+calls does it.
+
+A DOS `.EXE` carries no symbol table, so the names come from the linker map (`tcc -M`), passed
+with `--map`. Map addresses are relative to the start of the load image, which the MZ loader
+places at segment `0x1000`.
+
+⚠️ **Status: the linked route is not yet better.** It produces correctly-named functions (256
+from Turbo C 2.0 large, via 434 map addresses) and analysis does recover the call graph — 497
+call references in that image — but only 14 of them survive into stored relations, fewer than
+the object route's 20. The loss is in ingest's child resolution, not in the linking, and is an
+open thread. Use the `objects` route until it is closed.
+
+⚠️ Also note the linker only pulls in what is referenced, so a linked build covers fewer
+functions than the library holds (256 against 344) — `omf-uber` forces every *C-callable*
+public, but symbols that are not legal C identifiers (`@`-decorated internals, C++ mangling)
+cannot be referenced from generated C and are skipped.
 
 ---
 

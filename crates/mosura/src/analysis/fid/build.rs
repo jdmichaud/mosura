@@ -24,6 +24,67 @@ pub struct BuildSpec {
     /// One per line in a text file, `#` comments allowed — the shape of Ghidra's own
     /// `common_symbols_win32.txt`.
     pub common_symbols: Vec<String>,
+    /// Names by address, from a linker map.
+    ///
+    /// A **linked** image is the better ingest input than a pile of object files: the vendor's
+    /// own linker has resolved every call, so auto-analysis sees the true call graph instead of
+    /// `call 0000:0000` placeholders whose targets live only in relocation records. But a DOS
+    /// `.EXE` carries no symbol table, so the names have to come from the map the linker emits
+    /// alongside it (`tcc -M`, `tlink /m`). Addresses are relative to the load image; the
+    /// program's image base is added.
+    pub symbol_map: HashMap<u64, String>,
+}
+
+/// Where the loader placed the start of the load image, which is what a linker map's
+/// addresses are relative to.
+///
+/// For a DOS MZ that is segment `0x1000` — Ghidra's convention, mirrored by `loader/mz.rs` —
+/// while `image_base` is left at 0. For every other container the two coincide.
+fn load_image_base(program: &Program) -> u64 {
+    if program.language_id.starts_with("x86:LE:16") {
+        0x1_0000
+    } else {
+        program.image_base.offset
+    }
+}
+
+/// Parse a Borland/Microsoft linker map's "Publics by Value" section.
+///
+/// ```text
+///   Address         Publics by Value
+///
+///  0000:010D       __exit
+///  0000:01AF       _abort
+/// ```
+///
+/// The address is `segment:offset` in real-mode form, so the offset within the load image is
+/// `segment * 16 + offset`. `Abs` entries are absolute constants, not code, and are skipped.
+pub fn parse_linker_map(text: &str) -> HashMap<u64, String> {
+    let mut out = HashMap::new();
+    let mut in_publics = false;
+    for line in text.lines() {
+        if line.contains("Publics by Value") {
+            in_publics = true;
+            continue;
+        }
+        if !in_publics {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 2 {
+            continue;
+        }
+        let Some((seg, off)) = f[0].split_once(':') else { continue };
+        let (Ok(seg), Ok(off)) = (u64::from_str_radix(seg, 16), u64::from_str_radix(off, 16))
+        else {
+            continue;
+        };
+        // `Abs` marks an absolute symbol with no location in the image.
+        let name = if f[1] == "Abs" { f.get(2) } else { f.get(1) };
+        let Some(name) = name else { continue };
+        out.entry(seg * 16 + off).or_insert_with(|| (*name).to_string());
+    }
+    out
 }
 
 /// Parse a common-symbols list, in the format Ghidra's populate dialog accepts.
@@ -41,6 +102,14 @@ pub fn parse_common_symbols(text: &str) -> Vec<String> {
 /// usable — which is the honest outcome, since a signature database is only as good as the
 /// names in it (`docs/fid-port-plan.md` §8 R6).
 pub fn program_functions(program: &Program) -> Vec<IngestFunction> {
+    program_functions_with_map(program, &HashMap::new())
+}
+
+/// As [`program_functions`], naming functions from a linker map when one is supplied.
+pub fn program_functions_with_map(
+    program: &Program,
+    symbol_map: &HashMap<u64, String>,
+) -> Vec<IngestFunction> {
     // Which entries are functions, so a call can be resolved to one.
     let entries: Vec<crate::decompile::space::Address> =
         program.function_manager.functions().map(|f| f.entry_point()).collect();
@@ -72,9 +141,18 @@ pub fn program_functions(program: &Program) -> Vec<IngestFunction> {
         .into_iter()
         .map(|entry| {
             let symbol = program.symbol_table.primary_at(entry);
-            let name = symbol
-                .map(|s| s.name().to_string())
-                .filter(|n| !n.starts_with("FUN_") && !n.is_empty());
+            // A linker map wins: it is the only source of names for a linked DOS image, which
+            // carries no symbol table of its own. Map addresses are relative to the load image,
+            // which the MZ loader places at segment 0x1000 (`loader/mz.rs` INITIAL_SEGMENT) —
+            // note that is NOT `image_base`, which stays 0 to match Ghidra's reporting.
+            let name = symbol_map
+                .get(&entry.offset.wrapping_sub(load_image_base(program)))
+                .cloned()
+                .or_else(|| {
+                    symbol
+                        .map(|s| s.name().to_string())
+                        .filter(|n| !n.starts_with("FUN_") && !n.is_empty())
+                });
             IngestFunction {
                 entry: entry.offset,
                 name,
@@ -150,7 +228,7 @@ pub fn build_from_files(
             continue;
         }
 
-        let functions = program_functions(&program);
+        let functions = program_functions_with_map(&program, &spec.symbol_map);
         ingest.as_mut().unwrap().add_program(&functions);
     }
 
