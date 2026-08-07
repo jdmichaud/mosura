@@ -833,6 +833,21 @@ impl CircleRange {
     /// binary operator with a constant `val` on the other input (`slot` is the variable input's
     /// slot). Returns `true` if a valid range is formed. Note there is deliberately no `SUBPIECE`
     /// case: the driver ([`pull_back`]) handles zero-offset `SUBPIECE` specially via the NZMASK.
+    ///
+    /// **One deviation, and it fixes undefined behavior in the original.** The `INT_RIGHT` and
+    /// `INT_SRIGHT` arms here additionally require `slot == 0`; Ghidra's do not. Both arms read
+    /// `val` as the *shift distance*, which is only what it is when the constant sits on input 1.
+    /// When the constant is on input 0 instead (`const >> x`, so `slot == 1`), `val` is the value
+    /// being **shifted** and feeding it to `calc_mask(in_size) >> val` is meaningless — and, for
+    /// any `val >= 64`, undefined in C++. `INT_ADD`/`INT_SUB` above do branch on `slot`; the two
+    /// shift arms simply omit the check (`rangeutil.cc:946` and `:971`).
+    ///
+    /// This is reachable, not theoretical: analysing a `gcc -O2 -static` glibc binary produces
+    /// `INT_RIGHT` with `slot=1, val=65540, in_size=1`. Rust caught it as a debug panic; the same
+    /// op in Ghidra is UB, which x86-64 happens to render as `val % 64` (so `0xff >> 4`) — an
+    /// answer that is neither intended nor portable, so there is no oracle behavior to match here.
+    /// Returning `false` (= "no range can be pulled back") is the conservative defined answer, and
+    /// is what every other inapplicable case in this function already does.
     pub fn pull_back_binary(&mut self, opc: OpCode, val: u64, slot: i32, in_size: i32, _out_size: i32) -> bool {
         // If there is nothing in the output set, no input maps to it.
         if self.isempty {
@@ -980,7 +995,7 @@ impl CircleRange {
                 }
             }
             OpCode::IntRight => {
-                if self.step != 1 {
+                if self.step != 1 || slot != 0 {
                     return false;
                 }
                 let right_bound = (calc_mask(in_size) >> val).wrapping_add(1); // maximal right bound
@@ -1005,7 +1020,7 @@ impl CircleRange {
                 }
             }
             OpCode::IntSright => {
-                if self.step != 1 {
+                if self.step != 1 || slot != 0 {
                     return false;
                 }
                 let rightb0 = calc_mask(in_size);
@@ -1787,5 +1802,24 @@ mod tests {
         assert_eq!(CircleRange::default().translate2_op().0, 3); // empty
         assert_eq!(CircleRange::new(0, 10, 4, 2).translate2_op().0, 2); // stride
         assert_eq!(CircleRange::new(5, 20, 4, 1).translate2_op().0, 2); // interior interval
+    }
+
+    /// A shift pullback only applies when the constant IS the shift distance (`slot == 0`).
+    ///
+    /// With the constant on the other input (`const >> x`) `val` is the value being shifted, and
+    /// Ghidra — which omits this check — evaluates `calc_mask(in_size) >> val`, undefined in C++
+    /// for `val >= 64`. These are the exact operands seen analysing a static glibc binary; before
+    /// the guard this panicked with "attempt to shift right with overflow" in debug and silently
+    /// computed `0xff >> (65540 % 64)` in release.
+    #[test]
+    fn shift_pullback_rejects_constant_in_the_shifted_slot() {
+        for opc in [OpCode::IntRight, OpCode::IntSright] {
+            let mut r = CircleRange::new(0, 10, 1, 1);
+            assert!(!r.pull_back_binary(opc, 65540, 1, 1, 1), "{opc:?}: slot 1 must not pull back");
+            // Sanity: the same range with a sane distance in slot 0 is still handled, so the guard
+            // rejects the inapplicable case rather than disabling the opcode.
+            let mut ok = CircleRange::new(0, 10, 1, 1);
+            assert!(ok.pull_back_binary(opc, 2, 0, 1, 1), "{opc:?}: slot 0 must still pull back");
+        }
     }
 }
