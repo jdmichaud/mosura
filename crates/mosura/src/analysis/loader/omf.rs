@@ -29,6 +29,19 @@
 //! The odd id is the 32-bit variant: the low bit means offsets and lengths are 32-bit rather
 //! than 16-bit.
 //!
+//! ## Easy OMF-386
+//!
+//! Watcom 9.01 (and other early 386 toolchains) emit a variant in which the record **ids stay
+//! even** — `SEGDEF` is `0x98`, not `0x99` — while the length and offset fields inside are
+//! nonetheless **32-bit**. It is announced by a `COMENT` of class `0xAA` whose text is
+//! `"80386"`, which every such module carries near its head.
+//!
+//! Without honouring it, a `SEGDEF` body of `28 | 43 01 00 00 | 06 02 01` is read as a 16-bit
+//! length followed by name indexes taken from the wrong offsets — the segment ends up unnamed,
+//! so nothing is classified as code, and the whole library yields no functions. That is exactly
+//! what Watcom 9.01's `clib3r.lib` did: 351 members parsed, 507 publics found, **0 code
+//! bytes**.
+//!
 //! ## Why fixups must be applied
 //!
 //! An unlinked `call` to another module has a **zero displacement** — the linker has not filled
@@ -141,6 +154,8 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
     let mut names: Vec<String> = Vec::new(); // LNAMES pool, 1-based
     // A FIXUPP's offsets are relative to the LEDATA record immediately before it.
     let mut last_ledata: Option<(usize, usize)> = None;
+    // Easy OMF-386: even record ids, 32-bit fields (see the module docs).
+    let mut easy_omf_386 = false;
 
     for record in records(data) {
         let b = record.body;
@@ -149,6 +164,13 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
             0x80 | 0x82 => {
                 if let Some((n, _)) = omf_name(b, 0) {
                     module.name = n;
+                }
+            }
+            // COMENT — class 0xAA with text "80386" declares Easy OMF-386.
+            0x88 => {
+                // COMENT body: attributes(1), class(1), then the comment text.
+                if b.len() >= 2 && b[1] == 0xaa && b[2..].starts_with(b"80386") {
+                    easy_omf_386 = true;
                 }
             }
             // LNAMES
@@ -164,7 +186,7 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
             }
             // SEGDEF / SEGDEF32
             0x98 | 0x99 => {
-                let is32 = record.kind & 1 == 1;
+                let is32 = record.kind & 1 == 1 || easy_omf_386;
                 let Some(&attr) = b.first() else { continue };
                 let mut at = 1;
                 // An ACBP byte with A=0 (absolute) carries frame+offset we skip.
@@ -188,7 +210,7 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
             }
             // LEDATA / LEDATA32 — enumerated data at an offset within a segment.
             0xa0 | 0xa1 => {
-                let is32 = record.kind & 1 == 1;
+                let is32 = record.kind & 1 == 1 || easy_omf_386;
                 let Some((seg, at)) = omf_index(b, 0) else { continue };
                 let (offset, at) = if is32 {
                     let Some(s) = b.get(at..at + 4) else { continue };
@@ -207,7 +229,7 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
             }
             // PUBDEF / PUBDEF32
             0x90 | 0x91 => {
-                let is32 = record.kind & 1 == 1;
+                let is32 = record.kind & 1 == 1 || easy_omf_386;
                 let Some((group, at)) = omf_index(b, 0) else { continue };
                 let Some((seg, mut at)) = omf_index(b, at) else { continue };
                 if group == 0 && seg == 0 {
@@ -246,13 +268,13 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                 }
             }
             // FIXUPP / FIXUPP32
-            0x9c | 0x9d => parse_fixupp(b, last_ledata, &mut module),
+            0x9c | 0x9d => parse_fixupp(b, last_ledata, easy_omf_386, &mut module),
             _ => {}
         }
         // A FIXUPP's offsets are relative to the LEDATA record it follows.
         if matches!(record.kind, 0xa0 | 0xa1) {
             if let Some((seg, at)) = omf_index(record.body, 0) {
-                let is32 = record.kind & 1 == 1;
+                let is32 = record.kind & 1 == 1 || easy_omf_386;
                 let offset = if is32 {
                     record.body.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
                 } else {
@@ -279,7 +301,12 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
 /// byte 2:  F FRAME(3) T P TARGT(2)     the "fix dat" byte
 ///          then frame datum (if F=0), target datum (if T=0), displacement (if P=0)
 /// ```
-fn parse_fixupp(b: &[u8], last_ledata: Option<(usize, usize)>, module: &mut OmfModule) {
+fn parse_fixupp(
+    b: &[u8],
+    last_ledata: Option<(usize, usize)>,
+    easy_omf_386: bool,
+    module: &mut OmfModule,
+) {
     let Some((segment, data_offset)) = last_ledata else { return };
     let mut at = 0usize;
     while at < b.len() {
@@ -328,13 +355,21 @@ fn parse_fixupp(b: &[u8], last_ledata: Option<(usize, usize)>, module: &mut OmfM
         }
         if has_displacement {
             // 32-bit displacement in a FIXUPP32 record, 16-bit otherwise; both are skipped.
-            at += if location == 9 || location == 13 { 4 } else { 2 };
+            at += if location == 9 || location == 13 || easy_omf_386 { 4 } else { 2 };
         }
 
         // Target method 2 = EXTDEF index. Location 9/13 = a 32-bit offset field, which is what
         // a `call rel32` carries.
-        if target_explicit && target_method == 2 && self_relative && (location == 9 || location == 13)
-        {
+        //
+        // Under Easy OMF-386 the location codes are reinterpreted along with everything else:
+        // the nominally-16-bit offsets — 1 (plain) and 5 (loader-resolved) — denote **32-bit**
+        // offsets. Watcom 9.01 emits location 5 for its cross-module calls, so rejecting it
+        // left them unpatched: 391 functions but only 6 relations, against 426 for the same
+        // library built by 10.0a.
+        let offset32 = location == 9
+            || location == 13
+            || (easy_omf_386 && (location == 1 || location == 5));
+        if target_explicit && target_method == 2 && self_relative && offset32 {
             module.external_fixups.push((segment, data_offset + record_offset, target_datum));
         }
     }
