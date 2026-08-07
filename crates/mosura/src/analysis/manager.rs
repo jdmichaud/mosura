@@ -16,6 +16,13 @@
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
 use crate::analysis::program::{AddressSet, Program};
 
+/// The analyzer that executes a [`Scheduling::disassemble`] command — mosura's stand-in for
+/// Ghidra's `DisassembleCommand`, which is a free-standing command object rather than an analyzer.
+pub const DISASSEMBLY_COMMAND: &str = "Disassembly";
+/// The analyzer that executes a [`Scheduling::create_function`] command — mosura's stand-in for
+/// Ghidra's `CreateFunctionCmd`.
+pub const FUNCTION_COMMAND: &str = "Function";
+
 /// Per-analyzer scheduling state + the fact-routing notifiers, handed to an analyzer's
 /// [`Analyzer::added`] so it can enqueue follow-on work.
 #[derive(Default)]
@@ -60,6 +67,43 @@ impl Scheduling {
     /// New memory blocks appeared (Ghidra `blockAdded`).
     pub fn block_added(&mut self, set: &AddressSet) {
         self.notify(AnalyzerType::Byte, set);
+    }
+
+    /// Schedule disassembly at each address of `set` — Ghidra
+    /// `AutoAnalysisManager.disassemble(AddressSetView)` (AutoAnalysisManager.java:1128), which is
+    /// `schedule(new DisassembleCommand(targetSet, null, true), getDisassemblyPriority())` (:860).
+    ///
+    /// ⚠️ **A COMMAND, NOT A NOTIFICATION — the distinction is load-bearing.** Ghidra's
+    /// `codeDefined` (:262-272) announces that instructions were *actually laid down*; it is
+    /// raised from real listing changes and Ghidra's own comment at :385 notes that disassembly
+    /// deliberately does not go through change events. Nothing in Ghidra subscribes disassembly to
+    /// `codeDefined` at all.
+    ///
+    /// mosura expressed both as `code_defined`, and that one substitution produced three defects
+    /// at once (`docs/function-discovery-backlog.md` §9):
+    ///
+    ///  1. a request was only delivered to analyzers registered in *that* manager, so every
+    ///     request the byte-pattern passes made evaporated — their manager has no disassembler;
+    ///  2. requests were unioned into the same accumulator as the decoded EXTENT the disassembler
+    ///     notifies back to itself, so seeds and decoded code shared one [`AddressSet`], adjacent
+    ///     seeds coalesced into one range, and only the range minimum survived — `wprobe`'s
+    ///     `p_leaf_` @`08048112` was dropped because `__CHK` sits at `08048111`;
+    ///  3. a request echoed back to the requester, so the `Instruction`-typed pattern passes
+    ///     re-fired forever and had to be held off with thread-local dedupes.
+    ///
+    /// This carries SEED addresses only and never mixes with a decoded extent, which is what makes
+    /// per-address iteration safe at the far end.
+    pub fn disassemble(&mut self, set: &AddressSet) {
+        self.schedule_one_time(DISASSEMBLY_COMMAND, set);
+    }
+
+    /// Schedule function creation at each address of `set` — Ghidra
+    /// `AutoAnalysisManager.createFunction(AddressSetView, boolean)`
+    /// (AutoAnalysisManager.java:1132) → `schedule(new CreateFunctionCmd(targetSet, …), …)`.
+    /// A command, for the same reasons as [`Scheduling::disassemble`]; `function_defined` remains
+    /// the notification that functions *were created*.
+    pub fn create_function(&mut self, set: &AddressSet) {
+        self.schedule_one_time(FUNCTION_COMMAND, set);
     }
 
     /// Hand a set directly to one named analyzer (Ghidra

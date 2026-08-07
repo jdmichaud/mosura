@@ -151,7 +151,7 @@ impl Analyzer for RelocationSeedAnalyzer {
             seeds.add_range(t.space, t.offset, t.offset);
         }
         if !seeds.is_empty() {
-            sched.code_defined(&seeds);
+            sched.disassemble(&seeds);
         }
         true
     }

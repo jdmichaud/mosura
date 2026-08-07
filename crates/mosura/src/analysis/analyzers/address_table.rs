@@ -818,9 +818,10 @@ impl Analyzer for AddressTableAnalyzer {
             sched.block_added(&left);
         }
 
-        // :288 — "disassemble valid code" (`mgr.disassemble`).
+        // :288 — "disassemble valid code" (`mgr.disassemble`) — a COMMAND, which is what the
+        // Ghidra line already says; it was routed through the `codeDefined` notification.
         if !dis_set.is_empty() {
-            sched.code_defined(&dis_set);
+            sched.disassemble(&dis_set);
         }
         true
     }

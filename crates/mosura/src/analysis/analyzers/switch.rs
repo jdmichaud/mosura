@@ -83,7 +83,7 @@ impl Analyzer for DecompilerSwitchAnalyzer {
         }
         // The case targets are reachable code (only through the table) — disassemble them.
         if !case_targets.is_empty() {
-            sched.code_defined(&case_targets);
+            sched.disassemble(&case_targets);
         }
         true
     }

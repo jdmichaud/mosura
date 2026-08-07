@@ -179,15 +179,56 @@ impl Analyzer for Disassembler {
         "Disassembly"
     }
     fn analysis_type(&self) -> AnalyzerType {
-        AnalyzerType::Instruction
+        // ⚠️ NOT `Instruction`. Ghidra subscribes disassembly to no change channel whatsoever —
+        // it is only ever a `DisassembleCommand` scheduled onto the manager
+        // (`AutoAnalysisManager.disassemble`, :1128), and `AutoAnalysisManager.codeDefined`
+        // (:262-272) announces instructions that were laid down, to *other* analyzers.
+        // Subscribing this to `Instruction` made it re-receive its own decoded extent, which is
+        // how seed addresses came to share an accumulator with decoded code — see
+        // [`Scheduling::disassemble`]. Requests arrive by name through that command instead.
+        AnalyzerType::OneTime
     }
     fn priority(&self) -> AnalysisPriority {
         AnalysisPriority::DISASSEMBLY
     }
     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
         let ram = self.ram;
-        // Seeds are the start of each pending range (function/branch entry addresses).
-        let mut work: Vec<u64> = set.ranges().map(|r| r.min).collect();
+        // Ghidra `DisassembleCommand.doDisassembly` (DisassembleCommand.java:235-266) drains each
+        // range one address at a time — `while (!subRangeSet.isEmpty()) { Address nextAddr =
+        // subRangeSet.getMinAddress(); … subRangeSet.delete(nextAddr, nextAddr); … }` — and
+        // branches on how much of the range is left:
+        //
+        // ```java
+        // subRangeSet.delete(nextAddr, nextAddr);                    // :245
+        // …
+        // long addrsLeft = subRangeSet.getNumAddresses();            // :261
+        // if (addrsLeft <= 4) { seedSet.add(nextAddr); continue; }   // :262
+        // ```
+        //
+        // ⚠️ `addrsLeft` is counted AFTER `nextAddr` has been deleted (:245), so the cut admits a
+        // range of FIVE addresses, not four: `addrsLeft == r.max - r.min`.
+        //
+        // **A SHORT range contributes every one of its addresses as a seed; a LONG one is
+        // disassembled by FLOW from its minimum**, with the decoded extent then deleted from the
+        // range (:288-297). Taking `r.min` for every range implemented only the second half, so
+        // two requested entries that happen to be adjacent collapsed into one: `wprobe`'s `__CHK`
+        // @`08048111` swallowed `p_leaf_` @`08048112`, whose 46-byte body then never entered the
+        // listing even though `main_` calls it directly.
+        //
+        // ⚠️ Seeding every address of a LONG range instead is not a harmless generalisation — it
+        // walks into inter-function padding. Measured on the war2 MZ stub: 8 misaligned decodes
+        // (the tracked bound) became 53, with 0 spurious functions, i.e. pure over-decode. The
+        // `<= 4` cut is the line that governs it, and it is Ghidra's.
+        const MAX_ADDRS_LEFT: u64 = 4; // `addrsLeft <= 4` (:262)
+        let mut work: Vec<u64> = set
+            .ranges()
+            .flat_map(|r| {
+                // `addrsLeft` after deleting the range's minimum.
+                let addrs_left = r.max - r.min;
+                let last = if addrs_left <= MAX_ADDRS_LEFT { r.max } else { r.min };
+                r.min..=last
+            })
+            .collect();
         let mut call_targets = AddressSet::new();
         // The extent this walk actually laid down. Ghidra's `codeDefined` event carries the whole
         // newly-disassembled address set, which is what an INSTRUCTION analyzer's "added" set is
@@ -317,12 +358,14 @@ impl Analyzer for Disassembler {
             }
         }
         if !call_targets.is_empty() {
-            sched.function_defined(&call_targets);
+            // A COMMAND: make a function at each call target (Ghidra `createFunction`, :1132).
+            sched.create_function(&call_targets);
         }
-        // Ghidra's disassembly analyzer is itself an INSTRUCTION analyzer, so it is re-notified by
-        // its own output too; a second pass over already-decoded addresses skips every one of them
-        // at the `code_unit_containing` guard above and adds nothing to `decoded`, which is what
-        // terminates the loop.
+        // The genuine `codeDefined` NOTIFICATION (AutoAnalysisManager.java:262-272): these
+        // instructions were actually laid down. It carries the decoded EXTENT, and it is consumed
+        // by the `Instruction` analyzers that re-check byte patterns whose pre-requisite is
+        // "follows an instruction". This is the only place mosura raises it, and nothing
+        // subscribes disassembly to it — see [`Scheduling::disassemble`].
         if !decoded.is_empty() {
             sched.code_defined(&decoded);
         }
@@ -356,8 +399,13 @@ impl Analyzer for FunctionCreator {
     }
     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
         let mut to_disasm = AddressSet::new();
-        for r in set.ranges() {
-            let addr = Address::new(self.ram, r.min);
+        let mut created = AddressSet::new();
+        // EVERY address, not each range's minimum — Ghidra's `CreateFunctionCmd` iterates
+        // `origEntries.getAddresses(true)` (CreateFunctionCmd.java:158). Two entries that happen
+        // to be adjacent coalesce into one `AddressSet` range, and taking `r.min` created a
+        // function at only the first of them and scheduled only that one for disassembly.
+        for off in set.ranges().flat_map(|r| r.min..=r.max) {
+            let addr = Address::new(self.ram, off);
             // Ghidra creates a function at a direct call target as long as it lies in the
             // program's memory — even uninitialized data (a degenerate, un-disassembled
             // stub); but not at an unmapped address (e.g. a 16-bit offset below the loaded
@@ -366,14 +414,29 @@ impl Analyzer for FunctionCreator {
             if !program.memory.contains(addr) {
                 continue;
             }
-            let name = format!("FUN_{:08x}", r.min);
+            let is_new = program.function_manager.function_at(addr).is_none();
+            let name = format!("FUN_{off:08x}");
             program.function_manager.create_function(addr, &name, AddressSet::new());
             if !program.symbol_table.has_symbol_at(addr) {
                 program.symbol_table.add_with_primary(addr, &name, SymbolType::Function, true);
             }
-            to_disasm.add_range(self.ram, r.min, r.min);
+            to_disasm.add_range(self.ram, off, off);
+            if is_new {
+                created.add_range(self.ram, off, off);
+            }
         }
-        sched.code_defined(&to_disasm);
+        // A COMMAND, not a notification: these entries still need decoding.
+        sched.disassemble(&to_disasm);
+        // ...and the NOTIFICATION that they now exist, which is what every other FUNCTION
+        // analyzer (constant propagation, the decompiler switch analyzer, the address-table
+        // analyzer) subscribes to. Ghidra raises it from the program change event a created
+        // function produces — `handleFunctionAddedOrBodyChanged` → `functionDefined`
+        // (AutoAnalysisManager.java:392-395). **Only functions this call actually created**:
+        // re-announcing an existing entry re-triggers every FUNCTION analyzer, whose follow-on
+        // work re-enters this one, and the worklist never reaches a fixpoint.
+        if !created.is_empty() {
+            sched.function_defined(&created);
+        }
         true
     }
 }

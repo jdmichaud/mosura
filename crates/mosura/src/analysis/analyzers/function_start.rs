@@ -478,29 +478,19 @@ impl Analyzer for FunctionStartAnalyzer {
             }
         });
 
-        // :836 — disassemble known function starts now, delay the possible ones. mosura has one
-        // disassembly channel (the `Disassembler` at `DISASSEMBLY`), so both go there; Ghidra's
-        // split only changes *when* within the queue.
+        // :836-844 — disassemble known function starts now, delay the possible ones. Both are
+        // `analysisManager.disassemble(...)`, i.e. a scheduled `DisassembleCommand`; Ghidra's
+        // split only changes *when* within the queue, and mosura has one disassembly command.
+        //
+        // The thread-local dedupe that used to stand here is RETIRED. It existed because this
+        // request was raised as `code_defined`, which re-notified the `Instruction`-typed
+        // `AfterCode`/`AfterData` registrations — including on a `codeboundary` match over bytes
+        // that never decode, which was therefore re-proposed on every re-entry forever (measured
+        // on WAR2: `AfterCode` re-running indefinitely at ~22ms a turn, always
+        // `disasm=375 funcs=4`). A command is delivered to the disassembler and echoes nothing
+        // back to the requester, so the cycle has no driver left to hold off.
         if !st.disassem_result.is_empty() {
-            // Only schedule addresses this search has not already asked for. Ghidra's manager
-            // drops a request whose address it has already disassembled; mosura's re-fires the
-            // INSTRUCTION-typed registrations (`AfterCode`/`AfterData`) whenever *any* code unit
-            // is added, so a location that never becomes an instruction — a `codeboundary` match
-            // on bytes that fail to decode — is re-proposed on every re-entry, re-triggering the
-            // pass with an identical result set forever. Measured on WAR2 before this guard:
-            // `AfterCode` re-ran indefinitely at ~22ms a turn, always `disasm=375 funcs=4`.
-            // Deduping against what we have already requested makes the pass converge without
-            // changing which addresses are ever requested.
-            let fresh = SCHEDULED.with(|s| {
-                let mut s = s.borrow_mut();
-                let fresh = st.disassem_result.subtract(&s);
-                *s = s.union(&fresh);
-                fresh
-            });
-            st.disassem_result = fresh;
-        }
-        if !st.disassem_result.is_empty() {
-            sched.code_defined(&st.disassem_result);
+            sched.disassemble(&st.disassem_result);
         }
         // :846 `setProtectedLocations(codeLocations)` — mosura has no analyzer that clears code,
         // so there is nothing to protect it from; the set is still computed above so the port
@@ -514,22 +504,18 @@ impl Analyzer for FunctionStartAnalyzer {
             // :853 — kick off a later analyzer to create the functions after the fallout from
             // disassembly has settled.
             //
-            // Ghidra's `scheduleOneTimeAnalysis` is exactly that — one time. mosura's re-queues on
-            // every call, so proposing the same addresses again re-runs the delayed creator, whose
-            // work re-triggers this INSTRUCTION-typed pass, which proposes them again: a lockstep
-            // ping-pong. Measured on `fnpattern.watcom-x86-32` before this guard —
-            // `MOSURA_ANALYSIS_TRACE=1` showed 570,619 invocations each of "Function Start Search
-            // delayed" and "Function Start Search After Code" in 15 seconds, against 6 of
-            // Disassembly. Propose each address at most once per run, which is what "one time"
-            // means; it changes nothing about *which* addresses are ever proposed.
-            let fresh = PROPOSED.with(|s| {
-                let mut s = s.borrow_mut();
-                let fresh = potential.subtract(&s);
-                *s = s.union(&fresh);
-                fresh
-            });
-            if !fresh.is_empty() {
-                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &fresh);
+            // The `PROPOSED` thread-local that used to stand here is RETIRED for the same reason
+            // as `SCHEDULED` above: the delayed creator's work re-triggered this
+            // `Instruction`-typed pass, which proposed the same addresses again, in a lockstep
+            // ping-pong (measured on `fnpattern.watcom-x86-32`: 570,619 invocations each of
+            // "Function Start Search delayed" and "Function Start Search After Code" in 15
+            // seconds, against 6 of Disassembly). The creator's own :1006 guard — "a function
+            // containing the potential start appeared during analysis" — is what makes a
+            // re-proposal a no-op once the function exists, and that guard only works when the
+            // function was actually created and its bytes decoded, which is exactly what the
+            // command route now delivers.
+            if !potential.is_empty() {
+                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &potential);
             }
         }
 
@@ -1004,20 +990,12 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
 thread_local! {
     /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
     static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-    /// Addresses this run has already asked the disassembler for — see the dedupe in `added()`.
-    static SCHEDULED: std::cell::RefCell<AddressSet> =
-        std::cell::RefCell::new(AddressSet::new());
-    /// Addresses this run has already handed to the delayed creator — see the dedupe in `added()`.
-    static PROPOSED: std::cell::RefCell<AddressSet> =
-        std::cell::RefCell::new(AddressSet::new());
 }
 
 /// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
 /// inherits the previous program's state (the harness analyses many programs per thread).
 pub fn reset_body_refresh_memo() {
     BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
-    SCHEDULED.with(|s| *s.borrow_mut() = AddressSet::new());
-    PROPOSED.with(|s| *s.borrow_mut() = AddressSet::new());
 }
 
 /// Bring every function's body up to date before asking `getFunctionContaining`.

@@ -189,6 +189,12 @@ pub fn analyze(program: &mut Program) {
             seed.add_range(e.space, e.offset, e.offset);
         }
     }
+    // A NOTIFICATION, correctly: the loader has already created these functions (the set is built
+    // from `function_manager.functions()` above), so this is Ghidra's `functionDefined` for
+    // loader-created functions, and it is what puts them in front of every FUNCTION analyzer —
+    // constant propagation, the decompiler switch analyzer, the address-table analyzer — not just
+    // the one that disassembles them. The entry points that are NOT yet functions are created by
+    // `FunctionCreator` when it receives this same set.
     mgr.scheduling().function_defined(&seed);
     // Seed the BYTE analyzers with the loaded blocks — Ghidra's `AutoAnalysisManager.blockAdded`
     // fires for every block the loader lays down, which is how a BYTE_ANALYZER like
@@ -267,6 +273,21 @@ pub fn analyze(program: &mut Program) {
         }
     }
     if any {
+        // ⭐ THE COMMAND EXECUTORS MUST BE HERE. `FunctionStartAnalyzer` asks the manager to
+        // disassemble its matches and create its functions (:836-859, through
+        // `AutoAnalysisManager.getAnalysisManager(program)` — a per-program SINGLETON, :949). In
+        // Ghidra there is exactly one manager, so those commands always have something to execute
+        // them. mosura runs the pattern passes in a second manager (see the ordering note above),
+        // and while these two were absent from it every request the pattern search made was
+        // silently dropped: `function_defined` reached ZERO consumers, so a pattern-discovered
+        // function was never disassembled, never constant-propagated, and its callees were never
+        // discovered. That is the whole of `docs/function-discovery-backlog.md` §9's replacement
+        // item — 5 corpus functions with 100% of their bodies missing from the listing, gated by
+        // `ground_truth_parity::recovered_functions_are_in_the_listing`.
+        if let Some(d) = analyzers::Disassembler::for_program(program) {
+            fs_mgr.add_analyzer(Box::new(d), program);
+        }
+        fs_mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
         // The delayed creator the `possiblefuncstart` matches are handed to
         // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854).
         fs_mgr.add_analyzer(
@@ -392,7 +413,7 @@ fn plt_linear_sweep(mgr: &mut crate::analysis::manager::AutoAnalysisManager, pro
         // Seed this gap and let the flow disassembler (+ follow-on analyzers) run.
         let mut s = AddressSet::new();
         s.add_range(ram, a, a);
-        mgr.scheduling().code_defined(&s);
+        mgr.scheduling().disassemble(&s);
         mgr.run(program);
         // Advance: if the gap decoded, step past it; otherwise move on by one byte.
         let len = program.listing.code_unit_at(Address::new(ram, a)).map(|c| c.length()).unwrap_or(0);
