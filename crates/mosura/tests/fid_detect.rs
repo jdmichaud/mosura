@@ -91,3 +91,42 @@ fn the_vote_answers_the_family_question() {
         assert_eq!(report.family(), None, "no database claims AArch64");
     }
 }
+
+/// The refinement is **additive**: it records what signatures say without disturbing Ghidra's
+/// faithful compiler opinion or the embedded-marker version. Where the two disagree, that
+/// disagreement should be visible, not resolved silently.
+#[test]
+fn signature_detection_refines_without_overriding() {
+    let binary = paths::workspace_root().join("oracle/fid/binaries/crtprobe.msvc6-x86-32.exe");
+    let dir = paths::fid_db_dir();
+    if !binary.exists() || !dir.exists() {
+        return;
+    }
+    let mut program = mosura::analysis::analyze_file(&binary).expect("analyze");
+    let before_compiler = program.compiler.clone();
+    let before_version = program.compiler_version.clone();
+
+    let label = mosura::analysis::fid::detect::apply_signature_detection(&mut program, &dir);
+
+    assert_eq!(label.as_deref(), program.compiler_signature.as_deref());
+    assert!(
+        program.compiler_signature.as_deref().is_some_and(|l| l.starts_with("Visual Studio 1998")),
+        "expected the VC6 probe to be dated to VS 1998, got {:?}",
+        program.compiler_signature
+    );
+    assert_eq!(program.compiler, before_compiler, "Ghidra's CompilerOpinion is untouched");
+    assert_eq!(program.compiler_version, before_version, "the embedded marker is untouched");
+}
+
+/// A program no database covers records nothing rather than a guess.
+#[test]
+fn signature_detection_is_silent_when_unsure() {
+    let binary = paths::ground_truth_dir().join("arith.gcc-aarch64");
+    let dir = paths::workspace_root().join("oracle/fid/db");
+    if !binary.exists() || !dir.exists() {
+        return;
+    }
+    let mut program = mosura::analysis::analyze_file(&binary).expect("analyze");
+    assert_eq!(mosura::analysis::fid::detect::apply_signature_detection(&mut program, &dir), None);
+    assert_eq!(program.compiler_signature, None);
+}

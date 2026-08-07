@@ -199,3 +199,27 @@ pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
     report.votes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     report
 }
+
+/// Record a confident signature vote on the program, as a refinement.
+///
+/// Runs only when a database directory is present and readable, so an installation without
+/// signature data is unaffected. **Opt-in by cost**: a vote loads and queries every database of
+/// the program's language, which with ~70 databases is not free — so this is a deliberate call
+/// a caller makes, not something every analysis pays for.
+///
+/// Writes [`Program::compiler_signature`] only. `compiler` (Ghidra's faithful `CompilerOpinion`)
+/// and `compiler_version` (the embedded marker) are left untouched: this is a second, additive
+/// line of evidence, and where the two disagree that disagreement is worth seeing rather than
+/// hiding.
+pub fn apply_signature_detection(program: &mut Program, dir: &Path) -> Option<String> {
+    let report = detect_version(program, dir);
+    let best = report.best()?;
+    report.family()?; // the confidence gate: a thin or ambiguous vote records nothing
+    let label = if best.library_variant.is_empty() {
+        format!("{} {}", best.library_family, best.library_version)
+    } else {
+        format!("{} {} {}", best.library_family, best.library_version, best.library_variant)
+    };
+    program.compiler_signature = Some(label.clone());
+    Some(label)
+}

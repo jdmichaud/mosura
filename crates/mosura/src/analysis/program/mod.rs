@@ -49,6 +49,15 @@ pub struct Program {
     /// (`loader::compiler_version`), e.g. `msvc:6.0` / `gcc:14-win32` / `borland:c++:1994`. `None`
     /// when no marker is present. Refines the family opinion in `compiler`; never replaces it.
     pub compiler_version: Option<String>,
+    /// Beyond-Ghidra: the compiler build identified by matching **library signatures**
+    /// (`fid::detect`), e.g. `Borland tc2.0 cl` or `Visual Studio 1998 Release`.
+    ///
+    /// A second, independent line of evidence to [`Self::compiler_version`]'s embedded marker,
+    /// and the *only* one available where a format carries no metadata — a raw z80 `.com` has
+    /// no header, sections or symbol table, and sdcc writes no version string into compiled
+    /// output. Set only on a confident vote; `None` otherwise. Refines, never replaces
+    /// [`Self::compiler`].
+    pub compiler_signature: Option<String>,
     pub image_base: Address,
     pub big_endian: bool,
     /// Address size in bits (e.g. 64).
@@ -115,6 +124,7 @@ impl Program {
             // with the compiler-opinion label.
             compiler: "unknown".to_string(),
             compiler_version: None,
+            compiler_signature: None,
             image_base,
             big_endian,
             addr_size_bits,
