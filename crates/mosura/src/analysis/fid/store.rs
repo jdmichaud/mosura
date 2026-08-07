@@ -23,6 +23,12 @@
 //! Records are emitted in sorted order and keys are assigned deterministically from that
 //! order, so **the same inputs always produce a byte-identical file**. That is what makes a
 //! rebuild reviewable: a diff shows what actually changed in the runtime, not reordering noise.
+//!
+//! **Files are gzip-compressed on disk** (`.mfid.gz`). Text at rest would cost ~3.5× the size
+//! for ~20 ms less load time per database, and that size is paid in the release tarball, where
+//! nothing else is compressing it — a distribution ships working files, not git objects.
+//! [`read_file`] accepts either form, detecting gzip by its magic rather than by extension, so
+//! a hand-written or hand-edited plain `.mfid` still loads.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -198,15 +204,47 @@ impl FidStore {
     }
 }
 
-/// Read a `.mfid` file from disk.
+/// gzip's magic bytes, used to decide compression by content rather than by file name.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// Read a database from disk, gzip-compressed or plain.
 pub fn read_file(path: &std::path::Path) -> Result<FidStore, StoreError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| StoreError(format!("{}: {e}", path.display())))?;
+    let raw = std::fs::read(path).map_err(|e| StoreError(format!("{}: {e}", path.display())))?;
+    let text = decompress(&raw).map_err(|e| StoreError(format!("{}: {e}", path.display())))?;
     FidStore::from_text(&text)
 }
 
-/// Write a `.mfid` file to disk.
+/// Decode a database's bytes: inflate when gzip-framed, otherwise interpret as UTF-8 text.
+pub fn decompress(raw: &[u8]) -> Result<String, String> {
+    if raw.len() >= 2 && raw[..2] == GZIP_MAGIC {
+        use std::io::Read;
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(raw)
+            .read_to_string(&mut text)
+            .map_err(|e| format!("gzip decode failed: {e}"))?;
+        Ok(text)
+    } else {
+        String::from_utf8(raw.to_vec()).map_err(|e| format!("not UTF-8 text: {e}"))
+    }
+}
+
+/// Write a database to disk. A `.gz` extension compresses; anything else stays plain text.
+///
+/// Databases are shipped compressed — see the module docs. Writing plain remains available for
+/// inspecting or diffing one by hand.
 pub fn write_file(path: &std::path::Path, store: &FidStore) -> Result<(), StoreError> {
-    std::fs::write(path, store.to_text())
-        .map_err(|e| StoreError(format!("{}: {e}", path.display())))
+    let text = store.to_text();
+    let bytes = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        use std::io::Write;
+        // Fixed compression level, so the same input yields the same file — a database is a
+        // generated artifact and must regenerate reproducibly.
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(9));
+        encoder
+            .write_all(text.as_bytes())
+            .and_then(|()| encoder.finish())
+            .map_err(|e| StoreError(format!("{}: gzip encode failed: {e}", path.display())))?
+    } else {
+        text.into_bytes()
+    };
+    std::fs::write(path, bytes).map_err(|e| StoreError(format!("{}: {e}", path.display())))
 }

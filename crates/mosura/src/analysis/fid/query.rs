@@ -169,9 +169,10 @@ impl FidQueryService {
         self.databases.iter().map(FidDatabase::function_count).sum()
     }
 
-    /// Load every `.fidb` in `dir` whose libraries match the program's language and compiler
-    /// spec. Returns an empty service when the directory is absent — with no database attached
-    /// the analyzer is inert, which is the correct behaviour, not an error.
+    /// Load every database in `dir` whose libraries match the program's language and compiler
+    /// spec — Ghidra's `.fidb` and mosura's `.mfid` / `.mfid.gz` alike. Returns an empty
+    /// service when the directory is absent: with no database attached the analyzer is inert,
+    /// which is the correct behaviour, not an error.
     pub fn load_matching(
         dir: &std::path::Path,
         language_id: &str,
@@ -182,14 +183,28 @@ impl FidQueryService {
         let mut paths: Vec<std::path::PathBuf> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("fidb"))
+            .filter(|p| {
+                let n = p.file_name().unwrap_or_default().to_string_lossy();
+                n.ends_with(".fidb") || n.ends_with(".mfid") || n.ends_with(".mfid.gz")
+            })
             .collect();
         paths.sort();
 
         for path in paths {
             let Ok(data) = std::fs::read(&path) else { continue };
-            let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-            match FidDatabase::open_packed(&name, &data) {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let name = name.trim_end_matches(".gz").trim_end_matches(".mfid").trim_end_matches(".fidb");
+            let loaded = if data.first() == Some(&0xac) {
+                // Ghidra's packed `.fidb` (a Java ObjectStream header).
+                FidDatabase::open_packed(name, &data).map_err(|e| e.0)
+            } else {
+                super::store::decompress(&data)
+                    .and_then(|text| {
+                        super::store::FidStore::from_text(&text).map_err(|e| e.0)
+                    })
+                    .map(|store| store.into_database(name))
+            };
+            match loaded {
                 Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
                 Ok(_) => {}
                 Err(e) => eprintln!("fid: skipping {}: {e}", path.display()),

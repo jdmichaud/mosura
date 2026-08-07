@@ -37,7 +37,7 @@ cargo xtask fid-build \
     --version "10.0a" \
     --variant "Release" \
     --common-symbols oracle/fid/common-symbols/watcom.txt \
-    --out     oracle/fid/db/watcom-10.0a-x86-32.mfid \
+    --out     oracle/fid/db/watcom-10.0a-x86-32.mfid.gz \
     --dir     /path/to/extracted/clib3r-objects
 ```
 
@@ -53,7 +53,7 @@ cargo xtask fid-build \
 It prints what it did:
 
 ```
-fid-build: 214 input file(s) -> oracle/fid/db/watcom-10.0a-x86-32.mfid
+fid-build: 214 input file(s) -> oracle/fid/db/watcom-10.0a-x86-32.mfid.gz
   ingested  1893
   relations 4102
   excluded  310    Duplicate
@@ -106,7 +106,8 @@ list, rebuild.
 
 ## Attaching the database
 
-`.mfid` files are read from the FID database directory, alongside Ghidra's `.fidb`:
+`.mfid.gz` / `.mfid` files are read from the FID database directory, alongside Ghidra's
+`.fidb`:
 
 ```sh
 # default: third_party/ghidra-data/FunctionID
@@ -118,36 +119,29 @@ several columns can live in one directory without interfering.
 
 ---
 
-## Why the format is text — size and load time together
+## The format: sorted text, gzipped on disk
 
-Both axes on the same 40,911-function database (Ghidra's `vs2017_x64`), because quoting the
-compressed size next to the uncompressed load time would be picking whichever configuration
-flatters the answer:
+Both axes on the same 40,911-function database (Ghidra's `vs2017_x64`), measured in the same
+configurations so the comparison is honest:
 
 | artifact | on disk | load |
 | --- | ---: | ---: |
 | Ghidra `.fidb` (packed) | 3,849,100 | 67 ms |
 | Ghidra `.fidbf` (unpacked B-tree) | 10,682,368 | — |
-| mosura `.mfid` (text) | 7,153,017 | **29 ms** |
-| mosura `.mfid.gz` | **2,053,183** | 50 ms |
+| mosura `.mfid` (plain text) | 7,153,017 | 29 ms |
+| **mosura `.mfid.gz` (what we ship)** | **2,053,183** | **50 ms** |
 
-Read honestly, that is a **trade, not a clean win**:
+**We ship compressed.** Plain text loads ~20 ms faster per database, but costs 3.5× the bytes —
+and those bytes are paid in the **release tarball**, which ships working files with nothing else
+compressing them. Twenty milliseconds a database is not worth 5 MB a database on every
+download. (Git would have compressed the stored object either way; the tarball is the case that
+decides it.)
 
-- `.mfid` uncompressed is 1.9× the size of `.fidb` but loads 2.3× faster.
-- `.mfid.gz` is 1.9× *smaller* than `.fidb` and still loads faster (50 ms vs 67 ms) — but it
-  gives up most of the speed advantage the plain text had.
-- There is no configuration where text loses on load, because `.fidb` pays for both DEFLATE
-  (3.8 → 10.7 MB) *and* a B-tree walk across 651 buffers with node and chained-buffer decode,
-  while text is a linear scan with hex parsing.
+Even compressed, loading beats `.fidb`: that format pays for DEFLATE *and* a B-tree walk across
+651 buffers with node and chained-buffer decode, where this is inflate plus a linear scan.
 
-**We ship `.mfid` uncompressed**, taking the fastest load and the largest working file. Git
-compresses the stored object anyway, so the repo pays roughly the gzip figure regardless; the
-uncompressed file costs disk in a checkout, not history. Compressing it would trade the load
-advantage for bytes git was already saving.
-
-That reasoning is worth revisiting if a column produces a database large enough that the
-checkout size matters more than 20 ms — the reader would need a small change to accept
-`.mfid.gz`, and the numbers above say what it would cost.
+`read_file` detects gzip **by magic, not by extension**, so a hand-written or hand-edited plain
+`.mfid` still loads — useful when inspecting or diffing one.
 
 ---
 
@@ -193,7 +187,8 @@ i 90a1b2c3d4e5f607
 callee→caller; the key's presence *is* the relation).
 
 **Regeneration is deterministic**: record order and keys are derived from content, not from
-input order, so the same inputs always produce a byte-identical file. `tests/fid_ingest.rs`
+input order, and the gzip level is fixed, so the same inputs always produce a byte-identical
+file — compressed or not. `tests/fid_ingest.rs`
 asserts this by ingesting the same library forwards and backwards.
 
 The *schema* is Ghidra's, ported faithfully. Only the container differs — Ghidra writes a

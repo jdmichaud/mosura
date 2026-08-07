@@ -178,6 +178,41 @@ fn output_is_byte_identical_regardless_of_input_order() {
     assert_eq!(a.to_text(), b.to_text(), "record order and keys are content-derived");
 }
 
+/// Databases ship **compressed**, so the compressed path must round-trip and must be the one
+/// a `.gz` name selects. The reader detects gzip by magic, not by extension, so a
+/// hand-written plain `.mfid` still loads.
+#[test]
+fn databases_round_trip_compressed() {
+    let mut ingest = Ingest::new("x86:LE:32:default", "watcom", "T", "1", "R");
+    ingest.add_program(&sample_library());
+    let (built, _) = ingest.finish();
+
+    let dir = std::env::temp_dir().join(format!("mfid-gz-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let gz = dir.join("t.mfid.gz");
+    let plain = dir.join("t.mfid");
+    store::write_file(&gz, &built).expect("write gz");
+    store::write_file(&plain, &built).expect("write plain");
+
+    // The `.gz` really is gzip-framed, and really is smaller.
+    let gz_bytes = std::fs::read(&gz).expect("read gz");
+    let plain_bytes = std::fs::read(&plain).expect("read plain");
+    assert_eq!(&gz_bytes[..2], &[0x1f, 0x8b], "gzip magic");
+    assert!(gz_bytes.len() < plain_bytes.len(), "compression actually shrinks it");
+
+    // Both decode to the same database.
+    let from_gz = store::read_file(&gz).expect("read gz");
+    let from_plain = store::read_file(&plain).expect("read plain");
+    assert_eq!(from_gz.to_text(), built.to_text(), "compressed round trip is lossless");
+    assert_eq!(from_gz.to_text(), from_plain.to_text(), "both forms agree");
+
+    // Deterministic: a generated artifact must regenerate byte-identically, compressed too.
+    store::write_file(&gz, &built).expect("rewrite gz");
+    assert_eq!(std::fs::read(&gz).expect("reread"), gz_bytes, "same input, same bytes");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The store rejects a file it cannot read rather than silently producing an empty database.
 #[test]
 fn malformed_store_is_rejected() {
