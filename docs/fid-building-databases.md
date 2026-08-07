@@ -295,6 +295,25 @@ over the 14.6 score threshold, and about a quarter of a Borland runtime scores b
 size alone — so those functions were unidentifiable despite having a signature. With far fixups
 applied the far models sit in line with the near ones (303–377).
 
+#### Getting the libraries out of a Borland install set
+
+The four Turbo C releases ship uncompressed floppies, so `7z e <disk>.img '*.LIB'` is enough.
+Everything later packs its files into `.CA1`/`.CA2`/`.CA3` archives — which are **ordinary ZIPs
+behind a 4-byte prefix**, split across disks as volumes that concatenate:
+
+```sh
+# stage every disk of one product into a directory, then
+./scripts/extract-borland-ca.sh <staged-dir> <output-dir>
+```
+
+`7z` rejects a `.CA` file only because of those four leading bytes. Strip them from each volume,
+append in order, and it reads as a ZIP.
+
+Worth recording what does **not** work, since each cost a detour: `INSTALL /b` is a
+black-and-white colour switch, not a batch mode; piping keystrokes into dosemu does not reach a
+DOS program's INT 16h keyboard reads, so the installer hangs; Borland's own `UNPACK.COM` (1989)
+recognises the format but cannot read the later revision; and their `UNZIP.EXE` rejects it.
+
 **Linked** — let the vendor's linker resolve everything:
 
 ```sh
@@ -347,6 +366,25 @@ That matters because relations are what carry a *small* function over the 14.6 s
 threshold. Measured on Turbo C 2.0: **27% of the small model and 22% of the large model score
 below 14.6 on their own body**, so in the far models most of that quarter is unidentifiable
 even though its signature is in the database.
+
+#### Getting the libraries out of a Borland install set
+
+The four Turbo C releases ship uncompressed floppies, so `7z e <disk>.img '*.LIB'` is enough.
+Everything later packs its files into `.CA1`/`.CA2`/`.CA3` archives — which are **ordinary ZIPs
+behind a 4-byte prefix**, split across disks as volumes that concatenate:
+
+```sh
+# stage every disk of one product into a directory, then
+./scripts/extract-borland-ca.sh <staged-dir> <output-dir>
+```
+
+`7z` rejects a `.CA` file only because of those four leading bytes. Strip them from each volume,
+append in order, and it reads as a ZIP.
+
+Worth recording what does **not** work, since each cost a detour: `INSTALL /b` is a
+black-and-white colour switch, not a batch mode; piping keystrokes into dosemu does not reach a
+DOS program's INT 16h keyboard reads, so the installer hangs; Borland's own `UNPACK.COM` (1989)
+recognises the format but cannot read the later revision; and their `UNZIP.EXE` rejects it.
 
 **Linked** — let the vendor's linker resolve everything:
 
