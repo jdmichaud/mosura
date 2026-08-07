@@ -571,3 +571,67 @@ mod disassembler_bounds_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod constant_propagation_location_tests {
+    use super::*;
+    use crate::analysis::manager::Scheduling;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    /// CAUSE B (`docs/function-discovery-backlog.md`): `ConstantPropagationAnalyzer.added`
+    /// (ConstantPropagationAnalyzer.java:178-186) reduces the set to start locations with
+    /// `findLocationsRemoveFunctionBodies` (:248), whose FIRST pass contributes the entry point of
+    /// every function overlapping the set (:259-264). Reading `r.min` off the raw set implemented
+    /// only that method's LAST pass (:296-303) — the fallback for what is left once bodies and
+    /// call destinations have been removed — so two functions at adjacent entries, which coalesce
+    /// into a single `AddressSet` range, lost the second one entirely.
+    ///
+    /// Layout: a bare `ret` at `0x401000` (function A, the range minimum) and a rip-relative load
+    /// at `0x401001` (function B) that resolves to `0x401018`. Only propagating from A stops at
+    /// the `ret` and recovers nothing; the READ reference is the proof that B ran.
+    #[test]
+    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
+    fn adjacent_function_entries_are_all_propagated_from() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        let mut img = vec![0u8; 0x1000];
+        // 0x401000: c3                       ret
+        // 0x401001: 48 8b 05 10 00 00 00     mov rax,[rip+0x10]   -> reads 0x401018
+        // 0x401008: c3                       ret
+        img[..9].copy_from_slice(&[0xc3, 0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        for off in [0x40_1000u64, 0x40_1001] {
+            p.function_manager.create_function(
+                Address::new(ram, off),
+                &format!("FUN_{off:08x}"),
+                AddressSet::new(),
+            );
+        }
+
+        let mut set = AddressSet::new();
+        set.add_range(ram, 0x40_1000, 0x40_1000);
+        set.add_range(ram, 0x40_1001, 0x40_1001);
+        assert_eq!(set.ranges().count(), 1, "the two entries must coalesce for this to bite");
+
+        let a = ConstantPropagationAnalyzer::for_program(&p).unwrap();
+        a.added(&mut p, &set, &mut Scheduling::default());
+
+        let reads: Vec<u64> = p
+            .reference_manager
+            .references()
+            .filter(|r| r.ref_type == RefType::Read)
+            .map(|r| r.to.offset)
+            .collect();
+        assert!(
+            reads.contains(&0x40_1018),
+            "no READ reference to 0x401018: constant propagation never started at the function at \
+             0x401001, because it shares a coalesced range with the one at 0x401000 and only the \
+             range minimum was used. Got {reads:x?}"
+        );
+    }
+}

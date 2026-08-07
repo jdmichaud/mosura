@@ -476,3 +476,84 @@ impl Analyzer for SharedReturnAnalyzer {
         !retypes.is_empty() || !new_functions.is_empty()
     }
 }
+
+#[cfg(test)]
+mod destination_set_tests {
+    use super::*;
+    use crate::analysis::manager::Scheduling;
+    use crate::analysis::program::CodeUnit;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    fn program() -> Program {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(vec![0; 0x1000]));
+        p
+    }
+
+    fn make_function(p: &mut Program, off: u64) {
+        let ram = p.default_space;
+        p.function_manager.create_function(
+            Address::new(ram, off),
+            &format!("FUN_{off:08x}"),
+            AddressSet::new(),
+        );
+    }
+
+    /// CAUSE B (`docs/function-discovery-backlog.md`): `SharedReturnAnalysisCmd.applyTo` drives
+    /// `symbolTable.getSymbols(set, SymbolType.FUNCTION, true)` (SharedReturnAnalysisCmd.java:66)
+    /// — **every** function symbol in the set. Reading one entry per `AddressSet` range instead
+    /// drops all but the first of any run of adjacent entries, because the set coalesces them
+    /// (`wprobe.watcom-x86-32`: `08048110` / `08048111` / `08048112`).
+    ///
+    /// Here the shared-return jump targets the THIRD of three adjacent entries, so under the
+    /// range-minimum reading `processFunctionJumpReferences` is never run for it and the
+    /// `UNCONDITIONAL_JUMP` is never re-typed to `UNCONDITIONAL_CALL`.
+    ///
+    /// `assume_contiguous_functions` is off so part 2 cannot supply the same effect by another
+    /// route — the assertion measures the destination-set iteration and nothing else.
+    #[test]
+    #[ignore = "RED: committed before the fix, so its ability to fail is a fact of history"]
+    fn every_function_entry_in_the_set_is_a_destination_not_just_the_range_minimum() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut p = program();
+        let ram = p.default_space;
+        for off in [0x40_1010, 0x40_1011, 0x40_1012] {
+            make_function(&mut p, off);
+        }
+        // A `jmp 0x401012` at 0x401000: a code unit with exactly one flow reference out, in no
+        // function of its own (so it is neither a thunk nor an internal jump).
+        let src = Address::new(ram, 0x40_1000);
+        let dest = Address::new(ram, 0x40_1012);
+        p.listing.define(src, CodeUnit::Instruction { length: 5 });
+        p.reference_manager.add(src, dest, RefType::UnconditionalJump, -1);
+
+        let a = SharedReturnAnalyzer {
+            ram,
+            assume_contiguous_functions: false,
+            consider_conditional_branches: false,
+            spec,
+            ctx,
+        };
+        let mut set = AddressSet::new();
+        for off in [0x40_1010, 0x40_1011, 0x40_1012] {
+            set.add_range(ram, off, off);
+        }
+        assert_eq!(set.ranges().count(), 1, "the three entries must coalesce for this to bite");
+
+        a.added(&mut p, &set, &mut Scheduling::default());
+
+        let types: Vec<RefType> =
+            p.reference_manager.refs_from(src).map(|r| r.ref_type).collect();
+        assert_eq!(
+            types,
+            vec![RefType::UnconditionalCall],
+            "the jump to the function at 0x401012 is a shared-return tail call and must be \
+             re-typed; taking only the range minimum processes 0x401010 and stops"
+        );
+    }
+}
