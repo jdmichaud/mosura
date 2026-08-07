@@ -234,12 +234,15 @@ where
         let name = section.name().unwrap_or("<noname>").to_string();
         let write = sh_flags & u64::from(elf::SHF_WRITE) != 0;
         let execute = sh_flags & u64::from(elf::SHF_EXECINSTR) != 0;
-        // SHT_NOBITS (.bss) is uninitialized; everything else is file-backed.
-        let bytes = if section.kind() == object::SectionKind::UninitializedData {
-            None
-        } else {
-            section.data().ok().map(|d| d.to_vec())
-        };
+        // SHT_NOBITS occupies address space but has no file content; everything else is
+        // file-backed. Test `sh_type` rather than `object`'s `SectionKind`, which classifies
+        // a NOBITS **TLS** section (`.tbss`, SHF_TLS) as `UninitializedTls` rather than
+        // `UninitializedData` — that miss sent `.tbss` down the file-backed path, where
+        // `data()` correctly returns nothing and the block was built claiming 40 bytes it did
+        // not have. Any statically-linked binary with thread-local storage hits it.
+        let is_nobits = matches!(section.flags(), SectionFlags::Elf { .. })
+            && section.file_range().is_none();
+        let bytes = if is_nobits { None } else { section.data().ok().map(|d| d.to_vec()) };
         memory.add_block(&name, Address::new(ram, addr), size, true, write, execute, bytes);
         section_cover.add_range(ram, addr, addr + size - 1);
     }
