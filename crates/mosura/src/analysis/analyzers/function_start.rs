@@ -987,58 +987,7 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
     body
 }
 
-thread_local! {
-    /// Function count at the last body refresh; `usize::MAX` = "no refresh yet this run".
-    static BODIES_FRESH_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
-}
-
-/// Reset this analyzer's per-run memos. Called once per analysis run, so a fresh program never
-/// inherits the previous program's state (the harness analyses many programs per thread).
-pub fn reset_body_refresh_memo() {
-    BODIES_FRESH_AT.with(|c| c.set(usize::MAX));
-}
-
-/// Bring every function's body up to date before asking `getFunctionContaining`.
-///
-/// **Why this exists.** In Ghidra a function's body is computed when the function is created and
-/// is therefore always current; `FunctionStartAction.applyActionToSet` (:302) and
-/// `PossibleDelayedFunctionCreator` (:1007) both lean on `getFunctionContaining` to refuse a
-/// proposal that lands *inside* a function that already exists — which is what stops the
-/// `push ebp; mov ebp,esp` inside a Watcom save-first prologue from becoming a second entry a few
-/// bytes into every such function. mosura computes bodies once, after the whole worklist has
-/// converged (`analyze` -> `compute_function_bodies`), so during analysis every body is EMPTY and
-/// that guard silently never fires.
-///
-/// Measured, not assumed. On `fnpattern.watcom-x86-32`, Ghidra creates one extra entry
-/// (`08048136`, the orphan's `55`) and refuses `lead_fn_+5`, `trail_fn_+5` and `main_+5` because
-/// each is inside an existing function; mosura created all four. On `dispatch.gcc-m68k` and
-/// `tables.gcc-m68k` Ghidra's function set is IDENTICAL with the Function Start Search analyzers
-/// on and off, while mosura gained 3 and 8 entries. (`compgoto.gcc-m68k` is the case where Ghidra
-/// really does gain three — 2 functions with the search off, 5 with it on — so that one is a
-/// Ghidra property, not a port defect.)
-/// **Memoized on the function count.** `compute_function_bodies` walks every function and
-/// re-derives its body, so it is O(all functions). This runs at the top of every `added()`, and
-/// each pass that creates functions provokes another `added()` — on a large program that is
-/// quadratic (WAR2: ~1965 functions re-walked per call). Ghidra has no such call at all: its
-/// bodies are maintained incrementally as code units are created, so this refresh is mosura's
-/// own bookkeeping and skipping a redundant one changes no Ghidra-visible behaviour.
-///
-/// Bodies here can only go stale when the function *set* changes: within the search the only
-/// mutations are function creation (`create_functions`) and scheduled disassembly, and the latter
-/// is applied by the manager's disassembly pass, which recomputes bodies itself. So a refresh is
-/// needed exactly when the count has moved since the last one. The marker is thread-local, which
-/// is also the correct granularity — the test harness analyses different programs on different
-/// threads.
-fn refresh_function_bodies(program: &mut Program) {
-    let n = program.function_manager.functions().count();
-    if BODIES_FRESH_AT.with(|c| c.get()) == n {
-        return;
-    }
-    if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
-        super::compute_function_bodies(spec, ctx, program);
-    }
-    BODIES_FRESH_AT.with(|c| c.set(n));
-}
+pub use super::{refresh_function_bodies, reset_body_refresh_memo};
 
 /// `PossibleDelayedFunctionCreator` (FunctionStartAnalyzer.java:987) — "one time analyzer used to
 /// delay function creation until disassembly has settled". A `possiblefuncstart` match only

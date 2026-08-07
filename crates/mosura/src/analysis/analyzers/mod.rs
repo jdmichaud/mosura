@@ -506,6 +506,69 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
     }
 }
 
+thread_local! {
+    /// `(function count, code-unit count)` at the last body refresh; `None` = "no refresh yet
+    /// this run".
+    static BODIES_FRESH_AT: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Reset the per-run body-refresh memo. Called once per analysis run, so a fresh program never
+/// inherits the previous program's state (the harness analyses many programs per thread).
+pub fn reset_body_refresh_memo() {
+    BODIES_FRESH_AT.with(|c| c.set(None));
+}
+
+/// ⭐ Bring every function's body up to date before asking a **body question** —
+/// `getFunctionContaining`, `getFunctionsOverlapping`, or "subtract the function bodies from this
+/// set".
+///
+/// **Why this exists.** In Ghidra a function's body is computed when the function is created and
+/// maintained as code units appear, so it is *always current*; mosura computes bodies once, after
+/// the whole worklist has converged (`analyze` -> [`compute_function_bodies`]), so during analysis
+/// every body is EMPTY. Every ported body query therefore silently answers "nothing" unless the
+/// bodies are brought up to date first. This call is that bookkeeping — it restores what Ghidra's
+/// incremental maintenance guarantees, rather than adding a condition Ghidra does not have.
+///
+/// Three callers, and they are why the memo key is what it is:
+///
+///  - `FunctionStartAction.applyActionToSet` (:302) and `PossibleDelayedFunctionCreator` (:1007)
+///    refuse a pattern-proposed start that lands *inside* an existing function. Measured: on
+///    `fnpattern.watcom-x86-32` Ghidra refuses `lead_fn_+5`, `trail_fn_+5` and `main_+5`; mosura
+///    created all four before this existed.
+///  - [`ConstantPropagationAnalyzer`], whose `findLocationsRemoveFunctionBodies` pass 1
+///    (ConstantPropagationAnalyzer.java:259-268) **subtracts the bodies** from its added set. On
+///    the INSTRUCTION channel that set is a decoded EXTENT, so with empty bodies the subtraction
+///    removes only the single entry-point address and pass 3 (:296-303) then starts constant
+///    propagation at `entry + 1` — an offcut address inside the first instruction of every
+///    function. On the FUNCTION channel the set was entry points only, so passes 2 and 3 were
+///    inert and this never showed.
+///  - [`switch::DecompilerSwitchAnalyzer`], whose `findFunctions`
+///    (DecompilerSwitchAnalyzer.java:184) maps each candidate location through
+///    `getFunctionContaining`.
+///
+/// **Memoized on `(function count, code-unit count)`.** [`compute_function_bodies`] re-walks and
+/// re-decodes every function, so it is O(all code); this sits at the top of an `added()` that can
+/// run several times per program. Both halves of the key are load-bearing: a body grows when a
+/// function is created *and* when code is laid down inside an existing one (the disassembler's
+/// walk lays down code without creating any function, and nothing recomputes bodies afterwards),
+/// so keying on the function count alone leaves a body stale exactly when new code was decoded —
+/// which is the case the constant propagator's channel now depends on. The marker is thread-local,
+/// the correct granularity: the test harness analyses different programs on different threads.
+pub fn refresh_function_bodies(program: &mut Program) {
+    let key = (program.function_manager.function_count(), program.listing.len());
+    if BODIES_FRESH_AT.with(|c| c.get()) == Some(key) {
+        return;
+    }
+    if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
+        compute_function_bodies(spec, ctx, program);
+    }
+    // Re-read: computing bodies defines no code units and creates no function, but reading the
+    // key back keeps the memo honest if that ever changes.
+    let key = (program.function_manager.function_count(), program.listing.len());
+    BODIES_FRESH_AT.with(|c| c.set(Some(key)));
+}
+
 /// `ConstantPropagationAnalyzer.removeUninitializedBlocks` (ConstantPropagationAnalyzer.java:220)
 /// — uninitialized memory has no bytes, so it can hold no instruction and is dropped from the
 /// set before any location is chosen.
@@ -544,7 +607,7 @@ fn remove_uninitialized_blocks(program: &Program, set: &mut AddressSet) {
 /// ⚠️ **`getFunctionsOverlapping` is a body query and mosura's bodies are empty during analysis.**
 /// Ghidra maintains a function's body incrementally, so it is always current and always contains
 /// the entry point; mosura computes bodies in one pass *after* the worklist converges
-/// (`analyze` -> `compute_function_bodies`; see `function_start.rs:1031`), so during analysis
+/// (`analyze` -> `compute_function_bodies`; see [`refresh_function_bodies`]), so during analysis
 /// `f.body()` is empty for nearly every function and a literal body-intersection test would return
 /// NOTHING. The entry-point test below restores exactly what Ghidra's always-populated body
 /// guarantees — that a function whose entry is in the set overlaps the set — rather than adding a
@@ -884,6 +947,111 @@ mod constant_propagation_location_tests {
             "no READ reference to 0x401018: constant propagation never started at the function at \
              0x401001, because it shares a coalesced range with the one at 0x401000 and only the \
              range minimum was used. Got {reads:x?}"
+        );
+    }
+
+    /// ⭐ **THE CHANNEL GATE (task #7).** `ConstantPropagationAnalyzer` is an
+    /// `INSTRUCTION_ANALYZER` (ConstantPropagationAnalyzer.java:117): its added set is a decoded
+    /// EXTENT, and `findLocationsRemoveFunctionBodies` (:248) derives the start locations from it
+    /// — function entries first (:259-264), then call destinations (:271-293), then **the minimum
+    /// of every range that is left** (:296-303). That last pass is the only route by which
+    /// constant propagation reaches code that is decoded and belongs to NO function, which is
+    /// precisely what `AddressTableAnalyzer` produces (it disassembles a pointer table's targets
+    /// and creates no function at them, AddressTableAnalyzer.java:282).
+    ///
+    /// On the `Function` channel the added set was function entry points, so pass 1 consumed it
+    /// whole and passes 2 and 3 were structurally unreachable — code in no function was never
+    /// propagated through.
+    ///
+    /// **Both halves of the fix are measured here, and the second is why they cannot be
+    /// separated.** Pass 1 SUBTRACTS each overlapping function's BODY (:264-268). mosura's bodies
+    /// are empty during analysis, so without [`refresh_function_bodies`] the subtraction removes
+    /// only the single entry-point ADDRESS: the whole extent minus `{0x401000}` stays ONE range,
+    /// its minimum is `0x401001` — an OFFCUT address inside the first instruction — and that
+    /// becomes the only pass-3 location. The orphan at `0x401008` is never reached, and constant
+    /// propagation runs over a garbage decode instead. Hence the two assertions: the orphan's
+    /// reference must appear, and no reference may originate from an address that is not an
+    /// instruction start.
+    ///
+    /// Layout — `f` is a function, the code at `0x401008` is decoded but in no function:
+    /// ```text
+    /// 0x401000  48 8b 05 f9 0f 00 00   mov rax,[rip+0xff9]   -> READ 0x402000   } f's body
+    /// 0x401007  c3                     ret                                      }
+    /// 0x401008  48 8b 0d 01 10 00 00   mov rcx,[rip+0x1001]  -> READ 0x402010   } no function
+    /// 0x40100f  c3                     ret                                      }
+    /// ```
+    /// Decoding the offcut `0x401001` yields `8b 05 f9 0f 00 00` (`mov eax,[rip+0xff9]`), whose
+    /// rip-relative base lands on the same `0x401007`, so the broken path produces a READ to
+    /// `0x402000` **from `0x401001`** and stops at the `ret` — which is exactly what the second
+    /// assertion names.
+    #[test]
+    #[ignore = "RED until the analyzer channel is fixed (task #7) — see the note above"]
+    fn constant_propagation_reaches_decoded_code_that_is_in_no_function() {
+        if crate::lang::load("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        super::reset_body_refresh_memo(); // thread-local, and tests share threads
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        let mut img = vec![0u8; 0x2000];
+        img[..0x10].copy_from_slice(&[
+            0x48, 0x8b, 0x05, 0xf9, 0x0f, 0x00, 0x00, // mov rax,[rip+0xff9] -> 0x402000
+            0xc3, // ret
+            0x48, 0x8b, 0x0d, 0x01, 0x10, 0x00, 0x00, // mov rcx,[rip+0x1001] -> 0x402010
+            0xc3, // ret
+        ]);
+        p.memory.add_block(".text", base, 0x2000, true, false, true, Some(img));
+        p.function_manager.create_function(base, "f", AddressSet::new());
+
+        // Decode both — the function by its own seed, the orphan the way `AddressTableAnalyzer`
+        // reaches a pointer target: a disassembly seed with no function created at it.
+        let d = Disassembler::for_program(&p).unwrap();
+        let mut seeds = AddressSet::new();
+        seeds.add_range(ram, 0x40_1000, 0x40_1000);
+        seeds.add_range(ram, 0x40_1008, 0x40_1008);
+        let mut sched = Scheduling::default();
+        d.added(&mut p, &seeds, &mut sched);
+        assert!(
+            p.listing.code_unit_at(Address::new(ram, 0x40_1008)).is_some(),
+            "the orphan must be decoded for this fixture to measure anything"
+        );
+
+        // The decoded EXTENT, as `codeDefined` carries it — one contiguous range.
+        let mut extent = AddressSet::new();
+        extent.add_range(ram, 0x40_1000, 0x40_100f);
+        assert_eq!(extent.ranges().count(), 1, "one range is what makes the entry+1 minimum bite");
+
+        let cp = ConstantPropagationAnalyzer::for_program(&p).unwrap();
+        cp.added(&mut p, &extent, &mut Scheduling::default());
+
+        let reads: Vec<u64> = p
+            .reference_manager
+            .references()
+            .filter(|r| r.ref_type == RefType::Read)
+            .map(|r| r.to.offset)
+            .collect();
+        assert!(
+            reads.contains(&0x40_2010),
+            "no READ reference to 0x402010: constant propagation never started at 0x401008, the \
+             code that is decoded and inside no function. That is pass 3 of \
+             findLocationsRemoveFunctionBodies (:296-303), and it is reachable only when the added \
+             set is a decoded extent. Got {reads:x?}"
+        );
+
+        let offcut: Vec<u64> = p
+            .reference_manager
+            .references()
+            .map(|r| r.from.offset)
+            .filter(|&a| p.listing.code_unit_at(Address::new(ram, a)).is_none())
+            .collect();
+        assert!(
+            offcut.is_empty(),
+            "reference(s) made from {offcut:x?}, which is not an instruction start: pass 1 removed \
+             only the entry-point ADDRESS instead of the function's BODY, so the range minimum \
+             pass 3 picked was 0x401001 — inside the first instruction. Bodies must be current \
+             before a body query (`refresh_function_bodies`)"
         );
     }
 }

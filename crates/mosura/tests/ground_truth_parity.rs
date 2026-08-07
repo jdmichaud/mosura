@@ -619,6 +619,102 @@ fn data_pointer_le_seeding() {
     );
 }
 
+/// ⭐ **THE ANALYZER-CHANNEL GATE (task #7)** — `ConstantPropagationAnalyzer` is an
+/// `INSTRUCTION_ANALYZER` (ConstantPropagationAnalyzer.java:117), so its added set is the newly
+/// **disassembled extent**; mosura registered it on the `Function` channel, where the added set is
+/// function ENTRY POINTS. The two carry a different *kind* of thing, and the difference is not a
+/// refinement: `findLocationsRemoveFunctionBodies` (:248) derives its start locations from the set
+/// in three passes — function entries (:259-264), then call destinations (:271-293), then the
+/// minimum of each range left over (:296-303) — and an entry-point set is consumed whole by pass 1,
+/// so passes 2 and 3 can never run.
+///
+/// **Pass 3 is the only route into code that is decoded and belongs to no function**, and that
+/// state is not exotic: it is exactly what the data-side analyzers produce. Ghidra's
+/// `AddressTableAnalyzer` disassembles a pointer's target and deliberately creates NO function
+/// there (AddressTableAnalyzer.java:282, "For Now, Never make functions from address tables"), and
+/// `RelocationSeedAnalyzer` does the same for an LE fixup slot. Everything they reach was therefore
+/// invisible to constant propagation: no data references, no resolved computed-call destinations,
+/// no functions discovered from either.
+///
+/// `lestruct.watcom-le` is the measured instance, and [`data_pointer_le_seeding`] above is why it
+/// is the right one — it already pins the state this test needs (`h0_`/`h1_`/`h2_` disassembled
+/// from LE fixup records, with no function created at any of them). `h0` is `g_acc += x;
+/// return deep_le(x) + 1;`, which `wcc386` emits as a read-modify-write `add [g_acc],eax` at the
+/// handler's first instruction — one absolute operand that only constant propagation recovers.
+///
+/// MEASURED, both sides (`9113748`, this binary): before the channel fix mosura's whole reference
+/// set for `lestruct` is 6 references with 2 READs, and `h0_` @`00010010` carries NONE — its
+/// `g_acc` access is simply absent. After, `h0_` carries `READ` + `WRITE` to `g_acc` @`00020018`
+/// and the set is 8 references with 3 READs. `h1_`/`h2_` stay unreferenced for a DIFFERENT and
+/// separately-tracked reason: reaching them needs `ConstantPropagationAnalyzer.analyzeSet` (:389),
+/// the single-threaded loop over what the parallel pass did not cover, which is task #8. The walk
+/// from `h0_` ends at its `ret` and Ghidra's leftover loop is what picks up the next handler — so
+/// this test asserts `h0_` only, deliberately, rather than pretending the whole region is covered.
+///
+/// ⚠️ `datafnptr.watcom-x86-32` is the ELF sibling of this shape and CANNOT gate it: its `g_acc`
+/// sits at `0x8049014`, one byte past the end of the only writable section the linker emitted
+/// (`.data` is `0x8049000 + 0x14`, and the binary has no `.bss` at all), so the reference is
+/// suppressed for being outside loaded memory no matter which channel the analyzer is on. The
+/// obvious fixture measures nothing here.
+#[test]
+#[ignore = "RED until the analyzer channel is fixed (task #7) — see the note above"]
+fn constant_propagation_reaches_data_pointer_code_in_no_function() {
+    use mosura::analysis::program::CodeUnit;
+    let bin = ground_truth_dir().join("lestruct.watcom-le");
+    let truth_path = ground_truth_dir().join("lestruct.watcom-le.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!(
+            "skip constant_propagation_reaches_data_pointer_code_in_no_function: {} absent",
+            bin.display()
+        );
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let h0 = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "h0_")
+        .map(|(a, _)| *a)
+        .expect("truth lists h0_");
+
+    let prog = analysis::analyze_le_file(&bin).expect("analyze lestruct.watcom-le");
+    let ram = prog.default_space;
+
+    // The premise, restated as an assertion so the gate cannot pass for the wrong reason: `h0_` is
+    // decoded and no function was created at it. If either ever changes, this stops measuring the
+    // channel and starts measuring ordinary in-function propagation.
+    assert!(
+        matches!(prog.listing.code_unit_at(Address::new(ram, h0)), Some(CodeUnit::Instruction { .. })),
+        "h0_ @ {h0:#x} is not decoded — see data_pointer_le_seeding"
+    );
+    assert!(
+        prog.function_manager.function_at(Address::new(ram, h0)).is_none(),
+        "a function was created at h0_ @ {h0:#x}; this gate is about code in NO function"
+    );
+    assert!(
+        prog.function_manager.function_containing(Address::new(ram, h0)).is_none(),
+        "h0_ @ {h0:#x} ended up inside some other function's body; this gate is about code in NO \
+         function"
+    );
+
+    let from_h0: Vec<(u64, &str)> = prog
+        .reference_manager
+        .references()
+        .filter(|r| r.from.offset == h0)
+        .filter(|r| matches!(r.ref_type, RefType::Read | RefType::Write | RefType::Data))
+        .map(|r| (r.to.offset, r.ref_type.name()))
+        .collect();
+    assert!(
+        !from_h0.is_empty(),
+        "h0_ @ {h0:#x} is decoded, is inside no function, and reads+writes a global — but carries \
+         no data reference. Constant propagation never started there: on the FUNCTION channel its \
+         added set is function entry points, so findLocationsRemoveFunctionBodies pass 3 \
+         (ConstantPropagationAnalyzer.java:296-303) — the only pass that reaches code in no \
+         function — is unreachable"
+    );
+    eprintln!("lestruct channel gate: h0_ @ {h0:#x} carries {from_h0:x?}");
+}
+
 /// WAR2 `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's
 /// DECOMPILE_FAIL class (all 117 WAR2 panics were this one bug: `merge.rs:1205` index-out-of-bounds,
 /// docs/decompiler-bug-merge-indirect-trim-panic.md, fixed in `b6ec467`). `war2gates` (Open Watcom,

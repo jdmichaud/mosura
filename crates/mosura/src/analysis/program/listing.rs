@@ -90,4 +90,12 @@ impl Listing {
     pub fn is_empty(&self) -> bool {
         self.units.is_empty()
     }
+
+    /// Number of defined code units (Ghidra `Listing.getNumCodeUnits`). Used as half the
+    /// staleness key of the analysis-time body refresh
+    /// ([`crate::analysis::analyzers::refresh_function_bodies`]): a body goes stale when code is
+    /// laid down, not only when the function set grows.
+    pub fn len(&self) -> usize {
+        self.units.len()
+    }
 }
