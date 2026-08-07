@@ -52,9 +52,18 @@ pub fn program_functions(program: &Program) -> Vec<IngestFunction> {
         }
         let Some(from_fn) = program.function_manager.function_containing(r.from) else { continue };
         let from = from_fn.entry_point().offset;
-        if program.function_manager.function_at(r.to).is_some() {
+        let symbol = program.symbol_table.primary_at(r.to);
+
+        // Check EXTERNAL first. Analysis creates a function at any call target in an executable
+        // block, including the synthetic slots an object file's undefined symbols get — so
+        // `function_at` is true there too. Preferring `Local` in that case threw the name away
+        // and left a child that could never resolve: for Watcom's CLIB3R that was 542 `Local`
+        // children against 23 `Named`, when nearly every one is a cross-module call by name.
+        if let Some(sym) = symbol.filter(|s| s.is_external()) {
+            children_of.entry(from).or_default().push(ChildRef::Named(sym.name().to_string()));
+        } else if program.function_manager.function_at(r.to).is_some() {
             children_of.entry(from).or_default().push(ChildRef::Local(r.to.offset));
-        } else if let Some(sym) = program.symbol_table.primary_at(r.to) {
+        } else if let Some(sym) = symbol {
             children_of.entry(from).or_default().push(ChildRef::Named(sym.name().to_string()));
         }
     }

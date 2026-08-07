@@ -23,10 +23,28 @@
 //! | `PUBDEF` | `0x90`/`0x91` | public symbols: `(name, segment, offset)` |
 //! | `MODEND` | `0x8A`/`0x8B` | end of module |
 //!
+//! | `EXTDEF` | `0x8C` | external symbol names a call can target |
+//! | `FIXUPP` | `0x9C`/`0x9D` | relocations — which call sites target which external |
+//!
 //! The odd id is the 32-bit variant: the low bit means offsets and lengths are 32-bit rather
-//! than 16-bit. `FIXUPP` (`0x9C`) is deliberately **not** applied — relocated fields stay
-//! zero, exactly as `scripts/extract-omf-code.py` leaves them, which is also what makes a
-//! body's hash independent of where it would have been linked.
+//! than 16-bit.
+//!
+//! ## Why fixups must be applied
+//!
+//! An unlinked `call` to another module has a **zero displacement** — the linker has not filled
+//! it in yet. In Watcom's `CLIB3R.LIB` that is 714 of 847 call sites. Left alone, `E8 00 00 00
+//! 00` does not merely look odd: Ghidra's x86 spec has a *separate, more specific* constructor
+//! for a zero displacement (`ia.sinc:2964`, `simm32=0`) whose semantics are `goto`, **not
+//! `call`**. So every unresolved call would be hashed as a jump, would not be subtracted from
+//! `codeUnitSize`, and would contribute no callee relation — making every signature in the
+//! database systematically disagree with the same function in a linked binary.
+//!
+//! So external fixups are resolved: each external name gets a slot in a synthetic `EXTERNAL`
+//! block (the same device `loader/elf.rs` uses for undefined symbols), and self-relative call
+//! displacements are patched to reach it. The *hash* is unaffected by where that slot sits —
+//! the full hash masks the displacement away entirely, and a slot address is far larger than
+//! the 256 cutoff that would let the specific hash keep it — so this restores the call flow
+//! without making a body's signature depend on our synthetic layout.
 
 use super::elf::LoadError;
 use crate::analysis::program::{Memory, Program, SymbolType};
@@ -38,6 +56,10 @@ const LANGUAGE_ID: &str = "x86:LE:32:default";
 /// are position-independent until linked — so a nominal base is chosen. It cannot affect a
 /// hash: the full hash masks every operand, and no relocation is applied.
 const OBJ_BASE: u64 = 0x10000;
+
+/// Bytes reserved per external symbol in the synthetic `EXTERNAL` block. Ghidra's ELF loader
+/// uses one pointer per undefined symbol; the value only has to keep the slots distinct.
+const EXTERNAL_SLOT: u64 = 8;
 
 /// One record of the OMF stream.
 struct Record<'a> {
@@ -92,6 +114,11 @@ pub struct OmfModule {
     pub segments: Vec<OmfSegment>,
     /// `(name, segment index, offset)` from `PUBDEF`.
     pub publics: Vec<(String, usize, u64)>,
+    /// `EXTDEF` names, in declaration order (the 1-based index fixups refer to).
+    pub externals: Vec<String>,
+    /// Self-relative fixups targeting an external: `(segment index, offset of the displacement
+    /// field, external index)`.
+    pub external_fixups: Vec<(usize, usize, usize)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -112,6 +139,8 @@ impl OmfSegment {
 pub fn parse_module(data: &[u8]) -> OmfModule {
     let mut module = OmfModule::default();
     let mut names: Vec<String> = Vec::new(); // LNAMES pool, 1-based
+    // A FIXUPP's offsets are relative to the LEDATA record immediately before it.
+    let mut last_ledata: Option<(usize, usize)> = None;
 
     for record in records(data) {
         let b = record.body;
@@ -201,10 +230,114 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                     module.publics.push((name, seg, offset));
                 }
             }
+            // EXTDEF — external names, 1-based in declaration order.
+            0x8c => {
+                let mut at = 0;
+                while let Some((name, next)) = omf_name(b, at) {
+                    module.externals.push(name);
+                    // Each name is followed by a type index.
+                    match omf_index(b, next) {
+                        Some((_, n)) => at = n,
+                        None => break,
+                    }
+                    if at >= b.len() {
+                        break;
+                    }
+                }
+            }
+            // FIXUPP / FIXUPP32
+            0x9c | 0x9d => parse_fixupp(b, last_ledata, &mut module),
             _ => {}
+        }
+        // A FIXUPP's offsets are relative to the LEDATA record it follows.
+        if matches!(record.kind, 0xa0 | 0xa1) {
+            if let Some((seg, at)) = omf_index(record.body, 0) {
+                let is32 = record.kind & 1 == 1;
+                let offset = if is32 {
+                    record.body.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
+                } else {
+                    record.body.get(at..at + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as usize)
+                };
+                last_ledata = offset.map(|o| (seg, o));
+            }
         }
     }
     module
+}
+
+/// Parse a `FIXUPP` record, keeping the self-relative fixups that target an external symbol.
+///
+/// A subrecord with the high bit clear is a THREAD (a reusable frame/target specification); we
+/// do not need them, because a call fixup states its target explicitly. With the high bit set
+/// it is a FIXUP:
+///
+/// ```text
+/// byte 0:  1 M LLLL OO      M = 1 segment-relative, 0 self-relative
+///                           LLLL = location type (9 = 32-bit offset)
+///                           OO = high 2 bits of the data-record offset
+/// byte 1:  offset low 8 bits
+/// byte 2:  F FRAME(3) T P TARGT(2)     the "fix dat" byte
+///          then frame datum (if F=0), target datum (if T=0), displacement (if P=0)
+/// ```
+fn parse_fixupp(b: &[u8], last_ledata: Option<(usize, usize)>, module: &mut OmfModule) {
+    let Some((segment, data_offset)) = last_ledata else { return };
+    let mut at = 0usize;
+    while at < b.len() {
+        let first = b[at];
+        if first & 0x80 == 0 {
+            // THREAD subrecord: a method byte, then its datum.
+            let method = (first >> 2) & 0x07;
+            at += 1;
+            if method < 4 {
+                match omf_index(b, at) {
+                    Some((_, n)) => at = n,
+                    None => return,
+                }
+            }
+            continue;
+        }
+        let Some(&second) = b.get(at + 1) else { return };
+        let self_relative = first & 0x40 == 0;
+        let location = (first >> 2) & 0x0f;
+        let record_offset = (usize::from(first & 0x03) << 8) | usize::from(second);
+        at += 2;
+
+        let Some(&fix_dat) = b.get(at) else { return };
+        at += 1;
+        let frame_explicit = fix_dat & 0x80 == 0;
+        let frame_method = (fix_dat >> 4) & 0x07;
+        let target_explicit = fix_dat & 0x08 == 0;
+        let target_method = fix_dat & 0x03;
+        let has_displacement = fix_dat & 0x04 == 0;
+
+        if frame_explicit && frame_method < 3 {
+            match omf_index(b, at) {
+                Some((_, n)) => at = n,
+                None => return,
+            }
+        }
+        let mut target_datum = 0usize;
+        if target_explicit {
+            match omf_index(b, at) {
+                Some((d, n)) => {
+                    target_datum = d;
+                    at = n;
+                }
+                None => return,
+            }
+        }
+        if has_displacement {
+            // 32-bit displacement in a FIXUPP32 record, 16-bit otherwise; both are skipped.
+            at += if location == 9 || location == 13 { 4 } else { 2 };
+        }
+
+        // Target method 2 = EXTDEF index. Location 9/13 = a 32-bit offset field, which is what
+        // a `call rel32` carries.
+        if target_explicit && target_method == 2 && self_relative && (location == 9 || location == 13)
+        {
+            module.external_fixups.push((segment, data_offset + record_offset, target_datum));
+        }
+    }
 }
 
 /// Split an OMF `.LIB` into its member modules.
@@ -253,17 +386,15 @@ pub fn split_library(data: &[u8]) -> Vec<&[u8]> {
 /// Load one OMF module as a program: its code segments laid out consecutively from
 /// [`OBJ_BASE`], with a function symbol at every `PUBDEF`.
 pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
-    let module = parse_module(data);
+    let mut module = parse_module(data);
     if module.segments.is_empty() {
         return Err(LoadError::Unsupported("OMF module declares no segments".into()));
     }
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
-    let mut memory = Memory::new();
 
-    // Lay each non-empty segment at its own base, code first, so a public's address is
-    // `segment_base + offset`.
+    // Lay each non-empty segment at its own base, so a public's address is `base + offset`.
     let mut base_of: Vec<u64> = vec![0; module.segments.len() + 1];
     let mut next = OBJ_BASE;
     for (i, segment) in module.segments.iter().enumerate() {
@@ -271,17 +402,63 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
             continue;
         }
         base_of[i + 1] = next;
+        // Page-align the next segment so addresses stay readable.
+        next = (next + segment.data.len() as u64).next_multiple_of(0x1000);
+    }
+    let external_base = next;
+
+    // Resolve external call sites before the bytes are handed to memory. An unlinked call has
+    // a zero displacement, which decodes as a `goto` rather than a `call` (see the module
+    // docs); patching it to reach the symbol's slot restores the flow. The displacement of a
+    // `call rel32` is relative to the end of its 4-byte field.
+    let mut patched = 0usize;
+    for &(segment, offset, external) in &module.external_fixups {
+        let Some(base) = base_of.get(segment).copied().filter(|b| *b != 0) else { continue };
+        let Some(index) = external.checked_sub(1) else { continue };
+        if index >= module.externals.len() {
+            continue;
+        }
+        let Some(seg) = segment.checked_sub(1).and_then(|i| module.segments.get_mut(i)) else {
+            continue;
+        };
+        if offset + 4 > seg.data.len() {
+            continue;
+        }
+        let target = external_base + index as u64 * EXTERNAL_SLOT;
+        let site = base + offset as u64;
+        let displacement = (target as i64 - (site as i64 + 4)) as i32;
+        seg.data[offset..offset + 4].copy_from_slice(&displacement.to_le_bytes());
+        patched += 1;
+    }
+    let _ = patched;
+
+    let mut memory = Memory::new();
+    for (i, segment) in module.segments.iter().enumerate() {
+        if segment.data.is_empty() {
+            continue;
+        }
         memory.add_block(
             &segment.name,
-            Address::new(ram, next),
+            Address::new(ram, base_of[i + 1]),
             segment.data.len() as u64,
             true,
             !segment.is_code(),
             segment.is_code(),
             Some(segment.data.clone()),
         );
-        // Page-align the next segment so addresses stay readable.
-        next = (next + segment.data.len() as u64).next_multiple_of(0x1000);
+    }
+    // One slot per external name, so a patched call has somewhere to land. Uninitialized, like
+    // `loader/elf.rs`'s EXTERNAL block for undefined symbols.
+    if !module.externals.is_empty() {
+        memory.add_block(
+            "EXTERNAL",
+            Address::new(ram, external_base),
+            module.externals.len() as u64 * EXTERNAL_SLOT,
+            true,
+            false,
+            true,
+            None,
+        );
     }
 
     let image_base = Address::new(ram, OBJ_BASE);
@@ -304,6 +481,14 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
         } else {
             program.symbol_table.add_symbol(addr, name, SymbolType::Label);
         }
+    }
+
+    // Name each external slot, so a call to it resolves to that name during ingest. Marked
+    // EXTERNAL: the slot is a name for a routine defined in another module, not a body we can
+    // hash, and ingest must skip it rather than count it as an unhashable function.
+    for (i, name) in module.externals.iter().enumerate() {
+        let addr = Address::new(ram, external_base + i as u64 * EXTERNAL_SLOT);
+        program.symbol_table.add_external_symbol(addr, name, SymbolType::Function);
     }
 
     Ok(program)

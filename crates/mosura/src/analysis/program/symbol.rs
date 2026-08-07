@@ -77,6 +77,14 @@ impl SymbolTable {
         self.add(Symbol { address, name: name.to_string(), symbol_type, primary: true, external: false });
     }
 
+    /// Add an **external** symbol — a name for something defined outside this image, such as
+    /// an undefined symbol's slot in the synthetic `EXTERNAL` block. Consumers use the flag to
+    /// tell "a function that lives here" from "a name for something elsewhere"; FID's ingest,
+    /// for instance, must not try to hash a body an external slot does not have.
+    pub fn add_external_symbol(&mut self, address: Address, name: &str, symbol_type: SymbolType) {
+        self.add(Symbol { address, name: name.to_string(), symbol_type, primary: true, external: true });
+    }
+
     /// Add a symbol with an explicit primary flag (Ghidra's per-symbol `isPrimary`).
     pub fn add_with_primary(&mut self, address: Address, name: &str, symbol_type: SymbolType, primary: bool) {
         self.add(Symbol { address, name: name.to_string(), symbol_type, primary, external: false });
