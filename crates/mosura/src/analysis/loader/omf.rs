@@ -123,6 +123,34 @@ fn omf_index(data: &[u8], at: usize) -> Option<(usize, usize)> {
     }
 }
 
+/// How an external reference is encoded at its fixup site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixupKind {
+    /// A 2-byte self-relative displacement — `call rel16`, the near memory models.
+    Near16,
+    /// A 4-byte self-relative displacement — `call rel32`, 32-bit code.
+    Near32,
+    /// A 16:16 segment:offset pointer — `call far`, the medium/large/huge memory models.
+    ///
+    /// These are **segment-relative**, not self-relative, which is why they need separate
+    /// handling: the field holds an absolute `offset` word followed by a `segment` word rather
+    /// than a displacement. Leaving them unpatched costs the far models nearly all their
+    /// caller/callee relations, and relations are what carry a small function over the score
+    /// threshold.
+    Far1616,
+}
+
+impl FixupKind {
+    /// Bytes the fixup occupies at its site.
+    fn width(self) -> usize {
+        match self {
+            FixupKind::Near16 => 2,
+            FixupKind::Near32 => 4,
+            FixupKind::Far1616 => 4,
+        }
+    }
+}
+
 /// One parsed module.
 #[derive(Debug, Default)]
 pub struct OmfModule {
@@ -133,9 +161,9 @@ pub struct OmfModule {
     pub publics: Vec<(String, usize, u64)>,
     /// `EXTDEF` names, in declaration order (the 1-based index fixups refer to).
     pub externals: Vec<String>,
-    /// Self-relative fixups targeting an external: `(segment index, offset of the displacement
-    /// field, external index, field width in bytes)`.
-    pub external_fixups: Vec<(usize, usize, usize, usize)>,
+    /// Fixups targeting an external: `(segment index, offset of the field, external index,
+    /// [`FixupKind`])`.
+    pub external_fixups: Vec<(usize, usize, usize, FixupKind)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -396,20 +424,22 @@ fn parse_fixupp(
         // and those nominally-16-bit codes denote **32-bit** offsets. Watcom 9.01 emits
         // location 5 for its cross-module calls, so rejecting it left them unpatched — 391
         // functions but only 6 relations, against 426 for the same library built by 10.0a.
-        let width = match location {
-            9 | 13 => Some(4),
-            1 | 5 if easy_omf_386 => Some(4),
-            1 | 5 => Some(2),
+        // Location 3 is a 16:16 far pointer — a far call, always segment-relative. The
+        // self-relative locations are 9/13 (32-bit) and 1/5 (16-bit, or 32-bit under Easy
+        // OMF-386).
+        let kind = match (location, self_relative) {
+            (3, _) => Some(FixupKind::Far1616),
+            (9 | 13, true) => Some(FixupKind::Near32),
+            (1 | 5, true) if easy_omf_386 => Some(FixupKind::Near32),
+            (1 | 5, true) => Some(FixupKind::Near16),
             _ => None,
         };
-        if let (true, true, true, Some(width)) =
-            (target_explicit, target_method == 2, self_relative, width)
-        {
+        if let (true, true, Some(kind)) = (target_explicit, target_method == 2, kind) {
             module.external_fixups.push((
                 segment,
                 data_offset + record_offset,
                 target_datum,
-                width,
+                kind,
             ));
         }
     }
@@ -489,7 +519,8 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
     // docs); patching it to reach the symbol's slot restores the flow. The displacement of a
     // `call rel32` is relative to the end of its 4-byte field.
     let mut patched = 0usize;
-    for &(segment, offset, external, width) in &module.external_fixups {
+    for &(segment, offset, external, kind) in &module.external_fixups {
+        let width = kind.width();
         let Some(base) = base_of.get(segment).copied().filter(|b| *b != 0) else { continue };
         let Some(index) = external.checked_sub(1) else { continue };
         if index >= module.externals.len() {
@@ -503,15 +534,27 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
         }
         let target = external_base + index as u64 * EXTERNAL_SLOT;
         let site = base + offset as u64;
-        let displacement = target as i64 - (site as i64 + width as i64);
-        if width == 2 {
-            // A 16-bit displacement can only reach ±32 KB. The slots sit just past the code,
-            // so this holds for any realistic module; a fixup that cannot reach is left
-            // unpatched rather than silently wrapped into a wrong target.
-            let Ok(narrow) = i16::try_from(displacement) else { continue };
-            seg.data[offset..offset + 2].copy_from_slice(&narrow.to_le_bytes());
-        } else {
-            seg.data[offset..offset + 4].copy_from_slice(&(displacement as i32).to_le_bytes());
+        match kind {
+            // A far pointer is absolute: `offset` word then `segment` word. Our layout is
+            // linear, so the slot splits into `segment = slot >> 4`, `offset = slot & 0xf`.
+            FixupKind::Far1616 => {
+                let Ok(seg_word) = u16::try_from(target >> 4) else { continue };
+                let off_word = (target & 0xf) as u16;
+                seg.data[offset..offset + 2].copy_from_slice(&off_word.to_le_bytes());
+                seg.data[offset + 2..offset + 4].copy_from_slice(&seg_word.to_le_bytes());
+            }
+            FixupKind::Near16 => {
+                // A 16-bit displacement reaches ±32 KB. The slots sit just past the code, so
+                // this holds for any realistic module; one that cannot reach is left unpatched
+                // rather than silently wrapped onto a wrong target.
+                let displacement = target as i64 - (site as i64 + 2);
+                let Ok(narrow) = i16::try_from(displacement) else { continue };
+                seg.data[offset..offset + 2].copy_from_slice(&narrow.to_le_bytes());
+            }
+            FixupKind::Near32 => {
+                let displacement = target as i64 - (site as i64 + 4);
+                seg.data[offset..offset + 4].copy_from_slice(&(displacement as i32).to_le_bytes());
+            }
         }
         patched += 1;
     }

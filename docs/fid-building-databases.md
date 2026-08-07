@@ -267,6 +267,51 @@ probe as a `.com` and ingest that instead — a small, self-contained first proo
 
 Two routes, and it is worth understanding why there are two.
 
+**Objects** — ingest the library's OMF modules directly (the default):
+
+```sh
+./scripts/build-borland-db.sh objects /path/to/CS.LIB tc2.0 cs
+```
+
+Names come from `PUBDEF`. The modules are unlinked, so a cross-module call reads
+`call 0000:0000` — the real target lives in a `FIXUPP` record only a linker consumes — and the
+loader applies those fixups itself, pointing each call at a named slot in a synthetic
+`EXTERNAL` block. All three encodings are handled: near 16-bit (`call rel16`), near 32-bit
+(`call rel32`), and the **16:16 far pointer** the medium/large/huge memory models use.
+
+Far calls matter more than their share suggests: they are segment-relative rather than
+self-relative, and leaving them unpatched cost the far models nearly every caller/callee
+relation (9–27, against 193–310 for the near models). Relations are what carry a small function
+over the 14.6 score threshold, and about a quarter of a Borland runtime scores below it on body
+size alone — so those functions were unidentifiable despite having a signature. With far fixups
+applied the far models sit in line with the near ones (303–377).
+
+**Linked** — let the vendor's linker resolve everything:
+
+```sh
+./scripts/build-borland-db.sh linked /path/to/toolchain tc2.0 l
+```
+
+`cargo xtask omf-uber` generates a program referencing every C-callable public, TCC compiles
+it, TLINK links it, and mosura analyses the executable. A DOS `.EXE` has no symbol table, so
+names come from the linker map (`tcc -M`), passed with `--map`; map addresses are relative to
+the load image, which the MZ loader places at segment `0x1000`.
+
+⚠️ This route is **not** currently the better one. It names correctly (256 functions via 434
+map addresses) and analysis recovers 497 call references, but only 14 survive into stored
+relations — the loss is in ingest's child attribution, not in the linking. It also covers fewer
+functions than the library holds, since the linker drops unreferenced modules and symbols that
+are not legal C identifiers cannot be referenced from generated C. Use `objects`.
+
+### sdcc (z80)
+
+The z80 runtime ships as `.rel` objects, which mosura's COM loader does not read. Build the
+probe as a `.com` and ingest that instead — a small, self-contained first proof.
+
+### Borland / Turbo C (x86-16 and x86-32)
+
+Two routes, and it is worth understanding why there are two.
+
 **Objects** — ingest the library's OMF modules directly:
 
 ```sh
