@@ -118,6 +118,56 @@ several columns can live in one directory without interfering.
 
 ---
 
+## Why the format is text, and what it costs
+
+Measured on Ghidra's `vs2017_x64` (40,911 functions + 116,129 relations) converted to `.mfid`:
+
+| artifact | bytes | vs `.fidb` |
+| --- | ---: | --- |
+| Ghidra `.fidb` (packed, DEFLATE'd) | 3,849,100 | — |
+| Ghidra `.fidbf` (unpacked B-tree) | 10,682,368 | 2.8× |
+| mosura `.mfid` (plain text) | 7,153,017 | 1.9× |
+| `.mfid` + gzip -9 | 2,053,183 | 0.53× |
+| `.mfid` + zstd -19 | 1,428,081 | 0.37× |
+
+Raw text is ~1.9× Ghidra's *packed* form — but that compares compressed against uncompressed.
+Like-for-like it is already smaller (7.2 MB of text against 10.7 MB of B-tree, which carries
+node headers and slack), and compressed it wins outright: hex digits and symbol names have far
+less entropy than an already-DEFLATE'd image.
+
+Git also compresses objects, so a committed `.mfid` costs roughly its gzip size in the pack.
+And because records are **sorted**, a rebuild that changes fifty functions produces a small
+delta git packs well — where a rebuilt binary B-tree is a whole new blob every time. For an
+artifact that is regenerated and reviewed, sorted text is the cheaper choice over the repo's
+life.
+
+If a column ever produces an unreasonably large database, transparent `.mfid.zst` reading is a
+small change. Measure the column first.
+
+---
+
+## Versions: one database per toolchain build
+
+**A signature identifies one build of one library.** FID hashes the function body, so code from
+glibc 2.41 and glibc 2.39 hash differently and a database built from one will not recognise the
+other. This is inherent to the technique, not a limitation of this implementation — it is why
+Ghidra ships **ten** databases (vs2012 / vs2015 / vs2017 / vs2019 / vsOlder × x86 / x64) rather
+than one, and why the matcher queries *every* attached database at once.
+
+So the practical question per runtime is how closed its version set is:
+
+| runtime | version set | outlook |
+| --- | --- | --- |
+| Open Watcom | 10.0a, 10.6, 11.0, OW2 — closed, small, all obtainable | a **complete** column is achievable |
+| Borland, sdcc | bounded | complete columns achievable |
+| MSVC | Ghidra already ships 1998–2019 | done |
+| gcc / glibc | effectively unbounded — every distro build differs | **best-effort per toolchain**, never complete |
+
+Name a database for what it actually contains — `watcom-10.0a-x86-32.mfid`, not `watcom.mfid`
+— and build every version you can obtain. They coexist in one directory and are all consulted.
+
+---
+
 ## The database format
 
 `.mfid` is deliberately plain text, sorted, and self-describing — these are generated
