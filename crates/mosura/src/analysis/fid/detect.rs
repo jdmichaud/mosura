@@ -1,0 +1,170 @@
+//! Compiler-**version** detection by signature vote.
+//!
+//! The usual way to date a binary is an in-band marker — Watcom's run-time copyright banner
+//! (`loader/watcom.rs`), Borland's `Borland C++ - Copyright YYYY`, MSVC's rich header. That
+//! works where a marker exists and is version-specific. It often is neither: Borland stopped
+//! embedding a version string after Turbo C 1.5, so its libraries from 1990 onward carry only
+//! `__turboCrt`/`__turboFloat` symbol names, and the copyright year cannot separate Turbo C 1.5
+//! from 2.0 (both 1988).
+//!
+//! Signature databases answer the same question directly, and byte-exactly. A function's hash
+//! is derived from the runtime build it came from, so if a binary's functions match
+//! `watcom-11.0`'s signatures and not `watcom-10.0a`'s, **that is the version**. Where a
+//! marker only dates the era, this identifies the build.
+//!
+//! It is a *vote*, not a lookup: runtimes share code across releases, so several databases will
+//! match something. What distinguishes them is how much. The report keeps every database's
+//! score so a near-tie is visible rather than silently resolved — two adjacent point releases
+//! genuinely may be indistinguishable in a small binary, and saying so is more useful than
+//! picking one.
+
+use std::path::Path;
+
+use super::analyzer::hash_function;
+use super::matcher::{HashFamily, Seeker};
+use super::query::{FidDatabase, FidQueryService};
+use crate::analysis::program::Program;
+
+/// One database's score against a program.
+#[derive(Debug, Clone)]
+pub struct VersionVote {
+    /// The database's name, e.g. `watcom-11.0-x86-32`.
+    pub database: String,
+    pub library_family: String,
+    pub library_version: String,
+    /// Debug vs Release, or the memory model for a 16-bit runtime.
+    pub library_variant: String,
+    /// Functions of the program that matched at least one record in this database.
+    pub matched: usize,
+    /// Sum of the winning matches' scores — a size-weighted view, so one large agreeing
+    /// function counts for more than a handful of tiny ones.
+    pub score: f32,
+}
+
+/// The outcome of a detection run, most convincing first.
+#[derive(Debug, Clone, Default)]
+pub struct VersionReport {
+    pub votes: Vec<VersionVote>,
+    /// Functions the hasher could produce a quad for — the denominator the votes are out of.
+    pub hashable_functions: usize,
+}
+
+impl VersionReport {
+    /// The best-scoring database, if anything matched.
+    pub fn best(&self) -> Option<&VersionVote> {
+        self.votes.first()
+    }
+
+    /// Whether the top two are close enough that the answer is "one of these", not "this one".
+    ///
+    /// Adjacent point releases share most of their runtime, so a small binary genuinely may not
+    /// separate them. Reporting the ambiguity is more useful than resolving it arbitrarily —
+    /// the same reasoning as the matcher's multi-name gate.
+    pub fn is_ambiguous(&self) -> bool {
+        match (self.votes.first(), self.votes.get(1)) {
+            (Some(a), Some(b)) => b.score >= a.score * 0.95,
+            _ => false,
+        }
+    }
+}
+
+/// Score one program against every database in `dir` whose language and compiler spec match.
+///
+/// Each database is loaded and queried **on its own** — deliberately not merged into one
+/// service, because the point is to tell them apart.
+pub fn detect_version(program: &Program, dir: &Path) -> VersionReport {
+    let mut report = VersionReport::default();
+
+    // Hash every function once; the same quads are scored against each database.
+    let quads: Vec<_> = program
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point())
+        .filter_map(|e| hash_function(program, e))
+        .collect();
+    report.hashable_functions = quads.len();
+    if quads.is_empty() {
+        return report;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else { return report };
+    let mut paths: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().unwrap_or_default().to_string_lossy();
+            n.ends_with(".mfid") || n.ends_with(".mfid.gz") || n.ends_with(".fidb")
+        })
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let Ok(data) = std::fs::read(&path) else { continue };
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = name.trim_end_matches(".gz").trim_end_matches(".mfid").trim_end_matches(".fidb");
+
+        let loaded = if data.first() == Some(&0xac) {
+            FidDatabase::open_packed(name, &data).ok()
+        } else {
+            super::store::decompress(&data)
+                .ok()
+                .and_then(|t| super::store::FidStore::from_text(&t).ok())
+                .map(|s| s.into_database(name))
+        };
+        let Some(database) = loaded else { continue };
+        if !database.matches_program(&program.language_id, &program.compiler_spec_id) {
+            continue;
+        }
+        // A database can hold several libraries — Ghidra's `vsOlder` spans Visual Studio 1998
+        // through 2010, and each shipped runtime has a Debug and a Release variant. Naming the
+        // first one would report whichever happened to be stored first, so the label comes
+        // from the libraries the winning records actually belong to.
+        let libraries: std::collections::HashMap<i64, (String, String, String)> = database
+            .libraries()
+            .iter()
+            .map(|l| (l.id, (l.family.clone(), l.version.clone(), l.variant.clone())))
+            .collect();
+        let mut library_hits: std::collections::HashMap<i64, usize> =
+            std::collections::HashMap::new();
+
+        let mut service = FidQueryService::new();
+        service.attach(database);
+        let seeker = Seeker::new(&service);
+
+        let mut matched = 0usize;
+        let mut score = 0.0f32;
+        for &hash in &quads {
+            let family = HashFamily { hash: Some(hash), ..Default::default() };
+            if let Some(result) = seeker.process_matches(&family) {
+                matched += 1;
+                score += result
+                    .matches()
+                    .iter()
+                    .map(super::matcher::HashMatch::overall_score)
+                    .fold(0.0f32, f32::max);
+                for m in result.matches() {
+                    *library_hits.entry(m.record.library_id).or_insert(0) += 1;
+                }
+            }
+        }
+
+        if matched > 0 {
+            let (family, version, variant) = library_hits
+                .iter()
+                .max_by_key(|(_, n)| **n)
+                .and_then(|(id, _)| libraries.get(id).cloned())
+                .unwrap_or_default();
+            report.votes.push(VersionVote {
+                database: name.to_string(),
+                library_family: family,
+                library_version: version,
+                library_variant: variant,
+                matched,
+                score,
+            });
+        }
+    }
+
+    report.votes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    report
+}

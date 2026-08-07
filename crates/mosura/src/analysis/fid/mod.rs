@@ -16,6 +16,7 @@ pub mod analyzer;
 pub mod bufferfile;
 pub mod build;
 pub mod db;
+pub mod detect;
 pub mod hash;
 pub mod ingest;
 pub mod matcher;

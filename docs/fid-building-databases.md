@@ -197,6 +197,39 @@ are identical either way.
 
 ---
 
+## Using the databases to date a binary
+
+The databases answer a second question besides "what is this function": **which build of the
+runtime was this linked against**. `analysis/fid/detect.rs` scores a program against every
+database of its language and reports them ranked.
+
+That matters because in-band version markers are often absent or too coarse. Borland stopped
+embedding a version string after Turbo C 1.5 — its later libraries carry only `__turboCrt` and
+`__turboFloat` — and a copyright year cannot separate Turbo C 1.5 from 2.0, since both say
+1988. A signature is byte-exact and comes from the runtime build itself.
+
+Measured on binaries whose provenance we know because we compiled them:
+
+```
+uber program built by Turbo C 2.0, large model:
+   borland-tc2.0-cl    167 matched  score 7293   <- right release AND memory model
+   borland-tc2.01-cl   155 matched  score 6597   <- adjacent point release, close as expected
+   borland-tc2.0-cm     39 matched  score 1302   <- wrong memory model, far weaker
+   borland-tc1.5-cl      9 matched  score  275
+
+probe built by MSVC 6, against Ghidra's 1998-2019 databases:
+   vsOlder_x86           8 matched  score  462   -> Visual Studio 1998
+```
+
+It is a **vote, not a lookup**: releases share code, so several databases match something and
+what separates them is how much. `VersionReport::is_ambiguous` flags a top-two gap under 5% —
+two adjacent point releases genuinely may be indistinguishable in a small binary, and saying so
+beats picking one. A database holding several libraries (Ghidra's `vsOlder` spans 1998-2010) is
+labelled from the libraries the winning records actually belong to, not from whichever is
+stored first.
+
+---
+
 ## Verifying a new database
 
 Do not trust a database you have not tested against a binary whose contents you know.
