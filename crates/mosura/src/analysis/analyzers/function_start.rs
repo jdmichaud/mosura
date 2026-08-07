@@ -56,7 +56,7 @@ const MAX_CODE_UNIT_LEN: u64 = 16;
 /// Which of Ghidra's four registrations this instance is. They share `FunctionStartAnalyzer`'s
 /// whole body and differ only in name, analyzer type, priority, and which pattern-constraints
 /// file they read.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum FunctionStartKind {
     /// `FunctionStartPreFuncAnalyzer` (:24) — "Function Start Pre Search", a BYTE analyzer at
     /// `BLOCK_ANALYSIS.before()`, driven by `prepatternconstraints.xml`: patterns "better found
@@ -322,7 +322,18 @@ fn compiler_matches(node: roxmltree::Node, compiler_spec_id: &str) -> bool {
 
 /// `Patterns.findPatternFiles(program, decisionTree)` (:73) — the pattern files whose
 /// `(language, compiler)` path in the merged decision tree is satisfied by this program.
+#[cfg(test)]
 fn find_pattern_files(program: &Program, constraints_file: &str) -> Vec<PathBuf> {
+    find_pattern_files_for(&program.language_id, &program.compiler_spec_id, constraints_file)
+}
+
+/// As [`find_pattern_files`], addressed by language + compiler spec rather than by a `Program`,
+/// so the result can be memoized without holding one.
+fn find_pattern_files_for(
+    language_id: &str,
+    compiler_spec_id: &str,
+    constraints_file: &str,
+) -> Vec<PathBuf> {
     let dirs = pattern_dirs();
     let mut names: Vec<String> = Vec::new();
     for dir in &dirs {
@@ -333,12 +344,12 @@ fn find_pattern_files(program: &Program, constraints_file: &str) -> Vec<PathBuf>
             if lang.tag_name().name() != "language" {
                 continue;
             }
-            if !language_matches(lang.attribute("id").unwrap_or(""), &program.language_id) {
+            if !language_matches(lang.attribute("id").unwrap_or(""), language_id) {
                 continue;
             }
             for comp in lang.children().filter(|n| n.is_element()) {
                 match comp.tag_name().name() {
-                    "compiler" if compiler_matches(comp, &program.compiler_spec_id) => {
+                    "compiler" if compiler_matches(comp, compiler_spec_id) => {
                         for pf in comp.children().filter(|n| n.is_element()) {
                             if pf.tag_name().name() == "patternfile" {
                                 if let Some(t) = pf.text() {
@@ -350,7 +361,7 @@ fn find_pattern_files(program: &Program, constraints_file: &str) -> Vec<PathBuf>
                     // A `<patternfile>` directly under `<language>` is the node-level default the
                     // decision tree falls back to when no child constraint matched (DecisionTree
                     // class doc); none of the shipped files use one, but the shape is free.
-                    "patternfile" if !lang.children().any(|c| c.is_element() && c.tag_name().name() == "compiler" && compiler_matches(c, &program.compiler_spec_id)) => {
+                    "patternfile" if !lang.children().any(|c| c.is_element() && c.tag_name().name() == "compiler" && compiler_matches(c, compiler_spec_id)) => {
                         if let Some(t) = comp.text() {
                             names.push(t.trim().to_string());
                         }
@@ -379,8 +390,8 @@ fn find_pattern_files(program: &Program, constraints_file: &str) -> Vec<PathBuf>
 /// `FunctionStartAnalyzer` (:47).
 pub struct FunctionStartAnalyzer {
     kind: FunctionStartKind,
-    patterns: Vec<Pattern<Action>>,
-    root: SequenceSearchState,
+    patterns: &'static [Pattern<Action>],
+    root: &'static SequenceSearchState,
     /// `executableBlocksOnly` (:67) — the `Search Data Blocks` option's default is `false`, i.e.
     /// executable blocks only (:56, :892).
     executable_blocks_only: bool,
@@ -392,7 +403,61 @@ impl FunctionStartAnalyzer {
     /// subclasses' extra tests (`FunctionStartPostAnalyzer.canAnalyze`:33,
     /// `FunctionStartDataPostAnalyzer.canAnalyze`:33).
     pub fn for_program(program: &Program, kind: FunctionStartKind) -> Option<FunctionStartAnalyzer> {
-        let files = find_pattern_files(program, kind.constraints_file());
+        // The pattern set depends only on (language, compiler spec, kind): finding the files
+        // walks every processor's `data/patterns`, and building the search state parses each
+        // XML file and compiles a sequence state machine. That was ~180 ms on EVERY analyze()
+        // call — the dominant per-program cost once the SLEIGH tables were cached. Memoize it
+        // the same way `lang::load_cached` memoizes the tables.
+        let compiled = compiled_patterns(&program.language_id, &program.compiler_spec_id, kind)?;
+        Some(FunctionStartAnalyzer {
+            kind,
+            patterns: compiled.0,
+            root: compiled.1,
+            executable_blocks_only: true,
+            pdis: PseudoDisassembler::for_program(program),
+        })
+    }
+}
+
+/// What [`compiled_patterns`] caches: the pattern list and its search state machine, or `None`
+/// when this `(language, compiler spec, kind)` has no applicable pattern files.
+type CompiledPatterns = Option<(&'static [Pattern<Action>], &'static SequenceSearchState)>;
+
+/// The cache key: language id, compiler-spec id, analyzer kind.
+type PatternKey = (String, String, FunctionStartKind);
+
+/// The compiled pattern set for one `(language, compiler spec, kind)`, built once per process.
+///
+/// Leaked to `'static` exactly as [`crate::lang::load_cached`] leaks the SLEIGH tables: these
+/// are process-lifetime constants derived from read-only data files, and sharing them keeps the
+/// analyzer construction free after the first call.
+fn compiled_patterns(
+    language_id: &str,
+    compiler_spec_id: &str,
+    kind: FunctionStartKind,
+) -> CompiledPatterns {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PatternKey, CompiledPatterns>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (language_id.to_string(), compiler_spec_id.to_string(), kind);
+    let mut map = cache.lock().unwrap();
+    if let Some(hit) = map.get(&key) {
+        return *hit;
+    }
+    let built = build_patterns(language_id, compiler_spec_id, kind);
+    map.insert(key, built);
+    built
+}
+
+/// Find, read and compile the pattern files for one `(language, compiler spec, kind)`.
+fn build_patterns(
+    language_id: &str,
+    compiler_spec_id: &str,
+    kind: FunctionStartKind,
+) -> CompiledPatterns {
+    {
+        let files = find_pattern_files_for(language_id, compiler_spec_id, kind.constraints_file());
         if files.is_empty() {
             return None; // `Patterns.hasPatternFiles` is false
         }
@@ -424,13 +489,10 @@ impl FunctionStartAnalyzer {
         }
         let mut seqs: Vec<DittedBitSequence> = patterns.iter().map(|p| p.seq.clone()).collect();
         let root = SequenceSearchState::build_state_machine(&mut seqs);
-        Some(FunctionStartAnalyzer {
-            kind,
-            patterns,
-            root,
-            executable_blocks_only: true,
-            pdis: PseudoDisassembler::for_program(program),
-        })
+        Some((
+            Box::leak(patterns.into_boxed_slice()) as &'static [Pattern<Action>],
+            Box::leak(Box::new(root)) as &'static SequenceSearchState,
+        ))
     }
 }
 
@@ -468,7 +530,7 @@ impl Analyzer for FunctionStartAnalyzer {
         let mut st = RunState::default();
         // `checkForExecuteBlock(program) && executableBlocksOnly` (:807).
         let has_execute = program.memory.blocks().any(|b| b.is_execute());
-        let mut searcher = MemoryBytePatternSearcher::new(&self.root, &self.patterns);
+        let mut searcher = MemoryBytePatternSearcher::new(self.root, self.patterns);
         searcher.set_search_executable_only(has_execute && self.executable_blocks_only);
 
         let pdis = self.pdis.as_ref();
@@ -1308,7 +1370,7 @@ mod tests {
     fn above_guard_vetoes_on_fall_through_not_on_adjacency() {
         use crate::analysis::program::FunctionManager;
         use crate::decompile::space::{SpaceKind, SpaceManager};
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return;
         }
         // `<one byte of preceding instruction> | 53 83 ec 10 …` — the orphan entry is base+1.
@@ -1379,7 +1441,7 @@ mod tests {
     fn after_defined_start_survives_a_ret_that_belongs_to_no_function() {
         use crate::analysis::manager::Scheduling;
         use crate::decompile::space::{SpaceKind, SpaceManager};
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return;
         }
         let build = |last: u8| {
@@ -1444,7 +1506,7 @@ mod tests {
     fn create_functions_keeps_only_the_lowest_of_overlapping_entries() {
         use crate::analysis::manager::Scheduling;
         use crate::decompile::space::{SpaceKind, SpaceManager};
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return;
         }
         let mut spaces = SpaceManager::standard();

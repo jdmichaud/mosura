@@ -52,15 +52,15 @@ fn initialized_memory(program: &Program) -> AddressSet {
 /// [`CodeUnit::Instruction`]s. Static **call** targets are scheduled as new functions
 /// (calls themselves fall through — the callee is a separate flow).
 pub struct Disassembler {
-    spec: Spec,
-    ctx: Vec<u32>,
+    spec: &'static Spec,
+    ctx: &'static [u32],
     ram: SpaceId,
 }
 
 impl Disassembler {
     /// Load the SLEIGH tables for the program's language, or `None` if unavailable.
     pub fn for_program(program: &Program) -> Option<Disassembler> {
-        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
         Some(Disassembler { spec, ctx, ram: program.default_space })
     }
 
@@ -266,7 +266,7 @@ impl Analyzer for Disassembler {
                 continue;
             }
             let window = program.memory.read_window(addr, 16); // max x86-64 instruction length
-            let Some(insn) = self.spec.disassemble_ctx(&window, a, &self.ctx).into_iter().next() else {
+            let Some(insn) = self.spec.disassemble_ctx(&window, a, self.ctx).into_iter().next() else {
                 continue;
             };
             let ilen = insn.bytes.len() as u64;
@@ -655,14 +655,14 @@ fn find_locations_remove_function_bodies(program: &Program, set: &mut AddressSet
 /// data references (READ/WRITE/DATA) from resolved memory operands. Runs at REFERENCE
 /// priority, after disassembly + function creation.
 pub struct ConstantPropagationAnalyzer {
-    spec: Spec,
-    ctx: Vec<u32>,
+    spec: &'static Spec,
+    ctx: &'static [u32],
     ram: SpaceId,
 }
 
 impl ConstantPropagationAnalyzer {
     pub fn for_program(program: &Program) -> Option<ConstantPropagationAnalyzer> {
-        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
         Some(ConstantPropagationAnalyzer { spec, ctx, ram: program.default_space })
     }
 }
@@ -706,7 +706,7 @@ impl Analyzer for ConstantPropagationAnalyzer {
         let mut new_funcs = AddressSet::new();
         for loc in locations {
             let dests =
-                crate::analysis::symbolic::flow_constants(&self.spec, &self.ctx, program, loc, &entries);
+                crate::analysis::symbolic::flow_constants(self.spec, self.ctx, program, loc, &entries);
             for d in dests {
                 if !entries.contains(&d) {
                     new_funcs.add_range(self.ram, d, d);
@@ -773,7 +773,7 @@ mod disassembler_bounds_tests {
     /// decodes and would run to 0x401009 — straight through a data object defined at 0x401004.
     #[test]
     fn walk_does_not_overlap_defined_data() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let bytes = vec![
@@ -827,13 +827,13 @@ mod disassembler_bounds_tests {
     /// on both.
     #[test]
     fn walk_stops_after_a_run_of_repeated_byte_instructions() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return;
         }
         // `xor eax,eax` then 40 bytes of 0x00 — `00 00` is `ADD byte ptr [RAX],AL`, 2 bytes,
         // falling through, so without the bound the walk consumes all 20 of them.
         let mut bytes = vec![0x31, 0xc0];
-        bytes.extend(std::iter::repeat(0u8).take(40));
+        bytes.extend(std::iter::repeat_n(0u8, 40));
         let mut p = program_with(bytes, true, true);
         let ram = p.default_space;
         run_disassembler(&mut p, 0x40_1000);
@@ -873,7 +873,7 @@ mod disassembler_bounds_tests {
     /// adjacent one. This pins the intent.
     #[test]
     fn walk_stops_at_end_of_initialized_memory() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return;
         }
         // `xor eax,eax` then `nop` — the walk falls through off the end of the block.
@@ -907,7 +907,7 @@ mod constant_propagation_location_tests {
     /// the `ret` and recovers nothing; the READ reference is the proof that B ran.
     #[test]
     fn adjacent_function_entries_are_all_propagated_from() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let mut spaces = SpaceManager::standard();
@@ -987,7 +987,7 @@ mod constant_propagation_location_tests {
     #[test]
     #[ignore = "RED until the analyzer channel is fixed (task #7) — see the note above"]
     fn constant_propagation_reaches_decoded_code_that_is_in_no_function() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         super::reset_body_refresh_memo(); // thread-local, and tests share threads
@@ -1089,13 +1089,13 @@ mod flow_override_tests {
     /// model is inert on every available binary, so a corpus gate would measure nothing.
     #[test]
     fn a_call_return_override_stops_a_call_falling_through() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return; // SLEIGH tables unavailable
         };
         let (mut p, at) = program_with_a_call();
         let ram = p.default_space;
         let window = p.memory.read_window(at, 16);
-        let insn = spec.disassemble_ctx(&window, at.offset, &ctx).into_iter().next().unwrap();
+        let insn = spec.disassemble_ctx(&window, at.offset, ctx).into_iter().next().unwrap();
         assert_eq!(insn.bytes.len(), 5, "expected a 5-byte call, got {}", insn.mnemonic);
 
         assert!(
@@ -1124,7 +1124,7 @@ mod flow_override_tests {
     /// is why that analyzer's change is invisible in the listing.
     #[test]
     fn a_call_return_override_on_a_jump_changes_no_fall_through() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return;
         };
         let (mut p, at) = program_with_a_call();
@@ -1141,7 +1141,7 @@ mod flow_override_tests {
             m
         };
         let window = p.memory.read_window(at, 16);
-        let insn = spec.disassemble_ctx(&window, at.offset, &ctx).into_iter().next().unwrap();
+        let insn = spec.disassemble_ctx(&window, at.offset, ctx).into_iter().next().unwrap();
 
         assert!(!falls_through(&p, at, &insn, ram), "a plain jmp does not fall through");
         p.set_flow_override(at, FlowOverride::CallReturn);

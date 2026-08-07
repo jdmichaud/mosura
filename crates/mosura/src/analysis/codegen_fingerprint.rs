@@ -401,7 +401,7 @@ mod tests {
     /// mosura disassembles the committed bytes and the matcher must classify the known revision.
     #[test]
     fn matches_committed_self_compiled_probes() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let dir = crate::paths::codegen_probes_dir().join("watcom");
@@ -433,7 +433,7 @@ mod tests {
     /// Open Watcom's is `CMP AL,5 ; SETZ AL ; MOVZX EAX,AL`.
     #[test]
     fn disassembles_and_classifies_real_encodings() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         // 10.0a promoting cmpbyte: AND EAX,0xff ; CMP EAX,5 ; SETZ AL ; RET → uniquely 10.0 line.
@@ -461,7 +461,7 @@ mod tests {
     /// so it can never falsely narrow (or exclude) a revision.
     #[test]
     fn int_compare_is_not_a_byte_compare() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return;
         }
         // CMP EAX,0x1 ; RET — a bare int compare.
@@ -477,7 +477,7 @@ mod tests {
     /// the true revision (the earlier two-sided logic did, on a non-diagnostic byte-form compare).
     #[test]
     fn whole_program_matcher_never_wrongly_excludes() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return;
         }
         let path = crate::paths::analysis_corpus_dir().join("watcom_hello.exe");
@@ -508,7 +508,7 @@ mod tests {
     /// unchanged and is still asserted below.
     #[test]
     fn inline_const_div_anchor_fires_on_the_cdq_revisions() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let dir = crate::paths::codegen_probes_dir().join("watcom");
@@ -534,7 +534,7 @@ mod tests {
     /// every revision emits identically), and the `cdq` requirement rejects the classic signed form.
     #[test]
     fn inline_const_div_anchor_rejects_lookalikes() {
-        if crate::lang::load("x86:LE:32:default").is_none() {
+        if crate::lang::load_cached("x86:LE:32:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         // ow2 VARIABLE signed div: MOV ECX,EDX ; CDQ ; IDIV ECX ; RET — pre-CDQ move is reg→reg,

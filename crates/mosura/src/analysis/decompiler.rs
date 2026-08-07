@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn recovers_switch_jump_table_through_bridge() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let data = std::fs::read(crate::paths::analysis_corpus_dir().join("switchtab.elf")).unwrap();

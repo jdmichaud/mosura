@@ -19,10 +19,10 @@ const LANG: &str = "x86:LE:32:default";
 /// Skips (returns `None`) only when the SLEIGH tables are unavailable — the
 /// `sleigh_canary` suite fails loudly if that ever happens in CI.
 fn one(bytes: &[u8]) -> Option<(usize, InstructionFingerprint)> {
-    let (spec, ctx) = lang::load(LANG)?;
+    let (spec, ctx) = lang::load_cached(LANG)?;
     let base = 0x1000u64;
-    let ins = spec.disassemble_ctx(bytes, base, &ctx);
-    let fps = spec.disassemble_fingerprint(bytes, base, &ctx);
+    let ins = spec.disassemble_ctx(bytes, base, ctx);
+    let fps = spec.disassemble_fingerprint(bytes, base, ctx);
     assert_eq!(ins.len(), fps.len(), "fingerprint count matches instruction count");
     let insn = ins.into_iter().next()?;
     let fp = fps.into_iter().next()?;

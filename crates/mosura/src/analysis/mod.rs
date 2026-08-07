@@ -227,8 +227,8 @@ pub fn analyze(program: &mut Program) {
     analyzers::noreturn::analyze(program);
 
     // Compute function bodies once disassembly has converged (Ghidra `Function.getBody`).
-    if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
-        analyzers::compute_function_bodies(&spec, &ctx, program);
+    if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
+        analyzers::compute_function_bodies(spec, ctx, program);
     }
 
     // A7 Task 2: GCC exception-frame analysis — the `.eh_frame_hdr` FDE table's INDIRECTION
@@ -303,8 +303,8 @@ pub fn analyze(program: &mut Program) {
         }
         fs_mgr.scheduling().block_added(&fs_blocks);
         fs_mgr.run(program);
-        if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
-            analyzers::compute_function_bodies(&spec, &ctx, program);
+        if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
+            analyzers::compute_function_bodies(spec, ctx, program);
         }
     }
 
@@ -372,8 +372,8 @@ fn shared_return_pass(program: &mut Program) {
             let mut s = crate::analysis::manager::Scheduling::default();
             cp.added(program, &next, &mut s);
         }
-        if let Some((spec, ctx)) = crate::lang::load(&program.language_id) {
-            analyzers::compute_function_bodies(&spec, &ctx, program);
+        if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
+            analyzers::compute_function_bodies(spec, ctx, program);
         }
         added = next;
     }
@@ -470,7 +470,7 @@ mod a6_tests {
     /// emits exactly Ghidra's COMPUTED_JUMP edges (BRANCHIND → the 7 case targets).
     #[test]
     fn switch_analyzer_matches_ghidra_computed_jumps() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("switchtab.elf")).unwrap();
@@ -527,7 +527,7 @@ mod a6_typed_refs {
     /// (with no stray DATA at the param-set instructions).
     #[test]
     fn basic_indirect_flow_and_param_types_match_ghidra() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
@@ -559,7 +559,7 @@ mod a7_shared_return {
     /// inbound resolve-tail jump as a call (Ghidra SharedReturnAnalysisCmd).
     #[test]
     fn basic_shared_return_recovers_plt0() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
@@ -598,7 +598,7 @@ mod a7_eh_frame {
     /// to the protected functions, exactly matching the golden, with no spurious additions.
     #[test]
     fn basic_eh_frame_hdr_indirection_refs() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
         }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();
@@ -630,7 +630,7 @@ mod a7_eh_frame {
     /// blocks (`0x402008..=0x402128`) — the rest of `defined_data` is loader markup.
     #[test]
     fn basic_eh_frame_defines_data_units() {
-        if crate::lang::load("x86:LE:64:default").is_none() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return;
         }
         let p = analyze_file(&crate::paths::analysis_corpus_dir().join("basic.elf")).unwrap();

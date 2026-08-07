@@ -181,7 +181,15 @@ pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
 ///
 /// Every call re-reads the `.ldefs`, `.sla` and `.pspec` from the Ghidra tree; a caller that
 /// decodes more than one function must use [`load_cached`] instead.
-pub fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
+/// **Private on purpose — use [`load_cached`].**
+///
+/// This reads and re-parses the whole `.sla` on every call. Every caller in the tree wants the
+/// same tables for the same language, so an uncached call is always either a waste or a
+/// correctness hazard, and we have been caught by it repeatedly: analyzer constructors were
+/// each paying ~200 ms of table parsing, which made one `analyze()` cost 1.6 s regardless of
+/// how small the program was. Keeping this private means the mistake cannot be made from
+/// outside this module.
+fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     let (sla, pspec) = resolve(lang_id)?;
     let mut spec = Spec::from_sla(&fs::read(&sla).ok()?).ok()?;
     // The real-disassembly path attaches the laned (vector) registers, mirroring the cache

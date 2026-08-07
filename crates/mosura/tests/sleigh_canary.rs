@@ -1,6 +1,6 @@
 //! The SLEIGH-availability canary — this test **fails loudly** when the language tables or
 //! datatests cannot be resolved, where every other SLEIGH-gated test politely *skips*
-//! (`lang::load(..) == None` → early return).
+//! (`lang::load_cached(..) == None` → early return).
 //!
 //! Why it exists: the skip convention silently hollowed the suite once — with the Ghidra
 //! checkout deleted, `cargo test` stayed green while sleigh-dependent coverage skipped and
@@ -23,7 +23,7 @@ fn all_used_languages_load() {
         "68000:BE:32:default",
         "z80:LE:16:default",
     ];
-    let missing: Vec<&str> = ids.iter().copied().filter(|id| lang::load(id).is_none()).collect();
+    let missing: Vec<&str> = ids.iter().copied().filter(|id| lang::load_cached(id).is_none()).collect();
     assert!(
         missing.is_empty(),
         "SLEIGH tables unresolvable for {missing:?} — processors_dir()={} . \

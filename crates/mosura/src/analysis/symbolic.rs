@@ -577,13 +577,13 @@ mod tests {
 
     #[test]
     fn rip_relative_load_makes_read_reference() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             eprintln!("skip: SLEIGH tables unavailable");
             return;
         };
         // mov rax, [rip+0x10] ; ret   →  reads ram:0x401017 (next=0x401007 + 0x10)
         let (mut program, ram) = program_with_code(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let reads: Vec<u64> = program
             .reference_manager
             .references()
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn pointer_argument_makes_param_reference() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return;
         };
         // mov rdi, 0x401800 ; call 0x401700   →  PARAM from the mov (0x401000) to 0x401800
@@ -609,7 +609,7 @@ mod tests {
         // Recompute the call target precisely: next ip after call = 0x40100c, + rel32.
         // We don't depend on the call target for PARAM (only that it's a real call), so any
         // mapped target works; flow_constants reads RDI's value (0x401800) at the call.
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let params: Vec<(u64, u64)> = program
             .reference_manager
             .references()
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn lea_makes_data_reference_and_propagates_constant() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return;
         };
         // lea rax, [rip+0x20] ; mov rcx, [rax] ; ret
@@ -639,7 +639,7 @@ mod tests {
             0x48, 0x8b, 0x08, // mov rcx,[rax]
             0xc3, // ret
         ]);
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let has = |rt: RefType, to: u64| {
             program.reference_manager.references().any(|r| r.ref_type == rt && r.to.offset == to)
         };
@@ -654,7 +654,7 @@ mod tests {
         // `lea %pc@(fn),%aN; jsr %aN@` form, here as x86-64 `lea rax,[rip+d]; call rax`) must
         // (1) make a COMPUTED_CALL reference to the target and (2) return that target as a
         // function destination, so the analyzer creates a function there.
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return;
         };
         // lea rax,[rip+0x20] (rax = 0x401027 = next 0x401007 + 0x20) ; call rax ; ret
@@ -664,8 +664,8 @@ mod tests {
             0xc3, // ret
         ]);
         let dests = flow_constants(
-            &spec,
-            &ctx,
+            spec,
+            ctx,
             &mut program,
             Address::new(ram, 0x401000),
             &std::collections::HashSet::new(),
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn follows_a_pointer_through_memory() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return;
         };
         // mov rax, [rip+0xf9] ; mov rcx, [rax] ; ret
@@ -699,7 +699,7 @@ mod tests {
             Program::new(spaces, ram, "x86:LE:64:default", "gcc", Address::new(ram, 0x401000), false, 64);
         program.memory.add_block("text", Address::new(ram, 0x401000), 0x1000, true, false, true, Some(img));
 
-        flow_constants(&spec, &ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let read_to = |to: u64| {
             program.reference_manager.references().any(|r| r.ref_type == RefType::Read && r.to.offset == to)
         };

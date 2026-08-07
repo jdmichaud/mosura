@@ -50,15 +50,15 @@ pub struct SharedReturnAnalyzer {
     assume_contiguous_functions: bool,
     /// `considerConditionalBranches` — Ghidra default `false`.
     consider_conditional_branches: bool,
-    spec: Spec,
-    ctx: Vec<u32>,
+    spec: &'static Spec,
+    ctx: &'static [u32],
 }
 
 impl SharedReturnAnalyzer {
     /// Build the analyzer, or `None` if the SLEIGH tables for the program's language are
     /// unavailable (the fall-through guard needs to decode the predecessor instruction).
     pub fn for_program(program: &Program) -> Option<SharedReturnAnalyzer> {
-        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
         Some(SharedReturnAnalyzer {
             ram: program.default_space,
             assume_contiguous_functions: true,
@@ -308,7 +308,7 @@ impl SharedReturnAnalyzer {
     /// Decode the instruction at `addr` with the SLEIGH engine (same as `Disassembler`).
     fn decode(&self, program: &Program, addr: Address) -> Option<crate::sleigh::Instruction> {
         let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        self.spec.disassemble_ctx(&window, addr.offset, &self.ctx).into_iter().next()
+        self.spec.disassemble_ctx(&window, addr.offset, self.ctx).into_iter().next()
     }
 
     /// `Instruction.getFallThrough() != null` for the instruction at `addr` — Ghidra reads it
@@ -548,7 +548,7 @@ mod destination_set_tests {
     /// route — the assertion measures the destination-set iteration and nothing else.
     #[test]
     fn every_function_entry_in_the_set_is_a_destination_not_just_the_range_minimum() {
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return; // SLEIGH tables unavailable
         };
         let mut p = program();

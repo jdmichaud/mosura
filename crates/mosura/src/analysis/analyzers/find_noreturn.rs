@@ -61,8 +61,8 @@ const MAX_INSN_LEN: u64 = 16;
 const MAX_CHAIN: usize = 64;
 
 pub struct FindNoReturnFunctionsAnalyzer {
-    spec: Spec,
-    ctx: Vec<u32>,
+    spec: &'static Spec,
+    ctx: &'static [u32],
     ram: SpaceId,
     /// `isX86` (:83) — gates the `INT3`-after-call indicator (:574).
     is_x86: bool,
@@ -70,7 +70,7 @@ pub struct FindNoReturnFunctionsAnalyzer {
 
 impl FindNoReturnFunctionsAnalyzer {
     pub fn for_program(program: &Program) -> Option<FindNoReturnFunctionsAnalyzer> {
-        let (spec, ctx) = crate::lang::load(&program.language_id)?;
+        let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
         // `checkForX86` (:157): `program.getLanguage().getProcessor().equals(x86)` — the
         // processor is the first field of the language id.
         let is_x86 = program.language_id.split(':').next() == Some("x86");
@@ -80,7 +80,7 @@ impl FindNoReturnFunctionsAnalyzer {
     /// Decode the instruction at `addr`, or `None` if nothing decodes there.
     fn decode(&self, program: &Program, addr: Address) -> Option<crate::sleigh::Instruction> {
         let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        self.spec.disassemble_ctx(&window, addr.offset, &self.ctx).into_iter().next()
+        self.spec.disassemble_ctx(&window, addr.offset, self.ctx).into_iter().next()
     }
 
     /// `Instruction.getFlowType()` at `addr` — the classified flow with the instruction's flow

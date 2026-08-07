@@ -129,7 +129,7 @@ impl OperandAddressQuery for ProgramOperandAddresses<'_> {
 
 /// Hash one golden function out of the analyzed program, over Ghidra's body ranges.
 fn hash_function(program: &Program, golden: &GoldenFunction) -> Option<FidHashQuad> {
-    let (spec, ctx) = mosura::lang::load(&program.language_id)?;
+    let (spec, ctx) = mosura::lang::load_cached(&program.language_id)?;
     let skipper = Skipper::for_language(&program.language_id);
 
     // Decode each range independently, then hash the whole body in ascending address order —
@@ -147,8 +147,8 @@ fn hash_function(program: &Program, golden: &GoldenFunction) -> Option<FidHashQu
 
     let mut decoded = Vec::new();
     for (min, window) in &bytes_per_range {
-        let insns = spec.disassemble_ctx(window, *min, &ctx);
-        let fps = spec.disassemble_fingerprint(window, *min, &ctx);
+        let insns = spec.disassemble_ctx(window, *min, ctx);
+        let fps = spec.disassemble_fingerprint(window, *min, ctx);
         assert_eq!(insns.len(), fps.len(), "one fingerprint per instruction");
         for (insn, fp) in insns.into_iter().zip(fps) {
             decoded.push((insn, fp));

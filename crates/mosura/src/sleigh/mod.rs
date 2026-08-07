@@ -41,8 +41,8 @@ pub struct Instruction {
 /// [`Unimplemented`] only when the language's tables aren't available (e.g. the
 /// Ghidra tree isn't set up).
 pub fn disassemble(lang_id: &str, bytes: &[u8], base: u64) -> Result<Vec<Instruction>, Unimplemented> {
-    match crate::lang::load(lang_id) {
-        Some((spec, ctx)) => Ok(spec.disassemble_ctx(bytes, base, &ctx)),
+    match crate::lang::load_cached(lang_id) {
+        Some((spec, ctx)) => Ok(spec.disassemble_ctx(bytes, base, ctx)),
         None => Err(Unimplemented("sleigh::disassemble: language tables unavailable")),
     }
 }
@@ -58,8 +58,8 @@ pub fn disassemble_fingerprint(
     bytes: &[u8],
     base: u64,
 ) -> Result<Vec<InstructionFingerprint>, Unimplemented> {
-    match crate::lang::load(lang_id) {
-        Some((spec, ctx)) => Ok(spec.disassemble_fingerprint(bytes, base, &ctx)),
+    match crate::lang::load_cached(lang_id) {
+        Some((spec, ctx)) => Ok(spec.disassemble_fingerprint(bytes, base, ctx)),
         None => Err(Unimplemented("sleigh::disassemble_fingerprint: language tables unavailable")),
     }
 }

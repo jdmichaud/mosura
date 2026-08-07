@@ -668,22 +668,22 @@ mod tests {
             eprintln!("skip: watcom cspec absent");
             return;
         }
-        let Some((spec32, ctx32)) = crate::lang::load("x86:LE:32:default") else { return };
+        let Some((spec32, ctx32)) = crate::lang::load_cached("x86:LE:32:default") else { return };
         let off32 = |n: &str| spec32.register_offset(n).unwrap();
         let want = vec![off32("EAX"), off32("EDX"), off32("EBX"), off32("ECX")];
         assert_eq!(
-            gen_regs(&super::resolve_proto_model(&spec32, "x86:LE:32:default", "watcom")),
+            gen_regs(&super::resolve_proto_model(spec32, "x86:LE:32:default", "watcom")),
             want,
             "analysis path must resolve the __watcall register convention"
         );
 
         // End-to-end: the threaded ids reach the built Funcdata's proto_model (a `ret` stub).
         let f = super::raw_funcdata_flow_image_overrides(
-            &spec32,
+            spec32,
             "func",
             &[(0x10000, &[0xC3u8])],
             0x10000,
-            &ctx32,
+            ctx32,
             &std::collections::HashSet::new(),
             "x86:LE:32:default",
             "watcom",

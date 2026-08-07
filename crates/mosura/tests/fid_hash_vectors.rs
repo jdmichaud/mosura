@@ -113,10 +113,10 @@ fn skipper_selected_by_processor() {
 /// Disassemble one contiguous x86-32 body and hash it. Returns `None` when the SLEIGH tables
 /// are unavailable (the `sleigh_canary` suite fails loudly if that happens in CI).
 fn hash_body(bytes: &[u8], relocations: &dyn RelocationQuery) -> Option<mosura::analysis::fid::hash::FidHashQuad> {
-    let (spec, ctx) = lang::load(LANG)?;
+    let (spec, ctx) = lang::load_cached(LANG)?;
     let base = 0x1000u64;
-    let insns = spec.disassemble_ctx(bytes, base, &ctx);
-    let fps: Vec<InstructionFingerprint> = spec.disassemble_fingerprint(bytes, base, &ctx);
+    let insns = spec.disassemble_ctx(bytes, base, ctx);
+    let fps: Vec<InstructionFingerprint> = spec.disassemble_fingerprint(bytes, base, ctx);
     assert_eq!(insns.len(), fps.len(), "one fingerprint per instruction");
 
     let units: Vec<CodeUnitInput> = insns

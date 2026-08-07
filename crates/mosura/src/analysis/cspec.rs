@@ -435,10 +435,10 @@ mod tests {
     use super::*;
 
     fn load(lang: &str, cspec: &str) -> Option<Vec<u64>> {
-        let (spec, _ctx) = crate::lang::load(lang)?;
+        let (spec, _ctx) = crate::lang::load_cached(lang)?;
         let spaces = SpaceManager::standard();
         let reg = spaces.by_name("register").unwrap();
-        let list = default_input_paramlist(&spec, lang, cspec, &spaces)?;
+        let list = default_input_paramlist(spec, lang, cspec, &spaces)?;
         Some(integer_arg_registers(&list, reg))
     }
 
@@ -468,7 +468,7 @@ mod tests {
         let reg = spaces.by_name("register").unwrap();
         let s = &spaces;
         let off = |n: &str| {
-            let (spec, _) = crate::lang::load("x86:LE:64:default").unwrap();
+            let (spec, _) = crate::lang::load_cached("x86:LE:64:default").unwrap();
             spec.register_offset(n).unwrap()
         };
         let _ = (reg, s);
@@ -485,7 +485,7 @@ mod tests {
             return;
         }
         let regs = load("x86:LE:32:default", "watcom").unwrap_or_default();
-        let (spec, _) = crate::lang::load("x86:LE:32:default").unwrap();
+        let (spec, _) = crate::lang::load_cached("x86:LE:32:default").unwrap();
         let off = |n: &str| spec.register_offset(n).unwrap();
         assert_eq!(
             regs,
@@ -509,12 +509,12 @@ mod tests {
             0xBA, 0x22, 0x22, 0x22, 0x22, 0xB8, 0x11, 0x11, 0x11, 0x11, 0xE8, 0x00, 0x00, 0x00,
             0x00, 0x5A, 0x59, 0x5B, 0xC3,
         ];
-        let Some((spec, ctx)) = crate::lang::load("x86:LE:32:default") else {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:32:default") else {
             eprintln!("skip: x86 sla not present");
             return;
         };
         let asm: Vec<String> = spec
-            .disassemble_ctx(caller, 0x1000, &ctx)
+            .disassemble_ctx(caller, 0x1000, ctx)
             .into_iter()
             .map(|i| format!("{} {}", i.mnemonic.trim(), i.body.trim()))
             .collect();
@@ -572,12 +572,12 @@ mod tests {
     #[test]
     fn premise_dump_cspec_vs_hardcoded() {
         use crate::decompile::fspec;
-        let Some((spec, _ctx)) = crate::lang::load("x86:LE:64:default") else {
+        let Some((spec, _ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             eprintln!("skip: ghidra tree not present");
             return;
         };
         let spaces = SpaceManager::standard();
-        let Some(pm) = default_proto_model(&spec, "x86:LE:64:default", "gcc", &spaces) else {
+        let Some(pm) = default_proto_model(spec, "x86:LE:64:default", "gcc", &spaces) else {
             eprintln!("skip: no cspec proto model");
             return;
         };
