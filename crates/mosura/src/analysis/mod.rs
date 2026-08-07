@@ -19,6 +19,7 @@ pub mod bytesearch;
 pub mod codegen_fingerprint;
 pub mod cspec;
 pub mod decompiler;
+pub mod fid;
 pub mod flowtype;
 pub mod loader;
 pub mod manager;

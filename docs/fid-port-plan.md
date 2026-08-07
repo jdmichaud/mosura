@@ -302,7 +302,18 @@ Each lands independently and gated on `fid-port`. Ghidra paths below are under
 ### Stage 0 — SLEIGH operand/mask exposure ✅ LANDED (`2f69f51`)
 See §2.
 
-### Stage 1 — the hasher `FidHashQuad` (faithful, byte-identical)
+### Stage 1 — the hasher `FidHashQuad` ✅ LANDED
+`crates/mosura/src/analysis/fid/{mod,hash}.rs` + `tests/fid_hash_vectors.rs` (13/13). Additive:
+a new module plus one `pub mod` line, so nothing else in the tree changes (lib suite 545/545,
+clippy clean, decompile_corpus 7/7 with 62/62 datatests).
+
+One finding worth carrying forward: `E8` with a **zero** displacement (`call $+5`, the classic
+PIC idiom) is **not a call** — `ia.sinc:2964` declares a separate, more specific `simm32=0`
+constructor whose semantics are `goto`, not `call`, so FID does not subtract it from
+`codeUnitSize`. The first version of the call test used a zero displacement and therefore
+measured nothing; it now asserts the special case explicitly.
+
+The port, as landed:
 Port `hash/MessageDigestFidHasher.java` + `hash/FunctionBodyFunctionExtentGenerator.java` +
 `Framework/Generic/…/generic/hash/FNV1a64MessageDigest.java` + the x86 skipper
 (`Processors/x86/…/X86InstructionSkipper.java`) → new module `crates/mosura/src/analysis/fid/hash.rs`.
