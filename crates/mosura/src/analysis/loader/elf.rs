@@ -39,6 +39,11 @@ const LINKAGE_ALIGNMENT: u64 = 0x1000;
 /// Ghidra `DEFAULT_DISCARDABLE_SEGMENT_SIZE` — a `segment_*` filler fragment that is
 /// this small *and* entirely zero-filled is discarded (`isDiscardableFillerSegment`),
 /// which drops inter-section alignment padding while keeping the ELF-header fragment.
+/// Where a relocatable object's sections are laid out. An `.o` has no load address of its
+/// own; the base only has to be non-zero and out of the way. It cannot affect a FID hash — the
+/// full hash masks every operand — so this choice does not leak into a signature.
+const REL_OBJECT_BASE: u64 = 0x10_0000;
+
 const MAX_DISCARDABLE_SEGMENT_SIZE: u64 = 0xff;
 
 #[derive(Debug)]
@@ -217,13 +222,45 @@ where
     let mut memory = Memory::new();
     let mut section_cover = AddressSet::new(); // union of allocated-section ranges
 
+    // A **relocatable object** (`ET_REL`) has no addresses yet: every section's `sh_addr` is
+    // zero until the linker assigns one. Laying them out synthetically is what makes an object
+    // file analyzable at all — without it every allocatable section is skipped by the
+    // `addr == 0` test below, the program has no memory, and nothing disassembles. That is
+    // exactly what an `.a` member did: 64 named functions, none of them hashable.
+    //
+    // Ghidra's `ElfProgramBuilder` does the same for relocatable files, laying sections out in
+    // order from the image base. Symbol values in `ET_REL` are section-relative, so they are
+    // rebased alongside.
+    let is_relocatable = elf.kind() == object::ObjectKind::Relocatable;
+    let mut rel_base: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+    if is_relocatable {
+        let mut next = REL_OBJECT_BASE;
+        for section in elf.sections() {
+            let sh_flags = match section.flags() {
+                SectionFlags::Elf { sh_flags } => sh_flags,
+                _ => 0,
+            };
+            if sh_flags & u64::from(elf::SHF_ALLOC) == 0 || section.size() == 0 {
+                continue;
+            }
+            let align = section.align().max(1);
+            next = next.next_multiple_of(align);
+            rel_base.insert(section.index().0, next);
+            next += section.size();
+        }
+    }
+
     // --- named blocks for allocated sections ---
     for section in elf.sections() {
         let sh_flags = match section.flags() {
             SectionFlags::Elf { sh_flags } => sh_flags,
             _ => 0,
         };
-        let addr = section.address();
+        let addr = if is_relocatable {
+            rel_base.get(&section.index().0).copied().unwrap_or(0)
+        } else {
+            section.address()
+        };
         if sh_flags & u64::from(elf::SHF_ALLOC) == 0 || addr == 0 {
             continue;
         }
@@ -315,7 +352,7 @@ where
     let mut program =
         Program::new(spaces, ram, language_id, compiler_spec_id, image_base, big_endian, addr_size_bits);
     program.memory = memory;
-    recover_symbols(&elf, geom, ram, &externals, ext_start, &mut program);
+    recover_symbols(&elf, geom, ram, &externals, ext_start, &rel_base, &mut program);
     markup_elf_structures(&elf, geom, ram, &mut program);
     Ok(program)
 }
@@ -860,6 +897,9 @@ fn recover_symbols<H>(
     ram: SpaceId,
     externals: &[(String, SymbolKind)],
     ext_start: Option<u64>,
+    // Synthetic section bases for a relocatable object; empty for an executable. Symbol
+    // values in ET_REL are section-relative, so they need rebasing onto this layout.
+    rel_base: &std::collections::HashMap<usize, u64>,
     program: &mut Program,
 ) where
     H: FileHeader<Endian = Endianness>,
@@ -903,7 +943,17 @@ fn recover_symbols<H>(
         if matches!(kind, SymbolKind::Section | SymbolKind::File) {
             continue;
         }
-        let addr = Address::new(ram, sym.address());
+        // In a relocatable object a symbol's value is an offset within its section, so it is
+        // rebased onto wherever that section was laid out.
+        let sym_offset = if !rel_base.is_empty() {
+            match sym.section_index().and_then(|i| rel_base.get(&i.0)) {
+                Some(base) => base + sym.address(),
+                None => continue, // absolute or common symbol: not in our synthetic layout
+            }
+        } else {
+            sym.address()
+        };
+        let addr = Address::new(ram, sym_offset);
         let (stype, is_func) = match kind {
             SymbolKind::Text => (SymbolType::Function, true),
             _ => (SymbolType::Label, false),
@@ -922,7 +972,7 @@ fn recover_symbols<H>(
             program.function_manager.create_function(addr, name, AddressSet::new());
         }
         if sym.is_global() {
-            entry_addrs.insert(sym.address());
+            entry_addrs.insert(sym_offset);
         }
     }
 
