@@ -12,8 +12,10 @@
 //! - Stage 0 ✅ `sleigh::disassemble_fingerprint` — the disassembly-level ingredients.
 //! - Stage 1 → [`hash`] — the `FidHashQuad` hasher.
 
+pub mod analyzer;
 pub mod bufferfile;
 pub mod db;
 pub mod hash;
 pub mod matcher;
 pub mod packed;
+pub mod query;
