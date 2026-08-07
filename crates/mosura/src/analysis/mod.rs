@@ -191,14 +191,10 @@ pub fn analyze(program: &mut Program) {
     }
     // A NOTIFICATION, correctly: the loader has already created these functions (the set is built
     // from `function_manager.functions()` above), so this is Ghidra's `functionDefined` for
-    // loader-created functions. The entry points that are NOT yet functions are created by
+    // loader-created functions, and it is what puts them in front of every FUNCTION analyzer —
+    // constant propagation, the decompiler switch analyzer, the address-table analyzer — not just
+    // the one that disassembles them. The entry points that are NOT yet functions are created by
     // `FunctionCreator` when it receives this same set.
-    //
-    // The INSTRUCTION analyzers — constant propagation, the external-jump override, the decompiler
-    // switch analyzer — are not fed from here and must not be: they consume the decoded EXTENT
-    // (Ghidra `codeDefined`), which the disassembler raises once `FunctionCreator` has scheduled
-    // these entries for decoding. Handing them entry points is the defect this seeding used to
-    // paper over.
     mgr.scheduling().function_defined(&seed);
     // Seed the BYTE analyzers with the loaded blocks — Ghidra's `AutoAnalysisManager.blockAdded`
     // fires for every block the loader lays down, which is how a BYTE_ANALYZER like

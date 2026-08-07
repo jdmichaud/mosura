@@ -37,24 +37,14 @@ impl Analyzer for ExternalJumpAnalyzer {
     fn name(&self) -> &str {
         "External Jump Flow Override"
     }
-    /// `INSTRUCTION_ANALYZER` (OperandReferenceAnalyzer.java:133) — the newly disassembled
-    /// extent.
-    ///
-    /// ⚠️ **This has to move with [`ConstantPropagationAnalyzer`](super::ConstantPropagationAnalyzer),
-    /// not after it.** This pass re-types the `COMPUTED_JUMP` the constant propagator creates into
-    /// an external; the propagator re-creates that reference every time it runs. While this sat on
-    /// the `Function` channel and the propagator moved to `Instruction`, a decoded extent that
-    /// created no new function would re-run the propagator with nothing to re-type afterwards, and
-    /// `ReferenceManager::add` keys on the reference TYPE — so the re-created `COMPUTED_JUMP`
-    /// would sit alongside the `COMPUTED_CALL_TERMINATOR` instead of replacing it. On the same
-    /// channel, at Ghidra's own `REFERENCE_ANALYSIS` against the propagator's
-    /// `REFERENCE_ANALYSIS.before()x4`, every round runs both in that order.
     fn analysis_type(&self) -> AnalyzerType {
-        AnalyzerType::Instruction
+        AnalyzerType::Function
     }
     fn priority(&self) -> AnalysisPriority {
-        // `setPriority(AnalysisPriority.REFERENCE_ANALYSIS)` (OperandReferenceAnalyzer.java:138).
-        AnalysisPriority::REFERENCE
+        // After reference recovery (the constant propagator must first create the
+        // COMPUTED_JUMP into the external that we re-type) — Ghidra runs the
+        // OperandReferenceAnalyzer at REFERENCE_ANALYSIS.
+        AnalysisPriority::REFERENCE.after()
     }
     fn added(&self, program: &mut Program, _set: &AddressSet, _sched: &mut Scheduling) -> bool {
         // OperandReferenceAnalyzer: for each non-indirect JUMP reference whose target is in
