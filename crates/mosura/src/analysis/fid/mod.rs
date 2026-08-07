@@ -15,4 +15,5 @@
 pub mod bufferfile;
 pub mod db;
 pub mod hash;
+pub mod matcher;
 pub mod packed;

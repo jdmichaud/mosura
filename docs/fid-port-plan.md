@@ -480,16 +480,42 @@ non-very-common children; defer by-name calls; after all programs `resolveNamedR
   semantics: by full-hash lists and name regexes), not core ingest — port as a small config-driven
   pass.
 
-### Stage 7 — signature DBs per supported runtime (the payoff)
-Per §4, one column at a time, each landing as its own gated increment: **Watcom clib** first (WAR2
-north-star), then **gcc/glibc x86-64**, then the remaining ELF arches, sdcc/z80, Borland. Each
-column ships its DB (or its fetch recipe), its regeneration command, and its recall gate.
+### Stage 7 — signature DBs for EVERY supported compiler and architecture (the payoff)
 
-**Every column's gate is self-compiled.** We own the source, the toolchain and the link, so the
-expected name set comes from our own build (map file / unstripped symbols), and the gate asserts
-recall **and zero false names** after stripping. No user-supplied binary is ever load-bearing —
-see §4's standing constraint. `WAR2.EXE` may be used as a development guide while building the
-Watcom column, and as post-release validation, but never as a gate.
+**User directive 2026-08-07: the track is not done until every supported compiler × target
+column has a signature database and a passing recall gate.** No column is optional and none is
+"nice to have"; the order below is sequencing, not scope.
+
+| # | Target (loader → language, cspec) | Runtime to ingest | Source of signatures |
+| --- | --- | --- | --- |
+| 1 | LE x86-32 (`le.rs`), MZ x86-16 (`mz.rs`) | **Open Watcom** 10.0a/10.6/11.0/ow2 | ingest `clib3r`/`math3r` (OMF `.LIB`) |
+| 2 | ELF x86-64, `gcc` | **gcc/glibc** | ingest `libc.a` + CRT |
+| 3 | PE x86-32 / x86-64 (`pe.rs`) | **MSVC** 1998–2019 | the embedded `.fidb` — no ingest |
+| 4 | ELF x86-32 (EM_386), `gcc` | gcc/glibc | ingest |
+| 5 | ELF AArch64 (`AARCH64:LE:64:v8A`) | gcc/glibc | ingest |
+| 6 | ELF RISC-V 64 (`RISCV:LE:64:default`) | gcc/glibc | ingest |
+| 7 | ELF 68k (`68000:BE:32:Coldfire`) | gcc/newlib | ingest — **big-endian**, first non-LE column |
+| 8 | COM z80 (`z80:LE:16:default`) | sdcc | ingest the sdcc runtime — smallest, a good early proof |
+| 9 | PE x86-32 | Borland BC++ 4.5 | ingest |
+
+MSVC is listed third rather than first only because it needs no ingest — it is really the
+*earliest* one to go green (it unblocks the end-to-end test below the moment Stage 5 lands).
+Rows 5–7 additionally depend on **R7** (the empty-operand-mask fallback): until that lands their
+hashes do not match Ghidra's, so their databases would be internally consistent but not
+interoperable. Ingesting them is still worthwhile; interop parity follows R7.
+
+**Every column's gate is the same shape, and it is Ghidra-free:**
+
+> compile a program we own against that runtime → strip it → run mosura's FID over it →
+> assert the expected runtime function names come back, and that **zero** wrong names do.
+
+Ground truth is our own build (map file / unstripped symbols), so the gate needs no Ghidra at
+test time and no user-supplied binary — only our code, our toolchains, and the committed
+databases. This is the test that measures the actual product claim, as distinct from the
+port-fidelity gates of Stages 1–3.
+
+Each column ships: its database (or its fetch recipe), its regeneration command, its recall
+gate, and its measured recall/precision numbers stamped with the commit that produced them.
 
 ---
 
