@@ -39,6 +39,23 @@ pub struct FidDatabase {
 }
 
 impl FidDatabase {
+    /// Build a database directly from records — the path the mosura-native store
+    /// ([`super::store`]) takes. Same in-memory shape as a `.fidb` load; only the container
+    /// the records came out of differs.
+    pub fn new(
+        name: &str,
+        libraries: Vec<LibraryRecord>,
+        functions: Vec<FunctionRecord>,
+        superior: HashSet<i64>,
+        inferior: HashSet<i64>,
+    ) -> FidDatabase {
+        let mut by_full_hash: HashMap<u64, Vec<FunctionRecord>> = HashMap::new();
+        for record in functions {
+            by_full_hash.entry(record.full_hash).or_default().push(record);
+        }
+        FidDatabase { name: name.to_string(), libraries, by_full_hash, superior, inferior }
+    }
+
     /// Load a packed `.fidb` and build the lookup index.
     pub fn open_packed(name: &str, data: &[u8]) -> Result<FidDatabase, db::DbError> {
         Self::from_database(name, db::open_packed(data)?)

@@ -74,11 +74,88 @@ fn baseline() {
     println!("baseline: regenerated {n} disasm golden(s) against {}", sleighdir.display());
 }
 
+/// `cargo xtask fid-build` — build a FID signature database from a runtime library.
+///
+/// Full recipe, per compiler column: `docs/fid-building-databases.md`.
+fn fid_build() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut family = String::from("Unknown");
+    let mut version = String::from("0");
+    let mut variant = String::from("Release");
+    let mut common: Vec<String> = Vec::new();
+    let mut out: Option<PathBuf> = None;
+    let mut inputs: Vec<PathBuf> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        let take = |i: &mut usize| -> String {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| die("missing value"))
+        };
+        match args[i].as_str() {
+            "--family" => family = take(&mut i),
+            "--version" => version = take(&mut i),
+            "--variant" => variant = take(&mut i),
+            "--out" => out = Some(PathBuf::from(take(&mut i))),
+            "--common-symbols" => {
+                let path = take(&mut i);
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| die(format!("{path}: {e}")));
+                common = mosura::analysis::fid::build::parse_common_symbols(&text);
+            }
+            "--dir" => {
+                let dir = take(&mut i);
+                let mut found: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .unwrap_or_else(|e| die(format!("{dir}: {e}")))
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_file())
+                    .collect();
+                found.sort();
+                inputs.extend(found);
+            }
+            other if other.starts_with("--") => die(format!("unknown option {other}")),
+            _ => inputs.push(PathBuf::from(&args[i])),
+        }
+        i += 1;
+    }
+
+    let Some(out) = out else { die("--out <file.mfid> is required") };
+    if inputs.is_empty() {
+        die("no input files (pass paths, or --dir <directory>)");
+    }
+
+    println!("fid-build: {} input file(s) -> {}", inputs.len(), out.display());
+    let spec = mosura::analysis::fid::build::BuildSpec {
+        family,
+        version,
+        variant,
+        common_symbols: common,
+    };
+    match mosura::analysis::fid::build::build_to_file(&inputs, &spec, &out) {
+        Ok(result) => {
+            println!("  ingested  {}", result.ingested);
+            println!("  relations {}", result.relations);
+            let mut excluded: Vec<_> = result.excluded.iter().collect();
+            excluded.sort();
+            for (why, n) in excluded {
+                println!("  excluded  {n:<6} {why:?}");
+            }
+        }
+        Err(e) => die(e),
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("baseline") => baseline(),
+        Some("fid-build") => fid_build(),
         other => {
-            eprintln!("usage: cargo xtask baseline");
+            eprintln!("usage: cargo xtask <baseline|fid-build>");
+            eprintln!();
+            eprintln!("  fid-build --family <name> --version <v> --variant <Release|Debug>");
+            eprintln!("            [--common-symbols <file>] --out <db.mfid>");
+            eprintln!("            (--dir <directory> | <file> ...)");
             if other.is_some() {
                 exit(2);
             }

@@ -464,7 +464,23 @@ corpus.
 
 At the end of this stage MSVC identification works end to end, with zero ingest written.
 
-### Stage 6 — library ingest (our own DBs)
+### Stage 6 — library ingest ✅ LANDED
+`analysis/fid/{ingest,store,build}.rs`, `cargo xtask fid-build`, and
+**[`docs/fid-building-databases.md`](fid-building-databases.md)** — the operational recipe, one
+page, per-compiler commands runnable as written. Gates: `tests/fid_ingest.rs` (7/7) and
+`tests/fid_roundtrip.rs` (2/2), both Ghidra-free.
+
+The round trip is the meaningful one: hash a committed ground-truth binary's functions, ingest
+them under the names its `.truth` file records (derived at build time from the compiler's own
+`nm`/`objdump` — never from Ghidra, never from mosura), write the database, read it back, then
+identify against the same **stripped** binary. Every name above the score threshold comes back
+and nothing is invented, across x86-64, x86-32 Watcom and RISC-V.
+
+Databases are the mosura-native `.mfid`: plain text, sorted, and **deterministic** — record
+order and keys derive from content, not input order, so a rebuild diff shows real change. The
+schema is Ghidra's; only the container differs.
+
+The port, as originally specified:
 Port `service/FidServiceLibraryIngest.java` → `analysis/fid/ingest.rs`.
 
 Input = analyzed programs (one per object file of a `.a`/`.lib`). Per function: skip

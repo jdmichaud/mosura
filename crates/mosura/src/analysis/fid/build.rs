@@ -1,0 +1,140 @@
+//! Building a signature database from real binaries — the driver that turns analyzed programs
+//! into [`ingest`](super::ingest) input.
+//!
+//! Separated from the ingest algorithm so the algorithm stays testable without a loader, and
+//! so the same driver serves every compiler × architecture column: nothing here is
+//! architecture-specific. Run it from `cargo xtask fid-build`
+//! (see `docs/fid-building-databases.md`).
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use super::analyzer::hash_function;
+use super::ingest::{ChildRef, Ingest, IngestFunction, IngestResult};
+use super::store::FidStore;
+use crate::analysis::program::Program;
+
+/// Everything needed to describe the library being built.
+#[derive(Debug, Clone)]
+pub struct BuildSpec {
+    pub family: String,
+    pub version: String,
+    pub variant: String,
+    /// Symbols whose presence as a callee distinguishes nothing (`memcpy`, `malloc`, …).
+    /// One per line in a text file, `#` comments allowed — the shape of Ghidra's own
+    /// `common_symbols_win32.txt`.
+    pub common_symbols: Vec<String>,
+}
+
+/// Parse a common-symbols list, in the format Ghidra's populate dialog accepts.
+pub fn parse_common_symbols(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Turn one analyzed program into ingest input: every function, its hash, and its callees.
+///
+/// A function's name comes from the symbol table. A binary with no symbols yields nothing
+/// usable — which is the honest outcome, since a signature database is only as good as the
+/// names in it (`docs/fid-port-plan.md` §8 R6).
+pub fn program_functions(program: &Program) -> Vec<IngestFunction> {
+    // Which entries are functions, so a call can be resolved to one.
+    let entries: Vec<crate::decompile::space::Address> =
+        program.function_manager.functions().map(|f| f.entry_point()).collect();
+
+    let mut children_of: HashMap<u64, Vec<ChildRef>> = HashMap::new();
+    for r in program.reference_manager.references() {
+        if !r.ref_type.is_call() {
+            continue;
+        }
+        let Some(from_fn) = program.function_manager.function_containing(r.from) else { continue };
+        let from = from_fn.entry_point().offset;
+        if program.function_manager.function_at(r.to).is_some() {
+            children_of.entry(from).or_default().push(ChildRef::Local(r.to.offset));
+        } else if let Some(sym) = program.symbol_table.primary_at(r.to) {
+            children_of.entry(from).or_default().push(ChildRef::Named(sym.name().to_string()));
+        }
+    }
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let symbol = program.symbol_table.primary_at(entry);
+            let name = symbol
+                .map(|s| s.name().to_string())
+                .filter(|n| !n.starts_with("FUN_") && !n.is_empty());
+            IngestFunction {
+                entry: entry.offset,
+                name,
+                quad: hash_function(program, entry),
+                children: children_of.remove(&entry.offset).unwrap_or_default(),
+                is_thunk: false,
+                is_external: symbol.is_some_and(|s| s.is_external()),
+                has_terminator: true,
+            }
+        })
+        .collect()
+}
+
+/// Build a database from a list of binaries (object files, static-library members, or whole
+/// programs). Every input must share one language and compiler spec — that is what a library
+/// record pins, and what keeps a match from crossing architectures.
+pub fn build_from_files(
+    files: &[std::path::PathBuf],
+    spec: &BuildSpec,
+) -> Result<(FidStore, IngestResult), String> {
+    let mut ingest: Option<Ingest> = None;
+    let mut language = String::new();
+
+    for file in files {
+        let program = match crate::analysis::analyze_file(file) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("  skip {}: {e:?}", file.display());
+                continue;
+            }
+        };
+        if ingest.is_none() {
+            language = program.language_id.clone();
+            let mut new = Ingest::new(
+                &program.language_id,
+                &program.compiler_spec_id,
+                &spec.family,
+                &spec.version,
+                &spec.variant,
+            );
+            new.mark_common_symbols(spec.common_symbols.iter().cloned());
+            ingest = Some(new);
+        } else if program.language_id != language {
+            eprintln!(
+                "  skip {}: language {} != {language} (one library, one language)",
+                file.display(),
+                program.language_id
+            );
+            continue;
+        }
+
+        let functions = program_functions(&program);
+        ingest.as_mut().unwrap().add_program(&functions);
+    }
+
+    match ingest {
+        Some(i) => Ok(i.finish()),
+        None => Err("no input program could be analyzed".to_string()),
+    }
+}
+
+/// Build and write, printing a short report. The path is the caller's choice; by convention
+/// databases live in `oracle/fid/db/<family>-<version>-<arch>.mfid`.
+pub fn build_to_file(
+    files: &[std::path::PathBuf],
+    spec: &BuildSpec,
+    out: &Path,
+) -> Result<IngestResult, String> {
+    let (store, result) = build_from_files(files, spec)?;
+    super::store::write_file(out, &store).map_err(|e| e.to_string())?;
+    Ok(result)
+}
