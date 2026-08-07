@@ -81,6 +81,17 @@ pub struct Program {
     /// snapshot's `data` section is projected from this; the datatype names are Ghidra's
     /// (`DWordDataType.getName()` etc.), so a comparison is a clean subset of the oracle.
     pub defined_data: Vec<(Address, String, u32)>,
+    /// Per-instruction FLOW OVERRIDES (Ghidra `Instruction.setFlowOverride` /
+    /// `getFlowOverride`), keyed `(space, offset)`. Ghidra keeps this in the code unit's own
+    /// flag bits (`InstructionDB.java:54`, `FLOW_OVERRIDE_SET_MASK`); mosura keeps it beside the
+    /// listing, like `noreturn_functions` and `indirect_branches`.
+    ///
+    /// **It is what analysis decided, and it outranks the instruction's own bytes.** Ghidra's
+    /// `getFlowType()` (:321) is `getModifiedFlowType(proto.getFlowType(this), flowOverride)`,
+    /// and every fall-through decision goes through that (`getDefaultFallThrough`, :926). Only
+    /// `FlowOverride::None` entries are absent; see
+    /// [`overridden_flow_props`](crate::analysis::flowtype::overridden_flow_props).
+    pub flow_overrides: std::collections::HashMap<(u32, u64), crate::analysis::flowtype::FlowOverride>,
 }
 
 impl Program {
@@ -117,12 +128,44 @@ impl Program {
             indirect_branches: std::collections::HashSet::new(),
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),
+            flow_overrides: std::collections::HashMap::new(),
         }
     }
 
     /// Whether the function at `addr` is flagged "No Return" (Ghidra `Function.isNoReturn`).
     pub fn is_noreturn(&self, addr: Address) -> bool {
         self.noreturn_functions.contains(&(addr.space.0, addr.offset))
+    }
+
+    /// `Instruction.getFlowOverride()` — the flow override on the instruction at `addr`, or
+    /// `FlowOverride::None` when analysis has set none.
+    pub fn flow_override_at(&self, addr: Address) -> crate::analysis::flowtype::FlowOverride {
+        self.flow_overrides
+            .get(&(addr.space.0, addr.offset))
+            .copied()
+            .unwrap_or(crate::analysis::flowtype::FlowOverride::None)
+    }
+
+    /// `Instruction.setFlowOverride(flow)` (InstructionDB.java:615), as driven by
+    /// `SetFlowOverrideCmd`. Returns `false` when the override is already what is being set —
+    /// Ghidra's `if (flow == flowOverride) return;` (:622), which is also what lets a caller
+    /// mirror `processFunctionJumpReferences`'s "already overridden, skip" guard (:417).
+    pub fn set_flow_override(
+        &mut self,
+        addr: Address,
+        flow: crate::analysis::flowtype::FlowOverride,
+    ) -> bool {
+        use crate::analysis::flowtype::FlowOverride;
+        let key = (addr.space.0, addr.offset);
+        if self.flow_override_at(addr) == flow {
+            return false;
+        }
+        if flow == FlowOverride::None {
+            self.flow_overrides.remove(&key);
+        } else {
+            self.flow_overrides.insert(key, flow);
+        }
+        true
     }
 
     /// Project the converged program into the v1 analysis [`Snapshot`] (the oracle

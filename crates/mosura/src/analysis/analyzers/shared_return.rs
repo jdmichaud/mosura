@@ -102,13 +102,16 @@ impl SharedReturnAnalyzer {
     }
 
     /// `SharedReturnAnalysisCmd.processFunctionJumpReferences` — apply `CALL_RETURN` to the
-    /// single-flow jump sources that jump to function `entry`. Returns the retypes to apply
-    /// (collected to avoid mutating the reference manager mid-iteration, mirroring Ghidra's
-    /// "build list of jump references" comment).
+    /// single-flow jump sources that jump to function `entry`. Collects the instructions to
+    /// override and the reference retypes to apply, rather than mutating as it goes, mirroring
+    /// Ghidra's own reason: "since reference fixup will occur when flow override is done, avoid
+    /// concurrent modification during reference iterator use by building list of jump
+    /// references" (SharedReturnAnalysisCmd.java:379).
     fn process_function_jump_references(
         &self,
         program: &Program,
         entry: Address,
+        overrides: &mut Vec<Address>,
         retypes: &mut Vec<(Address, Address, RefType)>,
     ) {
         // getJumpRefsToFunction: JUMP references to `entry` (skipping conditional ones unless
@@ -152,11 +155,22 @@ impl SharedReturnAnalyzer {
             if check_to != to {
                 continue;
             }
-            // Apply FlowOverride.CALL_RETURN: the instruction's flow becomes CALL_TERMINATOR
-            // (modified_flow_type), and the reference fixup re-derives the *reference* type
-            // from that flow via getDefaultJumpOrCallFlowType — UNCONDITIONAL_CALL for a
-            // plain jump. (Ghidra checks getFlowOverride() != NONE first; we model the
-            // override solely by the resulting reference type, so re-applying is idempotent.)
+            // "if (instr.getFlowOverride() != FlowOverride.NONE) continue;"
+            // (SharedReturnAnalysisCmd.java:417) — an instruction analysis has already
+            // overridden is left alone. This guard used to be absent because the override was
+            // modelled *solely* by the resulting reference type, which made re-application
+            // accidentally idempotent; now that the override is carried on the instruction
+            // (`Program::flow_overrides`) the real guard applies.
+            if program.flow_override_at(from) != FlowOverride::None {
+                continue;
+            }
+            // SetFlowOverrideCmd(refInstrAddr, FlowOverride.CALL_RETURN) (:420). The override is
+            // the primary effect — it is what makes the instruction's flow CALL_TERMINATOR and
+            // therefore stops it falling through. The reference retype is the *consequence*:
+            // `InstructionDB.setFlowOverride` runs a reference fixup that re-derives the flow
+            // reference's type from the new flow via getDefaultJumpOrCallFlowType —
+            // UNCONDITIONAL_CALL for a plain jump.
+            overrides.push(from);
             let overridden_flow = modified_flow_type(check_type, FlowOverride::CallReturn);
             if let Some(new_ref_type) = default_jump_or_call_flow_type(overridden_flow) {
                 if new_ref_type != check_type {
@@ -226,10 +240,11 @@ impl SharedReturnAnalyzer {
         program: &mut Program,
         entry: Address,
         new_functions: &mut AddressSet,
+        overrides: &mut Vec<Address>,
         retypes: &mut Vec<(Address, Address, RefType)>,
     ) {
         if program.function_manager.function_at(entry).is_some() {
-            self.process_function_jump_references(program, entry, retypes);
+            self.process_function_jump_references(program, entry, overrides, retypes);
             return;
         }
         if self.could_have_fall_thru_to(program, entry) {
@@ -245,7 +260,7 @@ impl SharedReturnAnalyzer {
             new_functions.add_range(entry.space, entry.offset, entry.offset);
             // The newly created function is itself a shared-return destination — process its
             // jump references now (Ghidra re-enters via the FUNCTION_ANALYZER event).
-            self.process_function_jump_references(program, entry, retypes);
+            self.process_function_jump_references(program, entry, overrides, retypes);
         }
     }
 
@@ -359,12 +374,13 @@ impl Analyzer for SharedReturnAnalyzer {
             return false;
         }
 
+        let mut overrides: Vec<Address> = Vec::new();
         let mut retypes: Vec<(Address, Address, RefType)> = Vec::new();
         let mut new_functions = AddressSet::new();
 
         // Part 1 — processFunctionJumpReferences for each destination function in `set`.
         for entry in &new_function_entries {
-            self.process_function_jump_references(program, *entry, &mut retypes);
+            self.process_function_jump_references(program, *entry, &mut overrides, &mut retypes);
         }
 
         // Part 2 — assumeContiguousFunctions: scan the unconditional jumps around each
@@ -437,7 +453,7 @@ impl Analyzer for SharedReturnAnalyzer {
                         }
                     }
                     if dest.offset >= function_after_src.unwrap().unwrap() {
-                        self.create_function(program, dest, &mut new_functions, &mut retypes);
+                        self.create_function(program, dest, &mut new_functions, &mut overrides, &mut retypes);
                     }
                 } else {
                     // ---- backward jump ----
@@ -470,13 +486,18 @@ impl Analyzer for SharedReturnAnalyzer {
                         }
                     }
                     if dest.offset < function_before_src.unwrap().unwrap() {
-                        self.create_function(program, dest, &mut new_functions, &mut retypes);
+                        self.create_function(program, dest, &mut new_functions, &mut overrides, &mut retypes);
                     }
                 }
             }
         }
 
-        // Apply the collected reference retypes (the observable effect of the flow override).
+        // Apply the collected flow overrides, then the reference retypes they imply (Ghidra
+        // does both inside `InstructionDB.setFlowOverride`; here the override is stored on the
+        // instruction and the reference fixup follows it).
+        for from in &overrides {
+            program.set_flow_override(*from, FlowOverride::CallReturn);
+        }
         for (from, to, new_type) in &retypes {
             program.reference_manager.retype(*from, *to, *new_type);
         }
@@ -484,7 +505,7 @@ impl Analyzer for SharedReturnAnalyzer {
         if !new_functions.is_empty() {
             sched.function_defined(&new_functions);
         }
-        !retypes.is_empty() || !new_functions.is_empty()
+        !overrides.is_empty() || !retypes.is_empty() || !new_functions.is_empty()
     }
 }
 

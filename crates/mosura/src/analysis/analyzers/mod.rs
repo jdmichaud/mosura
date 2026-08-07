@@ -87,11 +87,34 @@ pub(crate) fn static_target(op: &crate::sleigh::pcode::PcodeOp) -> Option<u64> {
 /// (`NoReturnFunctionAnalyzer`, whose result `FollowFlow` reads through
 /// `Instruction.getFallThrough()`). An indirect call's target is not known here, so it is left
 /// falling through — as Ghidra does.
+///
+/// ⭐ **A FLOW OVERRIDE OUTRANKS THE INSTRUCTION.** Ghidra never asks the bytes directly:
+/// `getDefaultFallThrough()` (InstructionDB.java:926) asks `getFlowType()`, and `getFlowType()`
+/// (:321) is `getModifiedFlowType(proto.getFlowType(this), flowOverride)`. So when analysis has
+/// set an override on this instruction the answer comes from
+/// [`overridden_flow_props`](crate::analysis::flowtype::overridden_flow_props), not from the
+/// opcode reading below — re-deriving flow from the instruction discards exactly what the
+/// analyzers computed (`reftype-is-post-override-not-the-instruction`).
+///
+/// ⚠️ The opcode reading is kept for the un-overridden case and is a SEPARATE, pre-existing
+/// divergence from Ghidra, which classifies through `SleighInstructionPrototype`'s flow flags
+/// ([`crate::analysis::flowtype::has_fallthrough`]) — the two disagree on any instruction with
+/// an internal p-code loop, e.g. `rep movs` (see `shared_return.rs`'s
+/// `instruction_falls_through`). Routing only the overridden case through the faithful path
+/// keeps this change's blast radius to the addresses an analyzer actually overrides;
+/// converting the base derivation is its own change.
 pub(crate) fn falls_through(
     program: &Program,
+    addr: Address,
     insn: &crate::sleigh::Instruction,
     ram: SpaceId,
 ) -> bool {
+    let ov = program.flow_override_at(addr);
+    if ov != crate::analysis::flowtype::FlowOverride::None {
+        let next = addr.offset + insn.bytes.len() as u64;
+        return crate::analysis::flowtype::overridden_flow_props(&insn.ops, addr.offset, next, ov)
+            .fallthrough;
+    }
     let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
     if matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind)) {
         return false;
@@ -196,7 +219,7 @@ impl Analyzer for Disassembler {
             // Control falls through unless the instruction ends the flow, or is a direct call to
             // a no-return function (`falls_through` — the single definition all three walks use).
             let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-            let falls = falls_through(program, &insn, ram);
+            let falls = falls_through(program, addr, &insn, ram);
             // Record indirect branches as switch candidates for the A6 switch analyzer.
             if matches!(last, Some(OpCode::Branchind)) {
                 program.indirect_branches.insert(a);
@@ -360,7 +383,7 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
                 continue;
             }
             body.add_range(ram, a, a + ilen - 1); // inclusive [a, a+ilen)
-            let falls = falls_through(program, &insn, ram);
+            let falls = falls_through(program, Address::new(ram, a), &insn, ram);
             for op in &insn.ops {
                 if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
                     if let Some(t) = Disassembler::static_target(op).filter(|&t| t != a) {
@@ -720,5 +743,98 @@ mod constant_propagation_location_tests {
              0x401001, because it shares a coalesced range with the one at 0x401000 and only the \
              range minimum was used. Got {reads:x?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod flow_override_tests {
+    use super::*;
+    use crate::analysis::flowtype::FlowOverride;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    /// `call 0x401010` at `0x401000`, then a `nop`.
+    fn program_with_a_call() -> (Program, Address) {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        let mut img = vec![0x90u8; 0x100];
+        img[..5].copy_from_slice(&[0xe8, 0x0b, 0x00, 0x00, 0x00]); // call 0x401010
+        p.memory.add_block(".text", base, 0x100, true, false, true, Some(img));
+        (p, base)
+    }
+
+    /// ⭐ THE MECHANISM STEP 2 DEPENDS ON. Ghidra decides fall-through on `getFlowType()`
+    /// (InstructionDB.java:926 -> :321), which is the prototype's flow type with the
+    /// instruction's FLOW OVERRIDE applied — so `FlowOverride::CallReturn` on a `call` makes it
+    /// a `CALL_TERMINATOR`, which has no fall-through. That is how
+    /// `FindNoReturnFunctionsAnalyzer.setNoFallThru` (:218) stops the decode after a call to a
+    /// non-returning function; it sets no "fall-through override" at all.
+    ///
+    /// ⚠️ **This is the only thing that can fail about the flow-override model right now, and it
+    /// is why the test exists.** Measured across the whole Watcom ground-truth corpus, exactly 2
+    /// overrides are set (both on `tailjmp`, both on `JMP`) and **zero** of them change a
+    /// fall-through answer — a `JMP` has none either way. The one live setter,
+    /// `SharedReturnAnalyzer`, only ever overrides jumps. Until an analyzer overrides a CALL the
+    /// model is inert on every available binary, so a corpus gate would measure nothing.
+    #[test]
+    fn a_call_return_override_stops_a_call_falling_through() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let (mut p, at) = program_with_a_call();
+        let ram = p.default_space;
+        let window = p.memory.read_window(at, 16);
+        let insn = spec.disassemble_ctx(&window, at.offset, &ctx).into_iter().next().unwrap();
+        assert_eq!(insn.bytes.len(), 5, "expected a 5-byte call, got {}", insn.mnemonic);
+
+        assert!(
+            falls_through(&p, at, &insn, ram),
+            "a plain call falls through — without this the override below proves nothing"
+        );
+
+        assert!(p.set_flow_override(at, FlowOverride::CallReturn), "override newly set");
+        assert!(
+            !falls_through(&p, at, &insn, ram),
+            "CALL_RETURN makes the flow CALL_TERMINATOR, which has no fall-through — \
+             falls_through re-derived the answer from the opcode and ignored the override"
+        );
+
+        // `InstructionDB.setFlowOverride` :622 — setting the same override again is a no-op,
+        // which is what `processFunctionJumpReferences`'s "already overridden" guard (:417)
+        // reads.
+        assert!(!p.set_flow_override(at, FlowOverride::CallReturn), "re-setting reports no change");
+        assert!(p.set_flow_override(at, FlowOverride::None), "clearing reports a change");
+        assert!(falls_through(&p, at, &insn, ram), "cleared override restores fall-through");
+    }
+
+    /// The guard's other half: an override on an instruction that already has NO fall-through
+    /// must not invent one, and `CALL_RETURN` on a plain `jmp` keeps it non-falling. This is the
+    /// only case `SharedReturnAnalyzer` actually produces today (2 instances corpus-wide), and it
+    /// is why that analyzer's change is invisible in the listing.
+    #[test]
+    fn a_call_return_override_on_a_jump_changes_no_fall_through() {
+        let Some((spec, ctx)) = crate::lang::load("x86:LE:64:default") else {
+            return;
+        };
+        let (mut p, at) = program_with_a_call();
+        let ram = p.default_space;
+        // Overwrite the call with `jmp 0x401010` (e9 rel32) — same length, no fall-through.
+        p.memory = {
+            let mut spaces = SpaceManager::standard();
+            let r2 = spaces.add("ram", SpaceKind::Processor, 8, 1);
+            assert_eq!(r2, ram);
+            let mut m = crate::analysis::program::Memory::new();
+            let mut img = vec![0x90u8; 0x100];
+            img[..5].copy_from_slice(&[0xe9, 0x0b, 0x00, 0x00, 0x00]);
+            m.add_block(".text", at, 0x100, true, false, true, Some(img));
+            m
+        };
+        let window = p.memory.read_window(at, 16);
+        let insn = spec.disassemble_ctx(&window, at.offset, &ctx).into_iter().next().unwrap();
+
+        assert!(!falls_through(&p, at, &insn, ram), "a plain jmp does not fall through");
+        p.set_flow_override(at, FlowOverride::CallReturn);
+        assert!(!falls_through(&p, at, &insn, ram), "and still does not with the override");
     }
 }

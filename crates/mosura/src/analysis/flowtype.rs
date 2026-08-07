@@ -236,7 +236,11 @@ pub struct FlowProps {
 
 /// The [`FlowProps`] of the instruction lifted to `ops`.
 pub fn flow_props(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> FlowProps {
-    let kind = classify(ops, inst_start, inst_next);
+    props_of(classify(ops, inst_start, inst_next))
+}
+
+/// The [`FlowProps`] of a classified flow type.
+fn props_of(kind: FlowKind) -> FlowProps {
     let fallthrough = kind.has_fallthrough();
     match kind {
         // FALL_THROUGH / INVALID: `setHasFall()` only (RefType.java:101,119,127).
@@ -265,35 +269,75 @@ pub fn flow_props(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> FlowProps
 /// `FlowOverride.getModifiedFlowType` — apply a flow override to a base flow type. Faithful
 /// port of the `CALL_RETURN` arm (the only override mosura's analyzers set). Returns the
 /// (possibly modified) flow type.
+pub fn modified_flow_type(original: RefType, ov: FlowOverride) -> RefType {
+    match modified_flow_kind(FlowKind::Ref(original), ov) {
+        FlowKind::Ref(r) => r,
+        // Every CALL_RETURN arm yields a Ref (or the input unchanged), so a non-Ref result can
+        // only be the input itself — which was a Ref.
+        _ => original,
+    }
+}
+
+/// `FlowOverride.getModifiedFlowType` (FlowOverride.java:119) at the full `FlowType` level —
+/// the form [`overridden_flow`] needs, since the arms that decide fall-through include the
+/// terminator kinds mosura's [`RefType`] cannot name.
+///
+/// Only the `CALL_RETURN` arm is ported, which is the existing scope of this file: it is the one
+/// override mosura's analyzers set (`SharedReturnAnalysisCmd.processFunctionJumpReferences`
+/// :420, `FindNoReturnFunctionsAnalyzer.setNoFallThru` :233 — both `SetFlowOverrideCmd(…,
+/// CALL_RETURN)`). `BRANCH`/`CALL`/`RETURN` exist in Ghidra as *user* actions with no analyzer
+/// setter, and two of their result types (`CONDITIONAL_CALL_TERMINATOR`, `TERMINATOR` as a
+/// reference) have no [`RefType`] here; adding arms nothing can reach would be dead code.
 // faithful port of Ghidra's flow-override mapping; the computed/terminal branches map to the
 // same RefType but test distinct flow properties, so the cascade is kept as-is
 #[allow(clippy::if_same_then_else)]
-pub fn modified_flow_type(original: RefType, ov: FlowOverride) -> RefType {
-    let flow = original;
-    // NONE, or a non jump/terminal/call flow, is returned unchanged.
-    if ov == FlowOverride::None || !(is_jump(flow) || is_terminal(flow) || is_call(flow)) {
-        return flow;
+fn modified_flow_kind(kind: FlowKind, ov: FlowOverride) -> FlowKind {
+    let p = props_of(kind);
+    // NONE, or a non jump/terminal/call flow, is returned unchanged (:122-125).
+    if ov == FlowOverride::None || !(p.jump || p.terminal || p.call) {
+        return kind;
     }
     match ov {
-        FlowOverride::None => flow,
+        FlowOverride::None => kind,
         FlowOverride::CallReturn => {
-            if is_conditional(flow) {
-                if is_computed(flow) {
-                    RefType::ConditionalComputedCall
-                } else if is_terminal(flow) {
-                    RefType::ComputedCallTerminator
+            if p.conditional {
+                if p.computed {
+                    FlowKind::Ref(RefType::ConditionalComputedCall)
+                } else if p.terminal {
+                    FlowKind::Ref(RefType::ComputedCallTerminator)
                 } else {
-                    flow // don't replace
+                    kind // don't replace
                 }
-            } else if is_computed(flow) {
-                RefType::ComputedCallTerminator
-            } else if is_terminal(flow) {
-                RefType::ComputedCallTerminator
+            } else if p.computed {
+                FlowKind::Ref(RefType::ComputedCallTerminator)
+            } else if p.terminal {
+                FlowKind::Ref(RefType::ComputedCallTerminator)
             } else {
-                RefType::CallTerminator
+                FlowKind::Ref(RefType::CallTerminator)
             }
         }
     }
+}
+
+/// `InstructionDB.getFlowType()` (InstructionDB.java:321) — the instruction's flow type *as
+/// analysis left it*: the prototype's flow type with the instruction's FLOW OVERRIDE applied.
+///
+/// ```java
+/// return FlowOverride.getModifiedFlowType(proto.getFlowType(this), flowOverride);
+/// ```
+///
+/// **This is the only flow type Ghidra ever reads.** `getDefaultFallThrough()` (:926) asks
+/// `getFlowType().hasFallthrough()`, so an override propagates into fall-through by
+/// construction — there is no separate "fall-through override" involved. Re-deriving flow from
+/// the instruction alone instead discards every override the analyzers computed, which is the
+/// class recorded in `reftype-is-post-override-not-the-instruction`.
+pub fn overridden_flow_props(
+    ops: &[PcodeOp],
+    inst_start: u64,
+    inst_next: u64,
+    ov: FlowOverride,
+) -> FlowProps {
+    props_of(modified_flow_kind(classify(ops, inst_start, inst_next), ov))
 }
 
 /// `RefTypeFactory.getDefaultJumpOrCallFlowType` — derive the *reference* type Ghidra

@@ -877,7 +877,7 @@ fn instruction_falls_through(program: &Program, start: Address) -> bool {
     let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) else { return true };
     let window = program.memory.read_window(start, MAX_CODE_UNIT_LEN as usize);
     match spec.disassemble_ctx(&window, start.offset, ctx).into_iter().next() {
-        Some(insn) => super::falls_through(program, &insn, start.space),
+        Some(insn) => super::falls_through(program, start, &insn, start.space),
         None => true,
     }
 }
@@ -970,7 +970,7 @@ fn flow_body(program: &Program, entry: Address, entries: &BTreeSet<u64>) -> Addr
         }
         body.add_range(ram, a, a + ilen - 1);
         // The one definition of Ghidra's `Instruction.getFallThrough()` — see `falls_through`.
-        let falls = super::falls_through(program, &insn, ram);
+        let falls = super::falls_through(program, Address::new(ram, a), &insn, ram);
         for op in &insn.ops {
             if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
                 if let Some(crate::sleigh::pcode::PArg::Var(v)) = op.ins.first() {
