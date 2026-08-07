@@ -21,6 +21,39 @@ use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir, cnv_exe, comcom32
 /// validate the function-listing pipeline on those ISAs.
 const MANDATORY: &[&str] = &["freestanding", "basic", "aarch64", "riscv", "m68k"];
 
+/// Process-level memo for `analyze_file`, for the corpus loops only.
+///
+/// ⚠️ WHY THIS EXISTS, AND WHY IT IS NOT A BEHAVIOUR CHANGE. Four separate tests in this file
+/// each loop over [`MANDATORY`] and call `analyze_file(<name>.elf)` from scratch, so every
+/// corpus binary was analyzed **four times** per run. Analysis is a pure function of the file
+/// for a given build — same path in, same `Program` out — so analyzing once per process and
+/// sharing the result is observationally identical and is the single largest avoidable cost in
+/// this test binary (it was ~230 s of a ~10 min suite; a WAR2 analysis alone is ~4 min).
+///
+/// ⚠️ Scope is deliberately narrow: **only the repeated corpus loops use this.** Any test that
+/// depends on analysis being re-run — a mutation, an env/override, or a per-test cspec — must
+/// keep calling `analysis::analyze_file` directly, or the memo would hand it a `Program`
+/// produced under different conditions. Cached by path only, so a test that varies anything
+/// other than the path MUST NOT use it.
+///
+/// Cargo runs tests in threads within one process, hence the `Mutex`; the `Arc` avoids cloning
+/// a `Program` that holds thousands of functions.
+fn cached_analyze(path: &std::path::Path) -> std::sync::Arc<mosura::analysis::program::Program> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<mosura::analysis::program::Program>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(path) {
+        return Arc::clone(hit);
+    }
+    // Analyze OUTSIDE the lock: these take seconds, and holding the mutex would serialise
+    // every test thread behind the first one — turning a parallel suite into a sequential one.
+    let prog = Arc::new(analysis::analyze_file(path).unwrap());
+    let mut guard = cache.lock().unwrap();
+    Arc::clone(guard.entry(path.to_path_buf()).or_insert(prog))
+}
+
 /// (name, binary path, mandatory?) — externals are user-provided, skipped if absent.
 fn corpus() -> Vec<(&'static str, PathBuf, bool)> {
     let mut v: Vec<(&str, PathBuf, bool)> = MANDATORY
@@ -404,7 +437,7 @@ fn pe_mz_convergence_parity() {
             continue;
         }
         let golden = snapshot::parse(&std::fs::read_to_string(&golden_path).unwrap());
-        let snap = analysis::analyze_file(path).unwrap().snapshot();
+        let snap = cached_analyze(path).snapshot();
 
         let mf: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
         let gf: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
@@ -501,7 +534,7 @@ fn disassembly_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let snap = cached_analyze(&corpus_dir.join(format!("{name}.elf"))).snapshot();
         let mine: BTreeSet<u64> = snap.code_units.iter().copied().collect();
         let gold: BTreeSet<u64> = golden.code_units.iter().copied().collect();
         let misaligned: Vec<_> = mine.difference(&gold).collect();
@@ -541,7 +574,7 @@ fn demangler_parity() {
     let corpus_dir = analysis_corpus_dir();
     let golden =
         snapshot::parse(&std::fs::read_to_string(goldens.join("cppsym.snapshot")).unwrap());
-    let snap = analysis::analyze_file(&corpus_dir.join("cppsym.elf")).unwrap().snapshot();
+    let snap = cached_analyze(&corpus_dir.join("cppsym.elf")).snapshot();
 
     // Function names (the demangled simple name is applied to the function).
     let mine_fn: BTreeSet<(u64, String)> =
@@ -582,7 +615,7 @@ fn z80_com_parity() {
 
     // --- converged: functions / code-units / references / bodies, 0 spurious / 0 misaligned ---
     let golden = snapshot::parse(&std::fs::read_to_string(goldens.join("z80.snapshot")).unwrap());
-    let snap = analysis::analyze_file(&corpus).unwrap().snapshot();
+    let snap = cached_analyze(&corpus).snapshot();
 
     let mf: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
     let gf: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
@@ -825,7 +858,7 @@ fn function_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let snap = cached_analyze(&corpus_dir.join(format!("{name}.elf"))).snapshot();
         let mine: BTreeSet<u64> = snap.functions.iter().map(|f| f.entry).collect();
         let gold: BTreeSet<u64> = golden.functions.iter().map(|f| f.entry).collect();
         let spurious: Vec<_> = mine.difference(&gold).collect();
@@ -864,7 +897,7 @@ fn function_body_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let snap = cached_analyze(&corpus_dir.join(format!("{name}.elf"))).snapshot();
         let mine: BTreeMap<u64, Vec<(u64, u64)>> =
             snap.bodies.iter().map(|b| (b.entry, b.ranges.clone())).collect();
         let mut matched = 0usize;
@@ -898,7 +931,7 @@ fn reference_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let program = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap();
+        let program = cached_analyze(&corpus_dir.join(format!("{name}.elf")));
         let snap = program.snapshot();
 
         // References whose source is executable memory — what disassembly + the
@@ -959,7 +992,7 @@ fn eh_frame_reference_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let program = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap();
+        let program = cached_analyze(&corpus_dir.join(format!("{name}.elf")));
         let snap = program.snapshot();
         // The `.eh_frame_hdr` block range (skip binaries without one, e.g. freestanding).
         let Some((lo, hi)) = program
@@ -1007,7 +1040,7 @@ fn data_unit_parity() {
         let golden = snapshot::parse(
             &std::fs::read_to_string(goldens.join(format!("{name}.snapshot"))).unwrap(),
         );
-        let snap = analysis::analyze_file(&corpus_dir.join(format!("{name}.elf"))).unwrap().snapshot();
+        let snap = cached_analyze(&corpus_dir.join(format!("{name}.elf"))).snapshot();
         let mine: BTreeSet<(u64, String, u32)> =
             snap.data.iter().map(|d| (d.addr, d.type_name.clone(), d.len)).collect();
         let gold: BTreeSet<(u64, String, u32)> =

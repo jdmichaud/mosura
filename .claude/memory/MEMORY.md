@@ -83,6 +83,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [watcom-901-anchor-inversion](watcom-901-anchor-inversion.md) — **⭐ 9.01 emits `SETcc;MOVZX` + `CDQ;IDIV` too: they mark the lineage's OUTER ENDS, not Open Watcom.**
 
 ## Tooling / gotchas
+- [fast-iteration-skip-the-whole-binary-tests](fast-iteration-skip-the-whole-binary-tests.md) — **⭐ inner loop 367s -> 27s by SKIPPING 4 whole-binary tests at the CLI. Caching across tests does NOT help — cargo already parallelises.**
 - [worktree-needs-ghidra-src-or-ratchet-lies](worktree-needs-ghidra-src-or-ratchet-lies.md) — **⭐ a /tmp worktree silently drops to 15 vendored languages and `disasm_pcode_ratchet` calls it a REGRESSION; set `GHIDRA_SRC`.**
 - [pattern-gate-cspec-routing](pattern-gate-cspec-routing.md) — **⭐ a Watcom-fixture gate silently measures the GCC pattern file (corpus Watcom ELFs are `cspec=gcc`); call-reachable recall is vacuous.**
 - [load-the-artifact-directly](load-the-artifact-directly.md) — **the constructive half: when a fixture cannot reach the code, a test that loads the artifact BY PATH is the real gate, not a fallback.**
