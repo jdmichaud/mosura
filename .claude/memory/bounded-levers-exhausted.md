@@ -1,0 +1,19 @@
+---
+name: bounded-levers-exhausted
+description: cssa1 2026-07-19 consolidation — every remaining maybe-bounded corpus lever grounded as deep/foundation-gated; the only paths left are deep foundations (do not force autonomously).
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 99103a08-9d06-430b-8446-4ca5e3757106
+  modified: 2026-07-19T20:59:25.161Z
+---
+
+cssa1 grounded the last ungrounded maybe-bounded levers @`3579ac3` (corpus 0.9528/57). ALL are deep/foundation-gated → **bounded gauge levers are EXHAUSTED**; remaining movement needs a deep foundation, which per [[default-to-recommended-dont-block]] + the lead's steer is NOT to be forced autonomously — consolidate for the user's next-investment call.
+
+**RuleDoubleOut (coreaction.cc:5646, double.cc:3332) — INERT in mosura, foundation-gated.** Fires only on `PIECE(vnhi, vnlo)` where BOTH pieces are persistent **input** varnodes (double.cc:3340-3343), marks precisHi/precisLo if the whole is read arithmetically (attemptMarking), then `Funcdata::combineInputVarnodes` (funcdata_varnode.cc:381, ~60 lines, unported) merges them into one input. mosura HAS precisHi/precisLo (double.rs) + RuleDoubleLoad/Store, but NOT RuleDoubleIn/Out nor combineInputVarnodes. Decisive: mosura's revisit PIECE is `PIECE(u...:2, u...:2)` — both UNIQUES, never the input pair — so RuleDoubleOut would not fire at all. Ghidra's trace fires it on revisit only because Ghidra's upstream addrtied-piece heritage splitting (`normalizeWriteSize`, the SAME foundation revisit's render gap sits on — see [[task27-coarse-register-ssa-splituses]]) produces `PIECE(r0x100074:2(i), r0x100076:2(i))`. So RuleDoubleOut is downstream of the coarse-SSA/normalizeWriteSize foundation mosura lacks → porting it alone is inert.
+
+**#31 Brick 2 (jumptable action-group, coreaction.cc:5434 `setGroup("jumptable", …)`) — DEEP foundation.** The group = the reduced action set Ghidra enables for a jump-table recovery **sub-decompile** (a group-scoped re-decompile on a function COPY, then recover on the clean graph, then discard). mosura recovers directly on the already-simplified main partial (jumptable.rs:64, `recover_jumpbasic`), no scoped sub-decompile. Porting the group needs action-framework support for function-copy + group-scoped runs = structural foundation. jumptable_recovery is already 6/6; the only fixture it'd touch (switchmulti 0.667) is separately held-deep (setupCallindSpecs declared-vs-use-driven, entangled + wrong-code-risk).
+
+**impliedfield — DO NOT RE-GROUND (rpo1 already pinned it; lead 2026-07-19).** It is the SAME deep cast-timing wall as ActionSetCasts Brick 2, not a separate lever: mosura declares `uint8 param_1` vs oracle `xunknown8` because param_1's `>> 0x20` is a DIRECT use of RDI, and Ghidra keeps RDI undefined only because the CAST exists DURING inference (Ghidra's ActionSetCasts is terminal but its casts feed a graph that inference already ran on with the cast-recovery order) — which mosura's terminal cast insertion + print-time re-inference cannot reproduce. (cssa1's own dead-end grounding agreed: both seed uint8 from `TypeOpIntRight` inputTypeLocal, Ghidra commits xunknown8, and how it does so is unpinnable without a Ghidra per-pass type-trace.) Deep, gated behind the print-time re-inference retirement ([[actionsetcasts-campaign]]) — re-treading is wasted effort.
+
+**The known deep foundations left (all grounded across prior sessions, none to force autonomously):** coarse-register-SSA / `normalizeWriteSize` addrtied-piece + partial-symbol `._x_y_` render (revisit, task27 residual) · type-inference commit rules (impliedfield, orcompare return char-vs-int4) · print-time type RE-inference retirement (unblocks ActionSetCasts Brick 2, [[actionsetcasts-campaign]]) · jumptable scoped sub-decompile (#31 B2) · persistent BlockGraph/HighVariable C-cluster ([[adaptations-inventory]]).

@@ -1,0 +1,42 @@
+---
+name: first-exact-lane
+description: "USER 2026-07-29 'It hasn't moved a hair' — the byte-exact headline is flat because we ranked work by BLAST RADIUS on a noise proxy; new first priority is driving ONE function all the way to byte-identical"
+metadata:
+  type: project
+---
+
+**USER, 2026-07-29, on the WAR2 status: "It hasn't moved a hair."** Correct: **1 EXACT of 1286** (`FUN_00070805`, a 1-byte `ret` stub) — unchanged for weeks across many landed decompiler fixes.
+
+## WHY THE HEADLINE CANNOT MOVE — the distribution is a WALL AT 0%
+Per-function table, `%match` bands: **0-9% = 1052 fns · 10-19% = 68 · 20-29% = 12 · 30%+ = FOUR.** Best non-trivial 75% (`0x0006a7d0`), then 64%, 42%, 38%, nothing else. **Byte-exactness is CONJUNCTIVE (every instruction must match) ⇒ a STEP FUNCTION ⇒ and essentially the entire corpus is nowhere near the step.** Weeks of landed fixes moved it zero because they were never *capable* of moving it.
+
+## ⭐ THE STRATEGIC ERROR (lead's, owned) — a measurement error of our recurring kind
+**We ranked EVERY piece of work by BLAST RADIUS** (how many functions a defect class touches) because it looked efficient. **But blast radius optimizes `%match`, and our own doc states `%match` at these levels is ALIGNMENT NOISE, not a fidelity signal.** ⇒ **we have been choosing deep foundations BLIND, on a proxy that cannot tell us whether we are closer to the goal.** And: **we have never once driven a single function all the way to byte-identical. Not one.** Same family as [[absolute-vs-differential-wrongcode]] and [[measurement-determinism-first]] — the metric didn't measure the thing.
+
+## ➡️ NEW FIRST PRIORITY: the first-EXACT lane (supersedes the placeMultiequals port as *first*)
+Re-aimed at a CLEAN BOUNDARY (B1 reverted, master clean, nothing parked, port not yet started).
+
+**The reachable tier = 36 fns with original ≤12 bytes, TEN sharing ONE shape — original is a 6-8 byte ACCESSOR, mosura emits a bare 1-byte `ret`, all attributed `param-recovery`:**
+`orig=6 cand=1`: 0x0005f84c 0x000606b0 0x000606c0 0x00064077 0x0006407d 0x00065ee8 0x0007231f · `orig=8 cand=1`: 0x00065ed0 0x00065ed8 0x00065ee0. Second cluster = **6 `jmp` thunks** (orig 3-5 bytes) that re-expand into 10-77 byte call sequences.
+
+**SEQUENCE:** (1) **RE-MEASURE AT HEAD FIRST** — the doc's own sections disagree (941/227/117 vs 1214/71/0 vs 1148/137/1 in the table) and the table predates `__watcall` Stage 1; don't plan against those numbers. (2) **Take ONE function and drive it to byte-identical END TO END** — disassemble the original 6 bytes, work backwards to what C wcc386 compiles to exactly those bytes, fix whatever blocks THAT function (get one prototype right, not prototypes in general). (3) **Report the blocker list IN ORDER — that list IS the deliverable:** the first honest ranking of what obstructs byte-identity vs what merely looks worst in aggregate. Repeat for #2/#3 and find where they converge.
+
+**⛔ DO NOT GENERALIZE EARLY.** The instinct will be to see the shared shape and build the general fix. **Resist until ONE function is genuinely EXACT — a general fix built before a single end-to-end success is exactly how we got a flat headline plus a menu of foundations.**
+
+`placeMultiequals` port stays QUEUED as wrong code (it recovers calls in 92 fns, none in the tiny tier ⇒ won't move this number ⇒ no longer first). See [[war2-subregister-heritage-rootcause]].
+
+## ✅ LANE RESULT (2026-07-29): SECOND FUNCTION PROVEN — and the lane found a METRIC BUG
+guardReturns port landed `6e1b113`. **`FUN_0005f84c` RECOMPILES TO THE ORIGINAL LOADED BYTES** (wcc386 OBJ `b80c8d0800c3` == fixup-applied original). The survey couldn't see it — see [[measurement-determinism-first]] sixth instance: compare.py sliced RAW bytes vs mosura's fixup-applied image. **The ordered-blocker-list method delivered exactly as designed: blocker #1 = return recovery (hardcoded RAX/XMM0, fixed), blocker #2 = the METRIC's reference mismatch (not a decompiler defect at all). None of it was codegen.** Emitter symbolization of relocated operands (render `&_DAT_...` so wcc386 emits FIXUPPs → relocatable object like the original) filed as the honest end state.
+
+## 🏆 THE HEADLINE MOVED (2026-07-29, @6e1b113, full 1303-TU run, `compiled ok=1228 fail=75`)
+**EXACT 5 (was 1) + RELOC_EXACT 4 (was 0) = 9 byte-clean · MISMATCH 1219 · COMPILE_FAIL 75 · DECOMPILE_FAIL 0.** All ten named accessors accounted for: EXACT 0005f84c/00064077/0006407d/00072b88 (+ the old 00070805 stub); RELOC_EXACT 000606b0/000606c0/00065ee8/0007231f (4 both-sided fixup sites each). **ATTRIBUTION SETTLED BY THE 2×2 GRID (both sides freshly built+compiled, scored under both references): THE ENTIRE 1→9 MOVE IS THE DECOMPILER PORT.** Baseline 44ea232 scores 1/0/1214/71 under BOTH references — identical rows, so the reference fix CREATES nothing; it makes 3 of the port's 9 VISIBLE (earlier "+3 worth" was a decomposition of the ported column, not a cause — corrected). The baseline raw-ref row reproduces the standing headline TO THE DIGIT, auditing the reconstruction. Grid: base-raw 1/0 · base-loaded 1/0 · ported-raw 2/4 · ported-loaded 5/4. New byte-clean set STRICTLY CONTAINS the old. COMPILE_FAIL 71/1286→75/1303: direction UNCLAIMED until the error classes are diffed (are the 4 new failures among the 17 new fns?). Residual in-tier: the three orig=8 accessors (65ed0/65ed8/65ee0) missed — blockers to be named per lane rule. **The lane thesis is fully paid: two blockers (a hardcoded constant + the metric's own reference bug), neither codegen, and fixing them moved the headline 1→9 byte-clean.**
+**⭐ NEW MEASUREMENT RULE (agent self-catch): READ the fixup site set from the LE relocation table (`fixup_byte_set_in_range`), never INFER it from raw-vs-loaded byte diffs — a multi-byte fixup whose delta leaves a byte unchanged is still one site; inference broke all four expected RELOC_EXACTs and was caught BEFORE producing a number.**
+
+## COMPILE_FAIL 71→75 SETTLED (2026-07-29): one root cause, in the HARNESS, and it's a NEW CLASS
+Diff (loaded ref, 1286 common fns): 11 FIXED / 15 NEW; **all 17 newly-discovered fns COMPILE** (zero contribution). Dominant class E1052 "void type" 37→47; 10 of the 15 new are E1052. **ROOT CAUSE: `prelude.h`'s `typedef void (*code)();`** — mosura renders indirect calls Ghidra-style `(*(code *)(ptr))()`, and pre-port no indirect call's return was ever recovered, so statement position hid the void. Post-port the value IS recovered ⇒ `iVar9 = (*(code*)(...))();` assigns from void ⇒ E1052. **The port produced MORE correct code and the harness couldn't express it** (Ghidra's own C has the same shape; the prelude exists to make it compilable). Fix: `typedef int (*code)();` (backup prelude.h.voidcode.bak), full recompile running; byte-stability of the 9 byte-clean fns to be confirmed explicitly, not reasoned.
+**⭐ CLASS RULE: harness assumptions keyed to DECOMPILER LIMITATIONS are time bombs that detonate on improvement** — same family as the E1032 partial-symbol accessor. When the decompiler improves, re-audit the prelude/harness assumptions that existed to paper over the old weakness. E1052 is 47 of 75 COMPILE_FAILs and COMPILE_FAIL is an absolute bar to EXACT ⇒ this is headline-path.
+
+## STRETCH FINAL @6e1b113 (+ prelude fix, `results.6e1b113.intcode.tsv`)
+**5 EXACT + 4 RELOC_EXACT = 9 byte-clean (was 1) · COMPILE_FAIL 29 (was 71; E1052 47→0 via `typedef int (*code)()`) · DECOMPILE_FAIL 0 · of 1303.** The 46 recovered fns land in MISMATCH — no EXACT bought today, but the absolute bar is removed. Remaining classes: E1079 10, E1018 9, E1010 4, E1029 2, singles E1090/E1081/E1080/E1063. Commits: 6e1b113 · 496778d · b5ce76c · d6299dd (switchcall ground-truth: NEGATIVE reduction — narrowed-selector+calls keeps its bodies in all 3 variants — plus a real narrowed-selector defect found) · 26db108. **OPEN #1 close-out: war2-function-status.md headline block; blockers for the three orig=8 accessors (65ed0/65ed8/65ee0).**
+**QUEUE RULED: #8 stage-name diff only (block graph vs render, persists across IR changes) → `recover_call_args` TWIN (input-side of [[hardcoded-x86-64-vs-cspec-class]] instance #2: hardcoded RDI..R9 width 8 on every x86-32 CALL, same spurious-8-byte-range mechanism; promoted because the empty-switch carriers' IR may change wholesale under it — don't diagnose a moving target) → re-measure → #8 in full → rest of #5 → #7.**
+

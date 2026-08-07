@@ -1,0 +1,24 @@
+---
+name: single-agent-protocol
+description: "Hard rule — exactly ONE background agent at a time; how to detect + kill the spawn double-registration glitch that repeatedly burned the user's tokens."
+metadata:
+  node_type: memory
+  type: feedback
+  originSessionId: c0fe6b35-0fb2-4ed2-90d8-ec93de63680c
+---
+
+Run **exactly ONE** background agent at a time. Multiple concurrent agents on the shared master tree walk over each other and burn the user's budget — the user has stopped runaway agents 4+ times and is angry about the cost. This is the #1 recurring failure.
+
+**Root cause:** `Agent(name="X")` occasionally double-registers as `X` AND a phantom `X-2` (framework glitch; precedents: subvar2/subvar2-2, shiftpiece). Two agents then do the same task twice.
+
+**Guard protocol (do EVERY spawn, fast, no dithering):**
+1. Spawn ONE agent with a fresh unique name (don't reuse a prior name).
+2. IMMEDIATELY `TaskStop("<name>-2")` — kills the phantom if it exists; harmless "No task found" if not. This is the cheap dedup and costs ~nothing.
+3. Track the work as ONE task via TaskCreate with `owner=<name>`; each check-in run `TaskList` — the owner column shows the single live agent at a glance.
+4. **Reuse the SAME agent across tasks — do NOT spawn a fresh agent per task.** Keep ONE persistent worker and hand it the next task via `SendMessage` (to its name/id) when it finishes the current one. A fresh agent re-reads memory, re-studies the code, and re-derives the pipeline layout every time = large wasted-token rediscovery cost the user explicitly banned. Messaging the same agent RESUMES it with warm context — here that is the DESIRED mechanism (the old "resuming a terminated agent is a hazard" note only applied to *accidentally* waking an agent you meant to leave dead). Only spawn a brand-new agent when there is genuinely no live/resumable worker. This applies EVEN at budget/context boundaries: when an agent stops at a green boundary because its budget is low, WARM-RESUME the SAME agent via SendMessage — do NOT TaskStop + spawn a replacement. The user explicitly ruled that stopping+restarting agents is too costly (reaffirmed 2026-07-03 after a costly hgc->hgc2->p4t chain of budget-driven restarts). Keep the green-boundary "never half-land a single commit" discipline, but the CONTINUATION mechanism is ALWAYS warm-resume-the-same-agent, never spawn-new. Do not proactively stop early to "save budget for a fresh agent" — there is no fresh agent; keep the same one rolling. CAVEAT: an agent that sits IDLE across a user pause gets REAPED by the framework (unreachable by bare name; SendMessage fails "no agent named X reachable"). So warm-resume works only WITHIN an active stretch; across a pause, spawning a fresh agent from the turnkey memory checkpoint is UNAVOIDABLE — that is NOT the banned budget-restart, it's forced by reaping, and it's cheap because the checkpoint holds the plan. (Learned 2026-07-03: p4t was reaped during a pause; warm-resume by name failed; had to re-spawn from task2-p4-types-grounding.)
+
+**Blocking directives (2026-07-05 lesson):** when the lead issues a SPECIFIC directive (wire rule X, do Y), the agent must action it FIRST and confirm before resuming autonomous work — it is blocking, not advisory. Precedent: tail2 was told to wire the approved RuleSubCommute mover but landed THREE more rules past the directive instead (async momentum overriding the gate); the lead had to stop it and wire the rule directly (90b8dd4). If the lead needs a specific gated change actioned and the agent keeps skipping it, STOP the agent and make the small change lead-side (no live agent = no collision), then respawn. Agent briefs must say: a lead directive to gate/wire/fix a SPECIFIC thing is your next action, confirm it (reply with the sha) before any new rule/commit.
+
+**Git coordination (lead + agent share ONE working tree/index):** COMMIT doc/config changes (CLAUDE.md etc.) PROMPTLY — background agents do `git reset --hard`/`checkout` during investigation that WIPE uncommitted tree changes. (Memory files live OUTSIDE the repo, so they survive resets; in-repo files like CLAUDE.md do not.) After the lead commits, TELL the agent HEAD moved (name the new sha) so it doesn't reset to the old HEAD and orphan the commit. Concurrent git ops collide on `.git/index.lock` — NEVER `rm` the lock (corrupts the other's op); just retry. Lead should commit only non-code files to avoid racing the agent's code commits.
+
+**Why:** the user pays per token; duplicate agents = double burn, and per-task respawns = repeated rediscovery burn — both banned. **How to apply:** treat "is there exactly one agent, kept warm across tasks?" as a standing invariant. On the rare real spawn, fire the `-2` TaskStop guard; between tasks, feed the SAME agent via SendMessage. Check `TaskList` owner to confirm singularity. See [[direction-faithful-port]].
