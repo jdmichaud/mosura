@@ -126,8 +126,8 @@ pub fn vote(
     language_id: &str,
     compiler_spec_id: &str,
 ) -> VersionReport {
-    let mut report = VersionReport::default();
-    report.hashable_functions = quads.len();
+    let mut report =
+        VersionReport { hashable_functions: quads.len(), ..VersionReport::default() };
     if quads.is_empty() {
         return report;
     }
