@@ -150,6 +150,7 @@ prologue every revision emits is elided from each row):
 | **8.5a** (1991, WATCOM Systems) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
 | **9.01** (1992, WATCOM Intl) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
 | **9.5b** (1993, WATCOM Intl) | `cmp al,5 ; sete al ; and eax,0ffH` | byte compare, `AND`-masked |
+| **10.0-beta** (Mar 1994, LA preprod) | `cmp al,5 ; sete al ; and eax,0ffH` | byte compare, `AND`-masked |
 | **10.0a** (1994, WATCOM Intl) | `and eax,0ffH ; cmp eax,5 ; sete al ; and eax,0ffH` | **promote** to 32-bit compare |
 | **10.6** (1995) | `cmp al,5 ; sete al ; and eax,0ffH` | byte compare, `AND`-masked |
 | **11.0** (1997, Sybase) | `cmp al,5 ; jne L$1 ; mov eax,1` | byte compare, **branch — no `setcc` at all** |
@@ -234,7 +235,8 @@ So every link is committed: probe source → known-compiler object → extractor
 bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
 dosemu recipe above, or the wine one for [10.5](#getting-the-105-compiler-to-run)).
 
-Revisions currently covered: `7.0`, `8.5a`, `9.01`, `9.5b`, `10.0a`, `10.5`, `10.6`, `11.0`, `ow2` — every TABLE row has an artefact behind it except the still-inferred 10.0-beta. Every row in the
+Revisions currently covered: `7.0`, `8.5a`, `9.01`, `9.5b`, `10.0-beta`, `10.0a`, `10.5`, `10.6`,
+`11.0`, `ow2`. **Every TABLE row now has a measured artefact behind it — nothing is inferred.** Every row in the
 `TABLE` has an artefact behind it — a row without one is an inference, which is what 10.5 was.
 
 ### Two matchers — isolated probe vs whole binary
@@ -293,8 +295,56 @@ further. It does **not**: Watcom emits a real `idiv` (not a magic-number multipl
 divisor register draws the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the existing
 `loop_bound_reg` signal. For this probe **10.0a ≡ 10.6** byte-for-byte. So the 3-construct probe
 already extracts the maximum *classification* the **available** version set supports; further
-classification gain needs the missing versions (10.0-beta ISO-layout / 9.01 floppy-`INSTALL.EXE`),
-not more constructs.
+classification gain would need more constructs, not more versions — every revision we have media
+for is now measured.
+
+## 10.0a is a one-release excursion — the strongest form of the argument
+
+The 10.0 **beta** (LA preprod, 16 Mar 1994) was the last inferred row. Unpacked with the vendor's
+own `WPACK.EXE` (which ships *unpacked* on the beta ISO — see below) and run under wine via its PE
+launcher, it emits code **byte-identical to 9.5b, 10.5 and 10.6** — and **different from 10.0a
+retail**.
+
+So the promoting byte compare `and eax,0ffH ; cmp eax,5` appeared somewhere between the March 1994
+beta and 10.0a retail, and was gone again by 10.5. 10.0a is a single-release excursion with four
+measured revisions agreeing against it, two on each side. Nothing can be interpolated *to* it or
+*through* it.
+
+This **sharpens** WAR2's identification rather than weakening it: the promoting form is now known
+to be unique to one release, not merely to "the 10.0 line". Gated by
+`watcom_10_0a_is_a_one_release_excursion`.
+
+### Unpacking the beta: use the vendor's own WPACK.EXE
+
+`oracle/wpack/` decodes 1995-era archives but **not** the 1993/1994 ones (diagnosed: the code
+lengths and `MinVal` come out right — the first symbol decodes at the correct length 9 — but the
+within-length symbol assignment differs; neither wpack's own qsort order, nor stable, nor reversed
+reproduces it). The archives identify themselves as *"WATCOM Install Archiver **Version 1.3**"*
+while `oracle/wpack/` is a port of the 1.1-era `bld/wpack` source, which is the likely reason.
+
+None of that needs solving, because **`WPACK.EXE` is on the beta ISO unpacked**, and it is the
+matching-era tool:
+
+```sh
+# under dosemu: extract is the DEFAULT (no flag). -l lists, -a adds, -d DELETES.
+wpack -l PACK0022        # -> wcc386.exe  517764 unpacked  328213 packed
+wpack PACK0022           # -> wcc386.exe, 517,764 bytes, 16 Mar 1994
+```
+
+Then the 10.5 wine route, with one difference: the beta's PE launcher looks for its sibling in
+**`BINB`**, not `BINW`.
+
+```sh
+# BINNT/WCC386.EXE = pack0156 (7,168-byte PE32 console launcher)
+# BINB/WCC386.EXE  = pack0022 (517,764-byte LX payload)
+cd "$WINEPREFIX/drive_c" && wine 'C:\WBETA\BINNT\WCC386.EXE' WATCOM_C.C
+#  -> WATCOM C32 Optimizing Compiler  Version 10.0 Limited Availability ... Code size: 156
+```
+
+Dead ends, recorded so they are not retried: the beta's DOS `INSTALL.EXE` is a full-screen LX
+program that reads keystrokes via INT 16h, so a piped answer file never reaches it (it hangs with
+a 0-byte output file); `SETUP.EXE` is Win16 NE and `NTSETUP.EXE` is PE32 **GUI**; and W32RUN under
+dosemu produced no output.
 
 ## The pre-10.0 floppy revisions, and why the row labels widened
 
@@ -456,4 +506,5 @@ transition for as long as 10.0a was the oldest column.
 wearing two labels. Note how the two resolved differently — filling in 9.01 **inverted** a boundary's
 meaning, filling in 10.5 **confirmed** the guess. That is the point: which way an inference falls is
 not predictable from the inference, so the only way to know is to go and measure it. Both remaining
-gaps (10.0-beta, and the 7.0/8.5a/9.5b floppy sets) are still inferences of exactly this kind.
+gaps have since been closed: 7.0, 8.5a, 9.5b and 10.0-beta are all measured, and **all four
+confirmed that guessing would have been wrong somewhere** — see the excursion note below.
