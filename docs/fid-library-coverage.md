@@ -6,56 +6,64 @@ only**, which is a defensible default but was never written down, so "the Watcom
 complete" in [`fid-building-databases.md`](fid-building-databases.md) meant "complete across
 *versions*", not "complete across *libraries*". This file is the missing half.
 
-## The short version
+## The short version — CLOSED
 
-| compiler | libraries ingested | libraries shipped | coverage |
-| --- | --- | --- | --- |
-| **sdcc** (z80) | `z80.lib` | 1 | **100%** — nothing to miss |
-| **Watcom** (per version) | `LIB386/DOS/CLIB3R.LIB` | 51 (10.0a) … 187 (11.0) | 1 file |
-| **Borland** (per product) | `C{C,H,L,M,S}.LIB` + `CW32.LIB` | 13 (tc2.0) … 88 (bc4.5) | 5–6 files |
-| **MSVC** | Ghidra's shipped `.fidb` | n/a | vendored, not ours |
+All five gaps below were closed on 2026-08-08. **71 databases / 43,925 records -> 81 databases /
+65,657 records (+50%).**
 
-The raw ratios look alarming and mostly are not. Most of what is *not* ingested is genuinely
-irrelevant to identifying a C program: OS/2 and Win32 target libraries, C++ class frameworks
-(`OWL*`, `BIDS*`, `OCF*`, `PLIB*`), OLE/VBX bindings, DPMI extender support. A signature
-database is not free — every record is a candidate the matcher scores, and records a target
-never links can only produce false positives or dilute the version vote — so "ingest everything
-on the disc" is the wrong instinct.
-
-**One gap is real, though, and it is the same one in every column.**
-
-## The real gap: the floating-point/math libraries
-
-Every vendor of this era splits `printf`-family float formatting, `sqrt`/`sin`/`pow`, and the
-80x87 emulator out of the C library into a separate archive that the linker pulls in *only* when
-the program uses them:
-
-| compiler | not ingested | what is in it |
+| compiler | now ingested | previously |
 | --- | --- | --- |
-| Watcom | `MATH3R.LIB`, `MATH387R.LIB`, `EMU387.LIB` | math + x87 emulation |
-| Borland | `MATH{C,H,L,M,S}.LIB` (per memory model), `EMU.LIB`, `FP87.LIB` | math + FP emulation |
+| **Watcom** 32-bit, per version | `CLIB3R` + `MATH3R` + `MATH387R` + `EMU387` + `GRAPH` | `CLIB3R` only |
+| **Watcom** stack ABI, per version | `CLIB3S` + `MATH3S` + `MATH387S` — **5 new databases** | nothing |
+| **Watcom** 16-bit (10.5) | `CLIB{C,H,L,M,S}` + `EMU87` + `GRAPH` — **5 new databases** | nothing |
+| **Borland** 16-bit, per model | `C<M>` + `MATH<M>` + `EMU` + `FP87` + `GRAPHICS` + `OVERLAY` | `C<M>` only |
+| **Borland** 32-bit flat | `CW32` (math is built in — no `MATH32` exists) | unchanged, already complete |
+| **sdcc** z80 | `z80.lib` | unchanged, complete by construction |
+| **MSVC** | Ghidra's vendored `.fidb` | unchanged, not ours |
 
-A real program that does any floating-point work links these, so their functions are present in
-the target and absent from our databases — they cannot be identified. Borland ships 5 math
-libraries per product (9 for bc3.0+, adding the Windows models), one per memory model, so this is
-5–9 files per product rather than one.
+What is still deliberately excluded, and why: OS/2 and Win32 target libraries (`NT`, `OS2*`,
+`WIN386`, `RAFX*`, `SAFX*`, `REXX`, `SOM`, `VDH`), the GUI/application frameworks (`OWL*`,
+`BIDS*`, `OCF*`, `BWCC*`, `OLE2W*`, `IMPORT*`, `CTL3D*`, `BIVBX*`), and `OBSOLETE.LIB`. These are
+application libraries, not runtime: a program links them only if it uses that framework, and every
+record is a candidate the matcher scores, so carrying them costs false-positive surface for no
+identification gain on ordinary C programs.
 
-Watcom also ships `GRAPH.LIB` (its graphics API). Whether that is worth ingesting depends on the
-target; a game like WAR2 is more likely to use its own renderer.
+**Still open: the C++ runtimes** (`PLIB*`/`PLBX*`/`CPLX*` for Watcom; Borland's C++ support).
+Auditing `PLIB3R.LIB` produced 334 members, 614 symbols and **zero named functions**, so those
+archives do not ingest usefully today — that is a loader/ingest question, not a "point it at the
+file" one, and is left as its own task rather than shipped half-working.
+
+## What this bought on a real target: nothing, and that is worth stating
+
+WAR2.EXE named **121 functions before and 121 after** (one name refined, `___FPEHandlerEnd_` ->
+`FPEHandlerEnd_`). The +50% of records changed nothing there because WAR2 links none of the added
+libraries — it has its own renderer and does no library float work.
+
+That is not an argument against the change. It is the difference between *coverage* and *this
+binary*: the gap was real for any program that does use `sqrt`, BGI graphics, or the `-3s` ABI,
+and none of those programs could be identified before. It does mean the WAR2 misses (task: the
+8 CRT functions) were never a library-coverage problem, which is what the audit was originally
+chasing.
 
 ## Watcom, in detail
 
-Ingested, all six versions: **`LIB386/DOS/CLIB3R.LIB`** — the 32-bit DOS C run-time, *register*
-calling convention (`3` = 386, `R` = register). That is the right single choice: DOS/4GW programs
-are 32-bit and Watcom's default is `-3r`.
+Ingested, all six versions (`-3r`, the default): **`LIB386/DOS/CLIB3R.LIB` + `LIB386/MATH3R.LIB`
++ `LIB386/MATH387R.LIB` + `LIB386/DOS/EMU387.LIB` + `LIB386/DOS/GRAPH.LIB`**.
 
-Not ingested, grouped by whether it could matter for a DOS C program:
+Ingested as a separate `Stack` variant (`-3s`): **`CLIB3S` + `MATH3S` + `MATH387S`** — 5 databases
+named `watcom-<ver>-stack-x86-32`. A separate database, not merged: it is a different build of the
+same functions, and merging would file two different bodies under one name.
 
-- **Could matter** — `MATH3R.LIB`, `MATH387R.LIB`, `EMU387.LIB`, `NOEMU387.LIB`, `GRAPH.LIB`
-- **Wrong calling convention** — every `*3S.LIB` (stack-based; the `-3s` variant of the same code)
-- **Wrong target** — `NT.LIB`, `OS2286.LIB`, `OS2386.LIB`, `WIN386.LIB`, `RAFX*`, `SAFX*`,
-  `REXX.LIB`, `SOM.LIB`, `VDH.LIB`
-- **C++ / class libraries** — `PLIB*`, `PLBX*`, `CPLX*`
+Ingested for 16-bit (10.5, from the ISO's `LIB286/`): **`CLIB{C,H,L,M,S}` + `EMU87` + `GRAPH`** —
+5 databases `watcom-10.5-c{c,h,l,m,s}-x86-16`, language `x86:LE:16:Real Mode`, cspec `default`.
+
+⚠️ **`find | head -1` is a trap here.** A Watcom tree contains several `CLIB3R.LIB` — under
+`LIB386/DOS/`, `LIB386/OS2/`, and more. Picking the wrong one silently builds an OS/2 database
+labelled DOS. Always use the explicit `LIB386/DOS/...` path; the same trap is recorded for
+Open Watcom 2's many `clib3r.lib` copies.
+
+Still not ingested, and deliberately: `NT.LIB`, `OS2286/OS2386`, `WIN386`, `RAFX*`, `SAFX*`,
+`REXX`, `SOM`, `VDH` (other targets), and `PLIB*`/`PLBX*`/`CPLX*` (C++ — see the open item above).
 
 Open Watcom 2 ingests `bld/clib/library/msdos.386/ms_r/clib3r.lib` from the source tree, which is
 the same choice made against a build rather than a release (with the provenance caveat already in
@@ -71,9 +79,14 @@ bc4.52) and **`CW32.LIB` + `CW32MT.LIB`** for C++ Builder 5. bc3.0 uses its Wind
 That is the correct axis to cover — memory model changes the code, so each model needs its own
 database — and it is why Borland has 64 databases against Watcom's 6.
 
-Not ingested: the math set above, plus `GRAPHICS.LIB`, `OVERLAY.LIB`, `OBSOLETE.LIB`, and the
-large C++/Windows framework set (`OWL*`, `BIDS*`, `OCF*`, `BWCC*`, `OLE2W*`, `IMPORT*`, `CTL3D*`,
-`BIVBX*`, `W32SUT*`, `GLAUX`, `NOEH*`, `CRTLDLL`).
+Now ingested per 16-bit model `M`: **`C<M>.LIB` + `MATH<M>.LIB` + `EMU.LIB` + `FP87.LIB` +
+`GRAPHICS.LIB` + `OVERLAY.LIB`** (bc3.0 uses its Windows models `CW<M>` + `MATHW<M>`). The 32-bit
+flat databases (`CW32`, `CW32MT`) are unchanged — there is no `MATH32`, the math is inside the
+runtime.
+
+Still not ingested, deliberately: `OBSOLETE.LIB` and the C++/Windows framework set (`OWL*`,
+`BIDS*`, `OCF*`, `BWCC*`, `OLE2W*`, `IMPORT*`, `CTL3D*`, `BIVBX*`, `W32SUT*`, `GLAUX`, `NOEH*`,
+`CRTLDLL`) — application libraries, not runtime.
 
 ## sdcc
 
@@ -102,7 +115,14 @@ distinct library members — our database has `_nmalloc_` but not `malloc_`, and
 the ANSI names on top of the near/far/based allocators — but that needs the OMF `PUBDEF` records
 read directly rather than inferred.
 
-## If you want to close the math gap
+## Regenerating
+
+The recipe now lives in TWO places that must agree: `docs/fid-building-databases.md` (prose) and
+`crates/mosura/tests/fid_database_drift.rs` (executable — each `Source` lists every library of one
+database). That gate re-ingests and byte-compares, so it goes red when the recipe changes and is
+what proves a regeneration reproduced the committed file. It caught this change correctly.
+
+Historical note: the original text below described closing the math gap, which is now done.
 
 Per column, ingest the math library alongside the C library into the **same** database (same
 family/version/variant — it is one runtime), then regenerate and re-run `fid_database_drift`,

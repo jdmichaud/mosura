@@ -35,7 +35,11 @@ use mosura::analysis::fid::build::{build_from_files, BuildSpec};
 struct Source {
     /// File name under `oracle/fid/db/`.
     database: &'static str,
-    library: &'static str,
+    /// EVERY library the database is ingested from, in build order. This is the recipe, and
+    /// listing it here is what makes the gate catch a recipe change as well as a hasher change —
+    /// when the math/graphics libraries were added, this test went red until it was updated,
+    /// which is exactly the behaviour wanted.
+    libraries: &'static [&'static str],
     family: &'static str,
     version: &'static str,
     variant: &'static str,
@@ -47,7 +51,7 @@ const SOURCES: &[Source] = &[
     // goldens, which makes a drift check the only automated cover it has.
     Source {
         database: "sdcc-4.5.0-z80.mfid.gz",
-        library: "/usr/share/sdcc/lib/z80/z80.lib",
+        libraries: &["/usr/share/sdcc/lib/z80/z80.lib"],
         family: "sdcc",
         version: "4.5.0",
         variant: "z80",
@@ -57,7 +61,10 @@ const SOURCES: &[Source] = &[
     // docs/fid-building-databases.md.
     Source {
         database: "watcom-ow2-x86-32.mfid.gz",
-        library: "/data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib",
+        libraries: &[
+            "/data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib",
+            "/data/open-watcom-v2/bld/mathlib/library/msdos.386/ms_r/math3r.lib",
+        ],
         family: "Watcom",
         version: "ow2",
         variant: "Release",
@@ -66,14 +73,21 @@ const SOURCES: &[Source] = &[
     // which is where the R7 drift actually landed, and x86-32 as a control.
     Source {
         database: "borland-bc4.5-cs-x86-16.mfid.gz",
-        library: "/data/borland/BC45/LIB/CS.LIB",
+        libraries: &[
+            "/data/borland/BC45/LIB/CS.LIB",
+            "/data/borland/BC45/LIB/MATHS.LIB",
+            "/data/borland/BC45/LIB/EMU.LIB",
+            "/data/borland/BC45/LIB/FP87.LIB",
+            "/data/borland/BC45/LIB/GRAPHICS.LIB",
+            "/data/borland/BC45/LIB/OVERLAY.LIB",
+        ],
         family: "Borland",
         version: "bc4.5",
         variant: "cs",
     },
     Source {
         database: "borland-bc4.5-flat-x86-32.mfid.gz",
-        library: "/data/borland/BC45/LIB/CW32.LIB",
+        libraries: &["/data/borland/BC45/LIB/CW32.LIB"],
         family: "Borland",
         version: "bc4.5",
         variant: "flat",
@@ -98,10 +112,10 @@ fn committed_databases_match_the_current_hasher() {
     let mut drifted = Vec::new();
 
     for src in SOURCES {
-        let lib = Path::new(src.library);
+        let libs: Vec<PathBuf> = src.libraries.iter().map(PathBuf::from).collect();
         let db = dir.join(src.database);
-        if !lib.exists() {
-            skipped.push(format!("{} (no {})", src.database, src.library));
+        if let Some(missing) = libs.iter().find(|p| !p.exists()) {
+            skipped.push(format!("{} (no {})", src.database, missing.display()));
             continue;
         }
         let Some(want) = committed_text(&db) else {
@@ -116,7 +130,7 @@ fn committed_databases_match_the_current_hasher() {
             common_symbols: Vec::new(),
             symbol_map: std::collections::HashMap::new(),
         };
-        let (store, _) = build_from_files(&[lib.to_path_buf()], &spec)
+        let (store, _) = build_from_files(&libs, &spec)
             .unwrap_or_else(|e| panic!("{}: re-ingest failed: {e}", src.database));
         let got = store.to_text();
 

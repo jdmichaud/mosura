@@ -32,7 +32,13 @@ fn watcom_databases_are_complete_and_coherent() {
     // Every Watcom we hold — a closed set, which is what makes this column finishable at all
     // (unlike glibc). `ow2` is built from the Open Watcom source tree rather than a shipped
     // release; see its provenance note.
-    assert_eq!(versions.len(), 6, "one database per installed Watcom: {versions:?}");
+    //
+    // The count is NOT one-per-version: a version can have several databases because a Watcom
+    // program varies on axes that change the code. Today that is the calling convention
+    // (`-3r` register vs `-3s` stack, the `-stack-` databases) and the 16-bit memory models
+    // (`-c{c,h,l,m,s}-x86-16`). Each is a genuinely different build of the same runtime, so each
+    // needs its own signatures — merging them would put two bodies under one name.
+    assert!(versions.len() >= 6, "one database per installed Watcom at minimum: {versions:?}");
     for expected in ["9.01", "10.0a", "10.5", "10.6", "11.0", "ow2"] {
         assert!(
             versions.iter().any(|v| v.contains(expected)),
@@ -42,8 +48,14 @@ fn watcom_databases_are_complete_and_coherent() {
 
     for name in &versions {
         let store = store::read_file(&dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(store.language_id, "x86:LE:32:default", "{name}: language");
-        assert_eq!(store.compiler_spec_id, "watcom", "{name}: compiler spec");
+        // 32-bit unless the name says 16 — the LIB286 memory-model databases are Real Mode.
+        let expect_lang = if name.contains("x86-16") { "x86:LE:16:Real Mode" } else { "x86:LE:32:default" };
+        assert_eq!(store.language_id, expect_lang, "{name}: language");
+        // The 16-bit column carries `default`: Watcom's cspec detection is a 32-bit concern
+        // (loader/watcom.rs keys off the DOS/4GW runtime banner), so a LIB286 object declares
+        // the generic spec. Recorded rather than forced — the database must say what it is.
+        let expect_cspec = if name.contains("x86-16") { "default" } else { "watcom" };
+        assert_eq!(store.compiler_spec_id, expect_cspec, "{name}: compiler spec");
         assert_eq!(store.library_family, "Watcom", "{name}: family");
         assert!(store.functions.len() > 300, "{name}: only {} functions", store.functions.len());
 
