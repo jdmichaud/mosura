@@ -36,11 +36,35 @@ else
 		| sort)
 fi
 
+# Binaries Ghidra cannot classify on its own, and the processor to import them with.
+#
+# A raw CP/M `.COM` is a flat image with no header, no sections and no symbol table — there is
+# nothing for the loader to recognise, so an unqualified import yields no language, no functions
+# and silently no goldens. That is exactly why the z80 column had none: not because Ghidra cannot
+# hash z80 (it can — 6 quads from z80prog), but because nobody told it what the bytes were.
+#
+# These need their own headless pass, since -processor applies to the whole import.
+# ⚠️ The LOAD BASE matters as much as the processor. A `.COM` maps at the CP/M Transient Program
+# Area, 0x100 — which is what `loader/com.rs` does — so importing it at Ghidra's default base 0
+# produces goldens whose addresses no mosura body can be read at, and the gate silently reports
+# "bodies not readable" instead of comparing anything.
+needs_processor() {
+	case "$(basename "$1")" in
+	*.sdcc-z80.com) echo "-processor z80:LE:16:default -loader BinaryLoader -loader-baseAddr 0x100" ;;
+	*) echo "" ;;
+	esac
+}
+
 mkdir -p "$WORK/in" "$WORK/proj" "$OUT"
+declare -a QUALIFIED=()
 for b in "${BINARIES[@]}"; do
-	cp "$b" "$WORK/in/$(basename "$b")"
+	if [ -n "$(needs_processor "$b")" ]; then
+		QUALIFIED+=("$b")
+	else
+		cp "$b" "$WORK/in/$(basename "$b")"
+	fi
 done
-echo "staged ${#BINARIES[@]} binaries"
+echo "staged $(ls "$WORK/in" | wc -l) auto-detected binaries, ${#QUALIFIED[@]} needing -processor"
 
 "$HEADLESS" "$WORK/proj" fidhash \
 	-import "$WORK/in" \
@@ -48,6 +72,19 @@ echo "staged ${#BINARIES[@]} binaries"
 	-postScript FidHashDump.java "$OUT" \
 	> "$WORK/headless.log" 2>&1
 status=$?
+
+# One pass per explicitly-typed binary (they may not share a processor).
+for b in "${QUALIFIED[@]}"; do
+	# shellcheck disable=SC2086 # deliberate word-splitting: these are multiple flags
+	args="$(needs_processor "$b")"
+	echo "  $args  $(basename "$b")"
+	"$HEADLESS" "$WORK/proj" "fidhash_$(basename "$b" | tr -c 'A-Za-z0-9' '_')" \
+		-import "$b" $args \
+		-scriptPath "$REPO/oracle/fid" \
+		-preScript MarkComEntry.java \
+		-postScript FidHashDump.java "$OUT" \
+		>> "$WORK/headless.log" 2>&1 || status=$?
+done
 
 grep -E "FidHashDump:" "$WORK/headless.log" | sed 's/.*FidHashDump: /  /'
 if [ $status -ne 0 ]; then

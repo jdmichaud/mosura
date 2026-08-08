@@ -237,7 +237,16 @@ fn quads_match_ghidra_byte_for_byte() {
             eprintln!("  skip {stem}: analysis failed");
             continue;
         };
-        let arch = stem.rsplit('.').next().unwrap_or("?").to_string();
+        // `<prog>.<toolchain>-<arch>` — but a raw-image column adds a container extension
+        // (`z80prog.sdcc-z80.com`), and taking the last segment blindly labels that column
+        // "com" and silently gives it its own floor-less row. Strip the container first.
+        let arch = stem
+            .strip_suffix(".com")
+            .unwrap_or(&stem)
+            .rsplit('.')
+            .next()
+            .unwrap_or("?")
+            .to_string();
 
         for golden in parse_golden(&std::fs::read_to_string(golden_path).expect("golden")) {
             let Some(ours) = hash_function(&program, &golden) else {
@@ -297,6 +306,12 @@ fn quads_match_ghidra_byte_for_byte() {
         // AArch64's root cause — the two gaps were separate defects in the same mask path.
         ("gcc-m68k", 37, 41),
         ("watcom-le", 0, 1),
+        // FIRST MEASUREMENT OF THIS COLUMN, and it is not good news: 1/3. z80 had no goldens at
+        // all until now, which mattered because 60 of the 71 committed databases are z80 or
+        // x86-16 and the R7 fix rewrote every one of them — "the new hashes are correct" rested
+        // on the faithful-port argument for exactly the columns nothing measured. It is measured
+        // now, and it disagrees with Ghidra on 2 of 3 functions. See the task notes.
+        ("sdcc-z80", 1, 3),
     ];
 
     let mut regressions = Vec::new();
