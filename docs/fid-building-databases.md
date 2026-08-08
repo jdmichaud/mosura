@@ -157,8 +157,13 @@ So the practical question per runtime is how closed its version set is:
 
 | runtime | version set | outlook |
 | --- | --- | --- |
-| Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 under `~/.dosemu/drive_c/`, plus Open Watcom 2 — closed, small, all held | **complete** |
+| Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 under `~/.dosemu/drive_c/`, plus Open Watcom 2 — closed, small, all held | **complete across VERSIONS** |
 | Borland, sdcc | bounded | complete columns achievable |
+
+⚠️ "Complete" above means **every version**, not every library. Each column ingests the C
+run-time only; the math/floating-point libraries every vendor ships separately are NOT ingested,
+so a program that does float work has functions we cannot identify. Per-compiler detail:
+[`fid-library-coverage.md`](fid-library-coverage.md).
 | MSVC | Ghidra already ships 1998–2019 | done |
 | gcc / glibc | effectively unbounded — every distro build differs | **no database shipped** (see below) |
 
