@@ -7,6 +7,23 @@ carries the exact release for **DOS/4GW LE** output (the WAR2 case) — see
 register-allocation choices for the same source. This is the signal that pins WAR2's exact
 Watcom revision and feeds byte-exact recompilation (the `D1` north star).
 
+## Check order: banner first, always
+
+The three channels are not equal cost, so they are not tried in parallel:
+
+1. **Runtime banner** — a string search. Free, runs at load for every program
+   (`loader::with_compiler_version`). Answers the era outright, and for the pre-10.0 revisions it
+   answers the *release* (see the table further down: 7.0/8.5a/9.01 differ by banner while their
+   codegen is identical).
+2. **Codegen fingerprint** (this document) — needs disassembly. Use it for what the banner
+   cannot separate: the DOS/4GW LE case where no header field carries the release, and 10.5-vs-11.0
+   where the banner year is not an ordinal.
+3. **Signature vote** (`fid/detect.rs`) — loads and queries ~70 databases. Byte-exact and the most
+   precise, and correspondingly the only one that is opt-in by cost.
+
+Reach for 2 and 3 when 1 is absent or too coarse — not before. Most of what this document
+discriminates is only *needed* because the banner stops at the era.
+
 ## Reproducible setup — running a historical `wcc386` under dosemu2
 
 **One command** (`scripts/setup-watcom-dosemu.sh`) stages any ISO-based revision from its archive
@@ -31,11 +48,12 @@ section, which is now a *worked* procedure rather than a task note.
 ### Floppy-set revisions (7.0 / 8.5a / 9.01 / 9.5b) — run the vendor installer
 
 Everything on these disks is Watcom-packed, **including the files whose extension suggests
-otherwise**: `WCC386.DOS` starts `03 24 01 01`, not `MZ`. There is no unpacker on this machine
-(`bld/wpack` in the OW2 tree does not build against glibc — `dos.h`, `direct.h`, `sys/utime.h`), so
-the only route is the vendor's own `INSTALL.EXE`, driven from a stdin answer file. Verified on 9.01
-2026-08-06; it produced `bin/wcc386.exe` (181,192 bytes, 28 May 1992) plus `wcc386p.exe` and
-`dos4gw.exe`.
+otherwise**: `WCC386.DOS` starts `03 24 01 01`, not `MZ`. `oracle/wpack/` now decodes that format
+for 1995-era media, but **NOT** the 1993/1994 archives these disks use (see the 10.5 section), so
+the route for the floppy sets remains the vendor's own `INSTALL.EXE`, driven from a stdin answer
+file. Verified on 9.01 2026-08-06 (`bin/wcc386.exe`, 181,192 bytes, 28 May 1992) and re-verified
+unchanged on **8.5a** and **9.5b** 2026-08-08. **7.0 needs no installer at all** — its
+`WCC386.EXE` ships unpacked on the floppies; copy it plus `H/` and run it directly.
 
 ```sh
 DC=~/.dosemu/drive_c
@@ -128,7 +146,10 @@ prologue every revision emits is elided from each row):
 
 | Watcom revision | codegen | class |
 | --- | --- | --- |
+| **7.0** (1989, WATCOM Systems) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
+| **8.5a** (1991, WATCOM Systems) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
 | **9.01** (1992, WATCOM Intl) | `cmp al,5 ; sete al ; movzx eax,al` | byte compare + zero-extend |
+| **9.5b** (1993, WATCOM Intl) | `cmp al,5 ; sete al ; and eax,0ffH` | byte compare, `AND`-masked |
 | **10.0a** (1994, WATCOM Intl) | `and eax,0ffH ; cmp eax,5 ; sete al ; and eax,0ffH` | **promote** to 32-bit compare |
 | **10.6** (1995) | `cmp al,5 ; sete al ; and eax,0ffH` | byte compare, `AND`-masked |
 | **11.0** (1997, Sybase) | `cmp al,5 ; jne L$1 ; mov eax,1` | byte compare, **branch — no `setcc` at all** |
@@ -213,7 +234,7 @@ So every link is committed: probe source → known-compiler object → extractor
 bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
 dosemu recipe above, or the wine one for [10.5](#getting-the-105-compiler-to-run)).
 
-Revisions currently covered: `9.01`, `10.0a`, `10.5`, `10.6`, `11.0`, `ow2`. Every row in the
+Revisions currently covered: `7.0`, `8.5a`, `9.01`, `9.5b`, `10.0a`, `10.5`, `10.6`, `11.0`, `ow2` — every TABLE row has an artefact behind it except the still-inferred 10.0-beta. Every row in the
 `TABLE` has an artefact behind it — a row without one is an inference, which is what 10.5 was.
 
 ### Two matchers — isolated probe vs whole binary
@@ -274,6 +295,48 @@ divisor register draws the **same** `EBX`(10.x)→`ECX`(11.0/ow) boundary as the
 already extracts the maximum *classification* the **available** version set supports; further
 classification gain needs the missing versions (10.0-beta ISO-layout / 9.01 floppy-`INSTALL.EXE`),
 not more constructs.
+
+## The pre-10.0 floppy revisions, and why the row labels widened
+
+7.0, 8.5a and 9.5b are now measured too, via the vendor `INSTALL.EXE` recipe above (which this
+confirms works unchanged for all of them, not just 9.01). Two results, both of which made the
+table *less* precise — correctly:
+
+**`watcom:9.01` became `watcom:7.0/8.5a/9.01`.** Their probe code all differs (7.0 = 156 bytes,
+8.5a = 160, 9.01 = 150) but the four measured signals coincide exactly, so nothing in this
+matcher separates them. The old label claimed a precision it never had.
+
+**`watcom:10.5/10.6` became `watcom:9.5b/10.5/10.6`** — and this one matters:
+
+> **The lineage is not monotonic.** 9.5b (1993) emits code byte-identical to 10.5/10.6 (1995),
+> while 10.0a (1994) — which sits *between* them — is the odd one out, the only revision that
+> promotes the byte compare. Had 9.5b been interpolated from its neighbours 9.01 and 10.0a, **both**
+> would have given the wrong answer.
+
+That is the sharpest available argument against inferring an unmeasured revision from the ones
+around it, and it is gated by `watcom_9_5b_is_not_on_a_monotonic_lineage`. WAR2 is unaffected: its
+identification rests on 10.0a's promoting `cmp eax,5`, still unique to that row.
+
+**The banner still separates what the codegen cannot.** Read from each install's own `clib3r.lib`:
+
+| revision | runtime banner | codegen row |
+| --- | --- | --- |
+| 7.0 | `WATCOM Systems Inc. 1989` | `7.0/8.5a/9.01` |
+| 8.5a | `WATCOM Systems Inc. 1989, 1991` | `7.0/8.5a/9.01` |
+| 9.01 | `WATCOM Systems Inc. 1989, 1992` | `7.0/8.5a/9.01` |
+| 9.5b | `WATCOM International Corp. 1988-1993` | `9.5b/10.5/10.6` |
+
+⚠️ Note the pre-10.0 banners use a **different shape** from the ones in
+[`watcom-detection.md`](watcom-detection.md): discrete years (`1989, 1991`) rather than a range
+(`1988-1994`), and the product string is `WATCOM C 386 Run-Time system`, not `WATCOM C/C++32`.
+Whether `loader/watcom.rs` parses the comma form has not been checked. And the end year ordering
+correctly here (1989 < 1991 < 1992) is a local accident, not a rule — 11.0 embeds `1988-1994`
+while 10.5 embeds `1988-1995`.
+
+Two artefact notes: the older `wcc386` records a bare `WATCOM_C.C` THEADR where 10.x records
+`C:\WATCOM_C.C` — a real version difference, not an invocation difference, and harmless because
+the gate is on the extracted `.code`. And 7.0 needs no install at all: its `WCC386.EXE` ships
+unpacked on the floppies.
 
 ## 10.5: measured, not inferred
 

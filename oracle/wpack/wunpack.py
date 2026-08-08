@@ -112,7 +112,10 @@ class Dec:
                     ch = tb[(i + k) & (STRBUF - 1)]
                     tb[r] = ch; r = (r + 1) & (STRBUF - 1); out.append(ch)
                 count += j
-        return bytes(out)
+        # A trailing match can copy past `textsize` (the loop tests `count` before the copy, and a
+        # copy emits up to 60 bytes), so the tail is lookahead that is not part of the file. The
+        # directory's `length` is authoritative.
+        return bytes(out[:textsize])
 
 def main():
     data = b"".join(open(p,'rb').read() for p in sys.argv[1:-1])

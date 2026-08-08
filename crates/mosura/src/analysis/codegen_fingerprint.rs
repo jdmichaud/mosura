@@ -263,9 +263,9 @@ struct Fp {
 /// `oracle/codegen-probes/watcom/9.01.obj`; before this row it classified as **no known revision**
 /// (an empty result), which reads as "not Watcom".
 const TABLE: &[Fp] = &[
-    Fp { revision: "watcom:9.01", promoted: Some(false), zero_extended: Some(true), loop_bound: Some("EBX"), sw_ascending: Some(true) },
+    Fp { revision: "watcom:7.0/8.5a/9.01", promoted: Some(false), zero_extended: Some(true), loop_bound: Some("EBX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:10.0/10.0a", promoted: Some(true), zero_extended: Some(false), loop_bound: Some("EBX"), sw_ascending: Some(true) },
-    Fp { revision: "watcom:10.5/10.6", promoted: Some(false), zero_extended: Some(false), loop_bound: Some("EBX"), sw_ascending: Some(true) },
+    Fp { revision: "watcom:9.5b/10.5/10.6", promoted: Some(false), zero_extended: Some(false), loop_bound: Some("EBX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:11.0", promoted: Some(false), zero_extended: Some(false), loop_bound: Some("ECX"), sw_ascending: Some(true) },
     Fp { revision: "watcom:open", promoted: Some(false), zero_extended: Some(true), loop_bound: Some("ECX"), sw_ascending: Some(false) },
 ];
@@ -371,9 +371,9 @@ mod tests {
     #[test]
     fn measured_fingerprints_classify_uniquely() {
         let cases: &[(&str, Signals)] = &[
-            ("watcom:9.01", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(true), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
+            ("watcom:7.0/8.5a/9.01", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(true), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:10.0/10.0a", Signals { byte_compare_promoted: Some(true), result_zero_extended: Some(false), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
-            ("watcom:10.5/10.6", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(false), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
+            ("watcom:9.5b/10.5/10.6", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(false), loop_bound_reg: Some("EBX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:11.0", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(false), loop_bound_reg: Some("ECX".into()), sw_cmp_ascending: Some(true) }),
             ("watcom:open", Signals { byte_compare_promoted: Some(false), result_zero_extended: Some(true), loop_bound_reg: Some("ECX".into()), sw_cmp_ascending: Some(false) }),
         ];
@@ -391,7 +391,7 @@ mod tests {
         let byte_only = Signals { byte_compare_promoted: Some(false), ..Default::default() };
         assert_eq!(
             classify(&byte_only),
-            vec!["watcom:9.01", "watcom:10.5/10.6", "watcom:11.0", "watcom:open"]
+            vec!["watcom:7.0/8.5a/9.01", "watcom:9.5b/10.5/10.6", "watcom:11.0", "watcom:open"]
         );
     }
 
@@ -421,15 +421,42 @@ mod tests {
         // is separated from every other row by exactly one signal — ow2 by the loop register and
         // the switch order, 10.6 by the `movzx`. Adding it collapsed nothing, but a sixth revision
         // easily could, and an empty or two-element result here is what that would look like.
-        assert_eq!(load("9.01"), vec!["watcom:9.01"]); // CMP AL,5 + MOVZX + EBX + ascending
+        assert_eq!(load("9.01"), vec!["watcom:7.0/8.5a/9.01"]); // CMP AL,5 + MOVZX + EBX + ascending
         assert_eq!(load("10.0a"), vec!["watcom:10.0/10.0a"]); // CMP EAX,5 + EBX + ascending
-        assert_eq!(load("10.6"), vec!["watcom:10.5/10.6"]); // CMP AL,5 + EBX + ascending
-        assert_eq!(load("10.5"), vec!["watcom:10.5/10.6"]); // 10.5 measured, not inferred
+        assert_eq!(load("10.6"), vec!["watcom:9.5b/10.5/10.6"]); // CMP AL,5 + EBX + ascending
+        assert_eq!(load("10.5"), vec!["watcom:9.5b/10.5/10.6"]); // 10.5 measured, not inferred
+        // The pre-10.0 floppy revisions, also measured rather than assumed. Their probe CODE all
+        // differs (7.0=156, 8.5a=160, 9.01=150 bytes) but the four signals coincide, so they share
+        // a row — which is why the row is named for all three rather than for 9.01 alone.
+        assert_eq!(load("8.5a"), vec!["watcom:7.0/8.5a/9.01"]);
+        assert_eq!(load("7.0"), vec!["watcom:7.0/8.5a/9.01"]);
+        // 9.5b sits BEFORE 10.0a chronologically but classifies with 10.5/10.6, not with 10.0a —
+        // see `watcom_9_5b_is_not_on_a_monotonic_lineage`.
+        assert_eq!(load("9.5b"), vec!["watcom:9.5b/10.5/10.6"]);
         assert_eq!(load("11.0"), vec!["watcom:11.0"]); // CMP AL,5 + ECX + ASCENDING switch (vs open's descending)
         assert_eq!(load("ow2"), vec!["watcom:open"]); // CMP AL,5 + ECX + MOVZX + descending
     }
 
-    /// Why `watcom:10.5/10.6` is ONE row and not two: 10.5 and 10.6 emit **byte-identical code**
+    /// The lineage is NOT monotonic, and this is the test that says so.
+    ///
+    /// 9.5b (1993) ships the codegen of 10.5/10.6 (1995) — its probe code is byte-identical to
+    /// theirs — while 10.0a (1994), which sits BETWEEN them in release order, is the odd one out
+    /// (it alone promotes the byte compare). "Later release ⇒ later codegen" is therefore false
+    /// here, and interpolating an unmeasured revision from its neighbours is unsound: had 9.5b
+    /// been guessed from 9.01 and 10.0a, BOTH neighbours would have given the wrong answer.
+    ///
+    /// WAR2's identification is unaffected: it rests on 10.0a's *promoting* `cmp eax,5`, which
+    /// remains unique to that row.
+    #[test]
+    fn watcom_9_5b_is_not_on_a_monotonic_lineage() {
+        let dir = crate::paths::codegen_probes_dir().join("watcom");
+        let read = |rev: &str| std::fs::read(dir.join(format!("{rev}.code"))).unwrap();
+        assert_eq!(read("9.5b"), read("10.5"), "9.5b diverged from the 10.5/10.6 codegen");
+        assert_ne!(read("9.5b"), read("10.0a"), "9.5b matches its later neighbour 10.0a");
+        assert_ne!(read("9.5b"), read("9.01"), "9.5b matches its earlier neighbour 9.01");
+    }
+
+    /// Why `watcom:9.5b/10.5/10.6` is ONE row and not three: they emit **byte-identical code**
     /// for the probe. Not "no signal separates them" — the same 156 bytes.
     ///
     /// This row used to be an *inference*: 10.5's compiler could not be run, so it was bracketed
@@ -486,7 +513,7 @@ mod tests {
         let vmovzx = identify_watcom("x86:LE:32:default", &[0x3C, 0x05, 0x0F, 0x94, 0xC0, 0x0F, 0xB6, 0xC0, 0xC3], 0x1000);
         assert_eq!(
             vmovzx,
-            vec!["watcom:9.01", "watcom:open"],
+            vec!["watcom:7.0/8.5a/9.01", "watcom:open"],
             "byte compare + movzx cannot select between 9.01 and open on its own → {vmovzx:?}"
         );
     }
@@ -561,7 +588,7 @@ mod tests {
         // Composition: a fired anchor is folded into `result_zero_extended`, which excludes the
         // classic interior and leaves the two outer revisions — the honest narrowing.
         let narrowed = Signals { result_zero_extended: Some(true), ..Default::default() };
-        assert_eq!(classify(&narrowed), vec!["watcom:9.01", "watcom:open"]);
+        assert_eq!(classify(&narrowed), vec!["watcom:7.0/8.5a/9.01", "watcom:open"]);
     }
 
     /// The division anchor's false-positive guards, on encodings mosura's engine decodes. The
@@ -591,5 +618,6 @@ mod tests {
             "unsigned constant division"
         );
     }
+
 
 }
