@@ -68,7 +68,9 @@ fn identify(binary: &std::path::Path) -> Option<(BTreeSet<String>, usize, usize)
         return None;
     }
     let results = analyzer::search_program(&program, &service);
-    let names: BTreeSet<String> = results.into_iter().map(|r| r.name).collect();
+    // `name` is now `Option`: a result with `None` is a recognised-but-ambiguous match that
+    // carries a plate comment instead of a rename. Only the named ones belong in this set.
+    let names: BTreeSet<String> = results.into_iter().filter_map(|r| r.name).collect();
     Some((names, program.function_manager.function_count(), service.function_count()))
 }
 
@@ -237,4 +239,68 @@ fn default_search_path_includes_mosura_built_databases() {
         "no signature database attaches for x86:LE:32:default/watcom — the Watcom column is \
          present in oracle/fid/db but unreachable from the analyzer"
     );
+}
+
+/// A recognised-but-ambiguous match must leave a PLATE COMMENT even though it is not renamed.
+///
+/// Ghidra's `processMatches` calls `applyMarkup(function, null, plateComment, bookmark)` when the
+/// matches cannot be narrowed to one name: it declines to rename — two functions with identical
+/// code cannot be told apart, and guessing would put a wrong name on one — but it still records
+/// what it found. mosura returned `Option<String>` and dropped that, so a recognised-but-ambiguous
+/// function looked exactly like an unrecognised one.
+///
+/// Measured on WAR2 when this was found: 3 functions sit in this state, two scoring 75.0 against
+/// a pair of names (`__grab_int23_` / `__grab_int_ctrl_break_` — genuinely identical code).
+#[test]
+fn ambiguous_matches_leave_a_plate_comment_without_renaming() {
+    use mosura::analysis::fid::matcher::apply_markup;
+
+    // Two records, same hash, DIFFERENT base names, both scoring well above the multi-name bar:
+    // the shape Ghidra refuses to name.
+    let Some(result) = ambiguous_search_result() else {
+        return; // no database available
+    };
+    let markup = apply_markup(&result);
+    assert!(markup.name.is_none(), "different base names must NOT be renamed, got {:?}", markup.name);
+    assert!(
+        markup.plate.contains("Multiple Matches"),
+        "an ambiguous match must still be recorded; plate was {:?}",
+        markup.plate
+    );
+}
+
+/// Build a `SearchResult` whose matches carry different base names, from a real database so the
+/// scoring path is the real one. Returns `None` when no database is present.
+fn ambiguous_search_result() -> Option<mosura::analysis::fid::matcher::SearchResult> {
+    use mosura::analysis::fid::matcher::{HashFamily, Seeker};
+    let dir = paths::fid_db_dir();
+    if !dir.exists() {
+        return None;
+    }
+    let svc = FidQueryService::load_matching(&dir, "x86:LE:32:default", "windows");
+    if svc.is_empty() {
+        return None;
+    }
+    let seeker = Seeker::new(&svc);
+    // Any full hash shared by two differently-named records will do; scan the service for one.
+    {
+        for (hash, recs) in svc.full_hash_groups() {
+            let mut names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            if names.len() < 2 {
+                continue;
+            }
+            let quad = mosura::analysis::fid::hash::FidHashQuad {
+                code_unit_size: recs[0].code_unit_size,
+                full_hash: *hash,
+                specific_hash_additional_size: recs[0].specific_hash_additional_size,
+                specific_hash: recs[0].specific_hash,
+            };
+            if let Some(r) = seeker.process_matches(&HashFamily { hash: Some(quad), ..Default::default() }) {
+                return Some(r);
+            }
+        }
+    }
+    None
 }

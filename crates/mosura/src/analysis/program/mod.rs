@@ -30,6 +30,20 @@ pub use symbol::{Symbol, SymbolTable, SymbolType};
 use crate::analysis::snapshot::{self, Snapshot};
 use crate::decompile::space::{Address, SpaceId, SpaceManager};
 
+/// A listing comment's position, as Ghidra's `CodeUnit` constants name them
+/// (`EOL_COMMENT`, `PRE_COMMENT`, `POST_COMMENT`, `PLATE_COMMENT`, `REPEATABLE_COMMENT`).
+///
+/// Only `Plate` has a producer today (FID's library-match markup); the rest exist so the key
+/// space matches Ghidra's from the start rather than being widened later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommentKind {
+    Eol,
+    Pre,
+    Post,
+    Plate,
+    Repeatable,
+}
+
 /// The whole-program database (Ghidra `Program`).
 #[derive(Clone, Debug)]
 pub struct Program {
@@ -75,6 +89,15 @@ pub struct Program {
     /// inert, so the ELF/PE/COM paths behave exactly as they did before it existed. Today only
     /// the LE loader fills it, from the binary's own fixup table.
     pub relocation_table: RelocationTable,
+    /// Listing comments, keyed by `(address, kind)` — Ghidra `Listing.setComment`.
+    ///
+    /// Analysis results that are not a name. The first user is FID: when it recognises a
+    /// function but the matches cannot be collapsed to one name, Ghidra deliberately does NOT
+    /// rename, yet still records what it found as a plate comment. Without somewhere to put
+    /// that, a recognised-but-ambiguous function is indistinguishable from an unrecognised one.
+    ///
+    /// Not part of [`Snapshot`], so it does not affect the Ghidra-compared goldens.
+    pub comments: std::collections::BTreeMap<(u64, CommentKind), String>,
     /// Offsets of disassembled indirect branches (`BRANCHIND`) — switch candidates the
     /// decompiler-driven switch analyzer (A6) decompiles to recover jump tables; recorded
     /// by the disassembler so the analyzer only decompiles functions that need it.
@@ -135,6 +158,7 @@ impl Program {
             entry_points: Vec::new(),
             reference_manager: ReferenceManager::new(),
             relocation_table: RelocationTable::new(),
+            comments: std::collections::BTreeMap::new(),
             indirect_branches: std::collections::HashSet::new(),
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),

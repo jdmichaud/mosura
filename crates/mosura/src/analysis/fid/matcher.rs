@@ -352,16 +352,67 @@ pub fn collapse_names(matches: &[HashMatch]) -> Option<String> {
 /// also reach `MULTINAME_SCORE_THRESHOLD`. Below that, Ghidra applies nothing at all rather
 /// than guess — which is the behaviour that keeps a wrong name off a function.
 pub fn apply_name(result: &SearchResult) -> Option<String> {
+    apply_markup(result).name
+}
+
+/// What FID decided about a function — `ApplyFidEntriesCommand.processMatches` (`:105-150`) in
+/// full, not just the name half.
+///
+/// **A match that cannot be narrowed to one name still produces markup.** Ghidra calls
+/// `applyMarkup(function, newFunctionName, plateComment, bookmark, monitor)` with a NULL name in
+/// that case: it declines to rename — two functions with identical code cannot be told apart, and
+/// guessing would put a wrong name on one — but it records what it found. Returning only
+/// `Option<String>` threw that away, so a recognised-but-ambiguous function was indistinguishable
+/// from an unrecognised one. Measured on WAR2: 3 functions are in exactly this state, two of them
+/// scoring 75.0 against a pair of names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FidMarkup {
+    /// The name to apply, or `None` when the matches cannot be collapsed to one.
+    pub name: Option<String>,
+    /// The plate comment (`generateComment`: a header line, the matched names, the libraries).
+    /// Empty when nothing should be applied at all.
+    pub plate: String,
+}
+
+pub fn apply_markup(result: &SearchResult) -> FidMarkup {
+    let none = FidMarkup { name: None, plate: String::new() };
     let matches = result.matches();
     if matches.is_empty() {
-        return None;
+        return none;
     }
     let collapsed = collapse_names(matches);
     if collapsed.is_none() {
+        // `getMostOptimisticCount() > 1` — genuinely different base names. Below the multi-name
+        // bar Ghidra returns before applying anything, comment included.
         let top = matches.iter().map(HashMatch::overall_score).fold(f32::MIN, f32::max);
         if top < MULTINAME_SCORE_THRESHOLD {
-            return None;
+            return none;
         }
     }
-    collapsed
+
+    // `generateComment(header)`: header, then up to 4 names, then the libraries.
+    let header = if collapsed.is_some() {
+        "Library Function - Single Match"
+    } else {
+        "Library Function - Multiple Matches With Different Base Names"
+    };
+    let mut names: Vec<&str> = matches.iter().map(|m| m.record.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut plate = String::from(header);
+    plate.push('\n');
+    for n in names.iter().take(4) {
+        plate.push(' ');
+        plate.push_str(n);
+        plate.push('\n');
+    }
+    if names.len() > 4 {
+        plate.push_str(" ...\n");
+    }
+    // Ghidra's `generateComment` ends with `listLibraries`, which we omit: a `FunctionRecord`
+    // carries `library_id`, and resolving it to a NAME needs the database, which the matcher
+    // does not hold. Printing the raw id would be noise, so the line is left out rather than
+    // faked — the header and the candidate names are the part that tells a reader what happened.
+
+    FidMarkup { name: collapsed, plate }
 }

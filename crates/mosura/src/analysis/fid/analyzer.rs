@@ -23,7 +23,7 @@ use crate::decompile::space::Address;
 use super::hash::{
     CodeUnitInput, FidHashQuad, FidHasher, OperandAddressQuery, RelocationQuery, Skipper,
 };
-use super::matcher::{apply_name, HashFamily, Seeker};
+use super::matcher::{apply_markup, HashFamily, Seeker};
 use super::query::FidQueryService;
 
 /// The program's relocation table as an inclusive-range query
@@ -160,7 +160,12 @@ fn is_default_name(name: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct FidResult {
     pub entry: Address,
-    pub name: String,
+    /// The name to apply, or `None` when FID recognised the function but the matches could not
+    /// be narrowed to a single name. Ghidra declines to rename in that case and still records
+    /// the finding as a plate comment, so a `None` here is a RESULT, not the absence of one.
+    pub name: Option<String>,
+    /// The plate comment Ghidra's `generateComment` produces. Never empty for a returned result.
+    pub plate: String,
     pub score: f32,
     /// True when several records tied and their names collapsed to one.
     pub multiple: bool,
@@ -224,7 +229,10 @@ pub fn search_program(program: &Program, service: &FidQueryService) -> Vec<FidRe
         };
 
         let Some(result) = seeker.process_matches(&family) else { continue };
-        let Some(name) = apply_name(&result) else { continue };
+        let markup = apply_markup(&result);
+        if markup.plate.is_empty() {
+            continue; // below the apply gate entirely — nothing to say about this function
+        }
         let score = result
             .matches()
             .iter()
@@ -232,7 +240,8 @@ pub fn search_program(program: &Program, service: &FidQueryService) -> Vec<FidRe
             .fold(f32::MIN, f32::max);
         results.push(FidResult {
             entry,
-            name,
+            name: markup.name,
+            plate: markup.plate,
             score,
             multiple: result.matches().len() > 1,
         });
@@ -304,13 +313,21 @@ impl Analyzer for FidAnalyzer {
             if !is_default_name(function.name()) {
                 continue;
             }
-            program.function_manager.set_name(result.entry, &result.name);
-            program.symbol_table.add_symbol(
-                result.entry,
-                &result.name,
-                crate::analysis::program::symbol::SymbolType::Function,
+            // The plate comment goes on whether or not a name does — `applyMarkup` is called with
+            // a null name for an ambiguous match, so "recognised but could not be narrowed" is
+            // recorded rather than silently dropped.
+            program.comments.insert(
+                (result.entry.offset, crate::analysis::program::CommentKind::Plate),
+                result.plate.clone(),
             );
             applied = true;
+            let Some(name) = result.name.as_deref() else { continue };
+            program.function_manager.set_name(result.entry, name);
+            program.symbol_table.add_symbol(
+                result.entry,
+                name,
+                crate::analysis::program::symbol::SymbolType::Function,
+            );
         }
         applied
     }

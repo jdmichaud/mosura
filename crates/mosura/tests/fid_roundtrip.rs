@@ -99,8 +99,10 @@ fn round_trip(stem: &str) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
     let mut service = FidQueryService::new();
     service.attach(reloaded.into_database(stem));
 
+    // `name` is `Option`: `None` marks a recognised-but-ambiguous match, which carries a plate
+    // comment rather than a rename and so is not a "found name".
     let found: BTreeSet<String> =
-        search_program(&program, &service).into_iter().map(|r| r.name).collect();
+        search_program(&program, &service).into_iter().filter_map(|r| r.name).collect();
     Some((findable, found))
 }
 
@@ -189,7 +191,9 @@ fn a_database_does_not_match_unrelated_code() {
     // `_start` and other CRT-shaped stubs are legitimately shared between two binaries built
     // the same way; anything else would be a false positive.
     for hit in &hits {
-        let named = &hit.name;
+        let Some(named) = hit.name.as_deref() else {
+            continue; // ambiguous match: markup only, no name to check against the source
+        };
         assert!(
             names.values().any(|n| n == named),
             "matched a name that is not even in the source database: {named}"

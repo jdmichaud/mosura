@@ -214,6 +214,13 @@ impl FidQueryService {
     /// The databases live in two places (vendored Ghidra `.fidb` and the ones mosura builds), and
     /// a program can legitimately match in either. Each directory is cached independently by
     /// [`Self::load_matching`].
+    /// Every distinct full hash and the records under it — the raw index, for callers that need
+    /// to reason about collisions (a hash with several differently-named records is exactly the
+    /// ambiguous case FID refuses to name).
+    pub fn full_hash_groups(&self) -> impl Iterator<Item = (&u64, &Vec<FunctionRecord>)> {
+        self.databases.iter().flat_map(|d| d.by_full_hash.iter())
+    }
+
     pub fn load_matching_all(
         dirs: &[std::path::PathBuf],
         language_id: &str,
