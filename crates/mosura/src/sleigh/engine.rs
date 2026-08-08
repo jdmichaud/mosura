@@ -1776,12 +1776,10 @@ impl Spec {
             // getOperandValueMask(op_i): token-field value bits (`buildOperandMask`).
             let mut value_mask = vec![0u8; mask_len];
             self.combine_operand_mask(mnem, op_i, &mut value_mask);
-            if value_mask.iter().all(|&b| b == 0) {
-                // Empty mask fallback: "steal" the operand sub-constructor's pattern
-                // bits (`buildOperandMask`: `mainSubGroups.get(sym.getName())`).
-                if let (Some(OpNode::Sub(_)), Some(Some(subfp))) =
-                    (mnem.operands.get(op_i), mnem_fp.subs.get(op_i))
-                {
+            if value_mask.iter().all(|&b| b == 0) && self.steals_pattern_bits(mnem, op_i) {
+                // Empty-mask fallback: "steal" the operand sub-constructor's pattern bits
+                // (`buildOperandMask`: `mainSubGroups.get(sym.getName())`).
+                if let Some(Some(subfp)) = mnem_fp.subs.get(op_i) {
                     let mut fb = vec![0u8; mask_len];
                     self.subtree_mask(subfp, &mut fb);
                     value_mask = fb;
@@ -1870,6 +1868,38 @@ impl Spec {
             }
             return (cur, curfp);
         }
+    }
+
+    /// Whether the empty-mask fallback may steal operand `op_index`'s sub-constructor pattern
+    /// bits — Ghidra's `mainSubGroups.get(sym.getName()) != null` test.
+    ///
+    /// **The lookup is allowed to MISS, and that is the whole point.** Ghidra populates
+    /// `mainSubGroups` in `startPatternGroup` (`SleighDebugLogger.java:812-818`) only under
+    /// `currentGroup == mainGroup && name != null` — named groups whose parent is the *main*
+    /// group. Resolution enters the root `instruction` table first, so that root is the only
+    /// direct named child; every operand's subtable group is pushed one level deeper and is
+    /// therefore never a key. Confirmed against Ghidra itself rather than reasoned about —
+    /// `oracle/fid/FidMaskGroupDump.java` reads the private map by reflection and prints
+    /// `mainSubGroups keys = [instruction]` for AArch64 `mov x29,sp`.
+    ///
+    /// So the fallback fires only for an operand whose defining symbol *is* the root subtable,
+    /// which no current language does. Applying it unconditionally was the entire R7 hash-parity
+    /// gap: for `mov x29,sp` (an alias of `add x29,sp,#0` where the pattern pins `Rn` to 31)
+    /// `combine_operand_mask` already returns Ghidra's `00000000`, and the unconditional fallback
+    /// overwrote it with the `Rn` field bits, which then got cleared out of the instruction mask.
+    /// Gating it moved gcc-aarch64 from 16/56 to 52/56 byte-identical quads with **no other
+    /// column changed** (gcc-x86-64 stays 52/52), so the fallback was load-bearing for nothing.
+    ///
+    /// Kept as a gated port rather than deleted: it is Ghidra's structure, and it would start
+    /// firing on its own if a language ever did make the root table an operand. (Ghidra's own
+    /// source carries a `// FIXME !!!!!!!!!!!!!!!!!!!!` on that condition.)
+    fn steals_pattern_bits(&self, node: &Node, op_index: usize) -> bool {
+        if !matches!(node.operands.get(op_index), Some(OpNode::Sub(_))) {
+            return false;
+        }
+        let Some(&op_id) = self.ctor_of(node).operand_ids.get(op_index) else { return false };
+        let Some(op_sym) = self.operand(op_id) else { return false };
+        op_sym.subsym.is_some_and(|s| s as usize == self.root_subtable)
     }
 
     /// OR every matched pattern block in this node's subtree into `out`

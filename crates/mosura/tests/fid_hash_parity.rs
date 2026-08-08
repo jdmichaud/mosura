@@ -289,7 +289,11 @@ fn quads_match_ghidra_byte_for_byte() {
         ("gcc-x86-64", 52, 52),
         ("watcom-x86-32", 83, 84),
         ("gcc-riscv64", 53, 58),
-        ("gcc-aarch64", 16, 56),
+        // Raised 16 -> 52 when the empty-mask fallback was gated the way Ghidra gates it
+        // (`steals_pattern_bits`). The 4 stragglers are a separate, undiagnosed cause.
+        ("gcc-aarch64", 52, 56),
+        // UNMOVED by that fix, which is itself a finding: m68k was assumed to share AArch64's
+        // root cause and does not. Its gap is a different defect, still undiagnosed.
         ("gcc-m68k", 12, 41),
         ("watcom-le", 0, 1),
     ];
