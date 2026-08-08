@@ -15,7 +15,7 @@ All gaps below were closed on 2026-08-08. **71 databases / 43,925 records -> 85 
 | --- | --- | --- |
 | **Watcom** 32-bit, per version | `CLIB3R` + `MATH3R` + `MATH387R` + `EMU387` + `GRAPH` | `CLIB3R` only |
 | **Watcom** stack ABI, per version | `CLIB3S` + `MATH3S` + `MATH387S` — **5 new databases** | nothing |
-| **Watcom** 16-bit (10.5) | `CLIB{C,H,L,M,S}` + `EMU87` + `GRAPH` — **5 new databases** | nothing |
+| **Watcom** 16-bit (10.5) | `CLIB{C,H,L,M,S}` + `MATH87<M>` + `MATH<M>` + `EMU87` + `GRAPH` — **5 new databases** | nothing |
 | **Borland** 16-bit, per model | `C<M>` + `MATH<M>` + `EMU` + `FP87` + `GRAPHICS` + `OVERLAY` | `C<M>` only |
 | **Borland** 32-bit flat | `CW32` (math is built in — no `MATH32` exists) | unchanged, already complete |
 | **Watcom** C++, per version | `PLIB3R` + `PLBX3R` + `CPLX3R` — **4 new databases** | nothing (ingested to 0) |
@@ -48,9 +48,11 @@ libraries — it has its own renderer and does no library float work.
 
 That is not an argument against the change. It is the difference between *coverage* and *this
 binary*: the gap was real for any program that does use `sqrt`, BGI graphics, or the `-3s` ABI,
-and none of those programs could be identified before. It does mean the WAR2 misses (task: the
-8 CRT functions) were never a library-coverage problem, which is what the audit was originally
-chasing.
+and none of those programs could be identified before.
+
+It also pointed the right way. The WAR2 misses were **not** a library-coverage problem, which is
+what the audit was chasing — they were a loader problem, and the section below records what
+actually closed them.
 
 ## Watcom, in detail
 
@@ -61,8 +63,22 @@ Ingested as a separate `Stack` variant (`-3s`): **`CLIB3S` + `MATH3S` + `MATH387
 named `watcom-<ver>-stack-x86-32`. A separate database, not merged: it is a different build of the
 same functions, and merging would file two different bodies under one name.
 
-Ingested for 16-bit (10.5, from the ISO's `LIB286/`): **`CLIB{C,H,L,M,S}` + `EMU87` + `GRAPH`** —
-5 databases `watcom-10.5-c{c,h,l,m,s}-x86-16`, language `x86:LE:16:Real Mode`, cspec `default`.
+Ingested for 16-bit (10.5, from the ISO's `LIB286/`): **`CLIB{C,H,L,M,S}` + `MATH87<M>` +
+`MATH<M>` + `EMU87` + `GRAPH`** — 5 databases `watcom-10.5-c{c,h,l,m,s}-x86-16`, language
+`x86:LE:16:Real Mode`, cspec `default`.
+
+⚠️ **The math libraries here were missed by this audit and found later, by tooling.** The 16-bit
+column was staged by extracting `LIB286/DOS/*` from the ISO, and `MATH87<M>.LIB` / `MATH<M>.LIB`
+sit one directory **above** that, in `LIB286/` itself — so a `find` over the staged tree returned
+nothing and the column looked complete while every 16-bit float routine was absent. What caught it
+was `scripts/rebuild-fid-db.sh`: it names each source library explicitly and *reports* an absent
+one rather than quietly building from what happens to be there. An audit that greps a staged
+directory can only ever confirm what was staged.
+
+Not ingested from `LIB286/DOS/`: `CLIBOL.LIB` / `CLIBOM.LIB`, the overlaid-program C libraries.
+Those are a different **build** of the same functions, like Watcom's `-3s` variant, so merging
+them into a model's database would file two bodies under one name; covering them means two more
+databases, not more libraries in these.
 
 ⚠️ **`find | head -1` is a trap here.** A Watcom tree contains several `CLIB3R.LIB` — under
 `LIB386/DOS/`, `LIB386/OS2/`, and more. Picking the wrong one silently builds an OS/2 database
@@ -125,7 +141,7 @@ the honest score:
 So **116 of 136 nameable**, not the 107 a name-keyed diff reports. The `unlink_` "disagreement"
 that prompted this was never a disagreement: both are right about different addresses.
 
-## What this audit did NOT explain
+## What this audit did NOT explain — and what did
 
 The investigation started from 8 functions FID misses in WAR2 (`malloc_`, `free_`, `clock_`,
 `close_`, `delay_`, `heap_walk_static_`, `_asctime_static_`, `_localtime_static_`). **The missing
@@ -141,23 +157,41 @@ Two things were ruled out along the way, so nobody repeats them:
   function defined elsewhere, and a text search cannot tell the two apart — that mistake sent
   this investigation in the wrong direction once already.
 
-So the 8 remain open (task: "Close the 8-function Watcom library data gap", whose title now
-overstates what is known). The likely explanation is that these are aliases or thunks rather than
-distinct library members — our database has `_nmalloc_` but not `malloc_`, and Watcom implements
-the ANSI names on top of the near/far/based allocators — but that needs the OMF `PUBDEF` records
-read directly rather than inferred.
+**The answer was in the loader, not the libraries.** Coverage was never the problem: the same
+function, byte-identical in the library and in the linked program, was hashing two different
+ways. An unlinked object leaves relocated fields **zero**, and our OMF loader applied only the
+handful of *call* encodings it recognised — so a data reference kept its zero displacement. That
+is not cosmetic: `[EAX + 0x8ef18]` in the linked program decodes as plain `[EAX]` in the library,
+a different SLEIGH constructor with one fewer operand, and FID folds an operand object per operand
+into the full hash.
+
+Applying every fixup Ghidra's `OmfLoader.processRelocations` applies — every location type, every
+target method, segment-relative as well as self-relative — moved WAR2 from **120 to 130 named
+functions, with nothing lost**, and hash parity against Ghidra unchanged at 308/320. `_asctime_`
+is among the ten recovered.
+
+This is the one an audit could not have found: every internal check was green throughout. The
+databases were self-consistent, scored perfectly against themselves, and drifted from nothing —
+they were simply answering a question no linked binary asks.
 
 ## Regenerating
 
-The recipe now lives in TWO places that must agree: `docs/fid-building-databases.md` (prose) and
-`crates/mosura/tests/fid_database_drift.rs` (executable — each `Source` lists every library of one
-database). That gate re-ingests and byte-compares, so it goes red when the recipe changes and is
-what proves a regeneration reproduced the committed file. It caught this change correctly.
+```sh
+./scripts/rebuild-fid-db.sh -n        # check every source library is present, build nothing
+./scripts/rebuild-fid-db.sh           # rebuild all 85 in place
+./scripts/rebuild-fid-db.sh watcom    # or just one column
+```
 
-Historical note: the original text below described closing the math gap, which is now done.
+That script is the **executable recipe** — every database, every library, in one place. Before it
+existed the recipes were ad-hoc shell loops that survived only in a session transcript, which is
+why the 16-bit math gap above went unnoticed: there was nothing that could state what a database
+was *supposed* to be built from and check it.
 
-Per column, ingest the math library alongside the C library into the **same** database (same
-family/version/variant — it is one runtime), then regenerate and re-run `fid_database_drift`,
-which compares against the committed file and will go red by design until the new file is
-committed in the same change. Expect the record count to rise, and re-run the WAR2 comparison to
-see whether it moves the needle on a real target before doing it for all 71.
+Two other places describe the same thing and must agree with it:
+`docs/fid-building-databases.md` (prose, and *why* each column is built its way) and
+`crates/mosura/tests/fid_database_drift.rs` (a sampled subset — it re-ingests and byte-compares,
+so it goes red when the recipe or the hasher changes, and is what proves a regeneration
+reproduced the committed file).
+
+Regenerating and committing go together: the drift gate compares against the committed file, so
+it is red by design between the two.

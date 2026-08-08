@@ -47,33 +47,43 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // Architecture's `CompilerSpec`): a Watcom LE binary resolves the `__watcall` register
     // convention (`specs/x86-32-watcom.cspec`) rather than the datatest x86-64 SysV default,
     // so parameters/returns are recovered instead of the whole program decompiling as `void(void)`.
-    let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
-        spec,
-        name,
-        &chunks,
-        entry.offset,
-        ctx,
-        &call_return,
-        &program.language_id,
-        &program.compiler_spec_id,
-    );
     // Per-function isolation, faithful to Ghidra's `DecompilerSwitchAnalyzer`: it decompiles each
     // candidate through a `DecompilerCallback` and a single function's decompiler failure is caught
     // and logged, never aborting the analysis pass (DecompInterface returns an error result, not a
     // crash). Mirror that here — a panic inside the ported pipeline on one function yields no
     // jump-table/prototype for it and the pass continues. The half-built `f` is discarded on
     // failure (return None), so no caller observes a partially-decompiled state.
+    //
+    // The guard covers the FLOW BUILD as well as the simplification pipeline, because the flow
+    // build decompiles too: it simplifies a partial function on every round of multistage
+    // jump-table recovery (`build.rs`). Guarding only the second phase left the first unprotected,
+    // and that is where a real failure landed — an Open Watcom `signl.c` whose overlapping
+    // unaligned stack locations never reach SSA, so heritage stalls and `ActionRedundBranch` then
+    // trims a MULTIEQUAL that has no inputs.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::decompile::pipeline::decompile(&mut f);
-    }));
-    if outcome.is_err() {
-        eprintln!(
-            "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto)",
-            entry.offset
+        let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
+            spec,
+            name,
+            &chunks,
+            entry.offset,
+            ctx,
+            &call_return,
+            &program.language_id,
+            &program.compiler_spec_id,
         );
-        return None;
+        crate::decompile::pipeline::decompile(&mut f);
+        f
+    }));
+    match outcome {
+        Ok(f) => Some(f),
+        Err(_) => {
+            eprintln!(
+                "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto)",
+                entry.offset
+            );
+            None
+        }
     }
-    Some(f)
 }
 
 #[cfg(test)]

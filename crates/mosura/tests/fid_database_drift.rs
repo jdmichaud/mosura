@@ -69,6 +69,38 @@ const SOURCES: &[Source] = &[
         version: "ow2",
         variant: "Release",
     },
+    // Watcom 10.0a DOS — the column WAR2 is built against, and the one that moved when the OMF
+    // loader learned to apply **absolute** (non-self-relative) fixups. Without a shipped-release
+    // Watcom source here, that change would have gone unmeasured by this gate: the Open Watcom 2
+    // row above is a source build, and the two Borland rows are a different loader path.
+    Source {
+        database: "watcom-10.0a-x86-32.mfid.gz",
+        libraries: &[
+            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/CLIB3R.LIB",
+            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/MATH3R.LIB",
+            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/MATH387R.LIB",
+            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/EMU387.LIB",
+            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/GRAPH.LIB",
+        ],
+        family: "Watcom",
+        version: "10.0a",
+        variant: "Release",
+    },
+    // Watcom 16-bit. A different language (`x86:LE:16:Real Mode`) reached through the same OMF
+    // reader, so it catches a drift that only shows on 16-bit operand masks.
+    Source {
+        database: "watcom-10.5-cs-x86-16.mfid.gz",
+        libraries: &[
+            "/data/watcom16/LIB286/DOS/CLIBS.LIB",
+            "/data/watcom16/LIB286/MATH87S.LIB",
+            "/data/watcom16/LIB286/MATHS.LIB",
+            "/data/watcom16/LIB286/DOS/EMU87.LIB",
+            "/data/watcom16/LIB286/DOS/GRAPH.LIB",
+        ],
+        family: "Watcom",
+        version: "10.5",
+        variant: "cs",
+    },
     // Borland 4.5 — the one Borland install that lives on persistent storage. Covers x86-16,
     // which is where the R7 drift actually landed, and x86-32 as a control.
     Source {

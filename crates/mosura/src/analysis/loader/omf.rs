@@ -23,8 +23,9 @@
 //! | `PUBDEF` | `0x90`/`0x91` | public symbols: `(name, segment, offset)` |
 //! | `MODEND` | `0x8A`/`0x8B` | end of module |
 //!
-//! | `EXTDEF` | `0x8C` | external symbol names a call can target |
-//! | `FIXUPP` | `0x9C`/`0x9D` | relocations — which call sites target which external |
+//! | `EXTDEF` | `0x8C` | external symbol names a reference can target |
+//! | `GRPDEF` | `0x9A` | segment groups (`DGROUP`), which a fixup can target |
+//! | `FIXUPP` | `0x9C`/`0x9D` | relocations — which sites refer to what |
 //!
 //! The odd id is the 32-bit variant: the low bit means offsets and lengths are 32-bit rather
 //! than 16-bit.
@@ -58,6 +59,25 @@
 //! the full hash masks the displacement away entirely, and a slot address is far larger than
 //! the 256 cutoff that would let the specific hash keep it — so this restores the call flow
 //! without making a body's signature depend on our synthetic layout.
+//!
+//! ### The same argument applies to data, and there it changes the hash
+//!
+//! A fixup on a *data* reference — `mov al,[eax + <extern>]` — is not self-relative, and
+//! handling only the self-relative ones left those fields zero. That looks harmless, since the
+//! full hash masks displacements anyway. It is not, because it changes which **constructor**
+//! SLEIGH selects: a zero displacement matches the no-displacement addressing form, so
+//! `[EAX + 0x8ef18]` in the linked program decodes as plain `[EAX]` in the library. The masked
+//! bytes of the two are identical; the *operand lists* are not, and FID folds an operand object
+//! per operand into the full hash.
+//!
+//! The consequence was invisible in every internal check — the database was self-consistent,
+//! scored perfectly against itself, and drifted from nothing — while the affected functions
+//! could never be identified in a real binary, because byte-identical code hashed two different
+//! ways depending on whether a linker had run.
+//!
+//! So the fixup handling is a port of Ghidra's `OmfLoader.processRelocations` — every location
+//! type, every target method, segment-relative and self-relative alike — rather than the handful
+//! of call encodings it started as. See [`OmfFixup`].
 
 use super::elf::LoadError;
 use crate::analysis::program::{Memory, Program, SymbolType};
@@ -123,30 +143,58 @@ fn omf_index(data: &[u8], at: usize) -> Option<(usize, usize)> {
     }
 }
 
-/// How an external reference is encoded at its fixup site.
+/// What a fixup points at — the `TARGT` field of the FIXUPP "fix dat" byte.
+///
+/// Indexes are 1-based, as OMF writes them. Method 3 (and its no-displacement twin 7) is an
+/// explicit frame-number target that Ghidra rejects as "not supported by many linkers"; it is
+/// dropped at parse time rather than represented here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FixupKind {
-    /// A 2-byte self-relative displacement — `call rel16`, the near memory models.
-    Near16,
-    /// A 4-byte self-relative displacement — `call rel32`, 32-bit code.
-    Near32,
-    /// A 16:16 segment:offset pointer — `call far`, the medium/large/huge memory models.
-    ///
-    /// These are **segment-relative**, not self-relative, which is why they need separate
-    /// handling: the field holds an absolute `offset` word followed by a `segment` word rather
-    /// than a displacement. Leaving them unpatched costs the far models nearly all their
-    /// caller/callee relations, and relations are what carry a small function over the score
-    /// threshold.
-    Far1616,
+pub enum FixupTarget {
+    /// `SEGDEF` index — a location in one of this module's own segments.
+    Segment(usize),
+    /// `GRPDEF` index — a group, whose address is that of its first member segment.
+    Group(usize),
+    /// `EXTDEF` index — a symbol defined in some other module.
+    External(usize),
 }
 
-impl FixupKind {
-    /// Bytes the fixup occupies at its site.
-    fn width(self) -> usize {
-        match self {
-            FixupKind::Near16 => 2,
-            FixupKind::Near32 => 4,
-            FixupKind::Far1616 => 4,
+/// One `FIXUPP` fixup, in the form Ghidra's `OmfLoader.processRelocations` consumes.
+///
+/// The earlier shape of this was a small enum of *encodings we recognised* (`Near16`, `Near32`,
+/// `Far1616`), which is why data references were silently dropped: an encoding this loader had no
+/// name for simply did not exist. Recording the raw `(location, self_relative, target)` instead
+/// makes an unhandled case a `match` arm that can be seen, rather than a fixup that vanishes.
+#[derive(Debug, Clone, Copy)]
+pub struct OmfFixup {
+    /// 1-based `SEGDEF` index of the segment holding the field to patch.
+    pub segment: usize,
+    /// Offset of that field within the segment.
+    pub offset: usize,
+    pub target: FixupTarget,
+    /// The `TARGET DISPLACEMENT`, added to the target's address for methods 0–2.
+    pub displacement: u64,
+    /// `LLLL` from the fixup's first byte: the field's size and meaning. See [`Self::width`].
+    pub location: u8,
+    /// The `M` bit **inverted**: true when the field holds a displacement from its own end.
+    /// Ghidra calls the complement "segment relative"; the two names describe one bit.
+    pub self_relative: bool,
+    /// Easy OMF-386 widens the nominally-16-bit location codes 1 and 5 to 32-bit fields.
+    pub wide: bool,
+}
+
+impl OmfFixup {
+    /// Bytes the field occupies at its site.
+    ///
+    /// Ghidra reads 4 bytes for location 4 (high-order byte) along with 9 and 13, which is what
+    /// this reproduces — the case arises in no library ingested here, and diverging from the
+    /// reference on an untestable path buys nothing.
+    fn width(&self) -> usize {
+        match self.location {
+            0 => 1,
+            1 | 5 if self.wide => 4,
+            1 | 2 | 5 => 2,
+            3 | 4 | 9 | 13 => 4,
+            _ => 0,
         }
     }
 }
@@ -161,9 +209,10 @@ pub struct OmfModule {
     pub publics: Vec<(String, usize, u64)>,
     /// `EXTDEF` names, in declaration order (the 1-based index fixups refer to).
     pub externals: Vec<String>,
-    /// Fixups targeting an external: `(segment index, offset of the field, external index,
-    /// [`FixupKind`])`.
-    pub external_fixups: Vec<(usize, usize, usize, FixupKind)>,
+    /// `GRPDEF` groups, each the 1-based `SEGDEF` indexes of its member segments.
+    pub groups: Vec<Vec<usize>>,
+    /// Every `FIXUPP` fixup this module declares, in record order.
+    pub fixups: Vec<OmfFixup>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -210,6 +259,8 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
     let mut names: Vec<String> = Vec::new(); // LNAMES pool, 1-based
     // A FIXUPP's offsets are relative to the LEDATA record immediately before it.
     let mut last_ledata: Option<(usize, usize)> = None;
+    // The four target THREADs, which stay in force across the module's FIXUPP records.
+    let mut target_threads: [Option<(u8, usize)>; 4] = [None; 4];
     // Easy OMF-386: even record ids, 32-bit fields (see the module docs).
     let mut easy_omf_386 = false;
 
@@ -353,6 +404,29 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                 });
                 module.publics.push((name, module.segments.len(), offset as u64));
             }
+            // GRPDEF / GRPDEF32 — a named group of segments (`DGROUP` and friends). Only the
+            // membership matters: a fixup with target method 1 resolves to the group's address,
+            // which is that of its first member segment.
+            0x9a | 0x9b => {
+                let Some((_, mut at)) = omf_index(b, 0) else { continue };
+                let mut members = Vec::new();
+                // The body is a sequence of `type(1) index` pairs; type 0xFF is "segment index",
+                // the only one any real toolchain emits.
+                while at < b.len() {
+                    let kind = b[at];
+                    at += 1;
+                    match omf_index(b, at) {
+                        Some((index, next)) => {
+                            at = next;
+                            if kind == 0xff {
+                                members.push(index);
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                module.groups.push(members);
+            }
             // LEDATA / LEDATA32 — enumerated data at an offset within a segment.
             0xa0 | 0xa1 => {
                 let is32 = record.kind & 1 == 1 || easy_omf_386;
@@ -413,7 +487,9 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                 }
             }
             // FIXUPP / FIXUPP32
-            0x9c | 0x9d => parse_fixupp(b, last_ledata, easy_omf_386, &mut module),
+            0x9c | 0x9d => {
+                parse_fixupp(b, last_ledata, easy_omf_386, &mut target_threads, &mut module)
+            }
             _ => {}
         }
         // A FIXUPP's offsets are relative to the LEDATA record it follows.
@@ -432,11 +508,10 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
     module
 }
 
-/// Parse a `FIXUPP` record, keeping the self-relative fixups that target an external symbol.
+/// Parse a `FIXUPP` record, recording every fixup it declares.
 ///
-/// A subrecord with the high bit clear is a THREAD (a reusable frame/target specification); we
-/// do not need them, because a call fixup states its target explicitly. With the high bit set
-/// it is a FIXUP:
+/// A subrecord with the high bit clear is a THREAD — a reusable frame/target specification a
+/// later fixup can name instead of spelling out. With the high bit set it is a FIXUP:
 ///
 /// ```text
 /// byte 0:  1 M LLLL OO      M = 1 segment-relative, 0 self-relative
@@ -446,10 +521,14 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
 /// byte 2:  F FRAME(3) T P TARGT(2)     the "fix dat" byte
 ///          then frame datum (if F=0), target datum (if T=0), displacement (if P=0)
 /// ```
+///
+/// `threads` carries the four target threads across the records of one module, because a THREAD
+/// declared in one `FIXUPP` record stays in force for later ones.
 fn parse_fixupp(
     b: &[u8],
     last_ledata: Option<(usize, usize)>,
     easy_omf_386: bool,
+    threads: &mut [Option<(u8, usize)>; 4],
     module: &mut OmfModule,
 ) {
     let Some((segment, data_offset)) = last_ledata else { return };
@@ -457,14 +536,26 @@ fn parse_fixupp(
     while at < b.len() {
         let first = b[at];
         if first & 0x80 == 0 {
-            // THREAD subrecord: a method byte, then its datum.
+            // THREAD subrecord: `0 D 0 MMM TT` — D selects frame (1) or target (0) thread, MMM
+            // the method, TT the thread number. Only target threads are remembered; a frame
+            // thread does not affect where a fixup points.
+            let is_frame = first & 0x40 != 0;
             let method = (first >> 2) & 0x07;
+            let number = usize::from(first & 0x03);
             at += 1;
-            if method < 4 {
+            let datum = if method < 4 {
                 match omf_index(b, at) {
-                    Some((_, n)) => at = n,
+                    Some((d, n)) => {
+                        at = n;
+                        d
+                    }
                     None => return,
                 }
+            } else {
+                0
+            };
+            if !is_frame {
+                threads[number] = Some((method, datum));
             }
             continue;
         }
@@ -488,50 +579,65 @@ fn parse_fixupp(
                 None => return,
             }
         }
-        let mut target_datum = 0usize;
-        if target_explicit {
+        // A fixup either spells its target out or names a thread that did. Ghidra reads the
+        // method from the *fixup* and the datum from the *thread* in that case
+        // (`getFixMethodWithSub`), which is what this reproduces.
+        let (target_method, target_datum) = if target_explicit {
             match omf_index(b, at) {
                 Some((d, n)) => {
-                    target_datum = d;
                     at = n;
+                    (target_method, d)
                 }
                 None => return,
             }
-        }
+        } else {
+            match threads[usize::from(fix_dat & 0x03)] {
+                Some((thread_method, datum)) => (thread_method & 0x03, datum),
+                // A fixup naming a thread that was never declared is malformed; skipping it is
+                // the only sound option, but the record must still be walked past.
+                None => (0xff, 0),
+            }
+        };
+
+        let mut displacement = 0u64;
         if has_displacement {
-            // 32-bit displacement in a FIXUPP32 record, 16-bit otherwise; both are skipped.
-            at += if location == 9 || location == 13 || easy_omf_386 { 4 } else { 2 };
+            // 32-bit displacement in a FIXUPP32 record, 16-bit otherwise.
+            let wide = location == 9 || location == 13 || easy_omf_386;
+            if wide {
+                let Some(s) = b.get(at..at + 4) else { return };
+                displacement = u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as u64;
+                at += 4;
+            } else {
+                let Some(s) = b.get(at..at + 2) else { return };
+                displacement = u16::from_le_bytes([s[0], s[1]]) as u64;
+                at += 2;
+            }
         }
 
-        // Target method 2 = EXTDEF index. Location 9/13 = a 32-bit offset field, which is what
-        // a `call rel32` carries.
-        //
-        // Location 9/13 are 32-bit offset fields, which is what a `call rel32` carries.
-        // Locations 1 and 5 are the 16-bit plain and loader-resolved offsets — a `call rel16`,
-        // as every DOS-era Borland and Turbo C library uses.
-        //
-        // Under Easy OMF-386 the location codes are reinterpreted along with everything else,
-        // and those nominally-16-bit codes denote **32-bit** offsets. Watcom 9.01 emits
-        // location 5 for its cross-module calls, so rejecting it left them unpatched — 391
-        // functions but only 6 relations, against 426 for the same library built by 10.0a.
-        // Location 3 is a 16:16 far pointer — a far call, always segment-relative. The
-        // self-relative locations are 9/13 (32-bit) and 1/5 (16-bit, or 32-bit under Easy
-        // OMF-386).
-        let kind = match (location, self_relative) {
-            (3, _) => Some(FixupKind::Far1616),
-            (9 | 13, true) => Some(FixupKind::Near32),
-            (1 | 5, true) if easy_omf_386 => Some(FixupKind::Near32),
-            (1 | 5, true) => Some(FixupKind::Near16),
-            _ => None,
+        // Target methods, as Ghidra reads them: 0/4 a segment, 1/5 a group, 2/6 an external.
+        // The `+4` forms carry no displacement, which `has_displacement` has already settled;
+        // masking to the low 2 bits collapses each pair, and 3/7 (an explicit frame number) is
+        // the one Ghidra rejects outright.
+        let target = match target_method {
+            0 => FixupTarget::Segment(target_datum),
+            1 => FixupTarget::Group(target_datum),
+            2 => FixupTarget::External(target_datum),
+            _ => continue,
         };
-        if let (true, true, Some(kind)) = (target_explicit, target_method == 2, kind) {
-            module.external_fixups.push((
-                segment,
-                data_offset + record_offset,
-                target_datum,
-                kind,
-            ));
-        }
+
+        // Under Easy OMF-386 the location codes are reinterpreted along with everything else,
+        // and the nominally-16-bit codes 1 and 5 denote **32-bit** offsets. Watcom 9.01 emits
+        // location 5 for its cross-module calls, so treating it as 16-bit left them unpatched —
+        // 391 functions but only 6 relations, against 426 for the same library built by 10.0a.
+        module.fixups.push(OmfFixup {
+            segment,
+            offset: data_offset + record_offset,
+            target,
+            displacement,
+            location,
+            self_relative,
+            wide: easy_omf_386,
+        });
     }
 }
 
@@ -604,51 +710,123 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
     }
     let external_base = next;
 
-    // Resolve external call sites before the bytes are handed to memory. An unlinked call has
-    // a zero displacement, which decodes as a `goto` rather than a `call` (see the module
-    // docs); patching it to reach the symbol's slot restores the flow. The displacement of a
-    // `call rel32` is relative to the end of its 4-byte field.
-    let mut patched = 0usize;
-    for &(segment, offset, external, kind) in &module.external_fixups {
-        let width = kind.width();
-        let Some(base) = base_of.get(segment).copied().filter(|b| *b != 0) else { continue };
-        let Some(index) = external.checked_sub(1) else { continue };
-        if index >= module.externals.len() {
-            continue;
+    // Apply the fixups before the bytes are handed to memory — a port of Ghidra's
+    // `OmfLoader.processRelocations`, whose structure this follows case for case.
+    //
+    // Two distinct things are at stake. An unlinked *call* has a zero displacement, which decodes
+    // as a `goto` rather than a `call` (see the module docs), so leaving it costs the call graph.
+    // An unlinked *data* reference has a zero displacement too, and there it changes which
+    // addressing-mode constructor SLEIGH selects — the defect described above `FixupKind`'s
+    // replacement. Both are the same omission seen from two sides, which is why the handling is
+    // one loop over every fixup rather than a list of encodings we happened to recognise.
+    for fixup in &module.fixups {
+        let width = fixup.width();
+        if width == 0 {
+            continue; // a location code Ghidra logs as unsupported
         }
-        let Some(seg) = segment.checked_sub(1).and_then(|i| module.segments.get_mut(i)) else {
+        let Some(site_base) = base_of.get(fixup.segment).copied().filter(|b| *b != 0) else {
+            continue;
+        };
+
+        // Resolve the target to an address in our synthetic layout. Ghidra adds the target
+        // displacement for methods 0-2, which is every method reaching here.
+        let target = match fixup.target {
+            FixupTarget::Segment(index) => match base_of.get(index).copied().filter(|b| *b != 0) {
+                Some(base) => base,
+                None => continue,
+            },
+            // A group's address is that of its first member segment.
+            FixupTarget::Group(index) => {
+                let Some(members) = index.checked_sub(1).and_then(|i| module.groups.get(i)) else {
+                    continue;
+                };
+                match members.first().and_then(|s| base_of.get(*s)).copied().filter(|b| *b != 0) {
+                    Some(base) => base,
+                    None => continue,
+                }
+            }
+            // Externals live in slots past the last segment, the same device `loader/elf.rs`
+            // uses for undefined symbols.
+            FixupTarget::External(index) => {
+                let Some(index) = index.checked_sub(1).filter(|i| *i < module.externals.len())
+                else {
+                    continue;
+                };
+                external_base + index as u64 * EXTERNAL_SLOT
+            }
+        };
+        let target = target.wrapping_add(fixup.displacement);
+
+        let offset = fixup.offset;
+        let Some(seg) = fixup.segment.checked_sub(1).and_then(|i| module.segments.get_mut(i))
+        else {
             continue;
         };
         if offset + width > seg.data.len() {
             continue;
         }
-        let target = external_base + index as u64 * EXTERNAL_SLOT;
-        let site = base + offset as u64;
-        match kind {
-            // A far pointer is absolute: `offset` word then `segment` word. Our layout is
-            // linear, so the slot splits into `segment = slot >> 4`, `offset = slot & 0xf`.
-            FixupKind::Far1616 => {
-                let Ok(seg_word) = u16::try_from(target >> 4) else { continue };
-                let off_word = (target & 0xf) as u16;
-                seg.data[offset..offset + 2].copy_from_slice(&off_word.to_le_bytes());
-                seg.data[offset + 2..offset + 4].copy_from_slice(&seg_word.to_le_bytes());
+        let site = site_base + offset as u64;
+        let field = &mut seg.data[offset..offset + width];
+        // Ghidra reads the field first and ADDS it to the target when the fixup is
+        // segment-relative: the existing bytes are the addend, which is usually but not always
+        // zero in an unlinked object.
+        let addend = match width {
+            1 => field[0] as i64,
+            2 => i64::from(u16::from_le_bytes([field[0], field[1]])),
+            _ => i64::from(u32::from_le_bytes([field[0], field[1], field[2], field[3]])),
+        };
+        let segment_relative = !fixup.self_relative;
+
+        match fixup.location {
+            // Low-order byte.
+            0 => {
+                let value =
+                    if segment_relative { target as i64 + addend } else { target as i64 - (site as i64 + 1) };
+                field[0] = value as u8;
             }
-            FixupKind::Near16 => {
-                // A 16-bit displacement reaches ±32 KB. The slots sit just past the code, so
-                // this holds for any realistic module; one that cannot reach is left unpatched
-                // rather than silently wrapped onto a wrong target.
-                let displacement = target as i64 - (site as i64 + 2);
-                let Ok(narrow) = i16::try_from(displacement) else { continue };
-                seg.data[offset..offset + 2].copy_from_slice(&narrow.to_le_bytes());
+            // 16-bit offset, and the loader-resolved spelling of the same thing. Under Easy
+            // OMF-386 these are 4-byte fields, so the self-relative arithmetic uses `width`.
+            1 | 5 => {
+                let value = if segment_relative {
+                    target as i64 + addend
+                } else {
+                    target as i64 - (site as i64 + width as i64)
+                };
+                if width == 4 {
+                    field.copy_from_slice(&(value as i32).to_le_bytes());
+                } else {
+                    field.copy_from_slice(&(value as i16).to_le_bytes());
+                }
             }
-            FixupKind::Near32 => {
-                let displacement = target as i64 - (site as i64 + 4);
-                seg.data[offset..offset + 4].copy_from_slice(&(displacement as i32).to_le_bytes());
+            // 16-bit base — a logical segment selector, so it cannot be self-relative.
+            2 => {
+                if !segment_relative {
+                    continue;
+                }
+                let value = ((target as i64 + (addend << 4)) >> 4) as i16;
+                field.copy_from_slice(&value.to_le_bytes());
             }
+            // 32-bit far pointer: a 16-bit segment and a 16-bit offset, never self-relative.
+            // The linear target is split into 64K blocks, each mapped to a paragraph-aligned
+            // segment — `((v & 0xffff0000) << 12) | (v & 0xffff)`, exactly as Ghidra writes it.
+            3 => {
+                if !segment_relative {
+                    continue;
+                }
+                let value = target as i64 + addend;
+                let packed = ((value & 0xffff_0000) << 12) | (value & 0xffff);
+                field.copy_from_slice(&(packed as u32).to_le_bytes());
+            }
+            // 32-bit offset, its loader-resolved spelling, and — following Ghidra — the
+            // high-order-byte code, which shares this arm there.
+            4 | 9 | 13 => {
+                let value =
+                    if segment_relative { target as i64 + addend } else { target as i64 - (site as i64 + 4) };
+                field.copy_from_slice(&(value as i32).to_le_bytes());
+            }
+            _ => {}
         }
-        patched += 1;
     }
-    let _ = patched;
 
     let mut memory = Memory::new();
     for (i, segment) in module.segments.iter().enumerate() {

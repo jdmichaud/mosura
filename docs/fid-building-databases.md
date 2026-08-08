@@ -159,13 +159,15 @@ So the practical question per runtime is how closed its version set is:
 | --- | --- | --- |
 | Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 under `~/.dosemu/drive_c/`, plus Open Watcom 2 — closed, small, all held | **complete across VERSIONS** |
 | Borland, sdcc | bounded | complete columns achievable |
-
-⚠️ "Complete" above means **every version**, not every library. Each column ingests the C
-run-time only; the math/floating-point libraries every vendor ships separately are NOT ingested,
-so a program that does float work has functions we cannot identify. Per-compiler detail:
-[`fid-library-coverage.md`](fid-library-coverage.md).
 | MSVC | Ghidra already ships 1998–2019 | done |
 | gcc / glibc | effectively unbounded — every distro build differs | **no database shipped** (see below) |
+
+"Complete" has two axes and they are easy to confuse. Across **versions**, Watcom and Borland are
+closed sets and every one is held. Across **libraries**, each column once ingested the C run-time
+only — the separately-shipped math, emulator and graphics libraries were missing, so any program
+doing float work had functions no database could name. That is closed too, per column, in
+[`fid-library-coverage.md`](fid-library-coverage.md), which also records what stays deliberately
+excluded (application frameworks, other-OS targets) and why.
 
 Name a database for what it actually contains — `watcom-10.0a-x86-32.mfid`, not `watcom.mfid`
 — and build every version you can obtain. They coexist in one directory and are all consulted.
@@ -266,6 +268,14 @@ every column's gate takes (`fid-port-plan.md` §5 Stage 7). Assert **both** dire
 
 ## Per-column recipes
 
+**To rebuild everything, run `./scripts/rebuild-fid-db.sh`** — it holds all 85 recipes, and
+`-n` checks that every source library is present without building anything. The sections below
+explain *why* each column is built the way it is and how to obtain the libraries in the first
+place; the script is what actually reproduces the committed set. Keep the two in step: a recipe
+that lives only in prose cannot be checked, and the one gap this audit missed — the Watcom 16-bit
+math libraries — survived precisely because nothing could state what the column was supposed to
+contain.
+
 ### MSVC (x86-32 / x86-64) — nothing to build
 
 Ghidra ships these and they are committed at `third_party/ghidra-data/FunctionID/`, covering
@@ -355,11 +365,12 @@ Two routes, and it is worth understanding why there are two.
 ./scripts/build-borland-db.sh objects /path/to/CS.LIB tc2.0 cs
 ```
 
-Names come from `PUBDEF`. The modules are unlinked, so a cross-module call reads
-`call 0000:0000` — the real target lives in a `FIXUPP` record only a linker consumes — and the
-loader applies those fixups itself, pointing each call at a named slot in a synthetic
-`EXTERNAL` block. All three encodings are handled: near 16-bit (`call rel16`), near 32-bit
-(`call rel32`), and the **16:16 far pointer** the medium/large/huge memory models use.
+Names come from `PUBDEF`. The modules are unlinked, so a cross-module reference reads as zero —
+the real target lives in a `FIXUPP` record only a linker consumes — and the loader applies those
+fixups itself, a port of Ghidra's `OmfLoader.processRelocations`: every location type (byte,
+16-bit offset, segment base, 16:16 far pointer, 32-bit offset), every target method (segment,
+group, external), segment-relative as well as self-relative. External targets point at a named
+slot in a synthetic `EXTERNAL` block.
 
 Far calls matter more than their share suggests: they are segment-relative rather than
 self-relative, and leaving them unpatched cost the far models nearly every caller/callee
@@ -367,6 +378,12 @@ relation (9–27, against 193–310 for the near models). Relations are what car
 over the 14.6 score threshold, and about a quarter of a Borland runtime scores below it on body
 size alone — so those functions were unidentifiable despite having a signature. With far fixups
 applied the far models sit in line with the near ones (303–377).
+
+⚠️ **Do not narrow this back to "the encodings a call uses."** That is what it was, and it made
+*data* references keep a zero displacement — which changes the SLEIGH constructor, not just the
+value, so byte-identical code hashed differently in the library and in the linked program. It
+cost WAR2 ten CRT names while every internal check stayed green. See
+[`fid-library-coverage.md`](fid-library-coverage.md).
 
 #### Getting the libraries out of a Borland install set
 

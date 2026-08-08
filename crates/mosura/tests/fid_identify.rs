@@ -282,9 +282,21 @@ fn ambiguous_search_result() -> Option<mosura::analysis::fid::matcher::SearchRes
         return None;
     }
     let seeker = Seeker::new(&svc);
-    // Any full hash shared by two differently-named records will do; scan the service for one.
+    // Scan the service for a full hash shared by records the matcher would REFUSE to name.
+    //
+    // Two subtleties, both of which made an earlier version of this fixture flaky — it passed or
+    // failed at random across runs of the same binary:
+    //
+    // - `full_hash_groups` iterates a `HashMap`, so its order differs per process. The groups are
+    //   sorted by hash here so every run examines the same one first.
+    // - Distinct *record* names are not the precondition. `apply_markup` renames whenever the
+    //   names COLLAPSE to one base name, so a group of `___ismbcl1_l` / `__ismbcl1_l` is a
+    //   single-match rename and testing it asserts the opposite of what it should. The group has
+    //   to survive `collapse_names`, which is exactly `apply_markup(..).name.is_none()`.
+    let mut groups: Vec<_> = svc.full_hash_groups().collect();
+    groups.sort_by_key(|(hash, _)| **hash);
     {
-        for (hash, recs) in svc.full_hash_groups() {
+        for (hash, recs) in groups {
             let mut names: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
             names.sort_unstable();
             names.dedup();
@@ -298,7 +310,9 @@ fn ambiguous_search_result() -> Option<mosura::analysis::fid::matcher::SearchRes
                 specific_hash: recs[0].specific_hash,
             };
             if let Some(r) = seeker.process_matches(&HashFamily { hash: Some(quad), ..Default::default() }) {
-                return Some(r);
+                if mosura::analysis::fid::matcher::apply_markup(&r).name.is_none() {
+                    return Some(r);
+                }
             }
         }
     }

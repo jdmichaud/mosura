@@ -2099,15 +2099,52 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     n
 }
 
+/// Locations that still owe SSA form — the candidate half of [`heritage_complete`], counted
+/// rather than tested, so the driver can tell a pass that made progress from one that did not.
+fn outstanding(f: &Funcdata) -> usize {
+    gather_candidates(f, f.heritage_pass)
+        .iter()
+        .filter(|(l, &has_free)| f.globaldisjoint.find_pass(l.0, l.1) == -1 || has_free)
+        .count()
+}
+
 /// Build the SSA form for `f` to completion in one call — the convenience driver for the alias
 /// probe and unit tests. Drives [`heritage_pass`] over every delay group back-to-back; the
 /// iterating mainloop instead re-invokes `heritage_pass` one pass at a time so other actions run
 /// between passes.
+///
+/// # Why this stops on stalled progress
+///
+/// Ghidra has no such driver: `Heritage::heritage` (heritage.cc:2663) is a **single** pass that
+/// ends with `pass += 1`, and the repetition comes from `ActionHeritage` being re-entered by the
+/// mainloop, whose restart group is itself bounded (`ActionRestartGroup(...,"universal",1)`,
+/// coreaction.cc:5474 — Ghidra allows exactly one restart, then warns and gives up). This loop is
+/// ours, so the bound has to be ours too.
+///
+/// Without one it can spin forever, and does. A `signl.c` module of Open Watcom's `clib3r.lib`
+/// reaches heritage with overlapping unaligned stack locations (offsets 512/514/518/519/523) that
+/// stay `has_free` after being heritaged: every pass manufactures ~10 more ops for the same five
+/// locations, the block count never moves, and the op count climbs without limit. Nothing
+/// downstream could recover — a whole database build hung on one 569-byte module.
+///
+/// So the loop stops when a pass fails to reduce the outstanding set *and* no space is still
+/// waiting for its delay. Progress is the loop's own termination argument, and the delay check is
+/// what keeps the register→stack handover — which legitimately introduces new candidates — from
+/// reading as a stall. A function that stops here leaves some locations out of SSA, exactly as
+/// Ghidra's exhausted restart group leaves a function partly analyzed.
 pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
     if f.num_blocks() == 0 {
         return;
     }
+    let mut previous = usize::MAX;
     while !heritage_complete(f) {
+        let pending_delay =
+            build_info_list(&f.spaces).iter().any(|i| i.is_heritaged() && f.heritage_pass <= i.delay);
+        let remaining = outstanding(f);
+        if !pending_delay && remaining >= previous {
+            break; // a pass that removed nothing will not remove anything next time either
+        }
+        previous = remaining;
         heritage_pass(f, dom);
     }
 }

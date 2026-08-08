@@ -187,6 +187,10 @@ impl AutoAnalysisManager {
                 let t = std::time::Instant::now();
                 let n = set.num_addresses();
                 let r = set.ranges().count();
+                // Printed on ENTRY as well as exit, so an analyzer that never returns names
+                // itself. With only the exit line, a hang shows up as the *previous* analyzer
+                // having finished and nothing after it, which points at the wrong one.
+                eprintln!("[trace] {:>40} set={n} ranges={r} ...", analyzer.name());
                 analyzer.added(program, &set, &mut self.sched);
                 eprintln!("[trace] {:>40} set={n} ranges={r} took={:?}", analyzer.name(), t.elapsed());
             } else {
