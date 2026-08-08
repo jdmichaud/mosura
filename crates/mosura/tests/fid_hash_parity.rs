@@ -318,9 +318,9 @@ fn quads_match_ghidra_byte_for_byte() {
         // Also a first measurement, and the bigger of the two: 59 of the 71 committed databases
         // are x86-16. 14/25, so the segmented column disagrees with Ghidra on nearly half its
         // functions. Probe built by Turbo C 2.0 under dosemu (oracle/ground-truth/src/x16prog.c).
-        // 14/25 -> 17/25, same fix. The remaining 8 all have a MATCHING full hash and differ
-        // only in the specific hash — an operand-VALUE defect, not a mask one. See the task.
-        ("borland-x86-16", 17, 25),
+        // 14/25 -> 17/25 (depth-gated fallback) -> 24/25 (whole-scalar operands sign-extended
+        // from their token field's own width, which is what Ghidra's Scalar carries).
+        ("borland-x86-16", 24, 25),
     ];
 
     let mut regressions = Vec::new();

@@ -779,7 +779,11 @@ impl Spec {
                     .operand(*op_id)
                     .and_then(|o| o.defexp.as_ref())
                     .map_or(0, |e| self.eval(e, walker, Operands::Node(node), *offset));
-                Some(Handle { space: 0, offset: v as u64, size: 0, ptr: None })
+                let size = self
+                    .operand(*op_id)
+                    .and_then(|o| o.defexp.as_ref())
+                    .map_or(0, expr_byte_width);
+                Some(Handle { space: 0, offset: v as u64, size, ptr: None })
             }
         }
     }
@@ -1723,6 +1727,47 @@ impl Decision {
 ///
 /// This is the mask path only — `subtree_mask` is the sole caller, so pattern *matching* during
 /// disassembly is unaffected.
+/// The byte width of the field a pattern expression reads — the size SLEIGH gives the constant
+/// an expression operand exports.
+///
+/// Ghidra reports operand scalars through `Scalar.getSignedValue()` over a scalar built as
+/// `new Scalar(size * 8, ...)` (`SleighInstructionPrototype:826-835`), so the width decides the
+/// sign. Measured against Ghidra: every x86-16 scalar is `bits=16`, while m68k carries both
+/// `bits=32` and `bits=16` — i.e. the width is PER-OPERAND, not per-language, which is why no
+/// language-wide fallback reproduces it (two were tried and both measured worse: the default
+/// space's size regressed m68k 37->35, and the operand value mask's popcount gave 168/320).
+///
+/// The token field's own byte extent is that per-operand width, and it is already in the
+/// expression. A `Bin`/`Un` node spans its children, so a composed field reports the full extent.
+/// Sign-extend `value` from a `size`-byte field — Ghidra's `Scalar.getSignedValue()`,
+/// `(value << unusedBits) >> unusedBits` over a scalar of `size * 8` bits.
+///
+/// A width of 0 means "unknown", and then the value is returned untouched rather than extended
+/// from a guessed width. That matters: Ghidra's own fallback chain ends at the default space's
+/// pointer size, but applying any language-wide width here measured WORSE (the space size
+/// regressed m68k 37->35; the operand mask's popcount gave 168/320), because the true width is
+/// per-operand. Leaving unknown widths alone can only fail to fix a hash, never break one.
+fn sign_extend_from(value: u64, size: u64) -> i64 {
+    let bits = (size * 8).min(64);
+    if bits == 0 || bits >= 64 {
+        return value as i64;
+    }
+    let shift = 64 - bits;
+    ((value << shift) as i64) >> shift
+}
+
+fn expr_byte_width(e: &PatternExpr) -> u64 {
+    match e {
+        PatternExpr::Token { bytestart, byteend, .. }
+        | PatternExpr::Context { startbyte: bytestart, endbyte: byteend, .. } => {
+            (byteend - bytestart + 1).max(0) as u64
+        }
+        PatternExpr::Bin(_, a, b) => expr_byte_width(a).max(expr_byte_width(b)),
+        PatternExpr::Un(_, a) => expr_byte_width(a),
+        _ => 0,
+    }
+}
+
 fn apply_pattern_block(base: usize, block: &PatternBlock, out: &mut [u8]) {
     // Ghidra commits a block that carries its own byte offset TWICE — once at the parent's
     // offset and once shifted by the block's — and its `getBytes` ignores the block offset when
@@ -2132,7 +2177,7 @@ impl Spec {
         match h.ptr {
             None => {
                 if h.space == 0 {
-                    Some(OpObject::Scalar { signed_value: h.offset as i64 })
+                    Some(OpObject::Scalar { signed_value: sign_extend_from(h.offset, h.size) })
                 } else {
                     match self.space_name(h.space) {
                         "register" => Some(OpObject::Register { space_offset: h.offset }),
