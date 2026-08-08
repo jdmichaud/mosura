@@ -30,6 +30,7 @@ pub struct LibraryRecord {
 }
 
 /// A loaded signature database, indexed for lookup.
+#[derive(Clone)]
 pub struct FidDatabase {
     name: String,
     libraries: Vec<LibraryRecord>,
@@ -143,7 +144,7 @@ impl FidDatabase {
 }
 
 /// The set of attached databases (`FidQueryService`), queried in order.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct FidQueryService {
     databases: Vec<FidDatabase>,
 }
@@ -173,7 +174,42 @@ impl FidQueryService {
     /// spec — Ghidra's `.fidb` and mosura's `.mfid` / `.mfid.gz` alike. Returns an empty
     /// service when the directory is absent: with no database attached the analyzer is inert,
     /// which is the correct behaviour, not an error.
+    /// Load every database in `dir` that declares this program's language and compiler spec.
+    ///
+    /// **Memoised per process.** Deciding whether a database matches requires OPENING it — the
+    /// language and compiler spec live in its library records — and a packed `.fidb` is a
+    /// DEFLATE'd Java ObjectStream, so the check costs a full unpack. With Ghidra's ten shipped
+    /// Visual Studio databases that is ~2.2 s, and it was being paid on **every** `analyze()`
+    /// including ones where nothing matches: analysing a gcc x86-64 ELF went 0.93 s -> 3.17 s to
+    /// decompress ten Windows databases and discard all ten.
+    ///
+    /// The files are static for the life of the process, so the result is cached by
+    /// `(dir, language, cspec)` — the same treatment `lang::load_cached` gives the SLEIGH tables,
+    /// and for the same reason. First call pays; the rest are free, which is what matters for the
+    /// ingest loops that analyse thousands of objects in one process.
     pub fn load_matching(
+        dir: &std::path::Path,
+        language_id: &str,
+        compiler_spec_id: &str,
+    ) -> FidQueryService {
+        use std::sync::{Mutex, OnceLock};
+        type Cache = Mutex<std::collections::HashMap<(std::path::PathBuf, String, String), FidQueryService>>;
+        static CACHE: OnceLock<Cache> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+        let key = (dir.to_path_buf(), language_id.to_string(), compiler_spec_id.to_string());
+        if let Ok(c) = cache.lock() {
+            if let Some(hit) = c.get(&key) {
+                return hit.clone();
+            }
+        }
+        let service = Self::load_matching_uncached(dir, language_id, compiler_spec_id);
+        if let Ok(mut c) = cache.lock() {
+            c.insert(key, service.clone());
+        }
+        service
+    }
+
+    fn load_matching_uncached(
         dir: &std::path::Path,
         language_id: &str,
         compiler_spec_id: &str,

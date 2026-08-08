@@ -308,6 +308,43 @@ pub fn analyze(program: &mut Program) {
         }
     }
 
+    // Function ID — name library functions from the signature databases (Ghidra `FidAnalyzer` at
+    // the FUNCTION_ID priority band, plus the applying half of `ApplyFidEntriesCommand`). Hashes
+    // each recovered function, scores the candidates against its callers and callees, and
+    // replaces `FUN_xxxxxxxx` with the library name when the result clears the apply gate.
+    //
+    // ⚠️ THE WHOLE SUBSYSTEM WAS PREVIOUSLY UNREACHABLE. It had tests, but they construct the
+    // analyzer directly, so nothing in the pipeline ever consulted a database and `analyze()`
+    // returned no library names at all — FID answered "which compiler built this" and never
+    // "here is a function".
+    //
+    // Runs HERE — after every function-creating stage, including Function Start Search — rather
+    // than as an analyzer registered inside the manager. Registered there it fires once, on the
+    // round where the set it was notified about appeared. Measured on the MSVC6 probe that was
+    // with 58 of the eventual 62 functions and, more importantly, before reference recovery had
+    // finished; FID scores a candidate against its CALLERS AND CALLEES, so an incomplete call
+    // graph sinks every candidate below the apply gate. Same databases, three placements:
+    //     inside the manager        -> 0 names
+    //     after the fixpoint        -> 7 names (Function Start Search had not run yet)
+    //     here, before the demangler-> 9 names
+    // This is the same reason `noreturn` is re-run after the fixpoint above.
+    //
+    // ⚠️ IT IS NOT FREE WHEN IT CANNOT HELP, which is worth stating because the obvious
+    // assumption is that it is. Deciding whether a database matches requires OPENING it (the
+    // language and compiler spec live in its library records), so a program with no matching
+    // database still pays to unpack every candidate: analysing a gcc x86-64 ELF went
+    // 0.93 s -> 3.17 s against Ghidra's ten shipped Visual Studio databases, all discarded.
+    // `FidQueryService::load_matching` is memoised per process to bound that — first call pays,
+    // the rest are free (repeat analysis of the same language: 3.34 s then 0.15 s), which is what
+    // the ingest loops need since they analyse thousands of objects in one process. A single CLI
+    // analysis of an unmatched program still pays it once.
+    {
+        let analyzer = fid::analyzer::FidAnalyzer::for_program(program);
+        let set = AddressSet::new();
+        let mut sched = crate::analysis::manager::Scheduling::default();
+        crate::analysis::analyzer::Analyzer::added(&analyzer, program, &set, &mut sched);
+    }
+
     // A7 Task 6: GNU/Itanium C++ demangler (Ghidra GnuDemanglerAnalyzer, a BYTE_ANALYZER at
     // ~DATA_TYPE_PROPAGATION priority — i.e. late). Applies the demangled name to each
     // mangled symbol, keeping the mangled name as a secondary label. Runs last, once the

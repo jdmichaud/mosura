@@ -161,3 +161,49 @@ fn databases_are_selected_by_language_and_compiler_spec() {
     let wrong_cspec = FidQueryService::load_matching(&dir, "x86:LE:32:default", "gcc");
     assert!(wrong_cspec.is_empty(), "the VS databases declare cspec `windows`, not `gcc`");
 }
+
+/// **FID must be REACHABLE FROM `analyze()`, not merely callable.**
+///
+/// Every other test in this file constructs `FidAnalyzer` by hand. That proves the hasher, the
+/// scorer and the apply gate work — and proves nothing about whether anything in the pipeline
+/// ever calls them. It did not: the analyzer was implemented, tested and unregistered, so
+/// `analyze()` produced no library names at all and FID answered only "which compiler built
+/// this". A reviewer found that, not this suite.
+///
+/// So this test goes through the front door and asserts on the *program a caller gets back*.
+/// Renaming, re-registering or reordering the pass can move the count; silently removing it
+/// cannot.
+///
+/// The threshold is deliberately loose. The exact set depends on the pipeline stage FID runs at
+/// — measured on this probe: 0 names registered inside the manager (the call graph is still
+/// incomplete, and FID scores candidates against callers and callees), 7 after the fixpoint but
+/// before Function Start Search, 9 once every function-creating stage has run. Pinning the exact
+/// list would make this a change-detector for placement; what must never regress is that the
+/// pipeline recovers library names at all.
+#[test]
+fn analyze_applies_library_names_end_to_end() {
+    let path = probe_path(MSVC6_PROBE);
+    if !path.exists() || !paths::fid_db_dir().exists() {
+        return;
+    }
+    let program = mosura::analysis::analyze_file(&path).expect("analyze");
+
+    let named: Vec<String> = program
+        .function_manager
+        .functions()
+        .map(|f| f.name().to_string())
+        .filter(|n| !n.starts_with("FUN_") && n != "entry")
+        .collect();
+
+    assert!(
+        named.len() >= 5,
+        "analyze() recovered {} library names from the MSVC 6 probe; FID is not reaching the \
+         pipeline (it names 9 here when wired). Got: {named:?}",
+        named.len()
+    );
+    // A spot-check that these are real CRT names and not, say, imported-symbol labels.
+    assert!(
+        named.iter().any(|n| n == "_strlen" || n == "_memset" || n == "_malloc"),
+        "expected common CRT names among {named:?}"
+    );
+}
