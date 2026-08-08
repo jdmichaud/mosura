@@ -299,7 +299,7 @@ fn quads_match_ghidra_byte_for_byte() {
         // (arch, floor, total-at-the-time-the-floor-was-set)
         ("gcc-x86-64", 52, 52),
         ("watcom-x86-32", 83, 84),
-        ("gcc-riscv64", 53, 58),
+        ("gcc-riscv64", 57, 58),
         // Raised 16 -> 52 when the empty-mask fallback was gated the way Ghidra gates it
         // (`steals_pattern_bits`). The 4 stragglers are a separate, undiagnosed cause.
         ("gcc-aarch64", 52, 56),
@@ -313,11 +313,14 @@ fn quads_match_ghidra_byte_for_byte() {
         // x86-16 and the R7 fix rewrote every one of them — "the new hashes are correct" rested
         // on the faithful-port argument for exactly the columns nothing measured. It is measured
         // now, and it disagrees with Ghidra on 2 of 3 functions. See the task notes.
-        ("sdcc-z80", 1, 3),
+        // 1/3 -> 3/3 (exact) when the empty-mask fallback learned it is DEPTH-gated.
+        ("sdcc-z80", 3, 3),
         // Also a first measurement, and the bigger of the two: 59 of the 71 committed databases
         // are x86-16. 14/25, so the segmented column disagrees with Ghidra on nearly half its
         // functions. Probe built by Turbo C 2.0 under dosemu (oracle/ground-truth/src/x16prog.c).
-        ("borland-x86-16", 14, 25),
+        // 14/25 -> 17/25, same fix. The remaining 8 all have a MATCHING full hash and differ
+        // only in the specific hash — an operand-VALUE defect, not a mask one. See the task.
+        ("borland-x86-16", 17, 25),
     ];
 
     let mut regressions = Vec::new();

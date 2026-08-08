@@ -1812,7 +1812,7 @@ impl Spec {
             // getOperandValueMask(op_i): token-field value bits (`buildOperandMask`).
             let mut value_mask = vec![0u8; mask_len];
             self.combine_operand_mask(mnem, op_i, &mut value_mask);
-            if value_mask.iter().all(|&b| b == 0) && self.steals_pattern_bits(mnem, op_i) {
+            if value_mask.iter().all(|&b| b == 0) && self.steals_pattern_bits(node, mnem, op_i) {
                 // Empty-mask fallback: "steal" the operand sub-constructor's pattern bits
                 // (`buildOperandMask`: `mainSubGroups.get(sym.getName())`).
                 if let Some(Some(subfp)) = mnem_fp.subs.get(op_i) {
@@ -1926,16 +1926,34 @@ impl Spec {
     /// Gating it moved gcc-aarch64 from 16/56 to 52/56 byte-identical quads with **no other
     /// column changed** (gcc-x86-64 stays 52/52), so the fallback was load-bearing for nothing.
     ///
-    /// Kept as a gated port rather than deleted: it is Ghidra's structure, and it would start
-    /// firing on its own if a language ever did make the root table an operand. (Ghidra's own
-    /// source carries a `// FIXME !!!!!!!!!!!!!!!!!!!!` on that condition.)
-    fn steals_pattern_bits(&self, node: &Node, op_index: usize) -> bool {
-        if !matches!(node.operands.get(op_index), Some(OpNode::Sub(_))) {
+    /// **WHICH operands qualify is language-shaped, and it is the nesting depth that decides.**
+    /// `mainSubGroups` holds only groups whose parent is the main group, so an operand qualifies
+    /// exactly when its group sits at depth 1 — i.e. when it belongs to the constructor that IS
+    /// the main group. Measured with `oracle/fid/FidMaskGroupDump.java`, which reads the private
+    /// map by reflection:
+    ///
+    /// - **x86** `ADD AL,byte ptr [SI]` → `mainSubGroups keys = [Reg8, rm8]`, the instruction's
+    ///   own operands. x86 constructors sit directly in the root table, so their operand groups
+    ///   are depth 1 and the fallback FIRES. It is what gives the `rm8` memory operand its
+    ///   `00c7` mod/rm mask, which Ghidra then clears from the instruction mask.
+    /// - **AArch64** `mov x29,sp` → `keys = [instruction]` only. Its languages wrap the root in a
+    ///   flow-through constructor, so the real instruction resolves one level down and its
+    ///   operand groups are depth 2 — absent from the map, so the fallback MISSES and the mask
+    ///   correctly stays 0. m68k is the same shape (`keys` there are the wrapper's own operands
+    ///   `reg9an`/`regan`/`instruction`, never `eal`/`e2l`).
+    ///
+    /// `mnemonic_node` descends exactly those flow-through wrappers, so "did we descend?" is
+    /// precisely "is this operand's group deeper than depth 1?". Hence the test: the fallback
+    /// applies only when the mnemonic constructor is still the root node.
+    ///
+    /// (Ghidra's own source carries a `// FIXME !!!!!!!!!!!!!!!!!!!!` on the condition that
+    /// populates the map, so the depth-sensitivity is likely accidental — but it is what every
+    /// published FID database was hashed with.)
+    fn steals_pattern_bits(&self, root: &Node, mnem: &Node, op_index: usize) -> bool {
+        if !matches!(mnem.operands.get(op_index), Some(OpNode::Sub(_))) {
             return false;
         }
-        let Some(&op_id) = self.ctor_of(node).operand_ids.get(op_index) else { return false };
-        let Some(op_sym) = self.operand(op_id) else { return false };
-        op_sym.subsym.is_some_and(|s| s as usize == self.root_subtable)
+        std::ptr::eq(root, mnem)
     }
 
     /// OR every matched pattern block in this node's subtree into `out`
