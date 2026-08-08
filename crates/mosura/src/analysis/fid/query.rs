@@ -209,6 +209,25 @@ impl FidQueryService {
         service
     }
 
+    /// Load from every directory in a search path, merging the results.
+    ///
+    /// The databases live in two places (vendored Ghidra `.fidb` and the ones mosura builds), and
+    /// a program can legitimately match in either. Each directory is cached independently by
+    /// [`Self::load_matching`].
+    pub fn load_matching_all(
+        dirs: &[std::path::PathBuf],
+        language_id: &str,
+        compiler_spec_id: &str,
+    ) -> FidQueryService {
+        let mut merged = FidQueryService::new();
+        for dir in dirs {
+            for db in Self::load_matching(dir, language_id, compiler_spec_id).databases {
+                merged.attach(db);
+            }
+        }
+        merged
+    }
+
     fn load_matching_uncached(
         dir: &std::path::Path,
         language_id: &str,

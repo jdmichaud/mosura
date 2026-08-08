@@ -116,6 +116,28 @@ pub fn fid_db_dir() -> PathBuf {
     workspace_root().join("third_party/ghidra-data/FunctionID")
 }
 
+/// Every directory the FID analyzer searches for signature databases.
+///
+/// Two, because the databases come from two places and **both are shipped data**: Ghidra's
+/// vendored `.fidb` (Visual Studio 1998-2019) in `third_party/`, and the databases mosura builds
+/// itself in `oracle/fid/db` (Borland, Watcom, sdcc — `docs/fid-building-databases.md`).
+///
+/// ⚠️ Searching only the first is why FID identified **nothing** in a Watcom binary while the
+/// Watcom databases sat in the tree: WAR2.EXE analysed to 3021 functions with 1 name (its entry
+/// point) because zero databases matched, and to 121 names the moment this directory was
+/// included. A signature database nobody looks in is not a feature.
+///
+/// `MOSURA_FID_DIR` overrides both — an explicit directory means exactly that directory.
+pub fn fid_db_dirs() -> Vec<PathBuf> {
+    if let Ok(p) = std::env::var("MOSURA_FID_DIR") {
+        return vec![PathBuf::from(p)];
+    }
+    vec![
+        workspace_root().join("third_party/ghidra-data/FunctionID"),
+        workspace_root().join("oracle/fid/db"),
+    ]
+}
+
 /// Locate a user-provided binary by an env var with a `$HOME`-relative default — the same
 /// override convention as [`ghidra_src`]. These are copyrighted third-party files that are
 /// **not committed**; the tests that use them skip when absent (`docs/dependencies.md`). No

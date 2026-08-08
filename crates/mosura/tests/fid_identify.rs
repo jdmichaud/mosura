@@ -207,3 +207,34 @@ fn analyze_applies_library_names_end_to_end() {
         "expected common CRT names among {named:?}"
     );
 }
+
+/// The default search path must include **mosura's own** databases, not just the vendored
+/// Ghidra ones.
+///
+/// This is the gap that made the whole Watcom/Borland/sdcc column invisible in practice: the
+/// analyzer searched only `third_party/ghidra-data/FunctionID` (Visual Studio), so a Watcom
+/// program matched zero databases while 6 Watcom databases sat in `oracle/fid/db`. Measured on
+/// a real Watcom binary at the time: 3021 functions, 1 name — its entry point — and 121 names
+/// once this directory was searched.
+///
+/// Deliberately a **data-level** test: it asks which databases attach for a language/cspec pair
+/// and needs no binary, so it cannot rot when a fixture moves and it keeps the gate independent
+/// of any particular program.
+#[test]
+fn default_search_path_includes_mosura_built_databases() {
+    let dirs = paths::fid_db_dirs();
+    let own = paths::workspace_root().join("oracle/fid/db");
+    if !own.exists() {
+        return;
+    }
+    assert!(dirs.contains(&own), "default FID search path {dirs:?} omits {}", own.display());
+
+    // A Watcom DOS/4GW program: x86-32, `watcom` compiler spec. Its databases are ours, so this
+    // fails outright if only the vendored Visual Studio directory is searched.
+    let svc = FidQueryService::load_matching_all(&dirs, "x86:LE:32:default", "watcom");
+    assert!(
+        !svc.is_empty(),
+        "no signature database attaches for x86:LE:32:default/watcom — the Watcom column is \
+         present in oracle/fid/db but unreachable from the analyzer"
+    );
+}
