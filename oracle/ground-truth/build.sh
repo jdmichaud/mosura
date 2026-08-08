@@ -211,6 +211,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
+# --- Borland / x86-16 column: DOS MZ .EXE built by Turbo C 2.0 under dosemu. ----------------
+#     Exists for the FID hash-parity gate, which needs a binary Ghidra can hash and mosura can
+#     load; it carries no `.truth` (the function-discovery gate does not cover this column).
+#     The source is deliberately K&R-era C — TC 2.0 is from 1988, so no prototypes in
+#     definitions and nothing from a later standard.
+#
+#     Toolchain staged persistently at /data/borland/work/tc2.0 (see docs/fid-building-databases.md).
+#     TWO LINK TRAPS, both of which fail the build rather than silently:
+#       * EMU.LIB / MATHS.LIB must be present, or use `-f-` (no floating point) as we do here;
+#         TC links the FP emulation library by default even for a program with no floats.
+#       * pass `-L<dir>` explicitly: TCC looks for C0?.OBJ and C?.LIB in the config'd lib dir,
+#         which does not exist in a bare staging directory.
+#
+#   DC=~/.dosemu/drive_c
+#   mkdir -p $DC/gt16 && cp /data/borland/work/tc2.0/{TCC.EXE,TLINK.EXE,C0*.OBJ,C?.LIB,EMU.LIB,MATHS.LIB} $DC/gt16/
+#   cp oracle/ground-truth/src/x16prog.c $DC/gt16/X16PROG.C
+#   printf '@echo off\r\nc:\r\ncd \\gt16\r\ntcc -ms -f- -L\\gt16 X16PROG.C >BUILD.TXT\r\n' > $DC/MK16.BAT
+#   ( cd $DC && dosemu -dumb -quiet -E MK16.BAT </dev/null )
+#   cp $DC/gt16/x16prog.exe oracle/ground-truth/x16prog.borland-x86-16.exe
+# --------------------------------------------------------------------------------------------
+
 # --- sdcc / Z80 column: CP/M .COM (raw flat image, no ELF container; mosura loads via load_com).
 #     nm/objdump do not apply to a raw z80 image, so the truth is derived from sdcc's OWN output:
 #     functions from the linker map (`_CODE` area), the switch dispatch from the relocated

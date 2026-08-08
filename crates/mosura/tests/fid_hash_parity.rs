@@ -237,11 +237,13 @@ fn quads_match_ghidra_byte_for_byte() {
             eprintln!("  skip {stem}: analysis failed");
             continue;
         };
-        // `<prog>.<toolchain>-<arch>` — but a raw-image column adds a container extension
-        // (`z80prog.sdcc-z80.com`), and taking the last segment blindly labels that column
-        // "com" and silently gives it its own floor-less row. Strip the container first.
-        let arch = stem
-            .strip_suffix(".com")
+        // `<prog>.<toolchain>-<arch>` — but the 16-bit columns add a container extension
+        // (`z80prog.sdcc-z80.com`, `x16prog.borland-x86-16.exe`), and taking the last segment
+        // blindly labels those "com" / "exe": a floor-less row no ratchet covers, which is
+        // exactly how a column can regress unnoticed. Strip the container first.
+        let arch = ["com", "exe"]
+            .iter()
+            .find_map(|e| stem.strip_suffix(&format!(".{e}")))
             .unwrap_or(&stem)
             .rsplit('.')
             .next()
@@ -312,6 +314,10 @@ fn quads_match_ghidra_byte_for_byte() {
         // on the faithful-port argument for exactly the columns nothing measured. It is measured
         // now, and it disagrees with Ghidra on 2 of 3 functions. See the task notes.
         ("sdcc-z80", 1, 3),
+        // Also a first measurement, and the bigger of the two: 59 of the 71 committed databases
+        // are x86-16. 14/25, so the segmented column disagrees with Ghidra on nearly half its
+        // functions. Probe built by Turbo C 2.0 under dosemu (oracle/ground-truth/src/x16prog.c).
+        ("borland-x86-16", 14, 25),
     ];
 
     let mut regressions = Vec::new();
