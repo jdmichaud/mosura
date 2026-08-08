@@ -235,6 +235,8 @@ So every link is committed: probe source → known-compiler object → extractor
 bytes → gated test. Only *producing a new* `<rev>.obj` needs the historical toolchain (the
 dosemu recipe above, or the wine one for [10.5](#getting-the-105-compiler-to-run)).
 
+See also [`watcom-10.0-beta-codegen.md`](watcom-10.0-beta-codegen.md) for the beta / 10.0a excursion in detail.
+
 Revisions currently covered: `7.0`, `8.5a`, `9.01`, `9.5b`, `10.0-beta`, `10.0a`, `10.5`, `10.6`,
 `11.0`, `ow2`. **Every TABLE row now has a measured artefact behind it — nothing is inferred.** Every row in the
 `TABLE` has an artefact behind it — a row without one is an inference, which is what 10.5 was.
