@@ -100,6 +100,31 @@ Still not ingested, deliberately: `OBSOLETE.LIB` and the C++/Windows framework s
 `/usr/share/sdcc/lib/z80/z80.lib` is the only library the z80 target ships. This column is
 complete by construction.
 
+## How to compare against warcraft2-re's list (and how NOT to)
+
+⚠️ **Compare by ADDRESS, not by name.** FID names the *implementation* using Watcom's internal
+symbol; the tracker names the *ANSI alias*, often at a thunk. A name-keyed diff therefore invents
+misses that are not misses:
+
+| tracker says | FID says | relationship |
+| --- | --- | --- |
+| `unlink_` @ 0x72357 | `unlink_` @ 0x64058 | 0x72357 is `jmp 0x64058` — a thunk |
+| `delay_` @ 0x63f76 | `__delay_` @ 0x723bf | thunk + internal name |
+| `close_` @ 0x6525d | `__close_` @ 0x72325 | thunk + internal name |
+| `heap_walk_static_` @ 0x64427 | `_nheapwalk_` @ 0x64427 | SAME address, near-variant name |
+
+5 of the 152 tracker entries are `jmp rel32` thunks. Resolving them and matching on address gives
+the honest score:
+
+    FID named at that address     112
+    FID named the thunk's target    4   -> 116 of 152
+    genuinely unnamed              36   -> of which 16 are the tracker's OWN invented
+                                            names (FUN_*, crt_litconst_*, thunk_*), which
+                                            FID cannot produce and should not be scored on
+
+So **116 of 136 nameable**, not the 107 a name-keyed diff reports. The `unlink_` "disagreement"
+that prompted this was never a disagreement: both are right about different addresses.
+
 ## What this audit did NOT explain
 
 The investigation started from 8 functions FID misses in WAR2 (`malloc_`, `free_`, `clock_`,
