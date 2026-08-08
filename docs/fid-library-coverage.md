@@ -8,8 +8,8 @@ complete" in [`fid-building-databases.md`](fid-building-databases.md) meant "com
 
 ## The short version — CLOSED
 
-All five gaps below were closed on 2026-08-08. **71 databases / 43,925 records -> 81 databases /
-65,657 records (+50%).**
+All gaps below were closed on 2026-08-08. **71 databases / 43,925 records -> 85 databases /
+~68,000 records.**
 
 | compiler | now ingested | previously |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ All five gaps below were closed on 2026-08-08. **71 databases / 43,925 records -
 | **Watcom** 16-bit (10.5) | `CLIB{C,H,L,M,S}` + `EMU87` + `GRAPH` — **5 new databases** | nothing |
 | **Borland** 16-bit, per model | `C<M>` + `MATH<M>` + `EMU` + `FP87` + `GRAPHICS` + `OVERLAY` | `C<M>` only |
 | **Borland** 32-bit flat | `CW32` (math is built in — no `MATH32` exists) | unchanged, already complete |
+| **Watcom** C++, per version | `PLIB3R` + `PLBX3R` + `CPLX3R` — **4 new databases** | nothing (ingested to 0) |
 | **sdcc** z80 | `z80.lib` | unchanged, complete by construction |
 | **MSVC** | Ghidra's vendored `.fidb` | unchanged, not ours |
 
@@ -28,10 +29,16 @@ application libraries, not runtime: a program links them only if it uses that fr
 record is a candidate the matcher scores, so carrying them costs false-positive surface for no
 identification gain on ordinary C programs.
 
-**Still open: the C++ runtimes** (`PLIB*`/`PLBX*`/`CPLX*` for Watcom; Borland's C++ support).
-Auditing `PLIB3R.LIB` produced 334 members, 614 symbols and **zero named functions**, so those
-archives do not ingest usefully today — that is a loader/ingest question, not a "point it at the
-file" one, and is left as its own task rather than shipped half-working.
+**The C++ runtimes are now covered too** (`watcom-<ver>-cpp-x86-32`, 4 databases, 502–578 records
+each). They ingested to *zero* functions until the OMF reader learned `COMDAT` (0xC2/0xC3): C++
+emits template instantiations and inline functions as COMDATs so the linker can dedupe them, so a
+C++ archive is almost entirely COMDAT — PLIB3R has 33 COMDAT32 against 3 PUBDEF32 in a sampled
+prefix, where CLIB3R has none. Ghidra does not support COMDAT either (it logs the record as
+unsupported), so this is beyond-Ghidra and additive.
+
+**Borland needed nothing**: its libraries use classic PUBDEF/LEDATA, and its C++ runtime already
+lives inside the C libraries we ingest — 409 mangled names such as `@string@copy$qpcui` are in
+`borland-bc4.5-cs` today.
 
 ## What this bought on a real target: nothing, and that is worth stating
 
