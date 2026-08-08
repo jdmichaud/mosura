@@ -410,11 +410,10 @@ property that looks like it belongs to the instruction actually belongs to the a
 - **#1 (branch/call target surfaces as `Scalar` not `Address`) — CONFIRMED HARMLESS.** Ghidra's
   `Address` arm and our `Scalar` arm with `|val| ≥ 256` perform *identical* arithmetic and
   neither increments `specificCount`. Verified on AArch64 `bl`.
-- **#3 (empty-operand-mask fallback) — CONFIRMED A REAL BUG, and it is the AArch64/m68k gap.**
-  For `mov x29,sp` Ghidra gives the `sp` operand an **all-zero** value mask and an instruction
-  mask of `e0ffffff`; mosura gives a non-empty mask and so clears the wrong bits, yielding
-  `00fcffff`. Every hash over such an instruction diverges. The fix is in
-  `sleigh/engine.rs`'s `mainSubGroups` fallback (the sleigh lane) — see §8 R7.
+- **#3 (empty-operand-mask fallback) — WAS a real bug, now FIXED (see §8 R7).** For
+  `mov x29,sp` Ghidra gives the `sp` operand an all-zero value mask and an instruction mask of
+  `e0ffffff`; mosura gave a non-empty mask and cleared the wrong bits. Resolved by gating the
+  fallback on nesting depth, as Ghidra's `mainSubGroups` does.
 
 Two further known gaps, both decode-side rather than hasher-side:
 `inlineparam.watcom-x86-32` (Ghidra hashes 6 code units where we decode 11 — the MZ
@@ -516,9 +515,18 @@ column has a signature database and a passing recall gate.** No column is option
 
 MSVC is listed third rather than first only because it needs no ingest — it is really the
 *earliest* one to go green (it unblocks the end-to-end test below the moment Stage 5 lands).
-Rows 5–7 additionally depend on **R7** (the empty-operand-mask fallback): until that lands their
-hashes do not match Ghidra's, so their databases would be internally consistent but not
-interoperable. Ingesting them is still worthwhile; interop parity follows R7.
+R7 (the empty-operand-mask fallback) used to block rows 5–7 from Ghidra interoperability; it has
+landed, along with two further mask-path fixes. Current byte-identical parity against Ghidra's own
+hasher, per `tests/fid_hash_parity.rs` — **308/320**:
+
+| column | quads | column | quads |
+| --- | --- | --- | --- |
+| gcc-x86-64 | 52/52 | gcc-aarch64 | 52/56 |
+| watcom-x86-32 | 83/84 | gcc-m68k | 37/41 |
+| borland-x86-16 | 24/25 | gcc-riscv64 | 57/58 |
+| sdcc-z80 | 3/3 | watcom-le | 0/1 |
+
+Each column is ratcheted at its measured value: it may improve, never regress.
 
 **Every column's gate is the same shape, and it is Ghidra-free:**
 
@@ -591,28 +599,40 @@ and any measurement quoted in this doc is stale unless stamped `@sha == HEAD`.
 - **R1 — Stage-0 residuals (medium, contained).** The four documented residuals could perturb
   hashes on some encoding we have not hit. Stage 3 is designed to find exactly this, against a
   corpus far larger than we could hand-build. Contained because the fix is local to the accessor.
-- **R7 — a constrained field's bits are given to the operand (CONFIRMED, open).** The whole of
-  the AArch64 (16/56) and m68k (12/41) hash-parity gap. Reproducer: AArch64 `mov x29,sp`
-  (`fd 03 00 91`) — Ghidra's instruction mask is `e0ffffff` with operand masks `1f000000` and
-  `00000000`; ours is `00fcffff` with `1f000000` and `e0030000`. The instruction is an alias of
-  `add Xd,sp,#0` whose constructor **constrains** Rn to 31, so those field bits are opcode-fixed
-  and must stay in the instruction mask; we route them through the operand's subtable into a
-  VarnodeList and hand them to the operand.
+- **R7 — the empty-operand-mask fallback (RESOLVED).** It was the AArch64 and m68k gap after
+  all, and later the x86-16 one. `combine_operand_mask` was already returning Ghidra's answer;
+  the *fallback* then overwrote it. Ghidra's is conditional — `mainSubGroups.get(sym.getName())`
+  is allowed to miss — and the map holds only groups whose parent is the main group, so an
+  operand qualifies exactly when it belongs to the constructor that IS the main group. x86
+  constructors sit directly in the root table (so the fallback fires, supplying `rm8`'s mod/rm
+  mask); m68k and AArch64 wrap the root in a flow-through constructor, so theirs sit a level
+  deeper and it correctly misses. Landed in `steals_pattern_bits`.
 
-  ⚠️ **An earlier revision of this plan blamed the empty-operand-mask fallback. That is
-  disproven** — instrumented, the fallback fires only for op0 and produces exactly Ghidra's
-  answer there; op1 never reaches it. The divergence is in `combine_operand_mask`'s recursion,
-  which is **shared with the disassembler**, so this is a sleigh-lane change to coordinate, and
-  the disasm goldens must be re-run with it.
+  Two further mask-path defects fell out of the same investigation: a pattern block carrying a
+  byte offset is committed **twice** by Ghidra and its own offset ignored when laying bytes down
+  (m68k 12/41 → 37/41), and operand scalars must be **sign-extended from their own token-field
+  width** (x86-16 17/25 → 24/25).
+
+  ⚠️ Two earlier revisions of this entry were wrong — one blamed the fallback and was
+  "disproven" by instrumentation that had the operand indices transposed, the other blamed
+  `combine_operand_mask`'s recursion. Both are recorded here because the pattern is instructive:
+  every wrong turn came from reasoning about the mask machinery instead of dumping it.
+  `oracle/fid/FidMaskGroupDump.java` and `FidPatternTrace.java` exist for that.
 - **R8 — mosura's references do not record an operand index (open).** They store `op_index = -1`,
   so `getPrimaryReference(opIndex)` cannot be asked directly and `tests/fid_hash_parity.rs`
   reconstructs the operand by value. Exact for whole-scalar operands (the only ones whose
   ADDRESS bit reaches a hash), but recording the real index in the reference analyzers would
   make it faithful rather than reconstructed.
-- **R2 — operand-object fidelity per architecture (medium).** Byte-identical hashes need mosura's
-  Scalar/Register/Address split and signed scalar values to match Ghidra's *per language*. x86 is
-  best-tested and gets the huge MSVC gate; every other arch needs its own FidHashDump goldens
-  before its column is trusted. Do not extrapolate x86 parity to AArch64/RISC-V/68k/z80.
+- **R2 — operand-object fidelity per architecture (mostly closed).** Byte-identical hashes need
+  mosura's Scalar/Register/Address split and signed scalar values to match Ghidra's *per
+  language*. **Every column now has its own FidHashDump goldens**, including the two that had
+  none (z80 and x86-16 — and both disagreed with Ghidra the moment they were first measured,
+  which is exactly why "do not extrapolate x86 parity" was the right instinct).
+
+  Still open on this axis, both currently inert for the digest: Ghidra emits `Address(N)` where
+  we emit `Scalar(N)` for branch/call targets, and sets `addr=true` on memory operands where we
+  say false. Neither changes a hash today (see §8 #1); both are real if opObjects are ever
+  consumed elsewhere.
 - **R3 — 68k big-endian (medium).** First non-LE column; the hasher is endian-agnostic on raw
   bytes but the analysis read paths are LE-hardcoded. Prove, don't assume.
 - **R4 — licensing: ✅ RESOLVED 2026-08-07, clear to embed.** `ghidra-data` is Apache-2.0, the

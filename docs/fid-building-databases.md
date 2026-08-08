@@ -160,7 +160,7 @@ So the practical question per runtime is how closed its version set is:
 | Watcom | 9.01, 10.0a, 10.5, 10.6, 11.0 under `~/.dosemu/drive_c/`, plus Open Watcom 2 — closed, small, all held | **complete** |
 | Borland, sdcc | bounded | complete columns achievable |
 | MSVC | Ghidra already ships 1998–2019 | done |
-| gcc / glibc | effectively unbounded — every distro build differs | **best-effort per toolchain**, never complete |
+| gcc / glibc | effectively unbounded — every distro build differs | **no database shipped** (see below) |
 
 Name a database for what it actually contains — `watcom-10.0a-x86-32.mfid`, not `watcom.mfid`
 — and build every version you can obtain. They coexist in one directory and are all consulted.
@@ -286,7 +286,13 @@ cargo xtask fid-build --family "Open Watcom" --version 10.0a --variant Release \
 ⚠️ Watcom decorates its symbols (`strlen_`, `_strcpy_`); the names in the database are the
 names in the library, so expect the trailing underscore.
 
-### gcc / glibc (x86-64, x86-32, AArch64, RISC-V 64, 68k)
+### gcc / glibc (x86-64, x86-32, AArch64, RISC-V 64, 68k) — recipe only, nothing shipped
+
+⚠️ **No glibc database is committed, deliberately.** A glibc signature set identifies only the
+exact distro build it came from, and there are effectively unlimited such builds, so a committed
+one would mostly be dead weight that still has to be loaded and scored on every vote. The recipe
+below is here for building one against a runtime you actually care about. The 71 committed
+databases are Borland (64), Watcom (6) and sdcc (1).
 
 ```sh
 mkdir -p /tmp/libc && cd /tmp/libc
@@ -296,10 +302,11 @@ cargo xtask fid-build --family glibc --version "$(ldd --version | head -1)" --va
     --out oracle/fid/db/glibc-x86-64.mfid --dir /tmp/libc
 ```
 
-⚠️ AArch64, RISC-V and 68k currently hash *differently from Ghidra* — see
-[`fid-port-plan.md`](fid-port-plan.md) §8 R7 (the empty-operand-mask fallback). A database
-built for those columns is internally consistent and will identify functions correctly against
-itself, but is not interoperable with Ghidra until R7 lands.
+Every column is now measured against Ghidra's own hasher (`tests/fid_hash_parity.rs`, 308/320
+byte-identical). x86-64 and z80 are exact; the rest carry small ratcheted gaps — aarch64 52/56,
+m68k 37/41, riscv64 57/58, x86-16 24/25, watcom-x86-32 83/84. A database from a column with a
+gap is internally consistent and identifies correctly against itself; the residual functions are
+the ones that would not match a Ghidra-built database.
 
 ### Open Watcom 2
 
@@ -375,6 +382,32 @@ black-and-white colour switch, not a batch mode; piping keystrokes into dosemu d
 DOS program's INT 16h keyboard reads, so the installer hangs; Borland's own `UNPACK.COM` (1989)
 recognises the format but cannot read the later revision; and their `UNZIP.EXE` rejects it.
 
+#### Where the libraries actually live (and why that matters)
+
+Regenerating every Borland column takes ~15 minutes **if the libraries are staged** and the best
+part of an hour if they are not, so they are staged persistently:
+
+| path | contents |
+| --- | --- |
+| `/data/tools/borland_turbo_c/` | the 17 original media archives (742 MB) — the source of truth |
+| `/data/borland/src/` | those archives extracted (1.6 GB) |
+| `/data/borland/work/<product>/` | per-product disk images unpacked to flat directories |
+| `/data/borland/work/<product>-lib/` | the `.CA`-extracted libraries, for the products that use them |
+| `/data/borland/BC45/LIB/` | BC++ 4.5, which predates this layout |
+
+⚠️ **This layout exists because the extracted toolchains were once staged under `/tmp` and got
+cleaned, which read as "the media is gone" when the media was intact the whole time.** If a
+library is missing, re-extract from `/data/tools/borland_turbo_c/` — nothing is unrecoverable.
+
+Three traps when re-extracting:
+
+- The media directories **nest one level deeper than the archive name**, so a glob misses the
+  disk images; use `find`.
+- **C++ Builder 5 is a raw Mode 2 Form 1 CD image.** Its sectors need slicing at bytes
+  `24..2072` (offset 16 is Mode 1 and yields nothing) before `7z` can read the filesystem.
+- Turbo C floppies carry `.LIB` files uncompressed; everything later needs
+  `extract-borland-ca.sh` first.
+
 **Linked** — let the vendor's linker resolve everything:
 
 ```sh
@@ -391,107 +424,6 @@ map addresses) and analysis recovers 497 call references, but only 14 survive in
 relations — the loss is in ingest's child attribution, not in the linking. It also covers fewer
 functions than the library holds, since the linker drops unreferenced modules and symbols that
 are not legal C identifiers cannot be referenced from generated C. Use `objects`.
-
-### Open Watcom 2
-
-Built from the source tree rather than a shipped release:
-
-```sh
-cargo xtask fid-build --family Watcom --version ow2 --variant Release \
-    --out oracle/fid/db/watcom-ow2-x86-32.mfid.gz \
-    /data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib
-```
-
-⚠️ **Provenance caveat.** Every other database here comes from a runtime the vendor *shipped*,
-which is what a target binary was actually linked against. This one comes from a local build of
-a rolling source project. Real OW2 binaries are linked against official release snapshots, and
-if their code generation differs from this build's, the signatures will not match. It is worth
-having — OW2's library source moves slowly, and it closes the one version we could detect but
-not identify — but validate it against a binary built by an official OW2 release before
-trusting it.
-
-### sdcc (z80)
-
-```sh
-cargo xtask fid-build --family sdcc --version 4.5.0 --variant z80 \
-    --out oracle/fid/db/sdcc-4.5.0-z80.mfid.gz /usr/share/sdcc/lib/z80/z80.lib
-```
-
-Point it straight at the library: `z80.lib` is a Unix `ar` archive of SDCC `.rel` objects — an
-**ASCII** record format, a third object container alongside ELF and OMF — and
-`loader/rel.rs` reads both the archive and the members. Relocations against external symbols
-are applied, as for OMF: without them every cross-module call targets address 0 and the
-library records **no relations at all** (0 against 376), leaving the 19% of functions that
-score below 14.6 on body size alone unidentifiable.
-
-### Borland / Turbo C (x86-16 and x86-32)
-
-Two routes, and it is worth understanding why there are two.
-
-**Objects** — ingest the library's OMF modules directly:
-
-```sh
-./scripts/build-borland-db.sh objects /path/to/CS.LIB tc2.0 cs
-```
-
-Names come from `PUBDEF`, which is authoritative. But the modules are **unlinked**: a
-cross-module call still reads `call 0000:0000`, because the real target lives in a `FIXUPP`
-record that only a linker consumes. The loader patches *self-relative* (near) fixups so those
-calls reach a named external slot; **far** calls are fixed up as segment-relative 16:16
-pointers and are not patched, so the far memory models (`cm`/`cl`/`ch`) end up with very few
-relations — 9–27 against 193–310 for the near models.
-
-That matters because relations are what carry a *small* function over the 14.6 score
-threshold. Measured on Turbo C 2.0: **27% of the small model and 22% of the large model score
-below 14.6 on their own body**, so in the far models most of that quarter is unidentifiable
-even though its signature is in the database.
-
-#### Getting the libraries out of a Borland install set
-
-The four Turbo C releases ship uncompressed floppies, so `7z e <disk>.img '*.LIB'` is enough.
-Everything later packs its files into `.CA1`/`.CA2`/`.CA3` archives — which are **ordinary ZIPs
-behind a 4-byte prefix**, split across disks as volumes that concatenate:
-
-```sh
-# stage every disk of one product into a directory, then
-./scripts/extract-borland-ca.sh <staged-dir> <output-dir>
-```
-
-`7z` rejects a `.CA` file only because of those four leading bytes. Strip them from each volume,
-append in order, and it reads as a ZIP.
-
-Worth recording what does **not** work, since each cost a detour: `INSTALL /b` is a
-black-and-white colour switch, not a batch mode; piping keystrokes into dosemu does not reach a
-DOS program's INT 16h keyboard reads, so the installer hangs; Borland's own `UNPACK.COM` (1989)
-recognises the format but cannot read the later revision; and their `UNZIP.EXE` rejects it.
-
-**Linked** — let the vendor's linker resolve everything:
-
-```sh
-./scripts/build-borland-db.sh linked /path/to/toolchain tc2.0 l
-```
-
-`cargo xtask omf-uber` generates a program referencing every C-callable public in the library,
-TCC compiles it, TLINK links it, and mosura analyses the **executable**, where every call is
-real. This needs no relocation patching at all — the tool that is supposed to resolve those
-calls does it.
-
-A DOS `.EXE` carries no symbol table, so the names come from the linker map (`tcc -M`), passed
-with `--map`. Map addresses are relative to the start of the load image, which the MZ loader
-places at segment `0x1000`.
-
-⚠️ **Status: the linked route is not yet better.** It produces correctly-named functions (256
-from Turbo C 2.0 large, via 434 map addresses) and analysis does recover the call graph — 497
-call references in that image — but only 14 of them survive into stored relations, fewer than
-the object route's 20. The loss is in ingest's child resolution, not in the linking, and is an
-open thread. Use the `objects` route until it is closed.
-
-⚠️ Also note the linker only pulls in what is referenced, so a linked build covers fewer
-functions than the library holds (256 against 344) — `omf-uber` forces every *C-callable*
-public, but symbols that are not legal C identifiers (`@`-decorated internals, C++ mangling)
-cannot be referenced from generated C and are skipped.
-
----
 
 ## Troubleshooting
 

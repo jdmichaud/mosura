@@ -277,17 +277,19 @@ Notes: 11.0's DOS host lives in `BINW` (with its own `W32RUN.EXE`), 10.0a's in `
 
 ## Direction
 
-- **Fingerprint table**: compile the probe with each Watcom revision (10.0/10.0a/10.5/10.6/11.0
-  via dosemu; 9.01 done via the floppy `INSTALL.EXE` recipe, 8.5a/9.5b/7.0 still to do the same
-  way; OW 1.x/2.0 native) and record the per-construct codegen. That is the
-  `version → fingerprint` map. 9.01 is the standing warning that a missing column can invert a
-  boundary's meaning, not just leave a gap — see the correction at the end of this file.
+- **Fingerprint table — DONE.** Every revision we have media for is compiled and committed:
+  7.0, 8.5a, 9.01, 9.5b, 10.0-beta, 10.0a, 10.5, 10.6, 11.0, ow2. Nothing in the table is
+  inferred any more. The four closed last (7.0/8.5a/9.5b/10.0-beta) each confirmed that guessing
+  would have been wrong somewhere — see the excursion note and the correction at the end of this
+  file, which are the two standing warnings against interpolating an unmeasured revision.
 - **Matcher**: mosura disassembles an unknown binary (dogfooding its own engine), locates the
   equivalent constructs, and matches against the table to report the revision — the codegen
   counterpart to the header-field `compiler_version` detector.
 - **WAR2**: its banner era (`1988-1994`) + DOS/4GW Professional pin the **10.0 family**; the
-  byte-compare-promotion shape then selects the exact base revision, which is what a byte-exact
-  recompile needs. This reproduces the `warcraft2-re` result through mosura's own tooling.
+  byte-compare-promotion then selects the exact revision. That anchor got NARROWER, and therefore
+  stronger, once the beta was measured: the promoting form is unique to **10.0a retail**, not to
+  "the 10.0 line" — its own beta, and 9.5b/10.5/10.6 either side, all emit the non-promoting form.
+  See [`watcom-10.0-beta-codegen.md`](watcom-10.0-beta-codegen.md).
 
 ### Measured: div/mod/mul does NOT add classification power, but division IS a robustness anchor (2026-07-23)
 
