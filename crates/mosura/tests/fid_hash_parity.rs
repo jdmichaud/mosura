@@ -292,9 +292,10 @@ fn quads_match_ghidra_byte_for_byte() {
         // Raised 16 -> 52 when the empty-mask fallback was gated the way Ghidra gates it
         // (`steals_pattern_bits`). The 4 stragglers are a separate, undiagnosed cause.
         ("gcc-aarch64", 52, 56),
-        // UNMOVED by that fix, which is itself a finding: m68k was assumed to share AArch64's
-        // root cause and does not. Its gap is a different defect, still undiagnosed.
-        ("gcc-m68k", 12, 41),
+        // Raised 12 -> 37 when `apply_pattern_block` learned that Ghidra commits an offset-carrying
+        // pattern block TWICE and ignores its offset when laying bytes down. m68k did NOT share
+        // AArch64's root cause — the two gaps were separate defects in the same mask path.
+        ("gcc-m68k", 37, 41),
         ("watcom-le", 0, 1),
     ];
 

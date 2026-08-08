@@ -1697,16 +1697,52 @@ impl Decision {
 
 /// OR one matched pattern block's mask bytes into `out` at `base + block.offset`,
 /// big-endian per 32-bit word (Ghidra `SleighDebugLogger.InstructionBitPattern.getBytes`).
+/// OR one pattern block's mask bytes into `out`, at `base` — Ghidra
+/// `SleighDebugLogger.InstructionBitPattern.getMask` / `getBytes` (`:1177-1200`).
+///
+/// ⚠️ **`block.offset` is deliberately NOT added, because Ghidra does not add it.** Its `getBytes`
+/// indexes purely `i*4 + n + offset`, where `offset` is the one passed to `addInstructionPattern` —
+/// the `PatternBlock`'s own byte offset is simply never consulted. So a block that declares itself
+/// to start at byte 1 has its bytes laid down at byte 0.
+///
+/// That is a bug in Ghidra, and honouring the offset (which this did) is the more defensible
+/// reading — but this mask is an INPUT TO THE FID HASH, so matching Ghidra byte-for-byte is the
+/// whole requirement, and "more correct" here just means "hashes differently from every database
+/// Ghidra ever published".
+///
+/// It is observable: m68k `move.l D2,-(SP)` resolves an `eal` block declared `@byte1`, and Ghidra
+/// commits it TWICE — `addInstructionPattern(offset=0)` and `(offset=1)` — with `getBytes`
+/// ignoring the block's own offset both times. So its `0x38` lands at byte 0 *and* byte 1, giving
+/// `f1 | 0x38 = 0xf9` in the high byte. Applying the block only at `base + block.offset` yields
+/// `0xf1` and loses that bit; applying it only at `base` loses the byte-1 half. Both applications
+/// are needed.
+///
+/// Measured: gcc-m68k parity 12/41 -> 37/41 with no other column moving (traced with
+/// `oracle/fid/FidPatternTrace.java`, which logs every committed pattern block). The remaining 4
+/// are a separate cause.
+///
+/// This is the mask path only — `subtree_mask` is the sole caller, so pattern *matching* during
+/// disassembly is unaffected.
 fn apply_pattern_block(base: usize, block: &PatternBlock, out: &mut [u8]) {
-    for (i, &word) in block.mask.iter().enumerate() {
-        let mut v = word;
-        for n in (0..4i64).rev() {
-            let idx = base as i64 + block.offset + (i as i64) * 4 + n;
-            if idx >= 0 && (idx as usize) < out.len() {
-                out[idx as usize] |= (v & 0xff) as u8;
+    // Ghidra commits a block that carries its own byte offset TWICE — once at the parent's
+    // offset and once shifted by the block's — and its `getBytes` ignores the block offset when
+    // laying bytes down, so the two calls land at `base` and `base + block.offset`. Applying it
+    // only at `base + block.offset` (the defensible reading) drops the first. See the doc above.
+    let mut lay = |start: i64| {
+        for (i, &word) in block.mask.iter().enumerate() {
+            let mut v = word;
+            for n in (0..4i64).rev() {
+                let idx = start + (i as i64) * 4 + n;
+                if idx >= 0 && (idx as usize) < out.len() {
+                    out[idx as usize] |= (v & 0xff) as u8;
+                }
+                v >>= 8;
             }
-            v >>= 8;
         }
+    };
+    lay(base as i64 + block.offset);
+    if block.offset != 0 {
+        lay(base as i64);
     }
 }
 
