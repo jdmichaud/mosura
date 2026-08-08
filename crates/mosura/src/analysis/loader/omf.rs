@@ -174,6 +174,11 @@ pub struct OmfSegment {
     /// Turbo C object is told from a 32-bit one — the record ids do not say (and under Easy
     /// OMF-386 they actively mislead).
     pub use32: bool,
+    /// Set when the segment is known to hold code from something other than its name — today
+    /// only a `COMDAT`, whose name is the mangled symbol (`W?foo$n()v`), never `_TEXT`. Its
+    /// record states code-vs-data outright in the allocation type, so it is recorded here rather
+    /// than guessed from the name.
+    pub code: bool,
 }
 
 impl OmfSegment {
@@ -181,7 +186,7 @@ impl OmfSegment {
     /// convention is a `TEXT` suffix for any code segment (`BEGTEXT`, `FAR_TEXT`, …). Borland's
     /// 16-bit memory models also emit per-module `<module>_TEXT` segments, which this covers.
     pub fn is_code(&self) -> bool {
-        self.name.ends_with("TEXT") || self.name.ends_with("CODE")
+        self.code || self.name.ends_with("TEXT") || self.name.ends_with("CODE")
     }
 }
 
@@ -261,7 +266,92 @@ pub fn parse_module(data: &[u8]) -> OmfModule {
                     name,
                     data: vec![0u8; length as usize],
                     use32: attr & 0x01 != 0 || easy_omf_386,
+                    code: false,
                 });
+            }
+            // COMDAT / COMDAT32 (0xC2/0xC3) — a named, individually-linkable block of code or
+            // data. **This is how C++ emits template instantiations and inline functions**: each
+            // gets its own COMDAT so the linker can discard duplicates, so a C++ runtime archive
+            // carries almost no PUBDEF/LEDATA and almost all its code here.
+            //
+            // ⚠️ BEYOND GHIDRA — deliberately, and additively. Ghidra's own OMF loader classes
+            // COMDAT as `OmfUnsupportedRecord` and merely logs it
+            // (`omf/OmfFileHeader.java:417`), so a C++ OMF archive yields no code there either.
+            // Without this, `PLIB3R.LIB` loads 334 members and 614 symbols and produces ZERO
+            // functions: the names are all present and every body is missing.
+            //
+            // A COMDAT is LEDATA and PUBDEF fused: it names the block AND carries its bytes. So
+            // it becomes one synthetic segment plus one public at offset 0 — the shape the rest
+            // of this loader (and the FID ingest above it) already understands. Only the first
+            // record of a continued COMDAT starts a segment; a continuation appends.
+            0xc2 | 0xc3 => {
+                let is32 = record.kind & 1 == 1 || easy_omf_386;
+                let Some(&flags) = b.first() else { continue };
+                let Some(&attributes) = b.get(1) else { continue };
+                let mut at = 3; // flags, attributes, align
+                // Enumerated data offset: the block's own start, 2 or 4 bytes.
+                let offset = if is32 {
+                    let Some(v) = b.get(at..at + 4) else { continue };
+                    at += 4;
+                    u32::from_le_bytes([v[0], v[1], v[2], v[3]]) as usize
+                } else {
+                    let Some(v) = b.get(at..at + 2) else { continue };
+                    at += 2;
+                    u16::from_le_bytes([v[0], v[1]]) as usize
+                };
+                let Some((_type_index, next)) = omf_index(b, at) else { continue };
+                at = next;
+                // Public base, present only when the allocation type says the block is NOT
+                // explicitly placed (low nibble 0 = explicit). Mirrors PUBDEF's base.
+                // Allocation type (low nibble) states code vs data outright:
+                //   0 = explicit (a base group/segment follows — inherit from that segment)
+                //   1 = far code    2 = far data    3 = code32    4 = data32
+                let alloc = attributes & 0x0f;
+                let mut is_code = matches!(alloc, 1 | 3);
+                if alloc == 0 {
+                    let Some((group, n1)) = omf_index(b, at) else { continue };
+                    let Some((seg, n2)) = omf_index(b, n1) else { continue };
+                    at = n2;
+                    if group == 0 && seg == 0 {
+                        at += 2; // frame number
+                    }
+                    is_code = seg
+                        .checked_sub(1)
+                        .and_then(|i| module.segments.get(i))
+                        .is_some_and(OmfSegment::is_code);
+                }
+                let Some((name_idx, next)) = omf_index(b, at) else { continue };
+                at = next;
+                let payload = b.get(at..).unwrap_or_default();
+                let Some(name) = name_idx.checked_sub(1).and_then(|i| names.get(i)).cloned() else {
+                    continue;
+                };
+
+                // Bit 0 of `flags` marks a continuation of the COMDAT already in progress.
+                let continuation = flags & 0x01 != 0;
+                if continuation {
+                    if let Some(seg) = module.segments.last_mut() {
+                        let end = offset + payload.len();
+                        if seg.data.len() < end {
+                            seg.data.resize(end, 0);
+                        }
+                        seg.data[offset..end].copy_from_slice(payload);
+                    }
+                    continue;
+                }
+                // The segment is named for the COMDAT so `OmfSegment::is_code` can recognise it;
+                // a C++ COMDAT holding code is what we are here for, and its name is the mangled
+                // function, not `_TEXT`. `comdat_is_code` reads the attribute rather than the
+                // name for that reason.
+                let mut data = vec![0u8; offset];
+                data.extend_from_slice(payload);
+                module.segments.push(OmfSegment {
+                    name: format!("COMDAT${name}"),
+                    data,
+                    use32: is32,
+                    code: is_code,
+                });
+                module.publics.push((name, module.segments.len(), offset as u64));
             }
             // LEDATA / LEDATA32 — enumerated data at an offset within a segment.
             0xa0 | 0xa1 => {
