@@ -2132,9 +2132,14 @@ fn outstanding(f: &Funcdata) -> usize {
 /// what keeps the register→stack handover — which legitimately introduces new candidates — from
 /// reading as a stall. A function that stops here leaves some locations out of SSA, exactly as
 /// Ghidra's exhausted restart group leaves a function partly analyzed.
-pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
+/// Returns whether SSA was actually reached. **Check it.** The graph a stalled run leaves behind
+/// is half-built, so anything derived from it is derived from nothing — see the alias probe in
+/// `pipeline.rs`, whose caller falls back to the conservative boundary rather than believing a
+/// result computed on such a graph.
+#[must_use]
+pub fn heritage(f: &mut Funcdata, dom: &Dominators) -> bool {
     if f.num_blocks() == 0 {
-        return;
+        return true;
     }
     let mut previous = usize::MAX;
     while !heritage_complete(f) {
@@ -2142,11 +2147,12 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) {
             build_info_list(&f.spaces).iter().any(|i| i.is_heritaged() && f.heritage_pass <= i.delay);
         let remaining = outstanding(f);
         if !pending_delay && remaining >= previous {
-            break; // a pass that removed nothing will not remove anything next time either
+            return false; // a pass that removed nothing will not remove anything next time either
         }
         previous = remaining;
         heritage_pass(f, dom);
     }
+    true
 }
 
 /// Place the MULTIEQUALs for this pass's cover and run the renaming walk — the tail of Ghidra's

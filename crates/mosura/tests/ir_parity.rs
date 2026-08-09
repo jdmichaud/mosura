@@ -149,7 +149,7 @@ fn heritaged(spec: &Spec, ctx: &[u32], fixture: &std::path::Path) -> mosura::dec
     let mut f = raw_funcdata_flow(spec, "func", &dt.chunks[0].bytes, dt.chunks[0].offset, ctx);
     mosura::decompile::cfg::build_cfg(&mut f);
     let dom = mosura::decompile::dominator::compute(&f);
-    mosura::decompile::heritage::heritage(&mut f, &dom);
+    let _ = mosura::decompile::heritage::heritage(&mut f, &dom);
     f
 }
 

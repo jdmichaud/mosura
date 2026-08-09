@@ -62,14 +62,26 @@ impl Action for ActionHeritage {
                 let mut probe = data.clone();
                 probe.call_guards_active = true; // PROBE-DIAGNOSTIC
                 let pdom = super::dominator::compute(&probe);
-                super::heritage::heritage(&mut probe, &pdom);
-                super::recover::resolve_return(&mut probe);
-                super::recover::resolve_call_args(&mut probe);
-                // Suppress the MOSURA_TRACE trace here: this rule pool runs on a throwaway clone
-                // for alias analysis, so its firings would double the real pipeline's trace.
-                super::action::with_suppressed_trace(|| default_rule_pool().apply(&mut probe));
-                super::deadcode::ActionDeadCode.apply(&mut probe);
-                super::alias::alias_boundary(&probe)
+                if !super::heritage::heritage(&mut probe, &pdom) {
+                    // The probe could not reach SSA, so its graph says nothing about aliasing and
+                    // `alias_boundary` would report whatever the half-built form happened to show
+                    // — most likely `None`, i.e. "no stack slot is aliased", which is the LEAST
+                    // conservative answer available and exactly the wrong way to fail. Guard the
+                    // whole stack instead: over-guarding costs SSA quality, under-guarding is how
+                    // wrong code gets out.
+                    //
+                    // Reached by Open Watcom's `signl.c`, whose overlapping unaligned stack
+                    // locations never enter SSA (task #8).
+                    Some(i64::MIN)
+                } else {
+                    super::recover::resolve_return(&mut probe);
+                    super::recover::resolve_call_args(&mut probe);
+                    // Suppress the MOSURA_TRACE trace here: this rule pool runs on a throwaway
+                    // clone for alias analysis, so its firings would double the real trace.
+                    super::action::with_suppressed_trace(|| default_rule_pool().apply(&mut probe));
+                    super::deadcode::ActionDeadCode.apply(&mut probe);
+                    super::alias::alias_boundary(&probe)
+                }
             };
             // Enable heritage's per-range call-effect guarding (Ghidra `Heritage::guardCalls`),
             // threading the alias boundary. The probe clone above heritaged with guarding OFF (the
