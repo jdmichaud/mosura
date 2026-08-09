@@ -251,13 +251,24 @@ stored first.
 
 Do not trust a database you have not tested against a binary whose contents you know.
 
-1. **Compile a probe** against that runtime. `oracle/fid/src/crtprobe.c` exists for this: it
-   calls a known set of library routines and compiles under MSVC, Watcom and gcc.
+1. **Compile a probe** against that runtime. `oracle/fid/src/crtprobe.c` (MSVC, gcc) and
+   `oracle/fid/src/watprobe.c` (Watcom) exist for this: each calls a known set of library
+   routines. `scripts/build-fid-probes.sh [column]` builds them.
 2. **Strip it.**
 3. **Identify** and check the names against what the source calls.
 
-That is exactly what `tests/fid_identify.rs` does for the MSVC column, and it is the shape
-every column's gate takes (`fid-port-plan.md` §5 Stage 7). Assert **both** directions:
+⚠️ **Then check the gate can fail.** A recall gate measures nothing if its answer is fixed in
+advance, and that is easy to miss because it looks green either way. The Watcom probe was written
+twice for this reason: the first version, built from `crtprobe.c`, named the same 17 functions
+against the databases from *before* and *after* the OMF relocation fix. `watprobe.c` calls
+routines that read static tables — the shape that fix repaired — and scores 30 before, 38 after.
+Run a candidate gate against a known-bad input before trusting it.
+
+That is what `tests/fid_identify.rs` does for the MSVC column and `tests/fid_watcom_identify.rs`
+for Watcom, and it is the shape every column's gate takes (`fid-port-plan.md` §5 Stage 7). It is
+also the only *non-self-referential* evidence a column has: `fid_detect_versions` scores each
+database against its own records, and `fid_database_drift` proves a database reproduces from its
+libraries — neither can tell you it matches a real linked program. Assert **both** directions:
 
 - **recall** — the routines the probe calls must come back;
 - **precision** — the identified set must be exactly what you expect. A name you did not

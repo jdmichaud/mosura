@@ -47,9 +47,50 @@ if [ "$WANT" = all ] || [ "$WANT" = msvc6 ]; then
 	fi
 fi
 
+# --- Watcom 10.0a, x86-32 DOS/4G LE, static clib3r ------------------------------------------
+#
+# Built from oracle/fid/src/watprobe.c, NOT crtprobe.c — see that file's header for why (Watcom
+# 10.0a has no 64-bit integer type, and crtprobe's call set could not tell the pre- and post-OMF-fix
+# databases apart).
+#
+# Needs dosemu2 and a Watcom 10.0a staged at C:\WAT100A (scripts/setup-watcom-dosemu.sh 10.0a).
+# That script stages the dir holding WCC386 (BINB); the DOS-hosted WLINK.EXE lives in the sibling
+# BIN, and the linker resolves `system dos4g` through $WATCOM/binb/wlsystem.lnk — both are staged
+# here rather than assumed.
+if [ "$WANT" = all ] || [ "$WANT" = watcom ]; then
+	DC="${DOSEMU_C:-$HOME/.dosemu/drive_c}"
+	if command -v dosemu >/dev/null && [ -x "$DC/WAT100A/BIN/WCC386.EXE" ]; then
+		iso=$(ls /data/w10a/*.ISO /data/tools/watcom/*10A*.ISO 2>/dev/null | head -1)
+		for f in BIN/WLINK.EXE BINB/WLSYSTEM.LNK; do
+			base=$(basename "$f")
+			if [ ! -f "$DC/WAT100A/BIN/$base" ] && [ -n "$iso" ]; then
+				7z e -y -o"$DC/WAT100A/BIN" "$iso" "WATCOM/$f" >/dev/null 2>&1 || true
+			fi
+		done
+		mkdir -p "$DC/WAT100A/binb"
+		[ -f "$DC/WAT100A/BIN/WLSYSTEM.LNK" ] &&
+			cp -f "$DC/WAT100A/BIN/WLSYSTEM.LNK" "$DC/WAT100A/binb/wlsystem.lnk"
+
+		work="$DC/fidprobe"; rm -rf "$work"; mkdir -p "$work"
+		cp oracle/fid/src/watprobe.c "$work/WATPROBE.C"
+		# DOS COMMAND.COM has no `&&` and no `2>&1`: the steps go in a batch file, one redirect each.
+		printf '@echo off\r\nset WATCOM=C:\\WAT100A\r\nset PATH=C:\\WAT100A\\BIN\r\nset INCLUDE=C:\\WAT100A\\H\r\nc:\r\ncd \\fidprobe\r\nwcc386 -3r -otexan WATPROBE.C >BUILD.TXT\r\nwlink system dos4g file watprobe name watprobe.exe >>BUILD.TXT\r\n' \
+			> "$work/MKW.BAT"
+		dosemu -td -E 'c:\fidprobe\mkw.bat' >/dev/null 2>&1
+		if [ -s "$work/watprobe.exe" ]; then
+			cp "$work/watprobe.exe" "$OUT/watprobe.watcom10.0a-x86-32.exe"
+			echo "  watcom10.0a-x86-32  $(stat -c%s "$OUT/watprobe.watcom10.0a-x86-32.exe") bytes"
+			built=$((built + 1))
+		else
+			echo "  watcom10.0a-x86-32  FAILED (see $work/BUILD.TXT)"
+		fi
+	else
+		echo "  watcom10.0a-x86-32  skipped (need dosemu2 + C:\\WAT100A — setup-watcom-dosemu.sh 10.0a)"
+	fi
+fi
+
 # --- Further columns land with Stage 7 -----------------------------------------------------
-# Watcom (clib3r), gcc/glibc x86-64 + x86-32 + aarch64 + riscv64 + m68k, sdcc z80, Borland.
-# Each needs a signature database built by our own ingest first (Stage 6); the probe source
-# above is already written to compile under all of them.
+# gcc/glibc x86-64 + x86-32 + aarch64 + riscv64 + m68k, sdcc z80, Borland. Each needs a
+# signature database built by our own ingest first (Stage 6).
 
 echo "built $built probe(s) into oracle/fid/binaries/"
