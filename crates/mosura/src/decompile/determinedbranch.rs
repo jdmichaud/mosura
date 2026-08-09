@@ -51,12 +51,17 @@ fn branch_remove_internal(f: &mut Funcdata, bb: BlockId, num: usize) {
     f.block_mut(bb).out_edges.remove(num);
     f.block_mut(bbout).in_edges.remove(blocknum);
     // Patch MULTIEQUALs in bbout: drop the input for the now-dead edge, then collapse.
+    // Ghidra walks `bbout->beginOp()..endOp()`, and `opDestroy` REMOVES an op from its block's
+    // list (it moves to the dead list), so a destroyed MULTIEQUAL is never seen here. mosura
+    // leaves destroyed ops in the block's `ops` vector marked dead, and a dead op has had its
+    // inputs cleared — so without this filter `op_remove_input` is called on an op with none,
+    // which panics. Observed on Open Watcom's `signl.c`, where block 3 carries five dead phis.
     let multis: Vec<OpId> = f
         .block(bbout)
         .ops
         .iter()
         .copied()
-        .filter(|&op| f.op(op).code() == OpCode::Multiequal)
+        .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Multiequal)
         .collect();
     for op in multis {
         f.op_remove_input(op, blocknum);
@@ -492,12 +497,14 @@ fn block_remove_internal_preserving(f: &mut Funcdata, bb: BlockId) {
     for &bbout in &outs {
         let blocknum =
             f.block(bbout).in_edges.iter().position(|&p| p == bb).expect("bb feeds its out-block");
+        // Dead ops are excluded for the same reason as in `branch_remove_internal`: they are not
+        // in Ghidra's block op list at all, and they carry no inputs to patch.
         let phis: Vec<OpId> = f
             .block(bbout)
             .ops
             .iter()
             .copied()
-            .filter(|&op| f.op(op).code() == OpCode::Multiequal)
+            .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Multiequal)
             .collect();
         for op in phis {
             let deadvn = f.op(op).input(blocknum).expect("phi input per in-edge");
@@ -617,6 +624,62 @@ mod tests {
     use crate::decompile::op::SeqNum;
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::Funcdata;
+
+    /// A DESTROYED MULTIEQUAL left in a block's op list must not be patched.
+    ///
+    /// Ghidra's `opDestroy` removes an op from its block (it moves to the dead list), so
+    /// `blockRemoveInternal`/`branchRemoveInternal`, which walk `bbout->beginOp()..endOp()`, never
+    /// see one. mosura leaves destroyed ops in `BlockBasic::ops` marked dead, and a dead op has had
+    /// its inputs cleared — so patching it called `op_remove_input` on an op with no inputs and
+    /// panicked. Open Watcom's `signl.c` reaches exactly this: block 3 carries five dead phis when
+    /// its duplicated edge is removed.
+    #[test]
+    fn redundbranch_ignores_destroyed_multiequals() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+
+        // Block 0 ends in a CBRANCH whose BOTH targets are block 1 — the vacuous decision
+        // `ActionRedundBranch` arm 2 removes.
+        let c = f.new_const(1, 0);
+        let br = f.new_op(OpCode::Cbranch, s(0), vec![c]);
+        // Block 1 holds a MULTIEQUAL that has already been destroyed.
+        let a = f.new_const(8, 1);
+        let phi = f.new_op(OpCode::Multiequal, s(1), vec![a, a]);
+        f.new_output(phi, 8, Address::new(reg, 0));
+        let ret = f.new_op(OpCode::Return, s(2), vec![]);
+        let blocks = vec![
+            BlockBasic {
+                ops: vec![br],
+                in_edges: vec![],
+                out_edges: vec![BlockId(1), BlockId(1)],
+            },
+            BlockBasic {
+                ops: vec![phi, ret],
+                in_edges: vec![BlockId(0), BlockId(0)],
+                out_edges: vec![],
+            },
+        ];
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+        f.op_destroy(phi);
+        assert!(f.op(phi).is_dead() && f.op(phi).num_inputs() == 0, "destroyed phi has no inputs");
+        assert!(
+            f.block(BlockId(1)).ops.contains(&phi),
+            "this test only bites while destroyed ops stay in the block list",
+        );
+
+        // Must not panic: the dead phi is not Ghidra's to patch.
+        let n = ActionRedundBranch.apply(&mut f);
+        assert_eq!(n, 1, "the vacuous decision is removed");
+        assert_eq!(f.block(BlockId(0)).out_edges.len(), 1, "one edge severed");
+    }
 
     /// `ActionRedundBranch` arm 1 (coreaction.cc:3505): a single-out block whose successor has a
     /// single in-edge is spliced into it — the trailing branch dies and the two op lists join.
