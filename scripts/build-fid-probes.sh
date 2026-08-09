@@ -89,8 +89,48 @@ if [ "$WANT" = all ] || [ "$WANT" = watcom ]; then
 	fi
 fi
 
+# --- Borland C++ 4.5, x86-16 MZ, two memory models ------------------------------------------
+#
+# Built from oracle/fid/src/bcprobe.c. TWO models on purpose: the model changes the code (which is
+# why Borland has 64 databases), and a far call is segment-relative rather than self-relative, so
+# the large model is the only cover for the 16:16 far-pointer fixup.
+#
+# The .map is committed next to each .exe and is the gate's ground truth for precision — see
+# tests/fid_borland_identify.rs. Hence `-M`.
+if [ "$WANT" = all ] || [ "$WANT" = borland ]; then
+	DC="${DOSEMU_C:-$HOME/.dosemu/drive_c}"
+	BC="${MOSURA_BC45:-/data/borland/BC45}"
+	if command -v dosemu >/dev/null && [ -x "$BC/BIN/BCC.EXE" ]; then
+		work="$DC/bcprobe"; rm -rf "$work"; mkdir -p "$work/INCLUDE" "$work/LIB"
+		cp -r "$BC/BIN" "$work/BIN"
+		cp "$BC"/INCLUDE/*.H "$work/INCLUDE/" 2>/dev/null
+		# Only the 16-bit runtime pieces, not the whole 35 MB LIB tree.
+		cp "$BC"/LIB/C?.LIB "$BC"/LIB/MATH?.LIB "$BC"/LIB/C0*.OBJ "$BC"/LIB/EMU.LIB \
+			"$BC"/LIB/FP87.LIB "$work/LIB/" 2>/dev/null
+		cp oracle/fid/src/bcprobe.c "$work/BCPROBE.C"
+		for m in s:cs:BCPS l:cl:BCPL; do
+			model=${m%%:*}; rest=${m#*:}; variant=${rest%%:*}; stem=${rest#*:}
+			# TLINK must be on PATH; BCC shells out to it by name.
+			printf '@echo off\r\nc:\r\ncd \\bcprobe\r\nset PATH=C:\\BCPROBE\\BIN\r\nBIN\\BCC.EXE -m%s -O2 -M -IC:\\BCPROBE\\INCLUDE -LC:\\BCPROBE\\LIB -e%s.EXE BCPROBE.C >BUILD.TXT\r\n' \
+				"$model" "$stem" > "$work/MK.BAT"
+			dosemu -td -E 'c:\bcprobe\mk.bat' >/dev/null 2>&1
+			low=$(echo "$stem" | tr '[:upper:]' '[:lower:]')
+			if [ -s "$work/$low.exe" ]; then
+				cp "$work/$low.exe" "$OUT/bcprobe.bc4.5-$variant-x86-16.exe"
+				cp "$work/$low.map" "$OUT/bcprobe.bc4.5-$variant-x86-16.map"
+				echo "  borland bc4.5-$variant  $(stat -c%s "$OUT/bcprobe.bc4.5-$variant-x86-16.exe") bytes"
+				built=$((built + 1))
+			else
+				echo "  borland bc4.5-$variant  FAILED (see $work/BUILD.TXT)"
+			fi
+		done
+	else
+		echo "  borland bc4.5       skipped (need dosemu2 + \$MOSURA_BC45/BIN/BCC.EXE)"
+	fi
+fi
+
 # --- Further columns land with Stage 7 -----------------------------------------------------
-# gcc/glibc x86-64 + x86-32 + aarch64 + riscv64 + m68k, sdcc z80, Borland. Each needs a
-# signature database built by our own ingest first (Stage 6).
+# gcc/glibc x86-64 + x86-32 + aarch64 + riscv64 + m68k, sdcc z80. Each needs a signature
+# database built by our own ingest first (Stage 6).
 
 echo "built $built probe(s) into oracle/fid/binaries/"

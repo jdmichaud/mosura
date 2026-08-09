@@ -786,6 +786,15 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
             }
             // 16-bit offset, and the loader-resolved spelling of the same thing. Under Easy
             // OMF-386 these are 4-byte fields, so the self-relative arithmetic uses `width`.
+            //
+            // ⚠️ A 16-bit field that cannot hold the value is left UNPATCHED rather than
+            // truncated. Ghidra writes `(short) finalvalue` unconditionally and is right to:
+            // its addresses are real segmented ones, where an offset fits its frame by
+            // construction. OUR layout is the deviation — segments are laid out linearly and
+            // the synthetic EXTERNAL block sits above 0x10000 — so truncating writes an
+            // arbitrary value into the instruction stream, changing the decode and destroying
+            // the very call the fixup describes. Dropping this guard cost `borland-bc4.5-cs`
+            // 128 of its 3315 caller/callee relations and, downstream, real identifications.
             1 | 5 => {
                 let value = if segment_relative {
                     target as i64 + addend
@@ -794,8 +803,8 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
                 };
                 if width == 4 {
                     field.copy_from_slice(&(value as i32).to_le_bytes());
-                } else {
-                    field.copy_from_slice(&(value as i16).to_le_bytes());
+                } else if let Ok(narrow) = i16::try_from(value) {
+                    field.copy_from_slice(&narrow.to_le_bytes());
                 }
             }
             // 16-bit base — a logical segment selector, so it cannot be self-relative.
