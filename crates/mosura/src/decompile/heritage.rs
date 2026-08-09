@@ -2357,8 +2357,33 @@ fn rename(
 
     // Fill the phi argument each successor expects from this block (heritage.cc:2531-2552).
     let succs: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
-    for s in succs {
-        let j = f.blocks()[s].in_edges.iter().position(|e| e.0 as usize == b).unwrap();
+    for (i, &s) in succs.iter().enumerate() {
+        // Ghidra `FlowBlock::getOutRevIndex(i)` (heritage.cc:2533): the in-edge index of THIS
+        // out-edge — not of the first in-edge that happens to name the same predecessor.
+        //
+        // The two differ whenever an edge is DUPLICATED, which a CBRANCH whose taken and
+        // fall-through targets are the same block produces: the successor lists that predecessor
+        // twice, and this loop visits it twice. Matching on the predecessor alone returns index 0
+        // both times, so slot 0 is written twice and the second slot is never written at all. Its
+        // input stays the free placeholder `new_multiequal` created, the location never becomes
+        // heritage-known, and the range re-enters `disjoint` on every subsequent pass — heritage
+        // never reaches a fixpoint (task #8: `guard_calls` then re-adds an INDIRECT per call per
+        // pass, growing the graph without bound).
+        //
+        // Pairing the k-th duplicate out-edge with the k-th matching in-edge reproduces the
+        // reverse index without storing one: CFG construction appends both lists in the same
+        // order, so occurrence k on one side is occurrence k on the other.
+        let duplicates_before = succs[..i].iter().filter(|&&t| t == s).count();
+        let Some(j) = f.blocks()[s]
+            .in_edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.0 as usize == b)
+            .map(|(k, _)| k)
+            .nth(duplicates_before)
+        else {
+            continue; // in/out edge lists disagree; nothing sound to wire
+        };
         let phi_locs: Vec<(Loc, OpId)> = phis.get(&s).cloned().unwrap_or_default();
         for (l, phi) in phi_locs {
             // Ghidra tests the placeholder input itself (`if (!vnin->isHeritageKnown())`); mosura's
@@ -2405,6 +2430,92 @@ mod tests {
                 "{name} call placeholders",
             );
         }
+    }
+
+    /// A CBRANCH whose taken and fall-through targets are the SAME block gives that block a
+    /// duplicated in-edge, and its MULTIEQUAL one input per edge — including two for the one
+    /// predecessor. Renaming must fill BOTH, which means using the reverse index of each out-edge
+    /// (Ghidra `FlowBlock::getOutRevIndex`, heritage.cc:2533) rather than the first in-edge naming
+    /// that predecessor.
+    ///
+    /// Matching on the predecessor alone wrote slot 0 twice and left the later slot holding the
+    /// free placeholder forever: the location never became heritage-known, so its range re-entered
+    /// `disjoint` every pass and heritage never reached a fixpoint (task #8 — observed on Open
+    /// Watcom's `signl.c`, where each pass added another INDIRECT per call and the graph grew
+    /// without bound).
+    #[test]
+    fn duplicate_edge_fills_every_phi_slot() {
+        use super::super::block::{BlockBasic, BlockId};
+        use super::super::op::SeqNum;
+        use super::super::space::Address;
+
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("dup", Address::new(ram, 0), spaces);
+        let at = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        // A diamond whose right arm reaches the join on BOTH of its edges:
+        //     0 -> 1 -> 3
+        //     0 -> 2 -> 3   (twice)
+        // Block 3's in-edges are therefore [1, 2, 2] and it needs a 3-input MULTIEQUAL, because
+        // blocks 1 and 2 write the same register differently. That is the exact shape observed on
+        // Open Watcom's `signl.c`.
+        let c = f.new_const(1, 0);
+        let br0 = f.new_op(OpCode::Cbranch, at(0), vec![c]);
+
+        let c1 = f.new_const(1, 7);
+        let w1 = f.new_op(OpCode::Copy, at(1), vec![c1]);
+        f.new_output(w1, 1, Address::new(reg, 0x200));
+
+        let c2 = f.new_const(1, 9);
+        let w2 = f.new_op(OpCode::Copy, at(2), vec![c2]);
+        f.new_output(w2, 1, Address::new(reg, 0x200));
+        let br2 = f.new_op(OpCode::Cbranch, at(3), vec![c]);
+
+        let free = f.new_varnode(1, Address::new(reg, 0x200));
+        let r = f.new_op(OpCode::Copy, at(4), vec![free]);
+        f.new_output(r, 1, Address::new(reg, 0x300));
+
+        let mut blocks = vec![BlockBasic::default(); 4];
+        blocks[0].out_edges = vec![BlockId(1), BlockId(2)];
+        blocks[1].out_edges = vec![BlockId(3)];
+        blocks[2].out_edges = vec![BlockId(3), BlockId(3)]; // the duplicated edge
+        blocks[1].in_edges = vec![BlockId(0)];
+        blocks[2].in_edges = vec![BlockId(0)];
+        blocks[3].in_edges = vec![BlockId(1), BlockId(2), BlockId(2)];
+        let per_block: [Vec<OpId>; 4] = [vec![br0], vec![w1], vec![w2, br2], vec![r]];
+        for (bi, ops) in per_block.iter().enumerate() {
+            blocks[bi].ops = ops.clone();
+        }
+        f.set_blocks(blocks);
+        for (bi, ops) in per_block.iter().enumerate() {
+            for &op in ops {
+                f.op_mut(op).parent = Some(BlockId(bi as u32));
+            }
+        }
+
+        let dom = super::super::dominator::compute(&f);
+        assert!(heritage(&mut f, &dom), "heritage must converge on a duplicated edge");
+
+        // The join must carry a MULTIEQUAL, and EVERY one of its slots must have been renamed.
+        // Without the reverse-index wiring, slot 0 is written twice and the last slot keeps the
+        // free placeholder — which is the non-termination.
+        let mut phis = 0usize;
+        for op in f.op_ids().collect::<Vec<_>>() {
+            if f.op(op).code() != OpCode::Multiequal || f.op(op).is_dead() {
+                continue;
+            }
+            phis += 1;
+            for slot in 0..f.op(op).num_inputs() {
+                let vid = f.op(op).input(slot).expect("phi input present");
+                assert!(
+                    f.vn(vid).is_heritage_known(),
+                    "MULTIEQUAL slot {slot} left free — the duplicated edge was not renamed",
+                );
+            }
+        }
+        assert!(phis > 0, "the join needs a MULTIEQUAL or this test proves nothing");
     }
 
     /// `LocationMap::add` reports the Ghidra intersect codes and unions overlapping ranges, while
