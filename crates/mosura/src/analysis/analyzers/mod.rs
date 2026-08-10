@@ -1148,3 +1148,94 @@ mod flow_override_tests {
         assert!(!falls_through(&p, at, &insn, ram), "and still does not with the override");
     }
 }
+
+#[cfg(test)]
+mod thunk_resolution_tests {
+    use super::*;
+    use crate::analysis::manager::Scheduling;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    /// ⭐ **THE THUNK GATE.** Ghidra creates a function at the target of a function whose entry
+    /// is a lone unconditional jump, and it does so **before** that function's body is ever
+    /// computed:
+    ///
+    /// - `CreateFunctionCmd.createFunction` (CreateFunctionCmd.java:365) — *"check for a thunk
+    ///   first"* → `resolveThunk(entry, body, monitor)`, called before `listing.createFunction`.
+    /// - `CreateFunctionCmd.fixupFunctionBody` (:667) runs the same check on every body
+    ///   recomputation — *"function could now be a thunk, since someone is calling this because
+    ///   of a potential body flow change"* — again before `func.setBody`.
+    /// - `resolveThunk` → `CreateThunkFunctionCmd.getThunkedAddr` (CreateThunkFunctionCmd.java:548)
+    ///   → `getSimpleFlow` (:815): a non-conditional jump (or terminal call) with exactly one
+    ///   non-indirect flow returns that flow as the thunked address.
+    /// - `CreateThunkFunctionCmd.getReferencedFunction` (:360-375): with no function AT and no
+    ///   function CONTAINING the thunked address, it runs
+    ///   **`new CreateFunctionCmd(referencedFunctionAddr).applyTo(program)`** — that call is what
+    ///   creates the function.
+    ///
+    /// mosura has no thunk model at all (`function_start.rs:766` says so outright), so
+    /// [`compute_function_bodies`] follows the `jmp` and the target is **swallowed into the
+    /// jumping function's body**; the overlap refusal then declines a function there forever.
+    ///
+    /// **The fixture is WAR2's own `_cstart_` shape, reduced.** WAR2.EXE's entry `0x601f8` is
+    /// `EB 76` — a short jump over the inline Watcom copyright banner
+    /// (`analysis/loader/watcom.rs:5`) — and `0x601f8 + 2 + 0x76 = 0x60270` exactly. Ghidra
+    /// creates `FUN_00060270`; mosura does not. Because the whole span between the two is a
+    /// *string*, no function entry lies in it, so `SharedReturnAnalysisCmd`'s
+    /// `assumeContiguousFunctions` forward arm (`destAddr >= functionAfterSrc`) cannot fire for
+    /// it in Ghidra either — thunk resolution is the only mechanism that reaches it.
+    ///
+    /// ```text
+    /// 0x401000  eb 06                  jmp 0x401008     } the thunk entry, its whole body
+    /// 0x401002  'B' 'A' 'N' 'N' 00 00                   } inline banner, never decoded
+    /// 0x401008  31 c0                  xor eax,eax      } the thunked function
+    /// 0x40100a  c3                     ret              }
+    /// ```
+    ///
+    /// Only `0x401000` is created as a function, exactly as a loader marks an entry point.
+    #[test]
+    #[ignore = "RED until CreateThunkFunctionCmd.getThunkedAddr/getReferencedFunction is ported"]
+    fn a_jump_only_entry_creates_a_function_at_its_thunked_address() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:32:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:32:default", "gcc", base, false, 32);
+        let mut img = vec![0u8; 0x1000];
+        img[..0x0b].copy_from_slice(&[
+            0xeb, 0x06, // jmp 0x401008
+            b'B', b'A', b'N', b'N', 0x00, 0x00, // inline banner (data, never decoded)
+            0x31, 0xc0, // xor eax,eax
+            0xc3, // ret
+        ]);
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        p.function_manager.create_function(base, "entry", AddressSet::new());
+
+        let d = Disassembler::for_program(&p).unwrap();
+        let mut seeds = AddressSet::new();
+        seeds.add_range(ram, 0x40_1000, 0x40_1000);
+        d.added(&mut p, &seeds, &mut Scheduling::default());
+        let target = Address::new(ram, 0x40_1008);
+        assert!(
+            p.listing.code_unit_at(target).is_some(),
+            "the jump target must be decoded for this fixture to measure anything"
+        );
+
+        compute_function_bodies(spec, ctx, &mut p);
+
+        assert!(
+            p.function_manager.function_at(target).is_some(),
+            "no function at the thunked address 0x401008: the entry at 0x401000 is a lone \
+             unconditional jump, so Ghidra's CreateFunctionCmd.resolveThunk creates a function \
+             at its target before any body walk runs. Functions: {:x?}",
+            p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
+        );
+        let thunk_body = p.function_manager.function_at(base).unwrap().body().clone();
+        assert!(
+            !thunk_body.contains(target),
+            "the thunk's body swallowed its own target — the body walk followed the jmp instead \
+             of stopping at the function the thunk resolution created"
+        );
+    }
+}
