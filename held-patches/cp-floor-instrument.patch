@@ -1,0 +1,129 @@
+diff --git a/crates/mosura/src/analysis/analyzers/mod.rs b/crates/mosura/src/analysis/analyzers/mod.rs
+index 7376fca..33d3680 100644
+--- a/crates/mosura/src/analysis/analyzers/mod.rs
++++ b/crates/mosura/src/analysis/analyzers/mod.rs
+@@ -825,9 +825,24 @@ impl Analyzer for ConstantPropagationAnalyzer {
+         // drops entries: an `AddressSet` coalesces adjacent ranges, so functions at consecutive
+         // entries collapse into one range and only the first was ever propagated
+         // (`docs/function-discovery-backlog.md`, CAUSE B).
++        // ── DIAGNOSTIC (temporary, `MOSURA_ANALYSIS_TRACE=1`) ────────────────────────────
++        // The per-invocation half of the instrument, and the half that decides candidate 2. The
++        // `[fc]` lines cannot see `find_locations_remove_function_bodies`, so a cost living THERE
++        // (candidate 2: `AddressSet::add_range` re-sorting on every insert, O(K^2 log K) over
++        // 3022 functions now that Part A populates bodies) would be invisible without `findloc=`.
++        // The three phases account for the whole invocation — verified on mingw_hello.exe:
++        // uninit 33us + findloc 76us + flow 374.46ms against the manager's took=374.60ms — so
++        // whichever phase holds the 1.5s is read off directly, not inferred from a shortfall.
++        let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();
++        let t_phase = std::time::Instant::now();
+         let mut unanalyzed = set.clone();
+         remove_uninitialized_blocks(program, &mut unanalyzed);
++        let t_uninit = t_phase.elapsed();
++        let t_phase = std::time::Instant::now();
+         let locations = find_locations_remove_function_bodies(program, &mut unanalyzed);
++        let t_findloc = t_phase.elapsed();
++        let n_loc = locations.len();
++        let t_phase = std::time::Instant::now();
+ 
+         let mut new_funcs = AddressSet::new();
+         for loc in locations {
+@@ -839,6 +854,18 @@ impl Analyzer for ConstantPropagationAnalyzer {
+                 }
+             }
+         }
++        if trace {
++            eprintln!(
++                "[cp] set={} ranges={} entries={} uninit={:?} findloc={:?} nloc={} flow={:?}",
++                set.num_addresses(),
++                set.ranges().count(),
++                entries.len(),
++                t_uninit,
++                t_findloc,
++                n_loc,
++                t_phase.elapsed(),
++            );
++        }
+         if !new_funcs.is_empty() {
+             sched.function_defined(&new_funcs);
+         }
+diff --git a/crates/mosura/src/analysis/symbolic.rs b/crates/mosura/src/analysis/symbolic.rs
+index 63e8502..d6b75ef 100644
+--- a/crates/mosura/src/analysis/symbolic.rs
++++ b/crates/mosura/src/analysis/symbolic.rs
+@@ -461,11 +461,23 @@ pub fn flow_constants(
+     // NO parameter references for calls without a known signature. Model that by clearing the
+     // arg-register set there, so [`add_param_references`] no-ops. (`isHarvard` — default space
+     // ≠ default data space — is false for the flat images these loaders build.)
++    // ── DIAGNOSTIC (temporary, `MOSURA_ANALYSIS_TRACE=1`) ────────────────────────────────
++    // One line per walk, to decide what the WAR2 Constant Propagation floor actually is.
++    // Read the env var ONCE per walk (not per instruction) and keep every counter a local, so
++    // this adds no shared state — cf. `inert-is-not-thread-safe`.
++    let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();
++    let t_walk = std::time::Instant::now();
++    let mut n_dis = 0u64;
++    let mut t_dis = std::time::Duration::ZERO;
++    let mut t_ops = std::time::Duration::ZERO;
++
++    let t_arg = std::time::Instant::now();
+     let arg_regs = if program.addr_size_bits <= 16 {
+         Vec::new()
+     } else {
+         integer_arg_registers(spec, program)
+     };
++    let t_arg = t_arg.elapsed();
+     let mut visited: HashSet<u64> = HashSet::new();
+     let mut work: Vec<(u64, VarnodeContext)> = vec![(start.offset, VarnodeContext::default())];
+ 
+@@ -478,8 +490,12 @@ pub fn flow_constants(
+         if a != start.offset && entries.contains(&a) {
+             continue;
+         }
++        let t_d = std::time::Instant::now();
+         let window = program.memory.read_window(Address::new(ram, a), 16);
+-        let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else {
++        let decoded = spec.disassemble_ctx(&window, a, ctx);
++        t_dis += t_d.elapsed();
++        n_dis += 1;
++        let Some(insn) = decoded.into_iter().next() else {
+             continue;
+         };
+         let ilen = insn.bytes.len() as u64;
+@@ -496,6 +512,7 @@ pub fn flow_constants(
+ 
+         let mut falls = true;
+         let mut branch_targets: Vec<u64> = Vec::new();
++        let t_o = std::time::Instant::now();
+         for op in &insn.ops {
+             // On a call, recover PARAM references for the argument registers from the
+             // register state *before* the call clobbers anything (Ghidra applies
+@@ -536,6 +553,7 @@ pub fn flow_constants(
+         // Queue branch targets (each path gets its own context); skip already-interpreted
+         // ones so we don't clone the context needlessly (back-edges of loops). The
+         // fall-through path reuses this context by move — only branches need a clone.
++        t_ops += t_o.elapsed();
+         for t in branch_targets {
+             if !visited.contains(&t) {
+                 work.push((t, vctx.clone()));
+@@ -545,6 +563,22 @@ pub fn flow_constants(
+             work.push((a + ilen, vctx));
+         }
+     }
++    if trace {
++        // `t_dis` dominant  => candidate 1: the walk re-decodes raw bytes, unbounded by the body.
++        // `t_arg` dominant  => the compiler-spec setup (what was fixed for windows/gcc targets).
++        // neither, and the [cp] `flow=` total far below the invocation total => candidate 2,
++        // which lives in `find_locations_remove_function_bodies`, not here.
++        eprintln!(
++            "[fc] start={:x} visited={} n_dis={} t_arg={:?} t_dis={:?} t_ops={:?} total={:?}",
++            start.offset,
++            visited.len(),
++            n_dis,
++            t_arg,
++            t_dis,
++            t_ops,
++            t_walk.elapsed(),
++        );
++    }
+     call_dests.sort_unstable();
+     call_dests.dedup();
+     call_dests
