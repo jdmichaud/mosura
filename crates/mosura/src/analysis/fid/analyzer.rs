@@ -116,7 +116,22 @@ pub fn hash_function(program: &Program, entry: Address) -> Option<FidHashQuad> {
     // Decode each instruction from its own bytes, as the listing recorded it.
     let mut decoded = Vec::with_capacity(starts.len());
     for start in starts {
-        let window = program.memory.read_window(start, 16);
+        // ⚠️ **Bounded by the LISTING's recorded length, not a fixed 16-byte window.** A 16-byte
+        // window makes SLEIGH decode every instruction that fits in it — ~5 on x86 — and
+        // `.next()` throws four of them away. Doubly so here, because the window is decoded
+        // TWICE (once for p-code, once for the fingerprint). `perf --children` put
+        // `hash_function -> disassemble_ctx` at ~7.4% of a whole WAR2 run.
+        //
+        // Fourth instance of this class after b6754d2, 90dd655 and the thunk entry probe; the
+        // bound is the same one 90dd655 established (symbolic.rs:521). The comment above already
+        // claimed "from its own bytes, as the listing recorded it" — this makes it true.
+        let ilen = match program.listing.instruction_at(start) {
+            Some((len, _)) if len > 0 => len as usize,
+            // No recorded length (should not happen: `starts` came from the listing) — fall back
+            // to the old window rather than skip the instruction and change the hash.
+            _ => 16,
+        };
+        let window = program.memory.read_window(start, ilen);
         if window.is_empty() {
             continue;
         }
