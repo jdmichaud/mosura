@@ -972,7 +972,7 @@ fn create_functions(program: &mut Program, entries: &AddressSet, sched: &mut Sch
             continue;
         }
         let name = format!("FUN_{off:08x}");
-        program.function_manager.create_function(addr, &name, AddressSet::new());
+        crate::analysis::analyzers::create_function_with_body(program, addr, &name);
         if !program.symbol_table.has_symbol_at(addr) {
             program.symbol_table.add_with_primary(addr, &name, SymbolType::Function, true);
         }

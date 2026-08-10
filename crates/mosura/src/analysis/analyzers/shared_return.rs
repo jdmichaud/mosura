@@ -253,7 +253,7 @@ impl SharedReturnAnalyzer {
         // analysisMgr.createFunction: create the function + its default symbol, and schedule
         // it (function_defined re-triggers FunctionCreator → disassembly → reference recovery).
         let name = format!("FUN_{:08x}", entry.offset);
-        if program.function_manager.create_function(entry, &name, AddressSet::new()) {
+        if crate::analysis::analyzers::create_function_with_body(program, entry, &name) {
             if !program.symbol_table.has_symbol_at(entry) {
                 program.symbol_table.add_with_primary(entry, &name, SymbolType::Function, true);
             }

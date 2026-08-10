@@ -495,7 +495,7 @@ impl Analyzer for FunctionCreator {
             }
             let is_new = program.function_manager.function_at(addr).is_none();
             let name = format!("FUN_{off:08x}");
-            program.function_manager.create_function(addr, &name, AddressSet::new());
+            create_function_with_body(program, addr, &name);
             if !program.symbol_table.has_symbol_at(addr) {
                 program.symbol_table.add_with_primary(addr, &name, SymbolType::Function, true);
             }
@@ -681,6 +681,38 @@ pub fn reset_body_refresh_memo() {
 /// so keying on the function count alone leaves a body stale exactly when new code was decoded —
 /// which is the case the constant propagator's channel now depends on. The marker is thread-local,
 /// the correct granularity: the test harness analyses different programs on different threads.
+/// Create a function AND compute its body, as Ghidra does in one step.
+///
+/// `CreateFunctionCmd.createFunction` never stores a bodyless function — it computes the body with
+/// `getFunctionBody` and hands it to `listing.createFunction` in the same call
+/// (CreateFunctionCmd.java:332-337). mosura used to pass `AddressSet::new()` everywhere and fill
+/// bodies in later with a whole-program `compute_function_bodies`, which left every function
+/// bodyless for a window — and inside the manager loop that window is where the ported body
+/// queries run. An EMPTY body has ZERO ranges, so `getNumAddressRanges() <= 1` reads it as
+/// "contiguous" and `SharedReturnAnalysisCmd.checkBelowFunction`'s delete removes nothing
+/// (:327): the permissive branch of a ported query rather than a smaller version of it.
+/// Gated by `creating_a_function_carries_its_body_without_a_whole_program_recompute`.
+///
+/// The walk stops at any OTHER function's entry, so the entry set is read before the new function
+/// is inserted — which is also Ghidra's order, since `getFunctionBody` runs before
+/// `listing.createFunction`.
+///
+/// ⚠️ A body computed here can still be a one-byte stub, and that is CORRECT rather than a
+/// shortfall: at a call target the disassembler has not reached yet there is no instruction to
+/// walk, and Ghidra stores exactly the same degenerate `new AddressSet(entry, entry)`
+/// (CreateFunctionCmd.java:616-620). It grows when the code arrives and the body is recomputed.
+pub fn create_function_with_body(program: &mut Program, entry: Address, name: &str) -> bool {
+    let entries: std::collections::BTreeSet<u64> = program
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point())
+        .filter(|e| e.space == entry.space)
+        .map(|e| e.offset)
+        .collect();
+    let body = get_function_body(program, entry.space, entry.offset, &entries);
+    program.function_manager.create_function(entry, name, body)
+}
+
 /// Decode the single instruction at `addr`, bounded by the length the LISTING already recorded.
 ///
 /// ⚠️ **The whole point is the bound.** `read_window(addr, MAX_INSN_LEN)` hands SLEIGH 16 bytes,
@@ -1634,6 +1666,71 @@ mod body_walk_reads_the_listing {
     /// that reads the listing returns the eight-byte body; a walk that decodes returns Ghidra's
     /// degenerate one-byte body (:616-620) because it can parse nothing. Run this against the
     /// byte-decoding walk and it reports 1 instead of 8.
+    /// ⭐ **THE GATE FOR TASK #5 PART B: creating a function must CARRY its body.**
+    ///
+    /// Ghidra never creates a function without one. `CreateFunctionCmd.createFunction` computes it
+    /// — `body = (body == null ? getFunctionBody(program, entry, false, monitor) : body)` — and
+    /// hands it to `listing.createFunction` in the same breath (CreateFunctionCmd.java:332-337).
+    /// A Ghidra `Function` therefore never has an empty body at any point in its life.
+    ///
+    /// Every mosura production call site passes `AddressSet::new()` instead — `FunctionCreator`
+    /// (:498), `function_start.rs:975`, `find_noreturn.rs:408`, `shared_return.rs:256`,
+    /// `thunk.rs:202`, and all four loaders — and the body is filled in later by a whole-program
+    /// `compute_function_bodies`. Between those two moments the function is real and its body is
+    /// empty, and **every ported query that reads a body gets the wrong answer in that window**.
+    ///
+    /// The measured consequence, and why this blocks task #3: `SharedReturnAnalysisCmd`'s
+    /// `checkBelowFunction` asks `body.getNumAddressRanges()` and deletes the body from
+    /// `jumpScanSet` when it is a single range (:327). An EMPTY body has ZERO ranges, so `<= 1`
+    /// holds and the delete removes NOTHING — the scan set comes out WIDER than Ghidra's. That is
+    /// the permissive branch of a ported query, not a smaller version of it
+    /// (`.claude/memory/empty-bodies-take-the-permissive-branch.md`).
+    ///
+    /// This asserts the cause rather than that one symptom, because the same empty body is read by
+    /// `find_locations_remove_function_bodies`, `find_functions` and `getFunctionContaining` too.
+    /// It uses the real `FunctionCreator`, not a hand-made function, so it cannot be satisfied by
+    /// anything short of creation actually computing the body.
+    ///
+    /// ⚠️ **Committed RED first and verified failing** at `left: 0, right: 8` — zero, not Ghidra's
+    /// degenerate one-byte body (`new AddressSet(entry, entry)`, :616-620): mosura stored literally
+    /// nothing, which is why the `<= 1` range test read an empty body as "contiguous". Now GREEN
+    /// via `create_function_with_body`. Its failure is proven by history, not asserted.
+    #[test]
+    fn creating_a_function_carries_its_body_without_a_whole_program_recompute() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        p.memory.add_block(".text", base, 0x100, true, false, true, None);
+        // The listing as the disassembler would have left it: three straight-line instructions.
+        for (off, len) in [(0x40_1000u64, 4u32), (0x40_1004, 3), (0x40_1007, 1)] {
+            p.listing.define(Address::new(ram, off), CodeUnit::instruction(len));
+        }
+
+        // The PRODUCTION creation path — no `compute_function_bodies` anywhere.
+        let fc = FunctionCreator::new(&p);
+        let mut set = AddressSet::new();
+        set.add_range(ram, 0x40_1000, 0x40_1000);
+        crate::analysis::analyzer::Analyzer::added(
+            &fc,
+            &mut p,
+            &set,
+            &mut crate::analysis::manager::Scheduling::default(),
+        );
+
+        let body = p.function_manager.function_at(base).unwrap().body();
+        assert_eq!(
+            body.num_addresses(),
+            8,
+            "a function must carry its body from the moment it is created, as Ghidra's \
+             CreateFunctionCmd does; an empty body makes every ported body query take its \
+             permissive branch until a whole-program recompute happens to run"
+        );
+    }
+
     #[test]
     fn a_body_is_built_from_the_listing_not_from_the_bytes() {
         let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {

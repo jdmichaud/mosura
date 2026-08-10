@@ -196,7 +196,7 @@ pub fn resolve_thunks(program: &mut Program, spec: &Spec, ctx: &[u32]) -> Addres
         }
         // `new CreateFunctionCmd(referencedFunctionAddr, ...).applyTo(program)` (:371).
         let name = format!("FUN_{:08x}", thunked.offset);
-        if program.function_manager.create_function(thunked, &name, AddressSet::new()) {
+        if crate::analysis::analyzers::create_function_with_body(program, thunked, &name) {
             if !program.symbol_table.has_symbol_at(thunked) {
                 program.symbol_table.add_with_primary(thunked, &name, SymbolType::Function, true);
             }

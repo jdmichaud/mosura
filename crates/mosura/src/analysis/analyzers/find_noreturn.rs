@@ -405,7 +405,7 @@ impl Analyzer for FindNoReturnFunctionsAnalyzer {
             // it. `Function.setNoReturn(true)` is `noreturn_functions` here.
             if program.function_manager.function_at(entry).is_none() {
                 let name = format!("FUN_{:08x}", entry.offset);
-                if program.function_manager.create_function(entry, &name, AddressSet::new()) {
+                if crate::analysis::analyzers::create_function_with_body(program, entry, &name) {
                     created.add_range(entry.space, entry.offset, entry.offset);
                 } else {
                     continue;
