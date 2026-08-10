@@ -69,15 +69,28 @@ fn resolve_language_paths(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
 /// query is a map lookup on those already-parsed objects. There is no per-query filesystem walk
 /// anywhere in Ghidra.
 ///
-/// mosura had the walk on a **per-function** path and it dominated auto-analysis: the constant
-/// propagator asks for the default calling convention's argument registers once per function
-/// (`symbolic::integer_arg_registers` → [`crate::analysis::cspec::default_input_paramlist`]), and
+/// mosura had the walk on a **per-function** path: the constant propagator asks for the default
+/// calling convention's argument registers once per start location
+/// (`symbolic::integer_arg_registers` → [`crate::analysis::cspec::default_input_paramlist`] — one
+/// call per [`crate::analysis::symbolic::flow_constants`], measured 126 calls for 126 walks), and
 /// this function re-`read_dir`s every processor directory and re-XML-parses every `.ldefs` file on
-/// each ask — **34.7 ms measured, per call**. On `mingw_hello.exe` that made Constant Propagation
-/// 5.26 s of which 5.0 s was this resolution, for symbolic walks that cost 0.1–8 ms each. Because
-/// the price is paid per *start location* rather than per address, it presented as a fixed floor:
-/// a 21-address added set and a 3869-address one cost the same 1.5 s on WAR2. See
+/// each ask. On `mingw_hello.exe` that made Constant Propagation 5.26 s of which 5.0 s was this
+/// resolution, for symbolic walks that cost 0.1–8 ms each. See
 /// `tests/constant_propagation_floor.rs`.
+///
+/// ⚠️ **The cost is wildly configuration-dependent, and the short-circuit below is why.** Measured
+/// cold, per `(language, compiler spec)`:
+///
+/// ```text
+/// x86:LE:64:default  windows   118.6 ms      x86:LE:32:default  watcom     1.14 ms
+/// x86:LE:64:default  gcc        42.1 ms      x86:LE:32:default  gcc       34.7 ms
+/// ```
+///
+/// `watcom` on `x86:LE:32` returns from the mosura-authored spec before the tree walk begins, so it
+/// pays ~1 ms where every other configuration pays 35–120 ms. Anyone extrapolating a measurement
+/// from one target to another must check the configuration first: an x86-64 number over-states an
+/// x86-32-watcom target (WAR2's) by a factor of ~20, and doing exactly that produced a confident
+/// and wrong account of WAR2's constant-propagation profile, whose floor remains unexplained.
 ///
 /// The cache is keyed by `(lang_id, compiler_spec_id)` and holds the negative answer too — a
 /// language that declares no such `<compiler>` must not re-walk the tree to rediscover that.

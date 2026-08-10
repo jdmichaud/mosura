@@ -43,13 +43,16 @@ type CspecCache<T> = Mutex<HashMap<(String, String), T>>;
 /// per language, full stop.
 ///
 /// Each accessor in this module *was* an XML parse, and the constant propagator asks for the
-/// default convention's argument registers once per function
-/// ([`crate::analysis::symbolic::flow_constants`]). Measured on `mingw_hello.exe`: ~2 ms of decode
-/// per function on top of [`crate::lang::resolve_cspec`]'s 34.7 ms tree walk, against symbolic
-/// walks costing 0.1 ms — a fixed floor an order of magnitude above the work, and the reason a
-/// 21-address added set cost the same as a 3869-address one on WAR2. See
-/// `tests/constant_propagation_floor.rs`. The decompiler's per-function `Architecture` build
-/// (`decompile/build.rs`) asks three of these accessors per function and paid the same.
+/// default convention's argument registers once per start location (one call per
+/// [`crate::analysis::symbolic::flow_constants`] — measured 126 calls for 126 walks). Measured on
+/// `mingw_hello.exe`: ~2 ms of decode per walk on top of [`crate::lang::resolve_cspec`]'s tree
+/// walk, against symbolic walks costing 0.1 ms — a fixed cost an order of magnitude above the
+/// work. See `tests/constant_propagation_floor.rs`. The decompiler's per-function `Architecture`
+/// build (`decompile/build.rs`) asks three of these accessors per function and paid the same.
+///
+/// ⚠️ The decode is ~1.7–2.1 ms across every configuration, but the resolution underneath it is
+/// not — see the table on [`crate::lang::resolve_cspec`] before carrying any measurement here from
+/// one target to another.
 ///
 /// # Why the key needs nothing else
 ///

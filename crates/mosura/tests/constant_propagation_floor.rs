@@ -3,34 +3,23 @@
 //!
 //! # What is being gated, and why the obvious gate is the wrong one
 //!
-//! Profiled on WAR2 (`MOSURA_ANALYSIS_TRACE=1`), `Constant Propagation` spent 122.4 s over 95
-//! invocations with a per-invocation cost that **did not track the added set**:
+//! `Constant Propagation` paid a fixed setup cost per start location, independent of how much code
+//! that location gave it to walk. A gate on the *total* time would pass for the wrong reasons (and
+//! is vacuous on the fast corpus), so this gate scores the **shape**: two invocations that differ
+//! ONLY in how much code the propagator has to walk.
 //!
-//! ```text
-//! set=21 -> 1.56 s · set=236 -> 1.56 s · set=3869 -> 1.65 s · set=87072 -> 5.72 s
-//! ```
-//!
-//! A 21-address set costing the same as a 3869-address one is the signature of a fixed cost paid
-//! per invocation, independent of the work handed in. A gate on the *total* time would have passed
-//! for the wrong reasons (and is vacuous on the fast corpus), so this gate scores the **shape**:
-//! two invocations that differ ONLY in how much code the propagator has to walk.
-//!
-//! The floor lives one level below the analyzer, in
-//! [`mosura::analysis::symbolic::flow_constants`], which is called once per start location. Its
-//! setup asked the compiler spec for the default calling convention's argument registers
+//! The cost lives one level below the analyzer, in [`mosura::analysis::symbolic::flow_constants`],
+//! which is called **once per start location** — measured, 126 calls for 126 walks, with
+//! `integer_arg_registers` called exactly 126 times, i.e. once per walk and never per call site.
+//! Its setup asked the compiler spec for the default calling convention's argument registers
 //! (`integer_arg_registers` → `cspec::default_input_paramlist` → `lang::resolve_cspec`), and
 //! `resolve_cspec` walked every processor directory re-reading and re-XML-parsing every `.ldefs`
-//! file — **35 ms, on every call**. Measured on this very fixture, per `flow_constants` call:
+//! file. Measured on this very fixture, per `flow_constants` call:
 //!
 //! ```text
 //! start=140001430 visited=3     setup=31.7 ms   walk=0.10 ms
 //! start=140004ec0 visited=1386  setup=~40  ms   walk=59.2  ms
 //! ```
-//!
-//! So the number of *start locations* — not the number of addresses — set the price, and the
-//! location count barely moves with set size (pass 1 of `findLocationsRemoveFunctionBodies`
-//! contributes one entry per overlapping function, pass 3 one per remaining range). That is why a
-//! 21-address set and a 3869-address set cost the same on WAR2.
 //!
 //! Ghidra has no such cost: `LanguageService` parses every `.ldefs` once and hands out
 //! `LanguageDescription`s, and `program.getCompilerSpec()` returns an already-built
@@ -38,16 +27,31 @@
 //! that caching on the SLEIGH side (`lang::load_cached`); the compiler-spec side is the same layer
 //! with the cache missing.
 //!
+//! # ⚠️ What this fixture does NOT establish
+//!
+//! This gate scores **x86:LE:64 + `windows`**, where `resolve_cspec` costs ~119 ms cold. The cost
+//! is configuration-dependent by a factor of ~100 (see the table on `lang::resolve_cspec`): on
+//! `x86:LE:32` + `watcom` the resolution short-circuits on the mosura-authored spec and costs
+//! ~1.14 ms, so a target on that configuration barely pays this at all.
+//!
+//! An earlier reading of this fixture was carried onto WAR2 — an `x86:LE:32`/`watcom` target — to
+//! explain a ~1.5 s per-invocation floor there. That explanation was **wrong**: WAR2's setup is
+//! ~1.7 ms per walk, ~22× smaller, and cannot produce 1.5 s from a one-range added set. **WAR2's
+//! floor is unexplained and is not this.** The defect gated here is real and measured; its reach
+//! is not universal, and a number from one `(language, compiler spec)` pair says nothing about
+//! another until the pair is checked.
+//!
 //! # The measurement
 //!
-//! Both invocations hand the analyzer a **one-address set** at a function entry, so both reduce to
-//! exactly one start location. The only difference is the function: the program's smallest body
-//! versus its largest. The walk work differs by ~500×; if the elapsed time does not, the price is
-//! being set by a per-location constant rather than by the code.
+//! Both invocations hand the analyzer a **one-address set** at a function entry, which on this
+//! fixture reduces to a single start location each. The only difference is the function: the
+//! program's smallest body versus its largest. The walk work differs by ~500×; if the elapsed time
+//! does not, the price is being set by a per-location constant rather than by the code.
 //!
-//! Scored as a ratio so it is independent of machine speed. With the floor present the ratio is
-//! ~2.5 (35 ms of setup swamps both sides); without it, ~400. The bar is 20 — an order of
-//! magnitude clear of both.
+//! Scored as a ratio so it is independent of machine speed. Measured: **2.6 with the cost present**
+//! (35 ms of setup swamps both sides — 39.7 ms for a 1-byte function against 101.5 ms for a
+//! 5892-byte one), **~4000 without it** (16.6 µs against 68.2 ms). The bar is 20 — two orders of
+//! magnitude clear of the passing value and an order clear of the failing one.
 
 use std::time::{Duration, Instant};
 
