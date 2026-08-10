@@ -999,6 +999,56 @@ identical shapes.
 ⚠️ Scope: this is the **entry** shape, which is all the pattern set sees. 11.0's body codegen does
 differ (12 bytes shorter here), so nothing reasoning about bodies may cite this row.
 
+### ⭐⭐ RE-CONFIRMED 2026-08-09 ACROSS SIX REVISIONS, INCLUDING BOTH SIDES OF THE 10.0a EXCURSION
+
+The version set widened on master (7.0 / 8.5a / 9.5b / 10.5 / the 10.0 beta were added), and
+10.0a became **known** to be a one-release excursion in BODY codegen — byte-identical neighbours on
+each side, different in the middle (`docs/watcom-10.0-beta-codegen.md`). WAR2 is 10.0a. So the one
+revision this campaign targets is the one that provably deviates from its neighbours, and the
+question "does it also deviate in ENTRY shape?" had to be re-asked rather than assumed.
+
+**It does not.** `src/wprologue.c`, same flags (`-4r -fpi87 -s -od`), compiled by every revision that
+would build it, comparing the **prologue byte sequences** — not file positions:
+
+```
+  revision      code   13 prologues, identical sequence to 10.0a?   whole-probe diffs
+  9.01          1214                    YES                                6
+  9.5b          1214                    YES                                0
+  10.0 beta     1214                    YES                                0
+  10.0a         1214                    YES                                -
+  10.6          1214                    YES                                0
+  11.0          1202                    YES                              607
+  OW2           1234                    YES                              631
+```
+
+All **seven** emit **13 prologues with byte-identical sequences**, 1992 → 2002+.
+
+⭐ **AND THE EXCURSION DOES NOT APPEAR ON THIS PROBE AT ALL.** 9.5b, the 10.0 **beta**, 10.0a and 10.6
+are byte-identical over the *whole* of `wprologue.c` — 0 differences, not merely equal prologues.
+The 10.0a excursion is real (`docs/watcom-10.0-beta-codegen.md`) but it is **construct-specific**:
+it lives in the byte-compare promotion that `watcom_cg.c`'s `cmpbyte` exercises, and `wprologue.c`
+does not contain that construct. So "10.0a is an excursion" is a statement about a *particular
+construct*, not about its codegen generally — which makes the entry-shape result stronger, not
+weaker. 9.01 differs by 6 bytes (the known SIB base/index swaps, none in a prologue); 11.0 and OW2
+differ substantially in bodies and not at all in prologues.
+
+⚠️ The 10.0 beta is the load-bearing row here and it was missing from the first cut of this table —
+it is 10.0a's *immediate* neighbour and the entire basis of the excursion finding. It runs under
+wine, not dosemu: `wine 'C:\WBETA\BINNT\WCC386.EXE' -4r -fpi87 -s -od WP.C`.
+
+⚠️ **A POSITIONAL BYTE DIFF IS THE TRAP HERE, AND IT NEARLY GOT REPORTED.** 11.0 is 12 bytes shorter,
+so every byte after the first size change is SHIFTED; diffing by offset showed "37 differences inside
+a prologue" for 11.0 and 36 for ow2 — pure artifact. Compare the extracted prologue SEQUENCES, never
+file offsets, whenever the code sizes differ. Same family as [[gauge-counting-traps]].
+
+⚠️ **NOT covered, and the span is 9.01→ow2, not 7.0→ow2:** 7.0 (`wcc386.exe` not found in the staged
+tree), 8.5a (rejects the probe source, 1 error — a 1991 compiler), 10.5 ("Loader read error" under
+dosemu). Three revisions unmeasured; do not claim the full lineage.
+
+**Consequence:** precise RELEASE detection (era → 10.0a) buys this track little, since the pattern
+set keys on entry shape and entry shape does not move. It remains valuable for recompilation, where
+body codegen is the whole point.
+
 **§5 is COMPLETE — one axis of six moved the entry shape:** stack checking, the one WAR2's own build
 flags hid.
 
