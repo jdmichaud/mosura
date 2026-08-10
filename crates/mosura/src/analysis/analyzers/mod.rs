@@ -1323,4 +1323,69 @@ mod thunk_resolution_tests {
             p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
         );
     }
+
+    /// The INSTRUMENT's gate (task #4): [`thunk::report`] must name the arm that decided each
+    /// entry, and its raw-decode column must see a jump at an entry the *listing* cannot describe.
+    ///
+    /// This is what makes the WAR2 report readable as evidence rather than as a table. It is
+    /// deliberately built on the two arms that decide the interesting WAR2 cases —
+    /// `TargetInsideFunctionBody` (the veto) and `NoInstructionAtEntry` (an entry that never
+    /// reached the listing) — plus the two jump encodings the crude probe could not both handle:
+    /// `eb` (2-byte) and `e9` (5-byte). SLEIGH decodes both, so `raw_uncond_jump_target` is
+    /// encoding-blind by construction.
+    ///
+    /// ```text
+    /// 0x401000  31 c0           xor eax,eax     } A, a real function (entry is not a jump)
+    /// 0x401002  eb 02           jmp 0x401006    }
+    /// 0x401006  c3              ret             } still A's body
+    /// 0x401010  e9 f1 ff ff ff  jmp 0x401006    } T, a thunk INTO A's body -> vetoed
+    /// 0x401020  eb 02           jmp 0x401024    } U, never seeded: not in the listing
+    /// ```
+    #[test]
+    fn the_report_names_the_arm_that_decided_each_entry() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:32:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:32:default", "gcc", base, false, 32);
+        let mut img = vec![0u8; 0x1000];
+        img[..0x07].copy_from_slice(&[0x31, 0xc0, 0xeb, 0x02, 0x90, 0x90, 0xc3]);
+        img[0x10..0x15].copy_from_slice(&[0xe9, 0xf1, 0xff, 0xff, 0xff]); // -> 0x401006
+        img[0x20..0x22].copy_from_slice(&[0xeb, 0x02]); // -> 0x401024, never disassembled
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        for (off, name) in [(0x40_1000u64, "A"), (0x40_1010, "T"), (0x40_1020, "U")] {
+            p.function_manager.create_function(Address::new(ram, off), name, AddressSet::new());
+        }
+        let d = Disassembler::for_program(&p).unwrap();
+        let mut seeds = AddressSet::new();
+        seeds.add_range(ram, 0x40_1000, 0x40_1000);
+        seeds.add_range(ram, 0x40_1010, 0x40_1010);
+        d.added(&mut p, &seeds, &mut Scheduling::default()); // U is deliberately NOT seeded
+        compute_function_bodies(spec, ctx, &mut p);
+
+        let report = thunk::report(&p, spec, ctx);
+        let at = |off: u64| report.iter().find(|c| c.entry.offset == off).expect("entry in report");
+
+        // A: real code at the entry — the ordinary decline, and no raw jump.
+        assert_eq!(at(0x40_1000).outcome, thunk::Outcome::FlowNotJumpOrTerminalCall);
+        assert_eq!(at(0x40_1000).raw_uncond_jump_target, None);
+        // T: `e9 rel32` resolves, and the veto names the function that owns the target.
+        assert_eq!(at(0x40_1010).raw_uncond_jump_target, Some(0x40_1006));
+        assert_eq!(at(0x40_1010).thunked.map(|a| a.offset), Some(0x40_1006));
+        assert_eq!(
+            at(0x40_1010).outcome,
+            thunk::Outcome::TargetInsideFunctionBody(Address::new(ram, 0x40_1000)),
+            "the veto must name A as the owner of 0x401006"
+        );
+        // U: never disassembled, so resolution stops at the first guard — but the raw decode still
+        // reports the `eb` jump, which is the whole point of reading memory rather than the
+        // listing. A report that only asked the listing would show nothing here.
+        assert_eq!(at(0x40_1020).outcome, thunk::Outcome::NoInstructionAtEntry);
+        assert_eq!(at(0x40_1020).raw_uncond_jump_target, Some(0x40_1024));
+        assert_eq!(at(0x40_1020).thunked, None);
+        // Nothing is left to create at the fixpoint — the invariant the WAR2 report rests on.
+        assert!(report.iter().all(|c| c.outcome != thunk::Outcome::WouldCreate));
+    }
 }

@@ -44,6 +44,7 @@
 
 use crate::analysis::flowtype::flow_props;
 use crate::analysis::program::{AddressSet, Program, RefType, SymbolType};
+use crate::decompile::opcode::OpCode;
 use crate::decompile::space::Address;
 use crate::sleigh::engine::Spec;
 
@@ -67,10 +68,13 @@ fn simple_flow(
     addr: Address,
     ops: &[crate::sleigh::pcode::PcodeOp],
     len: u64,
-) -> Option<Address> {
+) -> Result<Address, Outcome> {
     let props = flow_props(ops, addr.offset, addr.offset + len);
-    if props.conditional || !(props.jump || (props.call && props.terminal)) {
-        return None;
+    if props.conditional {
+        return Err(Outcome::FlowConditional);
+    }
+    if !(props.jump || (props.call && props.terminal)) {
+        return Err(Outcome::FlowNotJumpOrTerminalCall);
     }
     // `instr.getFlows()` (InstructionDB.java:289): the flow references from this address,
     // dropping the INDIRECT ones (`RefType.isIndirect()` is true only for `INDIRECTION`,
@@ -86,8 +90,9 @@ fn simple_flow(
     }
     // `if (flows.length == 1) return flows[0];`
     match flows.as_slice() {
-        [only] => Some(*only),
-        _ => None,
+        [only] => Ok(*only),
+        [] => Err(Outcome::NoFlow),
+        many => Err(Outcome::MultipleFlows(many.len())),
     }
 }
 
@@ -95,21 +100,36 @@ fn simple_flow(
 /// (CreateThunkFunctionCmd.java:548) — the `getSimpleFlow` fast path only; see the module note
 /// for the arms this deliberately omits.
 pub fn thunked_addr(program: &Program, spec: &Spec, ctx: &[u32], entry: Address) -> Option<Address> {
+    thunked_addr_reporting(program, spec, ctx, entry).ok()
+}
+
+/// [`thunked_addr`], naming the guard that declined instead of collapsing to `None` — the
+/// resolution half of [`report`]. The control flow is the same; only the `?`s carry a reason.
+fn thunked_addr_reporting(
+    program: &Program,
+    spec: &Spec,
+    ctx: &[u32],
+    entry: Address,
+) -> Result<Address, Outcome> {
     let decode = |a: Address| {
         let window = program.memory.read_window(a, MAX_INSN_LEN);
         spec.disassemble_ctx(&window, a.offset, ctx).into_iter().next()
     };
     // `Instruction instr = listing.getInstructionAt(entry);`
-    program.listing.code_unit_at(entry)?;
+    if program.listing.code_unit_at(entry).is_none() {
+        return Err(Outcome::NoInstructionAtEntry);
+    }
     let mut at = entry;
-    let mut insn = decode(at)?;
+    let mut insn = decode(at).ok_or(Outcome::UndecodableAtEntry)?;
     // "if there is no pcode, go to the next instruction / assume fallthrough (ie. x86 instruction
     // ENDBR64)" (:567-572) — `instr = listing.getInstructionAfter(entry)`, which for a decoded
     // stream is the code unit abutting this one.
     if insn.ops.is_empty() {
         at = Address::new(entry.space, entry.offset + insn.bytes.len() as u64);
-        program.listing.code_unit_at(at)?;
-        insn = decode(at)?;
+        if program.listing.code_unit_at(at).is_none() {
+            return Err(Outcome::NoInstructionAfterEmptyPcode);
+        }
+        insn = decode(at).ok_or(Outcome::UndecodableAfterEmptyPcode)?;
     }
     simple_flow(program, at, &insn.ops, insn.bytes.len() as u64)
 }
@@ -155,34 +175,7 @@ pub fn resolve_thunks(program: &mut Program, spec: &Spec, ctx: &[u32]) -> Addres
 
     let mut created = AddressSet::new();
     for (entry, thunked) in candidates {
-        // `if (thunkedAddr == null || thunkedAddr.equals(entry)) return false;`
-        // (CreateFunctionCmd.java:501).
-        if thunked == entry {
-            continue;
-        }
-        // `Function f = listing.getFunctionAt(referencedFunctionAddr); if (f != null) return f;`
-        // (:319-338) — the thunk resolves to a function that already exists, so there is nothing
-        // to create. This is also the cycle terminator: `A jmp B; B jmp A` creates B, and B's own
-        // resolution then finds a function already at A.
-        if program.function_manager.function_at(thunked).is_some() {
-            continue;
-        }
-        // `if (!program.getMemory().contains(referencedFunctionAddr)) return getExternalFunction(..)`
-        // (:356) — an off-image target is the external-function arm, which is not ported.
-        if !program.memory.contains(thunked) {
-            continue;
-        }
-        // `f = listing.getFunctionContaining(referencedFunctionAddr); if (f != null ...) return null;`
-        // (:360-364), reading non-thunk bodies only — see the note above.
-        let owned_by_a_real_function = program.function_manager.functions().any(|f| {
-            let e = f.entry_point();
-            !thunk_entries.contains(&(e.space.0, e.offset)) && f.body().contains(thunked)
-        });
-        if owned_by_a_real_function {
-            continue;
-        }
-        // `|| listing.getInstructionAt(referencedFunctionAddr) == null` (:361).
-        if program.listing.code_unit_at(thunked).is_none() {
+        if creation_guards(program, entry, thunked, &thunk_entries).is_err() {
             continue;
         }
         // `new CreateFunctionCmd(referencedFunctionAddr, ...).applyTo(program)` (:371).
@@ -195,4 +188,237 @@ pub fn resolve_thunks(program: &mut Program, spec: &Spec, ctx: &[u32]) -> Addres
         }
     }
     created
+}
+
+/// The guards `getReferencedFunction` applies to a resolved thunked address before creating a
+/// function there — `Ok(())` means create. Named so [`report`] can run exactly the same chain
+/// read-only and say which one declined.
+fn creation_guards(
+    program: &Program,
+    entry: Address,
+    thunked: Address,
+    thunk_entries: &std::collections::HashSet<(u32, u64)>,
+) -> Result<(), Outcome> {
+    // `if (thunkedAddr == null || thunkedAddr.equals(entry)) return false;`
+    // (CreateFunctionCmd.java:501).
+    if thunked == entry {
+        return Err(Outcome::TargetIsEntry);
+    }
+    // `Function f = listing.getFunctionAt(referencedFunctionAddr); if (f != null) return f;`
+    // (:319-338) — the thunk resolves to a function that already exists, so there is nothing
+    // to create. This is also the cycle terminator: `A jmp B; B jmp A` creates B, and B's own
+    // resolution then finds a function already at A.
+    if program.function_manager.function_at(thunked).is_some() {
+        return Err(Outcome::FunctionAlreadyAtTarget);
+    }
+    // `if (!program.getMemory().contains(referencedFunctionAddr)) return getExternalFunction(..)`
+    // (:356) — an off-image target is the external-function arm, which is not ported.
+    if !program.memory.contains(thunked) {
+        return Err(Outcome::TargetNotInMemory);
+    }
+    // `f = listing.getFunctionContaining(referencedFunctionAddr); if (f != null ...) return null;`
+    // (:360-364), reading non-thunk bodies only — see the note above.
+    let owner = program.function_manager.functions().find(|f| {
+        let e = f.entry_point();
+        !thunk_entries.contains(&(e.space.0, e.offset)) && f.body().contains(thunked)
+    });
+    if let Some(f) = owner {
+        return Err(Outcome::TargetInsideFunctionBody(f.entry_point()));
+    }
+    // `|| listing.getInstructionAt(referencedFunctionAddr) == null` (:361).
+    if program.listing.code_unit_at(thunked).is_none() {
+        return Err(Outcome::NoInstructionAtTarget);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The instrument. Not part of the port: it runs the *ported* chain above read-only and names the
+// guard that answered, so "does the subset under-fire?" is measured rather than argued.
+// ---------------------------------------------------------------------------------------------
+
+/// What thunk resolution answered for one function entry — the arm that decided, named for the
+/// Ghidra line it ports. Every early return in [`thunked_addr_reporting`] and
+/// [`creation_guards`] has exactly one variant here, so a candidate is always classified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// `listing.getInstructionAt(entry) == null` (CreateThunkFunctionCmd.java:561) — the entry
+    /// is not in the listing at all, so resolution never looks at its bytes.
+    NoInstructionAtEntry,
+    /// The entry is in the listing but its bytes do not decode (mosura-side; Ghidra reads the
+    /// stored code unit rather than re-decoding).
+    UndecodableAtEntry,
+    /// Empty p-code at the entry, and `getInstructionAfter(entry)` is not in the listing (:567-572).
+    NoInstructionAfterEmptyPcode,
+    /// Empty p-code at the entry, and the following code unit does not decode.
+    UndecodableAfterEmptyPcode,
+    /// `getSimpleFlow`: `flowType.isConditional()` (CreateThunkFunctionCmd.java:817).
+    FlowConditional,
+    /// `getSimpleFlow`: neither `isJump()` nor `isCall() && isTerminal()` (:817) — the ordinary
+    /// answer for a function that starts with real code.
+    FlowNotJumpOrTerminalCall,
+    /// `getSimpleFlow`: `instr.getFlows()` minus INDIRECTION was **empty** (:822) — a jump-shaped
+    /// entry whose target was never recovered as a reference.
+    NoFlow,
+    /// `getSimpleFlow`: more than one distinct non-indirect flow (:822) — e.g. a computed jump
+    /// with a recovered table. Carries the count.
+    MultipleFlows(usize),
+    /// `thunkedAddr.equals(entry)` (CreateFunctionCmd.java:501).
+    TargetIsEntry,
+    /// `listing.getFunctionAt(thunkedAddr) != null` (:319-338) — nothing to create. ⚠️ At the
+    /// analysis fixpoint this is also what a thunk the port *did* fire on looks like: see
+    /// [`Candidate::target_inbound`] for what else could have created it.
+    FunctionAlreadyAtTarget,
+    /// `!memory.contains(thunkedAddr)` (:356) — the external-function arm, not ported.
+    TargetNotInMemory,
+    /// `getFunctionContaining(thunkedAddr) != null` (:360-364) — carries the owning entry.
+    TargetInsideFunctionBody(Address),
+    /// `listing.getInstructionAt(thunkedAddr) == null` (:361).
+    NoInstructionAtTarget,
+    /// Every guard passed: `new CreateFunctionCmd(thunkedAddr).applyTo(program)` would run.
+    /// **Must not occur in a report taken after analysis has converged** — if it does,
+    /// `compute_function_bodies` stopped short of its own fixpoint.
+    WouldCreate,
+}
+
+impl Outcome {
+    /// Did resolution get as far as a thunked address (i.e. is this entry thunk-*shaped*)?
+    pub fn resolved(self) -> bool {
+        !matches!(
+            self,
+            Outcome::NoInstructionAtEntry
+                | Outcome::UndecodableAtEntry
+                | Outcome::NoInstructionAfterEmptyPcode
+                | Outcome::UndecodableAfterEmptyPcode
+                | Outcome::FlowConditional
+                | Outcome::FlowNotJumpOrTerminalCall
+                | Outcome::NoFlow
+                | Outcome::MultipleFlows(_)
+        )
+    }
+}
+
+/// One function entry as thunk resolution sees it.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub entry: Address,
+    /// The first bytes at the entry, decoded **directly from memory, ignoring the listing** — so
+    /// an entry that never made it into the listing is still described. This is the generalisation
+    /// of "does the entry start with a jump opcode": `mnemonic`, the instruction length, and
+    /// `uncond_jump_target` for a non-conditional direct branch (any encoding, `eb` and `e9`
+    /// alike, since SLEIGH decodes it).
+    pub raw_mnemonic: Option<String>,
+    pub raw_len: usize,
+    pub raw_uncond_jump_target: Option<u64>,
+    /// Flow references *out of* the entry — `getFlows()`' raw material, so a `NoFlow` or
+    /// `MultipleFlows` decline can be read rather than guessed at.
+    pub entry_outbound: Vec<(RefType, Address)>,
+    /// The thunked address, when resolution produced one.
+    pub thunked: Option<Address>,
+    pub outcome: Outcome,
+    /// Is there a function at `thunked` in the state this report was taken in?
+    pub target_is_function: bool,
+    /// Flow references *into* `thunked` — the other mechanisms that could have put a function
+    /// there. A target with an inbound call would be a function with or without this port; a
+    /// target whose only inbound edge is the thunk's own jump would not.
+    pub target_inbound: Vec<(RefType, Address)>,
+}
+
+/// Run the resolution + creation chain over every function entry **read-only**, recording which
+/// arm decided each one.
+///
+/// ⚠️ **WHEN THIS IS VALID.** Two of the guards are body queries
+/// (`TargetInsideFunctionBody`) or function-set queries (`FunctionAlreadyAtTarget`), so the answer
+/// depends on *when* it is asked — the trap that already bit this port once, where empty bodies
+/// made the veto vacuous. Take this report **after analysis has converged**: the last thing
+/// [`super::compute_function_bodies`] does is walk every body and then call [`resolve_thunks`],
+/// looping until that call creates nothing. So at return the program is in exactly the state the
+/// final live `resolve_thunks` ran in — same function set, same bodies — and this replay
+/// reproduces that call's decisions, `WouldCreate` included (it must be empty, which is the loop's
+/// own exit condition and therefore a check on the instrument as much as on the pipeline).
+///
+/// What it cannot distinguish, and does not claim to: an entry the port fired on in an *earlier*
+/// round now reports `FunctionAlreadyAtTarget`, the same as a target some other analyzer created.
+/// [`Candidate::target_inbound`] carries the evidence to separate those by hand.
+pub fn report(program: &Program, spec: &Spec, ctx: &[u32]) -> Vec<Candidate> {
+    let mut entries: Vec<Address> =
+        program.function_manager.functions().map(|f| f.entry_point()).collect();
+    entries.sort_by_key(|a| (a.space.0, a.offset));
+
+    // The resolution phase for every entry, exactly as `resolve_thunks` runs it — the thunk set
+    // (whose bodies are excluded from the containment veto) is the entries that resolve.
+    let resolved: Vec<(Address, Result<Address, Outcome>)> = entries
+        .iter()
+        .map(|&e| (e, thunked_addr_reporting(program, spec, ctx, e)))
+        .collect();
+    let thunk_entries: std::collections::HashSet<(u32, u64)> = resolved
+        .iter()
+        .filter(|(_, r)| r.is_ok())
+        .map(|(e, _)| (e.space.0, e.offset))
+        .collect();
+
+    resolved
+        .into_iter()
+        .map(|(entry, r)| {
+            let (thunked, outcome) = match r {
+                Err(o) => (None, o),
+                Ok(t) => (
+                    Some(t),
+                    match creation_guards(program, entry, t, &thunk_entries) {
+                        Err(o) => o,
+                        Ok(()) => Outcome::WouldCreate,
+                    },
+                ),
+            };
+            let window = program.memory.read_window(entry, MAX_INSN_LEN);
+            let raw = spec.disassemble_ctx(&window, entry.offset, ctx).into_iter().next();
+            let (raw_mnemonic, raw_len, raw_uncond_jump_target) = match &raw {
+                None => (None, 0, None),
+                Some(insn) => {
+                    let len = insn.bytes.len();
+                    let props = flow_props(&insn.ops, entry.offset, entry.offset + len as u64);
+                    let target = (props.jump && !props.conditional)
+                        .then(|| {
+                            insn.ops
+                                .iter()
+                                .filter(|op| {
+                                    matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch))
+                                })
+                                .find_map(super::static_target)
+                        })
+                        .flatten();
+                    (Some(insn.mnemonic.clone()), len, target)
+                }
+            };
+            let entry_outbound = program
+                .reference_manager
+                .refs_from(entry)
+                .filter(|r| r.ref_type.is_flow())
+                .map(|r| (r.ref_type, r.to))
+                .collect();
+            let target_is_function =
+                thunked.is_some_and(|t| program.function_manager.function_at(t).is_some());
+            let target_inbound = thunked
+                .map(|t| {
+                    program
+                        .reference_manager
+                        .refs_to(t)
+                        .filter(|r| r.ref_type.is_flow())
+                        .map(|r| (r.ref_type, r.from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Candidate {
+                entry,
+                raw_mnemonic,
+                raw_len,
+                raw_uncond_jump_target,
+                entry_outbound,
+                thunked,
+                outcome,
+                target_is_function,
+                target_inbound,
+            }
+        })
+        .collect()
 }
