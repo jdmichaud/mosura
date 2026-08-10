@@ -444,6 +444,33 @@ fn pe_mz_convergence_parity() {
         let spurious_fns: Vec<_> = mf.difference(&gf).collect();
         assert!(spurious_fns.is_empty(), "{name}: spurious functions vs Ghidra: {spurious_fns:x?}");
 
+        // ⭐ THE THUNK CLUSTER, against Ghidra's own committed golden — the only place in the
+        // corpus where `CreateFunctionCmd.resolveThunk` (`analysis/analyzers/thunk.rs`) fires, and
+        // therefore the only non-WAR2-LE evidence that the port is right rather than merely
+        // harmless. `war2.snapshot` records two jump-only entries thunking to one target:
+        //     func 00017c4c thunk_FUN_11bd_61ee    fnbody 00017c4c 00017c4c:00017c4e
+        //     func 00017c50 thunk_FUN_11bd_61ee    fnbody 00017c50 00017c50:00017c52
+        //     func 00017dbe FUN_11bd_61ee          fnbody 00017dbe 00017dbe:00017e11
+        // Ghidra keeps each thunk's body to its own jump and gives the target a function of its
+        // own; mosura's body walk previously followed the jump and swallowed 0x17dbe instead.
+        // Bodies are asserted, not just entries: recovering the target while leaving the thunk
+        // with a swallowing body would be a half-port.
+        if name == "war2" {
+            for entry in [0x17c4cu64, 0x17c50, 0x17dbe] {
+                assert!(
+                    mf.contains(&entry),
+                    "war2: missing thunk-cluster function {entry:08x} — Ghidra has it"
+                );
+                let gold_body = golden.bodies.iter().find(|b| b.entry == entry);
+                let mine_body = snap.bodies.iter().find(|b| b.entry == entry);
+                assert_eq!(
+                    mine_body.map(|b| &b.ranges),
+                    gold_body.map(|b| &b.ranges),
+                    "war2: body mismatch at {entry:08x} — the thunk must own only its own jump"
+                );
+            }
+        }
+
         let mi: BTreeSet<u64> = snap.code_units.iter().copied().collect();
         let gi: BTreeSet<u64> = golden.code_units.iter().copied().collect();
         let misaligned = mi.difference(&gi).count();

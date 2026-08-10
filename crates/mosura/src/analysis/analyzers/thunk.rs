@@ -114,80 +114,85 @@ pub fn thunked_addr(program: &Program, spec: &Spec, ctx: &[u32], entry: Address)
     simple_flow(program, at, &insn.ops, insn.bytes.len() as u64)
 }
 
-/// `CreateFunctionCmd.resolveThunk` (CreateFunctionCmd.java:494) followed by the creating tail of
-/// `CreateThunkFunctionCmd.getReferencedFunction` (CreateThunkFunctionCmd.java:319-375). Returns
-/// the address a function must be created at, or `None` when the entry is not a thunk or the
-/// thunked address is already accounted for.
-fn thunked_function_to_create(
-    program: &Program,
-    spec: &Spec,
-    ctx: &[u32],
-    entry: Address,
-) -> Option<Address> {
-    let thunked = thunked_addr(program, spec, ctx, entry)?;
-    // `if (thunkedAddr == null || thunkedAddr.equals(entry)) return false;` (CreateFunctionCmd:501)
-    if thunked == entry {
-        return None;
-    }
-    // `Function f = listing.getFunctionAt(referencedFunctionAddr); if (f != null) return f;`
-    // (:319-338) — the thunk resolves to a function that already exists; nothing to create.
-    if program.function_manager.function_at(thunked).is_some() {
-        return None;
-    }
-    // `if (!program.getMemory().contains(referencedFunctionAddr)) return getExternalFunction(...)`
-    // (:356) — off-image targets are the external-function arm, which is not ported.
-    if !program.memory.contains(thunked) {
-        return None;
-    }
-    // `f = listing.getFunctionContaining(referencedFunctionAddr);`
-    // `if (f != null || listing.getInstructionAt(referencedFunctionAddr) == null) { ... return null; }`
-    // (:360-364).
-    if program.function_manager.function_containing(thunked).is_some() {
-        return None;
-    }
-    if program.listing.code_unit_at(thunked).is_none() {
-        return None;
-    }
-    Some(thunked)
-}
-
-/// Run thunk resolution over every current function entry, creating the thunked functions —
-/// `CreateThunkFunctionCmd.getReferencedFunction`'s `new CreateFunctionCmd(...).applyTo(program)`
-/// arm (CreateThunkFunctionCmd.java:371). Returns the entries created.
+/// One pass of `CreateFunctionCmd.resolveThunk` (CreateFunctionCmd.java:494) plus the creating
+/// tail of `CreateThunkFunctionCmd.getReferencedFunction` (CreateThunkFunctionCmd.java:319-375),
+/// over every current function entry. Returns the entries created.
 ///
-/// **Called from the top of [`super::compute_function_bodies`]**, which is mosura's whole-program
-/// stand-in for `fixupFunctionBody`. Placing it there rather than after the walk is what makes it
-/// faithful: Ghidra runs the check while the thunk's own body is still unstored (:664-673), so
-/// `getFunctionContaining(thunkedAddr)` cannot see the target as already owned by the jumping
-/// function. Running it after the walk would let every thunk veto its own target.
+/// **Called from [`super::compute_function_bodies`] AFTER its walk has stored the bodies**, and
+/// that placement is the whole difficulty. Ghidra's two call sites both run while the thunk's own
+/// body is unstored — the create path has not reached `listing.createFunction` yet
+/// (CreateFunctionCmd.java:365), and `fixupFunctionBody` has not reached `func.setBody` yet
+/// (:664-673) — so `getFunctionContaining(thunkedAddr)` never sees a *thunk's* body owning the
+/// target. mosura recomputes every body at once, so neither naive placement reproduces that:
 ///
-/// The loop repeats because `CreateFunctionCmd` recurses — a thunk whose target is itself a thunk
-/// is chased all the way down (`referringThunkAddresses` is Ghidra's cycle guard; here a cycle
-/// terminates because the second hop finds a function already at its target). It terminates
-/// because each round strictly grows a bounded function set.
+/// - **Before the walk**, every body is EMPTY, so `getFunctionContaining` can only answer `None`
+///   and the guard is vacuous. A predicate whose answer is fixed in advance measures nothing, and
+///   this one is a safety veto, so the vacuous version silently *permits*. Measured directly in
+///   the pipeline at that point: `bodies non-empty: 0 of 157`. This is
+///   `empty-bodies-take-the-permissive-branch` in its exact recorded form.
+/// - **After the walk with no correction**, every thunk's body has swallowed its own target and
+///   vetoes it — and excluding merely the candidate's own body is not enough, because *sibling*
+///   thunks veto each other. WAR2's MZ stub is the live case: `0x17c4c` and `0x17c50` both jump to
+///   `0x17dbe`, so each one's body contains the other's target.
+///
+/// So the veto reads **non-thunk bodies only**. That is not an extra condition bolted on; it
+/// restores Ghidra's ordering invariant — that no thunk has a stored body at the moment any thunk
+/// is resolved. Against a genuine function's body the veto stays live and can fire, which is the
+/// thing it exists for: refusing to mint a function in the middle of real code.
 pub fn resolve_thunks(program: &mut Program, spec: &Spec, ctx: &[u32]) -> AddressSet {
+    let mut entries: Vec<Address> =
+        program.function_manager.functions().map(|f| f.entry_point()).collect();
+    entries.sort_by_key(|a| (a.space.0, a.offset));
+
+    // Every thunk, resolved before any of them is acted on — this is the set whose bodies must not
+    // take part in the containment veto below.
+    let candidates: Vec<(Address, Address)> = entries
+        .into_iter()
+        .filter_map(|e| thunked_addr(program, spec, ctx, e).map(|t| (e, t)))
+        .collect();
+    let thunk_entries: std::collections::HashSet<(u32, u64)> =
+        candidates.iter().map(|(e, _)| (e.space.0, e.offset)).collect();
+
     let mut created = AddressSet::new();
-    loop {
-        let mut entries: Vec<Address> =
-            program.function_manager.functions().map(|f| f.entry_point()).collect();
-        entries.sort_by_key(|a| (a.space.0, a.offset));
-        let targets: Vec<Address> = entries
-            .into_iter()
-            .filter_map(|e| thunked_function_to_create(program, spec, ctx, e))
-            .collect();
-        let mut any = false;
-        for t in targets {
-            let name = format!("FUN_{:08x}", t.offset);
-            if program.function_manager.create_function(t, &name, AddressSet::new()) {
-                if !program.symbol_table.has_symbol_at(t) {
-                    program.symbol_table.add_with_primary(t, &name, SymbolType::Function, true);
-                }
-                created.add_range(t.space, t.offset, t.offset);
-                any = true;
-            }
+    for (entry, thunked) in candidates {
+        // `if (thunkedAddr == null || thunkedAddr.equals(entry)) return false;`
+        // (CreateFunctionCmd.java:501).
+        if thunked == entry {
+            continue;
         }
-        if !any {
-            return created;
+        // `Function f = listing.getFunctionAt(referencedFunctionAddr); if (f != null) return f;`
+        // (:319-338) — the thunk resolves to a function that already exists, so there is nothing
+        // to create. This is also the cycle terminator: `A jmp B; B jmp A` creates B, and B's own
+        // resolution then finds a function already at A.
+        if program.function_manager.function_at(thunked).is_some() {
+            continue;
+        }
+        // `if (!program.getMemory().contains(referencedFunctionAddr)) return getExternalFunction(..)`
+        // (:356) — an off-image target is the external-function arm, which is not ported.
+        if !program.memory.contains(thunked) {
+            continue;
+        }
+        // `f = listing.getFunctionContaining(referencedFunctionAddr); if (f != null ...) return null;`
+        // (:360-364), reading non-thunk bodies only — see the note above.
+        let owned_by_a_real_function = program.function_manager.functions().any(|f| {
+            let e = f.entry_point();
+            !thunk_entries.contains(&(e.space.0, e.offset)) && f.body().contains(thunked)
+        });
+        if owned_by_a_real_function {
+            continue;
+        }
+        // `|| listing.getInstructionAt(referencedFunctionAddr) == null` (:361).
+        if program.listing.code_unit_at(thunked).is_none() {
+            continue;
+        }
+        // `new CreateFunctionCmd(referencedFunctionAddr, ...).applyTo(program)` (:371).
+        let name = format!("FUN_{:08x}", thunked.offset);
+        if program.function_manager.create_function(thunked, &name, AddressSet::new()) {
+            if !program.symbol_table.has_symbol_at(thunked) {
+                program.symbol_table.add_with_primary(thunked, &name, SymbolType::Function, true);
+            }
+            created.add_range(thunked.space, thunked.offset, thunked.offset);
         }
     }
+    created
 }

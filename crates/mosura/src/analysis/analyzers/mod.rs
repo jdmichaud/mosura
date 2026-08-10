@@ -445,14 +445,24 @@ impl Analyzer for FunctionCreator {
 /// Compute each function's body (Ghidra `Function.getBody`): the address set of code
 /// units reachable from the entry by intra-function flow (fall-through + branch targets,
 /// not calls), not crossing into another function's entry. Run after disassembly.
+/// Thunk resolution (`CreateFunctionCmd.fixupFunctionBody`'s `resolveThunk`, :667) is interleaved
+/// here: bodies are walked, thunks are resolved against them, and if that created any function the
+/// walk repeats so the thunk's body stops at its new target and the target gets a body of its own.
+/// The repeat runs at most once per newly-created generation and terminates because each round
+/// strictly grows a bounded function set; after the first call every thunk is already resolved, so
+/// later calls do a single walk. See `thunk.rs` for why the veto inside must read non-thunk bodies.
 pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
+    loop {
+        walk_function_bodies(spec, ctx, program);
+        if thunk::resolve_thunks(program, spec, ctx).is_empty() {
+            return;
+        }
+    }
+}
+
+/// One body-computation pass — the walk itself, with the function set held fixed.
+fn walk_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
     use std::collections::{BTreeSet, HashSet};
-    // `CreateFunctionCmd.fixupFunctionBody` (:664-673) resolves thunks BEFORE it stores the
-    // recomputed body — *"function could now be a thunk, since someone is calling this because of
-    // a potential body flow change"*. The order is the mechanism, not an optimisation: a thunk
-    // whose body has already been stored owns its own target, and `getFunctionContaining` would
-    // then veto creating the function there. See `thunk.rs`.
-    thunk::resolve_thunks(program, spec, ctx);
     let ram = program.default_space;
     let entries: BTreeSet<u64> =
         program.function_manager.functions().map(|f| f.entry_point().offset).collect();
@@ -1237,11 +1247,80 @@ mod thunk_resolution_tests {
              at its target before any body walk runs. Functions: {:x?}",
             p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
         );
+        // ⭐ Ghidra's MEASURED shape, not merely "the target is elsewhere": the oracle reports
+        // WAR2's `fn@0x601f8` with `isThunk = true` and `body = [[000601f8, 000601f9]]` — two
+        // bytes, just the `EB 76`. The committed MZ golden says the same for its own thunks
+        // (`goldens/analysis/war2.snapshot`: `fnbody 00017c4c 00017c4c:00017c4e`). Reproducing
+        // that shape is why no thunk *relationship* needs modelling: once the target is a
+        // function, the body walk stops at it and the minimal body falls out.
         let thunk_body = p.function_manager.function_at(base).unwrap().body().clone();
+        let ranges: Vec<(u64, u64)> = thunk_body.ranges().map(|r| (r.min, r.max)).collect();
+        assert_eq!(
+            ranges,
+            vec![(0x40_1000, 0x40_1001)],
+            "the thunk's body must be exactly its own 2-byte jmp; it swallowed its target instead"
+        );
+    }
+
+    /// ⭐ **THE GUARD'S FALSIFIER.** `CreateThunkFunctionCmd.getReferencedFunction` declines when
+    /// `getFunctionContaining(thunkedAddr)` is non-null (CreateThunkFunctionCmd.java:360-364) — it
+    /// refuses to mint a function in the middle of real code. That veto is only a guard if it can
+    /// fire, and in mosura it very nearly could not: run thunk resolution before the body walk and
+    /// every body is EMPTY, so the query can only answer `None` and the veto silently permits
+    /// (measured in-pipeline: `bodies non-empty: 0 of 157`). This test is what that arm has to
+    /// fail against.
+    ///
+    /// ```text
+    /// 0x401000  31 c0        xor eax,eax   } function A — a REAL function, not a thunk
+    /// 0x401002  eb 02        jmp 0x401006  }   (its first instruction is not a jump)
+    /// 0x401004  90 90                      }   skipped by the jump
+    /// 0x401006  c3           ret           } still A's body, reached by A's own jump
+    /// 0x401010  e9 f1 ff ff ff  jmp 0x401006  } function T — a thunk INTO A's body
+    /// ```
+    ///
+    /// `0x401006` belongs to A, so Ghidra creates nothing there and T stays unresolved. The
+    /// sibling-thunk carve-out must not reach this case: A is not a thunk, so its body counts.
+    #[test]
+    fn a_thunk_into_a_real_functions_body_creates_nothing() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:32:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:32:default", "gcc", base, false, 32);
+        let mut img = vec![0u8; 0x1000];
+        img[..0x07].copy_from_slice(&[
+            0x31, 0xc0, // xor eax,eax
+            0xeb, 0x02, // jmp 0x401006
+            0x90, 0x90, // skipped
+            0xc3, // ret
+        ]);
+        // 0x401010: e9 rel32 -> 0x401006 (next = 0x401015, so rel32 = -0xf)
+        img[0x10..0x15].copy_from_slice(&[0xe9, 0xf1, 0xff, 0xff, 0xff]);
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        p.function_manager.create_function(base, "A", AddressSet::new());
+        let thunk = Address::new(ram, 0x40_1010);
+        p.function_manager.create_function(thunk, "T", AddressSet::new());
+
+        let d = Disassembler::for_program(&p).unwrap();
+        let mut seeds = AddressSet::new();
+        seeds.add_range(ram, 0x40_1000, 0x40_1000);
+        seeds.add_range(ram, 0x40_1010, 0x40_1010);
+        d.added(&mut p, &seeds, &mut Scheduling::default());
+
+        compute_function_bodies(spec, ctx, &mut p);
+
+        let target = Address::new(ram, 0x40_1006);
         assert!(
-            !thunk_body.contains(target),
-            "the thunk's body swallowed its own target — the body walk followed the jmp instead \
-             of stopping at the function the thunk resolution created"
+            p.function_manager.function_at(base).unwrap().body().contains(target),
+            "the fixture is wrong unless 0x401006 is genuinely inside A's body"
+        );
+        assert!(
+            p.function_manager.function_at(target).is_none(),
+            "0x401006 belongs to the real function at 0x401000, so getFunctionContaining vetoes \
+             the thunk at 0x401010 and Ghidra creates nothing there. Functions: {:x?}",
+            p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
         );
     }
 }
