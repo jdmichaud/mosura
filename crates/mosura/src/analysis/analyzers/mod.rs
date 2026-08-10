@@ -1334,12 +1334,20 @@ mod thunk_resolution_tests {
     /// `eb` (2-byte) and `e9` (5-byte). SLEIGH decodes both, so `raw_uncond_jump_target` is
     /// encoding-blind by construction.
     ///
+    /// The last two entries are the falsifier for the multi-instruction UPPER BOUND probe, which
+    /// is otherwise silent on every fixture available here (0 on basic / freestanding / comcom32)
+    /// — a column that has never been seen to fire measures nothing.
+    ///
     /// ```text
     /// 0x401000  31 c0           xor eax,eax     } A, a real function (entry is not a jump)
-    /// 0x401002  eb 02           jmp 0x401006    }
-    /// 0x401006  c3              ret             } still A's body
+    /// 0x401002  eb 02           jmp 0x401006    }   (a LOCAL branch: 4 bytes, so the walk
+    /// 0x401006  c3              ret             }    follows it and then stops at the ret)
     /// 0x401010  e9 f1 ff ff ff  jmp 0x401006    } T, a thunk INTO A's body -> vetoed
     /// 0x401020  eb 02           jmp 0x401024    } U, never seeded: not in the listing
+    /// 0x401030  b8 01 00 00 00  mov eax,1       } V, the multi-instruction shape: 2 insns to
+    /// 0x401035  e9 26 00 00 00  jmp 0x401060    }    a jump the ported subset cannot see
+    /// 0x401040  89 03           mov [ebx],eax   } W, the same shape but STORing -> disqualified
+    /// 0x401042  e9 29 00 00 00  jmp 0x401070    }
     /// ```
     #[test]
     fn the_report_names_the_arm_that_decided_each_entry() {
@@ -1354,14 +1362,21 @@ mod thunk_resolution_tests {
         img[..0x07].copy_from_slice(&[0x31, 0xc0, 0xeb, 0x02, 0x90, 0x90, 0xc3]);
         img[0x10..0x15].copy_from_slice(&[0xe9, 0xf1, 0xff, 0xff, 0xff]); // -> 0x401006
         img[0x20..0x22].copy_from_slice(&[0xeb, 0x02]); // -> 0x401024, never disassembled
+        img[0x30..0x3a].copy_from_slice(&[0xb8, 0x01, 0, 0, 0, 0xe9, 0x26, 0, 0, 0]); // -> 0x401060
+        img[0x40..0x47].copy_from_slice(&[0x89, 0x03, 0xe9, 0x29, 0, 0, 0]); // -> 0x401070
+        img[0x60] = 0xc3;
+        img[0x70] = 0xc3;
         p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
-        for (off, name) in [(0x40_1000u64, "A"), (0x40_1010, "T"), (0x40_1020, "U")] {
+        for (off, name) in
+            [(0x40_1000u64, "A"), (0x40_1010, "T"), (0x40_1020, "U"), (0x40_1030, "V"), (0x40_1040, "W")]
+        {
             p.function_manager.create_function(Address::new(ram, off), name, AddressSet::new());
         }
         let d = Disassembler::for_program(&p).unwrap();
         let mut seeds = AddressSet::new();
-        seeds.add_range(ram, 0x40_1000, 0x40_1000);
-        seeds.add_range(ram, 0x40_1010, 0x40_1010);
+        for off in [0x40_1000u64, 0x40_1010, 0x40_1030, 0x40_1040] {
+            seeds.add_range(ram, off, off);
+        }
         d.added(&mut p, &seeds, &mut Scheduling::default()); // U is deliberately NOT seeded
         compute_function_bodies(spec, ctx, &mut p);
 
@@ -1385,6 +1400,23 @@ mod thunk_resolution_tests {
         assert_eq!(at(0x40_1020).outcome, thunk::Outcome::NoInstructionAtEntry);
         assert_eq!(at(0x40_1020).raw_uncond_jump_target, Some(0x40_1024));
         assert_eq!(at(0x40_1020).thunked, None);
+        // V: the shape the ported subset is blind to — its entry is not a jump, so it is not a
+        // candidate at all, and only the UPPER BOUND column shows the unported walk could reach
+        // 0x401060 in 2 instructions. This is the column the WAR2 sizing rests on.
+        assert_eq!(at(0x40_1030).outcome, thunk::Outcome::FlowNotJumpOrTerminalCall);
+        assert_eq!(at(0x40_1030).thunked, None);
+        assert_eq!(
+            at(0x40_1030).multi_insn_upper_bound.map(|(t, n)| (t.offset, n)),
+            Some((0x40_1060, 2)),
+            "the multi-instruction probe must reach the jump two instructions in"
+        );
+        // W: identical but for the STORE, which disqualifies it (:614-617). The probe drops
+        // Ghidra's register side-effect half, so it can only over-accept — this is the one
+        // rejection it does keep, and it has to work or the bound is not even a bound.
+        assert_eq!(at(0x40_1040).multi_insn_upper_bound, None);
+        // A: a local branch is followed (4 bytes), and the `ret` it lands on ends the walk with
+        // no thunked address — so an ordinary function does not enter the bound.
+        assert_eq!(at(0x40_1000).multi_insn_upper_bound, None);
         // Nothing is left to create at the fixpoint — the invariant the WAR2 report rests on.
         assert!(report.iter().all(|c| c.outcome != thunk::Outcome::WouldCreate));
     }

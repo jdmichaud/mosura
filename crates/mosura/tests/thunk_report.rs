@@ -46,8 +46,12 @@ fn report_of(program: &Program) -> Vec<Candidate> {
 /// half is the proper form of the crude "entry begins with 0xeb/0xe9" probe: SLEIGH decodes every
 /// encoding, and it is computed from memory, so an entry that is not even in the listing still
 /// shows up (that decline, `NoInstructionAtEntry`, would otherwise be invisible).
+/// third, the entries the unported multi-instruction walk could reach a *new* target from — the
+/// only rows where an omitted arm, rather than a guard, is the reason there is no function.
 fn interesting(c: &Candidate) -> bool {
-    c.outcome.resolved() || c.raw_uncond_jump_target.is_some()
+    c.outcome.resolved()
+        || c.raw_uncond_jump_target.is_some()
+        || (c.multi_insn_upper_bound.is_some() && !c.multi_insn_target_is_function)
 }
 
 fn print_report(name: &str, program: &Program) {
@@ -70,6 +74,15 @@ fn print_report(name: &str, program: &Program) {
         .filter(|c| c.raw_uncond_jump_target.is_some() && c.target_is_function)
         .count();
     let would_create = report.iter().filter(|c| c.outcome == Outcome::WouldCreate).count();
+    // The unported multi-instruction arm's ceiling: entries resolution could not touch at all,
+    // that walk could reach a target from, and where that target is NOT already a function. Only
+    // the last of those three is a number of *missing functions* — and it is an upper bound (the
+    // probe omits Ghidra's register side-effect rejection, so it over-accepts).
+    let multi = report.iter().filter(|c| c.multi_insn_upper_bound.is_some()).count();
+    let multi_new = report
+        .iter()
+        .filter(|c| c.multi_insn_upper_bound.is_some() && !c.multi_insn_target_is_function)
+        .count();
 
     eprintln!("\n===== thunk report: {name} =====");
     eprintln!("function entries                                  {}", report.len());
@@ -77,6 +90,8 @@ fn print_report(name: &str, program: &Program) {
     eprintln!("raw first insn is an unconditional direct jump     {raw_jumps}");
     eprintln!("  ...of those, a function exists at the target     {raw_jump_target_is_fn}");
     eprintln!("WouldCreate (must be 0 at the fixpoint)            {would_create}");
+    eprintln!("unported multi-insn walk COULD reach a target      {multi}   (UPPER BOUND)");
+    eprintln!("  ...of those, no function there yet               {multi_new}   <- what that arm could add");
     eprintln!("-- by deciding arm ------------------------------------------------");
     for (k, n) in &by_outcome {
         eprintln!("  {n:>6}  {k}");
@@ -111,6 +126,13 @@ fn print_report(name: &str, program: &Program) {
             fmt_refs(&c.entry_outbound),
             fmt_refs(&c.target_inbound)
         );
+        if let Some((t, n)) = c.multi_insn_upper_bound {
+            eprintln!(
+                "            multi-insn UPPER BOUND: {n} insn -> {:08x} (function there: {})",
+                t.offset,
+                if c.multi_insn_target_is_function { "yes" } else { "NO" }
+            );
+        }
     }
     eprintln!("===== end {name} =====\n");
 }

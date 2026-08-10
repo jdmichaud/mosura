@@ -298,6 +298,81 @@ impl Outcome {
     }
 }
 
+/// ⚠️ **NOT A PORT — a population UPPER BOUND**, and the only thing in this file that is not the
+/// ported chain. It sizes the arm the module note lists first among the deliberate omissions:
+/// `getThunkedAddr`'s multi-instruction walk (CreateThunkFunctionCmd.java:598-648).
+///
+/// **Why the report needs it.** Without it the instrument is structurally blind to that arm: an
+/// entry whose *first* instruction is not a jump never enters the candidate population at all, so
+/// "every declined entry was declined correctly" could not be falsified for the exact arm most
+/// likely to explain a decline. A count here is what turns "maybe the missing walk is what WAR2
+/// needs" into a number.
+///
+/// **What it reproduces** (`resolveThunk` calls `getThunkedAddr(program, entry)`, which is
+/// `checkForSideEffects = true`, :535): at most `MAX_NUMBER_OF_THUNKING_INSTRUCTIONS` = 8
+/// instructions; a `STORE` anywhere disqualifies (:614-617); fall-through advances (:629-633);
+/// `isLocalBranch` — a non-conditional jump with exactly one flow, same space, within 8 bytes
+/// (:772-796) — advances to the target; anything else ends the walk and is decided by
+/// [`simple_flow`], which is `getFlowingAddrFromFinalState`'s jump/terminal-call condition
+/// (:673-706) minus its register half.
+///
+/// **What it does NOT reproduce, and why that makes it an upper bound**: `addSetRegisters` /
+/// `addRegisterUsage` / the `setRegisters` residue check — the register side-effect tracking that
+/// rejects a walk which leaves a register set for no reason. Omitting a rejection can only ACCEPT
+/// more entries than Ghidra, never fewer. So a count from this is a ceiling on what the unported
+/// arm could add; the true figure is at most this. It creates nothing.
+fn multi_insn_upper_bound(
+    program: &Program,
+    spec: &Spec,
+    ctx: &[u32],
+    entry: Address,
+) -> Option<(Address, usize)> {
+    let ram = program.default_space;
+    let mut at = entry;
+    for n in 1..=8usize {
+        // `instr = listing.getInstructionAt(...)`: the walk stops where the listing does, exactly
+        // as Ghidra's does — an entry that never reached the listing is a different class
+        // (`NoInstructionAtEntry`) and is not laundered into this one.
+        program.listing.code_unit_at(at)?;
+        let window = program.memory.read_window(at, MAX_INSN_LEN);
+        let insn = spec.disassemble_ctx(&window, at.offset, ctx).into_iter().next()?;
+        let len = insn.bytes.len() as u64;
+        if len == 0 {
+            return None;
+        }
+        // "Storing to a location is not allowed for a thunk as a side-effect of the thunk."
+        if insn.ops.iter().any(|o| matches!(OpCode::from_u32(o.opcode), Some(OpCode::Store))) {
+            return None;
+        }
+        if super::falls_through(program, at, &insn, ram) {
+            at = Address::new(at.space, at.offset + len);
+            continue;
+        }
+        // `isLocalBranch` (:772): "allow a jump of 8 bytes forward to allow for an embedded
+        // address" — a non-conditional jump with exactly one flow, in the same space, within 8.
+        let props = flow_props(&insn.ops, at.offset, at.offset + len);
+        let flows: Vec<Address> = {
+            let mut v: Vec<Address> = Vec::new();
+            for r in program.reference_manager.refs_from(at) {
+                if r.ref_type.is_flow() && r.ref_type != RefType::Indirection && !v.contains(&r.to) {
+                    v.push(r.to);
+                }
+            }
+            v
+        };
+        if props.jump && !props.conditional && flows.len() == 1 {
+            let t = flows[0];
+            if t.space == at.space && t.offset.abs_diff(at.offset) <= 8 {
+                at = t;
+                continue;
+            }
+        }
+        // "reached a flow, end of the line, gotta see what we have."
+        return simple_flow(program, at, &insn.ops, len).ok().map(|t| (t, n));
+    }
+    None
+}
+
 /// One function entry as thunk resolution sees it.
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -318,6 +393,14 @@ pub struct Candidate {
     pub outcome: Outcome,
     /// Is there a function at `thunked` in the state this report was taken in?
     pub target_is_function: bool,
+    /// ⚠️ **An UPPER BOUND, not a port** — see [`multi_insn_upper_bound`]. Computed only for
+    /// entries where resolution produced no target at all (the ones the unported multi-instruction
+    /// walk could rescue); carries the address that walk could reach and how many instructions it
+    /// took. `None` everywhere else.
+    pub multi_insn_upper_bound: Option<(Address, usize)>,
+    /// Is there already a function at [`Self::multi_insn_upper_bound`]'s address? When there is,
+    /// the unported arm would add nothing there.
+    pub multi_insn_target_is_function: bool,
     /// Flow references *into* `thunked` — the other mechanisms that could have put a function
     /// there. A target with an inbound call would be a function with or without this port; a
     /// target whose only inbound edge is the thunk's own jump would not.
@@ -398,6 +481,12 @@ pub fn report(program: &Program, spec: &Spec, ctx: &[u32]) -> Vec<Candidate> {
                 .collect();
             let target_is_function =
                 thunked.is_some_and(|t| program.function_manager.function_at(t).is_some());
+            let multi = thunked
+                .is_none()
+                .then(|| multi_insn_upper_bound(program, spec, ctx, entry))
+                .flatten();
+            let multi_insn_target_is_function = multi
+                .is_some_and(|(t, _)| program.function_manager.function_at(t).is_some());
             let target_inbound = thunked
                 .map(|t| {
                     program
@@ -414,6 +503,8 @@ pub fn report(program: &Program, spec: &Spec, ctx: &[u32]) -> Vec<Candidate> {
                 raw_len,
                 raw_uncond_jump_target,
                 entry_outbound,
+                multi_insn_upper_bound: multi,
+                multi_insn_target_is_function,
                 thunked,
                 outcome,
                 target_is_function,
