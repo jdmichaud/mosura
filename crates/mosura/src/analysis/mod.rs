@@ -331,6 +331,16 @@ pub fn analyze(program: &mut Program) {
         // event carries, and it is also what keeps the cursors doing their job — a fresh
         // `SharedReturnAnalysisCmd` per invocation is exactly Ghidra's granularity
         // (SharedReturnAnalyzer.java:79-82).
+        //
+        // ⚠️ THIS IS LIVE ON WATCOM x86-32, i.e. ON WAR2 — do not assume otherwise from Ghidra's
+        // own files. Ghidra's `Processors/x86/data/patterns/patternconstraints.xml` has no
+        // `watcom` node, but `pattern_dirs()` (`function_start.rs:286`) merges EVERY module's
+        // pattern directory the way `Patterns.java:42-55` does, and mosura's own
+        // `specs/patterns/patternconstraints.xml` contributes
+        // `(x86:LE:32:default, watcom) -> x86watcom_patterns.xml`. Measured:
+        // `FunctionStartAnalyzer::for_program` is `Some` for the Search / AfterCode / AfterData
+        // kinds there. Reading only the vendored Ghidra file gives the opposite answer, and did
+        // (see `.claude/memory/mosura-ships-its-own-pattern-constraints.md`).
         let mut fs_created = AddressSet::new();
         for f in program.function_manager.functions() {
             let e = f.entry_point();
