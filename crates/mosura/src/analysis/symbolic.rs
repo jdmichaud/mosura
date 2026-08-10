@@ -575,6 +575,97 @@ mod tests {
         (program, ram)
     }
 
+    /// Lay `count` instructions into the LISTING starting at `start`, as the disassembler does
+    /// before constant propagation ever runs (it is at REFERENCE priority, after DISASSEMBLY).
+    ///
+    /// `program_with_code` builds an image with an EMPTY listing, which is a state the real
+    /// pipeline never presents to [`flow_constants`]. That did not matter while the walk read raw
+    /// bytes; it is the whole question once the walk reads the listing.
+    fn define_instructions(
+        program: &mut Program,
+        ram: SpaceId,
+        spec: &Spec,
+        ctx: &[u32],
+        start: u64,
+        count: usize,
+    ) {
+        use crate::analysis::program::CodeUnit;
+        let mut at = start;
+        for _ in 0..count {
+            let window = program.memory.read_window(Address::new(ram, at), 16);
+            let Some(insn) = spec.disassemble_ctx(&window, at, ctx).into_iter().next() else { break };
+            let len = insn.bytes.len() as u32;
+            if len == 0 {
+                break;
+            }
+            program.listing.define(Address::new(ram, at), CodeUnit::instruction(len));
+            at += u64::from(len);
+        }
+    }
+
+    /// ⭐ THE GATE — the walk must take its instructions from the LISTING, not from raw bytes.
+    ///
+    /// Ghidra's `SymbolicPropogator.flowConstants` iterates the listing: it asks for the
+    /// instruction at an address and stops where there is none. mosura re-decoded memory at every
+    /// address it reached, so it walked straight through addresses that hold no defined
+    /// instruction — code Ghidra's listing could never have handed it.
+    ///
+    /// Scored as a CONTROLLED PAIR, so a walk that simply broke cannot pass. The same image, the
+    /// same start, the same expected reference — the *only* difference is whether the second
+    /// instruction is in the listing:
+    ///   - defined   → the READ reference IS recovered (proves the walk still works);
+    ///   - undefined → the READ reference is NOT recovered (the stop rule).
+    ///
+    /// Before the fix the undefined case recovers it too, and the pair is indistinguishable.
+    #[test]
+    #[ignore = "RED: the walk re-decodes raw bytes and ignores the listing. Un-ignore with the fix."]
+    fn walk_takes_its_instructions_from_the_listing() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            eprintln!("skip: SLEIGH tables unavailable");
+            return;
+        };
+        //   0x401000  31 c0                    xor eax,eax          (2 bytes, falls through)
+        //   0x401002  48 8b 05 10 00 00 00     mov rax,[rip+0x10]   → READ ram:0x401019
+        //   0x401009  c3                       ret
+        let code = [0x31u8, 0xc0, 0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3];
+        const READ_TARGET: u64 = 0x40_1019;
+
+        let recovered = |defined: usize| -> bool {
+            let (mut program, ram) = program_with_code(&code);
+            define_instructions(&mut program, ram, spec, ctx, 0x40_1000, defined);
+            flow_constants(
+                spec,
+                ctx,
+                &mut program,
+                Address::new(ram, 0x40_1000),
+                &std::collections::HashSet::new(),
+            );
+            let found = program
+                .reference_manager
+                .references()
+                .any(|r| r.ref_type == RefType::Read && r.to.offset == READ_TARGET);
+            found
+        };
+
+        // Control: both instructions in the listing. If this fails the walk is broken, not strict.
+        assert!(
+            recovered(2),
+            "control failed — with BOTH instructions in the listing the walk must still recover \
+             the READ reference to {READ_TARGET:#x}. A gate whose control fails proves nothing."
+        );
+
+        // The gate: only the first instruction is in the listing. The bytes at 0x401002 decode
+        // perfectly well — that is the point. Ghidra would never see them, because they are not
+        // in the listing.
+        assert!(
+            !recovered(1),
+            "the walk re-decoded raw bytes at 0x401002, where the listing has NO defined \
+             instruction, and recovered a READ reference to {READ_TARGET:#x} that Ghidra's \
+             `SymbolicPropogator` could not have produced — it reads instructions from the \
+             listing (`getInstructionAt`) and stops where there is none."
+        );
+    }
+
     #[test]
     fn rip_relative_load_makes_read_reference() {
         let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
