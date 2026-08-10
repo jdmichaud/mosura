@@ -78,8 +78,27 @@ impl HighVariables {
             self.parent[ra as usize] = rb;
             // Ghidra `HighVariable::mergeInternal` (variable.cc:626) appends the absorbed
             // variable's instances to the survivor's. Same here, so the index tracks `parent`.
-            let moved = std::mem::take(&mut self.members[ra as usize]);
-            self.members[rb as usize].extend(moved);
+            //
+            // Kept ASCENDING by VarnodeId: every reader below replaced a `0..num_varnodes` scan,
+            // and two of them are order-sensitive (`piece_rep` takes the FIRST match,
+            // `high_props`'s `tied` keeps the LAST). Both lists are already sorted, so this is a
+            // linear merge, not a sort.
+            let a = std::mem::take(&mut self.members[ra as usize]);
+            let b = std::mem::take(&mut self.members[rb as usize]);
+            let mut m = Vec::with_capacity(a.len() + b.len());
+            let (mut i, mut j) = (0, 0);
+            while i < a.len() && j < b.len() {
+                if a[i].0 <= b[j].0 {
+                    m.push(a[i]);
+                    i += 1;
+                } else {
+                    m.push(b[j]);
+                    j += 1;
+                }
+            }
+            m.extend_from_slice(&a[i..]);
+            m.extend_from_slice(&b[j..]);
+            self.members[rb as usize] = m;
         }
     }
 
@@ -678,7 +697,6 @@ fn merge_same_storage(
     // `full` (rep → all cover-bearing members) is maintained incrementally across unions —
     // only the two unioned classes change, and `classes_interfere` is an order-insensitive
     // any-pair test, so splicing their member lists is decision-identical to the full rescan.
-    let mut full = full_members_by_rep(f, h, covers);
     for members in groups {
         loop {
             // partition this storage group into current HighVariable classes, ordered by their
@@ -689,24 +707,29 @@ fn merge_same_storage(
             }
             let mut class_list: Vec<Vec<VarnodeId>> = classes.into_values().collect();
             class_list.sort_by_key(|c| c[0]);
-            let empty: Vec<VarnodeId> = Vec::new();
+            // A successful union restarts this pass (`break 'pair`), so within one pass the
+            // classes — and therefore their extended member lists — never change. Building them
+            // once per CLASS instead of once per PAIR turns O(k^2) extensions into O(k); the
+            // pair loop only reads them. They come from the union-find's own member index, so
+            // the hand-maintained `full` map that used to be threaded alongside `h` is gone: it
+            // recorded exactly what `class_of` already knows.
+            let reps: Vec<u32> = class_list.iter().map(|c| h.high(c[0])).collect();
+            let exts: Vec<Vec<VarnodeId>> = reps
+                .iter()
+                .map(|&rep| {
+                    let cls = h.class_of(rep);
+                    pieces.extend_members(h, &cls)
+                })
+                .collect();
             let mut merged = false;
             'pair: for i in 0..class_list.len() {
                 for j in (i + 1)..class_list.len() {
-                    let rep_i = h.high(class_list[i][0]);
-                    let rep_j = h.high(class_list[j][0]);
+                    let (rep_i, rep_j) = (reps[i], reps[j]);
                     if !merge_test_speculative(f, h, pieces, rep_i, rep_j) {
                         continue;
                     }
-                    let fi = full.get(&rep_i).unwrap_or(&empty).clone();
-                    let fj = full.get(&rep_j).unwrap_or(&empty).clone();
-                    let fi = pieces.extend_members(h, &fi);
-                    let fj = pieces.extend_members(h, &fj);
-                    if !classes_interfere(&fi, &fj, covers) {
+                    if !classes_interfere(&exts[i], &exts[j], covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
-                        let mut m = full.remove(&rep_i).unwrap_or_default();
-                        m.extend(full.remove(&rep_j).unwrap_or_default());
-                        full.insert(h.high(class_list[i][0]), m);
                         merged = true;
                         break 'pair;
                     }
@@ -719,23 +742,6 @@ fn merge_same_storage(
     }
 }
 
-/// Map each current HighVariable representative to *all* its member Varnodes that have a cover —
-/// the membership over which interference is tested (Ghidra's `HighVariable::inst`).
-fn full_members_by_rep(
-    f: &Funcdata,
-    h: &mut HighVariables,
-    covers: &HashMap<VarnodeId, Cover>,
-) -> HashMap<u32, Vec<VarnodeId>> {
-    let mut full: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
-    for i in 0..f.num_varnodes() as u32 {
-        let v = VarnodeId(i);
-        if covers.contains_key(&v) {
-            let rep = h.high(v);
-            full.entry(rep).or_default().push(v);
-        }
-    }
-    full
-}
 
 
 /// One `VariablePiece` (variable.hh:71): the HighVariable formed by the Varnodes at one exact
@@ -1046,14 +1052,11 @@ fn merge_test_basic(
 /// [`merge_test_required`] refuses to merge two pieces of a group, so a class holds at most one
 /// piece per group.)
 fn piece_rep(
-    f: &Funcdata,
     h: &mut HighVariables,
     pieces: &VariablePieces,
     rep: u32,
 ) -> Option<VarnodeId> {
-    (0..f.num_varnodes() as u32)
-        .map(VarnodeId)
-        .find(|&v| pieces.piece(v).is_some() && h.high(v) == rep)
+    h.class_of(rep).into_iter().find(|&v| pieces.piece(v).is_some())
 }
 
 /// The aggregate `(address-tied storage address, is-input, is-persist)` over every Varnode merged
@@ -1065,11 +1068,7 @@ fn high_props(f: &Funcdata, h: &mut HighVariables, rep: u32) -> (Option<Address>
     let stack = f.spaces.by_name("stack");
     let mut tied: Option<Address> = None;
     let (mut input, mut persist) = (false, false);
-    for i in 0..f.num_varnodes() as u32 {
-        let v = VarnodeId(i);
-        if h.high(v) != rep {
-            continue;
-        }
+    for v in h.class_of(rep) {
         let vn = f.vn(v);
         if vn.is_addrtied() || Some(vn.loc.space) == stack {
             tied = Some(vn.loc);
@@ -1100,7 +1099,7 @@ fn merge_test_required(
     // one storage location and never merge — without this the same-address arm below would happily
     // re-fuse the 2-byte and 4-byte versions that `mergeRangeMust` just kept apart, undoing the
     // split. Across groups, at least one piece must represent its whole group.
-    if let (Some(po), Some(pi)) = (piece_rep(f, h, pieces, rep_out), piece_rep(f, h, pieces, rep_in))
+    if let (Some(po), Some(pi)) = (piece_rep(h, pieces, rep_out), piece_rep(h, pieces, rep_in))
     {
         if pieces.same_group(po, pi) {
             return false;
@@ -1166,10 +1165,8 @@ fn high_type(f: &Funcdata, members: &[VarnodeId]) -> Datatype {
 /// [`high_type`] over the Varnodes currently merged into HighVariable `rep` — Ghidra's
 /// `vn->getHigh()->getType()`.
 fn high_type_of(f: &Funcdata, h: &mut HighVariables, rep: u32) -> Datatype {
-    let members: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
-        .map(VarnodeId)
-        .filter(|&v| mergeable(f, v) && h.high(v) == rep)
-        .collect();
+    let members: Vec<VarnodeId> =
+        h.class_of(rep).into_iter().filter(|&v| mergeable(f, v)).collect();
     if members.is_empty() {
         // `rep` names a constant/annotation singleton — its own type is the variable's type.
         return f.vn(VarnodeId(rep)).get_type();
@@ -1209,7 +1206,7 @@ fn merge_test_adjacent(
     // merge.cc:210-212, "Currently don't allow speculative merging of variables that are in separate
     // overlapping collections" — stricter than the required test, which permits the cross-group
     // whole-group case.
-    if piece_rep(f, h, pieces, rep_out).is_some() && piece_rep(f, h, pieces, rep_in).is_some() {
+    if piece_rep(h, pieces, rep_out).is_some() && piece_rep(h, pieces, rep_in).is_some() {
         return false;
     }
     high_type_of(f, h, rep_out) == high_type_of(f, h, rep_in)
@@ -1850,11 +1847,7 @@ fn build_dominant_copy(
         covers
     };
     let mut b_cover = Cover::default();
-    for i in 0..f.num_varnodes() as u32 {
-        let v = VarnodeId(i);
-        if h.high(v) != rep {
-            continue;
-        }
+    for v in h.class_of(rep) {
         let vn = f.vn(v);
         if vn.is_written() {
             let d = vn.def.expect("written varnode has a def");
