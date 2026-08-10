@@ -14,7 +14,25 @@ use std::sync::{Mutex, OnceLock};
 /// Resolve a language id to its `(.sla, .pspec)` paths. Accepts the bare 4-part id
 /// (`proc:endian:size:variant`) or one with a trailing `:cspec` (the goldens carry
 /// the compiler-spec suffix); only the language part is used.
+///
+/// **Resolved once per process**, for the reason spelled out on [`resolve_cspec`] — this is the
+/// same `.ldefs` tree walk, and Ghidra's `SleighLanguageProvider` performs it exactly once. The
+/// uncached walk is private so it cannot be reached and re-run per function.
 pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
+    type Cache = Mutex<HashMap<String, Option<(PathBuf, PathBuf)>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = cache.lock().unwrap();
+    if let Some(hit) = map.get(lang_id) {
+        return hit.clone();
+    }
+    let resolved = resolve_language_paths(lang_id);
+    map.insert(lang_id.to_string(), resolved.clone());
+    resolved
+}
+
+/// The filesystem walk behind [`resolve`] — Ghidra's one-time `.ldefs` read.
+fn resolve_language_paths(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
     let procs = paths::processors_dir();
     for proc in fs::read_dir(&procs).ok()?.flatten() {

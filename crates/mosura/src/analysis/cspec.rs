@@ -20,9 +20,64 @@
 //! `assignMap`/`fillinMap` allocator are decompiler-side and deferred (see
 //! `docs/cspec-decompiler-brief.md`).
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use crate::decompile::fspec::{effect, type_class, EffectRecord, ParamEntry, ParamList, ProtoModel};
 use crate::decompile::space::{RangeList, SpaceId, SpaceManager};
 use crate::sleigh::engine::Spec;
+
+/// One decoded `.cspec` answer per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
+type CspecCache<T> = Mutex<HashMap<(String, String), T>>;
+
+/// Decode a `.cspec`-derived value **once per `(language_id, compiler_spec_id)`**, then serve it
+/// from a process-level map.
+///
+/// # This is Ghidra's structure, and Ghidra's key
+///
+/// `SleighLanguage` owns a `HashMap<CompilerSpecID, CompilerSpec>`; `getCompilerSpecByID` decodes a
+/// `BasicCompilerSpec` once and every later query is served from that map. So
+/// `program.getCompilerSpec().getDefaultCallingConvention()` — the call
+/// `SymbolicPropogator.addParamReferences` makes at every call site it examines — is a field read on
+/// an already-decoded `PrototypeModel`, never an XML parse. Ghidra parses each compiler spec once
+/// per language, full stop.
+///
+/// Each accessor in this module *was* an XML parse, and the constant propagator asks for the
+/// default convention's argument registers once per function
+/// ([`crate::analysis::symbolic::flow_constants`]). Measured on `mingw_hello.exe`: ~2 ms of decode
+/// per function on top of [`crate::lang::resolve_cspec`]'s 34.7 ms tree walk, against symbolic
+/// walks costing 0.1 ms — a fixed floor an order of magnitude above the work, and the reason a
+/// 21-address added set cost the same as a 3869-address one on WAR2. See
+/// `tests/constant_propagation_floor.rs`. The decompiler's per-function `Architecture` build
+/// (`decompile/build.rs`) asks three of these accessors per function and paid the same.
+///
+/// # Why the key needs nothing else
+///
+/// The accessors also take `spec` and `spaces`, and neither varies independently: `spec` is the
+/// SLEIGH spec **of** `language_id` (every caller obtains it from [`crate::lang::load_cached`] with
+/// that same id — the coupling Ghidra gets for free by hanging its map off `SleighLanguage`), and
+/// `spaces` is the standard space manager. Negative answers are cached too, so an absent cspec is
+/// not rediscovered per function.
+///
+/// ⚠️ `decode` runs while the map is locked, so it must not call back into an accessor that shares
+/// this cache. None do: each decoder goes straight to [`crate::lang::resolve_cspec`] and the
+/// private `decode_*`/`push_*` helpers.
+fn cspec_cached<T: Clone>(
+    cache: &OnceLock<CspecCache<T>>,
+    language_id: &str,
+    compiler_spec_id: &str,
+    decode: impl FnOnce() -> T,
+) -> T {
+    let cache = cache.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (language_id.to_string(), compiler_spec_id.to_string());
+    let mut map = cache.lock().unwrap();
+    if let Some(hit) = map.get(&key) {
+        return hit.clone();
+    }
+    let decoded = decode();
+    map.insert(key, decoded.clone());
+    decoded
+}
 
 /// Build the `<default_proto>` **input** [`ParamList`] of `(language_id, compiler_spec_id)`
 /// from its `.cspec` (Ghidra `ParamListStandard::decode` over the `<input>` element), or
@@ -30,47 +85,23 @@ use crate::sleigh::engine::Spec;
 /// concrete `register`/`stack` [`SpaceId`]s the entries reference; `spec` resolves
 /// `<register name=...>` to a register-space offset.
 ///
-/// **Decoded once per `(language_id, compiler_spec_id)`.** This is Ghidra's own structure and
-/// Ghidra's own key: `SleighLanguage` owns a `HashMap<CompilerSpecID, CompilerSpec>` and
-/// `getCompilerSpecByID` decodes a `BasicCompilerSpec` once, then serves it from that map
-/// (SleighLanguage.java). `program.getCompilerSpec().getDefaultCallingConvention()` — the call
-/// this function stands in for, made once per call site by `SymbolicPropogator` — is therefore a
-/// field read on an already-decoded `PrototypeModel`, never an XML parse.
-///
-/// mosura re-read and re-parsed the `.cspec` on **every** ask, and the constant propagator asks
-/// once per function ([`crate::analysis::symbolic::flow_constants`]). With
-/// [`crate::lang::resolve_cspec`]'s tree walk removed, the residue was still ~2 ms per function
-/// against symbolic walks costing 0.1 ms — a fixed floor an order of magnitude above the work.
-/// See `tests/constant_propagation_floor.rs`.
-///
-/// The key is `(language_id, compiler_spec_id)` and nothing else because nothing else varies:
-/// `spec` is the SLEIGH spec **of** `language_id` (every caller obtains it from
-/// [`crate::lang::load_cached`] with that same id — the same coupling Ghidra gets for free by
-/// hanging the map off `SleighLanguage`), and `spaces` is the standard space manager. The
-/// negative answer is cached too, so an absent cspec is not rediscovered per function.
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
 pub fn default_input_paramlist(
     spec: &Spec,
     language_id: &str,
     compiler_spec_id: &str,
     spaces: &SpaceManager,
 ) -> Option<ParamList> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    type Cache = Mutex<HashMap<(String, String), Option<ParamList>>>;
-    static CACHE: OnceLock<Cache> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (language_id.to_string(), compiler_spec_id.to_string());
-    let mut map = cache.lock().unwrap();
-    if let Some(hit) = map.get(&key) {
-        return hit.clone();
-    }
-    let decoded = decode_default_input_paramlist(spec, language_id, compiler_spec_id, spaces);
-    map.insert(key, decoded.clone());
-    decoded
+    static CACHE: OnceLock<CspecCache<Option<ParamList>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_default_input_paramlist(spec, language_id, compiler_spec_id, spaces)
+    })
 }
 
 /// The XML decode behind [`default_input_paramlist`] — Ghidra's one-time `BasicCompilerSpec`
-/// construction.
+/// construction. **Private, and every `decode_*` below with it**: the uncached form must not be
+/// reachable from outside this module, or some caller will eventually take it and put the
+/// per-function parse back.
 fn decode_default_input_paramlist(
     spec: &Spec,
     language_id: &str,
@@ -90,7 +121,21 @@ fn decode_default_input_paramlist(
 /// Ghidra `ParamListStandardOut::decode` over the `<output>` element (`fspec.cc:1776`, which just
 /// runs `ParamListStandard::decode` with `is_output`). `None` when the cspec / its default prototype
 /// / an `<output>` element can't be located.
+///
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
 pub fn default_output_paramlist(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ParamList> {
+    static CACHE: OnceLock<CspecCache<Option<ParamList>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_default_output_paramlist(spec, language_id, compiler_spec_id, spaces)
+    })
+}
+
+fn decode_default_output_paramlist(
     spec: &Spec,
     language_id: &str,
     compiler_spec_id: &str,
@@ -126,7 +171,21 @@ pub fn default_output_paramlist(
 /// right for one is silently wrong for the other, and "silently" is the word: a stack-pointer offset
 /// that matches no register does not fail, it just never propagates, so stack-frame recovery yields
 /// nothing at all and every frame slot degenerates into an offset from an unmodelled register.
+///
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
 pub fn default_stack_pointer(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<(SpaceId, u64, u32)> {
+    static CACHE: OnceLock<CspecCache<Option<(SpaceId, u64, u32)>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_default_stack_pointer(spec, language_id, compiler_spec_id, spaces)
+    })
+}
+
+fn decode_default_stack_pointer(
     spec: &Spec,
     language_id: &str,
     compiler_spec_id: &str,
@@ -154,7 +213,16 @@ pub fn default_stack_pointer(
 /// default on today's targets" is the exact shape of the hardcoding that made stack recovery inert
 /// on x86:LE:32 — the cost of reading it is one XML lookup and the cost of assuming it is a silent
 /// wrong answer the first time a MIPS or AARCH64 target is built.
+///
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
 pub fn aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
+    static CACHE: OnceLock<CspecCache<bool>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_aggressive_ext_trim(language_id, compiler_spec_id)
+    })
+}
+
+fn decode_aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
     let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return false };
     let Ok(text) = std::fs::read_to_string(path) else { return false };
     let Ok(doc) = roxmltree::Document::parse(&text) else { return false };
@@ -164,7 +232,23 @@ pub fn aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
         .is_some_and(|v| v == "true")
 }
 
+///
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`]. This is the one the
+/// decompiler's per-function `Architecture` build asks for, so before the cache a whole-program
+/// decompile re-parsed the `.cspec` once per function.
 pub fn default_proto_model(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ProtoModel> {
+    static CACHE: OnceLock<CspecCache<Option<ProtoModel>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_default_proto_model(spec, language_id, compiler_spec_id, spaces)
+    })
+}
+
+fn decode_default_proto_model(
     spec: &Spec,
     language_id: &str,
     compiler_spec_id: &str,
