@@ -1046,6 +1046,13 @@ mod constant_propagation_location_tests {
         // 0x401008: c3                       ret
         img[..9].copy_from_slice(&[0xc3, 0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
         p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        // The listing the disassembler would have written. Constant propagation runs at REFERENCE
+        // priority, after DISASSEMBLY, and its walk reads instructions from the listing — so a
+        // program with functions but an empty listing is a state the pipeline never produces, and
+        // propagating from it would recover nothing.
+        for (off, len) in [(0x40_1000u64, 1u32), (0x40_1001, 7), (0x40_1008, 1)] {
+            p.listing.define(Address::new(ram, off), CodeUnit::instruction(len));
+        }
         for off in [0x40_1000u64, 0x40_1001] {
             p.function_manager.create_function(
                 Address::new(ram, off),

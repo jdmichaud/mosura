@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::analysis::program::{Program, RefType};
+use crate::analysis::program::{CodeUnit, Program, RefType};
 use crate::decompile::opcode::OpCode;
 use crate::decompile::space::{Address, SpaceId};
 use crate::sleigh::engine::Spec;
@@ -478,14 +478,39 @@ pub fn flow_constants(
         if a != start.offset && entries.contains(&a) {
             continue;
         }
-        let window = program.memory.read_window(Address::new(ram, a), 16);
-        let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else {
+        // ── The instruction comes from the LISTING (Ghidra `SymbolicPropogator.flowConstants`,
+        // which asks the listing for the instruction at each address and stops where there is
+        // none). Two things follow, and only the first changes behaviour:
+        //
+        // 1. **The stop rule.** An address with no defined instruction ends this path. Ghidra
+        //    could never hand the propagator code that is not in the listing. Measured before
+        //    changing it, on the addresses the byte-decoding walk reached: 100% were already
+        //    defined instructions on mingw_hello / mingw_hello32 / basic / clang_hello /
+        //    switchtab, 96.6% on comcom32 — so what leaves is 11 addresses across the corpus,
+        //    every one of them an address Ghidra's walk never had.
+        //
+        // 2. **The window is the instruction's own length**, which the record already carries
+        //    (`b6754d2` — the same field the body walk reads). This is pure cost: a 16-byte
+        //    window decodes ~5 x86-64 instructions and `.next()` threw 4 away, at every address
+        //    the walk visited. Measured: 32.49 µs -> 5.94 µs per instruction.
+        //
+        // The p-code still has to be lifted — unlike the body walk, this walk INTERPRETS the
+        // instruction, and `CodeUnit::Instruction` carries flow properties but not ops. Ghidra
+        // pays this too (`InstructionDB.getPcode` regenerates from the cached prototype); what it
+        // never pays is the re-parse, and what mosura was paying was 5 lifts per instruction.
+        let Some(CodeUnit::Instruction { length, .. }) =
+            program.listing.code_unit_at(Address::new(ram, a))
+        else {
             continue;
         };
-        let ilen = insn.bytes.len() as u64;
+        let ilen = u64::from(*length);
         if ilen == 0 {
             continue;
         }
+        let window = program.memory.read_window(Address::new(ram, a), ilen as usize);
+        let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else {
+            continue;
+        };
         let here = Address::new(ram, a);
 
         // The instruction's flow type (Ghidra `instruction.getFlowType()`), used to type a
@@ -589,7 +614,6 @@ mod tests {
         start: u64,
         count: usize,
     ) {
-        use crate::analysis::program::CodeUnit;
         let mut at = start;
         for _ in 0..count {
             let window = program.memory.read_window(Address::new(ram, at), 16);
@@ -601,6 +625,15 @@ mod tests {
             program.listing.define(Address::new(ram, at), CodeUnit::instruction(len));
             at += u64::from(len);
         }
+    }
+
+    /// [`program_with_code`] plus the listing the disassembler would have written for exactly
+    /// those bytes — the state the real pipeline hands [`flow_constants`].
+    fn program_with_listing(spec: &Spec, ctx: &[u32], bytes: &[u8]) -> (Program, SpaceId) {
+        let (mut program, ram) = program_with_code(bytes);
+        let n = spec.disassemble_ctx(bytes, 0x40_1000, ctx).len();
+        define_instructions(&mut program, ram, spec, ctx, 0x40_1000, n);
+        (program, ram)
     }
 
     /// ⭐ THE GATE — the walk must take its instructions from the LISTING, not from raw bytes.
@@ -618,7 +651,6 @@ mod tests {
     ///
     /// Before the fix the undefined case recovers it too, and the pair is indistinguishable.
     #[test]
-    #[ignore = "RED: the walk re-decodes raw bytes and ignores the listing. Un-ignore with the fix."]
     fn walk_takes_its_instructions_from_the_listing() {
         let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             eprintln!("skip: SLEIGH tables unavailable");
@@ -673,7 +705,8 @@ mod tests {
             return;
         };
         // mov rax, [rip+0x10] ; ret   →  reads ram:0x401017 (next=0x401007 + 0x10)
-        let (mut program, ram) = program_with_code(&[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
+        let (mut program, ram) =
+            program_with_listing(spec, ctx, &[0x48, 0x8b, 0x05, 0x10, 0x00, 0x00, 0x00, 0xc3]);
         flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let reads: Vec<u64> = program
             .reference_manager
@@ -693,7 +726,7 @@ mod tests {
         // (RDI = first integer arg; the value is a mapped address, the call is real).
         //   48 c7 c7 00 18 40 00  mov rdi, 0x401800   (7 bytes, at 0x401000)
         //   e8 f3 06 00 00        call 0x401700       (5 bytes, at 0x401007; rel32=0x6f3)
-        let (mut program, ram) = program_with_code(&[
+        let (mut program, ram) = program_with_listing(spec, ctx, &[
             0x48, 0xc7, 0xc7, 0x00, 0x18, 0x40, 0x00, // mov rdi, 0x401800
             0xe8, 0xf4, 0x06, 0x00, 0x00, // call 0x401800-... compute below
         ]);
@@ -725,7 +758,7 @@ mod tests {
         };
         // lea rax, [rip+0x20] ; mov rcx, [rax] ; ret
         //   rax = 0x401027 (next of lea = 0x401007 + 0x20); [rax] reads 0x401027.
-        let (mut program, ram) = program_with_code(&[
+        let (mut program, ram) = program_with_listing(spec, ctx, &[
             0x48, 0x8d, 0x05, 0x20, 0x00, 0x00, 0x00, // lea rax,[rip+0x20]
             0x48, 0x8b, 0x08, // mov rcx,[rax]
             0xc3, // ret
@@ -749,7 +782,7 @@ mod tests {
             return;
         };
         // lea rax,[rip+0x20] (rax = 0x401027 = next 0x401007 + 0x20) ; call rax ; ret
-        let (mut program, ram) = program_with_code(&[
+        let (mut program, ram) = program_with_listing(spec, ctx, &[
             0x48, 0x8d, 0x05, 0x20, 0x00, 0x00, 0x00, // lea rax,[rip+0x20]
             0xff, 0xd0, // call rax
             0xc3, // ret
@@ -789,6 +822,8 @@ mod tests {
         let mut program =
             Program::new(spaces, ram, "x86:LE:64:default", "gcc", Address::new(ram, 0x401000), false, 64);
         program.memory.add_block("text", Address::new(ram, 0x401000), 0x1000, true, false, true, Some(img));
+        // The listing the disassembler would have written: mov / mov / ret.
+        define_instructions(&mut program, ram, spec, ctx, 0x40_1000, 3);
 
         flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
         let read_to = |to: u64| {
