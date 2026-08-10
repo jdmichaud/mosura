@@ -140,25 +140,38 @@ pub fn compiler_spec_id(data: &[u8]) -> &'static str {
 }
 
 pub fn detect(data: &[u8]) -> Option<WatcomInfo> {
-    let caps = banner_regex().captures(data)?;
-    let get = |n: &str| caps.name(n).map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned());
-    let num = |n: &str| caps.name(n).and_then(|m| std::str::from_utf8(m.as_bytes()).ok()?.parse::<u32>().ok());
+    // A linked binary can embed banners from SEVERAL runtime objects (a real 10.0a toolchain
+    // ships `C 386 … 1988-1993` and `C/C++32 … 1988-1994` runtimes side by side), and which
+    // one sits first in the file is a link-layout accident. The image's era is its NEWEST
+    // banner's — the max-across-markers reading `gcc::detect` and the Borland detector use
+    // (compiler_version.rs). Ties keep the first match.
+    let mut best: Option<WatcomInfo> = None;
+    for caps in banner_regex().captures_iter(data) {
+        let get =
+            |n: &str| caps.name(n).map(|m| String::from_utf8_lossy(m.as_bytes()).into_owned());
+        let num = |n: &str| {
+            caps.name(n).and_then(|m| std::str::from_utf8(m.as_bytes()).ok()?.parse::<u32>().ok())
+        };
 
-    let (vendor, year_range) = if let (Some(y0), Some(y1)) = (num("iy0"), num("iy1")) {
-        (WatcomVendor::WatcomIntl, (y0, y1))
-    } else if let (Some(y0), Some(y1)) = (num("oy0"), num("oy1")) {
-        (WatcomVendor::OpenWatcom, (y0, y1))
-    } else {
-        return None;
-    };
+        let (vendor, year_range) = if let (Some(y0), Some(y1)) = (num("iy0"), num("iy1")) {
+            (WatcomVendor::WatcomIntl, (y0, y1))
+        } else if let (Some(y0), Some(y1)) = (num("oy0"), num("oy1")) {
+            (WatcomVendor::OpenWatcom, (y0, y1))
+        } else {
+            continue;
+        };
 
-    Some(WatcomInfo {
-        vendor,
-        product: get("prod").unwrap_or_default(),
-        bitness: get("bits").unwrap_or_default(),
-        year_range,
-        banner: String::from_utf8_lossy(caps.get(0).unwrap().as_bytes()).into_owned(),
-    })
+        if best.as_ref().is_none_or(|b| year_range.1 > b.year_range.1) {
+            best = Some(WatcomInfo {
+                vendor,
+                product: get("prod").unwrap_or_default(),
+                bitness: get("bits").unwrap_or_default(),
+                year_range,
+                banner: String::from_utf8_lossy(caps.get(0).unwrap().as_bytes()).into_owned(),
+            });
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -258,5 +271,31 @@ mod tests {
     fn non_watcom_returns_none() {
         assert!(detect(b"just some bytes, no banner here").is_none());
         assert!(detect(b"This program cannot be run in DOS mode.$").is_none());
+    }
+
+    /// Open task #7's live half: a LINKED binary can embed banners from several runtime
+    /// objects — a real 10.0a toolchain ships `C 386 … 1988-1993` and `C/C++32 … 1988-1994`
+    /// runtimes side by side (the module note's grounded finding). Which banner sits at the
+    /// lower file offset is a LINK-LAYOUT accident, so first-match answers an older era for
+    /// the same toolchain depending on object order. The era of the image is the NEWEST
+    /// banner's — the same max-across-markers reading `gcc::detect` and the Borland detector
+    /// already use (compiler_version.rs:284, :326).
+    #[test]
+    fn multi_banner_image_reports_the_newest_era() {
+        let mut img = vec![0u8; 16];
+        // The OLDER runtime's banner first in file order…
+        img.extend_from_slice(b"WATCOM C 386 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1993. All rights reserved.");
+        img.extend_from_slice(&[0u8; 16]);
+        // …the newer one after it.
+        img.extend_from_slice(b"WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1994. All rights reserved.");
+        img.extend_from_slice(&[0u8; 16]);
+        let info = detect(&img).expect("banner in image");
+        assert_eq!(
+            info.year_range,
+            (1988, 1994),
+            "the era of a multi-banner image is its NEWEST banner's, not whichever object the \
+             linker placed first"
+        );
+        assert_eq!(info.product, "C/C++");
     }
 }
