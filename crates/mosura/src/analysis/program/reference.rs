@@ -107,6 +107,23 @@ pub struct ReferenceManager {
     /// and pseudo-disassembler ports call once per candidate address. A linear scan of `refs`
     /// there is quadratic on a real binary (WAR2 holds >20k references).
     dests: std::collections::BTreeSet<(u32, u64)>,
+    /// `(space, offset) -> indices into `refs`, in insertion order` for the reference SOURCE and
+    /// DESTINATION — the backing for [`Self::refs_from`] / [`Self::refs_to`], Ghidra's
+    /// `getReferencesFrom` / `getReferencesTo`.
+    ///
+    /// ⚠️ **These are not an optimisation, they are the difference between linear and quadratic.**
+    /// `get_function_body` calls `refs_from` once per INSTRUCTION of every function, and a scan of
+    /// `refs` made that `O(instructions x references)`. On WAR2 that is ~387k instruction visits
+    /// against >20k references per whole-program body walk, and the walk runs once per analyzer
+    /// invocation: measured at **98.0s of a 197.8s run**, against 1.0s for the constant
+    /// propagation the walk exists to serve. Same class as the `dests` index above, on the other
+    /// two axes.
+    ///
+    /// Index order is insertion order, matching what `refs.iter().filter(..)` yielded — callers
+    /// that take `.next()` (`first_flow_reference_from`, deliberately not
+    /// `single_flow_reference_from`) depend on which reference comes first.
+    from_index: std::collections::BTreeMap<(u32, u64), Vec<u32>>,
+    to_index: std::collections::BTreeMap<(u32, u64), Vec<u32>>,
 }
 
 impl ReferenceManager {
@@ -115,6 +132,8 @@ impl ReferenceManager {
             refs: Vec::new(),
             seen: std::collections::HashSet::new(),
             dests: std::collections::BTreeSet::new(),
+            from_index: std::collections::BTreeMap::new(),
+            to_index: std::collections::BTreeMap::new(),
         }
     }
 
@@ -122,8 +141,11 @@ impl ReferenceManager {
     pub fn add(&mut self, from: Address, to: Address, ref_type: RefType, op_index: i32) {
         let key = (from.space.0, from.offset, to.space.0, to.offset, op_index, ref_type as i32);
         if self.seen.insert(key) {
+            let idx = self.refs.len() as u32;
             self.refs.push(Reference { from, to, ref_type, op_index });
             self.dests.insert((to.space.0, to.offset));
+            self.from_index.entry((from.space.0, from.offset)).or_default().push(idx);
+            self.to_index.entry((to.space.0, to.offset)).or_default().push(idx);
         }
     }
 
@@ -186,11 +208,25 @@ impl ReferenceManager {
         if !self.refs.iter().any(|r| r.to == to) {
             self.dests.remove(&(to.space.0, to.offset));
         }
+        // `retain` shifts every later index, so the from/to indices are rebuilt wholesale rather
+        // than patched. Same justification as `dests` above: removal is rare (only the parameter
+        // analysis' operand claim), and a wrong index here is a silently wrong answer, not a slow
+        // one.
+        self.rebuild_endpoint_indices();
+    }
+
+    fn rebuild_endpoint_indices(&mut self) {
+        self.from_index.clear();
+        self.to_index.clear();
+        for (i, r) in self.refs.iter().enumerate() {
+            self.from_index.entry((r.from.space.0, r.from.offset)).or_default().push(i as u32);
+            self.to_index.entry((r.to.space.0, r.to.offset)).or_default().push(i as u32);
+        }
     }
 
     /// True if any reference `from → to` exists (any type/op index).
     pub fn has_ref(&self, from: Address, to: Address) -> bool {
-        self.refs.iter().any(|r| r.from == from && r.to == to)
+        self.refs_from(from).any(|r| r.to == to)
     }
 
     /// All references (unordered; the snapshot sorts). Ghidra `getReferenceIterator`.
@@ -199,11 +235,19 @@ impl ReferenceManager {
     }
 
     pub fn refs_from(&self, from: Address) -> impl Iterator<Item = &Reference> {
-        self.refs.iter().filter(move |r| r.from == from)
+        self.from_index
+            .get(&(from.space.0, from.offset))
+            .into_iter()
+            .flatten()
+            .map(move |&i| &self.refs[i as usize])
     }
 
     pub fn refs_to(&self, to: Address) -> impl Iterator<Item = &Reference> {
-        self.refs.iter().filter(move |r| r.to == to)
+        self.to_index
+            .get(&(to.space.0, to.offset))
+            .into_iter()
+            .flatten()
+            .map(move |&i| &self.refs[i as usize])
     }
 
     pub fn len(&self) -> usize {
