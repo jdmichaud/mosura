@@ -765,3 +765,94 @@ mod a7_diag_noreturn {
         }
     }
 }
+
+#[cfg(test)]
+mod shared_return_schedule_tests {
+    use super::*;
+    use crate::analysis::program::AddressSet;
+    use crate::decompile::space::{Address, SpaceKind, SpaceManager};
+
+    /// ⭐ **THE GATE for the missing shared-return invocation (task #3).** A function the Function
+    /// Start Search block creates at [`analyze`]'s `:260-308` is exactly what makes a tail-call
+    /// destination qualify — and nothing runs shared return again after that block, so the
+    /// destination is never created.
+    ///
+    /// In Ghidra there is no gap: a pattern-created function raises a change record →
+    /// `handleFunctionAddedOrBodyChanged` → `functionDefined(entry)` → `functionTasks.notifyAdded`
+    /// (AutoAnalysisManager.java:392-395, :280-290), and `functionTasks` is the FUNCTION_ANALYZER
+    /// list (:158) that `SharedReturnAnalyzer` is on (SharedReturnAnalyzer.java:66). Delivery is
+    /// not priority-gated: `FunctionStartAnalyzer` runs LATER than shared return
+    /// (`CODE_ANALYSIS.after().after()` vs `.before().before()`) and still re-triggers it, on the
+    /// round after.
+    ///
+    /// The fixture is the `0x67f40` shape reduced — a backward jump whose verdict flips when an
+    /// intervening function appears:
+    ///
+    /// ```text
+    /// 0x401000  P  31 c0              xor eax,eax     } the entry function; the jnz is
+    /// 0x401002     0f 85 f8 02 00 00  jnz 0x401300    }   CONDITIONAL, so the shared-return
+    /// 0x401008     c3                 ret             }   scan skips it as a source
+    /// 0x401100  D  31 c0 c3           xor eax,eax; ret   <- the destination, no function yet
+    /// 0x4011fe     c3 90                                 <- gcc x86-64 PREpattern (RET; NOP)
+    /// 0x401200  X  55 48 89 e5 c3                        <- POSTpattern (PUSH RBP; MOV RBP,RSP)
+    /// 0x401300  S  e9 fb fd ff ff     jmp 0x401100    } reached only by the jnz
+    /// ```
+    ///
+    /// `S` is a backward jump, and the contiguous-function test is `destAddr < functionBeforeSrc`:
+    ///
+    /// - while `X` does not exist, `getFunctionBefore(0x401300)` is `P` at `0x401000` and
+    ///   `0x401100 < 0x401000` is false — `shared_return_pass` at `:245` correctly declines;
+    /// - once the pattern search creates `X`, `getFunctionBefore(0x401300)` is `0x401200` and
+    ///   `0x401100 < 0x401200` holds — so the destination must be created.
+    ///
+    /// Nothing else can supply the answer: `X` has no inbound flow, `D` is reached only by the
+    /// `jmp`, and `D`'s predecessor byte is undecoded so `checkIfCouldHaveFallThruTo` does not
+    /// veto it.
+    #[test]
+    #[ignore = "RED: the invocation this gate needs does not exist yet (task #3)"]
+    fn a_function_created_by_the_pattern_search_still_gets_shared_return() {
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable
+        }
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        let mut img = vec![0u8; 0x1000];
+        img[0x000..0x009].copy_from_slice(&[
+            0x31, 0xc0, // xor eax,eax
+            0x0f, 0x85, 0xf8, 0x02, 0x00, 0x00, // jnz 0x401300
+            0xc3, // ret
+        ]);
+        img[0x100..0x103].copy_from_slice(&[0x31, 0xc0, 0xc3]); // D
+        img[0x1fe..0x205].copy_from_slice(&[
+            0xc3, 0x90, // prepattern: RET; NOP
+            0x55, 0x48, 0x89, 0xe5, 0xc3, // X: PUSH RBP; MOV RBP,RSP; RET
+        ]);
+        img[0x300..0x305].copy_from_slice(&[0xe9, 0xfb, 0xfd, 0xff, 0xff]); // S: jmp 0x401100
+        p.memory.add_block(".text", base, 0x1000, true, false, true, Some(img));
+        p.entry_points.push(base);
+        p.function_manager.create_function(base, "entry", AddressSet::new());
+
+        analyze(&mut p);
+
+        let at = |off: u64| p.function_manager.function_at(Address::new(ram, off)).is_some();
+        // The fixture only measures the schedule if the pattern search really does create X here.
+        assert!(
+            at(0x40_1200),
+            "fixture broken: the gcc x86-64 funcstart pattern (RET;NOP + PUSH RBP;MOV RBP,RSP) did \
+             not create a function at 0x401200, so there is no late creation to re-trigger on. \
+             Functions: {:x?}",
+            p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
+        );
+        assert!(
+            at(0x40_1100),
+            "no function at the tail-call destination 0x401100: the pattern search created \
+             0x401200 AFTER `shared_return_pass` ran, and nothing delivers Ghidra's \
+             `functionDefined` event for it, so the backward jump at 0x401300 — whose \
+             `destAddr < functionBeforeSrc` test only passes once 0x401200 exists — is never \
+             re-examined. Functions: {:x?}",
+            p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
+        );
+    }
+}
