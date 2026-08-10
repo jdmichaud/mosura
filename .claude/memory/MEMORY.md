@@ -55,6 +55,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [war2-mz-inline-call-parameters](war2-mz-inline-call-parameters.md) — **⭐ the war2 MZ `0x13a56` thunks are followed by a 2-byte INLINE PARAMETER; decoding it destroys a real instruction.**
 - [listing-gate-held-fix](listing-gate-held-fix.md) — **⭐ `9d2f0e9`+`71876a2`: gate committed RED+`#[ignore]`d; fix HELD in `held-patches/`; unblocker = a fall-through override model.**
 - [shared-return-cursor-cache-is-semantic](shared-return-cursor-cache-is-semantic.md) — SharedReturnAnalysisCmd's functionBefore/AfterSrc caches CHANGE the answer; open gap = invocation granularity.
+- [thunk-resolution-runs-before-the-body](thunk-resolution-runs-before-the-body.md) — **⭐ `69cf941`: a jump-only entry is a THUNK; Ghidra creates its target's function BEFORE storing the body. Run it after the walk and every thunk vetoes its own target. NOT shared return.**
 - [war2-tailjmp-mve](war2-tailjmp-mve.md) — the tail-call MVE; `-oc` suppresses the shape, and C can't make a forward tail jmp.
 - [war2-per-function-ghidra-oracle](war2-per-function-ghidra-oracle.md) — **⭐ RECIPE: ask Ghidra about any WAR2 function despite the DOS/4GW-LE loader problem.**
 - [war2-guardreturns-port](war2-guardreturns-port.md) — **⭐ `6e1b113` return candidates from the cspec; headline 1→9 byte-clean, narrow-switch bug closed.**
