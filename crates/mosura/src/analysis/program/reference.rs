@@ -198,7 +198,16 @@ impl ReferenceManager {
     /// parameter analysis claims an operand: Ghidra's `ScalarOperandAnalyzer` skips an
     /// operand that already carries a reference, so a speculative DATA ref must not coexist
     /// with the PARAM the constant propagator created at the same site.
+    /// ⚠️ **The early-out is load-bearing, not a micro-optimisation.** The caller asks
+    /// unconditionally at every operand it claims, so the overwhelmingly common case is that there
+    /// is nothing to remove — and every line below is O(references). Doing that work on a no-op
+    /// call put this function at **2.3% of a whole WAR2 run** in `perf`. `from_index` answers "is
+    /// there any such reference" in O(log n), so the miss now costs a lookup instead of four
+    /// whole-table passes.
     pub fn remove(&mut self, from: Address, to: Address, ref_type: RefType) {
+        if !self.refs_from(from).any(|r| r.to == to && r.ref_type == ref_type) {
+            return; // nothing matches — do not touch refs, seen, dests or the indices
+        }
         self.refs.retain(|r| !(r.from == from && r.to == to && r.ref_type == ref_type));
         self.seen.retain(|k| {
             !(k.0 == from.space.0 && k.1 == from.offset && k.2 == to.space.0 && k.3 == to.offset && k.5 == ref_type as i32)
@@ -209,9 +218,7 @@ impl ReferenceManager {
             self.dests.remove(&(to.space.0, to.offset));
         }
         // `retain` shifts every later index, so the from/to indices are rebuilt wholesale rather
-        // than patched. Same justification as `dests` above: removal is rare (only the parameter
-        // analysis' operand claim), and a wrong index here is a silently wrong answer, not a slow
-        // one.
+        // than patched. Reached only when a reference really was removed, per the early-out above.
         self.rebuild_endpoint_indices();
     }
 
