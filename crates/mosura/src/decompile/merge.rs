@@ -33,11 +33,26 @@ const MAX_TERM_DUPLICATION: i32 = 2;
 #[derive(Clone)]
 pub struct HighVariables {
     parent: Vec<u32>,
+    /// The member Varnodes of each class, indexed by its ROOT — Ghidra's
+    /// `HighVariable::inst` (variable.hh:137), which `HighIntersectTest` reads directly.
+    ///
+    /// Without it, a class's membership can only be recovered by scanning every Varnode in the
+    /// function and testing `high(v) == rep`. The merge tests ask for a handful of classes tens
+    /// of thousands of times per function, so that scan was the dominant cost of the whole merge
+    /// family. Maintaining it on `union` — the same place Ghidra concatenates `inst` in
+    /// `mergeInternal` (variable.cc:626) — makes a lookup cost the class, not the function.
+    ///
+    /// Non-root entries are left empty; only `members[root]` is meaningful. Path halving in
+    /// [`Self::find`] never changes which node is the root, so the index stays valid.
+    members: Vec<Vec<VarnodeId>>,
 }
 
 impl HighVariables {
     fn new(n: usize) -> HighVariables {
-        HighVariables { parent: (0..n as u32).collect() }
+        HighVariables {
+            parent: (0..n as u32).collect(),
+            members: (0..n as u32).map(|i| vec![VarnodeId(i)]).collect(),
+        }
     }
 
     /// Grow the union-find to cover `n` varnodes: each new varnode starts as its own
@@ -46,6 +61,7 @@ impl HighVariables {
     pub(crate) fn extend_to(&mut self, n: usize) {
         let old = self.parent.len() as u32;
         self.parent.extend(old..n as u32);
+        self.members.extend((old..n as u32).map(|i| vec![VarnodeId(i)]));
     }
 
     fn find(&mut self, mut x: u32) -> u32 {
@@ -60,7 +76,20 @@ impl HighVariables {
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb {
             self.parent[ra as usize] = rb;
+            // Ghidra `HighVariable::mergeInternal` (variable.cc:626) appends the absorbed
+            // variable's instances to the survivor's. Same here, so the index tracks `parent`.
+            let moved = std::mem::take(&mut self.members[ra as usize]);
+            self.members[rb as usize].extend(moved);
         }
+    }
+
+    /// The members of the class rooted at `rep`, in the order they were unioned.
+    ///
+    /// Returned by value: the callers hold several classes at once (the merge testlist) and
+    /// cannot keep multiple borrows of `self` alive across `high()`, which needs `&mut` for path
+    /// compression. A class is small; the function is not — that is the whole point.
+    pub(crate) fn class_of(&mut self, rep: u32) -> Vec<VarnodeId> {
+        self.members[rep as usize].clone()
     }
 
     /// The HighVariable id of a varnode (its union-find representative).
@@ -586,12 +615,9 @@ fn merge_adjacent(
             if rep_out == rep_in || !merge_test_adjacent(f, h, pieces, rep_out, rep_in) {
                 continue;
             }
-            let by_rep = full_members_by_rep(f, h, covers);
-            let empty: Vec<VarnodeId> = Vec::new();
-            let out_members =
-                pieces.extend_members(h, by_rep.get(&rep_out).unwrap_or(&empty), &by_rep);
-            let in_members =
-                pieces.extend_members(h, by_rep.get(&rep_in).unwrap_or(&empty), &by_rep);
+            let (cls_out, cls_in) = (h.class_of(rep_out), h.class_of(rep_in));
+            let out_members = pieces.extend_members(h, &cls_out);
+            let in_members = pieces.extend_members(h, &cls_in);
             if !classes_interfere(&out_members, &in_members, covers) {
                 h.union(vn1.0, vn2.0);
             }
@@ -674,8 +700,8 @@ fn merge_same_storage(
                     }
                     let fi = full.get(&rep_i).unwrap_or(&empty).clone();
                     let fj = full.get(&rep_j).unwrap_or(&empty).clone();
-                    let fi = pieces.extend_members(h, &fi, &full);
-                    let fj = pieces.extend_members(h, &fj, &full);
+                    let fi = pieces.extend_members(h, &fi);
+                    let fj = pieces.extend_members(h, &fj);
                     if !classes_interfere(&fi, &fj, covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
                         let mut m = full.remove(&rep_i).unwrap_or_default();
@@ -828,12 +854,7 @@ impl VariablePieces {
     /// cost of the pass: `members_of` walks EVERY varnode in the function, once per seed, per
     /// rep, per call. Ghidra never pays it — a `HighVariable` owns its members in `inst`
     /// (variable.hh:137) and `HighIntersectTest` reads them directly.
-    fn extend_members(
-        &self,
-        h: &mut HighVariables,
-        base: &[VarnodeId],
-        by_rep: &HashMap<u32, Vec<VarnodeId>>,
-    ) -> Vec<VarnodeId> {
+    fn extend_members(&self, h: &mut HighVariables, base: &[VarnodeId]) -> Vec<VarnodeId> {
         // Collect the intersecting pieces first: the rep lookup needs `&mut h`, which cannot be
         // held across the borrow of `self.pieces`.
         let mut seeds: Vec<VarnodeId> = Vec::new();
@@ -854,8 +875,7 @@ impl VariablePieces {
         let mut seen: std::collections::HashSet<VarnodeId> = out.iter().copied().collect();
         for m in seeds {
             let rep = h.high(m);
-            let Some(class) = by_rep.get(&rep) else { continue };
-            for &w in class {
+            for w in h.class_of(rep) {
                 if seen.insert(w) {
                     out.push(w);
                 }
@@ -864,27 +884,6 @@ impl VariablePieces {
         out
     }
 
-    /// [`Self::extend_members`] applied to a whole rep → members map, so a caller that tests many
-    /// pairs (the `mergeOp` testlist, `mergeIndirect`) extends once instead of per pair.
-    fn extend_all(
-        &self,
-        h: &mut HighVariables,
-        mut members: HashMap<u32, Vec<VarnodeId>>,
-    ) -> HashMap<u32, Vec<VarnodeId>> {
-        if self.pieces.is_empty() {
-            return members;
-        }
-        // Snapshot the UNEXTENDED partition. `extend_members` used to recompute each class with
-        // `members_of`, which read the graph and so never saw the extensions this loop writes
-        // back; reading `members` directly would let an earlier rep's extension leak into a later
-        // one's seeds. Cloning once per call preserves the old semantics exactly.
-        let by_rep = members.clone();
-        for rep in by_rep.keys().copied() {
-            let ext = self.extend_members(h, &by_rep[&rep], &by_rep);
-            members.insert(rep, ext);
-        }
-        members
-    }
 }
 
 /// `Merge::mergeAddrTied` (merge.cc:609) — force-merge address-tied Varnodes into HighVariables and
@@ -1013,10 +1012,9 @@ fn merge_copy(
                 if !merge_test_required(f, h, pieces, rep_out, rep_in) {
                     continue;
                 }
-                let by_rep = full_members_by_rep(f, h, covers);
-                let empty: Vec<VarnodeId> = Vec::new();
-                let mo = pieces.extend_members(h, by_rep.get(&rep_out).unwrap_or(&empty), &by_rep);
-                let mi = pieces.extend_members(h, by_rep.get(&rep_in).unwrap_or(&empty), &by_rep);
+                let (cls_out, cls_in) = (h.class_of(rep_out), h.class_of(rep_in));
+                let mo = pieces.extend_members(h, &cls_out);
+                let mi = pieces.extend_members(h, &cls_in);
                 if classes_interfere(&mo, &mi, covers) {
                     continue; // would introduce a Cover intersection — skip
                 }
@@ -1334,12 +1332,10 @@ fn merge_indirect(
             return false;
         }
         // Merge::merge fails only on a Cover intersection.
-        let members = full_members_by_rep(f, h, covers);
-        let members = pieces.extend_all(h, members);
-        let empty: Vec<VarnodeId> = Vec::new();
-        let mo = members.get(&rep_out).unwrap_or(&empty);
-        let mi = members.get(&rep_in).unwrap_or(&empty);
-        if class_intersect(f, mo, mi, covers) {
+        let (cls_out, cls_in) = (h.class_of(rep_out), h.class_of(rep_in));
+        let mo = pieces.extend_members(h, &cls_out);
+        let mi = pieces.extend_members(h, &cls_in);
+        if class_intersect(f, &mo, &mi, covers) {
             return false;
         }
         h.union(outvn.0, in0.0);
@@ -1522,18 +1518,17 @@ fn merge_test_all(
     covers: &HashMap<VarnodeId, Cover>,
     op: super::op::OpId,
 ) -> bool {
-    let members = full_members_by_rep(f, h, covers);
-    let members = {
-        pieces.extend_all(h, members)
-    };
-    let mut testlist: Vec<u32> = Vec::new();
+    // Only the output's class and the input classes are ever consulted, so they are materialised
+    // on demand from the union-find's member index instead of rebuilding the whole function's
+    // rep -> members map for every call. Same classes, same order, same predicate.
+    let mut testlist: Vec<(u32, Vec<VarnodeId>)> = Vec::new();
     let out = f.op(op).output.expect("marker op has an output");
     let rep_out = h.high(out);
-    merge_test_class(f, covers, &members, out, rep_out, &mut testlist);
+    merge_test_class(f, h, pieces, covers, out, rep_out, &mut testlist);
     for i in 0..f.op(op).num_inputs() {
         let Some(inv) = f.op(op).input(i) else { continue };
         let rep_in = h.high(inv);
-        if !merge_test_class(f, covers, &members, inv, rep_in, &mut testlist) {
+        if !merge_test_class(f, h, pieces, covers, inv, rep_in, &mut testlist) {
             return false;
         }
     }
@@ -1546,28 +1541,30 @@ fn merge_test_all(
 /// variable.hh:217) always fails, which is what routes such an input into the blind trim loop.
 fn merge_test_class(
     f: &Funcdata,
+    h: &mut HighVariables,
+    pieces: &VariablePieces,
     covers: &HashMap<VarnodeId, Cover>,
-    members: &HashMap<u32, Vec<VarnodeId>>,
     v: VarnodeId,
     rep: u32,
-    testlist: &mut Vec<u32>,
+    testlist: &mut Vec<(u32, Vec<VarnodeId>)>,
 ) -> bool {
     let vn = f.vn(v);
     if !mergeable(f, v) || vn.is_free() {
         return false; // no cover: constant / annotation / never-heritaged
     }
-    let empty: Vec<VarnodeId> = Vec::new();
-    let mine = members.get(&rep).unwrap_or(&empty);
-    for &other in testlist.iter() {
-        if other == rep {
+    // The extended members of this class, carried in the testlist so each class is built once
+    // per test rather than looked up out of a whole-function map.
+    let cls = h.class_of(rep);
+    let mine = pieces.extend_members(h, &cls);
+    for (other, theirs) in testlist.iter() {
+        if *other == rep {
             continue; // same HighVariable (Ghidra intersection(a,a) == false)
         }
-        let theirs = members.get(&other).unwrap_or(&empty);
-        if class_intersect(f, mine, theirs, covers) {
+        if class_intersect(f, &mine, theirs, covers) {
             return false;
         }
     }
-    testlist.push(rep);
+    testlist.push((rep, mine));
     true
 }
 
@@ -2581,8 +2578,7 @@ mod tests {
         assert!(pieces.at(other).is_none(), "a lone (address, size) gets no piece");
         // Interference: the extended Cover of the narrow piece includes the whole's members, so a
         // merge test sees them as jointly live even though they are separate variables.
-        let by_rep = full_members_by_rep(&f, &mut h, &covers);
-        let ext = pieces.extend_members(&mut h, &[g4], &by_rep);
+        let ext = pieces.extend_members(&mut h, &[g4]);
         assert!(ext.contains(&g8), "the extended Cover spans the byte-overlapping piece");
     }
 
