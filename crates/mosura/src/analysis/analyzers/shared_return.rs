@@ -335,6 +335,98 @@ impl SharedReturnAnalyzer {
     }
 }
 
+/// The two lookup cursors `SharedReturnAnalysisCmd.applyTo` carries across its ascending walk
+/// (SharedReturnAnalysisCmd.java:88-89), with Java's three states modelled as `None` (null —
+/// never queried), `Some(None)` (`Address.NO_ADDRESS` — queried, no such function) and
+/// `Some(Some(a))` (an entry point).
+///
+/// These are **caches that change the answer**, not an optimisation: `functionBeforeSrc` is
+/// re-queried only once the walk has passed `functionAfterSrc`, so while it is frozen it holds the
+/// function-before of an EARLIER address — never higher than a fresh query — and
+/// `destAddr < functionBeforeSrc` therefore fails where a fresh query would pass. Re-querying both
+/// on every source (which is what a "cleaned-up" version does) over-creates: on WAR2 it invents
+/// functions at three shared epilogues (0x51e12 / 0x53254 / 0x78039) that Ghidra's own
+/// `SharedReturnAnalysisCmd`, run one-shot over the whole program, does not create.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Cursors {
+    /// `functionAfterSrc`.
+    pub after: Option<Option<u64>>,
+    /// `functionBeforeSrc`.
+    pub before: Option<Option<u64>>,
+}
+
+impl SharedReturnAnalyzer {
+    /// One iteration of `applyTo`'s `refSrcIter` loop (SharedReturnAnalysisCmd.java:92-193):
+    /// decide what the source at `src` does, advancing the carried cursors. `Some(dest)` means
+    /// Ghidra would call `createFunction(destAddr)`.
+    ///
+    /// Extracted so that [`Self::report_scan`] runs **this** code rather than a second copy of
+    /// it — a re-implementation would measure itself, not the port.
+    fn scan_step(&self, program: &Program, cur: &mut Cursors, src: Address) -> Option<Address> {
+        let (dest, flow) = self.first_flow_reference_from(program, src)?; // destAddr/flow == null
+        if !flow.is_jump_like()
+            || matches!(flow, RefType::ConditionalJump | RefType::ConditionalComputedJump)
+        {
+            return None; // !flow.isJump() || !flow.isUnConditional()
+        }
+        if src.space != dest.space {
+            return None; // can't handle flows between different spaces/overlays
+        }
+        let fn_after = |p: &Program, a: Address| {
+            p.function_manager.function_after(a).map(|f| f.entry_point().offset)
+        };
+        let fn_before = |p: &Program, a: Address| {
+            p.function_manager.function_before(a).map(|f| f.entry_point().offset)
+        };
+
+        if src.offset < dest.offset {
+            // ---- forward jump ----
+            if cur.after == Some(None) {
+                return None; // no function after srcAddr
+            }
+            if cur.after.is_none() || cur.after.unwrap().unwrap() <= src.offset {
+                match fn_after(program, src) {
+                    Some(e) => cur.after = Some(Some(e)),
+                    None => {
+                        cur.after = Some(None);
+                        return None; // no function after srcAddr
+                    }
+                }
+            }
+            (dest.offset >= cur.after.unwrap().unwrap()).then_some(dest)
+        } else {
+            // ---- backward jump ----
+            // prime lastFunctionAfterSrc if not previously set
+            if cur.after.is_none() {
+                cur.after = Some(fn_after(program, src));
+            }
+            if cur.before == Some(None) {
+                if cur.after == Some(None) {
+                    return None; // no functions exist - rare
+                }
+                if src.offset < cur.after.unwrap().unwrap() {
+                    return None; // we have not passed next function - no function before
+                }
+                cur.before = None; // must re-query
+                cur.after = Some(fn_after(program, src));
+            }
+            // if we have not passed lastFunctionAfter then no change to lastFunctionBefore
+            let keep = cur.before.is_some()
+                && (cur.after == Some(None) || src.offset < cur.after.unwrap().unwrap());
+            if !keep {
+                match fn_before(program, src) {
+                    Some(e) => cur.before = Some(Some(e)),
+                    None => {
+                        cur.before = Some(None);
+                        return None; // no function before srcAddr
+                    }
+                }
+            }
+            (dest.offset < cur.before.unwrap().unwrap()).then_some(dest)
+        }
+    }
+}
+
 impl Analyzer for SharedReturnAnalyzer {
     fn name(&self) -> &str {
         "Shared Return Calls"
@@ -402,92 +494,13 @@ impl Analyzer for SharedReturnAnalyzer {
             src_offsets.sort_unstable();
             src_offsets.dedup();
 
-            // `functionAfterSrc` / `functionBeforeSrc`, with Java's three states modelled as
-            // `None` (null — never queried), `Some(None)` (Address.NO_ADDRESS — queried, no
-            // such function) and `Some(Some(a))` (an entry point). These are **caches that
-            // change the answer**, not an optimisation: `functionBeforeSrc` is re-queried only
-            // once the walk has passed `functionAfterSrc`, so while it is frozen it holds the
-            // function-before of an EARLIER address — always lower than a fresh query — and
-            // `destAddr < functionBeforeSrc` therefore fails where a fresh query would pass.
-            // Re-querying both on every source (which is what a "cleaned-up" version does)
-            // over-creates: on WAR2 it invents functions at three shared epilogues
-            // (0x51e12 / 0x53254 / 0x78039) that Ghidra's own
-            // `SharedReturnAnalysisCmd`, run one-shot over the whole program, does not create.
-            let mut function_after_src: Option<Option<u64>> = None;
-            let mut function_before_src: Option<Option<u64>> = None;
+            // The carried cursors — see [`Cursors`] for why they are semantic, not a cache.
+            let mut cursors = Cursors::default();
 
             for off in src_offsets {
                 let src = Address::new(self.ram, off);
-                let Some((dest, flow)) = self.first_flow_reference_from(program, src) else {
-                    continue; // destAddr == null || flow == null
-                };
-                if !flow.is_jump_like()
-                    || matches!(flow, RefType::ConditionalJump | RefType::ConditionalComputedJump)
-                {
-                    continue; // !flow.isJump() || !flow.isUnConditional()
-                }
-                if src.space != dest.space {
-                    continue; // can't handle flows between different spaces/overlays
-                }
-                let fn_after = |p: &Program, a: Address| {
-                    p.function_manager.function_after(a).map(|f| f.entry_point().offset)
-                };
-                let fn_before = |p: &Program, a: Address| {
-                    p.function_manager.function_before(a).map(|f| f.entry_point().offset)
-                };
-
-                if src.offset < dest.offset {
-                    // ---- forward jump ----
-                    if function_after_src == Some(None) {
-                        continue; // no function after srcAddr
-                    }
-                    if function_after_src.is_none()
-                        || function_after_src.unwrap().unwrap() <= src.offset
-                    {
-                        match fn_after(program, src) {
-                            Some(e) => function_after_src = Some(Some(e)),
-                            None => {
-                                function_after_src = Some(None);
-                                continue; // no function after srcAddr
-                            }
-                        }
-                    }
-                    if dest.offset >= function_after_src.unwrap().unwrap() {
-                        self.create_function(program, dest, &mut new_functions, &mut overrides, &mut retypes);
-                    }
-                } else {
-                    // ---- backward jump ----
-                    // prime lastFunctionAfterSrc if not previously set
-                    if function_after_src.is_none() {
-                        function_after_src = Some(fn_after(program, src));
-                    }
-                    if function_before_src == Some(None) {
-                        if function_after_src == Some(None) {
-                            continue; // no functions exist - rare
-                        }
-                        if src.offset < function_after_src.unwrap().unwrap() {
-                            continue; // we have not passed next function - no function before
-                        }
-                        function_before_src = None; // must re-query
-                        function_after_src = Some(fn_after(program, src));
-                    }
-                    // if we have not passed lastFunctionAfter then no change to
-                    // lastFunctionBefore
-                    let keep = function_before_src.is_some()
-                        && (function_after_src == Some(None)
-                            || src.offset < function_after_src.unwrap().unwrap());
-                    if !keep {
-                        match fn_before(program, src) {
-                            Some(e) => function_before_src = Some(Some(e)),
-                            None => {
-                                function_before_src = Some(None);
-                                continue; // no function before srcAddr
-                            }
-                        }
-                    }
-                    if dest.offset < function_before_src.unwrap().unwrap() {
-                        self.create_function(program, dest, &mut new_functions, &mut overrides, &mut retypes);
-                    }
+                if let Some(dest) = self.scan_step(program, &mut cursors, src) {
+                    self.create_function(program, dest, &mut new_functions, &mut overrides, &mut retypes);
                 }
             }
         }
@@ -506,6 +519,128 @@ impl Analyzer for SharedReturnAnalyzer {
             sched.function_defined(&new_functions);
         }
         !overrides.is_empty() || !retypes.is_empty() || !new_functions.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The instrument (task #3). Not part of the port: it replays the scan above read-only and puts
+// the CARRIED verdict beside the FRESH one, so "the cursors declined it" is measured rather than
+// assumed. Creations are suppressed, so it answers "with this function set held fixed, what does
+// each source decide" — see [`SharedReturnAnalyzer::report_scan`].
+// ---------------------------------------------------------------------------------------------
+
+/// One reference source as the contiguous-function scan sees it.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceDecision {
+    pub src: Address,
+    pub dest: Address,
+    pub ref_type: RefType,
+    /// Cursor state as the source was reached (i.e. carried in from the sources before it).
+    pub carried_in: Cursors,
+    /// Would `createFunction(dest)` run, with the carried cursors?
+    pub carried_creates: bool,
+    /// ...and with cursors primed from nothing at this source — Ghidra's state on the first
+    /// source of a fresh `SharedReturnAnalysisCmd`, which is what a finer invocation gives it.
+    pub fresh_creates: bool,
+    /// Is there already a function at `dest`?
+    pub dest_is_function: bool,
+    /// Would `createFunction` then decline anyway? `checkIfCouldHaveFallThruTo`
+    /// (SharedReturnAnalysisCmd.java:275) is applied AFTER the cursor test, so a create verdict
+    /// is not yet a created function — without this column a guarded decline reads as work the
+    /// pass failed to do.
+    pub blocked_by_fallthru_guard: bool,
+}
+
+impl SourceDecision {
+    /// The only rows that bear on invocation granularity: the carried cursors and a fresh pair
+    /// disagree about this source.
+    pub fn diverges(&self) -> bool {
+        self.carried_creates != self.fresh_creates
+    }
+}
+
+/// What one invocation of the contiguous-function scan would do, with creations suppressed.
+pub struct ScanReport {
+    /// The function entries in the invocation's `set` (`getSymbols(set, FUNCTION, true)`).
+    pub set_entries: usize,
+    /// `jumpScanSet` — what `checkAboveFunction`/`checkBelowFunction` built.
+    pub scan: AddressSet,
+    pub decisions: Vec<SourceDecision>,
+}
+
+impl SharedReturnAnalyzer {
+    /// Replay [`Self::added`]'s `assumeContiguousFunctions` scan over `set` **read-only**,
+    /// recording each source's verdict under the carried cursors and under a fresh pair.
+    ///
+    /// ⚠️ **WHAT THIS CAN AND CANNOT SAY.** It runs the same [`Self::scan_step`] the port runs, so
+    /// the carried column is the real one. But the live scan CREATES functions as it goes and this
+    /// one does not, so the two diverge after the live scan's first creation: this is the answer
+    /// for the function set **held fixed**, which is the right question for "was the set missing
+    /// something when this source was scanned?" and the wrong one for "what did round 1 actually
+    /// do end to end". Take it on a converged program, where the set is the final one.
+    ///
+    /// A source that does not appear in [`ScanReport::decisions`] was never scanned at all —
+    /// check [`ScanReport::scan`] for whether the address was in `jumpScanSet`. That is a real and
+    /// separate reason for a missing function: `checkBelowFunction` DELETES a contiguous
+    /// function's own body from the scan on its own account (SharedReturnAnalysisCmd.java:326-337),
+    /// and only another function's `checkAboveFunction` puts it back.
+    pub fn report_scan(&self, program: &Program, set: &AddressSet) -> ScanReport {
+        let entries: Vec<Address> = {
+            let mut v: Vec<u64> = program
+                .function_manager
+                .functions()
+                .map(|f| f.entry_point())
+                .filter(|e| e.space == self.ram && set.contains(*e))
+                .map(|e| e.offset)
+                .collect();
+            v.sort_unstable();
+            v.into_iter().map(|off| Address::new(self.ram, off)).collect()
+        };
+        let scan = self.build_jump_scan_set(program, &entries);
+
+        let mut src_offsets: Vec<u64> = program
+            .reference_manager
+            .references()
+            .map(|r| r.from)
+            .filter(|a| a.space == self.ram && scan.contains(*a))
+            .map(|a| a.offset)
+            .collect();
+        src_offsets.sort_unstable();
+        src_offsets.dedup();
+
+        let mut cursors = Cursors::default();
+        let mut decisions = Vec::new();
+        for off in src_offsets {
+            let src = Address::new(self.ram, off);
+            let carried_in = cursors;
+            let carried = self.scan_step(program, &mut cursors, src);
+            // The same step from a standing start — one source is all a fresh command sees before
+            // it reaches this one when the invocation is finer.
+            let fresh = self.scan_step(program, &mut Cursors::default(), src);
+            // A row for every source the scan EVALUATES, not only the ones it acts on: a decline
+            // is the whole question here, so recording only `Some(dest)` would drop exactly the
+            // rows being asked about.
+            let Some((dest, ref_type)) = self.first_flow_reference_from(program, src) else {
+                continue;
+            };
+            if !ref_type.is_jump_like()
+                || matches!(ref_type, RefType::ConditionalJump | RefType::ConditionalComputedJump)
+                || src.space != dest.space
+            {
+                continue; // `!flow.isJump() || !flow.isUnConditional()`, or a cross-space flow
+            }
+            decisions.push(SourceDecision {
+                src,
+                dest,
+                ref_type,
+                carried_in,
+                carried_creates: carried.is_some(),
+                fresh_creates: fresh.is_some(),
+                dest_is_function: program.function_manager.function_at(dest).is_some(),
+                blocked_by_fallthru_guard: self.could_have_fall_thru_to(program, dest),
+            });
+        }
+        ScanReport { set_entries: entries.len(), scan, decisions }
     }
 }
 
@@ -585,6 +720,123 @@ mod destination_set_tests {
             vec![RefType::UnconditionalCall],
             "the jump to the function at 0x401012 is a shared-return tail call and must be \
              re-typed; taking only the range minimum processes 0x401010 and stops"
+        );
+    }
+
+    /// ⭐ **THE MVE for task #3: the invocation SET is semantic.** The same program, the same
+    /// analyzer, the same final function set — two invocation granularities, two different
+    /// answers. That is the claim "mosura calls the command once with every function, Ghidra calls
+    /// it per creation round" rests on, and it is measured here rather than argued.
+    ///
+    /// ```text
+    /// 0x400800  E: a function                      }
+    /// 0x400900  D: the tail-call DESTINATION       }  no function here yet
+    /// 0x401000  F: a function, body [0x401000, 0x4010ff] — ONE range
+    /// 0x401080  S:   jmp 0x400900                  }  inside F's body
+    /// 0x401200  G: a function
+    /// ```
+    ///
+    /// `S` is a backward jump and `getFunctionBefore(S) = F`, so `destAddr < functionBeforeSrc`
+    /// holds and the cursor test says *create a function at D*. Whether that test is ever reached
+    /// depends entirely on `jumpScanSet`:
+    ///
+    /// - **set = {E, F, G}** (mosura's whole-program pass): `checkBelowFunction(F)` deletes F's
+    ///   single-range body — with `S` in it — but `checkAboveFunction(G)` then re-adds
+    ///   `[F.entry, G.entry]` (SharedReturnAnalysisCmd.java:297-305), so `S` **is** scanned and D
+    ///   is created.
+    /// - **set = {F}** (the per-round invocation Ghidra makes when F is created): nothing re-adds
+    ///   the body, so `S` is never scanned and D is **not** created.
+    ///
+    /// ⚠️ Note the DIRECTION, because it contradicts the intuitive story: the finer invocation
+    /// sees *less* here, not more. Granularity does not monotonically buy recall, so "make it
+    /// per-round" cannot be justified as a recall argument — only as a faithfulness one.
+    #[test]
+    fn the_invocation_set_decides_whether_a_tail_call_destination_is_created() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let build = || {
+            let mut p = program();
+            let ram = p.default_space;
+            // E and G: plain functions with a one-instruction body.
+            for off in [0x40_0800u64, 0x40_1200] {
+                let mut body = AddressSet::new();
+                body.add_range(ram, off, off);
+                p.function_manager.create_function(
+                    Address::new(ram, off),
+                    &format!("FUN_{off:08x}"),
+                    body,
+                );
+            }
+            // F, with ONE contiguous body range that contains the jump source.
+            let mut f_body = AddressSet::new();
+            f_body.add_range(ram, 0x40_1000, 0x40_10ff);
+            p.function_manager.create_function(
+                Address::new(ram, 0x40_1000),
+                "FUN_00401000",
+                f_body,
+            );
+            // S: `jmp 0x400900`, one flow reference out, inside F's body.
+            let src = Address::new(ram, 0x40_1080);
+            let dest = Address::new(ram, 0x40_0900);
+            p.listing.define(src, CodeUnit::Instruction { length: 5 });
+            p.reference_manager.add(src, dest, RefType::UnconditionalJump, -1);
+            // D: decoded, with no fall-through predecessor, so `checkIfCouldHaveFallThruTo` lets
+            // the creation through — otherwise this fixture would measure that guard instead.
+            p.listing.define(dest, CodeUnit::Instruction { length: 2 });
+            p
+        };
+        let analyzer = |p: &Program| SharedReturnAnalyzer {
+            ram: p.default_space,
+            assume_contiguous_functions: true,
+            consider_conditional_branches: false,
+            spec,
+            ctx,
+        };
+        let entry_set = |p: &Program, offs: &[u64]| {
+            let mut s = AddressSet::new();
+            for &off in offs {
+                s.add_range(p.default_space, off, off);
+            }
+            s
+        };
+
+        // --- whole-program invocation: G's checkAbove re-adds F's body, so S is scanned ---
+        let mut whole = build();
+        let ram = whole.default_space;
+        let dest = Address::new(ram, 0x40_0900);
+        let a = analyzer(&whole);
+        let set = entry_set(&whole, &[0x40_0800, 0x40_1000, 0x40_1200]);
+        assert!(
+            a.report_scan(&whole, &set).scan.contains(Address::new(ram, 0x40_1080)),
+            "fixture broken: the whole-program jumpScanSet must contain the jump source"
+        );
+        a.added(&mut whole, &set, &mut Scheduling::default());
+        assert!(
+            whole.function_manager.function_at(dest).is_some(),
+            "the whole-program invocation scans S and must create the tail-call destination"
+        );
+
+        // --- per-round invocation for F alone: its own body is deleted and never restored ---
+        let mut round = build();
+        let a = analyzer(&round);
+        let set = entry_set(&round, &[0x40_1000]);
+        let r = a.report_scan(&round, &set);
+        assert!(
+            !r.scan.contains(Address::new(ram, 0x40_1080)),
+            "checkBelowFunction deletes F's single-range body, and with only F in the set nothing \
+             re-adds it — the source must be outside jumpScanSet"
+        );
+        assert!(
+            r.decisions.is_empty(),
+            "and therefore no source is evaluated at all: {:x?}",
+            r.decisions.iter().map(|d| d.src.offset).collect::<Vec<_>>()
+        );
+        a.added(&mut round, &set, &mut Scheduling::default());
+        assert!(
+            round.function_manager.function_at(dest).is_none(),
+            "the per-round invocation never reaches S, so it creates nothing — the two \
+             granularities disagree, which is the whole of task #3's premise"
         );
     }
 }
