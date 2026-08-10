@@ -307,8 +307,7 @@ impl SharedReturnAnalyzer {
 
     /// Decode the instruction at `addr` with the SLEIGH engine (same as `Disassembler`).
     fn decode(&self, program: &Program, addr: Address) -> Option<crate::sleigh::Instruction> {
-        let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        self.spec.disassemble_ctx(&window, addr.offset, self.ctx).into_iter().next()
+        crate::analysis::analyzers::decode_listed(program, self.spec, self.ctx, addr)
     }
 
     /// `Instruction.getFallThrough() != null` for the instruction at `addr` — Ghidra reads it

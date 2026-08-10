@@ -111,10 +111,7 @@ fn thunked_addr_reporting(
     ctx: &[u32],
     entry: Address,
 ) -> Result<Address, Outcome> {
-    let decode = |a: Address| {
-        let window = program.memory.read_window(a, MAX_INSN_LEN);
-        spec.disassemble_ctx(&window, a.offset, ctx).into_iter().next()
-    };
+    let decode = |a: Address| crate::analysis::analyzers::decode_listed(program, spec, ctx, a);
     // `Instruction instr = listing.getInstructionAt(entry);`
     let Some((entry_len, entry_flow)) = program.listing.instruction_at(entry) else {
         return Err(Outcome::NoInstructionAtEntry);
@@ -356,8 +353,7 @@ fn multi_insn_upper_bound(
         // as Ghidra's does — an entry that never reached the listing is a different class
         // (`NoInstructionAtEntry`) and is not laundered into this one.
         program.listing.code_unit_at(at)?;
-        let window = program.memory.read_window(at, MAX_INSN_LEN);
-        let insn = spec.disassemble_ctx(&window, at.offset, ctx).into_iter().next()?;
+        let insn = crate::analysis::analyzers::decode_listed(program, spec, ctx, at)?;
         let len = insn.bytes.len() as u64;
         if len == 0 {
             return None;
@@ -475,8 +471,7 @@ pub fn report(program: &Program, spec: &Spec, ctx: &[u32]) -> Vec<Candidate> {
                     },
                 ),
             };
-            let window = program.memory.read_window(entry, MAX_INSN_LEN);
-            let raw = spec.disassemble_ctx(&window, entry.offset, ctx).into_iter().next();
+            let raw = crate::analysis::analyzers::decode_listed(program, spec, ctx, entry);
             let (raw_mnemonic, raw_len, raw_uncond_jump_target) = match &raw {
                 None => (None, 0, None),
                 Some(insn) => {

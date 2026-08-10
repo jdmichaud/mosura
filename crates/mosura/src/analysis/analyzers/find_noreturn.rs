@@ -79,8 +79,7 @@ impl FindNoReturnFunctionsAnalyzer {
 
     /// Decode the instruction at `addr`, or `None` if nothing decodes there.
     fn decode(&self, program: &Program, addr: Address) -> Option<crate::sleigh::Instruction> {
-        let window = program.memory.read_window(addr, MAX_INSN_LEN as usize);
-        self.spec.disassemble_ctx(&window, addr.offset, self.ctx).into_iter().next()
+        crate::analysis::analyzers::decode_listed(program, self.spec, self.ctx, addr)
     }
 
     /// `Instruction.getFlowType()` at `addr` — the classified flow with the instruction's flow

@@ -681,6 +681,32 @@ pub fn reset_body_refresh_memo() {
 /// so keying on the function count alone leaves a body stale exactly when new code was decoded —
 /// which is the case the constant propagator's channel now depends on. The marker is thread-local,
 /// the correct granularity: the test harness analyses different programs on different threads.
+/// Decode the single instruction at `addr`, bounded by the length the LISTING already recorded.
+///
+/// ⚠️ **The whole point is the bound.** `read_window(addr, MAX_INSN_LEN)` hands SLEIGH 16 bytes,
+/// so it decodes every instruction that fits — ~5 on x86 — and `.into_iter().next()` throws four
+/// away. That single pattern has been the answer to four separate performance defects
+/// (`b6754d2`, `90dd655`, `thunk::thunked_addr_reporting`, `fid::hash_function`), so it lives
+/// here once rather than being re-fixed per call site.
+///
+/// Falls back to the full window when the listing has nothing at `addr` — which is the correct
+/// behaviour for callers probing bytes that are not yet code. The DISASSEMBLER and the
+/// PSEUDO-DISASSEMBLER deliberately do NOT use this: they exist to decode undefined bytes, so
+/// there is no recorded length to bound them by and the full window is the right input.
+pub fn decode_listed(
+    program: &Program,
+    spec: &Spec,
+    ctx: &[u32],
+    addr: Address,
+) -> Option<crate::sleigh::Instruction> {
+    let len = match program.listing.instruction_at(addr) {
+        Some((l, _)) if l > 0 => l as usize,
+        _ => 16,
+    };
+    let window = program.memory.read_window(addr, len);
+    spec.disassemble_ctx(&window, addr.offset, ctx).into_iter().next()
+}
+
 pub fn refresh_function_bodies(program: &mut Program) {
     let key = (program.function_manager.function_count(), program.listing.len());
     if BODIES_FRESH_AT.with(|c| c.get()) == Some(key) {
