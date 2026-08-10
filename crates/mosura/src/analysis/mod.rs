@@ -302,9 +302,44 @@ pub fn analyze(program: &mut Program) {
             fs_blocks.add_range(b.start().space, b.start().offset, b.end().offset);
         }
         fs_mgr.scheduling().block_added(&fs_blocks);
+        // Which functions this block creates — the payload of Ghidra's `functionDefined` event
+        // for them (see the delivery note below).
+        let before_fs: std::collections::HashSet<(u32, u64)> = program
+            .function_manager
+            .functions()
+            .map(|f| (f.entry_point().space.0, f.entry_point().offset))
+            .collect();
         fs_mgr.run(program);
         if let Some((spec, ctx)) = crate::lang::load_cached(&program.language_id) {
             analyzers::compute_function_bodies(spec, ctx, program);
+        }
+        // ⭐ THE FUNCTION-CREATION EVENT FOR THIS BLOCK'S FUNCTIONS. In Ghidra every created
+        // function raises a change record — `handleFunctionAddedOrBodyChanged` →
+        // `functionDefined(entry)` → `functionTasks.notifyAdded` (AutoAnalysisManager.java:392-395,
+        // :280-290) — and `functionTasks` is the FUNCTION_ANALYZER list (:158) that
+        // `SharedReturnAnalyzer` is on (SharedReturnAnalyzer.java:66). Delivery is NOT
+        // priority-gated: `FunctionStartAnalyzer` runs LATER than shared return
+        // (`CODE_ANALYSIS.after().after()` vs `.before().before()`) and still re-triggers it on
+        // the following round. mosura ran `shared_return_pass` once at the top of the pipeline and
+        // nothing again after this block, so a pattern-created function never reached it — and a
+        // tail-call destination that only qualifies once that function exists was never created.
+        // FID and the demangler only rename, so this block is the only later creator and this is
+        // the whole of the gap. Gated by
+        // `shared_return_schedule_tests::a_function_created_by_the_pattern_search_still_gets_shared_return`.
+        //
+        // The `set` is the functions this block created, NOT the whole program: that is what the
+        // event carries, and it is also what keeps the cursors doing their job — a fresh
+        // `SharedReturnAnalysisCmd` per invocation is exactly Ghidra's granularity
+        // (SharedReturnAnalyzer.java:79-82).
+        let mut fs_created = AddressSet::new();
+        for f in program.function_manager.functions() {
+            let e = f.entry_point();
+            if !before_fs.contains(&(e.space.0, e.offset)) {
+                fs_created.add_range(e.space, e.offset, e.offset);
+            }
+        }
+        if !fs_created.is_empty() {
+            shared_return_for(program, &fs_created);
         }
     }
 
@@ -367,11 +402,7 @@ pub fn analyze(program: &mut Program) {
 /// re-entry is the explicit loop here: each round feeds the previous round's new functions
 /// back in as the added set, after their references and bodies have been recovered.
 fn shared_return_pass(program: &mut Program) {
-    use crate::analysis::analyzer::Analyzer;
     use crate::analysis::program::AddressSet;
-    let Some(sr) = analyzers::shared_return::SharedReturnAnalyzer::for_program(program) else {
-        return;
-    };
     // The first round's "added" set is every current function (the destination functions to
     // examine); each later round's is only what the previous round created.
     let mut added = AddressSet::new();
@@ -379,6 +410,35 @@ fn shared_return_pass(program: &mut Program) {
         let e = f.entry_point();
         added.add_range(e.space, e.offset, e.offset);
     }
+    shared_return_for(program, &added);
+}
+
+/// `SharedReturnAnalyzer.added(program, set, ..)` for one "added" set, chased to a fixpoint —
+/// Ghidra's `functionDefined(set)` → `functionTasks.notifyAdded` (AutoAnalysisManager.java:280-290)
+/// delivered by hand.
+///
+/// ⚠️ **THIS IS A PIPELINE-STAGE CALL, NOT A MANAGER ANALYZER, AND IT MUST STAY THAT WAY UNTIL
+/// FUNCTION BODIES ARE INCREMENTAL.** `SharedReturnAnalysisCmd.checkBelowFunction`
+/// (SharedReturnAnalysisCmd.java:312-338) reads `function.getBody().getNumAddressRanges()`: a
+/// discontiguous body is ADDED to `jumpScanSet` and a contiguous one is DELETED from it. mosura's
+/// bodies are empty until `compute_function_bodies` has run, and an empty body has 0 ranges — so
+/// inside the manager loop the delete removes nothing and the scan set comes out **wider** than
+/// Ghidra's, which is the permissive branch of a ported query, not a smaller version of it. (Same
+/// class as `.claude/memory/empty-bodies-take-the-permissive-branch.md`; the thunk port hit it at
+/// `15d8741`.) Registering this analyzer in `AutoAnalysisManager` is therefore gated on making
+/// bodies incremental — do not "finish the job" by moving it there first.
+///
+/// Every call site must be somewhere `plt_linear_sweep` and `compute_function_bodies` have both
+/// already run. Both current sites satisfy that: `:245` follows the sweep and the first body
+/// computation, and the Function Start Search block's own `compute_function_bodies` runs
+/// immediately before the second.
+fn shared_return_for(program: &mut Program, added_set: &crate::analysis::program::AddressSet) {
+    use crate::analysis::analyzer::Analyzer;
+    use crate::analysis::program::AddressSet;
+    let Some(sr) = analyzers::shared_return::SharedReturnAnalyzer::for_program(program) else {
+        return;
+    };
+    let mut added = added_set.clone();
     loop {
         let before: std::collections::HashSet<(u32, u64)> = program
             .function_manager
@@ -809,7 +869,6 @@ mod shared_return_schedule_tests {
     /// `jmp`, and `D`'s predecessor byte is undecoded so `checkIfCouldHaveFallThruTo` does not
     /// veto it.
     #[test]
-    #[ignore = "RED: the invocation this gate needs does not exist yet (task #3)"]
     fn a_function_created_by_the_pattern_search_still_gets_shared_return() {
         if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
