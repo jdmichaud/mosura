@@ -6,6 +6,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 ## How to work
 - [memory-lives-in-the-repo](memory-lives-in-the-repo.md) — **⭐ USER RULE 2026-08-07: memory is VERSIONED IN THE REPO at `.claude/memory/`, never machine-local. Commit it.**
 - [agents-must-match-my-model-exactly](agents-must-match-my-model-exactly.md) — **⭐ USER RULE 2026-08-07: every sub-agent runs MY exact model (Opus 5, `claude-opus-5[1m]`) — pass `model: "opus"` and VERIFY the id verbatim.**
+- [diagnosed-is-not-fixed](diagnosed-is-not-fixed.md) — **⭐ USER RULE 2026-08-10: switch tasks only when the previous one is FIXED. Diagnosed-but-not-repaired stays OPEN (blocked, never completed).**
 - [always-keep-the-task-list-current](always-keep-the-task-list-current.md) — **⭐ USER RULE 2026-08-07: the task list is updated AS STATE CHANGES, never batched when asked.**
 - [perf-iterate-on-an-mve-or-a-profile](perf-iterate-on-an-mve-or-a-profile.md) — **⭐ USER RULE 2026-08-07: for PERF iterate on an MVE or a PROFILE. A cap below every hypothesis answers nothing.**
 - [probe-with-timeouts-dont-wait-for-runs](probe-with-timeouts-dont-wait-for-runs.md) — **⭐ USER RULE 2026-08-07: run it PARTIALLY and kill it with a timeout. A capped run still answers the question; never report it as a pass.**
