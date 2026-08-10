@@ -730,14 +730,14 @@ fn remove_uninitialized_blocks(program: &Program, set: &mut AddressSet) {
 ///
 /// Returns the start locations, ascending.
 ///
-/// ⚠️ **`getFunctionsOverlapping` is a body query and mosura's bodies are empty during analysis.**
-/// Ghidra maintains a function's body incrementally, so it is always current and always contains
-/// the entry point; mosura computes bodies in one pass *after* the worklist converges
-/// (`analyze` -> `compute_function_bodies`; see [`refresh_function_bodies`]), so during analysis
-/// `f.body()` is empty for nearly every function and a literal body-intersection test would return
-/// NOTHING. The entry-point test below restores exactly what Ghidra's always-populated body
-/// guarantees — that a function whose entry is in the set overlaps the set — rather than adding a
-/// condition Ghidra does not have.
+/// ⚠️ **`getFunctionsOverlapping` is a body query, and so is the pass-1 subtraction.** Ghidra
+/// maintains a function's body incrementally, so it is always current and always contains the
+/// entry point; mosura computes bodies in one pass *after* the worklist converges. The caller
+/// therefore runs [`refresh_function_bodies`] first — read its note, because with empty bodies
+/// pass 1 removes only the entry-point ADDRESS and pass 3 then starts propagation at `entry + 1`.
+/// The entry-point test below is kept as well: it restores exactly what Ghidra's always-populated
+/// body guarantees — that a function whose entry is in the set overlaps the set — for the callers
+/// that hand this an entry-point set rather than a decoded extent.
 fn find_locations_remove_function_bodies(program: &Program, set: &mut AddressSet) -> Vec<Address> {
     use std::collections::BTreeSet;
     let mut locations: BTreeSet<(u32, u64)> = BTreeSet::new();
@@ -777,9 +777,8 @@ fn find_locations_remove_function_bodies(program: &Program, set: &mut AddressSet
 }
 
 /// Constant-propagation reference analyzer (Ghidra `ConstantPropagationAnalyzer`): runs
-/// the [`SymbolicPropogator`](crate::analysis::symbolic) over each function to recover
-/// data references (READ/WRITE/DATA) from resolved memory operands. Runs at REFERENCE
-/// priority, after disassembly + function creation.
+/// the [`SymbolicPropogator`](crate::analysis::symbolic) over each location to recover
+/// data references (READ/WRITE/DATA) from resolved memory operands.
 pub struct ConstantPropagationAnalyzer {
     spec: &'static Spec,
     ctx: &'static [u32],
@@ -797,13 +796,41 @@ impl Analyzer for ConstantPropagationAnalyzer {
     fn name(&self) -> &str {
         "Constant Propagation"
     }
+    /// ⭐ **`INSTRUCTION_ANALYZER`** (ConstantPropagationAnalyzer.java:117) — the newly
+    /// **disassembled extent**, not a set of function entries.
+    ///
+    /// mosura registered this on the `Function` channel, and the two channels do not carry the
+    /// same *kind* of thing: Ghidra is handed a decoded extent and derives its start locations
+    /// from it (`findLocationsRemoveFunctionBodies`, :248 — function entries, then call
+    /// destinations, then whatever range minima are left), while an entry-point set collapses
+    /// that method to its first pass and makes passes 2 and 3 structurally unreachable. Pass 3 is
+    /// the one that matters: it is the only route by which constant propagation reaches code that
+    /// is **decoded and inside no function at all** — which in mosura is exactly what
+    /// `AddressTableAnalyzer` produces, since it disassembles a pointer table's targets and
+    /// deliberately creates no function at them (AddressTableAnalyzer.java:282). Six corpus
+    /// binaries hold decoded code in no function at all; `lestruct.watcom-le` is the one that
+    /// measures the difference, and `ground_truth_parity::
+    /// constant_propagation_reaches_data_pointer_code_in_no_function` is the gate.
+    ///
+    /// Sibling of the command-vs-notification defect in [`Scheduling::disassemble`]: the channel a
+    /// pass subscribes to decides the kind of set it sees, so subscribing to the wrong one is not
+    /// a scheduling detail, it silently changes the question being asked.
     fn analysis_type(&self) -> AnalyzerType {
-        AnalyzerType::Function
+        AnalyzerType::Instruction
     }
     fn priority(&self) -> AnalysisPriority {
-        AnalysisPriority::REFERENCE
+        // `REFERENCE_ANALYSIS.before().before().before().before()` (:120) — four steps ahead of
+        // the `OperandReferenceAnalyzer` at REFERENCE_ANALYSIS
+        // ([`external_jump::ExternalJumpAnalyzer`]), which re-types the references this pass
+        // creates. That ordering is what keeps the two composable now that both run on every
+        // decoded extent rather than once per created function.
+        AnalysisPriority::REFERENCE.before().before().before().before()
     }
     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
+        // `findLocationsRemoveFunctionBodies` SUBTRACTS each overlapping function's body from the
+        // set (:264-268). mosura's bodies are empty during analysis, which on this channel is not
+        // a missed refinement but a wrong answer — see [`refresh_function_bodies`].
+        refresh_function_bodies(program);
         // Function entries bound each propagation walk to its own function.
         let entries: std::collections::HashSet<u64> = program
             .function_manager
@@ -1083,21 +1110,29 @@ mod constant_propagation_location_tests {
         );
     }
 
-    /// ⭐ **THE CHANNEL GATE (task #7).** `ConstantPropagationAnalyzer` is an
-    /// `INSTRUCTION_ANALYZER` (ConstantPropagationAnalyzer.java:117): its added set is a decoded
-    /// EXTENT, and `findLocationsRemoveFunctionBodies` (:248) derives the start locations from it
-    /// — function entries first (:259-264), then call destinations (:271-293), then **the minimum
-    /// of every range that is left** (:296-303). That last pass is the only route by which
-    /// constant propagation reaches code that is decoded and belongs to NO function, which is
-    /// precisely what `AddressTableAnalyzer` produces (it disassembles a pointer table's targets
-    /// and creates no function at them, AddressTableAnalyzer.java:282).
+    /// ⭐ **THE BODY-REFRESH GATE (task #7)** — the *second* half of the channel fix. Read the
+    /// scope line first, because this test cannot see the first half: it calls `added()` directly
+    /// with a hand-built extent, so [`Analyzer::analysis_type`] never runs and flipping the channel
+    /// back to `Function` leaves it GREEN (measured). What it does gate is the
+    /// [`refresh_function_bodies`] call at the top of `added()` — remove that and it fails on the
+    /// first assertion. The channel itself is gated on real data by
+    /// `ground_truth_parity::constant_propagation_reaches_data_pointer_code_in_no_function`, which
+    /// does go RED when the channel is reverted. Neither test subsumes the other, and neither is
+    /// the whole gate.
     ///
-    /// On the `Function` channel the added set was function entry points, so pass 1 consumed it
-    /// whole and passes 2 and 3 were structurally unreachable — code in no function was never
-    /// propagated through.
+    /// The context both share: `ConstantPropagationAnalyzer` is an `INSTRUCTION_ANALYZER`
+    /// (ConstantPropagationAnalyzer.java:117), so its added set is a decoded EXTENT, and
+    /// `findLocationsRemoveFunctionBodies` (:248) derives the start locations from it — function
+    /// entries first (:259-264), then call destinations (:271-293), then **the minimum of every
+    /// range that is left** (:296-303). That last pass is the only route by which constant
+    /// propagation reaches code that is decoded and belongs to NO function, which is precisely what
+    /// `AddressTableAnalyzer` produces (it disassembles a pointer table's targets and creates no
+    /// function at them, AddressTableAnalyzer.java:282). On the `Function` channel the added set was
+    /// function entry points, so pass 1 consumed it whole and passes 2 and 3 were structurally
+    /// unreachable.
     ///
-    /// **Both halves of the fix are measured here, and the second is why they cannot be
-    /// separated.** Pass 1 SUBTRACTS each overlapping function's BODY (:264-268). mosura's bodies
+    /// **Why the two halves cannot be separated.** Pass 1 SUBTRACTS each overlapping function's
+    /// BODY (:264-268). mosura's bodies
     /// are empty during analysis, so without [`refresh_function_bodies`] the subtraction removes
     /// only the single entry-point ADDRESS: the whole extent minus `{0x401000}` stays ONE range,
     /// its minimum is `0x401001` — an OFFCUT address inside the first instruction — and that
@@ -1118,7 +1153,6 @@ mod constant_propagation_location_tests {
     /// `0x402000` **from `0x401001`** and stops at the `ret` — which is exactly what the second
     /// assertion names.
     #[test]
-    #[ignore = "RED until the analyzer channel is fixed (task #7) — see the note above"]
     fn constant_propagation_reaches_decoded_code_that_is_in_no_function() {
         if crate::lang::load_cached("x86:LE:64:default").is_none() {
             return; // SLEIGH tables unavailable
