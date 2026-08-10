@@ -184,9 +184,13 @@ pub fn analyze(program: &mut Program) {
     analyzers::noreturn::analyze(program);
 
     let mut mgr = AutoAnalysisManager::new();
-    if let Some(d) = analyzers::Disassembler::for_program(program) {
-        mgr.add_analyzer(Box::new(d), program);
-    }
+    // No Disassembler is registered — Ghidra has no such analyzer. Disassembly happens only
+    // through `Scheduling::disassemble`, a scheduled `DisassembleCommand` that the queue
+    // executes regardless of what is registered (AutoAnalysisManager.java:1128, :860).
+    //
+    // `FunctionCreator` IS registered, but as the `function_defined` CONSUMER that turns the
+    // loader's entry-point seed below into functions; `Scheduling::create_function` commands
+    // execute from the queue without consulting this registration.
     mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
     if let Some(cp) = analyzers::ConstantPropagationAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(cp), program);
@@ -324,27 +328,23 @@ pub fn analyze(program: &mut Program) {
         }
     }
     if any {
-        // ⭐ THE COMMAND EXECUTORS MUST BE HERE. `FunctionStartAnalyzer` asks the manager to
-        // disassemble its matches and create its functions (:836-859, through
-        // `AutoAnalysisManager.getAnalysisManager(program)` — a per-program SINGLETON, :949). In
-        // Ghidra there is exactly one manager, so those commands always have something to execute
-        // them. mosura runs the pattern passes in a second manager (see the ordering note above),
-        // and while these two were absent from it every request the pattern search made was
-        // silently dropped: `function_defined` reached ZERO consumers, so a pattern-discovered
-        // function was never disassembled, never constant-propagated, and its callees were never
-        // discovered. That is the whole of `docs/function-discovery-backlog.md` §9's replacement
-        // item — 5 corpus functions with 100% of their bodies missing from the listing, gated by
-        // `ground_truth_parity::recovered_functions_are_in_the_listing`.
-        if let Some(d) = analyzers::Disassembler::for_program(program) {
-            fs_mgr.add_analyzer(Box::new(d), program);
-        }
+        // The command executors are built into the queue itself: `FunctionStartAnalyzer` asks
+        // the manager to disassemble its matches and create its functions (:836-859, through
+        // `AutoAnalysisManager.getAnalysisManager(program)` — a per-program SINGLETON, :949),
+        // and a scheduled command executes REGARDLESS of what is registered
+        // (AutoAnalysisManager.java:860, :752). Before the queue port these requests were
+        // routed to analyzers registered by name, and while the executors were absent from
+        // this manager every request the pattern search made was silently dropped:
+        // `function_defined` reached ZERO consumers, so a pattern-discovered function was
+        // never disassembled, never constant-propagated, and its callees were never
+        // discovered — `docs/function-discovery-backlog.md` §9, gated by
+        // `ground_truth_parity::recovered_functions_are_in_the_listing`. The delayed creator
+        // rides inside its one-shot command (FunctionStartAnalyzer.java:853-854), never
+        // registered.
+        //
+        // `FunctionCreator` is registered as the `function_defined` CONSUMER: it re-issues
+        // disassembly for functions the pattern passes create inline.
         fs_mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
-        // The delayed creator the `possiblefuncstart` matches are handed to
-        // (`scheduleOneTimeAnalysis`, FunctionStartAnalyzer.java:854).
-        fs_mgr.add_analyzer(
-            Box::new(analyzers::function_start::PossibleDelayedFunctionCreator),
-            program,
-        );
         // Ghidra's `AutoAnalysisManager.blockAdded` fires for every loader block — that is how a
         // BYTE_ANALYZER gets the whole image as its "added" set.
         let mut fs_blocks = AddressSet::new();

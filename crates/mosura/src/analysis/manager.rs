@@ -9,46 +9,113 @@
 //! highest-priority analyzer with pending work; running one mutates the [`Program`] and
 //! may schedule more, so the worklist drives to a fixpoint.
 //!
-//! (Ghidra propagates "X was defined" via the program's change-event queue; here the
-//! analyzers notify [`Scheduling`] directly, the explicit-channel model from
-//! `docs/analysis-port-plan.md` §2a — same structure, no hidden event bus.)
+//! (Ghidra propagates "X was defined" via the program's change-event queue, flushed after
+//! every queue entry (`AnalysisTaskWrapper.run` → `flushPrivateEventQueue`,
+//! AutoAnalysisManager.java:681); here the analyzers notify [`Scheduling`] directly during
+//! their run — same delivery point, no hidden event bus.)
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
+use crate::analysis::priority::AnalysisPriority;
 use crate::analysis::program::{AddressSet, Program};
+use std::collections::BTreeMap;
 
-/// The analyzer that executes a [`Scheduling::disassemble`] command — mosura's stand-in for
-/// Ghidra's `DisassembleCommand`, which is a free-standing command object rather than an analyzer.
-pub const DISASSEMBLY_COMMAND: &str = "Disassembly";
-/// The analyzer that executes a [`Scheduling::create_function`] command — mosura's stand-in for
-/// Ghidra's `CreateFunctionCmd`.
-pub const FUNCTION_COMMAND: &str = "Function";
+/// One queued unit of work — Ghidra `BackgroundCommand` on the manager's ONE
+/// `PriorityQueue<BackgroundCommand>` (AutoAnalysisManager.java:111). EVERY entry is a
+/// command; an analyzer's run is just one kind (`AnalysisTask`). A command executes when
+/// popped REGARDLESS of what is registered — commands have no subscribers to miss — and
+/// each carries ITS OWN target set, never unioned with another entry's.
+enum Command {
+    /// `AnalysisTask` (AnalysisTask.java:35): run registered analyzer `i` over whatever its
+    /// scheduler accumulated (`AnalysisScheduler.runAnalyzer`, AnalysisScheduler.java:171).
+    Task(usize),
+    /// `DisassembleCommand` (scheduled by `AutoAnalysisManager.disassemble`, :1128).
+    Disassemble(AddressSet),
+    /// `CreateFunctionCmd` (scheduled by `AutoAnalysisManager.createFunction`, :1132).
+    CreateFunction(AddressSet),
+    /// `OneShotAnalysisCommand` (`scheduleOneTimeAnalysis`, :226-236): a caller-held analyzer
+    /// instance plus the set given at scheduling time.
+    OneShot(Box<dyn Analyzer>, AddressSet),
+}
 
-/// Per-analyzer scheduling state + the fact-routing notifiers, handed to an analyzer's
+impl Command {
+    /// Display name for the trace, mirroring the Java class names.
+    fn name<'a>(&'a self, analyzers: &'a [Box<dyn Analyzer>]) -> &'a str {
+        match self {
+            Command::Task(i) => analyzers[*i].name(),
+            Command::Disassemble(_) => "DisassembleCommand",
+            Command::CreateFunction(_) => "CreateFunctionCmd",
+            Command::OneShot(a, _) => a.name(),
+        }
+    }
+    fn set(&self, sched: &Scheduling) -> AddressSet {
+        match self {
+            Command::Task(i) => sched.pending[*i].clone(),
+            Command::Disassemble(s) | Command::CreateFunction(s) | Command::OneShot(_, s) => {
+                s.clone()
+            }
+        }
+    }
+}
+
+/// The command queue + per-analyzer scheduling state, handed to an analyzer's
 /// [`Analyzer::added`] so it can enqueue follow-on work.
 #[derive(Default)]
 pub struct Scheduling {
-    /// Accumulated "added" locations awaiting each analyzer (indexed like the manager's
-    /// analyzer list).
+    /// Ghidra's `PriorityQueue<BackgroundCommand>` — a `TreeMap<Integer, LinkedList>`
+    /// (PriorityQueue.java:30): lowest priority value first, FIFO within a priority. The
+    /// `(priority, seq)` key encodes exactly that ordering.
+    queue: BTreeMap<(i32, u64), Command>,
+    seq: u64,
+    /// The priority the currently-executing entry was queued at
+    /// (`AnalysisTaskWrapper.taskPriority`, set from `queue.getFirstPriority()` at pop,
+    /// AutoAnalysisManager.java:807-808) — the base of the active-relative command
+    /// priorities (:1106-1118).
+    active_priority: Option<i32>,
+    // Per registered analyzer — Ghidra `AnalysisScheduler`:
+    /// Accumulated "added" locations awaiting each analyzer (`AnalysisScheduler.addSet`).
     pending: Vec<AddressSet>,
+    /// The one-task-in-queue dedup flag (`AnalysisScheduler.scheduled`,
+    /// AnalysisScheduler.java:36): set when a `Task` is pushed, cleared when the set is
+    /// swapped out at run — so notifications DURING a run queue a fresh task.
+    scheduled: Vec<bool>,
     priority: Vec<i32>,
     ty: Vec<AnalyzerType>,
-    names: Vec<String>,
 }
 
 impl Scheduling {
-    fn register(&mut self, priority: i32, ty: AnalyzerType, name: &str) {
+    fn register(&mut self, priority: i32, ty: AnalyzerType) {
         self.pending.push(AddressSet::new());
+        self.scheduled.push(false);
         self.priority.push(priority);
         self.ty.push(ty);
-        self.names.push(name.to_string());
     }
 
-    /// Route an added-location set to every analyzer consuming `ty`.
+    /// Push one entry onto the queue (Ghidra `PriorityQueue.add`, preserving FIFO within a
+    /// priority).
+    fn push(&mut self, priority: i32, cmd: Command) {
+        self.queue.insert((priority, self.seq), cmd);
+        self.seq += 1;
+    }
+
+    /// Route an added-location set to every analyzer consuming `ty`
+    /// (`AnalysisTaskList.notifyAdded` → each `AnalysisScheduler.added`,
+    /// AnalysisScheduler.java:74-82): union into the accumulator, then make sure one task is
+    /// queued.
     fn notify(&mut self, ty: AnalyzerType, set: &AddressSet) {
         for i in 0..self.ty.len() {
             if self.ty[i] == ty {
                 self.pending[i] = self.pending[i].union(set);
+                self.schedule_task(i);
             }
+        }
+    }
+
+    /// `AnalysisScheduler.schedule` (AnalysisScheduler.java:65-72): if no task for this
+    /// analyzer is queued and it has pending work, queue one at the ANALYZER's own priority.
+    fn schedule_task(&mut self, i: usize) {
+        if !self.scheduled[i] && !self.pending[i].is_empty() {
+            self.push(self.priority[i], Command::Task(i));
+            self.scheduled[i] = true;
         }
     }
 
@@ -93,41 +160,70 @@ impl Scheduling {
     ///
     /// This carries SEED addresses only and never mixes with a decoded extent, which is what makes
     /// per-address iteration safe at the far end.
+    ///
+    /// Queued at `getDisassemblyPriority()` (:1106-1113): 2 less (= higher priority) than the
+    /// task that is running, so a request made mid-analysis executes before the rest of the
+    /// queue; plain `DISASSEMBLY` when nothing is running. An empty set is elided — Ghidra
+    /// queues a command that then no-ops.
     pub fn disassemble(&mut self, set: &AddressSet) {
-        self.schedule_one_time(DISASSEMBLY_COMMAND, set);
+        if set.is_empty() {
+            return;
+        }
+        let p = self.disassembly_priority();
+        self.push(p, Command::Disassemble(set.clone()));
+    }
+
+    /// The explicit-priority variant — Ghidra
+    /// `disassemble(AddressSetView, AnalysisPriority)` (AutoAnalysisManager.java:1136), used by
+    /// `FunctionStartAnalyzer` (:844) to DELAY possible-function-start disassembly to the
+    /// normal `DISASSEMBLY` band instead of the active-relative priority.
+    pub fn disassemble_at(&mut self, set: &AddressSet, priority: AnalysisPriority) {
+        if set.is_empty() {
+            return;
+        }
+        self.push(priority.0, Command::Disassemble(set.clone()));
     }
 
     /// Schedule function creation at each address of `set` — Ghidra
     /// `AutoAnalysisManager.createFunction(AddressSetView, boolean)`
-    /// (AutoAnalysisManager.java:1132) → `schedule(new CreateFunctionCmd(targetSet, …), …)`.
-    /// A command, for the same reasons as [`Scheduling::disassemble`]; `function_defined` remains
-    /// the notification that functions *were created*.
+    /// (AutoAnalysisManager.java:1132) → `schedule(new CreateFunctionCmd(targetSet, …),
+    /// getFunctionPriority())`, "1 higher [than disassembly], so disassembly happens first"
+    /// (:1115-1118). A command, for the same reasons as [`Scheduling::disassemble`];
+    /// `function_defined` remains the notification that functions *were created*.
     pub fn create_function(&mut self, set: &AddressSet) {
-        self.schedule_one_time(FUNCTION_COMMAND, set);
+        if set.is_empty() {
+            return;
+        }
+        let p = self.disassembly_priority() + 1;
+        self.push(p, Command::CreateFunction(set.clone()));
     }
 
-    /// Hand a set directly to one named analyzer (Ghidra
-    /// `AutoAnalysisManager.scheduleOneTimeAnalysis(analyzer, set)`, AutoAnalysisManager.java:226)
-    /// — the route for an analyzer that subscribes to no change channel. A no-op when that
-    /// analyzer is not registered, matching Ghidra's "the caller holds the instance" contract:
-    /// nothing else can trigger it, so nothing is silently dropped elsewhere.
-    pub fn schedule_one_time(&mut self, name: &str, set: &AddressSet) {
-        for i in 0..self.names.len() {
-            if self.names[i] == name {
-                self.pending[i] = self.pending[i].union(set);
-            }
+    /// Hand a caller-held analyzer instance one set — Ghidra
+    /// `AutoAnalysisManager.scheduleOneTimeAnalysis(analyzer, set)` (AutoAnalysisManager.java:
+    /// 226-236): each call wraps the instance and ITS set in a fresh `OneShotAnalysisCommand`
+    /// queued at the analyzer's own priority. Two calls are two commands — sets are never
+    /// unioned across calls.
+    pub fn schedule_one_shot(&mut self, analyzer: Box<dyn Analyzer>, set: &AddressSet) {
+        let p = analyzer.priority().0;
+        self.push(p, Command::OneShot(analyzer, set.clone()));
+    }
+
+    /// `AutoAnalysisManager.getDisassemblyPriority` (:1106-1113): "a priority of 1 less than
+    /// the current running task (a higher priority), or a normal disassembly priority if no
+    /// task is running". (The Java comment says 1; the code subtracts 2, leaving room for the
+    /// function-creation priority between.)
+    fn disassembly_priority(&self) -> i32 {
+        match self.active_priority {
+            None => AnalysisPriority::DISASSEMBLY.0,
+            Some(p) => p - 2,
         }
     }
 
-    /// The index of the highest-priority (lowest value) analyzer with pending work.
-    fn next_task(&self) -> Option<usize> {
-        (0..self.pending.len())
-            .filter(|&i| !self.pending[i].is_empty())
-            .min_by_key(|&i| self.priority[i])
-    }
-
-    /// Atomically take an analyzer's accumulated set, leaving it empty.
+    /// Swap out an analyzer's accumulated set and clear its `scheduled` flag — the atomic
+    /// head of `AnalysisScheduler.runAnalyzer` (AnalysisScheduler.java:176-180). Clearing the
+    /// flag BEFORE the run is load-bearing: work notified during the run queues a fresh task.
     fn take(&mut self, i: usize) -> AddressSet {
+        self.scheduled[i] = false;
         std::mem::take(&mut self.pending[i])
     }
 }
@@ -164,7 +260,7 @@ impl AutoAnalysisManager {
                 return;
             }
         }
-        self.sched.register(analyzer.priority().0, analyzer.analysis_type(), analyzer.name());
+        self.sched.register(analyzer.priority().0, analyzer.analysis_type());
         self.analyzers.push(analyzer);
     }
 
@@ -173,30 +269,70 @@ impl AutoAnalysisManager {
         &mut self.sched
     }
 
-    /// Run the worklist to a fixpoint: repeatedly run the highest-priority analyzer with
-    /// pending work; each run may schedule more (Ghidra `startAnalysis` loop).
-    /// `MOSURA_ANALYSIS_TRACE=1` prints one line per analyzer invocation (name, added-set size,
-    /// wall time). The worklist is a fixpoint, so a mis-scheduled analyzer shows up as an endless
-    /// repeating cycle rather than as a wrong answer — this makes that visible directly.
+    /// Drain the command queue (Ghidra `startAnalysis`'s loop, AutoAnalysisManager.java:
+    /// 752-771 + `getNextTask` :798-809): pop the lowest-(priority, seq) entry, record its
+    /// queued priority as the active priority (`AnalysisTaskWrapper.taskPriority`), execute
+    /// it, repeat until empty. Executing an entry may push more — commands at
+    /// active-relative priorities, analyzer tasks via the notifiers — so the queue drives to
+    /// a fixpoint.
+    ///
+    /// `MOSURA_ANALYSIS_TRACE=1` prints one line per entry (name, set size, wall time). The
+    /// queue is a fixpoint, so a mis-scheduled analyzer shows up as an endless repeating
+    /// cycle rather than as a wrong answer — this makes that visible directly.
     pub fn run(&mut self, program: &mut Program) {
         let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();
-        while let Some(i) = self.sched.next_task() {
-            let set = self.sched.take(i);
-            let analyzer = &self.analyzers[i];
-            if trace {
-                let t = std::time::Instant::now();
-                let n = set.num_addresses();
-                let r = set.ranges().count();
-                // Printed on ENTRY as well as exit, so an analyzer that never returns names
-                // itself. With only the exit line, a hang shows up as the *previous* analyzer
+        while let Some((&(prio, seq), _)) = self.sched.queue.first_key_value() {
+            let cmd = self.sched.queue.remove(&(prio, seq)).expect("just observed");
+            self.sched.active_priority = Some(prio);
+            let t = trace.then(|| {
+                let set = cmd.set(&self.sched);
+                let name = cmd.name(&self.analyzers).to_string();
+                // Printed on ENTRY as well as exit, so an entry that never returns names
+                // itself. With only the exit line, a hang shows up as the *previous* entry
                 // having finished and nothing after it, which points at the wrong one.
-                eprintln!("[trace] {:>40} set={n} ranges={r} ...", analyzer.name());
-                analyzer.added(program, &set, &mut self.sched);
-                eprintln!("[trace] {:>40} set={n} ranges={r} took={:?}", analyzer.name(), t.elapsed());
-            } else {
-                analyzer.added(program, &set, &mut self.sched);
+                eprintln!(
+                    "[trace] {:>40} set={} ranges={} ...",
+                    name,
+                    set.num_addresses(),
+                    set.ranges().count()
+                );
+                (name, std::time::Instant::now())
+            });
+            match cmd {
+                Command::Task(i) => {
+                    let set = self.sched.take(i);
+                    // `runAnalyzer` skips an empty added set (AnalysisScheduler.java:185).
+                    if !set.is_empty() {
+                        self.analyzers[i].added(program, &set, &mut self.sched);
+                    }
+                }
+                // The free-standing commands construct their executor at run time, as Ghidra
+                // constructs a fresh `DisassembleCommand`/`CreateFunctionCmd` object per
+                // schedule — nothing here consults the registered-analyzer list.
+                Command::Disassemble(set) => {
+                    if let Some(d) = crate::analysis::analyzers::Disassembler::for_program(program)
+                    {
+                        crate::analysis::analyzer::Analyzer::added(
+                            &d,
+                            program,
+                            &set,
+                            &mut self.sched,
+                        );
+                    }
+                }
+                Command::CreateFunction(set) => {
+                    let f = crate::analysis::analyzers::FunctionCreator::new(program);
+                    crate::analysis::analyzer::Analyzer::added(&f, program, &set, &mut self.sched);
+                }
+                Command::OneShot(a, set) => {
+                    a.added(program, &set, &mut self.sched);
+                }
+            }
+            if let Some((name, t)) = t {
+                eprintln!("[trace] {:>40} took={:?}", name, t.elapsed());
             }
         }
+        self.sched.active_priority = None;
     }
 }
 
@@ -243,6 +379,86 @@ mod tests {
             self.order.set(self.order.get() + 1);
             true
         }
+    }
+
+    /// ⭐ THE COMMAND-QUEUE MVE (command-queue-modelled-as-change-channel). Ghidra's
+    /// `AutoAnalysisManager.createFunction` (AutoAnalysisManager.java:1132) schedules a
+    /// free-standing `CreateFunctionCmd` onto the manager's ONE `PriorityQueue<BackgroundCommand>`
+    /// (:860-865), and the drain loop (:752-771) executes it REGARDLESS of which analyzers are
+    /// registered — a command is not a notification and has no subscribers to miss.
+    ///
+    /// mosura routed the command to a REGISTERED analyzer by name, so in a manager without that
+    /// registration the request silently evaporated — the fs_mgr half of the 374-function WAR2
+    /// listing hole.
+    #[test]
+    fn a_command_executes_in_a_manager_with_no_matching_analyzer() {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut program =
+            Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        program.memory.add_block(".text", base, 0x1000, true, false, true, Some(vec![0; 0x1000]));
+
+        // NO analyzers registered at all.
+        let mut mgr = AutoAnalysisManager::new();
+        let mut seed = AddressSet::new();
+        seed.add_range(ram, 0x40_1000, 0x40_1000);
+        mgr.scheduling().create_function(&seed);
+        mgr.run(&mut program);
+
+        assert!(
+            program.function_manager.function_at(Address::new(ram, 0x40_1000)).is_some(),
+            "a scheduled CreateFunctionCmd must execute regardless of registered analyzers \
+             (Ghidra AutoAnalysisManager.java:1132 + the :752 drain loop)"
+        );
+    }
+
+    /// Recorder analyzer: appends each invocation's address list to a shared log.
+    struct Recorder {
+        log: Rc<std::cell::RefCell<Vec<Vec<u64>>>>,
+    }
+    impl Analyzer for Recorder {
+        fn name(&self) -> &str { "Recorder" }
+        fn analysis_type(&self) -> AnalyzerType { AnalyzerType::OneTime }
+        fn priority(&self) -> AnalysisPriority { AnalysisPriority::FUNCTION }
+        fn added(&self, _p: &mut Program, set: &AddressSet, _s: &mut Scheduling) -> bool {
+            self.log.borrow_mut().push(set.ranges().flat_map(|r| r.min..=r.max).collect());
+            true
+        }
+    }
+
+    /// Ghidra `scheduleOneTimeAnalysis` (AutoAnalysisManager.java:226-236): EACH call wraps the
+    /// analyzer and ITS OWN set in a fresh `OneShotAnalysisCommand` on the queue — two calls are
+    /// two commands, executed FIFO within a priority (`PriorityQueue` is a
+    /// `TreeMap<Integer, LinkedList>`, PriorityQueue.java:30). Sets are never unioned across
+    /// calls: batching in Ghidra happens only in `AnalysisScheduler.addSet` for notification
+    /// channels, never for commands.
+    #[test]
+    fn each_scheduled_command_keeps_its_own_set_in_fifo_order() {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let mut program =
+            Program::new(spaces, ram, "x86:LE:64:default", "gcc", Address::new(ram, 0), false, 64);
+
+        let log = Rc::new(std::cell::RefCell::new(Vec::new()));
+        // NOTHING registered: the analyzer instances ride inside the commands, as Ghidra's
+        // `OneShotAnalysisCommand` holds the instance the caller constructed.
+        let mut mgr = AutoAnalysisManager::new();
+
+        let mut a = AddressSet::new();
+        a.add_range(RAM, 0x1000, 0x1000);
+        let mut b = AddressSet::new();
+        b.add_range(RAM, 0x2000, 0x2000);
+        mgr.scheduling().schedule_one_shot(Box::new(Recorder { log: log.clone() }), &a);
+        mgr.scheduling().schedule_one_shot(Box::new(Recorder { log: log.clone() }), &b);
+        mgr.run(&mut program);
+
+        assert_eq!(
+            *log.borrow(),
+            vec![vec![0x1000], vec![0x2000]],
+            "two scheduled commands must execute as two, each with its own set, in FIFO order \
+             (Ghidra OneShotAnalysisCommand — never unioned into one batch)"
+        );
     }
 
     #[test]

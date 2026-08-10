@@ -540,9 +540,9 @@ impl Analyzer for FunctionStartAnalyzer {
             }
         });
 
-        // :836-844 — disassemble known function starts now, delay the possible ones. Both are
-        // `analysisManager.disassemble(...)`, i.e. a scheduled `DisassembleCommand`; Ghidra's
-        // split only changes *when* within the queue, and mosura has one disassembly command.
+        // :836-844 — disassemble KNOWN function starts now (the active-relative priority, so
+        // it lands ahead of the queue), and DELAY the possible ones to the ordinary
+        // `DISASSEMBLY` band. Two separate `DisassembleCommand`s with their own sets.
         //
         // The thread-local dedupe that used to stand here is RETIRED. It existed because this
         // request was raised as `code_defined`, which re-notified the `Instruction`-typed
@@ -552,7 +552,12 @@ impl Analyzer for FunctionStartAnalyzer {
         // `disasm=375 funcs=4`). A command is delivered to the disassembler and echoes nothing
         // back to the requester, so the cycle has no driver left to hold off.
         if !st.disassem_result.is_empty() {
-            sched.disassemble(&st.disassem_result);
+            // :838-840 — "disassemble known function starts now".
+            let do_now = st.disassem_result.intersect(&st.func_result);
+            sched.disassemble(&do_now);
+            // :842-844 — "delay disassemble of possible function starts".
+            let delayed = st.disassem_result.subtract(&st.func_result);
+            sched.disassemble_at(&delayed, AnalysisPriority::DISASSEMBLY);
         }
         // :846 `setProtectedLocations(codeLocations)` — mosura has no analyzer that clears code,
         // so there is nothing to protect it from; the set is still computed above so the port
@@ -577,7 +582,10 @@ impl Analyzer for FunctionStartAnalyzer {
             // function was actually created and its bytes decoded, which is exactly what the
             // command route now delivers.
             if !potential.is_empty() {
-                sched.schedule_one_time(PossibleDelayedFunctionCreator::NAME, &potential);
+                // :853-854 — the command CARRIES the analyzer instance the caller constructs
+                // (`scheduleOneTimeAnalysis(new PossibleDelayedFunctionCreator(), …)`); it is
+                // never a registered analyzer.
+                sched.schedule_one_shot(Box::new(PossibleDelayedFunctionCreator), &potential);
             }
         }
 
