@@ -77,7 +77,6 @@ fn time_one_location(program: &mut Program, cp: &ConstantPropagationAnalyzer, at
 }
 
 #[test]
-#[ignore = "RED: the floor is present — measured ratio 2.6 against a bar of 20. Un-ignore with the fix."]
 fn constant_propagation_cost_tracks_the_walk_not_a_per_location_floor() {
     let path = analysis_corpus_dir().join("mingw_hello.exe");
     assert!(path.exists(), "committed corpus binary missing: {}", path.display());

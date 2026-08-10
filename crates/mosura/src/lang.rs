@@ -43,7 +43,42 @@ pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
 /// processor `.ldefs` `<language>`/`<compiler>` entries (Ghidra `LanguageDescription` +
 /// `CompilerSpecDescription`). Used by the analysis cspec loader to load the calling
 /// conventions. Returns `None` if no matching `<compiler>` is declared.
+///
+/// **Resolved once per process**, for the same reason and by the same structure as
+/// [`load_cached`]: Ghidra's `SleighLanguageProvider` reads every `.ldefs` **once** at
+/// construction (`createLanguages` → `LanguageDescription`/`CompilerSpecDescription`,
+/// SleighLanguageProvider.java:58) and every later `getLanguageDescription`/`getCompilerSpec`
+/// query is a map lookup on those already-parsed objects. There is no per-query filesystem walk
+/// anywhere in Ghidra.
+///
+/// mosura had the walk on a **per-function** path and it dominated auto-analysis: the constant
+/// propagator asks for the default calling convention's argument registers once per function
+/// (`symbolic::integer_arg_registers` → [`crate::analysis::cspec::default_input_paramlist`]), and
+/// this function re-`read_dir`s every processor directory and re-XML-parses every `.ldefs` file on
+/// each ask — **34.7 ms measured, per call**. On `mingw_hello.exe` that made Constant Propagation
+/// 5.26 s of which 5.0 s was this resolution, for symbolic walks that cost 0.1–8 ms each. Because
+/// the price is paid per *start location* rather than per address, it presented as a fixed floor:
+/// a 21-address added set and a 3869-address one cost the same 1.5 s on WAR2. See
+/// `tests/constant_propagation_floor.rs`.
+///
+/// The cache is keyed by `(lang_id, compiler_spec_id)` and holds the negative answer too — a
+/// language that declares no such `<compiler>` must not re-walk the tree to rediscover that.
 pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
+    type Cache = Mutex<HashMap<(String, String), Option<PathBuf>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (lang_id.to_string(), compiler_spec_id.to_string());
+    let mut map = cache.lock().unwrap();
+    if let Some(hit) = map.get(&key) {
+        return hit.clone();
+    }
+    let resolved = resolve_cspec_path(lang_id, compiler_spec_id);
+    map.insert(key, resolved.clone());
+    resolved
+}
+
+/// The filesystem walk behind [`resolve_cspec`] — Ghidra's one-time `.ldefs` read.
+fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
     // Mosura-authored (beyond-Ghidra) compiler specs first: the Watcom `watcall` cspec that no
     // Ghidra processor ships (`specs/x86-32-watcom.cspec`). Only x86:LE:32 + "watcom" today.
     if compiler_spec_id == "watcom" && lang_id.starts_with("x86:LE:32") {

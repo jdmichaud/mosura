@@ -29,7 +29,49 @@ use crate::sleigh::engine::Spec;
 /// `None` if the cspec / its default prototype can't be located. `spaces` supplies the
 /// concrete `register`/`stack` [`SpaceId`]s the entries reference; `spec` resolves
 /// `<register name=...>` to a register-space offset.
+///
+/// **Decoded once per `(language_id, compiler_spec_id)`.** This is Ghidra's own structure and
+/// Ghidra's own key: `SleighLanguage` owns a `HashMap<CompilerSpecID, CompilerSpec>` and
+/// `getCompilerSpecByID` decodes a `BasicCompilerSpec` once, then serves it from that map
+/// (SleighLanguage.java). `program.getCompilerSpec().getDefaultCallingConvention()` — the call
+/// this function stands in for, made once per call site by `SymbolicPropogator` — is therefore a
+/// field read on an already-decoded `PrototypeModel`, never an XML parse.
+///
+/// mosura re-read and re-parsed the `.cspec` on **every** ask, and the constant propagator asks
+/// once per function ([`crate::analysis::symbolic::flow_constants`]). With
+/// [`crate::lang::resolve_cspec`]'s tree walk removed, the residue was still ~2 ms per function
+/// against symbolic walks costing 0.1 ms — a fixed floor an order of magnitude above the work.
+/// See `tests/constant_propagation_floor.rs`.
+///
+/// The key is `(language_id, compiler_spec_id)` and nothing else because nothing else varies:
+/// `spec` is the SLEIGH spec **of** `language_id` (every caller obtains it from
+/// [`crate::lang::load_cached`] with that same id — the same coupling Ghidra gets for free by
+/// hanging the map off `SleighLanguage`), and `spaces` is the standard space manager. The
+/// negative answer is cached too, so an absent cspec is not rediscovered per function.
 pub fn default_input_paramlist(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ParamList> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    type Cache = Mutex<HashMap<(String, String), Option<ParamList>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (language_id.to_string(), compiler_spec_id.to_string());
+    let mut map = cache.lock().unwrap();
+    if let Some(hit) = map.get(&key) {
+        return hit.clone();
+    }
+    let decoded = decode_default_input_paramlist(spec, language_id, compiler_spec_id, spaces);
+    map.insert(key, decoded.clone());
+    decoded
+}
+
+/// The XML decode behind [`default_input_paramlist`] — Ghidra's one-time `BasicCompilerSpec`
+/// construction.
+fn decode_default_input_paramlist(
     spec: &Spec,
     language_id: &str,
     compiler_spec_id: &str,
