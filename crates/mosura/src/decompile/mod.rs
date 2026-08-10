@@ -22,6 +22,7 @@ pub mod directwrite;
 pub mod dominator;
 pub mod double;
 pub mod expression;
+pub mod fasthash;
 pub mod float;
 pub mod fspec;
 pub mod funcdata;

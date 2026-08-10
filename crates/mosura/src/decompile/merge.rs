@@ -2038,7 +2038,7 @@ fn shadowed_varnode(
     of: &[u32],
     members: &HashMap<u32, Vec<VarnodeId>>,
     covers: &HashMap<VarnodeId, Cover>,
-    pos: &HashMap<super::op::OpId, (usize, usize)>,
+    pos: &super::cover::OpPositions,
     v: VarnodeId,
 ) -> bool {
     let empty: Vec<VarnodeId> = Vec::new();
@@ -2070,7 +2070,7 @@ fn check_copy_pair(
     members: &[VarnodeId],
     _covers: &HashMap<VarnodeId, Cover>,
     doms: &super::dominator::Dominators,
-    pos: &HashMap<super::op::OpId, (usize, usize)>,
+    pos: &super::cover::OpPositions,
     dom_op: super::op::OpId,
     sub_op: super::op::OpId,
 ) -> bool {

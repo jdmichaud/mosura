@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use super::cover::{cover_to_read, op_index, op_positions, Cover};
+use super::cover::{cover_to_read, op_index, op_positions, Cover, OpPositions};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -201,7 +201,7 @@ pub(crate) fn partial_copy_shadow(f: &Funcdata, a: VarnodeId, b: VarnodeId, rel_
 /// INDIRECT def is positioned at its guarded (causing) op via [`op_index`] — Ghidra `getUIndex`
 /// treats an INDIRECT as living at the op it is indirect for, so an INDIRECT-created value's def
 /// sits just after the call (`2i+2`) rather than at the INDIRECT's own later slot.
-fn def_point(f: &Funcdata, vn2: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> (usize, i32) {
+fn def_point(f: &Funcdata, vn2: VarnodeId, pos: &OpPositions) -> (usize, i32) {
     if let Some(def) = f.vn(vn2).def {
         let (b, i) = op_index(f, def, pos).expect("def op is positioned");
         match f.op(def).code() {
@@ -217,7 +217,7 @@ fn def_point(f: &Funcdata, vn2: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) 
 /// point? Returns `0` (not contained), `1` (interior), `2` (at the cover start boundary), `3` (at
 /// the cover stop boundary). A cover starting at position 0 is the "live from block beginning"
 /// case (Ghidra's `start == (PcodeOp*)0`), which is never a start boundary.
-fn contain_varnode_def(f: &Funcdata, single: &Cover, vn2: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> i32 {
+fn contain_varnode_def(f: &Funcdata, single: &Cover, vn2: VarnodeId, pos: &OpPositions) -> i32 {
     let (blk, point) = def_point(f, vn2, pos);
     let Some((lo, hi)) = single.block_range(blk) else {
         return 0;
@@ -241,7 +241,7 @@ fn eliminate_intersect(
     f: &Funcdata,
     vn: VarnodeId,
     group: &[VarnodeId],
-    pos: &HashMap<OpId, (usize, usize)>,
+    pos: &OpPositions,
 ) -> Vec<OpId> {
     let mut marked = Vec::new();
     let descend = f.vn(vn).descend.clone();
@@ -280,7 +280,8 @@ fn eliminate_intersect(
                     }
                     (None, Some(_)) => continue,
                     (Some(d2), Some(d1)) => {
-                        if pos[&d2] < pos[&d1] {
+                        let (p2, p1) = (pos.get(d2), pos.get(d1));
+                        if p2.expect("def op is positioned") < p1.expect("def op is positioned") {
                             continue;
                         }
                     }
@@ -362,6 +363,7 @@ pub fn merge_required(f: &mut Funcdata) {
     }
     let mut spaces: Vec<SpaceId> = by_space.keys().copied().collect();
     spaces.sort_by_key(|s| s.0);
+    let mut pos = op_positions(f);
     for sp in spaces {
         let group = &by_space[&sp];
         if group.len() < 2 {
@@ -372,9 +374,11 @@ pub fn merge_required(f: &mut Funcdata) {
             if f.vn(vn).is_free() {
                 continue;
             }
-            let pos = op_positions(f); // recompute: snipReads mutates the block op lists
             let marked = eliminate_intersect(f, vn, &group, &pos);
-            snip_reads(f, vn, &marked);
+            if !marked.is_empty() {
+                snip_reads(f, vn, &marked);
+                pos = op_positions(f); // recompute: snipReads mutated the block op lists
+            }
         }
     }
 }

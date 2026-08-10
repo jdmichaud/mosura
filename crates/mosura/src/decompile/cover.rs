@@ -8,17 +8,17 @@
 //! *same* op don't intersect (the read at `2i+1` precedes the write at `2i+2`) — exactly
 //! what makes `x = x + 1`'s two SSA versions mergeable.
 
-use std::collections::{HashMap, HashSet};
-
+use super::fasthash::{FxHashMap, FxHashSet};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
 use super::varnode::VarnodeId;
+use std::collections::HashMap;
 
 /// The live range of one varnode: a convex `[lo, hi]` position range per block it's live in.
 #[derive(Default, Clone)]
 pub struct Cover {
-    blocks: HashMap<usize, (i32, i32)>,
+    blocks: FxHashMap<usize, (i32, i32)>,
 }
 
 impl Cover {
@@ -68,7 +68,7 @@ impl Cover {
 /// (Ghidra's `eliminateIntersect` builds `single` from one descend — cover.cc, merge.cc:502).
 /// A copy of [`cover_of`]'s liveness restricted to the one use, used by the addrtied snip
 /// ([`super::mergesnip`]) to test whether that read crosses another same-address def.
-pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
+pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &OpPositions) -> Cover {
     let mut cov = Cover::default();
     let vn = f.vn(v);
     let (def_block, def_wpos) = if vn.is_written() {
@@ -102,7 +102,7 @@ pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<Op
         }
     }
 
-    let mut seen: HashSet<usize> = HashSet::new();
+    let mut seen: FxHashSet<usize> = FxHashSet::default();
     while let Some(b) = liveout.pop() {
         if !seen.insert(b) {
             continue;
@@ -121,15 +121,37 @@ pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &HashMap<Op
     cov
 }
 
-/// `(block index, op index within the block)` for every op.
-pub fn op_positions(f: &Funcdata) -> HashMap<OpId, (usize, usize)> {
-    let mut pos = HashMap::new();
-    for b in 0..f.num_blocks() {
-        for (i, &op) in f.blocks()[b].ops.iter().enumerate() {
-            pos.insert(op, (b, i));
+/// `(block index, op index within the block)` for every op, dense-indexed by [`OpId`] (op ids are
+/// arena indices, so a flat vector replaces the former `HashMap` — the map's hashing was a
+/// measurable share of the WAR2 profile). Ops not in any block report `None` from [`get`].
+///
+/// [`get`]: OpPositions::get
+pub struct OpPositions {
+    pos: Vec<(u32, u32)>,
+}
+
+/// Sentinel for an op that sits in no block's op list.
+const UNPOSITIONED: (u32, u32) = (u32::MAX, u32::MAX);
+
+impl OpPositions {
+    #[inline]
+    pub fn get(&self, op: OpId) -> Option<(usize, usize)> {
+        match self.pos.get(op.0 as usize) {
+            Some(&(b, i)) if b != u32::MAX => Some((b as usize, i as usize)),
+            _ => None,
         }
     }
-    pos
+}
+
+/// `(block index, op index within the block)` for every op.
+pub fn op_positions(f: &Funcdata) -> OpPositions {
+    let mut pos = vec![UNPOSITIONED; f.num_ops()];
+    for b in 0..f.num_blocks() {
+        for (i, &op) in f.blocks()[b].ops.iter().enumerate() {
+            pos[op.0 as usize] = (b as u32, i as u32);
+        }
+    }
+    OpPositions { pos }
 }
 
 /// The `(block, op-index)` used for `op`'s cover half-points, mapping an INDIRECT to its guarded
@@ -138,19 +160,19 @@ pub fn op_positions(f: &Funcdata) -> HashMap<OpId, (usize, usize)> {
 /// that call's position and don't spuriously intersect the values flowing across it. Falls back to
 /// the INDIRECT's own position if it has no recorded [`guarded_op`](super::op::PcodeOp::guarded_op)
 /// or that op is no longer positioned (removed).
-pub fn op_index(f: &Funcdata, op: OpId, pos: &HashMap<OpId, (usize, usize)>) -> Option<(usize, usize)> {
+pub fn op_index(f: &Funcdata, op: OpId, pos: &OpPositions) -> Option<(usize, usize)> {
     if f.op(op).code() == OpCode::Indirect {
         if let Some(g) = f.op(op).guarded_op() {
-            if let Some(&p) = pos.get(&g) {
+            if let Some(p) = pos.get(g) {
                 return Some(p);
             }
         }
     }
-    pos.get(&op).copied()
+    pos.get(op)
 }
 
 /// Compute the [`Cover`] of one varnode via backward liveness from its uses to its def.
-pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
+pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &OpPositions) -> Cover {
     let mut cov = Cover::default();
     let vn = f.vn(v);
     // where the value comes alive: def op (write at 2i+2), or function entry (block 0, pos 0)
@@ -195,7 +217,7 @@ pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>)
     }
 
     // propagate "live at block exit" backward to the def
-    let mut seen: HashSet<usize> = HashSet::new();
+    let mut seen: FxHashSet<usize> = FxHashSet::default();
     while let Some(b) = liveout.pop() {
         if !seen.insert(b) {
             continue;
@@ -223,7 +245,7 @@ pub fn cover_replacing(
     f: &Funcdata,
     def_vn: VarnodeId,
     read_vn: VarnodeId,
-    pos: &HashMap<OpId, (usize, usize)>,
+    pos: &OpPositions,
 ) -> Cover {
     let mut cov = Cover::default();
     let dv = f.vn(def_vn);
@@ -265,7 +287,7 @@ pub fn cover_replacing(
             }
         }
     }
-    let mut seen: HashSet<usize> = HashSet::new();
+    let mut seen: FxHashSet<usize> = FxHashSet::default();
     while let Some(b) = liveout.pop() {
         if !seen.insert(b) {
             continue;
@@ -289,7 +311,7 @@ pub fn cover_replacing(
 /// Used where Ghidra tests a never-read write against other covers (`Merge::shadowedVarnode`) —
 /// mosura's [`cover_of`] yields an empty cover for an unread value, but the def point still
 /// occupies its program point.
-pub fn def_point_cover(f: &Funcdata, v: VarnodeId, pos: &HashMap<OpId, (usize, usize)>) -> Cover {
+pub fn def_point_cover(f: &Funcdata, v: VarnodeId, pos: &OpPositions) -> Cover {
     let mut cov = Cover::default();
     let vn = f.vn(v);
     if vn.is_written() {
