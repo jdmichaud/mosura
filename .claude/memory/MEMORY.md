@@ -90,6 +90,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [watcom-901-anchor-inversion](watcom-901-anchor-inversion.md) — **⭐ 9.01 emits `SETcc;MOVZX` + `CDQ;IDIV` too: they mark the lineage's OUTER ENDS, not Open Watcom.**
 
 ## Tooling / gotchas
+- [pspec-key-differs-from-java-field](pspec-key-differs-from-java-field.md) — **⭐ the pspec STRING never matches the Java field; grepping the code name reads as "no language sets it". A hardcode can be right-for-x86 AND unfaithful-in-form.**
 - [fast-iteration-skip-the-whole-binary-tests](fast-iteration-skip-the-whole-binary-tests.md) — **⭐ inner loop 367s -> 27s by SKIPPING 4 whole-binary tests at the CLI. Caching across tests does NOT help — cargo already parallelises.**
 - [worktree-needs-ghidra-src-or-ratchet-lies](worktree-needs-ghidra-src-or-ratchet-lies.md) — **⭐ a /tmp worktree silently drops to 15 vendored languages and `disasm_pcode_ratchet` calls it a REGRESSION; set `GHIDRA_SRC`.**
 - [pattern-gate-cspec-routing](pattern-gate-cspec-routing.md) — **⭐ a Watcom-fixture gate silently measures the GCC pattern file (corpus Watcom ELFs are `cspec=gcc`); call-reachable recall is vacuous.**
