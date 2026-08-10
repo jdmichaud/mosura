@@ -492,7 +492,18 @@ pub fn flow_constants(
         // 2. **The window is the instruction's own length**, which the record already carries
         //    (`b6754d2` — the same field the body walk reads). This is pure cost: a 16-byte
         //    window decodes ~5 x86-64 instructions and `.next()` threw 4 away, at every address
-        //    the walk visited. Measured: 32.49 µs -> 5.94 µs per instruction.
+        //    the walk visited. Measured over 4000 real instructions taken from a real listing —
+        //    a 16-byte window yields ~5 instructions on BOTH widths, so the redundancy is not an
+        //    x86-64 artefact:
+        //
+        //      x86:LE:32  58.80 µs -> 8.25 µs  (7.13x)  avg instruction 3.58 B, 5.03 per window
+        //      x86:LE:64  50.09 µs -> 7.57 µs  (6.61x)  avg instruction 3.66 B, 4.94 per window
+        //
+        //    ⚠️ A synthetic 34-byte buffer first put this at 32.49 -> 5.94 µs (5.5x). That
+        //    UNDER-measured it: a short buffer truncates the window near its end, so the wide
+        //    read decodes fewer instructions than it does in a real image. Size from the
+        //    real-code figures. The x86-32 rate corroborates independently — 58.8 µs/instruction
+        //    here against 62.8 µs measured on WAR2, the same language.
         //
         // The p-code still has to be lifted — unlike the body walk, this walk INTERPRETS the
         // instruction, and `CodeUnit::Instruction` carries flow properties but not ops. Ghidra
