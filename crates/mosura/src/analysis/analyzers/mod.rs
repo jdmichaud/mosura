@@ -633,9 +633,12 @@ fn get_function_body(
 }
 
 thread_local! {
-    /// `(function count, code-unit count)` at the last body refresh; `None` = "no refresh yet
-    /// this run".
-    static BODIES_FRESH_AT: std::cell::Cell<Option<(usize, usize)>> =
+    /// `(function count, code-unit count, reference generation)` at the last body refresh;
+    /// `None` = "no refresh yet this run". The third half exists because `get_function_body`
+    /// follows `refs_from` — a reference added or retyped over already-decoded code changes
+    /// bodies while moving neither count (open task #14; gated by
+    /// `the_body_refresh_memo_observes_reference_additions`).
+    static BODIES_FRESH_AT: std::cell::Cell<Option<(usize, usize, u64)>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -740,7 +743,11 @@ pub fn decode_listed(
 }
 
 pub fn refresh_function_bodies(program: &mut Program) {
-    let key = (program.function_manager.function_count(), program.listing.len());
+    let key = (
+        program.function_manager.function_count(),
+        program.listing.len(),
+        program.reference_manager.generation(),
+    );
     if BODIES_FRESH_AT.with(|c| c.get()) == Some(key) {
         return;
     }
@@ -749,7 +756,11 @@ pub fn refresh_function_bodies(program: &mut Program) {
     }
     // Re-read: computing bodies defines no code units and creates no function, but reading the
     // key back keeps the memo honest if that ever changes.
-    let key = (program.function_manager.function_count(), program.listing.len());
+    let key = (
+        program.function_manager.function_count(),
+        program.listing.len(),
+        program.reference_manager.generation(),
+    );
     BODIES_FRESH_AT.with(|c| c.set(Some(key)));
 }
 
@@ -1728,6 +1739,94 @@ mod body_walk_reads_the_listing {
             "a function must carry its body from the moment it is created, as Ghidra's \
              CreateFunctionCmd does; an empty body makes every ported body query take its \
              permissive branch until a whole-program recompute happens to run"
+        );
+    }
+
+    /// ⭐ THE GATE FOR OPEN TASK #14: the body-refresh memo must observe REFERENCE additions.
+    ///
+    /// `refresh_function_bodies` memoises on `(function count, code-unit count)`, but the body
+    /// walk (`get_function_body`) also follows `reference_manager.refs_from` — the only route
+    /// into a computed jump's cases. A reference added over already-decoded code (what
+    /// `DecompilerSwitchAnalyzer` does when the switch's case block was already reached some
+    /// other way) changes neither half of the key, so the refresh returns early and the body
+    /// stays stale.
+    ///
+    /// Phase A is the ANTI-VACUITY half (`could-it-have-come-out-otherwise`): with the memo
+    /// reset, the walk DOES follow the reference into the case — so the gate's phase B is
+    /// measuring the memo, not some other reason the case never joins the body.
+    #[test]
+    fn the_body_refresh_memo_observes_reference_additions() {
+        use crate::analysis::flowtype::FlowKind;
+        use crate::analysis::program::InstructionFlow;
+        if crate::lang::load_cached("x86:LE:64:default").is_none() {
+            return; // SLEIGH tables unavailable (refresh_function_bodies no-ops without them)
+        }
+        // A computed jump at the entry (2 bytes, ends flow, no static targets) and an
+        // already-decoded case instruction at +0x10 (1 byte, a terminator). Without the
+        // COMPUTED_JUMP reference the body is the entry instruction alone; the reference is
+        // the only route to the case.
+        fn program() -> (Program, Address, Address) {
+            let mut spaces = SpaceManager::standard();
+            let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+            let base = Address::new(ram, 0x40_1000);
+            let case = Address::new(ram, 0x40_1010);
+            let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+            p.memory.add_block(".text", base, 0x100, true, false, true, None);
+            p.listing.define(
+                base,
+                CodeUnit::Instruction {
+                    length: 2,
+                    flow: InstructionFlow {
+                        kind: FlowKind::JumpTerminator,
+                        flows: vec![],
+                        ends_flow: true,
+                        call_target: None,
+                    },
+                },
+            );
+            p.listing.define(
+                case,
+                CodeUnit::Instruction {
+                    length: 1,
+                    flow: InstructionFlow {
+                        kind: FlowKind::Terminator,
+                        flows: vec![],
+                        ends_flow: true,
+                        call_target: None,
+                    },
+                },
+            );
+            p.function_manager.create_function(base, "f", AddressSet::new());
+            (p, base, case)
+        }
+
+        // Phase A — the walk follows the reference when the memo does not intervene.
+        let (mut p, base, case) = program();
+        p.reference_manager.add(base, case, RefType::ComputedJump, -1);
+        reset_body_refresh_memo();
+        refresh_function_bodies(&mut p);
+        assert!(
+            p.function_manager.function_at(base).unwrap().body().contains(case),
+            "precondition: with a fresh memo the body walk follows the COMPUTED_JUMP into the \
+             case — if this fails the gate below is measuring the wrong thing"
+        );
+
+        // Phase B — the gate. Prime the memo BEFORE the reference exists; adding the reference
+        // creates no code unit and no function, so the memo key does not move.
+        let (mut p, base, case) = program();
+        reset_body_refresh_memo();
+        refresh_function_bodies(&mut p);
+        assert!(
+            !p.function_manager.function_at(base).unwrap().body().contains(case),
+            "precondition: without the reference the case is not in the body"
+        );
+        p.reference_manager.add(base, case, RefType::ComputedJump, -1);
+        refresh_function_bodies(&mut p);
+        assert!(
+            p.function_manager.function_at(base).unwrap().body().contains(case),
+            "a reference added with no new code unit and no new function must still invalidate \
+             the body-refresh memo — get_function_body follows refs_from, so the key must \
+             observe the reference manager too"
         );
     }
 

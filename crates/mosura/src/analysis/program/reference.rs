@@ -124,6 +124,14 @@ pub struct ReferenceManager {
     /// `single_flow_reference_from`) depend on which reference comes first.
     from_index: std::collections::BTreeMap<(u32, u64), Vec<u32>>,
     to_index: std::collections::BTreeMap<(u32, u64), Vec<u32>>,
+    /// Bumped on every mutation that can change a flow answer — an insert in [`Self::add`] and
+    /// a type change in [`Self::retype`]. The body-refresh memo keys on this
+    /// (`refresh_function_bodies`): `get_function_body` follows `refs_from`, so a reference
+    /// added over already-decoded code changes bodies while touching neither the function count
+    /// nor the code-unit count. A retype moves the answer too — the shared-return pass turns
+    /// an `UNCONDITIONAL_JUMP` into an `UNCONDITIONAL_CALL`, which `follows_flow_ref` stops
+    /// following.
+    generation: u64,
 }
 
 impl ReferenceManager {
@@ -134,7 +142,13 @@ impl ReferenceManager {
             dests: std::collections::BTreeSet::new(),
             from_index: std::collections::BTreeMap::new(),
             to_index: std::collections::BTreeMap::new(),
+            generation: 0,
         }
+    }
+
+    /// The mutation counter — see the field note. For memo keys, not an identity.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Add a reference, idempotent on `(from, to, op_index, ref_type)`.
@@ -146,6 +160,7 @@ impl ReferenceManager {
             self.dests.insert((to.space.0, to.offset));
             self.from_index.entry((from.space.0, from.offset)).or_default().push(idx);
             self.to_index.entry((to.space.0, to.offset)).or_default().push(idx);
+            self.generation += 1;
         }
     }
 
@@ -190,6 +205,7 @@ impl ReferenceManager {
                 self.seen.remove(&old_key);
                 self.seen.insert(new_key);
                 r.ref_type = new_type;
+                self.generation += 1;
             }
         }
     }
