@@ -1,108 +1,100 @@
-# Handoff to the decompiler track: three functions are 71% of every WAR2 analysis
+# Handoff: the two functions that dominate every WAR2 analysis run
 
-*From the analysis track, 2026-08-10, measured at `162fedb` on `analysis-port`.*
+**Status 2026-08-10 @`41ffc82`.** Round 1 of this handoff was acted on and worked — thank you.
+This is round 2, with the analysis-side costs now removed so the remaining number is clean.
 
-## The result in one line
+## Round 1 outcome (closed)
 
-Decompiling **three** WAR2 functions costs **140 seconds** — 71% of a 196-second whole-program
-analysis. Everything else in the run, including all 3022 function discoveries, is the other 29%.
+Handed off `0007a5b0` / `000793e0` / `00051298` as 140.2s of a 196.3s run. The decompiler track
+landed `8e4de5a` + `df93e00` + `eb90e1a` (HighVariable membership indexing / `VariablePieces`).
 
-## The measurement
+Measured by the analysis track, not taken on report:
 
-`DecompilerSwitchAnalyzer::added` (`crates/mosura/src/analysis/analyzers/switch.rs:67-92`) is a thin
-loop: `find_functions`, then `decompile_function` per entry, then read the jump tables. A
-`std::time::Instant` around each `decompile_function` call, baseline configuration
-(`analyze_le_file`, no overrides, `funcs=3022`, total 196.3 s):
+| | before | after |
+|---|---|---|
+| `analysis_parity` suite | 203.13s | **106.48s** (1.9x) |
+| `0007a5b0` | 71.63s | **20.09s** |
+| `000793e0` | 55.43s | **14.40s** |
+| `00051298` | 13.14s | **0.29s** |
 
-```
-Decompiler Switch total     126.4 s of 196.3 s   (64% of the run)
-worst single invocation     125.2 s
-functions decompiled         27  across 55 invocations
+`00051298` is done — it is now noise. The other two are not.
 
-    0007a5b0    71.63 s
-    000793e0    55.43 s
-    00051298    13.14 s
-    the other 24 functions   < 1 s each
-                             ------
-                             140.2 s in three functions
-```
+## Round 2: they are now 63% of the whole run
 
-Independently, `MOSURA_ANALYSIS_TRACE=1` gives the same top line with no code change at all — one
-line per analyzer invocation with name, set size and duration:
+WAR2 LE (`analyze_le_file`), `MOSURA_ANALYSIS_TRACE=1`, per-analyzer:
 
 ```
-126.4s   55 calls   Decompiler Switch          <- worst call 125.2s
-  9.9s  292 calls   Disassembly
-  6.8s  119 calls   Create Address Tables
-  6.8s   58 calls   Constant Propagation
+analyzer                        invocations   addrs delivered   seconds
+Decompiler Switch                        93           387,841      69.9
+Constant Propagation                     95           387,841      20.4
+Disassembly                             294             9,072       7.1
+Create Address Tables                   108        22,405,165       5.6
+...
+TOTAL                                  1101        25,235,222     111.1
 ```
 
-## Reproducing it
+`Decompiler Switch` is a thin loop — `find_locations`, `decompile_function` per entry, read back
+jump tables. Of its 69.9s, **69.0s is two `decompile_function` calls, each made twice**:
 
-No analysis-side setup is needed — decompile the three addresses directly.
-
-```rust
-let prog = analysis::analyze_le_file(std::path::Path::new("/home/jd/WAR2.EXE")).unwrap();
-let ram = prog.default_space;
-for off in [0x0007a5b0u64, 0x000793e0, 0x00051298] {
-    let t = std::time::Instant::now();
-    let _ = analysis::decompiler::decompile_function(&prog, Address::new(ram, off));
-    eprintln!("{off:08x} {:.2}s", t.elapsed().as_secs_f64());
-}
+```
+000793e0   14.40s  x2  =  28.8s
+0007a5b0   20.09s  x2  =  40.2s
+                          69.0s   of   111.1s   =  62%
+the other 24 decompilations   <0.3s each
 ```
 
-⚠️ A WAR2 analysis is ~3.3 minutes before you decompile anything, so cache the `Program` if you
-iterate. The three functions are reachable in the LE body (`analyze_le_file`), **not** the MZ view.
+⚠️ **The double decompile is CORRECT — do not "fix" it.** I checked: the second pass is driven by
+*different* computed-jump sites, which only exist because the first pass disassembled the switch
+case targets and revealed more switches:
 
-## Why this is worth the decompiler track's time
+```
+pass 1:  locs=[..., 795d5, 7a7d5, ...]                             -> fns=[..., 793e0, 7a5b0, ...]
+pass 2:  locs=[797e4, 79900, 79a20, 79b41, 7a9a4, 7aac0, 7abe0, 7ad01] -> fns=[793e0, 7a5b0]
+```
 
-1. **It roughly halves every WAR2 analysis run** — including every verification run both tracks
-   depend on. This session spent well over an hour of wall-clock waiting on runs whose cost was
-   dominated by these three functions.
-2. **It unblocks a reverted correctness fix.** The analyzer-channel change (`83fc4c6`, reverted at
-   `ddeaa7a` purely on cost) measured 4.1× on WAR2. After the analysis-side fixes below it is
-   ~2.2×, and **~145 s of the remaining gap is these three functions**, not the change itself. Fix
-   them and that change becomes affordable, which in turn unblocks the last shared-return recall
-   defect behind it.
-3. It is three inputs, not a systemic slowdown — 24 of the 27 decompilations in the same loop are
-   free.
+Ghidra's `DecompilerSwitchAnalyzer` de-duplicates into a `HashSet<Function>` **within** one
+`added()` call only (DecompilerSwitchAnalyzer.java:106-108), so it re-analyses across sets exactly
+as we do. The work is real; the per-call cost is the problem.
 
-## What it is NOT — three framings this track disproved along the way
+## What the analysis side has already removed, so the number above is clean
 
-- ⛔ **Not a channel-configuration problem.** It was framed that way for most of the session because
-  it first showed up in a profile of the reverted change. It costs 126.4 s in the **ordinary**
-  baseline run.
-- ⛔ **Not an analysis-layer defect.** `DecompilerSwitchAnalyzer` is doing the right work; it is a
-  faithful port of `DecompilerSwitchAnalysisCmd` and the loop is three statements.
-- ⛔ **Not "two pathological invocations with a discriminator in the set contents"** — that was the
-  earlier reading from the invocation-level profile. Those two calls are these same three function
-  decompilations, re-entered. The discriminator is *which functions the set causes to be
-  decompiled*, and it only became visible by timing one level down.
+Everything that was analysis-layer cost is gone, and none of it was in your lane:
 
-**Method note, since it took too long to get here:** `MOSURA_ANALYSIS_TRACE=1` named the expensive
-analyzer in a single run. The correct next step was a timer *inside* its loop. Instead a chain of
-hypotheses was pursued across the layer boundary — compiler-spec parsing, a supposed per-invocation
-floor, caching — each of which was measured and refuted. **Instrument the level below; do not
-theorise across it.**
+- `90dd655` — constant propagation asked for a 16-byte window and kept one instruction of ~5.
+- `41ffc82` — `ReferenceManager::refs_from`/`refs_to` were linear scans of a `Vec` of >20k
+  references, and `get_function_body` calls `refs_from` **once per instruction**. Indexing them by
+  source and destination took `analysis_parity` **243.58s -> 146.58s**, and the WAR2 LE run
+  197.8s -> 111.1s. Measured cause: `refresh_function_bodies` was 98.0s of the run while the
+  constant propagation it serves was 1.0s.
 
-## Analysis-side performance work already landed (context, not asks)
+So the 69.0s below is not hiding any analysis-layer defect behind it.
 
-These are on `analysis-port` and reduce the surrounding cost; none of them touch the three
-functions.
+## The ask
 
-| SHA | change | measured |
-| --- | --- | --- |
-| `b6754d2` | body walk reads the listing (`FollowFlow.followInstruction`) rather than re-parsing bytes | body-walk SLEIGH decodes 25 652 → **0** |
-| `f435e89` + `5760850` | compiler spec resolved/decoded **once**; uncached loaders made private | 118 ms (windows) / 42 ms (gcc-64) / 35 ms (gcc-32) per call removed. ⚠️ WAR2 is unaffected — `watcom` + `x86:LE:32` short-circuits at `lang.rs:49` and pays 1.14 ms |
-| `2464d84` + `90dd655` | constant-propagation walk stops decoding a 16-byte window to keep one instruction | **7.13×** on x86-32 decode (measured over 4000 real instructions); corpus CP 3.2× / 2.6× / 6.0×, reference counts identical |
+Profile `decompile_function` on **`0007a5b0`** (20.09s) and **`000793e0`** (14.40s) on the WAR2 LE
+image. They are ~20-40x more expensive than any other function in the binary, which suggests a
+super-linear structure rather than a constant factor — the same shape `df93e00` already found once
+in `HighVariable` membership.
 
-⚠️ **Known regression at `162fedb`, being fixed, blocks the merge to master:**
-`pe_mz_convergence_parity` fails with `war2: spurious functions vs Ghidra: [1d74e]` — mosura creates
-a function on the MZ image that Ghidra does not. Green at `15d8741`, so it is from one of the four
-commits above. Do not build on `analysis-port` until that clears.
+Reproduce with:
 
-## Contact points in the code
+```
+cargo build --release --example over_decode
+MOSURA_ANALYSIS_TRACE=1 ./target/release/examples/over_decode ~/WAR2.EXE --le
+```
 
-- `crates/mosura/src/analysis/analyzers/switch.rs:67` — the loop, and where the timer goes
-- `crates/mosura/src/analysis/decompiler.rs` — `decompile_function`, the entry point being timed
-- `crates/mosura/src/analysis/manager.rs:178` — the `MOSURA_ANALYSIS_TRACE` hook
+`perf` is now usable on this machine (`kernel.perf_event_paranoid=1`):
+
+```
+perf record -e cpu-clock:u -F 299 -g -o /tmp/p.data -- ./target/release/examples/over_decode ~/WAR2.EXE --le
+perf report -i /tmp/p.data --stdio --sort symbol
+```
+
+⚠️ **Rebuild between configuration switches and check the build exit code.** Two measurements in
+this session were invalidated by running a stale `target/release/...` binary after a `git revert`,
+once because the build had actually failed and the previous binary ran silently.
+
+## Value
+
+Halving these two takes the WAR2 analysis run from ~111s to ~76s, and every verification run in the
+project with it. There is nothing else above 8s.
