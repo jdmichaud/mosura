@@ -839,4 +839,105 @@ mod destination_set_tests {
              granularities disagree, which is the whole of task #3's premise"
         );
     }
+
+    /// ⭐ **HOW THE CARRIED CURSOR GOES STALE — with the function set held completely FIXED.**
+    ///
+    /// I told the lead that `keep == true` implies the carried `before` equals a fresh query
+    /// whenever the set is static, reasoning that the cursor can only freeze an answer from an
+    /// address with no intervening function entry. That is WRONG, and this fixture is the
+    /// counter-example. The flaw: the **forward** branch updates `functionAfterSrc` and never
+    /// touches `functionBeforeSrc` (SharedReturnAnalysisCmd.java:127-141). So a forward source can
+    /// push `after` PAST later entries while `before` stays frozen at an answer from far below —
+    /// and every backward source that follows, up to the new `after`, keeps that frozen value.
+    ///
+    /// ```text
+    /// 0x401000  A                     }
+    /// 0x401500     jmp 0x401400       } backward: before := A(0x401000), after := B(0x402000)
+    /// 0x402000  B                     }
+    /// 0x402500     jmp 0x402600       } FORWARD: after is stale-low, so re-query -> C(0x403000)
+    /// 0x402800     jmp 0x401800       } backward: 0x402800 < after(0x403000) => KEEP
+    /// 0x403000  C                     }
+    /// ```
+    ///
+    /// At `0x402800` the carried `before` is still `0x401000`, while `getFunctionBefore` freshly
+    /// answers `0x402000` — no function was created, nothing changed, the walk simply never
+    /// re-asked. `destAddr < functionBeforeSrc` is then `0x401800 < 0x401000` (false) where a
+    /// fresh pair gives `0x401800 < 0x402000` (true).
+    ///
+    /// ⚠️ **THE CONSEQUENCE FOR ANY PROPOSED FIX.** This is a property of the WALK, not of the
+    /// function set, so re-running the same whole-program invocation later reproduces it exactly:
+    /// the second pass starts from the bottom and arrives here with the same stale cursor. Only an
+    /// invocation whose scan set STARTS near the source — Ghidra's per-round granularity — primes
+    /// the cursors close enough to decide it freshly. WAR2's `0x69032` is this shape, measured:
+    /// carried `before` = `0x67d45`, fresh = `0x68f25`.
+    #[test]
+    fn a_forward_source_leaves_the_before_cursor_stale_with_the_function_set_unchanged() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut p = program();
+        let ram = p.default_space;
+        for off in [0x40_1000u64, 0x40_2000, 0x40_3000] {
+            let mut body = AddressSet::new();
+            body.add_range(ram, off, off);
+            p.function_manager.create_function(
+                Address::new(ram, off),
+                &format!("FUN_{off:08x}"),
+                body,
+            );
+        }
+        // Three jump sources, none of them a function entry.
+        for (from, to) in [
+            (0x40_1500u64, 0x40_1400u64), // backward — primes both cursors
+            (0x40_2500, 0x40_2600),       // FORWARD — pushes `after` to C, leaves `before` alone
+            (0x40_2800, 0x40_1800),       // backward — keeps the frozen `before`
+        ] {
+            let src = Address::new(ram, from);
+            p.listing.define(src, CodeUnit::Instruction { length: 5 });
+            p.reference_manager.add(src, Address::new(ram, to), RefType::UnconditionalJump, -1);
+        }
+
+        let a = SharedReturnAnalyzer {
+            ram,
+            assume_contiguous_functions: true,
+            consider_conditional_branches: false,
+            spec,
+            ctx,
+        };
+        let mut set = AddressSet::new();
+        for off in [0x40_1000u64, 0x40_2000, 0x40_3000] {
+            set.add_range(ram, off, off);
+        }
+        let r = a.report_scan(&p, &set);
+        let row = r
+            .decisions
+            .iter()
+            .find(|d| d.src.offset == 0x40_2800)
+            .expect("the last source must be evaluated — otherwise this measures the scan set");
+
+        assert_eq!(
+            row.carried_in.before,
+            Some(Some(0x40_1000)),
+            "the carried `before` must still be A, frozen since 0x401500"
+        );
+        assert_eq!(
+            p.function_manager.function_before(row.src).map(|f| f.entry_point().offset),
+            Some(0x40_2000),
+            "...while a fresh getFunctionBefore answers B — the set never changed"
+        );
+        assert!(
+            !row.carried_creates && row.fresh_creates,
+            "and the two disagree about creating 0x401800: carried={} fresh={}",
+            row.carried_creates,
+            row.fresh_creates
+        );
+        // The walk is deterministic in the set, so a SECOND identical invocation decides
+        // identically — which is why "run the whole-program pass again at the end" cannot fix it.
+        let again = a.report_scan(&p, &set);
+        assert_eq!(
+            again.decisions.iter().find(|d| d.src.offset == 0x40_2800).map(|d| d.carried_creates),
+            Some(false),
+            "a repeated whole-program invocation reproduces the same stale cursor"
+        );
+    }
 }
