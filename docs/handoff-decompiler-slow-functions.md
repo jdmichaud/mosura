@@ -98,3 +98,50 @@ once because the build had actually failed and the previous binary ran silently.
 
 Halving these two takes the WAR2 analysis run from ~111s to ~76s, and every verification run in the
 project with it. There is nothing else above 8s.
+
+## Round 2 addendum: the attributed profile (2026-08-10, `perf` call-graph, WAR2 LE)
+
+`perf record -e cpu-clock:u -F 299 --call-graph dwarf,4096`, whole run, `--no-children`. This is
+where the 69.0s actually goes — you should not have to re-derive it:
+
+```
+ 7.52%  core::hash::BuildHasher::hash_one
+          6.07%  decompile::build::raw_funcdata_flow_image_overrides
+            6.07%  ActionGroup::apply
+              5.10%  mergesnip::ActionMergeRequired::apply
+                3.17%  hashbrown::map::HashMap::insert
+ 4.99%  core::hash::BuildHasher::hash_one   (second inlining site, same path)
+          3.82%  raw_funcdata_flow_image_overrides -> ActionMergeRequired::apply
+ 4.70%  decompile::cover::op_index
+          3.79%  raw_funcdata_flow_image_overrides -> ActionMergeRequired::apply  2.76%
+ 3.78%  decompile::cover::cover_of
+          2.88%  raw_funcdata_flow_image_overrides
+            2.77%  merge::ActionMergeMarkerTrim::apply -> merge::merge_op -> merge::trim_slot 2.28%
+ 3.31%  hashbrown::map::HashMap::insert          2.73% under ActionMergeRequired
+ 3.26%  hashbrown::raw::RawTable::reserve_rehash 2.73% under ActionMergeRequired
+ 3.23%  core::hash::sip::Hasher::write          2.44% under ActionGroup::apply
+ 2.16%  decompile::mergesnip::merge_required
+```
+
+**~27% of the entire run is `mergesnip::merge_required` + `merge::trim_slot` + `cover`.** Two
+concrete observations, offered as leads not conclusions:
+
+1. **The hashing is the single biggest line and it is all `ActionMergeRequired`.** `hash_one` +
+   `HashMap::insert` + `reserve_rehash` + `sip::write` under that one action is ~10% of the run.
+   `reserve_rehash` at 2.7% means the maps are being **grown repeatedly** — a `with_capacity`, or
+   reusing one map across calls instead of allocating per call, may be most of it. The default
+   `SipHash` is also doing real work here; these keys look like small integer/varnode ids, where a
+   cheap hasher is the usual answer.
+2. **`cover::op_index` at 4.70%** is called from the same action. If it is a linear scan to find an
+   op's index within a block, that is the same defect class as `refs_from` was on our side — an
+   index would remove it.
+
+⚠️ Both are guesses from symbol names; I did not read `decompile/` beyond what `perf` named, since
+it is your lane. The measurement is solid, the two suggestions are not.
+
+## Why this now blocks the analysis track's own target
+
+Stated target: `analysis_parity` back to **106.48s**, the pre-channel baseline, so the faithful
+INSTRUCTION channel costs nothing net. Current **144.71s**. The analysis side has taken it 243.58s
+-> 144.71s and its editable surface is now ~5% of the profile (FID 2.58% plus allocator traffic) —
+`sleigh/` is another ~10% but is also not ours. **The remaining 38.2s cannot come from our lane.**
