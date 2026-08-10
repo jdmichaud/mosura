@@ -1,4 +1,31 @@
-# Performance log — porting-loop iteration cost
+# Performance log
+
+## WAR2 end-to-end (2026-08-10, round 2 of the handoff)
+
+The whole-binary run (`over_decode ~/WAR2.EXE --le`), measured under identical conditions
+(`perf record -e cpu-clock:u -F 299 --call-graph dwarf,4096`, `MOSURA_ANALYSIS_TRACE=1`
+per-analyzer sums), analysis output byte-identical at every row:
+
+| # | change | Decompiler Switch | traced total | profile leader after |
+|---|--------|------------------:|-------------:|----------------------|
+| 0 | baseline @ 16edaf6 | 69.6s | 94.4s | SipHash+map ops ~28%, all under `mergesnip`/`cover` |
+| 1 | op positions: dense vec, not a map; `Cover`/liveness sets: FxHash; `merge_required` rebuilds positions only after a snip mutates | 35.2s | 59.7s | `cover_of` 6.7% under `trim_slot`'s full `all_covers` rebuild |
+| 2 | `refresh_covers`: a trim recomputes only the covers touching its one mutated block | 25.6s | 50.4s | flat: sleigh decode ~11%, allocator ~7%, `ReferenceManager::remove` 3.5%+2.1% frees |
+
+The `HashMap<OpId, (usize,usize)>` position map was the whole first row: rebuilt per
+group-varnode in `merge_required` and SipHash-probed in every `op_index` call. Op ids are
+arena indices, so `cover::OpPositions` is a flat vector. The second row is the
+`Merge::trimOpInput` upkeep: every trim rebuilt every cover in the function, where only the
+covers touching the single mutated block can change (Ghidra tracks this with cover-dirty
+flags; the block filter is the bounded equivalent).
+
+Next unexploited (measured @ round 2): `ReferenceManager::remove`'s hit path retains over
+all refs + rebuilds both endpoint BTreeMap indices per removal (~5.6% with its frees, under
+`flow_constants`) — tombstones would make it O(log n + matches); sleigh
+`operand_handle`/`resolve_const_h` recursion ~11%; `dead_code` 3.2%; `merge_required`'s
+O(reads × group) inner loop 3.0% (Ghidra groups by maximal overlap range, not whole space).
+
+# Porting-loop iteration cost (2026-07-02)
 
 Goal: the porting loop's iteration is dominated by running mosura (debug-build test
 suite + incremental rebuild). This log records each measurement as optimizations land,

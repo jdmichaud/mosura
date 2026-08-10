@@ -139,6 +139,26 @@ concrete observations, offered as leads not conclusions:
 ⚠️ Both are guesses from symbol names; I did not read `decompile/` beyond what `perf` named, since
 it is your lane. The measurement is solid, the two suggestions are not.
 
+## Round 2 outcome (closed 2026-08-10, decompiler track)
+
+Both leads in the addendum were real, and both are retired:
+
+1. **The hashing was the `op_positions` map.** `merge_required` rebuilt a
+   `HashMap<OpId, (usize,usize)>` of every op **per group varnode**, and every `op_index`
+   call SipHash-probed it. Op ids are arena indices, so the map is now a flat vector
+   (`cover::OpPositions`), `merge_required` rebuilds it only after a snip actually mutates,
+   and the `Cover`/liveness sets use a fast integer hash.
+2. **`cover::op_index` was not a linear scan** — the 4.7% was the SipHash probing above.
+   The real linear-scan analogue was one level up: `trim_slot` rebuilt **every cover in the
+   function** per trim, where only the covers touching the one mutated block can change
+   (`refresh_covers`).
+
+Measured on the same WAR2 LE run, identical `perf` config, analysis output byte-identical:
+Decompiler Switch **69.6s → 25.6s**, traced total **94.4s → 50.4s**. The remaining profile
+is flat; the largest single item is back in the analysis lane —
+`ReferenceManager::remove`'s hit path (retain + full endpoint-index rebuild per removal,
+~5.6% with its frees, under `flow_constants`).
+
 ## Why this now blocks the analysis track's own target
 
 Stated target: `analysis_parity` back to **106.48s**, the pre-channel baseline, so the faithful
