@@ -1421,3 +1421,65 @@ mod thunk_resolution_tests {
         assert!(report.iter().all(|c| c.outcome != thunk::Outcome::WouldCreate));
     }
 }
+
+#[cfg(test)]
+mod body_walk_reads_the_listing {
+    use super::*;
+    use crate::analysis::program::CodeUnit;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    /// ⭐ **THE BODY-WALK GATE (task #5): a body walk reads the LISTING, it does not parse bytes.**
+    ///
+    /// Ghidra's `Function.getBody` comes from `CreateFunctionCmd.getFunctionBody`
+    /// (CreateFunctionCmd.java:613-627), which is a `FollowFlow`, and
+    /// `FollowFlow.followInstruction` (FollowFlow.java:525-577) reads code units:
+    /// `getCodeUnitContaining(target)` for each flow, `getInstructionAt(next)` for fall-through,
+    /// and `Instruction.getFallThrough()` for whether there is one. Every flow property it needs
+    /// is already on the `InstructionDB` record, put there when the instruction was laid down.
+    /// **Ghidra never re-parses bytes inside a body walk.**
+    ///
+    /// mosura's walk re-ran the SLEIGH decoder over raw memory for every instruction of every
+    /// function on every recomputation — measured at **46 µs per instruction and 94% of the whole
+    /// body-walk cost** (mingw_hello.exe: 1.18 s of 1.25 s; 25652 decodes per analysis). That is
+    /// the quadratic behind task #5, and it is a MISSING FIELD, not a missing algorithm.
+    ///
+    /// **The fixture makes the two readings disagree by removing the bytes.** The block is
+    /// UNINITIALIZED, so `read_window` yields nothing and no decoder can answer — but the listing
+    /// holds three instructions with their flow, exactly as the disassembler left them. A walk
+    /// that reads the listing returns the eight-byte body; a walk that decodes returns Ghidra's
+    /// degenerate one-byte body (:616-620) because it can parse nothing. Run this against the
+    /// byte-decoding walk and it reports 1 instead of 8.
+    #[test]
+    #[ignore = "RED: gates the listing-driven body walk (task #5); un-ignored by the fix"]
+    fn a_body_is_built_from_the_listing_not_from_the_bytes() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        // `None` = uninitialized: mapped, but holding no bytes for any decoder to read.
+        p.memory.add_block(".text", base, 0x100, true, false, true, None);
+        p.function_manager.create_function(base, "f", AddressSet::new());
+        // What the disassembler would have recorded: three straight-line instructions, each
+        // falling through to the next, the last falling out of the listing.
+        for (off, len) in [(0x40_1000u64, 4u32), (0x40_1004, 3), (0x40_1007, 1)] {
+            p.listing.define(Address::new(ram, off), CodeUnit::Instruction { length: len });
+        }
+
+        compute_function_bodies(spec, ctx, &mut p);
+
+        let body = p.function_manager.function_at(base).unwrap().body();
+        assert_eq!(
+            body.num_addresses(),
+            8,
+            "f's body must be the three listed instructions (0x401000-0x401007). Got {:x?}. A body \
+             of 1 means the walk tried to DECODE the bytes, found none, and fell back to Ghidra's \
+             degenerate one-byte body — i.e. it asked the memory image instead of the listing, \
+             which is what `FollowFlow` never does.",
+            body.ranges().map(|r| (r.min, r.max)).collect::<Vec<_>>()
+        );
+    }
+
+}
