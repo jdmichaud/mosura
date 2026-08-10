@@ -1343,14 +1343,16 @@ fn merge_indirect(
     }
     // The only thing that can go wrong with an input trim is the output being involved in the
     // input to the op causing the indirect effect — test for (and snip) that.
-    if snip_output_interference(f, h, indop) {
+    let first_new = f.num_varnodes() as u32;
+    if let Some(block) = snip_output_interference(f, h, indop) {
         h.extend_to(f.num_varnodes());
-        *covers = all_covers(f);
+        refresh_covers(f, covers, block, first_new);
         if try_merge(f, h, covers) {
             return;
         }
     }
     // Snip the INDIRECT itself: a COPY of the input placed just before it (allocateCopyTrim).
+    let first_new = f.num_varnodes() as u32;
     let in0 = f.op(indop).input(0).expect("INDIRECT has a data input");
     let size = f.vn(in0).size;
     let pc = f.op(indop).seqnum.pc;
@@ -1361,7 +1363,7 @@ fn merge_indirect(
     f.op_insert_before(copyop, indop);
     f.copy_trims.push(copyop); // allocateCopyTrim records it (merge.cc:432)
     h.extend_to(f.num_varnodes());
-    *covers = all_covers(f);
+    refresh_covers(f, covers, f.op(indop).parent.expect("INDIRECT has a parent block"), first_new);
     // Try the merge again; where Ghidra would throw ("Unable to merge address forced indirect"),
     // a residual conflict is left un-unioned.
     try_merge(f, h, covers);
@@ -1371,19 +1373,21 @@ fn merge_indirect(
 /// by the op causing the given INDIRECT (and the INDIRECTs stacked directly above it), of Varnodes
 /// belonging to the INDIRECT output's HighVariable; snip them by COPYing to a temporary just before
 /// the affected op — one COPY per distinct read Varnode HighVariable — and repoint the reads.
-/// Returns `true` if anything was snipped.
-fn snip_output_interference(f: &mut Funcdata, h: &mut HighVariables, indop: super::op::OpId) -> bool {
-    let Some(affect) = f.op(indop).guarded_op() else { return false };
+/// Returns the block the snip COPYs were inserted into (for [`refresh_covers`]), `None` if
+/// nothing was snipped.
+fn snip_output_interference(
+    f: &mut Funcdata,
+    h: &mut HighVariables,
+    indop: super::op::OpId,
+) -> Option<super::block::BlockId> {
+    let affect = f.op(indop).guarded_op()?;
     let out = f.op(indop).output.expect("INDIRECT has an output");
     let rep = h.high(out);
     // collectInputs: the affected op, plus any INDIRECT immediately preceding it in its block.
     let mut oplist: Vec<(super::op::OpId, usize)> = Vec::new();
-    let parent = match f.op(affect).parent {
-        Some(p) => p,
-        None => return false,
-    };
+    let parent = f.op(affect).parent?;
     let ops = f.block(parent).ops.clone();
-    let Some(mut idx) = ops.iter().position(|&o| o == affect) else { return false };
+    let mut idx = ops.iter().position(|&o| o == affect)?;
     loop {
         let op = ops[idx];
         for i in 0..f.op(op).num_inputs() {
@@ -1404,7 +1408,7 @@ fn snip_output_interference(f: &mut Funcdata, h: &mut HighVariables, indop: supe
         }
     }
     if oplist.is_empty() {
-        return false;
+        return None;
     }
     // Group by the read Varnode's HighVariable (compareByHigh): one snip COPY per group, all the
     // group's reads repointed at it.
@@ -1430,7 +1434,7 @@ fn snip_output_interference(f: &mut Funcdata, h: &mut HighVariables, indop: supe
         }
         f.op_set_input(op, slot, snip_out.expect("snip COPY exists"));
     }
-    true
+    Some(parent)
 }
 
 /// `Merge::mergeOp` (merge.cc:719) — force the merge of all input and output Varnodes for the given
@@ -1487,9 +1491,11 @@ fn merge_op(
         }
         if nexttrim == max {
             // One last trim we can try.
+            let first_new = f.num_varnodes() as u32;
             trim_op_output(f, op);
             h.extend_to(f.num_varnodes());
-            *covers = all_covers(f);
+            let block = f.op(op).parent.expect("marker op has a parent block");
+            refresh_covers(f, covers, block, first_new);
         }
     }
     // Phase 3: merge everything for real now.
@@ -1639,9 +1645,41 @@ fn trim_slot(
     op: super::op::OpId,
     slot: usize,
 ) {
-    trim_op_input(f, op, slot);
+    let first_new = f.num_varnodes() as u32;
+    let block = trim_op_input(f, op, slot);
     h.extend_to(f.num_varnodes());
-    *covers = all_covers(f);
+    refresh_covers(f, covers, block, first_new);
+}
+
+/// Refresh `covers` after a trim/snip mutation confined to one `block` (a COPY insertion there,
+/// plus read rewiring at ops whose cover position sits in that block): recomputing only the covers
+/// that touch `block`, plus the varnodes created by the mutation (`first_new..`), reproduces
+/// `all_covers(f)` exactly. Positions in every other block are untouched, a varnode read or
+/// defined in `block` necessarily covers it (a phi read covers the predecessor whose exit it is
+/// live at — where the trim COPY lands), and the rewiring gives reads only to the new varnodes,
+/// so no absent-from-map cover can become non-empty. The former full `all_covers` rebuild per trim
+/// was the dominant WAR2 decompile cost.
+fn refresh_covers(
+    f: &Funcdata,
+    covers: &mut HashMap<VarnodeId, Cover>,
+    block: super::block::BlockId,
+    first_new: u32,
+) {
+    let pos = super::cover::op_positions(f);
+    let mut redo: Vec<VarnodeId> = covers
+        .iter()
+        .filter(|(_, c)| c.block_range(block.0 as usize).is_some())
+        .map(|(&v, _)| v)
+        .collect();
+    redo.extend((first_new..f.num_varnodes() as u32).map(VarnodeId));
+    for v in redo {
+        let c = super::cover::cover_of(f, v, &pos);
+        if c.is_empty() {
+            covers.remove(&v);
+        } else {
+            covers.insert(v, c);
+        }
+    }
 }
 
 /// `Merge::trimOpInput` (merge.cc:692) — snip input `slot` into a fresh `unique` via a COPY, then
@@ -1649,8 +1687,8 @@ fn trim_slot(
 /// branches on the op: a MULTIEQUAL places the COPY at the predecessor block's end (`opInsertEnd`,
 /// at the block's stop address, `getIn(slot)`); any other marker op (an INDIRECT, whose slot-0 data
 /// input is not a phi edge) places it right before the op in the op's own block (`opInsertBefore`,
-/// at `op->getAddr()`).
-fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) {
+/// at `op->getAddr()`). Returns the block the COPY was inserted into (for [`refresh_covers`]).
+fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) -> super::block::BlockId {
     if f.op(op).code() == OpCode::Multiequal {
         // MULTIEQUAL input `slot` corresponds to `in_edges[slot]` (heritage wires `op_set_input(phi,
         // j, ...)` with `j = in_edges.position(pred)`).
@@ -1667,6 +1705,7 @@ fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) {
         f.op_insert_end(copyop, pred);
         // `allocateCopyTrim` records every trim COPY (merge.cc:432) for ActionDominantCopy.
         f.copy_trims.push(copyop);
+        pred
     } else {
         // Ghidra's else branch (merge.cc:701/709): `pc = op->getAddr()`, `opInsertBefore(copyop,
         // op)` — the COPY sits in the op's own block just before it. An INDIRECT reaches here (its
@@ -1681,6 +1720,7 @@ fn trim_op_input(f: &mut Funcdata, op: super::op::OpId, slot: usize) {
         f.op_set_input(op, slot, cout);
         f.op_insert_before(copyop, op);
         f.copy_trims.push(copyop);
+        f.op(op).parent.expect("marker op has a parent block")
     }
 }
 
