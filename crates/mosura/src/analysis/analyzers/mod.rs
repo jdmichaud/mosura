@@ -746,11 +746,11 @@ fn find_locations_remove_function_bodies(program: &Program, set: &mut AddressSet
     let mut in_body = AddressSet::new();
     for f in program.function_manager.functions() {
         let entry = f.entry_point();
-        if !set.contains(entry) && f.body().intersect(set).is_empty() {
+        if !set.contains(entry) && !f.body().intersects(set) {
             continue;
         }
         locations.insert((entry.space.0, entry.offset));
-        in_body = in_body.union(f.body());
+        in_body.extend(f.body());
         in_body.add(entry);
     }
     *set = set.subtract(&in_body);
@@ -830,7 +830,9 @@ impl Analyzer for ConstantPropagationAnalyzer {
         // `findLocationsRemoveFunctionBodies` SUBTRACTS each overlapping function's body from the
         // set (:264-268). mosura's bodies are empty during analysis, which on this channel is not
         // a missed refinement but a wrong answer — see [`refresh_function_bodies`].
+        let __t0=std::time::Instant::now();
         refresh_function_bodies(program);
+        let __rfb=__t0.elapsed();
         // Function entries bound each propagation walk to its own function.
         let entries: std::collections::HashSet<u64> = program
             .function_manager
@@ -838,6 +840,7 @@ impl Analyzer for ConstantPropagationAnalyzer {
             .filter(|f| f.entry_point().space == self.ram)
             .map(|f| f.entry_point().offset)
             .collect();
+        let __ent = __t0.elapsed() - __rfb;
         // Resolved COMPUTED_CALL destinations become functions (Ghidra
         // `ConstantPropagationAnalyzer.findFunctionLocations` makes a function at each
         // call-reference destination — the analog of the disassembler seeding a direct-call
@@ -852,9 +855,12 @@ impl Analyzer for ConstantPropagationAnalyzer {
         // drops entries: an `AddressSet` coalesces adjacent ranges, so functions at consecutive
         // entries collapse into one range and only the first was ever propagated
         // (`docs/function-discovery-backlog.md`, CAUSE B).
+        let __t1=std::time::Instant::now();
         let mut unanalyzed = set.clone();
         remove_uninitialized_blocks(program, &mut unanalyzed);
         let locations = find_locations_remove_function_bodies(program, &mut unanalyzed);
+        let __floc=__t1.elapsed();
+        let __t2=std::time::Instant::now();
 
         let mut new_funcs = AddressSet::new();
         for loc in locations {
@@ -865,6 +871,9 @@ impl Analyzer for ConstantPropagationAnalyzer {
                     new_funcs.add_range(self.ram, d, d);
                 }
             }
+        }
+        if std::env::var_os("MOSURA_CP_PROBE").is_some() {
+            eprintln!("[cp] entries={:?} rfb={__rfb:?} floc={__floc:?} flow={:?}", __ent, __t2.elapsed());
         }
         if !new_funcs.is_empty() {
             sched.function_defined(&new_funcs);

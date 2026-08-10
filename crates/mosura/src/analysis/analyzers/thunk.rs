@@ -116,8 +116,30 @@ fn thunked_addr_reporting(
         spec.disassemble_ctx(&window, a.offset, ctx).into_iter().next()
     };
     // `Instruction instr = listing.getInstructionAt(entry);`
-    if program.listing.code_unit_at(entry).is_none() {
+    let Some((entry_len, entry_flow)) = program.listing.instruction_at(entry) else {
         return Err(Outcome::NoInstructionAtEntry);
+    };
+    // ⚠️ **Pre-filter on the flow the listing ALREADY recorded, before decoding.**
+    // `simple_flow` can only succeed where the instruction really flows — it rejects anything
+    // that is neither a jump nor a terminal call. The overwhelming majority of function entries
+    // are ordinary `FallThrough` instructions, and decoding each of them with SLEIGH just to
+    // learn that cost 3.37% of a whole WAR2 run: this runs for every function on every
+    // `resolve_thunks` pass, and `compute_function_bodies` makes 96 of those.
+    //
+    // The SUCCESSOR is tested too, and that is not optional: when the entry's p-code is empty
+    // (x86-64 `ENDBR64`) the walk below advances one instruction and asks there instead, so
+    // filtering on the entry alone would lose that case. If neither position carries any flow,
+    // `simple_flow` returns `FlowNotJumpOrTerminalCall`/`NoFlow` at both — exactly what the
+    // early return below reports.
+    let has_flow = |f: &crate::analysis::program::listing::InstructionFlow| {
+        !matches!(f.kind, crate::analysis::flowtype::FlowKind::FallThrough) || !f.flows.is_empty()
+    };
+    if !has_flow(entry_flow) {
+        let after = Address::new(entry.space, entry.offset + u64::from(entry_len));
+        match program.listing.instruction_at(after) {
+            Some((_, next_flow)) if has_flow(next_flow) => {}
+            _ => return Err(Outcome::FlowNotJumpOrTerminalCall),
+        }
     }
     let mut at = entry;
     let mut insn = decode(at).ok_or(Outcome::UndecodableAtEntry)?;

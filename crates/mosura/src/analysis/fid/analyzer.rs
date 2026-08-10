@@ -54,8 +54,14 @@ impl OperandAddressQuery for ProgramOperandAddresses<'_> {
         op_index: usize,
         objects: &[crate::sleigh::OpObject],
     ) -> bool {
-        self.0.reference_manager.references().any(|r| {
-            if r.from.offset != instruction_address || !self.0.memory.contains(r.to) {
+        // ⚠️ Indexed, not a scan. This asks "are there references out of THIS instruction", once
+        // per operand of every instruction FID hashes; `references()` walks all >20k of them, and
+        // `perf` put this at 2.75% of a whole WAR2 run. A reference's `from` is an instruction
+        // address, so it is always in the program's default space — the previous offset-only test
+        // could not match anything else in practice.
+        let from = crate::decompile::space::Address::new(self.0.default_space, instruction_address);
+        self.0.reference_manager.refs_from(from).any(|r| {
+            if !self.0.memory.contains(r.to) {
                 return false;
             }
             if r.op_index >= 0 {

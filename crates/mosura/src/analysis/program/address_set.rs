@@ -87,22 +87,41 @@ impl AddressSet {
     }
 
     /// Add an inclusive range, coalescing with overlapping/adjacent ranges.
+    /// ⚠️ **This used to copy the whole `Vec` and re-`sort` it on EVERY insertion**, which made
+    /// every caller that adds ranges in a loop quadratic-with-a-sort:
+    /// `union` calls it once per range of the other set, `get_function_body` once per
+    /// INSTRUCTION, and `find_locations_remove_function_bodies` unions a growing `in_body` across
+    /// all 3023 WAR2 functions. It showed up in `perf` as `slice::sort::drift::sort` plus the
+    /// allocator traffic around it.
+    ///
+    /// The set is canonical — sorted by `(space, min)`, pairwise non-overlapping and
+    /// non-adjacent — so the insertion point is a binary search, and only the run of ranges that
+    /// actually touch `new` has to be merged. Same result, no sort, no reallocation.
     pub fn add_range(&mut self, space: SpaceId, min: u64, max: u64) {
         debug_assert!(min <= max);
         let mut new = AddressRange { space, min, max };
-        let mut out: Vec<AddressRange> = Vec::with_capacity(self.ranges.len() + 1);
-        for &r in &self.ranges {
-            if r.space != space || !touches_or_overlaps(&r, &new) {
-                out.push(r);
-            } else {
-                // merge r into new
-                new.min = new.min.min(r.min);
-                new.max = new.max.max(r.max);
+        // First range at or after `new` in key order.
+        let mut lo = self.ranges.partition_point(|r| key(r) < (space.0, min));
+        // At most one earlier range can reach `new` (they are disjoint and non-adjacent).
+        if lo > 0 {
+            let prev = self.ranges[lo - 1];
+            if prev.space == space && touches_or_overlaps(&prev, &new) {
+                lo -= 1;
             }
         }
-        out.push(new);
-        out.sort_by_key(key);
-        self.ranges = out;
+        // Absorb the contiguous run that touches `new`, re-testing against the GROWING `new` so a
+        // range only reachable after an earlier merge is still absorbed.
+        let mut hi = lo;
+        while hi < self.ranges.len() {
+            let r = self.ranges[hi];
+            if r.space != space || !touches_or_overlaps(&r, &new) {
+                break;
+            }
+            new.min = new.min.min(r.min);
+            new.max = new.max.max(r.max);
+            hi += 1;
+        }
+        self.ranges.splice(lo..hi, std::iter::once(new));
     }
 
     pub fn add(&mut self, addr: Address) {
@@ -116,6 +135,18 @@ impl AddressSet {
             out.add_range(r.space, r.min, r.max);
         }
         out
+    }
+
+    /// In-place union — `self |= other` (Ghidra `AddressSet.add(AddressSetView)`).
+    ///
+    /// ⚠️ **`a = a.union(b)` in a loop is quadratic in copying**: `union` starts from
+    /// `self.clone()`, so accumulating across N sets clones the growing accumulator N times.
+    /// `find_locations_remove_function_bodies` does exactly that over all 3023 WAR2 functions on
+    /// every invocation. This adds into `self` and clones nothing.
+    pub fn extend(&mut self, other: &AddressSet) {
+        for r in &other.ranges {
+            self.add_range(r.space, r.min, r.max);
+        }
     }
 
     /// Intersection (Ghidra `intersect`).
@@ -134,6 +165,33 @@ impl AddressSet {
             }
         }
         out
+    }
+
+    /// Does `self` share any address with `other`? (Ghidra `AddressSetView.intersects`.)
+    ///
+    /// ⚠️ **Not `!intersect(other).is_empty()`** — that builds the whole intersection, allocating a
+    /// fresh `AddressSet` and every overlapping range, just to answer a yes/no.
+    /// `find_locations_remove_function_bodies` asks it once per FUNCTION on every invocation:
+    /// 3023 functions x 95 invocations = ~287k allocating intersections per WAR2 run, which is
+    /// most of the allocator traffic `perf` attributes to the analysis lane. This short-circuits
+    /// on the first overlap and allocates nothing.
+    pub fn intersects(&self, other: &AddressSet) -> bool {
+        // Both sides are canonical — sorted by `(space, min)` — so this is a two-pointer merge,
+        // O(n + m), not the O(n x m) nested scan. It matters: the caller asks once per FUNCTION
+        // per invocation, and on WAR2 the sets reach 652 ranges against bodies of up to 93.
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < self.ranges.len() && j < other.ranges.len() {
+            let a = self.ranges[i];
+            let b = other.ranges[j];
+            if (a.space.0, a.max) < (b.space.0, b.min) {
+                i += 1;
+            } else if (b.space.0, b.max) < (a.space.0, a.min) {
+                j += 1;
+            } else {
+                return true; // same space, overlapping
+            }
+        }
+        false
     }
 
     /// Difference `self \ other` (Ghidra `subtract`).
