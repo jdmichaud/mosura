@@ -25,7 +25,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [faithful-type-of-wrong-ir](faithful-type-of-wrong-ir.md) — ugly render from a faithful layer = wrong upstream IR; fix the IR.
 - [gate-byte-identical-only](gate-byte-identical-only.md) — self-approve only on byte-IDENTICAL corpus; any fixture move is gated.
 - [numbers-stale-unless-sha-stamped](numbers-stale-unless-sha-stamped.md) — every number is STALE unless @sha==HEAD.
-- [perf-constants-are-configuration-scoped](perf-constants-are-configuration-scoped.md) — **⭐ a per-call cost is SCOPED to its (language, cspec): `resolve_cspec` spans 1.14ms→118.6ms, and WAR2 short-circuits it. Right mechanism, wrong account of where it bites.**
+- [perf-constants-are-configuration-scoped](perf-constants-are-configuration-scoped.md) — **⭐ a per-call cost is SCOPED to its (language, cspec): `resolve_cspec` spans 1.14ms→118.6ms, and WAR2 short-circuits it. Right mechanism, wrong account of where it bites — made TWICE in one task, the second time flagging another baseline "stale" that moved 0.**
 - [war2-issues-become-source-tests](war2-issues-become-source-tests.md) — **every WAR2 issue → a self-compiled Watcom source test as ground truth.**
 - [mve-obvious-version-tests-nothing](mve-obvious-version-tests-nothing.md) — **⭐ 4/4: the obvious MVE passes unfixed; write it, RUN it, then sharpen.**
 - [mve-first-then-solve-the-mve](mve-first-then-solve-the-mve.md) — **⭐ USER RULE 2026-08-05: MVE FIRST, then solve the MVE — now AGENTS.md directive 6. Carries the MVE-building traps.**

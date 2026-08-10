@@ -31,18 +31,31 @@ failed (`ms/range` spanned 4.4 → 1558, not a constant). ⭐ **A mechanism can 
 fixed while the account of WHERE it bites is wrong.** The fix's own numbers cannot catch that —
 they are from the configuration that does pay.
 
-**Two sub-lessons from the same episode:**
+⭐ **I made the SAME mistake twice in one task, and the second time I did not notice.** Having
+retracted the WAR2 attribution, I still declared Decompiler Switch's 247 s baseline **STALE** —
+because `decompile/build.rs` asks three of the same cached accessors per function, so it "must"
+have moved for free. On `mingw_hello` it had (5.547 s → 0.400 s). On WAR2 the lead measured
+**247.1 s → 249.3 s: zero.** Same short-circuit, same lesson, one layer over. **A free win from a
+shared root is a PREDICTION, not a consequence** — do not retire another agent's baseline on one,
+because "your number is stale" sends someone off to re-measure work that was never affected.
+
+**Three sub-lessons from the same episode:**
 - **Never infer start-location count from the trace's `ranges=` column.** Measured: `ranges=2 ->
   nloc=4`. Pass 1 of `findLocationsRemoveFunctionBodies` contributes function entries that are
   nobody's range minimum. That bad bridge is what let the wrong story look checkable.
 - **Counter beats inference for "how often is this called".** `integer_arg_registers` is once per
   `flow_constants` (126 calls / 126 walks), not per call site. One `AtomicU64` settled a question
   two people had hypotheses about.
+- **Withdrawing early is what makes a later measurement a confirmation.** The retraction landed
+  before the lead's WAR2 run; when the run came back flat it *corroborated* the finding instead of
+  exposing it. The same words after the run would have been an excuse.
 
 **How to apply:** when a fix is justified by a per-call constant, name the configuration the
 constant came from **in the commit message and the doc comment**, and put the per-configuration
 table where the next reader will hit it. If the target binary is a different `(language, cspec)`,
-measure that pair — it costs one probe and seconds. Predict only for configurations you measured.
+measure that pair — it costs one probe and seconds. Predict only for configurations you measured,
+and label a prediction as one: "I expect X to move; it is unmeasured" is free, "X is stale" costs
+someone a run.
 
 Related: [[numbers-stale-unless-sha-stamped]] (a number is stale unless stamped — this is its
 sibling: a number is *scoped* unless the configuration is stated),
