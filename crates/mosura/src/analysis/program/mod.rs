@@ -21,7 +21,7 @@ pub mod symbol;
 
 pub use address_set::{AddressRange, AddressSet};
 pub use function::{Function, FunctionManager};
-pub use listing::{CodeUnit, Listing};
+pub use listing::{CodeUnit, InstructionFlow, Listing};
 pub use memory::{Memory, MemoryBlock};
 pub use reference::{RefType, Reference, ReferenceManager};
 pub use relocation::{Relocation, RelocationTable};

@@ -19,7 +19,7 @@ pub mod switch;
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
 use crate::analysis::manager::Scheduling;
 use crate::analysis::priority::AnalysisPriority;
-use crate::analysis::program::{AddressSet, CodeUnit, Program, RefType, SymbolType};
+use crate::analysis::program::{AddressSet, CodeUnit, InstructionFlow, Program, RefType, SymbolType};
 use crate::decompile::opcode::OpCode;
 use crate::decompile::space::{Address, SpaceId};
 use crate::sleigh::engine::Spec;
@@ -111,6 +111,10 @@ pub(crate) fn static_target(op: &crate::sleigh::pcode::PcodeOp) -> Option<u64> {
 /// `instruction_falls_through`). Routing only the overridden case through the faithful path
 /// keeps this change's blast radius to the addresses an analyzer actually overrides;
 /// converting the base derivation is its own change.
+///
+/// [`falls_through_stored`] is the same decision taken from the listing's cached
+/// [`InstructionFlow`] instead of from freshly decoded p-code — the two are the same function,
+/// and [`instruction_flow`] is what carries one to the other.
 pub(crate) fn falls_through(
     program: &Program,
     addr: Address,
@@ -137,6 +141,70 @@ pub(crate) fn falls_through(
             if program.is_noreturn(Address::new(ram, t)) {
                 return false;
             }
+        }
+    }
+    true
+}
+
+/// The flow properties to store on a code unit as it is laid down — Ghidra's `InstructionDB`
+/// record (see [`InstructionFlow`]). Every field is derived from the p-code the disassembler has
+/// just decoded, so no later reader has to decode again.
+pub(crate) fn instruction_flow(
+    insn: &crate::sleigh::Instruction,
+    inst_start: u64,
+    inst_next: u64,
+) -> InstructionFlow {
+    let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
+    // `Instruction.getFlows()` — the static BRANCH/CBRANCH destinations. A target equal to the
+    // instruction's own address is the `hlt` idiom (SLEIGH lifts it to `BRANCH <self>`) and is not
+    // a flow edge, exactly as in the disassembler's own reference emission above.
+    let mut flows: Vec<u64> = Vec::new();
+    for op in &insn.ops {
+        if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
+            if let Some(t) = static_target(op).filter(|&t| t != inst_start) {
+                if !flows.contains(&t) {
+                    flows.push(t);
+                }
+            }
+        }
+    }
+    InstructionFlow {
+        kind: crate::analysis::flowtype::flow_kind(&insn.ops, inst_start, inst_next),
+        flows,
+        ends_flow: matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind)),
+        // Only when the LAST op is a call, matching `falls_through`'s no-return arm.
+        call_target: matches!(last, Some(OpCode::Call))
+            .then(|| {
+                insn.ops.iter().rev().find_map(|o| {
+                    matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call))
+                        .then(|| static_target(o))
+                        .flatten()
+                })
+            })
+            .flatten(),
+    }
+}
+
+/// [`falls_through`] taken from the listing's cached [`InstructionFlow`] — Ghidra
+/// `InstructionDB.getDefaultFallThrough()` (:926), which asks `getFlowType()` (:321), i.e. the
+/// stored prototype flow type with the instruction's flow override applied. Arm for arm the same
+/// decision as [`falls_through`]; only the source of the inputs differs.
+pub(crate) fn falls_through_stored(
+    program: &Program,
+    addr: Address,
+    flow: &InstructionFlow,
+    ram: SpaceId,
+) -> bool {
+    let ov = program.flow_override_at(addr);
+    if ov != crate::analysis::flowtype::FlowOverride::None {
+        return crate::analysis::flowtype::overridden_props_of(flow.kind, ov).fallthrough;
+    }
+    if flow.ends_flow {
+        return false;
+    }
+    if let Some(t) = flow.call_target {
+        if program.is_noreturn(Address::new(ram, t)) {
+            return false;
         }
     }
     true
@@ -337,7 +405,17 @@ impl Analyzer for Disassembler {
             if (1..ilen).any(|k| program.listing.code_unit_at(Address::new(ram, a + k)).is_some()) {
                 continue;
             }
-            program.listing.define(addr, CodeUnit::Instruction { length: ilen as u32 });
+            // The flow properties Ghidra's `InstructionDB` keeps on the record, computed here —
+            // the one moment the decoded p-code is in hand. Every later flow question (above all
+            // `CreateFunctionCmd.getFunctionBody`'s `FollowFlow`) reads them off the listing, as
+            // Ghidra's does; see `InstructionFlow`.
+            program.listing.define(
+                addr,
+                CodeUnit::Instruction {
+                    length: ilen as u32,
+                    flow: instruction_flow(&insn, a, a + ilen),
+                },
+            );
             decoded.add_range(ram, a, a + ilen - 1);
             decoded_any = true;
             // :1067 — the repeated-byte run check. Ghidra performs it BEFORE adding the
@@ -453,7 +531,7 @@ impl Analyzer for FunctionCreator {
 /// later calls do a single walk. See `thunk.rs` for why the veto inside must read non-thunk bodies.
 pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
     loop {
-        walk_function_bodies(spec, ctx, program);
+        walk_function_bodies(program);
         if thunk::resolve_thunks(program, spec, ctx).is_empty() {
             return;
         }
@@ -461,66 +539,97 @@ pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) 
 }
 
 /// One body-computation pass — the walk itself, with the function set held fixed.
-fn walk_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
-    use std::collections::{BTreeSet, HashSet};
+fn walk_function_bodies(program: &mut Program) {
+    use std::collections::BTreeSet;
     let ram = program.default_space;
     let entries: BTreeSet<u64> =
         program.function_manager.functions().map(|f| f.entry_point().offset).collect();
 
     let mut bodies: Vec<(u64, AddressSet)> = Vec::new();
     for &entry in &entries {
-        let mut body = AddressSet::new();
-        let mut visited: HashSet<u64> = HashSet::new();
-        let mut work = vec![entry];
-        while let Some(a) = work.pop() {
-            if !visited.insert(a) {
-                continue;
-            }
-            // Stop at another function's entry — it owns its own code.
-            if a != entry && entries.contains(&a) {
-                continue;
-            }
-            let window = program.memory.read_window(Address::new(ram, a), 16);
-            let Some(insn) = spec.disassemble_ctx(&window, a, ctx).into_iter().next() else {
-                continue;
-            };
-            let ilen = insn.bytes.len() as u64;
-            if ilen == 0 {
-                continue;
-            }
-            body.add_range(ram, a, a + ilen - 1); // inclusive [a, a+ilen)
-            let falls = falls_through(program, Address::new(ram, a), &insn, ram);
-            for op in &insn.ops {
-                if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
-                    if let Some(t) = Disassembler::static_target(op).filter(|&t| t != a) {
-                        work.push(t);
-                    }
-                }
-            }
-            // The flow references this instruction carries — how Ghidra's `FollowFlow` finds
-            // every target, and the only route to a computed jump's cases (the p-code for a
-            // `BRANCHIND` names no static target; the jump table lives in the reference set).
-            // The flow references this instruction carries — how Ghidra's `FollowFlow` finds
-            // every target, and the only route into a computed jump's cases (the p-code for a
-            // `BRANCHIND` names no static target; the jump table lives in the reference set).
-            for r in program.reference_manager.refs_from(Address::new(ram, a)) {
-                if follows_flow_ref(r.ref_type) && r.to.space == ram && r.to.offset != a {
-                    work.push(r.to.offset);
-                }
-            }
-            if falls {
-                work.push(a + ilen);
-            }
-        }
-        // External thunks / no-code functions get Ghidra's degenerate one-byte body.
-        if body.is_empty() {
-            body.add_range(ram, entry, entry);
-        }
-        bodies.push((entry, body));
+        bodies.push((entry, get_function_body(program, ram, entry, &entries)));
     }
     for (entry, body) in bodies {
         program.function_manager.set_body(Address::new(ram, entry), body);
     }
+}
+
+/// ⭐ `CreateFunctionCmd.getFunctionBody(program, entry, includeOtherFunctions=false, monitor)`
+/// (CreateFunctionCmd.java:613-627) — ONE function's body, by following flow from its entry.
+///
+/// Ghidra's is a `FollowFlow` with
+/// `dontFollow = {COMPUTED_CALL, CONDITIONAL_CALL, UNCONDITIONAL_CALL, INDIRECTION}` (:622), and
+/// `FollowFlow.followInstruction` (FollowFlow.java:525-577) is exactly the loop below:
+///
+///  - **the walk is over the LISTING.** `getCodeUnitContaining(target)` / `getInstructionAt(next)`
+///    — an address that is not a defined instruction is simply not pushed, so the flow stops
+///    there. Ghidra never parses bytes inside a body walk, and neither does this any more: mosura
+///    used to re-run the SLEIGH decoder over already-decoded code, **46 µs per instruction and 94%
+///    of the whole walk** (task #5), which is the quadratic that made re-computing bodies cost
+///    4.1× the analysis. The flow properties now come off the code unit
+///    ([`InstructionFlow`](crate::analysis::program::InstructionFlow)), where the disassembler put
+///    them, which is where Ghidra's `InstructionDB` keeps them.
+///  - targets are `getFlowsFromInstruction` (:743) — the instruction's flow REFERENCES, filtered
+///    by [`follows_flow_ref`] — plus the prototype's own static flow destinations
+///    (`Instruction.getFlows()`, cached as `InstructionFlow::flows`), which is the pre-existing
+///    opcode-driven half documented on [`follows_flow_ref`];
+///  - fall-through is `Instruction.getFallThrough()` ([`falls_through_stored`]);
+///  - `includeOtherFunctions == false` is the "stop at another function's entry" test: that
+///    function owns its own code.
+///
+/// `entries` is the stop set — every function entry in the program, hoisted by the caller so a
+/// whole-program pass builds it once.
+fn get_function_body(
+    program: &Program,
+    ram: SpaceId,
+    entry: u64,
+    entries: &std::collections::BTreeSet<u64>,
+) -> AddressSet {
+    use std::collections::HashSet;
+    let mut body = AddressSet::new();
+    let mut visited: HashSet<u64> = HashSet::new();
+    let mut work = vec![entry];
+    while let Some(a) = work.pop() {
+        if !visited.insert(a) {
+            continue;
+        }
+        // Stop at another function's entry — it owns its own code.
+        if a != entry && entries.contains(&a) {
+            continue;
+        }
+        // `getInstructionAt` — no instruction here means the flow stops (CreateFunctionCmd.java:616
+        // takes the same reading at the entry itself, where it yields the degenerate one-byte body
+        // below).
+        let Some((ilen, flow)) = program.listing.instruction_at(Address::new(ram, a)) else {
+            continue;
+        };
+        let ilen = u64::from(ilen);
+        if ilen == 0 {
+            continue;
+        }
+        body.add_range(ram, a, a + ilen - 1); // inclusive [a, a+ilen)
+        let falls = falls_through_stored(program, Address::new(ram, a), flow, ram);
+        for &t in &flow.flows {
+            work.push(t);
+        }
+        // The flow references this instruction carries — how Ghidra's `FollowFlow` finds
+        // every target, and the only route into a computed jump's cases (the p-code for a
+        // `BRANCHIND` names no static target; the jump table lives in the reference set).
+        for r in program.reference_manager.refs_from(Address::new(ram, a)) {
+            if follows_flow_ref(r.ref_type) && r.to.space == ram && r.to.offset != a {
+                work.push(r.to.offset);
+            }
+        }
+        if falls {
+            work.push(a + ilen);
+        }
+    }
+    // External thunks / no-code functions get Ghidra's degenerate one-byte body
+    // (CreateFunctionCmd.java:616-620: no instruction at the entry → `new AddressSet(entry, entry)`).
+    if body.is_empty() {
+        body.add_range(ram, entry, entry);
+    }
+    body
 }
 
 thread_local! {
@@ -813,7 +922,7 @@ mod disassembler_bounds_tests {
             .listing
             .code_units()
             .filter_map(|(a, u)| match u {
-                CodeUnit::Instruction { length } => Some((a.offset, *length)),
+                CodeUnit::Instruction { length, .. } => Some((a.offset, *length)),
                 _ => None,
             })
             .filter(|(a, len)| *a < 0x40_100a && a + u64::from(*len) > 0x40_1004)
@@ -1450,7 +1559,6 @@ mod body_walk_reads_the_listing {
     /// degenerate one-byte body (:616-620) because it can parse nothing. Run this against the
     /// byte-decoding walk and it reports 1 instead of 8.
     #[test]
-    #[ignore = "RED: gates the listing-driven body walk (task #5); un-ignored by the fix"]
     fn a_body_is_built_from_the_listing_not_from_the_bytes() {
         let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
             return; // SLEIGH tables unavailable
@@ -1465,7 +1573,7 @@ mod body_walk_reads_the_listing {
         // What the disassembler would have recorded: three straight-line instructions, each
         // falling through to the next, the last falling out of the listing.
         for (off, len) in [(0x40_1000u64, 4u32), (0x40_1004, 3), (0x40_1007, 1)] {
-            p.listing.define(Address::new(ram, off), CodeUnit::Instruction { length: len });
+            p.listing.define(Address::new(ram, off), CodeUnit::instruction(len));
         }
 
         compute_function_bodies(spec, ctx, &mut p);
@@ -1482,4 +1590,37 @@ mod body_walk_reads_the_listing {
         );
     }
 
+    /// The other half: the stored flow DECIDES the walk. `InstructionFlow::ends_flow` is the
+    /// cached form of `analyzers::falls_through`'s un-overridden reading, so an instruction the
+    /// disassembler recorded as ending the flow stops the body there — without the walk looking at
+    /// a single byte. The bytes here would say the opposite if anything read them: the block is
+    /// uninitialized, so only the record can answer.
+    #[test]
+    fn the_stored_flow_stops_the_walk() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            return; // SLEIGH tables unavailable
+        };
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 8, 1);
+        let base = Address::new(ram, 0x40_1000);
+        let mut p = Program::new(spaces, ram, "x86:LE:64:default", "gcc", base, false, 64);
+        p.memory.add_block(".text", base, 0x100, true, false, true, None);
+        p.function_manager.create_function(base, "f", AddressSet::new());
+        let mut ret = crate::analysis::program::InstructionFlow {
+            kind: crate::analysis::flowtype::FlowKind::Terminator,
+            ..Default::default()
+        };
+        ret.ends_flow = true;
+        p.listing.define(base, CodeUnit::Instruction { length: 1, flow: ret });
+        p.listing.define(Address::new(ram, 0x40_1001), CodeUnit::instruction(1));
+
+        compute_function_bodies(spec, ctx, &mut p);
+
+        assert_eq!(
+            p.function_manager.function_at(base).unwrap().body().num_addresses(),
+            1,
+            "the body must stop at the recorded terminator: `Instruction.getFallThrough()` is a \
+             property of the record, not a re-derivation from the bytes"
+        );
+    }
 }

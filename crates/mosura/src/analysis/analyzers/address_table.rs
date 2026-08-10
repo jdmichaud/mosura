@@ -480,7 +480,7 @@ fn instruction_falls_into(program: &Program, addr: Address) -> bool {
         let off = addr.offset.checked_sub(back)?;
         let a = Address::new(addr.space, off);
         match program.listing.code_unit_at(a) {
-            Some(CodeUnit::Instruction { length }) => Some((a, u64::from(*length))),
+            Some(CodeUnit::Instruction { length, .. }) => Some((a, u64::from(*length))),
             _ => None,
         }
     }) else {
@@ -643,7 +643,7 @@ impl AddressTableAnalyzer {
         let mut out = set.subtract(&sub);
         let mut sub = AddressSet::new();
         for (a, u) in program.listing.code_units() {
-            if let CodeUnit::Instruction { length } = u {
+            if let CodeUnit::Instruction { length, .. } = u {
                 sub.add_range(a.space, a.offset, a.offset + u64::from(*length) - 1);
             }
         }

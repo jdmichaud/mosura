@@ -695,7 +695,7 @@ mod destination_set_tests {
         // function of its own (so it is neither a thunk nor an internal jump).
         let src = Address::new(ram, 0x40_1000);
         let dest = Address::new(ram, 0x40_1012);
-        p.listing.define(src, CodeUnit::Instruction { length: 5 });
+        p.listing.define(src, CodeUnit::instruction(5));
         p.reference_manager.add(src, dest, RefType::UnconditionalJump, -1);
 
         let a = SharedReturnAnalyzer {
@@ -779,11 +779,11 @@ mod destination_set_tests {
             // S: `jmp 0x400900`, one flow reference out, inside F's body.
             let src = Address::new(ram, 0x40_1080);
             let dest = Address::new(ram, 0x40_0900);
-            p.listing.define(src, CodeUnit::Instruction { length: 5 });
+            p.listing.define(src, CodeUnit::instruction(5));
             p.reference_manager.add(src, dest, RefType::UnconditionalJump, -1);
             // D: decoded, with no fall-through predecessor, so `checkIfCouldHaveFallThruTo` lets
             // the creation through — otherwise this fixture would measure that guard instead.
-            p.listing.define(dest, CodeUnit::Instruction { length: 2 });
+            p.listing.define(dest, CodeUnit::instruction(2));
             p
         };
         let analyzer = |p: &Program| SharedReturnAnalyzer {
@@ -893,7 +893,7 @@ mod destination_set_tests {
             (0x40_2800, 0x40_1800),       // backward — keeps the frozen `before`
         ] {
             let src = Address::new(ram, from);
-            p.listing.define(src, CodeUnit::Instruction { length: 5 });
+            p.listing.define(src, CodeUnit::instruction(5));
             p.reference_manager.add(src, Address::new(ram, to), RefType::UnconditionalJump, -1);
         }
 

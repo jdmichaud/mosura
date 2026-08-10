@@ -110,10 +110,19 @@ fn flow_flags(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> Option<u32> {
 }
 
 /// Ghidra's `FlowType` — the full result set of `convertFlowFlags`, including the arms
-/// mosura's [`RefType`] (a *reference*-type subset) cannot name. Kept internal; the public
-/// accessors below project it onto what each caller needs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FlowKind {
+/// mosura's [`RefType`] (a *reference*-type subset) cannot name. The accessors below project it
+/// onto what each caller needs.
+///
+/// **Public because it is a stored property of a laid-down instruction, exactly as in Ghidra:**
+/// `InstructionDB` keeps `proto.getFlowType(this)` on the DB record and every later reader
+/// (`FollowFlow`, `CreateFunctionCmd.getFunctionBody`) asks the record rather than re-parsing the
+/// bytes. mosura stores it on [`CodeUnit::Instruction`](crate::analysis::program::CodeUnit) for
+/// the same reason — see [`InstructionFlow`](crate::analysis::program::InstructionFlow).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FlowKind {
+    /// The default: an instruction with no flow op at all (Ghidra's `flowState == null` →
+    /// `RefType.FALL_THROUGH`).
+    #[default]
     FallThrough,
     Invalid,
     Terminator,
@@ -140,6 +149,22 @@ impl FlowKind {
             ),
         }
     }
+}
+
+/// `SleighInstructionPrototype.getFlowType(instr)` — the instruction's prototype flow type,
+/// before any flow override. This is what Ghidra stores on the `InstructionDB` record when the
+/// instruction is laid down; mosura caches it on the code unit
+/// ([`InstructionFlow`](crate::analysis::program::InstructionFlow)) so a later body walk reads it
+/// instead of re-parsing the bytes, which is what `FollowFlow` does.
+pub fn flow_kind(ops: &[PcodeOp], inst_start: u64, inst_next: u64) -> FlowKind {
+    classify(ops, inst_start, inst_next)
+}
+
+/// [`FlowProps`] of an already-classified [`FlowKind`] with a flow override applied — the cached
+/// counterpart of [`overridden_flow_props`], for a caller holding a stored flow type rather than
+/// p-code.
+pub fn overridden_props_of(kind: FlowKind, ov: FlowOverride) -> FlowProps {
+    props_of(modified_flow_kind(kind, ov))
 }
 
 /// `SleighInstructionPrototype.flowListToFlowType` → `convertFlowFlags` — the whole switch.

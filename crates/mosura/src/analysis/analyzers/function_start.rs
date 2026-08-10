@@ -1384,7 +1384,7 @@ mod tests {
             // The preceding byte is a DECODED instruction that is in no function — the state the
             // address-table analyzer leaves behind (it disassembles a pointer target and
             // deliberately creates no function there).
-            p.listing.define(base, CodeUnit::Instruction { length: 1 });
+            p.listing.define(base, CodeUnit::instruction(1));
             (p, ram, Address::new(ram, 0x40_1001))
         };
 
@@ -1467,9 +1467,9 @@ mod tests {
             let len = code.len() as u64;
             p.memory.add_block(".text", base, len, true, false, true, Some(code));
             // The leaf, decoded and in no function — `AddressTableAnalyzer`'s output shape.
-            p.listing.define(base, CodeUnit::Instruction { length: 4 });
-            p.listing.define(Address::new(ram, 0x40_1004), CodeUnit::Instruction { length: 3 });
-            p.listing.define(Address::new(ram, 0x40_1007), CodeUnit::Instruction { length: 1 });
+            p.listing.define(base, CodeUnit::instruction(4));
+            p.listing.define(Address::new(ram, 0x40_1004), CodeUnit::instruction(3));
+            p.listing.define(Address::new(ram, 0x40_1007), CodeUnit::instruction(1));
             let mut set = AddressSet::new();
             set.add_range(ram, base.offset, base.offset + len - 1);
             (p, ram, set)

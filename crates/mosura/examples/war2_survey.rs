@@ -279,7 +279,7 @@ fn main() {
                 continue;
             }
             let len = match prog.listing.code_unit_at(pc) {
-                Some(mosura::analysis::program::CodeUnit::Instruction { length }) => *length as u64,
+                Some(mosura::analysis::program::CodeUnit::Instruction { length, .. }) => *length as u64,
                 _ => 1,
             };
             cov_lo = cov_lo.min(pc.offset);

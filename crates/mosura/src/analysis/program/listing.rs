@@ -6,13 +6,52 @@
 
 use std::collections::HashMap;
 
+use crate::analysis::flowtype::FlowKind;
 use crate::decompile::space::Address;
+
+/// The flow properties a laid-down instruction carries — Ghidra's `InstructionDB` record.
+///
+/// ⭐ **WHY THIS IS STORED, AND WHY IT IS THE PORT.** Ghidra never re-parses bytes to answer a
+/// flow question. `InstructionDB` keeps the prototype's flow type and its static flow
+/// destinations on the record, and every later reader asks the record: `FollowFlow`
+/// (FollowFlow.java:534, :557) takes its targets from `getReferencesFrom()` and its fall-through
+/// from `Instruction.getFallThrough()`, and `CreateFunctionCmd.getFunctionBody` (:613-627) is
+/// nothing but a `FollowFlow`. mosura's `CodeUnit::Instruction` used to carry only `length`, so
+/// every body walk had to run the SLEIGH decoder again over code it had already decoded —
+/// **measured at 46 µs per instruction and 94% of the whole body-walk cost** (mingw_hello.exe:
+/// 1.18 s of 1.25 s). That, multiplied by the number of body recomputations, is the quadratic in
+/// task #5, and it is a missing field rather than a missing algorithm.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct InstructionFlow {
+    /// `SleighInstructionPrototype.getFlowType(instr)` — the prototype flow type, BEFORE any
+    /// flow override (Ghidra applies the override at read time in `InstructionDB.getFlowType`,
+    /// :321, so the stored value must be the un-overridden one).
+    pub kind: FlowKind,
+    /// `Instruction.getFlows()` — the prototype's static flow destinations in the default space,
+    /// minus a self-target (SLEIGH lifts `hlt` to `BRANCH <self>`, for which Ghidra emits no
+    /// flow edge). Empty for an instruction with no static flow.
+    pub flows: Vec<u64>,
+    /// Whether the LAST p-code op ends the flow (`RETURN`/`BRANCH`/`BRANCHIND`) — the input to
+    /// mosura's un-overridden fall-through derivation.
+    ///
+    /// ⚠️ Deliberately NOT `kind.has_fallthrough()`. mosura derives the base case from the last
+    /// p-code op while Ghidra derives it from the prototype flow type; the two disagree on any
+    /// instruction with an internal p-code loop (`rep movs`). That divergence is pre-existing and
+    /// documented on `analyzers::falls_through`; this field caches it verbatim so making the walk
+    /// listing-driven changes *nothing* but the cost. Converting the base derivation is its own
+    /// change.
+    pub ends_flow: bool,
+    /// The static target of the instruction's trailing `CALL` op, if the last op is a call — the
+    /// input to the no-return check in `analyzers::falls_through`.
+    pub call_target: Option<u64>,
+}
 
 /// A defined code unit at an address (Ghidra `CodeUnit`: `Instruction` or `Data`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeUnit {
-    /// A disassembled instruction occupying `length` bytes.
-    Instruction { length: u32 },
+    /// A disassembled instruction occupying `length` bytes, with the flow properties Ghidra's
+    /// `InstructionDB` keeps on the record (see [`InstructionFlow`]).
+    Instruction { length: u32, flow: InstructionFlow },
     /// A defined data item of `length` bytes, with its data-type name.
     Data { length: u32, type_name: String },
 }
@@ -20,8 +59,15 @@ pub enum CodeUnit {
 impl CodeUnit {
     pub fn length(&self) -> u32 {
         match self {
-            CodeUnit::Instruction { length } | CodeUnit::Data { length, .. } => *length,
+            CodeUnit::Instruction { length, .. } | CodeUnit::Data { length, .. } => *length,
         }
+    }
+
+    /// An instruction code unit with no flow — the plain fall-through case. For callers that only
+    /// need "an instruction is defined here" (tests, and the pattern/table ports that probe
+    /// `code_unit_at`); the disassembler always stores the real [`InstructionFlow`].
+    pub fn instruction(length: u32) -> CodeUnit {
+        CodeUnit::Instruction { length, flow: InstructionFlow::default() }
     }
 }
 
@@ -64,6 +110,16 @@ impl Listing {
 
     pub fn code_unit_at(&self, addr: Address) -> Option<&CodeUnit> {
         self.units.get(&(addr.space.0, addr.offset)).map(|(_, u)| u)
+    }
+
+    /// The instruction starting exactly at `addr` — its length and stored flow properties
+    /// (Ghidra `Listing.getInstructionAt`). `None` at an undefined address or on defined data,
+    /// which is what makes a `FollowFlow` walk stop there.
+    pub fn instruction_at(&self, addr: Address) -> Option<(u32, &InstructionFlow)> {
+        match self.units.get(&(addr.space.0, addr.offset)).map(|(_, u)| u) {
+            Some(CodeUnit::Instruction { length, flow }) => Some((*length, flow)),
+            _ => None,
+        }
     }
 
     /// The code unit whose `[start, start+length)` range contains `addr` (Ghidra
