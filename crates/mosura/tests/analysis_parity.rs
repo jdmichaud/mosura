@@ -710,6 +710,18 @@ fn le_war2_analysis() {
             "native-LE war2: decompressor fn_{f:x} discovered via recovered switch"
         );
     }
+    // ⭐ The `_cstart_` THUNK's target. The entry `0x601F8` is `EB 76`, a short jump over the
+    // inline Watcom copyright banner (`analysis/loader/watcom.rs`), and
+    // `0x601F8 + 2 + 0x76 = 0x60270`. Ghidra creates `FUN_00060270` — not through
+    // `SharedReturnAnalysisCmd` (the span between the two is a *string*, so no function entry
+    // lies in it and `assumeContiguousFunctions`' forward arm cannot fire) but through
+    // `CreateFunctionCmd.resolveThunk` -> `CreateThunkFunctionCmd.getReferencedFunction`
+    // (`analysis/analyzers/thunk.rs`). Without that port the body walk follows the `jmp` and
+    // swallows the target into the entry function's own body.
+    assert!(
+        prog.function_manager.function_at(at(0x60270)).is_some(),
+        "native-LE war2: the _cstart_ thunk's target 0x60270 must be its own function"
+    );
     // Clean subset — the no-spurious-reference invariant: every recovered reference targets
     // mapped memory (obj1/obj2). No relocation or switch target may point outside the image.
     for r in prog.reference_manager.references() {

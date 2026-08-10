@@ -13,6 +13,7 @@ pub mod function_start;
 pub mod noreturn;
 pub mod relocation_seed;
 pub mod shared_return;
+pub mod thunk;
 pub mod switch;
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};
@@ -446,6 +447,12 @@ impl Analyzer for FunctionCreator {
 /// not calls), not crossing into another function's entry. Run after disassembly.
 pub fn compute_function_bodies(spec: &Spec, ctx: &[u32], program: &mut Program) {
     use std::collections::{BTreeSet, HashSet};
+    // `CreateFunctionCmd.fixupFunctionBody` (:664-673) resolves thunks BEFORE it stores the
+    // recomputed body — *"function could now be a thunk, since someone is calling this because of
+    // a potential body flow change"*. The order is the mechanism, not an optimisation: a thunk
+    // whose body has already been stored owns its own target, and `getFunctionContaining` would
+    // then veto creating the function there. See `thunk.rs`.
+    thunk::resolve_thunks(program, spec, ctx);
     let ram = program.default_space;
     let entries: BTreeSet<u64> =
         program.function_manager.functions().map(|f| f.entry_point().offset).collect();
@@ -1193,7 +1200,6 @@ mod thunk_resolution_tests {
     ///
     /// Only `0x401000` is created as a function, exactly as a loader marks an entry point.
     #[test]
-    #[ignore = "RED until CreateThunkFunctionCmd.getThunkedAddr/getReferencedFunction is ported"]
     fn a_jump_only_entry_creates_a_function_at_its_thunked_address() {
         let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:32:default") else {
             return; // SLEIGH tables unavailable
