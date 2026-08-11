@@ -2326,6 +2326,49 @@ fn callee_register_return_is_recovered_with_its_argument() {
     );
 }
 
+/// `void_proto` — the smell in every top-5 WAR2 mismatch cluster — is usually not a printing
+/// defect. A function that returns in a register the default model calls `<unaffected>` has NO
+/// consumer for the instruction that computes it, so the instruction is dead, it is removed, the
+/// only reads of its inputs go with it, and the prototype then collapses to `(void)`. The visible
+/// result is `void FUN_x(void) { return; }` — which is what the survey's 5-byte rows actually are:
+/// not stubs, but functions whose ENTIRE BODY was eliminated.
+///
+/// `bump_` is `add ebx,eax ; ret` (`parm caller [ebx] [eax] value [ebx]`). It must come back with
+/// its body AND both parameters. Asserting the body is the point: a fix that recovers only the
+/// prototype gives a right signature over bytes that are already gone.
+#[test]
+fn custom_convention_body_is_not_eliminated_as_dead() {
+    let bin = ground_truth_dir().join("regout.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("regout.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip custom_convention_body_is_not_eliminated_as_dead: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let bump = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "bump_")
+        .map(|(a, _)| *a)
+        .expect("truth lists bump_");
+    let prog = analysis::analyze_file(&bin).expect("analyze regout");
+    let f = decompile_function(&prog, Address::new(prog.default_space, bump))
+        .expect("bump_ decompiles");
+    let c = print_c(&f);
+
+    assert!(
+        !c.contains("FUN_(void)") && !c.contains("(void)\n"),
+        "bump_ @ {bump:#x} lost its parameters — the `add ebx,eax` was eliminated as dead because \
+         EBX is not the model's return register, and the prototype collapsed after it:\n{c}"
+    );
+    // The ADD must survive: the body computes and RETURNS the sum of the two arguments.
+    assert!(
+        c.contains("return param_1 + param_2;") || c.contains("return param_2 + param_1;"),
+        "bump_ @ {bump:#x} is `add ebx,eax ; ret` — its body must compute and return the sum of \
+         both arguments, not an empty `return;`:\n{c}"
+    );
+}
+
 /// Substring pair test kept local: `c` contains `open` … `close` with only a variable between.
 fn regex_lite_contains(c: &str, open: &str, close: &str) -> bool {
     let Some(i) = c.find(open) else { return false };

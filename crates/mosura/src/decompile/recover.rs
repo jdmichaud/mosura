@@ -1103,7 +1103,7 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
 /// before writing, in the order it reads them, which is the order the source's `parm caller [...]`
 /// lists them. One exclusion entry per register, each its own resource group so they fill as
 /// consecutive formal parameters.
-fn recovered_input_list(reads: &[(Address, u32)]) -> ParamList {
+pub(crate) fn recovered_input_list(reads: &[(Address, u32)]) -> ParamList {
     ParamList {
         entry: reads
             .iter()
@@ -1133,7 +1133,7 @@ fn recovered_input_list(reads: &[(Address, u32)]) -> ParamList {
 /// and each `TYPECLASS_GENERAL` — these are integer/pointer returns by construction (they are
 /// registers the default convention calls `<unaffected>`; the float stack is not among them).
 /// `minsize = 1` so a sub-register read of the returned value still justifies into its entry.
-fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
+pub(crate) fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
     ParamList {
         entry: recovered
             .iter()

@@ -81,6 +81,35 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // prototype from one function in isolation, and asked about the same WAR2 callee through
         // the whole-image wrapper it emits the same truncated function.
         record_callee_effects(program, spec, ctx, &mut f);
+        // SELF-EVIDENCE PROTOTYPE — the same scan, turned on THIS function. A callee that returns
+        // in a register the default model calls `<unaffected>` is not merely mis-typed at its call
+        // sites: decompiling it ON ITS OWN, nothing consumes the value, so the instruction that
+        // computes it is DEAD and is removed, the only reads of its inputs go with it, and
+        // `recover_input_params` then has no trials left — the function comes back as
+        // `void FUN_x(void) { return; }`. Measured on regout `bump_` (`add ebx,eax ; ret`), and it
+        // is what the WAR2 survey's 5-byte `void FUN(void){ return; }` rows actually are: not
+        // stubs, but functions whose entire body was eliminated. That is why `void_proto` shows up
+        // in every top-5 mismatch cluster — it is the SYMPTOM, and the body is the defect.
+        //
+        // Gated on a NON-EMPTY overwrite set, so it applies only to the anomaly it describes: a
+        // function that writes an `<unaffected>` register and never restores it. `callee_effects`
+        // is already conservative (straight line, no branch or call, must reach a `ret`), so an
+        // ordinary function returns None and nothing changes. Both halves are set together —
+        // giving the input list alone would recover a prototype for a body that has already been
+        // deleted, which is a right signature over wrong bytes.
+        if let Some(reg) = f.spaces.by_name("register") {
+            if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
+            {
+                if !writes.is_empty() {
+                    f.proto_model.output =
+                        Some(crate::decompile::recover::recovered_output_list(&writes));
+                    if !reads.is_empty() {
+                        f.proto_model.input =
+                            Some(crate::decompile::recover::recovered_input_list(&reads));
+                    }
+                }
+            }
+        }
         crate::decompile::pipeline::decompile(&mut f);
         f
     }));
