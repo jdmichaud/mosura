@@ -345,6 +345,17 @@ pub fn analyze(program: &mut Program) {
         // `FunctionCreator` is registered as the `function_defined` CONSUMER: it re-issues
         // disassembly for functions the pattern passes create inline.
         fs_mgr.add_analyzer(Box::new(analyzers::FunctionCreator::new(program)), program);
+        // In Ghidra's ONE manager, code the pattern phase decodes re-triggers
+        // `FindNoReturnFunctionsAnalyzer` like any other extent; mosura's second manager was
+        // dropping those notifications, so a no-return dispatcher whose CALLERS are only
+        // reached in this phase (war2's `13a56` inline-parameter family — its callers and
+        // sibling functions all materialize here) was never examined and the repair never
+        // ran. Registered here, its indicators see this phase's decoded extents WITH this
+        // phase's functions in place.
+        if let Some(nr) = analyzers::find_noreturn::FindNoReturnFunctionsAnalyzer::for_program(program)
+        {
+            fs_mgr.add_analyzer(Box::new(nr), program);
+        }
         // Ghidra's `AutoAnalysisManager.blockAdded` fires for every loader block — that is how a
         // BYTE_ANALYZER gets the whole image as its "added" set.
         let mut fs_blocks = AddressSet::new();

@@ -425,8 +425,16 @@ fn pe_mz_convergence_parity() {
     //
     // 53 -> 46 when 186dbf2 landed MAX_REPEAT_PATTERN_LENGTH (the ninth cluster, a separate
     // cause). The remaining 46 are the eight thunk clusters. CLOSED BY: task #10.
+    //
+    // 46 -> 43 when the task #10 repair began landing: `FindNoReturnFunctionsAnalyzer`
+    // registered in the pattern-phase manager detects the `13a56` dispatcher (Ghidra marks
+    // the same entry, oracle-verified), and `ClearFlowAndRepairCmd` (`clearflow.rs`) clears
+    // the three decoded inline parameters `13a4a/13a4f/13a54` and re-disassembles the
+    // repaired flow (+1 instruction). The rest of the family's damage needs no-return
+    // DETECTION PARITY (Ghidra marks all 6 family members; the batch structure fragments
+    // mosura's indicator evidence) — the open half of task #10.
     let cases: [(&str, PathBuf, usize); 2] =
-        [("comcom32", comcom32_exe(), 0), ("war2", war2_exe(), 46)];
+        [("comcom32", comcom32_exe(), 0), ("war2", war2_exe(), 43)];
     let mut evaluated = 0;
     for (name, path, max_misaligned) in &cases {
         let name = *name;

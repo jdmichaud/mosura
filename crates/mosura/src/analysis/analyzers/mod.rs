@@ -320,6 +320,18 @@ impl Analyzer for Disassembler {
                 MAX_REPEAT_PATTERN_LENGTH,
             );
         let mut prev_block_end: Option<u64> = None;
+        // ⚠️ CALL FLOW IS **NOT** FOLLOWED YET, unlike Ghidra (Disassembler.java:1301-1306
+        // queues call targets in the same command, deferred until the current block is laid
+        // down). Two landing attempts measured the same +8 misaligned on the war2 MZ stub:
+        // callers newly reached through call flow fall through into the `13a56` dispatcher
+        // family's 2-byte inline parameters. The repair that cleans exactly that class is
+        // PORTED (`clearflow.rs`, gate `inline_call_parameters_are_not_decoded_as_code`
+        // green) — but on war2 the repair never fires because no-return DETECTION parity is
+        // still missing: each manager phase delivers `FindNoReturnFunctionsAnalyzer` ONE
+        // giant batch (the whole decode cascade outruns its 301 priority), so the indicator
+        // evidence is fragmented and the 3-indication threshold is never met (Ghidra: 6
+        // no-return marks on war2, the whole family; mosura: 0). Call-following lands after
+        // detection parity — see docs/analysis-open-tasks.md.
         while let Some(a) = work.pop() {
             let addr = Address::new(ram, a);
             // Ghidra Disassembler.java:612-626. An Instruction already at this address means it
