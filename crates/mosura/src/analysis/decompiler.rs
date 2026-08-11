@@ -167,26 +167,25 @@ fn record_callee_effects(
     // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
     // still has `out=None` at that point, so `resolve_call_output` has not run yet.
     //
-    // WHY THE TRIAL IS REJECTED IS STILL NOT KNOWN, and two attributions have already been wrong,
-    // so trust only what is listed as measured. Instrumented runs on the MVE established:
+    // ROOT CAUSE, MEASURED — and it is the veto's own doing. Tagging the verdicts by heritage pass
+    // shows `check_input_trial_use` marks EBX **ACTIVE**; it is cleared afterwards by
+    // `ParamList::fillin_map`'s definitely-not-used chain rule (fspec.rs:498-511, Ghidra
+    // fspec.cc): once a whole exclusion group is `dnu`, `seendefnouse` latches and EVERY LATER
+    // trial gets `mark_inactive()`. The watcall input order is EAX, EDX, EBX, ECX — the veto
+    // correctly marks EDX no-use (the callee never reads it), EDX precedes EBX, so the latch fires
+    // and takes EBX with it. That matches every observation: ACTIVE at the check, `active=false
+    // defnouse=false` at `build_input_from_trials` (mark_inactive sets neither), and `only_op_use`
+    // never rejecting.
     //
-    //   - `only_op_use` NEVER rejects the EBX trial. Both of its `res = false` sites were printed
-    //     and neither fires, so the "a competing use disqualifies it" family of explanations is
-    //     dead, including the clobber-INDIRECT story once written here. (That one was doubly wrong:
-    //     the clobber INDIRECT is an indirect CREATION taking a constant 0, recover.rs:1733, so it
-    //     never reads the pre-call value, and only_op_use's INDIRECT arm only sets INDIRECTALT.)
-    //   - At `check_input_trial_use` the EBX trial varnode is `vn_input=false written=true
-    //     indcreate=false def=COPY` in the register space — STRUCTURALLY IDENTICAL to the EAX
-    //     trial, which is accepted and emitted. A non-internal COPY takes the `only_op_use` path
-    //     (recover.rs:453-465), which we know returns true here.
-    //
-    // So the state visible at the moment of the check says the trial SHOULD be Active, yet it
-    // arrives at `build_input_from_trials` as `active=false defnouse=false`. Those two observations
-    // cannot both describe the same evaluation: the flags must be set on a DIFFERENT heritage pass
-    // from the one printed. The next step is therefore to correlate by pass — tag each print with
-    // the heritage pass index and find the pass on which EBX is checked and rejected — rather than
-    // to explain the discrepancy away. Until that is known the argument list is wrong for this
-    // shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
+    // The rule is faithful and must stay: it is what stops a gap in the parameter sequence being
+    // read as a later parameter. The defect is that the veto punches a hole in the DEFAULT list's
+    // group sequence, when what the evidence actually says is that this callee does not USE that
+    // list. The fix is the input-side twin of `recovered_output_list`: build the call's input
+    // storage from `CallSpec::reads` as its own `ParamList`, so EAX and EBX are consecutive groups
+    // with no gap for the latch to catch, and drop the veto — a register outside the recovered list
+    // then has no entry to be a trial for, which is the same outcome expressed structurally instead
+    // of by suppression. Until that lands the argument list is wrong for this shape, so the pass
+    // stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
     if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
         return;
     }
