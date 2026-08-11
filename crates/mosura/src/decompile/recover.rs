@@ -916,8 +916,28 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
         .and_then(|cs| cs.reads.as_ref())
         .filter(|r| !r.is_empty())
         .map(|r| recovered_input_list(r));
+    let committed = recovered.is_some();
     let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
     let Some(active) = f.active_inputs.get_mut(&call) else { return };
+    // A recovered list is the CALLEE'S OWN prototype, so its entries are not candidates to be
+    // tested — they are facts. Ghidra reaches the same place from the other side: when a call spec
+    // has no model of its own, `ActionDefaultParams` does `fc->copy(otherfunc->getFuncProto())`
+    // (coreaction.cc:2327), copying the callee's recovered prototype onto the call, after which the
+    // arguments no longer depend on trial realism at all.
+    //
+    // Without this a PASS-THROUGH argument is lost: in `f(x) { g(x); }` the varnode reaching the
+    // call IS f's own input, so `AncestorRealistic::execute` takes its `isInput()` early-out
+    // (funcdata_varnode.cc:2205 — "we expect to see active movement into the parameter") and the
+    // trial is marked INACTIVE, and `fillin_map` only marks ACTIVE trials used. Measured on the
+    // regmodify MVE, where `keep` is recovered as `int4 FUN_08048106(int4 param_1)` and the call
+    // was still emitted as `func_0x08048106()`.
+    if committed {
+        for t in active.trial.iter_mut() {
+            if input.entry.iter().any(|e| e.justified_contain(t.addr, t.size).is_some()) {
+                t.mark_active();
+            }
+        }
+    }
     input.fillin_map(active);
 }
 
