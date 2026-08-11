@@ -67,6 +67,16 @@ Measured anyway: `-of` and `-of+` produce IDENTICAL code in 10.0a, matching OW2 
 learn which global holds the switches, then find its readers. `[0x7f8b0]` (a struct pointer with
 flags at `+0x54`, fields at `+0x34`/`+0x50`) is a confirmed live lead seen at `0x482f1`.
 
+**Dead ends already burned — do not repeat:**
+- OW2 constant values (register sets, switch bits) — see the three strikes above.
+- Searching for emitted opcodes (`8d 65`, `55`, `89 e5`): the encoder is table-driven, and the
+  `55 89 e5` hits are wcc386's OWN prologues (it is self-hosted).
+- `or [mem], imm` scans for a switches global: only 3 sites in the whole code region
+  (`0x7d52c`, `0x7f6ac`, `0x7f620`), so the option parser does not use that idiom.
+- Clustering `cmp al,<option letter>`: every cluster found (`0x35600`, `0x36c00`, `0x36200`,
+  `0x2c200`) is PRINTF, not option parsing — `%i %u %x %X %d %o %e %c %f %s` collide with the
+  option letters. `0x35600` is a vsprintf-style formatter.
+
 **What does NOT need the disassembly:** the swap itself is already understood and behaviourally
 confirmed on 10.0a — two prologue paths, chosen by whether traceable stack frames are requested
 (`-of`/`-of+` -> frame first then saves, needing `lea esp,[ebp-N]`; neither -> saves first then
