@@ -167,21 +167,17 @@ fn record_callee_effects(
     // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
     // still has `out=None` at that point, so `resolve_call_output` has not run yet.
     //
-    // The competing use is the clobber INDIRECT itself. `guard_calls` marks EBX killedbycall here,
-    // and the INDIRECT modelling that clobber consumes the pre-call EBX value, so the value now has
-    // two consumers — the CALL's argument slot and the INDIRECT — and `ancestor_op_use` refuses it
-    // as an argument. A register that is both an argument and the clobbered return of one call is
-    // therefore self-defeating in this representation: recovering its output half is exactly what
-    // disqualifies its input half.
+    // WHAT THE COMPETING USE IS, IS NOT YET KNOWN. An earlier revision of this comment blamed the
+    // clobber INDIRECT consuming the pre-call EBX. That is WRONG and was never measured: mosura's
+    // clobber INDIRECT is an indirect CREATION taking a constant 0 (recover.rs:1733), so it does not
+    // read the pre-call value at all, and `only_op_use`'s INDIRECT arm (recover.rs:329) only sets
+    // INDIRECTALT — it never sets `res = false`. Both facts contradict that story.
     //
-    // Ghidra never meets the case (it cannot see the callee, and no convention it ships reuses the
-    // return register as parameter storage), so there is nothing to port. The fix is to stop the
-    // clobber INDIRECT counting as a competing use for the call it belongs to — the INDIRECT arm of
-    // `ancestor_op_use` (recover.rs:422) already special-cases indirect creations, and this is the
-    // sibling case it does not yet cover. That is the next step, and it is a much smaller change
-    // than the "designed representation" an earlier reading of this gap called for. Until it lands
-    // the emitted argument list is wrong for exactly this shape, so the pass stays off. Enable with
-    // MOSURA_CALLEE_EFFECTS=1 to continue.
+    // So the next step is to instrument `only_op_use` itself and print which descendant sets
+    // `res = false` for the EBX trial varnode, rather than reasoning about which one ought to. The
+    // measured facts above (the INACTIVE verdict, and the three ruled-out causes) all stand; only
+    // the attribution does not. Until this is known the emitted argument list is wrong for exactly
+    // this shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
     if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
         return;
     }
