@@ -43,6 +43,10 @@ def mask(h):
     h = re.sub(r"(?<=ff15)[0-9a-f]{8}", "R" * 8, h)
     h = re.sub(r"(?<=e8)[0-9a-f]{8}", "R" * 8, h)
     h = re.sub(r"(?<=a1)[0-9a-f]{8}", "R" * 8, h)
+    # `mov <reg>,DWORD PTR [abs32]` — the modrm form of the `a1` accumulator shortcut, emitted
+    # whenever the destination is not EAX (8b1d = EBX). Its displacement is a relocation exactly as
+    # a1's is, so it masks on the same argument.
+    h = re.sub(r"(?<=8b1d)[0-9a-f]{8}", "R" * 8, h)
     return h
 
 

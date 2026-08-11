@@ -2258,6 +2258,74 @@ fn global_fnptr_call_is_not_a_value_cast() {
     );
 }
 
+/// A callee that RETURNS A NEW VALUE in a register the default model calls `<unaffected>` must
+/// have that value recovered as the call's result — and the register it also takes a PARAMETER in
+/// must still be passed. `bump_` in `regout.watcom-x86-32` is `add ebx,eax ; ret`: a pointer in
+/// EBX, a count in EAX, the advanced pointer back in EBX, i.e. `parm caller [ebx] [eax] value
+/// [ebx]`. It is hand-written assembly precisely because wcc386 inlines a same-TU C definition and
+/// no call survives — which is also the faithful shape, since the WAR2 functions in this class ARE
+/// assembly with custom conventions.
+///
+/// Believing the default convention here is wrong code on BOTH sides of one call: the result is
+/// discarded and the caller stores through its STALE pre-call pointer. Measured on WAR2
+/// FUN_00074744/FUN_000748fd, the class this reproduces. Ghidra emits the wrong form and cannot do
+/// otherwise — it recovers a prototype from one function in isolation, so nothing inside the
+/// callee is visible while the caller is decompiled. Recovering it is `caller-evidence prototypes`.
+///
+/// EBX being both the argument and the return register is the point, not an incidental detail: a
+/// fix that recovers the output half while dropping the input half still fails this gate.
+#[test]
+fn callee_register_return_is_recovered_with_its_argument() {
+    let bin = ground_truth_dir().join("regout.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("regout.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip callee_register_return_is_recovered_with_its_argument: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let use_ = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "use_")
+        .map(|(a, _)| *a)
+        .expect("truth lists use_");
+    let prog = analysis::analyze_file(&bin).expect("analyze regout");
+    let f = decompile_function(&prog, Address::new(prog.default_space, use_))
+        .expect("use_ decompiles");
+    let c = print_c(&f);
+
+    // The defect, stated as the thing that must not appear: the store going through a value the
+    // call did not produce. If the result is discarded, the pointer stored through is whatever the
+    // caller loaded BEFORE the call — the global — and the call statement has no assignment.
+    assert!(
+        !regex_lite_contains(&c, "= pxRam", ";"),
+        "the call's result is discarded and the store goes through the caller's stale pre-call \
+         pointer — the WAR2 FUN_00074744 class. use_ @ {use_:#x}:\n{c}"
+    );
+
+    // AND the real property: mosura must reproduce the REFERENCE SOURCE — the C worked out from
+    // these bytes and verified by `verify-expected.py`, at build time, to recompile to them.
+    // Comparing against a source of PROVEN byte-fidelity is what makes this a byte-exact gate
+    // without putting a compiler in the test chain.
+    let want = std::fs::read_to_string(ground_truth_dir().join("expected").join("regout.use_.c"))
+        .expect("reference source present");
+    let body = |s: &str| {
+        s.lines()
+            .skip_while(|l| !l.trim_start().starts_with("void FUN_"))
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        body(&c),
+        body(&want),
+        "mosura does not reproduce the reference source for use_ @ {use_:#x}.\n\
+         The reference is verified to recompile to the original bytes, so a difference here is a \
+         difference in the bytes.\n--- mosura ---\n{c}\n--- reference ---\n{want}"
+    );
+}
+
 /// Substring pair test kept local: `c` contains `open` … `close` with only a variable between.
 fn regex_lite_contains(c: &str, open: &str, close: &str) -> bool {
     let Some(i) = c.find(open) else { return false };
