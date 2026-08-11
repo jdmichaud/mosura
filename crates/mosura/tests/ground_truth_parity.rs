@@ -2182,3 +2182,53 @@ fn discovered_noreturn_marks_the_inline_parameter_dispatcher() {
         );
     }
 }
+
+/// A call through a GLOBAL FUNCTION POINTER must render as a call through the pointer, not as a
+/// cast of the pointer's VALUE. `call DWORD PTR ds:<addr>` is one memory-indirect instruction
+/// with no register load; `(*(code *)g)()` casts the stored value to a code pointer, which is a
+/// different program — wcc386 loads the global into a register and calls the register, 8 bytes
+/// against the original's 7, so such a function cannot recompile byte-identically however
+/// correct its logic is.
+///
+/// This is the largest single class in the WAR2 survey (the `indirect_call` smell covers 1193 of
+/// the attributable mismatches). `dispatch` in `globfnptr.c` reproduces it in 7 bytes:
+/// `ff 15 <abs32>` + `c3`, byte-for-byte the same encoding as the smallest extent-verified WAR2
+/// specimen.
+#[test]
+fn global_fnptr_call_is_not_a_value_cast() {
+    let bin = ground_truth_dir().join("globfnptr.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("globfnptr.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip global_fnptr_call_is_not_a_value_cast: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let dispatch = truth
+        .funcs
+        .iter()
+        .find(|(_, n)| n == "dispatch_")
+        .map(|(a, _)| *a)
+        .expect("truth lists dispatch_");
+    let prog = analysis::analyze_file(&bin).expect("analyze globfnptr");
+    let f = decompile_function(&prog, Address::new(prog.default_space, dispatch))
+        .expect("dispatch_ decompiles");
+    let c = print_c(&f);
+
+    // The defect, stated as the thing that must not appear: the global's value cast to `code *`
+    // and dereferenced. `(*(code *)xRam08049070)()`.
+    let value_cast = regex_lite_contains(&c, "(*(code *)", ")()");
+    assert!(
+        !value_cast,
+        "the global function pointer is rendered as a cast of its VALUE, which compiles to a \
+         register-indirect call (8 bytes) where the original is `call [mem]` (7). dispatch_ @ \
+         {dispatch:#x}:\n{c}"
+    );
+}
+
+/// Substring pair test kept local: `c` contains `open` … `close` with only a variable between.
+fn regex_lite_contains(c: &str, open: &str, close: &str) -> bool {
+    let Some(i) = c.find(open) else { return false };
+    let rest = &c[i + open.len()..];
+    let Some(j) = rest.find(close) else { return false };
+    !rest[..j].contains(';') && !rest[..j].contains('\n')
+}

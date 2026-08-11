@@ -402,6 +402,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom forcomma   # the same, on emitForLoop's header (printc.cc:2974) — loopcomma's sibling
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
+  build_watcom globfnptr  # memory-indirect call through a global fn-pointer (call [mem])
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
   # inlineparam: the INLINE CALL PARAMETER thunk repro (docs/function-discovery-backlog.md §9 #5),
   # the blocker holding held-patches/listing-command-channel.patch. The whole fixture is the
