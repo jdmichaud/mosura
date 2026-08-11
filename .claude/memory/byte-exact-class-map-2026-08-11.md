@@ -39,6 +39,32 @@ Optimistically these sum to ~340 potential, overlapping, and only functions whos
 actually flip. **Without cracking `+3`, 300 byte-clean is not reachable** — and `+3` may be a
 toolchain question (which wcc386) rather than a decompiler one.
 
+## Emitter defects the proven-source oracle found (all FIXED, decompiler was already right)
+
+Three in three diffs — the harness was discarding what the decompiler knew:
+
+| defect | scale | fix |
+|---|---|---|
+| `pc*` global declared `int *`, so a call through it is load-then-call-register (8 bytes) instead of `ff15 <abs32>` (7) | 53 | `bd556f7`/`171b785` |
+| padding trimmer stripped trailing `0x00` that was a real OPERAND byte — `e9 0c610100` cut to 4 | 37 extents | `e81e90f` |
+| every scalar Ram global declared `int`, so byte/word stores compiled as dword stores | **2636 of 4548 declarations** | `039b1ec` |
+
+The last is the big one: widths now come from the Funcdata's varnodes instead of the name prefix.
+After: 1912 int · 990 unsigned char · 722 unsigned short · 593 char · 331 short.
+
+**The pattern worth naming: the compass has been wrong more often than the engine.** Five
+comparator/harness faults this campaign, three of them in one afternoon.
+
+## Open, measured, not yet fixed
+
+- **stack parameters not recovered** — ~100 functions read a `Stack<offset>` value they never
+  assign. `0006aec4` is `mov eax,[esp+4] ; mov eax,[eax] ; shr eax,8 ; ret`, emitted as an
+  UNINITIALISED LOCAL plus a synthesized same-named global. The cspec is fine — it declares
+  `<pentry minsize=1 maxsize=500 align=4><addr offset="4" space="stack"/>` — so the recovery is
+  not consulting it. Decompiler work.
+- **`ret imm16`** (31): the RETURN operand IS the stack-parameter count (Ghidra models it as
+  `extrapop`); unused today.
+
 ## The Phase-1 lane is the honest target
 
 264 functions the tracker proves reproducible; we hold 83 (34 EXACT + 49 RELOC_EXACT), 177 miss,
