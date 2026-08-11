@@ -23,12 +23,54 @@ Archives at `~/software/MetaWare.Compilers` (locate via an env var, `METAWARE_AR
 | --- | --- | --- |
 | **High C 386 v2.31** (1992, C only) | **uncompressed** 1.2 MB floppies | ✅ libraries + `LIB/SRC/*.ASM` runtime sources, no installer needed |
 | **High C++ v3.03** | `highc.zip` = an already-installed tree | ✅ `LIB/*.LIB`, `BIN/` compiler, 158 `INC/` headers — **compiles today** |
-| High C++ v3.04 (1993) | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ❌ needs the DOS installer under dosemu2 |
-| High C++ v3.31 | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ❌ same installer (byte-identical size, 140186) — **solving v3.04 solves both** |
+| High C++ v3.04 (1993) | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ⚠️ installer automated up to its final screen; needs **one** interactive run |
+| High C++ v3.31 | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ⚠️ same installer (byte-identical, 140186) — one recipe covers both |
 | High C++ v3.2 (OS/2, Mar 1994) | ISO → `HCOS2_1.ZOO` + `ZOO.EXE` | ❌ ZOO archive, and an OS/2 host — lowest priority |
 
 So two versions are available with zero installer work, which is enough for every deliverable
-below. v3.04/v3.31 are a later "more FID columns" errand, not a blocker.
+below. v3.04/v3.31 are a "more FID columns" errand, not a blocker.
+
+## Installing them — the recorded recipe
+
+`scripts/setup-metaware-dosemu.sh <version> [--compile file.c] [--interactive]`, sibling of
+`setup-watcom-dosemu.sh` (env-located archives via `METAWARE_ARCHIVES`, `mktemp` work dir,
+stage into `DOSEMU_C`). Verified: `2.31` → 9 `.LIB`; `3.03` → 39 `.LIB`; `3.03 --compile` →
+`probe.obj`.
+
+**Each version installs to its own `C:\HC<tag>`.** Not cosmetic: the packed installer hardcodes
+`@Subdir = "\HIGHC"`, so two versions installed unmodified **silently merge into one tree** —
+which is what happened on the first hand-run, mixing v3.04 binaries into a v3.03 install. The
+script rewrites `@Subdir` in the staged `INSTALL.DAT`.
+
+The packed versions use **Knowledge Dynamics INSTALL 3.10.00**. All 7 disks are staged *flat*
+into one source directory so it never asks for a swap (`MWHC.00N` are uniquely named; only
+`DISK.ID`/`INSTALL.DAT` collide, disk 1 wins). Its screens and keys:
+
+| Screen | Key | Note |
+| --- | --- | --- |
+| welcome / any `@pause` | `CR` | |
+| Specify Compiler Drive | the drive **letter**, then `CR` | `CR` alone never completes the list |
+| Specify Compiler Directory | `CR` | accepts `@Subdir` |
+| Verify Compiler Directory | **`SPACE`** then `CR` | checkbox defaults to **No**; `CR` alone loops forever |
+| Enter Serial Number | any 6 digits, `CR` | a **format** check (`1-nnnnnn`), not a licence check — the distribution's own note says to enter any number |
+| Choose Installation Options | arrows + `SPACE` + `CR` | **the blocker — see below** |
+
+Three traps, each of which cost a debugging round:
+
+1. **DOS's BIOS keyboard buffer is 16 bytes.** Piping a burst of CRs loses all but the first
+   few, so early screens eat them and later screens see nothing. Feed one screen at a time.
+2. **Send keys on screen *transitions*, not on poll ticks.** Re-sending on every tick leaks the
+   key into the *next* screen: the drive letter got typed into the subdirectory field, building
+   `C:\C\C\C\HC304` and looping.
+3. **`ESC` aborts** ("To STOP the installation, press [Esc]"). That is why the last screen
+   cannot be automated: its Yes/No list is drawn in a direct-video sub-window (its state never
+   reaches stdout), it ignores `SPACE`/`CR` from a pipe, and it wants arrow keys — which as ANSI
+   sequences begin with `ESC`, so sending one kills the installer.
+
+Hence `--interactive` for v3.04/v3.31: the script stages everything, prints the exact answers,
+and hands over the terminal. The automated path drives every screen up to the checkbox and exits
+`3` with that instruction rather than pretending to succeed. It is a **one-time** cost per
+version — the installed tree is afterwards an ordinary directory to keep or archive.
 
 ### The compiler runs
 
