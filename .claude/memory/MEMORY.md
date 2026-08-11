@@ -84,6 +84,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 
 - [void-proto-is-body-elimination](void-proto-is-body-elimination.md) — **⭐ `void_proto` is the SYMPTOM: the body was deleted as dead code because the return register wasn't recognized. The 5-byte `void FUN(void){return;}` rows are ELIMINATED bodies, not stubs.**
 - [byte-exact-class-map-2026-08-11](byte-exact-class-map-2026-08-11.md) — **⭐ every defect class MEASURED: no single lever >216 fns. Phase-1 lane + warcraft2-re's proven C is the sharpest oracle.**
+- [prologue-order-is-chain-frame](prologue-order-is-chain-frame.md) — **⭐ ANSWERED: the +3 is Watcom's CHAIN_FRAME branch, forced by `-of+`. flags.py infers `-of+` from seeing a frame — unsound.**
 - [plus3-is-lea-esp-prologue-order](plus3-is-lea-esp-prologue-order.md) — **⭐ the +3 bucket (216 fns) is `lea esp,[ebp-N]`: register saved AFTER the frame instead of before. Also why ZERO mismatches have equal length.**
 - [caller-evidence-prototypes](caller-evidence-prototypes.md) — **⭐ `54ef51f` per-call prototype (overwrites+reads) LANDED, gated; gap = both-input-and-output register.**
 - [war2-crt-identified-by-omf-lib-search](war2-crt-identified-by-omf-lib-search.md) — ⭐ warcraft2-re's 152 `crt-known` rows are free non-circular ground truth.
