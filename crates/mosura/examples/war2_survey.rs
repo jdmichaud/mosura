@@ -521,7 +521,12 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
         // `ff 15 <abs32>`. That is exactly the defect the globfnptr ground-truth gate pins, fixed in
         // the decompiler but still mis-declared here — the emitter threw the recovered type away.
         // The prelude's `typedef int code();` makes `code *` the function-pointer type.
-        let ty = if n.starts_with("pc") { "code *" } else { "int *" };
+        // `pc` is AMBIGUOUS in mosura's naming — it is pointer-to-char as often as
+        // pointer-to-code (printc emits `char * pcVar1;` for the former). So do not key on the
+        // prefix: key on whether this global is actually CALLED through, which is unambiguous and
+        // is the only case where the distinction changes the emitted instruction.
+        let called = c.contains(&format!("(*{n})("));
+        let ty = if called { "code *" } else { "int *" };
         names.insert(format!("{ty}{n};"));
     }
     for d in names {
