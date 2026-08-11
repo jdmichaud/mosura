@@ -434,9 +434,12 @@ impl Analyzer for SharedReturnAnalyzer {
         AnalyzerType::Function
     }
     fn priority(&self) -> AnalysisPriority {
-        // See the module note: after FunctionCreator (FUNCTION) and reference recovery
-        // (REFERENCE), where Ghidra's precondition (functions + flow refs present) holds.
-        AnalysisPriority::REFERENCE.after()
+        // `setPriority(AnalysisPriority.CODE_ANALYSIS.before().before())`
+        // (SharedReturnAnalyzer.java:70). The old REFERENCE.after() deviation existed because
+        // bodies and references were not ready this early; both preconditions are now
+        // load-bearing facts — bodies are computed at creation (`create_function_with_body`)
+        // and flow references are laid down by the disassembler as it decodes.
+        AnalysisPriority::CODE.before().before()
     }
     fn added(&self, program: &mut Program, set: &AddressSet, sched: &mut Scheduling) -> bool {
         // The trigger set is newly-created functions. Ghidra (SharedReturnJumpAnalyzer +

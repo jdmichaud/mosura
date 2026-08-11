@@ -230,6 +230,16 @@ pub fn analyze(program: &mut Program) {
     // check — a data export like `__bss_start` is not a function); call targets found
     // during disassembly are *not* gated this way (Ghidra makes a function at every
     // direct call target, even one pointing into data).
+    // ⭐ U1 of the manager unification: the PLT sweep runs BEFORE the fixpoint, as Ghidra
+    // disassembles the PLT during LOAD (`ElfProgramBuilder.processGotPlt` →
+    // `ElfDefaultGotPltMarkup.processLinkageTable`) — before any analyzer sees the program.
+    // This is what lets `SharedReturnAnalyzer` run INSIDE the one manager at its faithful
+    // priority: its precondition (PLT stubs decoded when PLT functions are created) becomes a
+    // load-order fact instead of a staged-pass ordering constraint. The sweep drives
+    // `mgr.run` itself, so its decode fall-out reaches the registered analyzers exactly as
+    // before — just first.
+    plt_linear_sweep(&mut mgr, program);
+
     let mut seed = AddressSet::new();
     for f in program.function_manager.functions() {
         let e = f.entry_point();
@@ -261,14 +271,6 @@ pub fn analyze(program: &mut Program) {
     mgr.scheduling().block_added(&blocks);
     mgr.run(program);
 
-    // ELF GOT/PLT markup (Ghidra `ElfDefaultGotPltMarkup.processLinkageTable`, invoked by
-    // `ElfProgramBuilder.processGotPlt` during load): linearly disassemble the whole `.plt`
-    // section so the lazy-resolve stubs — unreachable by normal flow after relocation (e.g.
-    // PLT[0] and each entry's `push; jmp PLT[0]` tail) — get decoded. Done here rather than
-    // in the loader because mosura's SLEIGH-driven disassembly lives in the analysis phase;
-    // the closure (re-seeding each gap, following flow) matches Ghidra's `disassemble` loop.
-    plt_linear_sweep(&mut mgr, program);
-
     // Re-run the no-return analysis now that functions and references exist. The call above
     // happens before disassembly, which is right for flagging *symbols* but leaves
     // `analyze`'s PLT-thunk propagation dead: that loop walks
@@ -291,11 +293,12 @@ pub fn analyze(program: &mut Program) {
     analyzers::eh_frame::analyze(program);
 
     // A7 Task 1: shared-return tail calls (Ghidra SharedReturnAnalyzer + SharedReturnAnalysisCmd).
-    // Run after disassembly + reference recovery + body computation have converged, which is
-    // the state Ghidra's FUNCTION_ANALYZER precondition assumes (functions, flow refs, and
-    // bodies present). In Ghidra the PLT stubs are disassembled during load, so the resolve-
-    // tail jumps already exist when each PLT function is created; mosura disassembles the PLT
-    // in the deferred `plt_linear_sweep`, so the shared-return scan must follow it.
+    // Still STAGED, deliberately — the LAST link of the manager unification, not the second:
+    // an in-manager registration at the faithful 398 priority was measured to create a
+    // spurious `128bc` on war2 MZ, because SR is the most sequence-sensitive consumer and
+    // mosura's main-phase cascade order still differs from Ghidra's until call-following
+    // lands (which itself waits on no-return detection parity). Order of the campaign:
+    // pattern-phase unification → call-following → THEN this pass moves in-manager.
     shared_return_pass(program);
 
     // Function Start Search — Ghidra's byte-pattern function discovery: the only route that needs
@@ -460,8 +463,8 @@ pub fn analyze(program: &mut Program) {
 /// `AutoAnalysisManager.createFunction`, so every function it creates raises a
 /// FUNCTION_ANALYSIS event that re-enters the analyzer with the new function as the "added"
 /// set — a tail call into a function that itself ends in a tail call is chased all the way
-/// down. mosura runs this pass outside the manager loop (it must follow `plt_linear_sweep`
-/// and the first `compute_function_bodies`; see `shared_return.rs`'s module note), so the
+/// down. mosura runs this pass outside the manager loop (see the note at the call site: it
+/// moves in-manager only after call-following restores Ghidra's cascade order), so the
 /// re-entry is the explicit loop here: each round feeds the previous round's new functions
 /// back in as the added set, after their references and bodies have been recovered.
 fn shared_return_pass(program: &mut Program) {
