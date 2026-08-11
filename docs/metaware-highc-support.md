@@ -387,6 +387,14 @@ instead of 341). `_mwgoc` and `_mwargstack` appear in 64% of modules, `_mwint21`
 `SMALL?`, which the same tally surfaced at 32%, is a memory-model name leaking out of the record
 stream rather than a symbol, and is excluded rather than carried as if it were a callee.
 
+⚠️ **Its measured effect is nil for these libraries**: building a column with and without the list
+produces byte-identical databases (300 records either way). In a library module those helpers are
+EXTDEF references, so they arrive as unresolved by-name children and `resolveNamedRelations`
+already declines to relate them. The list is kept because it is a correct derived statement and is
+wired as the FID recipe recommends, and it would start to matter for input where such calls
+*resolve* to hashed functions in the same program — but it is not currently buying anything, and
+the commit that added it should not be read as if it were.
+
 **Verified against a linked binary we built ourselves** — see the section above: 14/14 names
 matching 386|LINK's own map.
 

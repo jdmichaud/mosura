@@ -18,6 +18,17 @@
 # Not included: `SMALL?`, which the same tally surfaced at 32%. It is not a symbol — it is a
 # memory-model name leaking out of the record stream — so it is excluded rather than silently
 # carried as if it were a callee.
+#
+# ⚠️ MEASURED EFFECT: NONE, for these libraries. Building highc-3.31-x86-32 with and without this
+# list produces BYTE-IDENTICAL databases (300 records either way). The list is kept because it is
+# a correct, derived statement of which callees carry no information, and it is wired the way
+# docs/fid-building-databases.md recommends — but it is not currently buying anything, and saying
+# otherwise would be a claim the evidence does not support.
+#
+# Why it is inert here: in a library module these helpers are EXTDEF references, so they arrive as
+# unresolved by-name children, and `resolveNamedRelations` already declines to build a relation for
+# them. The list would start to matter for input where those calls RESOLVE to hashed functions in
+# the same program — a linked image ingested with a map, for instance.
 _mwgoc
 _mwargstack
 _mwint21
