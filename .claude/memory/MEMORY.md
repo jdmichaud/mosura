@@ -83,6 +83,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [war2-pragmatism-over-faithfulness](war2-pragmatism-over-faithfulness.md) — **⭐ USER RULE 2026-08-05: for WAR2 PRAGMATISM wins — but beyond-Ghidra has NO ORACLE: validate against a 2nd oracle, stay ADDITIVE.**
 
 - [void-proto-is-body-elimination](void-proto-is-body-elimination.md) — **⭐ `void_proto` is the SYMPTOM: the body was deleted as dead code because the return register wasn't recognized. The 5-byte `void FUN(void){return;}` rows are ELIMINATED bodies, not stubs.**
+- [plus3-is-lea-esp-prologue-order](plus3-is-lea-esp-prologue-order.md) — **⭐ the +3 bucket (216 fns) is `lea esp,[ebp-N]`: register saved AFTER the frame instead of before. Also why ZERO mismatches have equal length.**
 - [caller-evidence-prototypes](caller-evidence-prototypes.md) — **⭐ `54ef51f` per-call prototype (overwrites+reads) LANDED, gated; gap = both-input-and-output register.**
 - [war2-crt-identified-by-omf-lib-search](war2-crt-identified-by-omf-lib-search.md) — ⭐ warcraft2-re's 152 `crt-known` rows are free non-circular ground truth.
 ## Function discovery (analysis lane)
