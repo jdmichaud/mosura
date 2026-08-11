@@ -97,6 +97,12 @@ exhaustively against it:
 | processor / convention | `-3r`, `-4r`, `-5r`, `-4s` | no effect on the order |
 | source shape | stack params (`parm []`, `parm caller []`), address-taken local, shared temp, self `#pragma aux` with four `modify` lists | none yields frame + save-first |
 
+Final closing test: the period-correct compilers (10.0 beta, 10.5) and 9.01 were re-run on a
+function that HAS locals, without `-of` — the one combination that could have made
+`NeedBPProlog()` fire naturally. All three gave save-first with NO frame, identical to 10.0a. So
+even recovering the locals would not, by itself, produce a BP frame under any available compiler:
+without `-of` these compilers address locals off ESP.
+
 **Only `-d2` produces the order, and it changes the body.** The two available flag settings give
 +3 (`-of+`) or -4 (no `-of`) — measured as M10/M11: 0 gained either way.
 
