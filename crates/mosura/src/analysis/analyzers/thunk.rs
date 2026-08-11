@@ -48,9 +48,6 @@ use crate::decompile::opcode::OpCode;
 use crate::decompile::space::Address;
 use crate::sleigh::engine::Spec;
 
-/// Max x86 instruction length — the decode window, as in `shared_return.rs`.
-const MAX_INSN_LEN: usize = 16;
-
 /// `CreateThunkFunctionCmd.getSimpleFlow` (CreateThunkFunctionCmd.java:815) — *"Treat single jump
 /// or call-return as thunk"*.
 ///

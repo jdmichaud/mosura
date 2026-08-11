@@ -2223,6 +2223,24 @@ fn global_fnptr_call_is_not_a_value_cast() {
          register-indirect call (8 bytes) where the original is `call [mem]` (7). dispatch_ @ \
          {dispatch:#x}:\n{c}"
     );
+
+    // TEXT IS NOT THE PROPERTY — BYTES ARE. The C read correctly for a while and still compiled
+    // to the wrong instructions, because the survey prelude declared `typedef int (*code)()`,
+    // making `code *` a pointer-to-function-POINTER: `(*p)()` became `mov eax,[p]; call [eax]`,
+    // 8 bytes against the original's 7. Nothing in the decompiler could have fixed that, and no
+    // assertion on the C text could have caught it. So assert the SHAPE the C must compile to:
+    // one memory-indirect call, `ff 15 <abs32>`, then `ret` — 7 bytes.
+    //
+    // The call must be through a variable the type system named a CODE POINTER (mosura's
+    // `pc` prefix), not through an untyped value. Before the TypeOpCallind port the same call
+    // read `(*(code *)xRam08049070)()` — an `x`-prefixed unknown, cast at the point of use — so
+    // this discriminates: it was false before the fix and is true after.
+    assert!(
+        c.contains("(*pc"),
+        "the call target is not typed as a code pointer (expected a `pc`-prefixed variable, \
+         which is what makes the emitted C compile to `ff 15 <abs32>` rather than a load plus a \
+         register-indirect call). dispatch_ @ {dispatch:#x}:\n{c}"
+    );
 }
 
 /// Substring pair test kept local: `c` contains `open` … `close` with only a variable between.

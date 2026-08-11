@@ -43,6 +43,14 @@ use mosura::decompile::space::Address;
 // wrong-code-adjacent gap compile, which is the "adaptation masking its own absence" trap this
 // project keeps paying for. They stay COMPILE_FAIL so they stay visible.
 //
+// ⚠️ `code` IS THE FUNCTION TYPE, NOT A POINTER TO ONE. Ghidra's `TypeCode` (TYPE_CODE) is
+// executable code itself; a call target is `code *`. Declaring `typedef int (*code)()` here made
+// `code *` a pointer-to-function-POINTER, so `(*p)()` compiled to `mov eax,[p]; call [eax]` —
+// two dereferences, 8 bytes — where the original `call DWORD PTR ds:<addr>` is 7. The emitted C
+// was correct and the bytes were still wrong, which no amount of decompiler work would have
+// fixed. With `typedef int code();` the same C compiles to `ff 15 <abs32>` + `c3`, byte-identical
+// to the original modulo the relocation. Measured on oracle/ground-truth/src/globfnptr.c.
+//
 // Integer metatypes take the widest integer wcc386 has (`unsigned int`/`int`) rather than the
 // width-matching `double` the unknown metatypes take, because they are USED as integers: both
 // `uint6` sites shift (`uStack_1e >> 0x10`), and shifting a double is `E1079: Expression must be
@@ -57,7 +65,7 @@ typedef unsigned int xunknown3; typedef double xunknown6; typedef unsigned int x
 typedef unsigned char undefined3; typedef unsigned int undefined5; typedef double undefined6; typedef double undefined7;
 typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
 typedef unsigned int uint6; typedef int int6; typedef unsigned int uint10; typedef int int10;
-typedef int (*code)(); typedef unsigned int pointer;
+typedef int code(); typedef unsigned int pointer;
 typedef float float4; typedef double float8; typedef long double float10;
 typedef unsigned char uchar; typedef unsigned short ushort; typedef unsigned int uint; typedef unsigned long ulong;
 typedef unsigned char bool;
