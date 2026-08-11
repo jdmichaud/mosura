@@ -1193,61 +1193,6 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
             active.trial[ti].mark_active();
         }
     }
-    // A STACK-BASED function has no register arguments at all, and under a register convention the
-    // empty register slots ahead of the stack entry read as HOLES: `build_trial_map` synthesizes
-    // unref trials for them and `force_inactive_chain` (maxchain=2) latches on the run and marks
-    // every later trial inactive — the real stack trial included. That chain rule is a faithful
-    // port of Ghidra's `fspec.cc:1111` and must not be weakened.
-    //
-    // The holes are an artefact of asking the WRONG LIST. When the evidence says this function
-    // takes no register arguments (no register input is even a possible parameter) but does take a
-    // stack one, the convention in force is the stack-based variant — Watcom spells it
-    // `#pragma aux ... parm []`, and warcraft2-re's proven sources use exactly that for these
-    // functions. Ask that list instead and there is no hole for the rule to fire on.
-    //
-    // Measured on the `stackarg` MVE (`mov eax,[esp+4] ; inc eax ; ret 4`), which came back
-    // `(void)` with the parameter rendered as an unassigned local.
-    // STRICTLY ADDITIVE. This is beyond-Ghidra evidence, so it may only ADD a prototype where the
-    // convention found none — never re-decide one it already recovered. Without that guard it also
-    // fired on SysV functions whose parameters are legitimately on the stack (`long double` is
-    // passed there), and the `longdouble` corpus fixture dropped 1.000 -> 0.976.
-    let mut default_run = active.clone();
-    pl.fillin_map(&mut default_run);
-    if default_run.trial.iter().any(|t| t.is_used()) {
-        return default_run
-            .trial
-            .iter()
-            .filter(|t| t.is_used())
-            .map(|t| ProtoSlot { addr: t.addr, size: t.size })
-            .collect();
-    }
-    let any_reg_param = active.trial.iter().any(|t| t.addr.space == reg);
-    let stack_only = !any_reg_param && active.num_trials() > 0;
-    if stack_only {
-        let entries: Vec<ParamEntry> = pl.entry.iter().filter(|e| e.space != reg).cloned().collect();
-        // The kept entries retain their ORIGINAL group numbers (the stack overflow slot is group 4
-        // in the watcom list), and `separate_sections` indexes `resource_start[1]` as the sentinel
-        // for "past the last group" — so it must exceed the largest group present, not the entry
-        // count. A `[0, 1]` sentinel indexes off the end of the section table.
-        let sentinel = entries.iter().map(|e| e.group).max().map_or(1, |g| g + 1);
-        let stack_list = ParamList {
-            entry: entries,
-            resource_start: vec![0, sentinel],
-            is_output: false,
-        };
-        if !stack_list.entry.is_empty() {
-            let mut restaged = active.clone();
-            stack_list.fillin_map(&mut restaged);
-            if restaged.trial.iter().any(|t| t.is_used()) {
-                return restaged
-                    .trial
-                    .iter()
-                    .filter(|t| t.is_used())
-                    .map(|t| ProtoSlot { addr: t.addr, size: t.size })
-                    .collect();
-            }
-        }
-    }
     pl.fillin_map(&mut active);
     active.trial.iter().filter(|t| t.is_used()).map(|t| ProtoSlot { addr: t.addr, size: t.size }).collect()
 }
