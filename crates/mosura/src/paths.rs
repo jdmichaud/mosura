@@ -156,6 +156,13 @@ pub fn war2_exe() -> PathBuf {
     user_binary("MOSURA_WAR2_EXE", "WAR2.EXE")
 }
 
+/// An X-32-bound executable (FlashTek X-32 / X-32VM). `MOSURA_X32_EXE`, default
+/// `$HOME/x32.exe`. Native-X-32 analysis ground truth for `docs/x32-loader-notes.md`.
+/// Deliberately a generic name: the container is what is under test, not any one product.
+pub fn x32_exe() -> PathBuf {
+    user_binary("MOSURA_X32_EXE", "x32.exe")
+}
+
 /// `cnv.exe` — a Clang-built PE. `MOSURA_CNV_EXE`, default `$HOME/cnv.exe`. PE
 /// `CompilerOpinion` ground truth.
 pub fn cnv_exe() -> PathBuf {

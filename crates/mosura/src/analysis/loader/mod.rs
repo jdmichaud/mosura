@@ -11,13 +11,16 @@ pub mod metaware;
 pub mod mz;
 pub mod omf;
 pub mod pe;
+pub mod read;
 pub mod rel;
 pub mod pe_opinion;
 pub mod watcom;
+pub mod x32;
 
 pub use com::load_com;
 pub use elf::{load_elf, LoadError};
 pub use le::{detect_le, load_le};
+pub use x32::{detect_x32, is_x32_image, load_x32};
 pub use mz::load_mz;
 pub use pe::load_pe;
 

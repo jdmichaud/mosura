@@ -1,8 +1,17 @@
 # X-32 (FlashTek 32-bit DOS extender) loader — design notes
 
-**Status: planned.** This is the design + the format grounding; no loader code yet.
+**Status: implemented.** `crates/mosura/src/analysis/loader/x32.rs`, gated by
+`crates/mosura/tests/x32_loader.rs` (8 tests, 7 of which need no user-provided binary).
 Compiler-side work (detection, cspec, FID) is a separate track:
 [`metaware-highc-support.md`](metaware-highc-support.md).
+
+On the real sample the native view recovers **751 functions** where the Ghidra-parity default view
+sees 3 (the extender stub):
+
+```sh
+cargo run --release --example fidnames -- --native <exe>   # 751 functions
+cargo run --release --example fidnames -- <exe>            # 3 — the 16-bit stub, as Ghidra sees it
+```
 
 A second container Ghidra cannot open, following the standing precedent set by
 [`le-loader-notes.md`](le-loader-notes.md): **default dispatch matches Ghidra (the 16-bit MZ
@@ -126,7 +135,7 @@ Same three-function shape, so the two read as siblings:
 
 | `le.rs` | `x32.rs` |
 | --- | --- |
-| `is_le_header(data, off) -> bool` | `is_x32_image(data, inner) -> bool` — validate the inner MZ + paragraph field + descriptor table |
+| `is_le_header(data, off) -> bool` | `is_x32_image(data) -> bool` — inner MZ + paragraph field + descriptor table + the idiom |
 | `detect_le(data) -> Option<usize>` | `detect_x32(data) -> Option<X32Layout>` — the table above, or `None` |
 | `load_le(data) -> Result<Program>` | `load_x32(data) -> Result<Program>` |
 
@@ -138,7 +147,7 @@ bytes zero-padded), because the container describes one flat segment — the sam
 treatment `le.rs` documents for its objects.
 
 **Extract, don't duplicate:** `le.rs`'s private `u16le`/`u32le` move to a shared
-`loader/read.rs` used by both. That is the only change to existing loader code.
+`loader/read.rs` used by both (plus a `u8at`, and its own unit test). That is the only change to existing loader code.
 
 ### 2. Dispatch — the two-oracle policy, generalised once (agreed)
 
@@ -162,18 +171,22 @@ Add `x32_exe()` via the existing `user_binary` helper (`MOSURA_X32_EXE`, `$HOME`
 default), and a row in the user-provided-binaries table with size + sha256. Skip-if-absent, like
 every other external. No absolute path and no product name anywhere in the tree.
 
-## Tests — the loader must be provable without any user-provided binary
+## Tests — the loader is provable without any user-provided binary
 
 The real samples are copyrighted and absent on a clean clone, so they can only ever be a
 skip-if-absent extra. The gate that actually proves the loader is a **synthetic X-32 builder** in
 test code — the positive-control discipline `over_decode --self-test` already sets here.
 
-`fn build_x32(entry: u32, sixteen_bit_len: usize, payload: &[u8], memsz: u32) -> Vec<u8>`
-assembles a real container: a stub, an inner MZ header whose image closes to EOF, the image
-header (paragraph field + descriptor table with base-0 flat descriptors), a 16-bit region ending
-in the transfer idiom carrying `entry`, then `payload` as the flat image.
+`build_x32(stub_len, sixteen_len, entry, payload, bss_end)` assembles a real container: a stub, an
+inner MZ header whose image closes to EOF, the image header (paragraph field + descriptor table
+with base-0 flat descriptors), a 16-bit region ending in the transfer idiom carrying `entry`, then
+`payload` as the flat image.
 
-Gates:
+Every gate runs over a **three-case matrix** — `(0x540, 0x6b90, entry 0xd)`, `(0x200, 0x4310,
+entry 0x320)`, `(0x100, 0x1000, entry 0x2a)` — so a loader that hardcoded either constant both
+real samples agree on (entry `0xd`, slot at `flat - 0x3bb8`) fails.
+
+Gates, as implemented:
 
 1. **Detection** — a built container is detected; the negative controls are not: a bare 16-bit MZ,
    a DOS/4GW-bound LE, an ELF, a PE, a truncated/garbage stub. (`is_le_header`'s discipline: a
@@ -188,15 +201,24 @@ Gates:
    if the pipeline runs over what it maps.
 5. **Refusal** — paragraph field past EOF, missing transfer idiom, and a relocation at or above the
    32-bit image start each produce `LoadError`, not a garbage map.
-6. **Real-binary extra (skip-if-absent)** — `MOSURA_X32_EXE`: assert the derived layout, that every
-   recovered reference targets mapped memory, and 0 spurious `COMPUTED_JUMP` — the same
-   clean-subset invariants `le_war2_analysis` uses, since there is no Ghidra golden to diff.
+6. **Default dispatch unchanged** — `loader::load` on an X-32 file still yields
+   `x86:LE:16:Real Mode`, i.e. the Ghidra-parity stub view. This is the gate that keeps the
+   two-oracle policy honest: the native view must stay opt-in.
+7. **Registry routing** — `native_loader_name` returns `X-32` for a built container and `None`
+   for a plain DOS MZ (which the default dispatch owns).
+8. **Real-binary extra (skip-if-absent)** — `MOSURA_X32_EXE`: the derived layout, >100 functions
+   recovered, the entry inside mapped memory, and every recovered reference targeting mapped
+   memory — the clean-subset invariants `le_war2_analysis` uses, since there is no Ghidra golden
+   to diff.
 
 ## Open items
 
 - **`image+0x12c` as memsz** has two-sample support and a plausible reading (sample A's value is
-  exactly the end of the range its own startup `rep stosd`-clears). If it fails on a third sample,
-  fall back to `memsz = file image size` and record why.
+  exactly the end of the range its own startup `rep stosd`-clears). The loader therefore *sanity
+  checks* it rather than trusting it — the value must be at least the file image size and within
+  1 GB of the base — and silently falls back to the file image size when it is not. So a third
+  sample with a different meaning for that field degrades to a file-sized map instead of a wrong
+  one.
 - **The transfer idiom is one runtime build's encoding.** Refusing to load when it is absent keeps
   that honest; a second runtime version extends the pattern set with its own evidence.
 - **No Ghidra oracle**, by construction. The oracles here are the container's own metadata,

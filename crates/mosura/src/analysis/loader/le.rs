@@ -21,13 +21,8 @@ use super::elf::LoadError;
 use crate::analysis::program::{Memory, Program, SymbolType};
 use crate::decompile::space::{Address, SpaceKind, SpaceManager};
 
-/// Read a little-endian u32 from `data` at `off`.
-fn u32le(data: &[u8], off: usize) -> Option<u32> {
-    data.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-}
-fn u16le(data: &[u8], off: usize) -> Option<u16> {
-    data.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
-}
+// The little-endian readers live in `super::read`, shared with `x32.rs`.
+use super::read::{u16le, u32le};
 
 /// LE header field offsets (relative to the LE header start), per the LE/LX spec.
 // the field-offset namespace shares the loader module's `le` name; renaming would churn callers

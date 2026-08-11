@@ -123,6 +123,51 @@ pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
     Ok(program)
 }
 
+/// The beyond-Ghidra container loaders, in the order [`analyze_native_file`] tries them.
+///
+/// One list rather than one entry point per format. Adding a container Ghidra cannot open then
+/// touches this line and nothing else, and the eventual CLI gets a single `--native` flag with a
+/// single warning path instead of a flag per format.
+///
+/// Each entry is `(name, claims, load)`. `claims` must be strict: a container that guesses wrong
+/// is worse than one that declines, because the caller's fallback is the Ghidra-parity view,
+/// which is always correct even when it is only the 16-bit stub.
+type NativeLoader = (&'static str, fn(&[u8]) -> bool, fn(&[u8]) -> Result<Program, loader::LoadError>);
+const NATIVE_LOADERS: &[NativeLoader] = &[
+    ("LE", |d| loader::detect_le(d).is_some(), loader::load_le),
+    ("X-32", loader::is_x32_image, loader::load_x32),
+];
+
+/// Load a binary with the **native** (beyond-Ghidra) loader that claims it, and run the full
+/// auto-analysis pipeline. The opt-in half of the two-oracle policy
+/// (`docs/le-loader-notes.md`, `docs/x32-loader-notes.md`): the default dispatch
+/// ([`analyze_file`]) keeps a DOS-extender-bound executable on the Ghidra-parity MZ-stub path,
+/// while this view loads the real 32-bit image and is validated against the container's own
+/// metadata, since Ghidra has no loader to diff against.
+///
+/// Returns the first loader that claims the file. `Unsupported` when none does — deliberately,
+/// so a caller asking for the native view of a file that has none is told, rather than silently
+/// handed the stub.
+pub fn analyze_native_file(path: &Path) -> Result<Program, AnalysisError> {
+    let data = std::fs::read(path)?;
+    for (_name, claims, load) in NATIVE_LOADERS {
+        if claims(&data) {
+            let mut program = loader::with_compiler_version(&data, load(&data)?);
+            analyze(&mut program);
+            return Ok(program);
+        }
+    }
+    Err(AnalysisError::Load(loader::LoadError::Unsupported(
+        "no native (beyond-Ghidra) loader claims this file; the default dispatch handles it".into(),
+    )))
+}
+
+/// Which native loader claims `data`, without loading it — for a CLI that wants to warn that the
+/// default view does not cover the file's real content.
+pub fn native_loader_name(data: &[u8]) -> Option<&'static str> {
+    NATIVE_LOADERS.iter().find(|(_, claims, _)| claims(data)).map(|(n, _, _)| *n)
+}
+
 /// Run the auto-analysis pipeline over a loaded [`Program`] (A3 framework + A4 analyzers):
 /// recursive-descent disassembly from the loader's functions and entry points, creating
 /// code units and discovering functions at call targets, to a fixpoint.

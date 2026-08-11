@@ -7,6 +7,7 @@
 //! ```text
 //! cargo run --release --example fidnames -- <binary> [db-dir]
 //! cargo run --release --example fidnames -- --le <bound-exe>     # native LE loader
+//! cargo run --release --example fidnames -- --native <exe>       # whichever native loader claims it
 //! ```
 //!
 //! `--le` selects [`analyze_le_file`](mosura::analysis::analyze_le_file) for a DOS/4GW-bound
@@ -19,8 +20,16 @@
 //! name to the column it came from.
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
-    let le = args.peek().map(|a| a == "--le").unwrap_or(false);
-    if le {
+    let mut le = false;
+    let mut native = false;
+    while let Some(a) = args.peek() {
+        match a.as_str() {
+            "--le" => le = true,
+            // `--native` picks whichever beyond-Ghidra loader claims the file (LE, X-32, ...)
+            // via `analyze_native_file`, rather than naming one.
+            "--native" => native = true,
+            _ => break,
+        }
         args.next();
     }
     let bin =
@@ -30,7 +39,9 @@ fn main() {
         None => mosura::paths::fid_db_dirs(),
     };
 
-    let program = if le {
+    let program = if native {
+        mosura::analysis::analyze_native_file(&bin)
+    } else if le {
         mosura::analysis::analyze_le_file(&bin)
     } else {
         mosura::analysis::analyze_file(&bin)

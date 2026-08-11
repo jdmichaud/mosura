@@ -110,6 +110,7 @@ against.
 | --- | --- | --- | --- | --- |
 | `WAR2.EXE` (DOS/4GW-bound Watcom LE) | `MOSURA_WAR2_EXE → $HOME/WAR2.EXE` | `4789987d1c4f4c3d02ad28cd20377d58d54f51c1fd2976d842ac33861eed0f63` / 878119 B | `le_war2_analysis`, `le_war2_objects`, `watcom_detection` | native-LE analysis + Watcom detection ground truth |
 | `cnv.exe` (Clang PE) | `MOSURA_CNV_EXE → $HOME/cnv.exe` | `132b8d5c005cc0cdb6c5e7f91d326eb1339f4faf97c132c94552bc6d65dd9903` / 1075200 B | `pe_compiler_opinion` | `PeLoader.CompilerOpinion` → `clangwindows`/`clang:unknown` |
+| `x32.exe` (FlashTek X-32 / X-32VM-bound 32-bit DOS exe) | `MOSURA_X32_EXE → $HOME/x32.exe` | `2e22dab11d4ae283acf89ce16944b83f9c4e88ba510fe09608f1e6685a4cf294` / 325075 B | `x32_loader::real_x32_binary_analyses_cleanly` | native X-32 analysis ground truth (`docs/x32-loader-notes.md`); the synthetic gates in that file need no binary |
 | `comcom32.exe` (DJGPP MZ) | `MOSURA_COMCOM32_EXE → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
 
 > **Implemented (task #6).** These three env vars are live, resolved by
