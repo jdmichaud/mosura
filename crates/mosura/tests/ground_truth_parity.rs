@@ -2105,10 +2105,11 @@ fn recovered_functions_are_in_the_listing() {
 /// disassembler's offcut bound doing its job — and it is exactly why the *third* parameter, whose
 /// victim `dispatch_` had not been decoded yet, is the one that does the damage. A fixture with a
 /// single thunk would have hit the same race and might have passed unfixed.
+// GREEN since the `ClearFlowAndRepairCmd` port (`analyzers/clearflow.rs` +
+// `find_repair_locations`): the discovered no-return dispatch_ gets its call sites
+// overridden AND the wrong units already on the ground cleared + re-disassembled —
+// docs/function-discovery-backlog.md §9 #5, closed.
 #[test]
-#[ignore = "expected-RED: the fix needs a flow-override model + FindNoReturnFunctionsAnalyzer \
-            (\"Non-Returning Functions - Discovered\"), neither of which is ported — \
-            docs/function-discovery-backlog.md §9 #5"]
 fn inline_call_parameters_are_not_decoded_as_code() {
     let bin = ground_truth_dir().join("inlineparam.watcom-x86-32");
     if !bin.exists() {

@@ -98,6 +98,16 @@ impl Listing {
         self.units.insert((addr.space.0, addr.offset), (addr, unit));
     }
 
+    /// Remove the code unit STARTING at `addr` (the unit half of Ghidra's `ClearCmd`, which
+    /// `ClearFlowAndRepairCmd` drives). Returns whether a unit was removed. The caller owns
+    /// the reference half (`ReferenceManager::remove_refs_from_set`) and any flow-override
+    /// stored for the address — Ghidra keeps both on the instruction record, so clearing it
+    /// clears them; mosura stores them beside the listing.
+    pub fn undefine(&mut self, addr: Address) -> bool {
+        self.instruction_starts.remove(&(addr.space.0, addr.offset));
+        self.units.remove(&(addr.space.0, addr.offset)).is_some()
+    }
+
     /// The first instruction starting strictly after `addr`, in `addr`'s space (Ghidra
     /// `Listing.getInstructionAfter`).
     pub fn instruction_after(&self, addr: Address) -> Option<Address> {

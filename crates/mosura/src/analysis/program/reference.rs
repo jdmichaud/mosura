@@ -236,6 +236,30 @@ impl ReferenceManager {
         // `retain` shifts every later index, so the from/to indices are rebuilt wholesale rather
         // than patched. Reached only when a reference really was removed, per the early-out above.
         self.rebuild_endpoint_indices();
+        self.generation += 1;
+    }
+
+    /// Remove every reference whose SOURCE address lies in `set` — the reference half of
+    /// clearing code units (Ghidra `ClearCmd`: a cleared instruction's references go with
+    /// it). One pass + one index rebuild regardless of how many units are cleared.
+    pub fn remove_refs_from_set(&mut self, set: &crate::analysis::program::AddressSet) {
+        let any = self
+            .from_index
+            .keys()
+            .any(|&(s, o)| set.contains(Address::new(crate::decompile::space::SpaceId(s), o)));
+        if !any {
+            return;
+        }
+        self.refs.retain(|r| !set.contains(r.from));
+        self.seen.retain(|k| {
+            !set.contains(Address::new(crate::decompile::space::SpaceId(k.0), k.1))
+        });
+        self.dests.clear();
+        for r in &self.refs {
+            self.dests.insert((r.to.space.0, r.to.offset));
+        }
+        self.rebuild_endpoint_indices();
+        self.generation += 1;
     }
 
     fn rebuild_endpoint_indices(&mut self) {

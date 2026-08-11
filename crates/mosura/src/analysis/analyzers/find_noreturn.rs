@@ -374,6 +374,45 @@ impl FindNoReturnFunctionsAnalyzer {
         }
         overridden
     }
+
+    /// `findRepairLocations` (:302): the DEFAULT fall-through of every call to the
+    /// non-returning `entry` — the address where wrong code was laid before the verdict
+    /// existed. A location is a repair seed only if nothing else justifies it: it is not the
+    /// entry itself, not an entry point, and NO flow reference targets it. A seed that holds
+    /// no instruction is dropped (Ghidra clears only an error bookmark there, which mosura
+    /// does not model). `skipNOPS` (:341) is not ported — the corpus' inline parameters are
+    /// never NOP runs; noted rather than silently skipped.
+    fn find_repair_locations(&self, program: &Program, entry: Address) -> AddressSet {
+        let mut clear_inst = AddressSet::new();
+        for (from, len) in program
+            .reference_manager
+            .refs_to(entry)
+            .filter(|r| r.ref_type.is_call())
+            .filter_map(|r| program.listing.instruction_at(r.from).map(|(l, _)| (r.from, l)))
+            .collect::<Vec<(Address, u32)>>()
+        {
+            // `instr.getFallThrough()` is null once the CALL_RETURN override is applied, so
+            // Ghidra falls back to the DEFAULT fall-through offset (:317-325) — the byte
+            // after the call, where the wrong decode starts.
+            let ft = Address::new(from.space, from.offset + u64::from(len));
+            // :329 — never the entry being marked.
+            if ft == entry {
+                continue;
+            }
+            // :334-338 — an entry point is never a repair seed.
+            if program.entry_points.contains(&ft) {
+                continue;
+            }
+            // :340 — a location some flow still targets was not created by this bad flow.
+            if program.reference_manager.refs_to(ft).any(|r| r.ref_type.is_flow()) {
+                continue;
+            }
+            if program.listing.instruction_at(ft).is_some() {
+                clear_inst.add_range(ft.space, ft.offset, ft.offset);
+            }
+        }
+        clear_inst
+    }
 }
 
 impl Analyzer for FindNoReturnFunctionsAnalyzer {
@@ -399,6 +438,7 @@ impl Analyzer for FindNoReturnFunctionsAnalyzer {
         }
 
         let mut created = AddressSet::new();
+        let mut marked: Vec<Address> = Vec::new();
         for off in noreturn_set {
             let entry = Address::new(self.ram, off);
             // `setFunctionNonReturning` (:198): create the function if there is none, then flag
@@ -416,8 +456,25 @@ impl Analyzer for FindNoReturnFunctionsAnalyzer {
             // `fixCallingFunctionBody` (:715) recomputes each calling function's body, which in
             // mosura is `compute_function_bodies`' job and already runs to convergence; the
             // bookmark half has no mosura equivalent.
-            //
-            // `repairDamagedLocations` (:139) would follow — NOT ported, see the module note.
+            marked.push(entry);
+        }
+        // `repairDamagedLocations` (:138-147) — a SECOND loop, after every entry is marked:
+        // clear the wrong code laid at each call site's fall-through before the no-return
+        // verdict existed, and re-disassemble the flows that entered it. The protected set is
+        // the no-return entries themselves (:144 passes `noReturnSet`; the manager's
+        // protected-locations store, :175, has no mosura counterpart — the pattern search's
+        // `code_locations` are computed but never registered).
+        let mut protected = AddressSet::new();
+        for e in &marked {
+            protected.add_range(e.space, e.offset, e.offset);
+        }
+        for e in &marked {
+            let damaged = self.find_repair_locations(program, *e);
+            if !damaged.is_empty() {
+                crate::analysis::analyzers::clearflow::clear_flow_and_repair(
+                    program, &damaged, &protected, sched,
+                );
+            }
         }
         if !created.is_empty() {
             sched.function_defined(&created);

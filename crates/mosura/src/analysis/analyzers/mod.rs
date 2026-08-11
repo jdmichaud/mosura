@@ -5,6 +5,7 @@
 //! entry points and call targets ([`FunctionCreator`]).
 
 pub mod address_table;
+pub mod clearflow;
 pub mod demangler;
 pub mod eh_frame;
 pub mod external_jump;
