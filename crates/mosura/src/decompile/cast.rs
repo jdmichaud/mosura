@@ -127,8 +127,12 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
         // type only when that parameter is TYPE-LOCKED, and mosura models no type-locked call
         // prototypes, so its fallback to `TypeOp::getInputLocal` is the whole reachable behaviour —
         // the same argument already documented for `output_token`'s CALL arm.)
+        // CALLIND is NOT here: `TypeOpCallind` declares `getInputLocal` but no `getInputCast`
+        // (typeop.hh:326-332), so Ghidra uses the BASE `TypeOp::getInputCast` — cast whenever the
+        // target's actual type differs from the `code *` local. Listing it here meant "no cast
+        // ever", which is why printc had to hardcode one; now the cast appears only where the
+        // type system asks for it.
         OpCode::Cbranch
-        | OpCode::Callind
         | OpCode::Callother
         | OpCode::Return
         | OpCode::Indirect

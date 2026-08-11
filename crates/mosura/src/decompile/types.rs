@@ -34,6 +34,13 @@ pub enum Datatype {
     Bool,
     /// IEEE float of N bytes.
     Float(u32),
+    /// Ghidra `TypeCode` (`TYPE_CODE = 11`, type.hh:86) — "Data is actual executable code".
+    /// `TypeFactory::getTypeCode` (type.cc) hands back a size-1 generic, complete code object;
+    /// it exists to be POINTED AT, and `TypeOpCallind::getInputLocal` (typeop.cc) makes exactly
+    /// that pointer the local type of an indirect call's slot 0: "First parameter is code
+    /// pointer". Without it a call target is only ever `undefined4`, so the printer must cast the
+    /// value to call it — which is a different program from `call [mem]`.
+    Code,
     /// Pointer of N bytes to a pointee.
     Pointer(u32, Box<Datatype>),
     /// Array of `count` elements of the given type (Ghidra `TypeArray`).
@@ -48,7 +55,8 @@ impl Datatype {
             Datatype::Void => 0,
             // Ghidra `TypeSpacebase` is size 0 (open-ended, `Datatype(0,1,TYPE_SPACEBASE)`).
             Datatype::Spacebase(_) => 0,
-            Datatype::Bool | Datatype::Char => 1,
+            // `getTypeCode` reads `typecache[1][...]`: the generic code object is size 1.
+            Datatype::Bool | Datatype::Char | Datatype::Code => 1,
             Datatype::Unknown(n) | Datatype::Int(n) | Datatype::Uint(n) | Datatype::Float(n) => *n,
             Datatype::Pointer(n, _) => *n,
             Datatype::Array(elem, count) => elem.size() * *count as u32,
@@ -67,11 +75,13 @@ impl Datatype {
             Datatype::Unknown(_) => 2,
             Datatype::Char | Datatype::Int(_) | Datatype::Uint(_) => 3,
             Datatype::Bool => 4,
-            Datatype::Float(_) => 5,
-            Datatype::Pointer(..) => 6,
+            // Ghidra `TYPE_CODE = 11`, between `TYPE_BOOL = 12` and `TYPE_FLOAT = 10`.
+            Datatype::Code => 5,
+            Datatype::Float(_) => 6,
+            Datatype::Pointer(..) => 7,
             // aggregates are more specific than a pointer (Ghidra TYPE_ARRAY/STRUCT < TYPE_PTR)
-            Datatype::Array(..) => 7,
-            Datatype::Struct(..) => 8,
+            Datatype::Array(..) => 8,
+            Datatype::Struct(..) => 9,
         }
     }
 
@@ -85,6 +95,7 @@ impl Datatype {
             Datatype::Array(..) => 3,     // SUB_ARRAY
             Datatype::Pointer(..) => 6,   // SUB_PTR
             Datatype::Float(_) => 8,      // SUB_FLOAT
+            Datatype::Code => 9,          // SUB_CODE
             Datatype::Bool => 10,         // SUB_BOOL
             Datatype::Uint(_) => 16,      // SUB_UINT_PLAIN
             Datatype::Int(_) => 17,       // SUB_INT_PLAIN
@@ -234,6 +245,9 @@ impl Datatype {
             Datatype::Uint(n) => format!("uint{n}"),
             Datatype::Bool => "bool".into(),
             Datatype::Float(n) => format!("float{n}"),
+            // Ghidra's `code` pseudo-type; the survey prelude declares `typedef int (*code)();`
+            // so `code *` renders as a callable function pointer.
+            Datatype::Code => "code".to_string(),
             Datatype::Pointer(_, to) => format!("{} *", to.name()),
             Datatype::Array(elem, count) => format!("{}[{}]", elem.name(), count),
             Datatype::Struct(n, _) => format!("struct_{n}"),

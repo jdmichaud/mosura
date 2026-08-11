@@ -1066,10 +1066,30 @@ impl<'a> PrintC<'a> {
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {
-                // indirect call through a computed target — Ghidra casts it to a code pointer
-                let tgt = self.operand(a(0), 16, false);
+                // `PrintC::opCallind` (printc.cc) pushes `function_call`, then `dereference`, then
+                // the target — and NO cast. Any cast is the type system's, inserted by
+                // ActionSetCasts through the base `TypeOp::getInputCast` against the `code *`
+                // local type of slot 0. Hardcoding `(code *)` here produced it even when the
+                // target was ALREADY a code pointer, and the redundant cast is not cosmetic: the
+                // C it yields loads the pointer into a register and calls the register, where the
+                // original is a single memory-indirect `call [mem]`.
+                //
+                // A CONSTANT target is the exception, and it is also Ghidra's: `pushConstant`'s
+                // TYPE_PTR arm routes a code-pointer constant to `pushPtrCodeConstant`
+                // (printc.cc), which prints the FUNCTION NAME when the address resolves in the
+                // global scope and returns false otherwise — falling through to the ordinary
+                // constant rendering, which carries the pointer type as a cast. mosura has no
+                // global function lookup at this point, so it takes the second path: an explicit
+                // `(code *)` on the constant, which is what makes `(*(code *)0x1006ca)()` valid C.
+                let t0 = a(0);
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
-                (format!("(*(code *){tgt})({})", args.join(", ")), 16)
+                if self.f.vn(t0).is_constant() {
+                    let tgt = self.operand(t0, 16, false);
+                    (format!("(*(code *){tgt})({})", args.join(", ")), 16)
+                } else {
+                    let tgt = self.operand(t0, 15, false);
+                    (format!("(*{tgt})({})", args.join(", ")), 16)
+                }
             }
             // PIECE (CONCAT) — heritage refinement / Ghidra's `guard` rejoin two pieces; printed
             // functionally as `CONCAT<s0><s1>(hi, lo)` (`TypeOpPiece::getOperatorName`, `typeop.cc`).

@@ -92,6 +92,17 @@ pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype 
     if slot == 1 && matches!(o.code(), OpCode::IntLeft | OpCode::IntRight | OpCode::IntSright) {
         return Datatype::Int(size);
     }
+    // `TypeOpCallind::getInputLocal` (typeop.cc): "First parameter is code pointer" —
+    //     td = tlst->getTypeCode();
+    //     return tlst->getTypePointer(op->getIn(0)->getSize(), td, spc->getWordSize());
+    // Without this the target of an indirect call is only ever `undefined<N>`, so calling it
+    // requires a cast of the VALUE — `(*(code *)g)()` — which loads the global into a register
+    // and calls the register. The original `call DWORD PTR ds:<addr>` is one memory-indirect
+    // instruction with no load, so every such function was a guaranteed byte mismatch. Typing
+    // the varnode is the fix; the printer was already faithful to the type it was given.
+    if slot == 0 && o.code() == OpCode::Callind {
+        return Datatype::Pointer(size, Box::new(Datatype::Code));
+    }
     base(op_meta(o.code()).1, size)
 }
 
