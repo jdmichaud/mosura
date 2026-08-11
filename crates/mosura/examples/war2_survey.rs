@@ -241,6 +241,42 @@ fn main() {
     // Next-entry map (same code object) → function byte extent [entry, next_entry).
     let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
 
+    // ── CALLEE CLOBBER PRE-PASS ────────────────────────────────────────────────────────────────
+    // The emitted C declares every callee as a bare `extern int func_0xNNN();`, so wcc386 applies
+    // the DEFAULT __watcall contract: eax/ebx/ecx/edx destroyed, esi/edi/ebp preserved. WAR2's real
+    // source did not rely on that default — it carried per-function `#pragma aux ... modify [...]`
+    // lists, and the compiler generated code around them. Measured example, FUN_00011920:
+    //
+    //   original   xor edx,edx ; call FUN_00059344 ; mov [g],edx     <- EDX held ACROSS the call
+    //   ours       call func_0x00059344(g) ; g = 0                   <- must rematerialise the 0
+    //
+    // The original only works because that callee spares EDX. Without the pragma no source we emit
+    // can compile to those bytes, however correct its logic — and the error runs BOTH ways: a
+    // callee that clobbers ESI/EDI/EBP is assumed by default to preserve them, so the caller keeps
+    // live values there across a call the original could not.
+    //
+    // So recover each function's clobber set from the binary and declare it. A register is claimed
+    // PRESERVED only when the linear decode of the whole extent never writes it outside a
+    // push/pop pair — never-written is a proof, and anything uncertain (a decode gap, an
+    // unreadable extent) drops the whole pragma so that function keeps today's default. The safe
+    // direction is always "more modified".
+    let clobbers: std::collections::HashMap<u64, Vec<u8>> = {
+        let mut m = std::collections::HashMap::new();
+        if let Some((sp, cx)) = mosura::lang::load_cached(&prog.language_id) {
+            for (i, (va, _)) in entries.iter().enumerate() {
+                let end = entry_offs.get(i + 1).copied().unwrap_or(va + 256);
+                if end <= *va || end - va > 65536 {
+                    continue;
+                }
+                if let Some(set) = clobbered_registers(&prog, sp, cx, *va, end) {
+                    m.insert(*va, set);
+                }
+            }
+        }
+        eprintln!("clobber pre-pass: {} of {} functions have a proven set", m.len(), entries.len());
+        m
+    };
+
     let mut mf = std::io::BufWriter::new(std::fs::File::create(&manifest_path).unwrap());
     // Stamp the manifest itself, so a .tsv that has been copied away from its directory still
     // says which tree produced it. Both consumers skipped exactly one line (compile.sh's
@@ -349,7 +385,7 @@ fn main() {
 
         // Synthesize a standalone TU and detect decompiler-artifact "smells".
         let thunk = matches!(region.first(), Some(0xe9) | Some(0xeb)) && orig_len <= 8;
-        let (tu, mut smells) = build_tu(&c, *va, false);
+        let (tu, mut smells) = build_tu(&c, *va, false, &clobbers);
         if thunk {
             smells.push("thunk".into());
         }
@@ -460,7 +496,12 @@ fn compilable_partial_symbols(c: &str) -> String {
 /// Scan the decompiled C for identifier families that need a top-level declaration to form a
 /// standalone translation unit, synthesize those declarations + the typedef prelude, and return
 /// the full TU text plus a list of decompiler-artifact "smell" tags.
-fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
+fn build_tu(
+    c: &str,
+    self_va: u64,
+    non_contig: bool,
+    clobbers: &std::collections::HashMap<u64, Vec<u8>>,
+) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
     // pointer use, so it keeps its scalar declaration).
@@ -504,6 +545,15 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
     fs.sort();
     for f in fs {
         decls.push_str(&format!("extern int {f}();\n"));
+        // Declare the callee's measured clobber set. Registers absent from `modify` are preserved,
+        // which is exactly the contract the original source's `#pragma aux` carried and which the
+        // compiler's register allocator plans around.
+        if let Some(va) = callee_va(&f) {
+            if let Some(set) = clobbers.get(&va) {
+                let regs: Vec<&str> = set.iter().filter_map(|o: &u8| watcom_reg_name(*o)).collect();
+                decls.push_str(&format!("#pragma aux {f} modify [{}];\n", regs.join(" ")));
+            }
+        }
     }
     // Ram globals + synthetic register vars. If ever indexed, declare as pointer.
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -620,4 +670,101 @@ fn ctype_for(prefix: char) -> &'static str {
         'p' => "void *",
         _ => "int", // x (xunknown) and anything else
     }
+}
+
+/// x86-32 SLEIGH register offset → the name Watcom's `#pragma aux ... modify [...]` uses.
+/// ESP (16) is deliberately absent: the stack pointer is never a `modify` member.
+fn watcom_reg_name(off: u8) -> Option<&'static str> {
+    Some(match off {
+        0 => "eax",
+        4 => "ecx",
+        8 => "edx",
+        12 => "ebx",
+        20 => "ebp",
+        24 => "esi",
+        28 => "edi",
+        _ => return None,
+    })
+}
+
+/// The VA a callee identifier refers to — `func_0x0005a1b2` / `FUN_0005a1b2`.
+fn callee_va(name: &str) -> Option<u64> {
+    let h = name.strip_prefix("func_0x").or_else(|| name.strip_prefix("FUN_"))?;
+    u64::from_str_radix(h, 16).ok()
+}
+
+/// The registers a function WRITES across its whole extent, or `None` when the extent cannot be
+/// decoded cleanly enough to prove anything.
+///
+/// This is a deliberate over-approximation of "clobbered", because the claim that matters is the
+/// NEGATIVE one: a register absent from the result is one no instruction in the body writes, which
+/// proves it is preserved regardless of control flow. That is why the walk does not need to follow
+/// branches — it decodes the extent linearly and takes the union, so a register written on any
+/// path is included. A register written only by a `pop` that matches an earlier `push` is the
+/// save/restore idiom and is NOT a clobber.
+///
+/// `None` (drop the pragma, keep the compiler's default) on any decode gap: an instruction that
+/// fails to decode, or one that runs past the extent. Under-claiming modification would let the
+/// compiler hold a value across a call that really destroys it, so uncertainty must fail closed.
+fn clobbered_registers(
+    prog: &mosura::analysis::program::Program,
+    spec: &mosura::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: u64,
+    end: u64,
+) -> Option<Vec<u8>> {
+    let ram = prog.default_space;
+    let mut written: HashSet<u8> = HashSet::new();
+    let mut pushed: HashSet<u8> = HashSet::new();
+    let mut restored: HashSet<u8> = HashSet::new();
+    let mut pc = entry;
+    while pc < end {
+        let bytes = prog.memory.read_window(Address::new(ram, pc), 16.min((end - pc) as usize + 15));
+        if bytes.is_empty() {
+            return None;
+        }
+        let insn = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
+        if insn.bytes.is_empty() {
+            return None;
+        }
+        let mnem = insn.mnemonic.to_ascii_uppercase();
+        let is_push = mnem.starts_with("PUSH");
+        let is_pop = mnem.starts_with("POP");
+        for o in &insn.ops {
+            if is_push {
+                // The pushed register is READ here; record it so its matching pop is not a clobber.
+                for a in &o.ins {
+                    if let Some(v) = a.as_var() {
+                        if v.space == "register" && v.offset != 16 {
+                            pushed.insert(v.offset as u8);
+                        }
+                    }
+                }
+            }
+            let Some(out) = &o.out else { continue };
+            if out.space != "register" || out.offset == 16 {
+                continue; // ESP moves with every push/pop; it is not a clobber of a caller value
+            }
+            if is_pop && pushed.contains(&(out.offset as u8)) {
+                restored.insert(out.offset as u8);
+                continue; // saved and restored — preserved after all
+            }
+            written.insert(out.offset as u8);
+        }
+        pc += insn.bytes.len() as u64;
+    }
+    if pc != end {
+        return None; // the last instruction straddled the extent boundary — decode is unreliable
+    }
+    // A register SAVED on entry and POPPED back is preserved whatever happened in between — the
+    // save/restore idiom. Skipping only the `pop` itself was not enough: `push ebp ; mov ebp,esp`
+    // writes EBP between the two, so every framed function looked like it clobbered EBP and the
+    // emitted `modify` list forced its callers to spill registers the original never spilled.
+    let mut v: Vec<u8> = written
+        .into_iter()
+        .filter(|o| !restored.contains(o))
+        .filter(|o| watcom_reg_name(*o).is_some())
+        .collect();
+    v.sort_unstable();
+    Some(v)
 }
