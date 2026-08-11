@@ -310,7 +310,18 @@ fn main() {
             .min(0x7_c4a0); // obj1 (code) end
         let mut end = next.max(*va + 1);
         let mut region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
-        while region.last().is_some_and(|&b| b == 0x00 || b == 0x90 || b == 0xcc) {
+        // Trim trailing padding, but NEVER below the end of the last decoded instruction. The
+        // trimmer used to strip any trailing 0x00/0x90/0xcc, and the last byte of a real operand is
+        // very often 0x00 — `e9 0c610100` (a 5-byte `jmp rel32` tail-call shim) came back as 4
+        // bytes with its displacement cut, and `b0 01 c2 0400` (`mov al,1 ; ret 4`) likewise. The
+        // function was then compared against a truncated original, and the row read as a decompiler
+        // failure. Measured against the tracker's true sizes: 39 extents short, 28 of them by
+        // exactly one byte.
+        //
+        // `cov_hi` is the end of the highest instruction the decompiled function actually covers,
+        // so it is the floor for trimming: padding is what lies AFTER the code, never inside it.
+        let floor = cov_hi.max(*va + 1);
+        while end > floor && region.last().is_some_and(|&b| b == 0x00 || b == 0x90 || b == 0xcc) {
             region.pop();
             end -= 1;
         }
