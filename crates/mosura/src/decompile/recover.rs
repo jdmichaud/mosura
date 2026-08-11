@@ -1009,6 +1009,9 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
         // contiguous INDIRECT run right before it — the placement Ghidra's `newIndirectCreation`
         // (`opInsertBefore`) and mosura's [`guard_calls`] both use. A creation at a return register
         // becomes a trial; checkOutputTrialUse marks it active iff live (present).
+        // The registers THIS callee is known to overwrite, recovered from its own body.
+        let recovered: Vec<(Address, u32)> =
+            f.call_specs.get(&call).map(|cs| cs.overwrites.clone()).unwrap_or_default();
         let mut active = ParamActive::new(reg);
         let mut vnmap: Vec<(Address, OpId, VarnodeId)> = Vec::new();
         for &op in block_ops[..pos].iter().rev() {
@@ -1020,7 +1023,16 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
                 continue;
             }
             let (loc, size) = (f.vn(out).loc, f.vn(out).size);
-            if outlist.characterize_as_param(loc, size) == Containment::NoContainment {
+            // A register THIS callee is known to overwrite (recovered from its own body,
+            // `CallSpec::overwrites`) is an output candidate even though the cspec's `<output>`
+            // list does not mention it: that list describes the DEFAULT convention, and these
+            // callees do not follow it. Without this the killedbycall guard alone leaves the
+            // post-call value an unnamed indirect creation and the caller consumes something
+            // undefined — measurably worse than doing nothing.
+            let is_recovered = recovered.iter().any(|&(a, sz)| a == loc && sz == size);
+            if !is_recovered
+                && outlist.characterize_as_param(loc, size) == Containment::NoContainment
+            {
                 continue; // not a return register (RCX/RSI/... clobbers) — plain killedbycall
             }
             let ti = active.register_trial(loc, size);
