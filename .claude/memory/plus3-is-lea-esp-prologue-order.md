@@ -65,17 +65,31 @@ contract differs from anything we have declared.
 
 DO NOT record a conclusion here again without an A/B that includes the beta.
 
-**THREE COMPILERS, ONE ANSWER (2026-08-11).** Same emitted C, `-4r -fpi87 -s -of+ -onatx`:
+**FIVE COMPILERS, ONE ANSWER (2026-08-11).** Same emitted C, `-4r -fpi87 -s -of+ -onatx`:
 
 | compiler | where | result |
 |---|---|---|
-| 10.0a retail | dosemu, warcraft2-re watcom_10.0a | `5589e552 ... 8d65fc 5a5dc3` |
-| 10.0 Limited Availability (beta) | wine, `C:\WBETA` | IDENTICAL |
-| 10.5 | wine, `C:\W105` | IDENTICAL |
+| 10.0a retail | dosemu | `5589e552 ... 8d65fc 5a5dc3` |
+| 10.0 Limited Availability (beta) | wine `C:\WBETA` | IDENTICAL |
+| 10.5 | wine `C:\W105` | IDENTICAL |
+| 10.6 | dosemu `C:\WAT106` | IDENTICAL |
+| 11.0 | dosemu `C:\WAT110` | IDENTICAL |
 
-All three put `push ebp ; mov ebp,esp` FIRST and the register save after, forcing the `lea`.
-The original does the opposite. So the version hypothesis is dead across the whole family the
-fingerprint doc groups together (docs/watcom-10.0-beta-codegen.md).
+All five put `push ebp ; mov ebp,esp` FIRST and the register save after, forcing the `lea`. The
+original does the opposite. The version hypothesis is dead for the entire 10.0–11.0 lineage.
+
+**THE ONE UNTESTED VERSION IS 9.01**, and the fingerprint doc puts it in a DIFFERENT codegen
+family (150-byte probe vs the 156-byte family). `scripts/setup-watcom-dosemu.sh 9.01` FAILS: the
+floppy revisions (7.0/8.5a/9.01) ship their runtime packed in `.WPK` and need `INSTALL.EXE` run
+under dosemu first, which that script documents as out of scope. Committed probes
+`oracle/codegen-probes/watcom/9.01.{obj,code}` exist, so it HAS been done — recover that recipe
+and re-run this one test. It governs 216 functions and is the single highest-value experiment
+left in the campaign.
+
+Staging recipe for the ISO revisions, which does work:
+`scripts/setup-watcom-dosemu.sh <rev>` stages to `C:\WAT<REV>`; then a dosemu BAT with
+`set WATCOM=C:\WAT110 / set PATH=C:\WAT110\BIN / set INCLUDE=C:\WAT110\H`, work dir passed as
+a single `-d` (it lands on **F:**, not G:), and objects come out lowercase.
 
 Source shapes tested and REJECTED, all under the beta, none reproducing save-before-frame:
 `-of+` / `-of` / `-onat` / `-oaxt` / `-zp4` / `-od` / no `-s`; a two-argument call; a shared
