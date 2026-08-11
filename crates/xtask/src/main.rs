@@ -85,6 +85,8 @@ fn fid_build() {
     let mut common: Vec<String> = Vec::new();
     let mut symbol_map = std::collections::HashMap::new();
     let mut out: Option<PathBuf> = None;
+    let mut language: Option<String> = None;
+    let mut compiler_spec: Option<String> = None;
     let mut inputs: Vec<PathBuf> = Vec::new();
 
     let mut i = 0;
@@ -97,6 +99,12 @@ fn fid_build() {
             "--family" => family = take(&mut i),
             "--version" => version = take(&mut i),
             "--variant" => variant = take(&mut i),
+            // Pin the language instead of letting the first module pick it. A vendor runtime
+            // that mixes 16- and 32-bit modules otherwise silently discards the ones you want.
+            "--language" => language = Some(take(&mut i)),
+            // Declare the compiler spec: an OMF module does not say who produced it, but the
+            // operator naming the library does. FID selects databases by language AND spec.
+            "--cspec" => compiler_spec = Some(take(&mut i)),
             "--out" => out = Some(PathBuf::from(take(&mut i))),
             "--common-symbols" => {
                 let path = take(&mut i);
@@ -139,6 +147,8 @@ fn fid_build() {
         version,
         variant,
         common_symbols: common,
+        language,
+        compiler_spec,
         symbol_map,
     };
     match mosura::analysis::fid::build::build_to_file(&inputs, &spec, &out) {

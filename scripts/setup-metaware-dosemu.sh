@@ -192,8 +192,12 @@ echo "  $files files, $libs .LIB, $(du -sh "$DEST" | cut -f1)"
 # calling convention is visible in the object, so no linker is required.
 if [ -n "$COMPILE" ]; then
   [ -f "$COMPILE" ] || { echo "no such file: $COMPILE"; exit 1; }
-  stem="$(basename "${COMPILE%.*}")"
-  cp "$COMPILE" "$DC/$(basename "$COMPILE")"
+  # DOS 8.3: a longer or hyphenated stem is simply not openable by the compiler, which reports
+  # only "Unable to proceed / Aborting(21)" and looks like a broken toolchain install.
+  stem="$(basename "${COMPILE%.*}" | tr -cd 'A-Za-z0-9' | cut -c1-8)"
+  [ -n "$stem" ] || stem="PROBE"
+  cp "$COMPILE" "$DC/$stem.C"
+  COMPILE="$stem.C"
   dosdest="$(basename "$DEST" | tr 'a-z' 'A-Z')"
   bat="$DC/MWCC$TAG.BAT"
   {
@@ -201,7 +205,7 @@ if [ -n "$COMPILE" ]; then
     echo "set PATH=C:\\$dosdest\\BIN;%PATH%"
     echo "set HCDIR=C:\\$dosdest"
     echo "set HCINCLUDE=C:\\$dosdest\\INC"
-    echo "C:\\$dosdest\\BIN\\HC386.EXE -c C:\\$(basename "$COMPILE") > C:\\MWCC$TAG.OUT"
+    echo "C:\\$dosdest\\BIN\\HC386.EXE -c C:\\$COMPILE > C:\\MWCC$TAG.OUT"
     echo "dir C:\\$stem.OBJ >> C:\\MWCC$TAG.OUT"
   } > "$bat"
   dosemu -td -E "C:\\$(basename "$bat")" >/dev/null 2>&1 || true

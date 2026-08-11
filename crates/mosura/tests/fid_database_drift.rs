@@ -43,6 +43,11 @@ struct Source {
     family: &'static str,
     version: &'static str,
     variant: &'static str,
+    /// Pinned language, when the library mixes widths (see `BuildSpec::language`). `None` keeps
+    /// the historical implicit behaviour for the rows that predate the option.
+    language: Option<&'static str>,
+    /// Declared compiler spec, for a library whose vendor the loader cannot infer.
+    compiler_spec: Option<&'static str>,
 }
 
 const SOURCES: &[Source] = &[
@@ -55,6 +60,8 @@ const SOURCES: &[Source] = &[
         family: "sdcc",
         version: "4.5.0",
         variant: "z80",
+    language: None,
+        compiler_spec: None,
     },
     // Open Watcom, built from the source tree. NOTE the exact path: there are many `clib3r.lib`
     // copies in that tree and only this one reproduces the database — see the trap recorded in
@@ -68,6 +75,8 @@ const SOURCES: &[Source] = &[
         family: "Watcom",
         version: "ow2",
         variant: "Release",
+    language: None,
+        compiler_spec: None,
     },
     // Watcom 10.0a DOS — the column WAR2 is built against, and the one that moved when the OMF
     // loader learned to apply **absolute** (non-self-relative) fixups. Without a shipped-release
@@ -85,6 +94,8 @@ const SOURCES: &[Source] = &[
         family: "Watcom",
         version: "10.0a",
         variant: "Release",
+    language: None,
+        compiler_spec: None,
     },
     // Watcom 16-bit. A different language (`x86:LE:16:Real Mode`) reached through the same OMF
     // reader, so it catches a drift that only shows on 16-bit operand masks.
@@ -100,6 +111,8 @@ const SOURCES: &[Source] = &[
         family: "Watcom",
         version: "10.5",
         variant: "cs",
+    language: None,
+        compiler_spec: None,
     },
     // Borland 4.5 — the one Borland install that lives on persistent storage. Covers x86-16,
     // which is where the R7 drift actually landed, and x86-32 as a control.
@@ -116,6 +129,8 @@ const SOURCES: &[Source] = &[
         family: "Borland",
         version: "bc4.5",
         variant: "cs",
+    language: None,
+        compiler_spec: None,
     },
     Source {
         database: "borland-bc4.5-flat-x86-32.mfid.gz",
@@ -123,6 +138,41 @@ const SOURCES: &[Source] = &[
         family: "Borland",
         version: "bc4.5",
         variant: "flat",
+    language: None,
+        compiler_spec: None,
+    },
+    // MetaWare High C 386 — the only rows whose source libraries live inside the dosemu C:
+    // drive that scripts/setup-metaware-dosemu.sh populates, so on a machine without the
+    // historical Watcom/Borland media these are what keeps this gate from measuring nothing.
+    // They also exercise the two options the other rows do not: an explicitly pinned language
+    // (HC386.LIB mixes 16- and 32-bit modules) and a declared compiler spec.
+    Source {
+        database: "highc-3.31-x86-32.mfid.gz",
+        libraries: &[
+            "/home/jd/.dosemu/drive_c/hc331/small/hc386.lib",
+            "/home/jd/.dosemu/drive_c/hc331/small/hc387.lib",
+            "/home/jd/.dosemu/drive_c/hc331/small/hcloc.lib",
+            "/home/jd/.dosemu/drive_c/hc331/small/hcna.lib",
+        ],
+        family: "MetaWare High C",
+        version: "3.31",
+        variant: "Release",
+        language: Some("x86:LE:32:default"),
+        compiler_spec: Some("highc"),
+    },
+    Source {
+        database: "highc-2.31-x86-32.mfid.gz",
+        libraries: &[
+            "/home/jd/.dosemu/drive_c/HC231/SMALL/HC386.LIB",
+            "/home/jd/.dosemu/drive_c/HC231/SMALL/HC387.LIB",
+            "/home/jd/.dosemu/drive_c/HC231/SMALL/HCLOC.LIB",
+            "/home/jd/.dosemu/drive_c/HC231/SMALL/HCNA.LIB",
+        ],
+        family: "MetaWare High C",
+        version: "2.31",
+        variant: "Release",
+        language: Some("x86:LE:32:default"),
+        compiler_spec: Some("highc"),
     },
 ];
 
@@ -156,6 +206,8 @@ fn committed_databases_match_the_current_hasher() {
         };
 
         let spec = BuildSpec {
+            language: src.language.map(str::to_string),
+            compiler_spec: src.compiler_spec.map(str::to_string),
             family: src.family.to_string(),
             version: src.version.to_string(),
             variant: src.variant.to_string(),

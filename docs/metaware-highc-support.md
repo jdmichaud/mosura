@@ -1,15 +1,55 @@
 # MetaWare High C/C++ support — detection, compiler spec, FID databases
 
-**Status: step 0 (toolchain recon) done — findings below.** The compiler-side track that makes the
-X-32 container ([`x32-loader-notes.md`](x32-loader-notes.md)) analysable rather than merely mapped.
+**Status: all three deliverables landed.** The compiler-side track that makes the X-32 container
+([`x32-loader-notes.md`](x32-loader-notes.md)) analysable rather than merely mapped.
 
-Three deliverables, each with its own oracle:
-
-| # | Deliverable | Kind | Oracle |
+| # | Deliverable | Kind | State |
 | --- | --- | --- | --- |
-| 1 | `loader/metaware.rs` — compiler + era detection | code | binaries we compile ourselves, + a no-false-positive gate |
-| 2 | `specs/x86-32-highc.cspec` — the calling convention | **data** | the toolchain's own generated code |
-| 3 | `oracle/fid/db/highc-<ver>-x86-32.mfid.gz` — library signatures, one per build | **data** | the toolchain's own libraries |
+| 1 | `loader/metaware.rs` — compiler + version detection | code | ✅ 3 markers, 6 unit gates incl. no-false-positive |
+| 2 | `specs/x86-32-highc.cspec` — the calling convention | **data** | ✅ derived from `oracle/probes/hcabi.c`'s object |
+| 3 | `oracle/fid/db/highc-*.mfid.gz` — library signatures | **data** | ✅ 7 databases, 544–266 records |
+
+Wiring: `lang::resolve_cspec` maps the `highc` spec id to the new cspec; `loader/omf.rs` selects
+it when a module carries a MetaWare marker; `watcom::compiler_spec_id` (the single x86-32 spec
+decision point) checks MetaWare first and accepts `highc` as a declared override, which is how a
+caller tests a compiler hypothesis on a linked image.
+
+Verified end to end on a real object compiled by the real toolchain (via a local grounding tool —
+`examples/dump*.rs` is gitignored by convention, so reproduce with a few lines calling
+`metaware::detect` + `analyze_file_as`):
+
+```
+hcabi.obj
+metaware marker : MetaWare High C [dosomf v2.05b(4pcs)] -> metaware:highc:dosomf2.05b
+language        : x86:LE:32:default / highc
+cspec file      : Some("specs/x86-32-highc.cspec")
+compiler_version: Some("metaware:highc:dosomf2.05b")
+```
+
+## ⚠️ The X-32 samples are NOT known to be High C
+
+Recorded prominently because the first version of this plan assumed the opposite, and because two
+independent checks now say there is **no evidence** for it:
+
+- **No marker.** Both samples were searched for `MetaWare`, `High C`, `Run-time Library`,
+  `dosomf`, `Library Version` and every copyright year range the toolchains stamp. None present.
+  (That is expected — the markers do not survive linking — so it is not itself disconfirming.)
+- **No FID match.** Analysed with `highc` declared, all 7 databases attach (3238 records) and
+  name **0** of the sample's 736 functions.
+
+So "X-32 implies High C" is retracted: X-32 was a compiler-agnostic extender, and which compiler
+built these particular binaries is **open**. Two candidate explanations for the 0 matches, not yet
+separated:
+
+1. the samples were built by a different compiler; or
+2. library modules keep their fixups *unapplied* (`scripts/extract-omf-code.py`'s own caveat: a
+   `call` is `e8 00 00 00 00` plus a FIXUPP record) while a linked image has them filled in, so
+   the hashes cannot line up unless the hasher masks those operands the same way on both sides.
+
+Separating them needs a **linked** High C binary to test against, which needs a linker: the kit
+ships none (Phar Lap's 386|LINK was sold separately). Until that exists, the honest statement is
+that the databases identify High C *library* code and have not been shown to identify a High C
+*program*.
 
 Per [`x32-loader-notes.md`](x32-loader-notes.md) §"How Ghidra structures this": a container needs
 code, a calling convention is data. Only #1 is code.
@@ -139,6 +179,28 @@ mis-diagnoses it. The `one library, one language` invariant is right and must st
 is inferring the language implicitly. Fix: an explicit `--language` pin on `fid-build`, plus a
 summarised skip count instead of one identical line per module (259 lines of noise here).
 
+## The three markers detection keys on
+
+Grounded by scanning the four installed toolchains' own libraries. The **translator version
+separates all four releases**, which makes it the useful discriminator:
+
+| release | `dosomf` translator | C RTL copyright | C++ RTL |
+| --- | --- | --- | --- |
+| v2.31 (1992) | `v2.04b` | 1983-1990 | — (C only) |
+| v3.03 | `v2.05a` | 1983-1992 | 0.10 Apr  9 1992 |
+| v3.04 (1993) | `v2.05b` | 1983-1992 | 0.10 Aug 21 1992 |
+| v3.31 | `v2.10b` | 1983-1993 | 0.30 Oct  2 1994 |
+
+The label reports the marker (`metaware:highc:dosomf2.05b`, `metaware:highc:cpprtl0.30`), never an
+invented release number — the rule `watcom.rs` already follows for its era banner. Note the 3.03
+tree's *compiler* stamps `v2.05b` while its *libraries* carry `v2.05a`: a translator version in a
+library says what built the library, and in a user object what built the object.
+
+Also retracted: the runtime strings visible in the X-32 samples (`NULL code pointer called`,
+`Bad stack size parameter`, `DGROUP relative address`, `__X386_VM_DISABLED`) were hypothesised
+here as High C tells. They appear in **no** MetaWare library — they are the FlashTek extender's.
+`metaware.rs` has a no-false-positive gate that keeps them out.
+
 ## Calling convention — measured, and it corrects an earlier claim
 
 ⚠️ **Correction.** An earlier version of this plan stated High C 386 "is a register-convention
@@ -169,10 +231,20 @@ sret(int a) -> struct S {int a; int b;}:
 An 8-byte struct comes back in **EAX:EDX**, where gcc/SysV i386 returns it through a hidden
 pointer. Structs passed *by value* go on the stack (`pmix` reads `[esp+0xc]`, `[esp+0x10]`).
 
-**So #2 is smaller and lower-risk than planned, and no longer a blocker:** start from Ghidra's
-x86-32 gcc cspec, change the struct-return rule, validate against probe output — rather than
-deriving a register convention from nothing. It is still worth doing, because a function returning
-a small struct decompiles wrongly without it.
+**`specs/x86-32-highc.cspec` is written from exactly this evidence**, and quotes it inline so the
+spec can be re-checked without re-deriving it. `oracle/probes/hcabi.c` is the probe — one function
+per question a cspec must answer (argument count/width, float return, struct in and out, callee-
+saved, varargs), compiled with `--compile` and read out of the OMF object; no linker needed.
+
+The full measured convention: stack arguments right to left in 4-byte slots (char/short widened),
+caller pops, EAX for integer/pointer returns, ST(0) for float/double, **EDX:EAX for a struct of
+≤8 bytes** and a hidden first-argument buffer pointer above that, EBX/ESI/EDI callee-saved.
+Everything except the struct-return rule matches Ghidra's x86-32 gcc spec — which is why the
+`gcc` placeholder was *approximately* right, and why a small-struct-returning function is what it
+gets wrong.
+
+Measured at default settings only (`-O1 -386`, no pragmas). High C has options that change the
+convention; a build using them is not described by this spec, and the file says so.
 
 **Still unmeasured, do not assume:** High C's pragmas/options that can change the convention (none
 were used here); varargs beyond the trivial case (`_mwargstack` is an interesting extern); `long

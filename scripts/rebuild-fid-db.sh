@@ -127,6 +127,51 @@ borland-bc4.52-flat-x86-32|Borland|bc4.52|flat|$B/bc4.52/BC45/LIB/CW32.LIB
 borland-cb5-cw32-x86-32|Borland|cb5|cw32|$B/cb5lib/CW32.LIB
 borland-cb5-cw32mt-x86-32|Borland|cb5|cw32mt|$B/cb5lib/CW32MT.LIB"
 
+# MetaWare High C/C++ 386 (docs/metaware-highc-support.md). Installed by
+# scripts/setup-metaware-dosemu.sh into $W/HC<tag>, whose case varies by version, so the
+# libraries are located with -iname. The C run-time plus the 387 math, locale and no-assert
+# libraries a DOS 386 build links — the same shape as the Watcom recipe above. The C++ run-time
+# is its own column, as with watcom-*-cpp.
+#
+# v1x/ (the High C 1.x compatibility tree), rwtool/ (Rogue Wave tools.h++) and pentium/ (a
+# Pentium-scheduled rebuild of the same functions) are EXCLUDED: they are different bodies for
+# the same names, which is exactly what separate columns exist to avoid conflating.
+for mwv in 2.31 3.03 3.04 3.31; do
+	mwtag=$(echo "$mwv" | tr -d .)
+	mwdir=""
+	for c in "$W/HC$mwtag" "$W/hc$mwtag"; do [ -d "$c" ] && mwdir="$c"; done
+	[ -n "$mwdir" ] || continue
+	mwfind() {
+		find "$mwdir" -iname "$1" 2>/dev/null \
+			| grep -viE '/(v1x|rwtool|pentium)/' | sort | head -1
+	}
+	libs=""
+	for f in hc386.lib hc387.lib hcloc.lib hcna.lib; do
+		p=$(mwfind "$f"); [ -n "$p" ] && libs="$libs $p"
+	done
+	[ -n "$libs" ] && RECIPES="$RECIPES
+highc-$mwv-x86-32|MetaWare High C|$mwv|Release|${libs# }"
+	p=$(mwfind hcc386.lib)
+	[ -n "$p" ] && RECIPES="$RECIPES
+highc-$mwv-cpp-x86-32|MetaWare High C|$mwv|cpp|$p"
+done
+
+# The language every module of a column must be. Derived from the database name, which already
+# encodes the architecture, so no recipe has to repeat it.
+#
+# ⚠️ This is not cosmetic. Without an explicit language, `fid-build` takes it from whichever
+# module happens to come FIRST and skips every module that disagrees — and a real vendor runtime
+# mixes widths. MetaWare's HC386.LIB holds 16-bit real-mode helpers alongside the 32-bit
+# runtime, so the first module pinned "x86:LE:16:Real Mode", 252 32-bit modules were dropped, and
+# the build reported `ingested 0` with no indication of the cause.
+lang_for() {
+	case "$1" in
+	*-x86-32) echo "x86:LE:32:default" ;;
+	*-x86-16) echo "x86:LE:16:Real Mode" ;;
+	*) echo "" ;;   # z80 and anything else: leave it implicit
+	esac
+}
+
 built=0 skipped=0 failed=0
 while IFS='|' read -r db family version variant libs; do
 	case "$db" in ''|'#'*) continue ;; esac
@@ -154,8 +199,16 @@ while IFS='|' read -r db family version variant libs; do
 	# Build to a scratch path that still ends in `.mfid.gz`: `fid-build` picks compression from
 	# the extension, so a `.gz.new` staging name silently writes PLAIN TEXT under a `.gz` name.
 	tmp=$(mktemp -d)
+	lang=$(lang_for "$db")
+	langopt=""
+	[ -n "$lang" ] && langopt="--language $lang"
+	# Declare the compiler spec where the loader cannot know it. An OMF module does not say who
+	# produced it, so `loader::omf` labels every 32-bit module `watcom`; without this a MetaWare
+	# database is filed under `compilerspec watcom` and can never match a program analysed as
+	# High C (FID selects databases by language AND spec).
+	case "$db" in highc-*) langopt="$langopt --cspec highc" ;; esac
 	if timeout 3600 cargo run --release -q -p xtask -- fid-build \
-		--family "$family" --version "$version" --variant "$variant" \
+		--family "$family" --version "$version" --variant "$variant" $langopt \
 		--out "$tmp/$db.mfid.gz" $present >/dev/null 2>&1 && [ -s "$tmp/$db.mfid.gz" ]; then
 		after=$(zcat "$tmp/$db.mfid.gz" | grep -c '^f ')
 		mv "$tmp/$db.mfid.gz" "$OUT/$db.mfid.gz"

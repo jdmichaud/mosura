@@ -122,8 +122,19 @@ pub fn compiler_spec_id(data: &[u8]) -> &'static str {
         match forced.as_str() {
             "watcom" => return "watcom",
             "gcc" => return "gcc",
+            // `highc` = specs/x86-32-highc.cspec (MetaWare High C 386). Declaring it is how a
+            // caller TESTS a compiler hypothesis on a linked image: the MetaWare markers live
+            // only in objects/libraries, and FID selects databases by (language, spec), so a
+            // program analysed as `gcc` can never match a `highc` database.
+            "highc" => return "highc",
             _ => {}
         }
+    }
+    // MetaWare before Watcom: its markers are distinct and its spec differs from both others
+    // (see `super::metaware`). Only input that actually carries a MetaWare marker is affected —
+    // an OMF object or library, never a linked X-32 image.
+    if super::metaware::detect(data).is_some() {
+        return "highc";
     }
     if detect(data).is_some() { "watcom" } else { "gcc" }
 }

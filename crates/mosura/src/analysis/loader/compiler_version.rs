@@ -19,6 +19,10 @@
 //!   (`Turbo C++ - Copyright YYYY` for the 16-bit line) — an **era** (copyright year); the
 //!   embedded Turbo Assembler version narrows it where present. See `borland`.
 //! - **Watcom**: the run-time copyright-year-range banner (era); handled by [`super::watcom`].
+//! - **MetaWare High C/C++ 386**: the `dosomf` translator comment (`v2.05b`), the C++ run-time
+//!   library version + build date, or the C run-time copyright era; handled by
+//!   [`super::metaware`]. Present in OMF objects/libraries only — a linked X-32 image carries
+//!   none of them, which is why the FID databases exist for that case.
 
 use regex::bytes::Regex;
 use std::sync::OnceLock;
@@ -31,6 +35,7 @@ pub enum Family {
     Clang,
     Borland,
     Watcom,
+    MetaWare,
 }
 
 impl Family {
@@ -41,6 +46,7 @@ impl Family {
             Family::Clang => "clang",
             Family::Borland => "borland",
             Family::Watcom => "watcom",
+            Family::MetaWare => "metaware",
         }
     }
 }
@@ -115,6 +121,21 @@ pub fn detect(data: &[u8]) -> Option<CompilerId> {
         .or_else(|| gcc::detect(data))
         .or_else(|| borland::detect(data))
         .or_else(|| watcom_id(data))
+        .or_else(|| metaware_id(data))
+}
+
+/// Adapt [`super::metaware::detect`] into a [`CompilerId`]. The marker is the toolchain's own
+/// stamp but never its release number, so the precision is `Era` and the version string is the
+/// marker itself — `super::metaware` documents the observed marker -> release mapping.
+fn metaware_id(data: &[u8]) -> Option<CompilerId> {
+    let m = super::metaware::detect(data)?;
+    let version = m.compiler_label().trim_start_matches("metaware:").to_string();
+    Some(CompilerId {
+        family: Family::MetaWare,
+        version,
+        precision: Precision::Era,
+        evidence: m.banner,
+    })
 }
 
 /// Adapt [`super::watcom::detect`] (the existing Watcom banner detector) into a [`CompilerId`].

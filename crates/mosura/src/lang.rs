@@ -110,12 +110,21 @@ pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
 
 /// The filesystem walk behind [`resolve_cspec`] — Ghidra's one-time `.ldefs` read.
 fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
-    // Mosura-authored (beyond-Ghidra) compiler specs first: the Watcom `watcall` cspec that no
-    // Ghidra processor ships (`specs/x86-32-watcom.cspec`). Only x86:LE:32 + "watcom" today.
-    if compiler_spec_id == "watcom" && lang_id.starts_with("x86:LE:32") {
-        let p = paths::specs_dir().join("x86-32-watcom.cspec");
-        if p.exists() {
-            return Some(p);
+    // Mosura-authored (beyond-Ghidra) compiler specs first — conventions no Ghidra processor
+    // ships: Watcom's `watcall` (`specs/x86-32-watcom.cspec`) and MetaWare High C 386's cdecl
+    // variant that returns a <=8-byte struct in EDX:EAX (`specs/x86-32-highc.cspec`). Both are
+    // x86:LE:32 only.
+    if lang_id.starts_with("x86:LE:32") {
+        let file = match compiler_spec_id {
+            "watcom" => Some("x86-32-watcom.cspec"),
+            "highc" => Some("x86-32-highc.cspec"),
+            _ => None,
+        };
+        if let Some(file) = file {
+            let p = paths::specs_dir().join(file);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
 

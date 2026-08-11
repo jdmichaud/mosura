@@ -872,7 +872,14 @@ pub fn load_omf_object(data: &[u8]) -> Result<Program, LoadError> {
     // which vendor produced it, and `fid-build` knows because the operator names the library.
     // `watcom` is the default because it is the spec mosura ships for x86-32 OMF; a 16-bit
     // module takes `default`, matching the MZ loader.
-    let cspec = if bits == 32 { "watcom" } else { "default" };
+    // MetaWare marks its own output (`MetaWare High C [dosomf vX.YY]`), so where that marker is
+    // present the module's spec is knowable rather than a default — see `super::metaware`.
+    // Everything else keeps the previous behaviour exactly.
+    let cspec = if bits == 32 {
+        if super::metaware::detect(data).is_some() { "highc" } else { "watcom" }
+    } else {
+        "default"
+    };
     let image_base = Address::new(ram, OBJ_BASE);
     let mut program = Program::new(spaces, ram, language, cspec, image_base, false, bits);
     program.memory = memory;

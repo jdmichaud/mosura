@@ -7,6 +7,7 @@ pub mod com;
 pub mod compiler_version;
 pub mod elf;
 pub mod le;
+pub mod metaware;
 pub mod mz;
 pub mod omf;
 pub mod pe;

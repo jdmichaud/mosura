@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  x86-32 MetaWare High C/C++ 386 compiler spec — a BEYOND-GHIDRA extension, sibling of
+  x86-32-watcom.cspec. No Ghidra x86 processor ships a MetaWare spec (x86/data/languages has
+  gcc/win/borland/delphi/golang/swift, none MetaWare). See docs/metaware-highc-support.md.
+
+  GROUNDED IN THE COMPILER'S OWN OUTPUT, not in documentation or memory. Every rule below is
+  read out of the OMF object that oracle/probes/hcabi.c compiles to, produced by the real
+  toolchain under dosemu2:
+
+      scripts/setup-metaware-dosemu.sh 3.03 --compile oracle/probes/hcabi.c
+
+  Reproduce with `python3 scripts/extract-omf-code.py <obj>` and disassemble; the evidence for
+  each rule is quoted here so the spec can be re-checked without re-deriving it.
+
+  THE CONVENTION IS ORDINARY 32-BIT CDECL, WITH ONE DIVERGENCE (the struct return). That is
+  worth stating plainly because an earlier plan for this work assumed High C was a
+  register-convention compiler and that gcc's spec would be badly wrong; the compiler's output
+  says otherwise, and the cost of that assumption would have been an invented spec.
+
+    - Integer/pointer arguments: ON THE STACK, right to left, one 4-byte slot each; char and
+      short are widened to a slot.
+        i1(int a):                mov eax,[esp+4]; ret
+        i6(a..f):                 [ebp+8], [ebp+0xc] ... [ebp+0x1c]
+        mixed(char,short,int,ptr) movzbl [esp+4] / movswl [esp+8] / [esp+0xc] / [esp+0x10]
+    - Caller pops the arguments (cdecl, extrapop=4/stackshift=4):
+        callall: push 6..1; call i6; ... add esp,0x2c
+        clobber: push edi; call sink; push esi; call sink; add esp,8
+    - Integer/pointer return in EAX:
+        lret(long x): mov eax,[esp+4]; inc eax; ret
+    - float/double return on the x87 stack, ST(0); double args occupy 8 stack bytes, float 4:
+        dret(double x): fldl <1.0>; faddl [esp+4]; ret
+        fret(float x):  fadds [esp+4]; ret
+        dmix(int,double,int): fildl [ebp+8]; faddl [ebp+0xc]; fildl [ebp+0x14]
+        (caller pushes a double as two dwords, low first: push 0x3ff00000; push 0; call dret)
+    - Callee-saved: EBX, ESI, EDI (and EBP/ESP). Caller-saved: EAX, ECX, EDX.
+        clobber: push ebp; mov ebp,esp; push edi; push esi; push ebx ...
+                 pop ebx; pop esi; pop edi; leave; ret
+    - Struct BY VALUE arguments go on the stack:
+        sarg(struct{int;int;}): mov eax,[esp+4]; add eax,[esp+8]; ret
+
+    - *** THE DIVERGENCE FROM gcc/SysV *** A struct return of 8 bytes or less comes back in
+      EAX:EDX; larger structs use a hidden buffer pointer passed as the FIRST argument, which
+      the callee also leaves in EAX. gcc/SysV i386 uses the hidden pointer for EVERY struct, so
+      with gcc's spec a small-struct-returning function decompiles wrongly.
+        sret2 -> struct{int;int;} (8 bytes):
+              mov eax,-8(ebp); mov edx,-4(ebp); leave; ret       <- EAX:EDX, no hidden pointer
+        sret3 -> struct{int;int;int;} (12 bytes):
+              mov eax,[ebp+0xc]   <- the real argument has SHIFTED to +0xc
+              ...
+              mov eax,[ebp+8]     <- +8 is the hidden buffer pointer
+              mov [eax],edx / mov [eax+4],edx / mov [eax+8],edx
+
+  The 8-byte register return is expressed as a <returnvalue> join of EAX and EDX, the same
+  mechanism Ghidra's own specs use for a 64-bit value in a register pair (EDX is the high half:
+  sret2 puts field `a`, the low 4 bytes, in EAX).
+
+  MEASURED AT THE DEFAULT SETTINGS ONLY (`-O1 -386`, no pragmas). High C has options that can
+  change the convention; a build using them is not described here, and nothing in this file
+  should be read as covering them. `long long` is 8 bytes to the compiler but the probe's `long`
+  is 32-bit, matching `long_size` below.
+-->
+
+<compiler_spec>
+  <data_organization>
+     <absolute_max_alignment value="0" />
+     <machine_alignment value="2" />
+     <default_alignment value="1" />
+     <default_pointer_alignment value="4" />
+     <pointer_size value="4" />
+     <wchar_size value="2" />
+     <short_size value="2" />
+     <integer_size value="4" />
+     <long_size value="4" />
+     <long_long_size value="8" />
+     <float_size value="4" />
+     <double_size value="8" />
+     <long_double_size value="8" />
+     <size_alignment_map>
+          <entry size="1" alignment="1" />
+          <entry size="2" alignment="2" />
+          <entry size="4" alignment="4" />
+          <entry size="8" alignment="4" />
+     </size_alignment_map>
+  </data_organization>
+  <global>
+    <range space="ram"/>
+  </global>
+  <stackpointer register="ESP" space="ram"/>
+  <default_proto>
+    <prototype name="__highc" extrapop="4" stackshift="4">
+      <input>
+        <pentry minsize="1" maxsize="500" align="4">
+          <addr offset="4" space="stack"/>
+        </pentry>
+      </input>
+      <output>
+        <!-- 8-byte struct / 64-bit value: EDX:EAX, EAX holding the low half. -->
+        <pentry minsize="5" maxsize="8">
+          <addr space="join" piece1="EDX" piece2="EAX"/>
+        </pentry>
+        <pentry minsize="1" maxsize="4">
+          <register name="EAX"/>
+        </pentry>
+        <pentry minsize="4" maxsize="10" metatype="float">
+          <register name="ST0"/>
+        </pentry>
+      </output>
+      <unaffected>
+        <register name="ESP"/>
+        <register name="EBP"/>
+        <register name="EBX"/>
+        <register name="ESI"/>
+        <register name="EDI"/>
+        <register name="DF"/>
+      </unaffected>
+      <killedbycall>
+        <register name="EAX"/>
+        <register name="ECX"/>
+        <register name="EDX"/>
+        <register name="ST0"/>
+      </killedbycall>
+    </prototype>
+  </default_proto>
+</compiler_spec>

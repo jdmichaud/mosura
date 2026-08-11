@@ -24,6 +24,24 @@ pub struct BuildSpec {
     /// One per line in a text file, `#` comments allowed — the shape of Ghidra's own
     /// `common_symbols_win32.txt`.
     pub common_symbols: Vec<String>,
+    /// The language every ingested module must be, e.g. `x86:LE:32:default`. `None` keeps the
+    /// historical behaviour of taking it from whichever module happens to come first.
+    ///
+    /// ⚠️ Why this exists. "One library, one language" is right — a library record pins one
+    /// language, and that is what stops a match crossing architectures. Inferring it *implicitly*
+    /// is what is wrong: a real vendor runtime mixes widths. MetaWare High C's `HC386.LIB` holds
+    /// 16-bit real-mode helpers alongside the 32-bit runtime, so the first module decided
+    /// `x86:LE:16:Real Mode` and all 252 32-bit modules were skipped — the build reported
+    /// `ingested 0` and the documented health check ("symbols did not survive extraction")
+    /// pointed at the wrong cause entirely. Say which language you want.
+    pub language: Option<String>,
+    /// The compiler spec to record on the library, overriding whatever the loader guessed.
+    /// An OMF module does not say which vendor produced it — `loader::omf` defaults 32-bit
+    /// modules to `watcom` because that is the spec mosura ships for x86-32 OMF — but the
+    /// operator naming the library DOES know. Without this, a MetaWare High C database is
+    /// labelled `compilerspec watcom`, which is both wrong and makes it unusable for a program
+    /// analysed with any other spec (FID selects databases by language AND spec).
+    pub compiler_spec: Option<String>,
     /// Names by address, from a linker map.
     ///
     /// A **linked** image is the better ingest input than a pile of object files: the vendor's
@@ -225,14 +243,22 @@ pub fn build_from_files(
     spec: &BuildSpec,
 ) -> Result<(FidStore, IngestResult), String> {
     let mut ingest: Option<Ingest> = None;
-    let mut language = String::new();
+    let mut language = spec.language.clone().unwrap_or_default();
+    let mut skipped: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
 
     for program in files.iter().flat_map(|f| expand_input(f)) {
+        // An explicitly pinned language filters before the first module is allowed to set it.
+        if let Some(want) = &spec.language {
+            if &program.language_id != want {
+                *skipped.entry(program.language_id.clone()).or_default() += 1;
+                continue;
+            }
+        }
         if ingest.is_none() {
             language = program.language_id.clone();
             let mut new = Ingest::new(
                 &program.language_id,
-                &program.compiler_spec_id,
+                spec.compiler_spec.as_deref().unwrap_or(&program.compiler_spec_id),
                 &spec.family,
                 &spec.version,
                 &spec.variant,
@@ -240,10 +266,7 @@ pub fn build_from_files(
             new.mark_common_symbols(spec.common_symbols.iter().cloned());
             ingest = Some(new);
         } else if program.language_id != language {
-            eprintln!(
-                "  skip a module: language {} != {language} (one library, one language)",
-                program.language_id
-            );
+            *skipped.entry(program.language_id.clone()).or_default() += 1;
             continue;
         }
 
@@ -251,9 +274,22 @@ pub fn build_from_files(
         ingest.as_mut().unwrap().add_program(&functions);
     }
 
+    // One summarised line per skipped language, not one per module: a mixed-width runtime skips
+    // hundreds, and 252 identical lines buried the fact that nothing was ingested.
+    for (lang, n) in &skipped {
+        eprintln!("  skipped {n} module(s): language {lang} != {language}");
+    }
+
     match ingest {
         Some(i) => Ok(i.finish()),
-        None => Err("no input program could be analyzed".to_string()),
+        None => Err(format!(
+            "no input program could be analyzed{}",
+            match &spec.language {
+                Some(l) if !skipped.is_empty() =>
+                    format!(" — every module was skipped; is --language {l} right?"),
+                _ => String::new(),
+            }
+        )),
     }
 }
 
