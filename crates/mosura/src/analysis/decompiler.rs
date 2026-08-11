@@ -98,11 +98,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // giving the input list alone would recover a prototype for a body that has already been
         // deleted, which is a right signature over wrong bytes.
         if let Some(reg) = f.spaces.by_name("register") {
-            let mut self_ends: Vec<u64> =
-                program.function_manager.functions().map(|fu| fu.entry.offset).collect();
-            self_ends.sort_unstable();
-            if let Some((writes, reads)) =
-                callee_effects(program, spec, ctx, entry.offset, reg, &f, &self_ends)
+            if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
             {
                 if !writes.is_empty() {
                     f.proto_model.output =
@@ -233,11 +229,6 @@ fn record_callee_effects(
         Vec<(crate::decompile::space::Address, u32)>,
     )>;
     let mut cache: std::collections::HashMap<u64, Effects> = std::collections::HashMap::new();
-    // Function entry points, sorted — a callee's extent is [entry, next_entry). Needed for the
-    // WHOLE-EXTENT overwrite scan below, which does not stop at a branch.
-    let mut ends: Vec<u64> =
-        program.function_manager.functions().map(|fu| fu.entry.offset).collect();
-    ends.sort_unstable();
     for call in calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
@@ -249,16 +240,9 @@ fn record_callee_effects(
         }
         let eff = cache
             .entry(target)
-            .or_insert_with(|| callee_effects(program, spec, ctx, target, reg, f, &ends))
+            .or_insert_with(|| callee_effects(program, spec, ctx, target, reg, f))
             .clone();
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
-        // Evidence-free is not the same as evidence-of-nothing. `call_specs.entry().or_default()`
-        // CREATES a spec where none existed (with `stackoffset: None`), and that is not inert —
-        // the branchy two-argument MVE lost its call result the moment an empty scan started
-        // materialising specs. Touch the map only when there is something to record.
-        if regs.is_empty() && reads.is_empty() {
-            continue;
-        }
         if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
             eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");
         }
@@ -282,7 +266,6 @@ fn callee_effects(
     entry: u64,
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
-    ends: &[u64],
 ) -> Option<(Vec<(crate::decompile::space::Address, u32)>, Vec<(crate::decompile::space::Address, u32)>)>
 {
     use crate::decompile::opcode::OpCode;
@@ -308,23 +291,9 @@ fn callee_effects(
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => is_ret = true,
-                // A branch ends what the LINEAR walk can prove about reads — a read after a
-                // write on another path is not a read-before-write — so the `reads` half stops
-                // here and claims nothing. The OVERWRITE half does not have to stop: a register
-                // written anywhere in the body is clobbered on some path, and taking the union
-                // over the whole extent is sound for that direction (it can only over-claim
-                // clobbering, which is the safe way to be wrong — believing a callee preserves a
-                // register it destroys is what produces stale values and wrong code).
-                //
-                // This matters because REAL callees branch. With the linear bail, callee-evidence
-                // effects only ever fired on straight-line callees, so the WAR2 functions this
-                // whole track exists for — e.g. FUN_00011920, whose callee returns a value in EDX
-                // that our cspec calls preserved — were never corrected.
+                // Anything that leaves the straight line: stop and claim nothing.
                 Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branch)
-                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => {
-                    let whole = callee_overwrites_extent(program, spec, ctx, entry, reg, f, ends)?;
-                    return Some((whole, Vec::new()));
-                }
+                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => return None,
                 _ => {}
             }
             // Inputs BEFORE the output, so an instruction that reads and writes the same register
@@ -377,96 +346,4 @@ fn callee_effects(
         pc += insn.bytes.len() as u64;
     }
     None // ran off the end of the window without reaching a return — no evidence
-}
-
-/// The registers a callee writes and does not restore, over its WHOLE extent — the fallback for a
-/// body the linear read-scan cannot follow.
-///
-/// Decodes `[entry, next_entry)` linearly and takes the UNION of register writes without following
-/// control flow. That is an over-approximation of "clobbered", which is the safe direction: it can
-/// only make a call site assume a register is destroyed when it survives (costing a spurious
-/// guard), never assume it survives when it is destroyed (which flows a stale value and is wrong
-/// code). Only registers the DEFAULT model calls `<unaffected>` are reported, since those are the
-/// ones whose correction changes anything.
-///
-/// `None` on any decode gap or an instruction straddling the extent, so an unreadable callee keeps
-/// the convention's own answer rather than acquiring a guess.
-fn callee_overwrites_extent(
-    program: &Program,
-    spec: &crate::sleigh::engine::Spec,
-    ctx: &[u32],
-    entry: u64,
-    reg: crate::decompile::space::SpaceId,
-    f: &crate::decompile::funcdata::Funcdata,
-    ends: &[u64],
-) -> Option<Vec<(crate::decompile::space::Address, u32)>> {
-    use crate::decompile::space::Address;
-    let end = match ends.binary_search(&entry) {
-        Ok(i) => *ends.get(i + 1)?,
-        Err(_) => return None,
-    };
-    if end <= entry || end - entry > 65536 {
-        return None;
-    }
-    let mut written: Vec<(Address, u32)> = Vec::new();
-    let mut pushed: Vec<u64> = Vec::new();
-    let mut restored: Vec<u64> = Vec::new();
-    let mut pc = entry;
-    while pc < end {
-        let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
-        if bytes.is_empty() {
-            return None;
-        }
-        let insn = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
-        if insn.bytes.is_empty() {
-            return None;
-        }
-        let mnem = insn.mnemonic.to_ascii_uppercase();
-        let (is_push, is_pop) = (mnem.starts_with("PUSH"), mnem.starts_with("POP"));
-        for o in &insn.ops {
-            if is_push {
-                for a in &o.ins {
-                    if let Some(v) = a.as_var() {
-                        if v.space == "register" {
-                            pushed.push(v.offset);
-                        }
-                    }
-                }
-            }
-            let Some(out) = &o.out else { continue };
-            if out.space != "register" {
-                continue;
-            }
-            let addr = Address::new(reg, out.offset);
-            if f.spaces.space_by_spacebase(addr, out.size).is_some() {
-                continue; // the stack pointer moves with every push/pop
-            }
-            if is_pop && pushed.contains(&out.offset) {
-                restored.push(out.offset);
-                continue;
-            }
-            // FULL-WIDTH writes only. A compare writes the CONDITION FLAGS, which the compiler
-            // spec does not list, so `has_effect` defaults them to `<unaffected>` and a naive scan
-            // records ZF/SF/CF as "registers this callee clobbers" — they then reach the call's
-            // recovered OUTPUT list and the call is given a flag as its return value. Measured:
-            // the branchy two-argument MVE regressed to `return param_2` with the call's result
-            // discarded. Narrow accesses are skipped rather than special-cased by name: a
-            // sub-register clobber is a conservative miss, a flag "return" is wrong code.
-            if out.size < 4 {
-                continue;
-            }
-            if f.proto_model.has_effect(addr, out.size) == crate::decompile::fspec::effect::UNAFFECTED
-                && !written.iter().any(|&(a, _)| a == addr)
-            {
-                written.push((addr, out.size));
-            }
-        }
-        pc += insn.bytes.len() as u64;
-    }
-    if pc != end {
-        return None;
-    }
-    // Saved on entry and popped back is preserved whatever happened in between.
-    written.retain(|&(a, _)| !restored.contains(&a.offset));
-    Some(written)
 }
