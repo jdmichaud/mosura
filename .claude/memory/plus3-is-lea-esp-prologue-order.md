@@ -65,7 +65,31 @@ contract differs from anything we have declared.
 
 DO NOT record a conclusion here again without an A/B that includes the beta.
 
-**SUPERSEDED — the flag-sweep list below was written before the beta test:**
+**THREE COMPILERS, ONE ANSWER (2026-08-11).** Same emitted C, `-4r -fpi87 -s -of+ -onatx`:
+
+| compiler | where | result |
+|---|---|---|
+| 10.0a retail | dosemu, warcraft2-re watcom_10.0a | `5589e552 ... 8d65fc 5a5dc3` |
+| 10.0 Limited Availability (beta) | wine, `C:\WBETA` | IDENTICAL |
+| 10.5 | wine, `C:\W105` | IDENTICAL |
+
+All three put `push ebp ; mov ebp,esp` FIRST and the register save after, forcing the `lea`.
+The original does the opposite. So the version hypothesis is dead across the whole family the
+fingerprint doc groups together (docs/watcom-10.0-beta-codegen.md).
+
+Source shapes tested and REJECTED, all under the beta, none reproducing save-before-frame:
+`-of+` / `-of` / `-onat` / `-oaxt` / `-zp4` / `-od` / no `-s`; a two-argument call; a shared
+temporary for the constant; `#pragma aux` on the CALLEE with explicit `parm caller [eax] [edx]`;
+and on the FUNCTION ITSELF `modify [eax]`, `modify [eax edx ebx ecx]`, `modify [eax ebx ecx]`,
+`parm [] modify [eax ebx ecx]`.
+
+One of those IS worth keeping: `modify [eax edx ebx ecx]` on the function under test removes the
+save and the `lea` entirely (28 -> 25 bytes, 23 after postlink). It does not match here — this
+function's contract genuinely preserves EDX — but warcraft2-re's proven sources declare exactly
+that list on most functions (`src/util/g2ac70.c`), and mosura's emitter declares NOTHING for the
+function it emits. That per-function contract is the untested lever, not the compiler.
+
+**SUPERSEDED**SUPERSEDED — the flag-sweep list below was written before the beta test:**
 
 **NEXT EXPERIMENT** (do not skip to a fix): decide between
 1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `war2-survey/BYTE-EXACT-PLAN.md`.
