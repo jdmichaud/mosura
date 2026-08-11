@@ -35,33 +35,38 @@ Compiler-version sensitivity is confirmed but the rule is NOT identified. Open W
 same source produces a third shape entirely (`55 89e5 a1.. e8.. 31c0 a3.. 89ec 5d c3` — no EDX
 save at all), so this scheduling is not something our C controls.
 
-**SETTLED 2026-08-11 — WATCOM 10.0a CANNOT PRODUCE THE ORIGINAL PROLOGUE.** A/B'd the same
-emitted C under real 10.0a via dosemu across `-of+ -onatx`, `-of`, `-of+ -onat`, `-of+ -oaxt`,
-`-of+ -zp4`, `-of+` without `-s`, and `-of+ -od`:
+**⚠️ RETRACTED — IT IS NOT A COMPILER-VERSION ARTIFACT.** An earlier revision of this file
+concluded "SETTLED: a toolchain question, do not spend decompiler effort here". That was wrong and
+was based on flag A/Bs under 10.0a alone. **Tested directly against the 10.0 BETA**
+(`~/.wine/drive_c/WBETA/BINNT/WCC386.EXE` under wine — the compiler this project already
+fingerprinted, docs/watcom-10.0-beta-codegen.md): it emits **byte-identical output to 10.0a** for
+this case, same frame-first prologue, same `lea esp,[ebp-4]`. Both compilers, one answer.
+
+What IS established, by A/B under real 10.0a and the 10.0 beta:
 
 ```
-ORIG   52 | 55 89e5 | ... | 5d 5a c3           save FIRST, then frame        25b
--of+   55 89e5 | 52 | ... | 8d65fc 5a 5d c3    frame first, save after + lea 28b
--of    52 | ... | 5a c3                        save first, NO frame          21b
+ORIG    52 | 55 89e5 | ... 31d2 ... e8.. | 8915.. | 5d 5a c3        save FIRST, ONE xor   25b
+ours    55 89e5 | 52 | ... 31d2 e8.. 31d2 8915.. | 8d65fc 5a 5d c3  frame first, TWO xor  28b
+-of     52 | ... | 5a c3                                            save first, NO frame  21b
 ```
 
-Every framed variant puts `push ebp ; mov ebp,esp` first and the register save after, which is
-exactly what forces the 3-byte `lea esp,[ebp-N]`. Every frameless variant puts the save first but
-emits no frame. **The frameless build is byte-identical to the original apart from the missing
-frame**, so the emitted C is right and only the code generator's prologue SCHEDULING differs.
+Two separate differences, and neither is the compiler:
+1. **A MISSING CALL ARGUMENT.** Under `__watcall` EDX is the SECOND argument register, so the
+   original's `xor edx,edx` before the call is argument 2 — the call is `f([g], 0)`. mosura emits
+   `func_0x00059344(xRam0008126c)`, one argument. That is a recovery defect, not codegen.
+2. **The prologue order** remains unexplained. NONE of these reproduced the original's
+   save-before-frame form: `-of+`/`-of`/`-onat`/`-oaxt`/`-zp4`/`-od`/no-`-s`, two-argument call,
+   a shared temporary for the 0, `#pragma aux` on the callee with explicit `parm caller [eax] [edx]`,
+   and a self-`pragma aux` on the function under test.
 
-⇒ The 216-function `+3` class is a TOOLCHAIN question — which wcc386 built WAR2 — and is NOT
-mosura's to fix. Direct evidence for the 10.0a vs 10.0-beta known-unknown in
-`war2-survey/BYTE-EXACT-PLAN.md`. Do not spend decompiler effort here; spend it on obtaining the
-other compiler.
+Also measured: with `modify [eax]` on the callee, wcc386 still REMATERIALISES the 0 after the call
+(two `31d2`) rather than holding it in EDX, where the original holds it. So the original's callee
+contract differs from anything we have declared.
 
-Recipe for repeating the A/B (the harness is fiddly): the DOS batch MUST carry the environment
-header or `WCC386` is not on PATH and dosemu exits silently with no output —
-`@echo off / SET WATCOM=F:\ / SET PATH=F:\BINB;F:\BIN;F:\BINP / SET INCLUDE=F:\H / G:` — the
-working directory must be under the project root (a `/tmp` path is not reachable from the guest),
-and wcc386 writes objects LOWERCASE.
+DO NOT record a conclusion here again without an A/B that includes the beta.
 
-**SUPERSEDED NEXT-EXPERIMENT LIST** (kept for the record):
+**SUPERSEDED — the flag-sweep list below was written before the beta test:**
+
 **NEXT EXPERIMENT** (do not skip to a fix): decide between
 1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `war2-survey/BYTE-EXACT-PLAN.md`.
    The systematic uniformity across 216 functions fits a version difference well. No 10.0-beta
