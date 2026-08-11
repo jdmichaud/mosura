@@ -78,13 +78,26 @@ DO NOT record a conclusion here again without an A/B that includes the beta.
 All five put `push ebp ; mov ebp,esp` FIRST and the register save after, forcing the `lea`. The
 original does the opposite. The version hypothesis is dead for the entire 10.0–11.0 lineage.
 
-**THE ONE UNTESTED VERSION IS 9.01**, and the fingerprint doc puts it in a DIFFERENT codegen
-family (150-byte probe vs the 156-byte family). `scripts/setup-watcom-dosemu.sh 9.01` FAILS: the
-floppy revisions (7.0/8.5a/9.01) ship their runtime packed in `.WPK` and need `INSTALL.EXE` run
-under dosemu first, which that script documents as out of scope. Committed probes
-`oracle/codegen-probes/watcom/9.01.{obj,code}` exist, so it HAS been done — recover that recipe
-and re-run this one test. It governs 216 functions and is the single highest-value experiment
-left in the campaign.
+**9.01 TESTED TOO — SIX COMPILERS, ALL FRAME-FIRST.** 9.01 is the different codegen family per
+the fingerprint doc, and it still puts the frame first:
+`5589e5 a1........ e8........ c705........00000000 89ec 5d c3` (it materialises the constant with
+`c705` instead of holding EDX, so its body differs — but the PROLOGUE order does not).
+
+⇒ **No Watcom C/386 from 9.01 to 11.0 emits save-before-frame.** The `+3` class is not explained
+by any compiler in the lineage, any flag, or any source shape tried.
+
+**THE REMAINING HYPOTHESIS, and it is not about the compiler:** the ENTRY POINT. The original is
+`52 | 55 89e5 | ... | 5d | 5a c3` and our candidate is `55 89e5 | 52 | ... | 8d65fc | 5a 5d c3`.
+Strip the original's leading `52` and our `52`+`8d65fc`, and the remainders are IDENTICAL. So the
+whole class may be an off-by-N function START, not a codegen difference — which is exactly what
+[[war2-tracker-anchors-mid-prologue]] warns about ("the tracker anchors save-first entries at
+`push ebp`; score SHIFT-TOLERANTLY"). Test that before touching the decompiler again: re-score the
+216 with a shift-tolerant alignment and see how many become clean.
+
+**Staging 9.01 (the script cannot — floppy set, .WPK runtime):** `7z x` the archive, then `7z x`
+`Disk01.img`; `WCC386.DOS` is UNPACKED (116 KB) — copy it to `C:\WAT901\BIN\WCC386.EXE` and
+borrow `DOS4GW.EXE`/`W32RUN.EXE` from a staged 10.x tree. No headers needed for a self-contained
+probe. Period-correct flags: `-onatx` and `-onat` do NOT exist in 9.01 (E1074) — use `-oat`.
 
 Staging recipe for the ISO revisions, which does work:
 `scripts/setup-watcom-dosemu.sh <rev>` stages to `C:\WAT<REV>`; then a dosemu BAT with
