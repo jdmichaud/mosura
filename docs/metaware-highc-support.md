@@ -280,14 +280,44 @@ install, at the honest banner granularity `watcom.rs` documents.
 ## 3. FID databases
 
 Per [`fid-building-databases.md`](fid-building-databases.md) §"Versions: one database per toolchain
-build", into `oracle/fid/db/` (already searched by `paths::fid_db_dirs`). The format question is
-settled — OMF, ingesting today. Remaining work per version: the `--language` pin above, a
-common-symbols exclusion list, verification by identifying functions in a binary **we compiled
-ourselves** (the `fid_watcom_identify` pattern), and a `fid_database_drift` entry.
+build", into `oracle/fid/db/` (already searched by `paths::fid_db_dirs`), built by
+`scripts/rebuild-fid-db.sh highc`.
 
-Useful side effect: with several version databases attached, the match profile **dates** an unknown
-image ([`fid-building-databases.md`](fid-building-databases.md) §"Using the databases to date a
-binary") — which is how "which High C built this?" gets answered by evidence.
+**Seven columns for four releases** — a C run-time column per release, plus a C++ run-time column
+for the three C/C++ releases. v2.31 is the C-only 386 product and ships no `HCC386.LIB`, so it has
+no C++ column. C and C++ are separate databases for the same reason `watcom-*` splits them: the
+variant is part of a database's identity, and merging them would file two different bodies under
+one name.
+
+| database | records | libraries |
+| --- | --- | --- |
+| `highc-2.31-x86-32` | 544 | `HC386` + `HC387` + `HCLOC` + `HCNA` |
+| `highc-3.03-x86-32` | 725 | same four |
+| `highc-3.03-cpp-x86-32` | 211 | `HCC386` |
+| `highc-3.04-x86-32` | 716 | same four |
+| `highc-3.04-cpp-x86-32` | 211 | `HCC386` |
+| `highc-3.31-x86-32` | 565 | same four |
+| `highc-3.31-cpp-x86-32` | 266 | `HCC386` |
+
+⚠️ **`highc-3.03-cpp` and `highc-3.04-cpp` have byte-identical signature content**, differing only
+in the `library` record that names the version. The two trees ship the same `HCC386.LIB` build —
+both stamped translator `v2.05a` and RTL `Library Version 0.10`, differing only in the banner date
+(Apr 9 vs Aug 21 1992). **Both are kept deliberately.** These databases exist largely to *date* an
+unknown image, and the useful answer there is "this body appears in 3.03 **and** 3.04"; dropping
+either would make a match look exclusive to whichever survived. Do not "de-duplicate" them.
+
+The C columns are genuinely different — 3.03 vs 3.04 differ in 2426 records, consistent with their
+different translators (`v2.05a` vs `v2.05b`).
+
+Two of these columns (`highc-2.31`, `highc-3.31`) are wired into `tests/fid_database_drift.rs`.
+That matters beyond MetaWare: on a machine without the historical Watcom/Borland media every other
+row skips, and the gate's own assert calls a run that checked nothing a broken environment. These
+are the rows that keep it honest, and they are also the only rows exercising `--language` and
+`--cspec`.
+
+Still open per version: a common-symbols exclusion list, and verification by identifying functions
+in a **linked** binary we built ourselves — which needs a linker the kit does not ship (see the
+warning at the top of this document).
 
 ## Revised sequencing
 

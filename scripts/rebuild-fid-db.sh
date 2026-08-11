@@ -151,6 +151,13 @@ for mwv in 2.31 3.03 3.04 3.31; do
 	done
 	[ -n "$libs" ] && RECIPES="$RECIPES
 highc-$mwv-x86-32|MetaWare High C|$mwv|Release|${libs# }"
+	# The C++ run-time is its own column (v2.31 is the C-only product and has none).
+	#
+	# NOTE: highc-3.03-cpp and highc-3.04-cpp come out with byte-identical signature content —
+	# both trees ship the same HCC386.LIB build (translator v2.05a, RTL Library Version 0.10;
+	# only the banner date differs). That is not a bug and both are kept on purpose: these
+	# databases exist largely to DATE an unknown image, where the useful answer is "this body is
+	# in 3.03 AND 3.04". Dropping either would make a match look exclusive to the survivor.
 	p=$(mwfind hcc386.lib)
 	[ -n "$p" ] && RECIPES="$RECIPES
 highc-$mwv-cpp-x86-32|MetaWare High C|$mwv|cpp|$p"
