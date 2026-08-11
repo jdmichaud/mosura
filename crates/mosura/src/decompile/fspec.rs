@@ -967,6 +967,30 @@ pub struct CallSpec {
     /// Ghidra `FuncCallSpecs::stackPlaceholderSlot` (fspec.hh:1652): which CALL input slot holds the
     /// artificial stack-pointer tracker. `None` is Ghidra's `-1` (unused/released).
     pub stack_placeholder_slot: Option<usize>,
+    /// Registers this callee OVERWRITES that the default convention calls `<unaffected>` —
+    /// recovered from the callee's own body, per call site.
+    ///
+    /// `<unaffected>` is a property of the DEFAULT model, and in this binary it is a per-function
+    /// property: Watcom's `modify` list is set per translation unit by `#pragma aux`, and hand
+    /// written assembly obeys whatever contract its callers were built against. 264 functions
+    /// across 245 measured on WAR2 write EBX/ESI/EDI/EBP and never restore them.
+    ///
+    /// Believing the default model at such a call site is wrong code, not a cosmetic difference:
+    /// `guardCalls` emits no guard for an unaffected register, so the caller's PRE-call value
+    /// flows across untouched and every later use reads a stale value. Measured on WAR2
+    /// FUN_000748fd, whose callee returns a new pointer in EBX:
+    ///
+    /// ```text
+    ///   original   call FUN_00074744 ; mov BYTE PTR [ebx],al   <- stores through the RESULT
+    ///   mosura     func_0x00074744(...); *pxStack00000004 = ... <- stores through the STALE ptr
+    /// ```
+    ///
+    /// Ghidra has the same defect and cannot fix it: it recovers a prototype from one function in
+    /// isolation, so nothing inside the callee is visible while the caller is decompiled. Asked
+    /// through the whole-image wrapper it emits the same truncated callee. This is therefore a
+    /// deliberate `beyond-ghidra` extension, licensed by that measurement — see
+    /// war2-survey/PLAN-register-effects.md.
+    pub overwrites: Vec<(Address, u32)>,
 }
 
 /// Ghidra `ParamActive` (fspec.hh:285): the set of trials accumulated while recovering one

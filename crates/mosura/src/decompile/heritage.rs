@@ -1284,7 +1284,9 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     let aliased_stack = Some(spc) == stack && f.alias_boundary.is_some_and(|b| (off as i64) >= b);
     let effecttype = if spc == reg {
         // Ghidra `fc->hasEffect` — the convention's EffectRecord list (decoded from the compiler
-        // spec's `<default_proto>`, carried on the function as `proto_model`).
+        // spec's `<default_proto>`, carried on the function as `proto_model`). Note this is the
+        // DEFAULT model; the per-call override for a callee that does not honour it is applied
+        // inside the loop below, where the call — and so its CallSpec — is known.
         f.proto_model.has_effect(super::space::Address::new(reg, off), size)
     } else if aliased_stack || Some(spc) == ram {
         // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
@@ -1318,6 +1320,20 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             continue;
         }
         let Some(bid) = f.op(call).parent else { continue };
+
+        // PER-CALL EFFECT OVERRIDE. `<unaffected>` is a property of the DEFAULT convention, and in
+        // this binary it is a per-function property: a callee that overwrites a "preserved"
+        // register — measured on 245 WAR2 functions — leaves the caller's pre-call value stale,
+        // because an unaffected range gets NO guard here and flows across untouched. Where the
+        // callee's own body says otherwise, that evidence wins over the model.
+        let effecttype = if spc == reg
+            && f.call_specs.get(&call).is_some_and(|cs| {
+                cs.overwrites.iter().any(|&(a, sz)| a.space == reg && a.offset == off && sz == size)
+            }) {
+            effect::KILLEDBYCALL
+        } else {
+            effecttype
+        };
 
         // Ghidra heritage.cc:1457-1467 — translate the range into the CALLEE's frame before asking
         // the convention anything about it. A register translates to itself; a SPACEBASE range must
