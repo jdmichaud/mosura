@@ -167,17 +167,26 @@ fn record_callee_effects(
     // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
     // still has `out=None` at that point, so `resolve_call_output` has not run yet.
     //
-    // WHAT THE COMPETING USE IS, IS NOT YET KNOWN. An earlier revision of this comment blamed the
-    // clobber INDIRECT consuming the pre-call EBX. That is WRONG and was never measured: mosura's
-    // clobber INDIRECT is an indirect CREATION taking a constant 0 (recover.rs:1733), so it does not
-    // read the pre-call value at all, and `only_op_use`'s INDIRECT arm (recover.rs:329) only sets
-    // INDIRECTALT — it never sets `res = false`. Both facts contradict that story.
+    // WHY THE TRIAL IS REJECTED IS STILL NOT KNOWN, and two attributions have already been wrong,
+    // so trust only what is listed as measured. Instrumented runs on the MVE established:
     //
-    // So the next step is to instrument `only_op_use` itself and print which descendant sets
-    // `res = false` for the EBX trial varnode, rather than reasoning about which one ought to. The
-    // measured facts above (the INACTIVE verdict, and the three ruled-out causes) all stand; only
-    // the attribution does not. Until this is known the emitted argument list is wrong for exactly
-    // this shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
+    //   - `only_op_use` NEVER rejects the EBX trial. Both of its `res = false` sites were printed
+    //     and neither fires, so the "a competing use disqualifies it" family of explanations is
+    //     dead, including the clobber-INDIRECT story once written here. (That one was doubly wrong:
+    //     the clobber INDIRECT is an indirect CREATION taking a constant 0, recover.rs:1733, so it
+    //     never reads the pre-call value, and only_op_use's INDIRECT arm only sets INDIRECTALT.)
+    //   - At `check_input_trial_use` the EBX trial varnode is `vn_input=false written=true
+    //     indcreate=false def=COPY` in the register space — STRUCTURALLY IDENTICAL to the EAX
+    //     trial, which is accepted and emitted. A non-internal COPY takes the `only_op_use` path
+    //     (recover.rs:453-465), which we know returns true here.
+    //
+    // So the state visible at the moment of the check says the trial SHOULD be Active, yet it
+    // arrives at `build_input_from_trials` as `active=false defnouse=false`. Those two observations
+    // cannot both describe the same evaluation: the flags must be set on a DIFFERENT heritage pass
+    // from the one printed. The next step is therefore to correlate by pass — tag each print with
+    // the heritage pass index and find the pass on which EBX is checked and rejected — rather than
+    // to explain the discrepancy away. Until that is known the argument list is wrong for this
+    // shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
     if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
         return;
     }
