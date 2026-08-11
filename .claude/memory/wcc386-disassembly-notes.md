@@ -53,4 +53,23 @@ Measured anyway: `-of` and `-of+` produce IDENTICAL code in 10.0a, matching OW2 
   `CHAIN_FRAME` decision looks like in OW2 terms (`TargetSwitches` + `CurrProc->state.attr`).
   Mapping `[0x7f8b0]` and the meaning of `+0x54` is the next concrete step.
 
+## ⚠️ OW2 CONSTANTS DO NOT TRANSFER TO 10.0a — three strikes
+
+1. `-oo` does not behave as OW2's `AddCacheRegs` predicts.
+2. OW2's register-set encoding (`HW_EBP = HW_EBPH|HW_BP = 0x40000400`, cgx86reg.h) appears
+   NOWHERE in 10.0a's code region. The single apparent `HW_ESP` (0x80000800) hit at `0x5687c` is a
+   FALSE POSITIVE: bytes `00 08 00 80` straddling a `mov %eax,0x80094` operand and the following
+   opcode.
+3. The emitter is table-driven, so no emitted-opcode constant (`8d 65`) exists to search for.
+
+⇒ Anchoring 10.0a code by OW2 constant values does not work. Whoever continues must recover
+10.0a's OWN encodings first — e.g. start from the option parser (find the `-o` letter dispatch),
+learn which global holds the switches, then find its readers. `[0x7f8b0]` (a struct pointer with
+flags at `+0x54`, fields at `+0x34`/`+0x50`) is a confirmed live lead seen at `0x482f1`.
+
+**What does NOT need the disassembly:** the swap itself is already understood and behaviourally
+confirmed on 10.0a — two prologue paths, chosen by whether traceable stack frames are requested
+(`-of`/`-of+` -> frame first then saves, needing `lea esp,[ebp-N]`; neither -> saves first then
+`Enter()`). The disassembly was only to locate that code IN 10.0a, not to discover the mechanism.
+
 Related: [[prologue-order-is-chain-frame]], [[analysis-external-toolchains]].
