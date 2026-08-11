@@ -459,4 +459,9 @@ else
 fi
 
 # clang, MSVC: not installed — documented gaps in docs/ground-truth-corpus.md (never faked).
+# Prove every expected/*.c still recompiles to the bytes of the function it claims. This is the
+# only place the compiler enters the byte-exact chain: it establishes the reference source is
+# byte-faithful, so ground_truth_parity can compare text and need no toolchain.
+log "verifying reference sources"
+python3 "$(dirname "$0")/verify-expected.py" || { log "REFERENCE SOURCE MISMATCH"; exit 1; }
 log "done — committed artifacts: *.<compiler>-<arch>[.com] (stripped) + *.truth"

@@ -2231,15 +2231,30 @@ fn global_fnptr_call_is_not_a_value_cast() {
     // assertion on the C text could have caught it. So assert the SHAPE the C must compile to:
     // one memory-indirect call, `ff 15 <abs32>`, then `ret` — 7 bytes.
     //
-    // The call must be through a variable the type system named a CODE POINTER (mosura's
-    // `pc` prefix), not through an untyped value. Before the TypeOpCallind port the same call
-    // read `(*(code *)xRam08049070)()` — an `x`-prefixed unknown, cast at the point of use — so
-    // this discriminates: it was false before the fix and is true after.
-    assert!(
-        c.contains("(*pc"),
-        "the call target is not typed as a code pointer (expected a `pc`-prefixed variable, \
-         which is what makes the emitted C compile to `ff 15 <abs32>` rather than a load plus a \
-         register-indirect call). dispatch_ @ {dispatch:#x}:\n{c}"
+    // AND the real property: mosura must reproduce the REFERENCE SOURCE — the C that was worked
+    // out from these bytes and is verified by `verify-expected.py`, at build time, to recompile
+    // to them. Text alone was not enough: the emitted C read correctly for a while and still
+    // compiled to the wrong instructions, because the prelude's `code` typedef made `code *` a
+    // pointer-to-function-pointer. Comparing against a source of PROVEN byte-fidelity is what
+    // closes that gap without putting a compiler in the test chain.
+    let want = std::fs::read_to_string(
+        ground_truth_dir().join("expected").join("globfnptr.dispatch_.c"),
+    )
+    .expect("reference source present");
+    let body = |s: &str| {
+        s.lines()
+            .skip_while(|l| !l.trim_start().starts_with("void FUN_"))
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        body(&c),
+        body(&want),
+        "mosura does not reproduce the reference source for dispatch_ @ {dispatch:#x}.\n\
+         The reference is verified to recompile to the original bytes, so a difference here is a \
+         difference in the bytes.\n--- mosura ---\n{c}\n--- reference ---\n{want}"
     );
 }
 
