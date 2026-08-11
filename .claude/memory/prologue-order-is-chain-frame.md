@@ -62,6 +62,27 @@ Confirmed by experiment (10.0a, same source):
 `81ec` stack allocation, `c705` instead of `31d2`/`8915`), so debug level alone is not the whole
 recipe — but the ORDER question is settled.
 
+## THE FULL RECIPE — REPRODUCED 2026-08-11
+
+```
+-os + stack param + a saved register   52 5589e5 8b550c 83c207 8b450c e8.. 8915.. 5d 5a c3
+-of+ -onatx (our flags)                5589e5 52 8b4508 8d5007 e8.. 8915.. 8d65fc 5a 5d c3
+ORIGINAL                               52 5589e5 ...                        5d 5a c3
+```
+
+Three conditions, all necessary:
+1. **`-os`** — `OptForSize > 50` makes `AddCacheRegs()` (x86proc.c:855) return early, so `sp_frame`
+   stays FALSE and a BP frame is permitted. `-os` alone gives save-first but NO frame.
+2. **stack parameters** — `parms.size != 0` makes `NeedBPProlog()` (x86proc.c:275) true, so
+   `Enter()` actually emits `push ebp ; mov ebp,esp`. Stack params alone (no `-os`) give ESP
+   addressing and no frame.
+3. **no `-of` / `-of+`** — leaves `DO_BP_CHAIN` false, so `GenProlog` takes the `else` branch and
+   pushes the saved registers BEFORE `Enter()`.
+
+Ruled out along the way: `-d1` (save-first, no frame), `-d2` (right order but bloats — homes params
+to memory, saves 5 registers), `-3r`/`-5r`/`-4s`, `-oi`, `-oc`, `-od`, `-zp4`, and six compiler
+revisions (9.01/10.0a/10.0beta/10.5/10.6/11.0 all identical here).
+
 ## What this means for the survey
 
 `war2-survey/flags.py` picks `-of+` when it sees a frame setup in the first 8 bytes. **That
