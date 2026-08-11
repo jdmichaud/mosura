@@ -39,14 +39,27 @@ def directives(text):
 
 
 def mask(h):
-    """Zero out relocated 4-byte operands so an unlinked object compares to a linked image."""
-    h = re.sub(r"(?<=ff15)[0-9a-f]{8}", "R" * 8, h)
-    h = re.sub(r"(?<=e8)[0-9a-f]{8}", "R" * 8, h)
-    h = re.sub(r"(?<=a1)[0-9a-f]{8}", "R" * 8, h)
-    # `mov <reg>,DWORD PTR [abs32]` — the modrm form of the `a1` accumulator shortcut, emitted
-    # whenever the destination is not EAX (8b1d = EBX). Its displacement is a relocation exactly as
-    # a1's is, so it masks on the same argument.
-    h = re.sub(r"(?<=8b1d)[0-9a-f]{8}", "R" * 8, h)
+    """Zero out relocated 4-byte operands so an unlinked object compares to a linked image.
+
+    The reference is an UNLINKED object, so every address the linker would resolve reads zero
+    where the binary holds the real value. Those sites are the only legitimate difference, which
+    is the same argument that makes RELOC_EXACT a real bucket in the survey.
+
+    Kept as a pattern list because this harness has no relocation records to consult. (The survey's
+    compare.py does have them — LE relocation table x OMF FIXUPP — and masks only sites that carry
+    a fixup on BOTH sides, which is strictly better; do not port this regex approach there.)
+
+    Each entry is an opcode prefix followed by a 4-byte operand:
+      e8 / e9              call rel32, jmp rel32
+      ff15                 call dword ptr [disp32]
+      a1 / a3              mov eax,[moffs32] / mov [moffs32],eax   (the accumulator short forms)
+      8b/89 + modrm        mov reg,[disp32] / mov [disp32],reg     (mod=00 reg=xxx rm=101)
+      c705                 mov dword ptr [disp32], imm32           (address operand only)
+    """
+    # mod=00, rm=101 (disp32) for each of the 8 registers: 00 reg 101
+    modrm = "(?:05|0d|15|1d|25|2d|35|3d)"
+    for pre in ("e8", "e9", "ff15", "a1", "a3", f"8b{modrm}", f"89{modrm}", "c705"):
+        h = re.sub(rf"(?<={pre})[0-9a-f]{{8}}", "R" * 8, h)
     return h
 
 
