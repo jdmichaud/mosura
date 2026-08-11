@@ -62,6 +62,22 @@ comparator/harness faults this campaign, three of them in one afternoon.
   UNINITIALISED LOCAL plus a synthesized same-named global. The cspec is fine — it declares
   `<pentry minsize=1 maxsize=500 align=4><addr offset="4" space="stack"/>` — so the recovery is
   not consulting it. Decompiler work.
+- **stack-only parameters are UNREACHABLE under the default model, and the port is FAITHFUL.**
+  Traced on the `stackarg` MVE (`mov eax,[esp+4] ; inc eax ; ret 4`, emitted as a read of an
+  unassigned local). The stack varnode IS an input, `possible_param` accepts it, and it is marked
+  ACTIVE — then `fillin_map` kills it. `build_trial_map` synthesizes unref trials for the four
+  empty register slots (groups 0-3) that precede the stack entry (group 4), and
+  `force_inactive_chain` with `maxchain=2` latches `seenchain` on that hole and marks every later
+  trial inactive, the active stack trial included. mosura's implementation matches Ghidra's
+  `fspec.cc:1111` line for line — **do not "fix" it.**
+
+  The real gap: these functions are not using default `__watcall` at all. warcraft2-re's proven
+  sources declare them `#pragma aux ... parm []` — ALL arguments on the stack, a different
+  convention our cspec does not model. Recovering them needs PER-FUNCTION convention detection
+  from binary evidence (`ret imm16` is the callee-pop signal and encodes the byte count), which is
+  beyond-Ghidra and needs a second oracle. Same underlying class as the `ret imm16` row below, so
+  the two are one job of ~130 functions.
+
 - **`ret imm16`** (31): the RETURN operand IS the stack-parameter count (Ghidra models it as
   `extrapop`); unused today.
 

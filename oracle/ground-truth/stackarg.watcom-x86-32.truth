@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=stackarg compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=stackarg.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048106 0 take_ code
+func 0804810e 0 main_ code
