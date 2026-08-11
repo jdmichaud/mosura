@@ -140,14 +140,33 @@ fn record_callee_effects(
     f: &mut crate::decompile::funcdata::Funcdata,
 ) {
     use crate::decompile::opcode::OpCode;
-    // GATED OFF BY DEFAULT — INCOMPLETE. Detection and the caller-side clobber work: the callee's
-    // overwritten registers are recovered and `guard_calls` marks them killedbycall at that call
-    // site, so the caller's stale pre-call value no longer flows across. What is MISSING is the
-    // other half: the register must become the call's recovered OUTPUT
-    // (`recover::resolve_call_output`), which today only accepts registers in the cspec's
-    // `<output>` list. Without it the post-call value is an unnamed indirect creation, the store
-    // consumes something undefined, and the call sprouts spurious input trials — measurably worse
-    // output than doing nothing. Enable with MOSURA_CALLEE_EFFECTS=1 to continue the work.
+    // GATED OFF BY DEFAULT — one gap left, documented below.
+    //
+    // Both halves of the per-call prototype now exist. `callee_effects` recovers, from the callee's
+    // own body, the registers it writes without restoring AND the registers it reads before writing
+    // — its `modify` and `parm` lists. `guard_calls` marks the former killedbycall at that call
+    // site; `recover::recovered_output_list` maps them as that call's OUTPUT storage when the
+    // default `<output>` does not explain the return; and `check_input_trial_use` vetoes an
+    // argument trial for any register the callee never reads. Measured on the regout MVE
+    // (oracle/ground-truth/src/regout.c), which reproduces the WAR2 FUN_00074744 defect:
+    //
+    //   gated off   pxVar1 = pxRam08049070; func_0x08048106(param_2); *pxVar1 = param_1;
+    //   enabled     pxVar1 = (xunknown1 *)func_0x08048106(param_2);   *pxVar1 = param_1;
+    //
+    // The store now goes through the call's RESULT instead of the caller's stale pre-call pointer,
+    // which was wrong code on both sides of the call. The argument veto took the same call from 5
+    // spurious arguments to 1.
+    //
+    // REMAINING GAP, and why it is still gated: the source passes TWO arguments
+    // (`bump(p, n)` — `parm caller [ebx] [eax]`), and EBX is dropped. EBX is both an argument and
+    // the return register of this callee, and mosura represents a killedbycall register's post-call
+    // value as an INDIRECT CREATION spliced before the CALL — so the same register cannot
+    // simultaneously carry a pre-call value in. Ghidra never meets the case (it cannot see the
+    // callee, and no convention it ships reuses the return register as parameter storage), so there
+    // is nothing to port: this needs a designed representation, where a both-directions register
+    // becomes the CALL's real output with its argument varnode bound to the pre-call def, rather
+    // than an indirect creation. Until then the emitted argument list is wrong for exactly this
+    // shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
     if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
         return;
     }
@@ -157,8 +176,11 @@ fn record_callee_effects(
     if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
         eprintln!("record_callee_effects: {} ops, {} direct calls", f.op_ids().count(), calls.len());
     }
-    let mut cache: std::collections::HashMap<u64, Vec<(crate::decompile::space::Address, u32)>> =
-        std::collections::HashMap::new();
+    type Effects = Option<(
+        Vec<(crate::decompile::space::Address, u32)>,
+        Vec<(crate::decompile::space::Address, u32)>,
+    )>;
+    let mut cache: std::collections::HashMap<u64, Effects> = std::collections::HashMap::new();
     for call in calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
@@ -168,32 +190,44 @@ fn record_callee_effects(
         if target == 0 {
             continue;
         }
-        let regs = cache
+        let eff = cache
             .entry(target)
-            .or_insert_with(|| callee_overwrites(program, spec, ctx, target, reg, f))
+            .or_insert_with(|| callee_effects(program, spec, ctx, target, reg, f))
             .clone();
+        let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
         if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
-            eprintln!("callee {target:08x} overwrites {regs:?}");
+            eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");
         }
-        if !regs.is_empty() {
-            f.call_specs.entry(call).or_default().overwrites = regs;
-        }
+        let cs = f.call_specs.entry(call).or_default();
+        cs.overwrites = regs;
+        cs.reads = Some(reads);
     }
 }
 
-/// The write-without-restore scan over one callee's body.
-fn callee_overwrites(
+/// One straight-line pass over a callee's body, recovering BOTH halves of its prototype: the
+/// registers it writes without restoring (its `modify`/output storage) and the registers it reads
+/// before writing (its input storage).
+///
+/// `None` when the walk cannot follow the body — the first branch or call ends it and nothing is
+/// claimed, so an unscannable callee keeps today's behaviour rather than acquiring a guess.
+#[allow(clippy::type_complexity)]
+fn callee_effects(
     program: &Program,
     spec: &crate::sleigh::engine::Spec,
     ctx: &[u32],
     entry: u64,
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
-) -> Vec<(crate::decompile::space::Address, u32)> {
+) -> Option<(Vec<(crate::decompile::space::Address, u32)>, Vec<(crate::decompile::space::Address, u32)>)>
+{
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
     let mut written: Vec<(Address, u32)> = Vec::new();
     let mut restored: Vec<u64> = Vec::new();
+    // Every register offset written so far, whatever the model says about it — a read AFTER one of
+    // these is the callee's own value, not an argument the caller supplied.
+    let mut written_any: Vec<u64> = Vec::new();
+    let mut reads: Vec<(Address, u32)> = Vec::new();
     let mut pc = entry;
     for _ in 0..64 {
         let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
@@ -211,8 +245,26 @@ fn callee_overwrites(
                 Some(OpCode::Return) => is_ret = true,
                 // Anything that leaves the straight line: stop and claim nothing.
                 Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branch)
-                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => return Vec::new(),
+                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => return None,
                 _ => {}
+            }
+            // Inputs BEFORE the output, so an instruction that reads and writes the same register
+            // (`add ebx,eax`) counts EBX as an argument as well as an overwrite — which is exactly
+            // the shape this whole track exists for.
+            for a in &o.ins {
+                let Some(v) = a.as_var() else { continue };
+                if v.space != "register" {
+                    continue;
+                }
+                let addr = Address::new(reg, v.offset);
+                // `ret` and every push/pop read the stack pointer; that is the frame moving, not an
+                // argument. Asked of the space manager, never by hardcoding ESP.
+                if f.spaces.space_by_spacebase(addr, v.size).is_some() {
+                    continue;
+                }
+                if !written_any.contains(&v.offset) && !reads.iter().any(|&(a, _)| a == addr) {
+                    reads.push((addr, v.size));
+                }
             }
             let Some(out) = &o.out else { continue };
             if out.space != "register" {
@@ -226,6 +278,7 @@ fn callee_overwrites(
             if f.spaces.space_by_spacebase(addr, out.size).is_some() {
                 continue;
             }
+            written_any.push(out.offset);
             if is_pop {
                 restored.push(out.offset); // saved and restored ⇒ preserved after all
             } else if f.proto_model.has_effect(addr, out.size)
@@ -237,9 +290,12 @@ fn callee_overwrites(
         }
         if is_ret {
             written.retain(|&(a, _)| !restored.contains(&a.offset));
-            return written;
+            // A register the callee saved on entry and popped back is not an argument either — the
+            // push READ it, but only to preserve it.
+            reads.retain(|&(a, _)| !restored.contains(&a.offset));
+            return Some((written, reads));
         }
         pc += insn.bytes.len() as u64;
     }
-    Vec::new()
+    None // ran off the end of the window without reaching a return — no evidence
 }

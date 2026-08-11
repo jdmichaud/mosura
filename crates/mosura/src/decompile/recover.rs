@@ -22,7 +22,7 @@
 
 use std::collections::HashSet;
 
-use super::fspec::{trial_flags, Containment, ParamActive, ParamList};
+use super::fspec::{trial_flags, Containment, ParamActive, ParamEntry, ParamList};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -841,7 +841,26 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         if checked {
             continue;
         }
+        // The callee's OWN input storage, where its body could be read (the input half of the
+        // per-call prototype, `CallSpec::reads`). Ghidra decides this trial from caller-side
+        // evidence alone, because a `FuncCallSpecs` it has not analysed carries only the default
+        // model — so every register the convention *could* pass a parameter in, that happens to be
+        // live at the call, survives as an argument. We have the callee's body: a register it never
+        // reads before writing is not an argument, however live it looks here. Overlap rather than
+        // equality so a sub-register read (`bl`) still justifies its enclosing trial (`EBX`).
+        let vetoed = {
+            let t = &f.active_inputs[&call].trial[ti];
+            let (ta, tsz) = (t.addr, t.size);
+            f.call_specs.get(&call).and_then(|cs| cs.reads.as_ref()).is_some_and(|reads| {
+                !reads.iter().any(|&(a, sz)| {
+                    a.space == ta.space
+                        && a.offset < ta.offset + tsz as u64
+                        && ta.offset < a.offset + sz as u64
+                })
+            })
+        };
         let verdict = match f.op(call).input(slot) {
+            _ if vetoed => Verdict::NoUse,
             None => Verdict::NoUse,
             Some(v) => {
                 let vn_is_input = f.vn(v).is_input();
@@ -1046,7 +1065,28 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
         if active.num_trials() == 0 {
             continue;
         }
+        // `derive_output_map` is destructive — `mark_no_use` CLEARS the ACTIVE flag (fspec.hh:250),
+        // so the trials cannot be re-mapped afterwards. Keep the as-collected state for stage two.
+        let collected = if recovered.is_empty() { None } else { Some(active.clone()) };
         derive_output_map(&outlist, &mut active);
+        // The default convention did not explain this call's return. Ghidra stops here, because a
+        // `FuncCallSpecs` it never got to analyse carries only the default model. We have the
+        // callee's own body, and `CallSpec::overwrites` says which storage it writes and does not
+        // restore; when one of those is LIVE at the call site, that storage IS this callee's return
+        // — the `#pragma aux ... value [ebx]` the source declared and the default `<output>` cannot
+        // express. Re-run the map against a per-call output list built from that evidence.
+        //
+        // Second stage rather than one merged list because `firstOnly` (fspec.cc:1649) admits one
+        // entry per storage class: EBX would be suppressed by EAX merely for sharing TYPECLASS_
+        // GENERAL, even at a call site where EAX is dead. Staging also keeps the default path
+        // bit-identical, so a call the convention already explains cannot be re-decided here.
+        if let Some(mut restaged) = collected.filter(|_| !active.trial.iter().any(|t| t.is_used())) {
+            let recovered_out = recovered_output_list(&recovered);
+            derive_output_map(&recovered_out, &mut restaged);
+            if restaged.trial.iter().any(|t| t.is_used()) {
+                active = restaged;
+            }
+        }
         // buildOutputFromTrials (fspec.cc:5770): collect the used trials' varnodes in address
         // (least-significant-first) order, then reassemble.
         let mut used: Vec<(Address, OpId, VarnodeId)> = active
@@ -1062,6 +1102,34 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
         }
     }
     count
+}
+
+/// The output storage recovered from a callee's own body, as a [`ParamList`] `derive_output_map` can
+/// map trials against — the per-call half of Ghidra's `FuncCallSpecs : FuncProto`, whose `store`
+/// (fspec.hh:1400) may describe storage the *model* does not.
+///
+/// One exclusion entry per recovered register, each its own resource group so none excludes another,
+/// and each `TYPECLASS_GENERAL` — these are integer/pointer returns by construction (they are
+/// registers the default convention calls `<unaffected>`; the float stack is not among them).
+/// `minsize = 1` so a sub-register read of the returned value still justifies into its entry.
+fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
+    ParamList {
+        entry: recovered
+            .iter()
+            .enumerate()
+            .map(|(i, &(addr, size))| ParamEntry {
+                group: i as u32,
+                type_class: 0, // TYPECLASS_GENERAL
+                space: addr.space,
+                addressbase: addr.offset,
+                size,
+                minsize: 1,
+                alignment: 0, // exclusion — a single slot, not a stack area
+            })
+            .collect(),
+        resource_start: vec![0],
+        is_output: true,
+    }
 }
 
 /// Ghidra `ParamListStandardOut::fillinMap` output-map (fspec.cc:1721) reduced to what the SysV

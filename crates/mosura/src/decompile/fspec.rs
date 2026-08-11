@@ -991,6 +991,17 @@ pub struct CallSpec {
     /// deliberate `beyond-ghidra` extension, licensed by that measurement — see
     /// war2-survey/PLAN-register-effects.md.
     pub overwrites: Vec<(Address, u32)>,
+    /// The registers this callee READS BEFORE WRITING — its actual input storage, recovered from
+    /// its own body. The input-side twin of [`Self::overwrites`], and the other half of the
+    /// per-call prototype: Ghidra's `FuncCallSpecs` extends `FuncProto`, which owns BOTH parameter
+    /// lists, so a callee whose convention differs from the model is describable rather than
+    /// patchable one query at a time.
+    ///
+    /// `None` means NO EVIDENCE — the body scan hit a branch or call and stopped, so nothing is
+    /// claimed and the default convention decides alone. `Some` is a closed list: a register
+    /// outside it is not an argument however live it looks at the call site, which is what stops
+    /// every caller-live register in the convention's parameter set becoming a spurious argument.
+    pub reads: Option<Vec<(Address, u32)>>,
 }
 
 /// Ghidra `ParamActive` (fspec.hh:285): the set of trials accumulated while recovering one
