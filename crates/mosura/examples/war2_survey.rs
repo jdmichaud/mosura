@@ -545,9 +545,29 @@ fn build_tu(
         decls.push_str(&format!("extern int {f}();\n"));
     }
     // Ram globals + synthetic register vars. If ever indexed, declare as pointer.
+    // Names printc ALREADY declares as locals inside the body must not also be synthesized as
+    // globals: the file then declares the same identifier twice and the local shadows a global that
+    // has no business existing. Measured on 52 functions — e.g. FUN_0006aec4 reads a stack
+    // parameter `puStack00000004` and got both `int *puStack00000004;` at file scope and
+    // `uint4 * puStack00000004;` as a local.
+    let body_start = c.find("\n{").map(|i| i + 1).unwrap_or(0);
+    let declared_locals: HashSet<&str> = c[body_start..]
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let name = l.strip_suffix(';')?.rsplit(|ch: char| ch == ' ' || ch == '*').next()?;
+            // A declaration line is `<type> [*]<name>;` — reject statements, which carry an
+            // operator or a call.
+            if l.contains('=') || l.contains('(') || !l.contains(' ') {
+                return None;
+            }
+            is_ident_start(name).then_some(name)
+        })
+        .collect();
+
     let mut names: BTreeSet<String> = BTreeSet::new();
     for (n, pfx) in &scalar_idents {
-        if ptr_idents.contains(n) {
+        if ptr_idents.contains(n) || declared_locals.contains(n.as_str()) {
             continue;
         }
         // Prefer the width the decompiler recovered for this address over the prefix's default.
@@ -558,6 +578,9 @@ fn build_tu(
         names.insert(format!("{ty} {n};"));
     }
     for n in &ptr_idents {
+        if declared_locals.contains(n.as_str()) {
+            continue;
+        }
         // mosura's name prefixes carry the recovered type: `p` is a pointer, and the SECOND letter
         // is what it points at — `pc` is pointer-to-CODE. Declaring one as `int *` makes
         // `(*pcRamNNN)()` a call through a data pointer, so wcc386 loads it into a register and
@@ -706,4 +729,10 @@ fn sized_ctype(prefix: char, size: u32) -> Option<String> {
         (8, _) if matches!(prefix, 'f' | 'd') => "double".into(),
         _ => return None,
     })
+}
+
+/// Does this token look like a C identifier (so a candidate declared name)?
+fn is_ident_start(s: &str) -> bool {
+    let mut it = s.bytes();
+    it.next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && s.bytes().all(is_ident)
 }
