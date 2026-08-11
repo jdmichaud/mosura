@@ -30,13 +30,17 @@
 //! banner. The mapping table above is how a reader turns a marker into a release, and it is
 //! evidence from four installs, not a guarantee that no other release shares a translator.
 //!
-//! ⚠️ **WHERE THIS DOES AND DOES NOT APPLY.** These markers live in OMF **objects and
-//! libraries**. They do **not** survive into a linked DOS/X-32 image: both real X-32 samples
-//! were checked for `MetaWare`, `High C`, `Run-time Library`, `dosomf`, `Library Version` and
-//! every copyright year range above, and carry **none** of them. So this detector identifies a
-//! compiler from object/library input; identifying the compiler of a *linked* image is what the
-//! FID databases are for (`oracle/fid/db/highc-*`, `docs/fid-building-databases.md`
-//! §"Using the databases to date a binary").
+//! **WHERE THIS APPLIES — including linked images.** The `dosomf` translator comment is an OMF
+//! COMENT record and so lives only in objects and libraries. The **C run-time banner does
+//! survive linking**: a program linked against `HC386.LIB` by Phar Lap 386|LINK carries
+//! `High C Run-time Library Copyright (C) 1983-1993 MetaWare Incorporated.` in its image, and
+//! this detector finds it there (verified on `oracle/probes/libprobe.c` linked with the real
+//! toolchain — see `docs/metaware-highc-support.md`).
+//!
+//! That makes the *absence* of any marker in a linked image informative rather than expected.
+//! It is why the two real X-32 samples, which carry none of these strings and which the FID
+//! databases name nothing in, are **evidence of a different compiler** rather than a gap in
+//! detection.
 //!
 //! ⚠️ An earlier plan for this work guessed that the runtime strings visible in the X-32 samples
 //! (`NULL code pointer called`, `Bad stack size parameter`, …) were High C's. They are **not**:

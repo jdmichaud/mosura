@@ -1,0 +1,24 @@
+# Common symbols for the MetaWare High C 386 columns — callees whose presence identifies
+# nothing, so they must not contribute to a function's specific hash.
+#
+# DERIVED, NOT GUESSED. Counted over the 341 modules of v3.31's HC386.LIB by walking the OMF
+# LIBRARY structure (modules are page-aligned after MODEND; a plain record walk desyncs on the
+# padding and sees only a handful of modules) and tallying EXTDEF references per module:
+#
+#   _mwgoc         217/341   64%
+#   _mwargstack    217/341   64%
+#   _mwint21        58/341   17%
+#   _mw_errnoset    36/341   11%
+#
+# The threshold was "referenced by >= 10% of modules". The four below are High C's universal
+# runtime helpers — the argument-stack helper, the general operation call, the DOS int 21h
+# thunk, and the errno setter — which is exactly the shape of thing this list exists for: a
+# match credited to "it calls _mwargstack" would be credited to every function in the runtime.
+#
+# Not included: `SMALL?`, which the same tally surfaced at 32%. It is not a symbol — it is a
+# memory-model name leaking out of the record stream — so it is excluded rather than silently
+# carried as if it were a callee.
+_mwgoc
+_mwargstack
+_mwint21
+_mw_errnoset

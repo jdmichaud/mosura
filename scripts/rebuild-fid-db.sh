@@ -213,7 +213,12 @@ while IFS='|' read -r db family version variant libs; do
 	# produced it, so `loader::omf` labels every 32-bit module `watcom`; without this a MetaWare
 	# database is filed under `compilerspec watcom` and can never match a program analysed as
 	# High C (FID selects databases by language AND spec).
-	case "$db" in highc-*) langopt="$langopt --cspec highc" ;; esac
+	case "$db" in highc-*)
+		langopt="$langopt --cspec highc"
+		# Derived from the library itself, not guessed — see the file's header.
+		[ -f "$REPO/oracle/fid/common-symbols/highc.txt" ] &&
+			langopt="$langopt --common-symbols $REPO/oracle/fid/common-symbols/highc.txt" ;;
+	esac
 	if timeout 3600 cargo run --release -q -p xtask -- fid-build \
 		--family "$family" --version "$version" --variant "$variant" $langopt \
 		--out "$tmp/$db.mfid.gz" $present >/dev/null 2>&1 && [ -s "$tmp/$db.mfid.gz" ]; then

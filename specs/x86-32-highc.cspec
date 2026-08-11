@@ -52,6 +52,16 @@
               mov eax,[ebp+8]     <- +8 is the hidden buffer pointer
               mov [eax],edx / mov [eax+4],edx / mov [eax+8],edx
 
+  The exact boundary, from oracle/probes/hcabi2.c (one struct size per function):
+
+        1, 2, 4 bytes  -> EAX          (sub esp,4 ; mov eax,[esp+8] ; add esp,4 ; ret)
+        5, 8 bytes     -> EAX:EDX      (mov eax,-8(ebp) ; mov edx,-4(ebp))
+        12 bytes       -> hidden buffer pointer, first argument, also left in EAX
+
+  so <=4 -> EAX, 5..8 -> the EDX:EAX join, >8 -> hidden pointer. That probe also confirms
+  unsigned/short/unsigned char in EAX/AL, float and double in ST(0), long and unsigned long as
+  32-bit in EAX, and a real va_arg walk reading consecutive stack slots.
+
   The 8-byte register return is expressed as a <returnvalue> join of EAX and EDX, the same
   mechanism Ghidra's own specs use for a 64-bit value in a register pair (EDX is the high half:
   sret2 puts field `a`, the low 4 bytes, in EAX).

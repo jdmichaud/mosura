@@ -31,9 +31,12 @@ compiler_version: Some("metaware:highc:dosomf2.05b")
 Recorded prominently because the first version of this plan assumed the opposite, and because two
 independent checks now say there is **no evidence** for it:
 
-- **No marker.** Both samples were searched for `MetaWare`, `High C`, `Run-time Library`,
-  `dosomf`, `Library Version` and every copyright year range the toolchains stamp. None present.
-  (That is expected — the markers do not survive linking — so it is not itself disconfirming.)
+- **No marker, and that now counts as evidence.** Both samples were searched for `MetaWare`,
+  `High C`, `Run-time Library`, `dosomf`, `Library Version` and every copyright year range the
+  toolchains stamp. None present. An earlier draft dismissed this as expected, on the assumption
+  that no marker survives linking. **That assumption was wrong**: a program linked with the real
+  toolchain *does* carry the C run-time banner, and the detector finds it (below). So the
+  samples' silence is a real signal.
 - **No FID match.** Analysed with `highc` declared, all 7 databases attach (3238 records) and
   name **0** of the sample's 736 functions.
 
@@ -46,10 +49,27 @@ separated:
    `call` is `e8 00 00 00 00` plus a FIXUPP record) while a linked image has them filled in, so
    the hashes cannot line up unless the hasher masks those operands the same way on both sides.
 
-Separating them needs a **linked** High C binary to test against, which needs a linker: the kit
-ships none (Phar Lap's 386|LINK was sold separately). Until that exists, the honest statement is
-that the databases identify High C *library* code and have not been shown to identify a High C
-*program*.
+**Both explanations are now ruled out**, because a linked High C binary exists to test against —
+Phar Lap **386|LINK 4.1** turned up in `~/software/phar-lap-386-dox-extender-4.1-sdk` (disk 2,
+`BIN/386LINK.EXE`, uncompressed):
+
+```
+oracle/probes/libprobe.c  --HC386-->  libprobe.obj  --386LINK + HC386/HC387/HCNA/HCLOC-->  lp.exp
+```
+
+Analysed as `highc`, that linked image gives:
+
+- **detection works**: `High C Run-time Library Copyright (C) 1983-1993 MetaWare` →
+  `metaware:highc:1983-1993`, straight out of the linked file;
+- **FID works**: of the functions auto-analysis discovered, **14 were named, and all 14 match the
+  linker's own map exactly** — `_cnvs2u`, `_xtoul`, `_doecvt`, `_fpecvt`, `_fpexpo`, `_pow10`,
+  `_cnvn2s`, `_cnvu2s`, `_cnvi2s`, `_cnvp2s`, `_cnvll2s`, `_cnvull2s`, `__udivrem64`, `__mul64`.
+  Zero wrong, zero near-misses. The ground truth is 386|LINK's `-MAP` output, i.e. the build,
+  not Ghidra.
+
+So the hashes *do* line up across the library→linked boundary, and the databases identify a High C
+**program**, not merely library modules. Which leaves exactly one explanation for the X-32 samples:
+**they were not built with MetaWare High C.** Which compiler built them is still open.
 
 Per [`x32-loader-notes.md`](x32-loader-notes.md) §"How Ghidra structures this": a container needs
 code, a calling convention is data. Only #1 is code.
@@ -179,6 +199,36 @@ mis-diagnoses it. The `one library, one language` invariant is right and must st
 is inferring the language implicitly. Fix: an explicit `--language` pin on `fid-build`, plus a
 summarised skip count instead of one identical line per module (259 lines of noise here).
 
+## Linking — the recipe for a linked High C binary
+
+The MetaWare kits ship no linker (`CFIG386.EXE` in them implies Phar Lap's, sold separately).
+**Phar Lap 386|LINK 4.1** is in `~/software/phar-lap-386-dox-extender-4.1-sdk`: disk 2 holds
+`BIN/386LINK.EXE` uncompressed, disk 1 `BIN/{RUN386,386LIB,STUB386}.EXE`, so a plain `7z e` is
+enough — no installer needed (though it is the *same* Knowledge Dynamics engine, so
+`kd-install-driver.py` would drive a full SDK install if the rest is ever wanted).
+
+Staged into the dosemu C: drive, the link is:
+
+```dos
+386LINK libprobe -LIB A,B,C,D -EXE LP.EXP -MAP LP.MAP -NOBANNER
+```
+
+Two gotchas, both of which cost a run:
+
+- **DOS's 127-character command line.** Spelling the libraries out as
+  `C:\HC331\SMALL\HC386.LIB,...` overflows it and 386|LINK reports
+  `Phar Lap sys err 10117: can't reading command line`, which looks like a corrupt install. Copy
+  the libraries to short root-level names first.
+- **The output is a Phar Lap `P3` flat `.EXP`**, a *fourth* container (magic `P3\x01\x00`), not
+  an MZ. Its header is `0x200` bytes and the flat image is mapped at base 0 — calibrated against
+  the `-MAP` public symbols, not guessed: at `0x200`, 118 of 195 publics land on a function
+  prologue and `__flush`/`__close` read `55 89 e5 …`/`55 8b ec …`, while the header's own size
+  field (`0x180`) does not. mosura has no P3 loader; the FID verification above wraps the carved
+  image for the test, since the container is incidental to the question being asked.
+
+`-MAP` output is also the ground truth for that verification, and is the input format
+`fid-build --map` already parses.
+
 ## The three markers detection keys on
 
 Grounded by scanning the four installed toolchains' own libraries. The **translator version
@@ -242,6 +292,20 @@ caller pops, EAX for integer/pointer returns, ST(0) for float/double, **EDX:EAX 
 Everything except the struct-return rule matches Ghidra's x86-32 gcc spec — which is why the
 `gcc` placeholder was *approximately* right, and why a small-struct-returning function is what it
 gets wrong.
+
+`oracle/probes/hcabi2.c` then pinned the **exact** boundary of the one divergent rule, which is
+what the cspec's `<returnvalue>` sizes have to match:
+
+| struct size | returned in |
+| --- | --- |
+| 1, 2, 4 bytes | `EAX` |
+| 5, 8 bytes | `EAX:EDX` (EAX = low half) |
+| 12 bytes | hidden buffer pointer as the first argument, also left in `EAX` |
+
+so `≤4 → EAX`, `5..8 → EDX:EAX join`, `>8 → hidden pointer` — exactly what the spec encodes. The
+same probe confirms `unsigned`/`short`/`unsigned char` in `EAX`/`AL`, `float`/`double` in `ST(0)`,
+`long`/`unsigned long` as 32-bit in `EAX`, and a real `va_arg` walk reading consecutive stack
+slots.
 
 Measured at default settings only (`-O1 -386`, no pragmas). High C has options that change the
 convention; a build using them is not described by this spec, and the file says so.
@@ -315,9 +379,16 @@ row skips, and the gate's own assert calls a run that checked nothing a broken e
 are the rows that keep it honest, and they are also the only rows exercising `--language` and
 `--cspec`.
 
-Still open per version: a common-symbols exclusion list, and verification by identifying functions
-in a **linked** binary we built ourselves — which needs a linker the kit does not ship (see the
-warning at the top of this document).
+**Common symbols** (`oracle/fid/common-symbols/highc.txt`) are derived, not guessed: counted over
+the 341 modules of v3.31's `HC386.LIB` by walking the OMF *library* structure (modules are
+page-aligned after `MODEND`; a plain record walk desyncs on the padding and sees five modules
+instead of 341). `_mwgoc` and `_mwargstack` appear in 64% of modules, `_mwint21` 17%,
+`_mw_errnoset` 11% — High C's universal runtime helpers, which is exactly what the list is for.
+`SMALL?`, which the same tally surfaced at 32%, is a memory-model name leaking out of the record
+stream rather than a symbol, and is excluded rather than carried as if it were a callee.
+
+**Verified against a linked binary we built ourselves** — see the section above: 14/14 names
+matching 386|LINK's own map.
 
 ## Revised sequencing
 
