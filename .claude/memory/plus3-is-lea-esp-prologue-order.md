@@ -35,6 +35,33 @@ Compiler-version sensitivity is confirmed but the rule is NOT identified. Open W
 same source produces a third shape entirely (`55 89e5 a1.. e8.. 31c0 a3.. 89ec 5d c3` — no EDX
 save at all), so this scheduling is not something our C controls.
 
+**SETTLED 2026-08-11 — WATCOM 10.0a CANNOT PRODUCE THE ORIGINAL PROLOGUE.** A/B'd the same
+emitted C under real 10.0a via dosemu across `-of+ -onatx`, `-of`, `-of+ -onat`, `-of+ -oaxt`,
+`-of+ -zp4`, `-of+` without `-s`, and `-of+ -od`:
+
+```
+ORIG   52 | 55 89e5 | ... | 5d 5a c3           save FIRST, then frame        25b
+-of+   55 89e5 | 52 | ... | 8d65fc 5a 5d c3    frame first, save after + lea 28b
+-of    52 | ... | 5a c3                        save first, NO frame          21b
+```
+
+Every framed variant puts `push ebp ; mov ebp,esp` first and the register save after, which is
+exactly what forces the 3-byte `lea esp,[ebp-N]`. Every frameless variant puts the save first but
+emits no frame. **The frameless build is byte-identical to the original apart from the missing
+frame**, so the emitted C is right and only the code generator's prologue SCHEDULING differs.
+
+⇒ The 216-function `+3` class is a TOOLCHAIN question — which wcc386 built WAR2 — and is NOT
+mosura's to fix. Direct evidence for the 10.0a vs 10.0-beta known-unknown in
+`war2-survey/BYTE-EXACT-PLAN.md`. Do not spend decompiler effort here; spend it on obtaining the
+other compiler.
+
+Recipe for repeating the A/B (the harness is fiddly): the DOS batch MUST carry the environment
+header or `WCC386` is not on PATH and dosemu exits silently with no output —
+`@echo off / SET WATCOM=F:\ / SET PATH=F:\BINB;F:\BIN;F:\BINP / SET INCLUDE=F:\H / G:` — the
+working directory must be under the project root (a `/tmp` path is not reachable from the guest),
+and wcc386 writes objects LOWERCASE.
+
+**SUPERSEDED NEXT-EXPERIMENT LIST** (kept for the record):
 **NEXT EXPERIMENT** (do not skip to a fix): decide between
 1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `war2-survey/BYTE-EXACT-PLAN.md`.
    The systematic uniformity across 216 functions fits a version difference well. No 10.0-beta
