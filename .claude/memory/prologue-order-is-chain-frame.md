@@ -83,6 +83,34 @@ Ruled out along the way: `-d1` (save-first, no frame), `-d2` (right order but bl
 to memory, saves 5 registers), `-3r`/`-5r`/`-4s`, `-oi`, `-oc`, `-od`, `-zp4`, and six compiler
 revisions (9.01/10.0a/10.0beta/10.5/10.6/11.0 all identical here).
 
+## THE CLASS IS NOT REPRODUCIBLE WITH THE AVAILABLE TOOLCHAIN (2026-08-11, comprehensive)
+
+The original shape is save-first + a BP frame + a tight body + ONE saved register. Tested
+exhaustively against it:
+
+| axis | tried | result |
+|---|---|---|
+| compilers | 9.01, 10.0a, 10.0 beta, 10.5, 10.6, 11.0 | all frame-first with `-of`; all save-first-NO-frame without |
+| frame flags | `-of+`, `-of`, none | `-of*` -> +3 (`lea`); none -> -4 (no frame) |
+| optimisation | `-onatx`, `-onat`, `-oat`, `-oi`, `-oc`, `-od`, `-os`, `-oo`, `-oaxt` | none yields frame + save-first |
+| debug | `-d1`, `-d2` | `-d1` no frame; `-d2` right ORDER but bloats (5 saves, params homed) |
+| processor / convention | `-3r`, `-4r`, `-5r`, `-4s` | no effect on the order |
+| source shape | stack params (`parm []`, `parm caller []`), address-taken local, shared temp, self `#pragma aux` with four `modify` lists | none yields frame + save-first |
+
+**Only `-d2` produces the order, and it changes the body.** The two available flag settings give
++3 (`-of+`) or -4 (no `-of`) — measured as M10/M11: 0 gained either way.
+
+**Independent corroboration.** warcraft2-re wrote hand-verified source for 980 functions of this
+shape and matched NONE of them; 838 carry their own blocker label `cgflag:ecx-pre-frameptr-save`.
+Two projects, opposite directions, same wall.
+
+**What IS established and is worth acting on:** without `-of` the emitted BODY matches the original
+byte-for-byte (verified on 10.0a). The entire remaining difference is the 4-byte frame, and on the
+non-chain path that frame requires `NeedBPProlog()` — `parms.size`/`locals.size`/`NEEDS_PROLOG`
+non-zero. Of the 2142 functions, 718 DO reference `[ebp+/-disp]` in the original (403 param refs,
+3379 local refs) which mosura recovers as nothing. Recovering that storage is the only path left
+that is mosura's to take, and it is decompiler work, not a flag.
+
 ## What this means for the survey
 
 `war2-survey/flags.py` picks `-of+` when it sees a frame setup in the first 8 bytes. **That
