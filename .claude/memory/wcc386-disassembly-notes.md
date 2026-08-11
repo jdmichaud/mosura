@@ -53,33 +53,58 @@ Measured anyway: `-of` and `-of+` produce IDENTICAL code in 10.0a, matching OW2 
   `CHAIN_FRAME` decision looks like in OW2 terms (`TargetSwitches` + `CurrProc->state.attr`).
   Mapping `[0x7f8b0]` and the meaning of `+0x54` is the next concrete step.
 
-## ⚠️ OW2 CONSTANTS DO NOT TRANSFER TO 10.0a — three strikes
+## ⭐ FOUND IT — the CHAIN_FRAME decision in 10.0a machine code
 
-1. `-oo` does not behave as OW2's `AddCacheRegs` predicts.
-2. OW2's register-set encoding (`HW_EBP = HW_EBPH|HW_BP = 0x40000400`, cgx86reg.h) appears
-   NOWHERE in 10.0a's code region. The single apparent `HW_ESP` (0x80000800) hit at `0x5687c` is a
-   FALSE POSITIVE: bytes `00 08 00 80` straddling a `mov %eax,0x80094` operand and the following
-   opcode.
-3. The emitter is table-driven, so no emitted-opcode constant (`8d 65`) exists to search for.
+**`0x3ff36` is the predicate. `-of`/`-of+` set the bit it tests. Its caller branches into two
+different emitters. That is the swap, in the shipped compiler.**
 
-⇒ Anchoring 10.0a code by OW2 constant values does not work. Whoever continues must recover
-10.0a's OWN encodings first — e.g. start from the option parser (find the `-o` letter dispatch),
-learn which global holds the switches, then find its readers. `[0x7f8b0]` (a struct pointer with
-flags at `+0x54`, fields at `+0x34`/`+0x50`) is a confirmed live lead seen at `0x482f1`.
+How it was reached (the method that worked, after four that did not):
+1. `[0x7f8b0]` is `CurrProc` — 234 code references. Clustering them gave a 111-reference region
+   `0x404ed`-`0x41a17`: the procedure prologue/epilogue module.
+2. Inside it, `0x404a2` builds a REGISTER SET from switch bits, which identified the switches word:
 
-**Dead ends already burned — do not repeat:**
-- OW2 constant values (register sets, switch bits) — see the three strikes above.
-- Searching for emitted opcodes (`8d 65`, `55`, `89 e5`): the encoder is table-driven, and the
-  `55 89 e5` hits are wcc386's OWN prologues (it is self-hosted).
-- `or [mem], imm` scans for a switches global: only 3 sites in the whole code region
-  (`0x7d52c`, `0x7f6ac`, `0x7f620`), so the option parser does not use that idiom.
-- Clustering `cmp al,<option letter>`: every cluster found (`0x35600`, `0x36c00`, `0x36200`,
-  `0x2c200`) is PRINTF, not option parsing — `%i %u %x %X %d %o %e %c %f %s` collide with the
-  option letters. `0x35600` is a vsprintf-style formatter.
+```asm
+404a2:  testb $0x40,0x7f89c  /  404ab: or $0x40000000,%eax   ; HW_EBPH
+404b0:  testb $0x80,0x7f89c  /  404b9: or $0x80000000,%eax   ; HW_ESPH
+404be:  testb $0x10,0x7f89d  /  404c7: or $0x200000c,%eax
+```
 
-**What does NOT need the disassembly:** the swap itself is already understood and behaviourally
-confirmed on 10.0a — two prologue paths, chosen by whether traceable stack frames are requested
-(`-of`/`-of+` -> frame first then saves, needing `lea esp,[ebp-N]`; neither -> saves first then
-`Enter()`). The disassembly was only to locate that code IN 10.0a, not to discover the mechanism.
+   ⇒ the target-switches word lives at **`0x7f89c`** (bytes `0x7f89c`/`0x7f89d`/`0x7f89e`).
+3. `CGSW_X86_NEED_STACK_FRAME = 0x00010000` (OW2 `bld/cg/intel/h/x86swi.h:49`) = bit 16 = byte
+   `0x7f89e` mask `0x01`. Searching for `testb $1,[0x7f89e]` gives exactly ONE site: `0x3ff36`.
+
+```asm
+0003ff36 <chain_frame_p>:              ; CHAIN_FRAME
+  3ff36:  testb $0x1,0x7f89e           ; NEED_STACK_FRAME  <- set by -of AND -of+
+  3ff3d:  jne   3ff51                  ;   -> true
+  3ff3f:  testb $0x4,0x7f89d           ; bit 10
+  3ff46:  je    3ff54                  ;   -> false
+  3ff48:  testb $0x2,0x7f89d           ; bit 9
+  3ff4f:  je    3ff54                  ;   -> false
+  3ff51:  mov   $1,%al ; ret           ; TRUE
+  3ff54:  xor   %al,%al ; ret          ; FALSE
+                                        ; == NEED_STACK_FRAME || (bit10 && bit9)
+
+  3ff69:  call  3ff36                  ; the caller branches on it
+  3ff6e:  test  %al,%al
+  3ff70:  je    3ff7d
+  3ff72:  call  38809                  ; TRUE  path: reads [0x7fab2], tags 5
+  3ff7d:  call  38802                  ; FALSE path: reads [0x7fab0], tags 1
+```
+
+So the shipped 10.0a really does carry the two-path structure OW2's `GenProlog` describes, the
+selector really is the `-of` switch bit, and `-of`/`-of+` really are the same bit — which is why
+they measure identical. The behavioural finding and the source reading are now both grounded in
+this binary.
+
+## ⚠️ OW2 CONSTANTS: PARTLY TRANSFER — earlier claim CORRECTED
+
+An earlier revision said they do not transfer at all. That was wrong for the register sets:
+`or $0x40000000` at `0x404ab` IS OW2's `HW_EBPH`. My search failed because I looked for the
+COMPOUND `HW_EBP` (`HW_EBPH|HW_BP` = 0x40000400); the code uses the bare high part. Switch bit
+values transfer too (`NEED_STACK_FRAME = 0x10000` located the predicate).
+
+What genuinely does NOT transfer is FLAG BEHAVIOUR: `-oo` does not act as OW2's `AddCacheRegs`
+predicts. Read OW2 for structure and constants; verify behaviour on the binary.
 
 Related: [[prologue-order-is-chain-frame]], [[analysis-external-toolchains]].
