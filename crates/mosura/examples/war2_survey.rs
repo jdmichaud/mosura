@@ -383,7 +383,32 @@ fn main() {
                 .and_modify(|e| *e = (*e).min(vn.size))
                 .or_insert(vn.size);
         }
+        // STACK-BASED CONVENTION. A function whose recovered parameters all live on the STACK is
+        // not using default __watcall — Watcom spells that `#pragma aux <name> parm []`, and
+        // warcraft2-re's proven sources use exactly that form. Without the declaration the emitted
+        // C is compiled as a register-convention function: the argument arrives in EAX instead of
+        // at [ebp+8] and the body ends `ret` instead of `ret 4`. Measured on FUN_00030da8, whose
+        // original is
+        //     55 89e5 8b4508 e8...... 5d c2 0400
+        //     push ebp ; mov ebp,esp ; mov eax,[ebp+8] ; call ; pop ebp ; ret 4
+        // Recovering the parameter WITHOUT declaring the convention is inert, which is exactly
+        // what an earlier measurement of the recovery half alone showed.
+        //
+        // `parm []` and not `parm caller []`: the caller-pop form leaves a bare `ret`, and the
+        // callee-pop default is what produces the `ret N` these functions carry.
+        let proto = mosura::decompile::fspec::recover_func_proto(&f);
+        let stack_convention = !proto.params.is_empty()
+            && proto.params.iter().all(|p| {
+                f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
+            });
         let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);
+        let tu = if stack_convention {
+            // The pragma alone, with NO forward declaration: printc emits its own signature and a
+            // `void f(void);` ahead of it would conflict. `#pragma aux` attaches by NAME.
+            format!("#pragma aux {name} parm [];\n{tu}")
+        } else {
+            tu
+        };
         if thunk {
             smells.push("thunk".into());
         }
