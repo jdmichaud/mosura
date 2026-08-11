@@ -514,7 +514,15 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
         names.insert(format!("{} {n};", ctype_for(*pfx)));
     }
     for n in &ptr_idents {
-        names.insert(format!("int *{n};", ));
+        // mosura's name prefixes carry the recovered type: `p` is a pointer, and the SECOND letter
+        // is what it points at — `pc` is pointer-to-CODE. Declaring one as `int *` makes
+        // `(*pcRamNNN)()` a call through a data pointer, so wcc386 loads it into a register and
+        // calls the register (8 bytes) where the original is one memory-indirect `call` (7):
+        // `ff 15 <abs32>`. That is exactly the defect the globfnptr ground-truth gate pins, fixed in
+        // the decompiler but still mis-declared here — the emitter threw the recovered type away.
+        // The prelude's `typedef int code();` makes `code *` the function-pointer type.
+        let ty = if n.starts_with("pc") { "code *" } else { "int *" };
+        names.insert(format!("{ty}{n};"));
     }
     for d in names {
         decls.push_str(&d);
