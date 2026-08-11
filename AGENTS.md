@@ -178,7 +178,6 @@ record gotchas in memory.
 - Keep the disasm engine data-driven — no per-instruction or per-arch special-casing.
 - Match Ghidra where it is the port target (formatting, structure, types); prefer
   faithfulness over "nicer" output.
-- Commit/push only when asked.
 
 ## Pointers
 
