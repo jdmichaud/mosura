@@ -1,0 +1,11 @@
+# mosura-ground-truth v1 program=twoarg compiler=watcom arch=x86-32 lang=x86:LE:32:default
+# derived-from=twoarg.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08048100
+func 08048100 0 _cstart_ code
+func 08048106 0 add2_ code
+func 08048109 0 add2b_ code
+func 08048110 0 feed_ code
+func 08048124 0 feedb_ code
+func 08048133 0 feedc_ code
+func 08048149 0 main_ code
