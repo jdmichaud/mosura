@@ -167,26 +167,26 @@ fn record_callee_effects(
     // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
     // still has `out=None` at that point, so `resolve_call_output` has not run yet.
     //
-    // ROOT CAUSE, MEASURED — and it is the veto's own doing. Tagging the verdicts by heritage pass
-    // shows `check_input_trial_use` marks EBX **ACTIVE**; it is cleared afterwards by
-    // `ParamList::fillin_map`'s definitely-not-used chain rule (fspec.rs:498-511, Ghidra
-    // fspec.cc): once a whole exclusion group is `dnu`, `seendefnouse` latches and EVERY LATER
-    // trial gets `mark_inactive()`. The watcall input order is EAX, EDX, EBX, ECX — the veto
-    // correctly marks EDX no-use (the callee never reads it), EDX precedes EBX, so the latch fires
-    // and takes EBX with it. That matches every observation: ACTIVE at the check, `active=false
-    // defnouse=false` at `build_input_from_trials` (mark_inactive sets neither), and `only_op_use`
-    // never rejecting.
+    // Both halves of the per-call prototype are live and the pass is ON. `MOSURA_CALLEE_EFFECTS=0`
+    // disables it.
     //
-    // The rule is faithful and must stay: it is what stops a gap in the parameter sequence being
-    // read as a later parameter. The defect is that the veto punches a hole in the DEFAULT list's
-    // group sequence, when what the evidence actually says is that this callee does not USE that
-    // list. The fix is the input-side twin of `recovered_output_list`: build the call's input
-    // storage from `CallSpec::reads` as its own `ParamList`, so EAX and EBX are consecutive groups
-    // with no gap for the latch to catch, and drop the veto — a register outside the recovered list
-    // then has no entry to be a trial for, which is the same outcome expressed structurally instead
-    // of by suppression. Until that lands the argument list is wrong for this shape, so the pass
-    // stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
-    if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
+    // The gap that kept this gated is closed. It was not a representational impossibility, as three
+    // successive readings claimed: pass-correlating the verdicts showed `check_input_trial_use`
+    // marks the both-directions register ACTIVE, and `fillin_map`'s definitely-not-used chain rule
+    // (fspec.rs:498-511) cleared it afterwards — a fully-`dnu` exclusion group latches
+    // `seendefnouse` and marks every LATER trial inactive. Suppressing EDX in the middle of
+    // watcall's EAX/EDX/EBX/ECX sequence took EBX down with it. Replacing the model's input list
+    // with the callee's own (`recovered_input_list`) makes the recovered registers consecutive
+    // groups, leaving the faithful rule nothing to fire on, and retires the suppression entirely.
+    //
+    // On the regout MVE, which reproduces WAR2 FUN_00074744:
+    //
+    //   before   pxVar1 = pxRam08049070; func_0x08048106(param_2);            *pxVar1 = param_1;
+    //   now      pxVar1 = (xunknown1 *)func_0x08048106(xRam08049070,param_2); *pxVar1 = param_1;
+    //
+    // which is the source: `p = bump(g_dst, n); *p = v` — both arguments, in the order
+    // `parm caller [ebx] [eax]` declares, and the result consumed by the store.
+    if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_some_and(|v| v == "0") {
         return;
     }
     let Some(reg) = f.spaces.by_name("register") else { return };

@@ -841,26 +841,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         if checked {
             continue;
         }
-        // The callee's OWN input storage, where its body could be read (the input half of the
-        // per-call prototype, `CallSpec::reads`). Ghidra decides this trial from caller-side
-        // evidence alone, because a `FuncCallSpecs` it has not analysed carries only the default
-        // model — so every register the convention *could* pass a parameter in, that happens to be
-        // live at the call, survives as an argument. We have the callee's body: a register it never
-        // reads before writing is not an argument, however live it looks here. Overlap rather than
-        // equality so a sub-register read (`bl`) still justifies its enclosing trial (`EBX`).
-        let vetoed = {
-            let t = &f.active_inputs[&call].trial[ti];
-            let (ta, tsz) = (t.addr, t.size);
-            f.call_specs.get(&call).and_then(|cs| cs.reads.as_ref()).is_some_and(|reads| {
-                !reads.iter().any(|&(a, sz)| {
-                    a.space == ta.space
-                        && a.offset < ta.offset + tsz as u64
-                        && ta.offset < a.offset + sz as u64
-                })
-            })
-        };
         let verdict = match f.op(call).input(slot) {
-            _ if vetoed => Verdict::NoUse,
             None => Verdict::NoUse,
             Some(v) => {
                 let vn_is_input = f.vn(v).is_input();
@@ -921,7 +902,21 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
 /// `0x38`). (Ghidra calls `resolveModel` first, coreaction.cc:1752, to pick between the models of a
 /// `ProtoModelMerged`; mosura carries a single model per function, so there is nothing to resolve.)
 fn derive_input_map(f: &mut Funcdata, call: OpId) {
-    let Some(input) = f.proto_model.input.clone() else { return };
+    // The callee's OWN input storage where its body could be read (`CallSpec::reads`) — the input
+    // half of the per-call prototype, and the twin of [`recovered_output_list`]. It must REPLACE the
+    // model's list rather than filter its results: `fillin_map`'s definitely-not-used chain rule
+    // (fspec.rs:498-511) latches on the first fully-`dnu` exclusion group and marks every LATER
+    // trial inactive, so suppressing a register in the middle of the DEFAULT sequence (EDX, in
+    // watcall's EAX/EDX/EBX/ECX) silently takes the recovered registers after it down too. Given the
+    // callee's real list the recovered registers are CONSECUTIVE groups and there is no hole for the
+    // latch to catch — the rule stays faithful and simply has nothing to fire on.
+    let recovered = f
+        .call_specs
+        .get(&call)
+        .and_then(|cs| cs.reads.as_ref())
+        .filter(|r| !r.is_empty())
+        .map(|r| recovered_input_list(r));
+    let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
     let Some(active) = f.active_inputs.get_mut(&call) else { return };
     input.fillin_map(active);
 }
@@ -1104,6 +1099,32 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
     count
 }
 
+/// The INPUT storage recovered from a callee's own body, as a [`ParamList`] — the registers it reads
+/// before writing, in the order it reads them, which is the order the source's `parm caller [...]`
+/// lists them. One exclusion entry per register, each its own resource group so they fill as
+/// consecutive formal parameters.
+fn recovered_input_list(reads: &[(Address, u32)]) -> ParamList {
+    ParamList {
+        entry: reads
+            .iter()
+            .enumerate()
+            .map(|(i, &(addr, size))| ParamEntry {
+                group: i as u32,
+                type_class: 0, // TYPECLASS_GENERAL
+                space: addr.space,
+                addressbase: addr.offset,
+                size,
+                minsize: 1,
+                alignment: 0, // exclusion — a single slot
+            })
+            .collect(),
+        // [start, sentinel] — `separate_sections` (fspec.rs:393) indexes `resource_start[1]`, and a
+        // sentinel past the last group means the single section covers every entry.
+        resource_start: vec![0, reads.len() as u32],
+        is_output: false,
+    }
+}
+
 /// The output storage recovered from a callee's own body, as a [`ParamList`] `derive_output_map` can
 /// map trials against — the per-call half of Ghidra's `FuncCallSpecs : FuncProto`, whose `store`
 /// (fspec.hh:1400) may describe storage the *model* does not.
@@ -1127,7 +1148,7 @@ fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
                 alignment: 0, // exclusion — a single slot, not a stack area
             })
             .collect(),
-        resource_start: vec![0],
+        resource_start: vec![0, recovered.len() as u32],
         is_output: true,
     }
 }
