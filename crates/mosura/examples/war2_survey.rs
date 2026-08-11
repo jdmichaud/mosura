@@ -360,7 +360,30 @@ fn main() {
 
         // Synthesize a standalone TU and detect decompiler-artifact "smells".
         let thunk = matches!(region.first(), Some(0xe9) | Some(0xeb)) && orig_len <= 8;
-        let (tu, mut smells) = build_tu(&c, *va, false);
+        // GLOBAL WIDTHS, from the decompiler rather than from the name. The emitter used to pick a
+        // Ram global's C type from its name prefix alone, which carries kind but not SIZE, so every
+        // scalar global came out `int`. A one-byte global then compiles to a 4-byte store:
+        // FUN_0003ca48's original is `mov [0x95435],al` (`a2`), and `int xRam00095435;` turns that
+        // into a dword store — wrong opcode, wrong length. 3083 globals are declared `int` today.
+        // The decompiled function knows each varnode's width, so ask it.
+        let ram_dec = f.spaces.by_name("ram");
+        let mut gsizes: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+        for i in 0..f.num_varnodes() as u32 {
+            let vn = f.vn(mosura::decompile::varnode::VarnodeId(i));
+            // `Processor` covers ram AND register, so select the data space by NAME — the
+            // decompiler's space ids differ from the analysis Program's and must not be carried
+            // across that boundary.
+            if Some(vn.loc.space) != ram_dec {
+                continue;
+            }
+            // Narrowest access wins: a byte store is what fixes the declaration, and a wider
+            // access at the same address is a different (adjacent or overlapping) object.
+            gsizes
+                .entry(vn.loc.offset)
+                .and_modify(|e| *e = (*e).min(vn.size))
+                .or_insert(vn.size);
+        }
+        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);
         if thunk {
             smells.push("thunk".into());
         }
@@ -471,7 +494,12 @@ fn compilable_partial_symbols(c: &str) -> String {
 /// Scan the decompiled C for identifier families that need a top-level declaration to form a
 /// standalone translation unit, synthesize those declarations + the typedef prelude, and return
 /// the full TU text plus a list of decompiler-artifact "smell" tags.
-fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
+fn build_tu(
+    c: &str,
+    self_va: u64,
+    non_contig: bool,
+    gsizes: &std::collections::HashMap<u64, u32>,
+) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
     // pointer use, so it keeps its scalar declaration).
@@ -522,7 +550,12 @@ fn build_tu(c: &str, self_va: u64, non_contig: bool) -> (String, Vec<String>) {
         if ptr_idents.contains(n) {
             continue;
         }
-        names.insert(format!("{} {n};", ctype_for(*pfx)));
+        // Prefer the width the decompiler recovered for this address over the prefix's default.
+        let ty = ram_addr_of(n)
+            .and_then(|a| gsizes.get(&a).copied())
+            .and_then(|sz| sized_ctype(*pfx, sz))
+            .unwrap_or_else(|| ctype_for(*pfx).to_string());
+        names.insert(format!("{ty} {n};"));
     }
     for n in &ptr_idents {
         // mosura's name prefixes carry the recovered type: `p` is a pointer, and the SECOND letter
@@ -644,4 +677,33 @@ fn ctype_for(prefix: char) -> &'static str {
         'p' => "void *",
         _ => "int", // x (xunknown) and anything else
     }
+}
+
+/// The RAM address a `<prefix>Ram<hex>` identifier names, if it is one.
+fn ram_addr_of(name: &str) -> Option<u64> {
+    let pos = name.find("Ram")?;
+    if !(1..=2).contains(&pos) {
+        return None;
+    }
+    let tail = &name[pos + 3..];
+    if tail.len() < 8 || !tail.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(tail, 16).ok()
+}
+
+/// A C type of exactly `size` bytes, keeping the kind the name prefix implies. `None` when the
+/// prefix's own type is already right (4 bytes) or the width has no C scalar, in which case the
+/// caller keeps [`ctype_for`] — the emitter must never invent a type it cannot spell.
+fn sized_ctype(prefix: char, size: u32) -> Option<String> {
+    let signed = matches!(prefix, 'i' | 's' | 'c');
+    Some(match (size, signed) {
+        (1, true) => "char".into(),
+        (1, false) => "unsigned char".into(),
+        (2, true) => "short".into(),
+        (2, false) => "unsigned short".into(),
+        (4, _) => return None, // the prefix already yields a 4-byte type
+        (8, _) if matches!(prefix, 'f' | 'd') => "double".into(),
+        _ => return None,
+    })
 }
