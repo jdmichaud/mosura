@@ -89,7 +89,22 @@ function's contract genuinely preserves EDX — but warcraft2-re's proven source
 that list on most functions (`src/util/g2ac70.c`), and mosura's emitter declares NOTHING for the
 function it emits. That per-function contract is the untested lever, not the compiler.
 
-**SUPERSEDED**SUPERSEDED — the flag-sweep list below was written before the beta test:**
+**THE `modify` LEVER IS DEAD TOO — SIZED BEFORE BUILDING (2026-08-11).** The surviving idea was
+that mosura's emitter declares no contract for the function it emits, so wcc386 saves registers the
+original's declared `modify` list would have let it destroy. Counted first: of the 216 delta+3
+functions, **216 save a register before the frame** and only 2 do not (`53 52`, `52`, `53 51 52`
+prefixes ahead of `55 89e5`). So these functions genuinely PRESERVE those registers — declaring
+them modifiable would be a lie about the binary, and the save has to happen either way. The only
+difference is WHERE, and no compiler available emits it before the frame.
+
+**⇒ The +3 class (216 functions, ~13% of the 1634 attributable) is BLOCKED on a compiler that
+emits save-before-frame.** 10.0a, the 10.0 beta and 10.5 all emit save-after-frame. 9.01 and 11.0
+are fingerprinted (docs/watcom-codegen-fingerprint.md) but NOT installed — only `C:\WBETA` and
+`C:\W105` exist under wine. Testing one of those, or accepting that these functions came from
+assembly/a library, is the next step. Do not spend more decompiler or emitter effort on this class
+until that is settled.
+
+**SUPERSEDED**SUPERSEDED**SUPERSEDED — the flag-sweep list below was written before the beta test:**
 
 **NEXT EXPERIMENT** (do not skip to a fix): decide between
 1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `war2-survey/BYTE-EXACT-PLAN.md`.
