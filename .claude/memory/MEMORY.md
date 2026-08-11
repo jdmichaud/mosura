@@ -34,6 +34,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [book-assume-tool-finished](book-assume-tool-finished.md) — write the mosura-book as docs of a FINISHED tool.
 - [direction-analysis-port](direction-analysis-port.md) — analysis track A0–A7 DONE. CLOSED — do not re-raise.
 
+- [gate-what-you-measured-not-what-you-guessed](gate-what-you-measured-not-what-you-guessed.md) — **⭐ a dump missing one field invented a wrong root cause; a hypothesis port got reverted.**
 ## Primary track: retire the inventions
 - [retirement-track-wave1](retirement-track-wave1.md) — **⭐ WAVE 1 A3 `9439fcf`: the held stackptr regression was CURED by the heritage core; 3820 stack trials vs a structural ZERO. New class: undefined `goto` labels.**
 - [direction-retire-inventions-first](direction-retire-inventions-first.md) — **★ USER PIVOT 2026-07-29: retiring inventions is THE primary track; WAR2-specific work parked. Protocol + 4 waves.**
@@ -81,6 +82,8 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 
 - [war2-pragmatism-over-faithfulness](war2-pragmatism-over-faithfulness.md) — **⭐ USER RULE 2026-08-05: for WAR2 PRAGMATISM wins — but beyond-Ghidra has NO ORACLE: validate against a 2nd oracle, stay ADDITIVE.**
 
+- [caller-evidence-prototypes](caller-evidence-prototypes.md) — **⭐ `54ef51f` per-call prototype (overwrites+reads) LANDED, gated; gap = both-input-and-output register.**
+- [war2-crt-identified-by-omf-lib-search](war2-crt-identified-by-omf-lib-search.md) — ⭐ warcraft2-re's 152 `crt-known` rows are free non-circular ground truth.
 ## Function discovery (analysis lane)
 - [command-queue-modelled-as-change-channel](command-queue-modelled-as-change-channel.md) — **⭐⭐ THE ROOT CAUSE: Ghidra's `disassemble()`/`createFunction()` are COMMAND-QUEUE pushes; we model them as change notifications, so they silently drop. Explains the 374-function listing hole AND the re-fire loop.**
 - [empty-bodies-take-the-permissive-branch](empty-bodies-take-the-permissive-branch.md) — **⭐ an empty body doesn't blur a ported body query, it INVERTS it to the permissive branch; the fix can legitimately REMOVE refs. Carries the `added()`-called-directly vacuity trap.**
@@ -120,6 +123,10 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [mosura-book](mosura-book.md) — Typst book at /home/jd/projects/mosura-book.
 - [analysis-unblocked-sweep-0723](analysis-unblocked-sweep-0723.md) — the 2026-07-23 analysis sweep; all items landed.
 
+- [dead-ops-stay-in-our-block-lists](dead-ops-stay-in-our-block-lists.md) — ⭐ ours leaves destroyed ops in blocks; block-op walks NEED a dead filter.
+- [executable-recipe-or-the-gap-is-invisible](executable-recipe-or-the-gap-is-invisible.md) — ⭐ name every input in a script that REPORTS absences.
+- [never-edit-a-running-script](never-edit-a-running-script.md) — **⭐ bash reads a script by BYTE OFFSET; editing it mid-run resumes it mid-token. Freeze a copy and run that.**
+- [mosura-ships-its-own-pattern-constraints](mosura-ships-its-own-pattern-constraints.md) — ⭐ pattern lookup merges every module dir; `specs/patterns` adds the watcom node.
 ## Architecture / inventory
 - [heritage-core-campaign](heritage-core-campaign.md) — **THE CAMPAIGN. Stage A + Stage B + the spacebase half all LANDED; `held-patches/` is the durable patch home.**
 - [variablepiece-extended-cover](variablepiece-extended-cover.md) — `be13a04` extended cover. **FAITHFUL ≠ COMPILABLE are separate axes.**
@@ -129,6 +136,11 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [ptrsub-refit-inert-spacebase](ptrsub-refit-inert-spacebase.md) — the sibling refit is INERT (536/536 true); its blocker is the ScopeLocal SYMBOL QUERY. Don't generalise from PTRADD.
 - [fid-port-track](fid-port-track.md) — faithful FID fingerprinting port. PLAN ONLY; Stage 0 needs SLEIGH masks.
 
+- [duplicate-edge-needs-the-reverse-index](duplicate-edge-needs-the-reverse-index.md) — ⭐ `0fe543a` index phi slots by EDGE, not predecessor.
+- [fid-hasher-inputs-are-analysis-output](fid-hasher-inputs-are-analysis-output.md) — ⭐ FID's isAddress/isCall are ANALYSIS output, not decode.
+- [self-referential-gates-prove-nothing](self-referential-gates-prove-nothing.md) — ⭐ `fba99de` CHECK A GATE CAN FAIL.
+- [synthetic-layout-needs-range-guards](synthetic-layout-needs-range-guards.md) — ⭐ `c676964` where OUR layout deviates, the guard IS the port.
+- [unlinked-zero-field-changes-the-decode](unlinked-zero-field-changes-the-decode.md) — ⭐ `b678279` a ZERO relocated field picks a different constructor.
 ## Live status
 - [live-status](live-status.md) — branch pointers, corpus/suite/byte-clean numbers, the gauge command, and where the gauge inputs live. **Every number is STALE unless @sha==HEAD.**
 

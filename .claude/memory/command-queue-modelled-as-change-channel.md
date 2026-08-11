@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: df001909-493d-4f50-92ac-53ef8ca6337d
-  modified: 2026-08-06T17:20:24.068Z
+  modified: 2026-08-11T06:16:09.338Z
 ---
 
 **⭐ THE ROOT CAUSE of the listing hole — measured 2026-08-06, `fnpattern` + Ghidra source.**
@@ -51,11 +51,43 @@ true as written. It was the lead hypothesis and it was wrong; don't re-suspect i
 `consumers=0` also means a pattern-discovered function's **callees are never discovered** — a
 cascade, and the right shape to explain the 8 WAR2 addresses Ghidra finds and mosura misses.
 
-**Faithful target:** give `Scheduling` a command channel that executes regardless of subscribers,
-matching `AutoAnalysisManager.schedule(cmd, priority)`. Step 1 (bounded): register `Disassembler` +
-`FunctionCreator` in `fs_mgr`. Collapsing the two-manager split is the real retirement (Ghidra has
-one manager per program) but `analysis/mod.rs:239-245` documents a real ordering constraint, so it
-needs its own step.
+**✅ LANDED 2026-08-10 @ `1a81975`:** `Scheduling` holds the real queue —
+`BTreeMap<(priority, seq)>` FIFO-within-priority, Task/Disassemble/CreateFunction/OneShot
+entries executing regardless of registration, active−2/−1 priorities, one-shots carrying their
+instance. WAR2 LE SET-IDENTICAL 3023 (probe `examples/le_funcs.rs`); all suites green. The
+two-manager split REMAINS (its ordering constraint stands).
+
+**⚠️ 2026-08-10 SAME DAY: the queue was NOT the missing piece for #6/#3.** Five further
+refutations on top of it (SR-in-fs_mgr, queued pattern creation, call-following, placeholder
+refusal, unified executor) all fail — and Ghidra's own `CreateFunctionCmd` semantics
+(source-verified) would create `1d74e` too, given mosura's state.
+
+**⭐ RESOLVED BY ORACLE MEASUREMENT (`oracle/ghidra_scripts/LogFunctionEvents.java`, a
+listener inside Ghidra's own war2 headless analysis):** `1d74e` is NEVER created; Ghidra
+creates `1d7b5` at function event 177 and `1d76a` at 267 — different cascades, opposite order
+to mosura's batch: SR scans `1d7b5` while `1d76a` does not exist (no entry to cross → no
+verdict), and `1d76a`'s later real body shields `1d78c`. mosura batches them together only
+because its main phase misses their callers (no call-following).
+
+**⚠️ 2026-08-11 RETRACTION: the "context model" unblocker was a WRONG-IMAGE measurement.**
+`bytesat` reads the LE view; the MZ bytes at `13a38` are `e8 1b 00` — the filed
+inline-parameter thunk site, not 32-bit code. No context model is involved (no x86
+`globalset`; the pspec defaults everything 16-bit). Zero `FUNCTION_REMOVED` refutes only
+FUNCTION-removal — `ClearFlowAndRepairCmd` removes CODE UNITS. **THE CORRECTED UNBLOCKER
+CHAIN: task #10 (no-return fall-through override + ClearFlowAndRepair repair) →
+call-following → SR delivery.** Gotchas: state which IMAGE a byte read uses
+(`mz_bytesat` vs `bytesat`); Ghidra holds domain-object listeners WEAKLY — root them in a
+static field (measured: 0 events otherwise). Full ledger: `docs/analysis-open-tasks.md`.
+
+**⛔ 2026-08-11 PARKED (user directive): the remaining #6/#3 links form a DEPENDENCY CYCLE**
+— wave granularity ≡ U3 (patterns in-manager) → needs U2 (SR in-manager, PLT[0] ordering) →
+needs cascade parity (spurious `128bc`) → needs call-following → needs wave granularity.
+Each link individually measured red; landing is one ATOMIC multi-link change, not a
+sequence. Reach classification proving no separate mechanism exists: of 7435 main-phase-
+missing insns, 2 behind unfollowed edges, 91% rooted in byte-search-only discoveries
+(`examples/mz_mainreach.rs`). Landed before parking: repair port `f23099d` (§9 #5 gate
+green), detection `39bbdbe` (war2 misaligned 46→43), U1 `e24d92b`. Full ledger:
+`docs/analysis-open-tasks.md`. The byte-exact lane does not depend on any of it.
 
 Related: [[invention-inventory-empty]] (this is a NEW invention that inventory did not cover),
 [[direction-retire-inventions-first]], [[hardcoded-x86-64-vs-cspec-class]].

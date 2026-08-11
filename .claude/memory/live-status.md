@@ -5,13 +5,53 @@ metadata:
   node_type: memory
   type: project
   originSessionId: df001909-493d-4f50-92ac-53ef8ca6337d
-  modified: 2026-08-06T15:58:04.777Z
+  modified: 2026-08-10T18:57:52.953Z
 ---
 
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
-## Live status — `master` @ `1ac5a6d`, work continues on `heritage-spacebase-land` @ `17666ad`
+## Live status — `master` @ `8b528d6` (2026-08-10), WAR2 perf wave landed, suite FULLY green
+
+Perf round 2 on WAR2 LANDED, 4 commits `c47130c`..`8b528d6`: dense `cover::OpPositions` +
+in-tree FxHash + `merge_required` position-rebuild-on-mutation-only (`c47130c`), the
+`refresh_covers` one-block trim filter (`79b9843`), docs (`5e648a2`). WAR2 LE end-to-end
+94.4s → 50.4s under identical perf-record conditions (Decompiler Switch 69.6 → 25.6s),
+analysis output byte-identical at every step; `analysis_parity` 82.9s (handoff target was
+106.5s); corpus **0.9569, 58/60 unchanged**; clippy adds nothing (2 pre-existing warnings
+remain: thunk.rs `MAX_INSN_LEN`, a merge.rs test unused var). `8b528d6` regenerated all 85
+FID databases — the `979bf4b`/`16edaf6` hasher change had left `fid_database_drift` RED at
+HEAD (verified pre-existing by stash-rerun); WAR2 output unmoved by the regen. Workspace
+suite 39/39 binaries green @`8b528d6`. Next measured perf leads: docs/perf-log.md top
+section (ReferenceManager::remove tombstones ~5.6%, sleigh decode ~11%).
+
+## Previous — `master` @ `a4081da` (2026-08-09), `analysis-port` fast-forwarded onto it
+
+**The FID identification arc LANDED on master**, 4 commits `b678279`..`3889dfa`, T1 green on the
+master worktree (549 lib tests, clippy 0, corpus avg **0.9569, 58/60**).
+
+- `b678279` — ported Ghidra's `OmfLoader.processRelocations`: **WAR2 120 → 130 named**, nothing
+  lost; hash parity vs Ghidra unchanged **308/320**. All 85 databases regenerated. See
+  [[unlinked-zero-field-changes-the-decode]].
+- `fba99de` — Watcom recall gate from a self-compiled probe (**no WAR2**): 38 names, red on the
+  pre-fix databases. See [[self-referential-gates-prove-nothing]].
+- `c676964` — Borland gate (small + large models, precision scored against the LINKER MAP) which
+  immediately caught a 16-bit regression in `b678279`. See [[synthetic-layout-needs-range-guards]].
+- `3889dfa` — a stalled heritage alias probe now fails conservatively.
+
+Databases: **85**, regenerate with `./scripts/rebuild-fid-db.sh` (`-n` to check inputs only).
+- `0fe543a` — **heritage non-termination FIXED**: a duplicated CFG edge left one phi slot unwired
+  forever. See [[duplicate-edge-needs-the-reverse-index]].
+- `a4081da` — **task #8 CLOSED**: `branchRemoveInternal`/`blockRemoveInternal` no longer patch a
+  DESTROYED MULTIEQUAL (Ghidra's `opDestroy` removes it from the block; ours leaves it marked
+  dead with no inputs). Open Watcom `signl.c` decompiles instead of being skipped.
+
+⚠️ Neither decompiler fix is visible to the corpus (byte-identical): no x86-64 datatest has a
+duplicated edge. Their unit tests are the only coverage and both were verified to FAIL without
+the fix. The old "overlapping unaligned stack locations" story for #8 is disproven —
+see [[gate-what-you-measured-not-what-you-guessed]].
+
+## Historical — `master` @ `1ac5a6d`, work continued on `heritage-spacebase-land` @ `17666ad`
 **Heritage core COMPLETE and battery-green, and ON MASTER** — Stage A + Stage B + the spacebase
 (stack-trial) half, 8 commits `08ca850`..`1ac5a6d`, fast-forwarded onto master 2026-07-30 (c2950da
 was an ancestor; nothing lost, reversible by moving the pointer back).
