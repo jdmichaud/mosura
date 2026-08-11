@@ -81,6 +81,47 @@ comparator/harness faults this campaign, three of them in one afternoon.
 - **`ret imm16`** (31): the RETURN operand IS the stack-parameter count (Ghidra models it as
   `extrapop`); unused today.
 
+## Session close 2026-08-11: 133 -> 162 measured, and what did NOT work
+
+**What moved the number — all EMITTER or COMPARATOR, decompiler already right:**
+
+| fix | commit | measured |
+|---|---|---|
+| global widths from the Funcdata, not the name prefix | `039b1ec` | 2636 of 4548 declarations corrected |
+| `code *` for globals that are CALLED through | `bd556f7` | 53 functions |
+| extent trimmer ate operand bytes (`e9 ...00`) | `e81e90f` | 37 extents |
+| synthesized global shadowing a printc local | `958bf64` | 52 functions |
+| stack convention: recover params AND declare `parm []` | `625f8d8` | +2, ⚠️ corpus 0.9593→0.9589 |
+| compare.py trimmed the `ret imm16` immediate | `b261834` (survey) | +2 |
+
+**What did NOT work — three widenings of callee-evidence effects, all reverted on measurement:**
+
+| attempt | result |
+|---|---|
+| `#pragma aux modify` from a clobber scan | −7, gained 0 |
+| whole-extent overwrite scan | −3, gained 0 |
+| stack-only param list WITHOUT the emitter half | 0, gained 0 |
+
+The lesson that cost the most: **over-claiming clobbering is safe for correctness and wrong
+for byte-exactness** — the caller needs the path actually taken, not "some path". A fourth
+attempt needs PATH-SENSITIVE evidence.
+
+The second lesson: **measure a WHOLE fix, not half of one.** The stack-param recovery measured
+as worthless and was reverted; it was inert only because the emitter still declared those
+functions with the default register convention. Recovery + declaration together turned
+FUN_00030da8 byte-clean.
+
+**Structural fact that bounds everything: ZERO of the ~2800 mismatches are same-length-wrong-
+bytes.** Verified twice, and again by extracting every same-length candidate from `obj/` and
+diffing against the manifest — nothing differs only in relocation-shaped fields. Every remaining
+mismatch is a real length difference, so there are no cheap comparator wins left of that shape.
+
+**SIZE CLASSES AGAINST THE ATTRIBUTABLE SET (1634), NEVER THE EMITTED SET (3023).** Sizing the
+stack-param class off emitted files produced a "~100 function" estimate for something worth 2.
+
+Related: [[plus3-is-lea-esp-prologue-order]] (the +3 is NOT a compiler-version artifact — the
+10.0 beta is byte-identical; retracted in that file).
+
 ## The Phase-1 lane is the honest target
 
 264 functions the tracker proves reproducible; we hold 83 (34 EXACT + 49 RELOC_EXACT), 177 miss,
