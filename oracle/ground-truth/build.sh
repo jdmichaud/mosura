@@ -398,6 +398,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom war2gates  # trimOpInput INDIRECT-panic repro (war2-issues-become-source-tests)
   build_watcom forphi     # E1063 for-loop phi-init marker-leak repro (war2-issues-become-source-tests)
   build_watcom switchcall # EMPTY SWITCH BODY repro -- recovered table, dropped case bodies (war2-issues-become-source-tests)
+  build_watcom regmodify  # caller holds a value across a call the callee's modify list spares
   build_watcom loopcomma  # while-condition statement must print INSIDE the parens (comma_separate)
   build_watcom forcomma   # the same, on emitForLoop's header (printc.cc:2974) — loopcomma's sibling
   build_watcom loopphi    # for-recovery must backtrack past a wrong loop-head phi (block.cc:3164)
