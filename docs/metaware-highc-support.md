@@ -23,54 +23,84 @@ Archives at `~/software/MetaWare.Compilers` (locate via an env var, `METAWARE_AR
 | --- | --- | --- |
 | **High C 386 v2.31** (1992, C only) | **uncompressed** 1.2 MB floppies | ✅ libraries + `LIB/SRC/*.ASM` runtime sources, no installer needed |
 | **High C++ v3.03** | `highc.zip` = an already-installed tree | ✅ `LIB/*.LIB`, `BIN/` compiler, 158 `INC/` headers — **compiles today** |
-| High C++ v3.04 (1993) | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ⚠️ installer automated up to its final screen; needs **one** interactive run |
-| High C++ v3.31 | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ⚠️ same installer (byte-identical, 140186) — one recipe covers both |
-| High C++ v3.2 (OS/2, Mar 1994) | ISO → `HCOS2_1.ZOO` + `ZOO.EXE` | ❌ ZOO archive, and an OS/2 host — lowest priority |
+| High C++ v3.04 (1993) | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ✅ installer driven unattended — 373 files, 23 `.LIB` |
+| High C++ v3.31 | packed `MWHC.001`–`.007` + `INSTALL.EXE` | ✅ same installer, same recipe — 426 files, 37 `.LIB` |
+| High C++ v3.2 (OS/2, Mar 1994) | ISO → `HCOS2_1.ZOO` + `ZOO.EXE` | ❌ ZOO archive, and an OS/2 host — wrong target, not pursued |
 
-So two versions are available with zero installer work, which is enough for every deliverable
-below. v3.04/v3.31 are a "more FID columns" errand, not a blocker.
+All four DOS-hosted versions install with one command, so every deliverable below has as many
+version columns as it needs.
 
-## Installing them — the recorded recipe
+## Installing them — one command, and why each piece of it is there
 
-`scripts/setup-metaware-dosemu.sh <version> [--compile file.c] [--interactive]`, sibling of
-`setup-watcom-dosemu.sh` (env-located archives via `METAWARE_ARCHIVES`, `mktemp` work dir,
-stage into `DOSEMU_C`). Verified: `2.31` → 9 `.LIB`; `3.03` → 39 `.LIB`; `3.03 --compile` →
-`probe.obj`.
+```sh
+scripts/setup-metaware-dosemu.sh 2.31|3.03|3.04|3.31 [--compile file.c] [--serial NNNNNN]
+```
 
-**Each version installs to its own `C:\HC<tag>`.** Not cosmetic: the packed installer hardcodes
-`@Subdir = "\HIGHC"`, so two versions installed unmodified **silently merge into one tree** —
-which is what happened on the first hand-run, mixing v3.04 binaries into a v3.03 install. The
-script rewrites `@Subdir` in the staged `INSTALL.DAT`.
+Sibling of `setup-watcom-dosemu.sh` (archives via `METAWARE_ARCHIVES`, `mktemp` work dir, stage
+into `DOSEMU_C`). The packed versions are driven by `scripts/kd-install-driver.py`, which runs
+dosemu on a pty and reads the rendered screen. Verified end to end:
 
-The packed versions use **Knowledge Dynamics INSTALL 3.10.00**. All 7 disks are staged *flat*
-into one source directory so it never asks for a swap (`MWHC.00N` are uniquely named; only
-`DISK.ID`/`INSTALL.DAT` collide, disk 1 wins). Its screens and keys:
+| version | result |
+| --- | --- |
+| 2.31 | 9 `.LIB` |
+| 3.03 | 39 `.LIB`, and `--compile` produces an OMF object |
+| 3.04 | 373 files, 9.4 MB, 23 `.LIB` |
+| 3.31 | 426 files, 12 MB, 37 `.LIB` |
 
-| Screen | Key | Note |
-| --- | --- | --- |
-| welcome / any `@pause` | `CR` | |
-| Specify Compiler Drive | the drive **letter**, then `CR` | `CR` alone never completes the list |
-| Specify Compiler Directory | `CR` | accepts `@Subdir` |
-| Verify Compiler Directory | **`SPACE`** then `CR` | checkbox defaults to **No**; `CR` alone loops forever |
-| Enter Serial Number | any 6 digits, `CR` | a **format** check (`1-nnnnnn`), not a licence check — the distribution's own note says to enter any number |
-| Choose Installation Options | arrows + `SPACE` + `CR` | **the blocker — see below** |
+**Each version installs to its own `C:\HC<tag>`.** The installer hardcodes
+`@Subdir = "\HIGHC"`, so two versions installed unmodified **silently merge into one tree**.
+The script rewrites `@Subdir` in the staged `INSTALL.DAT`.
 
-Three traps, each of which cost a debugging round:
+### The five things that had to be true (none of them guessable)
 
-1. **DOS's BIOS keyboard buffer is 16 bytes.** Piping a burst of CRs loses all but the first
-   few, so early screens eat them and later screens see nothing. Feed one screen at a time.
-2. **Send keys on screen *transitions*, not on poll ticks.** Re-sending on every tick leaks the
-   key into the *next* screen: the drive letter got typed into the subdirectory field, building
-   `C:\C\C\C\HC304` and looping.
-3. **`ESC` aborts** ("To STOP the installation, press [Esc]"). That is why the last screen
-   cannot be automated: its Yes/No list is drawn in a direct-video sub-window (its state never
-   reaches stdout), it ignores `SPACE`/`CR` from a pipe, and it wants arrow keys — which as ANSI
-   sequences begin with `ESC`, so sending one kills the installer.
+The engine is **Knowledge Dynamics INSTALL 3.10.00**. Getting it to run unattended took five
+findings; each one presented as a different, misleading symptom.
 
-Hence `--interactive` for v3.04/v3.31: the script stages everything, prints the exact answers,
-and hands over the terminal. The automated path drives every screen up to the checkbox and exits
-`3` with that instruction rather than pretending to succeed. It is a **one-time** cost per
-version — the installed tree is afterwards an ordinary directory to keep or archive.
+1. **Source and target must be different DOS drives.** Staging the volumes under `C:` and
+   installing to `C:` fails with *"The output drive cannot be the same as the input drive"*.
+   The volumes are staged outside the C: drive and mounted with `dosemu -d`, landing on `F:`.
+   *Symptom before the fix: every screen answered correctly, then nothing installed.*
+2. **All seven `@DefineDisk` blocks must be merged into one.** The engine prompts *"place Disk
+   #N in drive F:"* at each block boundary and re-verifies `DISK.ID`, which can only ever say
+   disk 1 when all volumes sit in one directory. *Symptom: the install ran, wrote 25 files, and
+   then quietly stalled — flattened, the same run writes 373.* The `@BeginLib MWHC.0NN`
+   references stay valid because every volume is present.
+3. **`@OutDrive` must be pinned to `C`.** v3.04 ships `@OutDrive = C` and works; **v3.31 ships
+   `@OutDrive = Z`**, which leaves the drive-selection list opened on the wrong entry. The
+   widget ignores a typed drive letter, so Enter accepts whatever is highlighted — `F:`, the
+   source — and it dies with the same "output drive" error as (1). *This is why a recipe proven
+   on v3.04 failed on v3.31.*
+4. **The option checkbox must be left alone.** Its defaults are already
+   `Install the C/C++ compiler = YES` / `Install the debugger = YES`, set by `@SetOption(1)` /
+   `@SetOption(2)`. `SPACE` toggles the highlighted line, i.e. switches the **compiler off**.
+   *Symptom: a successful-looking install containing no compiler.* Send `CR` only.
+5. **Drive it through a pty, reading the screen.** In dosemu's dumb mode (`-td`) the checkbox
+   sub-window is direct-video and never reaches stdout, so you are typing blind; keys piped as
+   bytes cannot express an arrow (an ANSI arrow starts with `ESC`, which the installer treats as
+   *"STOP the installation"*); and DOS's BIOS keyboard buffer is 16 bytes, so a burst of keys is
+   mostly discarded. Slang mode (`-t`) on a pty renders real ANSI, which the driver reconstructs
+   into an 80×25 buffer and answers one screen at a time.
+
+Screens and keys, for reference:
+
+| Screen | Key |
+| --- | --- |
+| welcome / any `@pause` / "place Disk #N" | `CR` |
+| Specify Compiler Drive | drive letter then `CR` (`CR` alone never completes the list) |
+| Specify Compiler Directory | `CR` (accepts `@Subdir`) |
+| Verify Compiler Directory | **`SPACE`** then `CR` — the checkbox defaults to **No**, and `CR` alone loops back forever |
+| Enter Serial Number | any 6 digits — a **format** check (`1-nnnnnn`), not a licence check; the distribution's own note says to enter any number |
+| Choose Installation Options | `CR` only — see (4) |
+
+Two more things that wasted time and are worth knowing:
+
+- **dosemu creates the target directory lower case** on a case-sensitive host, so a perfectly
+  good install reads as "0 files" if you only check the upper-case path. The script and the
+  driver both check either spelling.
+- **`$_hogthreshold = (0)`** is passed to dosemu. Without it dosemu sleeps whenever the DOS
+  program looks idle, and this installer polls the keyboard between file operations — so it
+  looks idle *while decompressing*, measured at ~5 % host CPU. The unpack was mostly dosemu
+  sleeping, not work.
 
 ### The compiler runs
 
@@ -95,8 +125,10 @@ the existing `cargo xtask fid-build`, no code changes:
 | Library | ingested | language-skipped |
 | --- | --- | --- |
 | v2.31 `SMALL/HC386.LIB` | **297** | 145 |
+| v3.31 `small/hc386.lib` | **300** | — |
 | v3.03 `LIB/HCC386.LIB` | **211** | 0 |
 | v3.03 `LIB/HC386.LIB` | 0 | **252** |
+| v3.04 `small/hc386.lib` | 0 | (same first-module pin) |
 | v2.31 `HCNA.LIB`, `HCLOC.LIB`; v3.03 `HCNA.LIB` | 0 | 1–83 |
 
 ⚠️ **A real bug this exposed, and it is not MetaWare-specific.** These libraries mix 16-bit and
