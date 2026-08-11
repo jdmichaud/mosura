@@ -42,6 +42,22 @@ mod le {
     pub const OBJ_PAGEMAP_OFF: usize = 0x48; // object page-map offset (rel. to LE header)
     pub const FIXUP_PAGE_TABLE_OFF: usize = 0x68; // fixup page table offset (rel. to LE header)
     pub const FIXUP_RECORD_TABLE_OFF: usize = 0x6c; // fixup record table offset (rel. to LE header)
+    // LX-only. LE reuses 0x2c for LAST_PAGE_BYTES; in LX it is the shift applied to a page's
+    // data offset, and the page-data region has a real header field instead of being inferred
+    // from EOF.
+    pub const PAGE_OFFSET_SHIFT: usize = 0x2c; // LX: page-offset shift
+    pub const DATA_PAGES_OFF: usize = 0x80; // LX: data pages offset (from FILE start)
+}
+
+/// Which linear-executable flavour a header is. They share the header layout and object table;
+/// they differ in how a logical page is located in the file, which is all `page_span` cares about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LeFlavour {
+    /// "LE" — 32-bit Linear Executable (DOS/4G, VxD). Pages are stored contiguously.
+    Le,
+    /// "LX" — Linear eXecutable (OS/2 2.x, and the host format of Watcom's own DOS-hosted
+    /// compilers). Each page is located through an 8-byte page-map entry.
+    Lx,
 }
 
 /// One LE object-table entry (24 bytes), per the LE/LX spec.
@@ -60,13 +76,20 @@ impl LeObject {
     }
 }
 
+/// The flavour of the header at `off`, assuming [`is_le_header`] already accepted it.
+pub fn le_flavour(data: &[u8], off: usize) -> LeFlavour {
+    if data.get(off..off + 2) == Some(b"LX") { LeFlavour::Lx } else { LeFlavour::Le }
+}
+
 /// Locate the LE header. A standalone LE executable has `e_lfanew` (MZ field at 0x3c)
 /// pointing at an in-bounds "LE" signature; a DOS-extender-bound exe (DOS/4GW) deliberately
 /// sets `e_lfanew` invalid so DOS ignores the "new EXE", and the embedded LE is found by
 /// scanning for a header whose fixed fields validate. Returns the LE header file offset.
 pub fn detect_le(data: &[u8]) -> Option<usize> {
+    // A raw LE/LX payload with no DOS stub is legal (Watcom ships its DOS-hosted compilers this
+    // way), so only require the MZ when we are going to trust `e_lfanew`.
     if !data.starts_with(b"MZ") {
-        return None;
+        return (0..data.len().saturating_sub(0xc4)).step_by(4).find(|&off| is_le_header(data, off));
     }
     // Standalone: e_lfanew → "LE".
     if let Some(off) = u32le(data, 0x3c).map(|v| v as usize) {
@@ -83,7 +106,7 @@ pub fn detect_le(data: &[u8]) -> Option<usize> {
 /// Validate the fixed LE-header fields at `off` (used by both standalone + scan detection,
 /// and by the loader dispatch to distinguish a standalone LE from a bound DOS-extender exe).
 pub fn is_le_header(data: &[u8], off: usize) -> bool {
-    if data.get(off..off + 2) != Some(b"LE") {
+    if !matches!(data.get(off..off + 2), Some(b"LE") | Some(b"LX")) {
         return false;
     }
     let f = |rel: usize| u32le(data, off + rel);
@@ -119,9 +142,12 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     let base = detect_le(data).ok_or_else(|| LoadError::Unsupported("no LE header found".into()))?;
     let f = |rel: usize| u32le(data, base + rel).ok_or(LoadError::Unsupported("truncated LE header".into()));
 
+    let flavour = le_flavour(data, base);
     let num_pages = f(le::NUM_PAGES)?;
     let page_size = f(le::PAGE_SIZE)?;
-    let last_page_bytes = f(le::LAST_PAGE_BYTES)?;
+    // LE reuses 0x2c for "bytes in the last page"; LX uses it as a shift. Read it per flavour so
+    // an LX file cannot be measured with LE's meaning.
+    let last_page_bytes = if flavour == LeFlavour::Le { f(le::LAST_PAGE_BYTES)? } else { page_size };
     let eip_object = f(le::EIP_OBJECT)?;
     let eip = f(le::EIP)?;
     let obj_count = f(le::OBJ_COUNT)?;
@@ -146,19 +172,50 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     // bogus (it reflects the unbound module), so the region is computed from end-of-file:
     // the physical pages are stored contiguously, ending exactly at EOF, the last page
     // holding `last_page_bytes` (docs/le-loader-notes.md). Reject if it doesn't close to EOF.
-    let total_page_bytes =
-        (num_pages.saturating_sub(1) as u64) * page_size as u64 + last_page_bytes as u64;
     let file_len = data.len() as u64;
-    if total_page_bytes > file_len {
-        return Err(LoadError::Unsupported("LE page region exceeds file".into()));
-    }
-    let pages_start = (file_len - total_page_bytes) as usize;
+    let pages_start = if flavour == LeFlavour::Le {
+        let total_page_bytes =
+            (num_pages.saturating_sub(1) as u64) * page_size as u64 + last_page_bytes as u64;
+        if total_page_bytes > file_len {
+            return Err(LoadError::Unsupported("LE page region exceeds file".into()));
+        }
+        (file_len - total_page_bytes) as usize
+    } else {
+        // LX carries a real "data pages offset" field, and unlike the DOS/4GW-bound LE case it is
+        // trustworthy: the LX files we load (Watcom's own DOS-hosted compilers) are not bound to
+        // an extender, so nothing rewrote it.
+        f(le::DATA_PAGES_OFF)? as usize
+    };
+    let page_shift = if flavour == LeFlavour::Lx { f(le::PAGE_OFFSET_SHIFT)? } else { 0 };
 
     // The page map (verified identity on the corpus: logical page i → physical page i,
     // flags=0 "valid"). We follow the file order, mapping each object's pages to the
     // contiguous data region; only the file's final physical page is partial.
     // (A non-identity / iterated / zero-fill page map is a future refinement — see notes.)
-    let _ = pagemap;
+    // Where logical page `n` (1-based, as object tables index it) lives in the file, and how many
+    // bytes of it are physically present.
+    //
+    // LE: the corpus-verified identity map — logical page i is physical page i in a contiguous
+    // region, only the final physical page partial.
+    // LX: an 8-byte page-map entry per page — `data offset` (scaled by the header's shift), a
+    // 16-bit physical size, and flags. Pages may be shorter than `page_size` (the remainder is
+    // zero) and need not be in file order, so the map must actually be read.
+    let page_span = |n: u32| -> Option<(usize, usize)> {
+        match flavour {
+            LeFlavour::Le => {
+                let idx = n.checked_sub(1)? as usize;
+                let off = pages_start + idx * page_size as usize;
+                let len = if n == num_pages { last_page_bytes as usize } else { page_size as usize };
+                Some((off, len))
+            }
+            LeFlavour::Lx => {
+                let e = pagemap + n.checked_sub(1)? as usize * 8;
+                let pdo = u32le(data, e)? as usize;
+                let dsize = u16le(data, e + 4)? as usize;
+                Some((pages_start + (pdo << page_shift), dsize.min(page_size as usize)))
+            }
+        }
+    };
 
     let mut spaces = SpaceManager::standard();
     let ram = spaces.add("ram", SpaceKind::Processor, 4, 1); // 32-bit address space
@@ -176,20 +233,21 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
         let vsize = obj.virtual_size as usize;
         let mut bytes = vec![0u8; vsize];
         if vsize != 0 {
-            // File bytes backing this object: its pages are physical pages
-            // [page_index, page_index + page_count) (1-based, identity map), laid contiguously
-            // from `pages_start`. Only the file's last physical page is short.
-            let first_page = obj.page_index; // 1-based
-            let last_page = obj.page_index + obj.page_count - 1;
-            let file_start = pages_start + (first_page as usize - 1) * page_size as usize;
-            let avail = if last_page == num_pages {
-                (obj.page_count as usize - 1) * page_size as usize + last_page_bytes as usize
-            } else {
-                obj.page_count as usize * page_size as usize
-            };
-            let copy = avail.min(vsize);
-            if let Some(src) = data.get(file_start..file_start + copy) {
-                bytes[..copy].copy_from_slice(src);
+            // File bytes backing this object: pages [page_index, page_index + page_count), 1-based.
+            // Each is located through `page_span`, which is the identity map for LE and a real
+            // page-map lookup for LX. Copying PAGE BY PAGE (rather than one contiguous slice) is
+            // what makes LX work: its pages can be short or out of file order, and the gap left by
+            // a short page is zero, which `bytes` already is.
+            for i in 0..obj.page_count {
+                let Some((src_off, src_len)) = page_span(obj.page_index + i) else { continue };
+                let dst_off = i as usize * page_size as usize;
+                if dst_off >= vsize {
+                    break;
+                }
+                let copy = src_len.min(vsize - dst_off);
+                if let Some(src) = data.get(src_off..src_off + copy) {
+                    bytes[dst_off..dst_off + copy].copy_from_slice(src);
+                }
             }
         }
         obj_bytes.push(bytes);
@@ -432,4 +490,40 @@ fn apply_le_fixups(
         }
     }
     applied
+}
+
+#[cfg(test)]
+mod lx_tests {
+    use super::*;
+
+    /// LX ("Linear eXecutable") is the same header family as LE and must load through the same
+    /// path. Watcom's own DOS-hosted compilers ship as LX, which is how this was found: mosura
+    /// could not open the toolchain it is being validated against.
+    ///
+    /// Skips when the compiler is absent — it is proprietary and not committed (same rule as the
+    /// VC6/BC45 fixtures). `WATCOM_WCC386` overrides the path.
+    #[test]
+    fn loads_an_lx_executable() {
+        let path = std::env::var("WATCOM_WCC386").unwrap_or_else(|_| {
+            "/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM/BINB/WCC386.EXE".into()
+        });
+        let Ok(data) = std::fs::read(&path) else {
+            eprintln!("skip loads_an_lx_executable: {path} absent");
+            return;
+        };
+        let off = detect_le(&data).expect("LX header located");
+        assert_eq!(le_flavour(&data, off), LeFlavour::Lx, "wcc386 is LX, not LE");
+
+        let prog = load_le(&data).expect("LX loads");
+        // The three objects of the loader stub, at their LX relocation bases. Their VIRTUAL sizes
+        // are 0x68 / 0xeb7 / 0x8200; the third is mostly BSS (only 471 bytes are in the file),
+        // which is exactly the case that a contiguous-slice reader gets wrong and a page-map
+        // reader gets right.
+        let starts: Vec<u64> = prog.memory.blocks().map(|b| b.start().offset).collect();
+        assert!(starts.contains(&0x10000) && starts.contains(&0x20000) && starts.contains(&0x30000),
+                "expected the three LX object bases, got {starts:x?}");
+        let sizes: Vec<usize> =
+            prog.memory.blocks().map(|b| b.bytes.as_ref().map_or(0, |v| v.len())).collect();
+        assert!(sizes.contains(&0x8200), "the BSS-tailed object must be virtual_size, got {sizes:?}");
+    }
 }
