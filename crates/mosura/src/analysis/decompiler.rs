@@ -158,15 +158,30 @@ fn record_callee_effects(
     // spurious arguments to 1.
     //
     // REMAINING GAP, and why it is still gated: the source passes TWO arguments
-    // (`bump(p, n)` — `parm caller [ebx] [eax]`), and EBX is dropped. EBX is both an argument and
-    // the return register of this callee, and mosura represents a killedbycall register's post-call
-    // value as an INDIRECT CREATION spliced before the CALL — so the same register cannot
-    // simultaneously carry a pre-call value in. Ghidra never meets the case (it cannot see the
-    // callee, and no convention it ships reuses the return register as parameter storage), so there
-    // is nothing to port: this needs a designed representation, where a both-directions register
-    // becomes the CALL's real output with its argument varnode bound to the pre-call def, rather
-    // than an indirect creation. Until then the emitted argument list is wrong for exactly this
-    // shape, so the pass stays off. Enable with MOSURA_CALLEE_EFFECTS=1 to continue.
+    // (`bump(p, n)` — `parm caller [ebx] [eax]`), and EBX is dropped.
+    //
+    // MEASURED, not assumed. Instrumenting the trials at `build_input_from_trials` gives EBX
+    // `used=false active=false defnouse=false` — the INACTIVE branch of `check_input_trial_use`,
+    // reached when the value is realistic but `ancestor_op_use` finds it is NOT used solely to feed
+    // this call. It is NOT the argument veto (EAX and EBX both come back `vetoed=false`; only
+    // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
+    // still has `out=None` at that point, so `resolve_call_output` has not run yet.
+    //
+    // The competing use is the clobber INDIRECT itself. `guard_calls` marks EBX killedbycall here,
+    // and the INDIRECT modelling that clobber consumes the pre-call EBX value, so the value now has
+    // two consumers — the CALL's argument slot and the INDIRECT — and `ancestor_op_use` refuses it
+    // as an argument. A register that is both an argument and the clobbered return of one call is
+    // therefore self-defeating in this representation: recovering its output half is exactly what
+    // disqualifies its input half.
+    //
+    // Ghidra never meets the case (it cannot see the callee, and no convention it ships reuses the
+    // return register as parameter storage), so there is nothing to port. The fix is to stop the
+    // clobber INDIRECT counting as a competing use for the call it belongs to — the INDIRECT arm of
+    // `ancestor_op_use` (recover.rs:422) already special-cases indirect creations, and this is the
+    // sibling case it does not yet cover. That is the next step, and it is a much smaller change
+    // than the "designed representation" an earlier reading of this gap called for. Until it lands
+    // the emitted argument list is wrong for exactly this shape, so the pass stays off. Enable with
+    // MOSURA_CALLEE_EFFECTS=1 to continue.
     if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_none() {
         return;
     }
