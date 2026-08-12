@@ -141,6 +141,13 @@ against.
 > `scripts/capture-analysis.sh` + `scripts/ci-clean-clone.sh` all honor them; no absolute path
 > is baked into code, tests, or scripts.
 
+> **Third-party material.** Some committed test data is vendor-produced or links a vendor
+> run-time (Watcom, Borland, MSVC, MinGW), and the Ghidra subset under `third_party/` is
+> redistributed under Apache 2.0. Every such file is inventoried, with its provenance and the gate
+> that needs it, in [`third-party-test-binaries.md`](third-party-test-binaries.md). Compiler
+> distributions and game binaries are **never** committed — they are user-provided and located by
+> the env vars above.
+
 ### In-repo test data (committed; not external)
 
 Part of the `cargo test` surface, but tracked in git — **not** an external dependency; listed

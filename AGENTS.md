@@ -172,6 +172,14 @@ faithfully into `src/decompile/` (mirroring Ghidra's file/class names) → diff 
 IR vs Ghidra's IR at that stage until exact → retire the corresponding prototype code →
 record gotchas in memory.
 
+## Third-party material
+
+Committed test data includes vendor-produced fixtures and programs linking historical proprietary
+run-times; `docs/third-party-test-binaries.md` inventories every one with its provenance and the
+gate that needs it. **Do not add to it casually.** Compiler distributions, SDKs, manuals and game
+binaries are never committed — they are user-provided, located by an env var, and their gates skip
+when absent (`docs/dependencies.md`).
+
 ## Conventions
 
 - Respect agreed plan/design decisions; if a decision needs changing, ask first.
