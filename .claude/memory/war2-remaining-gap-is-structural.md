@@ -90,5 +90,41 @@ NOTHING, so the verdict is decided by the other 61%: condition polarity (`je`/`j
 `jbe`), boolean materialization (`setne al ; and eax,0xff` where the original branched), and
 instruction selection (`lea` for `add`/`shl`). Those are structurer and codegen-shape questions.
 
+## THE LIVE LEAD: call arguments are OVER-recovered, not dropped (2026-08-12)
+
+Four earlier attempts assumed WAR2's calls lose arguments. Instrumented (`MOSURA_STACKARG=1`), the
+opposite is true for the caller-pop class:
+
+    original      mov edx,0x1000 ; mov eax,0x11098 ; call          TWO arguments
+    mosura        func_0x00050dd8(0x11098, 0x1000, param_2, param_3, param_1)   FIVE
+
+Arguments 3-5 are the CALLER's own incoming EAX/EDX/EBX, still live at the call because nothing
+overwrote them. Ghidra's defence against exactly this is `AncestorRealistic`'s `isInput()`
+early-out ("we expect to see active movement into the parameter"). `derive_input_map` BYPASSES it:
+when a recovered callee `reads` list exists (`committed`), every matching trial is force-marked
+active without any realism test. That force-mark was added for a real reason — the pass-through in
+`f(x) { g(x); }` is a genuine argument (the regmodify MVE) — so it cannot simply be deleted.
+
+Note also that arg3 is the caller's EDX going into the callee's EBX slot, which would need a
+`mov ebx,edx` the original does not have. Whether that is a second defect (argument ORDER) or a
+consequence of the first is NOT yet established — do not assume.
+
+Stack arguments are NOT the problem: 6118 of 7021 stack ranges reach guard_calls with a resolved
+offset. The 903 that do not are the first stack pass, before the rule pool folds the placeholder —
+the window pipeline.rs's priming pass exists to open, working as designed. Reading only the head of
+that log shows the stragglers and looks like total failure.
+
+## ⚠️ THREE INSTRUMENTS WERE FOUND LYING IN ONE CAMPAIGN
+
+1. trybatch scored `cand == orig`, missing compare.py's relocation masking -> both arms of three
+   experiments read zero.
+2. whydiff compared against the UNTRIMMED original -> invented a divergent region at the end of
+   every padded function (82 of them, top of the census).
+3. whydiff disassembles the slice at base 0, so call TARGETS in its ORIGINAL column are meaningless.
+   Still unfixed. Do not read call targets out of whydiff.
+
+Rule: any probe must reproduce the known baseline before its negative is believed. trybatch does
+this now (384 of 385 clean verdicts reproduced).
+
 Related: [[byte-exact-class-map-2026-08-11]], [[prologue-order-is-chain-frame]],
 [[caller-evidence-prototypes]].
