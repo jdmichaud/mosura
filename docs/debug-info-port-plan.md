@@ -90,6 +90,28 @@ reason PDB is in this plan rather than deferred out of it. The catalogues are al
 land incrementally: an unknown record kind must skip with a report, exactly as Ghidra tolerates
 unknown values, so coverage grows record by record without blocking the phases around it.
 
+The measure that survives translation is the **dispatcher**, not the directory:
+
+| | dispatch arms | dispatcher size |
+|---|---|---|
+| `SymbolParser.java` | 195 `case`s | 704 lines |
+| `TypeParser.java` | 131 `case`s | 562 lines |
+
+326 record IDs, dispatched from 1,266 lines. The 476 files carry the *identity* of those records —
+`GlobalData16` / `GlobalData3216` / `GlobalData32` / `GlobalData32St` / `GlobalDataHLSL` /
+`GlobalDataHLSL32` / `GlobalDataHLSL32Ext` are seven files for one record family — and 112 of them
+are `Abstract*` bases that exist only to be extended. In Rust that shape is a table, not a
+hierarchy:
+
+```rust
+enum SymbolRecord { GlobalData { seg16: bool, hlsl: bool, st: bool, ty: TypeIndex, … }, … }
+fn parse(id: u16, r: &mut Reader) -> Result<SymbolRecord, PdbError> { … }   // one match, 326 arms
+```
+
+so the seven files become one variant with flags, and the abstract bases disappear entirely — they
+are Java's way of sharing a constructor. Budget the catalogue as ~326 rows of decoding, not 35,000
+lines.
+
 The same caution applies more mildly elsewhere: DWARF's 113 files include 20+ small enum/exception
 classes, and `format/golang`'s 85 files include the RTTI struct mirrors.
 
@@ -272,7 +294,11 @@ formats because it is one ecosystem rather than a general mechanism.
 `PefDebugAnalyzer`, 117 lines. Included for completeness of the "everything Ghidra does" claim; a
 day's work once D0b exists, and only reachable if a PEF loader exists.
 
-Dependency order: D0a–D0d → D1 → D2 → D3 → {D4, D6} → D5 → D7 → D8 → D9 → D10 → D11 → D12 → D13.
+Dependency order is **not** the phase order. The D-numbers above are a dependency graph — D0a–D0d
+and D1 are the substrate every format targets, and the format blocks (D2–D7 DWARF, D8 CodeView,
+D9–D11 PDB, D12 Go, D13 PEF) are independent of each other, sharing only that substrate. §7 walks
+that graph **spine-first**: a thin vertical slice of the substrate plus a thin slice of DWARF, end
+to end, before any layer is built out.
 
 ## 4. Parity artifacts copied verbatim
 
@@ -453,28 +479,65 @@ Adding debug info to the corpus perturbs existing numbers, so, per
 
 ## 7. Phases and exit criteria
 
+The temptation — and the shape of this plan's first draft — is to build the sink completely, then
+the DIE layer completely, then types, then functions. That is layer-first, and it defers the only
+question that matters (does the architecture compose end to end?) until six phases in. So instead:
+
+**P0 — the spine.** The thinnest possible vertical slice, one binary, one path, bytes to visible
+output. Minimum of *each* layer, not all of any:
+
+- D0a: enough type sink for `int` and a pointer. No categories, no composites.
+- D0b: a comment DB with one comment type reaching the C output.
+- D0c: a signature on `Function` with one named parameter.
+- D0d: nothing (deferred to P5).
+- D1: `inputlock` only, honoured by `ActionInputPrototype`.
+- D2: `BaseSectionProvider` over ELF sections, `.debug_abbrev` + `.debug_info` only.
+- D3: `DW_TAG_compile_unit` + `DW_TAG_subprogram`, `DW_AT_name`/`low_pc`/`type`. DWARF 4,
+  32-bit, little-endian, no v5 indirection, no location expressions.
+- D5: name and one parameter, no fixup chain.
+- D7: the analyzer, with the decline path.
+- §6b snapshot vocabulary for `proto`, `comment`, and the `dbgsummary` line.
+
+*Exit criterion:* a `gcc -g` hello-world's function is **named from DWARF**, its one-parameter
+prototype **survives recovery because it is locked**, and a DWARF-derived comment appears in the
+decompiled C — with snapshot parity against Ghidra on those records. If the architecture is wrong,
+this is where it shows, at a fraction of the cost.
+
+**P1 — the second format's spine, immediately.** `DW_TAG_subprogram` → PE CodeView `S_GPROC32`,
+through the *same* substrate, on a `cv_pe.exe` fixture. Deliberately not at the end: the sink has
+to be format-neutral, and the only way to know is to run a second format through it **before**
+DWARF-specific detail accumulates in it. CodeView is the right second choice for two reasons — it
+is applied by the **loader**, so it proves the analyzer/loader split of §0 rather than assuming it;
+and it is the DOS-era format family (§5), so the container-agnostic constraint gets exercised while
+it is still cheap to honour.
+
+*Exit criterion:* one function named and one prototype locked from CodeView, at load time, with no
+change to the DWARF path and no format-specific branch in D0a–D0d or D1.
+
+Then thicken. Each row below is breadth over an already-working spine, so each is independently
+shippable and independently measurable:
+
 | Phase | Content | Exit criterion |
 |---|---|---|
-| P0 | D0a–D0d: types, comments, signatures, source map | round-trip tests; nothing else changes |
-| P1 | D1 override path + snapshot vocabulary (§6b) | a **hand-declared** prototype changes decompiler output, matched against the C++ oracle via `DecompileWithForcedParams`; a hand-written comment appears in the C text |
-| P2 | D2 + D7 skeleton | `dwarf_stripped.elf` declines gracefully; debuglink/build-id fixtures locate their external file; `dwarf_split.elf` refused exactly as Ghidra refuses it |
-| P3 | D3 DIE layer | §6c matrix green; §6g negatives all report-and-continue |
-| P4 | D6 line numbers | `srcline` + `comment` snapshot parity on `dwarf4.elf`/`dwarf5.elf` |
-| P5 | D4 types | `type` snapshot parity on `dwarf_types.elf`, bitfields and cycles included |
-| P6 | D5 functions + fixup chain | `proto`/`local` parity on all DWARF fixtures, `-O2` included; each of the seven fixups has a test showing it fire |
-| P7 | measurement | §6f: `ccompare` on paired binaries, two effects reported separately |
-| P8 | D8 PE CodeView + COFF + `.dbg` | `cv_pe.exe` parity, applied at **load** time; the reader is container-agnostic (§5) |
-| P9 | D9 PDB reader | structural parity on `pdb_pe.exe`'s streams; malformed-MSF negatives |
-| P10 | D10–D11 PDB applicator + analyzer | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe` |
-| P11 | D12 Go | `go_hello.elf` parity: names, source lines, RTTI types |
-| P12 | D13 PEF | only if a PEF loader exists; else recorded as unreachable |
-| P13 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
+| P2 | DWARF breadth: D2 fully (compressed, dSYM, external debug files), D3 fully | §6c matrix green — v2–v5, 32/64-bit, both endians, all `DW_FORM`s; `dwarf_split.elf` refused exactly as Ghidra refuses it; `dwarf_stripped.elf` declines; §6g negatives all report-and-continue |
+| P3 | D4 types + D0a built out (categories, composites, typedefs, enums, unions) | `type` snapshot parity on `dwarf_types.elf`, bitfields and cycles included |
+| P4 | D5 fully: locals, location expressions, register mappings (§4), the seven-fixup chain | `proto`/`local` parity on all DWARF fixtures, `-O2` included; each fixup has a test showing it fire |
+| P5 | D0d + D6 line numbers, **and** CodeView's line tables (`OMFSrcModuleLine`) | `srcline` + `comment` parity on `dwarf4.elf`/`dwarf5.elf` and `cv_pe.exe` |
+| P6 | measurement | §6f: `ccompare` on paired debug/no-debug binaries, the two effects reported separately |
+| P7 | D8 breadth: COFF debug, `DebugMisc`, separate `.dbg` (`DbgLoader`) | full `cv_pe.exe` parity; the reader is driven by blob + segment map, not a PE header (§5) |
+| P8 | D9 PDB spine: MSF container, stream directory, DBI, enough TPI for one signature | one function named and one prototype locked from a real `.pdb`, end to end — the spine pattern again, not the whole reader |
+| P9 | D9/D10 PDB breadth: the 326-ID record catalogue, applicators, `PdbSourceLinesApplicator`, `BlockCommentsManager`; D11 analyzer | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe`; unknown record IDs skip with a report (§0a) |
+| P10 | D12 Go | `go_hello.elf` parity: names, source lines, RTTI types |
+| P11 | D13 PEF | only if a PEF loader exists; else recorded as unreachable |
+| P12 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
 
-P1 is the one to be strict about. It is the only phase that delivers user-visible value with no
-debug parser at all, and it is the phase that proves the other twelve are worth building.
+Two properties this ordering buys. Every phase from P0 onward has a **working end-to-end path**, so
+a regression is always attributable to the phase that caused it rather than to an unfinished layer.
+And the format-neutrality of the substrate is proven at P1 by construction, when it costs one
+fixture, instead of being discovered at P8 when it costs a refactor.
 
-The DOS-era formats of §5 are a **later stage**, sequenced after P8 so they inherit a
-container-agnostic CodeView reader and a working DWARF reader, and they get their own plan then.
+The DOS-era formats of §5 are a **later stage**, sequenced after P7 so they inherit a
+container-agnostic CodeView reader and a complete DWARF reader; they get their own plan then.
 
 ## 8. Honest scope — what this does not buy
 

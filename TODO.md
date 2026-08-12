@@ -505,13 +505,18 @@ construction — we port the refusal. Ghidra has no stabs support, so neither do
 reads none of it (only DWARF *pointer encodings* in `analyzers/eh_frame.rs` and ELF
 `SHT_SYMTAB`/`SHT_DYNSYM` names in `loader/elf.rs`).
 
+Sequenced **spine-first**, not layer-first: P0 is a thin vertical slice — minimum sink, minimum
+DWARF, one `gcc -g` hello world named and locked and commented end to end — and P1 immediately runs
+a *second* format (PE CodeView) through the same substrate, because format-neutrality costs one
+fixture to prove at P1 and a refactor to discover at P8. Everything after that is breadth over a
+working path. The format blocks are independent of each other; they share only the sink.
+
 Two findings that shape the plan:
 
 - **The parsers are the easy half — there is no sink.** No type registry, no function signature, no
   comment database, no source map, and no `inputlock`/`outputlock`/`typelock` on `FuncProto`, which
-  is precisely how Ghidra lets declared info beat recovery. So P1 is the override path plus the
-  comment DB, testable with hand-declared prototypes and zero debug bytes, and it is the phase that
-  decides whether the other twelve are worth building.
+  is precisely how Ghidra lets declared info beat recovery. That is why the spine includes a lock and
+  a comment from day one: without them a parser changes nothing an observer can see.
 - **How debug info reaches decompiled output.** Not through source text (DWARF has none, and Ghidra
   reads no embedded source anywhere) and not through the line map (`SourceMapEntry` has **zero**
   references in `Features/Decompiler` — it feeds a listing field and a table). It reaches the C text
