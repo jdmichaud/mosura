@@ -11,10 +11,19 @@ divergent regions it has and what fraction of its instructions differ.
 
 | class | count | share |
 |---|---|---|
-| STRUCTURAL (>40% of instructions differ) | 2111 | 81.2% |
-| PARTIAL (<=40%) | 391 | 15.0% |
-| LOCAL (1 region, <=3 instructions) | 78 | 3.0% |
-| NEAR (<=2 regions, <=15%) | 19 | 0.7% |
+| STRUCTURAL (>40% of instructions differ) | 2079 | 80.0% |
+| NEAR/PARTIAL (<=40%) | 424 | 16.3% |
+| LOCAL (1 region, <=3 instructions) | 92 | 3.5% |
+
+(Measured at 379 byte-clean with the padding-corrected instrument. An earlier revision of this
+file gave 2111/391/78/19 from a tool that compared against the UNTRIMMED original and so invented
+a divergent region at the end of every padded function.)
+
+**THE TAIL IS FLAT.** Across the 516 near functions there are **531 distinct divergent-region
+shapes over 2106 regions** — about four regions per shape, and the top shapes are generic single
+instruction inserts/deletes (`mov`->`-` 184, `pop`->`-` 139, `-`->`mov` 119, `push`->`-` 111),
+i.e. register allocation and value materialization, not one mechanical cause. There is no large
+remaining lever in the near set; wins come ~4 functions at a time.
 
 **Only 97 functions are within one or two small regions of matching.** Reaching 600 from 375 needs
 +225, so it CANNOT come from the near-miss tail — it requires converting ~46% of the 488
