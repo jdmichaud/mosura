@@ -494,24 +494,37 @@ AAPCS, …). Reference source: Ghidra `Framework/SoftwareModeling/.../program/mo
       gated check that the PE corpus (comcom32/cnv) recovers its convention's PARAM refs as a
       clean subset of Ghidra.
 
-## Debug-information track — DWARF/PDB (`docs/debug-info-port-plan.md`)
+## Debug-information track (`docs/debug-info-port-plan.md`)
 
-**Not started.** Ghidra reads DWARF (`DWARFAnalyzer`, 20k lines), PDB (two implementations,
-76k lines), PE CodeView and Go symbols, all as `BYTE_ANALYZER`s at
-`FORMAT_ANALYSIS.after()` — before disassembly, so everything downstream treats debug facts as
-inputs. mosura reads none of it (only DWARF *pointer encodings* in `analyzers/eh_frame.rs` and
-ELF `SHT_SYMTAB`/`SHT_DYNSYM` names in `loader/elf.rs`).
+**Not started.** Scope is **everything Ghidra reads**: DWARF (20,440 lines), PDB Universal
+(75,680 across a reader and an applicator), PE CodeView + COFF debug (applied by the **loader**,
+`AbstractPeDebugLoader`, not an analyzer), separate `.dbg` files, Go symbol metadata, PEF debug,
+MachO `.dSYM`, and external debug files (build-id / `.gnu_debuglink`). MSDIA is Windows-only by
+construction — we port the refusal. Ghidra has no stabs support, so neither do we. mosura today
+reads none of it (only DWARF *pointer encodings* in `analyzers/eh_frame.rs` and ELF
+`SHT_SYMTAB`/`SHT_DYNSYM` names in `loader/elf.rs`).
 
-The plan's key finding: **the parser is the easy half.** There is no sink — no type registry, no
-function signature, and no `inputlock`/`outputlock`/`typelock` on `FuncProto`, which is precisely
-how Ghidra lets declared info beat recovery. So the first phase (P1) is the override path, testable
-with hand-declared prototypes and zero DWARF, and it is the phase that decides whether the rest is
-worth building. Scope is DWARF-only (v2–v5, `DW_UT_compile`; Ghidra refuses split DWARF too); PDB
-is deferred on a 4:1 size ratio and a worse test story.
+Two findings that shape the plan:
+
+- **The parsers are the easy half — there is no sink.** No type registry, no function signature, no
+  comment database, no source map, and no `inputlock`/`outputlock`/`typelock` on `FuncProto`, which
+  is precisely how Ghidra lets declared info beat recovery. So P1 is the override path plus the
+  comment DB, testable with hand-declared prototypes and zero debug bytes, and it is the phase that
+  decides whether the other twelve are worth building.
+- **How debug info reaches decompiled output.** Not through source text (DWARF has none, and Ghidra
+  reads no embedded source anywhere) and not through the line map (`SourceMapEntry` has **zero**
+  references in `Features/Decompiler` — it feeds a listing field and a table). It reaches the C text
+  through **code-unit comments** carrying `file:line`, which `printc.cc` prints from `commentdb`.
+  Types/signatures/locals/CC change the code; comments change the text around it.
+
+DOS-era compiler formats (Watcom `-hw`/`-hd`/`-hc`, Borland TDS, CodeView appended to MZ/LE) are a
+**later stage** with a designed-for slot: keep the section provider and the CodeView reader
+container-agnostic, and most of that story falls out of the PE and DWARF phases — Watcom `-hd`
+emits DWARF the same reader handles, and `-hc`/MS C emit the same CodeView `S_*`/OMF family.
 
 Note for measurement: **no committed binary carries debug info** — no `-g` in
-`oracle/analysis-corpus/build.sh`, and the DOS-era games have `e32_debuglen = 0` with no CodeView
-or HLL markers — so this track needs its own corpus and does not perturb existing goldens.
+`oracle/analysis-corpus/build.sh`, and the DOS-era games have `e32_debuglen = 0` with no
+CodeView/HLL marker — so this track needs its own corpus and does not perturb existing goldens.
 
 ## Prototype findings worth carrying forward (from the approximation era)
 
