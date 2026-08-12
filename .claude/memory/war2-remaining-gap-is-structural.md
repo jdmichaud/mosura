@@ -139,7 +139,18 @@ FOUR guards were tried and all missed, because it is none of these: a free varno
 !input && !constant`), a spacebase input, an indirect creation (Ghidra's `pop_failkill`), or a
 trial force-marked by the `committed` branch. It is a REGISTER input that is not a parameter.
 
-Two independent fixes, and they are worth different things:
+**AND ONE LAYER DEEPER (measured, not guessed):** dropping a non-parameter input from the argument
+list does NOT fix it, because the varnode IS at a parameter's location. mosura creates DUPLICATE
+input varnodes for one storage — the `--only` diagnostic prints `register+0x4/4` twice and
+`register+0xc/4` twice for FUN_000100b9. One of the pair becomes `param_4`; the other has no
+parameter slot, so printc names it `xVar1`, declares it with no assignment, and it is passed as a
+fifth argument. A guard keyed on the varnode's LOCATION cannot separate them.
+
+So the fix is not in argument recovery at all: it is that heritage produces two function inputs for
+the same register. Find why before touching `build_input_from_trials` again — a location-keyed
+guard was written, gated green, and was completely inert.
+
+Two further fixes, worth different things:
   - naming it `in_<reg>` matches Ghidra and makes the declaration honest — no byte effect;
   - NOT passing a non-parameter input as a call argument is the byte fix, and needs
     `build_input_from_trials` to know the function's own recovered parameter set (call
