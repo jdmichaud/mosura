@@ -84,9 +84,32 @@ fn build_le(
     out[0x02..0x04].copy_from_slice(&0x50u16.to_le_bytes());
     out[0x04..0x06].copy_from_slice(&1u16.to_le_bytes());
     out[0x08..0x0a].copy_from_slice(&2u16.to_le_bytes());
+    // Bound by default: e_lfanew invalid, so detection must scan. `build_le_standalone` below
+    // writes the real offset instead, which is the other shape found in the wild.
     out[0x3c..0x40].copy_from_slice(&0x0badf00du32.to_le_bytes()); // invalid e_lfanew
     out.extend_from_slice(&le);
     out.extend_from_slice(page_bytes);
+    out
+}
+
+/// As [`build_le`], but with a VALID `e_lfanew` pointing at the LE header — a **standalone** LE,
+/// which is what a DOS/4GW program looks like when the extender ships as a separate `DOS4GW.EXE`
+/// rather than bound into the image.
+///
+/// Both shapes exist in the wild and they take different paths through `loader::load_container`:
+/// a standalone LE is dispatched straight to `load_le` by `is_le_header(data, e_lfanew)`, while a
+/// bound one falls through to the 16-bit MZ stub and is only reachable via the opt-in native view.
+/// Real examples: Worms (1995) ships standalone LEs beside `DOS4GW.EXE`; WAR2 and Descent are
+/// bound and set `e_lfanew` to garbage on purpose.
+fn build_le_standalone(
+    stub_len: usize,
+    objects: &[Object],
+    eip_object: u32,
+    eip: u32,
+    page_bytes: &[u8],
+) -> Vec<u8> {
+    let mut out = build_le(stub_len, objects, eip_object, eip, page_bytes);
+    out[0x3c..0x40].copy_from_slice(&(stub_len as u32).to_le_bytes());
     out
 }
 
@@ -237,4 +260,54 @@ fn refuses_a_truncated_page_region() {
     let le = 0x300usize;
     data[le + 0x14..le + 0x18].copy_from_slice(&999u32.to_le_bytes());
     assert!(loader::load_le(&data).is_err(), "an oversized page region must be refused");
+}
+
+/// A **standalone** LE must be claimed by the DEFAULT dispatch, not just by the opt-in view.
+///
+/// This is the other half of the two-oracle policy and the half that had no coverage: the policy
+/// keeps a *bound* exe on the Ghidra-parity stub path because Ghidra cannot load the LE, but a
+/// standalone LE has a valid `e_lfanew`, so `load_container` routes it to `load_le` directly. Worms
+/// (1995) is a real binary of this shape — `WRMS.EXE`, `FMV/PLAY.EXE` and `BLACK.EXE` all have
+/// `e_lfanew` pointing at an `LE` and load as `x86:LE:32:default watcom` with no flag at all.
+#[test]
+fn a_standalone_le_is_claimed_by_the_default_dispatch() {
+    for &(stub, entry) in CASES {
+        let (pages, [f1, f2]) = call_graph_pages(entry, 3);
+        let data = build_le_standalone(stub, &two_objects(2, 1), 1, entry, &pages);
+
+        // detection still finds it, now via e_lfanew rather than the scan
+        assert_eq!(loader::detect_le(&data), Some(stub));
+
+        // and the DEFAULT dispatch gives the 32-bit view, not the 16-bit stub
+        let mut prog = loader::load(&data).expect("default dispatch loads a standalone LE");
+        assert_eq!(
+            prog.language_id, "x86:LE:32:default",
+            "a standalone LE is Ghidra-parity-irrelevant: there is no reason to show the stub"
+        );
+        assert_eq!(prog.entry_points[0].offset, 0x10000 + u64::from(entry));
+
+        // and analysis runs over it, as it does through the native path
+        mosura::analysis::analyze(&mut prog);
+        let found: Vec<u64> =
+            prog.function_manager.functions().map(|f| f.entry_point().offset).collect();
+        for want in [u64::from(entry), u64::from(f1), u64::from(f2)] {
+            assert!(found.contains(&(0x10000 + want)), "function {want:#x} not discovered");
+        }
+    }
+}
+
+/// The bound and standalone shapes must not be confused for one another.
+#[test]
+fn bound_and_standalone_are_distinguished() {
+    let (pages, _) = call_graph_pages(0x10, 3);
+    let bound = build_le(0x400, &two_objects(2, 1), 1, 0x10, &pages);
+    let standalone = build_le_standalone(0x400, &two_objects(2, 1), 1, 0x10, &pages);
+
+    // both are LE to the native view
+    assert_eq!(mosura::analysis::native_loader_name(&bound), Some("LE"));
+    assert_eq!(mosura::analysis::native_loader_name(&standalone), Some("LE"));
+
+    // but only the standalone one is claimed by the default dispatch
+    assert_eq!(loader::load(&bound).unwrap().language_id, "x86:LE:16:Real Mode");
+    assert_eq!(loader::load(&standalone).unwrap().language_id, "x86:LE:32:default");
 }
