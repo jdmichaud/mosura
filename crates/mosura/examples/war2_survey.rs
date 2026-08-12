@@ -263,9 +263,16 @@ fn main() {
     let raw_dir = out.join(format!("raw.{stamp}"));
     let manifest_path = out.join(format!("manifest.{stamp}.tsv"));
 
+    // `--only` is a READ-ONLY probe. Everything below this point rewrites the survey's working
+    // state — it clears the stamped src/raw directories, regenerates prelude.h, repoints the
+    // `src`/`raw`/`manifest` symlinks and truncates a manifest — so a one-function probe run while
+    // a real survey is in flight would destroy that survey's inputs mid-run. (Overlapping runs
+    // have already cost this project one measurement.) Probing must be free of that.
+    let probing = !only.is_empty();
+
     // A re-emit at the same clean commit is a no-op, not a silent rewrite. `-dirty` is exempt: an
     // uncommitted tree is expected to be re-emitted repeatedly while iterating.
-    if src_dir.exists() && !stamp.ends_with("-dirty") && !force {
+    if !probing && src_dir.exists() && !stamp.ends_with("-dirty") && !force {
         eprintln!(
             "{} already exists — that commit has been emitted.\n\
              Re-run with --force to overwrite it, or commit first for a new stamp.",
@@ -279,19 +286,23 @@ fn main() {
     // directory that is a snapshot of neither. That is not hypothetical: the pre-stamping
     // `war2-survey/src/` holds .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
     // Only reachable for a new stamp (nothing to clear), a `-dirty` stamp, or --force.
-    for d in [&src_dir, &raw_dir] {
-        if d.exists() {
-            std::fs::remove_dir_all(d).unwrap();
+    if !probing {
+        for d in [&src_dir, &raw_dir] {
+            if d.exists() {
+                std::fs::remove_dir_all(d).unwrap();
+            }
         }
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
     }
-    std::fs::create_dir_all(&src_dir).unwrap();
-    std::fs::create_dir_all(&raw_dir).unwrap();
-    std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
     // compile.sh reads <out>/src/$n.c and <out>/manifest.tsv; compare.py reads <out>/manifest.tsv.
     // Pointing the bare names at the current stamp keeps both working unchanged.
-    link_latest(&out.join("src"), &format!("src.{stamp}"));
-    link_latest(&out.join("raw"), &format!("raw.{stamp}"));
-    link_latest(&out.join("manifest.tsv"), &format!("manifest.{stamp}.tsv"));
+    if !probing {
+        link_latest(&out.join("src"), &format!("src.{stamp}"));
+        link_latest(&out.join("raw"), &format!("raw.{stamp}"));
+        link_latest(&out.join("manifest.tsv"), &format!("manifest.{stamp}.tsv"));
+    }
 
     eprintln!("loading WAR2 via analyze_le_file ...");
     let prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
@@ -320,7 +331,11 @@ fn main() {
     // Next-entry map (same code object) → function byte extent [entry, next_entry).
     let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
 
-    let mut mf = std::io::BufWriter::new(std::fs::File::create(&manifest_path).unwrap());
+    let mut mf: std::io::BufWriter<Box<dyn std::io::Write>> = std::io::BufWriter::new(if probing {
+        Box::new(std::io::sink())
+    } else {
+        Box::new(std::fs::File::create(&manifest_path).unwrap())
+    });
     // Stamp the manifest itself, so a .tsv that has been copied away from its directory still
     // says which tree produced it. Both consumers skipped exactly one line (compile.sh's
     // `tail -n +2`, compare.py's `header = next(fh)`), so they were changed to drop `#` lines
@@ -439,7 +454,9 @@ fn main() {
                 .len();
 
         let c = print_c(&f);
-        std::fs::write(raw_dir.join(format!("{va:08x}.c")), &c).unwrap();
+        if !probing {
+            std::fs::write(raw_dir.join(format!("{va:08x}.c")), &c).unwrap();
+        }
 
         // Synthesize a standalone TU and detect decompiler-artifact "smells".
         let thunk = matches!(region.first(), Some(0xe9) | Some(0xeb)) && orig_len <= 8;
