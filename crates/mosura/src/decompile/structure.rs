@@ -3766,4 +3766,3 @@ pub fn force_loop_overflow() -> bool {
 pub fn set_force_loop_overflow(on: bool) {
     FORCE_LOOP_OVERFLOW.with(|c| c.set(on));
 }
-
