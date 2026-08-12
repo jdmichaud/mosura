@@ -204,6 +204,14 @@ fn nondefault_parm_regs(
             return None;
         }
         let n = table.iter().find(|&&(o, sz, _)| o == s.addr.offset && sz == s.size)?;
+        // The frame and stack pointers are not argument storage under any Watcom convention, and
+        // naming one in a `parm` list is rejected outright: `E1122: Illegal register modified by
+        // '<name>' #pragma`, which fails the whole translation unit. Recovering a parameter in EBP
+        // means the recovery is wrong, so drop the DECLARATION rather than emit a list that cannot
+        // compile — a partial list would silently re-map the other parameters.
+        if n.2 == "ebp" || n.2 == "esp" {
+            return None;
+        }
         names.push(n.2);
     }
     // What Watcom assigns by position, for these same sizes.

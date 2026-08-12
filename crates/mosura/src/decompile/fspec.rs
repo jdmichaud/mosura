@@ -1244,6 +1244,25 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         if f.own_saved.as_ref().is_some_and(|r| r.contains(&vn.loc.offset)) {
             continue;
         }
+        // When the save/restore walk could not run (`own_saved` is None — an indirect branch, an
+        // unresolvable target, budget), there is NO evidence either way, and admitting a
+        // conventionally callee-saved register on no evidence is how EBP became a "parameter".
+        // Watcom rejects it outright: `E1122: Illegal register modified by '<name>' #pragma`, which
+        // fails the whole translation unit. Two TUs still hit that after the modify-list fix,
+        // because the frame pointer was in their `parm` list rather than their `modify` list.
+        //
+        // The frame and stack pointers are never argument storage under any Watcom convention, so
+        // they are excluded unconditionally; the other callee-saved registers are excluded only
+        // when there is no evidence to the contrary.
+        let callee_saved = f
+            .proto_model
+            .effectlist
+            .iter()
+            .any(|e| e.space == reg && e.offset == vn.loc.offset && e.effect == effect::UNAFFECTED);
+        if callee_saved && f.own_saved.is_none() {
+            continue;
+        }
+
         // Flags and other status bits are not argument storage.
         if vn.size > 4 || pl.entry.iter().all(|e| e.space != vn.loc.space || vn.loc.offset >= 0x100) {
             continue;
