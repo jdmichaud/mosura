@@ -943,6 +943,8 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
             }
         }
     }
+    // Which trials the CALL SITE itself made active, before the map's hole rules run.
+    let was_active: Vec<bool> = active.trial.iter().map(|t| t.is_active()).collect();
     input.fillin_map(active);
 
     // ADDITIVE EVIDENCE. `CallSpec::reads` records registers the CALLEE demonstrably reads before
@@ -959,8 +961,15 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // The chain rule itself is untouched: it is a faithful port and stays.
     if let Some(reads) = f_reads {
         let active = f.active_inputs.get_mut(&call).unwrap();
-        for t in active.trial.iter_mut() {
+        for (i, t) in active.trial.iter_mut().enumerate() {
             if t.is_used() {
+                continue;
+            }
+            // ONLY rescue a trial the CALL SITE had already made active. Callee evidence says the
+            // register is read on some path; it does not say this caller passes it. Requiring both
+            // is the per-call-site question: the caller set it AND the callee reads it. Marking on
+            // callee evidence alone invented arguments and measured 98 regressions.
+            if !was_active.get(i).copied().unwrap_or(false) {
                 continue;
             }
             let hit = reads.iter().any(|&(a, sz)| {
