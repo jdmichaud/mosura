@@ -1206,7 +1206,7 @@ impl Structured {
             }
             let exit = self.out(b)[1 - i];
             // blockaction.cc:1538 — the condition block is too big to fold into `while (…)`.
-            let overflow = self.is_complex(b);
+            let overflow = self.is_complex(b) || force_loop_overflow();
             let n = self.install(vec![b, body], FlowKind::WhileDo, vec![exit], ins);
             // blockaction.cc:1539 `if ((i==0)!=overflow)`: the normal form prints the CONTINUE
             // condition, the overflow form the BREAK condition, so overflow inverts the sense.
@@ -3727,3 +3727,43 @@ mod tests {
         assert!(gotos.is_empty(), "clean loop interior scores no goto: {gotos:?}");
     }
 }
+
+thread_local! {
+    static FORCE_LOOP_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Is the "overflow" while-do rendering forced for every loop? See [`set_force_loop_overflow`].
+pub fn force_loop_overflow() -> bool {
+    FORCE_LOOP_OVERFLOW.with(|c| c.get())
+}
+
+/// Render EVERY while-do with Ghidra's overflow syntax —
+/// ```text
+///     while( true ) { <condition body> ; if (<branch>) break; }
+/// ```
+/// — instead of folding the condition body into `while (…)` with the comma operator.
+///
+/// BOTH forms are Ghidra's (`PrintC::emitBlockWhileDo`, printc.cc): it picks between them on
+/// `BlockBasic::isComplex` (blockaction.cc:1538), which is a READABILITY threshold — a condition of
+/// at most two statements reads fine inline. This flag moves that threshold to zero. It is OFF by
+/// default, so the decompiler's own output and the Ghidra-scored corpus are untouched.
+///
+/// It exists because the two renderings are semantically identical and DO NOT compile the same.
+/// Watcom cannot short-circuit a comma-operator condition into a branch, so it materializes the
+/// truth value:
+/// ```text
+///     while (param_1 = param_1 + -1, param_1 != -1)     ->  setne al ; and eax,0xff ; je
+///     while( true ) { param_1 = param_1 + -1;
+///                     if (param_1 == -1) break;  ... }  ->  je
+/// ```
+/// Measured on WAR2's FUN_000458ec, whose original is the `je` form: the comma rendering compiles
+/// to 35 bytes against the original's 27, and the overflow rendering compiles to all 27, matching
+/// instruction for instruction. 86 emitted WAR2 functions carry a comma-operator condition, and 269
+/// emit more `setcc` than their original.
+///
+/// This is a rendering choice, not a claim about the binary: it changes only C surface syntax,
+/// never what was recovered, and it is applied uniformly rather than per-function from the answer.
+pub fn set_force_loop_overflow(on: bool) {
+    FORCE_LOOP_OVERFLOW.with(|c| c.set(on));
+}
+

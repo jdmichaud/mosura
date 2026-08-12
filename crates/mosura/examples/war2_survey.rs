@@ -347,6 +347,15 @@ fn main() {
     )
     .unwrap();
 
+    // RECOMPILATION RENDERING. Ghidra picks between `while (a = a-1, a != -1)` and
+    // `while( true ) { a = a-1; if (a == -1) break; }` on a READABILITY threshold
+    // (BlockBasic::isComplex). The two are semantically identical and do NOT compile the same:
+    // Watcom cannot short-circuit a comma-operator condition into a branch, so it materializes the
+    // truth value (`setne al ; and eax,0xff ; je` for a single `je`). This survey's output exists
+    // to be RECOMPILED, so it takes the branch form always. Measured on FUN_000458ec: 35 bytes
+    // with the comma condition against the original's 27, and all 27 — instruction for
+    // instruction — with this on.
+    mosura::decompile::structure::set_force_loop_overflow(true);
     let watreg = watcom_reg_table();
     let t0 = std::time::Instant::now();
     let (mut ok, mut fail) = (0usize, 0usize);
