@@ -398,17 +398,31 @@ fn callee_writes_cfg(
             if f.spaces.space_by_spacebase(addr, out.size).is_some() {
                 continue;
             }
+            // NORMALIZE a sub-register write to the register that CONTAINS it, before anything
+            // compares the two lists. `mov ah,..` writes offset 1 and `pop eax` restores offset 0;
+            // matching them by raw offset lets a high-byte write survive the saved-and-restored
+            // filter below. FUN_00010d70 saves and restores EBX, ECX, EDX and EBP, yet its AH/DH/BH
+            // writes came through as offsets 1/9/0xd and were reported as destroying EAX, EDX and
+            // EBX — so the emitted `modify` list told Watcom to skip two saves the original makes,
+            // and the function compiled 4 bytes short.
+            let key = if out.size < 4 { out.offset & !3 } else { out.offset };
             if is_pop {
-                if !restored.contains(&out.offset) {
-                    restored.push(out.offset);
+                if !restored.contains(&key) {
+                    restored.push(key);
                 }
-            } else if !writes.contains(&out.offset) {
-                writes.push(out.offset);
+            } else if !writes.contains(&key) {
+                writes.push(key);
             }
         }
         if fallthrough {
             frontier.push(pc + insn.bytes.len() as u64);
         }
+    }
+    if std::env::var_os("MOSURA_MODIFY").is_some() {
+        eprintln!(
+            "MODIFY entry={entry:#x} writes={:x?} restored={:x?} calls_clobber={calls_clobber}",
+            writes, restored
+        );
     }
     writes.retain(|o| !restored.contains(o));
     Some((writes, restored))
