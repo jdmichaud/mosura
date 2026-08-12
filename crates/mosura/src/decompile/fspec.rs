@@ -991,12 +991,6 @@ pub struct CallSpec {
     /// deliberate `beyond-ghidra` extension, licensed by that measurement — see
     /// war2-survey/PLAN-register-effects.md.
     pub overwrites: Vec<(Address, u32)>,
-
-    /// Every register offset the callee writes anywhere in its reachable body, or `None` when that
-    /// could not be established (`analysis::decompiler::callee_writes_cfg`). Unlike
-    /// [`Self::overwrites`] — a straight-line UPGRADE list — this is complete over the callee's
-    /// CFG, so absence from it is sound evidence the callee NEVER writes the register.
-    pub writes_all: Option<Vec<u64>>,
     /// The registers this callee READS BEFORE WRITING — its actual input storage, recovered from
     /// its own body. The input-side twin of [`Self::overwrites`], and the other half of the
     /// per-call prototype: Ghidra's `FuncCallSpecs` extends `FuncProto`, which owns BOTH parameter
