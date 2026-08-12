@@ -120,6 +120,15 @@ pub fn load_mz(data: &[u8]) -> Result<Program, LoadError> {
     // `Compiler` info property; a non-Watcom MZ (e.g. DJGPP comcom32) has no banner → unchanged.
     if let Some(w) = super::watcom::detect(data) {
         program.compiler = w.compiler_label();
+    } else if let Some(id) = super::compiler_version::detect(data) {
+        // Any other DOS-era family that names itself in its run-time banner — Microsoft's 16-bit
+        // line (`MS Run-Time Library - Copyright (c) 1992, Microsoft Corp`), Borland's
+        // `Turbo C++ - Copyright …`. Ghidra reports `unknown` for all of them, so this is the
+        // same beyond-Ghidra refinement the Watcom branch above is, generalised.
+        //
+        // Only input that actually carries a banner is affected: a DJGPP MZ (comcom32, the
+        // no-false-positive fixture) has none and stays `unknown`, so its golden does not move.
+        program.compiler = id.label();
     }
 
     // Entry point at CS:IP (Ghidra MzLoader.processEntryPoint): a label `entry`, also an

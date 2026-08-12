@@ -156,6 +156,14 @@ pub fn war2_exe() -> PathBuf {
     user_binary("MOSURA_WAR2_EXE", "WAR2.EXE")
 }
 
+/// A 16-bit **Microsoft C** DOS program. `MOSURA_MSC16_EXE`, default `$HOME/msc16.exe`.
+/// Ground truth for the 16-bit real-mode path: the `msc-7.0-*` FID columns and the 16-bit
+/// Microsoft run-time banner (`docs/flashback-corpus-notes.md`). Generic name on purpose — the
+/// compiler and the language are what is under test, not any one product.
+pub fn msc16_exe() -> PathBuf {
+    user_binary("MOSURA_MSC16_EXE", "msc16.exe")
+}
+
 /// An X-32-bound executable (FlashTek X-32 / X-32VM). `MOSURA_X32_EXE`, default
 /// `$HOME/x32.exe`. Native-X-32 analysis ground truth for `docs/x32-loader-notes.md`.
 /// Deliberately a generic name: the container is what is under test, not any one product.

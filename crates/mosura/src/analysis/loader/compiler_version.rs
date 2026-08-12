@@ -19,6 +19,9 @@
 //!   (`Turbo C++ - Copyright YYYY` for the 16-bit line) — an **era** (copyright year); the
 //!   embedded Turbo Assembler version narrows it where present. See `borland`.
 //! - **Watcom**: the run-time copyright-year-range banner (era); handled by [`super::watcom`].
+//! - **Microsoft, 16-bit DOS line** (MS C 6.x/7.0, MSVC 1.x): `MS Run-Time Library - Copyright
+//!   (c) YYYY, Microsoft Corp` — an era. A different string from the 32-bit
+//!   `Microsoft Visual C++ Runtime Library`, which this era never emits.
 //! - **MetaWare High C/C++ 386**: the `dosomf` translator comment (`v2.05b`), the C++ run-time
 //!   library version + build date, or the C run-time copyright era; handled by
 //!   [`super::metaware`]. Present in OMF objects/libraries only — a linked X-32 image carries
@@ -215,6 +218,25 @@ pub mod msvc {
     /// — the family fallback for pre-Rich toolchains (VC 2.0 through VC5) that carry no build id.
     const RUNTIME_STRING: &[u8] = b"Microsoft Visual C++ Runtime Library";
 
+    /// The **16-bit DOS** line's run-time banner, a different string entirely:
+    /// `MS Run-Time Library - Copyright (c) 1992, Microsoft Corp`.
+    ///
+    /// Grounded in the real libraries — present verbatim in MS C/C++ 7.0's `SLIBCR.LIB` and its
+    /// siblings — and verified in a real linked program: Flashback's `GAME_E.OVL` carries it, and
+    /// the MS C 7.0 medium-model FID column then names 30 of its functions.
+    ///
+    /// Worth a marker of its own because the 32-bit string above never appears in this era's
+    /// output, so a 16-bit Microsoft C binary previously detected as nothing at all.
+    fn dos_runtime_re() -> &'static regex::bytes::Regex {
+        static RE: std::sync::OnceLock<regex::bytes::Regex> = std::sync::OnceLock::new();
+        RE.get_or_init(|| {
+            regex::bytes::Regex::new(
+                r"MS Run-Time Library - Copyright \(c\) ([0-9]{4}), Microsoft Corp",
+            )
+            .unwrap()
+        })
+    }
+
     pub fn detect(data: &[u8]) -> Option<CompilerId> {
         // Rich header (VC6-era onward): exact build.
         if let Some(ents) = rich_entries(data) {
@@ -249,6 +271,17 @@ pub mod msvc {
                     precision: Precision::FamilyOnly,
                     evidence: "Microsoft Visual C++ Runtime Library (pre-Rich; no linker-version field)".to_string(),
                 },
+            });
+        }
+        // The 16-bit DOS line (MS C 6.x/7.0, continued by MSVC 1.x). The banner carries a
+        // copyright year, so this is an era, exactly as for Borland and Watcom.
+        if let Some(c) = dos_runtime_re().captures(data) {
+            let year = String::from_utf8_lossy(c.get(1).unwrap().as_bytes()).into_owned();
+            return Some(CompilerId {
+                family: Family::Msvc,
+                version: format!("16bit:{year}"),
+                precision: Precision::Era,
+                evidence: String::from_utf8_lossy(c.get(0).unwrap().as_bytes()).into_owned(),
             });
         }
         None
@@ -376,6 +409,35 @@ pub mod borland {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The 16-bit Microsoft DOS line, whose banner is a different string from the 32-bit one.
+    /// Fragment copied verbatim from MS C/C++ 7.0's SLIBCR.LIB.
+    #[test]
+    fn sixteen_bit_microsoft_runtime_banner() {
+        let d = b"junk MS Run-Time Library - Copyright (c) 1992, Microsoft Corp more junk";
+        let id = detect(d).expect("16-bit MS banner");
+        assert_eq!(id.family, Family::Msvc);
+        assert_eq!(id.version, "16bit:1992");
+        assert_eq!(id.precision, Precision::Era);
+
+        // and it must not fire on the other vendors' banners, nor on the 32-bit MSVC string's
+        // absence being mistaken for it
+        for s in [
+            &b"WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp."[..],
+            &b"Borland C++ - Copyright 1994 Borland Intl."[..],
+            &b"High C Run-time Library Copyright (C) 1983-1992 MetaWare Incorporated."[..],
+            &b"MS Run-Time Library - Copyright (c) XXXX, Microsoft Corp"[..],
+            &b""[..],
+        ] {
+            let got = detect(s);
+            assert!(
+                got.as_ref().map(|i| i.family) != Some(Family::Msvc),
+                "false positive on {:?}",
+                String::from_utf8_lossy(s)
+            );
+        }
+    }
     use super::*;
 
     #[test]

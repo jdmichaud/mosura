@@ -146,6 +146,24 @@ const SOURCES: &[Source] = &[
     // historical Watcom/Borland media these are what keeps this gate from measuring nothing.
     // They also exercise the two options the other rows do not: an explicitly pinned language
     // (HC386.LIB mixes 16- and 32-bit modules) and a declared compiler spec.
+    // Microsoft C 7.0, 16-bit DOS. The only 16-bit row whose sources are present here, and the
+    // one that exercises a language id CONTAINING A SPACE ("x86:LE:16:Real Mode") — which is
+    // exactly what word-split out of the rebuild script's option string until it used an array.
+    Source {
+        database: "msc-7.0-cm-x86-16.mfid.gz",
+        libraries: &[
+            "/home/jd/.dosemu/drive_c/MSC7/LIB/MLIBCR.LIB",
+            "/home/jd/.dosemu/drive_c/MSC7/LIB/MLIBFP.LIB",
+            "/home/jd/.dosemu/drive_c/MSC7/LIB/EM.LIB",
+            "/home/jd/.dosemu/drive_c/MSC7/LIB/87.LIB",
+            "/home/jd/.dosemu/drive_c/MSC7/LIB/GRAPHICS.LIB",
+        ],
+        family: "Microsoft C",
+        version: "7.0",
+        variant: "cm",
+        language: Some("x86:LE:16:Real Mode"),
+        compiler_spec: None,
+    },
     Source {
         database: "highc-3.31-x86-32.mfid.gz",
         libraries: &[

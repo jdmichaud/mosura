@@ -163,6 +163,24 @@ highc-$mwv-x86-32|MetaWare High C|$mwv|Release|${libs# }"
 highc-$mwv-cpp-x86-32|MetaWare High C|$mwv|cpp|$p"
 done
 
+# Microsoft C/C++ 7.0 (1992), the 16-bit DOS line — one column per memory model, the same shape
+# as the Borland rows. This is the era that built a lot of DOS-native game code, and there was no
+# Microsoft 16-bit column at all before: Ghidra's shipped .fidb are 32-bit Visual Studio, and the
+# committed 16-bit columns were Borland and Watcom only.
+#
+# The media ships its libraries KWAJ-compressed as `*.LI$`; scripts/setup-msc7-dosemu.sh expands
+# them with Microsoft's own DECOMP.EXE (on the profiler disk) into $W/MSC7/LIB.
+MSC7="$W/MSC7/LIB"
+for m in S M C L; do
+	lm=$(echo "$m" | tr A-Z a-z)
+	libs=""
+	for f in "${m}LIBCR.LIB" "${m}LIBFP.LIB" EM.LIB 87.LIB GRAPHICS.LIB; do
+		[ -f "$MSC7/$f" ] && libs="$libs $MSC7/$f"
+	done
+	[ -n "$libs" ] && RECIPES="$RECIPES
+msc-7.0-c$lm-x86-16|Microsoft C|7.0|c$lm|${libs# }"
+done
+
 # The language every module of a column must be. Derived from the database name, which already
 # encodes the architecture, so no recipe has to repeat it.
 #
@@ -207,20 +225,23 @@ while IFS='|' read -r db family version variant libs; do
 	# the extension, so a `.gz.new` staging name silently writes PLAIN TEXT under a `.gz` name.
 	tmp=$(mktemp -d)
 	lang=$(lang_for "$db")
-	langopt=""
-	[ -n "$lang" ] && langopt="--language $lang"
+	# An ARRAY, not a string: the 16-bit language id is "x86:LE:16:Real Mode", and an unquoted
+	# string option would word-split on that space into `--language x86:LE:16:Real` plus a stray
+	# `Mode`, failing every 16-bit column. Latent until a 16-bit column had sources present.
+	opts=()
+	[ -n "$lang" ] && opts+=(--language "$lang")
 	# Declare the compiler spec where the loader cannot know it. An OMF module does not say who
 	# produced it, so `loader::omf` labels every 32-bit module `watcom`; without this a MetaWare
 	# database is filed under `compilerspec watcom` and can never match a program analysed as
 	# High C (FID selects databases by language AND spec).
 	case "$db" in highc-*)
-		langopt="$langopt --cspec highc"
+		opts+=(--cspec highc)
 		# Derived from the library itself, not guessed — see the file's header.
 		[ -f "$REPO/oracle/fid/common-symbols/highc.txt" ] &&
-			langopt="$langopt --common-symbols $REPO/oracle/fid/common-symbols/highc.txt" ;;
+			opts+=(--common-symbols "$REPO/oracle/fid/common-symbols/highc.txt") ;;
 	esac
 	if timeout 3600 cargo run --release -q -p xtask -- fid-build \
-		--family "$family" --version "$version" --variant "$variant" $langopt \
+		--family "$family" --version "$version" --variant "$variant" "${opts[@]}" \
 		--out "$tmp/$db.mfid.gz" $present >/dev/null 2>&1 && [ -s "$tmp/$db.mfid.gz" ]; then
 		after=$(zcat "$tmp/$db.mfid.gz" | grep -c '^f ')
 		mv "$tmp/$db.mfid.gz" "$OUT/$db.mfid.gz"
