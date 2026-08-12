@@ -381,7 +381,14 @@ fn callee_effects(
 ) -> Option<CalleeEffects> {
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
-    let mut written: Vec<(Address, u32)> = Vec::new();
+    // `(storage, width, position of its LAST write)`. The position orders the recovered OUTPUT
+    // list: a return value is the register written closest to the `ret`, while an earlier write to
+    // some other register is an intermediate. Ordering by FIRST write made `movsx edx,dx` outrank
+    // the `and eax,edx` that actually produces FUN_0001ed28's return, so EDX became the output, the
+    // EAX computation went dead, and the ENTIRE BODY was eliminated — 48 bytes down to a bare
+    // `push ebp ; mov ebp,esp ; pop ebp ; ret`.
+    let mut written: Vec<(Address, u32, usize)> = Vec::new();
+    let mut seq = 0usize;
     let mut restored: Vec<u64> = Vec::new();
     // Every register offset written so far, whatever the model says about it — a read AFTER one of
     // these is the callee's own value, not an argument the caller supplied.
@@ -398,6 +405,7 @@ fn callee_effects(
             break;
         }
         let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
+        seq += 1;
         let mut is_ret = false;
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
@@ -468,23 +476,26 @@ fn callee_effects(
                 // FIRST: FUN_00043898 does `mov al,[eax+0x1f]` before `mov ax,[eax*2+0x97e08]`, so
                 // the 1-byte AL was recorded, the 2-byte AX ignored, and the function came back
                 // `char` — emitting `mov al` where the original returns the full word in AX.
-                match written.iter_mut().find(|(a, _)| *a == addr) {
-                    Some(e) if out.size > e.1 => e.1 = out.size,
-                    Some(_) => {}
-                    None => written.push((addr, out.size)),
+                match written.iter_mut().find(|(a, _, _)| *a == addr) {
+                    Some(e) if out.size > e.1 => {
+                        e.1 = out.size;
+                        e.2 = seq;
+                    }
+                    Some(e) => e.2 = seq, // remember the LAST write to this register
+                    None => written.push((addr, out.size, seq)),
                 }
             }
         }
         if is_ret {
-            written.retain(|&(a, _)| !restored.contains(&a.offset));
+            written.retain(|&(a, _, _)| !restored.contains(&a.offset));
             // A SUB-REGISTER write is not output storage of its own. `recovered_output_list` gives
             // every recovered register its own resource group in list order, so an early `mov ah,1`
             // landed ahead of the later `xor eax,eax` and `derive_output_map` picked AH — the
             // function's actual return of 0 was dropped and FUN_00011ab8 lost its `xor eax,eax`
             // (25 bytes -> 23). Drop any entry wholly contained in another's range; the containing
             // write is the storage, the partial one is an intermediate.
-            let ranges: Vec<(u64, u32)> = written.iter().map(|&(a, sz)| (a.offset, sz)).collect();
-            written.retain(|&(a, sz)| {
+            let ranges: Vec<(u64, u32)> = written.iter().map(|&(a, sz, _)| (a.offset, sz)).collect();
+            written.retain(|&(a, sz, _)| {
                 !ranges.iter().any(|&(o, s)| {
                     (o, s) != (a.offset, sz) && o <= a.offset && a.offset + sz as u64 <= o + s as u64
                 })
@@ -492,6 +503,9 @@ fn callee_effects(
             // A register the callee saved on entry and popped back is not an argument either — the
             // push READ it, but only to preserve it.
             reads.retain(|&(a, _)| !restored.contains(&a.offset));
+            // Most-recently-written first: the return value, then earlier intermediates.
+            written.sort_by(|a, b| b.2.cmp(&a.2));
+            let written = written.into_iter().map(|(a, sz, _)| (a, sz)).collect();
             return Some((written, reads));
         }
         pc += insn.bytes.len() as u64;
