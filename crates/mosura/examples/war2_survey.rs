@@ -837,6 +837,18 @@ fn build_tu(
             if l.contains('=') || l.contains('(') || !l.contains(' ') {
                 return None;
             }
+            // …and reject a STATEMENT that happens to have neither. `return param_1 - iRam00090630;`
+            // has a space, no `=` and no `(`, so it parsed as a declaration OF `iRam00090630` — and
+            // the emitter then skipped declaring that global, leaving the translation unit
+            // referencing an undeclared symbol and failing to build. FUN_00033d84 lost its
+            // byte-clean status to exactly this, and it is the largest remaining `E1011` block.
+            let first = l.split_whitespace().next()?;
+            if matches!(
+                first,
+                "return" | "break" | "continue" | "goto" | "case" | "default" | "do" | "else"
+            ) {
+                return None;
+            }
             is_ident_start(name).then_some(name)
         })
         .collect();
@@ -852,6 +864,41 @@ fn build_tu(
             .and_then(|sz| sized_ctype(*pfx, sz))
             .unwrap_or_else(|| ctype_for(*pfx).to_string());
         names.insert(format!("{ty} {n};"));
+    }
+    // SAFETY NET: every `<prefix>Ram<hex>` global the body references MUST be declared, or the
+    // translation unit does not compile at all. The identifier scan above misses some — FUN_00074744
+    // references `iRam000a8288` and `iRam000a82cc` in one expression and only the first was
+    // declared, and the same shape cost FUN_00033d84 its byte-clean status. The cause of the miss is
+    // not yet understood; this pass makes the invariant hold regardless, and a declaration can only
+    // let a TU build, never change what it compiles to.
+    {
+        let mut extra: Vec<String> = Vec::new();
+        for cap in c.split(|ch: char| !is_ident(ch as u8)) {
+            if cap.len() < 9 || !cap.contains("Ram") {
+                continue;
+            }
+            let pos = cap.find("Ram").unwrap();
+            if !(1..=2).contains(&pos) {
+                continue;
+            }
+            let tail = &cap[pos + 3..];
+            if tail.len() < 6 || !tail.bytes().all(|b| b.is_ascii_hexdigit()) {
+                continue;
+            }
+            if declared_locals.contains(cap)
+                || ptr_idents.contains(cap)
+                || names.iter().any(|d| d.split_whitespace().any(|t| t.trim_end_matches(';') == cap))
+            {
+                continue;
+            }
+            let pfx = cap.as_bytes()[0] as char;
+            let ty = ram_addr_of(cap)
+                .and_then(|a| gsizes.get(&a).copied())
+                .and_then(|sz| sized_ctype(pfx, sz))
+                .unwrap_or_else(|| ctype_for(pfx).to_string());
+            extra.push(format!("{ty} {cap};"));
+        }
+        names.extend(extra);
     }
     for n in &ptr_idents {
         if declared_locals.contains(n.as_str()) {
