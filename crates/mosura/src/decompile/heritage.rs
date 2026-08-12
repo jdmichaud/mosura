@@ -1349,6 +1349,16 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 Some(so) => trans_off = f.spaces.get(spc).wrap_offset(off.wrapping_sub(so)),
                 None => tryregister = false,
             }
+            // INSTRUMENT (`MOSURA_STACKARG=1`): 423 WAR2 functions pass call arguments on the
+            // stack (`push imm ; call ; add esp,4`) and only 5 are byte-clean, so whether a stack
+            // range ever reaches the trial branch is a measurement, not a guess.
+            if std::env::var("MOSURA_STACKARG").is_ok() {
+                eprintln!(
+                    "STACKARG call={} range={:#x}+{} sp_off={:?} trans={:#x} tryregister={tryregister}",
+                    call.0, off, size,
+                    super::fspec::spacebase_offset(f, call), trans_off
+                );
+            }
         }
         let trans_addr = super::space::Address::new(spc, trans_off);
 
