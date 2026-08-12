@@ -252,7 +252,17 @@ fn own_contract(
         parts.push(format!("parm {p}"));
     }
     // Only 4-byte general registers, named through the same spec-built table as `parm`.
-    if let Some(m) = f.own_modify.as_ref() {
+    // MEASURED NET-NEGATIVE and switched off pending a fix (M34: 15 regressions against 3 gains).
+    //
+    // The list OVER-DECLARES. FUN_00010d70's original saves EBX, ECX, EDX and EBP; we emitted
+    // `modify [eax ebx edx]`, so Watcom skipped the EBX and EDX saves and the function came out 4
+    // bytes short. `callee_writes_cfg` is supposed to drop any register the function saves and
+    // restores — its epilogue pops all four — so the `restored` set is not capturing them, and
+    // until that is understood the declaration is a claim we cannot support.
+    //
+    // The `parm` half stays: it is evidence about where values ARRIVE, independently checked, and
+    // it is what converted FUN_0004d95c and FUN_00010ac2.
+    if let Some(m) = f.own_modify.as_ref().filter(|_| std::env::var_os("MOSURA_EMIT_MODIFY").is_some()) {
         let regs: Vec<&str> = m
             .iter()
             // A SUB-REGISTER write modifies its containing 32-bit register: `mov ah,1` destroys
