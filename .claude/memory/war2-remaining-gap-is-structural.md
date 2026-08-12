@@ -119,7 +119,33 @@ NOTHING, so the verdict is decided by the other 61%: condition polarity (`je`/`j
 `jbe`), boolean materialization (`setne al ; and eax,0xff` where the original branched), and
 instruction selection (`lea` for `add`/`shl`). Those are structurer and codegen-shape questions.
 
-## THE LIVE LEAD: call arguments are OVER-recovered, not dropped (2026-08-12)
+## THE UNDEFINED-LOCAL CLASS, ROOT-CAUSED (2026-08-13)
+
+603 emitted TUs declare a local that is never assigned; NONE are byte-clean. Instrumented at the
+declaration site (`MOSURA_DECL=1` in printc's `name_of`), FUN_000100b9's `xVar1` reports
+
+    DECL xVar1 written=false input=true def=None
+
+It is a function INPUT varnode that `recover_input_params` did NOT return as a parameter. printc
+names it like an ordinary local and declares it — an input has no defining op, so no assignment is
+ever emitted — and `build_input_from_trials` passes it as the call's fifth argument. The recompiled
+call then carries a load or a push the original does not have.
+
+**Ghidra names these `in_<REG>`/`unaff_<REG>`** (`database.cc:2492`), which is why its output never
+shows an undeclared-looking local; the survey emitter already has a declaration path keyed on those
+prefixes. mosura gives them ordinary `xVarN` names, so they look like locals and hit nothing.
+
+FOUR guards were tried and all missed, because it is none of these: a free varnode (`!written &&
+!input && !constant`), a spacebase input, an indirect creation (Ghidra's `pop_failkill`), or a
+trial force-marked by the `committed` branch. It is a REGISTER input that is not a parameter.
+
+Two independent fixes, and they are worth different things:
+  - naming it `in_<reg>` matches Ghidra and makes the declaration honest — no byte effect;
+  - NOT passing a non-parameter input as a call argument is the byte fix, and needs
+    `build_input_from_trials` to know the function's own recovered parameter set (call
+    `recover_input_params` once per function and cache it, not per call site).
+
+## THE EARLIER LEAD: call arguments are OVER-recovered, not dropped (2026-08-12)
 
 Four earlier attempts assumed WAR2's calls lose arguments. Instrumented (`MOSURA_STACKARG=1`), the
 opposite is true for the caller-pop class:
