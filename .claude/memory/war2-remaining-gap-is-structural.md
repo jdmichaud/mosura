@@ -137,6 +137,42 @@ raises it. A blanket cspec change fights that design. Whatever fixes the saved-r
 work inside it — most likely by recognising the save/restore pair, not by redeclaring the
 convention.
 
+### NEXT STEP, NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
+
+Ghidra `coreaction.cc:1957`. Its second half is precisely the saved-register handling:
+
+```cpp
+  eiter = data.getFuncProto().effectBegin();
+  for(;eiter!=endeiter;++eiter) {            // Iterate through saved registers
+    if ((*eiter).getType() == EffectRecord::killedbycall) continue;   // Not saved
+    vn = data.findVarnodeInput((*eiter).getSize(),(*eiter).getAddress());
+    if ((vn != (Varnode *)0)&&(vn->isUnaffected())) {
+      for(iter=vn->beginDescend();iter!=vn->endDescend();++iter) {
+        op = *iter;
+        if (op->code() != CPUI_COPY) continue;
+        Varnode *outvn = op->getOut();
+        if (!data.getScopeLocal()->isUnaffectedStorage(outvn)) continue;
+        data.getScopeLocal()->markNotMapped(outvn->getSpace(),outvn->getOffset(),outvn->getSize(),false);
+      }
+    }
+  }
+```
+
+Its FIRST half (locked call parameters) is inert here — mosura's call prototypes are never
+input-locked, which `build_input_from_trials` and `resolve_spacebase_relative` both already
+document.
+
+mosura has the machinery to port it: `decompile/scope.rs` and `decompile/varmap.rs`, and the
+`UNAFFECTED` varnode flag (`varnode.rs:34`) and EffectRecord list (`fspec.rs:647`) already exist.
+
+⚠️ **THE PREMISE IS NOT YET VERIFIED.** This action marks the SAVE SLOT as not-mapped, which stops
+it becoming a local. Whether that also stops the saved register becoming a PARAMETER — the actual
+defect — has NOT been established. Per CLAUDE.md ("New code is ALWAYS a faithful port — never a
+hypothesis to test-and-revert. Before writing any code, ground it READ-ONLY until you have verified
+the premise"), ground it with the rule-trace diff / oracle IR dump on FUN_00050dd8 BEFORE writing
+any of it. It is a missing faithful port and worth adding on those grounds regardless; do not
+assume it is the fix for this class.
+
 ## ⚠️ THREE INSTRUMENTS WERE FOUND LYING IN ONE CAMPAIGN
 
 1. trybatch scored `cand == orig`, missing compare.py's relocation masking -> both arms of three
