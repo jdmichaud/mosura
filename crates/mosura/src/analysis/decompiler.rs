@@ -290,6 +290,16 @@ fn callee_writes_cfg(
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut frontier: Vec<u64> = vec![entry];
     let mut writes: Vec<u64> = Vec::new();
+    // A register the callee POPS is one it saved and gave back — preserved, not clobbered.
+    // `callee_effects` already draws this distinction (`is_pop` -> `restored`); without it here the
+    // walk reports every callee-saved register as written, the downgrade never fires for it, and a
+    // caller holding a value across the call has that value killed.
+    //
+    // Measured on WAR2's FUN_000458ec, whose callee saves and restores EDX: the caller's
+    // `param_2 = param_2 + 1` lost its consumer, was absorbed into the call as a second argument,
+    // and the loop counter stopped advancing — an INFINITE LOOP in the emitted C, not merely
+    // different bytes.
+    let mut restored: Vec<u64> = Vec::new();
     let mut budget = 512usize;
     while let Some(pc) = frontier.pop() {
         if !seen.insert(pc) {
@@ -305,6 +315,7 @@ fn callee_writes_cfg(
             return None;
         }
         let mut fallthrough = true;
+        let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => fallthrough = false,
@@ -339,7 +350,11 @@ fn callee_writes_cfg(
             if f.spaces.space_by_spacebase(addr, out.size).is_some() {
                 continue;
             }
-            if !writes.contains(&out.offset) {
+            if is_pop {
+                if !restored.contains(&out.offset) {
+                    restored.push(out.offset);
+                }
+            } else if !writes.contains(&out.offset) {
                 writes.push(out.offset);
             }
         }
@@ -347,6 +362,7 @@ fn callee_writes_cfg(
             frontier.push(pc + insn.bytes.len() as u64);
         }
     }
+    writes.retain(|o| !restored.contains(o));
     Some(writes)
 }
 
