@@ -202,11 +202,34 @@ correctly NOT EAX/ECX/EDX. Wired to a symmetric downgrade in `guard_calls` and c
 corrected cspec, `ground_truth_parity` went from 3 wrong-output failures to
 **`left: ""` — mosura produces NOTHING**, i.e. the decompile itself now fails.
 
-Reverted (a revert of newly-written code is a process failure per CLAUDE.md, and shipping a crash
-is worse than shipping the known defect). What is established: the evidence IS obtainable and the
-downgrade IS expressible; the remaining work is finding why making these registers killedbycall
-collapses the decompile. That is a real debugging task with a fast signal — `ground_truth_parity`
-runs in 19 seconds — and it is the highest-value place to start.
+**RESOLVED AND THEN MEASURED — the correction is WRONG FOR THIS BINARY (M23, 2026-08-12).**
+
+The `left: ""` was never a crash: the test's `body()` helper skips lines until one starts with
+`void FUN_`, so an empty left means the RETURN TYPE changed, not that decompilation failed. Four
+couplings had to be untangled to get all 25 MVEs green with the corrected cspec:
+
+1. `callee_writes_cfg` (a complete CFG write walk) supplies the downgrade evidence `overwrites`
+   cannot — it is straight-line and bails at the first branch.
+2. `guard_calls` gains the downgrade half, applied where the callee provably never writes the
+   register AND where there is NO evidence (indirect call, walk bailed). The model's effect list
+   decides the FUNCTION's exit liveness; the per-call override decides what a CALL clobbers.
+   Separating them keeps `indirect_call_does_not_clobber_loop_variable`.
+3. The RETURN storage is never downgraded — otherwise the caller's pre-call EAX flows across and
+   the caller recovers that pass-through as its own return value (regout's `use_` went
+   `void` -> value-returning).
+4. `callee_effects` had to stop gating its write list on `has_effect == UNAFFECTED`: that coupled
+   the killedbycall upgrade to the callee's recovered OUTPUT storage, so correcting the convention
+   emptied the output list. Re-gate on "the convention has an opinion" instead, or the flag and
+   segment registers land ahead of the real return register in `recovered_output_list`.
+
+All 25 MVEs green, corpus unchanged at 0.9578 — and WAR2 went **385 -> 374 byte-clean (15
+regressed, 4 gained)**. Reverted at `4882bd1`.
+
+**What that measurement MEANS, and it is worth more than the change was:** WAR2's callees really do
+largely preserve EBX/ECX/EDX. The "wrong" optimistic `<unaffected>` model fits this binary BETTER
+than the textbook watcall convention. The cspec is mosura-authored (Ghidra ships no watcall spec),
+so it is a MODEL of the binary, not a port — and the binary is the authority. Do not "correct" it
+again on documentation grounds; it has now been measured.
 
 ### ALSO NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
 
