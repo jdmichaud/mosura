@@ -108,13 +108,13 @@
         <register name="EBP"/>
         <register name="ESI"/>
         <register name="EDI"/>
-        <register name="EBX"/>
-        <register name="ECX"/>
-        <register name="EDX"/>
         <register name="DF"/>
-      </unaffected>
+            </unaffected>
       <killedbycall>
         <register name="EAX"/>
+        <register name="EDX"/>
+        <register name="EBX"/>
+        <register name="ECX"/>
       </killedbycall>
     </prototype>
   </default_proto>

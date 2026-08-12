@@ -242,6 +242,12 @@ fn record_callee_effects(
             .entry(target)
             .or_insert_with(|| callee_effects(program, spec, ctx, target, reg, f))
             .clone();
+        // The COMPLETE write set over the callee's whole CFG — computed whether or not the
+        // straight-line scan succeeded, because the downgrade it feeds is exactly the case the
+        // straight-line scan cannot reach.
+        if let Some(w) = callee_writes_cfg(program, spec, ctx, target, reg, f) {
+            f.call_specs.entry(call).or_default().writes_all = Some(w);
+        }
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
         if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
             eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");
@@ -259,6 +265,96 @@ fn record_callee_effects(
 /// `None` when the walk cannot follow the body — the first branch or call ends it and nothing is
 /// claimed, so an unscannable callee keeps today's behaviour rather than acquiring a guess.
 #[allow(clippy::type_complexity)]
+/// Every register the callee at `entry` writes, over its WHOLE reachable body — or `None` when that
+/// cannot be established.
+///
+/// [`callee_effects`] answers the same question along a straight line and gives up at the first
+/// branch, which is sound for an UPGRADE ("this callee provably clobbers the register, so guard
+/// it"). The opposite direction needs the opposite guarantee: to DOWNGRADE a killedbycall register
+/// to unaffected at a call site, the evidence must be that the callee writes it on NO path.
+/// Absence from a straight-line scan does not say that; absence from a walk of the whole reachable
+/// body does.
+///
+/// Conservative by construction — anything that could write a register this walk cannot see returns
+/// `None`: a nested CALL, an indirect branch or call, or running past the instruction budget.
+fn callee_writes_cfg(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: u64,
+    reg: crate::decompile::space::SpaceId,
+    f: &crate::decompile::funcdata::Funcdata,
+) -> Option<Vec<u64>> {
+    use crate::decompile::opcode::OpCode;
+    use crate::decompile::space::Address;
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut frontier: Vec<u64> = vec![entry];
+    let mut writes: Vec<u64> = Vec::new();
+    let mut budget = 512usize;
+    while let Some(pc) = frontier.pop() {
+        if !seen.insert(pc) {
+            continue;
+        }
+        budget = budget.checked_sub(1)?;
+        let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
+        if bytes.is_empty() {
+            return None;
+        }
+        let insn = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
+        if insn.bytes.is_empty() {
+            return None;
+        }
+        let mut fallthrough = true;
+        for o in &insn.ops {
+            match OpCode::from_u32(o.opcode) {
+                Some(OpCode::Return) => fallthrough = false,
+                Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branchind) => {
+                    return None;
+                }
+                // A BRANCH/CBRANCH into the CONSTANT space is p-code-relative control flow WITHIN
+                // one instruction (SLEIGH's internal `goto <n>`), not a machine branch: it must not
+                // be followed as an address and does not stop the fall-through.
+                Some(OpCode::Branch) => {
+                    let v = o.ins.first().and_then(|a| a.as_var())?;
+                    if v.space != "const" {
+                        fallthrough = false;
+                        frontier.push(v.offset);
+                    }
+                }
+                Some(OpCode::Cbranch) => {
+                    let v = o.ins.first().and_then(|a| a.as_var())?;
+                    if v.space != "const" {
+                        frontier.push(v.offset);
+                    }
+                }
+                _ => {}
+            }
+            let Some(out) = &o.out else { continue };
+            if out.space != "register" {
+                continue;
+            }
+            let addr = Address::new(reg, out.offset);
+            // The stack pointer moves on every push/pop and on `ret`; that is the frame, not a
+            // clobber of a caller value. Asked of the space manager, never hardcoded.
+            if f.spaces.space_by_spacebase(addr, out.size).is_some() {
+                continue;
+            }
+            if !writes.contains(&out.offset) {
+                writes.push(out.offset);
+            }
+        }
+        if fallthrough {
+            frontier.push(pc + insn.bytes.len() as u64);
+        }
+    }
+    Some(writes)
+}
+
+/// `(registers written and not restored, registers read before being written)` — the callee's
+/// recovered `modify` and `parm` lists.
+type RegSlot = (crate::decompile::space::Address, u32);
+type CalleeEffects = (Vec<RegSlot>, Vec<RegSlot>);
+
 fn callee_effects(
     program: &Program,
     spec: &crate::sleigh::engine::Spec,
@@ -266,8 +362,7 @@ fn callee_effects(
     entry: u64,
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
-) -> Option<(Vec<(crate::decompile::space::Address, u32)>, Vec<(crate::decompile::space::Address, u32)>)>
-{
+) -> Option<CalleeEffects> {
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
     let mut written: Vec<(Address, u32)> = Vec::new();
@@ -329,10 +424,28 @@ fn callee_effects(
             written_any.push(out.offset);
             if is_pop {
                 restored.push(out.offset); // saved and restored ⇒ preserved after all
-            } else if f.proto_model.has_effect(addr, out.size)
-                == crate::decompile::fspec::effect::UNAFFECTED
-                && !written.iter().any(|&(a, _)| a == addr)
+            } else if {
+                // Only registers the CONVENTION has an opinion about. Dropping the old
+                // `== UNAFFECTED` gate entirely let the flag and segment registers in
+                // (`ZF`/`CF`/… and the segment bases show up as writes of every `cmp`), and
+                // `recovered_output_list` gives each recovered register its own resource group, so
+                // a flag landed ahead of the real return register and `derive_output_map` picked
+                // it — the regout MVE stopped capturing its call's result.
+                let e = f.proto_model.has_effect(addr, out.size);
+                e == crate::decompile::fspec::effect::UNAFFECTED
+                    || e == crate::decompile::fspec::effect::KILLEDBYCALL
+            } && !written.iter().any(|&(a, _)| a == addr)
             {
+                // Every non-stack-pointer register the callee writes and does not restore, WITHOUT
+                // gating on what the model calls the register.
+                //
+                // This used to record only registers the model called `<unaffected>` — the
+                // "surprising" ones, since the list's first consumer was the killedbycall UPGRADE
+                // in `guard_calls`. But the same list is also the callee's recovered OUTPUT storage
+                // (`recover::recovered_output_list`), and that question has nothing to do with the
+                // model: a register the callee writes and leaves written is a candidate return
+                // value whether or not the convention claims it is preserved. Gating the two
+                // together meant correcting the convention silently emptied the output list.
                 written.push((addr, out.size));
             }
         }
