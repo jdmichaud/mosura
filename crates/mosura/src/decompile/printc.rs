@@ -2222,6 +2222,76 @@ fn render_const(val: u64, size: u32) -> String {
 }
 
 /// Decompile `f` to C text.
+/// One parameter as `print_c` declares it: its convention storage, its size, and the input Varnode
+/// backing it (`None` for a slot Ghidra materializes — see [`rendered_param_slots`]).
+pub struct RenderedParam {
+    pub addr: Address,
+    pub size: u32,
+    pub vn: Option<VarnodeId>,
+}
+
+/// The parameter list `print_c` renders, in declaration order.
+///
+/// Ghidra `ActionInputPrototype::apply` (coreaction.cc:4707) + `FuncProto::updateInputTypes`
+/// (fspec.cc): every *used* trial becomes a parameter, in convention order. A trial the map marked
+/// used but with no backing input Varnode is Ghidra's `isUnref() && isUsed()` case, and Ghidra
+/// MATERIALIZES it —
+/// ```text
+///     vn = data.newVarnode(paramtrial.getSize(), paramtrial.getAddress());
+///     vn = data.setInputVarnode(vn);
+/// ```
+/// — unless an existing input Varnode is in the way (`hasInputIntersection`, varnode.cc:1536), in
+/// which case it is marked no-use and dropped. Numbering is by FINAL POSITION: `updateInputTypes`
+/// writes each emitted parameter to `store->setInput(count, ...)` with a `count` that advances only
+/// for parameters it emits, so the list is `param_1 .. param_N` with no gaps.
+///
+/// This print-time recovery used to SKIP the unreferenced slots, which silently renumbered the
+/// signature: a function whose only argument arrives in EBX (watcall slot 3) printed as
+/// `f(uint4 param_3)` — one parameter, correctly NAMED but declared in POSITION 1. Recompiled,
+/// Watcom passes position 1 in EAX, so the argument lands in the wrong register and the function
+/// cannot be byte-identical. WAR2's `FUN_0001b750` is the minimal case: the original is
+/// `and ebx,0xff ; call [ebx*4+0x814b0]` and ours was `and eax,0xff ; call [eax*4+0x814b0]`.
+/// 432 of 3023 emitted WAR2 functions carried such a renumbered signature.
+///
+/// `addr` is Ghidra's `ParameterPieces::addr`, the true storage. Plain C text cannot express it, so
+/// a backend that must reproduce the original register assignment reads it here and declares it —
+/// Watcom spells that `#pragma aux <name> parm [<regs>]`.
+pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
+    let proto = super::fspec::recover_func_proto(f);
+    let find_used_input = |addr: Address, size: u32| -> Option<VarnodeId> {
+        let mut fallback = None;
+        for i in 0..f.num_varnodes() as u32 {
+            let v = VarnodeId(i);
+            let vn = f.vn(v);
+            if vn.is_input() && !vn.descend.is_empty() && vn.loc == addr {
+                if vn.size == size {
+                    return Some(v);
+                }
+                fallback.get_or_insert(v);
+            }
+        }
+        fallback
+    };
+    let has_input_intersection = |addr: Address, size: u32| -> bool {
+        (0..f.num_varnodes() as u32).any(|i| {
+            let vn = f.vn(VarnodeId(i));
+            vn.is_input()
+                && vn.loc.space == addr.space
+                && vn.loc.offset < addr.offset + size as u64
+                && addr.offset < vn.loc.offset + vn.size as u64
+        })
+    };
+    let mut out = Vec::new();
+    for slot in proto.params.iter() {
+        if let Some(v) = find_used_input(slot.addr, slot.size) {
+            out.push(RenderedParam { addr: slot.addr, size: slot.size, vn: Some(v) });
+        } else if !has_input_intersection(slot.addr, slot.size) {
+            out.push(RenderedParam { addr: slot.addr, size: slot.size, vn: None });
+        }
+    }
+    out
+}
+
 pub fn print_c(f: &Funcdata) -> String {
     let reg_space = f.spaces.by_name("register");
 
@@ -2240,29 +2310,15 @@ pub fn print_c(f: &Funcdata) -> String {
     // keeping spurious leading params out of the signature when the body never reads them. The
     // param *number* stays the slot's convention position, so a lone used `RDX` still prints
     // `param_3`.
-    let proto = super::fspec::recover_func_proto(f);
-    let find_used_input = |addr: Address, size: u32| -> Option<VarnodeId> {
-        let mut fallback = None;
-        for i in 0..f.num_varnodes() as u32 {
-            let v = VarnodeId(i);
-            let vn = f.vn(v);
-            if vn.is_input() && !vn.descend.is_empty() && vn.loc == addr {
-                if vn.size == size {
-                    return Some(v);
-                }
-                fallback.get_or_insert(v);
-            }
-        }
-        fallback
-    };
+    let rendered = rendered_param_slots(f);
     let mut param_index: HashMap<Address, u32> = HashMap::new();
-    let mut sig_params: Vec<(u32, VarnodeId)> = Vec::new();
-    for (i, slot) in proto.params.iter().enumerate() {
-        if let Some(v) = find_used_input(slot.addr, slot.size) {
-            let n = i as u32 + 1;
-            param_index.insert(slot.addr, n);
-            sig_params.push((n, v));
+    let mut sig_params: Vec<(u32, Option<VarnodeId>, u32)> = Vec::new();
+    for (i, r) in rendered.iter().enumerate() {
+        let n = i as u32 + 1;
+        if r.vn.is_some() {
+            param_index.insert(r.addr, n);
         }
+        sig_params.push((n, r.vn, r.size));
     }
 
     // Stage 0 (ir-cast-model): the render-time type re-inference is retired — types are read from the
@@ -2404,8 +2460,13 @@ pub fn print_c(f: &Funcdata) -> String {
     // stripped-binary case). No downgrade to `undefined`; `void` when there is no returned value.
     let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
     // Signature parameters in convention order, each typed from its backing input Varnode.
-    let plist: Vec<String> =
-        sig_params.iter().map(|&(n, v)| format!("{} param_{}", p.type_of(v).name(), n)).collect();
+    let plist: Vec<String> = sig_params
+        .iter()
+        .map(|&(n, v, sz)| match v {
+            Some(v) => format!("{} param_{}", p.type_of(v).name(), n),
+            None => format!("{} param_{}", super::types::Datatype::Unknown(sz).name(), n),
+        })
+        .collect();
 
     let t0 = std::time::Instant::now();
     let s = structure(f);

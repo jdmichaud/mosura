@@ -148,6 +148,69 @@ fn link_latest(link: &std::path::Path, target: &str) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
+/// Watcom register names for the parameter storage the decompiler recovered, keyed by SLEIGH
+/// register offset. Built once from the language spec rather than hardcoded, so a register that
+/// moves in the spec cannot silently mis-map.
+fn watcom_reg_table() -> Vec<(u64, u32, &'static str)> {
+    let Some(spec) = mosura::lang::load_cached("x86:LE:32:default") else { return Vec::new() };
+    let mut t = Vec::new();
+    // The watcall argument registers, in convention order, with the sub-register Watcom uses for a
+    // narrow argument (open-watcom-v2 `owflat.h`: a byte argument travels in AL/DL/BL/CL).
+    for (e, w, b, hi) in [
+        ("EAX", "ax", "al", "ah"),
+        ("EDX", "dx", "dl", "dh"),
+        ("EBX", "bx", "bl", "bh"),
+        ("ECX", "cx", "cl", "ch"),
+    ] {
+        let Some(off) = spec.0.register_offset(e) else { continue };
+        t.push((off, 4, Box::leak(e.to_lowercase().into_boxed_str()) as &'static str));
+        t.push((off, 2, w));
+        t.push((off, 1, b));
+        t.push((off + 1, 1, hi));
+    }
+    t
+}
+
+/// The `parm [..]` list to declare, or `None` when the recovered storage already IS what Watcom
+/// would assign by position — in which case the pragma would be a no-op and is left off.
+///
+/// Only all-register prototypes are handled: a mixed register/stack prototype needs the overflow
+/// form and is left to the default, and an unmappable storage returns `None` rather than guessing.
+fn nondefault_parm_regs(
+    f: &mosura::decompile::funcdata::Funcdata,
+    table: &[(u64, u32, &'static str)],
+) -> Option<String> {
+    let slots = mosura::decompile::printc::rendered_param_slots(f);
+    if slots.is_empty() {
+        return None;
+    }
+    let reg = f.spaces.by_name("register")?;
+    let mut names = Vec::new();
+    for s in &slots {
+        if s.addr.space != reg {
+            return None;
+        }
+        let n = table.iter().find(|&&(o, sz, _)| o == s.addr.offset && sz == s.size)?;
+        names.push(n.2);
+    }
+    // What Watcom assigns by position, for these same sizes.
+    let order = ["a", "d", "b", "c"];
+    let default: Vec<String> = slots
+        .iter()
+        .enumerate()
+        .map(|(i, s)| match (order.get(i), s.size) {
+            (Some(p), 4) => format!("e{p}x"),
+            (Some(p), 2) => format!("{p}x"),
+            (Some(p), 1) => format!("{p}l"),
+            _ => String::new(),
+        })
+        .collect();
+    if default.iter().zip(&names).all(|(d, n)| d == n) {
+        return None;
+    }
+    Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next().expect("usage: war2_survey [--prelude-only] <war2.exe> <out_dir>");
@@ -165,7 +228,23 @@ fn main() {
     }
     let bin = first;
     let out = std::path::PathBuf::from(args.next().expect("usage: war2_survey <war2.exe> <out_dir>"));
-    let force = args.any(|a| a == "--force");
+    let rest: Vec<String> = args.collect();
+    let force = rest.iter().any(|a| a == "--force");
+    // `--only <va>[,<va>...]` emits JUST those functions and prints each TU to stdout instead of
+    // running the whole 3023-function survey. A single function's C is what an MVE-first loop needs
+    // to see after a decompiler change, and re-emitting the corpus to read one signature is the
+    // long-running step that loop exists to avoid. Writes nothing, so it can be run while a real
+    // survey is in flight.
+    let only: Vec<u64> = rest
+        .iter()
+        .position(|a| a == "--only")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| {
+            v.split(',')
+                .map(|t| u64::from_str_radix(t.trim().trim_start_matches("0x"), 16).expect("hex va"))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Artifacts are STAMPED with the commit that produced them: `src.<stamp>/`, `raw.<stamp>/`,
     // `manifest.<stamp>.tsv`, with the unsuffixed names as symlinks to the current stamp.
@@ -253,9 +332,13 @@ fn main() {
     )
     .unwrap();
 
+    let watreg = watcom_reg_table();
     let t0 = std::time::Instant::now();
     let (mut ok, mut fail) = (0usize, 0usize);
     for (idx, (va, name)) in entries.iter().enumerate() {
+        if !only.is_empty() && !only.contains(va) {
+            continue;
+        }
         *panic_msg.lock().unwrap() = None;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             decompile_function(&prog, Address::new(ram, *va))
@@ -406,11 +489,43 @@ fn main() {
             // The pragma alone, with NO forward declaration: printc emits its own signature and a
             // `void f(void);` ahead of it would conflict. `#pragma aux` attaches by NAME.
             format!("#pragma aux {name} parm [];\n{tu}")
+        } else if let Some(regs) = nondefault_parm_regs(&f, &watreg) {
+            // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
+            // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
+            // only express POSITION — Watcom then assigns position 1 to EAX, 2 to EDX, and so on.
+            // Whenever the recovered storage is not exactly that default assignment, the signature
+            // alone compiles the arguments into the wrong registers, and `#pragma aux ... parm [..]`
+            // is how Watcom is told the real one. This is the same mechanism as the `parm []`
+            // stack case above, generalised to registers.
+            format!("#pragma aux {name} parm {regs};\n{tu}")
         } else {
             tu
         };
         if thunk {
             smells.push("thunk".into());
+        }
+        if !only.is_empty() {
+            // The recovered parameter STORAGE alongside the C, so a signature question ("why is
+            // this argument in the wrong register?") is answered by the same one-function run.
+            let slots = mosura::decompile::printc::rendered_param_slots(&f);
+            let store: Vec<String> = slots
+                .iter()
+                .map(|s| {
+                    let sp = f.spaces.get(s.addr.space);
+                    format!("{}+{:#x}/{}{}", sp.name, s.addr.offset, s.size, if s.vn.is_none() { "*" } else { "" })
+                })
+                .collect();
+            let raw: Vec<String> = proto
+                .params
+                .iter()
+                .map(|s| format!("{}+{:#x}/{}", f.spaces.get(s.addr.space).name, s.addr.offset, s.size))
+                .collect();
+            println!(
+                "/* ===== {idx:05} {name} @ {va:08x} orig_len={orig_len}\n   proto.params: {}\n   rendered:     {}   (* = materialized hole)\n===== */\n{tu}",
+                raw.join(" "),
+                store.join(" "),
+            );
+            continue;
         }
         std::fs::write(src_dir.join(format!("{idx:05}.c")), &tu).unwrap();
 
