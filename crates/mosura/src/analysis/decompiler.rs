@@ -477,6 +477,18 @@ fn callee_effects(
         }
         if is_ret {
             written.retain(|&(a, _)| !restored.contains(&a.offset));
+            // A SUB-REGISTER write is not output storage of its own. `recovered_output_list` gives
+            // every recovered register its own resource group in list order, so an early `mov ah,1`
+            // landed ahead of the later `xor eax,eax` and `derive_output_map` picked AH — the
+            // function's actual return of 0 was dropped and FUN_00011ab8 lost its `xor eax,eax`
+            // (25 bytes -> 23). Drop any entry wholly contained in another's range; the containing
+            // write is the storage, the partial one is an intermediate.
+            let ranges: Vec<(u64, u32)> = written.iter().map(|&(a, sz)| (a.offset, sz)).collect();
+            written.retain(|&(a, sz)| {
+                !ranges.iter().any(|&(o, s)| {
+                    (o, s) != (a.offset, sz) && o <= a.offset && a.offset + sz as u64 <= o + s as u64
+                })
+            });
             // A register the callee saved on entry and popped back is not an argument either — the
             // push READ it, but only to preserve it.
             reads.retain(|&(a, _)| !restored.contains(&a.offset));
