@@ -202,34 +202,37 @@ correctly NOT EAX/ECX/EDX. Wired to a symmetric downgrade in `guard_calls` and c
 corrected cspec, `ground_truth_parity` went from 3 wrong-output failures to
 **`left: ""` — mosura produces NOTHING**, i.e. the decompile itself now fails.
 
-**RESOLVED AND THEN MEASURED — the correction is WRONG FOR THIS BINARY (M23, 2026-08-12).**
+**RESOLVED — the correction is RIGHT, and the apparent regression was three of my own bugs
+(M23-M27, 2026-08-12).**
 
 The `left: ""` was never a crash: the test's `body()` helper skips lines until one starts with
-`void FUN_`, so an empty left means the RETURN TYPE changed, not that decompilation failed. Four
-couplings had to be untangled to get all 25 MVEs green with the corrected cspec:
+`void FUN_`, so an empty left means the RETURN TYPE changed. Four couplings had to be untangled to
+get all 25 MVEs green with the corrected cspec (`callee_writes_cfg`; the symmetric downgrade with
+the no-evidence case kept optimistic; never downgrading the RETURN storage; and decoupling
+`callee_effects`' write list from the model's unaffected list).
 
-1. `callee_writes_cfg` (a complete CFG write walk) supplies the downgrade evidence `overwrites`
-   cannot — it is straight-line and bails at the first branch.
-2. `guard_calls` gains the downgrade half, applied where the callee provably never writes the
-   register AND where there is NO evidence (indirect call, walk bailed). The model's effect list
-   decides the FUNCTION's exit liveness; the per-call override decides what a CALL clobbers.
-   Separating them keeps `indirect_call_does_not_clobber_loop_variable`.
-3. The RETURN storage is never downgraded — otherwise the caller's pre-call EAX flows across and
-   the caller recovers that pass-through as its own return value (regout's `use_` went
-   `void` -> value-returning).
-4. `callee_effects` had to stop gating its write list on `has_effect == UNAFFECTED`: that coupled
-   the killedbycall upgrade to the callee's recovered OUTPUT storage, so correcting the convention
-   emptied the output list. Re-gate on "the convention has an opinion" instead, or the flag and
-   segment registers land ahead of the real return register in `recovered_output_list`.
+The first measurement came back **385 -> 374** and I reverted it. **That was wrong.** The user's
+instruction — *"sometimes a correction might decrease the score, use your judgment, let's avoid
+local minimums"* — is the rule here: the cspec is mosura-AUTHORED (Ghidra ships no watcall spec),
+so it is OUR claim about the compiler, and Open Watcom's convention plus warcraft2-re's proven
+`modify [eax edx ebx ecx]` sources both say the argument registers are scratch. A wrong model that
+scores better is a local minimum.
 
-All 25 MVEs green, corpus unchanged at 0.9578 — and WAR2 went **385 -> 374 byte-clean (15
-regressed, 4 gained)**. Reverted at `4882bd1`.
+Re-landed, and every one of the 15 "regressions" was a REAL DEFECT the optimistic `<unaffected>`
+model had been masking:
 
-**What that measurement MEANS, and it is worth more than the change was:** WAR2's callees really do
-largely preserve EBX/ECX/EDX. The "wrong" optimistic `<unaffected>` model fits this binary BETTER
-than the textbook watcall convention. The cspec is mosura-authored (Ghidra ships no watcall spec),
-so it is a MODEL of the binary, not a port — and the binary is the authority. Do not "correct" it
-again on documentation grounds; it has now been measured.
+| defect | symptom |
+|---|---|
+| `callee_writes_cfg` counted a `pop` as a WRITE | callee-saved registers looked clobbered; a caller's loop counter was absorbed into the call as an argument and stopped advancing — **an infinite loop in the emitted C** (FUN_000458ec) |
+| write-list dedup kept the FIRST width at an address | `mov al` before `mov ax` returned `char`; truncating cast, wrong opcode (FUN_00043898) |
+| a SUB-REGISTER write counted as output storage | `mov ah,1` outranked a later `xor eax,eax`, so the return of 0 vanished (FUN_00011ab8) |
+
+All three were unreachable behind the old gate, which kept the return register out of the write
+list entirely. Progression: 379 -> 370 (buggy) -> 380 -> 380 -> **382, zero regressions**.
+
+**The lesson, and it is the important one:** a score drop from a correction is a HYPOTHESIS about
+your own code, not a verdict on the correction. Read the regressed functions' emitted C before
+reverting anything.
 
 ### ALSO NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
 
