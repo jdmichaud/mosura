@@ -523,11 +523,20 @@ Two findings that shape the plan:
   through **code-unit comments** carrying `file:line`, which `printc.cc` prints from `commentdb`.
   Types/signatures/locals/CC change the code; comments change the text around it.
 
-Design (plan §3a) draws mosura's existing dependency line: **decode with crates, port the
-decisions** — `gimli`/`pdb` for the bytes exactly as `loader/elf.rs` already uses `object` for ELF,
-with every Ghidra refusal, option and fixup veto on our side of the line, because a crate must never
-supply policy. That removes ~30k lines of hand-rolled parsing of hostile input, which is most of the
-security surface. The rest: `DebugSectionProvider` takes named byte ranges (not a container) so LE/MZ
+**Governing policy — port the judgement, offload the parsing.** What we want from Ghidra is the
+analysis and the decompilation; reading a debug format is commodity work that goes to reliable Rust
+crates as long as they provide what we need. Measured against Ghidra's source: **35,830 lines are
+decisions we port** (DWARF importers + fixups 12,828, PDB applicator 21,156, PE debug loader 402, Go
+1,327, PEF 117) and **67,136 are format reading we do not write** (`gimli` for DWARF's 7,612, the
+`pdb` crate for PDB's 54,524 including the 326-record catalogue, and CodeView's 4,927) — **65%
+offloaded**, which is what makes covering every format realistic instead of aspirational. Same line
+`loader/elf.rs` already draws with `object`. The crate supplies bytes and structure; we supply every
+judgement, including **every Ghidra refusal** (`gimli` reads split DWARF happily; Ghidra refuses it,
+so the refusal is ours). Where a crate cannot express a Ghidra decision, the decision wins: decode
+that one record locally, or contribute upstream — never fork, never bend the decision. The live risk
+is PDB record coverage, so `D8`/`D9` carry an adoption gate (itemised coverage check, `unsafe`/fuzzing
+posture, an entry in `docs/dependencies.md`) and a *measured coverage* exit criterion rather than a
+completeness claim. The rest: `DebugSectionProvider` takes named byte ranges (not a container) so LE/MZ
 is a new impl; unknown tags/forms/record IDs skip with a report as a *rule*, which is what lets the
 326-ID catalogue land incrementally; `fasthash::FxHasher` + dense-vec per the perf log's own paid
 lessons, one perf-log row per phase; and, since debug sections are the one input class guaranteed to

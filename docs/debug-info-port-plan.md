@@ -1,9 +1,45 @@
 # Plan — porting Ghidra's debug-information story to mosura
 
 Ghidra reads DWARF, PDB, PE CodeView/COFF, Go symbol metadata and PEF debug, and lets what it
-finds override what analysis guessed. mosura reads none of it. This plans **all of it**, faithfully,
-with the testing story that makes each step checkable — plus the extension point the DOS-era
-compiler formats will need later.
+finds override what analysis guessed. mosura reads none of it. This plans **all of it** — plus the
+extension point the DOS-era compiler formats will need later — under one governing policy.
+
+## The policy: port the judgement, offload the parsing
+
+**What we want from Ghidra is the analysis and the decompilation — what makes Ghidra unique.**
+Reading a debug format is not that. It is commodity work, specified by a public standard, and the
+Rust ecosystem already does it in libraries that are more heavily exercised than anything we would
+write. So **format reading is offloaded to reliable third-party crates as long as they provide what
+we need**, and what we port is the part no library has: Ghidra's *decisions* about what the debug
+data means for a program.
+
+The split, measured against Ghidra's source rather than estimated:
+
+| | lines | who does it |
+|---|---:|---|
+| **Port** — Ghidra's decisions | **35,830** | DWARF importers + fixups 12,828 · PDB applicator 21,156 · PE debug loader 402 · Go 1,327 · PEF 117 |
+| **Offload** — format reading | **67,136** | DWARF reader 7,612 · PDB reader 54,524 · CodeView/COFF readers 4,927 |
+| Not ported at all | 5,266 | PDB MSDIA — Windows-only by construction |
+
+**65% of the 103,000 lines is parsing we do not write.** That is the difference between a plausible
+track and an implausible one, and it is why this plan covers every format Ghidra reads instead of
+deferring most of them.
+
+The line is drawn precisely, because it is the thing that will drift:
+
+- **A crate supplies bytes and structure.** `gimli` hands us a DIE tree, attribute values, location
+  expressions and line programs; the `pdb` crate hands us MSF streams, TPI/DBI records and C13 line
+  sections; `flate2` (already a dependency) inflates `.zdebug_*`.
+- **We supply every judgement.** Which DIEs become functions, how a location expression becomes
+  storage, when a fixup vetoes a prototype, how a type graph maps onto the program's types, what
+  gets a comment, and — critically — **every refusal and every warning**. `gimli` reads split DWARF
+  happily; Ghidra refuses it (§0), so that refusal is ours, gated above `gimli`.
+- **Where a crate cannot express a Ghidra decision, the decision wins.** We drop to the crate's raw
+  reader for that case, or decode that one record locally. Never the reverse, and never a fork.
+
+This is the same line `loader/elf.rs` already draws with `object`: the crate parses ELF, and mosura
+ports `ElfProgramBuilder`'s decisions about what the sections *mean*. `roxmltree`, `regex`,
+`cpp_demangle` and `flate2` are all there on that basis.
 
 Status: **not started.** Nothing here is implemented. Live task status belongs in
 [`TODO.md`](../TODO.md); this file is the design and the sequence.
@@ -16,8 +52,8 @@ way the decompiler port owns `P` (`port-plan.md`), the analysis port owns `A`, t
   the citable IDs: "landed `D2`", "blocked on `D1`".
 - **Components are dotted handles**, not numbers, because §3 is a dependency *graph* rather than a
   schedule: `sink.types`, `sink.comments`, `sink.signatures`, `sink.srcmap`, `locks`,
-  `dwarf.sections`, `dwarf.die`, `dwarf.types`, `dwarf.funcs`, `dwarf.lines`, `dwarf.analyzer`,
-  `cv`, `pdb.reader`, `pdb.applicator`, `pdb.analyzer`, `go`, `pef`. A phase delivers a slice of
+  `dwarf.sections`, `dwarf.adapt`, `dwarf.types`, `dwarf.funcs`, `dwarf.lines`, `dwarf.analyzer`,
+  `cv`, `pdb.adapt`, `pdb.applicator`, `pdb.analyzer`, `go`, `pef`. A phase delivers a slice of
   several components; a component spans several phases.
 - Commit subjects use `debug:` as the area prefix.
 
@@ -96,12 +132,12 @@ over 500. A representative one, `AbstractLocalDataMsSymbol.java`, is 40 lines wh
 constructor calling `super`. That is Java's class-per-record idiom, and in Rust the two catalogues
 collapse into a pair of enums plus a parse `match`.
 
-So the useful estimate is **~40,000 lines of distinct logic** (msf + reader core + applicator) plus
-**two large record catalogues that port as data, not as 476 files**. That is roughly twice DWARF,
-not four times — which is a different sequencing argument than the raw counts suggest, and the
-reason PDB is in this plan rather than deferred out of it. The catalogues are also the part that can
-land incrementally: an unknown record kind must skip with a report, exactly as Ghidra tolerates
-unknown values, so coverage grows record by record without blocking the phases around it.
+**Under the offload policy, none of that is ours.** The MSF container, the reader core and both
+catalogues — 54,524 of the 75,680 lines — are the `pdb` crate's job. What we port is the applicator's
+21,156 lines of decisions. The breakdown still matters for two reasons: it tells us what to *check*
+the crate against at the adoption gate (§3a.1), and it sets expectations about coverage — a crate is
+unlikely to decode all 326 IDs, so unknown kinds skip with a report and coverage grows one record at
+a time.
 
 The measure that survives translation is the **dispatcher**, not the directory:
 
@@ -239,10 +275,18 @@ per base name; the legacy GNU form, *not* `SHF_COMPRESSED`), `DSymSectionProvide
 `.gnu_debuglink` lookup, `SameDirSearchLocation`, `LocalDirectorySearchLocation`, a registry, and
 `ExternalDebugFileSymbolImporter` for the symbols-only case.
 
-**`dwarf.die` — the DIE layer.** `DWARFProgram`, `DWARFCompilationUnit` (`readV4`/`readV5`),
-`DebugInfoEntry`, the abbreviation reader, `dwarf/attribs/` (form decoding, including v5
-`str_offsets`/`addr`/`rnglists`/`loclists` indirection via `DWARFIndirectTable`), `DWARFTag`,
-`StringTable`, `DWARFName`/`NamespacePath`, `DWARFRange`/`DWARFRangeList`.
+**`dwarf.adapt` — the DIE layer, as an adapter.** Under the policy this is **not a port**: `gimli`
+supplies the unit headers, DIE tree, abbreviations, attribute forms (including v5
+`str_offsets`/`addr`/`rnglists`/`loclists` indirection) and the location-expression evaluator that
+`DWARFProgram`, `DebugInfoEntry`, `dwarf/attribs/` and `dwarf/expression/` implement in 7,612 lines
+of Java. What we write is the adapter and the judgement on top of it:
+
+- **Ghidra's refusals**, which `gimli` does not share: reject below v2, accept v5 only for
+  `DW_UT_compile`, and reproduce the "Unsupported unitType" outcome for the other five (§0).
+- **Ghidra's naming and scoping** — `DWARFName`, `NamespacePath`, `NameDeduper` (327 + 93 lines),
+  which are decisions about program symbols, not about DWARF.
+- **The register mapping** (§4) turning DWARF register numbers into our register space.
+- The traversal budget and depth caps of §3a.5, which are ours because the *traversal* is ours.
 
 **`dwarf.types` — types.** `DWARFDataTypeManager`, `DWARFDataTypeImporter`: DIE → `sink.types`, preserving Ghidra's
 decisions — `elideTypedefsWithSameName`, `copyRenameAnonTypes`, `tryPackStructs`,
@@ -254,8 +298,10 @@ and cycles are the substance.
 implementations as a real chain with the same order and veto semantics, and the comment writes into
 `sink.comments`. Feeds `locks`.
 
-**`dwarf.lines` — line numbers.** `dwarf/line/`: the line-program state machine (`DWARFLineProgramExecutor`,
-standard and extended opcodes, v5 content types) → `sink.srcmap`, plus `DWARFSourceInfo`. Independent of
+**`dwarf.lines` — line numbers.** `gimli` runs the line-number program (the state machine, standard
+and extended opcodes, v5 content types) that `dwarf/line/` implements; we port `addSourceLineInfo`'s
+and `DWARFSourceInfo`'s decisions — which rows become source-map entries, and which become the
+`file:line` comments that are the only debug fact reaching decompiled text (§1). Independent of
 `dwarf.types`/`dwarf.funcs` and separately valuable.
 
 **`dwarf.analyzer` — the analyzer.** `DwarfAnalyzer` at the mosura equivalent of `FORMAT_ANALYSIS.after()`, with
@@ -275,13 +321,14 @@ plus `DebugCOFFSymbolTable`/`DebugCOFFLineNumber` and `DebugMisc`. Applied by th
 This is also the phase that pays forward: the CodeView 4.x / OMF `S_*` family here is **the same
 format MS C 7 and Watcom `-hc` emit for DOS targets** (§5), so porting it once serves both.
 
-### Format 3 — PDB (`pdb.reader`–`pdb.analyzer`)
+### Format 3 — PDB (`pdb.adapt`–`pdb.analyzer`)
 
-**`pdb.reader` — the reader.** `pdb2/pdbreader`: the MSF container (17 files, 2,059 lines), then the stream
-directory, TPI/IPI type streams, DBI, module info, global/public symbol streams and C13 line
-sections (98 files, 16,844 lines) — plus the two record catalogues that port as enums rather than as
-476 classes (§0a). Mechanical, and **platform-independent by design** ("it written in java, making it platform
-independent, unlike a previous PDB analyzer") — so it is fully testable on this machine.
+**`pdb.adapt` — the reader, as an adapter.** The `pdb` crate supplies the MSF container, stream
+directory, TPI/IPI, DBI, symbol streams and C13 line sections — the 54,524 lines that dominate
+Ghidra's PDB code and the 326-ID catalogue of §0a. We write the adapter, the coverage gaps the
+adoption gate (§3a.1) records, and the skip-with-report path for record kinds the crate does not
+decode. **This is the phase most exposed to "as long as they provide what we need"**, so its exit
+criterion is a measured coverage number against a real `.pdb`, not a green test.
 
 **`pdb.applicator` — the applicator.** `pdb/pdbapplicator` (80 files): `DefaultPdbApplicator`,
 `TypeApplierFactory`/`CompositeTypeApplier`, `SymbolApplierFactory`/`FunctionSymbolApplier`/
@@ -317,31 +364,39 @@ to end, before any layer is built out.
 The §3 blocks are *what* to port. This is *how*, and it is where the four properties are decided —
 none of them survives being retrofitted onto 40,000 lines of parser.
 
-### 3a.1 The dependency line: decode with crates, port the decisions
+### 3a.1 Crate adoption: the gate, and what happens when a crate falls short
 
-mosura already draws this line and it is the single biggest lever here. `loader/elf.rs` does not
-hand-roll ELF parsing — it uses the `object` crate for the bytes and ports `ElfProgramBuilder`'s
-**decisions** (which sections become blocks, how a relocatable is laid out, what `SHT_NOBITS`
-means). `flate2`, `cpp_demangle`, `roxmltree` and `regex` are there on the same basis.
+The policy is settled at the top of this plan; this is how it is executed, because "as long as they
+provide what we need" is the whole risk and it must be checked before a phase depends on it.
 
-Applied here:
+**Adoption gate — every crate, before the phase that needs it starts:**
 
-| Layer | Bytes | Decisions (the port) |
-|---|---|---|
-| DWARF | `gimli` | `DWARFImporter`, `DWARFFunctionImporter`, `DWARFDataTypeImporter`, the fixup chain, the refusals |
-| PDB / CodeView | `pdb` crate | `pdbapplicator`, `AbstractPeDebugLoader`'s application order and comments |
-| `.zdebug_*` | `flate2` (already a dep) | which section names to try, and the caching |
+1. **Coverage check against the importer's needs, itemised.** For `gimli`: DIE tree with sibling
+   traversal, all `DW_FORM`s our fixtures use, v5 `str_offsets`/`addr`/`rnglists`/`loclists`
+   indirection, location-expression evaluation, and the line-number program. For the `pdb` crate:
+   MSF streams, the stream directory, TPI *and* IPI, DBI module info, global/public symbol streams,
+   C13 line sections, and section contributions. Anything on that list the crate does not expose is
+   a gap recorded in the phase, not discovered mid-implementation.
+2. **`unsafe` posture and fuzzing.** mosura has **zero `unsafe`** in `crates/mosura/src/` (§3a.5);
+   a crate that parses hostile input on our behalf should forbid `unsafe` and be continuously
+   fuzzed. `gimli` is the reference case — it is the DWARF reader behind `addr2line` and rustc's
+   backtraces, so it is exercised far harder than a fresh port could be. **Verify at adoption**
+   rather than assuming: neither `gimli` nor `pdb` is in this machine's registry today, so the
+   posture claim above is a requirement, not a measurement.
+3. **Inventory it.** `docs/dependencies.md` is the auditable list, with a pin and "what breaks
+   without it". A new BUILD/TEST-tier dependency that is not in there is a hole in the
+   clean-clone guarantee `scripts/ci-clean-clone.sh` exists to protect.
 
-**The hard rule: a crate must never supply policy.** `gimli` reads split DWARF perfectly happily;
-Ghidra refuses it (§0), so that refusal is *ours*, gated above `gimli`. Every Ghidra option, warning,
-decline and fixup veto lives on our side of the line. Where a crate's abstraction cannot express a
-Ghidra decision, the decision wins and we drop to the crate's raw reader — never the reverse.
+**When a crate falls short**, in order of preference: (1) decode that one record or form locally,
+behind our own reader, and keep the crate for everything else; (2) contribute upstream; (3) only if
+neither works, port that reader from Ghidra — a scoped exception, recorded with its reason. Not on
+the list: forking the crate, or bending a Ghidra decision to fit what the crate offers.
 
-This is a judgment call worth naming rather than burying: hand-porting the readers is defensible
-under "only port Ghidra", but the precedent is `object`, and it removes ~30,000 lines of
-hand-rolled parsing of hostile input — which is most of §3a.5's risk. Adoption check for each new
-crate: does it forbid `unsafe`, and is it fuzzed? mosura has **zero `unsafe` today** (§3a.5) and
-that invariant should extend to what it depends on for this.
+**The PDB crate is the live risk and should be treated as such.** Ghidra's catalogue dispatches 326
+record IDs (§0a); a third-party crate is unlikely to decode all of them, and the ones it misses are
+exactly the obscure records that appear in old or unusual binaries. Mitigation is already in the
+design: unknown record kinds skip with a report (§3a.3), so a gap degrades coverage instead of
+failing the import — and the gap is *visible*, which is what makes it fixable one record at a time.
 
 ### 3a.2 Maintainable
 
@@ -412,8 +467,13 @@ every step. Requirements, not aspirations:
 **Threat model, stated plainly.** Debug sections are attacker-controlled bytes inside the file under
 analysis — the one input class a reverse-engineering tool is *guaranteed* to be fed hostile samples
 of. mosura has **zero `unsafe`** in `crates/mosura/src/`, so the realistic harms are **denial of
-service** (hang, OOM, process abort) and **wrong output**, not memory-safety compromise. Keeping
-that true is the security requirement; the five concrete hazards and the rule for each:
+service** (hang, OOM, process abort) and **wrong output**, not memory-safety compromise.
+
+The offload policy is the single largest security decision in this plan: **67,136 lines of parsing of
+that hostile input becomes someone else's continuously-fuzzed code** rather than 67,136 lines of ours
+written once. What remains on our side is the adapter and the *traversal* — and the traversal is
+where the sharpest hazard lives, because building a type graph from attacker-shaped input is our
+code no matter who decodes the bytes. The five hazards and the rule for each:
 
 1. **Stack overflow — the sharpest one.** DIE trees and type graphs are recursive and
    attacker-shaped, and a deep chain aborts the process: Rust cannot catch stack exhaustion.
@@ -438,10 +498,12 @@ is an attacker-controlled filename reaching the filesystem. Rule: reject absolut
 `..` component, and resolve only beneath the configured `SearchLocation` roots — Ghidra's
 `SameDirSearchLocation`/`LocalDirectorySearchLocation` are the only roots, and ours must be too.
 
-**Fuzzing, concretely.** `cargo-fuzz` targets at the section-bytes entry points
-(`DebugImporter::import` over a synthetic provider), seeded from the §6d corpus, with the §6c
-builders doubling as structure-aware generators. The acceptance bar is the one in §6g: every
-malformed input reports and continues; a panic or an abort is a bug, not a diagnostic.
+**Fuzzing, concretely, and aimed at what is ours.** The crates are fuzzed upstream; our targets
+belong at the *adapter and importer* boundary — `cargo-fuzz` on `DebugImporter::import` over a
+synthetic provider, seeded from the §6d corpus, with the §6c builders as structure-aware generators.
+That is where a malformed-but-decodable input (a valid DIE tree describing a 100,000-deep type chain)
+does its damage: the crate returns it happily and *our* traversal is what must survive. The
+acceptance bar is §6g's — every malformed input reports and continues; a panic or abort is a bug.
 
 ## 4. Parity artifacts copied verbatim
 
@@ -471,7 +533,7 @@ LE and X-32 loaders.
 | Format | Emitted by | Notes |
 |---|---|---|
 | CodeView, appended to MZ/LE | MS C 6/7/8, Watcom `-hc`, `386\|LINK` | **same `S_*`/OMF family as `cv`** — the reader is shared, only the container differs |
-| DWARF in an LE/MZ image | Watcom `-hd` (Open Watcom's default) | **the `dwarf.die`–`dwarf.lines` reader applies unchanged** — only a section provider for LE/MZ is new |
+| DWARF in an LE/MZ image | Watcom `-hd` (Open Watcom's default) | **the `dwarf.adapt`–`dwarf.lines` reader applies unchanged** — only a section provider for LE/MZ is new |
 | Watcom's own format | Watcom `-hw` | proprietary; the only genuinely new parser |
 | Borland TDS (`.tds` or appended) | Turbo C/C++, Borland C++ | separate format, separate work |
 
@@ -481,9 +543,9 @@ Ghidra's providers are ELF/MachO-shaped because those are the containers it load
 a refactor. Same for `cv`'s CodeView reader: it must be driven by a blob + a segment map, not by a PE
 header.
 
-The pay-off note, recorded so the sequencing is deliberate: **`cv` (PE CodeView) and `dwarf.die`–`dwarf.lines` (DWARF)
+The pay-off note, recorded so the sequencing is deliberate: **`cv` (PE CodeView) and `dwarf.adapt`–`dwarf.lines` (DWARF)
 between them cover most of the DOS-era story** — a Watcom binary built with `-hd` carries DWARF a
-completed `dwarf.die`–`dwarf.lines` already reads, and one built with `-hc`, like MS C's output, carries the CodeView
+completed `dwarf.adapt`–`dwarf.lines` already reads, and one built with `-hc`, like MS C's output, carries the CodeView
 `cv` already reads. Only Watcom `-hw` and Borland TDS are new parsers. None of the currently
 committed game binaries has any debug info at all (§2), so this pays off on *rebuilt* or
 *differently-sourced* DOS binaries, not on the corpus as it stands.
@@ -539,6 +601,14 @@ which bytes produce which conclusion, and the suite needs no third-party materia
   reader's structural gates. Full PDB coverage comes from layer 2; the synthetic builder exists for
   the malformed cases.
 
+**What these builders test changed with the offload policy, and it is worth being explicit about.**
+They are no longer covering a hand-rolled parser — `gimli` and the `pdb` crate are tested upstream.
+They cover *our* three things: the **refusals** (Ghidra rejects what `gimli` accepts, so those gates
+are about our layer, not the crate's), the **adapter** (a form the crate exposes differently than
+Ghidra reads it), and the **traversal** (§6g's malformed-but-decodable cases, which a crate hands
+over cheerfully). That makes the `PdbBuilder` in particular much smaller than first drafted: enough
+MSF structure to drive the adapter, not a second implementation of the container.
+
 The negative gates (§6g) are where this layer earns its keep: malformed debug data is trivial to
 *build* and near-impossible to *find*.
 
@@ -559,7 +629,7 @@ toolchain-stable), each binary tiny and reviewable:
 | `dwarf_split.elf` (`-gsplit-dwarf`) | **must be refused**, matching Ghidra |
 | `dwarf_stripped.elf` | no debug info → the graceful-decline path |
 | `dwarf_embedsrc.elf` (`clang -gembed-source`) | the opt-in beyond-Ghidra case of §1 |
-| `cv_pe.exe` + `pdb_pe.exe` + `.pdb` | `cv` and `pdb.reader`–`pdb.analyzer`; cross-built (`mingw-w64`) or committed prebuilt |
+| `cv_pe.exe` + `pdb_pe.exe` + `.pdb` | `cv` and `pdb.adapt`–`pdb.analyzer`; cross-built (`mingw-w64`) or committed prebuilt |
 | `go_hello.elf` | `go` |
 
 `clang -g` variants where the producer differs materially. The same sources compiled *without* `-g`
@@ -635,7 +705,7 @@ output. Minimum of *each* layer, not all of any:
 - `sink.srcmap`: nothing (deferred to D5).
 - `locks`: `inputlock` only, honoured by `ActionInputPrototype`.
 - `dwarf.sections`: `BaseSectionProvider` over ELF sections, `.debug_abbrev` + `.debug_info` only.
-- `dwarf.die`: `DW_TAG_compile_unit` + `DW_TAG_subprogram`, `DW_AT_name`/`low_pc`/`type`. DWARF 4,
+- `dwarf.adapt`: `DW_TAG_compile_unit` + `DW_TAG_subprogram`, `DW_AT_name`/`low_pc`/`type`. DWARF 4,
   32-bit, little-endian, no v5 indirection, no location expressions.
 - `dwarf.funcs`: name and one parameter, no fixup chain.
 - `dwarf.analyzer`: the analyzer, with the decline path.
@@ -662,14 +732,14 @@ shippable and independently measurable:
 
 | Phase | Content | Exit criterion |
 |---|---|---|
-| D2 | DWARF breadth: `dwarf.sections` fully (compressed, dSYM, external debug files), `dwarf.die` fully | §6c matrix green — v2–v5, 32/64-bit, both endians, all `DW_FORM`s; `dwarf_split.elf` refused exactly as Ghidra refuses it; `dwarf_stripped.elf` declines; §6g negatives all report-and-continue |
+| D2 | DWARF breadth: `dwarf.sections` fully (compressed, dSYM, external debug files), `dwarf.adapt` fully — mostly `gimli` wiring plus Ghidra's refusals | §6c matrix green — v2–v5, 32/64-bit, both endians, all `DW_FORM`s; `dwarf_split.elf` refused exactly as Ghidra refuses it; `dwarf_stripped.elf` declines; §6g negatives all report-and-continue |
 | D3 | `dwarf.types` + `sink.types` built out (categories, composites, typedefs, enums, unions) | `type` snapshot parity on `dwarf_types.elf`, bitfields and cycles included |
 | D4 | `dwarf.funcs` fully: locals, location expressions, register mappings (§4), the seven-fixup chain | `proto`/`local` parity on all DWARF fixtures, `-O2` included; each fixup has a test showing it fire |
 | D5 | `sink.srcmap` + `dwarf.lines`, **and** CodeView's line tables (`OMFSrcModuleLine`) | `srcline` + `comment` parity on `dwarf4.elf`/`dwarf5.elf` and `cv_pe.exe` |
 | D6 | measurement | §6f: `ccompare` on paired debug/no-debug binaries, the two effects reported separately |
 | D7 | `cv` breadth: COFF debug, `DebugMisc`, separate `.dbg` (`DbgLoader`) | full `cv_pe.exe` parity; the reader is driven by blob + segment map, not a PE header (§5) |
-| D8 | PDB spine (`pdb.reader`): MSF container, stream directory, DBI, enough TPI for one signature | one function named and one prototype locked from a real `.pdb`, end to end — the spine pattern again, not the whole reader |
-| D9 | PDB breadth (`pdb.reader`, `pdb.applicator`, `pdb.analyzer`): the 326-ID record catalogue, applicators, `PdbSourceLinesApplicator`, `BlockCommentsManager` | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe`; unknown record IDs skip with a report (§0a) |
+| D8 | PDB spine (`pdb.adapt`): the `pdb` crate wired in — streams, DBI, enough TPI for one signature — after the §3a.1 adoption gate passes | one function named and one prototype locked from a real `.pdb`, end to end — the spine pattern again, not the whole reader |
+| D9 | PDB breadth (`pdb.adapt`, `pdb.applicator`, `pdb.analyzer`): the applicators, `PdbSourceLinesApplicator`, `BlockCommentsManager`. The 326-ID catalogue is the crate's; ours is the coverage measurement and the skip-with-report gaps | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe`; unknown record IDs skip with a report (§0a) |
 | D10 | Go (`go`) | `go_hello.elf` parity: names, source lines, RTTI types |
 | D11 | PEF (`pef`) | only if a PEF loader exists; else recorded as unreachable |
 | D12 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
@@ -696,6 +766,11 @@ container-agnostic CodeView reader and a complete DWARF reader; they get their o
 - **Nothing for stripped modern binaries**, which is most of what anyone reverse-engineers.
 - **No MSDIA path** — Windows-only by construction (§3); we port the refusal.
 - **No stabs** — Ghidra has none either (§0); parity by omission.
+- **Third-party coverage is a real dependency, not a footnote.** The offload policy trades 67k lines
+  we would have written for a coverage question we do not control: if the `pdb` crate does not decode
+  a record Ghidra applies, that fact is ours to detect and work around (§3a.1). The mitigation makes
+  gaps visible and survivable, not absent. A parity claim on PDB is therefore a *measured coverage*
+  claim, and the plan says so at `D9` rather than implying completeness.
 - **Not a decompiler-quality win by itself.** Debug info makes output *readable* (real names, real
   types, `file:line` comments); it makes it *structurally* better only where the declared prototype
   differs from the recovered one. Expect the readability win to be large and the `ccompare` win to
