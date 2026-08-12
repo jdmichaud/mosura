@@ -541,6 +541,22 @@ fn main() {
                     format!("{}+{:#x}/{}{}", sp.name, s.addr.offset, s.size, if s.vn.is_none() { "*" } else { "" })
                 })
                 .collect();
+            // Every INPUT varnode, so "the prototype is missing a parameter" can be told apart
+            // from "the value was never an input in the first place".
+            let mut ins: Vec<String> = Vec::new();
+            for i in 0..f.num_varnodes() as u32 {
+                let vn = f.vn(mosura::decompile::varnode::VarnodeId(i));
+                if vn.is_input() {
+                    ins.push(format!(
+                        "{}+{:#x}/{}{}",
+                        f.spaces.get(vn.loc.space).name,
+                        vn.loc.offset,
+                        vn.size,
+                        if vn.descend.is_empty() { "(dead)" } else { "" }
+                    ));
+                }
+            }
+            println!("   inputs:       {}", ins.join(" "));
             let raw: Vec<String> = proto
                 .params
                 .iter()

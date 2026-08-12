@@ -429,7 +429,27 @@ fn callee_effects(
                 if f.spaces.space_by_spacebase(addr, v.size).is_some() {
                     continue;
                 }
-                if !written_any.contains(&v.offset) && !reads.iter().any(|&(a, _)| a == addr) {
+                // Only storage the convention could actually pass an argument in. Without this
+                // the FLAG registers come through — every `cmp`/`shl` reads them — and this list
+                // becomes the function's own `<input>` model via `recovered_input_list`, which
+                // gives each recovered register its own resource group IN ORDER. The flags then
+                // occupy groups 1..5, the real EDX/EBX land in groups 6..7, and the run of
+                // inactive flag trials trips `force_inactive_chain` (maxchain=2), which marks every
+                // LATER trial inactive — so both real parameters are dropped.
+                //
+                // FUN_0004d95c is the specimen: `shl eax,0x10 ; shl edx,0x8 ; or eax,edx ;
+                // or eax,ebx` recovered as `uint4 f(int4 param_1)` with EDX and EBX left as
+                // declared-but-never-assigned locals. 579 emitted TUs carry such a local and NONE
+                // are byte-clean. The `written` list already had this filter; `reads` did not.
+                let plausible = f
+                    .proto_model
+                    .input
+                    .as_ref()
+                    .is_some_and(|pl| pl.possible_param(addr, v.size));
+                if plausible
+                    && !written_any.contains(&v.offset)
+                    && !reads.iter().any(|&(a, _)| a == addr)
+                {
                     reads.push((addr, v.size));
                 }
             }

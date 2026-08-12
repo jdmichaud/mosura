@@ -1219,6 +1219,18 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // passed there), and the `longdouble` corpus fixture dropped 1.000 -> 0.976.
     let mut default_run = active.clone();
     pl.fillin_map(&mut default_run);
+    // INSTRUMENT (`MOSURA_PROTO=1`): 579 emitted WAR2 TUs declare a local that is never assigned
+    // and none are byte-clean; several are DROPPED PARAMETERS (FUN_0004d95c uses EDX and EBX,
+    // recovers only EAX). Which rule drops a trial is a measurement, not a guess.
+    if std::env::var_os("MOSURA_PROTO").is_some() {
+        for t in &default_run.trial {
+            eprintln!(
+                "PROTO trial {:#x}/{} active={} used={} unref={} dnu={} entry={:?}",
+                t.addr.offset, t.size, t.is_active(), t.is_used(), t.is_unref(),
+                t.is_definitely_not_used(), t.entry
+            );
+        }
+    }
     if default_run.trial.iter().any(|t| t.is_used()) {
         return default_run
             .trial
