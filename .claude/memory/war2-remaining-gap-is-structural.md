@@ -171,9 +171,32 @@ score movements. `callee_register_return_is_recovered_with_its_argument` loses i
 register return entirely and a byte parameter loses its width.
 
 So the watcall cspec's `<unaffected>` list is simultaneously (a) the root cause of the
-saved-register over-recovery and (b) load-bearing for register-return recovery. Resolving it means
-understanding WHY those MVEs depend on it — most likely that some other code compensates for the
-dual membership and would need to move first. Do not attempt the swap again without that.
+saved-register over-recovery and (b) load-bearing for register-return recovery.
+
+**WHY they depend on it — ANSWERED, and it ends at a named missing capability.** With ECX
+killedbycall the narrowest MVE loses a parameter:
+
+    expected  void FUN_08048109(xunknown1 param_1, xunknown4 param_2) { … *pxVar1 = param_1; }
+    got       void FUN_08048109(xunknown4 param_1)                    { … *pxVar1 = xVar2;   }
+
+It holds a byte parameter in ECX ACROSS a call. Killedbycall makes the call clobber it, so the
+incoming value never reaches the store. The optimistic `<unaffected>` default is the ONLY thing
+keeping it alive, because **the per-call effect override in `guard_calls` is ONE-DIRECTIONAL**: it
+upgrades `<unaffected>` -> killedbycall when `CallSpec::overwrites` says the callee writes the
+register, and has no downgrade for a callee that demonstrably PRESERVES a killedbycall register.
+
+The symmetric half was implemented and MEASURED: cspec corrected (EDX/EBX/ECX killedbycall) plus a
+downgrade branch gated on `cs.reads.is_some()` (the marker that `callee_effects` completed, so
+`overwrites` is exact rather than a lower bound). Still 3 failures — the downgrade never fires,
+because `analysis::decompiler::callee_effects` BAILS AT THE FIRST BRANCH and these MVEs' callees
+branch. Reverted; 25/25 green.
+
+**So the chain is: correct watcall cspec -> needs the symmetric override -> needs COMPLETE callee
+effects for BRANCHING callees.** That last capability does not exist. The earlier attempt at it
+(`callee_inputs_cfg`, a control-flow read-before-write walk) measured 268/274/363 against a 372
+baseline and was reverted — but note it was built for the INPUT side; the blocker here is the
+OVERWRITES side, which is a different and likely easier analysis (a write that reaches `ret`
+unrestored on every path).
 
 ### ALSO NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
 
