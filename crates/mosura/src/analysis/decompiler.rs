@@ -440,7 +440,7 @@ fn callee_effects(
             written_any.push(out.offset);
             if is_pop {
                 restored.push(out.offset); // saved and restored ⇒ preserved after all
-            } else if {
+            } else {
                 // Only registers the CONVENTION has an opinion about. Dropping the old
                 // `== UNAFFECTED` gate entirely let the flag and segment registers in
                 // (`ZF`/`CF`/… and the segment bases show up as writes of every `cmp`), and
@@ -448,9 +448,11 @@ fn callee_effects(
                 // a flag landed ahead of the real return register and `derive_output_map` picked
                 // it — the regout MVE stopped capturing its call's result.
                 let e = f.proto_model.has_effect(addr, out.size);
-                e == crate::decompile::fspec::effect::UNAFFECTED
-                    || e == crate::decompile::fspec::effect::KILLEDBYCALL
-            } {
+                let known = e == crate::decompile::fspec::effect::UNAFFECTED
+                    || e == crate::decompile::fspec::effect::KILLEDBYCALL;
+                if !known {
+                    continue;
+                }
                 // Every non-stack-pointer register the callee writes and does not restore, WITHOUT
                 // gating on what the model calls the register.
                 //
