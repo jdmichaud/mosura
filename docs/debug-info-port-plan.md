@@ -13,7 +13,7 @@ Status: **not started.** Nothing here is implemented. Live task status belongs i
 | # | Consumer | Where | Size | Applied by | Gate |
 |---|---|---|---|---|---|
 | 1 | **DWARF** | `app/plugin/core/analysis/DWARFAnalyzer.java` + `app/util/bin/format/dwarf/` | 113 files, 20,440 lines | analyzer | `DWARFSectionProviderFactory` finds sections |
-| 2 | **PDB Universal** | `Features/PDB/.../pdb2/pdbreader` + `pdb/pdbapplicator` | 671 files, 75,680 lines | analyzer | PE with a PDB reference |
+| 2 | **PDB Universal** | `Features/PDB/.../pdb2/pdbreader` + `pdb/pdbapplicator` | 671 files, 75,680 lines — but see §0a | analyzer | PE with a PDB reference |
 | 3 | **PDB MSDIA** | `Features/PDB/.../format/pdb` | 23 files, 5,266 lines | analyzer | **Windows only** — needs the MS DIA-SDK |
 | 4 | **PE CodeView + COFF** | `app/util/opinion/AbstractPeDebugLoader.java`, `app/util/bin/format/pe/debug/` | 48 files + loader | **loader**, not an analyzer | PE debug directory present |
 | 5 | **Separate `.dbg`** | `app/util/opinion/DbgLoader.java`, `pe/SeparateDebugHeader.java` | — | loader | a `.dbg` file is opened |
@@ -65,6 +65,33 @@ Two details to copy rather than reinvent:
   through `readV4`, and for v5 accepts **only** `DW_UT_compile`;
   `DW_UT_type`/`partial`/`skeleton`/`split_compile`/`split_type` all throw "Unsupported unitType".
   Split DWARF is not supported. Parity means reproducing that refusal, not exceeding it.
+
+## 0a. Reading those sizes honestly (especially PDB's)
+
+Raw file counts mislead here, and PDB's mislead badly. The 671 files break down as:
+
+| Subpackage | Files | Lines | What it is |
+|---|---|---|---|
+| `pdbreader/msf` | 17 | 2,059 | the MSF container (real logic) |
+| `pdbreader` (top level) | 98 | 16,844 | streams, stream directory, TPI/IPI/DBI, module info (real logic) |
+| `pdbreader/symbol` | 280 | 20,221 | **one class per CodeView symbol record type** |
+| `pdbreader/type` | 196 | 15,400 | **one class per type record type** |
+| `pdb/pdbapplicator` | 80 | 21,156 | the applicator (real logic) |
+
+476 of the 591 reader files are record classes, and **421 of 591 are under 80 lines** — only 10 are
+over 500. A representative one, `AbstractLocalDataMsSymbol.java`, is 40 lines whose entire body is a
+constructor calling `super`. That is Java's class-per-record idiom, and in Rust the two catalogues
+collapse into a pair of enums plus a parse `match`.
+
+So the useful estimate is **~40,000 lines of distinct logic** (msf + reader core + applicator) plus
+**two large record catalogues that port as data, not as 476 files**. That is roughly twice DWARF,
+not four times — which is a different sequencing argument than the raw counts suggest, and the
+reason PDB is in this plan rather than deferred out of it. The catalogues are also the part that can
+land incrementally: an unknown record kind must skip with a report, exactly as Ghidra tolerates
+unknown values, so coverage grows record by record without blocking the phases around it.
+
+The same caution applies more mildly elsewhere: DWARF's 113 files include 20+ small enum/exception
+classes, and `format/golang`'s 85 files include the RTTI struct mirrors.
 
 ## 1. Does debug info influence decompilation? Precisely.
 
@@ -215,9 +242,10 @@ format MS C 7 and Watcom `-hc` emit for DOS targets** (§5), so porting it once 
 
 ### Format 3 — PDB (D9–D11)
 
-**D9 — the reader.** `pdb2/pdbreader` (591 files): the MSF container, the stream directory, TPI/IPI
-type streams, DBI, module info, global/public symbol streams, C13 line sections. Large but
-mechanical, and **platform-independent by design** ("it written in java, making it platform
+**D9 — the reader.** `pdb2/pdbreader`: the MSF container (17 files, 2,059 lines), then the stream
+directory, TPI/IPI type streams, DBI, module info, global/public symbol streams and C13 line
+sections (98 files, 16,844 lines) — plus the two record catalogues that port as enums rather than as
+476 classes (§0a). Mechanical, and **platform-independent by design** ("it written in java, making it platform
 independent, unlike a previous PDB analyzer") — so it is fully testable on this machine.
 
 **D10 — the applicator.** `pdb/pdbapplicator` (80 files): `DefaultPdbApplicator`,

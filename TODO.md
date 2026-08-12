@@ -497,8 +497,9 @@ AAPCS, …). Reference source: Ghidra `Framework/SoftwareModeling/.../program/mo
 ## Debug-information track (`docs/debug-info-port-plan.md`)
 
 **Not started.** Scope is **everything Ghidra reads**: DWARF (20,440 lines), PDB Universal
-(75,680 across a reader and an applicator), PE CodeView + COFF debug (applied by the **loader**,
-`AbstractPeDebugLoader`, not an analyzer), separate `.dbg` files, Go symbol metadata, PEF debug,
+(671 files / 75,680 lines, but ~40k of distinct logic — 476 of those files are one-class-per-record
+CodeView catalogues that port as enums, see the plan's §0a), PE CodeView + COFF debug (applied by
+the **loader** `AbstractPeDebugLoader`, not an analyzer), separate `.dbg` files, Go symbol metadata, PEF debug,
 MachO `.dSYM`, and external debug files (build-id / `.gnu_debuglink`). MSDIA is Windows-only by
 construction — we port the refusal. Ghidra has no stabs support, so neither do we. mosura today
 reads none of it (only DWARF *pointer encodings* in `analyzers/eh_frame.rs` and ELF
