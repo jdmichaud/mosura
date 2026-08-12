@@ -169,3 +169,4 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 ## Pre-existing (were already versioned here)
 - [mosura-project](mosura-project.md) — Rust port of Ghidra logic; pinned to Ghidra 12.0.3 (matches MCP oracle); SLEIGH-engine-first test-baseline strategy.
 - [respect-plan-decisions](respect-plan-decisions.md) — respect agreed plan decisions; ask approval before changing any.
+- [WAR2's remaining gap is structural](war2-remaining-gap-is-structural.md) — 81% of mismatches differ in >40% of instructions; only ~97 are near-misses, so 600 cannot come from the tail.
