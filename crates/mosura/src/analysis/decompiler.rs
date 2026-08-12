@@ -37,12 +37,32 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // instruction actually ends in a BRANCH (a `jmp`), so a normal `call` at a call-typed reference
     // is left untouched. This is the multi-function context Ghidra decompiles with (the isolated
     // datatest path has no such references, keeping the corpus byte-identical).
-    let call_return: std::collections::HashSet<u64> = program
+    let mut call_return: std::collections::HashSet<u64> = program
         .reference_manager
         .references()
         .filter(|r| r.ref_type.is_call())
         .map(|r| r.from.offset)
         .collect();
+    // THUNKS. `SharedReturnAnalysisCmd` deliberately skips a jump whose source IS a function entry
+    // — in Ghidra that is a thunk, and the ThunkAnalyzer marks the function so the decompiler never
+    // walks its body. mosura records no thunk status, so the flow builder FOLLOWED the jump and
+    // decompiled the TARGET's body as if it were this function: `FUN_00051e93` is five bytes,
+    // `jmp 0x164d9`, and came out as the target's flags-assembly expression with fourteen
+    // undefined locals — a description of a different function entirely.
+    //
+    // Treating it as the tail call it is costs nothing and reuses the machinery already here: the
+    // flow builder rewrites the BRANCH to CALL + RETURN, so the body becomes `return f();`.
+    let entries: std::collections::HashSet<u64> =
+        program.function_manager.functions().map(|f| f.entry.offset).collect();
+    for r in program.reference_manager.references() {
+        if r.ref_type.is_call() || !entries.contains(&r.from.offset) {
+            continue;
+        }
+        // A jump FROM one function's entry TO a different function's entry.
+        if entries.contains(&r.to.offset) && r.to.offset != r.from.offset {
+            call_return.insert(r.from.offset);
+        }
+    }
     // Decode under the Program's own compiler spec (Ghidra `DecompInterface` reads the
     // Architecture's `CompilerSpec`): a Watcom LE binary resolves the `__watcall` register
     // convention (`specs/x86-32-watcom.cspec`) rather than the datatest x86-64 SysV default,
