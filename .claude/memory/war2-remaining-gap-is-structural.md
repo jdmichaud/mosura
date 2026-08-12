@@ -5,7 +5,23 @@ metadata:
   type: project
 ---
 
-**⭐ MEASURED 2026-08-12 at 375 byte-clean (`classify_diffs.py`, results.m20).** Both instruction
+**CURRENT: 386 byte-clean (M35, 2026-08-13, mosura `ddd42e3`).** Progression this campaign:
+133 -> 372 -> 384 (M28) -> 372 (M34, a regression I caused) -> **386**.
+
+⚠️ **THREE MEASUREMENTS IN A ROW WERE FICTION** (M30/M32/M33). Two causes, both now fixed:
+`remeasure.sh` ran `compile.frozen.sh`, a COPY in the scratchpad, so harness fixes committed to
+`war2-survey/compile.sh` never executed — M32 and M33 returned byte-identical numbers for that
+reason. And `compile.sh` never cleared `obj/`, so a TU that failed to compile silently kept the
+object from the PREVIOUS run and was scored as if current. compare.py now refuses stale objects,
+compile.sh clears obj/ and chunks the batch at 250 (one aborting TU used to kill all 3023), and
+remeasure.sh refreshes the frozen copy at run start.
+
+**THE CHEAP VALIDATION LOOP, which should be used before every full run:** compile a SAMPLE with
+`trybatch.py --idxfile <list>` (~4 minutes) instead of the full survey (~25). Running it over the
+previously-byte-clean set is the direct test for regressions — it showed 389/390 recovered before
+M35 was launched, where M34 had scored 375/390.
+
+**⭐ EARLIER, at 375 byte-clean (`classify_diffs.py`, results.m20).** Both instruction
 streams are aligned with difflib over normalized mnemonics; each mismatch is classed by how many
 divergent regions it has and what fraction of its instructions differ.
 
