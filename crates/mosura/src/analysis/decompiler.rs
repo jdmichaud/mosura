@@ -229,6 +229,11 @@ fn record_callee_effects(
         Vec<(crate::decompile::space::Address, u32)>,
     )>;
     let mut cache: std::collections::HashMap<u64, Effects> = std::collections::HashMap::new();
+    // Function entry points, sorted — a callee's extent is [entry, next_entry), which bounds the
+    // control-flow input walk.
+    let mut ends: Vec<u64> =
+        program.function_manager.functions().map(|fu| fu.entry.offset).collect();
+    ends.sort_unstable();
     for call in calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
@@ -242,7 +247,23 @@ fn record_callee_effects(
             .entry(target)
             .or_insert_with(|| callee_effects(program, spec, ctx, target, reg, f))
             .clone();
-        let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
+        // When the linear scan cannot follow the callee (it branches — i.e. most real callees),
+        // fall back to the control-flow input analysis. Without it the call reverts to the
+        // convention's full register list, whose empty leading slots read as holes and cost the
+        // argument entirely.
+        // A COMPLETE linear scan (reached `ret` without branching) may replace the convention's
+        // list. A control-flow walk of a branching body is only a LOWER BOUND, so it goes to
+        // `reads_may` and may only add. Conflating the two truncated 115 byte-clean functions.
+        let may = if eff.is_none() {
+            callee_inputs_cfg(program, spec, ctx, target, reg, f, &ends)
+        } else {
+            None
+        };
+        if let Some(m) = may {
+            f.call_specs.entry(call).or_default().reads_may = Some(m);
+            continue;
+        }
+        let Some((regs, reads)) = eff else { continue }; // no evidence — claim nothing
         if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
             eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");
         }
@@ -291,7 +312,15 @@ fn callee_effects(
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => is_ret = true,
-                // Anything that leaves the straight line: stop and claim nothing.
+                // A branch ends what this LINEAR walk can prove. Reads gathered so far are a
+                // LOWER BOUND (the entry block executes unconditionally), and a lower bound is
+                // not usable here: `recovered_input_list` REPLACES the convention's list, so a
+                // short list silently truncates the argument list. Measured on the twoarg MVE —
+                // `add2b_` reads EDX in its entry block and EAX only after the branch, and
+                // returning just EDX dropped the EAX argument.
+                //
+                // The complete answer needs the callee's control flow, which `callee_inputs_cfg`
+                // computes; this linear scan stays conservative and claims nothing.
                 Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branch)
                 | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => return None,
                 _ => {}
@@ -346,4 +375,134 @@ fn callee_effects(
         pc += insn.bytes.len() as u64;
     }
     None // ran off the end of the window without reaching a return — no evidence
+}
+
+/// The registers a callee reads BEFORE writing, over its whole control flow — its real input set.
+///
+/// `callee_effects`' linear walk stops at the first branch, and its partial answer is unusable
+/// because `recovered_input_list` REPLACES the convention's list: a short list truncates the
+/// argument list rather than extending it. Real callees branch, so without this they fall back to
+/// the convention, where the empty slots ahead of a used register read as holes and
+/// `force_inactive_chain` (a faithful port of Ghidra `fspec.cc:1111`) marks the live trial
+/// inactive — and the argument is dropped. Measured: 601 mismatching WAR2 functions have an
+/// original doing `mov <argreg>,imm32 ; call` whose argument we lose that way.
+///
+/// A register is an input if SOME path from the entry reaches a read of it with no earlier write.
+/// That is a may-analysis, so the walk follows both edges of a conditional and unions the results.
+/// State is `(pc, written-mask)` and each is visited once, which bounds the search; anything that
+/// cannot be followed (an indirect branch, a target outside the extent) simply ends that path.
+///
+/// A CALL is treated as WRITING every argument register. That under-claims — a register read after
+/// a call is not reported as an input — which is the safe direction: over-claiming would add
+/// arguments the callee never takes.
+fn callee_inputs_cfg(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: u64,
+    reg: crate::decompile::space::SpaceId,
+    f: &crate::decompile::funcdata::Funcdata,
+    ends: &[u64],
+) -> Option<Vec<(crate::decompile::space::Address, u32)>> {
+    use crate::decompile::opcode::OpCode;
+    use crate::decompile::space::Address;
+    let end = match ends.binary_search(&entry) {
+        Ok(i) => *ends.get(i + 1)?,
+        Err(_) => return None,
+    };
+    if end <= entry || end - entry > 8192 {
+        return None;
+    }
+    // The convention's own parameter registers are the only candidates worth tracking.
+    let cand: Vec<(u64, u32)> = f
+        .proto_model
+        .input
+        .as_ref()?
+        .entry
+        .iter()
+        .filter(|e| e.space == reg)
+        .map(|e| (e.addressbase, e.size))
+        .collect();
+    if cand.is_empty() {
+        return None;
+    }
+    let bit = |off: u64| cand.iter().position(|&(b, _)| b == off).map(|i| 1u32 << i);
+    let mut inputs = 0u32;
+    let mut seen: std::collections::HashSet<(u64, u32)> = std::collections::HashSet::new();
+    let mut work: Vec<(u64, u32)> = vec![(entry, 0)];
+    let mut steps = 0usize;
+    while let Some((mut pc, mut written)) = work.pop() {
+        loop {
+            steps += 1;
+            if steps > 20_000 || pc < entry || pc >= end || !seen.insert((pc, written)) {
+                break;
+            }
+            let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
+            if bytes.is_empty() {
+                break;
+            }
+            let Some(insn) = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next() else { break };
+            if insn.bytes.is_empty() {
+                break;
+            }
+            let next = pc + insn.bytes.len() as u64;
+            let mut ends_path = false;
+            let mut targets: Vec<u64> = Vec::new();
+            for o in &insn.ops {
+                // READS first: an instruction that reads and writes the same register (`add
+                // ebx,eax`) still has EBX as an input.
+                for a in &o.ins {
+                    if let Some(v) = a.as_var() {
+                        if v.space == "register" {
+                            if let Some(b) = bit(v.offset) {
+                                if written & b == 0 {
+                                    inputs |= b;
+                                }
+                            }
+                        }
+                    }
+                }
+                match OpCode::from_u32(o.opcode) {
+                    Some(OpCode::Return) | Some(OpCode::Branchind) => ends_path = true,
+                    Some(OpCode::Call) | Some(OpCode::Callind) => {
+                        written |= (1u32 << cand.len()) - 1; // a call clobbers the argument registers
+                    }
+                    Some(OpCode::Branch) | Some(OpCode::Cbranch) => {
+                        if let Some(t) = o.ins.first().and_then(|a| a.as_var()) {
+                            if t.space == "ram" {
+                                targets.push(t.offset);
+                            }
+                        }
+                        if OpCode::from_u32(o.opcode) == Some(OpCode::Branch) {
+                            ends_path = true; // unconditional: only the target continues
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(out) = &o.out {
+                    if out.space == "register" {
+                        if let Some(b) = bit(out.offset) {
+                            written |= b;
+                        }
+                    }
+                }
+            }
+            for t in targets {
+                if t >= entry && t < end {
+                    work.push((t, written));
+                }
+            }
+            if ends_path {
+                break;
+            }
+            pc = next;
+        }
+    }
+    let out: Vec<(Address, u32)> = cand
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| inputs & (1u32 << i) != 0)
+        .map(|(_, &(b, sz))| (Address::new(reg, b), sz))
+        .collect();
+    if out.is_empty() { None } else { Some(out) }
 }

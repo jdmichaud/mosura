@@ -910,12 +910,17 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // watcall's EAX/EDX/EBX/ECX) silently takes the recovered registers after it down too. Given the
     // callee's real list the recovered registers are CONSECUTIVE groups and there is no hole for the
     // latch to catch — the rule stays faithful and simply has nothing to fire on.
+    // Lower-bound evidence, applied additively after the map (see below).
+    let f_reads: Option<Vec<(Address, u32)>> =
+        f.call_specs.get(&call).and_then(|cs| cs.reads_may.clone()).filter(|r| !r.is_empty());
     let recovered = f
         .call_specs
         .get(&call)
         .and_then(|cs| cs.reads.as_ref())
         .filter(|r| !r.is_empty())
         .map(|r| recovered_input_list(r));
+    // The recovered list is used ADDITIVELY below, never as a replacement: see the note at
+    // `force_used`. `committed` still drives the map-side use for a COMPLETE scan.
     let committed = recovered.is_some();
     let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
     let Some(active) = f.active_inputs.get_mut(&call) else { return };
@@ -939,6 +944,36 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
         }
     }
     input.fillin_map(active);
+
+    // ADDITIVE EVIDENCE. `CallSpec::reads` records registers the CALLEE demonstrably reads before
+    // writing — read out of its own body. `fillin_map` cannot know that: it sees only the
+    // convention's list, so when a callee uses a LATER argument register without the earlier ones
+    // (`mov ebx,0x8ce58 ; call`), the empty leading slots are synthesized as unref trials and
+    // `force_inactive_chain` (fspec.rs:519, a faithful port of Ghidra fspec.cc:1111) marks the
+    // live trial inactive. The argument is then dropped. 601 mismatching WAR2 functions have that
+    // exact shape.
+    //
+    // So mark those trials used AFTERWARDS. This only ever ADDS an argument the callee is known to
+    // read; it can never remove one, which is the property an earlier attempt lacked — replacing
+    // the convention's list with a recovered one truncated 115 functions that had been byte-clean.
+    // The chain rule itself is untouched: it is a faithful port and stays.
+    if let Some(reads) = f_reads {
+        let active = f.active_inputs.get_mut(&call).unwrap();
+        for t in active.trial.iter_mut() {
+            if t.is_used() {
+                continue;
+            }
+            let hit = reads.iter().any(|&(a, sz)| {
+                a.space == t.addr.space
+                    && a.offset < t.addr.offset + t.size as u64
+                    && t.addr.offset < a.offset + sz as u64
+            });
+            if hit {
+                t.mark_active();
+                t.mark_used();
+            }
+        }
+    }
 }
 
 /// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685): rebuild the CALL's input list from

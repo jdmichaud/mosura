@@ -1002,6 +1002,10 @@ pub struct CallSpec {
     /// outside it is not an argument however live it looks at the call site, which is what stops
     /// every caller-live register in the convention's parameter set becoming a spurious argument.
     pub reads: Option<Vec<(Address, u32)>>,
+    /// Registers the callee MAY read before writing, from a control-flow walk of a body the linear
+    /// scan could not follow. Unlike [`Self::reads`] this is a LOWER BOUND, so it may only ADD
+    /// arguments — never replace the convention's list, which would truncate it.
+    pub reads_may: Option<Vec<(Address, u32)>>,
 }
 
 /// Ghidra `ParamActive` (fspec.hh:285): the set of trials accumulated while recovering one
