@@ -1326,11 +1326,54 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         // register — measured on 245 WAR2 functions — leaves the caller's pre-call value stale,
         // because an unaffected range gets NO guard here and flows across untouched. Where the
         // callee's own body says otherwise, that evidence wins over the model.
-        let effecttype = if spc == reg
-            && f.call_specs.get(&call).is_some_and(|cs| {
-                cs.overwrites.iter().any(|&(a, sz)| a.space == reg && a.offset == off && sz == size)
-            }) {
+        let overwritten = f.call_specs.get(&call).is_some_and(|cs| {
+            cs.overwrites.iter().any(|&(a, sz)| a.space == reg && a.offset == off && sz == size)
+        });
+        // The DOWNGRADE evidence: a COMPLETE walk of the callee's reachable body that never writes
+        // this register. `overwrites` cannot serve — it is a straight-line list, so absence from it
+        // means "not seen", not "never written".
+        let never_written = f
+            .call_specs
+            .get(&call)
+            .and_then(|cs| cs.writes_all.as_ref())
+            .is_some_and(|w| !w.contains(&off));
+        // No complete walk of this callee: an indirect call, or one whose body the walk could not
+        // establish (nested call, unresolvable target, budget).
+        let no_evidence =
+            f.call_specs.get(&call).and_then(|cs| cs.writes_all.as_ref()).is_none();
+        let effecttype = if spc == reg && overwritten {
             effect::KILLEDBYCALL
+        } else if spc == reg
+            && effecttype == effect::KILLEDBYCALL
+            // Positive evidence of preservation, OR no evidence at all. mosura has no
+            // `ActionDefaultParams` (coreaction.cc:2311), so `guard_calls` asks the CONTAINING
+            // FUNCTION's model what a call kills rather than the CALL's own prototype; the watcall
+            // cspec compensated by calling the argument registers `<unaffected>` GLOBALLY, which
+            // is what made a saved register's exit value observable and turned it into a parameter.
+            //
+            // Those two are separable. The model's effect list decides the FUNCTION's own exit
+            // liveness (so correcting it kills the save/restore chain), while this per-call
+            // override decides what a CALL clobbers. Keeping the optimism only where there is no
+            // evidence — an indirect call, or a callee whose walk bailed — preserves the behaviour
+            // `indirect_call_does_not_clobber_loop_variable` pins (WAR2's FUN_00057034) without
+            // paying for it at every function entry.
+            && (never_written || no_evidence)
+            // NEVER downgrade the convention's RETURN storage. The evidence "this callee writes no
+            // value into the register" is about ARGUMENT preservation; the call's OUTPUT lives in
+            // the return register by definition of the convention, and `guard_calls`' INDIRECT
+            // there is what return recovery reads. Downgrading it lets the caller's pre-call EAX
+            // flow across the call untouched, and the caller then recovers that pass-through as
+            // its OWN return value — the regout MVE's `use_` turned from `void` into a
+            // value-returning function on exactly this.
+            && !f
+                .proto_model
+                .output
+                .as_ref()
+                .is_some_and(|o| o.possible_param(addr, size))
+        {
+            // The symmetric half of the upgrade above: a callee that demonstrably PRESERVES a
+            // killedbycall register must not clobber the caller's value at this site.
+            effect::UNAFFECTED
         } else {
             effecttype
         };
