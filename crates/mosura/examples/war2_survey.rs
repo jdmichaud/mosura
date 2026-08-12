@@ -72,8 +72,11 @@ typedef int code(); typedef unsigned int pointer;
    so `swi` has to return a function pointer or the dereference is `E1029: Expression must be
    'pointer to ...'` and the whole translation unit fails to compile. It was undeclared: 74 of the
    156 COMPILE_FAIL functions were this one missing line, the single largest cause.
+   The pointed-to function returns INT, not void: printc emits `iVar1 = (*swi(0x21))(...)` — a DOS
+   interrupt call whose result is used — and declaring it void gave `E1052: Expression has void
+   type` on 24 TUs, trading one compile failure for another.
    These declarations make the C compile; they do not make an `int 3` reproducible from C. */
-extern void (*swi(int))(); extern unsigned int in(unsigned int); extern unsigned int cpuid(unsigned int);
+extern int (*swi(int))(); extern unsigned int in(unsigned int); extern unsigned int cpuid(unsigned int);
 typedef float float4; typedef double float8; typedef long double float10;
 typedef unsigned char uchar; typedef unsigned short ushort; typedef unsigned int uint; typedef unsigned long ulong;
 typedef unsigned char bool;
