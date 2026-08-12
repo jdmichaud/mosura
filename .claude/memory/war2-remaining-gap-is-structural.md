@@ -192,11 +192,21 @@ because `analysis::decompiler::callee_effects` BAILS AT THE FIRST BRANCH and the
 branch. Reverted; 25/25 green.
 
 **So the chain is: correct watcall cspec -> needs the symmetric override -> needs COMPLETE callee
-effects for BRANCHING callees.** That last capability does not exist. The earlier attempt at it
-(`callee_inputs_cfg`, a control-flow read-before-write walk) measured 268/274/363 against a 372
-baseline and was reverted — but note it was built for the INPUT side; the blocker here is the
-OVERWRITES side, which is a different and likely easier analysis (a write that reaches `ret`
-unrestored on every path).
+effects for BRANCHING callees.**
+
+That last capability was BUILT and it WORKS — `callee_writes_cfg`, a BFS over the callee's
+reachable body collecting every register write, returning `None` on a nested call / indirect branch
+/ budget exhaustion so that "absent from the set" is a sound "never written". On the failing MVE's
+callee it returns `Some([512, 523, 12, 519, 518, 514, 644])`: EBX (offset 12) plus flags, and
+correctly NOT EAX/ECX/EDX. Wired to a symmetric downgrade in `guard_calls` and combined with the
+corrected cspec, `ground_truth_parity` went from 3 wrong-output failures to
+**`left: ""` — mosura produces NOTHING**, i.e. the decompile itself now fails.
+
+Reverted (a revert of newly-written code is a process failure per CLAUDE.md, and shipping a crash
+is worse than shipping the known defect). What is established: the evidence IS obtainable and the
+downgrade IS expressible; the remaining work is finding why making these registers killedbycall
+collapses the decompile. That is a real debugging task with a fast signal — `ground_truth_parity`
+runs in 19 seconds — and it is the highest-value place to start.
 
 ### ALSO NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
 
