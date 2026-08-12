@@ -450,8 +450,7 @@ fn callee_effects(
                 let e = f.proto_model.has_effect(addr, out.size);
                 e == crate::decompile::fspec::effect::UNAFFECTED
                     || e == crate::decompile::fspec::effect::KILLEDBYCALL
-            } && !written.iter().any(|&(a, _)| a == addr)
-            {
+            } {
                 // Every non-stack-pointer register the callee writes and does not restore, WITHOUT
                 // gating on what the model calls the register.
                 //
@@ -462,7 +461,16 @@ fn callee_effects(
                 // model: a register the callee writes and leaves written is a candidate return
                 // value whether or not the convention claims it is preserved. Gating the two
                 // together meant correcting the convention silently emptied the output list.
-                written.push((addr, out.size));
+                // WIDEST write at an address wins. This list doubles as the function's recovered
+                // OUTPUT storage, and deduping on address alone kept whichever width was written
+                // FIRST: FUN_00043898 does `mov al,[eax+0x1f]` before `mov ax,[eax*2+0x97e08]`, so
+                // the 1-byte AL was recorded, the 2-byte AX ignored, and the function came back
+                // `char` — emitting `mov al` where the original returns the full word in AX.
+                match written.iter_mut().find(|(a, _)| *a == addr) {
+                    Some(e) if out.size > e.1 => e.1 = out.size,
+                    Some(_) => {}
+                    None => written.push((addr, out.size)),
+                }
             }
         }
         if is_ret {
