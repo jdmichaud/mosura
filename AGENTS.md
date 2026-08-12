@@ -192,6 +192,12 @@ when absent (`docs/dependencies.md`).
 - **Master plan: `docs/port-plan.md`.** Live status / phase checklist: `TODO.md`.
 - **Measurement, instruments, and how claims go bad: `docs/measurement-rules.md`.**
 - Per-Ghidra-class port status: `docs/coverage.md`.
+- Debug-information track (DWARF/PDB/CodeView/Go/PEF; phases `D0`–`D12`, not started):
+  `docs/debug-info-port-plan.md`.
+- **"What is this file?"** — `cargo run --release --example identify -- <binary>
+  [--native|--le] [--cspec <id>]` prints container, which loader claims it, the compiler
+  evidence in the bytes, the resolved language/cspec, and what FID identified. Reach for it
+  before writing a throwaway.
 - Detailed per-feature notes and gotchas: `.claude/memory/mosura-project.md`.
 - Superseded (approximation-era, kept for history): `docs/decompiler-plan.md`,
   `floats-plan.md`, `switches-plan.md`, `type-system-plan.md`.

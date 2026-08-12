@@ -20,6 +20,13 @@ The corpus similarity score is a diagnostic, never the definition. Done means:
    trivia) and no regressions on binaries beyond the corpus.
 4. **Analysis-track parity** — the A0–A7 auto-analysis port (binary file → what to
    decompile) passing its Program-state snapshot gates.
+5. **Debug-information parity** — the D0–D12 track (`docs/debug-info-port-plan.md`): DWARF,
+   PDB, PE CodeView/COFF, Go and PEF, passing the same snapshot gates. Listed explicitly
+   because it is ~100k lines of Ghidra that "analysis-track parity" reads as covering but
+   A0–A7 never enumerated; mosura reads none of it today. Sequenced after Phase 3 — it
+   targets the analysis track's Program model — and it is the one track whose payoff is
+   *ground truth*: a `-g` binary states the parameters, types and stack slots that
+   recovery is guessing at.
 
 ## Phase 0 — Coverage matrix (next; one focused session)
 

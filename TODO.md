@@ -494,7 +494,7 @@ AAPCS, …). Reference source: Ghidra `Framework/SoftwareModeling/.../program/mo
       gated check that the PE corpus (comcom32/cnv) recovers its convention's PARAM refs as a
       clean subset of Ghidra.
 
-## Debug-information track (`docs/debug-info-port-plan.md`)
+## Debug-information track — `D0`–`D12` (`docs/debug-info-port-plan.md`)
 
 **Not started.** Scope is **everything Ghidra reads**: DWARF (20,440 lines), PDB Universal
 (671 files / 75,680 lines, but ~40k of distinct logic — 476 of those files are one-class-per-record
@@ -505,10 +505,10 @@ construction — we port the refusal. Ghidra has no stabs support, so neither do
 reads none of it (only DWARF *pointer encodings* in `analyzers/eh_frame.rs` and ELF
 `SHT_SYMTAB`/`SHT_DYNSYM` names in `loader/elf.rs`).
 
-Sequenced **spine-first**, not layer-first: P0 is a thin vertical slice — minimum sink, minimum
-DWARF, one `gcc -g` hello world named and locked and commented end to end — and P1 immediately runs
+Sequenced **spine-first**, not layer-first: `D0` is a thin vertical slice — minimum sink, minimum
+DWARF, one `gcc -g` hello world named and locked and commented end to end — and `D1` immediately runs
 a *second* format (PE CodeView) through the same substrate, because format-neutrality costs one
-fixture to prove at P1 and a refactor to discover at P8. Everything after that is breadth over a
+fixture to prove at `D1` and a refactor to discover at `D8`. Everything after that is breadth over a
 working path. The format blocks are independent of each other; they share only the sink.
 
 Two findings that shape the plan:

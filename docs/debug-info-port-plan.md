@@ -8,6 +8,19 @@ compiler formats will need later.
 Status: **not started.** Nothing here is implemented. Live task status belongs in
 [`TODO.md`](../TODO.md); this file is the design and the sequence.
 
+**How to refer to this work.** It is the **debug-info track**, and it owns the letter **`D`**, the
+way the decompiler port owns `P` (`port-plan.md`), the analysis port owns `A`, the cspec track owns
+`C`, switches own `S` and floats own `F`. So:
+
+- **Phases are `D0`–`D12`** — `D0` is the spine, `D8` is the PDB spine, and so on (§7). These are
+  the citable IDs: "landed `D2`", "blocked on `D1`".
+- **Components are dotted handles**, not numbers, because §3 is a dependency *graph* rather than a
+  schedule: `sink.types`, `sink.comments`, `sink.signatures`, `sink.srcmap`, `locks`,
+  `dwarf.sections`, `dwarf.die`, `dwarf.types`, `dwarf.funcs`, `dwarf.lines`, `dwarf.analyzer`,
+  `cv`, `pdb.reader`, `pdb.applicator`, `pdb.analyzer`, `go`, `pef`. A phase delivers a slice of
+  several components; a component spans several phases.
+- Commit subjects use `debug:` as the area prefix.
+
 ## 0. What Ghidra actually does (the complete inventory)
 
 | # | Consumer | Where | Size | Applied by | Gate |
@@ -103,10 +116,10 @@ The measure that survives translation is the **dispatcher**, not the directory:
 are `Abstract*` bases that exist only to be extended. In Rust that shape is a table, not a
 hierarchy:
 
-```rust
+``rust
 enum SymbolRecord { GlobalData { seg16: bool, hlsl: bool, st: bool, ty: TypeIndex, … }, … }
 fn parse(id: u16, r: &mut Reader) -> Result<SymbolRecord, PdbError> { … }   // one match, 326 arms
-```
+``
 
 so the seven files become one variant with flags, and the abstract bases disappear entirely — they
 are Java's way of sharing a constructor. Budget the catalogue as ~326 rows of decoding, not 35,000
@@ -144,7 +157,7 @@ was reaching for, and it is real:
 
 So the influence is: **types, signatures, locals and calling convention change the code; comments
 carrying `file:line` change the text around it.** mosura has **no comment database at all**, so
-that becomes a required piece of this port rather than a nicety (§3, D0b).
+that becomes a required piece of this port rather than a nicety (§3, `sink.comments`).
 
 **Beyond-Ghidra opportunity, opt-in.** Two things Ghidra leaves on the table, both squarely in the
 `analyze_native_file` opt-in category the X-32 loader established
@@ -193,63 +206,63 @@ default dispatch, unlike the opt-in items in §1 and §5.
 
 ### Shared substrate (everything depends on it)
 
-**D0a — the type sink.** A port of `DataTypeManager` at the granularity we need: named types,
+**`sink.types` — the type sink.** A port of `DataTypeManager` at the granularity we need: named types,
 categories, composites with *named* fields, typedefs, enums, unions, function definitions. Shared
 with the type-system track; the decompiler's `Datatype` (`decompile/types.rs`) and Ghidra's Java
 `DataType` stay two separate systems, as they are in Ghidra, for the same reasons.
 
-**D0b — the comment database.** Ghidra's `CommentType.{PLATE,PRE,EOL,POST,REPEATABLE}` on code
+**`sink.comments` — the comment database.** Ghidra's `CommentType.{PLATE,PRE,EOL,POST,REPEATABLE}` on code
 units, and the decompiler-side `commentdb` + `commsorter` + `emitLineComment` that puts them in the
 C output. Required by §1: it is *the* mechanism by which every debug format's source information
 becomes visible in decompiled text. Also independently useful, and testable with hand-written
 comments and no debug info at all.
 
-**D0c — function signatures on the analysis side.** `Function` gains a signature, parameters with
+**`sink.signatures` — function signatures on the analysis side.** `Function` gains a signature, parameters with
 storage and names, locals, and a calling convention.
 
-**D0d — the source map.** Address → `file:line`, plus the file table. Feeds the listing view and
+**`sink.srcmap` — the source map.** Address → `file:line`, plus the file table. Feeds the listing view and
 the opt-in source interleaving of §1.
 
-**D1 — the override path (the payoff gate).** `FuncProto` gains `inputlock`, `outputlock`,
+**`locks` — the override path (the payoff gate).** `FuncProto` gains `inputlock`, `outputlock`,
 `typelock`; `ActionInputPrototype`/`ActionOutputPrototype` honour a locked prototype instead of
 recovering one; the local scope (`decompile/varmap.rs`, `ScopeLocal`) accepts externally-supplied
 names instead of only generating them. Faithful to Ghidra's mechanism, and **independently testable
 with hand-declared prototypes and zero debug info** — which decouples "can declared info win?" from
 "can we parse format X?".
 
-### Format 1 — DWARF (D2–D7)
+### Format 1 — DWARF (`dwarf.sections`–`dwarf.analyzer`)
 
-**D2 — section supply.** `DWARFSectionProvider` and its factory: `BaseSectionProvider`,
+**`dwarf.sections` — section supply.** `DWARFSectionProvider` and its factory: `BaseSectionProvider`,
 `CompressedSectionProvider` (the `z`-prefix convention — `.zdebug_info` etc., inflated and cached
 per base name; the legacy GNU form, *not* `SHF_COMPRESSED`), `DSymSectionProvider` (#8),
 `ExternalDebugFileSectionProvider`, `NullSectionProvider`. Then `dwarf/external/`: build-id and
 `.gnu_debuglink` lookup, `SameDirSearchLocation`, `LocalDirectorySearchLocation`, a registry, and
 `ExternalDebugFileSymbolImporter` for the symbols-only case.
 
-**D3 — the DIE layer.** `DWARFProgram`, `DWARFCompilationUnit` (`readV4`/`readV5`),
+**`dwarf.die` — the DIE layer.** `DWARFProgram`, `DWARFCompilationUnit` (`readV4`/`readV5`),
 `DebugInfoEntry`, the abbreviation reader, `dwarf/attribs/` (form decoding, including v5
 `str_offsets`/`addr`/`rnglists`/`loclists` indirection via `DWARFIndirectTable`), `DWARFTag`,
 `StringTable`, `DWARFName`/`NamespacePath`, `DWARFRange`/`DWARFRangeList`.
 
-**D4 — types.** `DWARFDataTypeManager`, `DWARFDataTypeImporter`: DIE → D0a, preserving Ghidra's
+**`dwarf.types` — types.** `DWARFDataTypeManager`, `DWARFDataTypeImporter`: DIE → `sink.types`, preserving Ghidra's
 decisions — `elideTypedefsWithSameName`, `copyRenameAnonTypes`, `tryPackStructs`,
 `specialCaseSizedBaseTypes`, `NameDeduper`, `fixupAnonStructMembers`. Bitfields, incomplete types
 and cycles are the substance.
 
-**D5 — functions.** `DWARFFunctionImporter`, `DWARFFunction`, `DWARFVariable`, the location decoder
+**`dwarf.funcs` — functions.** `DWARFFunctionImporter`, `DWARFFunction`, `DWARFVariable`, the location decoder
 (`dwarf/expression/`), `DWARFLocationList`, `DWARFRegisterMappings` (§4), the seven `funcfixup`
 implementations as a real chain with the same order and veto semantics, and the comment writes into
-D0b. Feeds D1.
+`sink.comments`. Feeds `locks`.
 
-**D6 — line numbers.** `dwarf/line/`: the line-program state machine (`DWARFLineProgramExecutor`,
-standard and extended opcodes, v5 content types) → D0d, plus `DWARFSourceInfo`. Independent of
-D4/D5 and separately valuable.
+**`dwarf.lines` — line numbers.** `dwarf/line/`: the line-program state machine (`DWARFLineProgramExecutor`,
+standard and extended opcodes, v5 content types) → `sink.srcmap`, plus `DWARFSourceInfo`. Independent of
+`dwarf.types`/`dwarf.funcs` and separately valuable.
 
-**D7 — the analyzer.** `DwarfAnalyzer` at the mosura equivalent of `FORMAT_ANALYSIS.after()`, with
+**`dwarf.analyzer` — the analyzer.** `DwarfAnalyzer` at the mosura equivalent of `FORMAT_ANALYSIS.after()`, with
 the once-per-session guard, the already-imported property, the graceful decline, the
 missing-register-mapping warning, and a summary mirroring `DWARFImportSummary`.
 
-### Format 2 — PE CodeView + COFF, at load time (D8)
+### Format 2 — PE CodeView + COFF, at load time (`cv`)
 
 `AbstractPeDebugLoader` and `pe/debug/`: `DebugDirectoryParser`, `DebugCodeView`,
 `DebugCodeViewSymbolTable`, the `OMF*` subsection readers (`OMFSrcModule`, `OMFSrcModuleFile`,
@@ -262,41 +275,40 @@ plus `DebugCOFFSymbolTable`/`DebugCOFFLineNumber` and `DebugMisc`. Applied by th
 This is also the phase that pays forward: the CodeView 4.x / OMF `S_*` family here is **the same
 format MS C 7 and Watcom `-hc` emit for DOS targets** (§5), so porting it once serves both.
 
-### Format 3 — PDB (D9–D11)
+### Format 3 — PDB (`pdb.reader`–`pdb.analyzer`)
 
-**D9 — the reader.** `pdb2/pdbreader`: the MSF container (17 files, 2,059 lines), then the stream
+**`pdb.reader` — the reader.** `pdb2/pdbreader`: the MSF container (17 files, 2,059 lines), then the stream
 directory, TPI/IPI type streams, DBI, module info, global/public symbol streams and C13 line
 sections (98 files, 16,844 lines) — plus the two record catalogues that port as enums rather than as
 476 classes (§0a). Mechanical, and **platform-independent by design** ("it written in java, making it platform
 independent, unlike a previous PDB analyzer") — so it is fully testable on this machine.
 
-**D10 — the applicator.** `pdb/pdbapplicator` (80 files): `DefaultPdbApplicator`,
+**`pdb.applicator` — the applicator.** `pdb/pdbapplicator` (80 files): `DefaultPdbApplicator`,
 `TypeApplierFactory`/`CompositeTypeApplier`, `SymbolApplierFactory`/`FunctionSymbolApplier`/
 `DataSymbolApplier`/`TypedefSymbolApplier`, `PdbSourceLinesApplicator`, `BlockCommentsManager`,
-`CppCompositeType`. Targets D0a–D0d and D1, exactly as DWARF's importer does.
+`CppCompositeType`. Targets `sink.types`–`sink.srcmap` and `locks`, exactly as DWARF's importer does.
 
-**D11 — `PdbUniversalAnalyzer`**, with the same gating discipline as D7.
+**`pdb.analyzer` — `PdbUniversalAnalyzer`**, with the same gating discipline as `dwarf.analyzer`.
 
 **PDB MSDIA (#3) is not portable.** It needs the Windows-only MS DIA-SDK; the legacy
 `format/pdb` package's other input is a `.pdb.xml` produced by a Windows-side tool. Parity here is
 to reproduce the *refusal* — Ghidra itself cannot run it off-Windows — and, optionally, the XML
 path since it is only 5k lines and needs no COM. Not on the critical path either way.
 
-### Format 4 — Go (D12)
+### Format 4 — Go (`go`)
 
 `GolangSymbolAnalyzer` (1,327 lines) + `format/golang/` (85 files): build info/build id,
 `moduledata`, `pclntab` → function names **and source line info** (`GoFuncData` produces
-`SourceMapEntry`s), RTTI → types. Self-contained relative to D0a–D0d; ordered last of the parity
+`SourceMapEntry`s), RTTI → types. Self-contained relative to `sink.types`–`sink.srcmap`; ordered last of the parity
 formats because it is one ecosystem rather than a general mechanism.
 
-### Format 5 — PEF (D13)
+### Format 5 — PEF (`pef`)
 
 `PefDebugAnalyzer`, 117 lines. Included for completeness of the "everything Ghidra does" claim; a
-day's work once D0b exists, and only reachable if a PEF loader exists.
+day's work once `sink.comments` exists, and only reachable if a PEF loader exists.
 
-Dependency order is **not** the phase order. The D-numbers above are a dependency graph — D0a–D0d
-and D1 are the substrate every format targets, and the format blocks (D2–D7 DWARF, D8 CodeView,
-D9–D11 PDB, D12 Go, D13 PEF) are independent of each other, sharing only that substrate. §7 walks
+Dependency order is **not** the phase order. The components above are a dependency graph — `sink.types`–`sink.srcmap`
+and `locks` are the substrate every format targets, and the format blocks (DWARF `dwarf.*`, CodeView `cv`, PDB `pdb.*`, Go, PEF) are independent of each other, sharing only that substrate. §7 walks
 that graph **spine-first**: a thin vertical slice of the substrate plus a thin slice of DWARF, end
 to end, before any layer is built out.
 
@@ -350,7 +362,7 @@ that invariant should extend to what it depends on for this.
 
 Three traits and one sink, sized so the later formats are additions rather than refactors:
 
-```rust
+``rust
 /// Ghidra `DWARFSectionProvider`. Named byte ranges — deliberately NOT a container, so an
 /// `LeSectionProvider` (§5) is a new impl, not a refactor.
 pub trait DebugSectionProvider {
@@ -366,10 +378,10 @@ pub trait DebugImporter {
 
 /// Ghidra `DWARFFunctionFixup`: assembled prototype in, veto or amend out.
 type FunctionFixup = fn(&mut DebugFunction) -> FixupVerdict;   // a `const` slice, per 3a.2
-```
+``
 
-`DebugSink` is the format-neutral face of D0a–D0d (`declare_type`, `set_signature`, `add_local`,
-`add_comment`, `add_source_line`) and it is the interface P1 exists to prove: a second format runs
+`DebugSink` is the format-neutral face of `sink.types`–`sink.srcmap` (`declare_type`, `set_signature`, `add_local`,
+`add_comment`, `add_source_line`) and it is the interface D1 exists to prove: a second format runs
 through it before DWARF-specific detail can settle into it.
 
 **Unknown-value tolerance is a rule, not a fallback.** An unknown `DW_TAG`, `DW_FORM` or record ID
@@ -436,11 +448,11 @@ malformed input reports and continues; a panic or an abort is a bug, not a diagn
 The 19 `.dwarf` files under `Ghidra/Processors/*/data/languages/` are configuration, not code — the
 same category as `.cspec` and `.sla`, copied the same way:
 
-```xml
+``xml
 <register_mapping dwarf="0" ghidra="EAX"/>
 <register_mapping dwarf="4" ghidra="ESP" stackpointer="true"/>
 <register_mapping dwarf="11" ghidra="ST0" auto_count="8"/>
-```
+``
 
 Ship `x86.dwarf` and `x86-64.dwarf` under `specs/` beside the cspecs, parsed into
 `DWARFRegisterMappings`, resolved by language id exactly as `resolve_cspec` does today
@@ -458,21 +470,21 @@ LE and X-32 loaders.
 
 | Format | Emitted by | Notes |
 |---|---|---|
-| CodeView, appended to MZ/LE | MS C 6/7/8, Watcom `-hc`, `386\|LINK` | **same `S_*`/OMF family as D8** — the reader is shared, only the container differs |
-| DWARF in an LE/MZ image | Watcom `-hd` (Open Watcom's default) | **the D3–D6 reader applies unchanged** — only a section provider for LE/MZ is new |
+| CodeView, appended to MZ/LE | MS C 6/7/8, Watcom `-hc`, `386\|LINK` | **same `S_*`/OMF family as `cv`** — the reader is shared, only the container differs |
+| DWARF in an LE/MZ image | Watcom `-hd` (Open Watcom's default) | **the `dwarf.die`–`dwarf.lines` reader applies unchanged** — only a section provider for LE/MZ is new |
 | Watcom's own format | Watcom `-hw` | proprietary; the only genuinely new parser |
 | Borland TDS (`.tds` or appended) | Turbo C/C++, Borland C++ | separate format, separate work |
 
 The design consequence for the parity phases: keep `DWARFSectionProvider` **container-agnostic**.
 Ghidra's providers are ELF/MachO-shaped because those are the containers it loads; ours must take
 "named byte ranges" from any loader, so an `LeSectionProvider` is later a small addition rather than
-a refactor. Same for D8's CodeView reader: it must be driven by a blob + a segment map, not by a PE
+a refactor. Same for `cv`'s CodeView reader: it must be driven by a blob + a segment map, not by a PE
 header.
 
-The pay-off note, recorded so the sequencing is deliberate: **D8 (PE CodeView) and D3–D6 (DWARF)
+The pay-off note, recorded so the sequencing is deliberate: **`cv` (PE CodeView) and `dwarf.die`–`dwarf.lines` (DWARF)
 between them cover most of the DOS-era story** — a Watcom binary built with `-hd` carries DWARF a
-completed D3–D6 already reads, and one built with `-hc`, like MS C's output, carries the CodeView
-D8 already reads. Only Watcom `-hw` and Borland TDS are new parsers. None of the currently
+completed `dwarf.die`–`dwarf.lines` already reads, and one built with `-hc`, like MS C's output, carries the CodeView
+`cv` already reads. Only Watcom `-hw` and Borland TDS are new parsers. None of the currently
 committed game binaries has any debug info at all (§2), so this pays off on *rebuilt* or
 *differently-sourced* DOS binaries, not on the corpus as it stands.
 
@@ -485,11 +497,11 @@ Debug-info import is unusually testable, and unusually easy to test *badly* — 
 
 The C++ oracle (`oracle/capture`, `capture.cc`) **cannot** be used for the import itself: every
 debug consumer is Java-side and the C++ decompiler never sees a `.debug_info` section. It remains
-the oracle for D0b's and D1's decompiler-side behaviour — a locked prototype's effect on output,
+the oracle for `sink.comments`'s and `locks`'s decompiler-side behaviour — a locked prototype's effect on output,
 and whether a comment lands in the C text — which is exactly what `printc.cc`'s commentdb path and
 `oracle/ghidra_scripts/DecompileWithForcedParams.java` already exercise.
 
-For D2–D13 the Java-side oracle is the vehicle, and it already exists:
+For `dwarf.sections`–`pef` the Java-side oracle is the vehicle, and it already exists:
 `oracle/ghidra_scripts/DumpAnalysisSnapshot.java` driven by `analyzeHeadless`, producing
 `goldens/analysis/*.snapshot` parsed by `crates/mosura/src/analysis/snapshot.rs` — the harness in
 [`oracle/analysis-capture.md`](../oracle/analysis-capture.md). `DWARFAnalyzer` and
@@ -547,8 +559,8 @@ toolchain-stable), each binary tiny and reviewable:
 | `dwarf_split.elf` (`-gsplit-dwarf`) | **must be refused**, matching Ghidra |
 | `dwarf_stripped.elf` | no debug info → the graceful-decline path |
 | `dwarf_embedsrc.elf` (`clang -gembed-source`) | the opt-in beyond-Ghidra case of §1 |
-| `cv_pe.exe` + `pdb_pe.exe` + `.pdb` | D8 and D9–D11; cross-built (`mingw-w64`) or committed prebuilt |
-| `go_hello.elf` | D12 |
+| `cv_pe.exe` + `pdb_pe.exe` + `.pdb` | `cv` and `pdb.reader`–`pdb.analyzer`; cross-built (`mingw-w64`) or committed prebuilt |
+| `go_hello.elf` | `go` |
 
 `clang -g` variants where the producer differs materially. The same sources compiled *without* `-g`
 give paired debug/no-debug binaries, which is what makes §6f measurable.
@@ -614,19 +626,19 @@ The temptation — and the shape of this plan's first draft — is to build the 
 the DIE layer completely, then types, then functions. That is layer-first, and it defers the only
 question that matters (does the architecture compose end to end?) until six phases in. So instead:
 
-**P0 — the spine.** The thinnest possible vertical slice, one binary, one path, bytes to visible
+**D0 — the spine.** The thinnest possible vertical slice, one binary, one path, bytes to visible
 output. Minimum of *each* layer, not all of any:
 
-- D0a: enough type sink for `int` and a pointer. No categories, no composites.
-- D0b: a comment DB with one comment type reaching the C output.
-- D0c: a signature on `Function` with one named parameter.
-- D0d: nothing (deferred to P5).
-- D1: `inputlock` only, honoured by `ActionInputPrototype`.
-- D2: `BaseSectionProvider` over ELF sections, `.debug_abbrev` + `.debug_info` only.
-- D3: `DW_TAG_compile_unit` + `DW_TAG_subprogram`, `DW_AT_name`/`low_pc`/`type`. DWARF 4,
+- `sink.types`: enough type sink for `int` and a pointer. No categories, no composites.
+- `sink.comments`: a comment DB with one comment type reaching the C output.
+- `sink.signatures`: a signature on `Function` with one named parameter.
+- `sink.srcmap`: nothing (deferred to D5).
+- `locks`: `inputlock` only, honoured by `ActionInputPrototype`.
+- `dwarf.sections`: `BaseSectionProvider` over ELF sections, `.debug_abbrev` + `.debug_info` only.
+- `dwarf.die`: `DW_TAG_compile_unit` + `DW_TAG_subprogram`, `DW_AT_name`/`low_pc`/`type`. DWARF 4,
   32-bit, little-endian, no v5 indirection, no location expressions.
-- D5: name and one parameter, no fixup chain.
-- D7: the analyzer, with the decline path.
+- `dwarf.funcs`: name and one parameter, no fixup chain.
+- `dwarf.analyzer`: the analyzer, with the decline path.
 - §6b snapshot vocabulary for `proto`, `comment`, and the `dbgsummary` line.
 
 *Exit criterion:* a `gcc -g` hello-world's function is **named from DWARF**, its one-parameter
@@ -634,7 +646,7 @@ prototype **survives recovery because it is locked**, and a DWARF-derived commen
 decompiled C — with snapshot parity against Ghidra on those records. If the architecture is wrong,
 this is where it shows, at a fraction of the cost.
 
-**P1 — the second format's spine, immediately.** `DW_TAG_subprogram` → PE CodeView `S_GPROC32`,
+**D1 — the second format's spine, immediately.** `DW_TAG_subprogram` → PE CodeView `S_GPROC32`,
 through the *same* substrate, on a `cv_pe.exe` fixture. Deliberately not at the end: the sink has
 to be format-neutral, and the only way to know is to run a second format through it **before**
 DWARF-specific detail accumulates in it. CodeView is the right second choice for two reasons — it
@@ -643,37 +655,37 @@ and it is the DOS-era format family (§5), so the container-agnostic constraint 
 it is still cheap to honour.
 
 *Exit criterion:* one function named and one prototype locked from CodeView, at load time, with no
-change to the DWARF path and no format-specific branch in D0a–D0d or D1.
+change to the DWARF path and no format-specific branch in `sink.types`–`sink.srcmap` or `locks`.
 
 Then thicken. Each row below is breadth over an already-working spine, so each is independently
 shippable and independently measurable:
 
 | Phase | Content | Exit criterion |
 |---|---|---|
-| P2 | DWARF breadth: D2 fully (compressed, dSYM, external debug files), D3 fully | §6c matrix green — v2–v5, 32/64-bit, both endians, all `DW_FORM`s; `dwarf_split.elf` refused exactly as Ghidra refuses it; `dwarf_stripped.elf` declines; §6g negatives all report-and-continue |
-| P3 | D4 types + D0a built out (categories, composites, typedefs, enums, unions) | `type` snapshot parity on `dwarf_types.elf`, bitfields and cycles included |
-| P4 | D5 fully: locals, location expressions, register mappings (§4), the seven-fixup chain | `proto`/`local` parity on all DWARF fixtures, `-O2` included; each fixup has a test showing it fire |
-| P5 | D0d + D6 line numbers, **and** CodeView's line tables (`OMFSrcModuleLine`) | `srcline` + `comment` parity on `dwarf4.elf`/`dwarf5.elf` and `cv_pe.exe` |
-| P6 | measurement | §6f: `ccompare` on paired debug/no-debug binaries, the two effects reported separately |
-| P7 | D8 breadth: COFF debug, `DebugMisc`, separate `.dbg` (`DbgLoader`) | full `cv_pe.exe` parity; the reader is driven by blob + segment map, not a PE header (§5) |
-| P8 | D9 PDB spine: MSF container, stream directory, DBI, enough TPI for one signature | one function named and one prototype locked from a real `.pdb`, end to end — the spine pattern again, not the whole reader |
-| P9 | D9/D10 PDB breadth: the 326-ID record catalogue, applicators, `PdbSourceLinesApplicator`, `BlockCommentsManager`; D11 analyzer | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe`; unknown record IDs skip with a report (§0a) |
-| P10 | D12 Go | `go_hello.elf` parity: names, source lines, RTTI types |
-| P11 | D13 PEF | only if a PEF loader exists; else recorded as unreachable |
-| P12 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
+| D2 | DWARF breadth: `dwarf.sections` fully (compressed, dSYM, external debug files), `dwarf.die` fully | §6c matrix green — v2–v5, 32/64-bit, both endians, all `DW_FORM`s; `dwarf_split.elf` refused exactly as Ghidra refuses it; `dwarf_stripped.elf` declines; §6g negatives all report-and-continue |
+| D3 | `dwarf.types` + `sink.types` built out (categories, composites, typedefs, enums, unions) | `type` snapshot parity on `dwarf_types.elf`, bitfields and cycles included |
+| D4 | `dwarf.funcs` fully: locals, location expressions, register mappings (§4), the seven-fixup chain | `proto`/`local` parity on all DWARF fixtures, `-O2` included; each fixup has a test showing it fire |
+| D5 | `sink.srcmap` + `dwarf.lines`, **and** CodeView's line tables (`OMFSrcModuleLine`) | `srcline` + `comment` parity on `dwarf4.elf`/`dwarf5.elf` and `cv_pe.exe` |
+| D6 | measurement | §6f: `ccompare` on paired debug/no-debug binaries, the two effects reported separately |
+| D7 | `cv` breadth: COFF debug, `DebugMisc`, separate `.dbg` (`DbgLoader`) | full `cv_pe.exe` parity; the reader is driven by blob + segment map, not a PE header (§5) |
+| D8 | PDB spine (`pdb.reader`): MSF container, stream directory, DBI, enough TPI for one signature | one function named and one prototype locked from a real `.pdb`, end to end — the spine pattern again, not the whole reader |
+| D9 | PDB breadth (`pdb.reader`, `pdb.applicator`, `pdb.analyzer`): the 326-ID record catalogue, applicators, `PdbSourceLinesApplicator`, `BlockCommentsManager` | `proto`/`type`/`local`/`srcline`/`comment` parity on `pdb_pe.exe`; unknown record IDs skip with a report (§0a) |
+| D10 | Go (`go`) | `go_hello.elf` parity: names, source lines, RTTI types |
+| D11 | PEF (`pef`) | only if a PEF loader exists; else recorded as unreachable |
+| D12 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
 
 **Cross-cutting, every phase, not a phase of its own** (§3a): a perf-log row measured the existing
 way; the `#![deny(clippy::indexing_slicing, clippy::unwrap_used)]` module attribute in place from
-P0; depth caps and visited sets on every traversal the phase adds; and a fuzz target for each new
+D0; depth caps and visited sets on every traversal the phase adds; and a fuzz target for each new
 reader entry point from the phase that introduces it. These are exit criteria for each row above,
-not a P13 cleanup — a robustness pass bolted on at the end is how the properties get lost.
+not a D12 cleanup — a robustness pass bolted on at the end is how the properties get lost.
 
-Two properties this ordering buys. Every phase from P0 onward has a **working end-to-end path**, so
+Two properties this ordering buys. Every phase from D0 onward has a **working end-to-end path**, so
 a regression is always attributable to the phase that caused it rather than to an unfinished layer.
-And the format-neutrality of the substrate is proven at P1 by construction, when it costs one
-fixture, instead of being discovered at P8 when it costs a refactor.
+And the format-neutrality of the substrate is proven at D1 by construction, when it costs one
+fixture, instead of being discovered at D8 when it costs a refactor.
 
-The DOS-era formats of §5 are a **later stage**, sequenced after P7 so they inherit a
+The DOS-era formats of §5 are a **later stage**, sequenced after D7 so they inherit a
 container-agnostic CodeView reader and a complete DWARF reader; they get their own plan then.
 
 ## 8. Honest scope — what this does not buy
