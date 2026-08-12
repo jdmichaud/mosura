@@ -947,22 +947,41 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
 /// arguments (that inversion is what made the old reduction depend on the retired fixed candidate
 /// list). Runs once the trials are fully checked, so the prune commits on a stable decision.
 ///
-/// Two Ghidra branches are not reachable here and are not ported: the `isUnref` trial (a parameter
-/// recovered from a locked prototype with no varnode at the call — mosura's call prototypes are
-/// never input-locked, and `guard_calls` creates a varnode for every trial it registers) and the
-/// spacebase `markNotMapped` branch (fspec.cc:5736 — `guard_calls` declines to register a trial for
-/// a spacebase range at all, lacking `FuncCallSpecs::getSpacebaseOffset`).
+/// The spacebase `markNotMapped` branch (fspec.cc:5736) is not reachable: `guard_calls` declines to
+/// register a trial for a spacebase range at all, lacking `FuncCallSpecs::getSpacebaseOffset`.
+///
+/// The `isUnref` branch IS reachable and IS ported. It was previously skipped on the premise that
+/// "`guard_calls` creates a varnode for every trial it registers" — true, but `build_trial_map`
+/// (inside `fillin_map`) registers FURTHER trials that `guard_calls` never saw: the unref holes it
+/// synthesizes for argument slots ahead of a used one. `force_inactive_chain`'s tail then marks
+/// those holes ACTIVE ("fill in holes of inactive trials"), `fillin_map` marks every active trial
+/// USED, and they arrive here with no varnode. Ghidra creates one:
+/// ```text
+///     if (paramtrial.isUnref())         // recovered unreferenced address as part of prototype
+///       vn = data.newVarnode(sz,Address(spc,off));   // We need to create the varnode
+/// ```
+/// Dropping them instead RENUMBERS the argument list. A call whose only real argument is the
+/// watcall SECOND one (EDX) was emitted as a one-argument call, so the recompiled code passes it in
+/// EAX — the original's `add edx,0x12 ; call` came back as `lea eax,[edx+0x12] ; call`. That shape
+/// is the single most common first divergence among WAR2's near-miss functions. It is the exact
+/// call-site twin of the signature defect fixed in `printc::rendered_param_slots`.
 fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     // fspec.cc:5703-5734 — the used trials, in trial order, each naming the slot it lives in.
-    let used: Vec<(usize, u32)> = f.active_inputs[&call]
+    let used: Vec<(usize, u32, bool, Address)> = f.active_inputs[&call]
         .trial
         .iter()
         .filter(|t| t.is_used())
-        .map(|t| (t.op_slot as usize, t.size))
+        .map(|t| (t.op_slot as usize, t.size, t.is_unref(), t.addr))
         .collect();
     let n = f.op(call).num_inputs();
     let mut newparam: Vec<VarnodeId> = vec![f.op(call).input(0).expect("CALL has a target")];
-    for (slot, sz) in used {
+    for (slot, sz, unref, addr) in used {
+        // fspec.cc:5717 — the unreferenced slot has no varnode at the call; create one, so the
+        // arguments after it keep their position in the list.
+        if unref {
+            newparam.push(f.new_varnode(sz, addr));
+            continue;
+        }
         if slot == 0 || slot >= n {
             continue;
         }
