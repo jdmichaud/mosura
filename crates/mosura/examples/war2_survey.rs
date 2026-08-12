@@ -66,6 +66,14 @@ typedef unsigned char undefined3; typedef unsigned int undefined5; typedef doubl
 typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
 typedef unsigned int uint6; typedef int int6; typedef unsigned int uint10; typedef int int10;
 typedef int code(); typedef unsigned int pointer;
+/* CALLOTHER intrinsics. Ghidra renders an unmodelled instruction as a call to a named user-op, and
+   the x86 SLEIGH spec names the software interrupt `swi`, the port read `in`, and `cpuid`.
+   `printc` emits the software interrupt as `(*swi(3))()` — a call THROUGH the user-op's result —
+   so `swi` has to return a function pointer or the dereference is `E1029: Expression must be
+   'pointer to ...'` and the whole translation unit fails to compile. It was undeclared: 74 of the
+   156 COMPILE_FAIL functions were this one missing line, the single largest cause.
+   These declarations make the C compile; they do not make an `int 3` reproducible from C. */
+extern void (*swi(int))(); extern unsigned int in(unsigned int); extern unsigned int cpuid(unsigned int);
 typedef float float4; typedef double float8; typedef long double float10;
 typedef unsigned char uchar; typedef unsigned short ushort; typedef unsigned int uint; typedef unsigned long ulong;
 typedef unsigned char bool;
