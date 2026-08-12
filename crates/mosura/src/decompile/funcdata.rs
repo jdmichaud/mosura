@@ -85,6 +85,10 @@ pub struct Funcdata {
     /// list, and a backend that must reproduce the original's register saves needs it: without a
     /// declaration Watcom preserves registers the original destroys, costing a push/pop pair each.
     pub own_modify: Option<Vec<u64>>,
+
+    /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
+    /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
+    pub own_saved: Option<Vec<u64>>,
     /// Master gate for heritage call-effect guarding (Ghidra runs `Heritage::guardCalls` only in the
     /// true heritage). The pipeline sets it before the real heritage; the AliasChecker probe clone
     /// leaves it `false`, so `alias_boundary` is computed on a graph without the call INDIRECTs.
@@ -217,6 +221,7 @@ impl Funcdata {
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
             own_modify: None,
+            own_saved: None,
             call_guards_active: false,
             alias_boundary: None,
             directwrite_pending_clear: false,

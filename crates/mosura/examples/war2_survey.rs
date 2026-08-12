@@ -249,6 +249,10 @@ fn own_contract(
         let regs: Vec<&str> = m
             .iter()
             .filter_map(|off| table.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2))
+            // Watcom REJECTS the frame and stack pointers in a `modify` list —
+            // `E1122: Illegal register modified by '<name>' #pragma` — and one such TU aborts the
+            // whole dosemu batch, leaving every later function with a stale object.
+            .filter(|r| *r != "ebp" && *r != "esp")
             .collect();
         if !regs.is_empty() {
             parts.push(format!("modify [{}]", regs.join(" ")));

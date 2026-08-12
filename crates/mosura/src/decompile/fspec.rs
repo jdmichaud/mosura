@@ -1239,6 +1239,11 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         if f.spaces.space_by_spacebase(vn.loc, vn.size).is_some() || pl.possible_param(vn.loc, vn.size) {
             continue;
         }
+        // Saved-and-restored ⇒ callee-saved, not an argument. The prologue's `push ebp` reads the
+        // INCOMING EBP, so without this every framed function declares an EBP parameter.
+        if f.own_saved.as_ref().is_some_and(|r| r.contains(&vn.loc.offset)) {
+            continue;
+        }
         // Flags and other status bits are not argument storage.
         if vn.size > 4 || pl.entry.iter().all(|e| e.space != vn.loc.space || vn.loc.offset >= 0x100) {
             continue;

@@ -101,7 +101,14 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // THIS function's own `modify` list, from a complete walk of its body. Straight-line
             // `callee_effects` cannot supply it — it gives up at the first branch, and a function
             // with a loop is exactly the case that needs it.
-            f.own_modify = callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true);
+            let cfg = callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true);
+            f.own_modify = cfg.as_ref().map(|(w, _)| w.clone());
+            // Registers the function SAVES AND RESTORES are callee-saved, not arguments. Every
+            // prologue does `push ebp`, which READS the incoming EBP — without this the custom
+            // register-convention recovery below declares an EBP parameter on almost every
+            // function, and the same for any saved ESI/EDI. A declaration built from that is not a
+            // recovered contract, it is noise.
+            f.own_saved = cfg.as_ref().map(|(_, r)| r.clone());
             if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
             {
                 if !writes.is_empty() {
@@ -249,7 +256,7 @@ fn record_callee_effects(
         // The COMPLETE write set over the callee's whole CFG — computed whether or not the
         // straight-line scan succeeded, because the downgrade it feeds is exactly the case the
         // straight-line scan cannot reach.
-        if let Some(w) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
+        if let Some((w, _)) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
             f.call_specs.entry(call).or_default().writes_all = Some(w);
         }
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
@@ -289,7 +296,7 @@ fn callee_writes_cfg(
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
     calls_clobber: bool,
-) -> Option<Vec<u64>> {
+) -> Option<(Vec<u64>, Vec<u64>)> {
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
@@ -384,7 +391,7 @@ fn callee_writes_cfg(
         }
     }
     writes.retain(|o| !restored.contains(o));
-    Some(writes)
+    Some((writes, restored))
 }
 
 /// `(registers written and not restored, registers read before being written)` — the callee's
