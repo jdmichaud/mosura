@@ -114,6 +114,29 @@ offset. The 903 that do not are the first stack pass, before the rule pool folds
 the window pipeline.rs's priming pass exists to open, working as designed. Reading only the head of
 that log shows the stragglers and looks like total failure.
 
+### Why the saved register becomes a parameter — and why the obvious fix is WRONG
+
+FUN_00050dd8 opens `push ebx ; push ecx ; push ebp ; mov ebp,esp ; sub esp,0x1c ; mov ecx,0x600 ;
+mov ebx,eax`. EBX and ECX are saved and IMMEDIATELY overwritten, so they cannot be parameters —
+yet mosura recovers four (EAX, EDX, EBX, ECX). The `push` gives the incoming value a descendant,
+so `ActionInputPrototype` marks the trial active. Every caller of such a function then passes
+spurious arguments.
+
+The obvious fix is to correct the cspec: under `__watcall` EAX/EDX/EBX/ECX are the ARGUMENT
+registers and are scratch, but `specs/x86-32-watcom.cspec` lists EBX/ECX/EDX as `<unaffected>` and
+`<killedbycall>` holds only EAX. **DO NOT MAKE THAT CHANGE — it was tried and it breaks three
+build-time-verified ground-truth MVEs** (`callee_register_return_is_recovered_with_its_argument`,
+`custom_convention_body_is_not_eliminated_as_dead`,
+`indirect_call_does_not_clobber_loop_variable`). The register return in `value [ebx]` stops being
+recovered and a byte parameter loses its width.
+
+The `<unaffected>` default is DELIBERATE architecture, not an oversight: mosura overrides it
+PER CALLEE from the callee's own body (`analysis::decompiler::callee_effects`, and the per-call
+effect override in `heritage::guard_calls`). The default is the conservative floor and evidence
+raises it. A blanket cspec change fights that design. Whatever fixes the saved-register case has to
+work inside it — most likely by recognising the save/restore pair, not by redeclaring the
+convention.
+
 ## ⚠️ THREE INSTRUMENTS WERE FOUND LYING IN ONE CAMPAIGN
 
 1. trybatch scored `cand == orig`, missing compare.py's relocation masking -> both arms of three
