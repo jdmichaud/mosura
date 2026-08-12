@@ -5,8 +5,21 @@ metadata:
   type: project
 ---
 
-**CURRENT: 386 byte-clean (M35, 2026-08-13, mosura `ddd42e3`).** Progression this campaign:
-133 -> 372 -> 384 (M28) -> 372 (M34, a regression I caused) -> **386**.
+**CURRENT: 387 byte-clean (M36, 2026-08-13, mosura `79a1aad`), COMPILE_FAIL 99.** Progression:
+133 -> 372 -> 384 (M28) -> 372 (M34, a regression I caused) -> 386 -> **387**.
+
+**WHERE THE REMAINING 99 COMPILE_FAILs ARE BLOCKED** (first error per TU, after the `swi` fix):
+24 `E1011` undeclared (mostly widths C has no type for — `int12`, `int14`, `xunknown10/12`),
+24 `E1052` void-typed expression, 23 `E1032` `.` on a non-struct (Ghidra's `._0_6_` partial-field
+syntax at a width `exact_uint` cannot render — it covers 1/2/4 only, and a 6-byte assignment has no
+C spelling), 19 `E1079` non-integral, 7 `E1063` missing operand. These now need DECOMPILER work;
+the prelude-level wins are taken.
+
+**AN EMITTER BUG WORTH REMEMBERING (fixed, 79a1aad):** `declared_locals` treated any line shaped
+`<word> … <word>;` with no `=` and no `(` as a declaration, so `return param_1 - iRam00090630;`
+parsed as DECLARING that global — and the emitter then skipped declaring it, leaving the TU
+referencing an undeclared symbol. Statement keywords are rejected now, plus a safety net that
+declares any referenced `<prefix>Ram<hex>` global nothing else declared.
 
 ⚠️ **THREE MEASUREMENTS IN A ROW WERE FICTION** (M30/M32/M33). Two causes, both now fixed:
 `remeasure.sh` ran `compile.frozen.sh`, a COPY in the scratchpad, so harness fixes committed to
