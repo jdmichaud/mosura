@@ -14,13 +14,32 @@
 # Env: WATCOM_ARCHIVES (default /data/tools/watcom), DOSEMU_C (default ~/.dosemu/drive_c).
 #
 # Scope: the ISO-based revisions (10.0/10.0a/10.5/10.6/11.0) whose DOS-extender host lives in
-# BINW or BINB. The floppy-set revisions (7.0/8.5a/9.01) ship the runtime packed in .WPK and
-# need INSTALL.EXE run under dosemu first — out of scope here (see the A4 Stage 2 task note).
+# BINW or BINB. The floppy-set revisions ship the runtime packed in .WPK with their own
+# INSTALL.EXE/INSTALL.SCR and need it run under dosemu first — out of scope here. Verified
+# against the media in $HOME/software/watcom:
+#
+#   stages with this script   10.0a, 10.5, 10.6, 11.0   (also 11.0A/11.0B ISOs, untried)
+#   needs the .WPK installer  7.0, 8.5a, 9.01, 9.5b     (e.g. 9.5b = W9532_01..10.img, whose
+#                             disk 1 holds INSTALL.EXE + INSTALL.SCR and disk 2 CLIB3R.DOS)
+#
+# What staging buys: the 12 committed watcom-{10.0a,10.5,10.6,11.0}-{,stack-,cpp-}x86-32 columns
+# become rebuildable, and rebuilding them reproduced all 12 BYTE-IDENTICALLY — so those columns
+# are now verified against their original media rather than merely committed. It also switches on
+# the `watcom-10.0a-x86-32` row of tests/fid_database_drift.rs, which had always skipped.
 set -euo pipefail
 
 VER="${1:?usage: setup-watcom-dosemu.sh <version> [archive.7z] [--compile file.c]}"
 shift || true
-ARCHIVES="${WATCOM_ARCHIVES:-/data/tools/watcom}"
+# Archive location. The historical default (/data/tools/watcom) is a path that keeps
+# disappearing with disk cleanups, so fall back through the places the media has actually been
+# found rather than failing with "no archive".
+ARCHIVES="${WATCOM_ARCHIVES:-}"
+if [ -z "$ARCHIVES" ]; then
+  for c in /data/tools/watcom "$HOME/software/watcom" "$HOME/projects/tools/watcom"; do
+    [ -d "$c" ] && { ARCHIVES="$c"; break; }
+  done
+  ARCHIVES="${ARCHIVES:-/data/tools/watcom}"
+fi
 DC="${DOSEMU_C:-$HOME/.dosemu/drive_c}"
 KEY="WAT$(echo "$VER" | tr -d '.[:space:]' | tr '[:lower:]' '[:upper:]')"   # 10.0a -> WAT100A
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT

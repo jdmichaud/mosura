@@ -99,6 +99,26 @@ Notes on the Ghidra BUILD/TEST dependency:
 | **dosemu2** (to run the DOS Watcom 10.0a tools) | `n/a` (PATH: `dosemu`) | `dosemu2-2.0pre9-dev-20260428-4642-gc24eb0498` (source/PPA build, not dpkg-owned) | prerequisite for the Watcom 10.0a fixture regen only |
 | **warcraft2-re** (RE ground truth, read-only) | `WARCRAFT2_RE → $HOME/projects/warcraft2-re` | git `github.com/jdmichaud/warcaft2-re` HEAD `71f8193` | reference (not executed): WAR2 objects/entry/switch ground truth for the native-LE two-oracle path |
 
+### Historical toolchain media — where it is, and what it unlocks
+
+The compiler media these columns are built from lives outside the repo. Locations that have
+actually been found on this machine, and the one command each needs:
+
+| toolchain | media | stage with |
+| --- | --- | --- |
+| Watcom 10.0a / 10.5 / 10.6 / 11.0 | `$HOME/software/watcom/*.7z` (ISOs) | `WATCOM_ARCHIVES=~/software/watcom scripts/setup-watcom-dosemu.sh <ver>` |
+| Watcom 7.0 / 8.5a / 9.01 / 9.5b | same dir, floppy sets | **not yet** — `.WPK`-packed behind their own `INSTALL.EXE`/`INSTALL.SCR` |
+| MetaWare High C 2.31 / 3.03 / 3.04 / 3.31 | `$HOME/software/MetaWare.Compilers/*.7z` | `scripts/setup-metaware-dosemu.sh <ver>` |
+| Microsoft C/C++ 7.0 | `$HOME/software/visual_studio/microsoft-c-cpp-7.0-*/` | `scripts/setup-msc7-dosemu.sh` |
+| Phar Lap 386\|LINK 4.1 | `$HOME/software/phar-lap-386-dox-extender-4.1-sdk/*.img` | `7z e` disk 2 `BIN/386LINK.EXE` (no installer needed) |
+| FlashTek X-32VM SDK | `$HOME/software/dosextender/*.zip` | `7z x` — plain zip; ships `X-32vm.txt`, `LIB/ZLX.LOD`, `BIN/X32TEST.EXE` |
+
+Staging the four Watcom ISO revisions made the 12 committed
+`watcom-{10.0a,10.5,10.6,11.0}-{,stack-,cpp-}x86-32` columns rebuildable for the first time, and
+rebuilding them reproduced **all 12 byte-identically** — so they are verified against their
+original media, not merely committed. It also switches on the `watcom-10.0a-x86-32` row of
+`fid_database_drift.rs`, which had always skipped.
+
 ### User-provided binaries — skip-if-absent gates
 
 Copyrighted third-party files; **not committed**. The tests that use them **skip when the
