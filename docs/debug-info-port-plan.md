@@ -543,6 +543,13 @@ Ghidra's providers are ELF/MachO-shaped because those are the containers it load
 a refactor. Same for `cv`'s CodeView reader: it must be driven by a blob + a segment map, not by a PE
 header.
 
+The policy applies here too, and it changes what "new parser" means: Watcom `-hd` output is read by
+`gimli`, and CodeView by the `pdb` crate, so those two need only a container-agnostic section
+provider from us. Watcom `-hw` and Borland TDS have **no Rust library worth offloading to and no
+Ghidra code to port** — Ghidra reads neither — so they are, uniquely in this whole plan, genuinely new
+parsers written here, and they should be judged on that cost when the time comes rather than assumed
+cheap by association.
+
 The pay-off note, recorded so the sequencing is deliberate: **`cv` (PE CodeView) and `dwarf.adapt`–`dwarf.lines` (DWARF)
 between them cover most of the DOS-era story** — a Watcom binary built with `-hd` carries DWARF a
 completed `dwarf.adapt`–`dwarf.lines` already reads, and one built with `-hc`, like MS C's output, carries the CodeView
