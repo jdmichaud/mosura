@@ -137,7 +137,45 @@ raises it. A blanket cspec change fights that design. Whatever fixes the saved-r
 work inside it — most likely by recognising the save/restore pair, not by redeclaring the
 convention.
 
-### NEXT STEP, NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
+### ORACLE-GROUNDED: the saved-register defect is WATCALL-ONLY, and the cspec is the root
+
+MVE (x86:LE:64:default:gcc, bytes `5748c7c70006000048893c25000060005fc3` at 0x400517) — save a
+PARAMETER register, immediately overwrite it, restore it:
+
+    push rdi ; mov rdi,0x600 ; mov [0x600000],rdi ; pop rdi ; ret
+
+Ghidra (`oracle/capture --c`) and mosura (`--example dump`) BOTH produce, identically:
+
+    void func(void) { xRam0000000000600000 = 0x600; return; }
+
+No parameter. mosura handles this correctly on the SysV path — the defect is NOT universal and
+NOT in `ActionInputPrototype`.
+
+**The difference is the cspec.** In SysV the parameter registers (RDI/RSI/RDX/RCX) are
+`killedbycall` and never `<unaffected>`. In `specs/x86-32-watcom.cspec` EBX/ECX/EDX are BOTH
+`<input>` pentries AND `<unaffected>`. That dual membership keeps a saved register's exit value
+observable, so the restore stays live, so the save stays live, so the incoming value has a
+descendant and becomes a parameter.
+
+**BUT NO SUBSET OF THE FIX IS FREE** — measured, each against `ground_truth_parity` (25 tests):
+
+| moved to killedbycall | result |
+|---|---|
+| EBX, ECX, EDX | 3 failures |
+| EBX, ECX | 2 failures |
+| EBX | 2 failures |
+| ECX | 1 failure |
+
+The MVEs are build-time-verified source-to-bytes pairs, so these are real output regressions, not
+score movements. `callee_register_return_is_recovered_with_its_argument` loses its `value [ebx]`
+register return entirely and a byte parameter loses its width.
+
+So the watcall cspec's `<unaffected>` list is simultaneously (a) the root cause of the
+saved-register over-recovery and (b) load-bearing for register-return recovery. Resolving it means
+understanding WHY those MVEs depend on it — most likely that some other code compensates for the
+dual membership and would need to move first. Do not attempt the swap again without that.
+
+### ALSO NAMED: `ActionRestrictLocal` is not ported (zero matches in mosura)
 
 Ghidra `coreaction.cc:1957`. Its second half is precisely the saved-register handling:
 
