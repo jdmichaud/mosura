@@ -523,6 +523,19 @@ Two findings that shape the plan:
   through **code-unit comments** carrying `file:line`, which `printc.cc` prints from `commentdb`.
   Types/signatures/locals/CC change the code; comments change the text around it.
 
+Design (plan §3a) draws mosura's existing dependency line: **decode with crates, port the
+decisions** — `gimli`/`pdb` for the bytes exactly as `loader/elf.rs` already uses `object` for ELF,
+with every Ghidra refusal, option and fixup veto on our side of the line, because a crate must never
+supply policy. That removes ~30k lines of hand-rolled parsing of hostile input, which is most of the
+security surface. The rest: `DebugSectionProvider` takes named byte ranges (not a container) so LE/MZ
+is a new impl; unknown tags/forms/record IDs skip with a report as a *rule*, which is what lets the
+326-ID catalogue land incrementally; `fasthash::FxHasher` + dense-vec per the perf log's own paid
+lessons, one perf-log row per phase; and, since debug sections are the one input class guaranteed to
+be hostile, explicit depth caps (stack exhaustion aborts and Rust can't catch it), no collection
+sized from file data, visited sets on every traversal, `deny(indexing_slicing, unwrap_used)` on the
+new modules, and `.gnu_debuglink`/build-id treated as attacker-controlled *paths* — no absolute, no
+`..`, resolved only under the configured search roots.
+
 DOS-era compiler formats (Watcom `-hw`/`-hd`/`-hc`, Borland TDS, CodeView appended to MZ/LE) are a
 **later stage** with a designed-for slot: keep the section provider and the CodeView reader
 container-agnostic, and most of that story falls out of the PE and DWARF phases — Watcom `-hd`

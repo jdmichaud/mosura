@@ -300,6 +300,137 @@ D9–D11 PDB, D12 Go, D13 PEF) are independent of each other, sharing only that 
 that graph **spine-first**: a thin vertical slice of the substrate plus a thin slice of DWARF, end
 to end, before any layer is built out.
 
+## 3a. Design: maintainable, extensible, fast, secure
+
+The §3 blocks are *what* to port. This is *how*, and it is where the four properties are decided —
+none of them survives being retrofitted onto 40,000 lines of parser.
+
+### 3a.1 The dependency line: decode with crates, port the decisions
+
+mosura already draws this line and it is the single biggest lever here. `loader/elf.rs` does not
+hand-roll ELF parsing — it uses the `object` crate for the bytes and ports `ElfProgramBuilder`'s
+**decisions** (which sections become blocks, how a relocatable is laid out, what `SHT_NOBITS`
+means). `flate2`, `cpp_demangle`, `roxmltree` and `regex` are there on the same basis.
+
+Applied here:
+
+| Layer | Bytes | Decisions (the port) |
+|---|---|---|
+| DWARF | `gimli` | `DWARFImporter`, `DWARFFunctionImporter`, `DWARFDataTypeImporter`, the fixup chain, the refusals |
+| PDB / CodeView | `pdb` crate | `pdbapplicator`, `AbstractPeDebugLoader`'s application order and comments |
+| `.zdebug_*` | `flate2` (already a dep) | which section names to try, and the caching |
+
+**The hard rule: a crate must never supply policy.** `gimli` reads split DWARF perfectly happily;
+Ghidra refuses it (§0), so that refusal is *ours*, gated above `gimli`. Every Ghidra option, warning,
+decline and fixup veto lives on our side of the line. Where a crate's abstraction cannot express a
+Ghidra decision, the decision wins and we drop to the crate's raw reader — never the reverse.
+
+This is a judgment call worth naming rather than burying: hand-porting the readers is defensible
+under "only port Ghidra", but the precedent is `object`, and it removes ~30,000 lines of
+hand-rolled parsing of hostile input — which is most of §3a.5's risk. Adoption check for each new
+crate: does it forbid `unsafe`, and is it fuzzed? mosura has **zero `unsafe` today** (§3a.5) and
+that invariant should extend to what it depends on for this.
+
+### 3a.2 Maintainable
+
+- **Mirror Ghidra's extension-point shape**, not just its behaviour, so the Rust reads beside the
+  Java: a trait per Ghidra interface (`DebugSectionProvider`, `DWARFFunctionFixup`), the same
+  names, the same veto semantics.
+- **Name-level traceability.** Where Java's class-per-record collapses to an enum (§0a), variant
+  names keep Ghidra's class names — `GlobalData32`, `FramePointerRelative`, `FrameSecurityCookie` —
+  so one `grep` hits both trees. The port already holds this line for rules and actions; the
+  catalogues are where it is easiest to lose.
+- **Registries as `const` slices**, following `NATIVE_LOADERS` (`analysis/mod.rs:136`) rather than
+  inventing a plugin mechanism.
+- A **file → module mapping table** in this doc when implementation starts, per the convention in
+  [`analysis-port-plan.md`](analysis-port-plan.md) §6, and a doc comment per ported unit citing the
+  Ghidra file and line, as the rest of the codebase does.
+
+### 3a.3 Extensible
+
+Three traits and one sink, sized so the later formats are additions rather than refactors:
+
+```rust
+/// Ghidra `DWARFSectionProvider`. Named byte ranges — deliberately NOT a container, so an
+/// `LeSectionProvider` (§5) is a new impl, not a refactor.
+pub trait DebugSectionProvider {
+    fn has_section(&self, names: &[&str]) -> bool;
+    fn section(&self, name: &str) -> Option<&[u8]>;
+}
+
+/// One debug format. DWARF, CodeView, PDB and Go are four impls over one sink.
+pub trait DebugImporter {
+    fn claims(&self, p: &dyn DebugSectionProvider) -> bool;   // Ghidra's silent-decline gate
+    fn import(&self, src: &dyn DebugSectionProvider, sink: &mut dyn DebugSink) -> ImportSummary;
+}
+
+/// Ghidra `DWARFFunctionFixup`: assembled prototype in, veto or amend out.
+type FunctionFixup = fn(&mut DebugFunction) -> FixupVerdict;   // a `const` slice, per 3a.2
+```
+
+`DebugSink` is the format-neutral face of D0a–D0d (`declare_type`, `set_signature`, `add_local`,
+`add_comment`, `add_source_line`) and it is the interface P1 exists to prove: a second format runs
+through it before DWARF-specific detail can settle into it.
+
+**Unknown-value tolerance is a rule, not a fallback.** An unknown `DW_TAG`, `DW_FORM` or record ID
+must skip with a report and never fail the import — Ghidra says so in its own source
+("Users of this enum should be tolerant of unknown values"). That is precisely what lets the 326-ID
+catalogue (§0a) land record by record without blocking the phases around it.
+
+### 3a.4 Fast
+
+The project has a real perf discipline ([`perf-log.md`](perf-log.md)): `perf record` plus
+`MOSURA_ANALYSIS_TRACE=1` per-analyzer sums, with before/after rows and byte-identical output at
+every step. Requirements, not aspirations:
+
+- **No new analyzer lands untraced.** One perf-log row per phase, measured the existing way.
+- **Reuse the two lessons the log already paid for**: `decompile/fasthash.rs` (`FxHasher`) for hot
+  integer-keyed maps, and a dense `Vec` indexed by a dense id instead of a `HashMap` — the log's
+  row #1 was exactly that win (69.6s → 35.2s). A DIE-offset → index map is the same shape.
+- **Index first, decode on demand.** One pass building offset → (unit, tag, depth, sibling), with
+  attributes decoded only for DIEs we actually import. Ghidra pre-materialises the DIE tree; parity
+  is over *results*, so the internal representation is ours to choose, and `gimli` is built for the
+  lazy shape.
+- **Intern names.** Type names and file paths repeat heavily across compilation units.
+- **Pay nothing when absent.** The decline path must cost one section lookup — that is Ghidra's
+  shape too, and it keeps the whole track free for the DOS corpus, which has no debug info at all.
+
+### 3a.5 Secure
+
+**Threat model, stated plainly.** Debug sections are attacker-controlled bytes inside the file under
+analysis — the one input class a reverse-engineering tool is *guaranteed* to be fed hostile samples
+of. mosura has **zero `unsafe`** in `crates/mosura/src/`, so the realistic harms are **denial of
+service** (hang, OOM, process abort) and **wrong output**, not memory-safety compromise. Keeping
+that true is the security requirement; the five concrete hazards and the rule for each:
+
+1. **Stack overflow — the sharpest one.** DIE trees and type graphs are recursive and
+   attacker-shaped, and a deep chain aborts the process: Rust cannot catch stack exhaustion.
+   Rule: explicit depth caps or iterative worklists on every traversal. Precedent exists —
+   `decompile/mergesnip.rs:112` truncates recursion at a maximum depth, mirroring Ghidra.
+2. **Unbounded allocation.** Never size a collection from file data. A `DW_AT_count` near 2^64, a
+   bogus PDB stream length or an absurd array bound must never reach `Vec::with_capacity`; grow as
+   you read, and cap against the section length.
+3. **Cycles.** Type graphs cycle legitimately (self-referential structs) and maliciously. Every
+   traversal carries a visited set; §6g gates it.
+4. **Panics.** Extend `loader/read.rs`'s stated policy — "every reader returns `None` rather than
+   panicking on a short buffer, because a loader's job on a truncated file is to refuse it" — to
+   these modules: `Result` out, no indexing, no `unwrap`. Enforce with a module-level
+   `#![deny(clippy::indexing_slicing, clippy::unwrap_used)]` on the new modules, rather than
+   crate-wide, which would be a large retrofit.
+5. **Time.** A work-unit counter so a hostile file cannot wedge the analyzer: report and stop,
+   rather than run forever inside `analyze()`.
+
+**Path traversal — the one that is easy to miss.** External debug files are located from a
+`.gnu_debuglink` string or a build-id embedded *in the file being analysed*, and then opened. That
+is an attacker-controlled filename reaching the filesystem. Rule: reject absolute paths and any
+`..` component, and resolve only beneath the configured `SearchLocation` roots — Ghidra's
+`SameDirSearchLocation`/`LocalDirectorySearchLocation` are the only roots, and ours must be too.
+
+**Fuzzing, concretely.** `cargo-fuzz` targets at the section-bytes entry points
+(`DebugImporter::import` over a synthetic provider), seeded from the §6d corpus, with the §6c
+builders doubling as structure-aware generators. The acceptance bar is the one in §6g: every
+malformed input reports and continues; a panic or an abort is a bug, not a diagnostic.
+
 ## 4. Parity artifacts copied verbatim
 
 The 19 `.dwarf` files under `Ghidra/Processors/*/data/languages/` are configuration, not code — the
@@ -530,6 +661,12 @@ shippable and independently measurable:
 | P10 | D12 Go | `go_hello.elf` parity: names, source lines, RTTI types |
 | P11 | D13 PEF | only if a PEF loader exists; else recorded as unreachable |
 | P12 | opt-in extras (§1) | source interleaving and `-gembed-source`, behind the native flag, no golden touched |
+
+**Cross-cutting, every phase, not a phase of its own** (§3a): a perf-log row measured the existing
+way; the `#![deny(clippy::indexing_slicing, clippy::unwrap_used)]` module attribute in place from
+P0; depth caps and visited sets on every traversal the phase adds; and a fuzz target for each new
+reader entry point from the phase that introduces it. These are exit criteria for each row above,
+not a P13 cleanup — a robustness pass bolted on at the end is how the properties get lost.
 
 Two properties this ordering buys. Every phase from P0 onward has a **working end-to-end path**, so
 a regression is always attributable to the phase that caused it rather than to an unfinished layer.
