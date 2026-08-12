@@ -156,23 +156,30 @@ fn watcom_reg_table() -> Vec<(u64, u32, &'static str)> {
     let mut t = Vec::new();
     // The watcall argument registers, in convention order, with the sub-register Watcom uses for a
     // narrow argument (open-watcom-v2 `owflat.h`: a byte argument travels in AL/DL/BL/CL).
+    // (32-bit name, 16-bit name, 8-bit low, 8-bit high). ESI/EDI/EBP have NO 8-bit forms on x86:
+    // naming one produces a pragma Watcom rejects, and a rejected pragma is not a local failure —
+    // `E1122` aborted a whole dosemu batch once already and cost an entire measurement.
     for (e, w, b, hi) in [
-        ("EAX", "ax", "al", "ah"),
-        ("EDX", "dx", "dl", "dh"),
-        ("EBX", "bx", "bl", "bh"),
-        ("ECX", "cx", "cl", "ch"),
+        ("EAX", "ax", Some("al"), Some("ah")),
+        ("EDX", "dx", Some("dl"), Some("dh")),
+        ("EBX", "bx", Some("bl"), Some("bh")),
+        ("ECX", "cx", Some("cl"), Some("ch")),
         // Not watcall argument registers, but a function whose parameters demonstrably arrive in
         // them is using a custom convention, and `#pragma aux ... parm [esi] [edi]` is how Watcom
         // is told so. `recover_input_params`' custom-register branch recovers these.
-        ("ESI", "si", "si", "si"),
-        ("EDI", "di", "di", "di"),
-        ("EBP", "bp", "bp", "bp"),
+        ("ESI", "si", None, None),
+        ("EDI", "di", None, None),
+        ("EBP", "bp", None, None),
     ] {
         let Some(off) = spec.0.register_offset(e) else { continue };
         t.push((off, 4, Box::leak(e.to_lowercase().into_boxed_str()) as &'static str));
         t.push((off, 2, w));
-        t.push((off, 1, b));
-        t.push((off + 1, 1, hi));
+        if let Some(b) = b {
+            t.push((off, 1, b));
+        }
+        if let Some(hi) = hi {
+            t.push((off + 1, 1, hi));
+        }
     }
     t
 }
@@ -248,12 +255,30 @@ fn own_contract(
     if let Some(m) = f.own_modify.as_ref() {
         let regs: Vec<&str> = m
             .iter()
-            .filter_map(|off| table.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2))
+            // A SUB-REGISTER write modifies its containing 32-bit register: `mov ah,1` destroys
+            // EAX, `xor dl,dl` destroys EDX. Requiring an exact 4-byte match dropped those from the
+            // list entirely — FUN_00011ab8 writes AH and DL and declared only `modify [eax]`, so
+            // Watcom still preserved EDX. Map an 8/16-bit offset back to the register that
+            // contains it (AH sits at base+1, so try base and base-1).
+            .filter_map(|off| {
+                table
+                    .iter()
+                    .find(|&&(o, sz, _)| o == *off && sz == 4)
+                    .or_else(|| table.iter().find(|&&(o, sz, _)| o + 1 == *off && sz == 4))
+                    .map(|t| t.2)
+            })
             // Watcom REJECTS the frame and stack pointers in a `modify` list —
             // `E1122: Illegal register modified by '<name>' #pragma` — and one such TU aborts the
             // whole dosemu batch, leaving every later function with a stale object.
             .filter(|r| *r != "ebp" && *r != "esp")
-            .collect();
+            .fold(Vec::new(), |mut acc, r| {
+                // Dedup: a register and its sub-registers now map to the same name, and
+                // `modify [eax eax]` is not something to hand a compiler.
+                if !acc.contains(&r) {
+                    acc.push(r);
+                }
+                acc
+            });
         if !regs.is_empty() {
             parts.push(format!("modify [{}]", regs.join(" ")));
         }
