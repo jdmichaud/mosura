@@ -7,6 +7,8 @@
 Cargo.lock.bak
 
 # local throwaway grounding tools (dump the IR/scope of a fixture); never committed.
+# For "what is this file?" (container/compiler/language/cspec/FID) do NOT write one: use the
+# committed `examples/identify.rs`. If it can't answer, extend it — that is the maintained path.
 # The runner examples/trace.rs and dumpc.rs ARE tracked (grounding tools kept for the port).
 /crates/mosura/examples/dump*.rs
 !/crates/mosura/examples/dumpc.rs

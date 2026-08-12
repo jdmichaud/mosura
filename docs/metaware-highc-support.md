@@ -14,17 +14,39 @@ it when a module carries a MetaWare marker; `watcom::compiler_spec_id` (the sing
 decision point) checks MetaWare first and accepts `highc` as a declared override, which is how a
 caller tests a compiler hypothesis on a linked image.
 
-Verified end to end on a real object compiled by the real toolchain (via a local grounding tool —
-`examples/dump*.rs` is gitignored by convention, so reproduce with a few lines calling
-`metaware::detect` + `analyze_file_as`):
+Verified end to end on a real object compiled by the real toolchain. Reproduce with the committed
+identification tool (`cargo run --release --example identify -- <file> [--cspec highc]`) — no
+throwaway needed; `examples/dump*.rs` remains gitignored because `identify` is the committed answer:
 
 ```
-hcabi.obj
-metaware marker : MetaWare High C [dosomf v2.05b(4pcs)] -> metaware:highc:dosomf2.05b
-language        : x86:LE:32:default / highc
-cspec file      : Some("specs/x86-32-highc.cspec")
-compiler_version: Some("metaware:highc:dosomf2.05b")
+== hcabi.obj  (1000 bytes)
+   sha256 acde798c458d585328f31e037e9a9fbd5b7ef6a9c81fa6fd3a316d65c5185443
+
+-- container
+   magic            OMF object
+   native loader    none — the default dispatch owns this file
+
+-- compiler evidence in the file
+   version marker   metaware:highc:dosomf2.05b (Era)
+   evidence         MetaWare High C [dosomf v2.05b(4pcs)]
+   metaware marker  metaware:highc:dosomf2.05b  [MetaWare High C [dosomf v2.05b(4pcs)]]
+
+-- as loaded and analysed
+   language         x86:LE:32:default
+   compiler spec    highc
+   cspec file       specs/x86-32-highc.cspec
+   compiler opinion unknown
+   compiler version metaware:highc:dosomf2.05b
+   blocks           4
+     _TEXT        0x00010000..0x000101bf  r-x
+     _DATA        0x00011000..0x00011001  rw-
+     CONST        0x00012000..0x0001200b  rw-
+     EXTERNAL     0x00013000..0x00013037  r-x
 ```
+
+Note `compiler opinion unknown` beside a populated `compiler version`: the OMF path records the
+version marker without claiming a `CompilerOpinion` label, since Ghidra's opinion enum has no
+MetaWare member. The marker is the evidence; the opinion stays empty rather than inventing a value.
 
 ## ⚠️ The X-32 samples are NOT known to be High C
 
