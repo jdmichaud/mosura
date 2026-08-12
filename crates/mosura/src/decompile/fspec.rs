@@ -1217,6 +1217,38 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // convention found none — never re-decide one it already recovered. Without that guard it also
     // fired on SysV functions whose parameters are legitimately on the stack (`long double` is
     // passed there), and the `longdouble` corpus fixture dropped 1.000 -> 0.976.
+    // A CUSTOM REGISTER CONVENTION, collected once and APPENDED to whatever the convention itself
+    // recovers. The body reads these registers without ever writing them, so their values come from
+    // the caller and they are parameters, whatever list the model holds. Watcom spells it
+    // `#pragma aux <name> parm [<regs>]`, the same mechanism the stack-only branch below uses.
+    //
+    // FUN_00010ac2 takes BOTH its arguments this way (ESI and EDI) and came back `void f(void)`
+    // with both pointers left as declared-but-never-assigned locals that the body then
+    // dereferenced. FUN_00010010 is the mixed case: EAX and EDX by the convention, plus ESI/EDI as
+    // the operands of its `rep movs`, which the caller must have set. 603 emitted WAR2 TUs carry
+    // such a local and none are byte-clean.
+    //
+    // STRICTLY ADDITIVE: it only ever ADDS storage the convention did not claim, never re-decides
+    // what it did. Ordered by register offset so the result is deterministic.
+    let mut custom: Vec<ProtoSlot> = Vec::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let vn = f.vn(VarnodeId(i));
+        if !vn.is_input() || vn.loc.space != reg || vn.descend.is_empty() {
+            continue;
+        }
+        if f.spaces.space_by_spacebase(vn.loc, vn.size).is_some() || pl.possible_param(vn.loc, vn.size) {
+            continue;
+        }
+        // Flags and other status bits are not argument storage.
+        if vn.size > 4 || pl.entry.iter().all(|e| e.space != vn.loc.space || vn.loc.offset >= 0x100) {
+            continue;
+        }
+        if !custom.iter().any(|p| p.addr == vn.loc) {
+            custom.push(ProtoSlot { addr: vn.loc, size: vn.size });
+        }
+    }
+    custom.sort_by_key(|p| p.addr.offset);
+
     let mut default_run = active.clone();
     pl.fillin_map(&mut default_run);
     // INSTRUMENT (`MOSURA_PROTO=1`): 579 emitted WAR2 TUs declare a local that is never assigned
@@ -1232,12 +1264,14 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         }
     }
     if default_run.trial.iter().any(|t| t.is_used()) {
-        return default_run
+        let mut out: Vec<ProtoSlot> = default_run
             .trial
             .iter()
             .filter(|t| t.is_used())
             .map(|t| ProtoSlot { addr: t.addr, size: t.size })
             .collect();
+        out.extend(custom);
+        return out;
     }
     let any_reg_param = active.trial.iter().any(|t| t.addr.space == reg);
     let stack_only = !any_reg_param && active.num_trials() > 0;
@@ -1267,7 +1301,29 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         }
     }
     pl.fillin_map(&mut active);
-    active.trial.iter().filter(|t| t.is_used()).map(|t| ProtoSlot { addr: t.addr, size: t.size }).collect()
+    let by_model: Vec<ProtoSlot> =
+        active.trial.iter().filter(|t| t.is_used()).map(|t| ProtoSlot { addr: t.addr, size: t.size }).collect();
+
+    // A CUSTOM REGISTER CONVENTION. The convention found nothing, yet the body reads registers it
+    // never wrote — those values come from the caller and are parameters, whatever list the model
+    // holds. Watcom spells it `#pragma aux <name> parm [<regs>]`, the same mechanism the stack-only
+    // branch above uses.
+    //
+    // FUN_00010ac2 is the specimen: its arguments arrive in ESI and EDI, neither of which is in
+    // watcall's `<input>` list (EAX/EDX/EBX/ECX/stack), so it came back `void f(void)` with both
+    // pointers left as declared-but-never-assigned locals whose garbage values the body then
+    // dereferenced. 603 emitted WAR2 TUs carry such a local and none are byte-clean.
+    //
+    // STRICTLY ADDITIVE, exactly like the stack-only branch: it may only ADD a prototype where the
+    // convention recovered none, never re-decide one it already found. Ordered by register offset
+    // so the recovered list is deterministic.
+    // APPENDED, not substituted: the convention's own parameters keep their positions and order,
+    // and the custom registers follow. A function can have both — FUN_00010010 takes EAX and EDX
+    // by the convention AND reads ESI/EDI as the source/destination of its `rep movs`, which the
+    // caller must have set; recovering only the first two left five undefined locals in its body.
+    let mut out = by_model;
+    out.extend(custom);
+    out
 }
 
 /// Ghidra `ActionOutputPrototype` (coreaction.cc:4765): the return storage, read from the

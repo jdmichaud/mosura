@@ -161,6 +161,12 @@ fn watcom_reg_table() -> Vec<(u64, u32, &'static str)> {
         ("EDX", "dx", "dl", "dh"),
         ("EBX", "bx", "bl", "bh"),
         ("ECX", "cx", "cl", "ch"),
+        // Not watcall argument registers, but a function whose parameters demonstrably arrive in
+        // them is using a custom convention, and `#pragma aux ... parm [esi] [edi]` is how Watcom
+        // is told so. `recover_input_params`' custom-register branch recovers these.
+        ("ESI", "si", "si", "si"),
+        ("EDI", "di", "di", "di"),
+        ("EBP", "bp", "bp", "bp"),
     ] {
         let Some(off) = spec.0.register_offset(e) else { continue };
         t.push((off, 4, Box::leak(e.to_lowercase().into_boxed_str()) as &'static str));
@@ -209,6 +215,46 @@ fn nondefault_parm_regs(
         return None;
     }
     Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
+}
+
+/// The function's own Watcom contract — its `parm` list where the recovered storage is not what
+/// Watcom would assign by position, and its `modify` list where the decompiler established which
+/// registers the function destroys. `None` when neither is needed.
+///
+/// The `modify` half is the expensive one to omit. Without it Watcom preserves every register it
+/// uses that the default convention does not let it destroy, so a function whose original freely
+/// clobbers EDX comes back with a `push edx`/`pop edx` pair around the whole body. Measured on
+/// FUN_0002266c: 31 bytes against the original's 29, and with `modify [eax edx]` it matches
+/// instruction for instruction. Across the survey the same shape shows up in aggregate as `pop`
+/// -428 and `push` -207 against the originals — 39% of the entire instruction deficit.
+///
+/// `modify` (additive) rather than `modify exact`: the exact form also strips the SEGMENT registers
+/// from the preserved set and Watcom starts saving GS.
+fn own_contract(
+    f: &mosura::decompile::funcdata::Funcdata,
+    table: &[(u64, u32, &'static str)],
+    stack_convention: bool,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    // A STACK-BASED prototype is `parm []`. It used to short-circuit the whole declaration, so
+    // these functions never got their `modify` list — the two are independent facts about the
+    // contract and both belong in the same pragma.
+    if stack_convention {
+        parts.push("parm []".to_string());
+    } else if let Some(p) = nondefault_parm_regs(f, table) {
+        parts.push(format!("parm {p}"));
+    }
+    // Only 4-byte general registers, named through the same spec-built table as `parm`.
+    if let Some(m) = f.own_modify.as_ref() {
+        let regs: Vec<&str> = m
+            .iter()
+            .filter_map(|off| table.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2))
+            .collect();
+        if !regs.is_empty() {
+            parts.push(format!("modify [{}]", regs.join(" ")));
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 fn main() {
@@ -511,11 +557,7 @@ fn main() {
                 f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
             });
         let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);
-        let tu = if stack_convention {
-            // The pragma alone, with NO forward declaration: printc emits its own signature and a
-            // `void f(void);` ahead of it would conflict. `#pragma aux` attaches by NAME.
-            format!("#pragma aux {name} parm [];\n{tu}")
-        } else if let Some(regs) = nondefault_parm_regs(&f, &watreg) {
+        let tu = if let Some(decl) = own_contract(&f, &watreg, stack_convention) {
             // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
             // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
             // only express POSITION — Watcom then assigns position 1 to EAX, 2 to EDX, and so on.
@@ -523,7 +565,7 @@ fn main() {
             // alone compiles the arguments into the wrong registers, and `#pragma aux ... parm [..]`
             // is how Watcom is told the real one. This is the same mechanism as the `parm []`
             // stack case above, generalised to registers.
-            format!("#pragma aux {name} parm {regs};\n{tu}")
+            format!("#pragma aux {name} {decl};\n{tu}")
         } else {
             tu
         };

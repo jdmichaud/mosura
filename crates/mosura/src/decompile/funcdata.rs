@@ -78,6 +78,13 @@ pub struct Funcdata {
     /// offset is read by `guardCalls` on every later heritage pass, long after the arguments
     /// commit and the `ParamActive` is dropped.
     pub call_specs: std::collections::HashMap<OpId, super::fspec::CallSpec>,
+
+    /// Register offsets THIS function destroys — written somewhere in its reachable body and not
+    /// restored — or `None` when that could not be established
+    /// (`analysis::decompiler::callee_writes_cfg`). It is the function's recovered Watcom `modify`
+    /// list, and a backend that must reproduce the original's register saves needs it: without a
+    /// declaration Watcom preserves registers the original destroys, costing a push/pop pair each.
+    pub own_modify: Option<Vec<u64>>,
     /// Master gate for heritage call-effect guarding (Ghidra runs `Heritage::guardCalls` only in the
     /// true heritage). The pipeline sets it before the real heritage; the AliasChecker probe clone
     /// leaves it `false`, so `alias_boundary` is computed on a graph without the call INDIRECTs.
@@ -209,6 +216,7 @@ impl Funcdata {
             active_output: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
+            own_modify: None,
             call_guards_active: false,
             alias_boundary: None,
             directwrite_pending_clear: false,

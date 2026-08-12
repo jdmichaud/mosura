@@ -98,6 +98,10 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // giving the input list alone would recover a prototype for a body that has already been
         // deleted, which is a right signature over wrong bytes.
         if let Some(reg) = f.spaces.by_name("register") {
+            // THIS function's own `modify` list, from a complete walk of its body. Straight-line
+            // `callee_effects` cannot supply it — it gives up at the first branch, and a function
+            // with a loop is exactly the case that needs it.
+            f.own_modify = callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true);
             if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
             {
                 if !writes.is_empty() {
@@ -245,7 +249,7 @@ fn record_callee_effects(
         // The COMPLETE write set over the callee's whole CFG — computed whether or not the
         // straight-line scan succeeded, because the downgrade it feeds is exactly the case the
         // straight-line scan cannot reach.
-        if let Some(w) = callee_writes_cfg(program, spec, ctx, target, reg, f) {
+        if let Some(w) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
             f.call_specs.entry(call).or_default().writes_all = Some(w);
         }
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
@@ -284,6 +288,7 @@ fn callee_writes_cfg(
     entry: u64,
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
+    calls_clobber: bool,
 ) -> Option<Vec<u64>> {
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
@@ -319,7 +324,23 @@ fn callee_writes_cfg(
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => fallthrough = false,
-                Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branchind) => {
+                Some(OpCode::Call) | Some(OpCode::Callind) => {
+                    // For the DOWNGRADE question ("does this callee leave the register alone?") a
+                    // nested call is unknown and the whole answer must be withheld. For the
+                    // function's OWN `modify` list the answer is known: whatever the convention
+                    // lets a call destroy, this function destroys too by containing one.
+                    if !calls_clobber {
+                        return None;
+                    }
+                    for e in f.proto_model.effectlist.iter() {
+                        if e.space == reg && e.effect == crate::decompile::fspec::effect::KILLEDBYCALL
+                            && !writes.contains(&e.offset)
+                        {
+                            writes.push(e.offset);
+                        }
+                    }
+                }
+                Some(OpCode::Branchind) => {
                     return None;
                 }
                 // A BRANCH/CBRANCH into the CONSTANT space is p-code-relative control flow WITHIN
