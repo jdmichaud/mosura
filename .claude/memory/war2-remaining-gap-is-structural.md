@@ -54,9 +54,22 @@ That is ~66 of the 73. **None of them is a prelude fix.** Adding a typedef canno
 14-byte integer exist, and widening `uint8` cannot help unless Watcom 10.0a has a 64-bit integer
 type — UNTESTED; `__int64` arrived in Watcom 11, so assume not until checked.
 
-The fix has to be in the DECOMPILER: stop producing >4-byte integer values where 32-bit arithmetic
-suffices. `(int4)(CONCAT44(a,b) >> 0x10) >> 0x10` is extracting a 16-bit field and needs no 64-bit
-intermediate at all.
+⚠️ **AND THE OBVIOUS DECOMPILER FIX IS NOT AVAILABLE.** "Simplify the SUBPIECE-of-PIECE away" was
+the first suggestion, and it is wrong: every relevant Ghidra rule is ALREADY ported —
+`RuleSubExtComm`, `RuleSubCommute`, `RuleSubZext`, `RuleSubRight`, `RuleSubNormal`,
+`RuleShiftPiece`, `RuleAndPiece`, `RulePiece2Sext`, `RuleSubCancel`, `RulePiece2Zext`. The 64-bit
+intermediate survives because the shift genuinely crosses the 32-bit boundary of two independent
+values; Ghidra produces the same thing.
+
+**So a real part of the remaining gap is a TARGET-LANGUAGE limit, not a defect.** Watcom 10.0a
+cannot express a 64-bit integer, a 6-byte assignment, or a 14-byte value, and no decompiler work
+changes that. ~66 of the 73 compile failures are in that category, which puts a CEILING on what
+this survey can reach: those functions cannot be byte-clean while the emitted language is C
+compiled by this toolchain.
+
+Before spending more here, establish the ceiling: count how many of the 3023 contain a construct
+with no Watcom-10.0a C spelling. That number is the real denominator, and 600 should be judged
+against it rather than against 3023.
 
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
