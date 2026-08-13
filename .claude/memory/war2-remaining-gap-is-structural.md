@@ -145,7 +145,16 @@ the concrete shape of the fix, and the sampled loop can validate it in four minu
 `ground_truth_parity` 25/25, and changed FUN_00020490's output NOT AT ALL. So either the add's
 output is not `implied` at that point, or the size comparison does not hold there. Print
 `outvn.size`, `tokenct.size()` and `is_implied(outvn)` for that op BEFORE writing the flag a second
-time. Reverted rather than shipped inert. None is recoverable
+time. Reverted rather than shipped inert.
+
+**RESOLVED — the lever is dead, do not retry it.** Instrumented (`MOSURA_CASTOUT`, env-gated print of
+`outvn.size` / `tokenct.size()` / `is_implied`) on FUN_00020490. Every implied IntAdd there reports
+`outsize=4 token=int4(4)`, so the guard `outvn.size < tokenct.size()` is `4 < 4` — false by
+construction, which is exactly why the flag was inert. The one narrow add (`outsize=2 token=int2`)
+reports `implied=false`, so it never enters the implied arm either. **`cast_output` is not where the
+width is dropped.** The `movsx`/width class must be found somewhere else — look at where the 2-byte
+value is widened before the add (the type-propagation pass), not at cast printing. This closes the
+last lever named in this file. None is recoverable
 information that a better decompiler could supply — the emitted C does not choose which register
 holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
 zero-extended by `xor`+`mov` or by `and`.
