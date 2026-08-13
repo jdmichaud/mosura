@@ -729,3 +729,23 @@ this now (384 of 385 clean verdicts reproduced).
 
 Related: [[byte-exact-class-map-2026-08-11]], [[prologue-order-is-chain-frame]],
 [[caller-evidence-prototypes]].
+
+### Corpus state after M38 — READ THIS BEFORE SCORING ANYTHING
+
+`src`/`raw`/`manifest.tsv` point at `src.83c11a1-dirty` (emitted 05:25 on 2026-08-13), an emit that
+was **never compiled**. `obj/` is the 04:17 compile of an EARLIER emit. The tree is therefore NOT
+scorable as it stands, and compare.py correctly refuses. **M38 (392 byte-clean of 1728 attributable)
+remains the last valid measurement.** Recovery is a full pipeline re-run — do NOT repoint the
+symlinks by guessing which `src.*` matches `obj/`; that manufactures exactly the pairing the guards
+exist to forbid.
+
+A shape-identical-but-byte-different scan run against this broken pairing produced an apparent
+harness false negative (FUN_00012594 reading "already EXACT"). **It was an artifact of the
+mismatched pairing and is WITHDRAWN.** It shows why the fourth guard was needed: the corpus looked
+entirely normal while yielding a wrong per-function verdict.
+
+**Fourth integrity guard** (war2-survey `e8925c8`): the compile sentinel records
+`emit=$(readlink src)` and compare.py refuses a cross-emit score. In the observed case object count,
+prelude hash and wcc flags ALL still agreed — only the emit identity disagreed, and nothing was
+checking it. Guard count: frozen-script staleness, obj/ not cleared, compile/compare race, and now
+cross-emit pairing.
