@@ -10168,6 +10168,221 @@ impl Rule for RuleExpandLoad {
     }
 }
 
+/// Ghidra `RulePiecePathology::isPathology` (ruleaction.cc:10440): does this value trace back to a
+/// source whose upper bytes are *garbage* rather than data? Two sources qualify, and both mean "the
+/// register was never fully written": a function INPUT that is not persistent, and the output of a
+/// CALL whose return storage is not being actively recovered.
+///
+/// The walk chases COPYs, queues MULTIEQUALs (marked so each is visited once), and reads an
+/// INDIRECT's `iop` back to the op it guards. Ghidra's `isOutputActive` has no per-CALL analogue in
+/// mosura — call-output trials are not modelled — so that arm reduces to "defined by a CALL that has
+/// a call spec", which is Ghidra's answer whenever output recovery is not in flight. It makes the
+/// test slightly more willing than Ghidra's during the recovery window.
+fn piece_pathology_is_pathology(data: &mut Funcdata, vn: VarnodeId) -> bool {
+    let mut worklist: Vec<OpId> = Vec::new();
+    let mut pos = 0usize;
+    let mut slot = 0usize;
+    let mut res = false;
+    let mut vn = vn;
+    loop {
+        if data.vn(vn).is_input() && !data.vn(vn).is_persist() {
+            res = true;
+            break;
+        }
+        let mut cur = data.vn(vn).def;
+        while !res {
+            let Some(op) = cur else { break };
+            match data.op(op).code() {
+                OpCode::Copy => {
+                    let Some(in0) = data.op(op).input(0) else { break };
+                    vn = in0;
+                    cur = data.vn(vn).def;
+                }
+                OpCode::Multiequal => {
+                    if !data.op(op).is_mark() {
+                        data.op_mut(op).set_mark();
+                        worklist.push(op);
+                    }
+                    cur = None;
+                }
+                OpCode::Indirect => {
+                    // Ghidra reads the iop annotation back to the guarded op; mosura carries the
+                    // same reference on the op itself.
+                    if let Some(call_op) = data.op(op).guarded_op() {
+                        if data.op(call_op).is_call() && data.call_specs.contains_key(&call_op) {
+                            res = true;
+                        }
+                    }
+                    cur = None;
+                }
+                OpCode::Call | OpCode::Callind => {
+                    if data.call_specs.contains_key(&op) {
+                        res = true;
+                    }
+                    break;
+                }
+                _ => cur = None,
+            }
+        }
+        if res {
+            break;
+        }
+        if pos >= worklist.len() {
+            break;
+        }
+        let op = worklist[pos];
+        if slot < data.op(op).num_inputs() {
+            let Some(next) = data.op(op).input(slot) else { break };
+            vn = next;
+            slot += 1;
+        } else {
+            pos += 1;
+            if pos >= worklist.len() {
+                break;
+            }
+            let Some(next) = data.op(worklist[pos]).input(0) else { break };
+            vn = next;
+            slot = 1;
+        }
+    }
+    for op in worklist {
+        data.op_mut(op).clear_mark();
+    }
+    res
+}
+
+/// Ghidra `RulePiecePathology::tracePathologyForward` (ruleaction.cc:10497): having established that
+/// a concatenation's upper half is garbage, follow the value forward through COPY/INDIRECT/
+/// MULTIEQUAL to every place it is *used*, and record there that only the lower bytes are real —
+/// on a CALL as that argument's consumed width, on a RETURN as the function's returned width.
+///
+/// Those two records are the rule's entire effect: they are read back by the dead-code consume
+/// sweep ([`super::consume`]), which is what makes the garbage bytes drop out of the output.
+fn piece_pathology_trace_forward(data: &mut Funcdata, op: OpId) -> u32 {
+    let mut count = 0u32;
+    let bytes_consumed = match data.op(op).input(1) {
+        Some(v) => data.vn(v).size,
+        None => return 0,
+    };
+    let mut worklist = vec![op];
+    let mut pos = 0usize;
+    data.op_mut(op).set_mark();
+    while pos < worklist.len() {
+        let cur_op = worklist[pos];
+        pos += 1;
+        let Some(out_vn) = data.op(cur_op).output else { continue };
+        for read_op in data.vn(out_vn).descend.clone() {
+            match data.op(read_op).code() {
+                OpCode::Copy | OpCode::Indirect | OpCode::Multiequal => {
+                    if !data.op(read_op).is_mark() {
+                        data.op_mut(read_op).set_mark();
+                        worklist.push(read_op);
+                    }
+                }
+                OpCode::Call | OpCode::Callind => {
+                    // Ghidra also requires !isInputActive() && !isInputLocked(); mosura has no
+                    // input lock, and active input recovery is an entry in `active_inputs`.
+                    if data.call_specs.contains_key(&read_op)
+                        && !data.active_inputs.contains_key(&read_op)
+                    {
+                        let mut changed = false;
+                        for i in 1..data.op(read_op).num_inputs() {
+                            if data.op(read_op).input(i) == Some(out_vn) {
+                                let cs = data.call_specs.get_mut(&read_op).unwrap();
+                                if cs.set_input_bytes_consumed(i, bytes_consumed) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if changed {
+                            count += 1;
+                        }
+                    }
+                }
+                OpCode::Return => {
+                    // Ghidra guards on !getFuncProto().isOutputLocked(); mosura models no output
+                    // lock (see consume.rs `gather_consumed_return`), so the guard is vacuous.
+                    if data.set_return_bytes_consumed(bytes_consumed) {
+                        count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for op in worklist {
+        data.op_mut(op).clear_mark();
+    }
+    count
+}
+
+/// Ghidra `RulePiecePathology` (ruleaction.cc:10454, coreaction.cc:5642): a CONCAT whose upper half
+/// is *garbage* — the untouched high bytes of a register that was only partially written — is a
+/// pathology, not a value. The rule does not rewrite the concatenation; it records how many bytes
+/// are real at each place the value is consumed, so the dead-code sweep can drop the rest.
+///
+/// Two shapes qualify. A `PIECE(SUBPIECE(v, k≠0), lo)` where `v` traces back to a non-persistent
+/// input or an unrecovered call return ([`piece_pathology_is_pathology`]) — the classic "read EAX
+/// after a function that only set AL". Or a `PIECE(INDIRECT-creation, lo)` where the low half comes
+/// from a real computation (or a call with a locked output) and the two halves are *contiguous
+/// storage* — the register pieced back together across a call that clobbered it.
+pub struct RulePiecePathology;
+
+impl Rule for RulePiecePathology {
+    fn name(&self) -> &str {
+        "piecepathology"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(vn) = data.op(op).input(0) else { return 0 };
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let sub_op = data.vn(vn).def.unwrap();
+        // Make sure we are concatenating the most significant bytes of a truncation.
+        match data.op(sub_op).code() {
+            OpCode::Subpiece => {
+                let Some(off) = data.op(sub_op).input(1) else { return 0 };
+                if data.vn(off).constant_value() == 0 {
+                    return 0;
+                }
+                let Some(src) = data.op(sub_op).input(0) else { return 0 };
+                if !piece_pathology_is_pathology(data, src) {
+                    return 0;
+                }
+            }
+            OpCode::Indirect => {
+                // Indirect concatenation.
+                let indirect_creation =
+                    data.op(sub_op).output.is_some_and(|o| data.vn(o).is_indirect_creation());
+                if !indirect_creation {
+                    return 0;
+                }
+                let Some(lsb_vn) = data.op(op).input(1) else { return 0 };
+                if !data.vn(lsb_vn).is_written() {
+                    return 0;
+                }
+                let lsb_op = data.vn(lsb_vn).def.unwrap();
+                if !data.op(lsb_op).is_unary_or_binary() {
+                    // ... or a CALL with a locked output. mosura models no output lock, so no call
+                    // qualifies and this arm declines — Ghidra's conservative direction.
+                    return 0;
+                }
+                // Into a contiguous register (little-endian: the low half sits below the high).
+                let lsb_loc = data.vn(lsb_vn).loc;
+                let expected = Address::new(lsb_loc.space, lsb_loc.offset + data.vn(lsb_vn).size as u64);
+                if expected != data.vn(vn).loc {
+                    return 0;
+                }
+            }
+            _ => return 0,
+        }
+        piece_pathology_trace_forward(data, op)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15375,6 +15590,109 @@ mod tests {
         f.new_output_unique(load, 1);
         parent_all(&mut f, vec![load]);
         assert_eq!(RuleExpandLoad.apply_op(load, &mut f), 0);
+    }
+
+
+    // ---- batch 7: RulePiecePathology + the bytes-consumed model ------------------------------
+
+    /// `PIECE(SUBPIECE(param, 4), lo)` — the classic "read the whole register after something only
+    /// wrote its low half". `param` is a non-persistent function input, which is Ghidra's first
+    /// pathology source.
+    fn piece_pathology_shape() -> (Funcdata, OpId, VarnodeId) {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let param = f.new_input(8, Address::new(reg, 0x10));
+        let four = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq(0), vec![param, four]);
+        let hi = f.new_output_unique(sub, 4);
+        let lo = f.new_input(4, Address::new(reg, 0x20));
+        let piece = f.new_op(OpCode::Piece, seq(1), vec![hi, lo]);
+        let whole = f.new_output_unique(piece, 8);
+        (f, piece, whole)
+    }
+
+    #[test]
+    fn piece_pathology_records_the_returned_width() {
+        // The pathological value reaches a RETURN, so only its low 4 bytes are really returned.
+        let (mut f, piece, whole) = piece_pathology_shape();
+        let ret = f.new_op(OpCode::Return, SeqNum { pc: f.op(piece).seqnum.pc, uniq: 2 }, vec![whole]);
+        let ops = vec![piece, ret];
+        let mut all = vec![f.vn(f.op(piece).input(0).unwrap()).def.unwrap()];
+        all.extend(ops);
+        parent_all(&mut f, all);
+        assert_eq!(f.return_bytes_consumed, 0, "unset before the rule runs");
+        assert_eq!(RulePiecePathology.apply_op(piece, &mut f), 1);
+        assert_eq!(f.return_bytes_consumed, 4, "only the low half is really returned");
+    }
+
+    #[test]
+    fn piece_pathology_records_the_argument_width_at_a_call() {
+        // The same value passed as a CALL argument records the consumed width on that slot.
+        use crate::decompile::fspec::CallSpec;
+        let (mut f, piece, whole) = piece_pathology_shape();
+        let pc = f.op(piece).seqnum.pc;
+        let target = f.new_const(8, 0x2000);
+        let call = f.new_op(OpCode::Call, SeqNum { pc, uniq: 2 }, vec![target, whole]);
+        f.call_specs.insert(call, CallSpec::default());
+        let sub = f.vn(f.op(piece).input(0).unwrap()).def.unwrap();
+        parent_all(&mut f, vec![sub, piece, call]);
+        assert_eq!(RulePiecePathology.apply_op(piece, &mut f), 1);
+        assert_eq!(f.call_specs[&call].input_bytes_consumed(1), 4);
+        // The setter only ever shrinks (fspec.cc:5887).
+        let cs = f.call_specs.get_mut(&call).unwrap();
+        assert!(!cs.set_input_bytes_consumed(1, 8), "a wider claim is discarded");
+        assert!(cs.set_input_bytes_consumed(1, 2), "a narrower one is taken");
+    }
+
+    #[test]
+    fn piece_pathology_declines_zero_offset_truncation() {
+        // `SUBPIECE(v, 0)` is the LOW half — concatenating it back is not the pathology.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let param = f.new_input(8, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let sub = f.new_op(OpCode::Subpiece, seq(0), vec![param, zero]);
+        let hi = f.new_output_unique(sub, 4);
+        let lo = f.new_input(4, Address::new(reg, 0x20));
+        let piece = f.new_op(OpCode::Piece, seq(1), vec![hi, lo]);
+        let whole = f.new_output_unique(piece, 8);
+        let ret = f.new_op(OpCode::Return, seq(2), vec![whole]);
+        parent_all(&mut f, vec![sub, piece, ret]);
+        assert_eq!(RulePiecePathology.apply_op(piece, &mut f), 0);
+        assert_eq!(f.return_bytes_consumed, 0);
+    }
+
+    #[test]
+    fn piece_pathology_declines_a_persistent_input() {
+        // A persistent (global) input's high bytes are real data, not garbage.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let param = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(param).flags |= crate::decompile::varnode::flags::PERSIST;
+        let four = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq(0), vec![param, four]);
+        let hi = f.new_output_unique(sub, 4);
+        let lo = f.new_input(4, Address::new(reg, 0x20));
+        let piece = f.new_op(OpCode::Piece, seq(1), vec![hi, lo]);
+        let whole = f.new_output_unique(piece, 8);
+        let ret = f.new_op(OpCode::Return, seq(2), vec![whole]);
+        parent_all(&mut f, vec![sub, piece, ret]);
+        assert_eq!(RulePiecePathology.apply_op(piece, &mut f), 0);
+        assert_eq!(f.return_bytes_consumed, 0);
+    }
+
+    #[test]
+    fn return_bytes_consumed_only_shrinks() {
+        // FuncProto::setReturnBytesConsumed (fspec.cc:3954).
+        let (mut f, _) = fd();
+        assert!(!f.set_return_bytes_consumed(0), "0 means no information");
+        assert!(f.set_return_bytes_consumed(4));
+        assert!(!f.set_return_bytes_consumed(8), "a wider claim is discarded");
+        assert!(f.set_return_bytes_consumed(2));
+        assert_eq!(f.return_bytes_consumed, 2);
     }
 
 }

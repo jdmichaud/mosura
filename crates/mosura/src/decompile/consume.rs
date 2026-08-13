@@ -293,8 +293,9 @@ pub(super) fn indirect_source(f: &Funcdata, vn: VarnodeId) -> Option<(Option<Var
 
 /// Ghidra `ActionDeadCode::gatherConsumedReturn` (`coreaction.cc:3871`): the bit mask consumed by
 /// the function's return values. mosura has no proto output-lock, so only the active-recovery guard
-/// applies; otherwise OR the minimal mask of each RETURN's value input. (`getReturnBytesConsumed`
-/// is not modelled in mosura, so no additional clamp.)
+/// applies; otherwise OR the minimal mask of each RETURN's value input, then clamp by
+/// [`Funcdata::return_bytes_consumed`] when `RulePiecePathology` has established that callers read
+/// only the low bytes.
 fn gather_consumed_return(f: &Funcdata) -> u64 {
     if f.active_output.is_some() {
         return u64::MAX;
@@ -308,6 +309,11 @@ fn gather_consumed_return(f: &Funcdata) -> u64 {
         if o.code() == OpCode::Return && o.num_inputs() > 1 {
             consume |= minimalmask(f.vn(o.input(1).unwrap()).nzm);
         }
+    }
+    // Ghidra clamps by `getReturnBytesConsumed()` when it is nonzero (coreaction.cc:3887).
+    let val = f.return_bytes_consumed;
+    if val != 0 {
+        consume &= calc_mask(val);
     }
     consume
 }
@@ -441,8 +447,15 @@ pub fn calc_consume(f: &mut Funcdata) {
         } else {
             for i in 1..n {
                 let v = o.input(i).unwrap();
-                let cv = if f.vn(v).is_auto_live() { u64::MAX } else { minimalmask(f.vn(v).nzm) };
-                // (getInputBytesConsumed is not modelled in mosura → no additional clamp.)
+                let mut cv =
+                    if f.vn(v).is_auto_live() { u64::MAX } else { minimalmask(f.vn(v).nzm) };
+                // Clamp by the callee's recorded input consumption (coreaction.cc:3857), which
+                // `RulePiecePathology` sets when it proves the high bytes of an argument are
+                // pathological.
+                let bytes = f.call_specs.get(&op).map_or(0, |cs| cs.input_bytes_consumed(i));
+                if bytes != 0 {
+                    cv &= calc_mask(bytes);
+                }
                 seeds.push((cv, v));
             }
         }

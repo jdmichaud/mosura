@@ -66,6 +66,15 @@ pub struct Funcdata {
     /// recovering which return register actually holds a returned value. Set up + committed by
     /// `recover::resolve_return`; `None` until first invoked and again after it commits
     /// (`clearActiveOutput`). Persisting it lets the trial decision DEFER across heritage passes.
+    /// Ghidra `FuncProto::returnBytesConsumed` (fspec.hh:1428): how many BYTES of this function's
+    /// return value its callers actually consume — 0 meaning "no information". Written only by
+    /// `RulePiecePathology` (ruleaction.cc:10529) and read by the dead-code consume sweep
+    /// (`gather_consumed_return`, coreaction.cc:3887) to clamp what the RETURN is considered to
+    /// consume.
+    ///
+    /// It lives on `Funcdata` rather than on [`super::fspec::FuncProto`] because mosura's FuncProto
+    /// is a recovered RESULT built at the end, while this is live state the pools mutate.
+    pub return_bytes_consumed: u32,
     pub active_output: Option<super::fspec::ParamActive>,
     /// Width of the return storage the function was found to actually produce, recorded when the
     /// output trials commit.
@@ -244,6 +253,7 @@ impl Funcdata {
             heritage_pass: 0,
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
+            return_bytes_consumed: 0,
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
@@ -286,6 +296,21 @@ impl Funcdata {
         }
         self.typerecovery_started = true;
         true
+    }
+
+    /// Ghidra `FuncProto::setReturnBytesConsumed` (fspec.cc:3954): record that callers consume only
+    /// `val` bytes of the return value. **Only ever shrinks** — a value of 0, or one no smaller than
+    /// what is already recorded, is discarded — and returns whether anything changed, so a rule can
+    /// count it as progress.
+    pub fn set_return_bytes_consumed(&mut self, val: u32) -> bool {
+        if val == 0 {
+            return false;
+        }
+        if self.return_bytes_consumed == 0 || val < self.return_bytes_consumed {
+            self.return_bytes_consumed = val;
+            return true;
+        }
+        false
     }
 
     /// Ghidra `Funcdata::isTypeRecoveryExceeded`: whether type propagation hit its pass cap (7).

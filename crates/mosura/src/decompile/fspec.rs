@@ -971,6 +971,14 @@ pub struct CallSpec {
     /// sentinel) — the state in which `guardCalls` refuses to register a spacebase range as a
     /// parameter trial, because it cannot express the range in the callee's frame.
     pub stackoffset: Option<u64>,
+    /// Ghidra `FuncCallSpecs::inputConsume` (fspec.hh:1660): per input slot, how many BYTES of the
+    /// argument this callee actually consumes — 0 meaning "no information". Written only by
+    /// `RulePiecePathology` (ruleaction.cc:10521), which discovers that a wide argument's high
+    /// bytes are pathological garbage, and read by the dead-code consume sweep
+    /// (coreaction.cc:3857) to clamp what the argument is considered to consume.
+    ///
+    /// Indexed by CALL input slot, so slot 0 (the call target) is never used.
+    pub input_consume: Vec<u32>,
     /// Ghidra `FuncCallSpecs::stackPlaceholderSlot` (fspec.hh:1652): which CALL input slot holds the
     /// artificial stack-pointer tracker. `None` is Ghidra's `-1` (unused/released).
     pub stack_placeholder_slot: Option<usize>,
@@ -1015,6 +1023,30 @@ pub struct CallSpec {
     /// outside it is not an argument however live it looks at the call site, which is what stops
     /// every caller-live register in the convention's parameter set becoming a spurious argument.
     pub reads: Option<Vec<(Address, u32)>>,
+}
+
+impl CallSpec {
+    /// Ghidra `FuncCallSpecs::getInputBytesConsumed` (fspec.cc:5870): bytes consumed at this slot,
+    /// or 0 for "unknown" (including any slot past what has been recorded).
+    pub fn input_bytes_consumed(&self, slot: usize) -> u32 {
+        self.input_consume.get(slot).copied().unwrap_or(0)
+    }
+
+    /// Ghidra `FuncCallSpecs::setInputBytesConsumed` (fspec.cc:5887): record that only `val` bytes
+    /// of this slot are consumed. **Only ever shrinks** — a wider claim than one already recorded is
+    /// discarded — and returns whether anything changed, which is what lets the rule count a change
+    /// and the pool re-run.
+    pub fn set_input_bytes_consumed(&mut self, slot: usize, val: u32) -> bool {
+        if self.input_consume.len() <= slot {
+            self.input_consume.resize(slot + 1, 0);
+        }
+        let old = self.input_consume[slot];
+        if old == 0 || val < old {
+            self.input_consume[slot] = val;
+            return true;
+        }
+        false
+    }
 }
 
 /// Ghidra `ParamActive` (fspec.hh:285): the set of trials accumulated while recovering one

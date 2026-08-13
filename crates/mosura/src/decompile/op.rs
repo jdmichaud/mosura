@@ -118,6 +118,75 @@ impl PcodeOp {
         self.guarded_op
     }
     /// A heritage marker (MULTIEQUAL/INDIRECT) — placed by heritage, not real control flow.
+    /// Ghidra `(PcodeOp::getEvalType() & (PcodeOp::unary | PcodeOp::binary)) != 0` — the op is a
+    /// plain unary or binary computation. The set is exactly the opcodes whose `TypeOp` constructor
+    /// sets `PcodeOp::unary` or `PcodeOp::binary` (typeop.cc): note CAST is `unary|special` so it
+    /// IS here, while PTRADD is `ternary` and MULTIEQUAL/INDIRECT/LOAD/STORE/CALL* are `special`
+    /// only, so they are not.
+    ///
+    /// Read by `RulePiecePathology` (ruleaction.cc:10507), which requires the low half of a
+    /// pathological concatenation to come from a real computation (or a call with a locked output).
+    pub fn is_unary_or_binary(&self) -> bool {
+        use OpCode::*;
+        matches!(
+            self.opcode,
+            Copy | Cast
+                | Ptrsub
+                | IntEqual
+                | IntNotequal
+                | IntSless
+                | IntSlessequal
+                | IntLess
+                | IntLessequal
+                | IntZext
+                | IntSext
+                | IntAdd
+                | IntSub
+                | IntCarry
+                | IntScarry
+                | IntSborrow
+                | Int2comp
+                | IntNegate
+                | IntXor
+                | IntAnd
+                | IntOr
+                | IntLeft
+                | IntRight
+                | IntSright
+                | IntMult
+                | IntDiv
+                | IntSdiv
+                | IntRem
+                | IntSrem
+                | BoolNegate
+                | BoolXor
+                | BoolAnd
+                | BoolOr
+                | FloatEqual
+                | FloatNotequal
+                | FloatLess
+                | FloatLessequal
+                | FloatNan
+                | FloatAdd
+                | FloatDiv
+                | FloatMult
+                | FloatSub
+                | FloatNeg
+                | FloatAbs
+                | FloatSqrt
+                | FloatInt2float
+                | FloatFloat2float
+                | FloatTrunc
+                | FloatCeil
+                | FloatFloor
+                | FloatRound
+                | Piece
+                | Subpiece
+                | Popcount
+                | Lzcount
+        )
+    }
+
     /// Ghidra `PcodeOp::getEvalType() == PcodeOp::special` (op.hh:379): the op is neither unary,
     /// binary nor ternary — it is one of the structural/special forms. The opcode set is exactly
     /// those whose `TypeOp` constructor sets `PcodeOp::special` WITHOUT also setting unary/binary

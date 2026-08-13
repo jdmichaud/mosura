@@ -24,6 +24,7 @@ use super::rules::{
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
     RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove, RuleSwitchSingle, RuleExpandLoad,
+    RulePiecePathology,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -359,6 +360,11 @@ pub fn default_rule_pool() -> ActionPool {
         // PTRSUB (`getExtraOffset`), so a component exceeded only after further additions is
         // caught too.
         .with(super::ptrarith::RulePtrsubUndo) // (128)
+        // RulePiecePathology (coreaction.cc:5642): a CONCAT whose upper half is the untouched high
+        // bytes of a partially-written register is a pathology, not a value. It rewrites nothing —
+        // it records how many bytes are real at each CALL argument and RETURN, which the dead-code
+        // consume sweep then reads (see `consume.rs`).
+        .with(RulePiecePathology) // (130)
         // The double-precision LOAD/STORE recombiners sit at Ghidra's oppool1 tail (coreaction.cc:
         // 5643-5644, after RulePiecePathology :5642 — not ported). RuleDoubleStore is dormant until
         // a PRECISLO/PRECISHI marker port lands (ActionParamDouble / SplitVarnode markings); the
