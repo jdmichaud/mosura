@@ -317,6 +317,16 @@ impl Varnode {
     pub fn is_typelock(&self) -> bool {
         self.flags & flags::TYPELOCK != 0
     }
+    /// Ghidra `Varnode::setPrecisLo` — set by `RuleDoubleIn`/`RuleDoubleOut`'s `attemptMarking`
+    /// (double.cc), which is what makes the halves of a double-precision value recognizable to the
+    /// rest of the double-precision machinery (including `RuleDoubleStore`).
+    pub fn set_precis_lo(&mut self) {
+        self.flags |= flags::PRECISLO;
+    }
+    /// Ghidra `Varnode::setPrecisHi`.
+    pub fn set_precis_hi(&mut self) {
+        self.flags |= flags::PRECISHI;
+    }
     /// Ghidra `Varnode::isNameLock` (varnode.hh:299) — the name attached to this storage is fixed,
     /// so a transform must not redefine or duplicate into it.
     pub fn is_namelock(&self) -> bool {

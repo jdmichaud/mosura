@@ -85,6 +85,37 @@ impl Datatype {
         }
     }
 
+    /// Ghidra `Datatype::isPieceStructured` (type.hh:929): the type is made of separate pieces —
+    /// `metatype <= TYPE_ARRAY`, i.e. the composite metatypes. mosura models `Struct` and `Array`
+    /// of that set (union/partial-* have no variant here).
+    pub fn is_piece_structured(&self) -> bool {
+        matches!(self, Datatype::Struct(..) | Datatype::Array(..))
+    }
+
+    /// Ghidra `Datatype::isPrimitiveWhole` (type.cc:501): is this really one primitive value, rather
+    /// than an aggregate that merely happens to be this wide? A non-composite is; a composite is
+    /// only if its first component spans the whole thing and is itself primitive-whole (an array of
+    /// one element, a struct with a single full-width field).
+    ///
+    /// Read by the double-precision `attemptMarking` routines, which refuse to mark a type-locked
+    /// whole as double precision unless it is a single primitive.
+    pub fn is_primitive_whole(&self) -> bool {
+        if !self.is_piece_structured() {
+            return true;
+        }
+        let component = match self {
+            Datatype::Array(elem, _) => Some((**elem).clone()),
+            Datatype::Struct(_, fields) => fields.first().map(|(_, t)| t.clone()),
+            _ => None,
+        };
+        if let Some(component) = component {
+            if component.size() == self.size() {
+                return component.is_primitive_whole();
+            }
+        }
+        false
+    }
+
     /// Ghidra's `sub_metatype` — the fine-grained ordering key used by [`type_order`] (the
     /// type-propagation comparator). *Lower* values order *earlier* / are more specific. These
     /// are the exact values from `enum sub_metatype` (`type.hh`) for the lattice we model; note

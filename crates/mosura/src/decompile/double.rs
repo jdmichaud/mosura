@@ -596,3 +596,207 @@ mod tests {
         assert!(!f.op(store_lo).is_dead());
     }
 }
+
+/// Ghidra `SplitVarnode::isAddrTiedContiguous` (double.cc): the two halves occupy adjacent,
+/// address-tied storage that could be a single wider variable, and no explicit symbol contradicts
+/// joining them.
+///
+/// mosura has no Scope object for register storage, so `getSymbolEntry()` is `None` on both halves
+/// and Ghidra's "one is marked with a symbol, the other is not" guard passes vacuously — the
+/// conservative direction is unreachable rather than skipped. Little-endian only, matching the rest
+/// of this file (`RuleDoubleLoad`/`RuleDoubleStore`).
+fn is_addr_tied_contiguous(
+    data: &Funcdata,
+    lo: VarnodeId,
+    hi: VarnodeId,
+) -> Option<super::space::Address> {
+    if !data.vn(lo).is_addrtied() || !data.vn(hi).is_addrtied() {
+        return None;
+    }
+    let spc = data.vn(lo).loc.space;
+    if spc != data.vn(hi).loc.space {
+        return None;
+    }
+    let looffset = data.vn(lo).loc.offset;
+    let hioffset = data.vn(hi).loc.offset;
+    if looffset >= hioffset {
+        return None;
+    }
+    if looffset + data.vn(lo).size as u64 != hioffset {
+        return None;
+    }
+    Some(data.vn(lo).loc)
+}
+
+/// Ghidra `RuleDoubleOut::attemptMarking` (double.cc): decide whether a `PIECE(hi, lo)` really is
+/// the two halves of one logical double-precision value, and if so mark them `precishi`/`precislo`.
+///
+/// The evidence Ghidra accepts is that *something reads the concatenation arithmetically* — a
+/// logical whole is a thing you do arithmetic on, whereas two unrelated adjacent registers are not.
+/// The halves must be the same size, and must not belong to different symbols.
+///
+/// This is what wakes the rest of the double-precision machinery, `RuleDoubleStore` included: those
+/// rules key on the PRECIS markers, and until this ran nothing set them.
+fn double_out_attempt_marking(
+    data: &mut Funcdata,
+    vnhi: VarnodeId,
+    vnlo: VarnodeId,
+    piece_op: OpId,
+) -> u32 {
+    let Some(whole) = data.op(piece_op).output else { return 0 };
+    if data.vn(whole).is_typelock() && !data.vn(whole).get_type().is_primitive_whole() {
+        return 0; // don't mark for double precision if not a primitive type
+    }
+    if data.vn(vnhi).size != data.vn(vnlo).size {
+        return 0;
+    }
+    // Ghidra compares the two halves' SymbolEntries here; mosura has no symbol entries for register
+    // storage, so both are absent and the check passes — see `is_addr_tied_contiguous`.
+    let is_whole = data
+        .vn(whole)
+        .descend
+        .iter()
+        .any(|&op| data.op(op).is_arithmetic_op() || data.op(op).is_floatingpoint_op());
+    if !is_whole {
+        return 0;
+    }
+    data.vn_mut(vnhi).set_precis_hi();
+    data.vn_mut(vnlo).set_precis_lo();
+    1
+}
+
+// `RuleDoubleIn::attemptMarking` — the SUBPIECE-side counterpart of the marking above — is NOT
+// here on purpose. It belongs with `RuleDoubleIn`, whose other arm needs the SplitVarnode engine
+// (double.cc's 12 `*Form` classes, ~3600 lines); porting the marking alone would leave this file
+// with a helper nothing calls. See docs/coverage.md's RuleDoubleIn row.
+
+/// Ghidra `RuleDoubleOut` (double.cc, oppool1 slot :5646): a `PIECE` of two contiguous, persistent
+/// INPUT varnodes is a double-precision parameter that arrived as two halves — fuse them into one
+/// wider input ([`Funcdata::combine_input_varnodes`]) so the function takes the whole value.
+///
+/// Before the halves are marked `precishi`/`precislo` the rule instead tries to mark them
+/// ([`double_out_attempt_marking`]); the fuse happens on a later pass, once they are.
+pub struct RuleDoubleOut;
+
+impl Rule for RuleDoubleOut {
+    fn name(&self) -> &str {
+        "doubleout"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let (Some(vnhi), Some(vnlo)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        // Currently this only implements collapsing INPUT varnodes read by a PIECE.
+        if !data.vn(vnhi).is_input() || !data.vn(vnlo).is_input() {
+            return 0;
+        }
+        if !data.vn(vnhi).is_persist() || !data.vn(vnlo).is_persist() {
+            return 0;
+        }
+        if !data.vn(vnhi).is_precis_hi() || !data.vn(vnlo).is_precis_lo() {
+            return double_out_attempt_marking(data, vnhi, vnlo, op);
+        }
+        if data.has_unreachable_blocks() {
+            return 0;
+        }
+        if is_addr_tied_contiguous(data, vnlo, vnhi).is_none() {
+            return 0;
+        }
+        if !data.combine_input_varnodes(vnhi, vnlo) {
+            return 0;
+        }
+        1
+    }
+}
+
+
+#[cfg(test)]
+mod double_out_tests {
+    use super::*;
+    use crate::decompile::op::SeqNum;
+    use crate::decompile::space::{Address, SpaceManager};
+    use crate::decompile::varnode::flags as vflags;
+    use crate::decompile::BlockBasic;
+    use crate::decompile::block::BlockId;
+
+    fn fd() -> (Funcdata, Address) {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        (Funcdata::new("t", Address::new(ram, 0), spaces), Address::new(ram, 0))
+    }
+
+    /// `PIECE(hi@+2, lo@+0)` of two contiguous persistent inputs, read arithmetically.
+    fn double_in_halves(arith_reader: bool) -> (Funcdata, OpId, VarnodeId, VarnodeId) {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let lo = f.new_input(2, Address::new(reg, 0x40));
+        let hi = f.new_input(2, Address::new(reg, 0x42));
+        for v in [lo, hi] {
+            f.vn_mut(v).flags |= vflags::PERSIST | vflags::ADDRTIED;
+        }
+        let piece = f.new_op(OpCode::Piece, seq(0), vec![hi, lo]);
+        let whole = f.new_output_unique(piece, 4);
+        let mut ops = vec![piece];
+        if arith_reader {
+            let k = f.new_const(4, 1);
+            let add = f.new_op(OpCode::IntAdd, seq(1), vec![whole, k]);
+            f.new_output_unique(add, 4);
+            ops.push(add);
+        }
+        f.set_blocks(vec![BlockBasic { ops: ops.clone(), ..Default::default() }]);
+        for op in ops {
+            f.op_mut(op).parent = Some(BlockId(0));
+        }
+        (f, piece, hi, lo)
+    }
+
+    #[test]
+    fn double_out_marks_the_halves_when_read_arithmetically() {
+        // First pass: nothing is marked yet, so the rule marks instead of fusing.
+        let (mut f, piece, hi, lo) = double_in_halves(true);
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 1);
+        assert!(f.vn(hi).is_precis_hi());
+        assert!(f.vn(lo).is_precis_lo());
+        assert_eq!(f.op(piece).code(), OpCode::Piece, "marking only — the fuse is a later pass");
+    }
+
+    #[test]
+    fn double_out_declines_marking_without_an_arithmetic_reader() {
+        // Two adjacent registers that are never used as one arithmetic value are not a logical
+        // whole — this is the evidence test that keeps the rule from fusing unrelated storage.
+        let (mut f, piece, hi, lo) = double_in_halves(false);
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 0);
+        assert!(!f.vn(hi).is_precis_hi());
+        assert!(!f.vn(lo).is_precis_lo());
+    }
+
+    #[test]
+    fn double_out_fuses_marked_contiguous_inputs() {
+        // Second pass: with the markers set, the halves become ONE wider input and the PIECE that
+        // recombined them becomes a COPY of it (Funcdata::combineInputVarnodes).
+        let (mut f, piece, hi, lo) = double_in_halves(true);
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 1); // marks
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 1); // fuses
+        assert_eq!(f.op(piece).code(), OpCode::Copy);
+        assert_eq!(f.op(piece).num_inputs(), 1);
+        let whole_in = f.op(piece).input(0).unwrap();
+        assert!(f.vn(whole_in).is_input());
+        assert_eq!(f.vn(whole_in).size, 4, "the two 2-byte halves became one 4-byte input");
+        assert_eq!(f.vn(whole_in).loc, f.vn(lo).loc, "starting at the LOW half's address");
+        let _ = hi;
+    }
+
+    #[test]
+    fn double_out_declines_when_blocks_were_unreachable() {
+        // Ghidra refuses to act on a function that had unreachable code removed.
+        let (mut f, piece, _, _) = double_in_halves(true);
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 1); // marks
+        f.blocks_unreachable = true;
+        assert_eq!(RuleDoubleOut.apply_op(piece, &mut f), 0);
+        assert_eq!(f.op(piece).code(), OpCode::Piece);
+    }
+}

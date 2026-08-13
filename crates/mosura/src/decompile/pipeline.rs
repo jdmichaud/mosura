@@ -376,6 +376,11 @@ pub fn default_rule_pool() -> ActionPool {
         // and join with their own port.
         .with(super::double::RuleDoubleLoad) // (125) doubleload group
         .with(super::double::RuleDoubleStore) // (126) doubleprecis group
+        // RuleDoubleOut (coreaction.cc:5646): a PIECE of two contiguous persistent INPUTs is a
+        // double-precision parameter that arrived as halves — fuse them into one wider input. Its
+        // `attemptMarking` arm is also what SETS the PRECISLO/PRECISHI markers, which is what
+        // RuleDoubleStore above has been waiting for (it was PORTED-DORMANT until now).
+        .with(super::double::RuleDoubleOut) // (135)
 }
 
 /// Sync address-tied varnode properties with the alias classification (the

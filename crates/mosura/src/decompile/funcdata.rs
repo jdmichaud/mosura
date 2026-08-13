@@ -74,6 +74,11 @@ pub struct Funcdata {
     ///
     /// It lives on `Funcdata` rather than on [`super::fspec::FuncProto`] because mosura's FuncProto
     /// is a recovered RESULT built at the end, while this is live state the pools mutate.
+    /// Ghidra `Funcdata::blocks_unreachable` (funcdata.hh:149, read by `hasUnreachableBlocks`): the
+    /// function exhibited unreachable code, which was removed. The double-precision rules refuse to
+    /// act while it is set, because a removed block can leave the remaining data-flow looking like a
+    /// logical whole when it is not.
+    pub blocks_unreachable: bool,
     pub return_bytes_consumed: u32,
     pub active_output: Option<super::fspec::ParamActive>,
     /// Width of the return storage the function was found to actually produce, recorded when the
@@ -254,6 +259,7 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             return_bytes_consumed: 0,
+            blocks_unreachable: false,
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
@@ -296,6 +302,102 @@ impl Funcdata {
         }
         self.typerecovery_started = true;
         true
+    }
+
+    /// Ghidra `Funcdata::combineInputVarnodes` (funcdata_varnode.cc:1620): fuse two CONTIGUOUS
+    /// input varnodes into one wider input — the repair for a double-precision value that arrived
+    /// as two separate halves.
+    ///
+    /// Every `PIECE(hi, lo)` that recombined them becomes a COPY of the new whole. Readers that
+    /// used a half on its own get a replacement built as a SUBPIECE of the whole, inserted at the
+    /// entry block, so no reader is left pointing at a varnode that no longer exists.
+    ///
+    /// Ghidra throws on non-input or non-contiguous arguments; the callers check first, so this
+    /// returns `false` instead (the rule then declines rather than aborting the decompile).
+    /// mosura has no varnode bank to `destroy` into, so the old halves are simply left unreferenced.
+    pub fn combine_input_varnodes(&mut self, vn_hi: VarnodeId, vn_lo: VarnodeId) -> bool {
+        if !self.vn(vn_hi).is_input() || !self.vn(vn_lo).is_input() {
+            return false;
+        }
+        // Little-endian: the low half sits below the high half, and the whole starts at the low.
+        let addr = self.vn(vn_lo).loc;
+        let other = Address::new(addr.space, addr.offset + self.vn(vn_lo).size as u64);
+        if other != self.vn(vn_hi).loc {
+            return false;
+        }
+        let mut piece_list = Vec::new();
+        let mut other_ops_hi = false;
+        for op in self.vn(vn_hi).descend.clone() {
+            if self.op(op).code() == OpCode::Piece
+                && self.op(op).input(0) == Some(vn_hi)
+                && self.op(op).input(1) == Some(vn_lo)
+            {
+                piece_list.push(op);
+            } else {
+                other_ops_hi = true;
+            }
+        }
+        let mut other_ops_lo = false;
+        for op in self.vn(vn_lo).descend.clone() {
+            if self.op(op).code() != OpCode::Piece
+                || self.op(op).input(0) != Some(vn_hi)
+                || self.op(op).input(1) != Some(vn_lo)
+            {
+                other_ops_lo = true;
+            }
+        }
+        for &p in &piece_list {
+            self.op_remove_input(p, 1);
+            // Ghidra also `opUnsetInput`s slot 0 here, to leave the old half with an empty descend
+            // list before destroying it in the varnode bank. mosura has no bank destroy, and slot 0
+            // is overwritten with the combined input below, so the unset would be a no-op.
+        }
+        let entry = super::block::BlockId(0);
+        let start = self.block(entry).ops.first().map(|&o| self.op(o).seqnum.pc);
+        let mut sub_hi = None;
+        let mut sub_lo = None;
+        if other_ops_hi {
+            let size_lo = self.vn(vn_lo).size;
+            let off = self.new_const(4, size_lo as u64);
+            let pc = start.unwrap_or(self.vn(vn_hi).loc);
+            let uniq = self.num_ops() as u32;
+            let op = self.new_op(OpCode::Subpiece, SeqNum { pc, uniq }, vec![vn_hi, off]);
+            let (size, loc) = (self.vn(vn_hi).size, self.vn(vn_hi).loc);
+            let new_hi = self.new_output(op, size, loc);
+            self.op_insert_begin(op, entry);
+            self.total_replace(vn_hi, new_hi);
+            sub_hi = Some(op);
+        }
+        if other_ops_lo {
+            let off = self.new_const(4, 0);
+            let pc = start.unwrap_or(self.vn(vn_lo).loc);
+            let uniq = self.num_ops() as u32;
+            let op = self.new_op(OpCode::Subpiece, SeqNum { pc, uniq }, vec![vn_lo, off]);
+            let (size, loc) = (self.vn(vn_lo).size, self.vn(vn_lo).loc);
+            let new_lo = self.new_output(op, size, loc);
+            self.op_insert_begin(op, entry);
+            self.total_replace(vn_lo, new_lo);
+            sub_lo = Some(op);
+        }
+        let out_size = self.vn(vn_hi).size + self.vn(vn_lo).size;
+        let in_vn = self.new_varnode(out_size, addr);
+        let in_vn = self.set_input_varnode(in_vn);
+        for &p in &piece_list {
+            self.op_set_input(p, 0, in_vn);
+            self.op_set_opcode(p, OpCode::Copy);
+        }
+        if let Some(op) = sub_hi {
+            self.op_set_input(op, 0, in_vn);
+        }
+        if let Some(op) = sub_lo {
+            self.op_set_input(op, 0, in_vn);
+        }
+        true
+    }
+
+    /// Ghidra `Funcdata::hasUnreachableBlocks` (funcdata.hh:149).
+    pub fn has_unreachable_blocks(&self) -> bool {
+        self.blocks_unreachable
     }
 
     /// Ghidra `FuncProto::setReturnBytesConsumed` (fspec.cc:3954): record that callers consume only

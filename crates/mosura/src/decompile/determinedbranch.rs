@@ -94,6 +94,9 @@ fn remove_unreachable_blocks(f: &mut Funcdata) -> bool {
     if reachable.iter().all(|&r| r) {
         return false;
     }
+    // Ghidra `ActionUnreachable::apply` sets `blocks_unreachable` when it removes any block
+    // (coreaction.cc); the double-precision rules key on it.
+    f.blocks_unreachable = true;
     // Sever the out-edges of every unreachable block (patching successor MULTIEQUALs).
     // faithful port of Ghidra's per-block walk; `b` is the BlockId, not merely a slice index
     #[allow(clippy::needless_range_loop)]

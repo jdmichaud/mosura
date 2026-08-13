@@ -118,6 +118,59 @@ impl PcodeOp {
         self.guarded_op
     }
     /// A heritage marker (MULTIEQUAL/INDIRECT) — placed by heritage, not real control flow.
+    /// Ghidra `TypeOp::isArithmeticOp` (`addlflags & arithmetic_op`, typeop.cc): the op computes an
+    /// arithmetic value, as opposed to a logical/bitwise one. The set is exactly the TypeOps whose
+    /// constructor sets `arithmetic_op`.
+    ///
+    /// Read by the double-precision `attemptMarking` routines (double.cc), which use "is this value
+    /// read arithmetically?" as the evidence that a concatenation is a genuine logical whole rather
+    /// than two unrelated halves that happen to be adjacent.
+    pub fn is_arithmetic_op(&self) -> bool {
+        use OpCode::*;
+        matches!(
+            self.opcode,
+            IntAdd
+                | IntSub
+                | IntCarry
+                | IntScarry
+                | IntSborrow
+                | Int2comp
+                | IntMult
+                | IntDiv
+                | IntSdiv
+                | IntRem
+                | IntSrem
+                | Ptradd
+                | Ptrsub
+        )
+    }
+
+    /// Ghidra `TypeOp::isFloatingPointOp` (`addlflags & floatingpoint_op`, typeop.cc).
+    pub fn is_floatingpoint_op(&self) -> bool {
+        use OpCode::*;
+        matches!(
+            self.opcode,
+            FloatEqual
+                | FloatNotequal
+                | FloatLess
+                | FloatLessequal
+                | FloatNan
+                | FloatAdd
+                | FloatDiv
+                | FloatMult
+                | FloatSub
+                | FloatNeg
+                | FloatAbs
+                | FloatSqrt
+                | FloatInt2float
+                | FloatFloat2float
+                | FloatTrunc
+                | FloatCeil
+                | FloatFloor
+                | FloatRound
+        )
+    }
+
     /// Ghidra `(PcodeOp::getEvalType() & (PcodeOp::unary | PcodeOp::binary)) != 0` — the op is a
     /// plain unary or binary computation. The set is exactly the opcodes whose `TypeOp` constructor
     /// sets `PcodeOp::unary` or `PcodeOp::binary` (typeop.cc): note CAST is `unary|special` so it
