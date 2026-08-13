@@ -27,6 +27,15 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         .blocks()
         .filter_map(|b| b.bytes.as_deref().map(|bytes| (b.start().offset, bytes)))
         .collect();
+    // The loader knows which sections are read-only, and the decompiler needs it: Ghidra's
+    // `Scope::isReadOnly` gates `RulePtrsubCharConstant` on exactly this. It used to be dropped
+    // here, so the decompiler had no read-only channel at all.
+    let readonly_ranges: Vec<(u64, u64)> = program
+        .memory
+        .blocks()
+        .filter(|b| !b.write && b.bytes.is_some())
+        .map(|b| (b.start().offset, b.end().offset))
+        .collect();
     if chunks.is_empty() {
         return None;
     }
@@ -91,6 +100,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.language_id,
             &program.compiler_spec_id,
         );
+        f.readonly_ranges = readonly_ranges.clone();
         // CALLEE-EVIDENCE EFFECTS, before the pipeline: for each direct call, record which
         // registers the CALLEE overwrites that the default convention calls `<unaffected>`.
         // `guard_calls` consults this per call site, so a callee that does not honour the

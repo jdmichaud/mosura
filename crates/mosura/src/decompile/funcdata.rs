@@ -78,6 +78,14 @@ pub struct Funcdata {
     /// function exhibited unreachable code, which was removed. The double-precision rules refuse to
     /// act while it is set, because a removed block can leave the remaining data-flow looking like a
     /// logical whole when it is not.
+    /// Address ranges that are READ-ONLY in the loaded image (`start..=end` offsets in the `ram`
+    /// space), from the loader's per-section write flag.
+    ///
+    /// Ghidra reaches this through `Scope::isReadOnly` → `queryProperties` → the `Varnode::readonly`
+    /// property a `MemoryBlock` contributes. mosura has no Scope object for globals, so the ranges
+    /// travel directly; the analysis layer fills them in (`analysis::decompiler`), and a hand-built
+    /// `Funcdata` has none, which answers "not read-only" — the conservative direction.
+    pub readonly_ranges: Vec<(u64, u64)>,
     pub blocks_unreachable: bool,
     pub return_bytes_consumed: u32,
     pub active_output: Option<super::fspec::ParamActive>,
@@ -260,6 +268,7 @@ impl Funcdata {
             active_output: None,
             return_bytes_consumed: 0,
             blocks_unreachable: false,
+            readonly_ranges: Vec::new(),
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
@@ -393,6 +402,14 @@ impl Funcdata {
             self.op_set_input(op, 0, in_vn);
         }
         true
+    }
+
+    /// Ghidra `Scope::isReadOnly` (database.cc): is every byte of `[addr, addr+size)` in read-only
+    /// storage? Ghidra asks the Scope for the varnode properties covering the range and tests
+    /// `Varnode::readonly`; mosura tests the ranges the loader marked non-writable.
+    pub fn is_read_only(&self, addr: u64, size: u32) -> bool {
+        let end = addr.saturating_add(size.max(1) as u64 - 1);
+        self.readonly_ranges.iter().any(|&(s, e)| s <= addr && end <= e)
     }
 
     /// Ghidra `Funcdata::hasUnreachableBlocks` (funcdata.hh:149).
