@@ -327,6 +327,19 @@ impl Varnode {
     pub fn set_precis_hi(&mut self) {
         self.flags |= flags::PRECISHI;
     }
+    /// Ghidra `Varnode::isProtoPartial` (varnode.hh:315): the value is a piece of a larger
+    /// structured whole that `RulePieceStructure` has carved out.
+    pub fn is_proto_partial(&self) -> bool {
+        self.flags & flags::PROTO_PARTIAL != 0
+    }
+    /// Ghidra `Varnode::setProtoPartial`.
+    pub fn set_proto_partial(&mut self) {
+        self.flags |= flags::PROTO_PARTIAL;
+    }
+    /// Ghidra `Varnode::isMapped` (varnode.hh:293): the storage has a symbol mapped over it.
+    pub fn is_mapped(&self) -> bool {
+        self.flags & flags::MAPPED != 0
+    }
     /// Ghidra `Varnode::isNameLock` (varnode.hh:299) — the name attached to this storage is fixed,
     /// so a transform must not redefine or duplicate into it.
     pub fn is_namelock(&self) -> bool {

@@ -10383,6 +10383,450 @@ impl Rule for RulePiecePathology {
     }
 }
 
+/// Ghidra `RulePtrsubCharConstant::pushConstFurther` (ruleaction.cc:7323): give a PTRADD reading
+/// the recovered string pointer the folded constant directly, so the constant propagates instead of
+/// leaving a pointer variable behind. Returns whether the descendant took it.
+fn ptrsub_char_push_const_further(
+    data: &mut Funcdata,
+    outtype: &super::types::Datatype,
+    op: OpId,
+    slot: usize,
+    val: u64,
+) -> bool {
+    if data.op(op).code() != OpCode::Ptradd || slot != 0 {
+        return false;
+    }
+    let Some(vn) = data.op(op).input(1) else { return false };
+    if !data.vn(vn).is_constant() {
+        return false; // that is adding a constant
+    }
+    let Some(mult) = data.op(op).input(2) else { return false };
+    let addval = data.vn(vn).constant_value().wrapping_mul(data.vn(mult).constant_value());
+    let val = val.wrapping_add(addval);
+    let size = data.vn(vn).size;
+    let newconst = data.new_const(size, val);
+    data.vn_mut(newconst).update_type(outtype.clone());
+    data.op_remove_input(op, 2);
+    data.op_remove_input(op, 1);
+    data.op_set_opcode(op, OpCode::Copy);
+    data.op_set_input(op, 0, newconst);
+    true
+}
+
+/// Ghidra `RulePtrsubCharConstant` (ruleaction.cc:7342, cleanup slot :5702): a PTRSUB off a
+/// spacebase that resolves to a read-only address holding a string is really a pointer CONSTANT —
+/// the thing the printer renders as `"..."`. Convert it, propagating the constant into any PTRADD
+/// readers ([`ptrsub_char_push_const_further`]) and dropping the PTRSUB entirely when they all take
+/// it.
+///
+/// ⚠️ **Structurally inert on today's targets, and the reason is worth knowing.** The rule needs a
+/// PTRSUB whose base points at a `TypeSpacebase`. Ghidra builds that shape for globals in
+/// `Funcdata::spacebaseConstant` (funcdata.cc:358), reached from `ActionConstantPtr`
+/// (coreaction.cc:1167) once a constant has been matched against a global symbol. mosura has
+/// neither, and registers only ONE spacebase — the stack (`space.rs`) — whose addresses are never
+/// read-only. So the gate cannot open until global symbol management exists. It is ported anyway,
+/// faithfully and wired, on the same principle as `RuleFuncPtrEncoding` (inert because no x86 cspec
+/// sets `<funcptr>`): the logic is Ghidra's and is unit-tested against hand-built preconditions, so
+/// when the producer lands the rule is already correct rather than absent.
+pub struct RulePtrsubCharConstant;
+
+impl Rule for RulePtrsubCharConstant {
+    fn name(&self) -> &str {
+        "ptrsubcharconstant"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Ptrsub]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        use super::types::Datatype;
+        let Some(sb) = data.op(op).input(0) else { return 0 };
+        let Datatype::Pointer(_, sb_pointee) = data.vn(sb).get_type() else { return 0 };
+        // The pointee must be a spacebase — Ghidra's `TypeSpacebase`.
+        let Datatype::Spacebase(space) = *sb_pointee else { return 0 };
+        let Some(vn1) = data.op(op).input(1) else { return 0 };
+        if !data.vn(vn1).is_constant() {
+            return 0;
+        }
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let outtype = data.vn(outvn).get_type();
+        let Datatype::Pointer(_, basetype) = outtype.clone() else { return 0 };
+        if !basetype.is_char_print() {
+            return 0;
+        }
+        // Ghidra `TypeSpacebase::getAddress(offset, size, point)`: for the spacebase's own space,
+        // the offset IS the address.
+        let symaddr = data.vn(vn1).constant_value();
+        let _ = space;
+        if !data.is_read_only(symaddr, 1) {
+            return 0;
+        }
+        // Check whether the data at the address looks like a string.
+        if !super::stringmanage::is_string(data, symaddr, basetype.size() as usize) {
+            return 0;
+        }
+        // The PTRSUB becomes a (COPY of a) pointer constant.
+        let mut remove_copy = false;
+        if !data.vn(outvn).is_addr_force() {
+            remove_copy = true; // assume we can remove, unless a descendant declines
+            for subop in data.vn(outvn).descend.clone() {
+                let Some(slot) = (0..data.op(subop).num_inputs())
+                    .find(|&k| data.op(subop).input(k) == Some(outvn))
+                else {
+                    remove_copy = false;
+                    continue;
+                };
+                if !ptrsub_char_push_const_further(data, &outtype, subop, slot, symaddr) {
+                    remove_copy = false;
+                }
+            }
+        }
+        if remove_copy {
+            data.op_destroy(op);
+        } else {
+            let size = data.vn(outvn).size;
+            let newvn = data.new_const(size, symaddr);
+            data.vn_mut(newvn).update_type(outtype);
+            data.op_remove_input(op, 1);
+            data.op_set_input(op, 0, newvn);
+            data.op_set_opcode(op, OpCode::Copy);
+        }
+        1
+    }
+}
+
+/// Ghidra `PieceNode` (ruleaction.hh): one edge of a CONCAT tree — the PIECE op, which input slot,
+/// the byte offset of that piece within the structured whole, and whether it is a leaf.
+#[derive(Clone, Copy)]
+struct PieceNode {
+    op: OpId,
+    slot: usize,
+    type_offset: i64,
+    leaf: bool,
+}
+
+/// Ghidra `PieceNode::isLeaf` (ruleaction.cc): the tree stops here — the value has its own symbol,
+/// is not written, is not built by a PIECE, is shared, or sits at the wrong address.
+fn piece_node_is_leaf(data: &Funcdata, root_vn: VarnodeId, vn: VarnodeId, rel_offset: i64) -> bool {
+    // Ghidra compares SymbolEntries; mosura has no symbol entries for these varnodes, so `isMapped`
+    // alone decides — the conservative direction (a mapped value is treated as its own symbol).
+    if data.vn(vn).is_mapped() {
+        return true;
+    }
+    if !data.vn(vn).is_written() {
+        return true;
+    }
+    let def = data.vn(vn).def.unwrap();
+    if data.op(def).code() != OpCode::Piece {
+        return true;
+    }
+    if data.lone_descend(vn).is_none() {
+        return true;
+    }
+    if data.vn(vn).is_addrtied() {
+        let base = data.vn(root_vn).loc;
+        let addr = Address::new(base.space, (base.offset as i64 + rel_offset) as u64);
+        if data.vn(vn).loc != addr {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ghidra `PieceNode::gatherPieces` (ruleaction.cc): walk the CONCAT tree depth-first, recording an
+/// edge per input with its offset into the whole. Little-endian: input 1 is the LOW half, so it
+/// keeps the base offset and input 0 sits above it.
+fn piece_node_gather(
+    data: &Funcdata,
+    stack: &mut Vec<PieceNode>,
+    root_vn: VarnodeId,
+    op: OpId,
+    base_offset: i64,
+    root_offset: i64,
+) {
+    for i in 0..2 {
+        let Some(vn) = data.op(op).input(i) else { continue };
+        let other = data.op(op).input(1 - i).map_or(0, |v| data.vn(v).size as i64);
+        let offset = if i == 1 { base_offset } else { base_offset + other };
+        let res = piece_node_is_leaf(data, root_vn, vn, offset - root_offset);
+        stack.push(PieceNode { op, slot: i, type_offset: offset, leaf: res });
+        if !res {
+            let def = data.vn(vn).def.unwrap();
+            piece_node_gather(data, stack, root_vn, def, offset, root_offset);
+        }
+    }
+}
+
+/// Ghidra `RulePieceStructure::spanningRange` (ruleaction.cc:7501): does `[offset, offset+size)`
+/// cross more than one component of `ct`?
+fn piece_structure_spanning_range(
+    ct: &super::types::Datatype,
+    offset: i64,
+    size: u32,
+) -> bool {
+    if offset + size as i64 > ct.size() as i64 {
+        return false;
+    }
+    let mut ct = ct.clone();
+    let mut newoff = offset;
+    loop {
+        match ct.get_subtype(newoff) {
+            None => return true, // don't know what it spans, assume multiple
+            Some((sub, off)) => {
+                ct = sub;
+                newoff = off;
+            }
+        }
+        if newoff + size as i64 > ct.size() as i64 {
+            return true; // spans more than one
+        }
+        if !ct.is_piece_structured() {
+            break;
+        }
+    }
+    false
+}
+
+/// Ghidra `RulePieceStructure::convertZextToPiece` (ruleaction.cc:7525): a zero extension inside a
+/// structured CONCAT tree is really a concatenation with a zero field, so rewrite it as one — that
+/// is what lets the tree be split along the structure's own boundaries.
+fn piece_structure_convert_zext(
+    data: &mut Funcdata,
+    zext: OpId,
+    ct: &super::types::Datatype,
+    offset: i64,
+) -> bool {
+    let (Some(outvn), Some(invn)) = (data.op(zext).output, data.op(zext).input(0)) else {
+        return false;
+    };
+    if data.vn(invn).is_constant() {
+        return false;
+    }
+    let sz = data.vn(outvn).size - data.vn(invn).size;
+    if sz > 8 {
+        return false; // Ghidra's sizeof(uintb) precision guard
+    }
+    // Little-endian: the zero field sits above the extended value.
+    let mut newoff = offset + data.vn(invn).size as i64;
+    let mut cur = Some(ct.clone());
+    while let Some(c) = cur.clone() {
+        if c.size() <= sz {
+            break;
+        }
+        match c.get_subtype(newoff) {
+            Some((sub, off)) => {
+                cur = Some(sub);
+                newoff = off;
+            }
+            None => {
+                cur = None;
+                break;
+            }
+        }
+    }
+    let zerovn = data.new_const(sz, 0);
+    if let Some(c) = cur {
+        if c.size() == sz {
+            data.vn_mut(zerovn).update_type(c);
+        }
+    }
+    data.op_set_opcode(zext, OpCode::Piece);
+    data.op_insert_input(zext, 0, zerovn);
+    // Ghidra also transfers a union read-resolution here (`inheritResolution`); mosura models no
+    // unions, so `needsResolution` is never true and the transfer is unreachable.
+    true
+}
+
+/// Ghidra `RulePieceStructure::findReplaceZext` (ruleaction.cc:7556).
+fn piece_structure_find_replace_zext(
+    data: &mut Funcdata,
+    stack: &[PieceNode],
+    structured_type: &super::types::Datatype,
+) -> bool {
+    let mut change = false;
+    for node in stack {
+        if !node.leaf {
+            continue;
+        }
+        let Some(vn) = data.op(node.op).input(node.slot) else { continue };
+        if !data.vn(vn).is_written() {
+            continue;
+        }
+        let op = data.vn(vn).def.unwrap();
+        if data.op(op).code() != OpCode::IntZext {
+            continue;
+        }
+        if !piece_structure_spanning_range(structured_type, node.type_offset, data.vn(vn).size) {
+            continue;
+        }
+        if piece_structure_convert_zext(data, op, structured_type, node.type_offset) {
+            change = true;
+        }
+    }
+    change
+}
+
+/// Ghidra `RulePieceStructure::separateSymbol` (ruleaction.cc:7580): would this leaf belong to a
+/// different symbol than the root, so that it needs its own storage?
+fn piece_structure_separate_symbol(data: &Funcdata, root: VarnodeId, leaf: VarnodeId) -> bool {
+    // Ghidra's first test compares SymbolEntries; mosura has none for these varnodes, so the two
+    // are never "forced to be different symbols" and the test falls through.
+    if data.vn(root).is_addrtied() {
+        return false;
+    }
+    if !data.vn(leaf).is_written() {
+        return true; // assume different symbols
+    }
+    if data.vn(leaf).is_proto_partial() {
+        return true; // already in another tree
+    }
+    let op = data.vn(leaf).def.unwrap();
+    if data.op(op).is_marker() {
+        return true; // leaf is not defined locally
+    }
+    if data.op(op).code() != OpCode::Piece {
+        return false;
+    }
+    data.vn(leaf).get_type().is_piece_structured() // would be a separate root
+}
+
+/// Ghidra `RulePieceStructure::determineDatatype` (ruleaction.cc:7463): the structured type this
+/// CONCAT tree is building, and the offset of `vn` within it.
+fn piece_structure_determine_datatype(
+    data: &Funcdata,
+    vn: VarnodeId,
+) -> Option<(super::types::Datatype, i64)> {
+    // Ghidra `Varnode::getStructuredType` (varnode.cc): the mapped symbol's type, else the
+    // varnode's own — but only if it is piece-structured.
+    let ct = data.vn(vn).get_type();
+    if !ct.is_piece_structured() {
+        return None;
+    }
+    if ct.size() != data.vn(vn).size {
+        // Ghidra resolves the partial through the varnode's SymbolEntry, which mosura does not
+        // have; without it the base offset is unknowable, so decline.
+        return None;
+    }
+    Some((ct, 0))
+}
+
+/// Ghidra `RulePieceStructure` (ruleaction.cc:7595, cleanup slot :5704): a CONCAT tree that is
+/// really building a STRUCTURE gets split along the structure's own field boundaries, so each field
+/// lands in its own storage instead of being assembled into one opaque value.
+///
+/// ⚠️ **Structurally inert on today's targets.** The gate is `determineDatatype` →
+/// `Varnode::getStructuredType`, which needs a varnode whose type (or whose mapped symbol's type)
+/// is a struct or array. A probe at this rule's own pool slot was invoked 7254 times across the
+/// corpus and found ZERO such varnodes: `Datatype::Struct` is constructed nowhere in mosura, and
+/// `Array` only ever appears as a POINTEE. So the rule cannot fire until type recovery produces a
+/// structured type for a value. It is ported anyway, faithfully and wired, on the
+/// `RuleFuncPtrEncoding` principle — unit-tested against hand-built preconditions, so it is correct
+/// when the producer lands rather than absent.
+///
+/// Two of Ghidra's steps are unreachable here rather than omitted: the union read-resolution
+/// transfers (`inheritResolution`/`resolveInFlow`), which are gated on `needsResolution` and mosura
+/// models no unions; and `Merge::registerProtoPartialRoot`, which feeds a merge-time
+/// proto-partial pass mosura does not have.
+pub struct RulePieceStructure;
+
+impl Rule for RulePieceStructure {
+    fn name(&self) -> &str {
+        "piecestructure"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Piece, OpCode::IntZext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).is_partial_root() {
+            return 0; // this CONCAT tree has already been visited
+        }
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let Some((ct, base_offset)) = piece_structure_determine_datatype(data, outvn) else {
+            return 0;
+        };
+        if data.op(op).code() == OpCode::IntZext {
+            return u32::from(piece_structure_convert_zext(data, op, &ct, 0));
+        }
+        // Check that outvn is really the root of the tree.
+        if let Some(zext) = data.lone_descend(outvn) {
+            match data.op(zext).code() {
+                OpCode::Piece => return 0, // more PIECEs below us, not a root
+                OpCode::IntZext => {
+                    // An extension of a structured data-type: convert it to a PIECE first.
+                    let zt = data.op(zext).output.map(|o| data.vn(o).get_type());
+                    let Some(zt) = zt else { return 0 };
+                    return u32::from(piece_structure_convert_zext(data, zext, &zt, 0));
+                }
+                _ => {}
+            }
+        }
+        let mut stack: Vec<PieceNode> = Vec::new();
+        loop {
+            stack.clear();
+            piece_node_gather(data, &mut stack, outvn, op, base_offset, base_offset);
+            if !piece_structure_find_replace_zext(data, &stack, &ct) {
+                break;
+            }
+            // If we found some, regenerate the tree.
+        }
+        data.op_mut(op).set_partial_root();
+        let base = data.vn(outvn).loc;
+        let base_addr = Address::new(base.space, (base.offset as i64 - base_offset) as u64);
+        for node in stack {
+            let Some(vn) = data.op(node.op).input(node.slot) else { continue };
+            let addr =
+                Address::new(base_addr.space, (base_addr.offset as i64 + node.type_offset) as u64);
+            if data.vn(vn).loc == addr
+                && (!node.leaf || !piece_structure_separate_symbol(data, outvn, vn))
+            {
+                // Already at the right address and part of the same symbol as the root.
+                if !data.vn(vn).is_addrtied() && !data.vn(vn).is_proto_partial() {
+                    data.vn_mut(vn).set_proto_partial();
+                }
+                continue;
+            }
+            if node.leaf {
+                // Insert a COPY into the correctly-addressed storage.
+                let pc = data.op(node.op).seqnum.pc;
+                let uniq = data.num_ops() as u32;
+                let copy_op = data.new_op(OpCode::Copy, SeqNum { pc, uniq }, vec![vn]);
+                let size = data.vn(vn).size;
+                let new_vn = data.new_output(copy_op, size, addr);
+                if let Some(newtype) = ct.get_exact_piece(node.type_offset, size) {
+                    data.vn_mut(new_vn).update_type(newtype);
+                }
+                data.op_set_input(node.op, node.slot, new_vn);
+                data.op_insert_before(copy_op, node.op);
+                if !data.vn(new_vn).is_addrtied() {
+                    data.vn_mut(new_vn).set_proto_partial();
+                }
+            } else {
+                // Not addrtied and has a lone descendant: replace the Varnode outright.
+                let (Some(def_op), Some(lone_op)) = (data.vn(vn).def, data.lone_descend(vn)) else {
+                    continue;
+                };
+                let Some(slot) = (0..data.op(lone_op).num_inputs())
+                    .find(|&k| data.op(lone_op).input(k) == Some(vn))
+                else {
+                    continue;
+                };
+                let size = data.vn(vn).size;
+                let ty = data.vn(vn).ty.clone();
+                let new_vn = data.new_varnode(size, addr);
+                if let Some(t) = ty {
+                    data.vn_mut(new_vn).update_type(t);
+                }
+                data.op_set_output(def_op, new_vn);
+                data.op_set_input(lone_op, slot, new_vn);
+                data.delete_varnode(vn);
+                if !data.vn(new_vn).is_addrtied() {
+                    data.vn_mut(new_vn).set_proto_partial();
+                }
+            }
+        }
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15693,6 +16137,172 @@ mod tests {
         assert!(!f.set_return_bytes_consumed(8), "a wider claim is discarded");
         assert!(f.set_return_bytes_consumed(2));
         assert_eq!(f.return_bytes_consumed, 2);
+    }
+
+
+    // ---- batch 8: RulePtrsubCharConstant -----------------------------------------------------
+
+    /// The shape the rule wants, built by hand because production cannot produce it yet: a PTRSUB
+    /// off a pointer-to-spacebase, at a read-only address holding a NUL-terminated string.
+    fn ptrsub_char_shape(readonly: bool, string_at: bool) -> (Funcdata, OpId, VarnodeId) {
+        use crate::decompile::types::Datatype;
+        let (mut f, ram) = fd();
+        let ramspc = f.spaces.by_name("ram").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let mut bytes = b"hello".to_vec();
+        bytes.push(0);
+        bytes.resize(64, 0);
+        if !string_at {
+            bytes[0] = 0x80; // illegal UTF-8 lead
+        }
+        f.image.push((0x2000, bytes));
+        if readonly {
+            f.readonly_ranges.push((0x2000, 0x203f));
+        }
+        // A spacebase-typed base pointer, as Funcdata::spacebaseConstant would build for a global.
+        let base = f.new_const(8, 0);
+        f.vn_mut(base)
+            .update_type(Datatype::Pointer(8, Box::new(Datatype::Spacebase(ramspc))));
+        let off = f.new_const(8, 0x2000);
+        let sub = f.new_op(OpCode::Ptrsub, seq, vec![base, off]);
+        let out = f.new_output_unique(sub, 8);
+        f.vn_mut(out).update_type(Datatype::Pointer(8, Box::new(Datatype::Char)));
+        parent_all(&mut f, vec![sub]);
+        (f, sub, out)
+    }
+
+    #[test]
+    fn ptrsub_char_constant_converts_a_readonly_string_pointer() {
+        // A reader that is NOT a PTRADD cannot take the folded constant, so `removeCopy` stays
+        // false and the PTRSUB is rewritten as a COPY of the pointer constant. (With NO readers at
+        // all, Ghidra instead destroys the op — covered by the PTRADD test below.)
+        let (mut f, sub, out) = ptrsub_char_shape(true, true);
+        let other = f.new_input(8, Address::new(f.spaces.by_name("register").unwrap(), 0x10));
+        let add = f.new_op(OpCode::IntAdd, SeqNum { pc: f.op(sub).seqnum.pc, uniq: 2 }, vec![out, other]);
+        f.new_output_unique(add, 8);
+        parent_all(&mut f, vec![sub, add]);
+        assert_eq!(RulePtrsubCharConstant.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Copy);
+        assert_eq!(f.op(sub).num_inputs(), 1);
+        let c = f.op(sub).input(0).unwrap();
+        assert!(f.vn(c).is_constant());
+        assert_eq!(f.vn(c).constant_value(), 0x2000);
+    }
+
+    #[test]
+    fn ptrsub_char_constant_declines_writable_memory() {
+        // Ghidra gates on Scope::isReadOnly — a writable address may not hold what it holds now.
+        let (mut f, sub, _) = ptrsub_char_shape(false, true);
+        assert_eq!(RulePtrsubCharConstant.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).code(), OpCode::Ptrsub);
+    }
+
+    #[test]
+    fn ptrsub_char_constant_declines_when_the_bytes_are_not_a_string() {
+        // Read-only, but the bytes fail the encoding check.
+        let (mut f, sub, _) = ptrsub_char_shape(true, false);
+        assert_eq!(RulePtrsubCharConstant.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).code(), OpCode::Ptrsub);
+    }
+
+    #[test]
+    fn ptrsub_char_constant_pushes_the_constant_into_a_ptradd_reader() {
+        // A PTRADD reader takes the folded constant, so the PTRSUB is removed entirely.
+        let (mut f, sub, out) = ptrsub_char_shape(true, true);
+        let idx = f.new_const(8, 3);
+        let elem = f.new_const(8, 1);
+        let pa = f.new_op(OpCode::Ptradd, SeqNum { pc: f.op(sub).seqnum.pc, uniq: 1 }, vec![out, idx, elem]);
+        f.new_output_unique(pa, 8);
+        parent_all(&mut f, vec![sub, pa]);
+        assert_eq!(RulePtrsubCharConstant.apply_op(sub, &mut f), 1);
+        assert!(f.op(sub).is_dead(), "the PTRSUB is destroyed once every reader takes the constant");
+        assert_eq!(f.op(pa).code(), OpCode::Copy);
+        let c = f.op(pa).input(0).unwrap();
+        assert_eq!(f.vn(c).constant_value(), 0x2003, "0x2000 + 3*1 folded in");
+    }
+
+    #[test]
+    fn ptrsub_char_constant_declines_a_non_spacebase_base() {
+        // The stack-relative and ordinary-pointer cases: the pointee must be a spacebase.
+        use crate::decompile::types::Datatype;
+        let (mut f, sub, _) = ptrsub_char_shape(true, true);
+        let base = f.op(sub).input(0).unwrap();
+        f.vn_mut(base).update_type(Datatype::Pointer(8, Box::new(Datatype::Char)));
+        assert_eq!(RulePtrsubCharConstant.apply_op(sub, &mut f), 0);
+    }
+
+
+    // ---- batch 9: RulePieceStructure ---------------------------------------------------------
+
+    #[test]
+    fn piece_structure_splits_a_concat_along_field_boundaries() {
+        // The precondition is hand-built, because nothing in mosura yet gives a value a struct
+        // type: `PIECE(b, a)` whose OUTPUT is typed as a 2-field struct. Each leaf is moved into
+        // the storage its field occupies, via a COPY.
+        use crate::decompile::types::Datatype;
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let a = f.new_input(4, Address::new(reg, 0x40)); // low field
+        let b = f.new_input(4, Address::new(reg, 0x80)); // high field, at the WRONG address
+        let piece = f.new_op(OpCode::Piece, seq(0), vec![b, a]);
+        let out = f.new_output(piece, 8, Address::new(reg, 0x40));
+        let st = Datatype::Struct(8, vec![(0, Datatype::Uint(4)), (4, Datatype::Uint(4))]);
+        f.vn_mut(out).update_type(st);
+        parent_all(&mut f, vec![piece]);
+        assert_eq!(RulePieceStructure.apply_op(piece, &mut f), 1);
+        assert!(f.op(piece).is_partial_root(), "the tree is marked visited");
+        // The high field's leaf was at register+0x80 but its field lives at register+0x44, so a
+        // COPY into that storage was inserted and the PIECE now reads it.
+        let hi_in = f.op(piece).input(0).unwrap();
+        assert_eq!(f.vn(hi_in).loc, Address::new(reg, 0x44));
+        let copy = f.vn(hi_in).def.unwrap();
+        assert_eq!(f.op(copy).code(), OpCode::Copy);
+        assert_eq!(f.op(copy).input(0), Some(b));
+    }
+
+    #[test]
+    fn piece_structure_declines_an_unstructured_output() {
+        // The gate: without a structured type on the output there is no field layout to split
+        // along. This is why the rule is inert on today's corpus.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x40));
+        let b = f.new_input(4, Address::new(reg, 0x80));
+        let piece = f.new_op(OpCode::Piece, seq, vec![b, a]);
+        f.new_output_unique(piece, 8);
+        parent_all(&mut f, vec![piece]);
+        assert_eq!(RulePieceStructure.apply_op(piece, &mut f), 0);
+        assert!(!f.op(piece).is_partial_root());
+    }
+
+    #[test]
+    fn piece_structure_declines_a_tree_it_already_visited() {
+        // Ghidra's isPartialRoot guard: the CONCAT tree is walked once.
+        use crate::decompile::types::Datatype;
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let a = f.new_input(4, Address::new(reg, 0x40));
+        let b = f.new_input(4, Address::new(reg, 0x80));
+        let piece = f.new_op(OpCode::Piece, seq, vec![b, a]);
+        let out = f.new_output(piece, 8, Address::new(reg, 0x40));
+        f.vn_mut(out)
+            .update_type(Datatype::Struct(8, vec![(0, Datatype::Uint(4)), (4, Datatype::Uint(4))]));
+        parent_all(&mut f, vec![piece]);
+        f.op_mut(piece).set_partial_root();
+        assert_eq!(RulePieceStructure.apply_op(piece, &mut f), 0);
+    }
+
+    #[test]
+    fn piece_structure_spanning_range_detects_a_straddling_field() {
+        // The helper that decides whether a ZEXT leaf needs converting: 4 bytes at offset 2 of a
+        // two-4-byte-field struct straddles both fields; 4 bytes at offset 0 does not.
+        use crate::decompile::types::Datatype;
+        let st = Datatype::Struct(8, vec![(0, Datatype::Uint(4)), (4, Datatype::Uint(4))]);
+        assert!(piece_structure_spanning_range(&st, 2, 4), "straddles the field boundary");
+        assert!(!piece_structure_spanning_range(&st, 0, 4), "fits field 0 exactly");
     }
 
 }

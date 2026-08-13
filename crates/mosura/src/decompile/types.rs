@@ -85,6 +85,42 @@ impl Datatype {
         }
     }
 
+    /// Ghidra `TypeFactory::getExactPiece` (type.cc:4028): the data-type covering `size` bytes at
+    /// `offset` within this type — descending through components until the size matches exactly.
+    ///
+    /// Ghidra falls back to a `TypePartialStruct`/`TypePartialEnum`/`TypePartialUnion` wrapper when
+    /// no component matches exactly; mosura models no partial-type variants, so that fallback
+    /// answers `None` and the caller keeps the piece's own type. That is the conservative
+    /// direction — a piece is left untyped rather than given an invented type.
+    pub fn get_exact_piece(&self, offset: i64, size: u32) -> Option<Datatype> {
+        let mut ct = self.clone();
+        let mut cur_off = offset;
+        loop {
+            if (ct.size() as i64) < size as i64 + cur_off {
+                break; // range is beyond the end of the current data-type
+            }
+            if ct.size() == size {
+                return Some(ct); // perfect size match
+            }
+            match ct.get_subtype(cur_off) {
+                Some((sub, newoff)) => {
+                    ct = sub;
+                    cur_off = newoff;
+                }
+                None => break,
+            }
+        }
+        None
+    }
+
+    /// Ghidra `Datatype::isCharPrint` (type.hh:218): `flags & (chartype|utf16|utf32|opaque_string)`
+    /// — does this print as a character rather than a number? mosura models only the `chartype`
+    /// member of that set ([`Datatype::Char`]); it has no wide-char or opaque-string variants, so a
+    /// UTF-16/32 string type cannot arise and cannot be misjudged here.
+    pub fn is_char_print(&self) -> bool {
+        matches!(self, Datatype::Char)
+    }
+
     /// Ghidra `Datatype::isPieceStructured` (type.hh:929): the type is made of separate pieces —
     /// `metatype <= TYPE_ARRAY`, i.e. the composite metatypes. mosura models `Struct` and `Array`
     /// of that set (union/partial-* have no variant here).

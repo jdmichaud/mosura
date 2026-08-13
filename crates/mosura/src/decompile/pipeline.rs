@@ -24,7 +24,7 @@ use super::rules::{
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
     RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove, RuleSwitchSingle, RuleExpandLoad,
-    RulePiecePathology,
+    RulePiecePathology, RulePtrsubCharConstant, RulePieceStructure,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -613,10 +613,19 @@ pub fn cleanup_pool() -> ActionPool {
         // at is widened to the whole value, the narrow value recovered by a SUBPIECE — or, in the
         // mask-and-compare shape, by shifting the masks instead.
         .with(RuleExpandLoad)
-        // RulePtrsubCharConstant (:5702) is BLOCKED on the StringManager — see docs/coverage.md.
+        // RulePtrsubCharConstant (coreaction.cc:5702): a PTRSUB off a spacebase resolving to a
+        // read-only address that holds a string is really a pointer constant. Inert until global
+        // symbol management exists (mosura registers only the stack spacebase, never read-only),
+        // but ported and wired so it is correct when the producer lands — see docs/coverage.md.
+        .with(RulePtrsubCharConstant)
         // RuleExtensionPush (coreaction.cc:5703): an extension feeding several PTRADD readers is
         // duplicated into each, so it prints inline instead of forcing a temporary.
         .with(RuleExtensionPush)
+        // RulePieceStructure (coreaction.cc:5704): a CONCAT tree that is really building a
+        // STRUCTURE is split along the structure's own field boundaries. Inert until type recovery
+        // ever gives a value a struct/array type (measured: 0 such varnodes on the corpus), but
+        // ported and wired so it is correct when that lands — see docs/coverage.md.
+        .with(RulePieceStructure)
 }
 
 /// Ghidra `ActionNonzeroMask` (`coreaction.cc:5507`, group "analysis"): recompute every Varnode's

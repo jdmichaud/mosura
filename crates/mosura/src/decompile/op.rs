@@ -56,6 +56,10 @@ pub mod flags {
     /// `Funcdata::opDestroyRecursive` (funcdata_op.cc:242, ported as
     /// [`Funcdata::op_destroy_recursive`](super::funcdata::Funcdata::op_destroy_recursive)).
     pub const INDIRECT_SOURCE: u32 = 0x400;
+    /// Ghidra `PcodeOp::partialroot` (op.hh:99): this PIECE is the root of a CONCAT tree that
+    /// `RulePieceStructure` has already visited, so it is not re-visited.
+    pub const PARTIALROOT: u32 = 0x100000;
+
     /// Ghidra `PcodeOp::spacebase_ptr` (op.hh:101) — a LOAD/STORE through a *dynamic* pointer into a
     /// spacebase, marked by `Funcdata::opMarkSpacebasePtr` (funcdata.hh:487) from the
     /// `discoverIndexedStackPointers`/`LoadGuard` subsystem. mosura records no load guards (an
@@ -266,6 +270,14 @@ impl PcodeOp {
                 | Cpoolref
                 | New
         )
+    }
+    /// Ghidra `PcodeOp::isPartialRoot` (op.hh:99).
+    pub fn is_partial_root(&self) -> bool {
+        self.flags & flags::PARTIALROOT != 0
+    }
+    /// Ghidra `PcodeOp::setPartialRoot`.
+    pub fn set_partial_root(&mut self) {
+        self.flags |= flags::PARTIALROOT;
     }
     pub fn is_marker(&self) -> bool {
         matches!(self.opcode, OpCode::Multiequal | OpCode::Indirect)

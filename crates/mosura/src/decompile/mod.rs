@@ -50,6 +50,7 @@ pub mod setcasts;
 pub mod space;
 pub mod splitflow;
 pub mod stackvars;
+pub mod stringmanage;
 pub mod structure;
 pub mod transform;
 pub mod types;
