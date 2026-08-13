@@ -828,3 +828,32 @@ ESP register rather than a resolved spacebase offset, so the -4 slot never becom
 all. Only ONE stack write survives in that function (the call's return-address push at -24). NEXT
 LEVER for this class: why `RuleStoreVarnode`/ptrarith does not resolve a STORE through the raw
 input spacebase register, which is the form the FIRST push in a prologue always takes.
+
+### STORE conversion for FUN_0005118c — ATTEMPTED, NOT SOLVED. Exact stopping point.
+
+Goal was to make the `push ebp` slot at -4 visible so `ActionRestrictLocal` marks it and the array
+caps at 16. It does not work yet, and here is precisely why, all instrumented:
+
+1. `check_spacebase`/`vn_spacebase`/`correct_spacebase` are FAITHFUL and they SUCCEED on this STORE:
+   the pointer is `IntAdd(ESP_input(spacebase,input), -4)` and resolution returns `(stack, -4)`.
+   **Do not go looking for a bug in the spacebase resolver — there isn't one.**
+2. The blocker is that the saved value reaches the STORE THROUGH A TEMPORARY. `MOSURA_VARMAP=1`
+   shows the EBP input's only descendant on the first pass is `Copy -> unique:0x41500`; the STORE's
+   value input is that unique, not EBP. Ghidra's `ActionRestrictLocal` matches only a DIRECT
+   descendant COPY whose output is in the scope's space (`isUnaffectedStorage`), so an intervening
+   unique defeats it. Ghidra gets the direct form because copy propagation collapses the temporary
+   BEFORE RestrictLocal looks; mosura's chain dies first.
+3. `RuleStoreVarnode` does convert the STORE (instrumented), but the resulting `stack[-4] = COPY ...`
+   has no consumer, so it is collected inside the same pool and never survives to the next
+   iteration's RestrictLocal. Only ONE stack write survives in this function: the call's
+   return-address push at -24.
+4. ORDERING, established from Ghidra's slots: RestrictLocal (:5502) runs BEFORE both the deadcode
+   (:5503) that collects the chain AND the actstackstall pool (:5651) that creates it — so what it
+   legitimately observes is the COPY left by the PREVIOUS iteration's pool. Moving mosura's
+   RestrictLocal down to sit next to deadcode was tried and is WORSE (it then sees the STORE
+   unconverted on pass 1 and nothing at all afterwards). It belongs at the mainloop head. Left there.
+
+NEXT LEVER (unverified): make the unique collapse before RestrictLocal runs, i.e. copy-propagate
+`unique = COPY EBP` into the STORE's value input — or find why the converted `stack[-4]` COPY is
+early-removed while the -24 one is kept. Do NOT special-case a `unique` hop inside RestrictLocal:
+Ghidra matches the direct descendant, and adding a hop is an invention, not a port.

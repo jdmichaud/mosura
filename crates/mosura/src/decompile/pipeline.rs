@@ -667,10 +667,10 @@ pub fn universal_action() -> ActionGroup {
                         // pass != 0) and reconcile addrtied/addrforce with it, so RuleSubRight /
                         // ActionConditionalConst's phi guards / SubVariableFlow see the net
                         // classification (pass 0 syncs against the ActionHeritage probe boundary).
-                        // Ghidra `ActionRestrictLocal` (:5502, "Do before dead code removed"):
-                        // carve the callee-save slots out of the local window while the save chain
-                        // is still alive. It must precede both the deadcode that deletes that
-                        // chain and the RestructureVarnode that reads the window.
+                        // Ghidra `ActionRestrictLocal` (:5502) runs BEFORE both the deadcode
+                        // (:5503) that collects the callee-save chain and the actstackstall pool
+                        // (:5651) that creates it, so what it observes is the stack COPY left by
+                        // the PREVIOUS iteration's pool.
                         .then(super::restrictlocal::ActionRestrictLocal)
                         .then(ActionRestructureVarnode::default())
                         .then(ActionSpacebase)
