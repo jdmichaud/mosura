@@ -611,7 +611,7 @@ impl<'a> SubvariableFlow<'a> {
                 return false; // something outside the mask is consumed — don't truncate
             }
         }
-        if self.fd.active_inputs.contains_key(&op) {
+        if self.fd.is_input_active(op) {
             return false; // don't trim while param recovery is mid-flight (isInputActive)
         }
         self.add_terminal_patch_same_op(op, rvn, slot);

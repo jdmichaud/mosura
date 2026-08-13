@@ -61,6 +61,39 @@ reference does not have. Verify on `FUN_00013c50` (it should emit `func_0x0005a4
 `XOR EAX,EAX`), then re-enable the pass and re-measure; the target is `missing` −87 *without*
 `extra` +105.
 
+### Re-opening is built, and it is NECESSARY BUT NOT SUFFICIENT (`@d0f1ddd`)
+
+The re-open exists now, and it exposed a second, real divergence on the way: Ghidra's
+`FuncCallSpecs::clearActiveInput` (fspec.hh:1696) flips `isinputactive` and **keeps the trials**,
+while mosura DELETED the whole `ParamActive` on commit. Re-opening was therefore impossible by
+construction. `ParamActive::active` now models Ghidra's flag, the trials survive, and
+`Funcdata::reopen_input` re-opens a call once — bounded, so it cannot cycle — when
+`resolve_call_output` commits an output.
+
+**It fires and it does not fix the specimen.** With `MOSURA_ARG_DEBUG` on `FUN_00013c50`, the call
+at `0x13c6b` now commits its argument THREE times instead of once, and every commit reports the
+same thing:
+
+```
+[arg] call@0x13c6b slot=1 size=4 unref=false addr=register+0x0 vn=Some((4, false, false))
+```
+
+still `written=false`. Measured on WAR2 with `MOSURA_PROTO_PASS=1`: **395 EXACT / 77 SAME_SHAPE /
+2480 MISMATCH / 71 COMPILE_FAIL**, against **421 / 85 / 2447 / 70** with the pass off — the same
+−26 byte-exact the pass always cost. The default configuration is unchanged, so the repair is free
+but not yet a win.
+
+**Why re-deriving is not enough, and what the remaining half is.**
+`build_input_from_trials` resolves an argument by reading `op(call).input(slot)` — the varnode
+ALREADY in the slot. Re-opening re-runs that derivation, which re-reads the SAME stale, unwritten
+varnode; committing the preceding call's output does not re-link it. Ghidra does not need a re-link
+because the read it resolves to is the INDIRECT creation `guardCalls` made, which
+`buildOutputFromTrials` then PROMOTES to be the call's output — the reader already points at the
+right object. So the remaining work is on the OUTPUT side: either the committed output must adopt
+the existing creation varnode that later reads are linked to, or the argument must be resolved by
+ADDRESS against current SSA rather than by reusing the slot's varnode. That is the next step, and
+it is a heritage/linking question, not an action-ordering one.
+
 ## Open thread 2 — make the search generative
 
 `recompile_search` selects among arms a human emitted; it proposes none. Every one of the 26

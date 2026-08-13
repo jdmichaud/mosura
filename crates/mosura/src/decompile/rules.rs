@@ -10283,7 +10283,7 @@ fn piece_pathology_trace_forward(data: &mut Funcdata, op: OpId) -> u32 {
                     // Ghidra also requires !isInputActive() && !isInputLocked(); mosura has no
                     // input lock, and active input recovery is an entry in `active_inputs`.
                     if data.call_specs.contains_key(&read_op)
-                        && !data.active_inputs.contains_key(&read_op)
+                        && !data.is_input_active(read_op)
                     {
                         let mut changed = false;
                         for i in 1..data.op(read_op).num_inputs() {

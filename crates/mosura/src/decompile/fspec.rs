@@ -1053,6 +1053,15 @@ impl CallSpec {
 /// direction's parameters, plus the pass bookkeeping.
 #[derive(Clone, Debug, Default)]
 pub struct ParamActive {
+    /// Ghidra `FuncCallSpecs::isinputactive` (fspec.hh:1658): is input-parameter recovery still
+    /// running for this call?
+    ///
+    /// It is a FLAG, not the container's existence, and that distinction is load-bearing. Ghidra's
+    /// `clearActiveInput` (fspec.hh:1696) sets `isinputactive = false` and leaves the trials in
+    /// place, so a call can be re-opened later with everything it learned. mosura used to DELETE
+    /// the container on commit, which made re-opening impossible — see
+    /// [`Funcdata::reopen_input`](super::funcdata::Funcdata::reopen_input).
+    pub active: bool,
     pub trial: Vec<ParamTrial>,
     /// The register space (so `register_trial` can auto-mark register trials killedbycall).
     reg_space: Option<SpaceId>,
@@ -1078,6 +1087,7 @@ pub struct ParamActive {
 impl ParamActive {
     pub fn new(reg_space: Option<SpaceId>) -> ParamActive {
         ParamActive {
+            active: true,
             trial: Vec::new(),
             reg_space,
             is_recover_subcall: false,

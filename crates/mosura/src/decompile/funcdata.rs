@@ -94,6 +94,11 @@ pub struct Funcdata {
     /// recomputed (`ActionRestructureVarnode`), which is exactly when Ghidra's Scope changes.
     pub stack_syms_cache: Option<Vec<super::varmap::StackSymbol>>,
     pub readonly_ranges: Vec<(u64, u64)>,
+    /// Calls whose committed argument list contained a linked-but-UNWRITTEN varnode, awaiting the
+    /// output commit that should give it a definition (see [`Self::reopen_input`]).
+    pub calls_awaiting_output: std::collections::BTreeSet<OpId>,
+    /// Calls already re-opened once — the bound that keeps the repair from cycling.
+    pub reopened_inputs: std::collections::BTreeSet<OpId>,
     pub blocks_unreachable: bool,
     pub return_bytes_consumed: u32,
     pub active_output: Option<super::fspec::ParamActive>,
@@ -275,6 +280,8 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             return_bytes_consumed: 0,
+            calls_awaiting_output: Default::default(),
+            reopened_inputs: Default::default(),
             blocks_unreachable: false,
             readonly_ranges: Vec::new(),
             stack_syms_cache: None,
@@ -432,6 +439,38 @@ impl Funcdata {
     /// Drop the cached scope — the local layout has changed.
     pub fn invalidate_stack_syms(&mut self) {
         self.stack_syms_cache = None;
+    }
+
+    /// Ghidra `FuncCallSpecs::isInputActive` (fspec.hh:1699): is this call still recovering its
+    /// input parameters? The container may outlive the recovery — see
+    /// [`ParamActive::active`](super::fspec::ParamActive::active).
+    pub fn is_input_active(&self, call: OpId) -> bool {
+        self.active_inputs.get(&call).is_some_and(|a| a.active)
+    }
+
+    /// Re-open a call's input recovery, keeping the trials it already has.
+    ///
+    /// This is the repair for the call-recovery ORDERING defect (`docs/byte-exact-status.md`, open
+    /// thread 1). `ActionResolveCalls` (arguments) is a mainloop member while `ActionActiveReturn`
+    /// (call outputs) is in the fullloop tail, so a call's arguments commit while the PRECEDING
+    /// call still has no output — and an argument that should be that call's result resolves to a
+    /// varnode that is linked but UNWRITTEN, so it prints as a constant and the caller emits an
+    /// instruction (`XOR EAX,EAX`) to produce a value the original passed implicitly.
+    ///
+    /// Ghidra survives this because its fullloop runs another round and the trials are still there.
+    /// Re-opening is that same shape, and it is why the trials must not be destroyed on commit.
+    /// Bounded to one re-open per call by `reopened_inputs`, so it cannot cycle.
+    pub fn reopen_input(&mut self, call: OpId) -> bool {
+        if !self.reopened_inputs.insert(call) {
+            return false; // already given its second round
+        }
+        match self.active_inputs.get_mut(&call) {
+            Some(a) => {
+                a.active = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Ghidra `Funcdata::hasUnreachableBlocks` (funcdata.hh:149).

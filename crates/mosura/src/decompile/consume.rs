@@ -440,7 +440,7 @@ pub fn calc_consume(f: &mut Funcdata) {
         }
         // Ghidra: isInputLocked() || isInputActive(). mosura has no input-lock; active recovery is
         // an entry in active_inputs → treat all parameters as fully consumed while resolving.
-        if f.active_inputs.contains_key(&op) {
+        if f.is_input_active(op) {
             for i in 1..n {
                 seeds.push((u64::MAX, o.input(i).unwrap()));
             }

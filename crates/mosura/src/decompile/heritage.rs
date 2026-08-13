@@ -1455,7 +1455,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 })
             })
         };
-        if tryregister && !is_saved_slot && f.active_inputs.contains_key(&call) {
+        if tryregister && !is_saved_slot && f.is_input_active(call) {
             match f.proto_model.characterize_as_input_param(trans_addr, size) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();

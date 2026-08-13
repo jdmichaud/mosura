@@ -784,7 +784,7 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
         // removes it. The gate used to be unnecessary because the retired `setup_active_input`
         // re-created the container from the CALL's input slots on every pass, so a call that had
         // already committed its arguments silently re-entered trial evaluation.
-        if !f.active_inputs.contains_key(&call) {
+        if !f.is_input_active(call) {
             continue;
         }
         check_input_trial_use(f, call);
@@ -793,7 +793,12 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
             // leaves them in parameter order; buildInputFromTrials then commits that list.
             derive_input_map(f, call);
             build_input_from_trials(f, call);
-            f.active_inputs.remove(&call); // Ghidra `FuncCallSpecs::clearActiveInput`
+            // Ghidra `FuncCallSpecs::clearActiveInput` (fspec.hh:1696) flips a flag and KEEPS the
+            // trials, so the call can be re-opened later with everything it learned. mosura used
+            // to remove the container here, which is what made the ordering defect unrecoverable.
+            if let Some(a) = f.active_inputs.get_mut(&call) {
+                a.active = false;
+            }
             count += 1; // coreaction.cc:1756 — the commit is a change
         } else {
             count += 1; // coreaction.cc:1748 — trials still being evaluated: work to do
@@ -1055,6 +1060,18 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         }
         newparam.push(vn);
     }
+    // ORDERING REPAIR (docs/byte-exact-status.md, open thread 1): if an argument resolved to a
+    // varnode that is LINKED but UNWRITTEN, its definition is a preceding call's output that has
+    // not been committed yet — `ActionActiveReturn` runs in the fullloop tail, after this. Record
+    // the call so the output commit can re-open it; without that the argument prints as a constant
+    // and the caller emits an instruction to produce a value the original passed implicitly.
+    let unwritten = newparam
+        .iter()
+        .skip(1)
+        .any(|&v| !f.vn(v).is_written() && !f.vn(v).is_free() && !f.vn(v).is_input());
+    if unwritten {
+        f.calls_awaiting_output.insert(call);
+    }
     f.op_set_all_input(call, &newparam); // fspec.cc:5739
     if let Some(active) = f.active_inputs.get_mut(&call) {
         active.delete_unused_trials(); // fspec.cc:5740
@@ -1093,6 +1110,17 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
 /// Ghidra's cleared `isOutputActive` gate).
 pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
     let mut count = 0u32;
+    // ORDERING REPAIR, second half (docs/byte-exact-status.md, open thread 1). Outputs commit HERE,
+    // in the fullloop tail; arguments committed earlier, in the mainloop. Any call whose argument
+    // resolved to a linked-but-unwritten varnode is re-opened now that the definition exists, so
+    // `ActionResolveCalls` re-derives it on the next round — the shape Ghidra's repeated fullloop
+    // already assumes. Each call gets exactly one such round (`reopened_inputs`), so this cannot
+    // cycle, and the re-open is counted as a change so the enclosing loop actually runs again.
+    for call in std::mem::take(&mut f.calls_awaiting_output) {
+        if f.reopen_input(call) {
+            count += 1;
+        }
+    }
     let reg = f.spaces.by_name("register");
     // The convention's output (return) list, decoded from the compiler spec's `<default_proto>`.
     let Some(outlist) = f.proto_model.output.clone() else { return 0 };
@@ -2001,10 +2029,10 @@ mod tests {
 
         resolve_call_args(&mut f); // pass 1: dead slots freed to const 0, but none removed
         assert_eq!(f.op(call).num_inputs(), 7, "deferred: all candidate slots retained after one pass");
-        assert!(f.active_inputs.contains_key(&call), "per-call trials persist until fully checked");
+        assert!(f.is_input_active(call), "per-call trials persist until fully checked");
 
         resolve_call_args(&mut f); // pass 2: fully checked ⇒ commit the prune
         assert_eq!(f.op(call).num_inputs(), 3, "committed: [target, RDI, RSI] once the deferral resolves");
-        assert!(!f.active_inputs.contains_key(&call), "active_inputs entry cleared on commit");
+        assert!(!f.is_input_active(call), "active_inputs entry cleared on commit");
     }
 }
