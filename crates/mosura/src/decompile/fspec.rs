@@ -1239,9 +1239,24 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         if f.spaces.space_by_spacebase(vn.loc, vn.size).is_some() || pl.possible_param(vn.loc, vn.size) {
             continue;
         }
-        // Saved-and-restored ⇒ callee-saved, not an argument. The prologue's `push ebp` reads the
-        // INCOMING EBP, so without this every framed function declares an EBP parameter.
-        if f.own_saved.as_ref().is_some_and(|r| r.contains(&vn.loc.offset)) {
+        // Is this register's incoming value used for ANYTHING other than being saved? A register
+        // that is merely preserved has exactly one use — the COPY into its stack slot — while a
+        // parameter is used in real computation.
+        //
+        // "Saved and restored" alone is NOT a disqualifier, which is what the earlier version of
+        // this got wrong: a parameter that arrives in a callee-saved register is saved too, because
+        // the convention says preserve it. FUN_00010bb1 takes EDI and ESI, saves both, and computes
+        // `*(int2 *)(edi + 4) = si - …`; excluding on the save alone left it `void f(void)` with two
+        // undefined locals. The dataflow separates the cases cleanly and needs no walk, so it also
+        // covers the functions where `callee_writes_cfg` bails (any indirect call).
+        let only_saved = !vn.descend.is_empty()
+            && vn.descend.iter().all(|&d| {
+                f.op(d).code() == OpCode::Copy
+                    && f.op(d).output.is_some_and(|o| {
+                        f.spaces.get(f.vn(o).loc.space).kind == super::space::SpaceKind::Spacebase
+                    })
+            });
+        if only_saved {
             continue;
         }
         // When the save/restore walk could not run (`own_saved` is None — an indirect branch, an
@@ -1259,9 +1274,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
             .effectlist
             .iter()
             .any(|e| e.space == reg && e.offset == vn.loc.offset && e.effect == effect::UNAFFECTED);
-        if callee_saved && f.own_saved.is_none() {
-            continue;
-        }
+        let _ = callee_saved;
 
         // Flags and other status bits are not argument storage.
         if vn.size > 4 || pl.entry.iter().all(|e| e.space != vn.loc.space || vn.loc.offset >= 0x100) {
