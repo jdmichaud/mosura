@@ -81,6 +81,8 @@ struct CspecSettings {
     stack_pointer: Option<(Address, u32)>,
     /// `<aggressivetrim signext=>` — `RuleSubvarSext`'s `aggressive` argument.
     aggressive_ext_trim: bool,
+    /// `<funcptr align=>` — `RuleFuncPtrEncoding`'s alignment, as a bit position.
+    funcptr_align: i32,
 }
 
 impl CspecSettings {
@@ -90,6 +92,7 @@ impl CspecSettings {
             proto_model: resolve_proto_model(spec, language_id, compiler_id),
             stack_pointer: resolve_stack_pointer(spec, language_id, compiler_id),
             aggressive_ext_trim: crate::analysis::cspec::aggressive_ext_trim(language_id, compiler_id),
+            funcptr_align: crate::analysis::cspec::funcptr_align(language_id, compiler_id),
         }
     }
 
@@ -174,6 +177,8 @@ fn build_from_instrs(
     // The compiler spec's `<aggressivetrim signext=>`, which `RuleSubvarSext` passes as
     // SubvariableFlow's `aggressive` argument (Ghidra `Architecture::aggressive_ext_trim`).
     f.aggressive_ext_trim = cspec.aggressive_ext_trim;
+    // RuleFuncPtrEncoding's alignment (Ghidra `Architecture::funcptr_align`).
+    f.funcptr_align = cspec.funcptr_align;
     // The user-op (`define pcodeop`) index→name table (Ghidra `Architecture::userops`), so
     // `PrintC::opCallother` can render a CALLOTHER as its userop name rather than `CALLOTHER(...)`.
     f.userops = userops.clone();

@@ -22,6 +22,7 @@ use super::rules::{
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
+    RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -324,8 +325,19 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubvarSext) // (117)
         // RuleNegateNegate (coreaction.cc:5629): `~~V` => `V`.
         .with(RuleNegateNegate) // (118)
+        // RuleFuncPtrEncoding (coreaction.cc:5632): drop the low-bit mask before an indirect call
+        // on a target with aligned function pointers. Inert on x86 — no cspec sets `<funcptr>`,
+        // so `funcptr_align` is 0 and the rule declines at its first test, as Ghidra's does.
+        .with(RuleFuncPtrEncoding) // (121)
         .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
+        // The unsigned-int-to-float pair (coreaction.cc:5636-5637), for hardware that only
+        // converts signed integers: RuleUnsigned2Float collapses the arithmetic form
+        // (halve-convert-double), RuleInt2FloatCollapse the branching one (a MULTIEQUAL joining a
+        // signed and an unsigned conversion under a sign test). Both rewrite to the single
+        // `FLOAT_INT2FLOAT(ZEXT(V))` the printer renders as an unsigned cast.
+        .with(RuleUnsigned2Float) // (125)
+        .with(RuleInt2FloatCollapse) // (126)
         // Ghidra's actprop slot for RulePtraddUndo (coreaction.cc:5638), immediately after the
         // float group — NOT actprop2, where RulePushPtr/RulePtrArith live (:5664/5666). The
         // separation is load-bearing: this rule undoes a mis-typed PTRADD here, and RulePtrArith

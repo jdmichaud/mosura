@@ -9092,6 +9092,325 @@ impl Rule for RuleNegateNegate {
     }
 }
 
+/// Ghidra `RuleFuncPtrEncoding` (ruleaction.cc:9905, coreaction.cc:5632): on a target whose
+/// function pointers are aligned, the compiler masks off the low bits before an indirect call —
+/// those bits encode something else (ARM/THUMB's instruction-set selector, say), not part of the
+/// address. The mask is noise in the decompiled output, so drop it.
+///
+/// Fires only when the compiler spec sets `<funcptr align=>` (see
+/// [`crate::analysis::cspec::funcptr_align`]) — never on x86, where the element is absent and
+/// `funcptr_align` is 0. Faithfully inert there rather than absent.
+pub struct RuleFuncPtrEncoding;
+
+impl Rule for RuleFuncPtrEncoding {
+    fn name(&self) -> &str {
+        "funcptrencoding"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Callind]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let align = data.funcptr_align;
+        if align == 0 {
+            return 0;
+        }
+        let Some(vn) = data.op(op).input(0) else { return 0 };
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let andop = data.vn(vn).def.unwrap();
+        if data.op(andop).code() != OpCode::IntAnd {
+            return 0;
+        }
+        let Some(maskvn) = data.op(andop).input(1) else { return 0 };
+        if !data.vn(maskvn).is_constant() {
+            return 0;
+        }
+        let val = data.vn(maskvn).constant_value();
+        let testmask = super::nzmask::calc_mask(data.vn(maskvn).size);
+        let slide = u64::MAX << align;
+        if (testmask & slide) == val {
+            // 1-bit encoding: eliminate the mask.
+            data.op_remove_input(andop, 1);
+            data.op_set_opcode(andop, OpCode::Copy);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `TypeOpFloatInt2Float::preferredZextSize` (typeop.cc:1911): the integer width to zero-
+/// extend to before an unsigned int-to-float conversion, so the conversion's input has a spare
+/// sign bit. Duplicated from [`super::subvarflow::preferred_zext_size`]'s private copy at the two
+/// call sites Ghidra has (RuleUnsigned2Float, RuleInt2FloatCollapse).
+fn preferred_zext_size(in_size: u32) -> u32 {
+    if in_size < 4 {
+        4
+    } else if in_size < 8 {
+        8
+    } else {
+        in_size + 1
+    }
+}
+
+/// Ghidra `RuleUnsigned2Float` (ruleaction.cc:10554, coreaction.cc:5636): recognize the
+/// unsigned-to-float idiom a compiler emits when the hardware only converts SIGNED integers. For a
+/// value with the high bit possibly set, it halves (rounding toward the odd bit), converts, and
+/// doubles:
+///
+/// ```text
+/// x = (V >> 1) | (V & 1)        // halve, keeping the low bit so rounding is correct
+/// f = (float)x                  // signed conversion, now safe
+/// f + f                         // double it back
+/// ```
+///
+/// Collapse the whole thing to a single unsigned conversion — `FLOAT_INT2FLOAT(ZEXT(V))`, the form
+/// the printer renders as an unsigned cast. The AND may be reached through an `INT_ZEXT`, and the
+/// shift's operand through a zero-offset `SUBPIECE`; both indirections are Ghidra's.
+pub struct RuleUnsigned2Float;
+
+impl Rule for RuleUnsigned2Float {
+    fn name(&self) -> &str {
+        "unsigned2float"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::FloatInt2float]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(invn) = data.op(op).input(0) else { return 0 };
+        if !data.vn(invn).is_written() {
+            return 0;
+        }
+        let orop = data.vn(invn).def.unwrap();
+        if data.op(orop).code() != OpCode::IntOr {
+            return 0;
+        }
+        let (Some(or0), Some(or1)) = (data.op(orop).input(0), data.op(orop).input(1)) else {
+            return 0;
+        };
+        if !data.vn(or0).is_written() || !data.vn(or1).is_written() {
+            return 0;
+        }
+        let mut shiftop = data.vn(or0).def.unwrap();
+        let mut andop = data.vn(or1).def.unwrap();
+        if data.op(shiftop).code() != OpCode::IntRight {
+            andop = shiftop;
+            shiftop = data.vn(or1).def.unwrap();
+        }
+        if data.op(shiftop).code() != OpCode::IntRight {
+            return 0;
+        }
+        // Shift to the right by 1 exactly, to clear the high bit.
+        if !constant_match(data, data.op(shiftop).input(1), 1) {
+            return 0;
+        }
+        let Some(basevn) = data.op(shiftop).input(0) else { return 0 };
+        if data.vn(basevn).is_free() {
+            return 0;
+        }
+        if data.op(andop).code() == OpCode::IntZext {
+            let Some(zin) = data.op(andop).input(0) else { return 0 };
+            if !data.vn(zin).is_written() {
+                return 0;
+            }
+            andop = data.vn(zin).def.unwrap();
+        }
+        if data.op(andop).code() != OpCode::IntAnd {
+            return 0;
+        }
+        // Mask off the least significant bit.
+        if !constant_match(data, data.op(andop).input(1), 1) {
+            return 0;
+        }
+        let Some(mut vn) = data.op(andop).input(0) else { return 0 };
+        if basevn != vn {
+            if !data.vn(vn).is_written() {
+                return 0;
+            }
+            let subop = data.vn(vn).def.unwrap();
+            if data.op(subop).code() != OpCode::Subpiece {
+                return 0;
+            }
+            let Some(off) = data.op(subop).input(1) else { return 0 };
+            if data.vn(off).constant_value() != 0 {
+                return 0;
+            }
+            let Some(sub_in) = data.op(subop).input(0) else { return 0 };
+            vn = sub_in;
+            if basevn != vn {
+                return 0;
+            }
+        }
+        let Some(outvn) = data.op(op).output else { return 0 };
+        for addop in data.vn(outvn).descend.clone() {
+            if data.op(addop).code() != OpCode::FloatAdd {
+                continue;
+            }
+            if data.op(addop).input(0) != Some(outvn) || data.op(addop).input(1) != Some(outvn) {
+                continue;
+            }
+            let pc = data.op(addop).seqnum.pc;
+            let uniq = data.num_ops() as u32;
+            let zextop = data.new_op(OpCode::IntZext, SeqNum { pc, uniq }, vec![basevn]);
+            let zextout =
+                data.new_output_unique(zextop, preferred_zext_size(data.vn(basevn).size));
+            data.op_set_opcode(addop, OpCode::FloatInt2float);
+            data.op_remove_input(addop, 1);
+            data.op_set_input(addop, 0, zextout);
+            data.op_insert_before(zextop, addop);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `Varnode::constantMatch` (varnode.cc:1268): the varnode is a constant with this value.
+fn constant_match(data: &Funcdata, vn: Option<VarnodeId>, val: u64) -> bool {
+    vn.is_some_and(|v| data.vn(v).is_constant() && data.vn(v).constant_value() == val)
+}
+
+/// Ghidra `FlowBlock::findCondition` (block.cc:557): given two edges arriving at a join, walk each
+/// back through single-exit blocks to the conditional block that chose between them, returning it
+/// and the out-slot of that block leading to the first edge (`slot1`). `None` when the walk hits a
+/// block that is neither a pass-through nor the shared condition.
+fn find_condition(
+    data: &Funcdata,
+    mut bl1: BlockId,
+    mut edge1: usize,
+    mut bl2: BlockId,
+    mut edge2: usize,
+) -> Option<(BlockId, usize)> {
+    let mut cond = *data.block(bl1).in_edges.get(edge1)?;
+    while data.block(cond).out_edges.len() != 2 {
+        if data.block(cond).out_edges.len() != 1 {
+            return None;
+        }
+        bl1 = cond;
+        edge1 = 0;
+        cond = *data.block(bl1).in_edges.first()?;
+    }
+    while Some(&cond) != data.block(bl2).in_edges.get(edge2) {
+        bl2 = *data.block(bl2).in_edges.get(edge2)?;
+        if data.block(bl2).out_edges.len() != 1 {
+            return None;
+        }
+        edge2 = 0;
+    }
+    // Ghidra `bl1->getInRevIndex(edge1)` — the out-slot of `cond` that reaches `bl1`. Ghidra
+    // stores the reverse index on the edge itself; mosura's edge is a plain BlockId, so it is
+    // recovered by position, the same idiom determinedbranch.rs and structure.rs already use.
+    // Both loops maintain `in_edges[edge1] == cond`, which is what makes the lookup well-posed;
+    // it differs from Ghidra only for a conditional whose two out-edges share a target, where
+    // the reverse index distinguishes them and a position lookup cannot.
+    debug_assert_eq!(data.block(bl1).in_edges.get(edge1), Some(&cond));
+    let slot1 = data.block(cond).out_edges.iter().position(|&o| o == bl1)?;
+    Some((cond, slot1))
+}
+
+/// Ghidra `RuleInt2FloatCollapse` (ruleaction.cc:10637, coreaction.cc:5637): the *branching* form
+/// of the same unsigned-to-float idiom [`RuleUnsigned2Float`] collapses. Here the compiler tests
+/// the sign and picks between two conversions:
+///
+/// ```text
+/// f = (V < 0) ? (float)(unsigned)V : (float)V
+/// ```
+///
+/// which arrives as a MULTIEQUAL joining a signed `FLOAT_INT2FLOAT` with an unsigned one over the
+/// same input. Redefine the MULTIEQUAL itself as the unsigned conversion `FLOAT_INT2FLOAT(ZEXT(V))`
+/// and the branch disappears. The guard checks the condition really is the sign test and that the
+/// true branch goes the right way — accepting both `V s< 0` and `-1 s< V`, with the direction
+/// requirement inverted between them.
+pub struct RuleInt2FloatCollapse;
+
+impl Rule for RuleInt2FloatCollapse {
+    fn name(&self) -> &str {
+        "int2floatcollapse"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::FloatInt2float]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(invn) = data.op(op).input(0) else { return 0 };
+        if !data.vn(invn).is_written() {
+            return 0;
+        }
+        let zextop = data.vn(invn).def.unwrap();
+        // The original FLOAT_INT2FLOAT must be the unsigned form.
+        if data.op(zextop).code() != OpCode::IntZext {
+            return 0;
+        }
+        let Some(basevn) = data.op(zextop).input(0) else { return 0 };
+        if data.vn(basevn).is_free() {
+            return 0;
+        }
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let Some(multiop) = lone_descend(data, outvn) else { return 0 };
+        // Output comes together with exactly 1 other flow.
+        if data.op(multiop).code() != OpCode::Multiequal || data.op(multiop).num_inputs() != 2 {
+            return 0;
+        }
+        let Some(slot) = (0..2).find(|&i| data.op(multiop).input(i) == Some(outvn)) else {
+            return 0;
+        };
+        let Some(otherout) = data.op(multiop).input(1 - slot) else { return 0 };
+        if !data.vn(otherout).is_written() {
+            return 0;
+        }
+        let op2 = data.vn(otherout).def.unwrap();
+        // The other flow must be a signed FLOAT_INT2FLOAT taking the same input.
+        if data.op(op2).code() != OpCode::FloatInt2float || data.op(op2).input(0) != Some(basevn) {
+            return 0;
+        }
+        let Some(outbl) = data.op(multiop).parent else { return 0 };
+        // `dir2unsigned` is Ghidra's out-of-parameter: the control path to the unsigned conversion.
+        let Some((cond, dir2unsigned)) = find_condition(data, outbl, slot, outbl, 1 - slot) else {
+            return 0;
+        };
+        let Some(&cbranch) = data.block(cond).ops.last() else { return 0 };
+        if data.op(cbranch).code() != OpCode::Cbranch {
+            return 0;
+        }
+        let Some(boolvn) = data.op(cbranch).input(1) else { return 0 };
+        if !data.vn(boolvn).is_written() || data.op(cbranch).is_boolean_flip() {
+            return 0;
+        }
+        let compare = data.vn(boolvn).def.unwrap();
+        if data.op(compare).code() != OpCode::IntSless {
+            return 0;
+        }
+        if constant_match(data, data.op(compare).input(1), 0) {
+            // Condition is `basevn s< 0`: the TRUE branch must be the unsigned conversion.
+            if data.op(compare).input(0) != Some(basevn) || dir2unsigned != 1 {
+                return 0;
+            }
+        } else if constant_match(
+            data,
+            data.op(compare).input(0),
+            super::nzmask::calc_mask(data.vn(basevn).size),
+        ) {
+            // Condition is `-1 s< basevn`: the TRUE branch must be the SIGNED conversion.
+            if data.op(compare).input(1) != Some(basevn) || dir2unsigned == 1 {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+        data.op_uninsert(multiop);
+        // Redefine the MULTIEQUAL as the unsigned FLOAT_INT2FLOAT.
+        data.op_set_opcode(multiop, OpCode::FloatInt2float);
+        data.op_remove_input(multiop, 0);
+        let pc = data.op(multiop).seqnum.pc;
+        let uniq = data.num_ops() as u32;
+        let newzext = data.new_op(OpCode::IntZext, SeqNum { pc, uniq }, vec![basevn]);
+        let newout = data.new_output_unique(newzext, preferred_zext_size(data.vn(basevn).size));
+        data.op_set_input(multiop, 0, newout);
+        // Reinsert the modified MULTIEQUAL after any other MULTIEQUAL.
+        data.op_insert_begin(multiop, outbl);
+        data.op_insert_before(newzext, multiop);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13627,6 +13946,241 @@ mod tests {
         parent_all(&mut f, vec![lz, shift]);
         assert_eq!(RuleLzcountShiftBool.apply_op(lz, &mut f), 0);
         assert_eq!(f.op(shift).code(), OpCode::IntRight);
+    }
+
+
+    // ---- batch 2: RuleFuncPtrEncoding / RuleUnsigned2Float / RuleInt2FloatCollapse ----------
+
+    #[test]
+    fn funcptr_encoding_declines_when_spec_sets_no_alignment() {
+        // funcptr_align == 0 (every x86 cspec) — Ghidra's first test, so the rule is inert.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let mask = f.new_const(8, 0xffff_ffff_ffff_fffe);
+        let and = f.new_op(OpCode::IntAnd, seq(0), vec![v, mask]);
+        let and_out = f.new_output_unique(and, 8);
+        let call = f.new_op(OpCode::Callind, seq(1), vec![and_out]);
+        parent_all(&mut f, vec![and, call]);
+        assert_eq!(f.funcptr_align, 0);
+        assert_eq!(RuleFuncPtrEncoding.apply_op(call, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn funcptr_encoding_drops_low_bit_mask_when_aligned() {
+        // With `<funcptr align="2"/>` (funcptr_align == 1, the ARM/THUMB case), the mask clearing
+        // bit 0 before an indirect call is the encoding, not the address — eliminated.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        f.funcptr_align = 1;
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let mask = f.new_const(8, u64::MAX << 1);
+        let and = f.new_op(OpCode::IntAnd, seq(0), vec![v, mask]);
+        let and_out = f.new_output_unique(and, 8);
+        let call = f.new_op(OpCode::Callind, seq(1), vec![and_out]);
+        parent_all(&mut f, vec![and, call]);
+        assert_eq!(RuleFuncPtrEncoding.apply_op(call, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::Copy);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        assert_eq!(f.op(and).input(0), Some(v));
+    }
+
+    #[test]
+    fn funcptr_encoding_declines_unrelated_mask() {
+        // A mask that is not "all bits above the alignment" is real arithmetic — declined.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        f.funcptr_align = 1;
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let mask = f.new_const(8, 0xff);
+        let and = f.new_op(OpCode::IntAnd, seq(0), vec![v, mask]);
+        let and_out = f.new_output_unique(and, 8);
+        let call = f.new_op(OpCode::Callind, seq(1), vec![and_out]);
+        parent_all(&mut f, vec![and, call]);
+        assert_eq!(RuleFuncPtrEncoding.apply_op(call, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn unsigned2float_collapses_halve_convert_double() {
+        // `((V >> 1) | (V & 1))` converted signed, then added to itself, is really the unsigned
+        // conversion of V (ruleaction.cc:10554).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let one = f.new_const(8, 1);
+        let shift = f.new_op(OpCode::IntRight, seq(0), vec![v, one]);
+        let shift_out = f.new_output_unique(shift, 8);
+        let one2 = f.new_const(8, 1);
+        let and = f.new_op(OpCode::IntAnd, seq(1), vec![v, one2]);
+        let and_out = f.new_output_unique(and, 8);
+        let or = f.new_op(OpCode::IntOr, seq(2), vec![shift_out, and_out]);
+        let or_out = f.new_output_unique(or, 8);
+        let cvt = f.new_op(OpCode::FloatInt2float, seq(3), vec![or_out]);
+        let cvt_out = f.new_output_unique(cvt, 8);
+        let add = f.new_op(OpCode::FloatAdd, seq(4), vec![cvt_out, cvt_out]);
+        f.new_output_unique(add, 8);
+        parent_all(&mut f, vec![shift, and, or, cvt, add]);
+        assert_eq!(RuleUnsigned2Float.apply_op(cvt, &mut f), 1);
+        // The doubling FLOAT_ADD became the unsigned conversion of a widened V.
+        assert_eq!(f.op(add).code(), OpCode::FloatInt2float);
+        assert_eq!(f.op(add).num_inputs(), 1);
+        let zext_out = f.op(add).input(0).unwrap();
+        let zext = f.vn(zext_out).def.unwrap();
+        assert_eq!(f.op(zext).code(), OpCode::IntZext);
+        assert_eq!(f.op(zext).input(0), Some(v));
+        // preferredZextSize(8) == 9 (typeop.cc:1911).
+        assert_eq!(f.vn(zext_out).size, 9);
+    }
+
+    #[test]
+    fn unsigned2float_declines_without_the_doubling_add() {
+        // No `f + f` reader — the idiom is not complete, so nothing is rewritten.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let one = f.new_const(8, 1);
+        let shift = f.new_op(OpCode::IntRight, seq(0), vec![v, one]);
+        let shift_out = f.new_output_unique(shift, 8);
+        let one2 = f.new_const(8, 1);
+        let and = f.new_op(OpCode::IntAnd, seq(1), vec![v, one2]);
+        let and_out = f.new_output_unique(and, 8);
+        let or = f.new_op(OpCode::IntOr, seq(2), vec![shift_out, and_out]);
+        let or_out = f.new_output_unique(or, 8);
+        let cvt = f.new_op(OpCode::FloatInt2float, seq(3), vec![or_out]);
+        f.new_output_unique(cvt, 8);
+        parent_all(&mut f, vec![shift, and, or, cvt]);
+        assert_eq!(RuleUnsigned2Float.apply_op(cvt, &mut f), 0);
+    }
+
+    #[test]
+    fn unsigned2float_declines_wrong_shift_amount() {
+        // Shifted by 2, not 1 — this is not the halving idiom.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let two = f.new_const(8, 2);
+        let shift = f.new_op(OpCode::IntRight, seq(0), vec![v, two]);
+        let shift_out = f.new_output_unique(shift, 8);
+        let one = f.new_const(8, 1);
+        let and = f.new_op(OpCode::IntAnd, seq(1), vec![v, one]);
+        let and_out = f.new_output_unique(and, 8);
+        let or = f.new_op(OpCode::IntOr, seq(2), vec![shift_out, and_out]);
+        let or_out = f.new_output_unique(or, 8);
+        let cvt = f.new_op(OpCode::FloatInt2float, seq(3), vec![or_out]);
+        let cvt_out = f.new_output_unique(cvt, 8);
+        let add = f.new_op(OpCode::FloatAdd, seq(4), vec![cvt_out, cvt_out]);
+        f.new_output_unique(add, 8);
+        parent_all(&mut f, vec![shift, and, or, cvt, add]);
+        assert_eq!(RuleUnsigned2Float.apply_op(cvt, &mut f), 0);
+        assert_eq!(f.op(add).code(), OpCode::FloatAdd);
+    }
+
+    /// The branching unsigned-conversion shape RuleInt2FloatCollapse folds:
+    ///
+    /// ```text
+    ///          b0:  if (V s< 0) goto b2      <- cond, out_edges [b1(signed), b2(unsigned)]
+    ///     b1: f1 = (float)V           b2: f2 = (float)(zext V)
+    ///          b3:  phi = MULTIEQUAL(f1, f2)
+    /// ```
+    fn int2float_branching(sless_form: bool) -> (Funcdata, OpId, OpId, VarnodeId) {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        // b0: the sign test. `V s< 0` (true => unsigned) or `-1 s< V` (true => signed).
+        let cmp = if sless_form {
+            let zero = f.new_const(4, 0);
+            f.new_op(OpCode::IntSless, seq(0), vec![v, zero])
+        } else {
+            let minus_one = f.new_const(4, 0xffff_ffff);
+            f.new_op(OpCode::IntSless, seq(0), vec![minus_one, v])
+        };
+        let cmp_out = f.new_output_unique(cmp, 1);
+        let dest = f.new_const(8, 0x100);
+        let cbr = f.new_op(OpCode::Cbranch, seq(1), vec![dest, cmp_out]);
+        // b1: the signed conversion.
+        let signed = f.new_op(OpCode::FloatInt2float, seq(2), vec![v]);
+        let signed_out = f.new_output_unique(signed, 8);
+        // b2: the unsigned conversion, through a ZEXT.
+        let zext = f.new_op(OpCode::IntZext, seq(3), vec![v]);
+        let zext_out = f.new_output_unique(zext, 8);
+        let unsigned = f.new_op(OpCode::FloatInt2float, seq(4), vec![zext_out]);
+        let unsigned_out = f.new_output_unique(unsigned, 8);
+        // b3: the join. Input order follows in_edges: [b1 (signed), b2 (unsigned)].
+        let phi = f.new_op(OpCode::Multiequal, seq(5), vec![signed_out, unsigned_out]);
+        f.new_output_unique(phi, 8);
+        let blocks = vec![
+            crate::decompile::BlockBasic {
+                ops: vec![cmp, cbr],
+                in_edges: vec![],
+                out_edges: vec![BlockId(1), BlockId(2)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![signed],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![zext, unsigned],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![phi],
+                in_edges: vec![BlockId(1), BlockId(2)],
+                out_edges: vec![],
+            },
+        ];
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+        (f, unsigned, phi, v)
+    }
+
+    #[test]
+    fn int2float_collapse_folds_the_sign_test_branch() {
+        // `(V s< 0) ? (float)(unsigned)V : (float)V` => `(float)(unsigned)V`, the MULTIEQUAL
+        // itself redefined as the conversion (ruleaction.cc:10637).
+        let (mut f, unsigned, phi, v) = int2float_branching(true);
+        assert_eq!(RuleInt2FloatCollapse.apply_op(unsigned, &mut f), 1);
+        assert_eq!(f.op(phi).code(), OpCode::FloatInt2float);
+        assert_eq!(f.op(phi).num_inputs(), 1);
+        let zext_out = f.op(phi).input(0).unwrap();
+        let zext = f.vn(zext_out).def.unwrap();
+        assert_eq!(f.op(zext).code(), OpCode::IntZext);
+        assert_eq!(f.op(zext).input(0), Some(v));
+        // preferredZextSize(4) == 8 (typeop.cc:1911).
+        assert_eq!(f.vn(zext_out).size, 8);
+    }
+
+    #[test]
+    fn int2float_collapse_rejects_reversed_branch_direction() {
+        // Same shape with the condition written `-1 s< V`, whose TRUE branch must reach the
+        // SIGNED conversion. Here it reaches the unsigned one, so the guard declines — this is
+        // the arm that keeps the rule from folding a conditional that means the opposite.
+        let (mut f, unsigned, phi, _) = int2float_branching(false);
+        assert_eq!(RuleInt2FloatCollapse.apply_op(unsigned, &mut f), 0);
+        assert_eq!(f.op(phi).code(), OpCode::Multiequal);
+    }
+
+    #[test]
+    fn int2float_collapse_declines_signed_original() {
+        // The op being examined must be the UNSIGNED conversion (input written by INT_ZEXT).
+        let (mut f, _, phi, _) = int2float_branching(true);
+        let signed = f.vn(f.op(phi).input(0).unwrap()).def.unwrap();
+        assert_eq!(RuleInt2FloatCollapse.apply_op(signed, &mut f), 0);
+        assert_eq!(f.op(phi).code(), OpCode::Multiequal);
     }
 
 }

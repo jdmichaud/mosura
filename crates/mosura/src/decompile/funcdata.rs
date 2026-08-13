@@ -197,6 +197,12 @@ pub struct Funcdata {
     /// (`architecture.cc:156`) and the answer for every x86 spec; see
     /// [`crate::analysis::cspec::aggressive_ext_trim`] for why it is read rather than assumed.
     pub aggressive_ext_trim: bool,
+    /// Ghidra `Architecture::funcptr_align` (`architecture.hh:183`), decoded from the compiler
+    /// spec's `<funcptr align=>` as a BIT POSITION (see
+    /// [`crate::analysis::cspec::funcptr_align`]). 0 — the x86 answer — disables the alignment
+    /// analysis entirely, which is what [`RuleFuncPtrEncoding`](super::rules::RuleFuncPtrEncoding)
+    /// checks first.
+    pub funcptr_align: i32,
     /// User-defined p-code op index → name (Ghidra `Architecture::userops`, reached via
     /// `Funcdata::getArch`). Copied from [`crate::sleigh::engine::Spec::userops`] by the build
     /// caller; consumed by `PrintC::opCallother` to render a `CPUI_CALLOTHER` as `<name>(args)`
@@ -255,6 +261,7 @@ impl Funcdata {
             proto_model,
             stack_pointer: None,
             aggressive_ext_trim: false,
+            funcptr_align: 0,
             userops: std::collections::HashMap::new(),
             opactdbg_active: false,
             modify_list: Vec::new(),

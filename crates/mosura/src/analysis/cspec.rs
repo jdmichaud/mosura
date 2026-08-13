@@ -225,6 +225,53 @@ pub fn aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
     })
 }
 
+/// Decode the compiler spec's `<funcptr align="N"/>` (Ghidra `Architecture::decodeFuncPtrAlign`,
+/// `architecture.cc:1049`) into `funcptr_align` — **the bit POSITION of the first set bit in the
+/// attribute**, not the alignment itself: `align="4"` yields 2. Ghidra's default is 0, meaning "no
+/// alignment analysis" (`architecture.cc:157`).
+///
+/// It marks targets whose function pointers are aligned and therefore have spare low bits that
+/// encode something else (AARCH64's `align="4"`, ARM/THUMB's `align="2"` where bit 0 selects the
+/// instruction set). Three mechanisms read it: `RuleFuncPtrEncoding` (ruleaction.cc:9911) drops the
+/// mask that clears those bits, and `ActionDeindirect`/`JumpTable` (coreaction.cc:1245,
+/// jumptable.cc:1444/2148) strip them before looking a function up by address.
+///
+/// **No x86 compiler spec has the element**, so this answers 0 — the "no alignment" case — on every
+/// target mosura currently builds, exactly as [`aggressive_ext_trim`] answers `false`. Read rather
+/// than assumed for the same reason.
+///
+/// Decoded once per `(language_id, compiler_spec_id)` — see [`cspec_cached`].
+pub fn funcptr_align(language_id: &str, compiler_spec_id: &str) -> i32 {
+    static CACHE: OnceLock<CspecCache<i32>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        decode_funcptr_align(language_id, compiler_spec_id)
+    })
+}
+
+fn decode_funcptr_align(language_id: &str, compiler_spec_id: &str) -> i32 {
+    let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return 0 };
+    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let Ok(doc) = roxmltree::Document::parse(&text) else { return 0 };
+    let Some(mut align) = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "funcptr")
+        .and_then(|n| n.attribute("align"))
+        .and_then(|v| v.parse::<i32>().ok())
+    else {
+        return 0;
+    };
+    if align == 0 {
+        return 0; // No alignment
+    }
+    let mut bits = 0;
+    while align & 1 == 0 {
+        // Find position of first 1 bit
+        bits += 1;
+        align >>= 1;
+    }
+    bits
+}
+
 fn decode_aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
     let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return false };
     let Ok(text) = std::fs::read_to_string(path) else { return false };

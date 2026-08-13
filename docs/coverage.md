@@ -260,12 +260,12 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleNegateNegate | PORTED (rules.rs — ruleaction.cc:9040, slot :5629): `~~V` => `COPY V`, inner operand must not be free. Corpus-neutral. |
 | RuleConditionalMove | MISSING |
 | RuleOrPredicate | MISSING |
-| RuleFuncPtrEncoding | MISSING |
+| RuleFuncPtrEncoding | PORTED (rules.rs — ruleaction.cc:9905, slot :5632): on a target whose function pointers are aligned, drop the mask that clears the spare low bits before a CALLIND — those bits encode something else (ARM/THUMB's instruction-set selector), not part of the address. Required plumbing `Architecture::funcptr_align` (`<funcptr align=>`, architecture.cc:1049) through the cspec as a **bit position** (`align="4"` → 2); see `analysis::cspec::funcptr_align`. **No x86 cspec has the element**, so `funcptr_align` is 0 and the rule declines at its first test on every target mosura builds today — faithfully inert, the RuleSubvarSext precedent. Ghidra's two other readers of the same value, `ActionDeindirect` (coreaction.cc:1245) and `JumpTable` (jumptable.cc:1444/2148), which strip the bits before an address lookup, are NOT yet wired to it. |
 | RuleSubfloatConvert | BLOCKED(SubfloatFlow subsystem — subflow.cc) |
 | RuleFloatCast | PORTED (rules.rs; byte-neutral, unit-tested — inert on corpus: the stacked FLOAT2FLOAT/INT2FLOAT pattern it targets doesn't survive to actprop; floatcast fixture's imperfection is upstream float sizing, not this rule) |
 | RuleIgnoreNan | PORTED |
-| RuleUnsigned2Float | MISSING |
-| RuleInt2FloatCollapse | MISSING |
+| RuleUnsigned2Float | PORTED (rules.rs — ruleaction.cc:10554, slot :5636): the unsigned-to-float idiom for hardware that only converts SIGNED integers — `((V>>1) | (V&1))` converted, then added to itself — collapses to `FLOAT_INT2FLOAT(ZEXT(V))`, which the printer renders as an unsigned cast. Both of Ghidra's indirections ported: the AND reached through an INT_ZEXT, the shift operand through a zero-offset SUBPIECE. `TypeOpFloatInt2Float::preferredZextSize` (typeop.cc:1911) ported alongside. Corpus-neutral. |
+| RuleInt2FloatCollapse | PORTED (rules.rs — ruleaction.cc:10637, slot :5637): the *branching* form of the same idiom — a MULTIEQUAL joining a signed and an unsigned FLOAT_INT2FLOAT over one input, under a sign test — with the MULTIEQUAL itself redefined as the unsigned conversion. Both condition spellings guarded as Ghidra does, with the direction requirement inverted between them (`V s< 0` ⇒ true branch is unsigned; `-1 s< V` ⇒ true branch is signed). Required porting `FlowBlock::findCondition` (block.cc:557) as `find_condition`; its one divergence is `getInRevIndex`, which Ghidra stores on the edge and mosura recovers by position — differing only for a conditional whose two out-edges share a target. Corpus-neutral. |
 | RulePtraddUndo | PORTED |
 | RulePtrsubUndo | MISSING |
 | RuleSegment | N/A (segmented arch) |
@@ -449,14 +449,14 @@ Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
 oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
 — `RuleIndirectConcat` is the only one, and it is not a gap (§3).
 
-- **oppool1** (134): **119 ported** — 118 under Ghidra's own name plus `RuleCollapseConstants` =
-  mosura's `RuleConstFold` — of which **116 are wired** and **3 HELD unwired**: `RuleAndCompare`,
+- **oppool1** (134): **122 ported** — 121 under Ghidra's own name plus `RuleCollapseConstants` =
+  mosura's `RuleConstFold` — of which **119 are wired** and **3 HELD unwired**: `RuleAndCompare`,
   `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
   3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
   subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
-  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **10 MISSING**:
-  RuleConditionalMove, RuleDoubleIn, RuleDoubleOut, RuleFuncPtrEncoding, RuleInt2FloatCollapse,
-  RuleOrPredicate, RulePiecePathology, RulePtrsubUndo, RuleSwitchSingle, RuleUnsigned2Float.
+  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **7 MISSING**:
+  RuleConditionalMove, RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology,
+  RulePtrsubUndo, RuleSwitchSingle.
   (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
 - **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
   RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
@@ -470,7 +470,7 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   RuleExpandLoad, RuleExtensionPush, RuleFloatSignCleanup, RulePieceStructure,
   RulePtrsubCharConstant.
 
-**Live gap: 27 of Ghidra's 154 rules have no mosura implementation** — 16 MISSING (the mechanical
+**Live gap: 24 of Ghidra's 154 rules have no mosura implementation** — 13 MISSING (the mechanical
 tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
 constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
 (RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
@@ -481,7 +481,7 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 16-rule MISSING set has a fixture citation, and the @`554620e` trace
+splits). Nothing in the current 13-rule MISSING set has a fixture citation, and the @`554620e` trace
 survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
 targets from a fresh trace-diff, not from this list's order.
 
