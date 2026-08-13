@@ -42,6 +42,18 @@ Gains rose 5 -> 9 on the 516-function near set (+4, up from +3). Regressions sta
 encoding was a real defect but not the cause of the regressions — those are still unexplained, and
 they are what blocks this.
 
+⚠️ **AND AT LEAST ONE OF THE SIX "REGRESSIONS" MAY BE A COMPARATOR ARTIFACT — CHECK BEFORE
+JUDGING THE PORT.** FUN_00056ca4 (idx 02159) reports MISMATCH under the port, and its ONLY
+difference is a trailing `mov eax,eax` (`8b c0`, the 2-byte NOP), which `compare.trim_pad` DOES
+strip (40 -> 38, ending `c3`). Every instruction matches; the one remaining difference is the
+unlinked `call` displacement, which the comparator masks as a verified call. So the byte comparison
+looks EXACT and the verdict says MISMATCH.
+
+Resolve that before accepting -6. If several of the six are this, the port is net POSITIVE and
+should land. (Note `tryone.py` shows the UNTRIMMED original, which is what made this look like a
+real 2-byte difference at first glance — `whydiff.original_bytes` trims, `tryone` does not. Fixing
+that inconsistency is itself worth doing.)
+
 **CALIBRATION, from M39 — the near set captures essentially ALL the gains.** Its sample said +3 and
 the full run's total gain was also +3. So predict with: `near-set gain − complete clean-set loss`.
 With the encoding fixed that is 4 − 6 = **−2**, which is why this is still not landed. Do NOT
