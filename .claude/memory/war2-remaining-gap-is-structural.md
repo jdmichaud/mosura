@@ -857,3 +857,27 @@ NEXT LEVER (unverified): make the unique collapse before RestrictLocal runs, i.e
 `unique = COPY EBP` into the STORE's value input — or find why the converted `stack[-4]` COPY is
 early-removed while the -24 one is kept. Do NOT special-case a `unique` hop inside RestrictLocal:
 Ghidra matches the direct descendant, and adding a hop is an invention, not a port.
+
+### Copy propagation is NOT the blocker — premise checked and disproved
+
+Investigated on request. **Do not "fix" copy propagation for this; there is nothing wrong with it.**
+
+- `RulePropagateCopy` IS ported (rules.rs), registered in the pool, and faithful to
+  `ruleaction.cc`'s version including the `isReturnCopy` bail and the marker/constant guard.
+- `RuleEarlyRemoval` is faithful too, including `isAutoLive` and the `deadRemovalAllowedSeen`
+  space guard, and is registered at the SAME slot as Ghidra (actprop, `coreaction.cc:5512`).
+- `check_spacebase`/`vn_spacebase`/`correct_spacebase` resolve this STORE correctly to `(stack,-4)`.
+
+THE ACTUAL BLOCKER, measured: **the `pop ebp` restore never materialises as a LOAD.** Instrumenting
+every `check_spacebase` call in FUN_0005118c gives exactly three hits — `Load -> (stack,-20)` twice
+(the buffer, working fine) and `Store -> (stack,-4)` once. There is NO `Load -> (stack,-4)`. So the
+saved-EBP slot has no reader at any point; its converted `stack[-4] = COPY` is dead the moment it is
+made, `RuleEarlyRemoval` collects it inside the same pool run, and `ActionRestrictLocal` — which
+correctly looks one iteration later — finds an empty descendant list. The machinery all works; the
+save/restore PAIR never forms.
+
+What does NOT explain it (checked, so nobody re-checks): `Heritage::guardReturns`' persist branch is
+gated on `Varnode::persist`, not `unaffected` (heritage.cc), so it is not what keeps the restore
+chain alive in Ghidra. Unknown what does. That is the open question for this class — find why
+Ghidra's `pop ebp` LOAD survives to be converted while mosura's does not, starting from the
+epilogue lift rather than from any rule.
