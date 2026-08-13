@@ -11,16 +11,22 @@ remainder is a burn-down list and every not-yet-stumbled-on gap is visible at on
 - `BLOCKED(dep)` — not yet portable; needs a subsystem/decision mosura lacks.
 - `MISSING` — no port yet, and not blocked (mechanical tail work).
 - `PARTIAL` — a subset/related functionality exists, but the Ghidra mechanism is not fully ported.
+- `PORTED-DORMANT` — ported **and wired**, but structurally unable to fire until a named dependency
+  lands (distinct from `HELD`, which is unwired by choice).
 - `N/A` — marker/no-op action, or arch feature irrelevant to x86-64-first (segmented spaces, etc.).
 
-**Precision note.** The rule-pool sections (oppool1/oppool2/cleanup) are *exact*: status is verified
+**Precision note.** The rule-pool sections (oppool1/oppool2/cleanup) are *exact at the status level*
+(re-verified at `f728a00`; see "Method and its limits" in the Summary for what that does not cover):
+status is verified
 against the `pub struct Rule*` set and the `.with(...)` wiring in `pipeline.rs`. The action and
 subsystem sections (heritage/fspec/jumptable/printc/merge) are *function-mapped* — mosura rarely
 names an Action after Ghidra, so these map by behaviour and several are annotated `PARTIAL`
 pending a deeper per-mechanism audit.
 
 Source of truth: Ghidra `coreaction.cc:5462` (`universalAction`), `ruleaction.cc`, `heritage.cc`,
-`fspec.cc`, `jumptable.cc`, `printc.cc`. mosura HEAD at authorship: `68a059e`.
+`fspec.cc`, `jumptable.cc`, `printc.cc`. mosura HEAD at authorship: `68a059e`; the rule-pool
+**Summary** at the bottom was re-derived against the live tree at `f728a00` (the §2-§4 rows were not
+re-audited in that pass — see "Row/summary skew" there).
 
 ---
 
@@ -143,7 +149,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePushMulti | PORTED (rules.rs, WIRED coreaction.cc:5518 group "nodejoin", registered into oppool1). Push a 2-input phi down through a shared functional op / collapse a phi of two shadowing COPYs; uses a pair-returning `functional_equality_level` (added additively — existing `==0` callers untouched) + `find_substitute` (cse_find_in_block). No separate node-join subsystem is needed — Ghidra registers it directly in oppool1. Corpus score-neutral (fires switchloop 13x / loopcomment 1x, final C unchanged; over-fire vs Ghidra 2x = the #23 8-byte-r0x8 upstream); unit-tested; no SSA breakage. |
 | RuleSborrow | PORTED (+ AddExpression `b5e3df8` Task #20 — subtract_matches now uses Ghidra's functional additive comparison, so `a - b` in the post-Sub2Add `a + b*-1` form still matches) |
 | RuleScarry | PORTED (rules.rs; ADD sibling of RuleSborrow via add_matches, now Ghidra's AddExpression `b5e3df8` Task #20) |
-| RuleIntLessEqual | DONE — WIRED in the main oppool1 @10 (Task #9) AND the post-orientation `condnegate_pool` (Task #1 S1), faithful to Ghidra's two registrations (coreaction.cc:5521 + the analysis re-run). `V <= c => V < (c+1)` via `replace_lessequal` (port of Funcdata::replaceLessequal), 4 unit tests. Wiring @10 was HELD pre-keystone (it made the print-time negation emit `100 <= x` vs Ghidra `99 < x`); task #8 materialized the negation in the IR → unblocked. Instrumented on wire (Ghidra `capture_trace` on condmulti): the @10 firing is **byte-faithful** — Ghidra fires `intlessequal` on the identical op (`6 <= x => 5 < x`). It exposed ONE downstream gap, now CLOSED by **RuleRangeMeld** (Task #11, see its row): the @10 SLESSEQUAL→SLESS conversion put the flag-reconstruction fold out of RuleLessNotEqual's reach (SLESSEQUAL-form only, ruleaction.cc:2290), and RuleRangeMeld recovers it in the SLESS form, matching Ghidra's `sborrow→intlessequal→rangemeld` chain. Landing @10 alone dipped condmulti/deindirect/elseif/loopcomment (corpus 0.9196/56→0.9168/55 at `0c6e0ea`) — the diagnostic naming the gap, not a mis-port (suite green, switch green); RuleRangeMeld then restored all four byte-identically (→0.9196/56). Landed per faithful-ports-land-not-held. printc::incr_in_width already DELETED (mechanism A `ActionPreferComplement` + compound `BlockCondition::negateCondition` materialize the print-time `<=` shortcut in the IR). |
+| RuleIntLessEqual | PORTED — wired in the main oppool1 @10 (Task #9) AND the post-orientation `condnegate_pool` (Task #1 S1), faithful to Ghidra's two registrations (coreaction.cc:5521 + the analysis re-run). `V <= c => V < (c+1)` via `replace_lessequal` (port of Funcdata::replaceLessequal), 4 unit tests. Wiring @10 was HELD pre-keystone (it made the print-time negation emit `100 <= x` vs Ghidra `99 < x`); task #8 materialized the negation in the IR → unblocked. Instrumented on wire (Ghidra `capture_trace` on condmulti): the @10 firing is **byte-faithful** — Ghidra fires `intlessequal` on the identical op (`6 <= x => 5 < x`). It exposed ONE downstream gap, now CLOSED by **RuleRangeMeld** (Task #11, see its row): the @10 SLESSEQUAL→SLESS conversion put the flag-reconstruction fold out of RuleLessNotEqual's reach (SLESSEQUAL-form only, ruleaction.cc:2290), and RuleRangeMeld recovers it in the SLESS form, matching Ghidra's `sborrow→intlessequal→rangemeld` chain. Landing @10 alone dipped condmulti/deindirect/elseif/loopcomment (corpus 0.9196/56→0.9168/55 at `0c6e0ea`) — the diagnostic naming the gap, not a mis-port (suite green, switch green); RuleRangeMeld then restored all four byte-identically (→0.9196/56). Landed per faithful-ports-land-not-held. printc::incr_in_width already DELETED (mechanism A `ActionPreferComplement` + compound `BlockCondition::negateCondition` materialize the print-time `<=` shortcut in the IR). |
 | RuleTrivialArith | PORTED |
 | RuleTrivialBool | PORTED (rules.rs; unit-tested — fold BOOL_AND/OR/XOR with a constant operand; fires 83× on corpus but rendered C is byte-IDENTICAL, effect absorbed downstream) |
 | RuleTrivialShift | PORTED |
@@ -173,7 +179,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleShift2Mult | PORTED |
 | RuleShiftPiece | PORTED |
 | RuleMultiCollapse | PORTED (+ nofunc const-base guard `68a059e`) |
-| RuleIndirectCollapse | BLOCKED (INDIRECT/effect subsystem, Task #10 — "remove a CPUI_INDIRECT if its blocking PcodeOp is dead"; depends on mosura's INDIRECT/effect-guard machinery, which is the iop/2-input-INDIRECT debt) |
+| RuleIndirectCollapse | PORTED (rules.rs, `006fabc` — ruleaction.cc:3157, registered at Ghidra's own slot coreaction.cc:5551 between RuleMultiCollapse and Rule2Comp2Mult). Both Ghidra situations ported verbatim: the iop op is **dead** (the `if (!indop.is_dead())` test is skipped entirely, so the repair does not depend on pass ordering), or it **resolved to a COPY** — identical storage → COPY, an output properly contained in the COPY's → SUBPIECE, partial overlap declines, no overlap falls through to the collapse. That last case is the one WAR2 produces in bulk (a prologue push rewritten to a `stack`-slot COPY while guardStores INDIRECTs guard `ram` globals). Without it a marker-only block of such INDIRECTs tripped `block_remove_internal_preserving`'s "deleting op with descendants" assert. Two arms are faithful code whose guard attributes have no producer yet (`nolocalalias` ← varmap.cc:1375, `spacebase_ptr` ← the LoadGuard/discoverIndexedStackPointers omission); control falls to Ghidra's own conservative `else return 0`, so the port evaluates identically — commented in place as inert-not-dead. |
 | Rule2Comp2Mult | PORTED (rules.rs; byte-neutral, unit-tested — `-V => V * -1` canonicalization in the main pool so mult/term rules act on it uniformly; cleanup-pool `RuleMultNegOne` restores `-V` (separate pools, no ping-pong); 0 firings on corpus — no surviving INT_2COMP reaches actprop — byte-IDENTICAL. Added `op_insert_input` helper) |
 | RuleSub2Add | PORTED (relocated to the main pool slot 42, Ghidra's actprop position — Task #20 keystone; the switch/jumptable cascade it triggered was resolved by the RuleEqual2Zero mask fix `3225f2b` + the faithful comparison/sign cluster, not by keeping it out of main) |
 | RuleCarryElim | PORTED (rules.rs; byte-neutral, unit-tested — `carry(V, c) => (-c) <= V`, special case `carry(V, 0) => false`; fires 19x on corpus but rendered C byte-IDENTICAL, absorbed downstream) |
@@ -237,7 +243,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleRangeMeld | PORTED (rules.rs, WIRED slot 101 — Task #11; BOOL_AND/BOOL_OR of two `V s< c`/`c s< V`/`V == c`/`V != c` range conditions, pulled back to a common Varnode as a `CircleRange` and intersected/unioned, then `CircleRange::translate2_op` re-expresses the result as one comparison. Collapses the x86 signed-compare flag reconstructions — `jg` form `(x != c) && (c-1 s< x) => c s< x`, `jle` form `(x == c) || (x s< c) => x s< c+1`. This is the paydown for RuleIntLessEqual @10 (Task #9): the @10 SLESSEQUAL→SLESS conversion put the fold out of RuleLessNotEqual's reach (SLESSEQUAL-form only); RuleRangeMeld recovers it in the SLESS form, matching Ghidra's `sborrow→intlessequal→rangemeld` chain. Recovers condmulti/deindirect/elseif/loopcomment byte-identically (corpus 0.9168/55→0.9196/56). 3 unit tests. `CircleRange::pullBack`/`intersect`/`circleUnion` already present; only `translate2Op` was added.) |
 | RuleFloatRange | PORTED |
 | RulePiece2Zext | PORTED (rules.rs; WIRED at coreaction.cc:5614, after RuleFloatRange). Was HELD ("rides with SubZext un-hold") for a floatconv over-fire; that hold is RESOLVED — the over-fire was the wide-return divergence, cleared once RuleSubvarZext narrows returns (floatconv unchanged 0.653 at wiring). Feeds RuleSplitFlow (movsd zero-high `CONCAT88(#0,Qa)`->`ZEXT816(Qa)`). |
-| RulePiece2Sext | MISSING |
+| RulePiece2Sext | PORTED (rules.rs, `19f1ebb` task #1 Brick 2 — ruleaction.cc:232, wired at Ghidra's own slot coreaction.cc:5615 immediately after RulePiece2Zext): `CONCAT(V s>> #(8*|V|-1), V) => SEXT(V)`, the cdq;idiv dividend. Feeds RuleSubCommute's INT_SDIV/SREM arm + RuleSubExtComm so the 8-byte signed-division idiom narrows to a 4-byte `/` — switchloop renders `iVar2 = iVar2 / 10` (was `CONCAT44(iVar2>>0x1f,iVar2)/10`), matching Ghidra. Corpus +0.0002, one mover (switchloop .830→.837). |
 | RulePopcountBoolXor | PORTED |
 | RuleXorSwap | MISSING |
 | RuleLzcountShiftBool | MISSING |
@@ -250,7 +256,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSubvarCompZero | PORTED |
 | RuleSubvarShift | PORTED |
 | RuleSubvarZext | PORTED (`381e745`; delivers int4 returns) |
-| RuleSubvarSext | BLOCKED(sext tracer `trace_forward_sext`/`trace_backward_sext` stubbed in subvarflow.rs; the last Stage-4 remainder alongside RulePtrFlow=isPtrFlow) |
+| RuleSubvarSext | PORTED (`f2d81d1` — SubVariableFlow lands whole): `trace_forward_sext`/`trace_backward_sext` (subflow.cc:867/960) are real implementations, not the former stubs, and the rule is wired at slot 117 (coreaction.cc:5628). The sext mode is **not** the zext mode reseeded — assuming a SIGN-extended container changes which ops preserve the logical value: INT_SRIGHT survives as itself with its shift amount (:991) where zext must re-mask, signed *and* unsigned comparisons work at both widths since both sides are sign-extended (:919), and an INT_ZEXT from a smaller size still acts as a sign extension so it becomes a push rather than an abort (:979). **`aggressive` is read from the compiler spec, not hardcoded**: `RuleSubvarSext::reset` (:1742) takes `Architecture::aggressive_ext_trim` ← `<aggressivetrim signext=>` (architecture.cc:1121), false on every target mosura builds today (no x86 spec sets it) but read rather than assumed. This is where the two subvar rules diverge: RuleSubvarZext's `aggressive` is `Varnode::isPtrFlow` and stays blocked on RulePtrFlow, while this one's source is a spec attribute. |
 | RuleNegateNegate | MISSING |
 | RuleConditionalMove | MISSING |
 | RuleOrPredicate | MISSING |
@@ -264,8 +270,8 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePtrsubUndo | MISSING |
 | RuleSegment | N/A (segmented arch) |
 | RulePiecePathology | MISSING |
-| RuleDoubleLoad | MISSING |
-| RuleDoubleStore | MISSING |
+| RuleDoubleLoad | PORTED (double.rs, `1bde3dd` task #5 paydown — double.cc:3370-3660 incl. noWriteConflict/testIndirectUse/reassignIndirects + SplitVarnode::adjacentOffsets/testContiguousPointers (double.cc:713/755), wired at the oppool1 tail per coreaction.cc:5643, group `doubleload`). Little-endian arms only, same convention as lanedivide. **Trace survey @`554620e` (capture_trace over all 79 datatests): Ghidra fires this rule nowhere on the corpus** — of the double family only RuleDoubleOut fires (revisit, doublemove/MIPS). Byte-identical at landing (corpus 0.9326, per-fixture join 60/60 identical). |
+| RuleDoubleStore | PORTED-DORMANT (double.rs, `1bde3dd`; coreaction.cc:5644, group `doubleprecis`) — wired but cannot fire until a **PRECISLO/PRECISHI marker port** lands (ActionParamDouble, SplitVarnode markings, heritage splitPieces). Ghidra fires it nowhere on the corpus either (same @`554620e` survey). |
 | RuleDoubleIn | MISSING |
 | RuleDoubleOut | MISSING |
 
@@ -299,13 +305,18 @@ sibling and IS ported.
 
 ## 3. oppool2 rules (coreaction.cc:5664-5669)
 
+5 active rules. `RuleIndirectConcat` is **not** one of them and is not a gap: both its registration
+(coreaction.cc:5666) and its class (ruleaction.hh:859 / ruleaction.cc:4736) are commented out in
+Ghidra. Any rule-name sweep that greps `new Rule` without dropping comment lines will re-surface it
+as a phantom MISSING — it isn't.
+
 | Ghidra rule | mosura |
 |---|---|
 | RulePushPtr | PORTED (ptrarith.rs `RulePushPtr`, ptrarith_pool — task #22 A) — ruleaction.cc:6834: push a pointer-typed Varnode to the bottom of its additive expression (`INT_ADD(INT_ADD(ptr,a),b)` → `INT_ADD(ptr, INT_ADD(a,b))`) so `RulePtrArith` can root at the pointer. Fires when `evaluatePointerExpression == 1` (a push is needed) — the case mosura's `apply_op` previously treated as no-op. Wired **before** RulePtrArith (Ghidra actprop2 order, coreaction.cc:5664/5666). This is what lets a shared frame base `RSP - k` feeding a variable-indexed stack-array LOAD `framebase + i*elem` reroot at `RSP_input` so the tree folds to `PTRSUB(RSP, array) + i` (wayoffarray 0.920→0.963). Ghidra's `collectDuplicateNeeds`/`duplicateNeed` CSE (multi-descendant shared push) omitted — `splitUses` gives each frame base a single descendant, so the duplicate path is unreached. |
 | RuleStructOffset0 | PARTIAL (ptrarith.rs / infertypes struct-offset-0) |
 | RulePtrArith | PORTED (ptrarith.rs, ptrarith_pool) — incl. the **TYPE_SPACEBASE arm** of `calcSubtype` (ruleaction.cc:6286, task #22 A): a spacebase pointee always has a matching sub-type (`getSubType` never null), so any `RSP + const` folds to `PTRSUB(RSP, off)`. `hasMatchingSubType` (ruleaction.cc:6064) ports the array-hint path — `TypeSpacebase::nearestArrayedComponent{Backward,Forward}` (type.cc:2971/3020) over the recovered `ScopeLocal` table (`recover_scope`): resolves a variable-indexed stack array to its base + folds the residual into the additive tail. **offsetarray two-pass PTRADD (task #22-A-2b LANDED):** the clean `axStack_98[param_1]` subscript needs the *two-pass* PTRADD — pass-1 ptrarith forms `PTRSUB(RSP, array_start)`, then `ActionInferTypes` (now run *inside* the reheritage restart) types that PTRSUB output as a pointer to the ScopeLocal array element (via the TYPE_SPACEBASE `getSubType` propagation, §6), so pass-2 ptrarith's Array arm folds the index into `PTRADD(array, i, elem)`. `default_rule_pool` in the restart folds the pass-1 `+array_start … −array_start` compensation to a bare `i*elem` first. offsetarray 0.686→1.000, wayoffarray 0.963→1.000. (The earlier "-0x98 vs -0x68 offset gap" premise was a mis-read cross-contaminated from varcross — offsetarray's final IR uses −0x98 throughout, no gap; the compensation was the un-folded residual, now folded.) |
-| RuleLoadVarnode | PARTIAL (rules.rs, ptrarith_pool — task #7 S1) — the **ram-global const-offset branch** ported (ruleaction.cc:4277, the `checkSpacebase` `offvn->isConstant()` case): `LOAD #space #constaddr` → `COPY <space:addr>`, so a constant-address global access names as `iRam/fRam/xRam` instead of `*addr`. Wired in ptrarith_pool after RulePtrArith (Ghidra actprop2 order, coreaction.cc:5666-5669). Corpus 0.9140→0.9168 (+.0028): longdouble .783→.909, switchmulti .564→.628; revisit .654→.633 CITED below. NOT ported: the **spacebase-register branch** (`vnSpacebase`/`correctSpacebase`, stackpointer+const — the stack case, entangled with pre-pool stackvars + heritage guardLoads versioning) = task #7 S2; the `isSpacebasePlaceholder`→`resolveSpacebaseRelative` SP-across-call trigger = S3. **CITATION (revisit −.021):** the pool-converted ram varnode is not re-heritaged (Ghidra runs this rule in the re-heritaging mainloop; mosura runs heritage-to-completion before the pools), so a read/modify/write of a global reads the pre-store version and the faithful merge-snip snapshots it (`iVar1=iRam; iRam=iVar1+10` vs Ghidra `iRam=iRam+10`). The value-versioning fix (re-heritage after conversion) folds into S2, same class as the multiret partial-overlap citation. |
-| RuleStoreVarnode | PARTIAL (rules.rs, ptrarith_pool — task #7 S1) — the ram-global const-offset counterpart of RuleLoadVarnode (ruleaction.cc:4319): `STORE #space #constaddr val` → `<space:addr> = COPY val`. `setStackStore` (a later-stack-analysis marker) + `markNotMapped` (needs a local scope the raw-decompile path lacks) omitted — neither affects ram-global naming. Same S2/S3 remainder + versioning citation as RuleLoadVarnode. |
+| RuleLoadVarnode | PORTED (rules.rs, ptrarith_pool — ruleaction.cc:4277, actprop2 slot :5668). **Both branches live.** *ram-global const* (task #7 S1, `offvn->isConstant()`): `LOAD #space #constaddr` → `COPY <space:addr>`, so a constant-address global names as `iRam/fRam/xRam` instead of `*addr` (corpus 0.9140→0.9168). *spacebase-register* (`vnSpacebase`/`correctSpacebase`, ported `41ab722` task #22-B Brick 1, **activated** by `47d082f` Brick 2 which retired recover_stack's general LOAD/STORE arms): a LOAD off the RSP **input** or `INT_ADD(RSP_input, const)` resolves to a `stack`-space COPY, and the strict `correctSpacebase !isInput` boundary DECLINES a COPY-of-RSP, a MULTIEQUAL-of-RSP, and any indexed pointer — leaving them indirect, matching Ghidra keeping varcross's `*pxVar1 = 0` and partialsplit's `*puVar3`, where the old pre-pool tracker (a loose superset) over-resolved them. Both branches share one `check_spacebase`, exactly Ghidra's structure (RuleStoreVarnode::applyOp calls RuleLoadVarnode::checkSpacebase); `Space::contain` (SpacebaseSpace::getContain) makes the x86-64 `stack` space accepted only off `ram`. The `isSpacebasePlaceholder` → `resolveSpacebaseRelative` SP-across-call trigger (:4295-4302) is ported too — the one-shot flag is cleared first, unconditionally. Corpus at activation 0.9336→0.9345 (57/60): varcross .915→.936, concatsplit +.067, partialsplit +.042, stackstring +.034. **The old S1-era versioning citation is resolved** — the pool-converted varnode now re-enters ActionHeritage on the next mainloop iteration (§1 reheritage restart), so a global RMW renders `iRam=iRam+10` as Ghidra does. NOT ported: `setStackStore`/`markNotMapped` (no stack-store analysis, no local scope in the raw path — neither affects naming) and the SEGMENTOP pointer unwrap (mosura's x86-64 lift emits no `CPUI_SEGMENTOP`; re-enables faithfully with a segmented target). Remaining stack debt is callee-stack-param modeling (`isUnmappedUnaliased`'s param-region carve-out, varmap.cc:494-501) — filed #22-C/P6, and the cause of wayoffarray −0.106. |
+| RuleStoreVarnode | PORTED (rules.rs, ptrarith_pool — ruleaction.cc:4319, actprop2 slot :5669): the STORE counterpart of RuleLoadVarnode, sharing `check_spacebase`, so both the ram-global and spacebase-register branches are live on the same schedule (`41ab722` + `47d082f`). `STORE #space #addr val` → `<space:addr> = COPY val`. Same `setStackStore`/`markNotMapped` omissions as the load side. |
 
 ---
 
@@ -432,26 +443,58 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 
 ## Summary (rule pools — the exact core)
 
-- **oppool1**: ~84 PORTED (incl. the now-de-fused div/sign cluster — RuleDivOpt (faithful), RuleDivTermAdd,
-  RuleSignShift, RuleTestSign, RuleSignForm, RuleSignForm2, RuleSignDiv2, RuleDivChain, RuleSignNearMult,
-  RuleModOpt, RuleSignMod2nOpt, RuleSignMod2nOpt2, RuleSignMod2Opt, RuleLessNotEqual — Task #20; plus
-  RuleFloatCast, RuleShiftAnd, RuleConcat*, RuleDouble*, RuleTrivialBool, RuleLess2Zero, RuleOrConsume,
-  RuleEqual2Constant, RuleBoolZext), 3 HELD (NotDistribute, AndDistribute, AndCompare), 1 BLOCKED
-  (SubvarSext / RulePtrFlow=isPtrFlow; SubZext + Piece2Zext now WIRED), 1 DEFERRED (RuleLeftRight — register-piece dep, Task #7),
-  ~61 MISSING, 0 non-faithful (the fused DivOpt is retired), + 3 mosura-only extras.
-  The MISSING set is the mechanical rule tail (Phase 1b, in progress).
-- **oppool2**: 1 PORTED (PtrArith), 3 PARTIAL (LoadVarnode/StoreVarnode ram-global branch ported task #7 S1;
-  stack/spacebase-reg branch = S2), 1 MISSING (PushPtr).
-- **cleanup**: 3 PORTED (the Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store —
-  SplitDatatype/TypePartialStruct dep), 9 MISSING (DumptyHumpLate etc.).
+Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
+`crates/mosura/src/decompile/` and the `.with(...)` wiring in `pipeline.rs`. Ghidra's
+`universalAction` registers **154** *active* rules across the three pools (`coreaction.cc:5511`
+oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
+— `RuleIndirectConcat` is the only one, and it is not a gap (§3).
 
-**Highest-value MISSING (already surfaced by trace-diff / fixtures):** RuleConcatZext/RuleConcatZero
-family. (RuleEarlyRemoval — 78× —, RuleScarry, RuleFloatCast, and RuleShiftAnd now PORTED byte-neutral;
-RuleLoadVarnode/StoreVarnode ram-global branch PORTED (task #7 S1, +.0028); their stack branch + the
-RuleSplit* family remain on the spacebase-S2 / SplitDatatype subsystems respectively.)
+- **oppool1** (134): **114 ported** — 113 under Ghidra's own name plus `RuleCollapseConstants` =
+  mosura's `RuleConstFold` — of which **111 are wired** and **3 HELD unwired**: `RuleAndCompare`,
+  `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
+  3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
+  subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
+  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **15 MISSING**:
+  RuleConditionalMove, RuleDoubleIn, RuleDoubleOut, RuleFloatSign, RuleFuncPtrEncoding,
+  RuleInt2FloatCollapse, RuleLessOne, RuleLzcountShiftBool, RuleNegateNegate, RuleOrPredicate,
+  RulePiecePathology, RulePtrsubUndo, RuleSwitchSingle, RuleUnsigned2Float, RuleXorSwap.
+  (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
+- **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
+  RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
+  `[+ const]`, plus the `isSpacebasePlaceholder` → `resolveSpacebaseRelative` trigger; only
+  `setStackStore`/`markNotMapped` and the SEGMENTOP form stay omitted). 1 absent:
+  `RuleStructOffset0` — PARTIAL, the behaviour lives in `ptrarith.rs` / infertypes struct-offset-0
+  rather than as a rule.
+- **cleanup** (15): **4 ported** (Rule2Comp2Sub, RuleAddUnsigned, RuleMultNegOne, RuleSubRight — the
+  Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store — SplitDatatype, subflow.cc),
+  2 BLOCKED on constsequence (RuleStringCopy, RuleStringStore), **6 MISSING**: RuleDumptyHumpLate,
+  RuleExpandLoad, RuleExtensionPush, RuleFloatSignCleanup, RulePieceStructure,
+  RulePtrsubCharConstant.
+
+**Live gap: 32 of Ghidra's 154 rules have no mosura implementation** — 21 MISSING (the mechanical
+tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
+constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
+(RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
+"3 mosura-only extras" of the previous revision are gone, folded into faithfully-named ports.
+
+**Previously flagged as highest-value, now PORTED and off the list:** the RuleConcatZext/RuleConcatZero
+family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sext/RulePiece2Zext,
+RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
+RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
+attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
+splits). Nothing in the current 21-rule MISSING set has a fixture citation, and the @`554620e` trace
+survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
+targets from a fresh trace-diff, not from this list's order.
+
+**Method and its limits.** This refresh matched by rule *name* against the live tree; the §2-§4 rows
+were then corrected where the name-level evidence contradicted them (RuleDoubleLoad, RuleDoubleStore,
+RulePiece2Sext, RuleIndirectCollapse, RuleSubvarSext, RuleLoadVarnode, RuleStoreVarnode — all of which
+had gone stale between `68a876e` and `f728a00`). What it does **not** establish: that a PORTED row's
+prose is still accurate in its details, or that a ported rule is faithful branch-for-branch. A
+name-level match is not a fidelity match.
 
 **Sub-case gaps within PORTED functions** (the class this matrix is meant to catch — e.g. the
 extended-precision consume branches found in Task #8): audit each PORTED rule/action for omitted
 `size > sizeof(uintb)`, `isPersist`, `isPtrFlow`, and aggressive-mode branches. Consume transfers
-(`consume.rs`) are now complete for SUBPIECE/PIECE extended precision (`68a059e`); other transfers
-and nzmask/refinement should get the same pass.
+(`consume.rs`) are complete for SUBPIECE/PIECE extended precision (`68a059e`); other transfers and
+nzmask/refinement still need the pass.

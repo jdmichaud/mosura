@@ -326,8 +326,8 @@ impl SpaceManager {
     /// Ghidra `Architecture::getSpaceBySpacebase` (architecture.cc:264): the address space whose
     /// spacebase register matches `(loc, size)` — e.g. passing RSP's location returns the `stack`
     /// space. Returns `None` if no space claims the register (Ghidra throws `LowlevelError`). Used by
-    /// the spacebase-register branch of `checkSpacebase`/`correctSpacebase` (the stack `RuleLoadVarnode`
-    /// case, wired in S2b).
+    /// the spacebase-register branch of `checkSpacebase`/`correctSpacebase` (the stack
+    /// `RuleLoadVarnode` case, live since task #22-B Brick 2).
     pub fn space_by_spacebase(&self, loc: Address, size: u32) -> Option<SpaceId> {
         self.spaces
             .iter()
@@ -416,7 +416,7 @@ mod tests {
 
     /// The standard space set registers RSP `(register:0x20, 8)` as the `stack` space's spacebase
     /// register, and `space_by_spacebase` (Ghidra `getSpaceBySpacebase`) resolves it — the reg→space
-    /// lookup the spacebase-register `RuleLoadVarnode` branch (S2b) uses.
+    /// lookup the spacebase-register `RuleLoadVarnode` branch uses.
     #[test]
     fn stack_spacebase_register_registered() {
         let m = SpaceManager::standard();

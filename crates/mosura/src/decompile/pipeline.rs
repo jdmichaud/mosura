@@ -403,7 +403,9 @@ impl Action for ActionRestructureVarnode {
 /// mark the input stack pointer (and every SSA version of it) `is_spacebase()` and give the input a
 /// locked pointer type — see [`Funcdata::spacebase`]. Activates the faithful pointer-arithmetic /
 /// nonzero-mask / type-inference rules that key on `is_spacebase()`. The spacebase-register
-/// (`RuleLoadVarnode` stack) branch that this enables is not yet wired (S2b).
+/// (`RuleLoadVarnode`/`RuleStoreVarnode` stack) branch this enables is LIVE (task #22-B Brick 1
+/// `41ab722` ported it dormant; Brick 2 `47d082f` activated it by retiring recover_stack's general
+/// LOAD/STORE arms, so stack accesses now reach the pool instead of being pre-resolved).
 pub struct ActionSpacebase;
 
 impl Action for ActionSpacebase {
@@ -527,7 +529,11 @@ pub fn ptrarith_pool() -> ActionPool {
         .with(super::ptrarith::RulePushPtr)
         .with(super::ptrarith::RulePtrArith)
         // Ghidra actprop2 order (coreaction.cc:5666-5669): RulePtrArith, then RuleLoadVarnode,
-        // RuleStoreVarnode. The ram-global (const-offset) branch of the spacebase model (task #7 S1).
+        // RuleStoreVarnode. BOTH branches of the spacebase model are live through one shared
+        // `check_spacebase`: the ram-global const-offset branch (task #7 S1) and the
+        // spacebase-register `RSP_input [+ const]` branch (task #22-B Bricks 1-2). The strict
+        // `correctSpacebase !isInput` boundary declines a COPY-of-RSP, a MULTIEQUAL-of-RSP and any
+        // indexed pointer, leaving them indirect as Ghidra does.
         .with(super::rules::RuleLoadVarnode)
         .with(super::rules::RuleStoreVarnode)
 }
