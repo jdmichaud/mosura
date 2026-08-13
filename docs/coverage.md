@@ -489,16 +489,21 @@ a rule dependency. (For scale: `<spacebase>` appears in no x86 cspec anywhere in
 in the PIC ones, so the *register*-relative spacebase route does not exist on these targets at all;
 the ram one is the only way in.)
 
-**Live gap: 11 of Ghidra's 154 rules have no mosura implementation, and none is mechanical tail
-work** — 8 BLOCKED on an absent subsystem (SubfloatFlow, constant pool, isPtrFlow, SplitDatatype ×3,
-constsequence ×2, SplitVarnode/PRECIS ×2, StringManager, PieceNode/TypePartialStruct), 1 DEFERRED
-(RuleLeftRight — register-piece dep), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere (RuleStructOffset0).
-**The MISSING set is empty**, and the remaining work is subsystem work: pick one and land it whole.
-Two have now been taken that way — bytes-consumed (ported, took RulePiecePathology with it) and
-condexe (where the blocker turned out to be **misdiagnosed**: the dependency was already ported in
-expression.rs). That second case is worth generalising: a BLOCKED label naming a FILE rather than a
-FUNCTION is a label that has not been checked. Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
-"3 mosura-only extras" of the previous revision are gone, folded into faithfully-named ports.
+**Live gap: 8 of Ghidra's 154 rules have no mosura implementation, and none is mechanical tail
+work** — all 8 BLOCKED on an absent subsystem: `RulePtrFlow` (isPtrFlow), `RuleSubfloatConvert`
+(SubfloatFlow), `RuleTransformCpool` (constant pool), `RuleSplitCopy`/`Load`/`Store` (SplitDatatype)
+and `RuleStringCopy`/`StringStore` (constsequence). Plus 1 DEFERRED (`RuleLeftRight`), 1 N/A
+(`RuleSegment`), 1 PARTIAL-elsewhere (`RuleStructOffset0`), 3 HELD unwired
+(`RuleAndCompare`/`RuleAndDistribute`/`RuleNotDistribute`) and 2 PORTED-INERT
+(`RulePtrsubCharConstant`, `RulePieceStructure` — wired, waiting on a producer).
+
+⚠️ **THE RULE POOLS ARE NOT THE WORK.** They are §2-§4, the only sections ever measured exactly, and
+they are now ~96% ported. The register's own §1 (actions) stands at **24 ported against 18 MISSING
+and 12 PARTIAL** — roughly half the action pipeline — and §5-§8 (heritage, fspec, jumptable, printc)
+add another 12 MISSING and 8 PARTIAL. Those sections are *function-mapped by behaviour*, never given
+§2-§4's mechanical treatment, so their counts are a FLOOR, not a measurement. And the byte-exact
+campaign's open thread is an ACTION-ordering defect (`ActionResolveCalls` vs `ActionActiveReturn`),
+not a rule gap — which is where the binary-exactness work actually lives.
 
 **Previously flagged as highest-value, now PORTED and off the list:** the RuleConcatZext/RuleConcatZero
 family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sext/RulePiece2Zext,
