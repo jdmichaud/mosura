@@ -86,6 +86,28 @@ So the achievable denominator is ~2950, not something much smaller. At 392 that 
 target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
 the structural bulk is.
 
+## THE TOP RECOVERABLE PATTERN: `test` vs `mov ; and ; and` (43 occurrences)
+
+Of the 588 near functions, 186 emit MORE than the original — that is the direction improvement can
+actually help. Censusing only those, the largest single pattern by far is
+
+     43   orig `test`   ->   ours `mov ; and ; and`
+
+The original tests a memory byte in ONE instruction (`test BYTE PTR [p], 2`); we load it, mask it,
+then mask AGAIN for C's integer promotion. FUN_0001d98c is the shape:
+
+    C     if ((*((uint1 *)(param_1 + 0x2d)) & 2) == 0)
+    ours  mov al,[eax+0x2d] ; and al,0x2 ; and eax,0xff
+    orig  test BYTE PTR [eax+0x2d],0x2
+
+The second `and` is the `uint1 -> int` promotion the C standard forces before the comparison. Any
+rendering that keeps the test in byte width — or that Watcom recognises as a pure condition — would
+collapse all three. This is an EMITTER-side rendering question of the same family as the while-do
+overflow form (which paid +4), not a recovery defect, and it is the biggest remaining lever in the
+reachable direction.
+
+Other patterns in the same 186: `shl` -> `lea` (17), spurious `xor` (41), spurious `mov` (49).
+
 ## ⭐ HOW MUCH OF THE NEAR SET IS EVEN REACHABLE (measured, M38)
 
 Of the **588** near-miss functions (within 40% of matching):
