@@ -86,6 +86,31 @@ So the achievable denominator is ~2950, not something much smaller. At 392 that 
 target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
 the structural bulk is.
 
+## ⭐ THE CHAIN THAT CONNECTS THE RECOVERABLE WORK: interval Cover -> LOAD implied -> RMW forms
+
+FUN_00044d8c (idx 01637, +8 bytes) is the worked example. The `test` half MATCHES; the gap is a
+read-modify-write:
+
+    orig   or BYTE PTR [eax+0x2d],0x4                          (one instruction; it hoists `add eax,0x68`)
+    ours   mov dl,[eax+0x95] ; or dl,0x4 ; mov [eax+0x95],dl   (three)
+
+This is the SAME shape the LOAD implied-cover port renders correctly — it turned FUN_0001d98c into
+`*p = *p | 0x20`, i.e. one `or [p],0x20`. But with correct position units that port is INERT,
+because the arm rejects the load: mosura's `Cover` keeps ONE (min,max) span per block, so a
+single-use load whose value is consumed BEFORE the store still "crosses" it. Ghidra's Cover is a set
+of INTERVALS and the span ends at the use.
+
+So the dependency chain for the largest reachable class is:
+
+    Cover as intervals  ->  checkImpliedCover's LOAD arms stop over-rejecting
+                        ->  multi-use and single-use loads inline
+                        ->  RMW forms (`or [p],imm`) instead of load/modify/store
+
+`Cover` is used by merge and heritage as well, so changing its representation is a core change and
+needs the sampled loop (clean set = COMPLETE regression count) before any full run. But this is the
+one thread where a single structural fix unlocks a measured, worked-example class rather than
+another +1.
+
 ## THE TOP RECOVERABLE PATTERN: `test` vs `mov ; and ; and` (43 occurrences)
 
 Of the 588 near functions, 186 emit MORE than the original — that is the direction improvement can
