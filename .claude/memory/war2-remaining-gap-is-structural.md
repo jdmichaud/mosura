@@ -123,9 +123,22 @@ exactly the original's `add` + `cwde`. The defect is downstream: the add's opera
 performs a 32-BIT add. The 2-byte width of the INT_ADD is nowhere in the text. It should be
 `(int4)(int2)(iVar2 + iVar1)` — a truncating cast on the sum.
 
-So this is a CAST-INSERTION question (Ghidra `ActionSetCasts`): an operation whose output is
-narrower than its rendered operands needs a cast at the result. Fixing it does NOT require touching
-type recovery — the recovered types are already right. None is recoverable
+**AND THE CAST BEHAVIOUR IS GHIDRA-FAITHFUL TOO — so this is NOT a recovery defect either.**
+`setcasts.rs::cast_output`, the implied arm:
+
+    } else if !matches!(out_resolve, Datatype::Pointer(..)) {
+        // Implied atomic (non-pointer): ignore the committed type in favor of the token.
+        f.vn_mut(outvn).update_type(tokenct.clone());
+
+An IMPLIED varnode adopts the token type, so the 2-byte add's output becomes int4 and the width
+disappears. That is `outvn->isImplied()` in Ghidra's `castOutput` (coreaction.cc:2532), ported
+faithfully — **Ghidra drops the width here as well**, and its C would not recompile byte-exact
+either.
+
+So closing this class is an EMITTER RENDERING choice, the same category as the while-do overflow
+form (which paid +4): force a cast when an implied varnode's true size is narrower than its token
+type, in the recompilation rendering only, leaving the decompiler's own output untouched. That is
+the concrete shape of the fix, and the sampled loop can validate it in four minutes. None is recoverable
 information that a better decompiler could supply — the emitted C does not choose which register
 holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
 zero-extended by `xor`+`mov` or by `and`.
