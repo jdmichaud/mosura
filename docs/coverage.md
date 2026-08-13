@@ -267,7 +267,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleUnsigned2Float | PORTED (rules.rs — ruleaction.cc:10554, slot :5636): the unsigned-to-float idiom for hardware that only converts SIGNED integers — `((V>>1) | (V&1))` converted, then added to itself — collapses to `FLOAT_INT2FLOAT(ZEXT(V))`, which the printer renders as an unsigned cast. Both of Ghidra's indirections ported: the AND reached through an INT_ZEXT, the shift operand through a zero-offset SUBPIECE. `TypeOpFloatInt2Float::preferredZextSize` (typeop.cc:1911) ported alongside. Corpus-neutral. |
 | RuleInt2FloatCollapse | PORTED (rules.rs — ruleaction.cc:10637, slot :5637): the *branching* form of the same idiom — a MULTIEQUAL joining a signed and an unsigned FLOAT_INT2FLOAT over one input, under a sign test — with the MULTIEQUAL itself redefined as the unsigned conversion. Both condition spellings guarded as Ghidra does, with the direction requirement inverted between them (`V s< 0` ⇒ true branch is unsigned; `-1 s< V` ⇒ true branch is signed). Required porting `FlowBlock::findCondition` (block.cc:557) as `find_condition`; its one divergence is `getInRevIndex`, which Ghidra stores on the edge and mosura recovers by position — differing only for a conditional whose two out-edges share a target. Corpus-neutral. |
 | RulePtraddUndo | PORTED |
-| RulePtrsubUndo | MISSING |
+| RulePtrsubUndo | PORTED (ptrarith.rs — ruleaction.cc:6931, slot :5639, beside RulePtraddUndo): the PTRSUB counterpart — a PTRSUB asserts its base type has a component at the offset, so when type recovery says otherwise it goes back to an INT_ADD, taking with it everything stacked below that was built on the same wrong type (`removeLocalAdds` :6789, `removeLocalAddRecurse` :6817), whose constants are lumped back into the offset. The checked offset includes what is added BELOW the PTRSUB (`getExtraOffset` :6872 + `getConstOffsetBack` :6836, both depth-limited at 8 as Ghidra is). `TypePointer::isPtrsubMatching` (type.cc:1123) + `testForArraySlack` (:1103) ported: the SPACEBASE arm is LIVE over the recovered ScopeLocal table, the ARRAY arm is direct, the STRUCT arm is faithful-but-unreachable (nothing constructs `Datatype::Struct`), and UNION is Ghidra's unconditional false. **Omitted:** `clearStopTypePropagation` — mosura models no `stop_type_propagation` flag, so nothing sets it and clearing it is vacuous. **0 firings across the 79 datatests** (`MOSURA_OPACTION=ptrsub_undo`), same as its RulePtraddUndo sibling measured; corpus byte-identical. ⚠️ **The spacebase arm must answer MATCH for an unmapped frame offset** (Ghidra's `TypeSpacebase::getSubType` returns `undefined1`/offset-0 there, not null): answering "mismatch" makes this rule undo a PTRSUB that RulePtrArith immediately rebuilds, and the pool ping-pongs forever — caught by `ground_truth_parity` hanging. |
 | RuleSegment | N/A (segmented arch) |
 | RulePiecePathology | MISSING |
 | RuleDoubleLoad | PORTED (double.rs, `1bde3dd` task #5 paydown — double.cc:3370-3660 incl. noWriteConflict/testIndirectUse/reassignIndirects + SplitVarnode::adjacentOffsets/testContiguousPointers (double.cc:713/755), wired at the oppool1 tail per coreaction.cc:5643, group `doubleload`). Little-endian arms only, same convention as lanedivide. **Trace survey @`554620e` (capture_trace over all 79 datatests): Ghidra fires this rule nowhere on the corpus** — of the double family only RuleDoubleOut fires (revisit, doublemove/MIPS). Byte-identical at landing (corpus 0.9326, per-fixture join 60/60 identical). |
@@ -449,13 +449,13 @@ Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
 oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
 — `RuleIndirectConcat` is the only one, and it is not a gap (§3).
 
-- **oppool1** (134): **124 ported** — 123 under Ghidra's own name plus `RuleCollapseConstants` =
-  mosura's `RuleConstFold` — of which **121 are wired** and **3 HELD unwired**: `RuleAndCompare`,
+- **oppool1** (134): **125 ported** — 124 under Ghidra's own name plus `RuleCollapseConstants` =
+  mosura's `RuleConstFold` — of which **122 are wired** and **3 HELD unwired**: `RuleAndCompare`,
   `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
   3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
   subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
-  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **5 MISSING**:
-  RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology, RulePtrsubUndo.
+  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **4 MISSING**:
+  RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology.
   (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
 - **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
   RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
@@ -469,7 +469,7 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   (RuleStringCopy, RuleStringStore), **3 MISSING**: RuleExpandLoad, RulePieceStructure,
   RulePtrsubCharConstant.
 
-**Live gap: 19 of Ghidra's 154 rules have no mosura implementation** — 8 MISSING (the mechanical
+**Live gap: 18 of Ghidra's 154 rules have no mosura implementation** — 7 MISSING (the mechanical
 tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
 constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
 (RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
@@ -480,7 +480,7 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 8-rule MISSING set has a fixture citation, and the @`554620e` trace
+splits). Nothing in the current 7-rule MISSING set has a fixture citation, and the @`554620e` trace
 survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
 targets from a fresh trace-diff, not from this list's order.
 

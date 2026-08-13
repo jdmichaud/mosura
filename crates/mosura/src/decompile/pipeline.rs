@@ -350,10 +350,15 @@ pub fn default_rule_pool() -> ActionPool {
         // float group — NOT actprop2, where RulePushPtr/RulePtrArith live (:5664/5666). The
         // separation is load-bearing: this rule undoes a mis-typed PTRADD here, and RulePtrArith
         // may legitimately rebuild one later in the pass with the element size read from the
-        // current type. RulePtrsubUndo (:5639) is NOT ported — its call site sits inside
-        // `removeLocalAddRecurse`, a helper of a much larger subsystem, so the two are not the
-        // same size of job and are deliberately not bundled.
-        .with(super::ptrarith::RulePtraddUndo)
+        // current type.
+        .with(super::ptrarith::RulePtraddUndo) // (127)
+        // RulePtrsubUndo (coreaction.cc:5639), the PTRSUB counterpart: a PTRSUB asserts its base
+        // type has a component at the offset, so when type recovery says otherwise the op goes
+        // back to an INT_ADD — along with everything stacked below it that was built on the same
+        // wrong type (`removeLocalAdds`). The offset checked includes what is added BELOW the
+        // PTRSUB (`getExtraOffset`), so a component exceeded only after further additions is
+        // caught too.
+        .with(super::ptrarith::RulePtrsubUndo) // (128)
         // The double-precision LOAD/STORE recombiners sit at Ghidra's oppool1 tail (coreaction.cc:
         // 5643-5644, after RulePiecePathology :5642 — not ported). RuleDoubleStore is dormant until
         // a PRECISLO/PRECISHI marker port lands (ActionParamDouble / SplitVarnode markings); the

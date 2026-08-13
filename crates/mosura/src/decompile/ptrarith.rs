@@ -881,6 +881,360 @@ impl AddTreeState {
     }
 }
 
+/// Ghidra `RulePtrsubUndo::DEPTH_LIMIT` (ruleaction.cc:6929): how deep the additive expression
+/// below a PTRSUB is followed, both when collecting constants and when removing them.
+const PTRSUB_UNDO_DEPTH_LIMIT: i32 = 8;
+
+/// Ghidra `TypePointer::testForArraySlack` (type.cc:1103): an offset outside the component is still
+/// acceptable when the component is an array, or when an arrayed component lies near enough in the
+/// direction of the offset — array indexing legitimately runs past the nominal component bounds.
+///
+/// Ghidra dispatches to `TypeStruct::nearestArrayedComponent*` or the `TypeSpacebase` pair. Only the
+/// spacebase pair exists here ([`sb_nearest_backward`]/[`sb_nearest_forward`]); the struct pair is
+/// unported and would be **inert** if written, because `Datatype::Struct` is never constructed (see
+/// this file's header). So the struct arm answers `false`, which is what Ghidra answers when no
+/// arrayed component is found.
+fn test_for_array_slack(
+    syms: &[super::varmap::StackSymbol],
+    dt: &Datatype,
+    off: i64,
+    spacebase: bool,
+) -> bool {
+    if matches!(dt, Datatype::Array(..)) {
+        return true;
+    }
+    if !spacebase {
+        return false; // struct pair unported-and-inert
+    }
+    if off < 0 {
+        sb_nearest_forward(syms, off).is_some()
+    } else {
+        sb_nearest_backward(syms, off).is_some()
+    }
+}
+
+/// Ghidra `TypePointer::isPtrsubMatching` (type.cc:1123): is this data-type suitable as the base of
+/// a PTRSUB at offset `off`, with `extra` further constant offset and an index `multiplier` below
+/// it? A PTRSUB must address a *component*, so the answer is no unless the pointee is structured.
+///
+/// The SPACEBASE arm reads the recovered `ScopeLocal` table (mosura's `TypeSpacebase::getSubType`,
+/// [`sb_get_subtype`]) and is LIVE — it is the arm that matters on x86-64, where every stack access
+/// is a PTRSUB off the spacebase. The ARRAY arm is direct. The STRUCT arm is ported faithfully but
+/// is unreachable today, since nothing constructs `Datatype::Struct`; the UNION arm is Ghidra's
+/// unconditional `false` and needs no metatype to express. Everything else is "not a pointer to a
+/// structured data-type" — also `false`.
+///
+/// Ghidra's `addressToByteInt(x, wordsize)` conversions are identities here: every space mosura
+/// loads has `wordSize` 1.
+fn is_ptrsub_matching(
+    f: &Funcdata,
+    dt: &Datatype,
+    off: i64,
+    extra: i64,
+    multiplier: i64,
+) -> bool {
+    let Datatype::Pointer(_, ptrto) = dt else {
+        return false; // not a pointer to a structured data-type
+    };
+    match &**ptrto {
+        Datatype::Spacebase(_) => {
+            let syms = super::varmap::recover_scope(f);
+            // Ghidra `TypeSpacebase::getSubType` (type.cc:2947) does NOT fail when the offset maps
+            // to no symbol: it answers `undefined1` at offset 0 (`getBase(1,TYPE_UNKNOWN)`), so an
+            // unmapped frame offset still MATCHES — only `extra` has to stay inside that 1-byte
+            // stand-in. [`sb_get_subtype`] returns `None` there, which is why the stand-in is
+            // supplied here rather than treated as a mismatch.
+            //
+            // This is load-bearing, not a detail: returning "no match" for an unmapped offset made
+            // this rule undo a PTRSUB that `RulePtrArith` (actprop2) immediately rebuilt, and the
+            // pool ping-ponged forever — the pair only converges because Ghidra's spacebase arm is
+            // this permissive.
+            let (sub_type, newoff) =
+                sb_get_subtype(&syms, off).unwrap_or((Datatype::Unknown(1), 0));
+            if newoff != 0 {
+                return false;
+            }
+            if extra < 0 || extra >= sub_type.size() as i64 {
+                // The offset lands outside the symbol: only array slack excuses it.
+                if !test_for_array_slack(&syms, &sub_type, extra, true) {
+                    return false;
+                }
+            }
+            true
+        }
+        Datatype::Array(..) => {
+            if off != 0 {
+                return false;
+            }
+            multiplier < ptrto.align_size() as i64
+        }
+        Datatype::Struct(..) => {
+            let typesize = ptrto.size() as i64;
+            if multiplier >= ptrto.align_size() as i64 {
+                return false;
+            }
+            match ptrto.get_subtype(off) {
+                Some((sub_type, newoff)) => {
+                    if newoff != 0 {
+                        return false;
+                    }
+                    if extra < 0 || extra >= sub_type.size() as i64 {
+                        return test_for_array_slack(&[], &sub_type, extra, false);
+                    }
+                    true
+                }
+                None => {
+                    // Ghidra lumps the unresolved residual into `extra` and range-checks it.
+                    !((extra < 0 || extra >= typesize) && typesize != 0)
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Ghidra `RulePtrsubUndo::getConstOffsetBack` (ruleaction.cc:6836): total the constant contribution
+/// reaching `vn` through an additive expression, and separately report the largest index
+/// `multiplier` seen — an INT_MULT by a constant scales an index, so it bounds how far below the
+/// PTRSUB a component reference could still be valid. Depth-limited exactly as Ghidra is.
+fn get_const_offset_back(f: &Funcdata, vn: VarnodeId, max_level: i32) -> (i64, i64) {
+    let mut multiplier = 0i64;
+    if f.vn(vn).is_constant() {
+        return (f.vn(vn).constant_value() as i64, multiplier);
+    }
+    if !f.vn(vn).is_written() {
+        return (0, multiplier);
+    }
+    let max_level = max_level - 1;
+    if max_level < 0 {
+        return (0, multiplier);
+    }
+    let op = f.vn(vn).def.unwrap();
+    let mut retval = 0i64;
+    match f.op(op).code() {
+        OpCode::IntAdd => {
+            for slot in 0..2 {
+                let Some(in_vn) = f.op(op).input(slot) else { continue };
+                let (val, submultiplier) = get_const_offset_back(f, in_vn, max_level);
+                retval += val;
+                if submultiplier > multiplier {
+                    multiplier = submultiplier;
+                }
+            }
+        }
+        OpCode::IntMult => {
+            let Some(cvn) = f.op(op).input(1) else { return (0, 0) };
+            if !f.vn(cvn).is_constant() {
+                return (0, 0);
+            }
+            multiplier = f.vn(cvn).constant_value() as i64;
+            if let Some(in0) = f.op(op).input(0) {
+                let (_, submultiplier) = get_const_offset_back(f, in0, max_level);
+                if submultiplier > 0 {
+                    multiplier *= submultiplier; // only contribute to the multiplier
+                }
+            }
+        }
+        _ => {}
+    }
+    (retval, multiplier)
+}
+
+/// Ghidra `RulePtrsubUndo::getExtraOffset` (ruleaction.cc:6872): walk the *lone-descendant* chain
+/// below the PTRSUB, accumulating any further constant offset and the largest index multiplier.
+/// This is what tells [`is_ptrsub_matching`] whether the PTRSUB's offset plus everything added
+/// below it still lands inside a component.
+fn get_extra_offset(f: &Funcdata, op: OpId) -> (i64, i64) {
+    let mut extra = 0i64;
+    let mut multiplier = 0i64;
+    let Some(mut outvn) = f.op(op).output else { return (0, 0) };
+    let mut cur = f.lone_descend(outvn);
+    while let Some(op) = cur {
+        match f.op(op).code() {
+            OpCode::IntAdd => {
+                let slot = get_slot(f, op, outvn);
+                if let Some(other) = f.op(op).input(1 - slot) {
+                    let (val, submultiplier) =
+                        get_const_offset_back(f, other, PTRSUB_UNDO_DEPTH_LIMIT);
+                    extra += val;
+                    if submultiplier > multiplier {
+                        multiplier = submultiplier;
+                    }
+                }
+            }
+            OpCode::Ptrsub => {
+                if let Some(c) = f.op(op).input(1) {
+                    extra += f.vn(c).constant_value() as i64;
+                }
+            }
+            OpCode::Ptradd => {
+                if f.op(op).input(0) != Some(outvn) {
+                    break;
+                }
+                let mut ptraddmult = f.op(op).input(2).map_or(0, |v| f.vn(v).constant_value() as i64);
+                let Some(invn) = f.op(op).input(1) else { break };
+                if f.vn(invn).is_constant() {
+                    // Only contribute to the extra if the index is constant.
+                    extra += ptraddmult * f.vn(invn).constant_value() as i64;
+                }
+                let (_, submultiplier) = get_const_offset_back(f, invn, PTRSUB_UNDO_DEPTH_LIMIT);
+                if submultiplier != 0 {
+                    ptraddmult *= submultiplier;
+                }
+                if ptraddmult > multiplier {
+                    multiplier = ptraddmult;
+                }
+            }
+            _ => break,
+        }
+        let Some(next) = f.op(op).output else { break };
+        outvn = next;
+        cur = f.lone_descend(outvn);
+    }
+    let bits = 8 * f.vn(outvn).size;
+    let extra = if bits >= 64 {
+        extra
+    } else {
+        let sh = 64 - bits;
+        (extra << sh) >> sh
+    };
+    (extra, multiplier)
+}
+
+/// Ghidra `RulePtrsubUndo::removeLocalAddRecurse` (ruleaction.cc:6817): strip constant addends out
+/// of the additive expression below a PTRSUB that turned out to be invalid, returning their total so
+/// the caller can lump it into the PTRSUB's own offset. A value used anywhere else is left alone.
+fn remove_local_add_recurse(data: &mut Funcdata, op: OpId, slot: usize, max_level: i32) -> i64 {
+    let Some(vn) = data.op(op).input(slot) else { return 0 };
+    if !data.vn(vn).is_written() {
+        return 0;
+    }
+    if data.lone_descend(vn) != Some(op) {
+        return 0; // varnode must not be used anywhere else
+    }
+    let max_level = max_level - 1;
+    if max_level < 0 {
+        return 0;
+    }
+    let op = data.vn(vn).def.unwrap();
+    let mut retval = 0i64;
+    if data.op(op).code() == OpCode::IntAdd {
+        let in1 = data.op(op).input(1);
+        if in1.is_some_and(|v| data.vn(v).is_constant()) {
+            retval += data.vn(in1.unwrap()).constant_value() as i64;
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, OpCode::Copy);
+        } else {
+            retval += remove_local_add_recurse(data, op, 0, max_level);
+            retval += remove_local_add_recurse(data, op, 1, max_level);
+        }
+    }
+    retval
+}
+
+/// Ghidra `RulePtrsubUndo::removeLocalAdds` (ruleaction.cc:6789): once a PTRSUB is known to be
+/// invalid, the PTRSUBs and PTRADDs stacked below it are invalid too — they were built on the same
+/// wrong type. Collapse each to a COPY (constant cases) or undo the scaling ([`Funcdata::
+/// op_undo_ptradd`]), returning the total constant offset removed.
+fn remove_local_adds(data: &mut Funcdata, vn: VarnodeId) -> i64 {
+    let mut extra = 0i64;
+    let mut vn = vn;
+    while let Some(op) = data.lone_descend(vn) {
+        match data.op(op).code() {
+            OpCode::IntAdd => {
+                let slot = get_slot(data, op, vn);
+                let in1 = data.op(op).input(1);
+                if slot == 0 && in1.is_some_and(|v| data.vn(v).is_constant()) {
+                    extra += data.vn(in1.unwrap()).constant_value() as i64;
+                    data.op_remove_input(op, 1);
+                    data.op_set_opcode(op, OpCode::Copy);
+                } else {
+                    // Get any constants from the other input.
+                    extra += remove_local_add_recurse(data, op, 1 - slot, PTRSUB_UNDO_DEPTH_LIMIT);
+                }
+            }
+            OpCode::Ptrsub => {
+                if let Some(c) = data.op(op).input(1) {
+                    extra += data.vn(c).constant_value() as i64;
+                }
+                data.op_remove_input(op, 1);
+                data.op_set_opcode(op, OpCode::Copy);
+            }
+            OpCode::Ptradd => {
+                if data.op(op).input(0) != Some(vn) {
+                    break;
+                }
+                // The PTRADD is associated with the invalid PTRSUB, so it becomes an INT_ADD or
+                // a COPY.
+                let ptraddmult =
+                    data.op(op).input(2).map_or(0, |v| data.vn(v).constant_value() as i64);
+                let Some(invn) = data.op(op).input(1) else { break };
+                if data.vn(invn).is_constant() {
+                    extra += ptraddmult * data.vn(invn).constant_value() as i64;
+                    data.op_remove_input(op, 2);
+                    data.op_remove_input(op, 1);
+                    data.op_set_opcode(op, OpCode::Copy);
+                } else {
+                    data.op_undo_ptradd(op, false);
+                    extra += remove_local_add_recurse(data, op, 1, PTRSUB_UNDO_DEPTH_LIMIT);
+                }
+            }
+            _ => break,
+        }
+        let Some(next) = data.op(op).output else { break };
+        vn = next;
+    }
+    extra
+}
+
+/// Ghidra `RulePtrsubUndo` (ruleaction.cc:6931, coreaction.cc:5639): the PTRSUB counterpart of
+/// [`RulePtraddUndo`] — "remove PTRSUB operations with mismatched data-type information". A PTRSUB
+/// asserts that its base type has a component at the given offset; when type recovery later says
+/// otherwise, the assertion is wrong and the op must go back to being an INT_ADD.
+///
+/// The offset it checks is not just the PTRSUB's own: [`get_extra_offset`] walks the lone-descendant
+/// chain below it, so a PTRSUB whose component is only exceeded *after* further additions is caught
+/// too. When the PTRSUB does go, everything built on the same wrong type goes with it
+/// ([`remove_local_adds`]), and the constants they contributed are lumped back into the INT_ADD.
+///
+/// Ghidra also calls `clearStopTypePropagation` here. mosura models no `stop_type_propagation` flag
+/// (this file's header records it as genuinely absent, gated on a union metatype that does not
+/// exist), so nothing sets it and clearing it is vacuous — omitted rather than faked.
+pub struct RulePtrsubUndo;
+
+impl Rule for RulePtrsubUndo {
+    fn name(&self) -> &str {
+        "ptrsub_undo"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Ptrsub]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if !data.has_type_recovery_started() {
+            return 0;
+        }
+        let Some(basevn) = data.op(op).input(0) else { return 0 };
+        let Some(cvn) = data.op(op).input(1) else { return 0 };
+        let val = data.vn(cvn).constant_value() as i64;
+        let (extra, multiplier) = get_extra_offset(data, op);
+        let base_ty = type_read_facing(data, basevn);
+        if is_ptrsub_matching(data, &base_ty, val, extra, multiplier) {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::IntAdd);
+        let Some(outvn) = data.op(op).output else { return 1 };
+        let extra = remove_local_adds(data, outvn);
+        if extra != 0 {
+            // Lump the extra into the additive offset.
+            let size = data.vn(cvn).size;
+            let newval = (val + extra) as u64 & calc_mask(size);
+            let newc = data.new_const(size, newval);
+            data.op_set_input(op, 1, newc);
+        }
+        1
+    }
+}
+
 /// Ghidra's `RulePtraddUndo` (ruleaction.cc:6910): "Remove PTRADD operations with mismatched
 /// data-type information." A Varnode can be given an incorrect type mid-simplification, producing
 /// an incorrect PTRADD conversion; once the right type is found the PTRADD must go back to an
@@ -946,4 +1300,91 @@ fn distrib_probe_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("MOSURA_DISTRIB").is_some())
+}
+
+
+#[cfg(test)]
+mod ptrsub_undo_tests {
+    use super::*;
+    use crate::decompile::action::Rule;
+    use crate::decompile::op::SeqNum;
+    use crate::decompile::space::{Address, SpaceManager};
+    use crate::decompile::BlockBasic;
+    use crate::decompile::block::BlockId;
+
+    /// A Funcdata with type recovery started (the rule's first gate).
+    fn fd() -> (Funcdata, Address) {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.start_type_recovery();
+        (f, Address::new(ram, 0))
+    }
+
+    #[test]
+    fn ptrsub_undo_converts_when_base_is_not_a_pointer() {
+        // The base type is an integer, so it has no component at any offset — the PTRSUB's
+        // assertion is wrong and it goes back to an INT_ADD (ruleaction.cc:6931).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let base = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(base).update_type(Datatype::Uint(8));
+        let off = f.new_const(8, 0x10);
+        let sub = f.new_op(OpCode::Ptrsub, seq, vec![base, off]);
+        f.new_output_unique(sub, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![sub], ..Default::default() }]);
+        f.op_mut(sub).parent = Some(BlockId(0));
+        assert_eq!(RulePtrsubUndo.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntAdd);
+        // The offset is untouched when nothing below contributed.
+        assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 0x10);
+    }
+
+    #[test]
+    fn ptrsub_undo_declines_before_type_recovery() {
+        // Ghidra's first gate: the types are not yet meaningful, so no mismatch can be concluded.
+        let spaces = SpaceManager::standard();
+        let ram_space = spaces.by_name("ram").unwrap();
+        let ram = Address::new(ram_space, 0);
+        let mut f = Funcdata::new("t", ram, spaces); // type recovery NOT started
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let base = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(base).update_type(Datatype::Uint(8));
+        let off = f.new_const(8, 0x10);
+        let sub = f.new_op(OpCode::Ptrsub, seq, vec![base, off]);
+        f.new_output_unique(sub, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![sub], ..Default::default() }]);
+        f.op_mut(sub).parent = Some(BlockId(0));
+        assert_eq!(RulePtrsubUndo.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).code(), OpCode::Ptrsub);
+    }
+
+    #[test]
+    fn ptrsub_undo_lumps_the_constant_added_below_it() {
+        // `PTRSUB(base, #0x10)` feeding `INT_ADD #4`: the add was built on the same wrong type, so
+        // it collapses to a COPY and its constant is lumped into the recovered INT_ADD's offset
+        // (removeLocalAdds, ruleaction.cc:6789).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let base = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(base).update_type(Datatype::Uint(8));
+        let off = f.new_const(8, 0x10);
+        let sub = f.new_op(OpCode::Ptrsub, seq(0), vec![base, off]);
+        let sub_out = f.new_output_unique(sub, 8);
+        let four = f.new_const(8, 4);
+        let add = f.new_op(OpCode::IntAdd, seq(1), vec![sub_out, four]);
+        f.new_output_unique(add, 8);
+        f.set_blocks(vec![BlockBasic { ops: vec![sub, add], ..Default::default() }]);
+        f.op_mut(sub).parent = Some(BlockId(0));
+        f.op_mut(add).parent = Some(BlockId(0));
+        assert_eq!(RulePtrsubUndo.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::IntAdd);
+        assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 0x14);
+        // The add below became a COPY of the recovered value.
+        assert_eq!(f.op(add).code(), OpCode::Copy);
+        assert_eq!(f.op(add).num_inputs(), 1);
+    }
 }
