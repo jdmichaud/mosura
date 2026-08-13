@@ -20,6 +20,7 @@ pub mod lang;
 pub mod oraclecache;
 pub mod paths;
 pub mod speccache;
+pub mod recompile;
 pub mod sleigh;
 
 /// Marker error for a pipeline stage that has not been ported yet.
