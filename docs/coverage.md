@@ -470,8 +470,24 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   Sub2Add reconstruction subset — plus RuleDumptyHumpLate, RuleFloatSignCleanup, RuleExtensionPush,
   RuleExpandLoad), 3 BLOCKED (RuleSplitCopy/Load/Store — SplitDatatype, subflow.cc), 2 BLOCKED on
   constsequence (RuleStringCopy, RuleStringStore), 2 BLOCKED as of this pass:
-  `RulePtrsubCharConstant` (StringManager::isString + Scope::isReadOnly — no string manager exists)
+  `RulePtrsubCharConstant` (**not** merely the StringManager — see below)
   and `RulePieceStructure` (PieceNode/TypePartialStruct, the SplitDatatype family). **0 MISSING.**
+
+**`RulePtrsubCharConstant`'s blocker, traced properly (this is a CORRECTION — the earlier
+"StringManager" label named the wrong dependency and understated the size).** The rule fires on
+`PTRSUB(base, #k)` where `base` points to a `TypeSpacebase`. mosura registers exactly ONE spacebase,
+the stack (`space.rs:260`, RSP → `stack`), and a stack address is never read-only, so the rule's
+`isReadOnly` test could never pass. The shape it actually wants is the **ram** spacebase Ghidra
+builds in `Funcdata::spacebaseConstant` (funcdata.cc:358) — the form a global reference takes once
+`ActionConstantPtr` (coreaction.cc:1167) has matched a constant against a global symbol. mosura has
+**none** of that chain: no `ActionConstantPtr`, no `ScopeGlobal`, no ram `TypeSpacebase`, and the
+decompiler is handed image chunks with the per-section `write` flag dropped at the boundary
+(`analysis/decompiler.rs:25` keeps only `(start, bytes)`), so there is no read-only channel either.
+Porting `StringManager::isString` alone would therefore land a rule that cannot fire on any target
+mosura builds. The real prerequisite is **global symbol management** — a project-scale feature, not
+a rule dependency. (For scale: `<spacebase>` appears in no x86 cspec anywhere in Ghidra 12.0.3, only
+in the PIC ones, so the *register*-relative spacebase route does not exist on these targets at all;
+the ram one is the only way in.)
 
 **Live gap: 15 of Ghidra's 154 rules have no mosura implementation, and none is mechanical tail
 work** — 12 BLOCKED on an absent subsystem (SubfloatFlow, constant pool, isPtrFlow, SplitDatatype ×3,
