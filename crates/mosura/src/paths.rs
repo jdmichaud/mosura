@@ -177,6 +177,14 @@ pub fn cnv_exe() -> PathBuf {
     user_binary("MOSURA_CNV_EXE", "cnv.exe")
 }
 
+/// A Watcom C/C++32 installation directory (the one holding `BINW`, `H`, `LIB386`).
+/// `MOSURA_WATCOM_DIR`, default `$HOME/watcom`. The **recompile oracle**: byte-exactness is a
+/// claim about what a particular compiler emits, and only that compiler can settle it. Gates
+/// needing it skip when it is absent, like every other user-provided toolchain.
+pub fn watcom_dir() -> PathBuf {
+    user_binary("MOSURA_WATCOM_DIR", "watcom")
+}
+
 /// `comcom32.exe` — a DJGPP MZ. `MOSURA_COMCOM32_EXE`, default
 /// `$HOME/.local/share/comcom32/comcom32.exe`. Watcom no-false-positive ground truth.
 pub fn comcom32_exe() -> PathBuf {

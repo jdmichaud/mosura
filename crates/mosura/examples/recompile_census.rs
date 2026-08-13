@@ -13,7 +13,7 @@
 use mosura::analysis;
 use mosura::decompile::space::Address;
 use mosura::recompile::insn::{NoReloc, NormInsn, normalize};
-use mosura::recompile::{compare, load_object_function, DivergenceClass};
+use mosura::recompile::{compare, load_object_function, DivergenceClass, Vocabulary};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -33,12 +33,14 @@ fn main() {
     let mut detail: Option<String> = None;
     let mut limit = usize::MAX;
     let mut out_path: Option<String> = None;
+    let mut foreign_out: Option<String> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--lang" => lang = args.next().expect("--lang <id>"),
             "--detail" => detail = Some(args.next().expect("--detail <idx>")),
             "--limit" => limit = args.next().expect("--limit n").parse().expect("n"),
             "--out" => out_path = Some(args.next().expect("--out <path>")),
+            "--foreign-out" => foreign_out = Some(args.next().expect("--foreign-out <path>")),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -68,14 +70,22 @@ fn main() {
         u64::from_str_radix(&hex, 16).ok()
     };
 
+    // PASS 1 — learn what this toolchain emits, from everything it just produced. A function
+    // whose ORIGINAL uses a spelling the compiler never once emits across three thousand
+    // translation units was not built by this compiler, and counting it as a decompiler failure
+    // would make the score a measure of how much foreign code the binary links in.
+    let mut vocab = Vocabulary::new();
+    let mut prepared: Vec<(usize, Vec<NormInsn>, Vec<NormInsn>, mosura::recompile::Candidate)> = Vec::new();
     let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut primary_census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut class_totals: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut sim_sum = 0.0;
     let mut scored = 0usize;
-    let mut out = String::from("idx\tva\tname\tverdict\tprimary\tsim\torig_insns\tcand_insns\tequal\tclasses\n");
+    let mut out = String::from(
+        "idx\tva\tname\tverdict\tprimary\tsim\torig_insns\tcand_insns\tequal\tforeign\tclasses\n",
+    );
 
-    for row in rows.iter().take(limit) {
+    for (ri, row) in rows.iter().take(limit).enumerate() {
         if let Some(d) = &detail {
             if &row.idx != d {
                 continue;
@@ -113,7 +123,39 @@ fn main() {
             Err(e) => panic!("{e}"),
         };
 
-        let diff = compare(&orig, &cnorm);
+        vocab.observe(&cnorm);
+        prepared.push((ri, orig, cnorm, cand));
+    }
+
+    // PASS 2 — compare, now that "reachable by this toolchain" can be decided.
+    eprintln!(
+        "toolchain vocabulary: {} (shape, encoding) pairs over {} instructions",
+        vocab.len(),
+        vocab.instructions_seen
+    );
+    let mut foreign_census: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut foreign_lines = String::from("va\tmnemonic\ttext\tform\n");
+    for (ri, orig, cnorm, cand) in &prepared {
+        let row = &rows[*ri];
+        let (orig, cnorm) = (orig.as_slice(), cnorm.as_slice());
+        // Only the strong signal counts: an encoding this compiler uses for nothing at all.
+        let foreign = vocab.foreign_forms(orig);
+        let is_foreign = !foreign.is_empty();
+        if foreign_out.is_some() {
+            for f in &foreign {
+                foreign_lines.push_str(&format!(
+                    "{:08x}\t{}\t{}\t{}\n",
+                    f.addr,
+                    f.mnemonic,
+                    f.text,
+                    f.form.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ));
+            }
+        }
+        let diff = compare(orig, cnorm);
+        if is_foreign {
+            *foreign_census.entry(diff.verdict.as_str()).or_default() += 1;
+        }
         *census.entry(diff.verdict.as_str()).or_default() += 1;
         if let Some(p) = diff.primary {
             *primary_census.entry(p.as_str()).or_default() += 1;
@@ -134,7 +176,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(",");
         out.push_str(&format!(
-            "{}\t{:08x}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\n",
+            "{}\t{:08x}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\n",
             row.idx,
             row.va,
             row.name,
@@ -144,11 +186,21 @@ fn main() {
             diff.orig_insns,
             diff.cand_insns,
             diff.equal_insns,
+            foreign.len(),
             classes
         ));
 
         if detail.is_some() {
-            print_detail(&row.name, &orig, &cnorm, &diff, &cand);
+            if is_foreign {
+                println!(
+                    "-- {} instruction(s) use an encoding this toolchain never emits (foreign):",
+                    foreign.len()
+                );
+                for f in foreign.iter().take(8) {
+                    println!("     {:08x}  {}", f.addr, f.text);
+                }
+            }
+            print_detail(&row.name, orig, cnorm, &diff, cand);
         }
     }
 
@@ -169,7 +221,17 @@ fn main() {
         for (k, v) in c {
             eprintln!("{v:8}  {k}");
         }
+        eprintln!("\n=== functions whose ORIGINAL uses an encoding this toolchain never emits ===");
+        let total_foreign: usize = foreign_census.values().sum();
+        eprintln!("{total_foreign:6}  total (not reachable from C with this compiler)");
+        for (k, v) in foreign_census.iter() {
+            eprintln!("{v:6}    of which verdict {k}");
+        }
         eprintln!("\nmean instruction similarity: {:.4}", sim_sum / scored.max(1) as f64);
+    }
+    if let Some(p) = foreign_out {
+        std::fs::write(&p, foreign_lines).expect("write");
+        eprintln!("foreign instructions written to {p}");
     }
     if let Some(p) = out_path {
         std::fs::write(&p, out).expect("write");

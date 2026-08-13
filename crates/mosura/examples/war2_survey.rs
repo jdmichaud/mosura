@@ -628,6 +628,13 @@ fn main() {
             smells.push("thunk".into());
         }
         if !only.is_empty() {
+            // The post-pipeline IR, on request. A question about what the C says is often really a
+            // question about what the op graph holds — here, whether a value the original widens is
+            // still four bytes wide by the time the printer sees it. Answering that from the C is
+            // guesswork; the graph states it.
+            if std::env::var("MOSURA_RAW_IR").is_ok() {
+                println!("{}", f.print_raw());
+            }
             // The recovered parameter STORAGE alongside the C, so a signature question ("why is
             // this argument in the wrong register?") is answered by the same one-function run.
             let slots = mosura::decompile::printc::rendered_param_slots(&f);

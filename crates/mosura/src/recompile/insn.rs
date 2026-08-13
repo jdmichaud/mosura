@@ -101,6 +101,12 @@ pub struct NormInsn {
     /// True when this instruction transfers control (its `target` is layout-dependent).
     pub is_branch: bool,
     pub is_call: bool,
+    /// The **encoding form**: the instruction's bytes with every operand-value bit cleared, so
+    /// only the opcode and addressing-mode bits chosen by the encoder remain. Two spellings of
+    /// one operation (`8b ec` and `89 e5` for `MOV EBP,ESP`) have different forms; the same
+    /// spelling with other registers has the same form. Paired with [`Self::shape`] this is what
+    /// a compiler's instruction-selection vocabulary is made of.
+    pub form: Vec<u8>,
 }
 
 impl NormInsn {
@@ -167,6 +173,16 @@ fn is_branchish(opcode: u32) -> bool {
 /// unlinked object carries into the addresses they will hold once linked, which is what makes
 /// the two sides comparable at all.
 pub fn normalize_one(insn: &Instruction, reloc: &dyn Relocator) -> NormInsn {
+    normalize_one_with_mask(insn, reloc, None)
+}
+
+/// As [`normalize_one`], with the instruction mask supplied by the caller (from
+/// [`crate::sleigh::disassemble_fingerprint`]) so [`NormInsn::form`] can be filled in.
+pub fn normalize_one_with_mask(
+    insn: &Instruction,
+    reloc: &dyn Relocator,
+    mask: Option<&[u8]>,
+) -> NormInsn {
     let ilen = insn.bytes.len();
     let resolve_const = |v: u64, sz: u32| reloc.resolve(insn.address, ilen, v, sz);
     let mut temps: HashMap<u64, u32> = HashMap::new();
@@ -268,6 +284,10 @@ pub fn normalize_one(insn: &Instruction, reloc: &dyn Relocator) -> NormInsn {
         target,
         is_branch,
         is_call,
+        form: match mask {
+            Some(m) => insn.bytes.iter().zip(m.iter()).map(|(b, m)| b & m).collect(),
+            None => insn.bytes.clone(),
+        },
     }
 }
 
@@ -292,7 +312,14 @@ pub fn normalize(
     reloc: &dyn Relocator,
 ) -> Result<Vec<NormInsn>, crate::Unimplemented> {
     let insns = crate::sleigh::disassemble(lang_id, bytes, base)?;
-    Ok(insns.iter().map(|i| normalize_one(i, reloc)).collect())
+    // The fingerprints are for exactly these instructions at these addresses, so the two lists
+    // are zipped positionally rather than re-derived.
+    let fps = crate::sleigh::disassemble_fingerprint(lang_id, bytes, base)?;
+    Ok(insns
+        .iter()
+        .enumerate()
+        .map(|(i, x)| normalize_one_with_mask(x, reloc, fps.get(i).map(|f| f.instruction_mask.as_slice())))
+        .collect())
 }
 
 /// Render a p-code op sequence for reports.

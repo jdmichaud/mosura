@@ -2310,6 +2310,38 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
     out
 }
 
+
+/// Widen a recovered type to the width of the storage the value actually occupies.
+///
+/// The declared return type of a C function decides how wide a value the compiler leaves in the
+/// return register: `int f()` produces a full 32-bit value, `bool f()` or `char f()` produce a
+/// byte and leave the rest alone. So a recovered type NARROWER than the value the binary
+/// actually produces is not a cosmetic difference — it deletes the widening instruction from the
+/// recompiled function.
+///
+/// This is exactly what happens to a comparison result. Type inference sees a `SETcc` feeding
+/// the return and settles on `bool`, which is true about the *value*; but the original function
+/// zero-extends it to 32 bits (`AND EAX,0xff`), which is what C does when the declared type is
+/// `int`. Emitting `bool` there loses that instruction in every such function — 86 of them in
+/// the WAR2 survey, 9 of which have no other defect at all.
+///
+/// The rule triggers only when the IR itself says the value is wider than its type, so a
+/// function that genuinely returns a byte (its returned Varnode *is* one byte) is untouched.
+/// Signedness is preserved where it is known; a boolean or character widens to `int`, which is
+/// the type C promotion would have given it in the original source.
+fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
+    if width == 0 || ty.size() >= width {
+        return ty.clone();
+    }
+    match ty {
+        Datatype::Bool | Datatype::Char | Datatype::Int(_) => Datatype::Int(width),
+        Datatype::Uint(_) => Datatype::Uint(width),
+        // Anything else (pointer, float, aggregate) narrower than its storage is not a promotion
+        // question and is left for the type recovery to answer.
+        other => other.clone(),
+    }
+}
+
 pub fn print_c(f: &Funcdata) -> String {
     let reg_space = f.spaces.by_name("register");
 
@@ -2476,7 +2508,27 @@ pub fn print_c(f: &Funcdata) -> String {
     // `ActionOutputPrototype` → `FuncProto::updateOutputTypes` (fspec.cc:4159), which sets the output
     // type to `triallist[0]->getHigh()->getType()` when the prototype is not output-locked (the
     // stripped-binary case). No downgrade to `undefined`; `void` when there is no returned value.
-    let ret_ty = ret.map_or("void".to_string(), |v| p.type_of(v).name());
+    let ret_ty = ret.map_or("void".to_string(), |v| {
+        // Width comes from the CONVENTION's return storage, not from the returned Varnode.
+        // Later pipeline stages legitimately narrow that Varnode — a comparison result reaching a
+        // RETURN ends up one byte wide even though the recovered output trial is the full
+        // four-byte register — and a narrower declared type deletes the widening the original
+        // performs. The convention is the stable statement of how wide a returned value is.
+        let vn = f.vn(v);
+        let width = f
+            .proto_model
+            .output
+            .as_ref()
+            .and_then(|out| {
+                out.entry
+                    .iter()
+                    .find(|e| e.justified_contain(vn.loc, vn.size) == Some(0))
+                    .map(|e| e.size)
+            })
+            .unwrap_or(vn.size)
+            .max(vn.size);
+        widen_to_storage(&p.type_of(v), width).name()
+    });
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params
         .iter()

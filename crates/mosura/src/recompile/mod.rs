@@ -16,6 +16,10 @@
 //! - [`insn`] — normalize both sides into instructions carrying a canonical p-code semantic
 //!   form. Comparing lifted semantics rather than text is what makes the instrument
 //!   architecture-agnostic: it works wherever SLEIGH does.
+//! - [`toolchain`] — drive the target compiler itself, batched and cached, because the only
+//!   authority on what a 1994 compiler emits is that compiler, and a search puts it in the loop.
+//! - [`vocab`] — what the toolchain is *able* to emit, learned from its own output, so a
+//!   function it could never have produced is excluded on evidence rather than by opinion.
 //! - [`align`] — align the two instruction streams and attribute every divergence to a named
 //!   class (encoding, register allocation, immediate, selection, extra/missing computation…).
 //!
@@ -27,7 +31,11 @@
 pub mod align;
 pub mod candidate;
 pub mod insn;
+pub mod toolchain;
+pub mod vocab;
 
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
 pub use candidate::{Candidate, CandFixup, SymbolResolver, load_object_function};
 pub use insn::{NormInsn, normalize};
+pub use toolchain::{CompileOutput, CompileUnit, Toolchain};
+pub use vocab::Vocabulary;
