@@ -418,7 +418,21 @@ impl Funcdata {
     }
 
     /// A function-input varnode (no ancestor).
+    ///
+    /// Ghidra's UNIQUENESS guarantee (`Funcdata::setInputVarnode`, funcdata_varnode.cc): a request
+    /// for storage an input already covers returns THAT input rather than making a second one.
+    /// Without it one register ends up with two function inputs — FUN_000100b9 had
+    /// `register+0x4/4` and `register+0xc/4` twice each. One of a pair becomes a parameter; the
+    /// other has no parameter slot, so printc names it `xVar1`, declares it with no assignment (an
+    /// input has no defining op) and it is passed as a spurious call argument. 603 emitted TUs
+    /// carry such a local and none are byte-clean.
     pub fn new_input(&mut self, size: u32, loc: Address) -> VarnodeId {
+        for i in 0..self.varnodes.len() {
+            let o = &self.varnodes[i];
+            if o.flags & flags::INPUT != 0 && o.loc == loc && o.size == size {
+                return VarnodeId(i as u32);
+            }
+        }
         self.alloc_varnode(size, loc, flags::INPUT | flags::INSERT)
     }
 
@@ -518,6 +532,33 @@ impl Funcdata {
     /// Mark an existing free varnode as a function input (Ghidra's `setInputVarnode`, reduced to
     /// mosura's case): clear any `written`/`def` and set `INPUT | INSERT`. Returns the varnode.
     pub fn set_input_varnode(&mut self, vid: VarnodeId) -> VarnodeId {
+        // Ghidra's UNIQUENESS guarantee (funcdata_varnode.cc): an input already marked is returned
+        // unchanged, and a request for storage some other input already covers returns THAT input
+        // rather than marking a second one —
+        //     if (vn->isInput()) return vn;
+        //     if (vn->getSize()==invn->getSize() && vn->getAddr()==invn->getAddr()) return invn;
+        // mosura marked unconditionally, so one register could end up with TWO function inputs.
+        // FUN_000100b9 has `register+0x4/4` and `register+0xc/4` twice each: one of each pair
+        // becomes a parameter, and the OTHER has no parameter slot, so printc names it `xVar1`,
+        // declares it with no assignment (an input has no defining op) and it is passed as a
+        // spurious call argument. 603 emitted TUs carry such a local and none are byte-clean.
+        {
+            let v = &self.varnodes[vid.0 as usize];
+            if v.flags & flags::INPUT != 0 {
+                return vid;
+            }
+            let (loc, size) = (v.loc, v.size);
+            for i in 0..self.varnodes.len() {
+                let o = &self.varnodes[i];
+                if i != vid.0 as usize
+                    && o.flags & flags::INPUT != 0
+                    && o.loc == loc
+                    && o.size == size
+                {
+                    return VarnodeId(i as u32);
+                }
+            }
+        }
         let v = &mut self.varnodes[vid.0 as usize];
         v.def = None;
         v.flags &= !flags::WRITTEN;
