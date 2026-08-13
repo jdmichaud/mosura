@@ -40,6 +40,24 @@ between two distant uses.
 ⚠️ **BUILD PROFILE:** the emit runs `cargo run --release`. Validate with a RELEASE build or the
 measurement is of the previous binary. This produced two rounds of confident, wrong conclusions.
 
+**THE REMAINING 73 COMPILE_FAILs SHARE ONE ROOT: values wider than 4 bytes.** Watcom 10.0a has no
+64-bit integer type, so `prelude.h` models 8-byte values as `double`
+(`typedef double uint8/undefined8`, and `CONCAT44(h,l)` expands to
+`(double)(h)*4294967296.0 + (double)(l)`). Every BITWISE use of such a value is then invalid C:
+
+    E1079 "Expression must be integral"  (19 TUs)  — e.g. `(int4)(CONCAT44(param_2,xStack_14) >> 0x10) >> 0x10`
+    E1011 undeclared `int12`/`int14`/`xunknown10/12` (24) — widths with no C type at all
+    E1032 `.` on a non-struct (23) — Ghidra's `._0_6_` partial field at a width `exact_uint` cannot
+          render (it covers 1/2/4; a 6-byte assignment has no C spelling)
+
+That is ~66 of the 73. **None of them is a prelude fix.** Adding a typedef cannot make a 6- or
+14-byte integer exist, and widening `uint8` cannot help unless Watcom 10.0a has a 64-bit integer
+type — UNTESTED; `__int64` arrived in Watcom 11, so assume not until checked.
+
+The fix has to be in the DECOMPILER: stop producing >4-byte integer values where 32-bit arithmetic
+suffices. `(int4)(CONCAT44(a,b) >> 0x10) >> 0x10` is extracting a 16-bit field and needs no 64-bit
+intermediate at all.
+
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
 | size | 0 locals | 1-3 | 4+ |
