@@ -414,7 +414,38 @@ fn main() {
     }
 
     eprintln!("loading WAR2 via analyze_le_file ...");
-    let prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
+    let mut prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
+    // PASS 1 — recover every function's prototype, so pass 2's callers can consult the callee
+    // instead of guessing it from one call site. Costs one decompile per function; the emit that
+    // follows is the second.
+    //
+    // OFF BY DEFAULT, on a measurement. Over the whole corpus it costs 26 byte-exact functions
+    // (420 -> 394): `missing` falls by 87, exactly as intended, and `extra` rises by 105. Trading
+    // one for the other is not progress, and the plan named that trade in advance as the thing to
+    // watch.
+    //
+    // The DIAGNOSIS is not "the prototypes are wrong" — they are right. `FUN_0005a48c` really does
+    // take a pointer in EAX, and its caller really does pass one: the original leaves the previous
+    // call's result in EAX and calls straight through, so the argument costs no instruction at all.
+    // What fails is the argument's VALUE. A declared parameter the call site has no varnode for
+    // takes the `unref` path in `build_input_from_trials`, which creates a FRESH varnode at the
+    // parameter's storage — and heritage has already run, so that varnode can never be linked to
+    // the value reaching the call. It renders as a constant, and the caller emits `XOR EAX,EAX` to
+    // produce a zero the original never wanted.
+    //
+    // So the missing piece is binding a propagated parameter to the value live in its storage at
+    // the call, which is a heritage-ordering problem rather than a prototype problem.
+    // `MOSURA_PROTO_PASS=1` enables the pass for work on exactly that.
+    if std::env::var("MOSURA_PROTO_PASS").as_deref() == Ok("1") {
+        let t = std::time::Instant::now();
+        prog.recovered_protos = analysis::interface::recover_prototypes(&prog);
+        eprintln!(
+            "prototype pass: {} functions in {:.1}s",
+            prog.recovered_protos.len(),
+            t.elapsed().as_secs_f64()
+        );
+    }
+    let prog = prog;
     let ram = prog.default_space;
     eprintln!("{} functions", prog.function_manager.function_count());
 

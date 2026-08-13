@@ -279,6 +279,65 @@ fn record_callee_effects(
         if let Some((w, _)) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
             f.call_specs.entry(call).or_default().writes_all = Some(w);
         }
+        // THE CALLEE'S OWN RECOVERED PROTOTYPE, when the whole-program pass has established one.
+        //
+        // `callee_effects` below answers the same question by walking the callee's body in a
+        // straight line, and gives up at its first branch or call. That reaches only the simplest
+        // bodies, which is why the mechanism was right and barely moved the population. Decompiling
+        // the callee answers it completely — and decompiling every function is something the
+        // whole-program pass already does, so the answer exists and was simply being discarded.
+        //
+        // It REPLACES the scan rather than merging with it: two derivations of one callee's
+        // parameter list can disagree, and the complete one is not improved by the partial one's
+        // opinion. `derive_input_map` then treats the list as fact rather than as candidates,
+        // exactly as Ghidra's `ActionDefaultParams` copies a callee's recovered prototype onto the
+        // call (coreaction.cc:2327).
+        //
+        // A missing entry means the pass has not run, or the callee could not be decompiled, or the
+        // target is indirect — never "this callee takes no arguments". Absence falls through to the
+        // scan, which falls through to the default convention.
+        if let Some(proto) = program.recovered_protos.get(&target) {
+            if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
+                eprintln!(
+                    "callee {target:08x} recovered proto: params={:?} out={:?}",
+                    proto.params.iter().map(|p| (f.spaces.get(p.addr.space).name.clone(), p.addr.offset, p.size)).collect::<Vec<_>>(),
+                    proto.output.as_ref().map(|o| (f.spaces.get(o.addr.space).name.clone(), o.addr.offset, o.size))
+                );
+            }
+            // A recovered parameter's size is the width the CALLEE READS, which is not the width
+            // of the slot it arrives in. This callee reads DX and BX, two bytes each, while the
+            // caller writes whole 4-byte registers — and a 4-byte trial cannot justify into an
+            // entry whose maximum size is 2, so every such argument was dropped and a five-argument
+            // call came out with one. An exclusion entry (a register) is a slot dedicated whole to
+            // one parameter, so the convention's own declared width is the slot width. A
+            // non-exclusion entry (the stack overflow area) is a region shared by many parameters
+            // and its declared size says nothing about any one of them, so a stack parameter keeps
+            // the width that was recovered for it.
+            let slots: Vec<(crate::decompile::space::Address, u32)> = proto
+                .params
+                .iter()
+                .map(|p| {
+                    let width = f
+                        .proto_model
+                        .input
+                        .as_ref()
+                        .and_then(|pl| {
+                            pl.entry
+                                .iter()
+                                .find(|e| e.is_exclusion_slot() && e.justified_contain(p.addr, p.size).is_some())
+                                .map(|e| e.size)
+                        })
+                        .unwrap_or(p.size);
+                    (p.addr, width.max(p.size))
+                })
+                .collect();
+            let cs = f.call_specs.entry(call).or_default();
+            cs.reads = Some(slots);
+            if let Some((regs, _)) = eff {
+                cs.overwrites = regs;
+            }
+            continue;
+        }
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
         if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
             eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");

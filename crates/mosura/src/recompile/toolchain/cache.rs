@@ -13,6 +13,10 @@
 use super::{CompileOutput, CompileUnit, Toolchain};
 use std::path::{Path, PathBuf};
 
+/// Units compiled before results are written to disk. Small enough that an interrupted run loses
+/// little, large enough that the underlying driver still batches usefully.
+const CACHE_GROUP: usize = 200;
+
 /// Wraps any toolchain with a disk cache.
 pub struct Cached<T: Toolchain> {
     inner: T,
@@ -91,10 +95,17 @@ impl<T: Toolchain> Toolchain for Cached<T> {
         }
         if !todo.is_empty() {
             self.misses.set(self.misses.get() + todo.len());
-            let batch: Vec<CompileUnit> = todo.iter().map(|&i| units[i].clone()).collect();
-            for (slot_i, res) in todo.iter().zip(self.inner.compile_batch(&batch)) {
-                self.write(&slots[*slot_i], &units[*slot_i], &res);
-                out[*slot_i] = Some(res);
+            // Persist in GROUPS rather than once at the end. A whole-corpus run is thousands of
+            // units and many minutes; interrupting it used to discard every object compiled so
+            // far, because nothing reached disk until the last one finished. Losing an eight
+            // minute compile to a timeout is not a small cost when the loop's whole value is that
+            // repeats are free.
+            for group in todo.chunks(CACHE_GROUP) {
+                let batch: Vec<CompileUnit> = group.iter().map(|&i| units[i].clone()).collect();
+                for (slot_i, res) in group.iter().zip(self.inner.compile_batch(&batch)) {
+                    self.write(&slots[*slot_i], &units[*slot_i], &res);
+                    out[*slot_i] = Some(res);
+                }
             }
         }
         out.into_iter().map(|o| o.expect("every unit answered")).collect()

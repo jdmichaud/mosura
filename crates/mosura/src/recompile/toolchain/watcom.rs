@@ -30,6 +30,19 @@ pub struct WatcomDos {
     pub prelude: String,
     /// Units per emulator session.
     pub batch_size: usize,
+    /// Remove the work directory when this driver is dropped.
+    owns_work_dir: bool,
+}
+
+impl Drop for WatcomDos {
+    fn drop(&mut self) {
+        // The work directory is scratch — sources copied in, objects taken back out — and a run
+        // that ends early (a timeout, a kill) otherwise leaves the whole corpus behind. Nine such
+        // directories had accumulated before this was noticed.
+        if self.owns_work_dir {
+            let _ = std::fs::remove_dir_all(&self.work_dir);
+        }
+    }
 }
 
 impl WatcomDos {
@@ -42,11 +55,19 @@ impl WatcomDos {
             version: version.to_string(),
             prelude: String::new(),
             batch_size: 200,
+            owns_work_dir: false,
         })
     }
 
     pub fn with_prelude(mut self, prelude: impl Into<String>) -> Self {
         self.prelude = prelude.into();
+        self
+    }
+
+    /// Delete the work directory when this driver is dropped. For a caller that created a
+    /// throwaway directory for one run; not for one pointing at a directory it shares.
+    pub fn owning_work_dir(mut self) -> Self {
+        self.owns_work_dir = true;
         self
     }
 

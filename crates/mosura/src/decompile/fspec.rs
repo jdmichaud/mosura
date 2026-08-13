@@ -66,6 +66,13 @@ impl ParamEntry {
         self.alignment == 0
     }
 
+    /// Public form of [`Self::is_exclusion`]: an entry that is a single dedicated slot (a
+    /// register), as opposed to an area many parameters are packed into (the stack overflow).
+    /// The distinction decides whether the entry's declared size describes ONE parameter.
+    pub fn is_exclusion_slot(&self) -> bool {
+        self.is_exclusion()
+    }
+
     /// Ghidra `ParamEntry::justifiedContain` (fspec.cc:248): if `[addr,addr+sz)` lies within
     /// this entry (and `sz` is in `[minsize,size]`), return the little-endian-justified byte
     /// offset of the parameter within the entry; else `None`. For a register entry a parameter

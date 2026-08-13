@@ -71,7 +71,7 @@ fn main() {
     let space = prog.default_space;
 
     let work = std::env::temp_dir().join(format!("mosura-check-{}", std::process::id()));
-    let wcc = WatcomDos::new(watcom, &work, "10.0a").expect("work dir").with_prelude(prelude);
+    let wcc = WatcomDos::new(watcom, &work, "10.0a").expect("work dir").with_prelude(prelude).owning_work_dir();
     let tc = Cached::new(wcc, &cache_dir).expect("cache dir");
 
     // Select the functions to check, then compile them all in one pass so a whole-corpus run is
@@ -220,6 +220,7 @@ fn main() {
         std::fs::write(&p, tsv).expect("write");
         eprintln!("rows written to {p}");
     }
+    eprintln!("recompile_check: COMPLETE");
     // A non-zero exit when nothing reached EXACT makes this usable as a gate on one function.
     if only.len() == 1 && census.get(Verdict::Exact.as_str()).copied().unwrap_or(0) == 0 {
         std::process::exit(1);
