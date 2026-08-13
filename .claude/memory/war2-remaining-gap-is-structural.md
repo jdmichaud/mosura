@@ -768,3 +768,37 @@ These are x87/aggregate-heavy functions; making them compile would not make them
 
 Consequence: the COMPILE_FAIL residue is not a cheap source of byte-clean functions. It was already
 worked from 156 down to 73; what is left is mostly this one unspellable idiom.
+
+### DIAGNOSED, NOT FIXED: mosura over-extends stack arrays into the callee-save slot
+
+**Oracle-confirmed divergence with direct byte impact.** Specimen FUN_0005118c (survey src/02074.c).
+The recompile matches the original instruction-for-instruction EXCEPT `sub esp,0x14` where the
+original has `sub esp,0x10`, and `lea eax,[ebp-0x14]` vs `[ebp-0x10]`. Cause: we declare
+`xunknown1 axStack_14 [20]`; Ghidra declares `undefined1 auStack_14 [16]`. Four bytes too many.
+
+Ghidra's answer (forced-param recipe, callees first, so the buffer pointer does not die):
+`GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='51298=EAX 5f734=EAX'
+scripts/ghidra-decompile-war2.sh 51298 5f734 5118c`
+
+MECHANISM, instrumented not guessed (`MOSURA_VARMAP=1`, added in varmap.rs):
+- Our hint list for this function is ONLY two `Open` hints at sstart=-20. There is **no hint at -4**.
+- `restructure` sizes an Open hint as `next.sstart - cur.sstart`; the next hint is the artificial
+  endpoint, which `MapState::initialize` places at 0 — so the array becomes 20.
+- The endpoint at 0 is CORRECT: our window is `[0xFFF00000, 0xFFFFFFFF]`, i.e. signed `[-1048576,-1]`,
+  and Ghidra's `initialize` (varmap.cc) computes `high = lastrange->getLast()+1` = 0 too. **The
+  hardcoded 0 is not the bug — do not "fix" it.**
+- The bug is the MISSING hint at -4, the saved-EBP slot. Ghidra's `MapState::gatherVarnodes`
+  (varmap.cc) calls `addFixedType` UNCONDITIONALLY in the `CPUI_COPY` and `default` arms — only the
+  input / INDIRECT / MULTIEQUAL / PIECE / SUBPIECE arms consult `isReadActive`. `push ebp` becomes a
+  COPY into the stack slot, so Ghidra always gets a bounding hint there. mosura's `gather_varnodes`
+  is FAITHFUL on this point (COPY and default both add unconditionally) — the varnode simply is not
+  there any more by then. `directwrite.rs` documents removing exactly this slot
+  (`s-0x8 = COPY RBP(input)` is not a direct write), so dead code eliminates it before
+  `restructureVarnode` runs. **The divergence is an ORDERING/lifetime question, not a gather bug.**
+
+Scope: 18 declarations in the emit have `declared_size == offset` (array running to the frame base);
+the rest stop short and are unaffected. So this is a modest class, not a 200-function lever — but it
+is real, oracle-confirmed, and each affected function is otherwise byte-identical.
+
+NEXT: find why the save-slot varnode survives to `restructureVarnode` in Ghidra and not here. Do NOT
+"cap arrays at -4" as a rule — that is the workaround; the varnode's lifetime is the actual defect.

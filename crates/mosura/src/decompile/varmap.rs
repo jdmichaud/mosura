@@ -724,8 +724,29 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
         MapState::new(&f.spaces, stack, map_state_range(f), &f.proto_model.localrange);
     state.gather_varnodes(f);
     state.gather_open(f);
+    // `MOSURA_VARMAP=1` dumps the window, the gathered hints and the resulting Symbols, keyed by
+    // function — the counterpart to `MOSURA_CFG`. Frame-layout divergences are otherwise only
+    // visible as their third-order symptom (a declared array of the wrong length, hence a wrong
+    // `sub esp,N`), which is how the FUN_0005118c over-extension went unnoticed.
+    if std::env::var_os("MOSURA_VARMAP").is_some() {
+        let rl = map_state_range(f);
+        for r in rl.iter() {
+            eprintln!("VARMAP[{}] range first={} last={}", f.name, r.first as i64, r.last as i64);
+        }
+        for h in &state.maplist {
+            eprintln!(
+                "VARMAP[{}] hint sstart={} size={} type={:?}",
+                f.name, h.sstart, h.size, h.range_type
+            );
+        }
+    }
     let mut out = Vec::new();
     restructure(&mut state, &mut out);
+    if std::env::var_os("MOSURA_VARMAP").is_some() {
+        for sym in &out {
+            eprintln!("VARMAP[{}] sym start={} size={} name={}", f.name, sym.start, sym.size, sym.name);
+        }
+    }
     out
 }
 
