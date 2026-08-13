@@ -59,6 +59,14 @@ impl Cover {
 
     /// Is the given position inside this cover in `block`? (Ghidra `Cover::contain`, cover.cc —
     /// the point query `checkCopyPair` uses to detect an intervening write inside a range.)
+    /// The single (lo,hi) span this cover records for `block`, if any. Diagnostic only — its
+    /// existence is the point: Ghidra's `Cover` is a set of INTERVALS, so a value with two distant
+    /// uses in one block has two ranges there, while this collapses them into one span that
+    /// swallows everything between.
+    pub fn span_of(&self, block: usize) -> Option<(i32, i32)> {
+        self.blocks.get(&block).copied()
+    }
+
     pub fn contains_point(&self, block: usize, point: i32) -> bool {
         self.blocks.get(&block).is_some_and(|&(lo, hi)| lo <= point && point <= hi)
     }

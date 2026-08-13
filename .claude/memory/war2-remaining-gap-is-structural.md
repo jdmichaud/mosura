@@ -30,6 +30,23 @@ EXPLICIT, the opposite direction, because its cover appears to span a later call
 `vn->getCover()->contain(callop, 2)` on the LOAD's OUTPUT, and the value here is consumed BEFORE
 that call. mosura's cover is coarser than Ghidra's, so the arm over-rejects.
 
+**A UNITS BUG IN THE PORT, found and fixed — and it was NOT the whole story.** Cover positions are
+ENCODED (`cover_of`: a write at 2i+2, a read at 2i+1). The arm passed the RAW op index to
+`contains_point`, so an op at index 21 tested against a span of (20,27) — which covers ops 9..13 —
+read as "inside", and every rejection was spurious. With `2*i+1` the specimen comes out right:
+
+    FUN_0001d98c   before  uVar1 = *p; *p = uVar1 | 0x20;      (mov/or/mov, +4 bytes)
+                   after   *p = *p | 0x20;                     (one `or [p],0x20`, matches)
+
+Gains rose 5 -> 9 on the 516-function near set (+4, up from +3). Regressions stayed at SIX. So the
+encoding was a real defect but not the cause of the regressions — those are still unexplained, and
+they are what blocks this.
+
+**CALIBRATION, from M39 — the near set captures essentially ALL the gains.** Its sample said +3 and
+the full run's total gain was also +3. So predict with: `near-set gain − complete clean-set loss`.
+With the encoding fixed that is 4 − 6 = **−2**, which is why this is still not landed. Do NOT
+extrapolate the near set upward; it is not a fifth of the gains, it is nearly all of them.
+
 **THE COVER DIVERGENCE, verified by reading the type** (whether it CAUSES these six is inferred,
 not proven — check before acting): `decompile/cover.rs`'s `Cover` stores ONE (min,max) span per
 block —
