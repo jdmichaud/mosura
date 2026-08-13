@@ -5474,7 +5474,7 @@ fn functional_equality_level0(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -
 /// further varnode pairs). Both call sites here (and Ghidra's) only test the `== 0` case, so —
 /// unlike Ghidra — we don't thread the contingent pairs back out; the recursion structure that
 /// decides whether `0` is reachable is reproduced exactly.
-fn functional_equality_level(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> i32 {
+pub(super) fn functional_equality_level(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> i32 {
     let testval = functional_equality_level0(data, vn1, vn2);
     if testval != 1 {
         return testval;

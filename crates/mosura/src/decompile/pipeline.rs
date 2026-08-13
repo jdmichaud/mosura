@@ -692,12 +692,14 @@ pub fn universal_action() -> ActionGroup {
                         // SUBPIECEs and over-split; task #8 Brick D retired that ordering.) Inert
                         // unless the Funcdata carries laned-register records (parsed from the
                         // pspec by the build caller). Absent members join at their slots when
-                        // ported: ActionMultiCse (:5653), ActionShadowVar (:5654),
-                        // ActionDeindirect (:5655), ActionStackPtrFlow (:5656).
+                        // ported: ActionShadowVar (:5654), ActionDeindirect (:5655),
+                        // ActionStackPtrFlow (:5656). ActionMultiCse (:5653) is now in place,
+                        // directly after LaneDivide as in Ghidra.
                         .then(
                             ActionGroup::restart("stackstall")
                                 .then(default_rule_pool())
-                                .then(OncePerFunc::new(super::lanedivide::ActionLaneDivide)),
+                                .then(OncePerFunc::new(super::lanedivide::ActionLaneDivide))
+                                .then(super::multicse::ActionMultiCse),
                         )
                         // Ghidra ActionRedundBranch (:5658, "deadcontrolflow"), directly after
                         // actstackstall: splice single-in/single-out block pairs and drop branches

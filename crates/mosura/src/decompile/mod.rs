@@ -31,6 +31,7 @@ pub mod jumpbasic;
 pub mod jumptable;
 pub mod lanedivide;
 pub mod merge;
+pub mod multicse;
 pub mod mergesnip;
 pub mod nzmask;
 pub mod op;
