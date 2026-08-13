@@ -145,9 +145,26 @@ It only RENDERS as the incoming EDI at print time. That is why every register-ke
 it, and why all the register-oriented hypotheses below were wrong: the trial is a spacebase trial
 registered by `guard_calls` once the stack-pointer placeholder resolved that call's offset.
 
-So the question to answer next is why a stack slot the caller never wrote is a live argument trial
-— i.e. whether `guard_calls` should be registering a spacebase trial there at all — NOT how to
-filter register inputs out of the argument list.
+**AND ITS FLAGS, dumped at the same point** (do not guess these — four guards were written and
+reverted on wrong assumptions about them):
+
+    SETALL op=138 <- [ ram+0x10010/4[]
+                     | register+0x0/4[w def=IntAnd]
+                     | const+0x10/4[c]
+                     | register+0xc/4[i]
+                     | register+0x4/4[i]
+                     | stack+0xfffffff4/4[w def=Copy] ]
+
+The spurious fifth argument is WRITTEN, by a COPY. It is not an unwritten slot, not a free varnode,
+not a register input — so a guard keyed on any of those cannot fire, which is exactly what happened
+four times.
+
+A COPY whose output is a stack varnode is the SIGNATURE of the stack-pointer placeholder machinery
+(`create_placeholder` hangs a 1-byte LOAD off the call; `RuleLoadVarnode` rewrites LOAD -> COPY of a
+fixed stack slot). Check first whether this is a placeholder that outlived
+`abort_spacebase_relative` — the width is 4 rather than the placeholder's 1, so it may instead be a
+genuine spill the caller made and the callee never reads. Dump the COPY's INPUT to tell those
+apart. Do not write a fifth guard before that is settled.
 
 **THE EARLIER VERIFIED FACT**, from an instrument pointed at the thing that PRODUCES the output
 (`MOSURA_CALLARGS=1` in printc's Call arm, which prints the rendered op and its argument varnodes):
