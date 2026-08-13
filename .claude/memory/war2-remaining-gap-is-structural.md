@@ -119,7 +119,41 @@ NOTHING, so the verdict is decided by the other 61%: condition polarity (`je`/`j
 `jbe`), boolean materialization (`setne al ; and eax,0xff` where the original branched), and
 instruction selection (`lea` for `add`/`shl`). Those are structurer and codegen-shape questions.
 
-## THE UNDEFINED-LOCAL CLASS, ROOT-CAUSED (2026-08-13)
+## THE UNDEFINED-LOCAL CLASS — **NOT** ROOT-CAUSED. Five wrong hypotheses, one real fix.
+
+⚠️ Read this before touching the class. 603 emitted TUs declare a local that is never assigned and
+none are byte-clean, and I reported a "root cause" FOUR times; each was wrong at the next layer:
+
+| claimed | disproved by |
+|---|---|
+| a free varnode with no value | a guard on `!written && !input && !constant` never fired |
+| a spurious STACK input | a spacebase guard never fired |
+| an INDIRECT creation (Ghidra `pop_failkill`) | instrumenting the kept args showed no such flag |
+| the `committed` force-mark inventing it | skipping the force-mark changed nothing |
+| a DUPLICATE input at a parameter's location | real, and FIXED (see below) — but the local remained |
+| `recover_input_params` and printc disagreeing about EDI | `proto.params` has no EDI; they agree |
+| `own_params` polluted mid-pipeline | printed it: `[0, 8, c, 4]`, EDI absent |
+
+**THE ONE VERIFIED FACT**, from an instrument pointed at the thing that PRODUCES the output
+(`MOSURA_CALLARGS=1` in printc's Call arm, which prints the rendered op and its argument varnodes):
+
+    CALLARGS func_0x00010010 op=138
+      args=[register+0x0/4 w | const+0x10/4 c | register+0xc/4 in | register+0x4/4 in |
+            register+0x1c/4 in]
+
+The fifth argument is the incoming EDI, an INPUT varnode, and EDI is not among the function's
+recovered parameters. A guard in `build_input_from_trials` that drops exactly that was written
+THREE times and never fired — so the trial reaches the argument list through an earlier branch of
+that function (the `isUnref` materialization is the candidate, untested) or through some path that
+is not `build_input_from_trials` at all. **Establish which, with an instrument at the point of
+change, before writing the guard a fourth time.**
+
+**THE METHOD LESSON, which cost more than the class did:** every wrong hypothesis above came from
+an instrument pointed at a path I ASSUMED fed the output — including one that was reading a
+CALLEE's call op, not the function's own. Point the instrument at the object that produces the
+observable, verify it is that object, and only then reason.
+
+## What WAS fixed here (real, ported, green)
 
 603 emitted TUs declare a local that is never assigned; NONE are byte-clean. Instrumented at the
 declaration site (`MOSURA_DECL=1` in printc's `name_of`), FUN_000100b9's `xVar1` reports

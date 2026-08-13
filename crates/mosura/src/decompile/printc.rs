@@ -1062,6 +1062,24 @@ impl<'a> PrintC<'a> {
                     Some(t) => format!("func_0x{:08x}", self.f.vn(t).loc.offset),
                     None => "func".to_string(),
                 };
+                if std::env::var_os("MOSURA_CALLARGS").is_some() {
+                    let facts: Vec<String> = (1..o.num_inputs())
+                        .map(|i| {
+                            let v = a(i);
+                            let vn = self.f.vn(v);
+                            format!(
+                                "{}+{:#x}/{}{}{}{}",
+                                self.f.spaces.get(vn.loc.space).name,
+                                vn.loc.offset,
+                                vn.size,
+                                if vn.is_written() { " w" } else { "" },
+                                if vn.is_input() { " in" } else { "" },
+                                if vn.is_constant() { " c" } else { "" }
+                            )
+                        })
+                        .collect();
+                    eprintln!("CALLARGS {name} op={} args=[{}]", op.0, facts.join(" | "));
+                }
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
                 (format!("{name}({})", args.join(", ")), 16)
             }
