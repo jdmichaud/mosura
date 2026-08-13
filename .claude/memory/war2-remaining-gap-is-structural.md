@@ -67,9 +67,24 @@ changes that. ~66 of the 73 compile failures are in that category, which puts a 
 this survey can reach: those functions cannot be byte-clean while the emitted language is C
 compiled by this toolchain.
 
-Before spending more here, establish the ceiling: count how many of the 3023 contain a construct
-with no Watcom-10.0a C spelling. That number is the real denominator, and 600 should be judged
-against it rather than against 3023.
+**CEILING MEASURED — AND IT IS NOT A REAL CONSTRAINT. Do not repeat this worry.** Counting the
+3023 emitted TUs by construct:
+
+| construct | TUs | of which byte-CLEAN |
+|---|---|---|
+| CONCAT then shift/mask (64-bit bitwise) | 88 | **36** |
+| software interrupt (`swi`) | 74 | 3 |
+| partial field at an inexpressible width | 22 | **22** |
+| type wider than 8 bytes | 11 | **11** |
+| port / cpuid intrinsic | 8 | 0 |
+
+48 of the 171 TUs containing one of these are ALREADY byte-clean, so the constructs are not fatal
+per se — they appear in expressions the emitter renders fine. The genuinely blocked set is the 73
+COMPILE_FAILs, i.e. ~2% of the corpus.
+
+So the achievable denominator is ~2950, not something much smaller. At 392 that is 13%, and a 600
+target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
+the structural bulk is.
 
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
