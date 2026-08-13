@@ -1,0 +1,271 @@
+//! Verify emitted C against the original bytes, one function at a time, through the real compiler.
+//!
+//! This is the development loop for byte-exactness. The alternative — re-emit the whole survey,
+//! compile three thousand translation units, then score — takes about half an hour and answers
+//! per function rather than per defect, which is far too slow to iterate a decompiler change
+//! against. Here one function costs about a second, and repeats cost nothing because the compiler
+//! driver caches on source content.
+//!
+//! It is also the whole measurement path in one program: source in, compiler, symbolic relink,
+//! instruction-level diff, verdict. Nothing is shelled out to, so there is no way for the emit,
+//! the objects and the manifest to drift apart between stages — which is the failure that has
+//! silently invalidated batteries before.
+//!
+//! Usage:
+//!   recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir>
+//!                   [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>]
+//!
+//! `<flags-file>` maps a function stem to its compiler flags, one per line (`<stem> <flags...>`).
+//! Which flags the original build used is a recovery problem of its own; this tool consumes the
+//! answer rather than guessing it.
+use mosura::analysis;
+use mosura::decompile::space::Address;
+use mosura::recompile::insn::{NoReloc, NormInsn, normalize};
+use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
+use mosura::recompile::{compare, load_object_function, DivergenceClass, Verdict};
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+fn main() {
+    let a: Vec<String> = std::env::args().skip(1).collect();
+    if a.len() < 5 {
+        eprintln!(
+            "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
+             [--only ids] [--cache dir] [--verbose] [--out tsv]"
+        );
+        std::process::exit(2);
+    }
+    let (bin, manifest, srcdir, flagsfile, watcom) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
+    let mut only: Vec<String> = Vec::new();
+    let mut cache_dir = std::env::temp_dir().join("mosura-recompile-cache");
+    let mut verbose = false;
+    let mut out_path: Option<String> = None;
+    let mut i = 5;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--only" => {
+                i += 1;
+                only = a[i].split(',').map(|s| s.trim().to_string()).collect();
+            }
+            "--cache" => {
+                i += 1;
+                cache_dir = std::path::PathBuf::from(&a[i]);
+            }
+            "--verbose" => verbose = true,
+            "--out" => {
+                i += 1;
+                out_path = Some(a[i].clone());
+            }
+            o => panic!("unknown argument {o}"),
+        }
+        i += 1;
+    }
+
+    let rows = read_manifest(manifest);
+    let flags = read_flags(flagsfile);
+    let prelude = std::fs::read_to_string(Path::new(srcdir).join("../prelude.h"))
+        .or_else(|_| std::fs::read_to_string("prelude.h"))
+        .unwrap_or_default();
+
+    let data = std::fs::read(Path::new(bin)).expect("read binary");
+    let prog = analysis::loader::load_le(&data).expect("load binary");
+    let space = prog.default_space;
+
+    let work = std::env::temp_dir().join(format!("mosura-check-{}", std::process::id()));
+    let wcc = WatcomDos::new(watcom, &work, "10.0a").expect("work dir").with_prelude(prelude);
+    let tc = Cached::new(wcc, &cache_dir).expect("cache dir");
+
+    // Select the functions to check, then compile them all in one pass so a whole-corpus run is
+    // one batched sweep rather than three thousand emulator sessions.
+    let selected: Vec<&Row> = rows
+        .iter()
+        .filter(|r| {
+            only.is_empty()
+                || only.iter().any(|o| {
+                    o == &r.idx
+                        || o.trim_start_matches("0x").eq_ignore_ascii_case(&format!("{:x}", r.va))
+                        || o == &r.name
+                })
+        })
+        .collect();
+    if selected.is_empty() {
+        eprintln!("no functions matched");
+        std::process::exit(1);
+    }
+
+    let mut units = Vec::new();
+    let mut kept: Vec<&Row> = Vec::new();
+    for r in &selected {
+        let path = Path::new(srcdir).join(format!("{}.c", r.idx));
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            eprintln!("{}: no source at {}", r.name, path.display());
+            continue;
+        };
+        let fl = flags.get(&r.idx).cloned().unwrap_or_else(|| DEFAULT_FLAGS.to_string());
+        units.push(CompileUnit {
+            key: r.idx.clone(),
+            source,
+            flags: fl.split_whitespace().map(str::to_string).collect(),
+        });
+        kept.push(r);
+    }
+
+    let t0 = std::time::Instant::now();
+    let outs = tc.compile_batch(&units);
+    let (hits, misses) = tc.stats();
+    eprintln!(
+        "compiled {} units in {:.1}s ({hits} cached, {misses} fresh)",
+        units.len(),
+        t0.elapsed().as_secs_f64()
+    );
+
+    let resolver = |sym: &str| -> Option<u64> {
+        let s = sym.trim_start_matches('_').trim_end_matches('_');
+        let hex = s
+            .strip_prefix("func_0x")
+            .or_else(|| s.strip_prefix("FUN_"))
+            .or_else(|| s.rsplit_once("Ram").map(|(_, h)| h))?;
+        let hex: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        (hex.len() >= 4).then(|| u64::from_str_radix(&hex, 16).ok()).flatten()
+    };
+
+    let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut causes: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut tsv = String::from("idx\tva\tname\tverdict\tprimary\tsim\tclasses\n");
+    for (row, out) in kept.iter().zip(outs.iter()) {
+        if !out.ok() {
+            *census.entry("COMPILE_FAIL").or_default() += 1;
+            if verbose {
+                println!("=== {} : COMPILE_FAIL ===\n{}", row.name, out.log.trim());
+            }
+            tsv.push_str(&format!("{}\t{:08x}\t{}\tCOMPILE_FAIL\t\t\t\n", row.idx, row.va, row.name));
+            continue;
+        }
+        let obj = out.object.as_ref().unwrap();
+        let cand = match load_object_function(obj, &format!("{}_", row.name), row.va, &resolver) {
+            Ok(c) => c,
+            Err(e) => {
+                *census.entry("OBJ_ERROR").or_default() += 1;
+                eprintln!("{}: {e}", row.name);
+                continue;
+            }
+        };
+        let mut obytes = Vec::with_capacity(row.len);
+        for k in 0..row.len {
+            match prog.memory.byte_at(Address::new(space, row.va + k as u64)) {
+                Some(b) => obytes.push(b),
+                None => break,
+            }
+        }
+        let orig = trim_padding(normalize(LANG, &obytes, row.va, &NoReloc).expect("lang"));
+        let cnorm = trim_padding(normalize(LANG, &cand.relinked_bytes(), row.va, &cand).expect("lang"));
+        let diff = compare(&orig, &cnorm);
+        *census.entry(diff.verdict.as_str()).or_default() += 1;
+        if let Some(p) = diff.primary {
+            *causes.entry(p.as_str()).or_default() += 1;
+        }
+        let classes = diff
+            .class_counts
+            .iter()
+            .filter(|(c, _)| **c != DivergenceClass::Equal)
+            .map(|(c, n)| format!("{}={}", c.as_str(), n))
+            .collect::<Vec<_>>()
+            .join(",");
+        tsv.push_str(&format!(
+            "{}\t{:08x}\t{}\t{}\t{}\t{:.3}\t{}\n",
+            row.idx,
+            row.va,
+            row.name,
+            diff.verdict.as_str(),
+            diff.primary.map(|p| p.as_str()).unwrap_or(""),
+            diff.similarity,
+            classes
+        ));
+        if verbose {
+            println!("=== {} @ {:08x} : {} ===", row.name, row.va, diff.verdict.as_str());
+            for op in &diff.ops {
+                match op {
+                    mosura::recompile::AlignOp::Pair { oi, ci, class } => println!(
+                        "{} {:08x}  {:<36} | {:<36} {}",
+                        if *class == DivergenceClass::Equal { " " } else { "~" },
+                        orig[*oi].addr,
+                        orig[*oi].text,
+                        cnorm[*ci].text,
+                        if *class == DivergenceClass::Equal { String::new() } else { format!("[{}]", class.as_str()) }
+                    ),
+                    mosura::recompile::AlignOp::OrigOnly { oi } => {
+                        println!("- {:08x}  {:<36} | {:<36} [missing]", orig[*oi].addr, orig[*oi].text, "")
+                    }
+                    mosura::recompile::AlignOp::CandOnly { ci } => {
+                        println!("+ {:08x}  {:<36} | {:<36} [extra]", cnorm[*ci].addr, "", cnorm[*ci].text)
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("\n=== verdicts ===");
+    for (k, v) in &census {
+        eprintln!("{v:6}  {k}");
+    }
+    if !causes.is_empty() {
+        eprintln!("=== dominant cause ===");
+        let mut c: Vec<_> = causes.iter().collect();
+        c.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+        for (k, v) in c {
+            eprintln!("{v:6}  {k}");
+        }
+    }
+    if let Some(p) = out_path {
+        std::fs::write(&p, tsv).expect("write");
+        eprintln!("rows written to {p}");
+    }
+    // A non-zero exit when nothing reached EXACT makes this usable as a gate on one function.
+    if only.len() == 1 && census.get(Verdict::Exact.as_str()).copied().unwrap_or(0) == 0 {
+        std::process::exit(1);
+    }
+}
+
+const LANG: &str = "x86:LE:32:default";
+const DEFAULT_FLAGS: &str = "-4r -fpi87 -s -onatx";
+
+struct Row {
+    idx: String,
+    va: u64,
+    name: String,
+    len: usize,
+}
+
+fn trim_padding(mut v: Vec<NormInsn>) -> Vec<NormInsn> {
+    while v.len() > 1 && v.last().is_some_and(|i| i.is_nop()) {
+        v.pop();
+    }
+    v
+}
+
+fn read_manifest(path: &str) -> Vec<Row> {
+    let text = std::fs::read_to_string(path).expect("manifest");
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            if f.len() < 5 || f[0] == "idx" {
+                return None;
+            }
+            Some(Row {
+                idx: f[0].to_string(),
+                va: u64::from_str_radix(f[1], 16).ok()?,
+                name: f[2].to_string(),
+                len: f[4].parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+fn read_flags(path: &str) -> HashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
+    text.lines()
+        .filter_map(|l| l.split_once(char::is_whitespace))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}

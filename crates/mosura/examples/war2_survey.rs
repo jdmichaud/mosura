@@ -114,8 +114,16 @@ typedef unsigned char bool;
 /// `nogit` only if git is unavailable — an unstamped artifact is still marked as unstamped
 /// rather than silently claiming to be reproducible.
 fn git_stamp() -> String {
+    // The stamp must name the commit of the code that PRODUCED this emit, and that is not
+    // whatever repository the process happens to be standing in. Running the survey from the
+    // data directory once that directory became a git repository of its own stamped every
+    // artifact with the DATA repo's commit — a plausible-looking sha that attributes the emit to
+    // the wrong tree entirely, and one that the compile stage's staleness gate then compares
+    // against mosura's HEAD and rejects. `CARGO_MANIFEST_DIR` is baked in at build time and
+    // points into the source tree this binary was built from, which is the thing being stamped.
+    let src_dir = env!("CARGO_MANIFEST_DIR");
     let sha = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+        .args(["-C", src_dir, "rev-parse", "--short", "HEAD"])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -123,7 +131,7 @@ fn git_stamp() -> String {
         .filter(|s| !s.is_empty());
     let Some(sha) = sha else { return "nogit".to_string() };
     let dirty = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["-C", src_dir, "status", "--porcelain"])
         .output()
         .ok()
         .map(|o| !o.stdout.is_empty())
