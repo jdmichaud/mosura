@@ -34,6 +34,32 @@ pub struct WatcomDos {
     owns_work_dir: bool,
 }
 
+/// Every spelling the object for `key` can land under.
+///
+/// DOS is case-insensitive and the emulator is not: which case reaches the host filesystem is a
+/// property of the dosemu2 build and its drive configuration, not of the compiler. Observed here,
+/// `WCC386 T00000.C` produced `t00000.obj` — lowercase STEM as well as lowercase extension — so a
+/// driver that varied only the extension found nothing, reported every unit as a compile failure,
+/// and the log said `Code size: 21`. `war2-survey/compile.sh` has always tolerated this
+/// (`[ -f "$DOS/$n.obj" ]`); the Rust driver did not.
+///
+/// The same list is used to CLEAR the previous run's objects. That matters as much as the read:
+/// leaving a stale `t00000.obj` while looking for `T00000.OBJ` would let a later failed compile
+/// be scored against the object from an earlier one.
+fn object_candidates(dir: &Path, key: &str) -> Vec<PathBuf> {
+    let stems = [key.to_string(), key.to_lowercase(), key.to_uppercase()];
+    let mut out = Vec::new();
+    for stem in stems {
+        for ext in ["obj", "OBJ"] {
+            let p = dir.join(format!("{stem}.{ext}"));
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
 impl Drop for WatcomDos {
     fn drop(&mut self) {
         // The work directory is scratch — sources copied in, objects taken back out — and a run
@@ -82,8 +108,8 @@ impl WatcomDos {
             text.push('\n');
             text.push_str(&u.source);
             let _ = std::fs::write(path, text);
-            for ext in ["obj", "OBJ"] {
-                let _ = std::fs::remove_file(self.work_dir.join(format!("{}.{ext}", u.key)));
+            for p in object_candidates(&self.work_dir, &u.key) {
+                let _ = std::fs::remove_file(p);
             }
         }
 
@@ -112,8 +138,7 @@ impl WatcomDos {
     }
 
     fn read_object(&self, key: &str) -> Option<Vec<u8>> {
-        for ext in ["obj", "OBJ"] {
-            let p = self.work_dir.join(format!("{key}.{ext}"));
+        for p in object_candidates(&self.work_dir, key) {
             if let Ok(b) = std::fs::read(&p) {
                 let _ = std::fs::remove_file(&p);
                 return Some(b);
