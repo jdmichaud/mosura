@@ -10012,6 +10012,162 @@ impl Rule for RuleSwitchSingle {
     }
 }
 
+/// Ghidra `RuleExpandLoad::checkAndComparison` (ruleaction.cc:10860): every reader of the LOAD's
+/// output is `(v & #mask) == #const` (or `!=`). In that shape the LOAD can be widened without
+/// inserting a truncation, because the masks and comparison constants can simply be shifted instead.
+fn expand_load_check_and_comparison(data: &Funcdata, vn: VarnodeId) -> bool {
+    for op in &data.vn(vn).descend {
+        let op = *op;
+        if data.op(op).code() != OpCode::IntAnd {
+            return false;
+        }
+        if !data.op(op).input(1).is_some_and(|v| data.vn(v).is_constant()) {
+            return false;
+        }
+        let Some(out) = data.op(op).output else { return false };
+        let Some(comp_op) = lone_descend(data, out) else { return false };
+        let opc = data.op(comp_op).code();
+        if opc != OpCode::IntEqual && opc != OpCode::IntNotequal {
+            return false;
+        }
+        if !data.op(comp_op).input(1).is_some_and(|v| data.vn(v).is_constant()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Ghidra `RuleExpandLoad::modifyAndComparison` (ruleaction.cc:10886): re-point each
+/// `(v & #mask) == #const` reader at the widened LOAD, shifting both constants left by the byte
+/// offset the narrow LOAD used to start at.
+fn expand_load_modify_and_comparison(
+    data: &mut Funcdata,
+    old_vn: VarnodeId,
+    new_vn: VarnodeId,
+    dt: &super::types::Datatype,
+    offset: u32,
+) {
+    let shift = 8 * offset; // convert to a shift amount
+    let size = dt.size();
+    for and_op in data.vn(old_vn).descend.clone() {
+        let Some(and_out) = data.op(and_op).output else { continue };
+        let Some(comp_op) = lone_descend(data, and_out) else { continue };
+        let new_off = data.vn(data.op(and_op).input(1).unwrap()).constant_value() << shift;
+        let vn = data.new_const(size, new_off);
+        data.vn_mut(vn).update_type(dt.clone());
+        data.op_set_input(and_op, 0, new_vn);
+        data.op_set_input(and_op, 1, vn);
+        let new_off = data.vn(data.op(comp_op).input(1).unwrap()).constant_value() << shift;
+        let vn = data.new_const(size, new_off);
+        data.vn_mut(vn).update_type(dt.clone());
+        data.op_set_input(comp_op, 1, vn);
+    }
+}
+
+/// Ghidra `RuleExpandLoad` (ruleaction.cc:10909, cleanup slot :5701): a LOAD that reads only part of
+/// what its pointer points at is widened to the full pointed-to value, with the original narrow
+/// value recovered by a SUBPIECE — or, in the mask-and-compare shape, by shifting the masks instead.
+/// The point is that `*ptr` reads better than a truncation of an unrelated-looking load, once the
+/// pointer's type says how big the thing really is.
+///
+/// The pointer may be reached through a small constant `INT_ADD` (≤16, single-use), which is folded
+/// away and becomes the LOAD's byte offset into the value.
+///
+/// mosura reads the varnode's committed type for both of Ghidra's `getTypeReadFacing` and
+/// `getTypeDefFacing`: this pool runs BEFORE the merge actions here, so there are no HighVariables
+/// to face yet — the same stand-in `ptrarith::type_read_facing` already uses.
+pub struct RuleExpandLoad;
+
+impl Rule for RuleExpandLoad {
+    fn name(&self) -> &str {
+        "expandload"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Load]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        use super::types::Datatype;
+        let Some(out_vn) = data.op(op).output else { return 0 };
+        let out_size = data.vn(out_vn).size;
+        let Some(mut root_ptr) = data.op(op).input(1) else { return 0 };
+        let mut add_op = None;
+        let mut offset = 0u32;
+        let el_type = if data.vn(root_ptr).is_written() {
+            let def_op = data.vn(root_ptr).def.unwrap();
+            let in1_const = data.op(def_op).input(1).is_some_and(|v| data.vn(v).is_constant());
+            if data.op(def_op).code() == OpCode::IntAdd && in1_const {
+                let off = data.vn(data.op(def_op).input(1).unwrap()).constant_value();
+                if off > 16 {
+                    return 0; // INT_ADD offset must be small
+                }
+                let Some(add_out) = data.op(def_op).output else { return 0 };
+                if lone_descend(data, add_out).is_none() {
+                    return 0; // INT_ADD must be used only once
+                }
+                add_op = Some(def_op);
+                root_ptr = data.op(def_op).input(0).unwrap();
+                offset = off as u32;
+            }
+            data.vn(root_ptr).get_type()
+        } else {
+            data.vn(root_ptr).get_type()
+        };
+        let Datatype::Pointer(_, el_type) = el_type else { return 0 };
+        let el_type = (*el_type).clone();
+        let el_size = el_type.size();
+        if el_size <= out_size || el_size < out_size + offset {
+            return 0; // pointer data-type must be bigger than the LOAD, and contain it
+        }
+        if matches!(el_type, Datatype::Unknown(_)) {
+            return 0;
+        }
+        let add_form = expand_load_check_and_comparison(data, out_vn);
+        // Every space mosura loads is little-endian; Ghidra's big-endian arm cuts from the other end.
+        let lsb_cut = if add_form { offset } else { 0 };
+        if !add_form {
+            // Check for natural integer truncation.
+            if !matches!(el_type, Datatype::Int(_) | Datatype::Uint(_) | Datatype::Char) {
+                return 0;
+            }
+            let out_meta = data.vn(out_vn).get_type();
+            if !matches!(
+                out_meta,
+                Datatype::Int(_) | Datatype::Uint(_) | Datatype::Char | Datatype::Unknown(_) | Datatype::Bool
+            ) {
+                return 0;
+            }
+            // Check that the LOAD is grabbing the least significant bytes.
+            if offset != 0 {
+                return 0;
+            }
+        }
+        // Modify the LOAD.
+        let new_out = data.new_unique(el_size);
+        data.vn_mut(new_out).update_type(el_type.clone());
+        data.op_set_output(op, new_out);
+        if let Some(add_op) = add_op {
+            data.op_set_input(op, 1, root_ptr);
+            data.op_destroy(add_op);
+        }
+        if add_form {
+            let dt = match el_type {
+                Datatype::Int(_) | Datatype::Uint(_) | Datatype::Char => el_type,
+                other => Datatype::Uint(other.size()),
+            };
+            expand_load_modify_and_comparison(data, out_vn, new_out, &dt, lsb_cut);
+        } else {
+            let pc = data.op(op).seqnum.pc;
+            let uniq = data.num_ops() as u32;
+            let zero = data.new_const(4, 0);
+            let sub_op = data.new_op(OpCode::Subpiece, SeqNum { pc, uniq }, vec![new_out, zero]);
+            // The original LOAD output is now defined by the SUBPIECE that truncates the wider load.
+            data.op_set_output(sub_op, out_vn);
+            data.op_insert_after(sub_op, op);
+        }
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15124,6 +15280,101 @@ mod tests {
         let (mut f, bi) = switch_single(vec![0x2000], vec![], vec![BlockId(1)]);
         assert_eq!(RuleSwitchSingle.apply_op(bi, &mut f), 0);
         assert_eq!(f.op(bi).code(), OpCode::Branchind);
+    }
+
+
+    // ---- batch 6: RuleExpandLoad ------------------------------------------------------------
+
+    #[test]
+    fn expand_load_widens_to_the_pointee_and_truncates() {
+        // `*(int1*)p` where p is `int4*` becomes a full 4-byte LOAD with a SUBPIECE recovering the
+        // original byte (ruleaction.cc:10909).
+        use crate::decompile::types::Datatype;
+        let (mut f, ram_addr) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram_addr, uniq: 0 };
+        let p = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(p).update_type(Datatype::Pointer(8, Box::new(Datatype::Int(4))));
+        let sid = f.new_const(8, ram.0 as u64);
+        let load = f.new_op(OpCode::Load, seq, vec![sid, p]);
+        let out = f.new_output_unique(load, 1);
+        f.vn_mut(out).update_type(Datatype::Int(1));
+        // A reader that is NOT the mask-and-compare shape, so the SUBPIECE path is taken. (With no
+        // readers at all, Ghidra's checkAndComparison is vacuously true and the and-compare path
+        // runs instead — a LOAD with no readers is dead, so that case does not arise in practice.)
+        let other = f.new_input(1, Address::new(reg, 0x20));
+        let use_op = f.new_op(OpCode::IntAdd, SeqNum { pc: ram_addr, uniq: 1 }, vec![out, other]);
+        f.new_output_unique(use_op, 1);
+        parent_all(&mut f, vec![load, use_op]);
+        assert_eq!(RuleExpandLoad.apply_op(load, &mut f), 1);
+        // The LOAD now produces the whole int4 ...
+        let new_out = f.op(load).output.unwrap();
+        assert_eq!(f.vn(new_out).size, 4);
+        // ... and the original 1-byte value is a SUBPIECE of it at offset 0.
+        let sub = f.vn(out).def.unwrap();
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(sub).input(0), Some(new_out));
+        assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 0);
+    }
+
+    #[test]
+    fn expand_load_shifts_masks_in_the_and_compare_form() {
+        // Every reader is `(v & #m) == #c`, and the LOAD sits at byte offset 2 through an INT_ADD:
+        // no SUBPIECE is needed — the mask and the comparison constant shift left by 2 bytes, and
+        // the INT_ADD folds away.
+        use crate::decompile::types::Datatype;
+        let (mut f, ram_addr) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram_addr, uniq: u };
+        let p = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(p).update_type(Datatype::Pointer(8, Box::new(Datatype::Uint(4))));
+        let two = f.new_const(8, 2);
+        let add = f.new_op(OpCode::IntAdd, seq(0), vec![p, two]);
+        let padd = f.new_output_unique(add, 8);
+        let sid = f.new_const(8, ram.0 as u64);
+        let load = f.new_op(OpCode::Load, seq(1), vec![sid, padd]);
+        let out = f.new_output_unique(load, 1);
+        let mask = f.new_const(1, 0x3);
+        let and = f.new_op(OpCode::IntAnd, seq(2), vec![out, mask]);
+        let and_out = f.new_output_unique(and, 1);
+        let k = f.new_const(1, 0x1);
+        let cmp = f.new_op(OpCode::IntEqual, seq(3), vec![and_out, k]);
+        f.new_output_unique(cmp, 1);
+        parent_all(&mut f, vec![add, load, and, cmp]);
+        assert_eq!(RuleExpandLoad.apply_op(load, &mut f), 1);
+        let new_out = f.op(load).output.unwrap();
+        assert_eq!(f.vn(new_out).size, 4);
+        // The INT_ADD folded away: the LOAD reads the root pointer.
+        assert_eq!(f.op(load).input(1), Some(p));
+        assert!(f.op(add).is_dead());
+        // Mask and comparison constant both shifted left by 8*2 bits, at the wider size.
+        assert_eq!(f.op(and).input(0), Some(new_out));
+        let m = f.op(and).input(1).unwrap();
+        assert_eq!(f.vn(m).constant_value(), 0x3 << 16);
+        assert_eq!(f.vn(m).size, 4);
+        let c = f.op(cmp).input(1).unwrap();
+        assert_eq!(f.vn(c).constant_value(), 0x1 << 16);
+    }
+
+    #[test]
+    fn expand_load_declines_unknown_pointee() {
+        // Ghidra's TYPE_UNKNOWN guard: an `undefined4*` says nothing about how much is really
+        // there, so widening would be a guess. This is why the rule is silent on mosura's corpus,
+        // where most pointees are still undefined.
+        use crate::decompile::types::Datatype;
+        let (mut f, ram_addr) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram_addr, uniq: 0 };
+        let p = f.new_input(8, Address::new(reg, 0x10));
+        f.vn_mut(p).update_type(Datatype::Pointer(8, Box::new(Datatype::Unknown(4))));
+        let sid = f.new_const(8, ram.0 as u64);
+        let load = f.new_op(OpCode::Load, seq, vec![sid, p]);
+        f.new_output_unique(load, 1);
+        parent_all(&mut f, vec![load]);
+        assert_eq!(RuleExpandLoad.apply_op(load, &mut f), 0);
     }
 
 }

@@ -23,7 +23,7 @@ use super::rules::{
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
-    RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove, RuleSwitchSingle,
+    RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove, RuleSwitchSingle, RuleExpandLoad,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -590,7 +590,11 @@ pub fn cleanup_pool() -> ActionPool {
         // RuleFloatSign — a sign manipulation whose result is TYPED float needs no neighbouring
         // float op to be recognized.
         .with(RuleFloatSignCleanup)
-        // RuleExpandLoad (:5701) and RulePtrsubCharConstant (:5702) are not ported yet.
+        // RuleExpandLoad (coreaction.cc:5701): a LOAD reading only part of what its pointer points
+        // at is widened to the whole value, the narrow value recovered by a SUBPIECE — or, in the
+        // mask-and-compare shape, by shifting the masks instead.
+        .with(RuleExpandLoad)
+        // RulePtrsubCharConstant (:5702) is BLOCKED on the StringManager — see docs/coverage.md.
         // RuleExtensionPush (coreaction.cc:5703): an extension feeding several PTRADD readers is
         // duplicated into each, so it prints inline instead of forcing a temporary.
         .with(RuleExtensionPush)
