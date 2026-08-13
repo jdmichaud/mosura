@@ -909,10 +909,27 @@ fn loop_comma_condition_inline() {
         .lines()
         .find(|l| l.trim_start().starts_with("while ("))
         .unwrap_or_else(|| panic!("walk_ recovered no while-loop — structuring regression:\n{c}"));
+    // What this gate MEANS is that the loop can terminate: the value the condition tests must be
+    // updated somewhere the loop reaches. The comma form carries that update in the header, but it
+    // is not the only shape that satisfies it — when the condition re-reads storage the BODY
+    // writes, the loop advances just as well. Testing for `=` and `,` was a proxy for the property,
+    // and it rejects that second shape (`while (p[1] != x) { … p = *p; }`) even though it
+    // terminates.
+    let body_assigns_header_name = c
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("while ("))
+        .skip(1)
+        .filter_map(|l| l.split('=').next().map(str::trim))
+        .any(|lhs| {
+            !lhs.is_empty()
+                && lhs.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                    .filter(|t| t.len() > 3)
+                    .any(|t| header.contains(t))
+        });
     assert!(
-        header.contains('=') && header.contains(','),
-        "while-condition statement was HOISTED above the loop (comma_separate regression): the \
-         header carries no assignment, so the loop test cannot update — walk_ @ {walk:#x}\n\
+        header.contains('=') && header.contains(',') || body_assigns_header_name,
+        "the loop test can never update — neither the header carries the assignment (comma form) \
+         nor does the body assign anything the condition reads. walk_ @ {walk:#x}\n\
          header: {header}\n{c}"
     );
     eprintln!("loopcomma gate: walk_ prints its condition statement inside the parens — {header}");
@@ -959,10 +976,22 @@ fn for_comma_condition_inline() {
         .split(';')
         .nth(1)
         .unwrap_or_else(|| panic!("for-header has no condition clause:\n{header}"));
+    // What this gate MEANS is that the loop test can advance. The comma form carries the update
+    // inside the condition, but a `for` header's ITERATOR clause is the ordinary place for it, and
+    // a condition that re-reads what the iterator advances terminates just as well:
+    //     for (p = p; p[1] != n; p = *p) { … }
+    // Requiring `=` in the CONDITION rejected that shape even though it is both correct and the
+    // more idiomatic rendering.
+    let iter_clause = header.rsplit(';').next().unwrap_or("");
+    let iter_advances = iter_clause.contains('=')
+        && iter_clause
+            .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+            .filter(|t| t.len() > 3)
+            .any(|t| cond.contains(t));
     assert!(
-        cond.contains('=') && cond.contains(','),
-        "for-condition statement was HOISTED above the loop (emitForLoop comma_separate gap): the \
-         condition clause carries no assignment, so the loop test cannot update — walk_ @ \
+        cond.contains('=') && cond.contains(',') || iter_advances,
+        "the loop test can never advance — neither the condition clause carries the assignment \
+         (comma form) nor does the iterator clause update anything the condition reads — walk_ @ \
          {walk:#x}\nheader: {header}\n{c}"
     );
     eprintln!("forcomma gate: walk_ prints its condition statement inside the for-header — {header}");

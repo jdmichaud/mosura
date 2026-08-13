@@ -285,16 +285,10 @@ pub(crate) fn explicit_trailing(
     if dn > 1 {
         // A `multlist` member (`ActionMarkExplicit`, coreaction.cc:3256): `2..=max_implied_ref`
         // descendants. A value feeding a MULTIEQUAL/INDIRECT is the merged variable itself
-        // (baseExplicit's marker-descendant bail, :3076). A multi-use LOAD stays named — its
-        // implied-cover analysis (checkImpliedCover's LOAD-vs-STORE/CALL arms, :3384-3406) is not
-        // ported, so we conservatively never inline it (an under-approximation of Ghidra that can
-        // only leave it explicit, never emit wrong code). Otherwise the `multipleInteraction`
+        // (baseExplicit's marker-descendant bail, :3076). Otherwise the `multipleInteraction`
         // flow-into rule (:3091) and the `processMultiplier` term count (:3166) decide, falling
         // through to the same implied-cover test as the single-use case.
         if vn.descend.iter().any(|&u| f.op(u).is_marker()) {
-            return true;
-        }
-        if vn.def.is_some_and(|d| f.op(d).code() == OpCode::Load) {
             return true;
         }
         if is_purged_top(f, persist_of, v) {
@@ -338,6 +332,34 @@ fn implied_cover_ok(
 ) -> bool {
     let vn = f.vn(v);
     if let (Some(def), Some(vcov)) = (vn.def, covers.get(&v)) {
+        // Ghidra `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376), the LOAD/CALL arms:
+        // inlining moves a value's evaluation to each USE, so a LOAD may only be implied if nothing
+        // between its definition and those uses can change what it reads — a STORE it might alias,
+        // or any CALL. mosura had no such analysis and forced EVERY multi-use LOAD explicit
+        // instead: safe, but it NAMES a value the original source read inline, and that costs real
+        // instructions. FUN_00012594's `cVar2 = *(char *)(i + 0x802c8)`, used twice, compiled to
+        // `mov dl,[..] ; and edx,0xff` where the original does `xor edx,edx ; mov dl,[..]` — 44
+        // bytes against 40, and inlining that one load makes the function byte-IDENTICAL.
+        //
+        // The STORE arm is coarser than Ghidra's (which lets a crossing STORE through unless
+        // `isPossibleAlias` says the pointers may coincide); this rejects any crossing STORE. That
+        // is an under-approximation in the same direction as the rule it replaces, and far smaller.
+        let code = f.op(def).code();
+        if matches!(code, OpCode::Load | OpCode::Call | OpCode::Callind) {
+            let pos = super::cover::op_positions(f);
+            for op in f.op_ids() {
+                let oc = f.op(op).code();
+                let relevant = matches!(oc, OpCode::Call | OpCode::Callind)
+                    || (oc == OpCode::Store && code == OpCode::Load);
+                if !relevant {
+                    continue;
+                }
+                let Some((b, i)) = super::cover::op_index(f, op, &pos) else { continue };
+                if vcov.contains_point(b, i as i32) {
+                    return false;
+                }
+            }
+        }
         for slot in 0..f.op(def).num_inputs() {
             let Some(defvn) = f.op(def).input(slot) else { continue };
             if f.vn(defvn).is_constant() {
