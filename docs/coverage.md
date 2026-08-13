@@ -234,7 +234,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSignMod2nOpt | PORTED (FAITHFUL, `4f19ab6` Task #20 — INT_RIGHT-rooted, walking forward to the `* -1`/AND/`V + correction`, replacing the INT_SUB-rooted adaptation that fired where Ghidra didn't) |
 | RuleSignMod2nOpt2 | PORTED (FAITHFUL, `4f19ab6` Task #20 — INT_MULT-rooted with checkSignExtForm; the general 2^n MULTIEQUAL conditional form is deferred) |
 | RuleSignMod2Opt | PORTED (divopt.rs, WIRED slot 94 — Task #20; ruleaction.cc:8776 `(V - sign)&1 + sign => V s%2` + check_sign_extraction / trunc-re-extend path) |
-| RuleSwitchSingle | MISSING |
+| RuleSwitchSingle | PORTED (rules.rs — ruleaction.cc:2136, slot :5606): a recovered switch whose BRANCHIND block has a single out-edge is not a switch — convert to a plain BRANCH at the one destination and forget the table. Ghidra's `isLabelled` precondition ported as written (its absence signals a multistage recovery problem, not a genuine one-destination switch). Required `Funcdata::newCodeRef` (funcdata_varnode.cc:129) + `findJumpTable`/`removeJumpTable`. **Omitted:** Ghidra's `warningHeader` ("Switch with 1 destination removed at …") — mosura's printer has no warning-comment surface at all, and that is output annotation, not IR; and `getStructure().clear()`, which has no analogue because mosura structures after the pools rather than caching a structure they could invalidate. Corpus-neutral, jumptable_recovery 6/6. |
 | RuleCondNegate | PORTED (WIRED in condnegate_pool — Task #1 S1; ruleaction.cc:5474: on a CBRANCH the late `ActionOrientBranches` (§1 ActionNormalizeBranches row) marked `boolean_flip`, insert `BOOL_NEGATE(cond)`, repoint the CBRANCH, `opFlipCondition`; RuleBoolNegate folds it to the complementary comparison. Orientation via the `fallthru_true` flag + structure() XOR, NOT edge-reversal — see the ActionNormalizeBranches row for that KNOWN DIVERGENCE (→ backlog Task #8). Corpus 0.8865→0.8882, all-positive delta, switch canary green; ifswitch `99 < (int4)param_1`, pointerrel `fRam < fStack_18` now materialized in IR. **KNOWN LIMITS (each a documented deferral, not a silent easy-case skip — `branch_negations`/`near_switch`):** (1) compound `&&`/`||` guards NOW PORTED (Task #1 compound): `collect_negations`/`compound_leaves` recurse a negated compound condition and orient EVERY short-circuit leaf CBRANCH (Ghidra `BlockCondition::negateCondition`, block.cc:3023, distributes the NOT to each side) — all-or-nothing (only when every leaf is a cleanly-foldable comparison + non-switch, matching Ghidra's recursion over both sides), the connective re-derived by De Morgan, per-leaf orientation read at print (printc `operand_oriented`), `is_oriented` returns false for compound blocks so the top-level `negated` (De Morgan direction) is not perturbed. loopcomment leaf `0x65 <= param_2` → `100 < param_2` (materialized IR `INT_SLESS #0x64 param_2` = Ghidra `#0x64 < ESI`), 0.736→0.745; elseif byte-identical (already matched); nan skipped (nested `BOOL_OR`/NAN leaf not foldable → stays print-time De Morgan). No hang (flag approach, no edge reversal). **The all-or-nothing gate is a STAGING BOUNDARY, not a grandfathered adaptation** — the oriented leaves match Ghidra and the deferred (skipped) compound is left byte-identical on the correct print-time De Morgan; FOLLOW-UP: port `BlockCondition::negateCondition` for the nested-`BOOL_OR`/`NAN` leaf case (Ghidra recurses into a nested `BlockCondition`/negates a `BOOL_NEGATE`/`FLOAT_NAN` leaf that mosura's `condition_folds_cleanly` currently rejects) → then the all-or-nothing gate AND the print-time De Morgan fallback both retire (same all-or-nothing discipline S1 established). (2) non-comparison conditions (BOOL_AND/OR/etc.) as the WHOLE condition skipped → need mechanism-A `opFlipInPlaceExecute` normal-form flip, DEFERRED (Task #4/S3). (3) switch range-guards skipped (`near_switch`, via cached `f.jumptables` op_addr) → VERIFIED FAITHFUL: Ghidra `JumpBasic::foldInOneGuard` (jumptable.cc:1373, `guard.clear()`) folds the guard INTO the switch rather than rendering it as an oriented `if`, so we are not dropping a case Ghidra keeps (ifswitch oracle: outer `if (99<param_1)` oriented + switch guard folded — matches). (4) orientation skipped during build's jump-table recovery probe (`table_recovery_probe` flag, build.rs:224) → materializing a guard there perturbs the range analysis and under-recovers in-code tables; follow-up is the build-probe/recovery interaction. |
 | RuleBoolNegate | PORTED |
 | RuleLessEqual | PORTED |
@@ -416,7 +416,7 @@ mosura `jumptable.rs` (`JumpTable`, `recover`, `recover_staged`).
 | JumpValuesRange / JumpValuesRangeDefault | PARTIAL |
 | findUnnormalized / buildLabels / backup2Switch / flowsOnlyToModel / markModel (jumptable.cc:1462/1506/472/1274/1254) | PORTED (jumpbasic.rs — `find_unnormalized` peels the normalized variable back through maxaddsub=1 INT_ADD/INT_SUB-by-const + maxext=1 ZEXT/SEXT (defaults jumptable.cc:2390-2392) to the *unnormalized* switch variable, each step guarded by `flows_only_to_model` over `mark_model`-marked model ops; `backup2switch` reverse-emulates each normalized-range value to it (OpBehavior::recoverInput*, opbehavior.cc:257/273/297/311) giving the real case labels (switchloop 0..8 → 1..9). Runs at recovery time where the bounded range is known; the labels + switchvn storage are saved on the JumpTable — mosura's stand-in for Ghidra's saved `origmodel` (the final graph loses the range, which only the recovery partial's edge-feedback phi widening bounds). Ghidra's readonly-memory binary companion in backup2Switch (jumptable.cc:488) is unreachable after the const-peel and declined; an incomplete label set drops labels whole (Ghidra pushes NO_LABEL + warns) and normalization declines. Unit-tested: identity labels + the `index-1` peel/shift/fold case) |
 | ActionSwitchNorm: matchModel + recoverLabels + foldInNormalization (coreaction.cc:4548, jumptable.cc:2683/2714/1546) | PORTED (jumpbasic.rs `switch_norm` + pipeline.rs `ActionSwitchNorm`, wired after the reheritage mainloop before cleanup (Ghidra actfullloop :5684, before ActionStartCleanUp :5692), final graph only — never inside the multistage recovery partial (`table_recovery_probe`), where folding the BRANCHIND would destroy the address path table discovery re-emulates. matchModel re-finds the switch variable on the final graph as the `find_determining_varnodes` common varnode at the saved storage; recoverLabels' labels come from the saved recovery-time model (above); foldInNormalization = `op_set_input(indop, switchvn, 0)` + a deadcode sweep (Ghidra: the repeating fullloop's ActionDeadCode member). RETIRES the print-time switch heuristics for normalized tables — printc `switch_index` reads the folded BRANCHIND input (Ghidra `BlockSwitch` `getSwitchVarnode()`) and `case_labels` the recovered labels, keeping the trace/position fallback only for unnormalized tables. ifswitch 0.985→1.000 (real case values 19/20 not positions), switchloop 0.820→0.828 (`switch(iVar1)` cases 1..9 = Ghidra's exact shape), zero regressions) |
-| RuleSwitchSingle | MISSING |
+| RuleSwitchSingle | PORTED — see the §2 row (rules.rs, slot :5606). Listed here too because it is part of the jumptable lifecycle: it is the one rule that REMOVES a recovered table. |
 | getSwitchVarConsume (deadcode integration) | MISSING (mosura fully-consumes switch var — consume.rs note) |
 
 ---
@@ -449,14 +449,13 @@ Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
 oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
 — `RuleIndirectConcat` is the only one, and it is not a gap (§3).
 
-- **oppool1** (134): **123 ported** — 122 under Ghidra's own name plus `RuleCollapseConstants` =
-  mosura's `RuleConstFold` — of which **120 are wired** and **3 HELD unwired**: `RuleAndCompare`,
+- **oppool1** (134): **124 ported** — 123 under Ghidra's own name plus `RuleCollapseConstants` =
+  mosura's `RuleConstFold` — of which **121 are wired** and **3 HELD unwired**: `RuleAndCompare`,
   `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
   3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
   subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
-  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **6 MISSING**:
-  RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology, RulePtrsubUndo,
-  RuleSwitchSingle.
+  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **5 MISSING**:
+  RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology, RulePtrsubUndo.
   (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
 - **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
   RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
@@ -470,7 +469,7 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   (RuleStringCopy, RuleStringStore), **3 MISSING**: RuleExpandLoad, RulePieceStructure,
   RulePtrsubCharConstant.
 
-**Live gap: 20 of Ghidra's 154 rules have no mosura implementation** — 9 MISSING (the mechanical
+**Live gap: 19 of Ghidra's 154 rules have no mosura implementation** — 8 MISSING (the mechanical
 tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
 constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
 (RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
@@ -481,7 +480,7 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 9-rule MISSING set has a fixture citation, and the @`554620e` trace
+splits). Nothing in the current 8-rule MISSING set has a fixture citation, and the @`554620e` trace
 survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
 targets from a fresh trace-diff, not from this list's order.
 

@@ -9967,6 +9967,51 @@ impl Rule for RuleConditionalMove {
     }
 }
 
+/// Ghidra `RuleSwitchSingle` (ruleaction.cc:2136, coreaction.cc:5606): a recovered switch whose
+/// every case goes to the same place is not a switch. When the BRANCHIND's block has exactly one
+/// out-edge and the jump table has recovered labels, convert the BRANCHIND to a plain BRANCH at that
+/// one destination and forget the table, so the output is a straight jump rather than a one-armed
+/// `switch`.
+///
+/// Ghidra also emits a warning header ("Switch with 1 destination removed at …") whenever the
+/// removal is not fully confirmed — i.e. unless the switch variable is itself constant — because the
+/// situation can indicate a recovery problem rather than a genuine single-destination switch. mosura
+/// has no warning-comment surface in its printer at all, so that half is omitted; it is output
+/// annotation, not IR, and the omission is recorded here rather than silently dropped.
+pub struct RuleSwitchSingle;
+
+impl Rule for RuleSwitchSingle {
+    fn name(&self) -> &str {
+        "switchsingle"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Branchind]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(bb) = data.op(op).parent else { return 0 };
+        if data.block(bb).out_edges.len() != 1 {
+            return 0;
+        }
+        let Some(jt_idx) = data.find_jump_table(op) else { return 0 };
+        let jt = &data.jumptables[jt_idx];
+        if jt.targets.is_empty() {
+            return 0;
+        }
+        // Labels must be recovered — as Ghidra puts it, this is what discovers multistage issues.
+        if jt.labels.is_empty() {
+            return 0;
+        }
+        let addr = jt.targets[0];
+        // Convert the BRANCHIND to just a branch, with the coderef of the single jumptable entry.
+        let space = data.op(op).seqnum.pc.space;
+        data.op_set_opcode(op, OpCode::Branch);
+        let coderef = data.new_code_ref(Address::new(space, addr));
+        data.op_set_input(op, 0, coderef);
+        data.remove_jump_table(jt_idx);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15021,6 +15066,64 @@ mod tests {
         f.op_set_all_input(phi, &ins);
         assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 0);
         assert_eq!(f.op(phi).code(), OpCode::Multiequal);
+    }
+
+
+    // ---- batch 5: RuleSwitchSingle ----------------------------------------------------------
+
+    /// A BRANCHIND whose block has ONE out-edge, with a recovered single-entry jump table.
+    fn switch_single(targets: Vec<u64>, labels: Vec<i64>, out_edges: Vec<BlockId>) -> (Funcdata, OpId) {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: Address::new(ram.space, 0x1000), uniq: u };
+        let v = f.new_input(8, Address::new(reg, 0x10));
+        let bi = f.new_op(OpCode::Branchind, seq(0), vec![v]);
+        let blocks = vec![
+            crate::decompile::BlockBasic { ops: vec![bi], in_edges: vec![], out_edges },
+            crate::decompile::BlockBasic { ops: vec![], in_edges: vec![BlockId(0)], out_edges: vec![] },
+        ];
+        f.op_mut(bi).parent = Some(BlockId(0));
+        f.set_blocks(blocks);
+        f.jumptables = vec![crate::decompile::jumptable::JumpTable {
+            op_addr: 0x1000,
+            targets,
+            default: None,
+            labels,
+            switchvn_loc: None,
+            normalized: false,
+        }];
+        (f, bi)
+    }
+
+    #[test]
+    fn switch_single_becomes_a_plain_branch() {
+        // One out-edge + a labelled table => BRANCH to the single destination, table forgotten.
+        let (mut f, bi) = switch_single(vec![0x2000], vec![0], vec![BlockId(1)]);
+        assert_eq!(RuleSwitchSingle.apply_op(bi, &mut f), 1);
+        assert_eq!(f.op(bi).code(), OpCode::Branch);
+        let dest = f.op(bi).input(0).unwrap();
+        assert!(f.vn(dest).is_annotation());
+        assert_eq!(f.vn(dest).loc.offset, 0x2000);
+        assert!(f.jumptables.is_empty(), "the table is removed with the switch");
+    }
+
+    #[test]
+    fn switch_single_declines_multiway_block() {
+        // Two out-edges — a real switch.
+        let (mut f, bi) =
+            switch_single(vec![0x2000, 0x3000], vec![0, 1], vec![BlockId(1), BlockId(1)]);
+        assert_eq!(RuleSwitchSingle.apply_op(bi, &mut f), 0);
+        assert_eq!(f.op(bi).code(), OpCode::Branchind);
+        assert_eq!(f.jumptables.len(), 1);
+    }
+
+    #[test]
+    fn switch_single_declines_unlabelled_table() {
+        // No recovered labels: Ghidra requires them, because their absence is what signals a
+        // multistage recovery problem rather than a genuine one-destination switch.
+        let (mut f, bi) = switch_single(vec![0x2000], vec![], vec![BlockId(1)]);
+        assert_eq!(RuleSwitchSingle.apply_op(bi, &mut f), 0);
+        assert_eq!(f.op(bi).code(), OpCode::Branchind);
     }
 
 }

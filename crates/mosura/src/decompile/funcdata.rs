@@ -1241,6 +1241,29 @@ impl Funcdata {
     ///
     /// Ghidra threads a caller-owned `scratch` vector purely to reuse the allocation; the worklist
     /// is local here.
+    /// Ghidra `Funcdata::newCodeRef` (funcdata_varnode.cc:129): a size-1 annotation varnode holding
+    /// a code address, typed `code`. It is the operand form a BRANCH/CBRANCH takes for a static
+    /// target — mosura's CFG builder reads such an operand's `loc.offset` as the target address
+    /// (`cfg::branch_target`), exactly as the SLEIGH lift produces it.
+    pub fn new_code_ref(&mut self, m: Address) -> VarnodeId {
+        let vn = self.alloc_varnode(1, m, super::varnode::flags::ANNOTATION);
+        self.vn_mut(vn).ty = Some(super::types::Datatype::Code);
+        vn
+    }
+
+    /// Ghidra `Funcdata::findJumpTable` (funcdata.cc:1024): the recovered jump table for this
+    /// BRANCHIND, matched on the op's address as Ghidra matches on the op's address.
+    pub fn find_jump_table(&self, op: OpId) -> Option<usize> {
+        let addr = self.op(op).seqnum.pc.offset;
+        self.jumptables.iter().position(|jt| jt.op_addr == addr)
+    }
+
+    /// Ghidra `Funcdata::removeJumpTable` (funcdata.cc:1053): forget a recovered jump table, so the
+    /// BRANCHIND it described no longer structures as a switch.
+    pub fn remove_jump_table(&mut self, idx: usize) {
+        self.jumptables.remove(idx);
+    }
+
     pub fn op_destroy_recursive(&mut self, op: OpId) {
         let mut worklist = vec![op];
         let mut pos = 0;

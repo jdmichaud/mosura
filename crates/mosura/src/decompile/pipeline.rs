@@ -23,7 +23,7 @@ use super::rules::{
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
-    RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove,
+    RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove, RuleSwitchSingle,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -268,6 +268,9 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::divopt::RuleSignMod2nOpt) // (92)
         .with(super::divopt::RuleSignMod2nOpt2) // (93)
         .with(super::divopt::RuleSignMod2Opt) // (94)
+        // RuleSwitchSingle (coreaction.cc:5606): a recovered switch whose block has a single
+        // out-edge is not a switch — the BRANCHIND becomes a BRANCH and the table is forgotten.
+        .with(RuleSwitchSingle) // (95)
         // RuleCondNegate (coreaction.cc:5607, immediately before RuleBoolNegate) is NOT wired
         // here: it fires only on a CBRANCH the structurer has marked `boolean_flip`, which is set
         // after block orientation, so it runs in the post-orientation `condnegate_pool` instead
