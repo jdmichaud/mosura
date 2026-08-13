@@ -134,7 +134,22 @@ none are byte-clean, and I reported a "root cause" FOUR times; each was wrong at
 | `recover_input_params` and printc disagreeing about EDI | `proto.params` has no EDI; they agree |
 | `own_params` polluted mid-pipeline | printed it: `[0, 8, c, 4]`, EDI absent |
 
-**THE ONE VERIFIED FACT**, from an instrument pointed at the thing that PRODUCES the output
+**THE ANSWER, traced at the POINT OF CHANGE (`MOSURA_TRACEARG=1` on `op_append_input` /
+`op_set_all_input`).** EDI is never appended to any call — zero occurrences corpus-wide for that
+function. The final input list `build_input_from_trials` commits for the offending call is
+
+    SETALL op=138 <- [ram+0x10010 register+0x0 const+0x10 register+0xc register+0x4 stack+0xfffffff4]
+
+The fifth argument is a recovered **STACK** argument, `stack+0xfffffff4` — not a register at all.
+It only RENDERS as the incoming EDI at print time. That is why every register-keyed guard missed
+it, and why all the register-oriented hypotheses below were wrong: the trial is a spacebase trial
+registered by `guard_calls` once the stack-pointer placeholder resolved that call's offset.
+
+So the question to answer next is why a stack slot the caller never wrote is a live argument trial
+— i.e. whether `guard_calls` should be registering a spacebase trial there at all — NOT how to
+filter register inputs out of the argument list.
+
+**THE EARLIER VERIFIED FACT**, from an instrument pointed at the thing that PRODUCES the output
 (`MOSURA_CALLARGS=1` in printc's Call arm, which prints the rendered op and its argument varnodes):
 
     CALLARGS func_0x00010010 op=138
