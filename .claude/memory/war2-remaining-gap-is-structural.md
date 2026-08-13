@@ -30,6 +30,17 @@ EXPLICIT, the opposite direction, because its cover appears to span a later call
 `vn->getCover()->contain(callop, 2)` on the LOAD's OUTPUT, and the value here is consumed BEFORE
 that call. mosura's cover is coarser than Ghidra's, so the arm over-rejects.
 
+**THE COVER DIVERGENCE, verified by reading the type** (whether it CAUSES these six is inferred,
+not proven — check before acting): `decompile/cover.rs`'s `Cover` stores ONE (min,max) span per
+block —
+
+    fn extend(&mut self, block, lo, hi) { e.0 = e.0.min(lo); e.1 = e.1.max(hi); }
+
+— while Ghidra's `Cover` is a set of INTERVALS. Two uses far apart in one block therefore collapse
+into a single span that swallows everything between them, including any CALL or STORE. An arm that
+asks "does this cover contain that call?" will over-reject exactly as observed. Confirm on
+FUN_0001d98c (dump the load's cover and the call's position) before changing the type.
+
 FIX THE COVER GRANULARITY FIRST, then re-land. The gain side is real: +3 on 516 near-miss
 functions, and FUN_00012594 becomes byte-IDENTICAL when its twice-used load is inlined
 (`mov dl,[..] ; and edx,0xff` -> `xor edx,edx ; mov dl,[..]`, 44 bytes -> 40).
