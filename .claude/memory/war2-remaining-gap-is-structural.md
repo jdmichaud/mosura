@@ -16,6 +16,28 @@ change, then the varnode's flags, then the COPY's source, then the original's pr
 written before that chain were each keyed on a property the varnode did not have, and all four were
 reverted; one command dumping its flags would have killed all four upfront.
 
+**THE LOAD-EXPLICIT LEVER, and the precise reason it is not landed yet (M39, -3).**
+
+Removing the non-Ghidra "a multi-use LOAD is always explicit" rule and porting
+`checkImpliedCover`'s LOAD/CALL arms (coreaction.cc:3376) measured **392 -> 389**. The six
+regressions are all one shape, and the cause is in the PORT, not the idea:
+
+    FUN_0001d98c   original  or BYTE PTR [edx+0x6],0x20              (one RMW, 4 bytes)
+                   ours      mov al,[edx+6] ; or al,0x20 ; mov [edx+6],al   (+4)
+
+That load is SINGLE-USE, so the blanket rule never applied to it — my new CALL arm made it
+EXPLICIT, the opposite direction, because its cover appears to span a later call. Ghidra tests
+`vn->getCover()->contain(callop, 2)` on the LOAD's OUTPUT, and the value here is consumed BEFORE
+that call. mosura's cover is coarser than Ghidra's, so the arm over-rejects.
+
+FIX THE COVER GRANULARITY FIRST, then re-land. The gain side is real: +3 on 516 near-miss
+functions, and FUN_00012594 becomes byte-IDENTICAL when its twice-used load is inlined
+(`mov dl,[..] ; and edx,0xff` -> `xor edx,edx ; mov dl,[..]`, 44 bytes -> 40).
+
+⚠️ Do NOT judge this by extrapolating a sample. The clean-set check is a COMPLETE count and said
+-6; the near-set check covers a fifth of the mismatches and said +3. Multiplying the partial by
+five predicted net-positive and was wrong.
+
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
 | size | 0 locals | 1-3 | 4+ |
