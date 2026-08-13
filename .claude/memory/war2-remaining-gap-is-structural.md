@@ -16,67 +16,29 @@ change, then the varnode's flags, then the COPY's source, then the original's pr
 written before that chain were each keyed on a property the varnode did not have, and all four were
 reverted; one command dumping its flags would have killed all four upfront.
 
-**THE LOAD-EXPLICIT LEVER, and the precise reason it is not landed yet (M39, -3).**
+**THE LOAD-EXPLICIT LEVER — RESOLVED: the port as written is INERT, and every earlier number
+about it came from a STALE BINARY.**
 
 Removing the non-Ghidra "a multi-use LOAD is always explicit" rule and porting
-`checkImpliedCover`'s LOAD/CALL arms (coreaction.cc:3376) measured **392 -> 389**. The six
-regressions are all one shape, and the cause is in the PORT, not the idea:
+`checkImpliedCover`'s LOAD/CALL arms (coreaction.cc:3376) produced, in sequence:
 
-    FUN_0001d98c   original  or BYTE PTR [edx+0x6],0x20              (one RMW, 4 bytes)
-                   ours      mov al,[edx+6] ; or al,0x20 ; mov [edx+6],al   (+4)
+| measurement | what it actually was |
+|---|---|
+| M39: 392 -> 389, "six regressions, +3 gains" | raw op index compared against ENCODED cover positions (`cover_of` writes at 2i+2, reads at 2i+1) — every rejection spurious |
+| "still six regressions, +4 gains" after the encoding fix | the fix was built with `cargo build` (debug) while the emit ran `cargo run --release` — the release binary never had it |
+| with the fix genuinely in the release build | **0 regressions, 0 gains — INERT** |
 
-That load is SINGLE-USE, so the blanket rule never applied to it — my new CALL arm made it
-EXPLICIT, the opposite direction, because its cover appears to span a later call. Ghidra tests
-`vn->getCover()->contain(callop, 2)` on the LOAD's OUTPUT, and the value here is consumed BEFORE
-that call. mosura's cover is coarser than Ghidra's, so the arm over-rejects.
+With correct units the arm rejects essentially every candidate: a multi-use LOAD's cover almost
+always spans a CALL or a STORE, so nothing is ever implied and the port is behaviourally identical
+to the blanket rule it replaces. It is not landed — no benefit, added complexity.
 
-**A UNITS BUG IN THE PORT, found and fixed — and it was NOT the whole story.** Cover positions are
-ENCODED (`cover_of`: a write at 2i+2, a read at 2i+1). The arm passed the RAW op index to
-`contains_point`, so an op at index 21 tested against a span of (20,27) — which covers ops 9..13 —
-read as "inside", and every rejection was spurious. With `2*i+1` the specimen comes out right:
+To make it pay, the arms need Ghidra's precision, not just correct units: `isPossibleAlias` on the
+STORE side (Ghidra lets a crossing STORE through unless the pointers may coincide), and a Cover that
+is a set of INTERVALS rather than mosura's one (min,max) span per block, which swallows everything
+between two distant uses.
 
-    FUN_0001d98c   before  uVar1 = *p; *p = uVar1 | 0x20;      (mov/or/mov, +4 bytes)
-                   after   *p = *p | 0x20;                     (one `or [p],0x20`, matches)
-
-Gains rose 5 -> 9 on the 516-function near set (+4, up from +3). Regressions stayed at SIX. So the
-encoding was a real defect but not the cause of the regressions — those are still unexplained, and
-they are what blocks this.
-
-⚠️ **AND AT LEAST ONE OF THE SIX "REGRESSIONS" MAY BE A COMPARATOR ARTIFACT — CHECK BEFORE
-JUDGING THE PORT.** FUN_00056ca4 (idx 02159) reports MISMATCH under the port, and its ONLY
-difference is a trailing `mov eax,eax` (`8b c0`, the 2-byte NOP), which `compare.trim_pad` DOES
-strip (40 -> 38, ending `c3`). Every instruction matches; the one remaining difference is the
-unlinked `call` displacement, which the comparator masks as a verified call. So the byte comparison
-looks EXACT and the verdict says MISMATCH.
-
-Resolve that before accepting -6. If several of the six are this, the port is net POSITIVE and
-should land. (Note `tryone.py` shows the UNTRIMMED original, which is what made this look like a
-real 2-byte difference at first glance — `whydiff.original_bytes` trims, `tryone` does not. Fixing
-that inconsistency is itself worth doing.)
-
-**CALIBRATION, from M39 — the near set captures essentially ALL the gains.** Its sample said +3 and
-the full run's total gain was also +3. So predict with: `near-set gain − complete clean-set loss`.
-With the encoding fixed that is 4 − 6 = **−2**, which is why this is still not landed. Do NOT
-extrapolate the near set upward; it is not a fifth of the gains, it is nearly all of them.
-
-**THE COVER DIVERGENCE, verified by reading the type** (whether it CAUSES these six is inferred,
-not proven — check before acting): `decompile/cover.rs`'s `Cover` stores ONE (min,max) span per
-block —
-
-    fn extend(&mut self, block, lo, hi) { e.0 = e.0.min(lo); e.1 = e.1.max(hi); }
-
-— while Ghidra's `Cover` is a set of INTERVALS. Two uses far apart in one block therefore collapse
-into a single span that swallows everything between them, including any CALL or STORE. An arm that
-asks "does this cover contain that call?" will over-reject exactly as observed. Confirm on
-FUN_0001d98c (dump the load's cover and the call's position) before changing the type.
-
-FIX THE COVER GRANULARITY FIRST, then re-land. The gain side is real: +3 on 516 near-miss
-functions, and FUN_00012594 becomes byte-IDENTICAL when its twice-used load is inlined
-(`mov dl,[..] ; and edx,0xff` -> `xor edx,edx ; mov dl,[..]`, 44 bytes -> 40).
-
-⚠️ Do NOT judge this by extrapolating a sample. The clean-set check is a COMPLETE count and said
--6; the near-set check covers a fifth of the mismatches and said +3. Multiplying the partial by
-five predicted net-positive and was wrong.
+⚠️ **BUILD PROFILE:** the emit runs `cargo run --release`. Validate with a RELEASE build or the
+measurement is of the previous binary. This produced two rounds of confident, wrong conclusions.
 
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
