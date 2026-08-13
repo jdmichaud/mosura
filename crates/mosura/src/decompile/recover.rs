@@ -1018,9 +1018,20 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         // reaching definition and prints as a constant.
         //
         // That makes it an ordering problem between one call's OUTPUT recovery and the next call's
-        // INPUT recovery, not a heritage-marking problem and not a prototype problem. Both calls
-        // are resolved in the same phase, and the second's argument is evaluated against an EAX
-        // whose producer has not been wired yet.
+        // INPUT recovery, not a heritage-marking problem and not a prototype problem.
+        //
+        // The two sit in different loops, and that placement is FAITHFUL to Ghidra:
+        // `ActionResolveCalls` (arguments) is a member of the mainloop, while `ActionActiveReturn`
+        // (call outputs) is in the fullloop tail (coreaction.cc:5688). So a call's arguments commit
+        // while the preceding call still has no output at all. Ghidra survives this because a
+        // fullloop round that commits outputs forces another round; mosura's argument list is
+        // committed and its trial container cleared by then, so the second round has nothing left
+        // to re-evaluate.
+        //
+        // The fix is therefore NOT to move an action — that would diverge from the reference for a
+        // reason the reference does not have. It is to let a call whose argument resolved to an
+        // unwritten varnode be re-opened once outputs commit, which is the shape Ghidra's repeated
+        // fullloop already assumes.
         if unref {
             let v = f.new_varnode(sz, addr);
             f.vn_mut(v).set_active_heritage();
