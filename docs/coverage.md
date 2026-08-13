@@ -333,7 +333,7 @@ as a phantom MISSING — it isn't.
 | RuleExpandLoad | PORTED (rules.rs — ruleaction.cc:10909, cleanup slot :5701): a LOAD reading only part of what its pointer points at is widened to the whole pointed-to value, the narrow value recovered by a SUBPIECE — or, in the mask-and-compare shape (`checkAndComparison` :10860), by shifting the masks and comparison constants instead (`modifyAndComparison` :10886), which needs no truncation at all. A small constant `INT_ADD` (≤16, single-use) on the pointer folds away into the LOAD's byte offset. Ghidra's big-endian `lsbCut` arm is inert — every space mosura loads is little-endian. Both facings use the varnode's committed type: this pool runs BEFORE the merge actions, so there are no HighVariables to face. **0 firings on the datatests**, and the reason is Ghidra's own TYPE_UNKNOWN guard — an `undefined4*` says nothing about how much is really there, and most mosura pointees are still undefined; the rule wakes up as type recovery sharpens pointees. Corpus byte-identical. |
 | RulePtrsubCharConstant | MISSING |
 | RuleExtensionPush | PORTED (rules.rs — ruleaction.cc:10827, cleanup slot :5703): an extension read by ≥2 pointer-arithmetic consumers is duplicated into each, so it prints inline in every index expression instead of forcing a named temporary. Fires only when every reader is a PTRADD or an INT_ADD whose lone reader is a PTRADD — i.e. when the extension is about to be hidden anyway. Required porting `RulePushPtr::duplicateNeed` + `buildVarnodeOut` (ruleaction.cc:6812/6800) into ptrarith.rs, which also **retires the omission noted on the RulePushPtr row** — the helper now exists, though RulePushPtr's own `collectDuplicateNeeds` call site is still not wired. Ghidra's locked/tied guards ported verbatim (a duplicated definition must not land in fixed storage). Corpus-neutral. |
-| RulePieceStructure | MISSING |
+| RulePieceStructure | BLOCKED(nothing CONSTRUCTS a structured type on a varnode) — diagnosis established by measurement, not by reading. The rule's gate is `determineDatatype` → `Varnode::getStructuredType` (varnode.cc), which answers non-null only when the varnode's own type (or its mapped symbol's) is `isPieceStructured` — Struct/Array/Union/Partial*. **A probe wired at this rule's own pool slot was invoked 7254 times across the corpus and found ZERO varnodes carrying a structured type**, so `determineDatatype` would return null on every call and the rule could never fire. The missing piece is therefore NOT PieceNode/TypePartialStruct — those are just the body — but type recovery that ever assigns a struct/array type to a value. (`Datatype::Struct` is never constructed anywhere in mosura; `Array` is built only as a POINTEE inside `ptrarith`. Same root cause the ptrarith.rs header records for the unported `TypeStruct::nearestArrayedComponent` pair.) Porting the body now would be ~200 lines of provably dead code. |
 | RuleSplitCopy | BLOCKED(SplitDatatype subsystem — subflow.cc) |
 | RuleSplitLoad | BLOCKED(SplitDatatype subsystem — subflow.cc) |
 | RuleSplitStore | BLOCKED(SplitDatatype subsystem — subflow.cc; concatsplit fixture: mosura emits one 16-byte store where Ghidra splits) |
@@ -469,9 +469,11 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
 - **cleanup** (15): **8 ported** (Rule2Comp2Sub, RuleAddUnsigned, RuleMultNegOne, RuleSubRight — the
   Sub2Add reconstruction subset — plus RuleDumptyHumpLate, RuleFloatSignCleanup, RuleExtensionPush,
   RuleExpandLoad), 3 BLOCKED (RuleSplitCopy/Load/Store — SplitDatatype, subflow.cc), 2 BLOCKED on
-  constsequence (RuleStringCopy, RuleStringStore), 2 BLOCKED as of this pass:
-  `RulePtrsubCharConstant` (**not** merely the StringManager — see below)
-  and `RulePieceStructure` (PieceNode/TypePartialStruct, the SplitDatatype family). **0 MISSING.**
+  constsequence (RuleStringCopy, RuleStringStore), 2 BLOCKED, both
+  re-diagnosed by measurement this pass: `RulePtrsubCharConstant` (global symbol management, **not**
+  the StringManager — see below) and `RulePieceStructure` (nothing ever gives a varnode a structured
+  type, so its gate can never open — **not** PieceNode/TypePartialStruct, which is only its body).
+  **0 MISSING.**
 
 **`RulePtrsubCharConstant`'s blocker, traced properly (this is a CORRECTION — the earlier
 "StringManager" label named the wrong dependency and understated the size).** The rule fires on
