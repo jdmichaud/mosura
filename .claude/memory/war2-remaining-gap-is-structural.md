@@ -86,6 +86,30 @@ So the achievable denominator is ~2950, not something much smaller. At 392 that 
 target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
 the structural bulk is.
 
+## ⭐ FINAL CHARACTERISATION OF THE GAP (M38, 2457 mismatches)
+
+Delta distribution: 531 within +/-4 bytes, 284 within +/-2. The largest single bucket is -2 with
+108 functions, and its divergence census settles what the remainder is made of:
+
+     37  `mov` -> `mov`            same instruction, DIFFERENT REGISTER
+     27  `xor` -> (absent)         the original zeroes a register we do not need to
+     19  `pop` -> (absent)  14 `push` -> (absent)    allocator saves we do not make
+     15  `add ; mov` -> `lea`      instruction selection
+     13  `mov ; cmp` -> `movsx ; cmp`   extension-width selection
+
+Every dominant entry is REGISTER ALLOCATION or INSTRUCTION SELECTION. None is recoverable
+information that a better decompiler could supply — the emitted C does not choose which register
+holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
+zero-extended by `xor`+`mov` or by `and`.
+
+Combined with the reachability measurement (330 of 588 near functions have us emitting LESS code
+than the original; 48 differ only in register choice), the conclusion is:
+
+**A large share of the remaining gap is not a decompiler defect.** Byte-exactness against these
+functions requires reproducing Watcom 10.0a's allocator and peephole decisions, which is a
+compiler-matching problem, not a decompilation one. Decide whether that is in scope before setting
+a numeric target — it determines whether the target is achievable at all.
+
 ## ⭐ THE CHAIN THAT CONNECTS THE RECOVERABLE WORK: interval Cover -> LOAD implied -> RMW forms
 
 FUN_00044d8c (idx 01637, +8 bytes) is the worked example. The `test` half MATCHES; the gap is a
