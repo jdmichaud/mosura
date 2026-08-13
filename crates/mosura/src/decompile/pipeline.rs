@@ -667,6 +667,11 @@ pub fn universal_action() -> ActionGroup {
                         // pass != 0) and reconcile addrtied/addrforce with it, so RuleSubRight /
                         // ActionConditionalConst's phi guards / SubVariableFlow see the net
                         // classification (pass 0 syncs against the ActionHeritage probe boundary).
+                        // Ghidra `ActionRestrictLocal` (:5502, "Do before dead code removed"):
+                        // carve the callee-save slots out of the local window while the save chain
+                        // is still alive. It must precede both the deadcode that deletes that
+                        // chain and the RestructureVarnode that reads the window.
+                        .then(super::restrictlocal::ActionRestrictLocal)
                         .then(ActionRestructureVarnode::default())
                         .then(ActionSpacebase)
                         .then(ActionNonzeroMask)

@@ -19,11 +19,16 @@
 
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;
-use super::space::{Address, RangeList, SpaceId, SpaceManager};
+use super::space::{Address, Range, RangeList, SpaceId, SpaceManager};
 use super::types::{type_order, Datatype};
 use super::varnode::VarnodeId;
 
 /// Ghidra `sign_extend(val, bit)` — sign-extend treating bit index `bit` as the sign.
+/// Sign-extend a 32-bit frame offset for display.
+pub fn sx32(v: u64) -> i64 {
+    sign_extend(v, 31)
+}
+
 fn sign_extend(val: u64, bit: u32) -> i64 {
     if bit >= 63 {
         val as i64
@@ -622,11 +627,21 @@ impl<'a> MapState<'a> {
         if self.maplist.is_empty() {
             return false;
         }
-        // Bound any final open entry at the locals/parameters boundary (the entry SP, offset 0).
+        let highest = self.spaces.get(self.space).highest();
+        // Ghidra `MapState::initialize` (varmap.cc) bounds any final open entry ONE PAST THE END
+        // OF THE WINDOW — `high = wrapOffset(lastSignedRange->getLast()+1)` — not at a fixed offset
+        // 0. The two agree for an untouched frame (the default `<localrange>` ends at -1, so the
+        // endpoint is 0), and diverge exactly when `markNotMapped` has carved the callee-save slots
+        // off the top: then the window ends at -5 and a trailing open range stops at -4 instead of
+        // running into the saved register.
+        let Some(term) = last_signed_range(&self.range, self.space, highest) else {
+            return false;
+        };
+        let high = term.last.wrapping_add(1) & highest;
         self.maplist.push(RangeHint {
-            start: 0,
+            start: high,
             size: 1,
-            sstart: 0,
+            sstart: sign_extend(high, self.sign_bit),
             ty: self.default_type.clone(),
             flags: 0,
             range_type: RangeType::Endpoint,
@@ -699,6 +714,17 @@ fn restructure(state: &mut MapState, out: &mut Vec<StackSymbol>) {
     // The last range is the artificial endpoint, so no entry is built for it.
 }
 
+/// Ghidra `RangeList::getLastSignedRange` (space.cc): the last range in SIGNED order — the last
+/// one starting at or below the space's midpoint (the "positive" side) if any, otherwise the last
+/// range overall (the "negative" side). A stack window is entirely negative, so in practice this is
+/// the final range, and its `last` is the byte just below the frame boundary.
+fn last_signed_range(rl: &RangeList, spc: SpaceId, highest: u64) -> Option<&Range> {
+    let midway = highest / 2;
+    rl.iter()
+        .rfind(|r| r.spc == spc && r.first <= midway)
+        .or_else(|| rl.iter().rfind(|r| r.spc == spc))
+}
+
 /// The window `MapState` will accept hints in. Ghidra builds it in two steps: `ScopeLocal`'s own
 /// range tree is `localrange ∪ paramrange` (`ScopeLocal::resetLocalWindow`, varmap.cc:441-459), and
 /// `MapState`'s constructor then removes `paramrange` from its copy (varmap.cc:870-875, "Clear
@@ -711,6 +737,11 @@ fn map_state_range(f: &Funcdata) -> RangeList {
         rl.insert_range(r.spc, r.first, r.last);
     }
     for r in f.proto_model.paramrange.iter() {
+        rl.remove_range(r.spc, r.first, r.last);
+    }
+    // Ghidra `ScopeLocal::markNotMapped` removes the callee-save slots from the Scope's range tree
+    // itself (varmap.cc), so both this window and `initialize`'s endpoint see the hole.
+    for r in f.not_mapped.iter().cloned().collect::<Vec<_>>() {
         rl.remove_range(r.spc, r.first, r.last);
     }
     rl
@@ -732,6 +763,22 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
         let rl = map_state_range(f);
         for r in rl.iter() {
             eprintln!("VARMAP[{}] range first={} last={}", f.name, r.first as i64, r.last as i64);
+        }
+        for v in (0..f.num_varnodes() as u32).map(VarnodeId) {
+            if f.vn(v).loc.space != stack {
+                continue;
+            }
+            let off = sign_extend(f.vn(v).loc.offset, 31);
+            let def = f.vn(v).def.map(|d| format!("{:?}", f.op(d).code()));
+            eprintln!(
+                "VARMAP[{}] stackvn off={} size={} free={} def={:?} ndescend={}",
+                f.name,
+                off,
+                f.vn(v).size,
+                f.vn(v).is_free(),
+                def,
+                f.vn(v).descend.len()
+            );
         }
         for h in &state.maplist {
             eprintln!(
@@ -775,6 +822,37 @@ mod tests {
             range.remove_range(r.spc, r.first, r.last);
         }
         MapState::new(spaces, stack, range, local)
+    }
+
+    /// A trailing OPEN range is bounded by the artificial endpoint, and the endpoint sits one past
+    /// the end of the WINDOW — so once `ActionRestrictLocal` has carved the callee-save slot out,
+    /// the array stops there instead of running into it.
+    ///
+    /// This is FUN_0005118c's defect in miniature: a buffer that Open Watcom allocates 16 bytes for
+    /// recovered as 20 because nothing occupied the saved-register slot above it, and the recompile
+    /// emitted `sub esp,0x14` against the original's `sub esp,0x10`.
+    #[test]
+    fn a_saved_register_slot_bounds_a_trailing_open_range() {
+        let (spaces, stack, local, param) = stack_fixture();
+        // Baseline: with the whole window available the open range runs to the frame base.
+        let mut state = map_state(&spaces, stack, &local, &param);
+        state.add_range(0xffffffffffffffe8, None, 0, RangeType::Open, -1); // -0x18
+        let mut out = Vec::new();
+        restructure(&mut state, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].start, -0x18);
+        assert_eq!(out[0].size, 0x18, "unbounded, the open range reaches offset 0");
+
+        // Now mark an 8-byte callee-save slot at -8 not-mapped, as ActionRestrictLocal does.
+        let mut carved = local.clone();
+        carved.remove_range(stack, 0xfffffffffffffff8, 0xffffffffffffffff);
+        let mut state = map_state(&spaces, stack, &carved, &param);
+        state.add_range(0xffffffffffffffe8, None, 0, RangeType::Open, -1);
+        let mut out = Vec::new();
+        restructure(&mut state, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].start, -0x18);
+        assert_eq!(out[0].size, 0x10, "the open range stops at the saved slot, not the frame base");
     }
 
     #[test]

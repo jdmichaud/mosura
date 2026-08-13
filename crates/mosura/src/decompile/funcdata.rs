@@ -89,6 +89,14 @@ pub struct Funcdata {
     /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
     /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
     pub own_saved: Option<Vec<u64>>,
+
+    /// Ghidra `ScopeLocal`'s carved-out ranges (`markNotMapped`, varmap.cc): storage that is NOT a
+    /// local variable — today the callee-save slots found by [`super::restrictlocal`]. Ghidra
+    /// removes these from the Scope's range tree; mosura has no Scope object, so the removals are
+    /// accumulated here and subtracted when the local window is built ([`super::varmap`]).
+    /// Cumulative on purpose: the marking happens while the save chain is alive and must outlive
+    /// the deadcode pass that deletes it.
+    pub not_mapped: super::space::RangeList,
     /// Master gate for heritage call-effect guarding (Ghidra runs `Heritage::guardCalls` only in the
     /// true heritage). The pipeline sets it before the real heritage; the AliasChecker probe clone
     /// leaves it `false`, so `alias_boundary` is computed on a graph without the call INDIRECTs.
@@ -222,6 +230,7 @@ impl Funcdata {
             call_specs: std::collections::HashMap::new(),
             own_modify: None,
             own_saved: None,
+            not_mapped: super::space::RangeList::default(),
             call_guards_active: false,
             alias_boundary: None,
             directwrite_pending_clear: false,
@@ -433,7 +442,9 @@ impl Funcdata {
                 return VarnodeId(i as u32);
             }
         }
-        self.alloc_varnode(size, loc, flags::INPUT | flags::INSERT)
+        let vid = self.alloc_varnode(size, loc, flags::INPUT | flags::INSERT);
+        self.apply_input_effect(vid);
+        vid
     }
 
     /// A constant varnode (`const` space).
@@ -563,7 +574,29 @@ impl Funcdata {
         v.def = None;
         v.flags &= !flags::WRITTEN;
         v.flags |= flags::INPUT | flags::INSERT;
+        self.apply_input_effect(vid);
         vid
+    }
+
+    /// Ghidra `Funcdata::setInputVarnode` (funcdata_varnode.cc:365-371): the convention's effect on
+    /// an input's storage decides whether it is `unaffected` — a callee-saved register whose value
+    /// flows through the function untouched — and whether it is the return address.
+    ///     uint4 effecttype = funcp.hasEffect(vn->getAddr(),vn->getSize());
+    ///     if (effecttype == EffectRecord::unaffected) vn->setUnaffected();
+    ///     if (effecttype == EffectRecord::return_address) { setUnaffected(); setReturnAddress(); }
+    /// mosura had the flag and its readers but NO setter anywhere, so `is_unaffected()` was false
+    /// for every varnode in every function and `ActionRestrictLocal` could not recognise a single
+    /// callee-save slot. Applied at BOTH input-creation entry points, since Ghidra funnels all of
+    /// them through `setInputVarnode`.
+    fn apply_input_effect(&mut self, vid: VarnodeId) {
+        let (loc, size) = (self.varnodes[vid.0 as usize].loc, self.varnodes[vid.0 as usize].size);
+        let effecttype = self.proto_model.has_effect(loc, size);
+        if effecttype == super::fspec::effect::UNAFFECTED {
+            self.varnodes[vid.0 as usize].flags |= flags::UNAFFECTED;
+        }
+        if effecttype == super::fspec::effect::RETURN_ADDRESS {
+            self.varnodes[vid.0 as usize].flags |= flags::UNAFFECTED | flags::RETURN_ADDRESS;
+        }
     }
 
     /// Ghidra `Funcdata::spacebase` (funcdata.cc:230, the body of `ActionSpacebase`): mark every SSA
@@ -1146,6 +1179,19 @@ impl Funcdata {
 
     /// Replace every use of `old` with `new` across all reading ops (Ghidra's
     /// `totalReplace`), maintaining descendant lists.
+    /// Ghidra `ScopeLocal::markNotMapped` (varmap.cc): record that `[first, first+sz)` is not
+    /// local-variable storage. Ghidra also removes any Symbol already built over the range; mosura
+    /// builds Symbols fresh from the window on every `restructure`, so recording the hole is
+    /// sufficient.
+    pub fn mark_not_mapped(&mut self, spc: super::space::SpaceId, first: u64, sz: u32) {
+        let highest = self.spaces.get(spc).highest();
+        let last = first.wrapping_add(sz as u64).wrapping_sub(1);
+        // "Do not allow the range to cover the split point between negative and positive stack
+        // offsets" — a wrap, or running past the space, clamps to the top.
+        let last = if last < first || last > highest { highest } else { last };
+        self.not_mapped.insert_range(spc, first, last);
+    }
+
     pub fn total_replace(&mut self, old: VarnodeId, new: VarnodeId) {
         let users = std::mem::take(&mut self.varnodes[old.0 as usize].descend);
         for op in users {
