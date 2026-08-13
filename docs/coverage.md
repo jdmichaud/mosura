@@ -259,7 +259,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSubvarSext | PORTED (`f2d81d1` — SubVariableFlow lands whole): `trace_forward_sext`/`trace_backward_sext` (subflow.cc:867/960) are real implementations, not the former stubs, and the rule is wired at slot 117 (coreaction.cc:5628). The sext mode is **not** the zext mode reseeded — assuming a SIGN-extended container changes which ops preserve the logical value: INT_SRIGHT survives as itself with its shift amount (:991) where zext must re-mask, signed *and* unsigned comparisons work at both widths since both sides are sign-extended (:919), and an INT_ZEXT from a smaller size still acts as a sign extension so it becomes a push rather than an abort (:979). **`aggressive` is read from the compiler spec, not hardcoded**: `RuleSubvarSext::reset` (:1742) takes `Architecture::aggressive_ext_trim` ← `<aggressivetrim signext=>` (architecture.cc:1121), false on every target mosura builds today (no x86 spec sets it) but read rather than assumed. This is where the two subvar rules diverge: RuleSubvarZext's `aggressive` is `Varnode::isPtrFlow` and stays blocked on RulePtrFlow, while this one's source is a spec attribute. |
 | RuleNegateNegate | PORTED (rules.rs — ruleaction.cc:9040, slot :5629): `~~V` => `COPY V`, inner operand must not be free. Corpus-neutral. |
 | RuleConditionalMove | PORTED (rules.rs — ruleaction.cc:9372, slot :5630): a 2-input MULTIEQUAL whose arms both carry booleans is a conditional move; the control flow becomes an expression — `zext(c)`, `c \|\| d`, `c && d`, or a plain COPY, per which arms are literals. All of Ghidra's cases ported, including `path0istrue` (which incoming edge is the true one, then flipped by the CBRANCH's `boolean_flip`) and the both-constant/one-constant/neither-constant splits. Helpers ported alongside: `checkBoolean` (:9259), `gatherExpression` (:9287) and, for the case where the boolean is computed INSIDE the branch and must be duplicated out, the reachable subset of `CloneBlockOps::cloneExpression` (funcdata_block.cc:1024). That subset is exact, not partial: `patchInputs`' MULTIEQUAL/INDIRECT/CALL arms are unreachable here because `gatherExpression` refuses any op whose eval type is `special`, which is precisely that set — see `PcodeOp::is_special_eval`, ported for this test (Ghidra compares the masked eval type for EQUALITY, so CAST, being `unary\|special`, is not in the set). Corpus-neutral. |
-| RuleOrPredicate | MISSING |
+| RuleOrPredicate | BLOCKED(ConditionalExecution subsystem — condexe.cc) — reclassified from MISSING after reading the source. Its `applyOp` (condexe.cc:654) needs `BooleanExpressionMatch::verifyCondition` to prove two CBRANCHes test the same condition, plus the `MultiPredicate` helper (`discoverZeroSlot`/`discoverCbranch`/`discoverPathIsTrue`/`discoverConditionalZero`, :509-590). **None of condexe.cc is ported** — `ActionConditionalExe` (coreaction.cc:5675) is itself unported, as pipeline.rs records at its slot. This is not mechanical tail work: it is the front half of a subsystem. |
 | RuleFuncPtrEncoding | PORTED (rules.rs — ruleaction.cc:9905, slot :5632): on a target whose function pointers are aligned, drop the mask that clears the spare low bits before a CALLIND — those bits encode something else (ARM/THUMB's instruction-set selector), not part of the address. Required plumbing `Architecture::funcptr_align` (`<funcptr align=>`, architecture.cc:1049) through the cspec as a **bit position** (`align="4"` → 2); see `analysis::cspec::funcptr_align`. **No x86 cspec has the element**, so `funcptr_align` is 0 and the rule declines at its first test on every target mosura builds today — faithfully inert, the RuleSubvarSext precedent. Ghidra's two other readers of the same value, `ActionDeindirect` (coreaction.cc:1245) and `JumpTable` (jumptable.cc:1444/2148), which strip the bits before an address lookup, are NOT yet wired to it. |
 | RuleSubfloatConvert | BLOCKED(SubfloatFlow subsystem — subflow.cc) |
 | RuleFloatCast | PORTED (rules.rs; byte-neutral, unit-tested — inert on corpus: the stacked FLOAT2FLOAT/INT2FLOAT pattern it targets doesn't survive to actprop; floatcast fixture's imperfection is upstream float sizing, not this rule) |
@@ -269,11 +269,11 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RulePtraddUndo | PORTED |
 | RulePtrsubUndo | PORTED (ptrarith.rs — ruleaction.cc:6931, slot :5639, beside RulePtraddUndo): the PTRSUB counterpart — a PTRSUB asserts its base type has a component at the offset, so when type recovery says otherwise it goes back to an INT_ADD, taking with it everything stacked below that was built on the same wrong type (`removeLocalAdds` :6789, `removeLocalAddRecurse` :6817), whose constants are lumped back into the offset. The checked offset includes what is added BELOW the PTRSUB (`getExtraOffset` :6872 + `getConstOffsetBack` :6836, both depth-limited at 8 as Ghidra is). `TypePointer::isPtrsubMatching` (type.cc:1123) + `testForArraySlack` (:1103) ported: the SPACEBASE arm is LIVE over the recovered ScopeLocal table, the ARRAY arm is direct, the STRUCT arm is faithful-but-unreachable (nothing constructs `Datatype::Struct`), and UNION is Ghidra's unconditional false. **Omitted:** `clearStopTypePropagation` — mosura models no `stop_type_propagation` flag, so nothing sets it and clearing it is vacuous. **0 firings across the 79 datatests** (`MOSURA_OPACTION=ptrsub_undo`), same as its RulePtraddUndo sibling measured; corpus byte-identical. ⚠️ **The spacebase arm must answer MATCH for an unmapped frame offset** (Ghidra's `TypeSpacebase::getSubType` returns `undefined1`/offset-0 there, not null): answering "mismatch" makes this rule undo a PTRSUB that RulePtrArith immediately rebuilds, and the pool ping-pongs forever — caught by `ground_truth_parity` hanging. |
 | RuleSegment | N/A (segmented arch) |
-| RulePiecePathology | MISSING |
+| RulePiecePathology | BLOCKED(FuncProto/FuncCallSpecs *bytes-consumed* model) — reclassified from MISSING after reading the source. The rule's ENTIRE effect is calling `FuncCallSpecs::setInputBytesConsumed` (fspec.cc:5887) and `FuncProto::setReturnBytesConsumed` (fspec.cc:3954); mosura models neither field, so a port would compute a pathology and then have nowhere to write it. The readers are absent too: consume.rs's `gather_consumed_return` says in as many words that `getReturnBytesConsumed` is not modelled, and the call-input consume push (coreaction.cc:3857) has no `getInputBytesConsumed` clamp. Porting the model — two fields, their only-ever-shrink setters, and the two consume.rs clamps — is the prerequisite; the rule is small once it exists. It also needs `isOutputActive`/`isInputActive`/`isInputLocked` on call specs and `getOpFromConst` for the INDIRECT iop. |
 | RuleDoubleLoad | PORTED (double.rs, `1bde3dd` task #5 paydown — double.cc:3370-3660 incl. noWriteConflict/testIndirectUse/reassignIndirects + SplitVarnode::adjacentOffsets/testContiguousPointers (double.cc:713/755), wired at the oppool1 tail per coreaction.cc:5643, group `doubleload`). Little-endian arms only, same convention as lanedivide. **Trace survey @`554620e` (capture_trace over all 79 datatests): Ghidra fires this rule nowhere on the corpus** — of the double family only RuleDoubleOut fires (revisit, doublemove/MIPS). Byte-identical at landing (corpus 0.9326, per-fixture join 60/60 identical). |
 | RuleDoubleStore | PORTED-DORMANT (double.rs, `1bde3dd`; coreaction.cc:5644, group `doubleprecis`) — wired but cannot fire until a **PRECISLO/PRECISHI marker port** lands (ActionParamDouble, SplitVarnode markings, heritage splitPieces). Ghidra fires it nowhere on the corpus either (same @`554620e` survey). |
-| RuleDoubleIn | MISSING |
-| RuleDoubleOut | MISSING |
+| RuleDoubleIn | BLOCKED(SplitVarnode subsystem + PRECISLO/PRECISHI markers) — reclassified from MISSING after reading the source. `applyOp` (double.cc) gates on `outvn->isPrecisLo()`, then runs `SplitVarnode::wholeList` + `SplitVarnode::applyRuleIn` — the double-precision recovery engine, of which mosura has only the fragments `1bde3dd` needed for RuleDoubleLoad/Store (adjacentOffsets, testContiguousPointers, noWriteConflict). The PRECIS markers are the same dependency that leaves RuleDoubleStore PORTED-DORMANT. Same subsystem as its `attemptMarking` fallback. |
+| RuleDoubleOut | BLOCKED(`Funcdata::combineInputVarnodes` + PRECISLO/PRECISHI markers) — reclassified from MISSING after reading the source. Gates on `isPrecisHi`/`isPrecisLo` (absent, as above), then needs `SplitVarnode::isAddrTiedContiguous` and `combineInputVarnodes`, which fuses two input varnodes into one wider input — a Funcdata primitive mosura does not have. Note the @`554620e` trace survey found this is the ONE member of the double family Ghidra actually fires on the corpus (revisit, doublemove/MIPS), so it is the one with a demonstrated payoff once the markers land. |
 
 **mosura-only pool rules (no Ghidra oppool1 counterpart, slotted next to siblings):** RuleMultMult,
 RuleIdempotent, RuleRangeAnd — faithful IR-alignment extras (see pipeline.rs comments).
@@ -452,11 +452,14 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
 - **oppool1** (134): **125 ported** — 124 under Ghidra's own name plus `RuleCollapseConstants` =
   mosura's `RuleConstFold` — of which **122 are wired** and **3 HELD unwired**: `RuleAndCompare`,
   `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
-  3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
-  subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
-  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **4 MISSING**:
-  RuleDoubleIn, RuleDoubleOut, RuleOrPredicate, RulePiecePathology.
-  (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
+  **7 BLOCKED** — `RulePtrFlow` (`Varnode::isPtrFlow`), `RuleSubfloatConvert` (SubfloatFlow,
+  subflow.cc), `RuleTransformCpool` (constant-pool subsystem), and the four reclassified by this
+  pass: `RuleOrPredicate` (ConditionalExecution/condexe.cc, entirely unported), `RulePiecePathology`
+  (the FuncProto/FuncCallSpecs bytes-consumed model, which is also absent from consume.rs),
+  `RuleDoubleIn` and `RuleDoubleOut` (SplitVarnode + PRECISLO/PRECISHI markers). 1 DEFERRED
+  (`RuleLeftRight` — register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and
+  **0 MISSING**. (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending the same PRECIS
+  markers.)
 - **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
   RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
   `[+ const]`, plus the `isSpacebasePlaceholder` → `resolveSpacebaseRelative` trigger; only
@@ -470,10 +473,13 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   `RulePtrsubCharConstant` (StringManager::isString + Scope::isReadOnly — no string manager exists)
   and `RulePieceStructure` (PieceNode/TypePartialStruct, the SplitDatatype family). **0 MISSING.**
 
-**Live gap: 17 of Ghidra's 154 rules have no mosura implementation** — 6 MISSING (the mechanical
-tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
-constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
-(RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
+**Live gap: 17 of Ghidra's 154 rules have no mosura implementation, and NONE of them is mechanical
+tail work any more** — 14 BLOCKED on an absent subsystem (SubfloatFlow, constant pool, isPtrFlow,
+SplitDatatype ×3, constsequence ×2, ConditionalExecution, bytes-consumed, SplitVarnode/PRECIS ×2,
+StringManager, PieceNode/TypePartialStruct), 1 DEFERRED (RuleLeftRight — register-piece dep,
+1 N/A (RuleSegment), 1 PARTIAL-elsewhere (RuleStructOffset0). **The MISSING set is empty.** Every
+rule that could be ported against the subsystems mosura has, has been; what remains is gated on
+eleven named subsystems, and the next rule-tail work is to pick one of those and land it whole. Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
 "3 mosura-only extras" of the previous revision are gone, folded into faithfully-named ports.
 
 **Previously flagged as highest-value, now PORTED and off the list:** the RuleConcatZext/RuleConcatZero
@@ -481,9 +487,12 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 6-rule MISSING set has a fixture citation, and the @`554620e` trace
-survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
-targets from a fresh trace-diff, not from this list's order.
+splits). With the MISSING set empty, ordering the remaining work means ordering SUBSYSTEMS, not rules. Two
+have evidence attached: SplitDatatype (the concatsplit fixture) and the bytes-consumed model (whose
+absence is already annotated in consume.rs as a missing clamp). The @`554620e` survey also found
+`RuleDoubleOut` is the one double-family rule Ghidra actually fires on the corpus, which makes
+SplitVarnode/PRECIS the third with a measured payoff. Everything else should be ordered from a fresh
+trace-diff rather than from this list.
 
 **Method and its limits.** This refresh matched by rule *name* against the live tree; the §2-§4 rows
 were then corrected where the name-level evidence contradicted them (RuleDoubleLoad, RuleDoubleStore,
