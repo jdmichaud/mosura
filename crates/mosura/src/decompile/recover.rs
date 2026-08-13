@@ -976,6 +976,18 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         .map(|t| (t.op_slot as usize, t.size, t.is_unref(), t.addr))
         .collect();
     let n = f.op(call).num_inputs();
+    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        for (slot, sz, unref, addr) in &used {
+            let vn = if *slot > 0 && *slot < n { f.op(call).input(*slot) } else { None };
+            eprintln!(
+                "[arg] call@{:#x} slot={slot} size={sz} unref={unref} addr={}+{:#x} vn={:?}",
+                f.op(call).seqnum.pc.offset,
+                f.spaces.get(addr.space).name,
+                addr.offset,
+                vn.map(|v| (f.vn(v).size, f.vn(v).is_written(), f.vn(v).is_free()))
+            );
+        }
+    }
     let mut newparam: Vec<VarnodeId> = vec![f.op(call).input(0).expect("CALL has a target")];
     for (slot, sz, unref, addr) in used {
         // fspec.cc:5717 — the unreferenced slot has no varnode at the call; create one, so the
@@ -992,15 +1004,23 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         // "a free ancestor then stops ancestorOpUse dead"). Without it the argument exists in the
         // signature and nowhere in the data flow.
         //
-        // MEASURED: this flag alone does NOT close the case. Heritage does re-run after argument
-        // recovery commits, and the argument still renders as a constant. The remaining suspect is
-        // heritage's own bookkeeping of which address ranges it has already processed: a range
-        // renamed on an earlier pass is not re-renamed for a read that appears later, so the new
-        // CALL input never joins a renaming round however it is flagged. Confirming that, and
-        // deciding whether the range must be re-opened or the prototype must be known before the
-        // first pass, is the open question — see the task on binding propagated parameters. The
-        // flag stays because a manufactured read that is not marked is wrong under this port's own
-        // convention, not because it is a fix.
+        // The flag is correct under this port's convention, and it is NOT what the propagated-
+        // prototype defect turned out to be. `MOSURA_ARG_DEBUG` settled that, and the answer is
+        // worth recording because two readings of the emitted C had pointed the other way:
+        //
+        //   [arg] call@0x13c6b slot=1 size=4 unref=FALSE addr=register+0x0
+        //         vn=Some((4, written=false, free=false))
+        //
+        // The trial is not unreferenced, so this branch never runs for it. A varnode exists and is
+        // linked — and it is UNWRITTEN. The caller's EAX at that point holds the result of the
+        // call five instructions earlier, and the original passes it by doing nothing at all; the
+        // read simply never resolved to that call's recovered return value, so the argument has no
+        // reaching definition and prints as a constant.
+        //
+        // That makes it an ordering problem between one call's OUTPUT recovery and the next call's
+        // INPUT recovery, not a heritage-marking problem and not a prototype problem. Both calls
+        // are resolved in the same phase, and the second's argument is evaluated against an EAX
+        // whose producer has not been wired yet.
         if unref {
             let v = f.new_varnode(sz, addr);
             f.vn_mut(v).set_active_heritage();
