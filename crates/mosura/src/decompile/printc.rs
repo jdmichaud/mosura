@@ -2329,6 +2329,39 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
 /// function that genuinely returns a byte (its returned Varnode *is* one byte) is untouched.
 /// Signedness is preserved where it is known; a boolean or character widens to `int`, which is
 /// the type C promotion would have given it in the original source.
+/// How wide the emitted return type should be — an EMISSION CHOICE, deliberately selectable.
+///
+/// Two defensible answers, each wrong in the opposite direction, and which is right for a given
+/// binary is a measurement rather than an argument:
+///
+/// - `storage` (default) — the full width of the convention's return register. Correct whenever
+///   the original source returned an `int`, which is what C promotion makes of every comparison
+///   and every narrow value; wrong for a function that genuinely returns a byte, where it invents
+///   a widening instruction the original does not have.
+/// - `recovered` — the width the return-value recovery found the function to actually produce
+///   ([`Funcdata::output_storage_size`]). Right in the opposite set of cases, and it under-reports
+///   whenever the widening reaches the return through a path the trial coverage does not credit
+///   (a `XOR EAX,EAX ; MOV AL,[m]` zero-extension covers one byte by that measure, not four).
+///
+/// Both are implemented so the population can decide, which is the whole point of making
+/// emission choices explicit: the alternative is picking one on plausibility and never learning
+/// that the other was worth several hundred functions. `MOSURA_RETURN_WIDTH` selects.
+fn return_width(f: &Funcdata, vn: &super::varnode::Varnode) -> u32 {
+    let recovered = matches!(std::env::var("MOSURA_RETURN_WIDTH").as_deref(), Ok("recovered"));
+    let w = if recovered {
+        f.output_storage_size.unwrap_or(vn.size)
+    } else {
+        f.proto_model
+            .output
+            .as_ref()
+            .and_then(|out| {
+                out.entry.iter().find(|e| e.justified_contain(vn.loc, vn.size) == Some(0)).map(|e| e.size)
+            })
+            .unwrap_or(vn.size)
+    };
+    w.max(vn.size)
+}
+
 fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
     if width == 0 || ty.size() >= width {
         return ty.clone();
@@ -2515,19 +2548,7 @@ pub fn print_c(f: &Funcdata) -> String {
         // four-byte register — and a narrower declared type deletes the widening the original
         // performs. The convention is the stable statement of how wide a returned value is.
         let vn = f.vn(v);
-        let width = f
-            .proto_model
-            .output
-            .as_ref()
-            .and_then(|out| {
-                out.entry
-                    .iter()
-                    .find(|e| e.justified_contain(vn.loc, vn.size) == Some(0))
-                    .map(|e| e.size)
-            })
-            .unwrap_or(vn.size)
-            .max(vn.size);
-        widen_to_storage(&p.type_of(v), width).name()
+        widen_to_storage(&p.type_of(v), return_width(f, vn)).name()
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params

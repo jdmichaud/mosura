@@ -67,6 +67,18 @@ pub struct Funcdata {
     /// `recover::resolve_return`; `None` until first invoked and again after it commits
     /// (`clearActiveOutput`). Persisting it lets the trial decision DEFER across heritage passes.
     pub active_output: Option<super::fspec::ParamActive>,
+    /// Width of the return storage the function was found to actually produce, recorded when the
+    /// output trials commit.
+    ///
+    /// It is recorded there because that is the last moment the evidence exists. The recovered
+    /// trials say how much of the convention's return register this function really writes — a
+    /// comparison result that the original widens to the full register covers four bytes, while a
+    /// function returning a byte covers one — and later stages legitimately narrow the Varnode
+    /// reaching the RETURN, so by print time the two cases are indistinguishable. They must not
+    /// be: the declared return type's width is exactly what makes the compiler emit or omit the
+    /// widening instruction, so getting it wrong deletes an instruction in one direction and
+    /// invents one in the other.
+    pub output_storage_size: Option<u32>,
     /// Ghidra `FuncCallSpecs::activeinput`, one per CALL (keyed by the CALL op): the [`ParamActive`]
     /// recovering that sub-function's argument registers. Set up + committed by
     /// `recover::resolve_call_args`; an entry is removed once its trials commit
@@ -226,6 +238,7 @@ impl Funcdata {
             heritage_pass: 0,
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
+            output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
             own_modify: None,

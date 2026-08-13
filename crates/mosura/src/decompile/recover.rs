@@ -581,7 +581,9 @@ pub fn resolve_return(f: &mut Funcdata) -> u32 {
     let mut count = check_output_trial_use(f);
     if f.active_output.as_ref().is_some_and(|a| a.is_fully_checked()) {
         if let Some(outlist) = f.proto_model.output.clone() {
-            derive_output_map(&outlist, f.active_output.as_mut().unwrap());
+            // Record how much of the return storage this function was found to produce, before
+            // the evidence is optimized away (see `Funcdata::output_storage_size`).
+            f.output_storage_size = derive_output_map(&outlist, f.active_output.as_mut().unwrap());
         }
         build_return_output(f);
         f.active_output = None; // Ghidra `Funcdata::clearActiveOutput`
@@ -1213,7 +1215,10 @@ pub(crate) fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
 /// deferred (no corpus fixture returns a 128-bit integer). The multi-precision `extracheck_low/high` +
 /// `isRemFormed`/`isIndCreateFormed` guards (fspec.cc:1676-1681) are omitted — inert for mosura's
 /// single-register SysV output entries, which never set those flags.
-fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) {
+/// Returns the contiguous coverage of the selected entry by its used trials — the width of the
+/// return storage this function was found to actually produce. `None` when no entry was selected
+/// (the function returns nothing).
+fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) -> Option<u32> {
     let mut best: Option<usize> = None;
     let mut best_cover = 0u32;
     let mut best_class = u8::MAX; // Ghidra `bestclass = TYPECLASS_PTR` — worse than GENERAL(0)/FLOAT(1)
@@ -1252,12 +1257,13 @@ fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) {
             best_class = e.type_class;
         }
     }
-    match best {
+    let recovered = match best {
         None => {
             for t in active.trial.iter_mut() {
                 t.mark_no_use();
                 t.clear_entry();
             }
+            None
         }
         Some(be) => {
             for t in active.trial.iter_mut() {
@@ -1269,11 +1275,13 @@ fn derive_output_map(outlist: &ParamList, active: &mut ParamActive) {
                     t.clear_entry(); // fspec.cc:1662/1665
                 }
             }
+            Some(best_cover)
         }
-    }
+    };
     // fspec.cc:1668 — the unmatched trials sink below the used ones, so a consumer that stops at the
     // first not-used trial still sees every used one.
     active.sort_trials();
+    recovered
 }
 
 /// Ghidra `FuncCallSpecs::findPreexistingWhole` (fspec.cc:5750): if two varnodes are each the lone
