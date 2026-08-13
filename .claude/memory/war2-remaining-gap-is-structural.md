@@ -145,7 +145,35 @@ It only RENDERS as the incoming EDI at print time. That is why every register-ke
 it, and why all the register-oriented hypotheses below were wrong: the trial is a spacebase trial
 registered by `guard_calls` once the stack-pointer placeholder resolved that call's offset.
 
-**AND ITS FLAGS, dumped at the same point** (do not guess these — four guards were written and
+## ⭐ SOLVED (diagnosis): THE SPURIOUS ARGUMENT IS A SAVED CALLEE-SAVE REGISTER'S STACK SLOT
+
+Traced end to end, each step dumped rather than assumed:
+
+    SETALL op=138 <- [ … | stack+0xfffffff4/4 <- Copy register+0x1c/4[i] ]
+
+The fifth argument is a stack slot holding a COPY of the function's INCOMING EDI. And EDI's only
+appearance in FUN_000100b9's original is the PROLOGUE:
+
+    push ecx ; push esi ; push edi ; push ebp ; …            ← a callee-save, paired with `pop edi`
+
+So the save's stack slot is being registered as an OUTGOING ARGUMENT: `guard_calls` resolves the
+call's stack-pointer offset, the slot translates into the callee's parameter area, and the trial
+survives because the varnode is genuinely written (by the save) and traces to a genuine input.
+Every guard that assumed "unwritten", "free", "register", or "not a parameter" had to fail.
+
+This is EXACTLY what `ActionRestrictLocal` (coreaction.cc:1957) exists to prevent — the second half
+iterates the proto's saved registers and calls `markNotMapped` on the storage where each unaffected
+value gets saved. **mosura does not port it** (zero matches, established earlier). It was declined
+at the time because the premise was unverified; the premise is now verified.
+
+Predicted reach: every function that SAVES a register and then makes a CALL is exposed. 2134
+functions have locals and only 78 are byte-clean; 603 carry a declared-but-never-assigned local and
+none are byte-clean.
+
+IMPLEMENT `ActionRestrictLocal`'s saved-register loop, and validate with the sampled loop
+(`trybatch.py --idxfile`) on the previously-clean set BEFORE a full run.
+
+**The flags, for reference** (do not guess these — four guards were written and
 reverted on wrong assumptions about them):
 
     SETALL op=138 <- [ ram+0x10010/4[]
