@@ -238,6 +238,25 @@ It only RENDERS as the incoming EDI at print time. That is why every register-ke
 it, and why all the register-oriented hypotheses below were wrong: the trial is a spacebase trial
 registered by `guard_calls` once the stack-pointer placeholder resolved that call's offset.
 
+## THE UNDEFINED-LOCAL CLASS: 603 -> 228, and the remainder is a TAIL, not a class
+
+After the callee-save-slot fix (554ac15) and the use-based parameter test (b7a5763):
+
+    603 TUs -> 228 TUs, of which 17 are byte-clean (was 0)
+    undefined local passed as a CALL ARGUMENT:  5   (the sub-case that mattered — essentially closed)
+    undefined local used elsewhere:           223
+
+Sampling the 223 shows they are heterogeneous, not one more layer:
+  * FUN_00010b84 — parameters now recovered correctly (ESI/EDI); the leftover is `code * pcVar1`,
+    an indirect-call TARGET, not a parameter.
+  * FUN_00012a78 — every register input is DEAD; the leftover `iVar1` is not a register input at
+    all (an INDIRECT creation / call-clobber artifact, i.e. Ghidra's `extraout_` family).
+
+So do NOT attack this as a single class again. The parameter-recovery half is done; what is left is
+a tail of distinct causes, each small. Ghidra names the `extraout_`/`in_`/`unaff_` family
+explicitly, and the survey emitter already has a declaration path keyed on those prefixes — naming
+them that way would make the output honest but change no bytes.
+
 ## ⭐ SOLVED (diagnosis): THE SPURIOUS ARGUMENT IS A SAVED CALLEE-SAVE REGISTER'S STACK SLOT
 
 Traced end to end, each step dumped rather than assumed:
