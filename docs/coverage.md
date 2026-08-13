@@ -239,15 +239,15 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleBoolNegate | PORTED |
 | RuleLessEqual | PORTED |
 | RuleLessNotEqual | PORTED (rules.rs, WIRED slot 100 — `2b22f65` Task #20; BOOL_AND `(V <= W) && (V != W) => V < W`, collapses the for-loop guard to `<` without the print-time `<=` adaptation) |
-| RuleLessOne | MISSING |
+| RuleLessOne | PORTED (rules.rs — ruleaction.cc:2233, slot :5611): `V < 1` / `V <= 0` => `V == 0`, the only non-trivial answer a comparison against the unsigned range boundary has; the INT_LESS form's constant is replaced by zero. Corpus-neutral. |
 | RuleRangeMeld | PORTED (rules.rs, WIRED slot 101 — Task #11; BOOL_AND/BOOL_OR of two `V s< c`/`c s< V`/`V == c`/`V != c` range conditions, pulled back to a common Varnode as a `CircleRange` and intersected/unioned, then `CircleRange::translate2_op` re-expresses the result as one comparison. Collapses the x86 signed-compare flag reconstructions — `jg` form `(x != c) && (c-1 s< x) => c s< x`, `jle` form `(x == c) || (x s< c) => x s< c+1`. This is the paydown for RuleIntLessEqual @10 (Task #9): the @10 SLESSEQUAL→SLESS conversion put the fold out of RuleLessNotEqual's reach (SLESSEQUAL-form only); RuleRangeMeld recovers it in the SLESS form, matching Ghidra's `sborrow→intlessequal→rangemeld` chain. Recovers condmulti/deindirect/elseif/loopcomment byte-identically (corpus 0.9168/55→0.9196/56). 3 unit tests. `CircleRange::pullBack`/`intersect`/`circleUnion` already present; only `translate2Op` was added.) |
 | RuleFloatRange | PORTED |
 | RulePiece2Zext | PORTED (rules.rs; WIRED at coreaction.cc:5614, after RuleFloatRange). Was HELD ("rides with SubZext un-hold") for a floatconv over-fire; that hold is RESOLVED — the over-fire was the wide-return divergence, cleared once RuleSubvarZext narrows returns (floatconv unchanged 0.653 at wiring). Feeds RuleSplitFlow (movsd zero-high `CONCAT88(#0,Qa)`->`ZEXT816(Qa)`). |
 | RulePiece2Sext | PORTED (rules.rs, `19f1ebb` task #1 Brick 2 — ruleaction.cc:232, wired at Ghidra's own slot coreaction.cc:5615 immediately after RulePiece2Zext): `CONCAT(V s>> #(8*|V|-1), V) => SEXT(V)`, the cdq;idiv dividend. Feeds RuleSubCommute's INT_SDIV/SREM arm + RuleSubExtComm so the 8-byte signed-division idiom narrows to a 4-byte `/` — switchloop renders `iVar2 = iVar2 / 10` (was `CONCAT44(iVar2>>0x1f,iVar2)/10`), matching Ghidra. Corpus +0.0002, one mover (switchloop .830→.837). |
 | RulePopcountBoolXor | PORTED |
-| RuleXorSwap | MISSING |
-| RuleLzcountShiftBool | MISSING |
-| RuleFloatSign | MISSING |
+| RuleXorSwap | PORTED (rules.rs — ruleaction.cc:6055, slot :5617): `V ^ (V ^ W)` => `COPY W`, undoing the XOR swap idiom. Either input may hold the inner XOR and either of its operands may be the shared one; the survivor must not be free. Corpus-neutral. |
+| RuleLzcountShiftBool | PORTED (rules.rs — ruleaction.cc:6100, slot :5618): `LZCOUNT(V) >> k` used as a boolean is `V == 0`, guarded on `8*|V|` being a power of two and `(8*|V|) >> k == 1` (Ghidra's own guard — a 24-bit maximum would make both `16>>4` and `24>>4` equal 1). The shift op survives as the width adapter: COPY at boolean width, INT_ZEXT otherwise. Corpus-neutral. |
+| RuleFloatSign | PORTED (rules.rs — ruleaction.cc:10716, slot :5619): an integer sign-bit manipulation neighbouring a float op is really FLOAT_ABS/FLOAT_NEG. Converts both the ops defining the float op's inputs (skipped for FLOAT_INT2FLOAT, whose input is an integer) and the ops reading its output (skipped for boolean output and FLOAT_TRUNC, whose output is an integer). `TypeOp::floatSignManipulation` (typeop.cc:153) ported alongside as `float_sign_manipulation`, shared with RuleFloatSignCleanup as in Ghidra. **Not ported:** its other two Ghidra callers, `TypeOpIntXor::propagateType`/`TypeOpIntAnd::propagateType` (typeop.cc:1428/1461), which let a float type propagate *through* the manipulation — so a float-typed operand does not yet reach these ops via type inference. Corpus-neutral. |
 | RuleOrCompare | PORTED |
 | RuleSubvarAnd | PORTED |
 | RuleSubvarSubpiece | PORTED. Its trace now handles the CALL-pull: `SubvariableFlow::try_call_pull` (subflow.cc:208) + `PcodeOp::getRepeatSlot` (op.cc:93) + the traceForward CALL/CALLIND arm (subflow.cc:616-623) are ported (was a Stage-4 `_ => return false` stub) — the loop induction phi passed to a call now narrows 8→4 bytes. WIRED (engine, all subvar rules). Net-positive: forloop_varused 0.914→1.000 (byte-identical to Ghidra), noforloop_iterused +0.035, noforloop_alias/elseif/loopcomment bonus, 0 down (+0.0025). Prereq: `active_inputs` cleared on param-recovery commit (isInputActive→false in a later mainloop pass). |
@@ -257,7 +257,7 @@ Order = Ghidra registration = per-opcode priority. Status verified against `rule
 | RuleSubvarShift | PORTED |
 | RuleSubvarZext | PORTED (`381e745`; delivers int4 returns) |
 | RuleSubvarSext | PORTED (`f2d81d1` — SubVariableFlow lands whole): `trace_forward_sext`/`trace_backward_sext` (subflow.cc:867/960) are real implementations, not the former stubs, and the rule is wired at slot 117 (coreaction.cc:5628). The sext mode is **not** the zext mode reseeded — assuming a SIGN-extended container changes which ops preserve the logical value: INT_SRIGHT survives as itself with its shift amount (:991) where zext must re-mask, signed *and* unsigned comparisons work at both widths since both sides are sign-extended (:919), and an INT_ZEXT from a smaller size still acts as a sign extension so it becomes a push rather than an abort (:979). **`aggressive` is read from the compiler spec, not hardcoded**: `RuleSubvarSext::reset` (:1742) takes `Architecture::aggressive_ext_trim` ← `<aggressivetrim signext=>` (architecture.cc:1121), false on every target mosura builds today (no x86 spec sets it) but read rather than assumed. This is where the two subvar rules diverge: RuleSubvarZext's `aggressive` is `Varnode::isPtrFlow` and stays blocked on RulePtrFlow, while this one's source is a spec attribute. |
-| RuleNegateNegate | MISSING |
+| RuleNegateNegate | PORTED (rules.rs — ruleaction.cc:9040, slot :5629): `~~V` => `COPY V`, inner operand must not be free. Corpus-neutral. |
 | RuleConditionalMove | MISSING |
 | RuleOrPredicate | MISSING |
 | RuleFuncPtrEncoding | MISSING |
@@ -449,15 +449,14 @@ Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
 oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
 — `RuleIndirectConcat` is the only one, and it is not a gap (§3).
 
-- **oppool1** (134): **114 ported** — 113 under Ghidra's own name plus `RuleCollapseConstants` =
-  mosura's `RuleConstFold` — of which **111 are wired** and **3 HELD unwired**: `RuleAndCompare`,
+- **oppool1** (134): **119 ported** — 118 under Ghidra's own name plus `RuleCollapseConstants` =
+  mosura's `RuleConstFold` — of which **116 are wired** and **3 HELD unwired**: `RuleAndCompare`,
   `RuleAndDistribute` (RuleHumptyOr ping-pong hang), `RuleNotDistribute` (no verified firing).
   3 BLOCKED (`RulePtrFlow` = `Varnode::isPtrFlow`; `RuleSubfloatConvert` = SubfloatFlow subsystem,
   subflow.cc; `RuleTransformCpool` = constant-pool subsystem), 1 DEFERRED (`RuleLeftRight` —
-  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **15 MISSING**:
-  RuleConditionalMove, RuleDoubleIn, RuleDoubleOut, RuleFloatSign, RuleFuncPtrEncoding,
-  RuleInt2FloatCollapse, RuleLessOne, RuleLzcountShiftBool, RuleNegateNegate, RuleOrPredicate,
-  RulePiecePathology, RulePtrsubUndo, RuleSwitchSingle, RuleUnsigned2Float, RuleXorSwap.
+  register-piece dep, Task #7), 1 N/A (`RuleSegment`, segmented arch), and **10 MISSING**:
+  RuleConditionalMove, RuleDoubleIn, RuleDoubleOut, RuleFuncPtrEncoding, RuleInt2FloatCollapse,
+  RuleOrPredicate, RulePiecePathology, RulePtrsubUndo, RuleSwitchSingle, RuleUnsigned2Float.
   (One ported rule is wired-but-dormant: `RuleDoubleStore`, pending PRECISLO/PRECISHI markers.)
 - **oppool2** (5): **4 ported and wired** — RulePushPtr, RulePtrArith, and RuleLoadVarnode/
   RuleStoreVarnode with *both* branches now live (ram-global const **and** spacebase-register
@@ -471,7 +470,7 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   RuleExpandLoad, RuleExtensionPush, RuleFloatSignCleanup, RulePieceStructure,
   RulePtrsubCharConstant.
 
-**Live gap: 32 of Ghidra's 154 rules have no mosura implementation** — 21 MISSING (the mechanical
+**Live gap: 27 of Ghidra's 154 rules have no mosura implementation** — 16 MISSING (the mechanical
 tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
 constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
 (RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
@@ -482,7 +481,7 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 21-rule MISSING set has a fixture citation, and the @`554620e` trace
+splits). Nothing in the current 16-rule MISSING set has a fixture citation, and the @`554620e` trace
 survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
 targets from a fresh trace-diff, not from this list's order.
 

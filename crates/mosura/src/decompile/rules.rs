@@ -8831,6 +8831,267 @@ impl Rule for RuleSubCommute {
     }
 }
 
+/// Ghidra `TypeOp::floatSignManipulation` (typeop.cc:153): recognize the integer bit-twiddle a
+/// compiler emits to manipulate an IEEE sign bit, returning the float op it really is. An
+/// `INT_AND` with the all-but-the-top-bit mask clears the sign — `FLOAT_ABS`; an `INT_XOR` with
+/// the top-bit-only mask flips it — `FLOAT_NEG`. Returns `None` (Ghidra's `CPUI_MAX`) otherwise.
+///
+/// Shared by [`RuleFloatSign`] and `RuleFloatSignCleanup`, exactly as in Ghidra. (Ghidra's other
+/// two callers are `TypeOpIntXor::propagateType`/`TypeOpIntAnd::propagateType` (typeop.cc:1428/
+/// 1461), which let a float type propagate through the manipulation — not ported yet, so a
+/// float-typed operand does not yet reach these ops through type inference.)
+pub fn float_sign_manipulation(data: &Funcdata, op: OpId) -> Option<OpCode> {
+    let opc = data.op(op).code();
+    let cvn = data.op(op).input(1)?;
+    if !data.vn(cvn).is_constant() {
+        return None;
+    }
+    let full = super::nzmask::calc_mask(data.vn(cvn).size);
+    match opc {
+        OpCode::IntAnd if (full >> 1) == data.vn(cvn).constant_value() => Some(OpCode::FloatAbs),
+        OpCode::IntXor if (full ^ (full >> 1)) == data.vn(cvn).constant_value() => {
+            Some(OpCode::FloatNeg)
+        }
+        _ => None,
+    }
+}
+
+/// Ghidra `RuleLessOne` (ruleaction.cc:2233, coreaction.cc:5611): a comparison against the
+/// boundary of the unsigned range has only one possible non-trivial answer — `V < 1` and
+/// `V <= 0` both mean `V == 0`. Rewrite to `INT_EQUAL`, replacing the constant with zero for
+/// the `INT_LESS` form.
+pub struct RuleLessOne;
+
+impl Rule for RuleLessOne {
+    fn name(&self) -> &str {
+        "lessone"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntLess, OpCode::IntLessequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(constvn) = data.op(op).input(1) else { return 0 };
+        if !data.vn(constvn).is_constant() {
+            return 0;
+        }
+        let val = data.vn(constvn).constant_value();
+        if data.op(op).code() == OpCode::IntLess && val != 1 {
+            return 0;
+        }
+        if data.op(op).code() == OpCode::IntLessequal && val != 0 {
+            return 0;
+        }
+        data.op_set_opcode(op, OpCode::IntEqual);
+        if val != 0 {
+            let size = data.vn(constvn).size;
+            let zero = data.new_const(size, 0);
+            data.op_set_input(op, 1, zero);
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleXorSwap` (ruleaction.cc:6055, coreaction.cc:5617): undo the XOR swap idiom —
+/// `V ^ (V ^ W)` is `W`. Either input may hold the inner XOR, and either of the inner XOR's
+/// operands may be the shared one; the surviving operand must not be free, so the COPY has a
+/// definition to read.
+pub struct RuleXorSwap;
+
+impl Rule for RuleXorSwap {
+    fn name(&self) -> &str {
+        "xorswap"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        for i in 0..2 {
+            let Some(vn) = data.op(op).input(i) else { continue };
+            if !data.vn(vn).is_written() {
+                continue;
+            }
+            let op2 = data.vn(vn).def.unwrap();
+            if data.op(op2).code() != OpCode::IntXor {
+                continue;
+            }
+            let othervn = data.op(op).input(1 - i);
+            let (Some(vn0), Some(vn1)) = (data.op(op2).input(0), data.op(op2).input(1)) else {
+                continue;
+            };
+            let keep = if othervn == Some(vn0) && !data.vn(vn1).is_free() {
+                vn1
+            } else if othervn == Some(vn1) && !data.vn(vn0).is_free() {
+                vn0
+            } else {
+                continue;
+            };
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_set_input(op, 0, keep);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `RuleLzcountShiftBool` (ruleaction.cc:6100, coreaction.cc:5618): a shifted count of
+/// leading zeros used as a boolean is an equality test. `LZCOUNT(V) >> k == 1` exactly when `V`
+/// is zero, provided `8*|V|` — lzcount's maximum — is a power of two and `max >> k == 1`.
+/// Rewrite the shift's input to a fresh `V == 0` and keep the shift op as the width adapter:
+/// a COPY when its output is already boolean-sized, an `INT_ZEXT` otherwise.
+///
+/// The power-of-two guard is Ghidra's own (a 24-bit maximum would make both `16 >> 4` and
+/// `24 >> 4` equal 1, so the test would not mean "zero").
+pub struct RuleLzcountShiftBool;
+
+impl Rule for RuleLzcountShiftBool {
+    fn name(&self) -> &str {
+        "lzcountshiftbool"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Lzcount]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(outvn) = data.op(op).output else { return 0 };
+        let Some(invn) = data.op(op).input(0) else { return 0 };
+        let insize = data.vn(invn).size;
+        let max_return = 8u64 * insize as u64;
+        if max_return.count_ones() != 1 {
+            return 0;
+        }
+        for base_op in data.vn(outvn).descend.clone() {
+            let opc = data.op(base_op).code();
+            if opc != OpCode::IntRight && opc != OpCode::IntSright {
+                continue;
+            }
+            let Some(vn1) = data.op(base_op).input(1) else { continue };
+            if !data.vn(vn1).is_constant() {
+                continue;
+            }
+            let shift = data.vn(vn1).constant_value();
+            if shift >= 64 || (max_return >> shift) != 1 {
+                continue;
+            }
+            let pc = data.op(base_op).seqnum.pc;
+            let uniq = data.num_ops() as u32;
+            let zero = data.new_const(insize, 0);
+            let new_op = data.new_op(OpCode::IntEqual, SeqNum { pc, uniq }, vec![invn, zero]);
+            // INT_EQUAL must produce a 1-byte boolean result.
+            let eq_res = data.new_output_unique(new_op, 1);
+            data.op_insert_before(new_op, base_op);
+            // The shift's readers expect the old output width, so the shift op stays as the
+            // adapter: COPY when that width is already 1, INT_ZEXT otherwise.
+            data.op_remove_input(base_op, 1);
+            let out_size = data.op(base_op).output.map(|o| data.vn(o).size).unwrap_or(0);
+            let adapt = if out_size == 1 { OpCode::Copy } else { OpCode::IntZext };
+            data.op_set_opcode(base_op, adapt);
+            data.op_set_input(base_op, 0, eq_res);
+            return 1;
+        }
+        0
+    }
+}
+
+/// Ghidra `RuleFloatSign` (ruleaction.cc:10716, coreaction.cc:5619): once a value is known to be
+/// floating point — because a float op reads or writes it — an integer sign manipulation on that
+/// value is really `FLOAT_ABS`/`FLOAT_NEG`. Convert every such neighbour of a float op:
+/// the ops defining its inputs (except for `FLOAT_INT2FLOAT`, whose input is an integer) and the
+/// ops reading its output (unless the output is boolean or the op is `FLOAT_TRUNC`, whose output
+/// is an integer). See [`float_sign_manipulation`] for the two recognized forms.
+pub struct RuleFloatSign;
+
+impl Rule for RuleFloatSign {
+    fn name(&self) -> &str {
+        "floatsign"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![
+            OpCode::FloatEqual,
+            OpCode::FloatNotequal,
+            OpCode::FloatLess,
+            OpCode::FloatLessequal,
+            OpCode::FloatNan,
+            OpCode::FloatAdd,
+            OpCode::FloatDiv,
+            OpCode::FloatMult,
+            OpCode::FloatSub,
+            OpCode::FloatNeg,
+            OpCode::FloatAbs,
+            OpCode::FloatSqrt,
+            OpCode::FloatFloat2float,
+            OpCode::FloatCeil,
+            OpCode::FloatFloor,
+            OpCode::FloatRound,
+            OpCode::FloatInt2float,
+            OpCode::FloatTrunc,
+        ]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let mut res = 0;
+        let opc = data.op(op).code();
+        if opc != OpCode::FloatInt2float {
+            let mut slots = vec![0usize];
+            if data.op(op).num_inputs() == 2 {
+                slots.push(1);
+            }
+            for slot in slots {
+                let Some(vn) = data.op(op).input(slot) else { continue };
+                if !data.vn(vn).is_written() {
+                    continue;
+                }
+                let sign_op = data.vn(vn).def.unwrap();
+                if let Some(res_code) = float_sign_manipulation(data, sign_op) {
+                    data.op_remove_input(sign_op, 1);
+                    data.op_set_opcode(sign_op, res_code);
+                    res = 1;
+                }
+            }
+        }
+        if data.op(op).is_bool_output() || opc == OpCode::FloatTrunc {
+            return res;
+        }
+        let Some(outvn) = data.op(op).output else { return res };
+        for read_op in data.vn(outvn).descend.clone() {
+            if let Some(res_code) = float_sign_manipulation(data, read_op) {
+                data.op_remove_input(read_op, 1);
+                data.op_set_opcode(read_op, res_code);
+                res = 1;
+            }
+        }
+        res
+    }
+}
+
+/// Ghidra `RuleNegateNegate` (ruleaction.cc:9040, coreaction.cc:5629): `~~V` is `V`. The inner
+/// operand must not be free, so the COPY has a definition to read.
+pub struct RuleNegateNegate;
+
+impl Rule for RuleNegateNegate {
+    fn name(&self) -> &str {
+        "negatenegate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntNegate]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(vn1) = data.op(op).input(0) else { return 0 };
+        if !data.vn(vn1).is_written() {
+            return 0;
+        }
+        let neg2 = data.vn(vn1).def.unwrap();
+        if data.op(neg2).code() != OpCode::IntNegate {
+            return 0;
+        }
+        let Some(vn2) = data.op(neg2).input(0) else { return 0 };
+        if data.vn(vn2).is_free() {
+            return 0;
+        }
+        data.op_set_input(op, 0, vn2);
+        data.op_set_opcode(op, OpCode::Copy);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13158,4 +13419,214 @@ mod tests {
 
         assert_eq!(RuleShiftSub.apply_op(sub, &mut f), 0);
     }
+
+    // ---- batch 1: RuleLessOne / RuleXorSwap / RuleLzcountShiftBool / RuleFloatSign /
+    // ---- RuleNegateNegate -----------------------------------------------------------------
+
+    #[test]
+    fn lessone_int_less_one_becomes_equal_zero() {
+        // `V < 1` => `V == 0`, with the constant replaced by zero (ruleaction.cc:2233).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let one = f.new_const(4, 1);
+        let cmp = f.new_op(OpCode::IntLess, seq, vec![v, one]);
+        f.new_output_unique(cmp, 1);
+        parent_all(&mut f, vec![cmp]);
+        assert_eq!(RuleLessOne.apply_op(cmp, &mut f), 1);
+        assert_eq!(f.op(cmp).code(), OpCode::IntEqual);
+        let c = f.op(cmp).input(1).unwrap();
+        assert_eq!(f.vn(c).constant_value(), 0);
+        assert_eq!(f.vn(c).size, 4);
+    }
+
+    #[test]
+    fn lessone_int_lessequal_zero_becomes_equal_keeping_constant() {
+        // `V <= 0` => `V == 0`; val is already 0, so the constant is left alone.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let cmp = f.new_op(OpCode::IntLessequal, seq, vec![v, zero]);
+        f.new_output_unique(cmp, 1);
+        parent_all(&mut f, vec![cmp]);
+        assert_eq!(RuleLessOne.apply_op(cmp, &mut f), 1);
+        assert_eq!(f.op(cmp).code(), OpCode::IntEqual);
+        assert_eq!(f.op(cmp).input(1), Some(zero));
+    }
+
+    #[test]
+    fn lessone_declines_other_bounds() {
+        // `V < 2` is not a boundary comparison — declined.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let two = f.new_const(4, 2);
+        let cmp = f.new_op(OpCode::IntLess, seq, vec![v, two]);
+        f.new_output_unique(cmp, 1);
+        parent_all(&mut f, vec![cmp]);
+        assert_eq!(RuleLessOne.apply_op(cmp, &mut f), 0);
+        assert_eq!(f.op(cmp).code(), OpCode::IntLess);
+    }
+
+    #[test]
+    fn xorswap_collapses_shared_operand() {
+        // `V ^ (V ^ W)` => `COPY W` (ruleaction.cc:6055).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let inner = f.new_op(OpCode::IntXor, seq(0), vec![v, w]);
+        let inner_out = f.new_output_unique(inner, 4);
+        let outer = f.new_op(OpCode::IntXor, seq(1), vec![v, inner_out]);
+        f.new_output_unique(outer, 4);
+        parent_all(&mut f, vec![inner, outer]);
+        assert_eq!(RuleXorSwap.apply_op(outer, &mut f), 1);
+        assert_eq!(f.op(outer).code(), OpCode::Copy);
+        assert_eq!(f.op(outer).num_inputs(), 1);
+        assert_eq!(f.op(outer).input(0), Some(w));
+    }
+
+    #[test]
+    fn xorswap_declines_unrelated_xor() {
+        // No shared operand — declined.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let x = f.new_input(4, Address::new(reg, 0x20));
+        let inner = f.new_op(OpCode::IntXor, seq(0), vec![w, x]);
+        let inner_out = f.new_output_unique(inner, 4);
+        let outer = f.new_op(OpCode::IntXor, seq(1), vec![v, inner_out]);
+        f.new_output_unique(outer, 4);
+        parent_all(&mut f, vec![inner, outer]);
+        assert_eq!(RuleXorSwap.apply_op(outer, &mut f), 0);
+        assert_eq!(f.op(outer).code(), OpCode::IntXor);
+    }
+
+    #[test]
+    fn negatenegate_collapses_to_copy() {
+        // `~~V` => `COPY V` (ruleaction.cc:9040).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let neg2 = f.new_op(OpCode::IntNegate, seq(0), vec![v]);
+        let neg2_out = f.new_output_unique(neg2, 4);
+        let neg1 = f.new_op(OpCode::IntNegate, seq(1), vec![neg2_out]);
+        f.new_output_unique(neg1, 4);
+        parent_all(&mut f, vec![neg2, neg1]);
+        assert_eq!(RuleNegateNegate.apply_op(neg1, &mut f), 1);
+        assert_eq!(f.op(neg1).code(), OpCode::Copy);
+        assert_eq!(f.op(neg1).input(0), Some(v));
+    }
+
+    #[test]
+    fn floatsign_input_and_mask_becomes_float_abs() {
+        // FLOAT_ADD reading `INT_AND(V, 0x7fffffff)` — the operand is really `ABS(V)`
+        // (TypeOp::floatSignManipulation, typeop.cc:153).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let mask = f.new_const(4, 0x7fff_ffff);
+        let and = f.new_op(OpCode::IntAnd, seq(0), vec![v, mask]);
+        let and_out = f.new_output_unique(and, 4);
+        let add = f.new_op(OpCode::FloatAdd, seq(1), vec![and_out, w]);
+        f.new_output_unique(add, 4);
+        parent_all(&mut f, vec![and, add]);
+        assert_eq!(RuleFloatSign.apply_op(add, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::FloatAbs);
+        assert_eq!(f.op(and).num_inputs(), 1);
+        assert_eq!(f.op(and).input(0), Some(v));
+    }
+
+    #[test]
+    fn floatsign_output_xor_topbit_becomes_float_neg() {
+        // A reader of a float op's output that XORs the top bit is `NEG`.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let w = f.new_input(4, Address::new(reg, 0x18));
+        let add = f.new_op(OpCode::FloatAdd, seq(0), vec![v, w]);
+        let add_out = f.new_output_unique(add, 4);
+        let top = f.new_const(4, 0x8000_0000);
+        let xor = f.new_op(OpCode::IntXor, seq(1), vec![add_out, top]);
+        f.new_output_unique(xor, 4);
+        parent_all(&mut f, vec![add, xor]);
+        assert_eq!(RuleFloatSign.apply_op(add, &mut f), 1);
+        assert_eq!(f.op(xor).code(), OpCode::FloatNeg);
+        assert_eq!(f.op(xor).num_inputs(), 1);
+        assert_eq!(f.op(xor).input(0), Some(add_out));
+    }
+
+    #[test]
+    fn floatsign_declines_int2float_input_side() {
+        // FLOAT_INT2FLOAT's input is an INTEGER, so an AND-mask feeding it is not a sign
+        // manipulation — Ghidra skips the input side entirely for this opcode.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0x7fff_ffff);
+        let and = f.new_op(OpCode::IntAnd, seq(0), vec![v, mask]);
+        let and_out = f.new_output_unique(and, 4);
+        let cvt = f.new_op(OpCode::FloatInt2float, seq(1), vec![and_out]);
+        f.new_output_unique(cvt, 4);
+        parent_all(&mut f, vec![and, cvt]);
+        assert_eq!(RuleFloatSign.apply_op(cvt, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn lzcount_shift_bool_becomes_equal_zero() {
+        // `LZCOUNT(V:4) >> 5` is 1 exactly when V is zero: 8*4 = 32 is a power of two and
+        // 32 >> 5 == 1 (ruleaction.cc:6100). The shift op survives as the width adapter.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let lz = f.new_op(OpCode::Lzcount, seq(0), vec![v]);
+        let lz_out = f.new_output_unique(lz, 4);
+        let five = f.new_const(4, 5);
+        let shift = f.new_op(OpCode::IntRight, seq(1), vec![lz_out, five]);
+        f.new_output_unique(shift, 4);
+        parent_all(&mut f, vec![lz, shift]);
+        assert_eq!(RuleLzcountShiftBool.apply_op(lz, &mut f), 1);
+        // The shift became a ZEXT of a fresh `V == 0`.
+        assert_eq!(f.op(shift).code(), OpCode::IntZext);
+        assert_eq!(f.op(shift).num_inputs(), 1);
+        let eq_out = f.op(shift).input(0).unwrap();
+        let eq = f.vn(eq_out).def.unwrap();
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual);
+        assert_eq!(f.op(eq).input(0), Some(v));
+        let c = f.op(eq).input(1).unwrap();
+        assert_eq!(f.vn(c).constant_value(), 0);
+        assert_eq!(f.vn(eq_out).size, 1);
+    }
+
+    #[test]
+    fn lzcount_shift_bool_declines_wrong_shift() {
+        // 32 >> 4 == 2, not 1 — the test would not mean "V is zero".
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let lz = f.new_op(OpCode::Lzcount, seq(0), vec![v]);
+        let lz_out = f.new_output_unique(lz, 4);
+        let four = f.new_const(4, 4);
+        let shift = f.new_op(OpCode::IntRight, seq(1), vec![lz_out, four]);
+        f.new_output_unique(shift, 4);
+        parent_all(&mut f, vec![lz, shift]);
+        assert_eq!(RuleLzcountShiftBool.apply_op(lz, &mut f), 0);
+        assert_eq!(f.op(shift).code(), OpCode::IntRight);
+    }
+
 }

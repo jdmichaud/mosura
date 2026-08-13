@@ -21,7 +21,7 @@ use super::rules::{
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
-    RuleSubvarZext,
+    RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -266,16 +266,16 @@ pub fn default_rule_pool() -> ActionPool {
         .with(super::divopt::RuleSignMod2nOpt) // (92)
         .with(super::divopt::RuleSignMod2nOpt2) // (93)
         .with(super::divopt::RuleSignMod2Opt) // (94)
-        // RuleCondNegate (coreaction.cc:5607, immediately before RuleBoolNegate) is defined +
-        // unit-tested in rules.rs but HELD UNWIRED: it only fires on a CBRANCH the structurer has
-        // marked `boolean_flip`, and mosura does not yet set that flag — it still negates branch
-        // sense at PRINT time (printc::render_negated + the structurer's `Structured.negated`).
-        // Wiring it is inert until the structurer sets `boolean_flip` instead (task #1 S1/S2); at
-        // that point this materializes the negation in the IR so RuleBoolNegate/RuleIntLessEqual
-        // normalize it there and printc reads the positive condition directly.
-        .with(RuleBoolNegate) // (98)
-        .with(RuleLessEqual) // (99)
-        .with(RuleLessNotEqual) // (100)
+        // RuleCondNegate (coreaction.cc:5607, immediately before RuleBoolNegate) is NOT wired
+        // here: it fires only on a CBRANCH the structurer has marked `boolean_flip`, which is set
+        // after block orientation, so it runs in the post-orientation `condnegate_pool` instead
+        // (task #1 S1) — see that pool for the ordering argument.
+        .with(RuleBoolNegate) // (97)
+        .with(RuleLessEqual) // (98)
+        .with(RuleLessNotEqual) // (99)
+        // RuleLessOne (coreaction.cc:5611): `V < 1` / `V <= 0` => `V == 0` — the only non-trivial
+        // answer a comparison against the unsigned range boundary has.
+        .with(RuleLessOne) // (100)
         .with(RuleRangeMeld) // (101)
         .with(RuleFloatRange) // (102)
         // RulePiece2Zext (coreaction.cc:5614): `CONCAT(#0, W) => ZEXT(W)`. Wired now that RuleSubvarZext
@@ -289,6 +289,14 @@ pub fn default_rule_pool() -> ActionPool {
         // SDIV/SREM arm so the 8-byte signed-division idiom narrows to the 4-byte `/`.
         .with(super::rules::RulePiece2Sext) // (104)
         .with(RulePopcountBoolXor) // (105)
+        // RuleXorSwap (coreaction.cc:5617): `V ^ (V ^ W)` => `W`, undoing the XOR swap idiom.
+        .with(RuleXorSwap) // (106)
+        // RuleLzcountShiftBool (coreaction.cc:5618): `LZCOUNT(V) >> k` used as a boolean is
+        // `V == 0`, when `8*|V|` is a power of two and `(8*|V|) >> k == 1`.
+        .with(RuleLzcountShiftBool) // (107)
+        // RuleFloatSign (coreaction.cc:5619): an integer sign-bit manipulation neighbouring a
+        // float op is really FLOAT_ABS/FLOAT_NEG (TypeOp::floatSignManipulation, typeop.cc:153).
+        .with(RuleFloatSign) // (108)
         .with(RuleOrCompare) // (109)
         // SubVariableFlow driving rules (coreaction.cc:5621-5628). RuleAndDistribute (5537) stays OUT
         // (RuleHumptyOr ping-pong hang). RuleSubZext is now wired at slot 74 above (its wide-return
@@ -314,6 +322,8 @@ pub fn default_rule_pool() -> ActionPool {
         // `sextrestrictions` tracers. Its `aggressive` argument comes from the compiler spec's
         // `<aggressivetrim signext=>`, not a constant.
         .with(RuleSubvarSext) // (117)
+        // RuleNegateNegate (coreaction.cc:5629): `~~V` => `V`.
+        .with(RuleNegateNegate) // (118)
         .with(RuleFloatCast) // (123) floatprecision group
         .with(RuleIgnoreNan) // (124) floatprecision group
         // Ghidra's actprop slot for RulePtraddUndo (coreaction.cc:5638), immediately after the
