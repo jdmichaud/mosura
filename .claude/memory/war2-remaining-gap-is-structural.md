@@ -802,3 +802,29 @@ is real, oracle-confirmed, and each affected function is otherwise byte-identica
 
 NEXT: find why the save-slot varnode survives to `restructureVarnode` in Ghidra and not here. Do NOT
 "cap arrays at -4" as a rule — that is the workaround; the varnode's lifetime is the actual defect.
+
+### FIXED (partly) — and the earlier diagnosis above is CORRECTED
+
+Landed as mosura `24f92a8`. The mechanism is NOT what the section above guessed. Corrections:
+
+- The endpoint hardcoded at 0 in `MapState::initialize` **was** wrong after all, but only in
+  combination: Ghidra derives it from the window (`high = lastSignedRange->getLast()+1`), which
+  equals 0 for an untouched frame and moves only once a slot is carved off the top. Both now match.
+- The bounding hint at -4 does NOT come from `gatherVarnodes`. **Ghidra has no symbol at -4 either**
+  (verified with a new `oracle/ghidra_scripts/DumpLocals.java`, which dumps the HighFunction's
+  LocalSymbolMap). It comes from `ActionRestrictLocal` (coreaction.cc:1957) calling
+  `ScopeLocal::markNotMapped`, which REMOVES the callee-save slot from the scope's range tree.
+- The reason mosura could not do this was much dumber than an ordering problem: **`is_unaffected()`
+  was false for every varnode in every function** — mosura had the flag and its readers but no
+  setter anywhere. Ghidra sets it in `Funcdata::setInputVarnode` from `funcp.hasEffect`. Fixed.
+
+RESULT: of 200 sampled array-declaring functions, 2 change, both verified toward Ghidra
+(FUN_00058618 loses a 16-byte array — Ghidra has no stack locals there at all; FUN_0005af4c loses
+a 6-byte one — Ghidra has nothing at or above -12). Corpus unchanged, 565 green.
+
+**FUN_0005118c is still 20 — the specimen is NOT fixed.** Different root cause, found by
+instrumenting: its `push ebp` remains an unconverted `CPUI_STORE` whose address input is the bare
+ESP register rather than a resolved spacebase offset, so the -4 slot never becomes a varnode at
+all. Only ONE stack write survives in that function (the call's return-address push at -24). NEXT
+LEVER for this class: why `RuleStoreVarnode`/ptrarith does not resolve a STORE through the raw
+input spacebase register, which is the form the FIRST push in a prologue always takes.
