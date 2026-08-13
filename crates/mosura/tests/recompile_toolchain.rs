@@ -1,23 +1,49 @@
 //! The toolchain driver against the real compiler.
 //!
-//! Skips when no Watcom installation is configured (`MOSURA_WATCOM_DIR`), like every other gate
-//! that needs a user-provided toolchain. What it proves cannot be proved without one: that
-//! mosura can drive the compiler, tell success from failure, attribute a diagnostic to the unit
-//! that caused it, and survive a unit that takes its session down.
+//! **These tests FAIL when no toolchain is configured; they do not skip.** They used to skip, and
+//! that is precisely how the driver came to report every unit as a compile failure on a machine
+//! where the compiler worked perfectly: the default path (`$HOME/watcom`) did not exist, both
+//! tests printed one line and passed, and the whole recompile/verify path stayed inert and green.
+//! A gate that goes quiet when its subject is missing is not a gate. Set `MOSURA_WATCOM_DIR` (and
+//! have `dosemu` on PATH) to run them.
+//!
+//! What they prove cannot be proved without a real compiler: that mosura can drive it, tell
+//! success from failure, attribute a diagnostic to the unit that caused it, and survive a unit
+//! that takes its session down.
 use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
 
-fn watcom() -> Option<WatcomDos> {
+/// Serialize the dosemu sessions — this target runs single-threaded by construction rather than
+/// by remembering `--test-threads=1`.
+///
+/// Each test gets its OWN work directory (see [`watcom`]), so the sessions no longer corrupt each
+/// other's sources; but one emulator per machine at a time is still the honest assumption, and
+/// serializing here costs ~5s while making the target's behaviour independent of how cargo
+/// schedules it.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn watcom(tag: &str) -> WatcomDos {
     let dir = mosura::paths::watcom_dir();
-    if !dir.join("BINW").is_dir() && !dir.join("binw").is_dir() {
-        eprintln!("skipping: no Watcom at {} (set MOSURA_WATCOM_DIR)", dir.display());
-        return None;
-    }
-    if which_dosemu().is_none() {
-        eprintln!("skipping: dosemu not on PATH");
-        return None;
-    }
-    let work = std::env::temp_dir().join(format!("mosura-wcc-{}", std::process::id()));
-    Some(WatcomDos::new(dir, work, "10.0a").expect("work dir"))
+    assert!(
+        dir.join("BINW").is_dir() || dir.join("binw").is_dir(),
+        "no Watcom installation at {} — set MOSURA_WATCOM_DIR to a Watcom 10.0a tree (the one \
+         holding BINW/). These tests deliberately fail rather than skip: a silent skip is what \
+         kept a broken compile driver green.",
+        dir.display()
+    );
+    assert!(
+        which_dosemu().is_some(),
+        "dosemu is not on PATH — the Watcom compiler is a 16-bit DOS program and cannot be run \
+         without it. Install dosemu2 or put it on PATH."
+    );
+    // Per-TEST work directory. Keying only on the process id gave every test in this binary the
+    // SAME directory, so two running concurrently overwrote each other's .C files, _BUILD.BAT and
+    // objects — which read as "the compiler produced nothing" and hung the pair for >10 minutes.
+    let work = std::env::temp_dir().join(format!("mosura-wcc-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    WatcomDos::new(dir, work, "10.0a").expect("work dir")
 }
 
 fn which_dosemu() -> Option<std::path::PathBuf> {
@@ -38,7 +64,8 @@ fn unit(key: &str, source: &str) -> CompileUnit {
 
 #[test]
 fn compiles_a_batch_and_reports_each_unit() {
-    let Some(wcc) = watcom() else { return };
+    let _serial = serial();
+    let wcc = watcom("batch");
     let units = vec![
         unit("T00000", "int add2(int a, int b) { return a + b; }"),
         // A unit the compiler must REJECT. Without a failing case the driver could be reporting
@@ -65,7 +92,8 @@ fn compiles_a_batch_and_reports_each_unit() {
 
 #[test]
 fn the_cache_serves_the_same_object_without_recompiling() {
-    let Some(wcc) = watcom() else { return };
+    let _serial = serial();
+    let wcc = watcom("cache");
     let dir = std::env::temp_dir().join(format!("mosura-wcc-cache-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let cached = Cached::new(wcc, &dir).expect("cache dir");
