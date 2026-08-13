@@ -1421,7 +1421,41 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         // The TRIAL address is the callee-frame `trans_addr`, but the VARNODE that carries it is at
         // the caller-frame `addr` — the two differ by exactly the stack offset for a stack argument,
         // and `build_input_from_trials` translates back (fspec.cc:5713) when it commits the list.
-        if tryregister && f.active_inputs.contains_key(&call) {
+        // Ghidra `ActionRestrictLocal` (coreaction.cc:1957), the saved-register loop: for each
+        // register the convention does NOT kill, find its input varnode and mark the storage where
+        // that value gets SAVED as not-mapped —
+        //     if (op->code() != CPUI_COPY) continue;
+        //     if (!data.getScopeLocal()->isUnaffectedStorage(outvn)) continue;
+        //     data.getScopeLocal()->markNotMapped(outvn->getSpace(), outvn->getOffset(), …);
+        // mosura does not port that action, so a callee-save slot stays an ordinary stack range and
+        // `guard_calls` registers it as an OUTGOING ARGUMENT once the call's stack-pointer offset
+        // resolves and the slot translates into the callee's parameter area.
+        //
+        // FUN_000100b9's prologue is `push ecx ; push esi ; push edi ; push ebp`; its call came out
+        // with a fifth argument `stack+0xfffffff4 <- Copy register+0x1c[i]` — the saved EDI. The
+        // trial survives every realism test because the varnode IS written (by the save) and DOES
+        // trace to a real input, which is why guards keyed on unwritten/free/register all failed.
+        let is_saved_slot = f.spaces.get(spc).kind == super::space::SpaceKind::Spacebase && {
+            (0..f.num_varnodes() as u32).any(|i| {
+                let src = f.vn(super::varnode::VarnodeId(i));
+                if !src.is_input() || Some(src.loc.space) != f.spaces.by_name("register") {
+                    return false;
+                }
+                // Only a register the convention preserves — a killedbycall register in a stack
+                // slot is a genuine spill, not a save.
+                if f.proto_model.has_effect(src.loc, src.size) != effect::UNAFFECTED {
+                    return false;
+                }
+                src.descend.iter().any(|&d| {
+                    f.op(d).code() == super::opcode::OpCode::Copy
+                        && f.op(d).output.is_some_and(|o| {
+                            let ov = f.vn(o);
+                            ov.loc.space == spc && ov.loc.offset == off && ov.size == size
+                        })
+                })
+            })
+        };
+        if tryregister && !is_saved_slot && f.active_inputs.contains_key(&call) {
             match f.proto_model.characterize_as_input_param(trans_addr, size) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();
