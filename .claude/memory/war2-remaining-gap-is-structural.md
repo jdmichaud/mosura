@@ -138,7 +138,14 @@ either.
 So closing this class is an EMITTER RENDERING choice, the same category as the while-do overflow
 form (which paid +4): force a cast when an implied varnode's true size is narrower than its token
 type, in the recompilation rendering only, leaving the decompiler's own output untouched. That is
-the concrete shape of the fix, and the sampled loop can validate it in four minutes. None is recoverable
+the concrete shape of the fix, and the sampled loop can validate it in four minutes.
+
+⚠️ **ATTEMPTED AND INERT — instrument before retrying.** A `set_force_narrow_casts` flag gating
+`setcasts.rs::cast_output`'s implied arm on `outvn.size < tokenct.size()` built clean, kept
+`ground_truth_parity` 25/25, and changed FUN_00020490's output NOT AT ALL. So either the add's
+output is not `implied` at that point, or the size comparison does not hold there. Print
+`outvn.size`, `tokenct.size()` and `is_implied(outvn)` for that op BEFORE writing the flag a second
+time. Reverted rather than shipped inert. None is recoverable
 information that a better decompiler could supply — the emitted C does not choose which register
 holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
 zero-extended by `xor`+`mov` or by `and`.
