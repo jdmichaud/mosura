@@ -86,6 +86,26 @@ So the achievable denominator is ~2950, not something much smaller. At 392 that 
 target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
 the structural bulk is.
 
+## ⭐ HOW MUCH OF THE NEAR SET IS EVEN REACHABLE (measured, M38)
+
+Of the **588** near-miss functions (within 40% of matching):
+
+| | count | meaning |
+|---|---|---|
+| our C compiles **SHORTER** than the original | **330** | the original contains code we do not reproduce — redundant saves, copies, allocator spills. Closing these means reproducing the ORIGINAL COMPILER'S INEFFICIENCY, not recovering better. |
+| longer | 186 | we emit extra work — the recoverable direction |
+| same length | 72 | |
+| **identical mnemonic sequence, only operands differ** | **48** | PURE register allocation. Nothing in C selects the register. |
+
+More than half the near set is us emitting LESS code than the original. FUN_0005a4a4 is the shape:
+the original saves EBX and does `mov ebx,eax` so its allocator can hold a pointer in a callee-saved
+register; our 8 bytes are correct against its 12.
+
+**This bounds the target.** A meaningful share of the remaining gap is instruction selection and
+register allocation, which the emitted C does not determine. Before setting a numeric goal, decide
+whether "byte-clean" is meant to include functions whose original is simply less efficient than what
+correct C compiles to — because no decompiler change reaches those.
+
 **WHERE THE NEAR SET STANDS AFTER THIS SESSION (M38).** It GREW from 516 to 588 functions within
 40% of matching — ~72 more moved close without crossing the line, which is the clearest sign the
 session's fixes were directionally right. Its divergence census:
