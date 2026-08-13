@@ -749,3 +749,22 @@ entirely normal while yielding a wrong per-function verdict.
 prelude hash and wcc flags ALL still agreed — only the emit identity disagreed, and nothing was
 checking it. Guard count: frozen-script staleness, obj/ not cleared, compile/compare race, and now
 cross-emit pairing.
+
+### The remaining COMPILE_FAIL classes are NOT a prelude gap — do not "fix" them with typedefs
+
+M38's 73 COMPILE_FAILs, by recorded cause: 23 `Expression for '.' must be a 'structure' or 'union'`,
+19 `Expression must be integral`, 7 `Missing operand`, 6 `Symbol 'xunknownN' has not been declared`,
+4 `BREAK must appear in while/do/for/switch`, then singletons.
+
+The `xunknownN` six look like a trivial prelude omission: prelude.h declares xunknown1..8 and the
+emit uses xunknown10/12/16 (7/10/3 uses, in src/01170, 01661, 02212, 02407, 02545, 02228).
+**Adding those typedefs does not fix the compile.** They are used as VALUES in Ghidra's sub-piece
+idiom — `(xunknown12)axStack_24[0]`, `CONCAT412(param_5, ...)`, `SUB124(...)`, and field access
+`axStack_24[0]._0_12_` / `._8_4_` / `._10_2_`. A cast to a 10/12/16-byte aggregate is not legal C,
+so a typedef only moves the diagnostic to the next line. The same idiom IS the 23-function
+`'.' must be a structure or union` class, so together that is ~29 of the 73 with one root cause:
+**Ghidra's CONCATxy/SUBxy/`._N_M_` partial-variable rendering has no Watcom 10.0a spelling.**
+These are x87/aggregate-heavy functions; making them compile would not make them byte-clean.
+
+Consequence: the COMPILE_FAIL residue is not a cheap source of byte-clean functions. It was already
+worked from 156 down to 73; what is left is mostly this one unspellable idiom.
