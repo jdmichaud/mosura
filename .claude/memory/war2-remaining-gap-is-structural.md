@@ -97,7 +97,17 @@ Delta distribution: 531 within +/-4 bytes, 284 within +/-2. The largest single b
      15  `add ; mov` -> `lea`      instruction selection
      13  `mov ; cmp` -> `movsx ; cmp`   extension-width selection
 
-Every dominant entry is REGISTER ALLOCATION or INSTRUCTION SELECTION. None is recoverable
+Every dominant entry is REGISTER ALLOCATION or INSTRUCTION SELECTION — **except one, which IS
+recoverable**: `mov ; cmp` -> `movsx ; cmp` (13 in this bucket, 24 corpus-wide) is a recovered
+WIDTH error. FUN_00020490:
+
+    orig   add eax,ebx ; cwde ; cmp eax,0xff        16-bit add, THEN sign-extend the sum
+    ours   cwde ; movsx edx,bx ; add eax,edx ; cmp  extend each operand, add in 32-bit
+    C      iVar3 = (int4)(iVar2 + iVar1);           cast on the sum, at width FOUR
+
+The original's `cwde` AFTER the add says the sum is 2 bytes; we recovered 4. Same family as the
+widest-write output fix — a return/expression width, not an allocator choice. This is the one
+entry in the census worth decompiler effort. None is recoverable
 information that a better decompiler could supply — the emitted C does not choose which register
 holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
 zero-extended by `xor`+`mov` or by `and`.
