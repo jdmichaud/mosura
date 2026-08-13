@@ -61,7 +61,10 @@ fn main() {
     }
 
     let rows = read_manifest(manifest);
-    let flags = read_flags(flagsfile);
+    // `recover` derives the per-function options from each original function's own prologue
+    // instead of reading a table. That is the general path: a second binary has no table.
+    let recover_flags = flagsfile == "recover";
+    let flags = if recover_flags { HashMap::new() } else { read_flags(flagsfile) };
     let prelude = std::fs::read_to_string(Path::new(srcdir).join("../prelude.h"))
         .or_else(|_| std::fs::read_to_string("prelude.h"))
         .unwrap_or_default();
@@ -92,6 +95,15 @@ fn main() {
         std::process::exit(1);
     }
 
+    // The stack and frame pointers, by name for this language. A general driver would read the
+    // stack pointer from the compiler spec's `<stackpointer>`; there is no declaration of a frame
+    // pointer anywhere, so it is named here and passed in, which is why `buildconfig::detect`
+    // takes both as parameters rather than assuming an architecture.
+    let (sp, fp) = mosura::lang::load_cached(LANG)
+        .and_then(|(spec, _)| Some(((spec.register_offset("ESP")?, 4u32), (spec.register_offset("EBP")?, 4u32))))
+        .expect("stack/frame pointer registers");
+    let profile = mosura::recompile::buildconfig::watcom_10_0a();
+
     let mut units = Vec::new();
     let mut kept: Vec<&Row> = Vec::new();
     for r in &selected {
@@ -100,12 +112,32 @@ fn main() {
             eprintln!("{}: no source at {}", r.name, path.display());
             continue;
         };
-        let fl = flags.get(&r.idx).cloned().unwrap_or_else(|| DEFAULT_FLAGS.to_string());
-        units.push(CompileUnit {
-            key: r.idx.clone(),
-            source,
-            flags: fl.split_whitespace().map(str::to_string).collect(),
-        });
+        let unit_flags: Vec<String> = if recover_flags {
+            let mut obytes = Vec::with_capacity(r.len);
+            for k in 0..r.len {
+                match prog.memory.byte_at(Address::new(space, r.va + k as u64)) {
+                    Some(b) => obytes.push(b),
+                    None => break,
+                }
+            }
+            let insns = mosura::recompile::insn::normalize(
+                LANG,
+                &obytes,
+                r.va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .expect("language tables");
+            profile.flags_for(&mosura::recompile::buildconfig::detect(&insns, sp, fp))
+        } else {
+            flags
+                .get(&r.idx)
+                .cloned()
+                .unwrap_or_else(|| DEFAULT_FLAGS.to_string())
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        };
+        units.push(CompileUnit { key: r.idx.clone(), source, flags: unit_flags });
         kept.push(r);
     }
 

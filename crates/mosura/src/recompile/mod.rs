@@ -29,12 +29,14 @@
 //! "this was written in assembler" (not reachable from C at all). Those three need completely
 //! different responses, and until they are separated the population cannot be worked.
 pub mod align;
+pub mod buildconfig;
 pub mod candidate;
 pub mod insn;
 pub mod toolchain;
 pub mod verify;
 pub mod vocab;
 
+pub use buildconfig::{BuildConfig, Evidence, Profile};
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
 pub use candidate::{Candidate, CandFixup, SymbolResolver, load_object_function};
 pub use insn::{NormInsn, normalize};

@@ -1,0 +1,301 @@
+//! Recovering the BUILD, not just the code: which compiler options each function was compiled with.
+//!
+//! A byte-exact claim is a claim about a specific compiler invoked a specific way. Two of WAR2's
+//! options are visible in its own bytes and change the emitted function completely — whether a BP
+//! frame is built at all, and whether callee-saved registers are pushed before or after it — so
+//! compiling every function one way guarantees a mismatch on most of them, however good the
+//! decompilation is.
+//!
+//! The evidence is read from the ORIGINAL function's decoded instructions rather than from a byte
+//! pattern. A frame prologue is "push the frame-pointer register, then copy the stack pointer into
+//! it" — a statement about what the instructions do, which holds for every encoding of it and for
+//! architectures whose spellings nobody here has seen. Matching hex, the way the WAR2-specific
+//! script this replaces does, misses the second encoding of the same instruction: WAR2 contains
+//! both `55 89 e5` and `55 8b ec`, and a scan written for one silently mis-flags 84 functions.
+//!
+//! What stays outside: which flags a *profile* maps evidence to is toolchain knowledge, and it
+//! belongs in a profile rather than in the decompiler. And a project that has independent ground
+//! truth about its build (a recovered makefile, per-file options) supplies it as an override —
+//! this module consumes such an answer, never invents one.
+
+use super::insn::{NormInsn, SemArg, SemOp};
+use std::collections::HashMap;
+
+/// What the original function's own code says about how it was compiled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Evidence {
+    /// The function builds a frame: the frame-pointer register is pushed, then the stack pointer
+    /// is copied into it.
+    pub frame_prologue: bool,
+    /// Callee-saved registers are pushed BEFORE the frame is built.
+    ///
+    /// This separates the compiler's two prologue paths. Building the frame first requires
+    /// restoring the stack pointer from it at the end (`lea esp,[ebp-N]`); saving first does not,
+    /// and the epilogue is bare pops. A function whose original saves first was not compiled the
+    /// other way, and compiling it that way costs at least three bytes no matter what the C says.
+    pub saves_before_frame: bool,
+}
+
+/// A rule mapping evidence to option changes, for one toolchain.
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub when_frame_prologue: Option<bool>,
+    pub when_saves_before_frame: Option<bool>,
+    pub add: Vec<String>,
+    pub remove: Vec<String>,
+}
+
+/// One toolchain's base options and evidence rules.
+#[derive(Debug, Clone)]
+pub struct Profile {
+    pub name: String,
+    pub base: Vec<String>,
+    pub rules: Vec<Rule>,
+}
+
+impl Profile {
+    /// Options for a function with this evidence.
+    pub fn flags_for(&self, ev: &Evidence) -> Vec<String> {
+        let mut out = self.base.clone();
+        for r in &self.rules {
+            if r.when_frame_prologue.is_some_and(|w| w != ev.frame_prologue) {
+                continue;
+            }
+            if r.when_saves_before_frame.is_some_and(|w| w != ev.saves_before_frame) {
+                continue;
+            }
+            out.retain(|f| !r.remove.contains(f));
+            for a in &r.add {
+                if !out.contains(a) {
+                    out.push(a.clone());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Watcom C/C++32 10.0a as WAR2 was built with it.
+///
+/// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
+/// checking (`-s`) and the measured optimization set (`-onatx`). The one evidence rule is `-d1+`:
+/// line-number debug information, which is what makes this compiler emit a BP frame on the path
+/// WAR2 was built with. Adding it to a frameless function adds four bytes that are not there, so
+/// it is applied only where the original has a frame.
+///
+/// Deliberately NOT here: `-of`/`-of+`. Both force the other prologue path, and every WAR2
+/// function that saves registers before its frame is evidence against them.
+pub fn watcom_10_0a() -> Profile {
+    Profile {
+        name: "watcom-10.0a".into(),
+        base: ["-4r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
+        rules: vec![Rule {
+            when_frame_prologue: Some(true),
+            when_saves_before_frame: None,
+            add: vec!["-d1+".into()],
+            remove: vec!["-of".into(), "-of+".into()],
+        }],
+    }
+}
+
+/// Read the evidence out of a function's decoded prologue.
+///
+/// `sp` and `fp` are the stack- and frame-pointer registers as `(register-space offset, size)`;
+/// the caller resolves them from the language rather than this module assuming an architecture.
+pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
+    let mut ev = Evidence::default();
+    let mut pushes_before = 0usize;
+    for (i, insn) in insns.iter().enumerate().take(PROLOGUE_WINDOW) {
+        if is_frame_setup(insn, sp, fp) {
+            ev.frame_prologue = true;
+            // A push of the frame pointer itself is part of the frame setup, not a callee-saved
+            // register save, so it does not count as saving first.
+            ev.saves_before_frame = pushes_before > 0;
+            break;
+        }
+        match push_of(insn, sp) {
+            Some(reg) if reg != fp => pushes_before += 1,
+            Some(_) => {}
+            None => break, // anything else ends the prologue
+        }
+        let _ = i;
+    }
+    ev
+}
+
+/// How many instructions into the function a frame setup may appear. Registers are saved first on
+/// one of the two paths, so the window has to cover a realistic save list.
+const PROLOGUE_WINDOW: usize = 12;
+
+/// `fp = sp`, however it is spelled: a single COPY of the stack pointer into the frame pointer.
+fn is_frame_setup(insn: &NormInsn, sp: (u64, u32), fp: (u64, u32)) -> bool {
+    matches!(
+        insn.sem.as_slice(),
+        [SemOp { opcode: CPUI_COPY, out: Some(SemArg::Reg(o, osz)), ins }]
+            if (*o, *osz) == fp && matches!(ins.as_slice(), [SemArg::Reg(i, isz)] if (*i, *isz) == sp)
+    )
+}
+
+/// A push: the stack pointer is decremented and a register is stored at the new top. Returns the
+/// pushed register.
+///
+/// The stored value is a lifter TEMPORARY, not the register itself — `PUSH EBP` becomes
+/// `t = COPY EBP ; ESP = INT_SUB ESP,4 ; STORE ram ESP t` — so the store's operand is resolved
+/// back through the copies inside the instruction. Matching the register directly finds nothing,
+/// which made this return `None` for every push and stop the prologue scan at its first
+/// instruction.
+fn push_of(insn: &NormInsn, sp: (u64, u32)) -> Option<(u64, u32)> {
+    let mut decremented = false;
+    let mut stored: Option<&SemArg> = None;
+    // Temporary -> what was copied into it, within this instruction.
+    let mut origin: Vec<(&SemArg, &SemArg)> = Vec::new();
+    for op in &insn.sem {
+        match op.opcode {
+            CPUI_COPY => {
+                if let (Some(out @ SemArg::Temp(..)), [src]) = (&op.out, op.ins.as_slice()) {
+                    origin.push((out, src));
+                }
+            }
+            CPUI_INT_SUB | CPUI_INT_ADD => {
+                if matches!(&op.out, Some(SemArg::Reg(o, s)) if (*o, *s) == sp) {
+                    decremented = true;
+                }
+            }
+            CPUI_STORE => {
+                if let [_, _, value] = op.ins.as_slice() {
+                    stored = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !decremented {
+        return None;
+    }
+    let mut value = stored?;
+    for _ in 0..4 {
+        match value {
+            SemArg::Reg(r, s) => return Some((*r, *s)),
+            _ => match origin.iter().find(|(t, _)| *t == value) {
+                Some((_, src)) => value = src,
+                None => return None,
+            },
+        }
+    }
+    None
+}
+
+const CPUI_COPY: u32 = 1;
+const CPUI_STORE: u32 = 3;
+const CPUI_INT_ADD: u32 = 19;
+const CPUI_INT_SUB: u32 = 20;
+
+/// Per-function options for a whole program.
+#[derive(Debug, Default, Clone)]
+pub struct BuildConfig {
+    /// Keyed by function entry address.
+    pub flags: HashMap<u64, Vec<String>>,
+    pub profile: String,
+}
+
+impl BuildConfig {
+    pub fn get(&self, entry: u64) -> Option<&Vec<String>> {
+        self.flags.get(&entry)
+    }
+}
+
+/// Recover per-function options for every function whose original instructions are supplied.
+///
+/// `overrides` carries independent ground truth about the build, keyed by entry address; where it
+/// speaks, it wins, because it is evidence this module cannot derive. Everything else comes from
+/// the profile's rules applied to the function's own prologue.
+pub fn recover(
+    profile: &Profile,
+    functions: &[(u64, Vec<NormInsn>)],
+    sp: (u64, u32),
+    fp: (u64, u32),
+    overrides: &HashMap<u64, Vec<String>>,
+) -> BuildConfig {
+    let mut flags = HashMap::with_capacity(functions.len());
+    for (entry, insns) in functions {
+        let ev = detect(insns, sp, fp);
+        let mut f = match overrides.get(entry) {
+            // An override states the build, not the evidence, so the evidence rules still apply on
+            // top: the two answer different questions and the override does not know this
+            // function's prologue.
+            Some(o) => o.clone(),
+            None => profile.base.clone(),
+        };
+        for r in &profile.rules {
+            if r.when_frame_prologue.is_some_and(|w| w != ev.frame_prologue) {
+                continue;
+            }
+            if r.when_saves_before_frame.is_some_and(|w| w != ev.saves_before_frame) {
+                continue;
+            }
+            f.retain(|x| !r.remove.contains(x));
+            for a in &r.add {
+                if !f.contains(a) {
+                    f.push(a.clone());
+                }
+            }
+        }
+        flags.insert(*entry, f);
+    }
+    BuildConfig { flags, profile: profile.name.clone() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recompile::insn::{NoReloc, normalize};
+
+    const ESP: (u64, u32) = (0x10, 4);
+    const EBP: (u64, u32) = (0x14, 4);
+
+    fn lift(hex: &str) -> Vec<NormInsn> {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
+    }
+
+    /// BOTH encodings of `mov ebp,esp` are a frame setup. The script this replaces matched hex, and
+    /// WAR2 contains both spellings — 261 functions use one and 84 the other.
+    #[test]
+    fn a_frame_is_recognized_in_either_encoding() {
+        for hex in ["5589e58b45085dc3", "558bec8b45085dc3"] {
+            let ev = detect(&lift(hex), ESP, EBP);
+            assert!(ev.frame_prologue, "{hex}");
+            assert!(!ev.saves_before_frame, "{hex}");
+        }
+    }
+
+    /// Registers pushed BEFORE the frame is the other prologue path, and the frame-pointer's own
+    /// push does not count as one.
+    #[test]
+    fn saving_before_the_frame_is_distinguished() {
+        // push edx; push ebp; mov ebp,esp; pop ebp; pop edx; ret
+        let ev = detect(&lift("52558 9e55d5ac3".replace(' ', "").as_str()), ESP, EBP);
+        assert!(ev.frame_prologue);
+        assert!(ev.saves_before_frame);
+    }
+
+    /// A function with no frame at all reports neither.
+    #[test]
+    fn a_frameless_function_reports_no_frame() {
+        // mov eax,edx; add eax,1; ret
+        let ev = detect(&lift("89d083c001c3"), ESP, EBP);
+        assert!(!ev.frame_prologue);
+        assert!(!ev.saves_before_frame);
+    }
+
+    /// The Watcom profile adds the frame flag only where there is a frame — on a frameless
+    /// function it would add four bytes the original does not have.
+    #[test]
+    fn the_frame_flag_is_applied_only_where_there_is_a_frame() {
+        let p = watcom_10_0a();
+        assert!(p.flags_for(&Evidence { frame_prologue: true, saves_before_frame: false }).contains(&"-d1+".to_string()));
+        assert!(!p.flags_for(&Evidence::default()).contains(&"-d1+".to_string()));
+    }
+}
