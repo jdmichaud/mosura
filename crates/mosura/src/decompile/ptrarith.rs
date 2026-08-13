@@ -117,6 +117,56 @@ fn type_read_facing(f: &Funcdata, v: VarnodeId) -> Datatype {
 }
 
 /// The input slot at which `vn` appears in `op` (Ghidra `PcodeOp::getSlot`).
+/// Ghidra `RulePushPtr::buildVarnodeOut` (ruleaction.cc:6800): an output varnode for a duplicated
+/// op — in the original storage when that storage is a real, non-tied location, otherwise a fresh
+/// unique. Address-tied storage cannot be duplicated into, because two ops would then define the
+/// same tied location.
+fn build_varnode_out(data: &mut Funcdata, vn: VarnodeId, op: OpId) -> VarnodeId {
+    let size = data.vn(vn).size;
+    let internal =
+        data.spaces.get(data.vn(vn).loc.space).kind == super::space::SpaceKind::Internal;
+    if data.vn(vn).is_addrtied() || internal {
+        return data.new_output_unique(op, size);
+    }
+    let loc = data.vn(vn).loc;
+    data.new_output(op, size, loc)
+}
+
+/// Ghidra `RulePushPtr::duplicateNeed` (ruleaction.cc:6812): give every reader of this op's output
+/// its own copy of the op, then destroy the original. The point is to un-share a value whose single
+/// definition would otherwise force a temporary into the output: once each reader has its own
+/// extension (or multiply), the operation can be folded into each reader's expression and printed
+/// inline.
+///
+/// Used by [`RuleExtensionPush`](super::rules::RuleExtensionPush) and, in Ghidra, by `RulePushPtr`
+/// itself via `collectDuplicateNeeds`.
+pub fn duplicate_need(data: &mut Funcdata, op: OpId) {
+    let Some(out_vn) = data.op(op).output else { return };
+    let Some(in_vn) = data.op(op).input(0) else { return };
+    let num = data.op(op).num_inputs();
+    let opc = data.op(op).code();
+    let in1 = if num > 1 { data.op(op).input(1) } else { None };
+    let out_ty = data.vn(out_vn).ty.clone();
+    while let Some(dec_op) = data.vn(out_vn).descend.first().copied() {
+        let slot = get_slot(data, dec_op, out_vn);
+        // Duplicate the op at the ORIGINAL address (Ghidra `op->getAddr()`), inserted before the
+        // reader so its result is defined where it is used.
+        let pc = data.op(op).seqnum.pc;
+        let uniq = data.num_ops() as u32;
+        let new_op = data.new_op(opc, super::op::SeqNum { pc, uniq }, vec![in_vn]);
+        if let Some(v1) = in1 {
+            data.op_set_all_input(new_op, &[in_vn, v1]);
+        }
+        let new_out = build_varnode_out(data, out_vn, new_op);
+        if let Some(ct) = out_ty.clone() {
+            data.vn_mut(new_out).update_type(ct);
+        }
+        data.op_set_input(dec_op, slot, new_out);
+        data.op_insert_before(new_op, dec_op);
+    }
+    data.op_destroy(op);
+}
+
 fn get_slot(f: &Funcdata, op: OpId, vn: VarnodeId) -> usize {
     f.op(op).inrefs.iter().position(|&v| v == vn).unwrap_or(0)
 }

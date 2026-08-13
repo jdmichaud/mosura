@@ -1233,6 +1233,38 @@ impl Funcdata {
     /// Disconnect `op` from the graph (Ghidra's `opDestroy`): drop it from every input's
     /// descendant list, clear its output's def, and mark it dead. The op stays in the
     /// arena but is detached and should be removed from its block's op list separately.
+    /// Ghidra `Funcdata::opDestroyRecursive` (funcdata_op.cc:398): destroy an op and, transitively,
+    /// the ops defining inputs that only it read. An input's definition follows it down only when
+    /// the input is written, is not `autolive` (address-tied storage that must survive), had this
+    /// op as its LONE reader, and is not produced by a call or an INDIRECT source — those have
+    /// effects beyond the value.
+    ///
+    /// Ghidra threads a caller-owned `scratch` vector purely to reuse the allocation; the worklist
+    /// is local here.
+    pub fn op_destroy_recursive(&mut self, op: OpId) {
+        let mut worklist = vec![op];
+        let mut pos = 0;
+        while pos < worklist.len() {
+            let cur = worklist[pos];
+            pos += 1;
+            for i in 0..self.op(cur).num_inputs() {
+                let Some(vn) = self.op(cur).input(i) else { continue };
+                if !self.vn(vn).is_written() || self.vn(vn).is_auto_live() {
+                    continue;
+                }
+                if self.lone_descend(vn).is_none() {
+                    continue;
+                }
+                let def_op = self.vn(vn).def.unwrap();
+                if self.op(def_op).is_call() || self.op(def_op).is_indirect_source() {
+                    continue;
+                }
+                worklist.push(def_op);
+            }
+            self.op_destroy(cur);
+        }
+    }
+
     pub fn op_destroy(&mut self, op: OpId) {
         self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let inrefs = std::mem::take(&mut self.ops[op.0 as usize].inrefs);

@@ -327,12 +327,12 @@ as a phantom MISSING — it isn't.
 | RuleMultNegOne | PORTED (cleanup_pool) |
 | RuleAddUnsigned | PORTED (cleanup_pool) |
 | Rule2Comp2Sub | PORTED (cleanup_pool) |
-| RuleDumptyHumpLate | MISSING |
+| RuleDumptyHumpLate | PORTED (rules.rs — subflow.cc:3006, cleanup slot :5698): `SUB(PIECE(a,b),k)` reads the component directly, backtracking through nested PIECEs until the truncation would straddle two components or the component matches exactly. All three of Ghidra's outcomes ported — re-root the SUBPIECE with a rebased offset (component wider than the output), SUBPIECE→COPY (exact match, autolive output), or replace the output outright (exact match, free output) — plus the recursive cleanup of whatever is left dangling. Required porting `Funcdata::opDestroyRecursive` (funcdata_op.cc:398). Corpus-neutral. |
 | RuleSubRight | PORTED (rules.rs, wired in cleanup_pool at Ghidra's actcleanup slot (coreaction.cc:5700) — `sub(V,c) => sub(V>>c*8, 0)` truncation-to-cast cleanup, with lone INT_RIGHT/SRIGHT descendant lumping + sign-extraction clamp; 4 unit tests. Ghidra's special-print/isPieceStructured guard is vacuously absent (no TypePartialStruct yet, P4/P8 debt); the uint/int typing of the new shift output is likewise not carried (no datatypes at rule time)) |
-| RuleFloatSignCleanup | MISSING |
+| RuleFloatSignCleanup | PORTED (rules.rs — ruleaction.cc:10771, cleanup slot :5700): the post-type-inference twin of RuleFloatSign — a sign manipulation whose OUTPUT IS TYPED float is FLOAT_ABS/FLOAT_NEG on its own, with no neighbouring float op required. Shares `float_sign_manipulation` with RuleFloatSign, as in Ghidra. Corpus-neutral. |
 | RuleExpandLoad | MISSING |
 | RulePtrsubCharConstant | MISSING |
-| RuleExtensionPush | MISSING |
+| RuleExtensionPush | PORTED (rules.rs — ruleaction.cc:10827, cleanup slot :5703): an extension read by ≥2 pointer-arithmetic consumers is duplicated into each, so it prints inline in every index expression instead of forcing a named temporary. Fires only when every reader is a PTRADD or an INT_ADD whose lone reader is a PTRADD — i.e. when the extension is about to be hidden anyway. Required porting `RulePushPtr::duplicateNeed` + `buildVarnodeOut` (ruleaction.cc:6812/6800) into ptrarith.rs, which also **retires the omission noted on the RulePushPtr row** — the helper now exists, though RulePushPtr's own `collectDuplicateNeeds` call site is still not wired. Ghidra's locked/tied guards ported verbatim (a duplicated definition must not land in fixed storage). Corpus-neutral. |
 | RulePieceStructure | MISSING |
 | RuleSplitCopy | BLOCKED(SplitDatatype subsystem — subflow.cc) |
 | RuleSplitLoad | BLOCKED(SplitDatatype subsystem — subflow.cc) |
@@ -464,13 +464,13 @@ oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registr
   `setStackStore`/`markNotMapped` and the SEGMENTOP form stay omitted). 1 absent:
   `RuleStructOffset0` — PARTIAL, the behaviour lives in `ptrarith.rs` / infertypes struct-offset-0
   rather than as a rule.
-- **cleanup** (15): **4 ported** (Rule2Comp2Sub, RuleAddUnsigned, RuleMultNegOne, RuleSubRight — the
-  Sub2Add reconstruction subset), 3 BLOCKED (RuleSplitCopy/Load/Store — SplitDatatype, subflow.cc),
-  2 BLOCKED on constsequence (RuleStringCopy, RuleStringStore), **6 MISSING**: RuleDumptyHumpLate,
-  RuleExpandLoad, RuleExtensionPush, RuleFloatSignCleanup, RulePieceStructure,
+- **cleanup** (15): **7 ported** (Rule2Comp2Sub, RuleAddUnsigned, RuleMultNegOne, RuleSubRight — the
+  Sub2Add reconstruction subset — plus RuleDumptyHumpLate, RuleFloatSignCleanup, RuleExtensionPush),
+  3 BLOCKED (RuleSplitCopy/Load/Store — SplitDatatype, subflow.cc), 2 BLOCKED on constsequence
+  (RuleStringCopy, RuleStringStore), **3 MISSING**: RuleExpandLoad, RulePieceStructure,
   RulePtrsubCharConstant.
 
-**Live gap: 24 of Ghidra's 154 rules have no mosura implementation** — 13 MISSING (the mechanical
+**Live gap: 21 of Ghidra's 154 rules have no mosura implementation** — 10 MISSING (the mechanical
 tail), 8 BLOCKED on an absent subsystem (SubfloatFlow, cpool, isPtrFlow, SplitDatatype ×3,
 constsequence ×2), 1 DEFERRED (RuleLeftRight), 1 N/A (RuleSegment), 1 PARTIAL-elsewhere
 (RuleStructOffset0). Exactly one mosura `Rule*` name is not a Ghidra name — `RuleConstFold` — so the
@@ -481,7 +481,7 @@ family, RuleEarlyRemoval, RuleScarry, RuleFloatCast, RuleShiftAnd, RulePiece2Sex
 RuleSubZext, RuleSubvarSext, RuleIndirectCollapse, RulePushPtr, RuleDoubleLoad/RuleDoubleStore, and
 RuleLoadVarnode/RuleStoreVarnode (both branches). The only remaining gap carrying a fixture
 attribution is the **RuleSplit\* family** (concatsplit: mosura emits one 16-byte store where Ghidra
-splits). Nothing in the current 13-rule MISSING set has a fixture citation, and the @`554620e` trace
+splits). Nothing in the current 10-rule MISSING set has a fixture citation, and the @`554620e` trace
 survey found Ghidra firing neither double-precision rule anywhere on the corpus — so pick the next
 targets from a fresh trace-diff, not from this list's order.
 

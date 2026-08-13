@@ -22,7 +22,8 @@ use super::rules::{
     RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
-    RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse,
+    RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
+    RuleFloatSignCleanup, RuleExtensionPush,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -569,7 +570,18 @@ pub fn cleanup_pool() -> ActionPool {
         .with(RuleMultNegOne)
         .with(RuleAddUnsigned)
         .with(Rule2Comp2Sub)
+        // RuleDumptyHumpLate (coreaction.cc:5698): `SUB(PIECE(a,b),k)` reads the component
+        // directly — the concatenation taken apart again.
+        .with(RuleDumptyHumpLate)
         .with(RuleSubRight)
+        // RuleFloatSignCleanup (coreaction.cc:5700): the post-type-inference twin of
+        // RuleFloatSign — a sign manipulation whose result is TYPED float needs no neighbouring
+        // float op to be recognized.
+        .with(RuleFloatSignCleanup)
+        // RuleExpandLoad (:5701) and RulePtrsubCharConstant (:5702) are not ported yet.
+        // RuleExtensionPush (coreaction.cc:5703): an extension feeding several PTRADD readers is
+        // duplicated into each, so it prints inline instead of forcing a temporary.
+        .with(RuleExtensionPush)
 }
 
 /// Ghidra `ActionNonzeroMask` (`coreaction.cc:5507`, group "analysis"): recompute every Varnode's

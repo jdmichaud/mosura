@@ -317,6 +317,11 @@ impl Varnode {
     pub fn is_typelock(&self) -> bool {
         self.flags & flags::TYPELOCK != 0
     }
+    /// Ghidra `Varnode::isNameLock` (varnode.hh:299) — the name attached to this storage is fixed,
+    /// so a transform must not redefine or duplicate into it.
+    pub fn is_namelock(&self) -> bool {
+        self.flags & flags::NAMELOCK != 0
+    }
     /// Ghidra `Varnode::setImplied` — this value is folded into the expression that uses it.
     pub fn set_implied(&mut self) {
         self.flags |= flags::IMPLIED;

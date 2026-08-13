@@ -9411,6 +9411,195 @@ impl Rule for RuleInt2FloatCollapse {
     }
 }
 
+/// Ghidra `RuleFloatSignCleanup` (ruleaction.cc:10771, coreaction.cc:5700): the cleanup-pool twin
+/// of [`RuleFloatSign`]. By this point type inference has run, so a sign manipulation whose result
+/// is *typed* float can be recognized on its own — no neighbouring float op needed. Same two forms
+/// (see [`float_sign_manipulation`]): mask off the sign bit is `FLOAT_ABS`, flip it is `FLOAT_NEG`.
+pub struct RuleFloatSignCleanup;
+
+impl Rule for RuleFloatSignCleanup {
+    fn name(&self) -> &str {
+        "floatsigncleanup"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntAnd, OpCode::IntXor]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(out) = data.op(op).output else { return 0 };
+        if !matches!(data.vn(out).get_type(), super::types::Datatype::Float(_)) {
+            return 0;
+        }
+        let Some(opc) = float_sign_manipulation(data, op) else { return 0 };
+        data.op_remove_input(op, 1);
+        data.op_set_opcode(op, opc);
+        1
+    }
+}
+
+/// Ghidra `RuleDumptyHumpLate` (subflow.cc:3006, coreaction.cc:5698): a truncation of a
+/// concatenation that lands inside one component reads that component directly — `SUB(PIECE(a,b),k)`
+/// becomes a read of `a` or `b`. ("Humpty Dumpty": the pieces were put together and are now being
+/// taken apart again.) The backtrack repeats through nested PIECEs, stopping when the truncation
+/// would straddle two components or the component is reached exactly.
+///
+/// Three outcomes, all Ghidra's: the component is bigger than the output, so the SUBPIECE stays but
+/// re-roots onto the component with an adjusted offset; the sizes match but the output is
+/// address-tied (`autolive`), so the SUBPIECE becomes a COPY; or the sizes match and the output is
+/// free, so the output is replaced by the component outright. Whatever op is left dangling is
+/// destroyed recursively (see [`Funcdata::op_destroy_recursive`]).
+pub struct RuleDumptyHumpLate;
+
+impl Rule for RuleDumptyHumpLate {
+    fn name(&self) -> &str {
+        "dumptyhumplate"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Subpiece]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(in0) = data.op(op).input(0) else { return 0 };
+        let mut vn = in0;
+        if !data.vn(vn).is_written() {
+            return 0;
+        }
+        let mut piece_op = data.vn(vn).def.unwrap();
+        if data.op(piece_op).code() != OpCode::Piece {
+            return 0;
+        }
+        let Some(out) = data.op(op).output else { return 0 };
+        let out_size = data.vn(out).size;
+        let Some(off_vn) = data.op(op).input(1) else { return 0 };
+        let mut trunc = data.vn(off_vn).constant_value() as u32;
+        // Ghidra's `for(;;)` with five exits; hoisting the first into a `while let` header would
+        // hide the other four, so the loop keeps its shape.
+        #[allow(clippy::while_let_loop)]
+        loop {
+            // Try to backtrack through the PIECE to the component vn is truncated from. Assume the
+            // least significant component first.
+            let Some(mut trial_vn) = data.op(piece_op).input(1) else { break };
+            let mut trial_trunc = trunc;
+            if trunc >= data.vn(trial_vn).size {
+                // Truncation is from the most significant part.
+                trial_trunc -= data.vn(trial_vn).size;
+                let Some(hi) = data.op(piece_op).input(0) else { break };
+                trial_vn = hi;
+            }
+            if out_size + trial_trunc > data.vn(trial_vn).size {
+                break; // vn crosses both components
+            }
+            vn = trial_vn; // commit to this component
+            trunc = trial_trunc;
+            if data.vn(vn).size == out_size {
+                break; // found the matching component
+            }
+            if !data.vn(vn).is_written() {
+                break;
+            }
+            piece_op = data.vn(vn).def.unwrap();
+            if data.op(piece_op).code() != OpCode::Piece {
+                break;
+            }
+        }
+        if vn == in0 {
+            return 0; // didn't backtrack through any PIECE
+        }
+        if data.vn(vn).is_written() {
+            let def = data.vn(vn).def.unwrap();
+            if data.op(def).code() == OpCode::Copy {
+                if let Some(src) = data.op(def).input(0) {
+                    vn = src;
+                }
+            }
+        }
+        let remove_op;
+        if out_size != data.vn(vn).size {
+            // Component does not match the size exactly — preserve the SUBPIECE.
+            remove_op = data.vn(in0).def.unwrap();
+            if data.vn(data.op(op).input(1).unwrap()).constant_value() != trunc as u64 {
+                let newoff = data.new_const(4, trunc as u64);
+                data.op_set_input(op, 1, newoff);
+            }
+            data.op_set_input(op, 0, vn);
+        } else if data.vn(out).is_auto_live() {
+            // Exact match but the output address is fixed — change the SUBPIECE to a COPY.
+            remove_op = data.vn(in0).def.unwrap();
+            data.op_remove_input(op, 1);
+            data.op_set_opcode(op, OpCode::Copy);
+            data.op_set_input(op, 0, vn);
+        } else {
+            // Exact match — replace the output with the component outright.
+            remove_op = op;
+            data.total_replace(out, vn);
+        }
+        let rem_out = data.op(remove_op).output;
+        if let Some(ro) = rem_out {
+            if data.vn(ro).descend.is_empty() && !data.vn(ro).is_auto_live() {
+                data.op_destroy_recursive(remove_op);
+            }
+        }
+        1
+    }
+}
+
+/// Ghidra `RuleExtensionPush` (ruleaction.cc:10827, coreaction.cc:5703): an extension feeding
+/// several pointer-arithmetic readers is duplicated into each of them, so it can be printed inline
+/// at each use instead of forcing a named temporary. It fires only when every reader is a PTRADD,
+/// or an INT_ADD whose own lone reader is a PTRADD — i.e. when the extension is about to be hidden
+/// inside an array index anyway — and only when there are at least two such readers.
+///
+/// The locked/tied guards are Ghidra's: neither the input nor the output may be address-tied,
+/// address-forced, or name/type locked, because duplicating a definition into fixed storage would
+/// give that storage two definitions. See [`super::ptrarith::duplicate_need`] for the duplication.
+pub struct RuleExtensionPush;
+
+impl Rule for RuleExtensionPush {
+    fn name(&self) -> &str {
+        "extensionpush"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::IntZext, OpCode::IntSext]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        let Some(in_vn) = data.op(op).input(0) else { return 0 };
+        if data.vn(in_vn).is_constant() || data.vn(in_vn).is_addr_force() || data.vn(in_vn).is_addrtied()
+        {
+            return 0;
+        }
+        let Some(out_vn) = data.op(op).output else { return 0 };
+        if data.vn(out_vn).is_typelock() || data.vn(out_vn).is_namelock() {
+            return 0;
+        }
+        if data.vn(out_vn).is_addr_force() || data.vn(out_vn).is_addrtied() {
+            return 0;
+        }
+        let mut addcount = 0; // number of INT_ADD descendants
+        let mut ptrcount = 0; // number of PTRADD descendants
+        for dec_op in data.vn(out_vn).descend.clone() {
+            match data.op(dec_op).code() {
+                OpCode::Ptradd => ptrcount += 1, // this extension will likely be hidden
+                OpCode::IntAdd => {
+                    let Some(add_out) = data.op(dec_op).output else { return 0 };
+                    let Some(sub_op) = lone_descend(data, add_out) else { return 0 };
+                    if data.op(sub_op).code() != OpCode::Ptradd {
+                        return 0;
+                    }
+                    addcount += 1;
+                }
+                _ => return 0,
+            }
+        }
+        if addcount + ptrcount <= 1 {
+            return 0;
+        }
+        if addcount > 0 && lone_descend(data, in_vn).is_some() {
+            return 0;
+        }
+        // Duplicate the extension to all result descendants.
+        super::ptrarith::duplicate_need(data, op);
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14181,6 +14370,175 @@ mod tests {
         let signed = f.vn(f.op(phi).input(0).unwrap()).def.unwrap();
         assert_eq!(RuleInt2FloatCollapse.apply_op(signed, &mut f), 0);
         assert_eq!(f.op(phi).code(), OpCode::Multiequal);
+    }
+
+
+    // ---- batch 3: RuleFloatSignCleanup / RuleDumptyHumpLate / RuleExtensionPush -------------
+
+    #[test]
+    fn floatsign_cleanup_typed_float_and_becomes_abs() {
+        // Post-type-inference: an INT_AND clearing the sign bit whose OUTPUT IS TYPED FLOAT is
+        // FLOAT_ABS on its own, with no neighbouring float op (ruleaction.cc:10771).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0x7fff_ffff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let out = f.new_output_unique(and, 4);
+        f.vn_mut(out).update_type(crate::decompile::types::Datatype::Float(4));
+        parent_all(&mut f, vec![and]);
+        assert_eq!(RuleFloatSignCleanup.apply_op(and, &mut f), 1);
+        assert_eq!(f.op(and).code(), OpCode::FloatAbs);
+        assert_eq!(f.op(and).num_inputs(), 1);
+    }
+
+    #[test]
+    fn floatsign_cleanup_declines_integer_output() {
+        // The same bit pattern on an INTEGER-typed result is ordinary masking — the type test is
+        // the whole difference between this rule and RuleFloatSign.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let v = f.new_input(4, Address::new(reg, 0x10));
+        let mask = f.new_const(4, 0x7fff_ffff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![v, mask]);
+        let out = f.new_output_unique(and, 4);
+        f.vn_mut(out).update_type(crate::decompile::types::Datatype::Uint(4));
+        parent_all(&mut f, vec![and]);
+        assert_eq!(RuleFloatSignCleanup.apply_op(and, &mut f), 0);
+        assert_eq!(f.op(and).code(), OpCode::IntAnd);
+    }
+
+    #[test]
+    fn dumpty_hump_late_reads_the_high_component_directly() {
+        // `SUB(PIECE(hi,lo), 4):4` is just `hi` — exact size match with a free output, so the
+        // output is replaced outright and the reader now reads `hi` (subflow.cc:3012).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let hi = f.new_input(4, Address::new(reg, 0x10));
+        let lo = f.new_input(4, Address::new(reg, 0x18));
+        let piece = f.new_op(OpCode::Piece, seq(0), vec![hi, lo]);
+        let piece_out = f.new_output_unique(piece, 8);
+        let four = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq(1), vec![piece_out, four]);
+        let sub_out = f.new_output_unique(sub, 4);
+        let reader = f.new_op(OpCode::IntAdd, seq(2), vec![sub_out, lo]);
+        f.new_output_unique(reader, 4);
+        parent_all(&mut f, vec![piece, sub, reader]);
+        assert_eq!(RuleDumptyHumpLate.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(reader).input(0), Some(hi));
+    }
+
+    #[test]
+    fn dumpty_hump_late_keeps_subpiece_when_component_is_wider() {
+        // `SUB(PIECE(hi:4,lo:4), 4):2` lands inside `hi` but is narrower — the SUBPIECE survives,
+        // re-rooted onto `hi` with the offset rebased to 0.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let hi = f.new_input(4, Address::new(reg, 0x10));
+        let lo = f.new_input(4, Address::new(reg, 0x18));
+        let piece = f.new_op(OpCode::Piece, seq(0), vec![hi, lo]);
+        let piece_out = f.new_output_unique(piece, 8);
+        let four = f.new_const(4, 4);
+        let sub = f.new_op(OpCode::Subpiece, seq(1), vec![piece_out, four]);
+        f.new_output_unique(sub, 2);
+        parent_all(&mut f, vec![piece, sub]);
+        assert_eq!(RuleDumptyHumpLate.apply_op(sub, &mut f), 1);
+        assert_eq!(f.op(sub).code(), OpCode::Subpiece);
+        assert_eq!(f.op(sub).input(0), Some(hi));
+        let off = f.op(sub).input(1).unwrap();
+        assert_eq!(f.vn(off).constant_value(), 0);
+    }
+
+    #[test]
+    fn dumpty_hump_late_declines_when_truncation_straddles() {
+        // `SUB(PIECE(hi:4,lo:4), 2):4` crosses both components — no component to re-root onto.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let hi = f.new_input(4, Address::new(reg, 0x10));
+        let lo = f.new_input(4, Address::new(reg, 0x18));
+        let piece = f.new_op(OpCode::Piece, seq(0), vec![hi, lo]);
+        let piece_out = f.new_output_unique(piece, 8);
+        let two = f.new_const(4, 2);
+        let sub = f.new_op(OpCode::Subpiece, seq(1), vec![piece_out, two]);
+        f.new_output_unique(sub, 4);
+        parent_all(&mut f, vec![piece, sub]);
+        assert_eq!(RuleDumptyHumpLate.apply_op(sub, &mut f), 0);
+        assert_eq!(f.op(sub).input(0), Some(piece_out));
+    }
+
+    #[test]
+    fn extension_push_duplicates_into_each_ptradd() {
+        // A ZEXT read by two PTRADDs is duplicated into both and the original destroyed, so each
+        // index expression can print its own cast (ruleaction.cc:10827).
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let idx = f.new_input(4, Address::new(reg, 0x10));
+        let base1 = f.new_input(8, Address::new(reg, 0x18));
+        let base2 = f.new_input(8, Address::new(reg, 0x20));
+        let zext = f.new_op(OpCode::IntZext, seq(0), vec![idx]);
+        let zext_out = f.new_output_unique(zext, 8);
+        let elem = f.new_const(8, 4);
+        let pa1 = f.new_op(OpCode::Ptradd, seq(1), vec![base1, zext_out, elem]);
+        f.new_output_unique(pa1, 8);
+        let pa2 = f.new_op(OpCode::Ptradd, seq(2), vec![base2, zext_out, elem]);
+        f.new_output_unique(pa2, 8);
+        parent_all(&mut f, vec![zext, pa1, pa2]);
+        assert_eq!(RuleExtensionPush.apply_op(zext, &mut f), 1);
+        assert!(f.op(zext).is_dead(), "the shared extension is destroyed");
+        // Each PTRADD now reads its OWN zext of the same index.
+        let z1 = f.vn(f.op(pa1).input(1).unwrap()).def.unwrap();
+        let z2 = f.vn(f.op(pa2).input(1).unwrap()).def.unwrap();
+        assert_ne!(z1, z2);
+        for z in [z1, z2] {
+            assert_eq!(f.op(z).code(), OpCode::IntZext);
+            assert_eq!(f.op(z).input(0), Some(idx));
+        }
+    }
+
+    #[test]
+    fn extension_push_declines_single_reader() {
+        // One PTRADD reader — nothing is shared, so there is nothing to un-share.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let idx = f.new_input(4, Address::new(reg, 0x10));
+        let base = f.new_input(8, Address::new(reg, 0x18));
+        let zext = f.new_op(OpCode::IntZext, seq(0), vec![idx]);
+        let zext_out = f.new_output_unique(zext, 8);
+        let elem = f.new_const(8, 4);
+        let pa = f.new_op(OpCode::Ptradd, seq(1), vec![base, zext_out, elem]);
+        f.new_output_unique(pa, 8);
+        parent_all(&mut f, vec![zext, pa]);
+        assert_eq!(RuleExtensionPush.apply_op(zext, &mut f), 0);
+        assert!(!f.op(zext).is_dead());
+    }
+
+    #[test]
+    fn extension_push_declines_non_pointer_reader() {
+        // A reader that is neither PTRADD nor an INT_ADD feeding a PTRADD aborts the whole rule —
+        // the extension is not about to be hidden, so duplicating it would just add ops.
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: ram, uniq: u };
+        let idx = f.new_input(4, Address::new(reg, 0x10));
+        let base = f.new_input(8, Address::new(reg, 0x18));
+        let other = f.new_input(8, Address::new(reg, 0x28));
+        let zext = f.new_op(OpCode::IntZext, seq(0), vec![idx]);
+        let zext_out = f.new_output_unique(zext, 8);
+        let elem = f.new_const(8, 4);
+        let pa = f.new_op(OpCode::Ptradd, seq(1), vec![base, zext_out, elem]);
+        f.new_output_unique(pa, 8);
+        let mul = f.new_op(OpCode::IntMult, seq(2), vec![zext_out, other]);
+        f.new_output_unique(mul, 8);
+        parent_all(&mut f, vec![zext, pa, mul]);
+        assert_eq!(RuleExtensionPush.apply_op(zext, &mut f), 0);
+        assert!(!f.op(zext).is_dead());
     }
 
 }
