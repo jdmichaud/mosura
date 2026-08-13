@@ -363,7 +363,14 @@ pub fn default_rule_pool() -> ActionPool {
         // wrong type (`removeLocalAdds`). The offset checked includes what is added BELOW the
         // PTRSUB (`getExtraOffset`), so a component exceeded only after further additions is
         // caught too.
-        .with(super::ptrarith::RulePtrsubUndo) // (128)
+        // RulePtrsubUndo (coreaction.cc:5639) is PORTED but HELD UNWIRED. It never fires — 0
+        // modifications across a full WAR2 trace — yet its per-PTRSUB evaluation cost is enough to
+        // stop FUN_00024a88 converging: master decompiles it, this branch does not finish in 900s,
+        // and stubbing `get_extra_offset` alone restores it. The walk itself is short (<64 steps),
+        // so the cost is the depth-8 `get_const_offset_back` recursion run per PTRSUB per pool
+        // pass. Ghidra pays the same walk cheaply because its pool reaches this function's fixpoint
+        // in far fewer passes; matching that is a convergence question, not a rule question, so the
+        // rule waits here rather than shipping a hang. See docs/coverage.md.
         // RulePiecePathology (coreaction.cc:5642): a CONCAT whose upper half is the untouched high
         // bytes of a partially-written register is a pathology, not a value. It rewrites nothing —
         // it records how many bytes are real at each CALL argument and RETURN, which the dead-code
