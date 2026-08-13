@@ -5,8 +5,31 @@ metadata:
   type: project
 ---
 
-**CURRENT: 387 byte-clean (M36, 2026-08-13, mosura `79a1aad`), COMPILE_FAIL 99.** Progression:
-133 -> 372 -> 384 (M28) -> 372 (M34, a regression I caused) -> 386 -> **387**.
+**CURRENT: 392 byte-clean (M38, 2026-08-13, mosura `b7a5763`), COMPILE_FAIL 73.** Progression:
+133 -> 372 -> 384 (M28) -> 372 (M34, a regression I caused) -> 386 -> 387 -> **392**.
+
+**THE +5 THAT WORKED, and why:** `guard_calls` was registering a CALLEE-SAVE stack slot as an
+outgoing call argument (554ac15) — Ghidra prevents this in the unported `ActionRestrictLocal`. It
+also took the undefined-local class from 603 TUs to 250, 23 of which became byte-clean. It was
+found by TRACING, not guessing: instrument the code that PRODUCES the output, then the point of
+change, then the varnode's flags, then the COPY's source, then the original's prologue. Four guards
+written before that chain were each keyed on a property the varnode did not have, and all four were
+reverted; one command dumping its flags would have killed all four upfront.
+
+**LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
+
+| size | 0 locals | 1-3 | 4+ |
+|---|---|---|---|
+| 0-40 | 47.9% | 33.9% | 0.0% |
+| 41-80 | 29.0% | 4.8% | 1.1% |
+| 81-160 | 10.8% | 0.7% | 0.0% |
+| 161+ | 0.0% | 0.4% | 0.0% |
+
+A 6x drop at FIXED size between 0 and 1-3 locals, in every band. Not a size confound. The
+MAX_IMPLIED_REF / LOAD-explicit angle was tried (removing the non-Ghidra "multi-use LOAD is always
+explicit" rule): it gained +3 on a 516-function sample but FAILED two build-time-verified
+ground-truth MVEs and was reverted. That remains the most promising untried direction, and it needs
+those two references re-verified rather than a blanket removal.
 
 **WHERE THE REMAINING 99 COMPILE_FAILs ARE BLOCKED** (first error per TU, after the `swi` fix):
 24 `E1011` undeclared (mostly widths C has no type for — `int12`, `int14`, `xunknown10/12`),
