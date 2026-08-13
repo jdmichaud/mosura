@@ -86,6 +86,22 @@ So the achievable denominator is ~2950, not something much smaller. At 392 that 
 target is 20% of what compiles. **Expressibility is not what blocks it** — decompiler quality on
 the structural bulk is.
 
+**WHERE THE NEAR SET STANDS AFTER THIS SESSION (M38).** It GREW from 516 to 588 functions within
+40% of matching — ~72 more moved close without crossing the line, which is the clearest sign the
+session's fixes were directionally right. Its divergence census:
+
+     216  orig `mov`  -> (absent)        154  orig `pop`  -> (absent)
+     159  `mov` -> `mov` (different)     130  orig `push` -> (absent)
+     138  (absent) -> `mov`               71  (absent) -> `xor`
+      35  `test` -> `mov and and`         24  `mov cmp` -> `movsx cmp`
+
+`pop`/`push` deletions still dominate: 284 places where the ORIGINAL saves a register and we do
+not. That is the emitted `modify` list still claiming a register the original preserves. The
+sub-register normalization (b4e31f8) fixed one cause of that; this says there is at least one more.
+START THERE — take a near function whose diff shows `pop -> (absent)`, compare its emitted
+`#pragma aux … modify [...]` against the registers its original actually pushes, and find why the
+list still over-claims.
+
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
 | size | 0 locals | 1-3 | 4+ |
