@@ -90,7 +90,6 @@ list rather than a count:
 | `ParamList` split/join + `ParamActive::splitTrial` | ActionParamDouble |
 | `FuncProto::unjustifiedInputParam` + `Funcdata::adjustInputVarnodes` | ActionUnjustifiedParams |
 | structured graph + `getCopyMap` + `nodeSplit` | ActionReturnSplit |
-| `extrapop` modelling | ActionExtraPopSetup |
 | FuncProto internal-storage list | ActionInternalStorage |
 | dynamic symbols + `DynamicHash` | ActionDynamicMapping, ActionDynamicSymbols |
 | Override subsystem | ActionForceGoto *(inert even then — no user overrides in a batch decompile)* |
@@ -109,7 +108,7 @@ Phase 1d (prototypes) of `roadmap-100.md`, reached from the other direction.
 | ActionConstbase | PORTED (build.rs) | constant space base |
 | ActionNormalizeSetup | N/A for this pipeline — group `normalanalysis`, which the **`decompile` root does not enable** (coreaction.cc:5424-5431). It belongs to the `normalize` action list, used for normalized-tree calculations, not to the decompile the port targets. Counting it as a gap was a category error. |
 | ActionDefaultParams | PARTIAL (fspec.rs) | default proto model (sysv) |
-| ActionExtraPopSetup | MISSING — BLOCKED(extrapop not modelled). Needs `FuncCallSpecs::getExtraPop`/`setEffectiveExtraPop`; mosura decodes no `extrapop` from the cspec and models no stack adjustment at a call. Group `base`. |
+| ActionExtraPopSetup | PORTED (pipeline.rs `ActionExtraPopSetup`; `ProtoModel::extrapop` + `EXTRAPOP_UNKNOWN` in fspec.rs, decoded from the cspec in analysis/cspec.rs; `CallSpec::effective_extrapop`). Group `base`. Known extrapop → `INT_ADD` after the call; unknown → `INDIRECT` on the stack pointer before it. WAR2's `__watcall` is `extrapop="unknown"`, x86-64-gcc's `__stdcall` is `8`. **Invoked from `ActionHeritage`'s one-time setup, right after `build_cfg`** — Ghidra's slot is after `ActionStart`, whose `followFlow` builds the blocks, so the CFG must exist: at the head of `universal_action` `num_blocks()==0`, `op_insert_before` finds no parent, and the orphaned INDIRECT is later stranded in a block away from the CALL it guards (16 WAR2 functions then tripped `blockRemoveInternal`'s "deleting op with descendants"). Landed together with its consuming half, ActionStackPtrFlow — see that row. |
 | ActionPrototypeTypes | PARTIAL (fspec.rs) | proto param/return types |
 | ActionFuncLink / …OutOnly | PARTIAL (recover.rs) | call linking (recover_call_args) |
 
@@ -138,7 +137,7 @@ Phase 1d (prototypes) of `roadmap-100.md`, reached from the other direction.
 | ActionMultiCse | PORTED (multicse.rs `ActionMultiCse`, WIRED in `stackstall` directly after ActionLaneDivide, Ghidra's slot :5653) — row was stale. |
 | ActionShadowVar | MISSING | shadow-varnode detection |
 | ActionDeindirect | PARTIAL (recover.rs) | resolve_call_output; deindirect fixture works. Call-output recovery is now the faithful `ActionActiveReturn::apply` chain (see that row). |
-| ActionStackPtrFlow | PARTIAL (stackvars.rs) | |
+| ActionStackPtrFlow | PORTED (stackvars.rs `ActionStackPtrFlow` + `StackSolver`, WIRED in `stackstall` at Ghidra's slot :5656, group `stackptrflow`, which the `decompile` root enables at coreaction.cc:5425). Full action: `StackSolver::build/solve/propagate/duplicate`, `analyzeExtraPop`, `checkClog`, `repair`, `adjustLoad`, `isStackRelative`. This is the **consuming half of ActionExtraPopSetup**: it solves a linear system over every reference to the stack pointer and rewrites each solved definition to `sp_input + <const>`, turning that action's INDIRECT marks into concrete adds and recording each call's recovered `effectiveExtraPop`. Landing ExtraPopSetup alone costs 16 EXACT and 12 COMPILE_FAIL on WAR2; with this half, 15 of those 16 and 7 of the 12 come back. (`stackvars.rs`'s pre-existing forward symbolic pass — the return-address-push neutralization — remains a separate non-Ghidra adaptation, unchanged here.) |
 | ActionRedundBranch | PORTED (determinedbranch.rs `ActionRedundBranch`, WIRED at Ghidra's slot :5658 "deadcontrolflow", directly after actstackstall: splices single-in/single-out block pairs and drops branches whose exits all reach the same block) — row was stale. |
 | ActionBlockStructure | PORTED (structure.rs) | |
 | ActionConstantPtr | PARTIAL (infertypes.rs) | constant-pointer typing |

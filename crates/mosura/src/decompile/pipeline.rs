@@ -48,6 +48,17 @@ impl Action for ActionHeritage {
             // Build the CFG before stack recovery so recover_stack can propagate the stack pointer
             // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
             super::cfg::build_cfg(data);
+            // ActionExtraPopSetup (coreaction.cc:1436, group `base`, universalAction slot 5477):
+            // model each call's effect on the stack pointer. Ghidra's slot is right after
+            // `ActionStart`, whose `startProcessing`/`followFlow` builds the p-code AND the basic
+            // blocks — so when it runs the CFG exists and heritage has not happened. In mosura the
+            // block construction lives here, inside this one-time setup, so this is that same point
+            // in the graph's life. (It cannot go at the head of `universal_action`: there
+            // `num_blocks() == 0`, so `op_insert_before` finds no parent block, leaves the new op
+            // orphaned, and the later CFG build strands the INDIRECT in a block away from the CALL
+            // it guards — which then reads as a marker-only "do nothing" block and trips
+            // `blockRemoveInternal`'s "deleting op with descendants".)
+            ActionExtraPopSetup.apply(data);
             super::stackvars::recover_stack(data);
             // Open return-value and argument recovery before heritage (Ghidra
             // `ActionPrototypeTypes`, coreaction.cc:4651, and `ActionFuncLink::funcLinkInput`,
@@ -472,6 +483,63 @@ impl Action for ActionSpacebase {
     }
 }
 
+/// Ghidra `ActionExtraPopSetup` (coreaction.cc, group `base`, slot :5477): model the stack
+/// pointer's change across each call, so later stack analysis sees a value it can reason about.
+///
+/// Two shapes, and the difference matters. A KNOWN extrapop becomes `sp = sp + n` inserted AFTER
+/// the call, because the change is exact. An UNKNOWN one becomes an `INDIRECT` on the stack pointer
+/// inserted BEFORE the call — the value afterwards is indeterminate, and saying "unchanged" would
+/// be a lie the stack recovery would then build on. WAR2's `__watcall` is the unknown case;
+/// x86-64-gcc's `__stdcall` is the known one (8).
+pub struct ActionExtraPopSetup;
+
+impl Action for ActionExtraPopSetup {
+    fn name(&self) -> &str {
+        "extrapopsetup"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        use super::fspec::EXTRAPOP_UNKNOWN;
+        let extrapop = data.proto_model.extrapop;
+        if extrapop == 0 {
+            return 0; // stack pointer is undisturbed
+        }
+        // Ghidra reads the stack space's spacebase register (`stackspace->getSpacebase(0)`).
+        let Some(stack) = data.spaces.by_name("stack") else { return 0 };
+        let Some(&(sb_addr, sb_size)) = data.spaces.get(stack).spacebase.first() else {
+            return 0; // no stack to speak of
+        };
+        let calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        let mut count = 0;
+        for call in calls {
+            if data.op(call).is_dead() {
+                continue;
+            }
+            let pc = data.op(call).seqnum.pc;
+            let uniq = data.num_ops() as u32;
+            let sp_in = data.new_varnode(sb_size, sb_addr);
+            if extrapop != EXTRAPOP_UNKNOWN {
+                // We know exactly how the stack pointer changes.
+                let k = data.new_const(sb_size, extrapop as u64);
+                let op = data.new_op(super::opcode::OpCode::IntAdd, super::op::SeqNum { pc, uniq }, vec![sp_in, k]);
+                data.new_output(op, sb_size, sb_addr);
+                data.op_insert_after(op, call);
+                if let Some(cs) = data.call_specs.get_mut(&call) {
+                    cs.effective_extrapop = Some(extrapop);
+                }
+            } else {
+                // We do not know exactly, so the value afterwards is indeterminate.
+                let op = data.new_op(super::opcode::OpCode::Indirect, super::op::SeqNum { pc, uniq }, vec![sp_in]);
+                data.op_mut(op).guarded_op = Some(call); // Ghidra's `newVarnodeIop(fc->getOp())`
+                data.new_output(op, sb_size, sb_addr);
+                data.op_insert_before(op, call);
+            }
+            count += 1;
+        }
+        debug_assert!(count <= data.call_specs.len());
+        0 // Ghidra `ActionExtraPopSetup::apply` returns 0 unconditionally (coreaction.cc:1465)
+    }
+}
+
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
 /// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
 /// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
@@ -781,7 +849,7 @@ pub fn universal_action() -> ActionGroup {
                         // SUBPIECEs and over-split; task #8 Brick D retired that ordering.) Inert
                         // unless the Funcdata carries laned-register records (parsed from the
                         // pspec by the build caller). Absent members join at their slots when
-                        // ported: ActionDeindirect (:5655), ActionStackPtrFlow (:5656).
+                        // ported: ActionDeindirect (:5655).
                         // ActionMultiCse (:5653) and ActionShadowVar (:5654) are in place, in
                         // Ghidra's order directly after LaneDivide.
                         .then(
@@ -792,7 +860,13 @@ pub fn universal_action() -> ActionGroup {
                                 // ActionShadowVar (:5654, group `analysis`): a MULTIEQUAL that
                                 // merely shadows an earlier one in the same block — same inputs in
                                 // the same branch order — becomes a COPY of it.
-                                .then(super::multicse::ActionShadowVar),
+                                .then(super::multicse::ActionShadowVar)
+                                // ActionStackPtrFlow (:5656, group `stackptrflow`): repair stack-
+                                // pointer clogs, then run the linear analysis that resolves the
+                                // stack-pointer change across calls whose extrapop is unknown. It
+                                // is the consuming half of `ActionExtraPopSetup` — it rewrites the
+                                // INDIRECTs that action plants into solved `sp_input + const` adds.
+                                .then(super::stackvars::ActionStackPtrFlow::default()),
                         )
                         // Ghidra ActionRedundBranch (:5658, "deadcontrolflow"), directly after
                         // actstackstall: splice single-in/single-out block pairs and drop branches

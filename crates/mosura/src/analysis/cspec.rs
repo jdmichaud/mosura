@@ -393,7 +393,19 @@ fn decode_default_proto_model(
     if !saw_paramrange {
         paramrange = ProtoModel::default_param_range(spaces, grows_negative);
     }
-    Some(ProtoModel { input, output, effectlist, localrange, paramrange })
+    // Ghidra `ProtoModel::decode`'s `extrapop` attribute (fspec.cc): an integer, or the literal
+    // "unknown" for a convention that does not specify the stack-pointer change across a call.
+    let extrapop = proto
+        .attribute("extrapop")
+        .map(|v| {
+            if v == "unknown" {
+                crate::decompile::fspec::EXTRAPOP_UNKNOWN
+            } else {
+                v.parse::<i32>().unwrap_or(0)
+            }
+        })
+        .unwrap_or(0);
+    Some(ProtoModel { input, output, effectlist, localrange, paramrange, extrapop })
 }
 
 /// Decode the `<range>` children of a `<localrange>`/`<paramrange>` element into `res` (Ghidra

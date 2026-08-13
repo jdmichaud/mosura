@@ -750,7 +750,18 @@ pub struct ProtoModel {
     /// `ScopeLocal`'s range is `localrange ∪ paramrange`, but `MapState` then removes `paramrange`
     /// from it (varmap.cc:870-875) so parameter slots never become locals.
     pub paramrange: RangeList,
+    /// Ghidra `ProtoModel::extrapop` (fspec.hh:752): bytes the CALLEE pops from the stack beyond
+    /// what the caller pushed — the stack pointer's change across a call.
+    ///
+    /// [`EXTRAPOP_UNKNOWN`] is NOT the same as zero: an unknown extrapop makes the stack pointer
+    /// after the call indeterminate, which `ActionExtraPopSetup` models with an INDIRECT rather
+    /// than an add. WAR2's `__watcall` is exactly that (`extrapop="unknown"`); x86-64-gcc's
+    /// `__stdcall` is `8`.
+    pub extrapop: i32,
 }
+
+/// Ghidra `ProtoModel::extrapop_unknown` (fspec.hh:772).
+pub const EXTRAPOP_UNKNOWN: i32 = 0x8000;
 
 impl ProtoModel {
     /// The empty model — no parameter storage, no declared side effects. Ghidra's `ProtoModel`
@@ -971,6 +982,9 @@ pub struct CallSpec {
     /// sentinel) — the state in which `guardCalls` refuses to register a spacebase range as a
     /// parameter trial, because it cannot express the range in the callee's frame.
     pub stackoffset: Option<u64>,
+    /// Ghidra `FuncCallSpecs::extrapop` (fspec.hh:1362): this call site's stack-pointer change,
+    /// seeded from the prototype model. `None` until `ActionExtraPopSetup` has modelled it.
+    pub effective_extrapop: Option<i32>,
     /// Ghidra `FuncCallSpecs::inputConsume` (fspec.hh:1660): per input slot, how many BYTES of the
     /// argument this callee actually consumes — 0 meaning "no information". Written only by
     /// `RulePiecePathology` (ruleaction.cc:10521), which discovers that a wide argument's high
