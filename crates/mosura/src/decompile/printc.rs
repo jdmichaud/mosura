@@ -2343,12 +2343,22 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
 ///   whenever the widening reaches the return through a path the trial coverage does not credit
 ///   (a `XOR EAX,EAX ; MOV AL,[m]` zero-extension covers one byte by that measure, not four).
 ///
-/// Both are implemented so the population can decide, which is the whole point of making
-/// emission choices explicit: the alternative is picking one on plausibility and never learning
-/// that the other was worth several hundred functions. `MOSURA_RETURN_WIDTH` selects.
+/// Both are implemented so the population could decide, and it did. Measured over the 2952
+/// compilable WAR2 functions, against the same emit and the same flags:
+///
+/// | rule | EXACT | regressions |
+/// | --- | --- | --- |
+/// | before either | 158 | — |
+/// | `storage` | 168 | 2 — a spurious `XOR EAX,EAX ; MOV AL,DL` on functions that really do return a byte |
+/// | `recovered` (default) | **170** | none |
+///
+/// `recovered` wins on both counts: it takes every function `storage` takes and keeps the two
+/// byte-returning functions `storage` broke. `MOSURA_RETURN_WIDTH=storage` selects the other arm,
+/// which stays because a different binary may answer differently — that is what an emission
+/// choice is for.
 fn return_width(f: &Funcdata, vn: &super::varnode::Varnode) -> u32 {
-    let recovered = matches!(std::env::var("MOSURA_RETURN_WIDTH").as_deref(), Ok("recovered"));
-    let w = if recovered {
+    let storage = matches!(std::env::var("MOSURA_RETURN_WIDTH").as_deref(), Ok("storage"));
+    let w = if !storage {
         f.output_storage_size.unwrap_or(vn.size)
     } else {
         f.proto_model

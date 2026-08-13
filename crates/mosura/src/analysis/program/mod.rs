@@ -102,6 +102,19 @@ pub struct Program {
     /// decompiler-driven switch analyzer (A6) decompiles to recover jump tables; recorded
     /// by the disassembler so the analyzer only decompiles functions that need it.
     pub indirect_branches: std::collections::HashSet<u64>,
+    /// Prototypes recovered by decompiling each function, keyed by entry offset — the evidence a
+    /// CALLER needs and cannot obtain from its own body.
+    ///
+    /// Decompiling a function recovers its parameter list and return storage, and then that
+    /// answer is discarded: every caller re-derives the callee's interface from trials taken at
+    /// one call site. The two disagree, and the callee is right — it is the one whose body shows
+    /// what it reads. The measured consequence is arguments that vanish, most visibly a stack
+    /// argument the caller never learns about (`docs/interface-recovery-plan.md`).
+    ///
+    /// Empty until [`crate::analysis::interface::recover_prototypes`] has run, so a consumer must
+    /// treat absence as "no evidence" rather than as "no parameters" — an empty prototype is a
+    /// claim, and the wrong one.
+    pub recovered_protos: std::collections::HashMap<u64, crate::decompile::fspec::FuncProto>,
     /// Addresses flagged "No Return" (Ghidra `Function.setNoReturn(true)`) by the
     /// non-returning-function analyzer — the function entry itself and any PLT thunk that
     /// resolves to it. A direct call to one of these does not fall through (the disassembler
@@ -160,6 +173,7 @@ impl Program {
             relocation_table: RelocationTable::new(),
             comments: std::collections::BTreeMap::new(),
             indirect_branches: std::collections::HashSet::new(),
+            recovered_protos: std::collections::HashMap::new(),
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),
             flow_overrides: std::collections::HashMap::new(),
