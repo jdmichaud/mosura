@@ -765,6 +765,76 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `Funcdata::adjustInputVarnodes` (funcdata_varnode.cc:494): replace every function
+    /// input intersecting `[addr, addr+sz)` with a single new input covering the whole range, each
+    /// old input becoming a `SUBPIECE` of it at its justified offset.
+    ///
+    /// This is what [`super::pipeline::ActionUnjustifiedParams`] uses to widen an input that the
+    /// calling convention says is improperly justified inside its parameter container: rather than
+    /// leaving a varnode that starts partway into a parameter's storage, the whole container
+    /// becomes the input and the original is carved back out of it.
+    ///
+    /// Panics where Ghidra throws `LowlevelError`: an intersecting input that runs past the end of
+    /// the range, or one that is not properly contained, means the caller computed a bad container.
+    pub fn adjust_input_varnodes(&mut self, addr: Address, sz: u32) {
+        let endoff = addr.offset + (sz as u64 - 1);
+        let mut inlist: Vec<VarnodeId> = (0..self.varnodes.len() as u32)
+            .map(VarnodeId)
+            .filter(|&v| {
+                let vn = self.vn(v);
+                vn.is_input()
+                    && vn.loc.space == addr.space
+                    && vn.loc.offset >= addr.offset
+                    && vn.loc.offset <= endoff
+            })
+            .collect();
+        // Ghidra walks the def-ordered set, which for one address range is create order.
+        inlist.sort_by_key(|&v| (self.vn(v).loc.offset, self.vn(v).create_index));
+        for &v in &inlist {
+            let vn = self.vn(v);
+            assert!(
+                vn.loc.offset + (vn.size as u64 - 1) <= endoff,
+                "cannot properly adjust input varnodes"
+            );
+        }
+        let entry = self.addr;
+        for i in 0..inlist.len() {
+            let v = inlist[i];
+            let (vloc, vsize) = (self.vn(v).loc, self.vn(v).size);
+            // Ghidra: `addr.justifiedContain(sz, vn->getAddr(), vn->getSize(), false)` — the
+            // little-endian offset of the old input inside the new container.
+            assert!(
+                self.vn(v).is_input() && sz > vsize && vloc.offset >= addr.offset,
+                "bad adjustment to input varnode"
+            );
+            let sa = vloc.offset - addr.offset;
+            let uniq = self.num_ops() as u32;
+            let k = self.new_const(4, sa);
+            let subop = self.new_op(
+                super::opcode::OpCode::Subpiece,
+                super::op::SeqNum { pc: entry, uniq },
+                vec![k, k], // input 0 is patched to the new input below
+            );
+            self.op_set_input(subop, 1, k);
+            let newvn = self.new_output(subop, vsize, vloc);
+            // `newvn` must not be free, so the block insert happens before the replacement.
+            self.op_insert_begin(subop, super::block::BlockId(0));
+            self.total_replace(v, newvn);
+            self.delete_varnode(v); // get rid of the old input before creating the new one
+            inlist[i] = newvn;
+        }
+        // With every intersecting input pulled out, the new one covering the range can be made.
+        let invn = self.new_varnode(sz, addr);
+        let invn = self.set_input_varnode(invn);
+        // A new input may cause new heritage and "Heritage AFTER dead removal" errors, so heritage
+        // is told to ignore it (Ghidra sets the write mask for exactly this reason).
+        self.vn_mut(invn).set_write_mask();
+        for &v in &inlist {
+            let op = self.vn(v).def.expect("just built as a SUBPIECE output");
+            self.op_set_input(op, 0, invn);
+        }
+    }
+
     /// Mark an existing free varnode as a function input (Ghidra's `setInputVarnode`, reduced to
     /// mosura's case): clear any `written`/`def` and set `INPUT | INSERT`. Returns the varnode.
     pub fn set_input_varnode(&mut self, vid: VarnodeId) -> VarnodeId {

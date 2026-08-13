@@ -540,6 +540,94 @@ impl Action for ActionExtraPopSetup {
     }
 }
 
+/// Ghidra `ActionUnjustifiedParams` (coreaction.cc:4784, group `protorecovery`): widen any
+/// function input that the calling convention says is *improperly justified* within its parameter
+/// container.
+///
+/// An input varnode may land partway into a parameter's storage — a sub-range that does not start
+/// where a parameter of that size starts under the convention. Leaving it that way gives the
+/// function an input that is not a parameter. Instead the containing storage becomes the input,
+/// and the original is carved back out as a `SUBPIECE` (`Funcdata::adjust_input_varnodes`).
+///
+/// The inner loop is Ghidra's container-growing fixpoint: after choosing a container, any *other*
+/// input that overlaps it and extends past its start grows the container leftwards, and the grown
+/// container is re-tested for justification — repeating until it stops growing.
+pub struct ActionUnjustifiedParams;
+
+impl Action for ActionUnjustifiedParams {
+    fn name(&self) -> &str {
+        "unjustifiedparams"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Ghidra reads `data.getFuncProto().unjustifiedInputParam`, which consults locked
+        // parameters first and otherwise delegates to the model's input ParamList
+        // (fspec.cc:4426-4452). mosura has no locked prototype parameters in a batch decompile, so
+        // only the model delegation exists; the locked pre-check joins when user prototypes do.
+        let Some(input) = data.proto_model.input.clone() else { return 0 };
+        let mut count = 0;
+        let mut done: Vec<(super::space::Address, u32)> = Vec::new();
+        loop {
+            // Ghidra walks `beginDef(Varnode::input)` and restarts the iterator after each
+            // adjustment (the additions and deletions invalidate it); mosura re-collects instead.
+            let inputs: Vec<super::varnode::VarnodeId> = (0..data.num_varnodes() as u32)
+                .map(super::varnode::VarnodeId)
+                .filter(|&v| data.vn(v).is_input())
+                .collect();
+            let mut adjusted = false;
+            for v in inputs {
+                let (loc, size) = (data.vn(v).loc, data.vn(v).size);
+                let Some((mut caddr, mut csize)) = input.unjustified_container(loc, size) else {
+                    continue;
+                };
+                if done.contains(&(caddr, csize)) {
+                    continue; // already widened to this container
+                }
+                loop {
+                    // Grow the container over any other input that overlaps it and starts earlier.
+                    let mut overlaps = false;
+                    for w in (0..data.num_varnodes() as u32).map(super::varnode::VarnodeId) {
+                        let wn = data.vn(w);
+                        if !wn.is_input() || wn.loc.space != caddr.space {
+                            continue;
+                        }
+                        let last = wn.loc.offset + (wn.size as u64 - 1);
+                        if last >= caddr.offset && wn.loc.offset < caddr.offset {
+                            overlaps = true;
+                            let endpoint = caddr.offset + csize as u64;
+                            caddr = super::space::Address::new(caddr.space, wn.loc.offset);
+                            csize = (endpoint - caddr.offset) as u32;
+                        }
+                    }
+                    if !overlaps {
+                        break; // no additional overlaps, go with the current container
+                    }
+                    // Having grown, the container may no longer be justified itself.
+                    match input.unjustified_container(caddr, csize) {
+                        Some((a, s)) => {
+                            caddr = a;
+                            csize = s;
+                        }
+                        None => break,
+                    }
+                }
+                if std::env::var("MOSURA_UJP_DEBUG").is_ok() {
+                    eprintln!("UJP widen {:?}+{:x} size {} (from {:?}+{:x}/{})",
+                        caddr.space, caddr.offset, csize, loc.space, loc.offset, size);
+                }
+                data.adjust_input_varnodes(caddr, csize);
+                done.push((caddr, csize));
+                count += 1;
+                adjusted = true;
+                break; // the varnode set changed; re-collect
+            }
+            if !adjusted {
+                break;
+            }
+        }
+        count
+    }
+}
+
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
 /// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
 /// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
@@ -927,8 +1015,7 @@ pub fn universal_action() -> ActionGroup {
                 //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
                 //   are skipped (`output.is_some()`, cleared isOutputActive).
                 // Tail members mosura has not ported are absent here: ActionLikelyTrash (:5679),
-                // ActionReturnSplit (:5685), ActionUnjustifiedParams (:5686) — each joins at its
-                // slot with its port.
+                // ActionReturnSplit (:5685) — each joins at its slot with its port.
                 // - ActionDirectWrite ×2 (:5680-5681): the fullloop-tail directwrite recompute,
                 //   feeding the tail DeadCode's addrforce-clear exactly as in the mainloop.
                 .then(super::directwrite::ActionDirectWrite::new(true))
@@ -936,6 +1023,9 @@ pub fn universal_action() -> ActionGroup {
                 .then(super::deadcode::ActionDeadCode)
                 .then(super::determinedbranch::ActionDoNothing)
                 .then(ActionSwitchNorm)
+                // ActionUnjustifiedParams (:5686, group `protorecovery`), directly after
+                // ActionSwitchNorm/ActionReturnSplit and before ActionStartTypes.
+                .then(ActionUnjustifiedParams)
                 .then(ActionStartTypes)
                 .then(ActionActiveReturn),
         )

@@ -88,8 +88,49 @@ impl ParamEntry {
         if end > self.addressbase + self.size as u64 {
             return None;
         }
+        if self.alignment != 0 {
+            // An ALIGNED entry (fspec.cc:269-282) is a run of equal-sized slots, not one datum:
+            // a parameter is justified within its own slot, so the offset is taken modulo the
+            // alignment rather than from the entry base. Little-endian is always left-justified
+            // (`isLeftJustified()` is `force_left_justify || !isBigEndian`), which is the
+            // `startaddr % alignment` branch. Reading the offset from the base instead reported
+            // every stack parameter past the first slot as "unjustified" — harmless while every
+            // caller only tested `is_some()`, but `ParamList::unjustified_container` reads the
+            // value, and `ActionUnjustifiedParams` then widened the same stack slot forever.
+            return Some((addr.offset - self.addressbase) % self.alignment as u64);
+        }
         // little-endian: justify to the least-significant bytes, i.e. offset from the base.
         Some(addr.offset - self.addressbase)
+    }
+
+    /// Ghidra `ParamEntry::getContainer` (fspec.cc:295): the full storage of the parameter that
+    /// contains `[addr, addr+sz)`, as `(address, size)`. Returns `None` when the range is not
+    /// contained in this entry at all.
+    ///
+    /// Ghidra's `joinrec` branch — a parameter split across several pieces — has no counterpart
+    /// here: mosura's `ParamEntry` models no join records, so only the single-range case exists.
+    pub fn get_container(&self, addr: Address, sz: u32) -> Option<(Address, u32)> {
+        if addr.space != self.space || sz == 0 {
+            return None;
+        }
+        let endoff = addr.offset.checked_add(sz as u64 - 1)?;
+        let base = self.addressbase;
+        let entry_end = base + self.size as u64 - 1;
+        if addr.offset > entry_end || endoff < base {
+            return None; // Ghidra's two `overlap` tests
+        }
+        if self.alignment == 0 {
+            // Ordinary endian containment: the whole entry is the container.
+            return Some((Address::new(self.space, base), self.size));
+        }
+        let al = (addr.offset - base) % self.alignment as u64;
+        let off = addr.offset - al;
+        let mut size = (endoff - off) as u32 + 1;
+        let al2 = size % self.alignment;
+        if al2 != 0 {
+            size += self.alignment - al2; // bump up to the nearest alignment
+        }
+        Some((Address::new(self.space, off), size))
     }
 
     /// Ghidra `ParamEntry::containedBy` (fspec.cc): is this entry fully contained within the range
@@ -170,6 +211,28 @@ impl ParamList {
     /// contains `[loc,loc+size)`, with its justified offset. Drives `possibleParam`.
     pub fn find_entry(&self, loc: Address, size: u32) -> Option<(&ParamEntry, u64)> {
         self.entry.iter().find_map(|e| e.justified_contain(loc, size).map(|off| (e, off)))
+    }
+
+    /// Ghidra `ParamListStandard::unjustifiedContainer` (fspec.cc:1411): if `[loc,loc+size)` sits
+    /// inside one of this list's entries but is NOT justified within it — a sub-range that does
+    /// not start where the convention says a parameter of that size starts — return the full
+    /// storage of the containing parameter. `None` means either "not contained" or "contained and
+    /// properly justified", which are the two cases needing no adjustment.
+    ///
+    /// mosura's [`ParamEntry::justified_contain`] returns `None` for Ghidra's `just < 0` and
+    /// `Some(0)` for its `just == 0`, so the three-way outcome maps directly.
+    pub fn unjustified_container(&self, loc: Address, size: u32) -> Option<(Address, u32)> {
+        for e in &self.entry {
+            if e.minsize > size {
+                continue;
+            }
+            match e.justified_contain(loc, size) {
+                None => continue,          // not contained (Ghidra: just < 0)
+                Some(0) => return None,    // contained but properly justified
+                Some(_) => return e.get_container(loc, size),
+            }
+        }
+        None
     }
 
     /// Whether `[loc,loc+size)` could be a parameter under this convention (Ghidra
@@ -1576,6 +1639,56 @@ pub fn abort_spacebase_relative(f: &mut Funcdata, call: OpId) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `unjustifiedContainer` distinguishes Ghidra's three outcomes: not contained, contained and
+    /// properly justified, contained but improperly justified (the only one needing adjustment).
+    #[test]
+    fn unjustified_container_three_outcomes() {
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
+        // One 8-byte register entry at register+0x20, accepting parameters of 1..=8 bytes.
+        pl.entry.push(ParamEntry {
+            group: 0,
+            type_class: 0,
+            space: reg,
+            addressbase: 0x20,
+            size: 8,
+            minsize: 1,
+            alignment: 0,
+        });
+        let at = |off: u64| Address::new(reg, off);
+
+        // Outside the entry entirely.
+        assert_eq!(pl.unjustified_container(at(0x40), 4), None, "not contained");
+        // At the base — properly justified for little-endian, so nothing to do.
+        assert_eq!(pl.unjustified_container(at(0x20), 4), None, "justified");
+        // Partway in — improperly justified, so the whole entry is the container.
+        assert_eq!(
+            pl.unjustified_container(at(0x22), 2),
+            Some((at(0x20), 8)),
+            "unjustified sub-range returns the containing parameter storage"
+        );
+    }
+
+    /// `minsize` gates the scan exactly as Ghidra's `getMinSize() > size` continue does.
+    #[test]
+    fn unjustified_container_respects_minsize() {
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
+        pl.entry.push(ParamEntry {
+            group: 0,
+            type_class: 0,
+            space: reg,
+            addressbase: 0x20,
+            size: 8,
+            minsize: 4,
+            alignment: 0,
+        });
+        // A 2-byte range is below the entry's minimum, so the entry is skipped entirely.
+        assert_eq!(pl.unjustified_container(Address::new(reg, 0x22), 2), None);
+    }
     use super::*;
     use crate::decompile::space::SpaceManager;
     use crate::decompile::{OpCode, SeqNum};
