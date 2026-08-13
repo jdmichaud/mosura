@@ -232,3 +232,78 @@ mod tests {
         );
     }
 }
+
+
+/// Ghidra `ActionShadowVar` (coreaction.cc:892, group `analysis`, slot :5654): eliminate a
+/// MULTIEQUAL that merely *shadows* an earlier one — same inputs, same block, same branch order —
+/// by making it a COPY of the earlier one's output.
+///
+/// The scan is Ghidra's, including the two subtleties that look like they could be simplified and
+/// cannot. It walks ALL ops at the block's start address rather than stopping at the first
+/// non-MULTIEQUAL, because `multi_collapse` lets other ops creep into the phi run. And it flags
+/// candidates by marking the FIRST input: a repeated first input is the cheap necessary condition,
+/// after which the full input-by-input comparison runs against each earlier MULTIEQUAL.
+pub struct ActionShadowVar;
+
+impl super::action::Action for ActionShadowVar {
+    fn name(&self) -> &str {
+        "shadowvar"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let mut oplist: Vec<OpId> = Vec::new();
+        for b in 0..data.num_blocks() {
+            let bl = super::block::BlockId(b as u32);
+            let ops = data.block(bl).ops.clone();
+            let Some(&first) = ops.first() else { continue };
+            let startoffset = data.op(first).seqnum.pc.offset;
+            let mut marked: Vec<VarnodeId> = Vec::new();
+            for op in ops {
+                // Ghidra breaks at the first op NOT at the block's start address; ops after that
+                // are not part of the phi run.
+                if data.op(op).seqnum.pc.offset != startoffset {
+                    break;
+                }
+                if data.op(op).code() != OpCode::Multiequal {
+                    continue; // other ops creep in via multi_collapse
+                }
+                let Some(vn) = data.op(op).input(0) else { continue };
+                if data.vn(vn).is_mark() {
+                    oplist.push(op);
+                } else {
+                    data.vn_mut(vn).set_mark();
+                    marked.push(vn);
+                }
+            }
+            for vn in marked {
+                data.vn_mut(vn).clear_mark();
+            }
+        }
+        let mut count = 0;
+        for op in oplist {
+            // Ghidra walks BACK through the block from `op` looking for a MULTIEQUAL whose inputs
+            // match slot for slot — the branch order must agree, not just the set.
+            let Some(bl) = data.op(op).parent else { continue };
+            let ops = data.block(bl).ops.clone();
+            let Some(pos) = ops.iter().position(|&o| o == op) else { continue };
+            for &op2 in ops[..pos].iter().rev() {
+                if data.op(op2).code() != OpCode::Multiequal {
+                    continue;
+                }
+                if data.op(op2).num_inputs() != data.op(op).num_inputs() {
+                    continue;
+                }
+                let same = (0..data.op(op).num_inputs())
+                    .all(|i| data.op(op).input(i) == data.op(op2).input(i));
+                if !same {
+                    continue; // all branches did not match
+                }
+                let Some(out2) = data.op(op2).output else { continue };
+                data.op_set_opcode(op, OpCode::Copy);
+                data.op_set_all_input(op, &[out2]);
+                count += 1;
+                break;
+            }
+        }
+        count
+    }
+}

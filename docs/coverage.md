@@ -71,16 +71,25 @@ registers **73 active actions** — extracted by dropping comment lines, which a
 - The name diff is NOT the gap: 46 of the 73 have no same-named mosura struct, because mosura folds
   or renames. Only the behaviour check counts, which is what this pass did.
 
-Real remaining: **13 MISSING**, listed below.
+**GROUP GATING — a dimension this register never recorded.** Ghidra registers every action in
+`universalAction`, but each carries a GROUP, and a root action list enables only some groups
+(`ActionDatabase::buildDefaultGroups`, coreaction.cc:5419). The `decompile` root — the one mosura
+ports — enables 31 groups; the `jumptable` and `normalize` roots enable different sets. So an action
+registered in `universalAction` is not necessarily an action the decompile pipeline ever runs, and
+counting it as a gap is a category error. Two were: `ActionNormalizeSetup` (group `normalanalysis`,
+normalize-only) and `ActionFuncLinkOutOnly` (group `noproto`, jumptable-only).
+
+Real remaining: **11 MISSING**, all in groups the `decompile` root does enable, listed below with
+their group.
 
 ### Setup (top-level, pre-loop)
 | Ghidra action | mosura | notes |
 |---|---|---|
 | ActionStart | PORTED (build.rs) | raw funcdata construction |
-| ActionFuncLinkOutOnly | MISSING — added by the §1 verification pass; had no row at all. The output-only half of ActionFuncLink (coreaction.cc), used when only the call's output side needs linking. |
+| ActionFuncLinkOutOnly | N/A for this pipeline — group `noproto`, enabled by the **`jumptable`** root, not `decompile` (coreaction.cc:5434). It is the output-only half of ActionFuncLink used during jump-table analysis. |
 | ActionRestartGroup | MISSING — added by the §1 verification pass; had no row at all. Ghidra's restart-group control action (`ActionGroup::restart`); mosura has `ActionGroup::restart` as a builder but not this action. |
 | ActionConstbase | PORTED (build.rs) | constant space base |
-| ActionNormalizeSetup | MISSING | normalize/jumptable setup |
+| ActionNormalizeSetup | N/A for this pipeline — group `normalanalysis`, which the **`decompile` root does not enable** (coreaction.cc:5424-5431). It belongs to the `normalize` action list, used for normalized-tree calculations, not to the decompile the port targets. Counting it as a gap was a category error. |
 | ActionDefaultParams | PARTIAL (fspec.rs) | default proto model (sysv) |
 | ActionExtraPopSetup | MISSING | extrapop/stack-adjust modelling |
 | ActionPrototypeTypes | PARTIAL (fspec.rs) | proto param/return types |
