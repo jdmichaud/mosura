@@ -106,8 +106,16 @@ WIDTH error. FUN_00020490:
     C      iVar3 = (int4)(iVar2 + iVar1);           cast on the sum, at width FOUR
 
 The original's `cwde` AFTER the add says the sum is 2 bytes; we recovered 4. Same family as the
-widest-write output fix — a return/expression width, not an allocator choice. This is the one
-entry in the census worth decompiler effort. None is recoverable
+widest-write output fix — a return/expression width, not an allocator choice. This is the one entry
+in the census worth decompiler effort.
+
+WHERE TO LOOK: in p-code the original is `INT_SEXT(SUBPIECE(sum, 0))`, which should render
+`(int4)(int2)sum` — the SUBPIECE is the TRUNCATION and the SEXT the widening. We emit only
+`(int4)sum`, so the truncation is lost somewhere between the IR and the text. Start by checking
+whether the SUBPIECE survives into the final IR for FUN_00020490 (a rule may have folded
+`SEXT(SUB(x))`, which would drop the semantics) or whether it survives and `printc`'s
+`cast_operand` renders it as implicit because the types already agree. `printc.rs` IntSext arm is
+at the `(int{n})` format; the SUBPIECE arm is just above it. None is recoverable
 information that a better decompiler could supply — the emitted C does not choose which register
 holds a value, whether an address is hoisted to reach a disp8 form, or whether a value is
 zero-extended by `xor`+`mov` or by `and`.
