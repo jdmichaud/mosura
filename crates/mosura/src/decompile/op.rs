@@ -53,7 +53,8 @@ pub mod flags {
     /// (coreaction.cc:3656/3661, mosura [`super::consume::indirect_source`]). It is never set by the
     /// code that *creates* an INDIRECT, and never carried forward across a pass — so it cannot go
     /// stale and wrongly keep a dead op alive. Read by `RuleEarlyRemoval` (ruleaction.cc:31) and by
-    /// `Funcdata::opDestroyRecursive` (funcdata_op.cc:242, a primitive mosura does not have).
+    /// `Funcdata::opDestroyRecursive` (funcdata_op.cc:242, ported as
+    /// [`Funcdata::op_destroy_recursive`](super::funcdata::Funcdata::op_destroy_recursive)).
     pub const INDIRECT_SOURCE: u32 = 0x400;
     /// Ghidra `PcodeOp::spacebase_ptr` (op.hh:101) — a LOAD/STORE through a *dynamic* pointer into a
     /// spacebase, marked by `Funcdata::opMarkSpacebasePtr` (funcdata.hh:487) from the
@@ -117,6 +118,33 @@ impl PcodeOp {
         self.guarded_op
     }
     /// A heritage marker (MULTIEQUAL/INDIRECT) — placed by heritage, not real control flow.
+    /// Ghidra `PcodeOp::getEvalType() == PcodeOp::special` (op.hh:379): the op is neither unary,
+    /// binary nor ternary — it is one of the structural/special forms. The opcode set is exactly
+    /// those whose `TypeOp` constructor sets `PcodeOp::special` WITHOUT also setting unary/binary
+    /// (typeop.cc): note CAST is `unary|special`, so its eval type is not `special` and it is not
+    /// in this set — Ghidra's test is an equality on the masked flags, not a bit test.
+    ///
+    /// Read by `RuleConditionalMove::gatherExpression` (ruleaction.cc:9307) to refuse to pull such
+    /// an op out of a conditional branch.
+    pub fn is_special_eval(&self) -> bool {
+        use OpCode::*;
+        matches!(
+            self.opcode,
+            Load | Store
+                | Branch
+                | Cbranch
+                | Branchind
+                | Call
+                | Callind
+                | Callother
+                | Return
+                | Multiequal
+                | Indirect
+                | Segmentop
+                | Cpoolref
+                | New
+        )
+    }
     pub fn is_marker(&self) -> bool {
         matches!(self.opcode, OpCode::Multiequal | OpCode::Indirect)
     }

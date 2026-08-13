@@ -9600,6 +9600,373 @@ impl Rule for RuleExtensionPush {
     }
 }
 
+/// Ghidra `RuleConditionalMove::checkBoolean` (ruleaction.cc:9259): the varnode carries a boolean —
+/// either it is written by an op with boolean output, or it is a COPY of the constant 0 or 1. In the
+/// constant case the CONSTANT is returned, not the copy, which is what lets `applyOp` distinguish
+/// "this branch supplies a literal" from "this branch supplies a condition".
+fn cm_check_boolean(data: &Funcdata, vn: VarnodeId) -> Option<VarnodeId> {
+    if !data.vn(vn).is_written() {
+        return None;
+    }
+    let op = data.vn(vn).def.unwrap();
+    if data.op(op).is_bool_output() {
+        return Some(vn);
+    }
+    if data.op(op).code() == OpCode::Copy {
+        let src = data.op(op).input(0)?;
+        if data.vn(src).is_constant() {
+            let val = data.vn(src).constant_value();
+            if val & !1u64 == 0 {
+                return Some(src);
+            }
+        }
+    }
+    None
+}
+
+/// Ghidra `RuleConditionalMove::gatherExpression` (ruleaction.cc:9287): can the expression rooted at
+/// `vn` be propagated out of the conditional branch? Ops that live *inside* the branch are collected
+/// into `ops` for later duplication; anything formed before the branch needs no work.
+///
+/// The refusals are Ghidra's: a free (non-constant) or address-tied value, a `special` eval-type op
+/// (LOAD/STORE/CALL/MULTIEQUAL/INDIRECT/… — see [`super::op::PcodeOp::is_special_eval`]), an inner
+/// result with more than one use, and an expression of more than 4 ops.
+fn cm_gather_expression(
+    data: &Funcdata,
+    vn: VarnodeId,
+    ops: &mut Vec<OpId>,
+    root: BlockId,
+    branch: BlockId,
+) -> bool {
+    if data.vn(vn).is_constant() {
+        return true; // constants can always be propagated
+    }
+    if data.vn(vn).is_free() || data.vn(vn).is_addrtied() {
+        return false;
+    }
+    if root == branch {
+        return true; // can always propagate if there is no branch
+    }
+    if !data.vn(vn).is_written() {
+        return true;
+    }
+    let op = data.vn(vn).def.unwrap();
+    if data.op(op).parent != Some(branch) {
+        return true; // value formed before the branch
+    }
+    ops.push(op);
+    let mut pos = 0;
+    while pos < ops.len() {
+        let op = ops[pos];
+        pos += 1;
+        if data.op(op).is_special_eval() {
+            return false;
+        }
+        for i in 0..data.op(op).num_inputs() {
+            let Some(in0) = data.op(op).input(i) else { continue };
+            if data.vn(in0).is_free() && !data.vn(in0).is_constant() {
+                return false;
+            }
+            if data.vn(in0).is_written()
+                && data.op(data.vn(in0).def.unwrap()).parent == Some(branch)
+            {
+                if data.vn(in0).is_addrtied() {
+                    return false; // don't pull out results that can be indirectly addressed
+                }
+                if lone_descend(data, in0) != Some(op) {
+                    return false; // don't pull out results with more than one use
+                }
+                if ops.len() >= 4 {
+                    return false;
+                }
+                ops.push(data.vn(in0).def.unwrap());
+            }
+        }
+    }
+    true
+}
+
+/// Ghidra `CloneBlockOps::cloneExpression` (funcdata_block.cc:1024), restricted to the case
+/// `RuleConditionalMove` can reach: duplicate each op of a small expression before `follow_op`,
+/// rewiring inputs to the clones as they are built, and return the last clone's output.
+///
+/// Ghidra's `patchInputs` has arms for MULTIEQUAL, INDIRECT and CALL — all unreachable from here,
+/// because [`cm_gather_expression`] refuses any op whose eval type is `special`, which is exactly
+/// that set. The remaining arm is ported: a constant input is shared, an annotation is rebuilt as a
+/// code ref, a free input is impossible (already refused), and a written input maps to its clone
+/// when one exists.
+fn cm_clone_expression(data: &mut Funcdata, ops: &[OpId], follow_op: OpId) -> Option<VarnodeId> {
+    let mut orig_to_clone: Vec<(OpId, OpId)> = Vec::new();
+    let mut last_clone = None;
+    for &orig in ops {
+        if data.op(orig).code().is_branch() {
+            continue; // Ghidra's buildOpClone returns null for a branch
+        }
+        let inputs: Vec<VarnodeId> = (0..data.op(orig).num_inputs())
+            .filter_map(|i| data.op(orig).input(i))
+            .collect();
+        let pc = data.op(orig).seqnum.pc;
+        let uniq = data.num_ops() as u32;
+        let opc = data.op(orig).code();
+        let clone = data.new_op(opc, SeqNum { pc, uniq }, inputs);
+        // buildVarnodeOutput (funcdata_block.cc:1046): the clone's output lives at the original's
+        // address, carrying the storage-describing flags across.
+        if let Some(opvn) = data.op(orig).output {
+            let size = data.vn(opvn).size;
+            let loc = data.vn(opvn).loc;
+            let keep = super::varnode::flags::EXTERNREF
+                | super::varnode::flags::VOLATILE
+                | super::varnode::flags::READONLY
+                | super::varnode::flags::PERSIST
+                | super::varnode::flags::ADDRTIED
+                | super::varnode::flags::ADDRFORCE
+                | super::varnode::flags::NOLOCALALIAS
+                | super::varnode::flags::SPACEBASE
+                | super::varnode::flags::INDIRECT_CREATION;
+            let vflags = data.vn(opvn).flags & keep;
+            let newvn = data.new_output(clone, size, loc);
+            data.vn_mut(newvn).flags |= vflags;
+        }
+        data.op_insert_before(clone, follow_op);
+        orig_to_clone.push((orig, clone));
+        last_clone = Some(clone);
+    }
+    // patchInputs (funcdata_block.cc:1049), ordinary-op arm only.
+    for &(orig, clone) in &orig_to_clone {
+        for i in 0..data.op(clone).num_inputs() {
+            let Some(orig_vn) = data.op(orig).input(i) else { continue };
+            let clone_vn = if data.vn(orig_vn).is_constant() {
+                orig_vn
+            } else if data.vn(orig_vn).is_written() {
+                let def = data.vn(orig_vn).def.unwrap();
+                match orig_to_clone.iter().find(|&&(o, _)| o == def) {
+                    Some(&(_, c)) => match data.op(c).output {
+                        Some(o) => o,
+                        None => orig_vn,
+                    },
+                    None => orig_vn,
+                }
+            } else {
+                orig_vn
+            };
+            data.op_set_input(clone, i, clone_vn);
+        }
+    }
+    let last = last_clone?;
+    data.op(last).output
+}
+
+/// Ghidra `RuleConditionalMove::constructBool` (ruleaction.cc:9328): reuse the existing boolean when
+/// nothing has to move, otherwise rebuild the expression at the merge point. Ghidra sorts `ops` by
+/// `compareOp` (sequence order) before cloning so definitions precede uses; the same order is what
+/// `cm_gather_expression` produces walking the worklist backwards, reversed here.
+fn cm_construct_bool(
+    data: &mut Funcdata,
+    vn: VarnodeId,
+    insertop: OpId,
+    ops: &mut [OpId],
+) -> VarnodeId {
+    if ops.is_empty() {
+        return vn;
+    }
+    // Ghidra `compareOp` (ruleaction.hh:1433) orders by `SeqNum::getOrder()` — the
+    // within-address sequence counter, which is mosura's `SeqNum::uniq`.
+    ops.sort_by_key(|&o| (data.op(o).seqnum.pc.offset, data.op(o).seqnum.uniq));
+    cm_clone_expression(data, ops, insertop).unwrap_or(vn)
+}
+
+/// Ghidra `RuleConditionalMove` (ruleaction.cc:9372, coreaction.cc:5630): recognize a conditional
+/// move — a two-input MULTIEQUAL whose arms both carry booleans — and replace the control flow with
+/// an expression.
+///
+/// ```text
+/// if (c) res0 = 1; else res1 = 0;   res = ?res0:res1   =>   res = zext(c)
+/// if (c) res0 = c; else res1 = d;   res = ?res0:res1   =>   res = c || d
+/// ```
+///
+/// All of Ghidra's cases are ported: both arms constant and equal (a plain COPY), both constant and
+/// different (COPY/BOOL_NEGATE at boolean width, INT_ZEXT above it), one arm constant (BOOL_OR or
+/// BOOL_AND against the branch condition), and neither constant (BOOL_OR/BOOL_AND when one arm *is*
+/// the condition, possibly through a BOOL_NEGATE). `path0istrue` accounts for which incoming edge is
+/// the true one and for `boolean_flip` on the CBRANCH.
+pub struct RuleConditionalMove;
+
+impl Rule for RuleConditionalMove {
+    fn name(&self) -> &str {
+        "conditionalmove"
+    }
+    fn oplist(&self) -> Vec<OpCode> {
+        vec![OpCode::Multiequal]
+    }
+    fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).num_inputs() != 2 {
+            return 0; // MULTIEQUAL must have exactly 2 inputs
+        }
+        let (Some(in0), Some(in1)) = (data.op(op).input(0), data.op(op).input(1)) else {
+            return 0;
+        };
+        let Some(bool0) = cm_check_boolean(data, in0) else { return 0 };
+        let Some(bool1) = cm_check_boolean(data, in1) else { return 0 };
+
+        // Look for the situation
+        //               inblock0
+        //             /         |
+        // rootblock ->            bb
+        //             |         /
+        //               inblock1
+        // Either inblock0 or inblock1 can be empty.
+        let Some(bb) = data.op(op).parent else { return 0 };
+        if data.block(bb).in_edges.len() != 2 {
+            return 0;
+        }
+        let inblock0 = data.block(bb).in_edges[0];
+        let rootblock0 = if data.block(inblock0).out_edges.len() == 1 {
+            if data.block(inblock0).in_edges.len() != 1 {
+                return 0;
+            }
+            data.block(inblock0).in_edges[0]
+        } else {
+            inblock0
+        };
+        let inblock1 = data.block(bb).in_edges[1];
+        let rootblock1 = if data.block(inblock1).out_edges.len() == 1 {
+            if data.block(inblock1).in_edges.len() != 1 {
+                return 0;
+            }
+            data.block(inblock1).in_edges[0]
+        } else {
+            inblock1
+        };
+        if rootblock0 != rootblock1 {
+            return 0;
+        }
+        // rootblock must end in CBRANCH, which gives the boolean for the conditional move.
+        let Some(&cbranch) = data.block(rootblock0).ops.last() else { return 0 };
+        if data.op(cbranch).code() != OpCode::Cbranch {
+            return 0;
+        }
+        let mut op_list0 = Vec::new();
+        if !cm_gather_expression(data, bool0, &mut op_list0, rootblock0, inblock0) {
+            return 0;
+        }
+        let mut op_list1 = Vec::new();
+        if !cm_gather_expression(data, bool1, &mut op_list1, rootblock0, inblock1) {
+            return 0;
+        }
+        // Ghidra `FlowBlock::getTrueOut` (block.hh:328) is `getOut(1)` — the second out-edge.
+        let true_out = data.block(rootblock0).out_edges.get(1).copied();
+        let mut path0istrue = if rootblock0 != inblock0 {
+            true_out == Some(inblock0)
+        } else {
+            true_out != Some(inblock1)
+        };
+        if data.op(cbranch).is_boolean_flip() {
+            path0istrue = !path0istrue;
+        }
+        let Some(boolvn) = data.op(cbranch).input(1) else { return 0 };
+
+        if !data.vn(bool0).is_constant() && !data.vn(bool1).is_constant() {
+            // Neither arm is a literal: one of them must BE the branch condition (possibly negated),
+            // and the merge becomes a short-circuit || or &&.
+            let (first_is_zero_arm, mut andorselect) = if inblock0 == rootblock0 {
+                (true, path0istrue)
+            } else if inblock1 == rootblock0 {
+                (false, !path0istrue)
+            } else {
+                return 0;
+            };
+            let forced = if first_is_zero_arm { in0 } else { in1 };
+            if boolvn != forced {
+                if !data.vn(boolvn).is_written() {
+                    return 0;
+                }
+                let negop = data.vn(boolvn).def.unwrap();
+                if data.op(negop).code() != OpCode::BoolNegate
+                    || data.op(negop).input(0) != Some(forced)
+                {
+                    return 0;
+                }
+                andorselect = !andorselect;
+            }
+            let opc = if andorselect { OpCode::BoolOr } else { OpCode::BoolAnd };
+            data.op_uninsert(op);
+            data.op_set_opcode(op, opc);
+            data.op_insert_begin(op, bb);
+            let (va, vb, la, lb) = if first_is_zero_arm {
+                (bool0, bool1, &mut op_list0, &mut op_list1)
+            } else {
+                (bool1, bool0, &mut op_list1, &mut op_list0)
+            };
+            let firstvn = cm_construct_bool(data, va, op, la);
+            let secondvn = cm_construct_bool(data, vb, op, lb);
+            data.op_set_input(op, 0, firstvn);
+            data.op_set_input(op, 1, secondvn);
+            return 1;
+        }
+
+        // Below here some change is being made.
+        data.op_uninsert(op); // changing from MULTIEQUAL, this should be reinserted
+        let sz = data.op(op).output.map(|o| data.vn(o).size).unwrap_or(0);
+        if data.vn(bool0).is_constant() && data.vn(bool1).is_constant() {
+            let val0 = data.vn(bool0).constant_value();
+            let val1 = data.vn(bool1).constant_value();
+            if val0 == val1 {
+                data.op_remove_input(op, 1);
+                data.op_set_opcode(op, OpCode::Copy);
+                let c = data.new_const(sz, val0);
+                data.op_set_input(op, 0, c);
+                data.op_insert_begin(op, bb);
+            } else {
+                data.op_remove_input(op, 1);
+                let needcomplement = (val0 == 0) == path0istrue;
+                if sz == 1 {
+                    let opc =
+                        if needcomplement { OpCode::BoolNegate } else { OpCode::Copy };
+                    data.op_set_opcode(op, opc);
+                    data.op_insert_begin(op, bb);
+                    data.op_set_input(op, 0, boolvn);
+                } else {
+                    data.op_set_opcode(op, OpCode::IntZext);
+                    data.op_insert_begin(op, bb);
+                    let mut bvn = boolvn;
+                    if needcomplement {
+                        bvn = data.op_bool_negate(bvn, op, false);
+                    }
+                    data.op_set_input(op, 0, bvn);
+                }
+            }
+        } else if data.vn(bool0).is_constant() {
+            let val0 = data.vn(bool0).constant_value();
+            let needcomplement = path0istrue != (val0 != 0);
+            let opc = if val0 != 0 { OpCode::BoolOr } else { OpCode::BoolAnd };
+            data.op_set_opcode(op, opc);
+            data.op_insert_begin(op, bb);
+            let mut bvn = boolvn;
+            if needcomplement {
+                bvn = data.op_bool_negate(bvn, op, false);
+            }
+            let body1 = cm_construct_bool(data, bool1, op, &mut op_list1);
+            data.op_set_input(op, 0, bvn);
+            data.op_set_input(op, 1, body1);
+        } else {
+            // bool1 must be constant
+            let val1 = data.vn(bool1).constant_value();
+            let needcomplement = path0istrue == (val1 != 0);
+            let opc = if val1 != 0 { OpCode::BoolOr } else { OpCode::BoolAnd };
+            data.op_set_opcode(op, opc);
+            data.op_insert_begin(op, bb);
+            let mut bvn = boolvn;
+            if needcomplement {
+                bvn = data.op_bool_negate(bvn, op, false);
+            }
+            let body0 = cm_construct_bool(data, bool0, op, &mut op_list0);
+            data.op_set_input(op, 0, bvn);
+            data.op_set_input(op, 1, body0);
+        }
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -14539,6 +14906,121 @@ mod tests {
         parent_all(&mut f, vec![zext, pa, mul]);
         assert_eq!(RuleExtensionPush.apply_op(zext, &mut f), 0);
         assert!(!f.op(zext).is_dead());
+    }
+
+
+    // ---- batch 4: RuleConditionalMove -------------------------------------------------------
+
+    /// The conditional-move shape:
+    ///
+    /// ```text
+    ///        b0: if (c) ...            <- out_edges [b1 (false path), b2 (true path)]
+    ///   b1: a = COPY #v0        b2: b = COPY #v1
+    ///        b3: res = MULTIEQUAL(a, b)
+    /// ```
+    fn cond_move(v0: u64, v1: u64, sz: u32) -> (Funcdata, OpId, VarnodeId) {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = |u: u32| SeqNum { pc: Address::new(ram.space, ram.offset + u as u64), uniq: u };
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let zero = f.new_const(4, 0);
+        let cmp = f.new_op(OpCode::IntEqual, seq(0), vec![x, zero]);
+        let cond = f.new_output_unique(cmp, 1);
+        let dest = f.new_const(8, 0x100);
+        let cbr = f.new_op(OpCode::Cbranch, seq(1), vec![dest, cond]);
+        let k0 = f.new_const(sz, v0);
+        let cp0 = f.new_op(OpCode::Copy, seq(2), vec![k0]);
+        let a = f.new_output_unique(cp0, sz);
+        let k1 = f.new_const(sz, v1);
+        let cp1 = f.new_op(OpCode::Copy, seq(3), vec![k1]);
+        let b = f.new_output_unique(cp1, sz);
+        let phi = f.new_op(OpCode::Multiequal, seq(4), vec![a, b]);
+        f.new_output_unique(phi, sz);
+        let blocks = vec![
+            crate::decompile::BlockBasic {
+                ops: vec![cmp, cbr],
+                in_edges: vec![],
+                out_edges: vec![BlockId(1), BlockId(2)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![cp0],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![cp1],
+                in_edges: vec![BlockId(0)],
+                out_edges: vec![BlockId(3)],
+            },
+            crate::decompile::BlockBasic {
+                ops: vec![phi],
+                in_edges: vec![BlockId(1), BlockId(2)],
+                out_edges: vec![],
+            },
+        ];
+        for (bi, blk) in blocks.iter().enumerate() {
+            for &opid in &blk.ops {
+                f.op_mut(opid).parent = Some(BlockId(bi as u32));
+            }
+        }
+        f.set_blocks(blocks);
+        (f, phi, cond)
+    }
+
+    #[test]
+    fn conditional_move_two_constants_becomes_zext() {
+        // `if (c) res = 0; else res = 1;` at width 4 => `res = zext(!c)`. b1 is the FALSE path
+        // (out_edges[1] is the true one), so the condition needs complementing.
+        let (mut f, phi, cond) = cond_move(1, 0, 4);
+        assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 1);
+        assert_eq!(f.op(phi).code(), OpCode::IntZext);
+        assert_eq!(f.op(phi).num_inputs(), 1);
+        let neg_out = f.op(phi).input(0).unwrap();
+        let neg = f.vn(neg_out).def.unwrap();
+        assert_eq!(f.op(neg).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(neg).input(0), Some(cond));
+    }
+
+    #[test]
+    fn conditional_move_equal_constants_becomes_copy() {
+        // Both arms supply the same literal — the branch is irrelevant, so it is a plain COPY.
+        let (mut f, phi, _) = cond_move(1, 1, 4);
+        assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 1);
+        assert_eq!(f.op(phi).code(), OpCode::Copy);
+        assert_eq!(f.op(phi).num_inputs(), 1);
+        let c = f.op(phi).input(0).unwrap();
+        assert!(f.vn(c).is_constant());
+        assert_eq!(f.vn(c).constant_value(), 1);
+    }
+
+    #[test]
+    fn conditional_move_boolean_width_uses_negate_not_zext() {
+        // At width 1 there is nothing to extend: the merge becomes BOOL_NEGATE (or COPY) of the
+        // condition directly.
+        let (mut f, phi, cond) = cond_move(1, 0, 1);
+        assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 1);
+        assert_eq!(f.op(phi).code(), OpCode::BoolNegate);
+        assert_eq!(f.op(phi).input(0), Some(cond));
+    }
+
+    #[test]
+    fn conditional_move_declines_non_boolean_arms() {
+        // Arms carrying values other than 0/1 are not a conditional move.
+        let (mut f, phi, _) = cond_move(7, 0, 4);
+        assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 0);
+        assert_eq!(f.op(phi).code(), OpCode::Multiequal);
+    }
+
+    #[test]
+    fn conditional_move_declines_three_input_multiequal() {
+        // Ghidra's first test: exactly 2 inputs.
+        let (mut f, phi, _) = cond_move(1, 0, 4);
+        let extra = f.op(phi).input(0).unwrap();
+        let mut ins: Vec<_> = (0..f.op(phi).num_inputs()).filter_map(|i| f.op(phi).input(i)).collect();
+        ins.push(extra);
+        f.op_set_all_input(phi, &ins);
+        assert_eq!(RuleConditionalMove.apply_op(phi, &mut f), 0);
+        assert_eq!(f.op(phi).code(), OpCode::Multiequal);
     }
 
 }

@@ -23,7 +23,7 @@ use super::rules::{
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
-    RuleFloatSignCleanup, RuleExtensionPush,
+    RuleFloatSignCleanup, RuleExtensionPush, RuleConditionalMove,
 };
 
 /// Build the CFG and SSA form, iterating heritage one delay-group pass per call (Ghidra's
@@ -326,6 +326,10 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleSubvarSext) // (117)
         // RuleNegateNegate (coreaction.cc:5629): `~~V` => `V`.
         .with(RuleNegateNegate) // (118)
+        // RuleConditionalMove (coreaction.cc:5630): a 2-input MULTIEQUAL whose arms both carry
+        // booleans is a conditional move — replace the control flow with `zext(c)`, `c || d`,
+        // `c && d`, or a plain COPY, per which arms are literals.
+        .with(RuleConditionalMove) // (119)
         // RuleFuncPtrEncoding (coreaction.cc:5632): drop the low-bit mask before an indirect call
         // on a target with aligned function pointers. Inert on x86 — no cspec sets `<funcptr>`,
         // so `funcptr_align` is 0 and the rule declines at its first test, as Ghidra's does.
