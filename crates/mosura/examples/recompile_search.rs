@@ -44,6 +44,7 @@ fn main() {
     let mut arms: Vec<Arm> = Vec::new();
     let mut cache_dir = std::env::temp_dir().join("mosura-recompile-cache");
     let mut out_path: Option<String> = None;
+    let mut assemble: Option<String> = None;
     let mut i = 3;
     while i < a.len() {
         match a[i].as_str() {
@@ -54,6 +55,10 @@ fn main() {
             "--out" => {
                 i += 1;
                 out_path = Some(a[i].clone());
+            }
+            "--assemble" => {
+                i += 1;
+                assemble = Some(a[i].clone());
             }
             spec => {
                 let (label, rest) = spec.split_once('=').expect("arm: <label>=<manifest>:<srcdir>");
@@ -76,6 +81,9 @@ fn main() {
 
     // name -> (arm label -> byte-exact?)
     let mut results: BTreeMap<String, (u64, BTreeMap<String, bool>)> = BTreeMap::new();
+    // name -> arm label -> the source file that produced that result, so the winning rendering can
+    // be assembled without re-deriving which arm it came from.
+    let mut sources: BTreeMap<String, BTreeMap<String, (String, String)>> = BTreeMap::new();
 
     for arm in &arms {
         let prelude = std::fs::read_to_string(Path::new(&arm.srcdir).join("../prelude.h")).unwrap_or_default();
@@ -131,6 +139,10 @@ fn main() {
                 .or_insert_with(|| (row.va, BTreeMap::new()))
                 .1
                 .insert(arm.label.clone(), exact);
+            sources
+                .entry(row.name.clone())
+                .or_default()
+                .insert(arm.label.clone(), (arm.srcdir.clone(), row.idx.clone()));
         }
     }
 
@@ -181,6 +193,45 @@ fn main() {
     if let Some(p) = out_path {
         std::fs::write(&p, tsv).expect("write");
         eprintln!("rows written to {p}");
+    }
+
+    // ASSEMBLE the selection into one source tree: each function taken from the arm that
+    // reproduced it, and from the first arm otherwise. This is what makes the selection a
+    // deliverable rather than a statistic — the result is a tree in which every function is the
+    // best rendering found for it, and it can be verified as a whole.
+    //
+    // Choosing per function against the original's bytes is not fitting to noise: every arm is a
+    // legitimate semantics-preserving rendering of the same IR, and the binary is the specification
+    // being recovered. Picking the rendering that reproduces it is the task, not a shortcut around it.
+    if let Some(dir) = assemble {
+        let src = std::path::Path::new(&dir).join("src");
+        std::fs::create_dir_all(&src).expect("assemble dir");
+        // The manifest and prelude come from the first arm: the function set is the same in all of
+        // them, and a consumer needs exactly one of each.
+        let first = &arms[0];
+        let _ = std::fs::copy(
+            std::path::Path::new(&first.srcdir).join("../prelude.h"),
+            std::path::Path::new(&dir).join("prelude.h"),
+        );
+        let _ = std::fs::copy(&first.manifest, std::path::Path::new(&dir).join("manifest.tsv"));
+        let mut taken: BTreeMap<&str, usize> = BTreeMap::new();
+        for (name, (_, by_arm)) in &results {
+            let winner = arms
+                .iter()
+                .map(|a| &a.label)
+                .find(|l| by_arm.get(*l) == Some(&true))
+                .unwrap_or(&first.label);
+            let Some((srcdir, idx)) = sources.get(name).and_then(|m| m.get(winner)) else { continue };
+            *taken.entry(winner.as_str()).or_default() += 1;
+            let _ = std::fs::copy(
+                std::path::Path::new(srcdir).join(format!("{idx}.c")),
+                src.join(format!("{idx}.c")),
+            );
+        }
+        eprintln!("\n=== assembled into {dir} ===");
+        for (l, n) in &taken {
+            eprintln!("{n:6}  from {l}");
+        }
     }
     eprintln!("recompile_search: COMPLETE");
 }
