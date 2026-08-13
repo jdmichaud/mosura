@@ -19,6 +19,15 @@ use std::collections::HashMap;
 #[derive(Default, Clone)]
 pub struct Cover {
     blocks: FxHashMap<usize, (i32, i32)>,
+    /// The individual live ranges per block, un-merged. `blocks` keeps their CONVEX HULL, which is
+    /// what merging has always used and what every mergeability decision is calibrated against;
+    /// this keeps the pieces so a point query can be exact.
+    ///
+    /// Ghidra's `Cover` is a set of intervals throughout. The hull is an over-approximation: a
+    /// value live at [4,6] and [20,22] reads as live at 12. That is SAFE for merging (it only
+    /// refuses merges Ghidra would allow) but wrong for `contains_point`, whose whole purpose is
+    /// asking whether a specific op falls inside a value's life — an op at 12 is not.
+    spans: FxHashMap<usize, Vec<(i32, i32)>>,
 }
 
 impl Cover {
@@ -26,6 +35,18 @@ impl Cover {
         let e = self.blocks.entry(block).or_insert((i32::MAX, i32::MIN));
         e.0 = e.0.min(lo);
         e.1 = e.1.max(hi);
+        let v = self.spans.entry(block).or_default();
+        v.push((lo, hi));
+        // keep them disjoint and ordered so the point query is a simple scan
+        v.sort_unstable();
+        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(v.len());
+        for &(a, b) in v.iter() {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        *v = merged;
     }
 
     /// Do these two covers overlap at any live point?
@@ -52,8 +73,10 @@ impl Cover {
     /// Union another cover into this one (Ghidra `Cover::merge`, cover.cc) — per block, the
     /// combined `[lo, hi]` range.
     pub fn merge_from(&mut self, other: &Cover) {
-        for (&b, &(lo, hi)) in &other.blocks {
-            self.extend(b, lo, hi);
+        for (&b, ranges) in &other.spans {
+            for &(lo, hi) in ranges {
+                self.extend(b, lo, hi);
+            }
         }
     }
 
@@ -68,7 +91,8 @@ impl Cover {
     }
 
     pub fn contains_point(&self, block: usize, point: i32) -> bool {
-        self.blocks.get(&block).is_some_and(|&(lo, hi)| lo <= point && point <= hi)
+        // Exact: the individual ranges, not their hull. See `spans`.
+        self.spans.get(&block).is_some_and(|v| v.iter().any(|&(lo, hi)| lo <= point && point <= hi))
     }
 }
 
