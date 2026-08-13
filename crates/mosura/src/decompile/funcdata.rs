@@ -85,6 +85,14 @@ pub struct Funcdata {
     /// property a `MemoryBlock` contributes. mosura has no Scope object for globals, so the ranges
     /// travel directly; the analysis layer fills them in (`analysis::decompiler`), and a hand-built
     /// `Funcdata` has none, which answers "not read-only" — the conservative direction.
+    /// Cache for [`super::varmap::recover_scope`] — the recovered stack symbols.
+    ///
+    /// Ghidra's `TypeSpacebase::getSubType` queries a PERSISTENT `Scope`; mosura's `recover_scope`
+    /// REBUILDS the whole table (O(function size)) on every call. That is fine for the callers that
+    /// ask once per pass, but `RulePtrsubUndo` asks per PTRSUB evaluation, which measured 23µs a
+    /// call and kept WAR2's FUN_00024a88 from finishing. Invalidated wherever the local layout is
+    /// recomputed (`ActionRestructureVarnode`), which is exactly when Ghidra's Scope changes.
+    pub stack_syms_cache: Option<Vec<super::varmap::StackSymbol>>,
     pub readonly_ranges: Vec<(u64, u64)>,
     pub blocks_unreachable: bool,
     pub return_bytes_consumed: u32,
@@ -269,6 +277,7 @@ impl Funcdata {
             return_bytes_consumed: 0,
             blocks_unreachable: false,
             readonly_ranges: Vec::new(),
+            stack_syms_cache: None,
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
@@ -410,6 +419,19 @@ impl Funcdata {
     pub fn is_read_only(&self, addr: u64, size: u32) -> bool {
         let end = addr.saturating_add(size.max(1) as u64 - 1);
         self.readonly_ranges.iter().any(|&(s, e)| s <= addr && end <= e)
+    }
+
+    /// The recovered stack symbols, computed once and cached (see [`Self::stack_syms_cache`]).
+    pub fn stack_syms(&mut self) -> &[super::varmap::StackSymbol] {
+        if self.stack_syms_cache.is_none() {
+            self.stack_syms_cache = Some(super::varmap::recover_scope(self));
+        }
+        self.stack_syms_cache.as_deref().unwrap()
+    }
+
+    /// Drop the cached scope — the local layout has changed.
+    pub fn invalidate_stack_syms(&mut self) {
+        self.stack_syms_cache = None;
     }
 
     /// Ghidra `Funcdata::hasUnreachableBlocks` (funcdata.hh:149).

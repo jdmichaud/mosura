@@ -993,6 +993,17 @@ fn is_ptrsub_matching(
     }
 }
 
+/// Sign-extend a constant of `size` bytes to `i64` — Ghidra's implicit `uintb` → `int8` read of a
+/// PTRSUB's offset, which is negative for every stack local.
+fn sext_const(v: u64, size: u32) -> i64 {
+    if size >= 8 {
+        v as i64
+    } else {
+        let sh = 64 - 8 * size;
+        ((v << sh) as i64) >> sh
+    }
+}
+
 /// Ghidra `RulePtrsubUndo::getConstOffsetBack` (ruleaction.cc:6836): total the constant contribution
 /// reaching `vn` through an additive expression, and separately report the largest index
 /// `multiplier` seen — an INT_MULT by a constant scales an index, so it bounds how far below the
@@ -1215,7 +1226,12 @@ impl Rule for RulePtrsubUndo {
         }
         let Some(basevn) = data.op(op).input(0) else { return 0 };
         let Some(cvn) = data.op(op).input(1) else { return 0 };
-        let val = data.vn(cvn).constant_value() as i64;
+        // SIGN-EXTEND the offset. Stack locals live at NEGATIVE frame offsets, and the constant is
+        // stored unsigned: reading `0xffffffe6` as 4294967270 instead of -26 makes the symbol
+        // lookup miss, so a perfectly good PTRSUB is judged invalid, converted to an INT_ADD, and
+        // rebuilt by RulePtrArith on the next pass — the pool then never reaches a fixpoint (WAR2
+        // FUN_00024a88). Ghidra reads the same field into a SIGNED `int8` (ruleaction.cc:6935).
+        let val = sext_const(data.vn(cvn).constant_value(), data.vn(cvn).size);
         let (extra, multiplier) = get_extra_offset(data, op);
         let base_ty = type_read_facing(data, basevn);
         if is_ptrsub_matching(data, &base_ty, val, extra, multiplier) {
@@ -1339,6 +1355,35 @@ mod ptrsub_undo_tests {
         assert_eq!(f.op(sub).code(), OpCode::IntAdd);
         // The offset is untouched when nothing below contributed.
         assert_eq!(f.vn(f.op(sub).input(1).unwrap()).constant_value(), 0x10);
+    }
+
+    #[test]
+    fn sext_const_reads_a_stack_offset_as_negative() {
+        // The bug that made this rule fight RulePtrArith forever: a PTRSUB's offset is stored
+        // unsigned, but stack locals live at NEGATIVE frame offsets.
+        assert_eq!(sext_const(0xffff_ffe6, 4), -26, "0xffffffe6 is -26, not 4294967270");
+        assert_eq!(sext_const(0x10, 4), 16);
+        assert_eq!(sext_const(0xffff_ffff_ffff_ffe6, 8), -26);
+    }
+
+    #[test]
+    fn ptrsub_undo_declines_a_negative_stack_offset() {
+        // The WAR2 FUN_00024a88 shape: PTRSUB off the stack spacebase at a negative offset. Read
+        // unsigned, the symbol lookup misses and the rule wrongly undoes a PTRSUB that
+        // RulePtrArith rebuilds on the next pass — the pool then never converges.
+        let (mut f, ram) = fd();
+        let spaces_stack = f.spaces.by_name("stack").unwrap();
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let base = f.new_input(4, Address::new(f.spaces.by_name("register").unwrap(), 0x20));
+        f.vn_mut(base)
+            .update_type(Datatype::Pointer(4, Box::new(Datatype::Spacebase(spaces_stack))));
+        let off = f.new_const(4, 0xffff_ffe6); // -26
+        let sub = f.new_op(OpCode::Ptrsub, seq, vec![base, off]);
+        f.new_output_unique(sub, 4);
+        f.set_blocks(vec![BlockBasic { ops: vec![sub], ..Default::default() }]);
+        f.op_mut(sub).parent = Some(BlockId(0));
+        assert_eq!(RulePtrsubUndo.apply_op(sub, &mut f), 0, "a negative frame offset is valid");
+        assert_eq!(f.op(sub).code(), OpCode::Ptrsub);
     }
 
     #[test]
