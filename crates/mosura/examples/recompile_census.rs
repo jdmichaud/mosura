@@ -12,8 +12,8 @@
 //! with mosura's own SLEIGH engine, so nothing here is x86-specific.
 use mosura::analysis;
 use mosura::decompile::space::Address;
-use mosura::recompile::insn::{NoReloc, NormInsn, normalize};
-use mosura::recompile::{compare, load_object_function, DivergenceClass, Vocabulary};
+use mosura::recompile::insn::NormInsn;
+use mosura::recompile::{emitted_symbol_address, verify, DivergenceClass, Subject, Vocabulary};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -53,29 +53,14 @@ fn main() {
     let prog = analysis::loader::load_le(&data).expect("load binary");
     let space = prog.default_space;
 
-    // Every symbol mosura emits is named after the address it was recovered from, so the naming
-    // convention *is* the symbol table. A name that does not encode an address stays unresolved
-    // and is reported rather than guessed at.
-    let resolver = |sym: &str| -> Option<u64> {
-        let s = sym.trim_start_matches('_').trim_end_matches('_');
-        let hex = s
-            .strip_prefix("func_0x")
-            .or_else(|| s.strip_prefix("FUN_"))
-            .or_else(|| s.rsplit_once("Ram").map(|(_, h)| h))
-            .or_else(|| s.rsplit_once("_0x").map(|(_, h)| h))?;
-        let hex: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
-        if hex.len() < 4 {
-            return None;
-        }
-        u64::from_str_radix(&hex, 16).ok()
-    };
+    let resolver = emitted_symbol_address;
 
     // PASS 1 — learn what this toolchain emits, from everything it just produced. A function
     // whose ORIGINAL uses a spelling the compiler never once emits across three thousand
     // translation units was not built by this compiler, and counting it as a decompiler failure
     // would make the score a measure of how much foreign code the binary links in.
     let mut vocab = Vocabulary::new();
-    let mut prepared: Vec<(usize, Vec<NormInsn>, Vec<NormInsn>, mosura::recompile::Candidate)> = Vec::new();
+    let mut prepared: Vec<(usize, mosura::recompile::Checked)> = Vec::new();
     let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut primary_census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut class_totals: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -97,7 +82,15 @@ fn main() {
             out.push_str(&format!("{}\t{:08x}\t{}\tNO_OBJECT\t\t\t\t\t\t\n", row.idx, row.va, row.name));
             continue;
         };
-        let cand = match load_object_function(&data, &row.name, row.va, &resolver) {
+        let mut obytes = Vec::with_capacity(row.len);
+        for i in 0..row.len {
+            match prog.memory.byte_at(Address::new(space, row.va + i as u64)) {
+                Some(b) => obytes.push(b),
+                None => break,
+            }
+        }
+        let subject = Subject { name: row.name.clone(), va: row.va, len: row.len };
+        let checked = match verify(&lang, &obytes, &subject, &data, &resolver) {
             Ok(c) => c,
             Err(e) => {
                 *census.entry("OBJ_ERROR").or_default() += 1;
@@ -106,25 +99,8 @@ fn main() {
             }
         };
 
-        let mut obytes = Vec::with_capacity(row.len);
-        for i in 0..row.len {
-            match prog.memory.byte_at(Address::new(space, row.va + i as u64)) {
-                Some(b) => obytes.push(b),
-                None => break,
-            }
-        }
-        let orig = match normalize(&lang, &obytes, row.va, &NoReloc) {
-            Ok(v) => trim_padding(v),
-            Err(e) => panic!("{e}"),
-        };
-        let cbytes = cand.relinked_bytes();
-        let cnorm = match normalize(&lang, &cbytes, row.va, &cand) {
-            Ok(v) => trim_padding(v),
-            Err(e) => panic!("{e}"),
-        };
-
-        vocab.observe(&cnorm);
-        prepared.push((ri, orig, cnorm, cand));
+        vocab.observe(&checked.candidate);
+        prepared.push((ri, checked));
     }
 
     // PASS 2 — compare, now that "reachable by this toolchain" can be decided.
@@ -135,9 +111,9 @@ fn main() {
     );
     let mut foreign_census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut foreign_lines = String::from("va\tmnemonic\ttext\tform\n");
-    for (ri, orig, cnorm, cand) in &prepared {
+    for (ri, checked) in &prepared {
         let row = &rows[*ri];
-        let (orig, cnorm) = (orig.as_slice(), cnorm.as_slice());
+        let (orig, cnorm, cand) = (checked.original.as_slice(), checked.candidate.as_slice(), &checked.relinked);
         // Only the strong signal counts: an encoding this compiler uses for nothing at all.
         let foreign = vocab.foreign_forms(orig);
         let is_foreign = !foreign.is_empty();
@@ -152,7 +128,7 @@ fn main() {
                 ));
             }
         }
-        let diff = compare(orig, cnorm);
+        let diff = &checked.diff;
         if is_foreign {
             *foreign_census.entry(diff.verdict.as_str()).or_default() += 1;
         }
@@ -200,7 +176,7 @@ fn main() {
                     println!("     {:08x}  {}", f.addr, f.text);
                 }
             }
-            print_detail(&row.name, orig, cnorm, &diff, cand);
+            print_detail(&row.name, orig, cnorm, diff, cand);
         }
     }
 
@@ -244,21 +220,6 @@ fn main() {
 /// The extent a function is recorded with runs to the next function's entry, which includes any
 /// padding. At byte level that has to be pattern-matched and guessed at; at instruction level it
 /// is simply the run of no-ops after the last control transfer, which is exactly what padding is.
-fn trim_padding(mut v: Vec<NormInsn>) -> Vec<NormInsn> {
-    while let Some(last) = v.last() {
-        if is_padding(last) && v.len() > 1 {
-            v.pop();
-        } else {
-            break;
-        }
-    }
-    v
-}
-
-fn is_padding(i: &NormInsn) -> bool {
-    i.is_nop()
-}
-
 fn print_detail(
     name: &str,
     orig: &[NormInsn],

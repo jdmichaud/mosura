@@ -20,9 +20,8 @@
 //! answer rather than guessing it.
 use mosura::analysis;
 use mosura::decompile::space::Address;
-use mosura::recompile::insn::{NoReloc, NormInsn, normalize};
 use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
-use mosura::recompile::{compare, load_object_function, DivergenceClass, Verdict};
+use mosura::recompile::{emitted_symbol_address, verify, DivergenceClass, Subject, Verdict};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -119,15 +118,7 @@ fn main() {
         t0.elapsed().as_secs_f64()
     );
 
-    let resolver = |sym: &str| -> Option<u64> {
-        let s = sym.trim_start_matches('_').trim_end_matches('_');
-        let hex = s
-            .strip_prefix("func_0x")
-            .or_else(|| s.strip_prefix("FUN_"))
-            .or_else(|| s.rsplit_once("Ram").map(|(_, h)| h))?;
-        let hex: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
-        (hex.len() >= 4).then(|| u64::from_str_radix(&hex, 16).ok()).flatten()
-    };
+    let resolver = emitted_symbol_address;
 
     let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut causes: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -141,15 +132,6 @@ fn main() {
             tsv.push_str(&format!("{}\t{:08x}\t{}\tCOMPILE_FAIL\t\t\t\n", row.idx, row.va, row.name));
             continue;
         }
-        let obj = out.object.as_ref().unwrap();
-        let cand = match load_object_function(obj, &format!("{}_", row.name), row.va, &resolver) {
-            Ok(c) => c,
-            Err(e) => {
-                *census.entry("OBJ_ERROR").or_default() += 1;
-                eprintln!("{}: {e}", row.name);
-                continue;
-            }
-        };
         let mut obytes = Vec::with_capacity(row.len);
         for k in 0..row.len {
             match prog.memory.byte_at(Address::new(space, row.va + k as u64)) {
@@ -157,9 +139,16 @@ fn main() {
                 None => break,
             }
         }
-        let orig = trim_padding(normalize(LANG, &obytes, row.va, &NoReloc).expect("lang"));
-        let cnorm = trim_padding(normalize(LANG, &cand.relinked_bytes(), row.va, &cand).expect("lang"));
-        let diff = compare(&orig, &cnorm);
+        let subject = Subject { name: row.name.clone(), va: row.va, len: row.len };
+        let checked = match verify(LANG, &obytes, &subject, out.object.as_ref().unwrap(), &resolver) {
+            Ok(c) => c,
+            Err(e) => {
+                *census.entry("OBJ_ERROR").or_default() += 1;
+                eprintln!("{}: {e}", row.name);
+                continue;
+            }
+        };
+        let (diff, orig, cnorm) = (&checked.diff, &checked.original, &checked.candidate);
         *census.entry(diff.verdict.as_str()).or_default() += 1;
         if let Some(p) = diff.primary {
             *causes.entry(p.as_str()).or_default() += 1;
@@ -234,13 +223,6 @@ struct Row {
     va: u64,
     name: String,
     len: usize,
-}
-
-fn trim_padding(mut v: Vec<NormInsn>) -> Vec<NormInsn> {
-    while v.len() > 1 && v.last().is_some_and(|i| i.is_nop()) {
-        v.pop();
-    }
-    v
 }
 
 fn read_manifest(path: &str) -> Vec<Row> {
