@@ -980,8 +980,31 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     for (slot, sz, unref, addr) in used {
         // fspec.cc:5717 — the unreferenced slot has no varnode at the call; create one, so the
         // arguments after it keep their position in the list.
+        //
+        // And mark it for heritage. A varnode manufactured after renaming has run is FREE: it sits
+        // at the parameter's storage address and is linked to nothing, so it carries no value and
+        // renders as a constant. The caller then emits an instruction to produce that constant —
+        // `XOR EAX,EAX` for an argument the original passed implicitly, because the value was
+        // already in the register.
+        //
+        // `setActiveHeritage` is how every other manufactured read in this port joins the next
+        // renaming round (heritage.cc:1671, and `guard_returns_overlapping` for the same reason:
+        // "a free ancestor then stops ancestorOpUse dead"). Without it the argument exists in the
+        // signature and nowhere in the data flow.
+        //
+        // MEASURED: this flag alone does NOT close the case. Heritage does re-run after argument
+        // recovery commits, and the argument still renders as a constant. The remaining suspect is
+        // heritage's own bookkeeping of which address ranges it has already processed: a range
+        // renamed on an earlier pass is not re-renamed for a read that appears later, so the new
+        // CALL input never joins a renaming round however it is flagged. Confirming that, and
+        // deciding whether the range must be re-opened or the prototype must be known before the
+        // first pass, is the open question — see the task on binding propagated parameters. The
+        // flag stays because a manufactured read that is not marked is wrong under this port's own
+        // convention, not because it is a fix.
         if unref {
-            newparam.push(f.new_varnode(sz, addr));
+            let v = f.new_varnode(sz, addr);
+            f.vn_mut(v).set_active_heritage();
+            newparam.push(v);
             continue;
         }
         if slot == 0 || slot >= n {
