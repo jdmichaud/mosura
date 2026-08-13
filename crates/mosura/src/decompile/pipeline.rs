@@ -380,6 +380,10 @@ pub fn default_rule_pool() -> ActionPool {
         // double-precision parameter that arrived as halves — fuse them into one wider input. Its
         // `attemptMarking` arm is also what SETS the PRECISLO/PRECISHI markers, which is what
         // RuleDoubleStore above has been waiting for (it was PORTED-DORMANT until now).
+        // RuleDoubleIn (coreaction.cc:5645): the SUBPIECE side — a marked low half feeds the
+        // SplitVarnode engine, which finds arithmetic done on the pair and rewrites it as one
+        // whole-width operation. Wired BEFORE RuleDoubleOut, as Ghidra registers it.
+        .with(super::double::RuleDoubleIn) // (134)
         .with(super::double::RuleDoubleOut) // (135)
 }
 
