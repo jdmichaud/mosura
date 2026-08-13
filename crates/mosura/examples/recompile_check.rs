@@ -21,7 +21,7 @@
 use mosura::analysis;
 use mosura::decompile::space::Address;
 use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
-use mosura::recompile::{emitted_symbol_address, verify, DivergenceClass, Subject, Verdict};
+use mosura::recompile::{emitted_symbol_address, verify, ByteVerdict, DivergenceClass, Subject, Verdict};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -122,7 +122,8 @@ fn main() {
 
     let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut causes: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut tsv = String::from("idx\tva\tname\tverdict\tprimary\tsim\tclasses\n");
+    let (mut identical, mut reloc_only) = (0usize, 0usize);
+    let mut tsv = String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tclasses\n");
     for (row, out) in kept.iter().zip(outs.iter()) {
         if !out.ok() {
             *census.entry("COMPILE_FAIL").or_default() += 1;
@@ -149,6 +150,11 @@ fn main() {
             }
         };
         let (diff, orig, cnorm) = (&checked.diff, &checked.original, &checked.candidate);
+        match checked.bytes {
+            ByteVerdict::Identical => identical += 1,
+            ByteVerdict::IdenticalOutsideRelocations => reloc_only += 1,
+            ByteVerdict::Different => {}
+        }
         *census.entry(diff.verdict.as_str()).or_default() += 1;
         if let Some(p) = diff.primary {
             *causes.entry(p.as_str()).or_default() += 1;
@@ -161,11 +167,12 @@ fn main() {
             .collect::<Vec<_>>()
             .join(",");
         tsv.push_str(&format!(
-            "{}\t{:08x}\t{}\t{}\t{}\t{:.3}\t{}\n",
+            "{}\t{:08x}\t{}\t{}\t{:?}\t{}\t{:.3}\t{}\n",
             row.idx,
             row.va,
             row.name,
             diff.verdict.as_str(),
+            checked.bytes,
             diff.primary.map(|p| p.as_str()).unwrap_or(""),
             diff.similarity,
             classes
@@ -193,6 +200,10 @@ fn main() {
         }
     }
 
+    eprintln!("\n=== byte-clean ===");
+    eprintln!("{identical:6}  identical (relocations resolved AND matching)");
+    eprintln!("{reloc_only:6}  identical outside relocation sites, but a site disagrees");
+    eprintln!("{:6}  TOTAL byte-clean under the permissive reading", identical + reloc_only);
     eprintln!("\n=== verdicts ===");
     for (k, v) in &census {
         eprintln!("{v:6}  {k}");

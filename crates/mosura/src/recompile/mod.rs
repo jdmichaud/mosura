@@ -39,5 +39,5 @@ pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
 pub use candidate::{Candidate, CandFixup, SymbolResolver, load_object_function};
 pub use insn::{NormInsn, normalize};
 pub use toolchain::{CompileOutput, CompileUnit, Toolchain};
-pub use verify::{Checked, Subject, emitted_symbol_address, trim_padding, verify};
+pub use verify::{ByteVerdict, Checked, Subject, emitted_symbol_address, trim_padding, verify};
 pub use vocab::Vocabulary;
