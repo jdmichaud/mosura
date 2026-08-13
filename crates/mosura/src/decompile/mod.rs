@@ -14,6 +14,7 @@ pub mod cast;
 pub mod cfg;
 pub mod circlerange;
 pub mod condconst;
+pub mod condexe;
 pub mod consume;
 pub mod cover;
 pub mod deadcode;

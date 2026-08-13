@@ -334,6 +334,10 @@ pub fn default_rule_pool() -> ActionPool {
         // booleans is a conditional move — replace the control flow with `zext(c)`, `c || d`,
         // `c && d`, or a plain COPY, per which arms are literals.
         .with(RuleConditionalMove) // (119)
+        // RuleOrPredicate (coreaction.cc:5631): recover a short-circuit `||` from the
+        // conditionally-zeroed form — two values each zeroed on the opposite path of one
+        // condition, OR'd together, collapse to a single MULTIEQUAL merging them.
+        .with(super::condexe::RuleOrPredicate) // (120)
         // RuleFuncPtrEncoding (coreaction.cc:5632): drop the low-bit mask before an indirect call
         // on a target with aligned function pointers. Inert on x86 — no cspec sets `<funcptr>`,
         // so `funcptr_align` is 0 and the rule declines at its first test, as Ghidra's does.
