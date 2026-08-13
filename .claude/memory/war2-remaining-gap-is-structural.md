@@ -95,12 +95,21 @@ session's fixes were directionally right. Its divergence census:
      138  (absent) -> `mov`               71  (absent) -> `xor`
       35  `test` -> `mov and and`         24  `mov cmp` -> `movsx cmp`
 
-`pop`/`push` deletions still dominate: 284 places where the ORIGINAL saves a register and we do
-not. That is the emitted `modify` list still claiming a register the original preserves. The
-sub-register normalization (b4e31f8) fixed one cause of that; this says there is at least one more.
-START THERE — take a near function whose diff shows `pop -> (absent)`, compare its emitted
-`#pragma aux … modify [...]` against the registers its original actually pushes, and find why the
-list still over-claims.
+`pop`/`push` deletions dominate: 284 places where the ORIGINAL saves a register and we do not.
+
+⚠️ **I ASSUMED THAT WAS THE `modify` LIST OVER-CLAIMING AND TESTED IT — IT IS NOT.** FUN_0005a4a4:
+
+    original  push ebx ; push ebp ; mov ebp,esp ; mov ebx,eax ; call [ebx+0x24] ; pop ebp ; pop ebx
+    ours      push ebp ; mov ebp,esp ; call [eax+0x24] ; pop ebp                        (8b vs 12b)
+
+Ours is CORRECT and SHORTER. The original does a redundant EBX save plus `mov ebx,eax` because its
+register allocator parked the pointer in a callee-saved register. Our `modify [eax ecx edx]`
+correctly says EBX is preserved; we simply never use it. Nothing in the C controls which register
+Watcom picks, so this shape is not reachable by any declaration.
+
+So a large part of the push/pop gap is REGISTER ALLOCATION, not a contract defect — the same
+category as the `lea`-vs-`add` and `xor+mov`-vs-`movzx` instruction-selection differences recorded
+above. Check a candidate against this before assuming the modify list is wrong.
 
 **LOCALS REMAIN THE STRONGEST PREDICTOR** (rate by size band x local count, M38):
 
