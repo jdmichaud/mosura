@@ -77,6 +77,11 @@ pub mod flags {
     /// `Funcdata::debug_mod_check`, cleared by `debug_mod_print`/`debug_mod_clear`. Never read by
     /// the pipeline.
     pub const MODIFIED: u32 = 0x2000;
+    /// Ghidra `PcodeOp::indirect_store` (op.hh:106): this INDIRECT is caused by a STORE rather than
+    /// by a call. Set by `Heritage::guardStores` (heritage.cc:1553) and read by
+    /// `ActionLikelyTrash::traceTrash`, which follows such an INDIRECT's output instead of treating
+    /// it as a trash sink.
+    pub const INDIRECT_STORE: u32 = 0x4000;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -281,6 +286,14 @@ impl PcodeOp {
     }
     pub fn is_marker(&self) -> bool {
         matches!(self.opcode, OpCode::Multiequal | OpCode::Indirect)
+    }
+    /// Ghidra `PcodeOp::isIndirectStore` (op.hh:180): is this INDIRECT caused by a STORE?
+    pub fn is_indirect_store(&self) -> bool {
+        self.flags & flags::INDIRECT_STORE != 0
+    }
+    /// Ghidra's `PcodeOp::indirect_store` set at `newIndirectOp` (heritage.cc:1553).
+    pub fn set_indirect_store(&mut self) {
+        self.flags |= flags::INDIRECT_STORE;
     }
     /// Ghidra `PcodeOp::isMark` — the transient traversal bit (see [`flags::MARK`]).
     pub fn is_mark(&self) -> bool {

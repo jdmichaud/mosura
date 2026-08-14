@@ -405,7 +405,18 @@ fn decode_default_proto_model(
             }
         })
         .unwrap_or(0);
-    Some(ProtoModel { input, output, effectlist, localrange, paramrange, extrapop })
+    // Ghidra `ProtoModel::decode`'s `<likelytrash>` element (fspec.cc:2663): registers a caller is
+    // likely to leave garbage in. Ghidra sorts the list after decoding (fspec.cc:2694).
+    let mut likelytrash: Vec<(crate::decompile::space::Address, u32)> = proto
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "likelytrash")
+        .flat_map(|lt| lt.children().filter(|n| n.is_element()))
+        .filter_map(|n| {
+            decode_storage(spec, spaces, n).map(|(sp, off, sz)| (crate::decompile::space::Address::new(sp, off), sz))
+        })
+        .collect();
+    likelytrash.sort_by_key(|&(a, sz)| (a.space.0, a.offset, sz));
+    Some(ProtoModel { input, output, effectlist, localrange, paramrange, extrapop, likelytrash })
 }
 
 /// Decode the `<range>` children of a `<localrange>`/`<paramrange>` element into `res` (Ghidra

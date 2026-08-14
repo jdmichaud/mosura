@@ -832,6 +832,13 @@ pub struct ProtoModel {
     /// than an add. WAR2's `__watcall` is exactly that (`extrapop="unknown"`); x86-64-gcc's
     /// `__stdcall` is `8`.
     pub extrapop: i32,
+    /// Ghidra `ProtoModel::likelytrash` (fspec.hh:757), decoded from the cspec's `<likelytrash>`
+    /// element: registers a caller is likely to leave garbage in, reached through
+    /// `FuncProto::trashBegin()..trashEnd()`. `ActionLikelyTrash` traces each one and, if every
+    /// path from it is a trash sink, cuts the data flow. Empty for a model that declares none —
+    /// x86-32-watcom and x86-64-gcc both do, so this is empty on both of mosura's targets; x86win,
+    /// x86gcc, x86borland, x86delphi and x86-32-golang declare it.
+    pub likelytrash: Vec<(Address, u32)>,
 }
 
 /// Ghidra `ProtoModel::extrapop_unknown` (fspec.hh:772).

@@ -835,6 +835,26 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `VarnodeBank::findCoveredInput` (varnode.cc:1485): the function input varnode that
+    /// lies completely inside `[loc, loc+s)`. Ghidra range-queries the def-ordered set from `loc`
+    /// to `loc+s` and returns the first input fully contained; if it exists it is unique.
+    pub fn find_covered_input(&self, s: u32, loc: Address) -> Option<VarnodeId> {
+        let end = loc.offset + s as u64 - 1;
+        let mut hits: Vec<VarnodeId> = (0..self.varnodes.len() as u32)
+            .map(VarnodeId)
+            .filter(|&v| {
+                let vn = self.vn(v);
+                vn.is_input()
+                    && vn.loc.space == loc.space
+                    && vn.loc.offset >= loc.offset
+                    && vn.loc.offset <= end
+                    && vn.loc.offset + (vn.size as u64 - 1) <= end
+            })
+            .collect();
+        hits.sort_by_key(|&v| (self.vn(v).loc.offset, self.vn(v).create_index));
+        hits.first().copied()
+    }
+
     /// Mark an existing free varnode as a function input (Ghidra's `setInputVarnode`, reduced to
     /// mosura's case): clear any `written`/`def` and set `INPUT | INSERT`. Returns the varnode.
     pub fn set_input_varnode(&mut self, vid: VarnodeId) -> VarnodeId {

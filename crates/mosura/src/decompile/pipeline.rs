@@ -540,6 +540,157 @@ impl Action for ActionExtraPopSetup {
     }
 }
 
+/// Ghidra `ActionLikelyTrash::traceTrash` (coreaction.cc:2047): follow every path out of `vn` and
+/// report whether all of them end in a "trash sink" — an INDIRECT that is not an indirect-store, or
+/// an INT_AND that keeps only the topmost significant bytes. The sinks found are collected in
+/// `indlist`; a single non-sink use anywhere makes the whole trace fail.
+fn trace_trash(data: &mut Funcdata, vn: super::varnode::VarnodeId, indlist: &mut Vec<super::op::OpId>) -> bool {
+    use super::opcode::OpCode;
+    let mut allroutes: Vec<super::op::OpId> = Vec::new(); // merging ops (more than one input)
+    let mut markedlist: Vec<super::varnode::VarnodeId> = vec![vn];
+    data.vn_mut(vn).set_mark();
+    let mut traced = 0;
+    let mut istrash = true;
+
+    'outer: while traced < markedlist.len() {
+        let curvn = markedlist[traced];
+        traced += 1;
+        for op in data.vn(curvn).descend.clone() {
+            let Some(outvn) = data.op(op).output else {
+                istrash = false;
+                break 'outer;
+            };
+            match data.op(op).code() {
+                OpCode::Indirect => {
+                    if data.vn(outvn).is_persist() {
+                        istrash = false;
+                    } else if data.op(op).is_indirect_store() {
+                        if !data.vn(outvn).is_mark() {
+                            data.vn_mut(outvn).set_mark();
+                            markedlist.push(outvn);
+                        }
+                    } else {
+                        indlist.push(op);
+                    }
+                }
+                OpCode::Subpiece => {
+                    if data.vn(outvn).is_persist() {
+                        istrash = false;
+                    } else if !data.vn(outvn).is_mark() {
+                        data.vn_mut(outvn).set_mark();
+                        markedlist.push(outvn);
+                    }
+                }
+                OpCode::Multiequal | OpCode::Piece => {
+                    if data.vn(outvn).is_persist() {
+                        istrash = false;
+                    } else {
+                        if !data.op(op).is_mark() {
+                            data.op_mut(op).set_mark();
+                            allroutes.push(op);
+                        }
+                        // Only follow a merge once EVERY input has been reached.
+                        let nummark = (0..data.op(op).num_inputs())
+                            .filter(|&i| {
+                                data.op(op).input(i).is_some_and(|v| data.vn(v).is_mark())
+                            })
+                            .count();
+                        if nummark == data.op(op).num_inputs() && !data.vn(outvn).is_mark() {
+                            data.vn_mut(outvn).set_mark();
+                            markedlist.push(outvn);
+                        }
+                    }
+                }
+                OpCode::IntAnd => {
+                    // An AND that keeps ONLY the topmost significant bytes is a trash sink.
+                    let mut sink = false;
+                    if let Some(k) = data.op(op).input(1) {
+                        if data.vn(k).is_constant() {
+                            let sz = data.vn(k).size;
+                            let mask = if sz >= 8 { u64::MAX } else { (1u64 << (8 * sz)) - 1 };
+                            let val = data.vn(k).constant_value();
+                            sink = val == ((mask << 8) & mask)
+                                || val == ((mask << 16) & mask)
+                                || val == ((mask << 32) & mask);
+                        }
+                    }
+                    if sink {
+                        indlist.push(op);
+                    } else {
+                        istrash = false;
+                    }
+                }
+                _ => istrash = false,
+            }
+            if !istrash {
+                break 'outer;
+            }
+        }
+    }
+
+    for &op in &allroutes {
+        // A merge whose output was never reached means not all its inputs were seen.
+        if data.op(op).output.is_some_and(|o| !data.vn(o).is_mark()) {
+            istrash = false;
+        }
+        data.op_mut(op).clear_mark();
+    }
+    for &v in &markedlist {
+        data.vn_mut(v).clear_mark();
+    }
+    istrash
+}
+
+/// Ghidra `ActionLikelyTrash` (coreaction.cc:2140, group `protorecovery`, slot :5679): a register
+/// the calling convention marks as likely holding caller garbage, and every one of whose uses is a
+/// trash sink, has its data flow cut — the INDIRECT becomes an indirect *creation* and the
+/// masking AND's constant becomes zero.
+///
+/// Driven by the cspec's `<likelytrash>` element (`ProtoModel::likelytrash`). x86-32-watcom (WAR2)
+/// and x86-64-gcc (the corpus) declare none, so this is inert on both of mosura's targets;
+/// x86win, x86gcc, x86borland, x86delphi and x86-32-golang declare it.
+pub struct ActionLikelyTrash;
+
+impl Action for ActionLikelyTrash {
+    fn name(&self) -> &str {
+        "likelytrash"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let trash = data.proto_model.likelytrash.clone();
+        let mut count = 0;
+        for (addr, size) in trash {
+            let Some(vn) = data.find_covered_input(size, addr) else { continue };
+            if data.vn(vn).is_typelock() || data.vn(vn).is_namelock() {
+                continue;
+            }
+            let mut indlist: Vec<super::op::OpId> = Vec::new();
+            if !trace_trash(data, vn, &mut indlist) {
+                continue;
+            }
+            for op in indlist {
+                match data.op(op).code() {
+                    super::opcode::OpCode::Indirect => {
+                        // Truncate data flow through the INDIRECT, turning it into an indirect
+                        // creation.
+                        let sz = data.op(op).output.map(|o| data.vn(o).size).unwrap_or(0);
+                        let k = data.new_const(sz, 0);
+                        data.op_set_input(op, 0, k);
+                        data.mark_indirect_creation(op, false);
+                    }
+                    super::opcode::OpCode::IntAnd => {
+                        let sz = data.op(op).input(1).map(|v| data.vn(v).size).unwrap_or(0);
+                        let k = data.new_const(sz, 0);
+                        data.op_set_input(op, 1, k);
+                    }
+                    _ => {}
+                }
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
 /// Ghidra `ActionParamDouble` (coreaction.cc:1597, group `protorecovery`): a call argument built
 /// by a `PIECE` whose two halves are each a parameter in their own right is split back into two
 /// arguments.
@@ -1110,10 +1261,14 @@ pub fn universal_action() -> ActionGroup {
                 // - ActionActiveReturn (:5688): commit call outputs from the surviving
                 //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
                 //   are skipped (`output.is_some()`, cleared isOutputActive).
-                // Tail members mosura has not ported are absent here: ActionLikelyTrash (:5679),
+                // Tail members mosura has not ported are absent here:
                 // ActionReturnSplit (:5685) — each joins at its slot with its port.
+                // - ActionLikelyTrash (:5679, "protorecovery"): cut the data flow out of a
+                //   convention-declared trash register whose every use is a trash sink. Inert on
+                //   both of mosura's targets (neither cspec declares `<likelytrash>`).
                 // - ActionDirectWrite ×2 (:5680-5681): the fullloop-tail directwrite recompute,
                 //   feeding the tail DeadCode's addrforce-clear exactly as in the mainloop.
+                .then(ActionLikelyTrash)
                 .then(super::directwrite::ActionDirectWrite::new(true))
                 .then(super::directwrite::ActionDirectWrite::new(false))
                 .then(super::deadcode::ActionDeadCode)
@@ -1227,6 +1382,74 @@ pub fn decompile(data: &mut Funcdata) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ActionLikelyTrash` cuts the data flow out of a convention-declared trash register when
+    /// every path from it is a trash sink: the INDIRECT's before-value becomes a zero constant
+    /// (indirect *creation*) — Ghidra coreaction.cc:2158-2162.
+    #[test]
+    fn likely_trash_truncates_indirect_into_creation() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let ecx = Address::new(reg, 0x4);
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model.likelytrash = vec![(ecx, 4)];
+
+        let vn = f.new_input(4, ecx);
+        let target = f.new_const(4, 0x1000);
+        let call = f.new_op(OpCode::Call, SeqNum { pc: Address::new(ram, 0), uniq: 0 }, vec![target]);
+        // A call-caused INDIRECT on ECX: the only use, and a trash sink.
+        let ind = f.new_op(OpCode::Indirect, SeqNum { pc: Address::new(ram, 0), uniq: 1 }, vec![vn]);
+        f.op_mut(ind).guarded_op = Some(call);
+        f.new_output(ind, 4, ecx);
+
+        assert_eq!(ActionLikelyTrash.apply(&mut f), 1, "the one sink is cut");
+        let before = f.op(ind).input(0).expect("INDIRECT before-value");
+        assert!(f.vn(before).is_constant() && f.vn(before).constant_value() == 0,
+            "data flow through the INDIRECT is truncated to a zero constant");
+    }
+
+    /// A non-sink use anywhere makes the whole trace fail, and nothing is cut (Ghidra's
+    /// `istrash = false` default arm, coreaction.cc:2119).
+    #[test]
+    fn likely_trash_declines_when_a_use_is_not_a_sink() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let reg = spaces.by_name("register").unwrap();
+        let ram = spaces.by_name("ram").unwrap();
+        let ecx = Address::new(reg, 0x4);
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        f.proto_model.likelytrash = vec![(ecx, 4)];
+
+        let vn = f.new_input(4, ecx);
+        // A real arithmetic use — the register is not trash.
+        let k = f.new_const(4, 1);
+        let add = f.new_op(OpCode::IntAdd, SeqNum { pc: Address::new(ram, 0), uniq: 0 }, vec![vn, k]);
+        f.new_output(add, 4, Address::new(reg, 0x8));
+
+        assert_eq!(ActionLikelyTrash.apply(&mut f), 0, "a genuine use blocks the cut");
+        assert_eq!(f.op(add).input(0), Some(vn), "the graph is untouched");
+    }
+
+    /// The `<likelytrash>` cspec element decodes. x86win declares ECX; x86-64-gcc declares none,
+    /// which is why the action is inert on mosura's corpus target.
+    #[test]
+    fn likelytrash_decodes_from_the_cspec() {
+        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86.sla");
+        if !sla.exists() {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&sla) else { return };
+        let Some(spec) = Spec::from_sla(&bytes).ok() else { return };
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let win = crate::analysis::cspec::default_proto_model(&spec, "x86:LE:32:default", "windows", &spaces);
+        if let Some(m) = win {
+            assert!(!m.likelytrash.is_empty(), "x86win declares <likelytrash> (ECX)");
+        }
+    }
     use super::*;
     use crate::decompile::build::raw_funcdata_flow;
     use crate::decompile::{OpCode, OpId};

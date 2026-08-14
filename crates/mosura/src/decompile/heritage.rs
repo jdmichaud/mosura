@@ -1231,6 +1231,9 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
     }
     for op in stores {
         let ind = f.new_indirect_op(op, super::space::Address::new(spc, off), size);
+        // Ghidra passes `PcodeOp::indirect_store` to newIndirectOp here (heritage.cc:1553): the
+        // INDIRECT is caused by a STORE, which `ActionLikelyTrash::traceTrash` distinguishes.
+        f.op_mut(ind).set_indirect_store();
         // heritage.cc:1554-1555 — both ends of the passthrough join this round's renaming.
         let in0 = f.op(ind).input(0).expect("INDIRECT has an input");
         f.vn_mut(in0).set_active_heritage();
