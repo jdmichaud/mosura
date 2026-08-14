@@ -6,7 +6,7 @@
 
 ## The measurement
 
-**432 of 2948 compilable functions are byte-exact**: the C mosura emits, compiled with Watcom
+**433 of 2948 compilable functions are byte-exact**: the C mosura emits, compiled with Watcom
 10.0a and relinked at the original's addresses, reproduces the original's bytes exactly —
 relocation sites resolved and *verified to the same targets*, not masked. 3023 functions are
 emitted; 75 fail to compile.
@@ -14,8 +14,9 @@ emitted; 75 fail to compile.
 | step | EXACT |
 | --- | --- |
 | baseline, re-measured | 421 |
-| callee stack-cleanup recovery (`recompile::convention`) | **432** |
-| per-function selection over the `return-width` axis | +2 |
+| callee stack-cleanup recovery (`recompile::convention`) | 432 |
+| recovered callee prototype treated as fact, not candidate | **433** |
+| per-function selection over the `return-width` axis | +2 (measured on the 421 baseline; not re-run since) |
 
 Two instrument defects were fixed first, and the numbers before them are not comparable:
 
@@ -49,6 +50,13 @@ Whole-program prototype recovery is built (`analysis::interface`, `Program::reco
 bound at every direct call). It is OFF by default (`MOSURA_PROTO_PASS=1`). Measured on WAR2 with
 the corrected instrument: `missing` 1157 → 1081, but `extra` 467 → 603 and COMPILE_FAIL 75 → 96,
 so EXACT goes 421 → 394. The prototypes are right; the pass loses on spurious arguments.
+
+**Iterating it to a fixpoint was tried and rejected.** Round one's snapshot is taken before any
+prototype exists, so it is systematically narrower than what the same callee recovers later —
+`FUN_0004c978` gives `[register+0x0/2]` where the function takes `register+0x0/4, register+0x8/4`,
+which deletes its caller's second argument. Iterating measured **413** against 422 for one round,
+and never converged within four rounds: each extra round reduces `missing` exactly as predicted
+and buys more `extra` than it is worth.
 
 **The previously recorded diagnosis was wrong, and it was wrong in a way that sent the fix to the
 wrong subsystem.** It read this instrument line
@@ -117,7 +125,7 @@ specimen came back as `func_0x0005a48c()` with no argument at all.
 
 ## Open thread 1a — the 47 functions the pass still breaks
 
-The pass is still net −10 against the default (422 vs 432); the union of on/off is 469. It breaks 47
+The pass is still net −11 against the default (422 vs 433); the union of on/off is 469. It breaks 47
 functions that are EXACT with it off, **17 of them by a single divergence**, and those 17 split into
 two opposite defects — which is why a single "the pass over-recovers" story never fit:
 
