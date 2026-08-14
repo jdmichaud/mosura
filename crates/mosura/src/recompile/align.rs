@@ -49,6 +49,16 @@ pub enum DivergenceClass {
     Missing,
     /// Aligned, same instruction, but the control transfer lands somewhere else.
     BranchTarget,
+    /// Same semantics, same encoding form, different bytes: the instruction sits at a different
+    /// address, so a layout-dependent operand — a branch displacement, a pushed return address —
+    /// encodes differently.
+    ///
+    /// **This is a consequence, never a cause.** Something upstream changed size, and that change
+    /// is reported where it happened; this row only records that the shift propagated here.
+    /// Counting it as [`DivergenceClass::Encoding`] said the opposite — `encoding` means "not
+    /// reachable from C, do not work on this function" — and would have written 109 WAR2 functions
+    /// off the work-list for a difference that is entirely downstream of a fixable one.
+    LayoutShift,
 }
 
 impl DivergenceClass {
@@ -63,12 +73,20 @@ impl DivergenceClass {
             DivergenceClass::Extra => "extra",
             DivergenceClass::Missing => "missing",
             DivergenceClass::BranchTarget => "branch-target",
+            DivergenceClass::LayoutShift => "layout-shift",
         }
     }
     /// True for classes that mean the candidate does not compute what the original computes —
     /// as opposed to computing it differently. These are correctness defects, not form defects.
     pub fn is_semantic(self) -> bool {
         matches!(self, DivergenceClass::Missing | DivergenceClass::Extra | DivergenceClass::BranchTarget)
+    }
+
+    /// True when a row of this class exists only because some *other* divergence exists. Derived
+    /// rows are excluded from the dominant cause, because a work-list headed by a consequence
+    /// sends the work to the wrong place.
+    pub fn is_derived(self) -> bool {
+        matches!(self, DivergenceClass::LayoutShift)
     }
 }
 
@@ -149,6 +167,13 @@ fn sub_cost(a: &NormInsn, b: &NormInsn) -> (u32, DivergenceClass) {
     if a.sem == b.sem {
         if a.bytes == b.bytes {
             return (0, DivergenceClass::Equal);
+        }
+        // Same semantics AND the same encoding form. `form` is the bytes with every operand-value
+        // bit cleared, and `sem` equality already established that every operand in the key
+        // agrees — so the bytes can only differ in an operand the key deliberately holds out,
+        // which is the layout-dependent one. The instruction moved; it did not change.
+        if a.form == b.form {
+            return (1, DivergenceClass::LayoutShift);
         }
         return (1, DivergenceClass::Encoding);
     }
@@ -231,7 +256,14 @@ pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
     let mut ops = ops;
     for op in ops.iter_mut() {
         let AlignOp::Pair { oi, ci, class } = op else { continue };
-        if *class != DivergenceClass::Equal && *class != DivergenceClass::Encoding {
+        // Only pairs that are the same instruction are worth asking "does it still go to the
+        // same place" — and a layout shift is exactly that: the same instruction, moved. Omitting
+        // it here would let a jump to the WRONG place hide behind "it only moved", which is the
+        // one thing this check exists to prevent.
+        if !matches!(
+            *class,
+            DivergenceClass::Equal | DivergenceClass::Encoding | DivergenceClass::LayoutShift
+        ) {
             continue;
         }
         let (o, c) = (&orig[*oi], &cand[*ci]);
@@ -318,7 +350,7 @@ pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
 
     let primary = class_counts
         .iter()
-        .filter(|(c, _)| **c != DivergenceClass::Equal)
+        .filter(|(c, _)| **c != DivergenceClass::Equal && !c.is_derived())
         // Rank by population, but let a semantic class win a tie: "one instruction is missing"
         // is the finding, even alongside three register differences.
         .max_by_key(|(c, n)| (**n, c.is_semantic()))
@@ -326,7 +358,10 @@ pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
 
     let verdict = if divergences.is_empty() {
         Verdict::Exact
-    } else if divergences.iter().all(|d| d.class == DivergenceClass::Encoding) {
+    } else if divergences
+        .iter()
+        .all(|d| matches!(d.class, DivergenceClass::Encoding | DivergenceClass::LayoutShift))
+    {
         Verdict::SameCode
     } else if divergences.iter().all(|d| !d.class.is_semantic()) {
         Verdict::SameShape
@@ -357,7 +392,13 @@ mod tests {
     use super::*;
     use crate::recompile::insn::{NoReloc, normalize};
 
-    fn lift(hex: &str) -> Vec<NormInsn> {
+    /// Lift a two-instruction stream given as separate encodings, so a test can state the pair
+    /// it means rather than one concatenated hex blob.
+    fn lift2(a: &str, b: &str) -> Vec<NormInsn> {
+        lift1(&format!("{a}{b}"))
+    }
+
+    fn lift1(hex: &str) -> Vec<NormInsn> {
         let bytes: Vec<u8> = (0..hex.len() / 2)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
             .collect();
@@ -369,7 +410,7 @@ mod tests {
 
     #[test]
     fn identical_streams_are_exact() {
-        let d = compare(&lift(FRAME), &lift(FRAME));
+        let d = compare(&lift1(FRAME), &lift1(FRAME));
         assert_eq!(d.verdict, Verdict::Exact);
         assert!(d.divergences.is_empty());
         assert_eq!(d.similarity, 1.0);
@@ -380,7 +421,7 @@ mod tests {
     #[test]
     fn an_unrelated_function_is_a_mismatch() {
         // xor eax,eax; inc eax; ret  — nothing to do with FRAME
-        let d = compare(&lift(FRAME), &lift("31c040c3"));
+        let d = compare(&lift1(FRAME), &lift1("31c040c3"));
         assert_eq!(d.verdict, Verdict::Mismatch);
         assert!(d.similarity < 0.5, "similarity {} too high", d.similarity);
     }
@@ -389,7 +430,7 @@ mod tests {
     /// difference is real, it is just not one the emitted C can influence.
     #[test]
     fn encoding_choice_is_its_own_verdict() {
-        let d = compare(&lift(FRAME), &lift("558bec8b45085dc3"));
+        let d = compare(&lift1(FRAME), &lift1("558bec8b45085dc3"));
         assert_eq!(d.verdict, Verdict::SameCode);
         assert_eq!(d.class_counts.get(&DivergenceClass::Encoding), Some(&1));
     }
@@ -400,10 +441,41 @@ mod tests {
     #[test]
     fn a_dropped_instruction_is_missing_not_form() {
         // the same frame without the `mov eax,[ebp+8]`
-        let d = compare(&lift(FRAME), &lift("5589e55dc3"));
+        let d = compare(&lift1(FRAME), &lift1("5589e55dc3"));
         assert_eq!(d.verdict, Verdict::Mismatch);
         assert_eq!(d.class_counts.get(&DivergenceClass::Missing), Some(&1));
         assert_eq!(d.primary, Some(DivergenceClass::Missing));
+    }
+
+    /// A call that moved is not a call that changed.
+    ///
+    /// Both streams call `0x2000`; the candidate's `CMP EBX,-1` is one byte longer than the
+    /// original's `TEST EBX,EBX`, so the call sits one byte later and its `rel32` — and the
+    /// return address it pushes — encode differently. The finding is the `TEST`/`CMP` choice;
+    /// the call is a consequence of it, and must not be reported as a second, independent one.
+    #[test]
+    fn a_call_displaced_by_an_upstream_size_change_is_derived_not_a_cause() {
+        let orig = lift2("85db" /* test ebx,ebx */ , "e8f90f0000" /* call 0x2000 from 0x1002 */);
+        let cand = lift2("83fbff" /* cmp ebx,-1 */ , "e8f80f0000" /* call 0x2000 from 0x1003 */);
+        let d = compare(&orig, &cand);
+        assert_eq!(orig[1].target, cand[1].target, "both call the same place");
+        assert_eq!(d.class_counts.get(&DivergenceClass::LayoutShift), Some(&1));
+        assert_eq!(
+            d.primary,
+            Some(DivergenceClass::Selection),
+            "the dominant cause is the instruction that changed, not the one that moved"
+        );
+        assert!(DivergenceClass::LayoutShift.is_derived());
+    }
+
+    /// A program that only moved is the same program: with nothing but layout shifts, the verdict
+    /// is SAME_CODE — no C change can close it, and none is needed.
+    #[test]
+    fn layout_shift_alone_reads_as_the_same_code() {
+        let orig = lift2("90", "e8fa0f0000"); // nop; call 0x2000 from 0x1001
+        let cand = lift2("6690", "e8f90f0000"); // 66 nop (2 bytes); call 0x2000 from 0x1002
+        let d = compare(&orig, &cand);
+        assert_eq!(d.verdict, Verdict::SameCode, "{:?}", d.class_counts);
     }
 
     /// Different register, same program: SAME_SHAPE, and the substitution is reported as a
@@ -411,7 +483,7 @@ mod tests {
     #[test]
     fn a_register_rename_is_shape_not_semantics() {
         // mov eax,[ebp+8] -> mov edx,[ebp+8]
-        let d = compare(&lift(FRAME), &lift("5589e58b55085dc3"));
+        let d = compare(&lift1(FRAME), &lift1("5589e58b55085dc3"));
         assert_eq!(d.verdict, Verdict::SameShape);
         assert_eq!(d.class_counts.get(&DivergenceClass::RegisterAlloc), Some(&1));
         assert!(d.reg_subst_consistent);
@@ -424,8 +496,8 @@ mod tests {
     #[test]
     fn a_branch_to_the_wrong_place_is_caught() {
         // jmp +2; nop; nop; ret      vs      jmp +3; nop; nop; ret
-        let a = lift("eb029090c3");
-        let b = lift("eb039090c3");
+        let a = lift1("eb029090c3");
+        let b = lift1("eb039090c3");
         let d = compare(&a, &b);
         assert_eq!(d.class_counts.get(&DivergenceClass::BranchTarget), Some(&1));
         assert_eq!(d.verdict, Verdict::Mismatch);
@@ -435,7 +507,7 @@ mod tests {
     /// direction matters, because only one of the two means we lost a computation.
     #[test]
     fn direction_of_a_gap_is_preserved() {
-        let d = compare(&lift(FRAME), &lift("5589e58b450840405dc3"));
+        let d = compare(&lift1(FRAME), &lift1("5589e58b450840405dc3"));
         assert_eq!(d.class_counts.get(&DivergenceClass::Extra), Some(&2));
         assert_eq!(d.class_counts.get(&DivergenceClass::Missing), None);
     }

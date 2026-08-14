@@ -69,6 +69,20 @@ pub enum SemArg {
     /// branch in a shifted function look like a divergence. Verified separately, after the
     /// alignment establishes which instruction the original's target corresponds to.
     Target,
+    /// A constant that *is* a position in the instruction stream — this instruction's own address
+    /// or its successor's — rather than a value the program computed.
+    ///
+    /// Every architecture materializes one: x86 `CALL` pushes the return address, ARM `BL` writes
+    /// `pc+4` to `LR`, MIPS `JAL` writes it to `$ra`. It is layout-dependent for exactly the same
+    /// reason [`SemArg::Target`] is, and holding it in the key had exactly the same consequence:
+    /// one byte of size drift anywhere upstream made **every later call** report a spurious
+    /// `immediate` divergence. Measured on WAR2, that was 5741 rows across 1722 functions —
+    /// enough to distort which cause the census reports as dominant.
+    ///
+    /// Erasing it hides nothing. A candidate whose calls really did land at other addresses has
+    /// different bytes, and the byte verdict is computed independently of this key; whatever made
+    /// it shift is itself reported where it happened.
+    PcRef,
 }
 
 /// One canonicalized p-code operation.
@@ -224,6 +238,12 @@ pub fn normalize_one_with_mask(
             }
             "const" => {
                 let val = resolve_const(v.offset, v.size).unwrap_or(v.offset);
+                // A constant naming this instruction's own position is a PC reference, not a
+                // value — see [`SemArg::PcRef`]. Kept out of `consts` as well as out of the key,
+                // because `consts` is what separates an immediate difference from a register one.
+                if val == insn.address || val == insn.address.wrapping_add(ilen as u64) {
+                    return SemArg::PcRef;
+                }
                 if !consts.contains(&val) {
                     consts.push(val);
                 }
@@ -377,6 +397,46 @@ mod tests {
         assert_eq!(a[0].shape, b[0].shape);
         assert_ne!(a[0].sem, b[0].sem);
         assert_ne!(a[0].shape, c[0].shape);
+    }
+
+    /// Lift at an explicit address, so a test can ask what changes when only the address does.
+    fn lift_at(hex: &str, at: u64) -> Vec<NormInsn> {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        normalize("x86:LE:32:default", &bytes, at, &NoReloc).expect("language tables")
+    }
+
+    /// **The same call, one byte further along, is the same call.**
+    ///
+    /// `CALL` pushes its return address, which is a constant naming the *next* instruction — so
+    /// moving the call moves that constant, and holding it in the key made every call downstream
+    /// of any size change report a spurious `immediate` divergence. Both spellings here target
+    /// the same absolute address (`rel32` is adjusted for the shift), so nothing about what the
+    /// instruction does has changed.
+    #[test]
+    fn a_calls_pushed_return_address_is_not_part_of_the_key() {
+        // call 0x1105 from 0x1000, and the same call from 0x1001.
+        let a = lift_at("e800010000", 0x1000);
+        let b = lift_at("e8ff000000", 0x1001);
+        assert_eq!(a[0].target, b[0].target, "same destination");
+        assert_eq!(a[0].sem, b[0].sem, "{} @1000 vs {} @1001", a[0].text, b[0].text);
+        // The stack decrement (`ESP = ESP - 4`) is a genuine constant and stays; the return
+        // address does not appear on either side.
+        assert_eq!(a[0].consts, vec![4]);
+        assert_eq!(b[0].consts, vec![4]);
+    }
+
+    /// Erasing the PC reference must not erase real constants: a call whose operand list holds an
+    /// actual value still separates from one holding a different value.
+    #[test]
+    fn a_real_constant_survives_pc_reference_erasure() {
+        // push 0x1005 (a constant that *is* this stream's next address at 0x1000) vs push 0x2000.
+        let a = lift_at("6805100000", 0x1000);
+        let b = lift_at("6800200000", 0x1000);
+        assert_ne!(a[0].sem, b[0].sem, "different pushed values must stay different");
+        assert!(b[0].consts.contains(&0x2000), "an ordinary constant is still a value: {:?}", b[0].consts);
+        assert!(!a[0].consts.contains(&0x1005), "the PC reference is gone: {:?}", a[0].consts);
     }
 
     /// A branch's destination is layout-dependent, so it is held out of the comparison keys:

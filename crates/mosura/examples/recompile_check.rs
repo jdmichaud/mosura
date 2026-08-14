@@ -13,7 +13,7 @@
 //!
 //! Usage:
 //!   recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir>
-//!                   [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>]
+//!                   [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>]
 //!
 //! `<flags-file>` maps a function stem to its compiler flags, one per line (`<stem> <flags...>`).
 //! Which flags the original build used is a recovery problem of its own; this tool consumes the
@@ -21,7 +21,10 @@
 use mosura::analysis;
 use mosura::decompile::space::Address;
 use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
-use mosura::recompile::{emitted_symbol_address, verify, ByteVerdict, DivergenceClass, Subject, Verdict};
+use mosura::recompile::{
+    emitted_symbol_address, verify, ByteVerdict, DivergenceClass, FnKey, Subject, Verdict,
+    DIVERGENCE_HEADER,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -30,7 +33,7 @@ fn main() {
     if a.len() < 5 {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
-             [--only ids] [--cache dir] [--verbose] [--out tsv]"
+             [--only ids] [--cache dir] [--verbose] [--out tsv] [--divergences tsv]"
         );
         std::process::exit(2);
     }
@@ -39,6 +42,7 @@ fn main() {
     let mut cache_dir = std::env::temp_dir().join("mosura-recompile-cache");
     let mut verbose = false;
     let mut out_path: Option<String> = None;
+    let mut div_path: Option<String> = None;
     let mut i = 5;
     while i < a.len() {
         match a[i].as_str() {
@@ -54,6 +58,10 @@ fn main() {
             "--out" => {
                 i += 1;
                 out_path = Some(a[i].clone());
+            }
+            "--divergences" => {
+                i += 1;
+                div_path = Some(a[i].clone());
             }
             o => panic!("unknown argument {o}"),
         }
@@ -156,6 +164,7 @@ fn main() {
     let mut causes: BTreeMap<&'static str, usize> = BTreeMap::new();
     let (mut identical, mut reloc_only) = (0usize, 0usize);
     let mut tsv = String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tclasses\n");
+    let mut divs = String::from(DIVERGENCE_HEADER);
     for (row, out) in kept.iter().zip(outs.iter()) {
         if !out.ok() {
             *census.entry("COMPILE_FAIL").or_default() += 1;
@@ -209,6 +218,10 @@ fn main() {
             diff.similarity,
             classes
         ));
+        if div_path.is_some() {
+            let key = FnKey { idx: row.idx.clone(), va: row.va, name: row.name.clone() };
+            mosura::recompile::write_divergence_rows(&mut divs, &key, diff, orig, cnorm);
+        }
         if verbose {
             println!("=== {} @ {:08x} : {} ===", row.name, row.va, diff.verdict.as_str());
             for op in &diff.ops {
@@ -251,6 +264,11 @@ fn main() {
     if let Some(p) = out_path {
         std::fs::write(&p, tsv).expect("write");
         eprintln!("rows written to {p}");
+    }
+    if let Some(p) = div_path {
+        let n = divs.lines().count().saturating_sub(1);
+        std::fs::write(&p, divs).expect("write");
+        eprintln!("{n} divergence rows written to {p}");
     }
     eprintln!("recompile_check: COMPLETE");
     // A non-zero exit when nothing reached EXACT makes this usable as a gate on one function.
