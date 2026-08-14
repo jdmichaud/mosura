@@ -860,6 +860,13 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     let recovered: Vec<(Address, u32)> =
         f.call_specs.get(&call).and_then(|cs| cs.reads.clone()).unwrap_or_default();
     let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
+    // How many trials this evaluation actually sees. Print it beside the `[trials]` line from
+    // `build_input_from_trials` and the two must agree: a trial registered after the evaluation
+    // has run is never given a verdict, and an unevaluated trial is dropped from the argument
+    // list. The two counts disagreeing is the whole diagnosis for a silently missing argument.
+    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        eprintln!("[check] call@{:#x} ntrials={ntrials}", f.op(call).seqnum.pc.offset);
+    }
     // Each unchecked trial is evaluated, marked and (for `markNoUse`) freed IN-LOOP — Ghidra's
     // sequential semantics (both the marking and the constant-0 free happen inside the trial loop,
     // fspec.cc:5613-5651) — so a later trial's [`check_call_double_use`] sees the verdicts of the

@@ -123,6 +123,53 @@ The gate has to sit INSIDE the check. Skipping `check_input_trial_use` wholesale
 marking and the pass counter, so the list commits on pass 0 and arguments vanish — measured, the
 specimen came back as `func_0x0005a48c()` with no argument at all.
 
+## Open thread 1b — an argument's trial is evaluated before it exists
+
+**This is the call-argument family's root defect in the DEFAULT configuration** (no prototype
+pass), and it is one instrument line from being actionable.
+
+Sized by marginal value on the 433 baseline: **73 functions** have only call-argument-shaped
+divergences — missing `PUSH`/`POP` register saves, missing `MOV <argreg>,K` setup, missing
+`PUSH K` stack arguments, missing `ADD ESP,K` cleanup. Ten are a single divergence from exact,
+26 within three. (2225 functions merely *exhibit* one of those; that number means nothing.)
+
+Minimal specimen, `FUN_00033370` — three consecutive near-identical wrappers, 01117/01119/01121,
+each missing a `MOV EBX,<global>` with the globals stepping by 8:
+
+```
+  00033370  PUSH EBP        | PUSH EBP
+  00033371  MOV EBP,ESP     | MOV EBP,ESP
+- 00033373  MOV EBX,0x8ce58 |                 [missing]
+  00033378  CALL 0x332c4    | CALL 0x332c4
+```
+
+We emit `func_0x000332c4()`. The callee takes its argument in **EBX** — watcall slot 3 of
+EAX/EDX/EBX/ECX — and slots 1 and 2 are unused at this site.
+
+`MOSURA_ARG_DEBUG=1` names the mechanism exactly:
+
+```
+[check]  call@0x33378 ntrials=1
+[trials] call@0x33378 register+0x0/4---R  register+0x8/4---R  register+0xc/4----
+```
+
+The evaluation loop sees ONE trial; the commit sees THREE. EAX and EDX are `R` — unref holes
+`build_trial_map` synthesized inside `fillin_map`, which runs *after* the evaluation. EBX is
+matched to its convention entry (`entry=Some(2)`) and carries **no flags at all** — not even
+`CHECKED`. Every verdict path in `check_input_trial_use` sets `CHECKED`
+(`mark_active`/`mark_inactive`/`mark_no_use` all do), so an unflagged trial was never reached by
+that loop. It is then not `used`, and `build_input_from_trials` keeps only used trials, so the
+argument disappears.
+
+**The trial set that decides the argument list is not the trial set that was evaluated.** That is
+the defect. Note it is not the definitely-not-used chain rule, which was the obvious suspect given
+two unused leading slots — the chain rule marks trials `D`, and these are unmarked.
+
+Next step is to establish WHY the count differs — whether `fillin_map` registers the deciding
+trials, or a later heritage round does after `resolve_call_args` has set `active = false` and can
+never revisit the call. Those have different fixes, and the `[check]`/`[trials]` pair distinguishes
+them at a glance.
+
 ## Open thread 1a — the 47 functions the pass still breaks
 
 The pass is still net −11 against the default (422 vs 433); the union of on/off is 469. It breaks 47
