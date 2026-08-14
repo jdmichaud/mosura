@@ -16,7 +16,8 @@ use mosura::analysis::{self, decompiler::decompile_function};
 use mosura::decompile::funcdata::Funcdata;
 use mosura::decompile::op::flags;
 use mosura::decompile::opcode::OpCode;
-use mosura::decompile::printc::print_c;
+use mosura::decompile::emit::EmitChoices;
+use mosura::decompile::printc::{print_c_with};
 use mosura::decompile::space::Address;
 
 // Sized-int / undefined typedefs a compilable-C emitter would prepend (Ghidra decompiler C).
@@ -355,6 +356,29 @@ fn main() {
         })
         .unwrap_or_default();
 
+    // `--arms <θ>[;<θ>...]` emits the corpus under several EMISSION CHOICE VECTORS in ONE pass —
+    // e.g. `--arms 'default;return-width=storage'`. Each θ is a different rendering of the SAME
+    // recovered program (see `decompile::emit::EmitChoices` for the rules that keep that true), so
+    // this is the generate half of the byte-exact search: which rendering the original compiler was
+    // given is not derivable from the IR, and the compiler in the loop is what decides it.
+    //
+    // One pass rather than one run per arm, because decompiling is θ-independent and is essentially
+    // the whole cost: a second arm adds a `print_c_with` per function (milliseconds) instead of a
+    // second 50-second analysis. Arm 0 writes the ordinary `src.<stamp>/`, so a run without
+    // `--arms` is byte-for-byte the run that existed before this option.
+    let arms: Vec<EmitChoices> = rest
+        .iter()
+        .position(|a| a == "--arms")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| {
+            v.split(';')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| EmitChoices::parse(t).unwrap_or_else(|e| panic!("--arms: {e}")))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![EmitChoices::default()]);
+
     // Artifacts are STAMPED with the commit that produced them: `src.<stamp>/`, `raw.<stamp>/`,
     // `manifest.<stamp>.tsv`, with the unsuffixed names as symlinks to the current stamp.
     //
@@ -371,6 +395,13 @@ fn main() {
     let src_dir = out.join(format!("src.{stamp}"));
     let raw_dir = out.join(format!("raw.{stamp}"));
     let manifest_path = out.join(format!("manifest.{stamp}.tsv"));
+    // Arm 0 IS `src.<stamp>/`; every further arm gets its own stamped directory named by its θ, so
+    // two arms can never be blended into one directory that is a snapshot of neither.
+    let arm_dirs: Vec<std::path::PathBuf> = arms
+        .iter()
+        .enumerate()
+        .map(|(i, t)| if i == 0 { src_dir.clone() } else { out.join(format!("src-{}.{stamp}", t.tag())) })
+        .collect();
 
     // `--only` is a READ-ONLY probe. Everything below this point rewrites the survey's working
     // state — it clears the stamped src/raw directories, regenerates prelude.h, repoints the
@@ -396,12 +427,14 @@ fn main() {
     // `war2-survey/src/` holds .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
     // Only reachable for a new stamp (nothing to clear), a `-dirty` stamp, or --force.
     if !probing {
-        for d in [&src_dir, &raw_dir] {
+        for d in arm_dirs.iter().chain([&raw_dir]) {
             if d.exists() {
                 std::fs::remove_dir_all(d).unwrap();
             }
         }
-        std::fs::create_dir_all(&src_dir).unwrap();
+        for d in &arm_dirs {
+            std::fs::create_dir_all(d).unwrap();
+        }
         std::fs::create_dir_all(&raw_dir).unwrap();
         std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
     }
@@ -409,6 +442,10 @@ fn main() {
     // Pointing the bare names at the current stamp keeps both working unchanged.
     if !probing {
         link_latest(&out.join("src"), &format!("src.{stamp}"));
+        for (t, d) in arms.iter().zip(&arm_dirs).skip(1) {
+            let name = d.file_name().unwrap().to_string_lossy().to_string();
+            link_latest(&out.join(format!("src-{}", t.tag())), &name);
+        }
         link_latest(&out.join("raw"), &format!("raw.{stamp}"));
         link_latest(&out.join("manifest.tsv"), &format!("manifest.{stamp}.tsv"));
     }
@@ -602,7 +639,10 @@ fn main() {
             mosura::decompile::structure::reached_basic_blocks(&mosura::decompile::structure::structure(&f))
                 .len();
 
-        let c = print_c(&f);
+        // Decompiling is θ-independent and dominates the cost, so every rendering the caller asked
+        // for is printed from this one Funcdata. That is what makes a multi-arm emit cost a print
+        // per arm instead of a whole second analysis.
+        let c = print_c_with(&f, &arms[0]);
         if !probing {
             std::fs::write(raw_dir.join(format!("{va:08x}.c")), &c).unwrap();
         }
@@ -650,8 +690,21 @@ fn main() {
             && proto.params.iter().all(|p| {
                 f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
             });
+        let contract = own_contract(&f, &watreg, stack_convention);
+        // Arms past the first: same function, same declarations, a different rendering of the body.
+        for (ai, theta) in arms.iter().enumerate().skip(1) {
+            let ac = print_c_with(&f, theta);
+            let (atu, _) = build_tu(&ac, *va, false, &gsizes);
+            let atu = match &contract {
+                Some(decl) => format!("#pragma aux {name} {decl};\n{atu}"),
+                None => atu,
+            };
+            if only.is_empty() {
+                std::fs::write(arm_dirs[ai].join(format!("{idx:05}.c")), &atu).unwrap();
+            }
+        }
         let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);
-        let tu = if let Some(decl) = own_contract(&f, &watreg, stack_convention) {
+        let tu = if let Some(decl) = contract.clone() {
             // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
             // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
             // only express POSITION — Watcom then assigns position 1 to EAX, 2 to EDX, and so on.

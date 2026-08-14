@@ -21,6 +21,7 @@ pub mod deadcode;
 pub mod determinedbranch;
 pub mod directwrite;
 pub mod dominator;
+pub mod emit;
 pub mod double;
 pub mod expression;
 pub mod fasthash;

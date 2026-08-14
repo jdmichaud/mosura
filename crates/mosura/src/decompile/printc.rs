@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
+use super::emit::{EmitChoices, ReturnWidth};
 use super::funcdata::Funcdata;
 use super::merge::HighVariables;
 use super::op::OpId;
@@ -2356,18 +2357,21 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
 /// byte-returning functions `storage` broke. `MOSURA_RETURN_WIDTH=storage` selects the other arm,
 /// which stays because a different binary may answer differently — that is what an emission
 /// choice is for.
-fn return_width(f: &Funcdata, vn: &super::varnode::Varnode) -> u32 {
-    let storage = matches!(std::env::var("MOSURA_RETURN_WIDTH").as_deref(), Ok("storage"));
-    let w = if !storage {
-        f.output_storage_size.unwrap_or(vn.size)
-    } else {
-        f.proto_model
+fn return_width(f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
+    let w = match choices.return_width {
+        // What the reference decompiler prints: the value's own width, nothing widened.
+        ReturnWidth::Value => vn.size,
+        // How much of the return storage the recovery found this function to produce.
+        ReturnWidth::Recovered => f.output_storage_size.unwrap_or(vn.size),
+        // The convention's whole return-storage entry, whatever the recovery credited.
+        ReturnWidth::Storage => f
+            .proto_model
             .output
             .as_ref()
             .and_then(|out| {
                 out.entry.iter().find(|e| e.justified_contain(vn.loc, vn.size) == Some(0)).map(|e| e.size)
             })
-            .unwrap_or(vn.size)
+            .unwrap_or(vn.size),
     };
     w.max(vn.size)
 }
@@ -2379,13 +2383,32 @@ fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
     match ty {
         Datatype::Bool | Datatype::Char | Datatype::Int(_) => Datatype::Int(width),
         Datatype::Uint(_) => Datatype::Uint(width),
+        // `undefined<N>` is a value of KNOWN WIDTH and unknown interpretation, so widening it is
+        // the same question as widening an integer and has the same answer. Excluding it made this
+        // choice inert on the type that dominates a stripped binary: across WAR2's 3023 functions
+        // the storage arm changed 4 translation units, because nearly every recovered return type
+        // is `undefined<N>` and fell into the catch-all below.
+        Datatype::Unknown(_) => Datatype::Unknown(width),
         // Anything else (pointer, float, aggregate) narrower than its storage is not a promotion
         // question and is left for the type recovery to answer.
         other => other.clone(),
     }
 }
 
+/// Emit C for `f` under the reference rendering — the decompiler's own choices.
+///
+/// This is what every caller outside the byte-exact search wants, and what the whole test suite
+/// uses: with [`EmitChoices::default`] the output is what it was before emission became
+/// parameterized, so the port is unaffected by θ existing.
 pub fn print_c(f: &Funcdata) -> String {
+    print_c_with(f, &EmitChoices::default())
+}
+
+/// Emit C for `f` under an explicit choice vector — the `IR × θ → C` byte-exact recovery needs.
+///
+/// Every θ renders the same recovered program; see [`EmitChoices`] for the rules that keep that
+/// true, and for why an axis is not a place to repair a decompilation defect.
+pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
     let reg_space = f.spaces.by_name("register");
 
     // Parameters: the recovered function prototype (Ghidra `ActionInputPrototype` →
@@ -2558,7 +2581,7 @@ pub fn print_c(f: &Funcdata) -> String {
         // four-byte register — and a narrower declared type deletes the widening the original
         // performs. The convention is the stable statement of how wide a returned value is.
         let vn = f.vn(v);
-        widen_to_storage(&p.type_of(v), return_width(f, vn)).name()
+        widen_to_storage(&p.type_of(v), return_width(f, vn, choices)).name()
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params
