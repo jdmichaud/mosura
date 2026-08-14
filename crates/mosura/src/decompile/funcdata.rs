@@ -842,6 +842,152 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `CloneBlockOps::cloneBlock` (funcdata_block.cc:1004) together with `buildOpClone`
+    /// (:951), `buildVarnodeOutput` (:981) and `patchInputs` (:1047): copy every p-code op of `b`
+    /// into `bprime`, rewiring the clones to read each other and splitting the MULTIEQUALs.
+    ///
+    /// The MULTIEQUAL handling is the point of the exercise: `bprime` now takes exactly one of
+    /// `b`'s in-edges, so each cloned phi collapses to a COPY of that edge's input, and the
+    /// original phi loses that input (itself collapsing to a COPY if only one is left).
+    ///
+    /// Panics where Ghidra throws: a 2-way/n-way branch, an INDIRECT, a CALL, or a free input
+    /// cannot be cloned. `ActionReturnSplit::isSplittable` has already excluded all of them.
+    ///
+    /// Flag copying is the intersection of Ghidra's lists with what mosura models. Ghidra carries
+    /// `nocollapse/startmark/nonprinting/halt/badinstruction/unimplemented/noreturn/missing/
+    /// calculated_bool/ptrflow` on ops and `special_prop/special_print/incidental_copy/
+    /// is_cpool_transformed/stop_type_propagation/store_unmapped` as op addlflags; mosura has no
+    /// counterpart for those, so they are simply absent rather than approximated.
+    pub fn clone_block_ops(&mut self, b: super::block::BlockId, bprime: super::block::BlockId, inedge: usize) {
+        use super::op::flags as opf;
+        use super::varnode::flags as vnf;
+        const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE;
+        const VN_KEEP: u32 = vnf::EXTERNREF
+            | vnf::VOLATILE
+            | vnf::INCIDENTAL_COPY
+            | vnf::READONLY
+            | vnf::PERSIST
+            | vnf::ADDRTIED
+            | vnf::ADDRFORCE
+            | vnf::NOLOCALALIAS
+            | vnf::SPACEBASE
+            | vnf::INDIRECT_CREATION
+            | vnf::RETURN_ADDRESS
+            | vnf::PRECISLO
+            | vnf::PRECISHI;
+
+        let mut clone_list: Vec<(OpId, OpId)> = Vec::new(); // (clone, orig)
+        let mut orig_to_clone: std::collections::HashMap<OpId, OpId> = std::collections::HashMap::new();
+        for orig in self.blocks[b.0 as usize].ops.clone() {
+            if self.op(orig).code().is_branch() {
+                assert_eq!(
+                    self.op(orig).code(),
+                    OpCode::Branch,
+                    "cannot duplicate a 2-way or n-way branch in nodesplit"
+                );
+                continue;
+            }
+            let (pc, code, nin) =
+                (self.op(orig).seqnum.pc, self.op(orig).code(), self.op(orig).num_inputs());
+            let uniq = self.num_ops() as u32;
+            // Inputs are patched below; seed the clone with the original's so the arity matches.
+            let seed: Vec<VarnodeId> =
+                (0..nin).map(|i| self.op(orig).input(i).expect("input")).collect();
+            let dup = self.new_op(code, super::op::SeqNum { pc, uniq }, seed);
+            let fl = self.op(orig).flags & OP_KEEP;
+            self.op_mut(dup).flags |= fl;
+            if let Some(opvn) = self.op(orig).output {
+                let (size, loc, vflags, addl) = (
+                    self.vn(opvn).size,
+                    self.vn(opvn).loc,
+                    self.vn(opvn).flags & VN_KEEP,
+                    self.vn(opvn).addlflags & super::varnode::addlflags::WRITEMASK,
+                );
+                let newvn = self.new_output(dup, size, loc);
+                self.vn_mut(newvn).flags |= vflags;
+                self.vn_mut(newvn).addlflags |= addl;
+            }
+            clone_list.push((dup, orig));
+            orig_to_clone.insert(orig, dup);
+            self.op_insert_end(dup, bprime);
+        }
+        // patchInputs (funcdata_block.cc:1047)
+        for &(clone_op, orig) in &clone_list {
+            if self.op(orig).code() == OpCode::Multiequal {
+                let pick = self.op(orig).input(inedge).expect("phi input per in-edge");
+                // One edge now goes into the new block, so the clone is a COPY of that input.
+                while self.op(clone_op).num_inputs() > 1 {
+                    self.op_remove_input(clone_op, 1);
+                }
+                self.op_set_opcode(clone_op, OpCode::Copy);
+                self.op_set_input(clone_op, 0, pick);
+                // One edge is removed from the original block.
+                self.op_remove_input(orig, inedge);
+                if self.op(orig).num_inputs() == 1 {
+                    self.op_set_opcode(orig, OpCode::Copy);
+                }
+                continue;
+            }
+            assert!(self.op(orig).code() != OpCode::Indirect, "can't clone INDIRECTs");
+            assert!(!self.op(orig).is_call(), "can't clone CALLs");
+            for i in 0..self.op(clone_op).num_inputs() {
+                let orig_vn = self.op(orig).input(i).expect("input");
+                let clone_vn = if self.vn(orig_vn).is_constant() {
+                    orig_vn
+                } else if self.vn(orig_vn).is_annotation() {
+                    let m = self.vn(orig_vn).loc;
+                    self.new_code_ref(m)
+                } else {
+                    assert!(!self.vn(orig_vn).is_free(), "can't clone a free varnode");
+                    match self.vn(orig_vn).def.and_then(|d| orig_to_clone.get(&d).copied()) {
+                        Some(c) => self.op(c).output.expect("cloned op has an output"),
+                        None => orig_vn,
+                    }
+                };
+                self.op_set_input(clone_op, i, clone_vn);
+            }
+        }
+    }
+
+    /// Ghidra `Funcdata::nodeSplitBlockEdge` (funcdata_block.cc:824) + `nodeSplit` (:845): split
+    /// control flow into `b`, duplicating its p-code into a new block that takes over the given
+    /// in-edge.
+    ///
+    /// Panics where Ghidra throws: the block must have no out-flow (Ghidra's own comment notes the
+    /// general out-edge case is unimplemented, since it would need MULTIEQUALs in the out-blocks),
+    /// must have more than one in-edge, and must have no duplicate in-edges.
+    pub fn node_split(&mut self, b: super::block::BlockId, inedge: usize) {
+        assert!(
+            self.blocks[b.0 as usize].out_edges.is_empty(),
+            "cannot (currently) nodesplit a block with out flow"
+        );
+        assert!(
+            self.blocks[b.0 as usize].in_edges.len() > 1,
+            "cannot nodesplit a block with only 1 in edge"
+        );
+        {
+            let ins = &self.blocks[b.0 as usize].in_edges;
+            let mut seen = std::collections::HashSet::new();
+            assert!(
+                ins.iter().all(|e| seen.insert(*e)),
+                "cannot nodesplit a block with redundant in edges"
+            );
+        }
+        // nodeSplitBlockEdge: a duplicate block takes over the one in-edge, inheriting b's outs
+        // (of which there are none here).
+        let a = self.blocks[b.0 as usize].in_edges[inedge];
+        let bprime = self.new_block_basic();
+        let a_out = self.blocks[a.0 as usize]
+            .out_edges
+            .iter()
+            .position(|&x| x == b)
+            .expect("edge is reciprocal");
+        self.blocks[a.0 as usize].out_edges[a_out] = bprime;
+        self.blocks[b.0 as usize].in_edges.remove(inedge);
+        self.blocks[bprime.0 as usize].in_edges.push(a);
+        self.clone_block_ops(b, bprime, inedge);
+    }
+
     /// Ghidra `BlockGraph::removeEdge` (block.cc): drop the edge `from` -> `to` from both sides.
     pub fn remove_edge(&mut self, from: super::block::BlockId, to: super::block::BlockId) {
         let oi = self.blocks[from.0 as usize]

@@ -1369,7 +1369,7 @@ pub fn universal_action() -> ActionGroup {
                 //   killedbycall clobbers. Convergent: +1 per committed output, committed calls
                 //   are skipped (`output.is_some()`, cleared isOutputActive).
                 // Tail members mosura has not ported are absent here:
-                // ActionReturnSplit (:5685) — each joins at its slot with its port.
+                // (all fullloop-tail members are now at their slots.)
                 // - ActionLikelyTrash (:5679, "protorecovery"): cut the data flow out of a
                 //   convention-declared trash register whose every use is a trash sink. Inert on
                 //   both of mosura's targets (neither cspec declares `<likelytrash>`).
@@ -1381,6 +1381,9 @@ pub fn universal_action() -> ActionGroup {
                 .then(super::deadcode::ActionDeadCode)
                 .then(super::determinedbranch::ActionDoNothing)
                 .then(ActionSwitchNorm)
+                // ActionReturnSplit (:5685, group `returnsplit`), Ghidra's slot directly after
+                // ActionSwitchNorm and before ActionUnjustifiedParams.
+                .then(super::blockjoin::ActionReturnSplit)
                 // ActionUnjustifiedParams (:5686, group `protorecovery`), directly after
                 // ActionSwitchNorm/ActionReturnSplit and before ActionStartTypes.
                 .then(ActionUnjustifiedParams)

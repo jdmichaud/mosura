@@ -384,3 +384,179 @@ mod tests {
         assert_eq!(f.num_blocks(), 3);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Ghidra `ActionReturnSplit` (blockaction.cc:2205-2320).
+// ---------------------------------------------------------------------------
+
+/// Ghidra `ActionReturnSplit::isSplittable` (blockaction.cc:2241): a block ending in RETURN can be
+/// split only if nothing substantive else happens in it.
+fn is_splittable(data: &Funcdata, b: BlockId) -> bool {
+    for &op in &data.block(b).ops {
+        match data.op(op).code() {
+            OpCode::Multiequal => continue,
+            OpCode::Copy | OpCode::Return => {
+                for i in 0..data.op(op).num_inputs() {
+                    let vn = data.op(op).input(i).expect("input");
+                    if data.vn(vn).is_constant() || data.vn(vn).is_annotation() {
+                        continue;
+                    }
+                    if data.vn(vn).is_free() {
+                        return false;
+                    }
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Ghidra `ActionReturnSplit::gatherReturnGotos` (blockaction.cc:2205): does the flow arriving at
+/// `parent` on its `i`-th in-edge get there by a **goto** that targets `parent`?
+///
+/// Ghidra walks the predecessor's `getCopyMap()` up the `getParent()` chain looking for a
+/// `BlockGoto` that prints, or a `BlockIf` carrying a goto target, whose target resolves down
+/// through `subBlock(0)` to `parent`. mosura's structurer records the same state in two maps —
+/// [`Structured::gotos`], keyed by the basic block whose exit emits a conditional if-goto (Ghidra's
+/// `BlockIf::gototarget`), and [`Structured::node_gotos`], keyed by the structured node wrapping an
+/// unconditional goto (Ghidra's `BlockGoto`) — so the chain walk reads those instead of a copyMap.
+fn in_edge_gotos_to(s: &super::structure::Structured, pred: BlockId, parent: BlockId) -> bool {
+    let targets_parent = |recs: Option<&Vec<super::structure::GotoRecord>>| {
+        recs.is_some_and(|v| v.iter().any(|g| g.target == parent))
+    };
+    // The conditional (BlockIf) form is keyed by the emitting basic block.
+    if targets_parent(s.gotos.get(&pred)) {
+        return true;
+    }
+    // The unconditional (BlockGoto) form is keyed by the structured node, so walk the chain from
+    // the predecessor's leaf up through its enclosing composites.
+    let Some(mut node) = s.blocks.iter().position(|fb| fb.kind == super::structure::FlowKind::Basic(pred))
+    else {
+        return false;
+    };
+    loop {
+        if targets_parent(s.node_gotos.get(&node)) {
+            return true;
+        }
+        match s.blocks[node].parent {
+            Some(p) => node = p,
+            None => return false,
+        }
+    }
+}
+
+/// Ghidra `ActionReturnSplit` (blockaction.cc:2264, group `returnsplit`, slot :5685): where several
+/// paths reach one RETURN block and some of them get there by an explicit goto, duplicate the
+/// RETURN block along those edges so each path returns directly instead of jumping to a shared
+/// exit.
+pub struct ActionReturnSplit;
+
+impl Action for ActionReturnSplit {
+    fn name(&self) -> &str {
+        "returnsplit"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.num_blocks() == 0 {
+            return 0;
+        }
+        // Ghidra reads `data.getStructure()`, the structured graph `ActionBlockStructure` leaves on
+        // the Funcdata at slot :5659 — inside the same fullloop iteration, so it is present by the
+        // time this runs. mosura's structurer is a pure function rather than cached state, so this
+        // builds it here, the same way the in-pipeline `ActionOrientBranches` does.
+        let s = super::structure::structure(data);
+        if s.blocks.is_empty() {
+            return 0; // Ghidra: some other restructuring happened first
+        }
+        // Collect every edge to split first, then split — Ghidra accumulates across all RETURNs
+        // before touching the graph (blockaction.cc:2287-2312).
+        let mut splitedge: Vec<(BlockId, usize)> = Vec::new();
+        let returns: Vec<OpId> = data
+            .op_ids()
+            .filter(|&op| !data.op(op).is_dead() && data.op(op).code() == OpCode::Return)
+            .collect();
+        for op in returns {
+            let Some(parent) = data.op(op).parent else { continue };
+            if data.block(parent).in_edges.len() <= 1 {
+                continue;
+            }
+            if !is_splittable(data, parent) {
+                continue;
+            }
+            let n = data.block(parent).in_edges.len();
+            let marked: Vec<bool> = (0..n)
+                .map(|i| in_edge_gotos_to(&s, data.block(parent).in_edges[i], parent))
+                .collect();
+            if std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok() {
+                eprintln!("RETSPLIT candidate: {} in-edges, {} marked", n, marked.iter().filter(|&&m| m).count());
+            }
+            if !marked.iter().any(|&m| m) {
+                continue;
+            }
+            // Descending index order, so removing an edge never shifts one still to be split.
+            let mut here: Vec<(BlockId, usize)> =
+                (0..n).rev().filter(|&i| marked[i]).map(|i| (parent, i)).collect();
+            if here.len() == n {
+                here.pop(); // can't split ALL in edges
+            }
+            splitedge.extend(here);
+        }
+        let mut count = 0;
+        for (parent, inedge) in splitedge {
+            data.node_split(parent, inedge);
+            count += 1;
+        }
+        count
+    }
+}
+
+#[cfg(test)]
+mod returnsplit_tests {
+    use super::*;
+    use crate::decompile::block::BlockBasic;
+    use crate::decompile::space::{Address, SpaceManager};
+
+    /// `isSplittable` accepts a RETURN block holding only markers and copies, and rejects one that
+    /// does real work — Ghidra blockaction.cc:2241, the guard that keeps nodeSplit from having to
+    /// clone a CALL or an INDIRECT.
+    #[test]
+    fn return_split_only_accepts_a_trivial_return_block() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let at = Address::new(ram, 0);
+        let mut f = Funcdata::new("t", at, spaces);
+        let v = f.new_input(4, Address::new(reg, 0));
+        let ret = f.new_op(OpCode::Return, SeqNum { pc: at, uniq: 0 }, vec![v, v]);
+        let mut b = BlockBasic::default();
+        b.ops.push(ret);
+        f.set_blocks(vec![b]);
+        f.op_mut(ret).parent = Some(BlockId(0));
+        assert!(is_splittable(&f, BlockId(0)), "a bare RETURN of a non-free value is splittable");
+
+        // Add an INT_ADD and it is no longer splittable.
+        let k = f.new_const(4, 1);
+        let add = f.new_op(OpCode::IntAdd, SeqNum { pc: at, uniq: 1 }, vec![v, k]);
+        f.new_output(add, 4, Address::new(reg, 8));
+        f.block_mut(BlockId(0)).ops.insert(0, add);
+        f.op_mut(add).parent = Some(BlockId(0));
+        assert!(!is_splittable(&f, BlockId(0)), "a block that computes is not splittable");
+    }
+
+    /// A RETURN block with a single in-edge has nothing to split (Ghidra blockaction.cc:2277).
+    #[test]
+    fn return_split_skips_a_single_predecessor() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let at = Address::new(ram, 0);
+        let mut f = Funcdata::new("t", at, spaces);
+        let ret = f.new_op(OpCode::Return, SeqNum { pc: at, uniq: 0 }, vec![]);
+        let mut b = BlockBasic::default();
+        b.ops.push(ret);
+        f.set_blocks(vec![b]);
+        f.op_mut(ret).parent = Some(BlockId(0));
+
+        assert_eq!(ActionReturnSplit.apply(&mut f), 0);
+        assert_eq!(f.num_blocks(), 1, "no duplicate block is created");
+    }
+}
