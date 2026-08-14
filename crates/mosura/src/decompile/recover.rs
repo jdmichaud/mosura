@@ -787,6 +787,26 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
         if !f.is_input_active(call) {
             continue;
         }
+        // A call whose CALLEE PROTOTYPE HAS BEEN RECOVERED is not a candidate list to be tested.
+        // `derive_input_map` already says so ("its entries are not candidates to be tested — they
+        // are facts") and re-marks the matching trials active — but by then the damage is done,
+        // because `check_input_trial_use` runs FIRST and its `markNoUse` verdict does not merely
+        // mark: it FREES THE DATAFLOW, setting the input slot to a constant 0 (fspec.cc:5650-5651).
+        // Re-marking a trial cannot restore a varnode that has been replaced by a constant.
+        //
+        // Measured on `FUN_00013c50` with `MOSURA_PROTO_PASS=1`. Heritage binds the argument
+        // correctly to `r0x0:4(0x13c5e:12)` — the output of the call five instructions earlier,
+        // which is the value the original passes by doing nothing at all. That value has other
+        // readers, so `ancestorOpUse` cannot say "used only to feed this call", the trial is freed,
+        // and the call commits `func_0x0005a48c(0)`. Watcom then emits the `XOR EAX,EAX` that the
+        // original does not have. Ghidra, asked with the callee's parameter forced, emits
+        // `FUN_0005a48c(forced_1)`.
+        //
+        // Ghidra never reaches that path. `ActionDefaultParams` copies the callee's recovered
+        // prototype onto the call (coreaction.cc:2327), which leaves it NOT input-active, and
+        // `ActionActiveParam` does all of its work under `if (fc->isInputActive())` — so
+        // `checkInputTrialUse` never runs on a call whose prototype is known. Skipping the realism
+        // check here is that same gate, expressed where mosura keeps the recovered list.
         check_input_trial_use(f, call);
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
             // coreaction.cc:1752-1754 — deriveInputMap decides which trials are the parameters and
@@ -835,6 +855,10 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         Inactive, // markInactive — dataflow PRESERVED (may still be a parameter)
         NoUse,    // markNoUse — dataflow FREED (definitely not an argument)
     }
+    // Storage the CALLEE'S OWN recovered prototype says it reads. A trial at one of these is not a
+    // candidate to be tested — see the note in `resolve_call_args`.
+    let recovered: Vec<(Address, u32)> =
+        f.call_specs.get(&call).and_then(|cs| cs.reads.clone()).unwrap_or_default();
     let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
     // Each unchecked trial is evaluated, marked and (for `markNoUse`) freed IN-LOOP — Ghidra's
     // sequential semantics (both the marking and the constant-0 free happen inside the trial loop,
@@ -873,6 +897,18 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         // Free the dataflow of a definitely-not-used (`markNoUse`) slot only; `markInactive`
         // preserves its dataflow (Ghidra frees only when `trial.isDefinitelyNotUsed()`,
         // fspec.cc:5649-5651).
+        // A trial the callee's recovered prototype names is an argument by the callee's own
+        // evidence, and no realism verdict taken at this one call site overrides that. Ghidra
+        // reaches the same place by not running this check at all on a call whose prototype was
+        // copied from the callee.
+        let verdict = {
+            let t = &f.active_inputs[&call].trial[ti];
+            if recovered.iter().any(|&(a, sz)| a == t.addr && sz >= t.size) {
+                Verdict::Active
+            } else {
+                verdict
+            }
+        };
         if matches!(verdict, Verdict::NoUse) {
             if let Some(v) = f.op(call).input(slot) {
                 if !f.vn(v).is_constant() {
