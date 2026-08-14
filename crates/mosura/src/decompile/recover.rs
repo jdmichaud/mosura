@@ -1018,6 +1018,30 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         .collect();
     let n = f.op(call).num_inputs();
     if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        // EVERY trial, not just the used ones. A trial that exists and is not marked used looks
+        // exactly like a trial that was never registered if only the used ones are printed, and
+        // those two have completely different causes.
+        let all: Vec<String> = f.active_inputs[&call]
+            .trial
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}+{:#x}/{}{}{}{}{}[e{:?}s{}]",
+                    f.spaces.get(t.addr.space).name,
+                    t.addr.offset,
+                    t.size,
+                    if t.is_active() { "A" } else { "-" },
+                    if t.is_used() { "U" } else { "-" },
+                    if t.is_definitely_not_used() { "D" } else { "-" },
+                    if t.is_unref() { "R" } else { "-" },
+                    t.entry,
+                    t.slot,
+                )
+            })
+            .collect();
+        eprintln!("[trials] call@{:#x} {}", f.op(call).seqnum.pc.offset, all.join(" "));
+    }
+    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
         for (slot, sz, unref, addr) in &used {
             let vn = if *slot > 0 && *slot < n { f.op(call).input(*slot) } else { None };
             // The WHOLE input list and the placeholder slot alongside the trial's recorded slot:

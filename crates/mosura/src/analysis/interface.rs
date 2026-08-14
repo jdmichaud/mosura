@@ -27,6 +27,40 @@ use super::program::Program;
 /// Costs one decompile per function. A function whose decompile fails contributes nothing rather
 /// than an empty prototype — absence must read as "no evidence", since an empty parameter list is
 /// itself a claim, and the wrong one.
+/// Recover every prototype repeatedly, until a round changes nothing or `max_rounds` is spent.
+///
+/// One round is not enough, and the single-round version's own note said so — "whether a further
+/// round moves anything is a measurement, not an assumption". It moves things, and the direction is
+/// the damaging one: a callee's parameter recovery IMPROVES once its own callees' prototypes are
+/// known, so a snapshot taken before any prototypes exist is systematically too narrow. Propagating
+/// that snapshot then DELETES real arguments at every call site, because a propagated list replaces
+/// the call-site scan rather than merging with it.
+///
+/// Measured on WAR2's `FUN_0004c978`: round one recovers `[register+0x0/2]` — one two-byte
+/// parameter — while the same function decompiled with prototypes available recovers
+/// `register+0x0/4, register+0x8/4`. Its caller `FUN_00049284` is byte-exact without the pass and
+/// loses its second argument (`MOV EDX,0x4921c`) with it, purely because the stale narrow list was
+/// propagated.
+///
+/// Termination is by fixpoint with a hard bound, not by hope: each round is compared to the last
+/// and the loop stops when they agree. A bound is still required because nothing guarantees the
+/// sequence is monotone — mutually recursive functions can oscillate — and a decompiler that
+/// sometimes does not terminate is worse than one that is occasionally one round short.
+pub fn recover_prototypes_iterated(program: &mut Program, max_rounds: usize) -> usize {
+    for round in 1..=max_rounds {
+        let next = recover_prototypes(program);
+        let same = next.len() == program.recovered_protos.len()
+            && next.iter().all(|(k, v)| {
+                program.recovered_protos.get(k).is_some_and(|p| p.params == v.params && p.output == v.output)
+            });
+        program.recovered_protos = next;
+        if same {
+            return round;
+        }
+    }
+    max_rounds
+}
+
 pub fn recover_prototypes(program: &Program) -> HashMap<u64, FuncProto> {
     let entries: Vec<u64> = program.function_manager.functions().map(|f| f.entry.offset).collect();
     let ram = program.default_space;
