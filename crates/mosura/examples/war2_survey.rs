@@ -493,14 +493,7 @@ fn main() {
     // `MOSURA_PROTO_PASS=1` enables the pass for work on exactly that.
     if std::env::var("MOSURA_PROTO_PASS").as_deref() == Ok("1") {
         let t = std::time::Instant::now();
-        // Iterate: one round's snapshot is taken before any prototype exists, so it is
-        // systematically narrower than what the same callee recovers once its own callees are
-        // known — and propagating the narrow one deletes real arguments. `MOSURA_PROTO_ROUNDS`
-        // caps it (default 4).
-        let rounds: usize =
-            std::env::var("MOSURA_PROTO_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
-        let used = analysis::interface::recover_prototypes_iterated(&mut prog, rounds);
-        eprintln!("  prototype recovery converged after {used} round(s) (cap {rounds})");
+        prog.recovered_protos = analysis::interface::recover_prototypes(&prog);
         eprintln!(
             "prototype pass: {} functions in {:.1}s",
             prog.recovered_protos.len(),
