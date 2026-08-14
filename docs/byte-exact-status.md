@@ -182,6 +182,20 @@ So the hole-filling needs to distinguish a hole that stands for a real argument 
 synthesized purely to keep slot numbering contiguous. Until it does, half one stays out — reverted,
 not lost.
 
+**And the specimen is not caller-side at all.** With the prototype pass ON, `FUN_00033370` still
+emits `func_0x000332c4()`, because the propagated prototype for the callee is
+`[(register,0,4), (register,8,4)]` — EAX and EDX, not the EBX the caller demonstrably sets. Ghidra's
+own unforced recovery of that callee is `void FUN_000332c4(void)` with a `byte *in_EAX` and **no
+mention of EBX anywhere in its body**. So neither decompiler sees the callee read the register its
+caller writes: EBX must be consumed further down, and recovering it needs argument propagation
+across more than one call level. Ghidra only produced `FUN_000332c4(0x8ce58)` because the parameter
+was forced.
+
+That reframes the family. Trial recovery cannot produce a one-argument call at slot 3 even in
+principle — Ghidra's hole-filling is deliberate, since C has no gaps, so slots 1 and 2 must become
+arguments once slot 3 is one. The answer has to come from a correct callee prototype, and for this
+specimen that prototype is only correct if EBX is propagated through the callee to its own callees.
+
 **Eliminated: the heritage marking on the manufactured varnode.** `build_input_from_trials`'s
 `isUnref` branch calls `set_active_heritage()` on the varnode it manufactures, which Ghidra does
 not (`vn = data.newVarnode(sz, addr)` and nothing else). That looked like the mechanism — the
