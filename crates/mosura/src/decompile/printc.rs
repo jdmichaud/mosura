@@ -2330,33 +2330,24 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
 /// function that genuinely returns a byte (its returned Varnode *is* one byte) is untouched.
 /// Signedness is preserved where it is known; a boolean or character widens to `int`, which is
 /// the type C promotion would have given it in the original source.
-/// How wide the emitted return type should be — an EMISSION CHOICE, deliberately selectable.
+/// How wide the emitted return type should be — an EMISSION CHOICE, selected by
+/// [`EmitChoices::return_width`].
 ///
-/// Two defensible answers, each wrong in the opposite direction, and which is right for a given
-/// binary is a measurement rather than an argument:
+/// A function may compute a narrow value and return it in a wide register, and C forces a single
+/// declaration to stand for both facts. The three answers differ in what the compiler is then made
+/// to materialize:
 ///
-/// - `storage` (default) — the full width of the convention's return register. Correct whenever
-///   the original source returned an `int`, which is what C promotion makes of every comparison
-///   and every narrow value; wrong for a function that genuinely returns a byte, where it invents
-///   a widening instruction the original does not have.
-/// - `recovered` — the width the return-value recovery found the function to actually produce
-///   ([`Funcdata::output_storage_size`]). Right in the opposite set of cases, and it under-reports
-///   whenever the widening reaches the return through a path the trial coverage does not credit
-///   (a `XOR EAX,EAX ; MOV AL,[m]` zero-extension covers one byte by that measure, not four).
+/// - [`ReturnWidth::Value`] — the returned Varnode's own width, which is what the reference
+///   decompiler prints. The compiler materializes only the bytes the value occupies.
+/// - [`ReturnWidth::Recovered`] (default) — how much of the return storage the recovery found the
+///   function to produce ([`Funcdata::output_storage_size`]).
+/// - [`ReturnWidth::Storage`] — the convention's whole return-storage entry, whatever the recovery
+///   credited. Recovers a zero-extension the original performs (`XOR EAX,EAX ; MOV AL,[m]`), and
+///   invents one on a function that genuinely returns a byte.
 ///
-/// Both are implemented so the population could decide, and it did. Measured over the 2952
-/// compilable WAR2 functions, against the same emit and the same flags:
-///
-/// | rule | EXACT | regressions |
-/// | --- | --- | --- |
-/// | before either | 158 | — |
-/// | `storage` | 168 | 2 — a spurious `XOR EAX,EAX ; MOV AL,DL` on functions that really do return a byte |
-/// | `recovered` (default) | **170** | none |
-///
-/// `recovered` wins on both counts: it takes every function `storage` takes and keeps the two
-/// byte-returning functions `storage` broke. `MOSURA_RETURN_WIDTH=storage` selects the other arm,
-/// which stays because a different binary may answer differently — that is what an emission
-/// choice is for.
+/// Which is right is a property of the original and is not derivable from the IR, so it is searched
+/// per function rather than decided here — see [`EmitChoices`] for the rules an axis must satisfy,
+/// and `docs/byte-exact-status.md` for what each currently measures.
 fn return_width(f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
     let w = match choices.return_width {
         // What the reference decompiler prints: the value's own width, nothing widened.
