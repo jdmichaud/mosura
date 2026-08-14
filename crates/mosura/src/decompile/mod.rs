@@ -54,6 +54,7 @@ pub mod stringmanage;
 pub mod structure;
 pub mod transform;
 pub mod types;
+pub mod blockjoin;
 pub mod infertypes;
 pub mod varmap;
 pub mod varnode;

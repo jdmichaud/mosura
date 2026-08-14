@@ -842,6 +842,100 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `BlockGraph::removeEdge` (block.cc): drop the edge `from` -> `to` from both sides.
+    pub fn remove_edge(&mut self, from: super::block::BlockId, to: super::block::BlockId) {
+        let oi = self.blocks[from.0 as usize]
+            .out_edges
+            .iter()
+            .position(|&b| b == to)
+            .expect("edge exists");
+        let ii = self.blocks[to.0 as usize]
+            .in_edges
+            .iter()
+            .position(|&b| b == from)
+            .expect("edge is reciprocal");
+        self.blocks[from.0 as usize].out_edges.remove(oi);
+        self.blocks[to.0 as usize].in_edges.remove(ii);
+    }
+
+    /// Ghidra `BlockGraph::moveOutEdge` (block.cc:1502) via `FlowBlock::replaceInEdge`
+    /// (block.cc:160): re-source `blold`'s out-edge at `slot` so it leaves `blnew` instead.
+    ///
+    /// The target's IN-edge index is preserved and the edge is appended to `blnew`'s out list.
+    /// Preserving the in-index is the load-bearing part: it keeps the target's MULTIEQUAL input
+    /// slots lined up with their incoming edges across the surgery.
+    pub fn move_out_edge(&mut self, blold: super::block::BlockId, slot: usize, blnew: super::block::BlockId) {
+        let outbl = self.blocks[blold.0 as usize].out_edges[slot];
+        let i = self.blocks[outbl.0 as usize]
+            .in_edges
+            .iter()
+            .position(|&b| b == blold)
+            .expect("edge is reciprocal");
+        self.blocks[blold.0 as usize].out_edges.remove(slot);
+        self.blocks[outbl.0 as usize].in_edges[i] = blnew;
+        self.blocks[blnew.0 as usize].out_edges.push(outbl);
+    }
+
+    /// Ghidra `BlockGraph::addEdge` (block.cc): append a new edge `from` -> `to`.
+    pub fn add_edge(&mut self, from: super::block::BlockId, to: super::block::BlockId) {
+        self.blocks[from.0 as usize].out_edges.push(to);
+        self.blocks[to.0 as usize].in_edges.push(from);
+    }
+
+    /// Ghidra `BlockGraph::newBlockBasic` (block.cc): append an empty basic block.
+    pub fn new_block_basic(&mut self) -> super::block::BlockId {
+        self.blocks.push(super::block::BlockBasic::default());
+        super::block::BlockId(self.blocks.len() as u32 - 1)
+    }
+
+    /// Ghidra `Funcdata::nodeJoinCreateBlock` (funcdata_block.cc:779): build the new joined
+    /// condition block for [`super::blockjoin::ConditionalJoin`].
+    ///
+    /// Two of the four original edges into `exita`/`exitb` are deleted — for each exit, the one
+    /// from whichever side holds the HIGHER in-index, so the surviving edge keeps the lower index
+    /// and the caller's recorded slots stay valid. The two survivors are re-sourced onto the new
+    /// block, and `block1`/`block2` both gain an edge into it.
+    pub fn node_join_create_block(
+        &mut self,
+        block1: super::block::BlockId,
+        block2: super::block::BlockId,
+        exita: super::block::BlockId,
+        exitb: super::block::BlockId,
+        fora_block1ishigh: bool,
+        forb_block1ishigh: bool,
+    ) -> super::block::BlockId {
+        let newblock = self.new_block_basic();
+        let swapa = if fora_block1ishigh {
+            self.remove_edge(block1, exita);
+            block2
+        } else {
+            self.remove_edge(block2, exita);
+            block1
+        };
+        let swapb = if forb_block1ishigh {
+            self.remove_edge(block1, exitb);
+            block2
+        } else {
+            self.remove_edge(block2, exitb);
+            block1
+        };
+        let sa = self.blocks[swapa.0 as usize]
+            .out_edges
+            .iter()
+            .position(|&b| b == exita)
+            .expect("surviving edge to exita");
+        self.move_out_edge(swapa, sa, newblock);
+        let sb = self.blocks[swapb.0 as usize]
+            .out_edges
+            .iter()
+            .position(|&b| b == exitb)
+            .expect("surviving edge to exitb");
+        self.move_out_edge(swapb, sb, newblock);
+        self.add_edge(block1, newblock);
+        self.add_edge(block2, newblock);
+        newblock
+    }
+
     /// Ghidra `FlowBlock::replaceEdgesThru` (block.cc:198): splice in-edge `in` of `bl` directly
     /// onto out-edge `out`, then drop both from `bl`.
     ///
