@@ -182,6 +182,14 @@ So the hole-filling needs to distinguish a hole that stands for a real argument 
 synthesized purely to keep slot numbering contiguous. Until it does, half one stays out — reverted,
 not lost.
 
+**Eliminated: the heritage marking on the manufactured varnode.** `build_input_from_trials`'s
+`isUnref` branch calls `set_active_heritage()` on the varnode it manufactures, which Ghidra does
+not (`vn = data.newVarnode(sz, addr)` and nothing else). That looked like the mechanism — the
+manufactured read joining the next renaming round, linking to whatever the caller had in that
+register, and the caller's own input recovery then seeing a used input. It is not: removing it
+alongside half one leaves the specimen byte-for-byte unchanged, caller parameters and all. Whatever
+promotes those holes to caller inputs happens elsewhere, and that is the next thing to find.
+
 ## Open thread 1a — the 47 functions the pass still breaks
 
 The pass is still net −11 against the default (422 vs 433); the union of on/off is 469. It breaks 47
