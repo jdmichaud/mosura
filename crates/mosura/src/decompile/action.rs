@@ -137,9 +137,10 @@ pub trait Action {
     fn reset(&mut self, _data: &mut Funcdata) {}
 }
 
-/// An ordered list of actions (Ghidra's `ActionGroup`). When `restart` is set it behaves
-/// as Ghidra's `ActionRestartGroup`: re-run the whole sequence until a full pass makes no
-/// change (fixpoint).
+/// An ordered list of actions (Ghidra's `ActionGroup`). When `restart` is set it re-runs the whole
+/// sequence until a full pass makes no change — that is Ghidra's `rule_repeatapply`, NOT
+/// `ActionRestartGroup`, which is a different mechanism (clear all analysis and redo the entire
+/// universal action) living in [`super::pipeline::decompile_with_restart`].
 pub struct ActionGroup {
     name: String,
     list: Vec<Box<dyn Action>>,
@@ -151,7 +152,7 @@ impl ActionGroup {
     pub fn once(name: impl Into<String>) -> ActionGroup {
         ActionGroup { name: name.into(), list: Vec::new(), restart: false }
     }
-    /// A group re-run to fixpoint (`ActionRestartGroup`).
+    /// A group re-run to fixpoint (Ghidra's `rule_repeatapply`).
     pub fn restart(name: impl Into<String>) -> ActionGroup {
         ActionGroup { name: name.into(), list: Vec::new(), restart: true }
     }

@@ -450,9 +450,15 @@ fn widening_ranges(f: &Funcdata, pass: i32) -> WideningRanges {
 /// narrow output is write-masked so `collect` no longer counts it as a write of the narrow location.
 /// A return-form COPY is simply unlinked — `guardReturns` re-guards the widened range.
 ///
-/// The `info->deadremoved > 0` warning + `bumpDeadcodeDelay` branch (`heritage.cc:248-257`) is
-/// omitted: mosura removes no dead code inside heritage, so the branch is unreachable here.
+/// The `info->deadremoved > 0` branch (`heritage.cc:248-257`) IS ported: re-heritaging a range in a
+/// space that has already had Varnodes eliminated means the earlier SSA was built on incomplete
+/// information, so the space's dead-code removal is delayed a pass and the decompile restarts.
+/// (Ghidra also emits a "Heritage AFTER dead removal" warning header here, once per space; mosura
+/// has no warning-header channel, so only the delay lands.)
 fn remove_revisited_markers_at(f: &mut Funcdata, remove: &[VarnodeId], range: &MemRange) {
+    if dead_removed(f, range.space) {
+        bump_deadcode_delay(f, range.space);
+    }
     for &out in remove {
         let op = f.vn(out).def.expect("a collected marker output has a def");
         // Return-form COPY (heritage.cc:281): unlink in preparation for a wider re-guarded COPY.
@@ -2081,6 +2087,57 @@ pub fn dead_removal_allowed(f: &Funcdata, spc: SpaceId) -> bool {
     f.heritage_pass > f.spaces.get(spc).deadcodedelay
 }
 
+/// Ghidra `Heritage::deadRemovalAllowedSeen` (heritage.cc:2843): the same predicate, but it also
+/// LATCHES that Varnodes have now been eliminated in this space.
+///
+/// Ghidra keeps the latch on the per-space `HeritageInfo`; mosura rebuilds those on every
+/// `build_info_list`, so the flag lives on the Funcdata. Only `RuleEarlyRemoval` (ruleaction.cc:39)
+/// uses this variant — `ActionDeadCode` (coreaction.cc:3952/4028) uses the non-latching one.
+///
+/// The latch is what makes [`bump_deadcode_delay`] reachable: a range re-heritaged AFTER dead code
+/// was removed from its space means the earlier SSA was built on incomplete information, and the
+/// only sound response is to delay dead-code removal for that space and start the decompile over.
+pub fn dead_removal_allowed_seen(f: &mut Funcdata, spc: SpaceId) -> bool {
+    let res = dead_removal_allowed(f, spc);
+    if res {
+        if f.deadremoved.len() <= spc.0 as usize {
+            f.deadremoved.resize(spc.0 as usize + 1, 0);
+        }
+        f.deadremoved[spc.0 as usize] = 1;
+    }
+    res
+}
+
+/// Ghidra `Heritage::bumpDeadcodeDelay` (heritage.cc:2571): delay dead-code removal one more pass
+/// for this space and ask for a whole-decompile restart.
+///
+/// The delay is installed as an OVERRIDE precisely because `Funcdata::clear` preserves overrides
+/// (funcdata.cc:106) — it has to survive the restart, or the restart would rediscover the same
+/// problem and spin.
+pub fn bump_deadcode_delay(f: &mut Funcdata, spc: SpaceId) {
+    // Only a processor or spacebase space gets a delay.
+    if !f.spaces.get(spc).is_heritaged() {
+        return;
+    }
+    if f.spaces.get(spc).delay != f.spaces.get(spc).deadcodedelay {
+        return; // there is already a global delay
+    }
+    if f.deadcode_delay_override.contains_key(&spc) {
+        return; // a delay has already been installed
+    }
+    if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
+        eprintln!("RESTART bump on space {}", f.spaces.get(spc).name);
+    }
+    let bumped = f.spaces.get(spc).deadcodedelay + 1;
+    f.deadcode_delay_override.insert(spc, bumped);
+    f.restart_pending = true;
+}
+
+/// Has this space had dead code removed from it already (Ghidra `HeritageInfo::deadremoved`)?
+fn dead_removed(f: &Funcdata, spc: SpaceId) -> bool {
+    f.deadremoved.get(spc.0 as usize).copied().unwrap_or(0) > 0
+}
+
 /// Ghidra `Heritage::clearStackPlaceholders` (heritage.cc:2048): tear down every call site's
 /// stack-pointer tracker. Called once per space carrying placeholders, immediately before that space
 /// is heritaged — by then the tracker has either done its job (`RuleLoadVarnode` resolved it during
@@ -2176,8 +2233,15 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
                 if vn.descend.is_empty() {
                     continue; // :2713
                 }
-                // The `deadremoved` re-heritage warning + `bumpDeadcodeDelay` (:2714-2718) is a
-                // diagnostic path mosura does not model (it removes no dead code inside heritage).
+                // Re-heritaging a location in a space that has already had Varnodes eliminated
+                // (heritage.cc:2714-2718): the earlier SSA was built on incomplete information, so
+                // delay this space's dead-code removal a pass and restart the decompile. Ghidra
+                // gates on `!isJumptableRecoveryOn()`, which is mosura's `table_recovery_probe`:
+                // a recovery partial is throwaway, so restarting the real decompile for it would
+                // be wrong.
+                if dead_removed(f, space) && !f.table_recovery_probe {
+                    bump_deadcode_delay(f, space);
+                }
                 disjoint.add(space, base, msize, MemRange::OLD_ADDRESSES);
             } else {
                 // Partially contained in an old range, but may contain new stuff (:2722).
@@ -2510,6 +2574,54 @@ fn rename(
 
 #[cfg(test)]
 mod tests {
+
+    /// The restart chain end to end: `deadRemovalAllowedSeen` latches the space, a later
+    /// `bumpDeadcodeDelay` installs a one-pass delay as an override and asks for a restart. The
+    /// override is the piece Ghidra's `Funcdata::clear` preserves, so a restart converges instead
+    /// of rediscovering the same problem (heritage.cc:2843/2571).
+    #[test]
+    fn deadcode_delay_bump_requests_one_restart_and_latches_an_override() {
+        use crate::decompile::space::{Address, SpaceManager};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+
+        // Nothing latched yet, so no bump is warranted.
+        assert!(!dead_removed(&f, reg));
+        f.heritage_pass = f.spaces.get(reg).deadcodedelay + 1;
+        assert!(dead_removal_allowed_seen(&mut f, reg), "removal is allowed past the delay");
+        assert!(dead_removed(&f, reg), "and the space is now latched");
+
+        let before = f.spaces.get(reg).deadcodedelay;
+        bump_deadcode_delay(&mut f, reg);
+        assert!(f.restart_pending, "a restart is requested");
+        assert_eq!(f.deadcode_delay_override.get(&reg), Some(&(before + 1)), "delayed one pass");
+
+        // A second bump is a no-op: the delay is already installed, which is what makes the
+        // restart converge rather than loop.
+        f.restart_pending = false;
+        bump_deadcode_delay(&mut f, reg);
+        assert!(!f.restart_pending, "the installed override suppresses a second request");
+    }
+
+    /// The override is what survives a rebuild, and applying it really does delay removal.
+    #[test]
+    fn deadcode_delay_override_applies_to_the_space() {
+        use crate::decompile::space::{Address, SpaceManager};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let base = f.spaces.get(reg).deadcodedelay;
+
+        f.heritage_pass = base + 1;
+        assert!(dead_removal_allowed(&f, reg), "allowed at the original delay");
+
+        f.deadcode_delay_override.insert(reg, base + 1);
+        f.apply_deadcode_delay_override();
+        assert!(!dead_removal_allowed(&f, reg), "the delayed pass now blocks removal");
+    }
     use super::*;
     use super::super::space::{SpaceKind, SpaceManager};
 

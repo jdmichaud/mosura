@@ -31,6 +31,19 @@ pub struct Funcdata {
     /// recorded and never read. Carried for roster fidelity so `ActionStartCleanUp` is a real port
     /// rather than an empty stub; a future consumer finds it already correct.
     clean_up_index: u32,
+    /// Ghidra `Funcdata::restart_pending` (funcdata.hh:148, the `restart_pending` flag word bit):
+    /// analysis discovered something that invalidates the whole decompile, so the root
+    /// `ActionRestartGroup` should clear and re-run it. Set by [`super::heritage::bump_deadcode_delay`].
+    pub restart_pending: bool,
+    /// Ghidra's per-space `HeritageInfo::deadremoved` (heritage.hh), latched by
+    /// `Heritage::deadRemovalAllowedSeen`. mosura derives `HeritageInfo` fresh on every
+    /// `build_info_list` call, so the latch needs a persistent home; this is it, indexed by
+    /// `SpaceId`.
+    pub deadremoved: Vec<i32>,
+    /// Ghidra `Override::deadcodedelay` (override.hh), the one piece of state that deliberately
+    /// SURVIVES `Funcdata::clear` across a restart ("Do not clear overrides", funcdata.cc:106) —
+    /// otherwise the restart would rediscover the same problem and loop forever.
+    pub deadcode_delay_override: std::collections::HashMap<SpaceId, i32>,
     unique_offset: u64,
     /// Recovered jump-table case targets, keyed by the BRANCHIND instruction address.
     pub switch_targets: std::collections::HashMap<u64, Vec<u64>>,
@@ -275,6 +288,9 @@ impl Funcdata {
             blocks: Vec::new(),
             create_index: 0,
             clean_up_index: 0,
+            restart_pending: false,
+            deadremoved: Vec::new(),
+            deadcode_delay_override: std::collections::HashMap::new(),
             unique_offset: 0x10000,
             switch_targets: std::collections::HashMap::new(),
             switch_defaults: std::collections::HashMap::new(),
@@ -1175,6 +1191,16 @@ impl Funcdata {
                 self.new_const(size, val)
             };
             self.op_set_input(op, slot, newrep);
+        }
+    }
+
+    /// Write the deadcode-delay override into the space table, so `dead_removal_allowed` sees the
+    /// delayed value after a restart. Ghidra reads the Override through
+    /// `Heritage::getInfo`/`spc->getDeadcodeDelay()` rather than copying it, but the effect is the
+    /// same and mosura's `HeritageInfo` is derived from the spaces.
+    pub fn apply_deadcode_delay_override(&mut self) {
+        for (&spc, &delay) in &self.deadcode_delay_override.clone() {
+            self.spaces.set_deadcode_delay(spc, delay);
         }
     }
 

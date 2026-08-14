@@ -90,9 +90,14 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // unaligned stack locations never reach SSA, so heritage stalls and `ActionRedundBranch` then
     // trims a MULTIEQUAL that has no inputs.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Everything from the flow build to the end of the pipeline is a closure, because Ghidra's
+        // `ActionRestartGroup` may need to run it twice: `clearAnalysis` throws the graph away and
+        // `ActionStart`'s `followFlow` regenerates it. mosura generates p-code out here rather than
+        // inside the action tree, so this is where the rebuild has to live.
+        let build_one = |prev: Option<&crate::decompile::Funcdata>| {
         let mut f = crate::decompile::build::raw_funcdata_flow_image_overrides(
             spec,
-            name,
+            name.clone(),
             &chunks,
             entry.offset,
             ctx,
@@ -151,7 +156,25 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
                 }
             }
         }
+            // Carry the deadcode-delay override across a restart — the one piece of state
+            // Ghidra's `Funcdata::clear` deliberately preserves (funcdata.cc:106).
+            if let Some(p) = prev {
+                f.deadcode_delay_override = p.deadcode_delay_override.clone();
+                f.apply_deadcode_delay_override();
+            }
+            f
+        };
+        let mut f = build_one(None);
         crate::decompile::pipeline::decompile(&mut f);
+        let mut restarts = 0;
+        while f.restart_pending && restarts < crate::decompile::pipeline::MAX_RESTARTS {
+            restarts += 1;
+            if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
+                eprintln!("RESTART re-running decompile (attempt {restarts})");
+            }
+            f = build_one(Some(&f));
+            crate::decompile::pipeline::decompile(&mut f);
+        }
         f
     }));
     match outcome {

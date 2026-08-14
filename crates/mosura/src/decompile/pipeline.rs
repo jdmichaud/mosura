@@ -1493,6 +1493,42 @@ pub fn decompile(data: &mut Funcdata) {
     universal_action().apply(data);
 }
 
+/// Ghidra's `ActionRestartGroup` maximum (coreaction.cc:5474: `ActionRestartGroup(…,"universal",1)`)
+/// — exactly one restart is allowed per function.
+pub const MAX_RESTARTS: u32 = 1;
+
+/// Ghidra `ActionRestartGroup::apply` (action.cc:553): run the universal action, and if analysis
+/// asked for a restart, clear everything and run it again.
+///
+/// A restart is requested by [`super::heritage::bump_deadcode_delay`] when a range is re-heritaged
+/// in a space that has already had dead code removed: the earlier SSA was built on incomplete
+/// information, so that space's dead-code removal is delayed one pass and the whole decompile is
+/// redone. The delay is carried in `Funcdata::deadcode_delay_override`, which is exactly the state
+/// Ghidra's `Funcdata::clear` refuses to reset ("Do not clear overrides", funcdata.cc:106) — carry
+/// it and the restart converges; drop it and it would rediscover the same problem forever.
+///
+/// Ghidra's `clearAnalysis` resets the Funcdata in place and lets `ActionStart`'s `followFlow`
+/// regenerate the p-code, so its restart lives inside the action tree. mosura generates p-code in
+/// `build.rs` before the pipeline is entered, so the rebuild has to be done by whoever holds the
+/// builder inputs; `rebuild` is that callback, and it must apply
+/// [`Funcdata::take_deadcode_delay_override`] to the fresh Funcdata.
+///
+/// Ghidra also refuses to restart inside jumptable recovery; mosura's equivalent partial is marked
+/// `table_recovery_probe`, and `bump_deadcode_delay` is not reached for it.
+pub fn decompile_with_restart(data: &mut Funcdata, mut rebuild: impl FnMut(&mut Funcdata)) -> u32 {
+    decompile(data);
+    let mut restarts = 0;
+    while data.restart_pending && restarts < MAX_RESTARTS {
+        restarts += 1;
+        let carried = std::mem::take(&mut data.deadcode_delay_override);
+        rebuild(data);
+        data.deadcode_delay_override = carried;
+        data.apply_deadcode_delay_override();
+        decompile(data);
+    }
+    restarts
+}
+
 #[cfg(test)]
 mod tests {
 

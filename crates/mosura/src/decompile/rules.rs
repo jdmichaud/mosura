@@ -406,10 +406,12 @@ impl Rule for RuleEarlyRemoval {
         // and "no descendants" means "SSA is not built yet", not "dead". Without it the pool early-
         // removed floatcast's ram-global loads and the whole function body went with them.
         //
-        // Ghidra's `…Seen` variant additionally latches `info->deadremoved = 1` for the re-heritage
-        // warning; mosura models no such diagnostic (heritage.rs says so at its own site), so only
-        // the predicate is ported.
-        if !super::heritage::dead_removal_allowed(data, data.vn(out).loc.space) {
+        // Ghidra uses the `…Seen` variant here (ruleaction.cc:39), which additionally LATCHES
+        // `info->deadremoved = 1`. That latch is not a diagnostic: it is what makes
+        // `bumpDeadcodeDelay` — and so the whole-decompile restart — reachable when a range is
+        // later re-heritaged after this space has had Varnodes eliminated.
+        let spc = data.vn(out).loc.space;
+        if !super::heritage::dead_removal_allowed_seen(data, spc) {
             return 0;
         }
         data.op_destroy(op);

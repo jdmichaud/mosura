@@ -267,6 +267,12 @@ impl SpaceManager {
 
     /// Register a spacebase (base pointer) register for a virtual space (Ghidra's per-space
     /// `spacebaselist`, populated from the compiler spec). `reg`/`size` describe the register.
+    /// Install a delayed dead-code pass for a space (Ghidra's `Override::deadcodedelay` read back
+    /// through `AddrSpace::getDeadcodeDelay`).
+    pub fn set_deadcode_delay(&mut self, space: SpaceId, delay: i32) {
+        self.spaces[space.0 as usize].deadcodedelay = delay;
+    }
+
     pub fn set_spacebase(&mut self, space: SpaceId, reg: Address, size: u32) {
         self.spaces[space.0 as usize].spacebase.push((reg, size));
     }
