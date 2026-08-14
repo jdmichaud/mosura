@@ -984,12 +984,27 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
         for (slot, sz, unref, addr) in &used {
             let vn = if *slot > 0 && *slot < n { f.op(call).input(*slot) } else { None };
+            // The WHOLE input list and the placeholder slot alongside the trial's recorded slot:
+            // a trial that names the wrong slot is indistinguishable from one whose varnode never
+            // resolved, and the two have opposite fixes.
+            let inputs: Vec<String> = (0..n)
+                .map(|i| match f.op(call).input(i) {
+                    Some(v) => {
+                        let sep = if i == *slot { "*" } else { ":" };
+                        let sp = &f.spaces.get(f.vn(v).loc.space).name;
+                        let w = if f.vn(v).is_written() { "w" } else { "-" };
+                        format!("{i}{sep}{sp}+{:#x}/{}{w}", f.vn(v).loc.offset, f.vn(v).size)
+                    }
+                    None => format!("{i}:?"),
+                })
+                .collect();
             eprintln!(
-                "[arg] call@{:#x} slot={slot} size={sz} unref={unref} addr={}+{:#x} vn={:?}",
+                "[arg] call@{:#x} slot={slot} size={sz} unref={unref} addr={}+{:#x} vn={:?} inputs=[{}]",
                 f.op(call).seqnum.pc.offset,
                 f.spaces.get(addr.space).name,
                 addr.offset,
-                vn.map(|v| (f.vn(v).size, f.vn(v).is_written(), f.vn(v).is_free()))
+                vn.map(|v| (f.vn(v).size, f.vn(v).is_written(), f.vn(v).is_free())),
+                inputs.join(" ")
             );
         }
     }

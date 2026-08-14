@@ -1,98 +1,113 @@
-# Byte-exact — where this stands, and the two open threads
+# Byte-exact — where this stands
 
-*Stamped at `d6e87aa`. Numbers here were measured on the WAR2 corpus with recovered build flags;
-regenerate rather than quote them after any decompiler change.*
+*Re-measured from scratch on branch `be2`. Regenerate rather than quote these after any change:
+`war2_survey <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
+<WATCOM> --out <tsv> --divergences <tsv>`.*
 
 ## The measurement
 
-**447 of 2952 compilable functions are byte-clean**: the C mosura emits, compiled with Watcom
+**432 of 2948 compilable functions are byte-exact**: the C mosura emits, compiled with Watcom
 10.0a and relinked at the original's addresses, reproduces the original's bytes exactly —
-relocation sites resolved and *verified to the same targets*, not masked.
+relocation sites resolved and *verified to the same targets*, not masked. 3023 functions are
+emitted; 75 fail to compile.
 
-| step | byte-clean |
+| step | EXACT |
 | --- | --- |
-| before this work | 407 |
-| return-type storage width (A/B measured, winner defaulted) | 420 |
-| build-config recovery replacing the hand-built flags table | 421 |
-| per-function emission selection | **447** |
+| baseline, re-measured | 421 |
+| callee stack-cleanup recovery (`recompile::convention`) | **432** |
+| per-function selection over the `return-width` axis | +2 |
 
-Denominators that matter: 3023 functions emitted, 2952 compile, and **887 use encodings this
-toolchain never emits anywhere across three thousand translation units** — software interrupts,
-segment-register moves, 16-bit-prefixed operations, string moves. Those are not reachable from C
-with this compiler and are not a decompiler defect.
+Two instrument defects were fixed first, and the numbers before them are not comparable:
 
-## The work-list, by measured population
+- A `CALL` pushes its return address as a constant, so one byte of upstream size drift made every
+  later call report an `immediate` divergence it did not have — 5741 rows across 1722 functions.
+- With that constant erased those pairs became `encoding`, the class meaning "not reachable from
+  C, do not work on this function". That would have written **122 functions** off the work-list
+  for a difference entirely downstream of a fixable one. They are `layout-shift` now, marked
+  derived so they can never head a work-list.
 
-Dominant divergence per function, attributable set only:
+## The work-list, by measured marginal value
 
-| cause | functions | what it means |
+Not "which class is biggest" — which class, if *eliminated*, leaves functions with **no**
+divergence at all. That is the number that converts to EXACT. From the per-divergence fact table
+(`recompile::report`):
+
+| cause | functions whose ONLY cause it is | cumulative if also eliminated |
 | --- | --- | --- |
-| `missing` | 1090 | the emitted C computes LESS than the original — **wrong code** |
-| `extra` | 476 | it computes more — usually a spurious interface |
-| `regalloc` | 371 | same program, different registers — reachable by changing the C |
-| `selection` | 317 | a different instruction for the same job |
-| `immediate` / `operand-form` | 228 | types, stack layout |
-| `encoding` | 13 | same instruction, different bytes — **not reachable from C** |
+| `missing`/`extra` (call arguments) | 45 | 477 |
+| `save/args` (missing PUSH/POP) | 9 | 554 |
+| `immediate`/`operand-form` | 21 | 629 |
+| `selection` | 7 | 828 |
+| `regalloc` | 3 | 1510 |
 
-## Open thread 1 — the call recovery ordering
+The first two are one cause — **we call functions with too few arguments** — and that is open
+thread 1. 996 missing `ADD ESP,K` rows across 354 functions are the caller-side of the same thing.
 
-Whole-program prototype recovery is built and correct (`analysis::interface`,
-`Program::recovered_protos`, bound at every direct call, 3023 prototypes in 59s). It is OFF by
-default (`MOSURA_PROTO_PASS=1`) because it costs 26 byte-exact functions: `missing` −87, `extra`
-+105.
+## Open thread 1 — the propagated-prototype argument, RE-DIAGNOSED
 
-The prototypes are right. The defect is that a propagated argument resolves to a varnode that is
-linked but **unwritten** — instrumented with `MOSURA_ARG_DEBUG`:
+Whole-program prototype recovery is built (`analysis::interface`, `Program::recovered_protos`,
+bound at every direct call). It is OFF by default (`MOSURA_PROTO_PASS=1`). Measured on WAR2 with
+the corrected instrument: `missing` 1157 → 1081, but `extra` 467 → 603 and COMPILE_FAIL 75 → 96,
+so EXACT goes 421 → 394. The prototypes are right; the pass loses on spurious arguments.
+
+**The previously recorded diagnosis was wrong, and it was wrong in a way that sent the fix to the
+wrong subsystem.** It read this instrument line
 
 ```
 [arg] call@0x13c6b slot=1 size=4 unref=FALSE addr=register+0x0 vn=Some((4, written=false, free=false))
 ```
 
-`ActionResolveCalls` (arguments) is a mainloop member; `ActionActiveReturn` (call outputs) is in
-the fullloop tail (`coreaction.cc:5688`). So a call's arguments commit while the *preceding* call
-still has no output, and an argument that should be that call's result has no reaching definition.
-Both placements are faithful to Ghidra; Ghidra survives it because a fullloop round that commits
-outputs forces another round, while mosura's argument list is already committed and its trial
-container cleared.
-
-**The fix is to re-open a call whose argument resolved to an unwritten varnode once outputs
-commit — not to move an action**, which would diverge from the reference for a reason the
-reference does not have. Verify on `FUN_00013c50` (it should emit `func_0x0005a48c(iVar1)` with no
-`XOR EAX,EAX`), then re-enable the pass and re-measure; the target is `missing` −87 *without*
-`extra` +105.
-
-### Re-opening is built, and it is NECESSARY BUT NOT SUFFICIENT (`@d0f1ddd`)
-
-The re-open exists now, and it exposed a second, real divergence on the way: Ghidra's
-`FuncCallSpecs::clearActiveInput` (fspec.hh:1696) flips `isinputactive` and **keeps the trials**,
-while mosura DELETED the whole `ParamActive` on commit. Re-opening was therefore impossible by
-construction. `ParamActive::active` now models Ghidra's flag, the trials survive, and
-`Funcdata::reopen_input` re-opens a call once — bounded, so it cannot cycle — when
-`resolve_call_output` commits an output.
-
-**It fires and it does not fix the specimen.** With `MOSURA_ARG_DEBUG` on `FUN_00013c50`, the call
-at `0x13c6b` now commits its argument THREE times instead of once, and every commit reports the
-same thing:
+as "an argument resolved to a varnode that is linked but UNWRITTEN", concluded the argument had no
+reaching definition, and built a call re-open mechanism on that premise. But `written=false,
+free=false` is exactly what a **constant** varnode reports — a constant is neither written nor
+free. The argument had not failed to resolve; it had already been *replaced by* `#0x0:4`. The
+instrument now prints the whole input list, which makes the difference impossible to misread:
 
 ```
-[arg] call@0x13c6b slot=1 size=4 unref=false addr=register+0x0 vn=Some((4, false, false))
+[arg] call@0x13c6b slot=1 ... inputs=[0:ram+0x5a48c/4- 1*const+0x0/4- 2:register+0x8/4w 3:register+0xc/4w]
 ```
 
-still `written=false`. Measured on WAR2 with `MOSURA_PROTO_PASS=1`: **395 EXACT / 77 SAME_SHAPE /
-2480 MISMATCH / 71 COMPILE_FAIL**, against **421 / 85 / 2447 / 70** with the pass off — the same
-−26 byte-exact the pass always cost. The default configuration is unchanged, so the repair is free
-but not yet a win.
+Slot 1 — the slot the trial names, and the correct one — already holds the constant when
+`build_input_from_trials` reads it. The slot bookkeeping is fine.
 
-**Why re-deriving is not enough, and what the remaining half is.**
-`build_input_from_trials` resolves an argument by reading `op(call).input(slot)` — the varnode
-ALREADY in the slot. Re-opening re-runs that derivation, which re-reads the SAME stale, unwritten
-varnode; committing the preceding call's output does not re-link it. Ghidra does not need a re-link
-because the read it resolves to is the INDIRECT creation `guardCalls` made, which
-`buildOutputFromTrials` then PROMOTES to be the call's output — the reader already points at the
-right object. So the remaining work is on the OUTPUT side: either the committed output must adopt
-the existing creation varnode that later reads are linked to, or the argument must be resolved by
-ADDRESS against current SSA rather than by reusing the slot's varnode. That is the next step, and
-it is a heritage/linking question, not an action-ordering one.
+**What actually happens, from the rule trace** (`MOSURA_OPACTION=1`, `FUN_00013c50`). Heritage
+binds the argument correctly:
+
+```
+0x13c6b:31: CALL r0x5a48c:4(free) u0x10009:1(...) r0x0:4(free)          r0x8:4(free) r0xc:4(free)
+   0x13c6b:31: CALL r0x5a48c:4(free) u0x10009:1(...) r0x0:4(0x13c5e:12) r0x8:4(0x13c56:8) r0xc:4(0x13c54:7)
+```
+
+`r0x0:4(0x13c5e:12)` is the output of the call five instructions earlier — exactly the value the
+original passes by doing nothing at all. Then one action replaces it:
+
+```
+DEBUG 1249404: resolvecalls
+0x13c6b:31: CALL ... r0x0:4(0x13c5e:12) r0x8:4(...) r0xc:4(...)
+   0x13c6b:31: CALL ... #0x0:4          r0x8:4(...) r0xc:4(...)
+```
+
+`ActionResolveCalls` is `resolve_return` + `resolve_call_args`. The constant is already in the slot
+by the time this call's `build_input_from_trials` runs, so the substitution happens earlier within
+that same action — that is the next thing to isolate, and it is a *dataflow* question, not an
+action-ordering one.
+
+**Ground truth, from Ghidra with the callee's parameter forced** (`GHIDRA_POSTSCRIPT=
+DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='5a48c=EAX' scripts/ghidra-decompile-war2.sh
+5a48c 596b0 13c50`):
+
+```c
+forced_1 = FUN_000596b0();
+if (param_2 != *(int *)(forced_1 + 0x14)) { *(int *)(forced_1 + 0x14) = param_2; FUN_0005a48c(forced_1); }
+```
+
+Ghidra passes the previous call's result. mosura emits `func_0x0005a48c(0)`, and Watcom then emits
+the `XOR EAX,EAX` that shows up as the `extra` divergence. So this is a port defect with a named
+oracle answer, not a design difference.
+
+**Worth, if fixed.** Not the +28 that the union of the two measured configurations suggests — that
+number bounds *selecting between* two configurations, not what a corrected pass reaches. By the
+per-cause map below, `missing/extra` + `save/args` is ~122 functions.
 
 ## Open thread 2 — make the search generative
 
