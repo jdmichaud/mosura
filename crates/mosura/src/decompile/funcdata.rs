@@ -842,6 +842,56 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `FlowBlock::replaceEdgesThru` (block.cc:198): splice in-edge `in` of `bl` directly
+    /// onto out-edge `out`, then drop both from `bl`.
+    ///
+    /// The neighbours keep their edge SLOT positions — the predecessor's out-slot that pointed at
+    /// `bl` now points at the successor, and the successor's in-slot that pointed at `bl` now
+    /// points at the predecessor. That matters: an out-slot's index is what distinguishes a
+    /// CBRANCH's false branch (0) from its true branch (1).
+    ///
+    /// Ghidra stores each edge's `reverse_index` explicitly; mosura derives it by searching the
+    /// neighbour's list, the same way `block_remove_internal_preserving` and `branch_remove_internal`
+    /// already do.
+    pub fn replace_edges_thru(&mut self, bl: super::block::BlockId, inslot: usize, outslot: usize) {
+        let inb = self.blocks[bl.0 as usize].in_edges[inslot];
+        let outb = self.blocks[bl.0 as usize].out_edges[outslot];
+        let inblock_outslot = self.blocks[inb.0 as usize]
+            .out_edges
+            .iter()
+            .position(|&b| b == bl)
+            .expect("predecessor lists bl as an out-edge");
+        let outblock_inslot = self.blocks[outb.0 as usize]
+            .in_edges
+            .iter()
+            .position(|&b| b == bl)
+            .expect("successor lists bl as an in-edge");
+        self.blocks[inb.0 as usize].out_edges[inblock_outslot] = outb;
+        self.blocks[outb.0 as usize].in_edges[outblock_inslot] = inb;
+        self.blocks[bl.0 as usize].in_edges.remove(inslot);
+        self.blocks[bl.0 as usize].out_edges.remove(outslot);
+    }
+
+    /// Ghidra `BlockGraph::removeFromFlowSplit` (block.cc:1575) as reached through
+    /// `Funcdata::removeFromFlowSplit` (funcdata_block.cc:882): remove a 2-in/2-out block, routing
+    /// each input directly to one output. With `flipflow`, In(0) goes to Out(1) and In(1) to Out(0);
+    /// otherwise In(0)→Out(0) and In(1)→Out(1).
+    ///
+    /// This is what [`super::condexe::ActionConditionalExe`] uses to delete the unnecessary
+    /// control-flow join once the data flow through it has been reproduced. Ghidra follows it with
+    /// `structureReset()`; mosura rebuilds the structured graph from scratch in `structure.rs`
+    /// rather than caching it, so there is nothing to invalidate.
+    pub fn remove_from_flow_split(&mut self, bl: super::block::BlockId, flipflow: bool) {
+        // The order matters: each call deletes one in-edge and one out-edge, so the second call's
+        // (0,0) names whichever pair is left.
+        if flipflow {
+            self.replace_edges_thru(bl, 0, 1);
+        } else {
+            self.replace_edges_thru(bl, 1, 1);
+        }
+        self.replace_edges_thru(bl, 0, 0);
+    }
+
     /// Ghidra `Funcdata::totalReplaceConstant` (funcdata_varnode.cc:1496): make every read of
     /// `vn` read the constant `val` instead.
     ///

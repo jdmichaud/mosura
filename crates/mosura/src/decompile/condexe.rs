@@ -7,6 +7,8 @@
 //! `BooleanMatch::evaluate`, which decides whether two conditions are the same, complementary, or
 //! uncorrelated — already lives in [`super::expression`], ported for `RuleOrCompare`.
 
+use std::collections::HashMap;
+
 use super::block::BlockId;
 use super::dominator::Dominators;
 use super::expression::{self, BooleanMatch};
@@ -379,8 +381,44 @@ impl super::action::Rule for RuleOrPredicate {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ActionConditionalExe` declines a block that fails the most basic shape test: `iblock` must
+    /// have exactly 2 in-edges, 2 out-edges and a trailing CBRANCH (Ghidra `testIBlock`,
+    /// condexe.cc:43). A straight-line block must be left alone.
+    #[test]
+    fn conditional_exe_declines_a_block_that_is_not_a_join() {
+        let (mut f, at) = fd();
+        let c = f.new_const(1, 1);
+        let br = f.new_op(OpCode::Cbranch, SeqNum { pc: at, uniq: 0 }, vec![c, c]);
+        let mut b = BlockBasic::default();
+        b.ops.push(br);
+        f.set_blocks(vec![b]);
+        f.op_mut(br).parent = Some(BlockId(0));
+
+        assert_eq!(ActionConditionalExe.apply(&mut f), 0, "a lone block is not a join");
+        assert_eq!(f.num_blocks(), 1, "the graph is untouched");
+    }
+
+    /// The action is inert while the graph still has unreachable blocks — Ghidra bails out up front
+    /// because the elimination logic does not work with them (condexe.cc:485).
+    #[test]
+    fn conditional_exe_is_inert_with_unreachable_blocks() {
+        let (mut f, at) = fd();
+        let c = f.new_const(1, 1);
+        let br = f.new_op(OpCode::Cbranch, SeqNum { pc: at, uniq: 0 }, vec![c, c]);
+        let mut b0 = BlockBasic::default();
+        b0.ops.push(br);
+        f.set_blocks(vec![b0]);
+        f.op_mut(br).parent = Some(BlockId(0));
+        // Ghidra's `blocks_unreachable` is a recorded flag, not a recomputed predicate — set by
+        // whoever removed a block (determinedbranch.rs:99) — so the test sets it the same way.
+        f.blocks_unreachable = true;
+
+        assert!(f.has_unreachable_blocks());
+        assert_eq!(ActionConditionalExe.apply(&mut f), 0);
+    }
     use super::*;
-    use crate::decompile::action::Rule;
+    use crate::decompile::action::{Action, Rule};
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::BlockBasic;
 
@@ -556,5 +594,547 @@ mod tests {
         f.set_blocks(vec![BlockBasic { ops: vec![or], ..Default::default() }]);
         f.op_mut(or).parent = Some(BlockId(0));
         assert_eq!(RuleOrPredicate.apply_op(or, &mut f), 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ghidra `ConditionalExecution` (condexe.cc:23-490) and `ActionConditionalExe` (condexe.cc:478).
+//
+// The large half of condexe.cc, and the consumer of `BooleanExpressionMatch` above. Where a block
+// `iblock` merely re-tests a condition an earlier block (`initblock`) already branched on, the
+// flow coming together at `iblock` is unnecessary: each incoming path already knows which way the
+// re-test goes. The pass reproduces `iblock`'s data flow along the two paths and then deletes the
+// join, turning a diamond back into two straight paths.
+// ---------------------------------------------------------------------------
+
+/// Ghidra `ConditionalExecution` (condexe.hh:91).
+struct ConditionalExecution {
+    /// CBRANCH in `iblock`.
+    cbranch: OpId,
+    /// The initial block computing the boolean value.
+    initblock: BlockId,
+    /// The block where flow is (unnecessarily) coming together.
+    iblock: BlockId,
+    /// `iblock.in_edges[prea_inslot]` is the "pre a" path.
+    prea_inslot: usize,
+    /// Does the \b true branch (in terms of `iblock`) go to path "pre a"?
+    init2a_true: bool,
+    /// Does the \b true branch go to path "post a"?
+    iblock2posta_true: bool,
+    /// init-or-pre slot to use for data flow through "post".
+    camethruposta_slot: usize,
+    /// The out edge from `iblock` to "post a".
+    posta_outslot: usize,
+    /// Map from block index to the replacement Varnode for the current Varnode.
+    replacement: HashMap<usize, VarnodeId>,
+    /// Outputs of ops pulled back from `iblock` for the current Varnode, by in-branch.
+    pullback: Vec<Option<VarnodeId>>,
+    /// Per address space, whether heritage has been performed on it.
+    heritageyes: Vec<bool>,
+}
+
+impl ConditionalExecution {
+    /// Ghidra `ConditionalExecution::buildHeritageArray` (condexe.cc:23): which spaces have had at
+    /// least one heritage pass.
+    ///
+    /// Ghidra asks `fd->numHeritagePasses(spc) > 0` per space. mosura carries one global
+    /// `heritage_pass` counter plus each space's `delay`, and a space enters SSA once the pass
+    /// counter has gone past its delay — so `heritage_pass > delay` is the same predicate.
+    fn build_heritage_array(data: &Funcdata) -> Vec<bool> {
+        let n = data.spaces.num_spaces();
+        let mut yes = vec![false; n];
+        for info in super::heritage::build_info_list(&data.spaces) {
+            if !info.is_heritaged() {
+                continue;
+            }
+            if let Some(spc) = info.space {
+                if data.heritage_pass > info.delay {
+                    yes[spc.0 as usize] = true;
+                }
+            }
+        }
+        yes
+    }
+
+    fn new(data: &Funcdata) -> ConditionalExecution {
+        ConditionalExecution {
+            cbranch: OpId(0),
+            initblock: BlockId(0),
+            iblock: BlockId(0),
+            prea_inslot: 0,
+            init2a_true: false,
+            iblock2posta_true: false,
+            camethruposta_slot: 0,
+            posta_outslot: 0,
+            replacement: HashMap::new(),
+            pullback: Vec::new(),
+            heritageyes: Self::build_heritage_array(data),
+        }
+    }
+
+    /// Ghidra `ConditionalExecution::testIBlock` (condexe.cc:43): 2 in, 2 out, ending in a CBRANCH.
+    fn test_iblock(&mut self, data: &Funcdata) -> bool {
+        if data.block(self.iblock).in_edges.len() != 2 {
+            return false;
+        }
+        if data.block(self.iblock).out_edges.len() != 2 {
+            return false;
+        }
+        let Some(&last) = data.block(self.iblock).ops.last() else { return false };
+        if data.op(last).code() != OpCode::Cbranch {
+            return false;
+        }
+        self.cbranch = last;
+        true
+    }
+
+    /// Ghidra `ConditionalExecution::findInitPre` (condexe.cc:55): walk back from both of
+    /// `iblock`'s inputs through single-in/single-out blocks; both must reach the same 2-out block,
+    /// which is `initblock`.
+    fn find_init_pre(&mut self, data: &Funcdata) -> bool {
+        let mut tmp = data.block(self.iblock).in_edges[self.prea_inslot];
+        let mut last = self.iblock;
+        while data.block(tmp).out_edges.len() == 1 && data.block(tmp).in_edges.len() == 1 {
+            last = tmp;
+            tmp = data.block(tmp).in_edges[0];
+        }
+        if data.block(tmp).out_edges.len() != 2 {
+            return false;
+        }
+        self.initblock = tmp;
+        let mut tmp = data.block(self.iblock).in_edges[1 - self.prea_inslot];
+        while data.block(tmp).out_edges.len() == 1 && data.block(tmp).in_edges.len() == 1 {
+            tmp = data.block(tmp).in_edges[0];
+        }
+        if tmp != self.initblock {
+            return false;
+        }
+        if self.initblock == self.iblock {
+            return false;
+        }
+        // Ghidra `FlowBlock::getTrueOut()` is out-edge 1 (block.hh:300); out-edge 0 is the false
+        // branch. So "does initblock's true branch go to path a" is `out_edges[1] == last`.
+        self.init2a_true = data.block(self.initblock).out_edges.get(1).copied() == Some(last);
+        true
+    }
+
+    /// Ghidra `ConditionalExecution::verifySameCondition` (condexe.cc:80): `initblock` and
+    /// `iblock` must branch on the same condition, or on complementary ones.
+    fn verify_same_condition(&mut self, data: &Funcdata) -> bool {
+        let Some(&init_cbranch) = data.block(self.initblock).ops.last() else { return false };
+        if data.op(init_cbranch).code() != OpCode::Cbranch {
+            return false;
+        }
+        let Some(tester) = BooleanExpressionMatch::verify_condition(data, self.cbranch, init_cbranch)
+        else {
+            return false;
+        };
+        if tester.match_flip {
+            self.init2a_true = !self.init2a_true;
+        }
+        true
+    }
+}
+
+impl ConditionalExecution {
+    /// Ghidra `ConditionalExecution::testMultiRead` (condexe.cc:101): can the MULTIEQUAL defining
+    /// `vn` be moved, given this reader?
+    fn test_multi_read(&self, data: &Funcdata, vn: VarnodeId, op: OpId) -> bool {
+        if data.op(op).parent == Some(self.iblock) {
+            // The copy-like ops are tested separately: if the COPY's output reads can be altered,
+            // then `vn` can be altered.
+            return matches!(data.op(op).code(), OpCode::Copy | OpCode::Subpiece);
+        }
+        if data.op(op).code() == OpCode::Return {
+            // Only flow through to the return VALUE is testable.
+            if data.op(op).num_inputs() < 2 || data.op(op).input(1) != Some(vn) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Ghidra `ConditionalExecution::testOpRead` (condexe.cc:120): can the (non-MULTIEQUAL) op
+    /// defining `vn` be moved, given this reader?
+    fn test_op_read(&self, data: &Funcdata, vn: VarnodeId, op: OpId) -> bool {
+        if data.op(op).parent == Some(self.iblock) {
+            return true;
+        }
+        let Some(write_op) = data.vn(vn).def else { return false };
+        let opc = data.op(write_op).code();
+        if !matches!(opc, OpCode::Copy | OpCode::Subpiece | OpCode::IntAdd | OpCode::Ptrsub) {
+            return false;
+        }
+        if matches!(opc, OpCode::IntAdd | OpCode::Ptrsub) {
+            // Only a constant second operand can be pulled back.
+            match data.op(write_op).input(1) {
+                Some(k) if data.vn(k).is_constant() => {}
+                _ => return false,
+            }
+        }
+        let invn = data.op(write_op).input(0).expect("copy-like op has input 0");
+        if data.vn(invn).is_written() {
+            let upop = data.vn(invn).def.expect("written");
+            if data.op(upop).parent == Some(self.iblock) && data.op(upop).code() != OpCode::Multiequal
+            {
+                return false;
+            }
+        } else if data.vn(invn).is_free() {
+            return false;
+        }
+        true
+    }
+
+    /// Ghidra `ConditionalExecution::testRemovability` (condexe.cc:361).
+    fn test_removability(&self, data: &Funcdata, op: OpId) -> bool {
+        if data.op(op).code() == OpCode::Multiequal {
+            let vn = data.op(op).output.expect("MULTIEQUAL has an output");
+            return data.vn(vn).descend.iter().all(|&r| self.test_multi_read(data, vn, r));
+        }
+        // Ghidra `isFlowBreak()` is `flags & (branch|returns)` (op.hh:189).
+        if data.op(op).code().is_branch() || data.op(op).code() == OpCode::Return {
+            return false;
+        }
+        if data.op(op).is_call() {
+            return false;
+        }
+        if matches!(data.op(op).code(), OpCode::Load | OpCode::Store | OpCode::Indirect) {
+            return false;
+        }
+        let Some(vn) = data.op(op).output else { return true };
+        if data.vn(vn).is_addrtied() {
+            return false;
+        }
+        let mut hasnodescend = true;
+        for &r in &data.vn(vn).descend {
+            if !self.test_op_read(data, vn, r) {
+                return false;
+            }
+            hasnodescend = false;
+        }
+        if hasnodescend && !self.heritageyes[data.vn(vn).loc.space.0 as usize] {
+            // Nothing reads it and its space is not in SSA form, so the write may still matter.
+            return false;
+        }
+        true
+    }
+
+    /// Ghidra `ConditionalExecution::verify` (condexe.cc:402): `iblock` is fixed; test every
+    /// control-flow condition and the removability of every op in it.
+    fn verify(&mut self, data: &Funcdata) -> bool {
+        self.prea_inslot = 0;
+        self.posta_outslot = 0;
+
+        if !self.test_iblock(data) {
+            return false;
+        }
+        if !self.find_init_pre(data) {
+            return false;
+        }
+        if !self.verify_same_condition(data) {
+            return false;
+        }
+        // Cache some useful values.
+        self.iblock2posta_true = self.posta_outslot == 1;
+        self.camethruposta_slot = if self.init2a_true == self.iblock2posta_true {
+            self.prea_inslot
+        } else {
+            1 - self.prea_inslot
+        };
+        // Every op except the trailing branch must be removable.
+        let ops = data.block(self.iblock).ops.clone();
+        let n = ops.len();
+        if n == 0 {
+            return false;
+        }
+        for &op in ops[..n - 1].iter().rev() {
+            if !self.test_removability(data, op) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl ConditionalExecution {
+    /// Ghidra's `getInRevIndex(i)` (block.hh:306): the out-slot index that `bl`'s `i`-th input
+    /// block uses to reach `bl`. Ghidra stores it on the edge; mosura searches, as the rest of the
+    /// block surgery in this crate does.
+    fn in_rev_index(data: &Funcdata, bl: BlockId, i: usize) -> usize {
+        let inb = data.block(bl).in_edges[i];
+        data.block(inb).out_edges.iter().position(|&b| b == bl).expect("edge is reciprocal")
+    }
+
+    /// Ghidra `ConditionalExecution::pullbackOp` (condexe.cc:161): duplicate an `iblock` op outside
+    /// the block, on the given incoming branch. Cached per branch in `pullback`.
+    fn pullback_op(&mut self, data: &mut Funcdata, op: OpId, inbranch: usize, dom: &Dominators) -> VarnodeId {
+        while self.pullback.len() <= inbranch {
+            self.pullback.push(None);
+        }
+        if let Some(v) = self.pullback[inbranch] {
+            return v;
+        }
+        let mut invn = data.op(op).input(0).expect("pullback op has input 0");
+        let bl;
+        if data.vn(invn).is_written() {
+            let def_op = data.vn(invn).def.expect("written");
+            if data.op(def_op).parent == Some(self.iblock) {
+                bl = data.block(self.iblock).in_edges[inbranch];
+                // def_op must be a MULTIEQUAL, so its input on this branch is the pulled-back value.
+                invn = data.op(def_op).input(inbranch).expect("phi input per in-edge");
+            } else {
+                bl = BlockId(dom.idom[self.iblock.0 as usize] as u32);
+            }
+        } else {
+            bl = BlockId(dom.idom[self.iblock.0 as usize] as u32);
+        }
+        let (pc, code) = (data.op(op).seqnum.pc, data.op(op).code());
+        let orig_out = data.op(op).output.expect("pullback op has an output");
+        let (osize, oloc) = (data.vn(orig_out).size, data.vn(orig_out).loc);
+        let rest: Vec<VarnodeId> = (1..data.op(op).num_inputs())
+            .map(|i| data.op(op).input(i).expect("input"))
+            .collect();
+        let uniq = data.num_ops() as u32;
+        let mut inputs = vec![invn];
+        inputs.extend(rest);
+        let new_op = data.new_op(code, SeqNum { pc, uniq }, inputs);
+        let out_vn = data.new_output(new_op, osize, oloc);
+        data.op_insert_end(new_op, bl);
+        self.pullback[inbranch] = Some(out_vn);
+        out_vn
+    }
+
+    /// Ghidra `ConditionalExecution::getNewMulti` (condexe.cc:216): a MULTIEQUAL in `bl` holding
+    /// the data flow from `op`.
+    ///
+    /// Every input is `op`'s output. Ghidra notes these are deliberately NEW references that land
+    /// at the end of the dependency list and get resolved by later rounds of the
+    /// [`Self::do_replacement`] loop — which is why that loop restarts rather than iterating a
+    /// snapshot.
+    fn get_new_multi(&mut self, data: &mut Funcdata, op: OpId, bl: BlockId) -> VarnodeId {
+        let outvn = data.op(op).output.expect("op has an output");
+        let size = data.vn(outvn).size;
+        let n = data.block(bl).in_edges.len();
+        let pc = data
+            .block(bl)
+            .ops
+            .first()
+            .map(|&o| data.op(o).seqnum.pc)
+            .unwrap_or_else(|| data.op(op).seqnum.pc);
+        let uniq = data.num_ops() as u32;
+        let new_op = data.new_op(OpCode::Multiequal, SeqNum { pc, uniq }, vec![outvn; n]);
+        // Using the original output's address could cause merge conflicts, so Ghidra takes a
+        // unique (condexe.cc:224-226).
+        let newout = data.new_output_unique(new_op, size);
+        data.op_insert_begin(new_op, bl);
+        newout
+    }
+
+    /// Ghidra `ConditionalExecution::resolveIblockRead` (condexe.cc:242): the replacement for a
+    /// read of `op`'s output known to arrive through `iblock` on the given branch.
+    fn resolve_iblock_read(&mut self, data: &mut Funcdata, op: OpId, inbranch: usize, dom: &Dominators) -> Option<VarnodeId> {
+        let mut op = op;
+        if data.op(op).code() == OpCode::Copy {
+            let vn = data.op(op).input(0).expect("COPY input");
+            if data.vn(vn).is_written() {
+                let def_op = data.vn(vn).def.expect("written");
+                if data.op(def_op).code() == OpCode::Multiequal
+                    && data.op(def_op).parent == Some(self.iblock)
+                {
+                    op = def_op;
+                }
+            } else {
+                return Some(vn);
+            }
+        }
+        match data.op(op).code() {
+            OpCode::Multiequal => data.op(op).input(inbranch),
+            OpCode::Subpiece | OpCode::IntAdd | OpCode::Ptrsub => {
+                Some(self.pullback_op(data, op, inbranch, dom))
+            }
+            // Ghidra throws "Conditional execution: Illegal op in iblock". verify() has already
+            // rejected anything else, so this is unreachable.
+            _ => None,
+        }
+    }
+
+    /// Ghidra `ConditionalExecution::resolveRead` (condexe.cc:225).
+    fn resolve_read(&mut self, data: &mut Funcdata, op: OpId, bl: BlockId, dom: &Dominators) -> Option<VarnodeId> {
+        if data.block(bl).in_edges.len() == 1 {
+            // The dominator is iblock, so In(0) must be iblock: work out which side we came through.
+            let slot = if Self::in_rev_index(data, bl, 0) == self.posta_outslot {
+                self.camethruposta_slot
+            } else {
+                1 - self.camethruposta_slot
+            };
+            self.resolve_iblock_read(data, op, slot, dom)
+        } else {
+            Some(self.get_new_multi(data, op, bl))
+        }
+    }
+
+    /// Ghidra `ConditionalExecution::getReplacementRead` (condexe.cc:292): a replacement valid for
+    /// everything dominated by `bl`, creating and caching one if needed.
+    fn get_replacement_read(&mut self, data: &mut Funcdata, op: OpId, bl: BlockId, dom: &Dominators) -> Option<VarnodeId> {
+        if let Some(&v) = self.replacement.get(&(bl.0 as usize)) {
+            return Some(v);
+        }
+        // Flow must eventually come through iblock.
+        let mut curbl = bl;
+        while BlockId(dom.idom[curbl.0 as usize] as u32) != self.iblock {
+            let next = dom.idom[curbl.0 as usize];
+            if next == curbl.0 as usize {
+                return None; // Ghidra: "Could not find dominator"
+            }
+            curbl = BlockId(next as u32);
+        }
+        if let Some(&v) = self.replacement.get(&(curbl.0 as usize)) {
+            self.replacement.insert(bl.0 as usize, v);
+            return Some(v);
+        }
+        let res = self.resolve_read(data, op, curbl, dom)?;
+        self.replacement.insert(curbl.0 as usize, res);
+        if curbl != bl {
+            self.replacement.insert(bl.0 as usize, res);
+        }
+        Some(res)
+    }
+
+    /// Ghidra `ConditionalExecution::getMultiequalRead` (condexe.cc:271).
+    fn get_multiequal_read(&mut self, data: &mut Funcdata, op: OpId, readop: OpId, slot: usize, dom: &Dominators) -> Option<VarnodeId> {
+        let bl = data.op(readop).parent.expect("reader is in a block");
+        let inbl = data.block(bl).in_edges[slot];
+        if inbl != self.iblock {
+            return self.get_replacement_read(data, op, inbl, dom);
+        }
+        let s = if Self::in_rev_index(data, bl, slot) == self.posta_outslot {
+            self.camethruposta_slot
+        } else {
+            1 - self.camethruposta_slot
+        };
+        self.resolve_iblock_read(data, op, s, dom)
+    }
+}
+
+impl ConditionalExecution {
+    /// Ghidra `ConditionalExecution::doReplacement` (condexe.cc:320): reproduce `op`'s data flow in
+    /// the new control-flow configuration, after which `op` can be destroyed.
+    ///
+    /// Ghidra restarts the descendant iterator on every round because
+    /// [`Self::get_new_multi`] deliberately adds fresh reads of `op`'s output that must themselves
+    /// be resolved; a snapshot of the descendant list would miss them. mosura keeps that restart.
+    ///
+    /// One deviation, in the transient state only: Ghidra calls `opUnsetInput` on a reader that
+    /// lives in `iblock`, which nulls the slot and drops the descendant link so the loop makes
+    /// progress. mosura's `PcodeOp::inrefs` has no null representation, so instead the loop
+    /// terminates on "no descendant OUTSIDE iblock remains" and the in-block readers are left for
+    /// the `op_destroy` that [`Self::execute`] performs on every op of `iblock` moments later —
+    /// `op_destroy` clears inputs and descend links, so the final graph is identical.
+    fn do_replacement(&mut self, data: &mut Funcdata, op: OpId, dom: &Dominators) -> bool {
+        self.replacement.clear();
+        self.pullback.clear();
+        let Some(vn) = data.op(op).output else { return true };
+        loop {
+            // The next reader living outside iblock, if any.
+            let next = data
+                .vn(vn)
+                .descend
+                .iter()
+                .copied()
+                .find(|&r| data.op(r).parent != Some(self.iblock));
+            let Some(mut readop) = next else { return true };
+            let mut slot = data
+                .op(readop)
+                .inrefs
+                .iter()
+                .position(|&v| v == vn)
+                .expect("reader reads vn");
+            let bl = data.op(readop).parent.expect("reader is in a block");
+            let rvn = if data.op(readop).code() == OpCode::Multiequal {
+                self.get_multiequal_read(data, op, readop, slot, dom)
+            } else if data.op(readop).code() == OpCode::Return {
+                // A RETURN's input cannot be replaced directly, so hold it in a COPY that preserves
+                // the RETURN's storage address (condexe.cc:337-345).
+                let retvn = data.op(readop).input(1).expect("RETURN value");
+                let (rsize, rloc) = (data.vn(retvn).size, data.vn(retvn).loc);
+                let pc = data.op(readop).seqnum.pc;
+                let uniq = data.num_ops() as u32;
+                let newcopy = data.new_op(OpCode::Copy, SeqNum { pc, uniq }, vec![retvn]);
+                let outvn = data.new_output(newcopy, rsize, rloc);
+                data.op_set_input(readop, 1, outvn);
+                data.op_insert_before(newcopy, readop);
+                readop = newcopy;
+                slot = 0;
+                self.get_replacement_read(data, op, bl, dom)
+            } else {
+                self.get_replacement_read(data, op, bl, dom)
+            };
+            let Some(rvn) = rvn else { return false };
+            data.op_set_input(readop, slot, rvn);
+        }
+    }
+
+    /// Ghidra `ConditionalExecution::execute` (condexe.cc:457): eliminate the unnecessary join at
+    /// `iblock`. Assumes the last [`Self::verify`] returned true.
+    fn execute(&mut self, data: &mut Funcdata, dom: &Dominators) -> bool {
+        // Ghidra removes ops in REVERSE order, doing each op's replacement immediately before
+        // destroying it.
+        for op in data.block(self.iblock).ops.clone().into_iter().rev() {
+            if !data.op(op).code().is_branch() && !self.do_replacement(data, op, dom) {
+                return false;
+            }
+            data.op_destroy(op);
+        }
+        data.remove_from_flow_split(self.iblock, self.posta_outslot != self.camethruposta_slot);
+        // Ghidra's `Funcdata::removeFromFlowSplit` follows the edge surgery with
+        // `bblocks.removeBlock(bl)` (funcdata_block.cc:889); mosura drops a block through the
+        // renumbering removal the rest of the block surgery in this crate uses.
+        let mut keep = vec![true; data.num_blocks()];
+        keep[self.iblock.0 as usize] = false;
+        super::determinedbranch::renumber_reachable(data, &keep);
+        true
+    }
+}
+
+/// Ghidra `ActionConditionalExe` (condexe.cc:478, group `conditionalexe`, slot :5675): remove the
+/// redundant control-flow join left by a block that re-tests a condition an earlier block already
+/// branched on.
+pub struct ActionConditionalExe;
+
+impl super::action::Action for ActionConditionalExe {
+    fn name(&self) -> &str {
+        "conditionalexe"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // The elimination logic does not work with unreachable blocks (condexe.cc:485).
+        if data.has_unreachable_blocks() {
+            return 0;
+        }
+        let mut numhits = 0;
+        loop {
+            let mut changethisround = false;
+            let mut i = 0;
+            while i < data.num_blocks() {
+                let dom = super::dominator::compute(data);
+                let mut condexe = ConditionalExecution::new(data);
+                condexe.iblock = BlockId(i as u32);
+                let ok = condexe.verify(data);
+                if std::env::var("MOSURA_CONDEXE_DEBUG").is_ok() && ok {
+                    eprintln!("CONDEXE verify ok at block {i}");
+                }
+                if ok && condexe.execute(data, &dom) {
+                    numhits += 1;
+                    changethisround = true;
+                    // The block list changed under us; restart the sweep.
+                    i = 0;
+                    continue;
+                }
+                i += 1;
+            }
+            if !changethisround {
+                break;
+            }
+        }
+        numhits
     }
 }

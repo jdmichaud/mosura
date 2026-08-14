@@ -128,7 +128,7 @@ fn remove_unreachable_blocks(f: &mut Funcdata) -> bool {
 /// op `parent`. In-edges are *remapped* (not rebuilt) so MULTIEQUAL input ordering — which is
 /// positional by in-edge — is preserved. Mirrors the renumber tail of `cfg::build_cfg`, which is
 /// monotonic, so the surviving predecessors keep their relative (ascending) order.
-fn renumber_reachable(f: &mut Funcdata, reachable: &[bool]) {
+pub(super) fn renumber_reachable(f: &mut Funcdata, reachable: &[bool]) {
     let nb = reachable.len();
     let mut order: Vec<usize> = vec![0];
     order.extend((1..nb).filter(|&b| reachable[b]));

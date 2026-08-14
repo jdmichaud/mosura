@@ -1216,8 +1216,8 @@ pub fn universal_action() -> ActionGroup {
         //   in mosura's determinedbranch) → ActionConditionalConst (:5676) — then the cycle wraps
         //   to ActionHeritage (:5492) + ActionDeadCode, the next iteration's head, so within every
         //   pass the stack/global LOAD/STOREs just resolved are seen by determinedbranch/condconst
-        //   in the same iteration (the #22-B ordering evidence). ActionNodeJoin (:5674) /
-        //   ActionConditionalExe (:5675) join here when ported.
+        //   in the same iteration (the #22-B ordering evidence). ActionNodeJoin (:5674) joins
+        //   here when ported; ActionConditionalExe (:5675) is wired.
         // - Convergence: heritage returns 0 once complete, deadcode counts removals, the pools are
         //   fixpoint, nzmask/consume return 0 (analysis), determinedbranch/condconst are monotone
         //   (branch removal strictly shrinks the CFG; a propagated constant no longer matches),
@@ -1293,6 +1293,10 @@ pub fn universal_action() -> ActionGroup {
                         // after ActionDeterminedBranch — which in Ghidra leaves its orphaned
                         // blocks for exactly this action to collect.
                         .then(super::determinedbranch::ActionUnreachable)
+                        // ActionConditionalExe (:5675, group `conditionalexe`), Ghidra's slot
+                        // directly after ActionUnreachable/ActionNodeJoin and before
+                        // ActionConditionalConst.
+                        .then(super::condexe::ActionConditionalExe)
                         .then(super::condconst::ActionConditionalConst)
                         // ActionUnreachable (:5490, group `base`) opens Ghidra's mainloop, ahead
                         // of ActionVarnodeProps/ActionHeritage.
