@@ -25,6 +25,12 @@ pub struct Funcdata {
     ops: Vec<PcodeOp>,
     blocks: Vec<BlockBasic>,
     create_index: u32,
+    /// Ghidra `Funcdata::clean_up_index` (funcdata.hh:75): the varnode creation index at the moment
+    /// the clean-up phase started, stamped by [`Self::start_clean_up`]. NOTE: in Ghidra 12.0.3 the
+    /// companion `getCleanUpIndex()` has no callers anywhere in the decompiler — the watermark is
+    /// recorded and never read. Carried for roster fidelity so `ActionStartCleanUp` is a real port
+    /// rather than an empty stub; a future consumer finds it already correct.
+    clean_up_index: u32,
     unique_offset: u64,
     /// Recovered jump-table case targets, keyed by the BRANCHIND instruction address.
     pub switch_targets: std::collections::HashMap<u64, Vec<u64>>,
@@ -268,6 +274,7 @@ impl Funcdata {
             ops: Vec::new(),
             blocks: Vec::new(),
             create_index: 0,
+            clean_up_index: 0,
             unique_offset: 0x10000,
             switch_targets: std::collections::HashMap::new(),
             switch_defaults: std::collections::HashMap::new(),
@@ -833,6 +840,17 @@ impl Funcdata {
             let op = self.vn(v).def.expect("just built as a SUBPIECE output");
             self.op_set_input(op, 0, invn);
         }
+    }
+
+    /// Ghidra `Funcdata::startCleanUp` (funcdata.hh:186): stamp the varnode creation index at the
+    /// start of the clean-up phase.
+    pub fn start_clean_up(&mut self) {
+        self.clean_up_index = self.create_index;
+    }
+
+    /// Ghidra `Funcdata::getCleanUpIndex` (funcdata.hh:187).
+    pub fn clean_up_index(&self) -> u32 {
+        self.clean_up_index
     }
 
     /// Ghidra `VarnodeBank::findCoveredInput` (varnode.cc:1485): the function input varnode that

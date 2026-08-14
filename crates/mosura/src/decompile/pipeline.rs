@@ -508,7 +508,13 @@ impl Action for ActionExtraPopSetup {
         let Some(&(sb_addr, sb_size)) = data.spaces.get(stack).spacebase.first() else {
             return 0; // no stack to speak of
         };
-        let calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        // Ghidra walks `data.numCalls()`/`getCallSpecs(i)` — an ORDERED vector, in call order.
+        // mosura keys call specs by OpId in a HashMap, whose iteration order is randomized per
+        // process, so the keys must be sorted or the pass is nondeterministic. (It is: leaving
+        // this unsorted made 11 of 3023 WAR2 functions emit differently between two runs of an
+        // otherwise identical build.) OpId is creation order, which for calls is program order.
+        let mut calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        calls.sort();
         let mut count = 0;
         for call in calls {
             if data.op(call).is_dead() {
@@ -641,6 +647,26 @@ fn trace_trash(data: &mut Funcdata, vn: super::varnode::VarnodeId, indlist: &mut
     istrash
 }
 
+/// Ghidra `ActionStartCleanUp` (coreaction.hh:58, group `cleanup`, slot :5692): mark the start of
+/// the clean-up phase by stamping the varnode creation index.
+///
+/// The whole body is `data.startCleanUp()`. Worth noting rather than hiding: in Ghidra 12.0.3 the
+/// companion `Funcdata::getCleanUpIndex()` has **no callers anywhere** in the decompiler, so the
+/// watermark is written and never read. It is ported anyway — it is a real member of
+/// `universalAction` and the state is cheap and correct, so a future consumer of the index finds
+/// it already there instead of the action being a silent roster gap.
+pub struct ActionStartCleanUp;
+
+impl Action for ActionStartCleanUp {
+    fn name(&self) -> &str {
+        "startcleanup"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        data.start_clean_up();
+        0 // Ghidra's apply returns 0 (coreaction.hh:66)
+    }
+}
+
 /// Ghidra `ActionLikelyTrash` (coreaction.cc:2140, group `protorecovery`, slot :5679): a register
 /// the calling convention marks as likely holding caller garbage, and every one of whose uses is a
 /// trash sink, has its data flow cut — the INDIRECT becomes an indirect *creation* and the
@@ -720,7 +746,13 @@ impl Action for ActionParamDouble {
         let Some(input) = data.proto_model.input.clone() else { return 0 };
         // Ghidra's `spc->getType() != IPTR_SPACEBASE` test: only a stack-space trial splits here.
         let Some(stack) = data.spaces.by_name("stack") else { return 0 };
-        let calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        // Ghidra walks `data.numCalls()`/`getCallSpecs(i)` — an ORDERED vector, in call order.
+        // mosura keys call specs by OpId in a HashMap, whose iteration order is randomized per
+        // process, so the keys must be sorted or the pass is nondeterministic. (It is: leaving
+        // this unsorted made 11 of 3023 WAR2 functions emit differently between two runs of an
+        // otherwise identical build.) OpId is creation order, which for calls is program order.
+        let mut calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        calls.sort();
         let mut count = 0;
         for call in calls {
             if data.op(call).is_dead() || !data.is_input_active(call) {
@@ -1280,6 +1312,9 @@ pub fn universal_action() -> ActionGroup {
                 .then(ActionStartTypes)
                 .then(ActionActiveReturn),
         )
+        // ActionStartCleanUp (:5692, group `cleanup`), Ghidra's slot directly before the cleanup
+        // rule pool and after ActionMappedLocalSync.
+        .then(ActionStartCleanUp)
         .then(cleanup_pool())
         .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
@@ -1382,6 +1417,26 @@ pub fn decompile(data: &mut Funcdata) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ActionStartCleanUp` stamps the varnode creation index at the moment it runs, so the
+    /// watermark separates varnodes made before the clean-up phase from those made during it.
+    #[test]
+    fn start_clean_up_stamps_the_creation_index() {
+        use crate::decompile::space::{Address, SpaceManager};
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        assert_eq!(f.clean_up_index(), 0);
+
+        let before = f.new_input(4, Address::new(reg, 0));
+        ActionStartCleanUp.apply(&mut f);
+        let mark = f.clean_up_index();
+        let after = f.new_const(4, 7);
+
+        assert!(f.vn(before).create_index < mark, "varnodes made before the phase are under it");
+        assert!(f.vn(after).create_index >= mark, "varnodes made during it are at or above");
+    }
 
     /// `ActionLikelyTrash` cuts the data flow out of a convention-declared trash register when
     /// every path from it is a trash sink: the INDIRECT's before-value becomes a zero constant
