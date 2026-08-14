@@ -139,6 +139,31 @@ Both directions being present at once means the recovered prototype is right in 
 extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
 not a global loosening or tightening.
 
+## Measured and rejected — widening a register parameter to its slot
+
+**Do not redo this.** Declaring a register parameter at the convention's slot width instead of the
+width the body reads is net **−28** (432 → 404, gained 1, lost 29). It is recorded here because the
+premise checks out and the conclusion still does not.
+
+The premise: WAR2's `FUN_00015224` takes a value in EAX and hands it straight to another function.
+Declared `xunknown1 param_1` it compiles with an `AND EAX,0xff` the original does not have. Asked
+with the callee's parameter forced, Ghidra declares `undefined4 in_EAX` and passes it untouched —
+four bytes, the whole register. So on that specimen the wide declaration is right, and it agrees
+with the reference decompiler.
+
+It does not generalise. The 29 functions it breaks diverge on `missing: AND EAX,K`,
+`missing: CWDE`, `missing: MOV DL,AL` — their originals genuinely DO narrow the incoming register,
+because their parameter really is a byte. Declaring it wide deletes the narrowing.
+
+So the parameter width is the same value-versus-storage duality as the return width, and neither
+rule wins everywhere. It is not worth making an emission axis either: the split is 29 to 1, so the
+narrow width is simply the better default and the wide one buys a single function.
+
+Note the asymmetry that misled this: Ghidra declares the RETURN at the value's width (`undefined1`)
+and renders an unrecovered INPUT register at the storage width (`undefined4`). The second is not a
+parameter declaration at all — it is an unnamed local standing for "whatever the caller left here",
+which reads well and does not rebuild. Reading it as a claim about parameter width is the mistake.
+
 ## Open thread 2 — make the search generative
 
 `recompile_search` selects among arms a human emitted; it proposes none. Every one of the 26
