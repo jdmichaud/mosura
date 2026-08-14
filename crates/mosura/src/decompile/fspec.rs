@@ -235,6 +235,17 @@ impl ParamList {
         None
     }
 
+    /// Ghidra `ParamListStandard::checkSplit` (fspec.cc:1342): would `[loc,loc+size)`, cut at
+    /// `splitpoint`, land on two storage locations this convention actually uses for parameters?
+    /// Reached from `FuncCallSpecs::checkInputSplit` (fspec.hh:1524) via the model.
+    pub fn check_split(&self, loc: Address, size: u32, splitpoint: u32) -> bool {
+        if splitpoint == 0 || splitpoint >= size {
+            return false;
+        }
+        let loc2 = Address::new(loc.space, loc.offset + splitpoint as u64);
+        self.find_entry(loc, splitpoint).is_some() && self.find_entry(loc2, size - splitpoint).is_some()
+    }
+
     /// Whether `[loc,loc+size)` could be a parameter under this convention (Ghidra
     /// `ParamList::possibleParam`).
     pub fn possible_param(&self, loc: Address, size: u32) -> bool {
@@ -1000,6 +1011,28 @@ impl ParamTrial {
     pub fn is_unref(&self) -> bool {
         self.flags & trial_flags::UNREF != 0
     }
+    /// Ghidra `ParamTrial::isChecked` (fspec.hh:243): has this trial been investigated?
+    pub fn is_checked(&self) -> bool {
+        self.flags & trial_flags::CHECKED != 0
+    }
+
+    /// Ghidra `ParamTrial::splitHi` (fspec.cc:1845): a trial covering the FIRST `sz` bytes of this
+    /// trial's range, keeping its slot and flags.
+    pub fn split_hi(&self, sz: u32) -> ParamTrial {
+        ParamTrial { size: sz, ..self.clone() }
+    }
+
+    /// Ghidra `ParamTrial::splitLo` (fspec.cc:1856): a trial covering the LAST `sz` bytes of this
+    /// trial's range, taking the next slot and keeping the flags.
+    pub fn split_lo(&self, sz: u32) -> ParamTrial {
+        ParamTrial {
+            addr: Address::new(self.addr.space, self.addr.offset + (self.size - sz) as u64),
+            size: sz,
+            slot: self.slot + 1,
+            ..self.clone()
+        }
+    }
+
     pub fn is_definitely_not_used(&self) -> bool {
         self.flags & trial_flags::DEFNOUSE != 0
     }
@@ -1162,6 +1195,40 @@ pub struct ParamActive {
 }
 
 impl ParamActive {
+    /// Ghidra `ParamActive::splitTrial` (fspec.cc:2033): replace trial `i` with two trials — the
+    /// first `sz` bytes and the remainder — and push every later slot up by one.
+    ///
+    /// Panics where Ghidra throws: the stack placeholder must have been recovered first, because
+    /// splitting renumbers the slots the placeholder is tracked by.
+    ///
+    /// Ghidra also bumps its `slotbase` here; mosura deliberately does not carry `slotbase` (it
+    /// exists to PREDICT the input index a trial lands on, and mosura's callers read the index
+    /// back off the op instead — the same number by construction).
+    pub fn split_trial(&mut self, i: usize, sz: u32) {
+        assert!(
+            self.stackplaceholder < 0,
+            "cannot split parameter when the placeholder has not been recovered"
+        );
+        let slot = self.trial[i].slot;
+        let mut newtrials: Vec<ParamTrial> = Vec::with_capacity(self.trial.len() + 1);
+        let bump = |t: &ParamTrial| {
+            let mut t = t.clone();
+            if t.slot > slot {
+                t.slot += 1;
+            }
+            t
+        };
+        for t in &self.trial[..i] {
+            newtrials.push(bump(t));
+        }
+        newtrials.push(self.trial[i].split_hi(sz));
+        newtrials.push(self.trial[i].split_lo(self.trial[i].size - sz));
+        for t in &self.trial[i + 1..] {
+            newtrials.push(bump(t));
+        }
+        self.trial = newtrials;
+    }
+
     pub fn new(reg_space: Option<SpaceId>) -> ParamActive {
         ParamActive {
             active: true,
@@ -1639,6 +1706,67 @@ pub fn abort_spacebase_relative(f: &mut Funcdata, call: OpId) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ParamTrial::splitHi`/`splitLo` carve a trial in two: the first `sz` bytes keep the slot,
+    /// the remainder takes the next slot, and both inherit the flags (Ghidra fspec.cc:1845/1856).
+    #[test]
+    fn param_trial_splits_into_hi_and_lo() {
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let stack = spaces.by_name("stack").unwrap();
+        let mut t = ParamTrial::new(Address::new(stack, 0x10), 8);
+        t.slot = 3;
+        t.flags |= trial_flags::ACTIVE;
+
+        let hi = t.split_hi(4);
+        assert_eq!((hi.addr.offset, hi.size, hi.slot), (0x10, 4, 3));
+        let lo = t.split_lo(4);
+        assert_eq!((lo.addr.offset, lo.size, lo.slot), (0x14, 4, 4), "lo starts past the hi part");
+        assert_eq!(lo.flags & trial_flags::ACTIVE, trial_flags::ACTIVE, "flags are inherited");
+    }
+
+    /// `ParamActive::splitTrial` replaces the trial in place and pushes every LATER slot up by one,
+    /// leaving earlier slots alone (Ghidra fspec.cc:2033).
+    #[test]
+    fn split_trial_renumbers_later_slots_only() {
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let stack = spaces.by_name("stack").unwrap();
+        let mut a = ParamActive::new(None);
+        for (off, slot) in [(0x08u64, 1u32), (0x10, 2), (0x18, 3)] {
+            let mut t = ParamTrial::new(Address::new(stack, off), 8);
+            t.slot = slot;
+            a.trial.push(t);
+        }
+        a.split_trial(1, 4); // split the middle trial (slot 2)
+
+        let slots: Vec<u32> = a.trial.iter().map(|t| t.slot).collect();
+        assert_eq!(slots, vec![1, 2, 3, 4], "the split adds a slot and later trials shift up");
+        let sizes: Vec<u32> = a.trial.iter().map(|t| t.size).collect();
+        assert_eq!(sizes, vec![8, 4, 4, 8]);
+        assert_eq!(a.trial[1].addr.offset, 0x10);
+        assert_eq!(a.trial[2].addr.offset, 0x14);
+    }
+
+    /// `checkSplit` asks whether BOTH halves land on storage the convention uses; a cut at 0 or at
+    /// the full size is not a split at all.
+    #[test]
+    fn check_split_requires_both_halves_to_be_parameters() {
+        let spaces = crate::decompile::space::SpaceManager::standard();
+        let stack = spaces.by_name("stack").unwrap();
+        let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
+        pl.entry.push(ParamEntry {
+            group: 0,
+            type_class: 0,
+            space: stack,
+            addressbase: 0x10,
+            size: 0x40,
+            minsize: 1,
+            alignment: 4,
+        });
+        let at = Address::new(stack, 0x10);
+        assert!(pl.check_split(at, 8, 4), "two 4-byte halves both land in the stack entry");
+        assert!(!pl.check_split(at, 8, 0), "a cut at 0 is not a split");
+        assert!(!pl.check_split(at, 8, 8), "a cut at the full size is not a split");
+    }
 
     /// `unjustifiedContainer` distinguishes Ghidra's three outcomes: not contained, contained and
     /// properly justified, contained but improperly justified (the only one needing adjustment).

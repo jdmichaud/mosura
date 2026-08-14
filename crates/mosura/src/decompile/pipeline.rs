@@ -540,6 +540,91 @@ impl Action for ActionExtraPopSetup {
     }
 }
 
+/// Ghidra `ActionParamDouble` (coreaction.cc:1597, group `protorecovery`): a call argument built
+/// by a `PIECE` whose two halves are each a parameter in their own right is split back into two
+/// arguments.
+///
+/// Ghidra's `apply` has three blocks. Only the first — the SPLIT of an active input trial — is
+/// ported; the other two are gated on subsystems mosura does not have, and are cited rather than
+/// approximated:
+///
+/// * **join** (`!isInputLocked() && isDoublePrecisOn()`, coreaction.cc:1636): fuses two adjacent
+///   argument slots that are the halves of one double-precision value. It needs
+///   `FuncCallSpecs::doInputJoin` → `Architecture::constructJoinAddress` and
+///   `ParamActive::joinTrial`, i.e. the **JOIN address space**, which mosura has no counterpart
+///   for (`ParamEntry` models no join records either). BLOCKED(join space).
+/// * **locked-parameter split** (coreaction.cc:1667): searches a *locked* prototype's parameters
+///   for hi/lo components. mosura has no locked prototype parameters in a batch decompile, so the
+///   block has nothing to iterate. BLOCKED(locked prototypes).
+///
+/// The split block is independent of both: it reads only the active trial container and the
+/// model's input `ParamList`, so porting it alone lands a whole mechanism, not half of one.
+pub struct ActionParamDouble;
+
+impl Action for ActionParamDouble {
+    fn name(&self) -> &str {
+        "paramdouble"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let Some(input) = data.proto_model.input.clone() else { return 0 };
+        // Ghidra's `spc->getType() != IPTR_SPACEBASE` test: only a stack-space trial splits here.
+        let Some(stack) = data.spaces.by_name("stack") else { return 0 };
+        let calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
+        let mut count = 0;
+        for call in calls {
+            if data.op(call).is_dead() || !data.is_input_active(call) {
+                continue;
+            }
+            let mut j = 0;
+            loop {
+                let Some(active) = data.active_inputs.get(&call) else { break };
+                if j >= active.trial.len() {
+                    break;
+                }
+                let t = &active.trial[j];
+                // Ghidra skips trials already investigated or with no reference.
+                if t.is_checked() || t.is_unref() || t.addr.space != stack {
+                    j += 1;
+                    continue;
+                }
+                let (taddr, tsize, slot) = (t.addr, t.size, t.slot as usize);
+                let Some(vn) = data.op(call).input(slot) else {
+                    j += 1;
+                    continue;
+                };
+                if !data.vn(vn).is_written() {
+                    j += 1;
+                    continue;
+                }
+                let concatop = data.vn(vn).def.expect("written");
+                if data.op(concatop).code() != super::opcode::OpCode::Piece {
+                    j += 1;
+                    continue;
+                }
+                // Ghidra's `!fc->hasModel()` bail-out: mosura always carries a prototype model, so
+                // the check is structurally satisfied here.
+                let mostvn = data.op(concatop).input(0).expect("PIECE input 0");
+                let leastvn = data.op(concatop).input(1).expect("PIECE input 1");
+                // Little-endian: the split size is the LEAST significant piece's size.
+                let splitsize = data.vn(leastvn).size;
+                if !input.check_split(taddr, tsize, splitsize) {
+                    j += 1;
+                    continue;
+                }
+                if std::env::var("MOSURA_PARAMDOUBLE_DEBUG").is_ok() {
+                    eprintln!("PARAMDOUBLE split trial {j} at {:x} size {tsize} -> {splitsize}", taddr.offset);
+                }
+                data.active_inputs.get_mut(&call).expect("checked").split_trial(j, splitsize);
+                data.op_insert_input(call, slot, leastvn);
+                data.op_set_input(call, slot + 1, mostvn);
+                count += 1;
+                // Ghidra decrements j so a nested CONCAT is checked at the same index.
+            }
+        }
+        count
+    }
+}
+
 /// Ghidra `ActionUnjustifiedParams` (coreaction.cc:4784, group `protorecovery`): widen any
 /// function input that the calling convention says is *improperly justified* within its parameter
 /// container.
@@ -965,6 +1050,10 @@ pub fn universal_action() -> ActionGroup {
                         .then(super::determinedbranch::ActionDeterminedBranch)
                         .then(super::condconst::ActionConditionalConst)
                         .then(ActionHeritage)
+                        // ActionParamDouble (:5493, group `protorecovery`), Ghidra's slot directly
+                        // after the mainloop ActionHeritage: a call argument built by a PIECE whose
+                        // halves are each a parameter is split back into two arguments.
+                        .then(ActionParamDouble)
                         // ActionDirectWrite ×2 (Ghidra :5497-5498, "protorecovery_a"/"_b"): mapped
                         // to mosura's rotated cycle between ActionHeritage (:5492) and the deadcode
                         // it feeds (:5503) — the tail DeadCode below. The pass recomputes the
