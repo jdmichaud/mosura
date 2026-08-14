@@ -1048,7 +1048,14 @@ pub fn universal_action() -> ActionGroup {
                         .then(super::deadcode::ActionDeadCode)
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
+                        // ActionUnreachable (:5673, group `unreachable`), Ghidra's slot directly
+                        // after ActionDeterminedBranch — which in Ghidra leaves its orphaned
+                        // blocks for exactly this action to collect.
+                        .then(super::determinedbranch::ActionUnreachable)
                         .then(super::condconst::ActionConditionalConst)
+                        // ActionUnreachable (:5490, group `base`) opens Ghidra's mainloop, ahead
+                        // of ActionVarnodeProps/ActionHeritage.
+                        .then(super::determinedbranch::ActionUnreachable)
                         .then(ActionHeritage)
                         // ActionParamDouble (:5493, group `protorecovery`), Ghidra's slot directly
                         // after the mainloop ActionHeritage: a call argument built by a PIECE whose

@@ -194,6 +194,30 @@ impl Action for ActionDeterminedBranch {
     }
 }
 
+/// Ghidra `ActionUnreachable` (coreaction.cc:3457, groups `base` at slot :5490 and `unreachable`
+/// at :5673): detect unreachable blocks and remove them.
+///
+/// The whole body is `data.removeUnreachableBlocks(true,false)`. In Ghidra this is a separate
+/// action *because* `ActionDeterminedBranch` deliberately does not clean up after itself — it
+/// removes every determined branch in one pass and leaves the newly-orphaned blocks to the
+/// `ActionUnreachable` that directly follows it (:5672-5673).
+///
+/// mosura's [`ActionDeterminedBranch`] folds that cleanup into its own loop (it calls
+/// `remove_unreachable_blocks` after each branch removal), so at the :5673 slot this action
+/// usually finds nothing left; at the mainloop-head slot :5490 it is the only thing doing the
+/// work. Unfolding DeterminedBranch to match Ghidra's one-pass shape is a separate change.
+pub struct ActionUnreachable;
+
+impl Action for ActionUnreachable {
+    fn name(&self) -> &str {
+        "unreachable"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Ghidra counts +1 when at least one block was deleted, and returns 0.
+        u32::from(remove_unreachable_blocks(data))
+    }
+}
+
 /// Ghidra `Funcdata::spliceBlockBasic` (funcdata_block.cc:908) + `BlockGraph::spliceBlock`
 /// (block.cc:1597): merge a block with exactly one output into its successor with exactly one
 /// input — destroy `bb`'s trailing branch, move the successor's ops into `bb`, give `bb` the
