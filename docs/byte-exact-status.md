@@ -139,6 +139,34 @@ Both directions being present at once means the recovered prototype is right in 
 extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
 not a global loosening or tightening.
 
+## How to size a fix before writing it
+
+Every estimate in this document must come from one query: **how many functions would become
+divergence-FREE if this cause were eliminated.** Not "how many functions show this symptom" — that
+number is meaningless and it is always large.
+
+The register-parameter widening below is the worked example of getting this wrong. Sized by a grep
+over our own emitted signatures it looked like 313 functions. Sized correctly it was **9**, and it
+delivered 1:
+
+| question | answer |
+| --- | --- |
+| functions whose signature has a narrow register parameter, and are non-exact | 313 |
+| functions with ANY width-shaped divergence (`AND EAX,K`, `CWDE`, `MOVZX`, `MOV DL,AL`) | 1581 |
+| functions whose ONLY divergences are width-shaped | **9** |
+| measured outcome | +1, −29 |
+
+The 313 assumed the narrow parameter was WHY those functions were non-exact. It was not — they sit
+at a median of 21 divergences. A symptom that appears in half the corpus as one row among twenty
+converts nobody.
+
+The calibration that shows the method works: `ret-n` marginal value said 13, the fix delivered 11.
+
+The trap is that the marginal-value query needs a divergence CLASS to filter on, and some causes
+have none — parameter width shows up as ordinary `missing`/`extra` rows. That is not a licence to
+substitute a grep over our own output: build the instruction-shape filter instead. It is one query,
+and it is the difference between a 35x over-estimate and a calibrated one.
+
 ## Measured and rejected — widening a register parameter to its slot
 
 **Do not redo this.** Declaring a register parameter at the convention's slot width instead of the
