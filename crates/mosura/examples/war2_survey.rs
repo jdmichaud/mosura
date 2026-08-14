@@ -114,6 +114,9 @@ typedef unsigned char bool;
 /// The commit that produced an emit: `<short-sha>` or `<short-sha>-dirty`. Falls back to
 /// `nogit` only if git is unavailable — an unstamped artifact is still marked as unstamped
 /// rather than silently claiming to be reproducible.
+/// The subject's language. WAR2 is a 32-bit protected-mode DOS image.
+const SURVEY_LANG: &str = "x86:LE:32:default";
+
 fn git_stamp() -> String {
     // The stamp must name the commit of the code that PRODUCED this emit, and that is not
     // whatever repository the process happens to be standing in. Running the survey from the
@@ -269,13 +272,25 @@ fn own_contract(
     f: &mosura::decompile::funcdata::Funcdata,
     table: &[(u64, u32, &'static str)],
     stack_convention: bool,
+    cleanup: Option<u32>,
 ) -> Option<String> {
     let mut parts = Vec::new();
     // A STACK-BASED prototype is `parm []`. It used to short-circuit the whole declaration, so
     // these functions never got their `modify` list — the two are independent facts about the
     // contract and both belong in the same pragma.
+    //
+    // WHO POPS is a third, independent fact, and it is not a choice: Watcom's default is
+    // callee-pops (`parm routine`), and a function whose original ends in a bare `RET` after
+    // reading `[ESP+4]` is caller-pops. Emitting the default regardless put a `RET 4` where the
+    // original has `RET` in 101 WAR2 functions — 13 of them one instruction from exact and
+    // nothing else wrong. `recompile::callee_stack_cleanup` reads the contract off the function's
+    // own return instruction; where it cannot tell (no return, or returns that disagree) the
+    // default stands, because a guess here is wrong code in every caller.
     if stack_convention {
-        parts.push("parm []".to_string());
+        parts.push(match cleanup {
+            Some(0) => "parm caller []".to_string(),
+            _ => "parm []".to_string(),
+        });
     } else if let Some(p) = nondefault_parm_regs(f, table) {
         parts.push(format!("parm {p}"));
     }
@@ -449,6 +464,9 @@ fn main() {
         link_latest(&out.join("raw"), &format!("raw.{stamp}"));
         link_latest(&out.join("manifest.tsv"), &format!("manifest.{stamp}.tsv"));
     }
+
+    // The stack pointer's register-space offset, from the language tables rather than a constant.
+    let esp_off = mosura::lang::load_cached(SURVEY_LANG).and_then(|(spec, _)| spec.register_offset("ESP"));
 
     eprintln!("loading WAR2 via analyze_le_file ...");
     let mut prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
@@ -690,7 +708,15 @@ fn main() {
             && proto.params.iter().all(|p| {
                 f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
             });
-        let contract = own_contract(&f, &watreg, stack_convention);
+        // The callee's stack-cleanup contract, read from its own return instruction. Lifting the
+        // already-decoded bytes again costs a disassembly per function, which is nothing beside the
+        // decompile that just ran, and keeps this a property of the SUBJECT rather than of our IR.
+        let cleanup = esp_off.and_then(|sp| {
+            mosura::sleigh::disassemble(SURVEY_LANG, &region, *va)
+                .ok()
+                .and_then(|insns| mosura::recompile::callee_stack_cleanup(&insns, sp))
+        });
+        let contract = own_contract(&f, &watreg, stack_convention, cleanup);
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
             let ac = print_c_with(&f, theta);
