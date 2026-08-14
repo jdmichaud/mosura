@@ -1,120 +1,138 @@
-# How to re-measure WAR2 byte-exactness
+# Running the WAR2 recompile tooling
 
-The measurement that asks, per function: **does the C mosura emits, compiled by the original
-toolchain and relinked at the original's address, reproduce the original's bytes?**
+How to drive the three in-repo tools that answer, per function: **does the C mosura emits, compiled
+by the original toolchain and relinked at the original's address, reproduce the original's bytes?**
 
-Everything is in-repo and in-process. Three programs, no shell glue between them — that is
-deliberate, and it is why a re-measure is reproducible (see *Superseded* at the end).
+This is a usage reference. For what the current numbers are, what is broken and what to work on
+next, see [`byte-exact-status.md`](byte-exact-status.md); for why the pipeline is shaped this way,
+[`byte-exact-architecture.md`](byte-exact-architecture.md).
 
 ## Prerequisites
 
 - `dosemu2` working (there is a `dosemu2` skill).
 - Watcom 10.0a at `/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
-- Build the tree you want to measure — the EMIT uses the current decompiler.
-- Put the build target on **local disk**: the project mount is sshfs and ~16x slower.
+- Build the tree you want to measure — the emit uses the current decompiler.
+- Put the build target on **local disk**; the project mount is sshfs and far slower:
   `export CARGO_TARGET_DIR=/data/<you>-target`
 
-## The three stages
+## The three tools
 
 ```sh
-OUT=/data/be2/run1                       # anywhere on local disk; never inside a worktree
+OUT=/data/be2/run1                       # local disk; never inside a worktree
 WAT=/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM
 EX=$CARGO_TARGET_DIR/release/examples
-
-# 1. EMIT — decompile every function, one standalone compilable .c each, plus a manifest.
-#    ~75 s for 3023 functions.
-$EX/war2_survey /home/jd/WAR2.EXE $OUT
-
-# 2. COMPILE + VERIFY — Watcom under dosemu2, symbolic relink, instruction align, byte verdict.
-#    ~8 min cold; seconds when the cache is warm (keyed on source content, so it survives re-emits).
-$EX/recompile_check /home/jd/WAR2.EXE $OUT/manifest.tsv $OUT/src recover $WAT \
-    --cache /data/be2/cache --out $OUT/verdicts.tsv --divergences $OUT/div.tsv
-
-# 3. SELECT (only with --arms) — per function, the rendering that reassembles exactly,
-#    written out as a source tree you can actually recompile.
-$EX/recompile_select a=$OUT/a.tsv:$OUT/src b=$OUT/b.tsv:$OUT/src-b --out sel.tsv --out-src sel-src
 ```
 
-`recover` in stage 2 means "read each function's build flags from its own prologue" rather than
-from a table — the general path, since a second binary has no table.
+### 1. `war2_survey` — emit
+
+```sh
+$EX/war2_survey <war2.exe> <out_dir> [--arms '<θ>;<θ>...'] [--only <va>,...] [--force]
+$EX/war2_survey /home/jd/WAR2.EXE $OUT
+```
+
+Decompiles every function and writes one standalone compilable `.c` each, plus `manifest.tsv`.
+Takes about a minute and a half. Artifacts are stamped with the commit that produced them
+(`src.<stamp>/`, `raw.<stamp>/`, `manifest.<stamp>.tsv`) with the bare names as symlinks; re-emitting
+at the same clean commit refuses unless `--force`.
+
+- `--only <va>[,<va>...]` is a **read-only probe**: it prints the TU for those functions to stdout
+  and writes nothing, so it is safe while a real emit is running.
+- `--arms '<θ>;<θ>...'` emits several renderings in one pass — decompiling is θ-independent and is
+  essentially the whole cost, so extra arms are nearly free. Arm 0 goes to `src/`; each further arm
+  to `src-<tag>/`, where `<tag>` is the vector with `=` replaced by `-`. So
+  `--arms 'default;return-width=storage'` gives `src/` and `src-return-width-storage/`.
+  What may legitimately be an arm is defined in `decompile::emit::EmitChoices`.
+
+### 2. `recompile_check` — compile, relink, verify
+
+```sh
+$EX/recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
+    [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>]
+
+$EX/recompile_check /home/jd/WAR2.EXE $OUT/manifest.tsv $OUT/src recover $WAT \
+    --cache /data/be2/cache --out $OUT/verdicts.tsv --divergences $OUT/div.tsv
+```
+
+Compiles each TU with Watcom under dosemu2, symbolically relinks the object to the original's
+address, aligns the two instruction streams and classifies every difference. About eight minutes
+cold; seconds once the cache is warm — the cache is keyed on source content, so it survives
+re-emits and is worth sharing across runs.
+
+`recover` as `<flags-file>` means "read each function's build flags from its own prologue", which is
+the general path since another binary has no flags table. Pass a file instead to override.
+
+`--only` takes a manifest index, a `0x`-prefixed VA, or a function name; with `--verbose` it prints
+the full aligned instruction diff for those functions, which is the fastest way to see what a single
+function is doing wrong.
+
+### 3. `recompile_select` — pick the winning arm per function
+
+```sh
+$EX/recompile_select <tag>=<verdicts.tsv>:<srcdir> ... [--out <tsv>] [--out-src <dir>]
+
+# run stage 2 once per arm first, then:
+$EX/recompile_select \
+    recovered=$OUT/v-recovered.tsv:$OUT/src \
+    storage=$OUT/v-storage.tsv:$OUT/src-return-width-storage \
+    --out $OUT/selected.tsv --out-src $OUT/selected-src
+```
+
+Only useful with `--arms`. Picks, per function, the first arm that reassembles **exactly**, and with
+`--out-src` materializes the winning sources as a directory you can actually recompile. Arms are
+tried left to right, so put the reference rendering first.
 
 ## Reading the output
 
-Per-function verdict (`--out`): `EXACT` / `SAME_CODE` (same program, different encodings) /
-`SAME_SHAPE` (same computation, different registers or constants) / `MISMATCH` / `COMPILE_FAIL`.
+`--out` is one row per function: `idx va name verdict bytes primary sim classes`, where verdict is
+`EXACT` / `SAME_CODE` (same program, different encodings) / `SAME_SHAPE` (same computation,
+different registers or constants) / `MISMATCH` / `COMPILE_FAIL`.
 
-Per-divergence rows (`--divergences`) are the thing to actually work from — one row per difference,
-with class, both mnemonics, both register sets, stream position, both renderings. Classes:
-`missing` (we compute LESS — a wrong-code bug), `extra`, `regalloc`, `immediate`, `operand-form`,
-`selection`, `branch-target`, `encoding`, and `layout-shift`.
+`--divergences` is one row per individual difference, and is what to work from:
 
-`layout-shift` is **derived** — same instruction, moved because something upstream changed size. It
-never heads a work-list. Filter it out of any census.
+| col | field | col | field |
+| --- | --- | --- | --- |
+| 0 | `idx` | 7 | `cand_n` (candidate stream length) |
+| 1 | `fn_va` | 8 / 9 | `orig_mn` / `cand_mn` (mnemonics) |
+| 2 | `class` | 10 / 11 | `orig_regs` / `cand_regs` (`off:size`) |
+| 3 | `addr` | 12 / 13 | `orig_text` / `cand_text` |
+| 4 / 5 | `oi` / `ci` (stream positions, `-1` if absent) | | |
+| 6 | `orig_n` | | |
 
-## Sizing a fix BEFORE writing it
+Classes: `missing` (the candidate computes LESS — a wrong-code bug), `extra`, `regalloc`,
+`immediate`, `operand-form`, `selection`, `branch-target`, `encoding`, and `layout-shift`.
 
-The only number that predicts anything is: **how many functions would become divergence-FREE if
-this cause were eliminated.** Not "how many functions show this symptom" — that number is always
-large and means nothing.
+**Filter `layout-shift` out of any census.** It is derived — the same instruction, moved because
+something upstream changed size — and it never indicates a cause.
 
-```sh
-# marginal value of a cause, from the divergence table
-python3 - <<'PY'
-import collections
-rows=collections.defaultdict(list)
-for i,l in enumerate(open('div.tsv')):
-    if i and l.split('\t')[2]!='layout-shift': rows[l.split('\t')[0]].append(l.split('\t'))
-solo=[f for f,rs in rows.items() if rs and all(<your predicate>(r) for r in rs)]
-print(len(solo))
-PY
-```
+## Environment knobs
 
-Calibration: `ret-n` marginal value said 13 and the fix delivered 11. The register-parameter
-widening was sized by a grep over our own signatures at 313 and delivered 1 — see the rejected-fix
-note in `byte-exact-status.md`.
+| variable | effect |
+| --- | --- |
+| `MOSURA_PROTO_PASS=1` | whole-program callee prototype recovery before the emit |
+| `MOSURA_ARG_DEBUG=1` | per-call argument trials, with the full CALL input list |
+| `MOSURA_OPACTION=<action>` | rule/action trace; `<action>` or `1` for all |
+| `MOSURA_RAW_IR=1` | post-pipeline IR alongside the C (with `--only`) |
+| `MOSURA_EFFECTS_DEBUG=1` | what prototype was propagated to each call |
 
-## Invariants — do not undo these
-
-- **The reference is the fixup-applied image**, not raw on-disk bytes. `load_le` applies LE fixups;
-  a literal equal to the LOADED value is EXACT at this base, and that is the definition. Comparing
-  against the raw slice made byte-perfect functions score MISMATCH.
-- **Relocations are RESOLVED and verified to the same target, never masked.** Masking would pass a
-  candidate that calls the wrong function. The permissive count (identical only outside relocation
-  sites) is reported separately and is currently 0.
-- **Padding is trimmed semantically, not by byte pattern.** `recompile::trim_padding` drops trailing
-  instructions that are no-ops *however spelled* — Watcom's `8b c0` (`mov eax,eax`) as well as
-  `90`/`cc`/`00`, and `xchg r,r` on other toolchains.
-- **`postlink` is gone and stays gone.** It rewrote `89 ec` out of the compiler's output so bytes
-  would match, making every verdict on a framed function a claim about the patch.
+To find which action changed an op, `awk` for the nearest preceding `DEBUG n: <action>` header above
+the changed op in the `MOSURA_OPACTION` trace.
 
 ## Gotchas that have cost real time
 
-- `--only <va>` is a read-only probe, but with `MOSURA_PROTO_PASS=1` it still runs the whole-program
-  prototype pass first, so `MOSURA_ARG_DEBUG` output covers **every** function. Filter on the call
-  address.
+- `--only` is read-only, but with `MOSURA_PROTO_PASS=1` it still runs the whole-program prototype
+  pass first, so debug output covers **every** function. Filter on the call address.
 - `pgrep -f recompile_check` matches your own wait-loop shell. Use `pgrep -x`.
 - Two runs' manifests may number functions differently. Join on the **VA** column, never on `idx`.
 - A backgrounded `nohup ... &` inside a tool call can be killed at session teardown; use the
   harness's own background mode for anything long.
 
-## Useful knobs
-
-- `--arms 'default;return-width=storage'` — emit several renderings in ONE pass (decompiling is
-  θ-independent and is essentially the whole cost). Arm 0 is the ordinary `src/`; each further arm
-  gets `src-<tag>/`. See `decompile::emit::EmitChoices` for what an emission axis may and may not be.
-- `MOSURA_PROTO_PASS=1` — whole-program callee prototype recovery before the emit.
-- `MOSURA_ARG_DEBUG=1` — per-call argument trials, with the full CALL input list.
-- `MOSURA_OPACTION=<action>` — rule/action trace; `awk` for the `DEBUG n: <action>` header above a
-  changed op to name what changed it.
-
 ## Superseded
 
-Earlier revisions of this document drove an out-of-repo harness in
-`/home/jd/projects/mosura/war2-survey/` (`compile.sh`, `compare.py`, `wardiff`, `postlink.py`) across
-three shell processes. That is replaced by `recompile_check`, which does emit-independent compile,
-relink, align and score in one program — because splitting the stages let the emit, the objects and
-the manifest drift apart, which silently invalidated batteries more than once.
+Earlier revisions drove an out-of-repo harness in `/home/jd/projects/mosura/war2-survey/`
+(`compile.sh`, `compare.py`, `wardiff`, `postlink.py`) across three shell processes.
+`recompile_check` replaced it by doing compile, relink, align and score in one program, because
+splitting the stages let the emit, the objects and the manifest drift apart.
 
-`war2-survey/` remains useful as the historical record and as the store for `ghidra-all.txt`
-(Ghidra's own decompilation of WAR2, used as an oracle). It is no longer the measurement path, and
-its `RELOC_EXACT` verdict no longer exists: relocations are resolved, not masked.
+`war2-survey/` remains the historical record and the store for `ghidra-all.txt` (Ghidra's own
+decompilation of WAR2, used as an oracle). It is no longer the measurement path, and its
+`RELOC_EXACT` verdict no longer exists — relocations are resolved and verified, not masked.
