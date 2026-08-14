@@ -105,9 +105,39 @@ Ghidra passes the previous call's result. mosura emits `func_0x0005a48c(0)`, and
 the `XOR EAX,EAX` that shows up as the `extra` divergence. So this is a port defect with a named
 oracle answer, not a design difference.
 
-**Worth, if fixed.** Not the +28 that the union of the two measured configurations suggests — that
-number bounds *selecting between* two configurations, not what a corrected pass reaches. By the
-per-cause map below, `missing/extra` + `save/args` is ~122 functions.
+**Fixed, and what it was worth.** `check_input_trial_use` runs before `derive_input_map`, and its
+`markNoUse` verdict does not merely mark — it FREES the dataflow, replacing the input slot with a
+constant 0 (fspec.cc:5650-5651). `derive_input_map` then re-marks the trial active, which cannot
+restore a varnode that is now a constant. A trial at storage the callee's recovered prototype names
+is marked Active inside the check now. Measured: pass ON **394 → 422** EXACT, `missing` 1081 → 1019.
+
+The gate has to sit INSIDE the check. Skipping `check_input_trial_use` wholesale also skips the
+marking and the pass counter, so the list commits on pass 0 and arguments vanish — measured, the
+specimen came back as `func_0x0005a48c()` with no argument at all.
+
+## Open thread 1a — the 47 functions the pass still breaks
+
+The pass is still net −10 against the default (422 vs 432); the union of on/off is 469. It breaks 47
+functions that are EXACT with it off, **17 of them by a single divergence**, and those 17 split into
+two opposite defects — which is why a single "the pass over-recovers" story never fit:
+
+**Under-recovery (8).** `missing: MOV EDX,0x4921c` at 0x49298, 0x492bc, 0x492e0 … — consecutive
+near-identical wrappers, each stepping 0x24, each loading the SAME constant into EDX. The original
+passes a second argument and we drop it: the callee's recovered prototype does not include EDX.
+
+**Over-recovery, by WIDTH (5).** `extra: AND EAX,0xff` at 0x15227, 0x15247, 0x15267, 0x15287,
+0x15297 — again consecutive near-identical functions. The caller masks the argument to one byte
+before the call because the recovered parameter is one byte wide; the original passes the whole
+register. `analysis::decompiler` already widens a recovered parameter to its exclusion entry's slot
+width (`width.max(p.size)`) precisely for this — so either that lookup is failing for these, or the
+narrowing is re-introduced after it.
+
+**Over-recovery, plain (4).** `extra: XOR EDX,EDX` / `XOR EAX,EAX` / `XOR EBX,EBX` /
+`MOV EDX,0xfffffffc` — a parameter materialized for a slot the original does not pass.
+
+Both directions being present at once means the recovered prototype is right in kind and wrong in
+extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
+not a global loosening or tightening.
 
 ## Open thread 2 — make the search generative
 
