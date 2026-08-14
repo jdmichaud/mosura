@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
 struct Arm {
     tag: String,
     src: PathBuf,
-    /// idx -> (verdict, va, name)
+    /// **VA** -> (verdict, idx, name). Keyed on the address, never on the manifest index: two
+    /// emits number functions independently, so arm B's `00123` need not be arm A's `00123`. The
+    /// index is carried alongside because it names the arm's own source file.
     rows: BTreeMap<String, (String, String, String)>,
 }
 
@@ -59,8 +61,8 @@ fn main() {
         usage::<()>("give at least one arm");
     }
 
-    // Every function any arm knows about — an arm that failed to emit one is simply absent for it,
-    // which must not silently shrink the denominator.
+    // Every function any arm knows about, by VA — an arm that failed to emit one is simply absent
+    // for it, which must not silently shrink the denominator.
     let mut all: BTreeMap<String, ()> = BTreeMap::new();
     for a in &arms {
         for k in a.rows.keys() {
@@ -76,25 +78,30 @@ fn main() {
     let mut exact = 0usize;
     let mut tsv = String::from("idx\tva\tname\tarm\tverdict\n");
     let mut unresolved: BTreeMap<String, usize> = BTreeMap::new();
-    for idx in all.keys() {
+    // Output filenames follow the FIRST arm's numbering, so the resulting tree lines up with the
+    // manifest a reader would naturally pair it with.
+    let reference = &arms[0];
+    for va in all.keys() {
         // First arm reaching EXACT wins; arms are tried in the order given.
-        let win = arms.iter().find(|a| a.rows.get(idx).is_some_and(|(v, _, _)| v == "EXACT"));
+        let win = arms.iter().find(|a| a.rows.get(va).is_some_and(|(v, _, _)| v == "EXACT"));
         // Nothing reached EXACT: report the leftmost arm that has an opinion at all, so the row
         // still names a verdict to work on rather than vanishing.
-        let fallback = arms.iter().find(|a| a.rows.contains_key(idx));
+        let fallback = arms.iter().find(|a| a.rows.contains_key(va));
         let chosen = win.or(fallback).expect("idx came from some arm");
-        let (verdict, va, name) = chosen.rows.get(idx).cloned().unwrap_or_default();
+        let (verdict, chosen_idx, name) = chosen.rows.get(va).cloned().unwrap_or_default();
+        // The name this function is filed under in the output tree.
+        let out_idx = reference.rows.get(va).map(|(_, i, _)| i.clone()).unwrap_or_else(|| chosen_idx.clone());
         if win.is_some() {
             exact += 1;
             *per_arm_wins.entry(chosen.tag.as_str()).or_default() += 1;
         } else {
             *unresolved.entry(verdict.clone()).or_default() += 1;
         }
-        tsv.push_str(&format!("{idx}\t{va}\t{name}\t{}\t{verdict}\n", chosen.tag));
+        tsv.push_str(&format!("{out_idx}\t{va}\t{name}\t{}\t{verdict}\n", chosen.tag));
         if let Some(d) = &out_src {
-            let from = chosen.src.join(format!("{idx}.c"));
+            let from = chosen.src.join(format!("{chosen_idx}.c"));
             if let Ok(text) = std::fs::read(&from) {
-                std::fs::write(Path::new(d).join(format!("{idx}.c")), text).expect("write selected source");
+                std::fs::write(Path::new(d).join(format!("{out_idx}.c")), text).expect("write selected source");
             }
         }
     }
@@ -142,7 +149,8 @@ fn read_verdicts(path: &str) -> BTreeMap<String, (String, String, String)> {
             if f.len() < 4 || f[0] == "idx" {
                 return None;
             }
-            Some((f[0].to_string(), (f[3].to_string(), f[1].to_string(), f[2].to_string())))
+            // key = VA, value = (verdict, idx, name)
+            Some((f[1].to_string(), (f[3].to_string(), f[0].to_string(), f[2].to_string())))
         })
         .collect()
 }
