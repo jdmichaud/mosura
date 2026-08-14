@@ -647,6 +647,64 @@ fn trace_trash(data: &mut Funcdata, vn: super::varnode::VarnodeId, indlist: &mut
     istrash
 }
 
+/// Ghidra `ActionVarnodeProps` (coreaction.cc:1282, group `base`, slot :5491): a varnode whose
+/// non-zero bits are entirely unconsumed downstream carries no information, so every read of it
+/// becomes a read of the constant 0.
+///
+/// This is NOT `Funcdata::setVarnodeProperties` (funcdata_varnode.cc:25) — the mapped/addrtied/
+/// persist lookup mosura ported as `varnodeprops.rs`'s `ActionMarkAddrTied`. Ghidra's action has
+/// three arms and only the third is portable today; the other two are cited rather than faked:
+///
+/// * **auto-live-hold** (coreaction.cc:1296): clear `auto_live_hold` once a heritage pass has run,
+///   unless the varnode is a LOAD through a constant or read-only pointer. mosura models no
+///   `auto_live_hold` flag. BLOCKED(auto_live_hold).
+/// * **action properties** (coreaction.cc:1318): `fillinReadOnly` substitutes the value straight
+///   out of the load image, and `replaceVolatile` rewrites a volatile access as a CALLOTHER.
+///   mosura has `Funcdata::is_read_only` but no fill-in, and models no volatile varnodes.
+///   BLOCKED(readonly fill-in / volatile model).
+///
+/// The third arm needs only `nzmask` and `consume`, which mosura computes
+/// ([`super::consume::calc_consume`]), so it stands alone.
+pub struct ActionVarnodeProps;
+
+impl Action for ActionVarnodeProps {
+    fn name(&self) -> &str {
+        "varnodeprops"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        let mut count = 0;
+        for vn in (0..data.num_varnodes() as u32).map(super::varnode::VarnodeId) {
+            let v = data.vn(vn);
+            if v.is_annotation() || v.size as usize > std::mem::size_of::<u64>() {
+                continue;
+            }
+            if v.get_nzmask() & v.consume != 0 {
+                continue;
+            }
+            if v.is_constant() {
+                continue; // don't replace a constant
+            }
+            if let Some(def) = v.def {
+                if data.op(def).code() == super::opcode::OpCode::Copy {
+                    // Don't replace a COPY of 0 with a zero — let constant propagation do it, or
+                    // the two rewrite each other forever (Ghidra's infinite-recursion note).
+                    if let Some(in0) = data.op(def).input(0) {
+                        if data.vn(in0).is_constant() && data.vn(in0).constant_value() == 0 {
+                            continue;
+                        }
+                    }
+                }
+            }
+            if data.vn(vn).descend.is_empty() {
+                continue; // `hasNoDescend`: nothing reads it, so there is nothing to replace
+            }
+            data.total_replace_constant(vn, 0);
+            count += 1;
+        }
+        count
+    }
+}
+
 /// Ghidra `ActionStartCleanUp` (coreaction.hh:58, group `cleanup`, slot :5692): mark the start of
 /// the clean-up phase by stamping the varnode creation index.
 ///
@@ -1239,6 +1297,16 @@ pub fn universal_action() -> ActionGroup {
                         // ActionUnreachable (:5490, group `base`) opens Ghidra's mainloop, ahead
                         // of ActionVarnodeProps/ActionHeritage.
                         .then(super::determinedbranch::ActionUnreachable)
+                        // ActionVarnodeProps (:5491, group `base`) belongs at Ghidra's slot right
+                        // here, between ActionUnreachable and ActionHeritage. It is HELD out of the
+                        // pipeline, not missing: wiring it drops the corpus 0.9578 -> 0.9454 and
+                        // 58/60 -> 57/60. The port is faithful and the two obvious explanations
+                        // were checked and ruled out — mosura's `nzm` defaults to `calc_mask(size)`
+                        // and `consume` to `!0`, both matching Ghidra's constructor
+                        // (varnode.cc:586/601). So the zero-consume arm really does fire and really
+                        // does hurt, which by the porting rule means something downstream of it in
+                        // mosura is wrong. Diagnosing that is the follow-up; see docs/coverage.md.
+                        // .then(ActionVarnodeProps)
                         .then(ActionHeritage)
                         // ActionParamDouble (:5493, group `protorecovery`), Ghidra's slot directly
                         // after the mainloop ActionHeritage: a call argument built by a PIECE whose
@@ -1417,6 +1485,57 @@ pub fn decompile(data: &mut Funcdata) {
 
 #[cfg(test)]
 mod tests {
+
+    /// `ActionVarnodeProps`' zero-consume arm: a varnode whose possibly-non-zero bits are entirely
+    /// unconsumed downstream carries no information, so every read becomes a read of constant 0
+    /// (Ghidra coreaction.cc:1327). Held out of the pipeline (see the wiring comment), so tested
+    /// directly.
+    #[test]
+    fn varnode_props_replaces_unconsumed_value_with_zero() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let k = f.new_const(4, 3);
+        let op = f.new_op(OpCode::IntAdd, SeqNum { pc: Address::new(ram, 0), uniq: 0 }, vec![a, k]);
+        let out = f.new_output(op, 4, Address::new(reg, 0x20));
+        let use_op = f.new_op(OpCode::IntAdd, SeqNum { pc: Address::new(ram, 4), uniq: 1 }, vec![out, k]);
+        f.new_output(use_op, 4, Address::new(reg, 0x28));
+        // Nothing downstream consumes any bit of `out`.
+        f.vn_mut(out).consume = 0;
+
+        assert!(ActionVarnodeProps.apply(&mut f) >= 1);
+        let now = f.op(use_op).input(0).expect("the read");
+        assert!(f.vn(now).is_constant() && f.vn(now).constant_value() == 0,
+            "the read is rewritten to constant 0");
+    }
+
+    /// A COPY of the constant 0 is left alone — replacing it would rewrite itself forever
+    /// (Ghidra's explicit infinite-recursion guard, coreaction.cc:1332-1338).
+    #[test]
+    fn varnode_props_leaves_a_copy_of_zero_alone() {
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::op::SeqNum;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+
+        let zero = f.new_const(4, 0);
+        let cop = f.new_op(OpCode::Copy, SeqNum { pc: Address::new(ram, 0), uniq: 0 }, vec![zero]);
+        let out = f.new_output(cop, 4, Address::new(reg, 0x20));
+        let k = f.new_const(4, 3);
+        let use_op = f.new_op(OpCode::IntAdd, SeqNum { pc: Address::new(ram, 4), uniq: 1 }, vec![out, k]);
+        f.new_output(use_op, 4, Address::new(reg, 0x28));
+        f.vn_mut(out).consume = 0;
+
+        ActionVarnodeProps.apply(&mut f);
+        assert_eq!(f.op(use_op).input(0), Some(out), "a COPY of 0 is left for constant propagation");
+    }
 
     /// `ActionStartCleanUp` stamps the varnode creation index at the moment it runs, so the
     /// watermark separates varnodes made before the clean-up phase from those made during it.

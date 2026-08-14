@@ -842,6 +842,52 @@ impl Funcdata {
         }
     }
 
+    /// Ghidra `Funcdata::totalReplaceConstant` (funcdata_varnode.cc:1496): make every read of
+    /// `vn` read the constant `val` instead.
+    ///
+    /// A marker op (MULTIEQUAL/INDIRECT) must not take a constant directly, so those reads go
+    /// through a single shared COPY of the constant — placed after `vn`'s defining op, or at the
+    /// start of the entry block when `vn` is not written.
+    pub fn total_replace_constant(&mut self, vn: VarnodeId, val: u64) {
+        let size = self.vn(vn).size;
+        let mut copyout: Option<VarnodeId> = None;
+        for op in self.vn(vn).descend.clone() {
+            let Some(slot) = self.op(op).inrefs.iter().position(|&v| v == vn) else { continue };
+            let newrep = if self.op(op).is_marker() {
+                match copyout {
+                    Some(v) => v,
+                    None => {
+                        let k = self.new_const(size, val);
+                        let v = match self.vn(vn).def {
+                            Some(def) => {
+                                let pc = self.op(def).seqnum.pc;
+                                let uniq = self.num_ops() as u32;
+                                let cop = self.new_op(OpCode::Copy, SeqNum { pc, uniq }, vec![k]);
+                                let out = self.new_output_unique(cop, size);
+                                self.op_insert_after(cop, def);
+                                out
+                            }
+                            None => {
+                                let bb = super::block::BlockId(0);
+                                let pc = self.addr;
+                                let uniq = self.num_ops() as u32;
+                                let cop = self.new_op(OpCode::Copy, SeqNum { pc, uniq }, vec![k]);
+                                let out = self.new_output_unique(cop, size);
+                                self.op_insert_begin(cop, bb);
+                                out
+                            }
+                        };
+                        copyout = Some(v);
+                        v
+                    }
+                }
+            } else {
+                self.new_const(size, val)
+            };
+            self.op_set_input(op, slot, newrep);
+        }
+    }
+
     /// Ghidra `Funcdata::startCleanUp` (funcdata.hh:186): stamp the varnode creation index at the
     /// start of the clean-up phase.
     pub fn start_clean_up(&mut self) {
