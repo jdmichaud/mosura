@@ -865,7 +865,16 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     // has run is never given a verdict, and an unevaluated trial is dropped from the argument
     // list. The two counts disagreeing is the whole diagnosis for a silently missing argument.
     if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-        eprintln!("[check] call@{:#x} ntrials={ntrials}", f.op(call).seqnum.pc.offset);
+        let seen: Vec<String> = f.active_inputs[&call]
+            .trial
+            .iter()
+            .map(|t| format!("{}+{:#x}/{}", f.spaces.get(t.addr.space).name, t.addr.offset, t.size))
+            .collect();
+        eprintln!(
+            "[check] call@{:#x} ntrials={ntrials} [{}]",
+            f.op(call).seqnum.pc.offset,
+            seen.join(" ")
+        );
     }
     // Each unchecked trial is evaluated, marked and (for `markNoUse`) freed IN-LOOP — Ghidra's
     // sequential semantics (both the marking and the constant-0 free happen inside the trial loop,
@@ -931,6 +940,24 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
             Verdict::Inactive => active.trial[ti].mark_inactive(),
             Verdict::NoUse => active.trial[ti].mark_no_use(),
         }
+    }
+    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        let v: Vec<String> = f.active_inputs[&call]
+            .trial
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}+{:#x}/{}{}{}{}",
+                    f.spaces.get(t.addr.space).name,
+                    t.addr.offset,
+                    t.size,
+                    if t.flags & trial_flags::CHECKED != 0 { "C" } else { "-" },
+                    if t.is_active() { "A" } else { "-" },
+                    if t.is_definitely_not_used() { "D" } else { "-" },
+                )
+            })
+            .collect();
+        eprintln!("[verdict] call@{:#x} [{}]", f.op(call).seqnum.pc.offset, v.join(" "));
     }
     let active = f.active_inputs.get_mut(&call).unwrap();
     active.finish_pass();
@@ -1033,10 +1060,11 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
             .iter()
             .map(|t| {
                 format!(
-                    "{}+{:#x}/{}{}{}{}{}[e{:?}s{}]",
+                    "{}+{:#x}/{}{}{}{}{}{}[e{:?}s{}]",
                     f.spaces.get(t.addr.space).name,
                     t.addr.offset,
                     t.size,
+                    if t.flags & crate::decompile::fspec::trial_flags::CHECKED != 0 { "C" } else { "-" },
                     if t.is_active() { "A" } else { "-" },
                     if t.is_used() { "U" } else { "-" },
                     if t.is_definitely_not_used() { "D" } else { "-" },
