@@ -1534,7 +1534,15 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
         out.extend(custom);
         return out;
     }
-    let any_reg_param = active.trial.iter().any(|t| t.addr.space == reg);
+    // A register trial disqualifies the stack-based reading only when it is ACTIVE -- an input
+    // varnode with actual reads. A present-but-inactive trial is an input varnode NOBODY READS:
+    // heritage's call guards manufacture entry-value varnodes (a passthrough INDIRECT's `before`
+    // at the first call IS the entry value), and a later-deleted chain leaves them floating with
+    // no descend. That is not evidence of a register argument. Measured on WAR2's FUN_0006c6f0
+    // (1,963 B): its two stack arguments read throughout the body, its four register trials all
+    // inactive -- and their mere presence kept this branch from firing, so the prototype came out
+    // `void(void)` with the arguments declared as uninitialized locals (`iStack00000004`).
+    let any_reg_param = active.trial.iter().any(|t| t.addr.space == reg && t.is_active());
     let stack_only = !any_reg_param && active.num_trials() > 0;
     if stack_only {
         let entries: Vec<ParamEntry> = pl.entry.iter().filter(|e| e.space != reg).cloned().collect();

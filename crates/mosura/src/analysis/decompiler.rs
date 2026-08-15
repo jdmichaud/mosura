@@ -136,7 +136,17 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // THIS function's own `modify` list, from a complete walk of its body. Straight-line
             // `callee_effects` cannot supply it — it gives up at the first branch, and a function
             // with a loop is exactly the case that needs it.
-            let cfg = callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true);
+            // For the function's OWN lists the flow-walk is the wrong tool: it bails on the
+            // first BRANCHIND, and a function with a SWITCH has one by construction -- so the
+            // biggest functions, the ones whose `modify` list matters most, got none. Watcom then
+            // had to preserve every scratch register the body uses: WAR2's FUN_0006c6f0 (1,963 B,
+            // a switch) grew three extra saves (`PUSH EBX/ECX/EDX`), shifting every frame offset
+            // in the function. The union-over-instructions the lists want does not need flow at
+            // all: analysis already resolved the switch targets when it computed the RECORDED
+            // BODY, and every instruction in the body contributes its writes and restores
+            // regardless of path. Walk that.
+            let cfg = own_effects_over_body(program, spec, ctx, entry, reg, &f)
+                .or_else(|| callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true));
             f.own_modify = cfg.as_ref().map(|(w, _)| w.clone());
             // Registers the function SAVES AND RESTORES are callee-saved, not arguments. Every
             // prologue does `push ebp`, which READS the incoming EBP — without this the custom
@@ -404,6 +414,79 @@ fn record_callee_effects(
         cs.overwrites = regs;
         cs.reads = Some(reads);
     }
+}
+
+/// The function's own `(writes, restores)` over its RECORDED BODY -- the union over every
+/// instruction analysis placed in the function, switch arms included, which is exactly what the
+/// `modify`/saved lists mean. No flow is followed, so a BRANCHIND cannot end the answer; `None`
+/// only when the body is missing or an instruction fails to decode. Register accounting matches
+/// `callee_writes_cfg`: POPs are restores, other register writes are writes, sub-register writes
+/// normalize to their containing register, stack/frame pointers are the frame rather than
+/// clobbers, and a CALL adds what the convention lets a call destroy.
+fn own_effects_over_body(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: crate::decompile::space::Address,
+    reg: crate::decompile::space::SpaceId,
+    f: &crate::decompile::funcdata::Funcdata,
+) -> Option<(Vec<u64>, Vec<u64>)> {
+    use crate::decompile::opcode::OpCode;
+    use crate::decompile::space::Address;
+    let func = program.function_manager.function_at(entry)?;
+    let body = func.body();
+    if body.is_empty() {
+        return None;
+    }
+    let mut writes: Vec<u64> = Vec::new();
+    let mut restored: Vec<u64> = Vec::new();
+    let mut budget = 4096usize;
+    for r in body.ranges() {
+        let mut pc = r.min;
+        while pc <= r.max {
+            budget = budget.checked_sub(1)?;
+            let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
+            if bytes.is_empty() {
+                return None;
+            }
+            let insn = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
+            if insn.bytes.is_empty() {
+                return None;
+            }
+            let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
+            for o in &insn.ops {
+                if matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call) | Some(OpCode::Callind)) {
+                    for e in f.proto_model.effectlist.iter() {
+                        if e.space == reg
+                            && e.effect == crate::decompile::fspec::effect::KILLEDBYCALL
+                            && !writes.contains(&e.offset)
+                        {
+                            writes.push(e.offset);
+                        }
+                    }
+                }
+                let Some(out) = &o.out else { continue };
+                if out.space != "register" {
+                    continue;
+                }
+                let addr = Address::new(reg, out.offset);
+                if f.spaces.space_by_spacebase(addr, out.size).is_some() {
+                    continue;
+                }
+                let key = if out.size < 4 { out.offset & !3 } else { out.offset };
+                if is_pop {
+                    if !restored.contains(&key) {
+                        restored.push(key);
+                    }
+                } else if !writes.contains(&key) {
+                    writes.push(key);
+                }
+            }
+            pc += insn.bytes.len() as u64;
+        }
+    }
+    writes.retain(|o| !restored.contains(o));
+    Some((writes, restored))
 }
 
 /// The callee's stack-cleanup contract, read from its own return instructions over a walk of its
