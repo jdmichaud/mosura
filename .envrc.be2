@@ -1,2 +1,0 @@
-# be2 worktree environment. Source this before any cargo/measure command.
-export CARGO_TARGET_DIR=/data/be2-target

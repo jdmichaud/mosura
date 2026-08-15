@@ -6,22 +6,32 @@
 
 ## The measurement
 
-**514 of 2948 compilable functions are byte-exact** from a single default configuration, and
-**539** if the prototype-pass arm is selected per function (verified by recompiling the materialized
-tree, not by joining verdict files).
+**539 of 3023 emitted functions are byte-exact** from a single default configuration, and
+**557** if the prototype-pass arm is also selected per function (verified by recompiling the
+materialized tree, not by joining verdict files).
 
-| step | EXACT |
+The default configuration is the one that matters: it is a single decompile pass, so it is
+what `war2_survey <exe> <out>` produces with no environment set. The arm requires a second
+decompile of every function and a second compile round, and buys 18 functions.
+
+| step (default configuration) | EXACT |
 | --- | --- |
 | baseline, re-measured | 421 |
 | callee stack-cleanup recovery (`recompile::convention`) | 432 |
 | recovered callee prototype treated as fact, not candidate | 433 |
 | **call arguments the chain rule was discarding** | **514** |
-| + prototype-pass arm, selected per function | 539 |
-| **range offset canonicalized to its space** (default config) | **539** |
-| + prototype-pass arm, selected per function | **557** |
+| stack-pointer offset recorded at the CALL op | 536 |
+| **range offset canonicalized to its space** | **539** |
 
-Current standing: **539** in the default single-pass configuration, **557** with the
-prototype-pass arm unioned in. The prototype pass alone measures 501.
+| configuration | EXACT |
+| --- | --- |
+| default, single pass | **539** |
+| prototype pass alone (`MOSURA_PROTO_PASS=1`) | 501 |
+| both, best-of per function (`recompile_select`) | **557** |
+
+The prototype pass alone is still 38 behind the default. Against the default it wins 18
+functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm
+and with it the doubled decompile and compile.
 
 ### One address per location
 
