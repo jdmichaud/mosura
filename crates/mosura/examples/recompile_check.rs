@@ -33,7 +33,7 @@ fn main() {
     if a.len() < 5 {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
-             [--only ids] [--cache dir] [--verbose] [--out tsv] [--divergences tsv]"
+             [--only ids] [--cache dir] [--verbose] [--include-library] [--out tsv] [--divergences tsv]"
         );
         std::process::exit(2);
     }
@@ -41,6 +41,7 @@ fn main() {
     let mut only: Vec<String> = Vec::new();
     let mut cache_dir = std::env::temp_dir().join("mosura-recompile-cache");
     let mut verbose = false;
+    let mut include_library = false;
     let mut out_path: Option<String> = None;
     let mut div_path: Option<String> = None;
     let mut i = 5;
@@ -55,6 +56,7 @@ fn main() {
                 cache_dir = std::path::PathBuf::from(&a[i]);
             }
             "--verbose" => verbose = true,
+            "--include-library" => include_library = true,
             "--out" => {
                 i += 1;
                 out_path = Some(a[i].clone());
@@ -87,8 +89,20 @@ fn main() {
 
     // Select the functions to check, then compile them all in one pass so a whole-corpus run is
     // one batched sweep rather than three thousand emulator sessions.
+    // Library code is EXCLUDED by default. `memset`, `printf` and the CRT startup are reproduced
+    // by linking the Watcom libraries, not by decompiling them, so counting them measures the
+    // toolchain rather than the port. Measured on WAR2: 5 of 131 library functions are byte-exact
+    // (3.8%) against 534 of 2892 of the subject's own (18.5%), so excluding them RAISES the ratio.
+    // They were dragging it down, not flattering it. `--include-library` restores them for anyone
+    // measuring the identification itself.
+    //
+    // An explicit `--only` overrides the exclusion: naming a function is a request for it, and
+    // silently returning nothing would look like a broken filter.
+    let excluded: Vec<&Row> =
+        rows.iter().filter(|r| !include_library && only.is_empty() && r.kind == "library").collect();
     let selected: Vec<&Row> = rows
         .iter()
+        .filter(|r| include_library || !only.is_empty() || r.kind != "library")
         .filter(|r| {
             only.is_empty()
                 || only.iter().any(|o| {
@@ -249,6 +263,13 @@ fn main() {
     eprintln!("{identical:6}  identical (relocations resolved AND matching)");
     eprintln!("{reloc_only:6}  identical outside relocation sites, but a site disagrees");
     eprintln!("{:6}  TOTAL byte-clean under the permissive reading", identical + reloc_only);
+    if !excluded.is_empty() {
+        eprintln!(
+            "\n{:6}  library functions excluded (identified by signature matching; \
+             --include-library to measure them)",
+            excluded.len()
+        );
+    }
     eprintln!("\n=== verdicts ===");
     for (k, v) in &census {
         eprintln!("{v:6}  {k}");
@@ -285,6 +306,10 @@ struct Row {
     va: u64,
     name: String,
     len: usize,
+    /// `user` or `library`, from the manifest's `kind` column. Manifests emitted before that
+    /// column existed have no opinion, and are read as `user` so an old file still measures
+    /// everything it used to rather than silently losing rows.
+    kind: String,
 }
 
 fn read_manifest(path: &str) -> Vec<Row> {
@@ -301,6 +326,7 @@ fn read_manifest(path: &str) -> Vec<Row> {
                 va: u64::from_str_radix(f[1], 16).ok()?,
                 name: f[2].to_string(),
                 len: f[4].parse().ok()?,
+                kind: f.get(12).unwrap_or(&"user").to_string(),
             })
         })
         .collect()

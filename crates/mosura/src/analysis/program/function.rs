@@ -26,6 +26,35 @@ impl Function {
     pub fn body(&self) -> &AddressSet {
         &self.body
     }
+
+    /// Whether this function still carries the placeholder name analysis generates for an
+    /// unrecognised entry (`FUN_00012345`, `analysis::decompiler`).
+    ///
+    /// This is the program's own record of "nothing identified this function". Anything else --
+    /// a FID signature match, a symbol the loader supplied -- replaces the placeholder, so the
+    /// inverse ([`is_identified`](Self::is_identified)) means some evidence named it.
+    pub fn has_default_name(&self) -> bool {
+        Function::name_is_default(&self.name)
+    }
+
+    /// [`has_default_name`](Self::has_default_name) for a bare name, so a caller holding only a
+    /// string (FID decides whether to rename before it has a `Function` in hand) asks the same
+    /// question of the same definition.
+    pub fn name_is_default(name: &str) -> bool {
+        name.strip_prefix("FUN_")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// Whether something identified this function.
+    ///
+    /// On a stripped binary the only thing that names a function is signature matching against a
+    /// known library, so this is also the answer to "is this library code rather than the
+    /// subject's own?" -- which is what decides whether a function belongs in a recompilation
+    /// denominator. Library code is reproduced by LINKING the library, not by decompiling it, so
+    /// counting it would measure the toolchain rather than the port.
+    pub fn is_identified(&self) -> bool {
+        !self.has_default_name()
+    }
 }
 
 /// The program's functions (Ghidra `FunctionManager`).
@@ -123,5 +152,31 @@ mod tests {
         let names: Vec<_> = fns.iter().map(|f| f.name()).collect();
         assert_eq!(names, vec!["add", "main"]);
         assert_eq!(fm.function_count(), 2);
+    }
+
+    /// The placeholder analysis generates for an unrecognised entry.
+    #[test]
+    fn the_generated_placeholder_is_a_default_name() {
+        assert!(Function::name_is_default("FUN_00023514"));
+        assert!(Function::name_is_default("FUN_0"));
+    }
+
+    /// Anything that replaced the placeholder identified the function. On a stripped image that
+    /// is signature matching, which is what lets the recompile tooling separate the subject's own
+    /// code from the toolchain's.
+    #[test]
+    fn an_identified_function_is_not_default_named() {
+        for n in ["memset_", "sprintf_", "_dos_findfirst_", "entry", "__sigfpe_handler_"] {
+            assert!(!Function::name_is_default(n), "{n} should read as identified");
+        }
+    }
+
+    /// The prefix alone is not the format: a name that merely STARTS like the placeholder but
+    /// carries anything non-hex was chosen by something, and must not be mistaken for unnamed.
+    #[test]
+    fn the_prefix_alone_does_not_make_a_default_name() {
+        assert!(!Function::name_is_default("FUN_"));
+        assert!(!Function::name_is_default("FUN_main"));
+        assert!(!Function::name_is_default("FUNCTION_00023514"));
     }
 }

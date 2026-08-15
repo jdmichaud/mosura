@@ -171,10 +171,12 @@ pub fn hash_function(program: &Program, entry: Address) -> Option<FidHashQuad> {
 }
 
 /// Ghidra's default function name (`SymbolUtilities.getDefaultFunctionName`).
+/// One definition of "still unidentified", shared with the recompile tooling, which asks the
+/// same question to decide what belongs in its denominator. Two copies of the placeholder-name
+/// format would drift the moment the generator changed.
+use crate::analysis::program::function::Function as ProgramFunction;
 fn is_default_name(name: &str) -> bool {
-    name.strip_prefix("FUN_").is_some_and(|rest| {
-        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_hexdigit())
-    })
+    ProgramFunction::name_is_default(name)
 }
 
 /// The name FID decided for each function, and the matches behind it.

@@ -114,6 +114,28 @@ typedef unsigned char bool;
 /// The commit that produced an emit: `<short-sha>` or `<short-sha>-dirty`. Falls back to
 /// `nogit` only if git is unavailable — an unstamped artifact is still marked as unstamped
 /// rather than silently claiming to be reproducible.
+/// Whether a function is the subject's own code or the toolchain's.
+///
+/// A recompilation denominator must not count library code. `memset`, `printf` and the CRT
+/// startup are reproduced by LINKING the Watcom libraries, not by decompiling them, so counting
+/// them measures the toolchain rather than the port -- and their verdicts are not the port's to
+/// claim either way. Measured on WAR2: 5 of 131 library functions are byte-exact (3.8%) against
+/// 534 of 2892 of the subject's own (18.5%), so excluding them RAISES the ratio -- they were
+/// dragging it down, not flattering it, which is the opposite of what was assumed here first.
+///
+/// The classification is the program's own: analysis names an unrecognised entry `FUN_<addr>`,
+/// and on a stripped image the only thing that replaces that placeholder is FID matching the
+/// function against a known library. So "was it identified" IS "is it library code" here, and it
+/// is asked through [`Function::name_is_default`] so this file does not carry a second copy of
+/// the placeholder format.
+fn kind_of(name: &str) -> &'static str {
+    if mosura::analysis::program::function::Function::name_is_default(name) {
+        "user"
+    } else {
+        "library"
+    }
+}
+
 /// The subject's language. WAR2 is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
 
@@ -538,7 +560,7 @@ fn main() {
     writeln!(mf, "# war2_survey emit @ {stamp}").unwrap();
     writeln!(
         mf,
-        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached"
+        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind"
     )
     .unwrap();
 
@@ -571,7 +593,7 @@ fn main() {
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
             let head = head.replace(['\t', '\n'], " ");
             let head: String = head.chars().take(120).collect();
-            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0").unwrap();
+            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0\t{}", kind_of(name)).unwrap();
             continue;
         };
         ok += 1;
@@ -796,8 +818,9 @@ fn main() {
         let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(
             mf,
-            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}",
+            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}",
             smells.join(","),
+            kind_of(name),
         )
         .unwrap();
 
