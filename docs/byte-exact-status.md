@@ -25,9 +25,14 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **539** |
-| prototype pass alone (`MOSURA_PROTO_PASS=1`) | 501 |
-| both, best-of per function (`recompile_select`) | **557** |
+| default, single pass | **564** |
+| prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
+| both, best-of per function (`recompile_select`) | **591** |
+
+(The default's 539 -> 564 is the function-extent fix -- a measurement correction, recorded in
+its own commit. The pass's 501 -> 560 and the union's 557 -> 591 are this thread: the anchored
+placeholder (`19d8060`), the locked-with-varargs prototype port (`b6c7d31`), and recovered
+per-call extrapop (`d854c22`). The pass is 4 functions behind the default, from 63 behind.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm
