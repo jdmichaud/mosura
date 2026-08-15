@@ -995,6 +995,19 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
         .map(|r| recovered_input_list(r));
     let committed = recovered.is_some();
     let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
+    // What the convention's own list would have marked used, computed before the mutable borrow.
+    // Used below to keep propagation monotone.
+    let model_used: Option<std::collections::HashSet<(Address, u32)>> = if committed {
+        f.proto_model.input.clone().and_then(|m| {
+            f.active_inputs.get(&call).map(|a| {
+                let mut probe = a.clone();
+                m.fillin_map(&mut probe);
+                probe.trial.iter().filter(|t| t.is_used()).map(|t| (t.addr, t.size)).collect()
+            })
+        })
+    } else {
+        None
+    };
     let Some(active) = f.active_inputs.get_mut(&call) else { return };
     // A recovered list is the CALLEE'S OWN prototype, so its entries are not candidates to be
     // tested — they are facts. Ghidra reaches the same place from the other side: when a call spec
@@ -1016,6 +1029,31 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
         }
     }
     input.fillin_map(active);
+
+    // MONOTONE: a propagated prototype may ADD arguments, never remove them.
+    //
+    // The callee's body is authoritative about the parameters it USES and blind to the ones it
+    // merely RECEIVES — a parameter the callee ignores leaves no trace in it, at any number of
+    // propagation rounds, while the call site shows it plainly because the caller still has to
+    // place the value. So a recovered list that is NARROWER than the convention's is missing
+    // evidence rather than correcting it.
+    //
+    // Measured over the 104 WAR2 functions whose verdict propagation changes: of the 26 it fixes,
+    // 25 gain arguments; of the 78 it breaks, 43 LOSE arguments while only one of the wins does.
+    // "Propagation removed an argument" is thus an almost perfect predictor of a regression.
+    //
+    // The model-derived result is computed on a clone and unioned in by storage, not by index —
+    // `fillin_map` synthesizes hole trials, so the two containers need not agree in length or
+    // order and zipping them would silently pair the wrong trials.
+    if committed {
+        if let Some(model_used) = model_used {
+            for t in active.trial.iter_mut() {
+                if !t.is_used() && model_used.contains(&(t.addr, t.size)) {
+                    t.mark_used();
+                }
+            }
+        }
+    }
 }
 
 /// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685): rebuild the CALL's input list from
