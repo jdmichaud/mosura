@@ -1108,6 +1108,15 @@ pub struct CallSpec {
     /// Ghidra `FuncCallSpecs::stackPlaceholderSlot` (fspec.hh:1652): which CALL input slot holds the
     /// artificial stack-pointer tracker. `None` is Ghidra's `-1` (unused/released).
     pub stack_placeholder_slot: Option<usize>,
+    /// Whether [`reads`](Self::reads) came from the callee's own DECOMPILE (the whole-program
+    /// prototype pass) rather than from the straight-line scan. The two are different grades of
+    /// evidence and one consumer must tell them apart: the stack-placeholder anchor
+    /// ([`create_placeholder`]) corrects the placeholder's binding only where a recovered
+    /// prototype will consume the resolved offset, because there the prototype itself caps the
+    /// argument list and a spurious saved-slot trial stays unused. Scan-grade reads get the
+    /// historical geometry, whose non-resolving placeholder is what the measured baseline is
+    /// built on.
+    pub reads_recovered: bool,
     /// Registers this callee OVERWRITES that the default convention calls `<unaffected>` —
     /// recovered from the callee's own body, per call site.
     ///
@@ -1648,13 +1657,79 @@ fn clear_stack_placeholder_slot(f: &mut Funcdata, call: OpId) {
     }
 }
 
+/// The extrapop INDIRECT `ActionExtraPopSetup` planted for `call`, if one exists: the nearest op
+/// before `call` in its block, at the call's own address, that is an INDIRECT guarded by this call
+/// and defines the stack-pointer spacebase register. `None` when extrapop modelling did not cover
+/// this call.
+fn extrapop_indirect_before(f: &Funcdata, call: OpId) -> Option<OpId> {
+    let block = f.op(call).parent?;
+    let ops = f.block(block).ops.clone();
+    let pos = ops.iter().position(|&o| o == call)?;
+    let pc = f.op(call).seqnum.pc;
+    // The spacebase register (ESP) this function's stack space is based on.
+    let stack = f.spaces.by_name("stack")?;
+    let &(sb_addr, sb_size) = f.spaces.get(stack).spacebase.first()?;
+    for i in (0..pos).rev() {
+        let op = ops[i];
+        if f.op(op).seqnum.pc != pc {
+            break; // left the call instruction's op cluster
+        }
+        if f.op(op).code() == super::opcode::OpCode::Indirect
+            && f.op(op).guarded_op() == Some(call)
+            && f.op(op).output.is_some_and(|o| f.vn(o).loc == sb_addr && f.vn(o).size == sb_size)
+        {
+            return Some(op);
+        }
+    }
+    None
+}
+
 /// Ghidra `FuncCallSpecs::createPlaceholder` (fspec.cc:4849): hang the artificial stack-pointer
 /// tracker off `call` as an extra input — a 1-byte LOAD from offset 0 of `spacebase`, built off a
 /// FREE spacebase-register reference so heritage resolves it to the value reaching this call site.
 pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
     let slot = f.op(call).num_inputs();
+    // The placeholder must bind the stack pointer BEFORE the call's extrapop INDIRECT, when
+    // `ActionExtraPopSetup` has planted one (extrapop unknown -- watcall). Both are manufactured
+    // ops inserted directly before the CALL, so whichever is created later sits closer to the call;
+    // the INDIRECT is created first (pipeline setup), the placeholder after (and again on every
+    // re-open round), so the placeholder's free stack-pointer read renames to the INDIRECT's
+    // OUTPUT -- the post-call value the stack solver later resolves. The offset convention here
+    // (`resolve_spacebase_relative`: pre-push binding, corrected by the return-address slot) was
+    // derived on a graph with NO such INDIRECT, so a post-call binding records the offset one or
+    // more slots high, every caller stack range translates below the parameter area, and the
+    // trailing stack argument is silently dropped.
+    //
+    // Measured on WAR2's `FUN_00023514` under the prototype pass: with the INDIRECT present the
+    // placeholder resolved off=-16 and recorded -20 (truth: -24); its 5th argument `PUSH 9`
+    // vanished from the emitted call. Anchoring the placeholder before the INDIRECT restores the
+    // same binding the no-INDIRECT graph produces, making the recorded offset invariant to whether
+    // extrapop modelling covered the call -- which is what lets the recovered-prototype
+    // configuration coexist with the placeholder machinery.
+    //
+    // Ghidra's geometry differs and is internally consistent the other way: its placeholder also
+    // reads through the INDIRECT, but its stackoffset semantics are defined relative to that same
+    // graph. mosura's binding rule already deviates (the placeholder is not ordered against the
+    // call instruction's own push -- see `resolve_spacebase_relative`), and this keeps that
+    // documented deviation SELF-consistent rather than coverage-dependent.
+    // The corrected binding applies exactly where Ghidra's locked-prototype branch would need a
+    // stack offset: a recovered prototype that NAMES STACK STORAGE (funcLinkInput's "Param is
+    // stack relative" arm, coreaction.cc:1498). A register-only callee's arguments never touch
+    // the stack, so resolving the offset at its calls buys nothing -- and it costs: resolution
+    // enables stack-range trials at the call, and the caller's own saved-register slots translate
+    // into the parameter window and survive realism (they are written, and they trace to real
+    // inputs). Measured on WAR2's FUN_0001fdbc under the prototype pass: with the anchor applied
+    // at its 63 register-only memset calls, 59 of them grew phantom stack arguments from the
+    // caller's save slots, EXACT -> 0.522.
+    let stack_param = f.call_specs.get(&call).is_some_and(|c| {
+        c.reads_recovered
+            && c.reads.as_ref().is_some_and(|r| {
+                r.iter().any(|(a, _)| f.spaces.get(a.space).kind == super::space::SpaceKind::Spacebase)
+            })
+    });
+    let anchor = if stack_param { extrapop_indirect_before(f, call).unwrap_or(call) } else { call };
     // Ghidra passes `(Varnode *)0` for the stack reference and `false` for insertafter.
-    let Some(loadval) = f.op_stack_load(spacebase, 0, 1, call, None, false) else { return };
+    let Some(loadval) = f.op_stack_load(spacebase, 0, 1, anchor, None, false) else { return };
     f.op_append_input(call, loadval); // Ghidra `opInsertInput(op,loadval,slot)` with slot == numInput
     set_stack_placeholder_slot(f, call, slot);
     f.vn_mut(loadval).set_spacebase_placeholder();
