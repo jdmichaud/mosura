@@ -1008,6 +1008,7 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     } else {
         None
     };
+    let call_pc = f.op(call).seqnum.pc.offset;
     let Some(active) = f.active_inputs.get_mut(&call) else { return };
     // A recovered list is the CALLEE'S OWN prototype, so its entries are not candidates to be
     // tested — they are facts. Ghidra reaches the same place from the other side: when a call spec
@@ -1029,6 +1030,33 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
         }
     }
     input.fillin_map(active);
+
+    // INSTRUMENT (`MOSURA_MONO=1`): what propagation did to this call's trials. Prints the trial
+    // container AFTER the recovered list was applied, alongside the set the convention's own list
+    // would have marked used, so a demotion (used by the model, unused here) is visible directly.
+    if std::env::var("MOSURA_MONO").is_ok() {
+        let show: Vec<String> = active
+            .trial
+            .iter()
+            .map(|t| {
+                let m = model_used.as_ref().is_some_and(|s| s.contains(&(t.addr, t.size)));
+                format!(
+                    "sp{:?}+{:#x}/{}{}{}",
+                    t.addr.space,
+                    t.addr.offset,
+                    t.size,
+                    if t.is_used() { "=used" } else { "=UNUSED" },
+                    if m { ",model" } else { "" }
+                )
+            })
+            .collect();
+        eprintln!(
+            "[mono] call@{call_pc:#x} committed={committed} recovered_entries={} model_used={} trials=[{}]",
+            input.entry.len(),
+            model_used.as_ref().map_or(0, |s| s.len()),
+            show.join(" ")
+        );
+    }
 
     // MONOTONE: a propagated prototype may ADD arguments, never remove them.
     //

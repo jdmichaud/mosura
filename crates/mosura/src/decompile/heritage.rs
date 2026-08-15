@@ -1322,6 +1322,19 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
         .filter(|&op| matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
         .collect();
+    // An offset only names a location modulo its space's size, and the SAME stack slot reaches
+    // here spelled two ways: once canonical (`0xffffffec`) and once sign-extended to 64 bits
+    // (`0xffffffffffffffe8`), because the offsets are computed with wrapping arithmetic on `u64`
+    // and only some paths mask afterwards. Two spellings are two `Address`es, so the trial created
+    // under one never matches the varnode under the other and the argument is silently dropped at
+    // commit — measured on WAR2's FUN_00023514, whose fifth (stack) argument flickers in and out of
+    // the trial container across rounds and is absent from the final one.
+    //
+    // Canonicalizing here rather than at each use is what makes the property hold: `addr`, the
+    // spacebase translation below, and every trial built from them then share one spelling by
+    // construction. This is a property of address spaces, not of x86 — any space narrower than 64
+    // bits (a 16-bit segment, a 20-bit harvard code space) has the same two-spellings hazard.
+    let off = f.spaces.get(spc).wrap_offset(off);
     let addr = super::space::Address::new(spc, off);
     for call in calls {
         // Skip a call whose own output already IS this range (Ghidra heritage.cc:1453 isAssignment).
