@@ -44,35 +44,53 @@ formed (`c38ce6a`) is worth +3 on the default configuration and, more importantl
 whole class of silent mismatch that is not x86-specific -- any space narrower than 64 bits
 has it.
 
-### Open thread 3 -- a trailing stack trial is never created
+### CLOSED: open thread 3 -- the trailing stack trial (60 -> 38 pass losses, `19d8060`)
 
-Of the 56 functions the prototype pass still breaks, 35 are a SINGLE divergence and 22 of
-those are one `missing PUSH <const>`: the pass drops the last stack argument. Specimen
-`FUN_00023514` (`sb2/src/00579.c`), which the default renders exactly as
-`func_0x000234b0(param_1, 10, 0x10, 4, 9)` and the pass truncates to four arguments.
+The dropped trailing stack argument was not a fillin problem. The chain: the prototype pass's
+call_specs entries opt calls in to `ActionExtraPopSetup` (which iterates `call_specs.keys()`
+where Ghidra walks ALL calls); watcall's unknown extrapop plants an ESP INDIRECT before the
+CALL; the stack placeholder, inserted after it, binds the INDIRECT's post-call OUTPUT; the
+recorded stack offset comes out one slot high; the real argument translates below the
+parameter area and no trial is ever registered. `FUN_00023514` recorded -20 where the truth
+is -24, and `PUSH 9` vanished.
 
-`MOSURA_MONO=1` shows the final round as `committed=true recovered_entries=5 model_used=4`
-with only FOUR trials in the container. So the callee's recovered prototype DOES name five
-parameters -- there is simply no trial object for the fifth, and `fillin_map` can only mark
-trials that exist. The monotone rule (`145853b`) cannot help for the same reason: it promotes
-existing trials.
+Fixed by anchoring the placeholder BEFORE the call's extrapop INDIRECT -- gated to calls whose
+RECOVERED prototype names stack storage (Ghidra's own locked-prototype condition,
+coreaction.cc:1498). The gate is load-bearing twice over; both arms were measured before the
+gate existed:
 
-`buildTrialMap` synthesizes hole trials only for holes that PRECEDE a used group, which is
-faithful to Ghidra -- there, the trailing trial exists because heritage created it from the
-real stack varnode. So the defect is upstream in heritage: `MOSURA_STACKARG=1` shows the
-correct offer being made (`trans=0x0`) while the trials that reach the container sit at
-`stack+0x4` and `stack+0x14`. Why the offered slot is not the one registered is the next
-question, and it is worth 22 functions on the pass configuration.
+* ungated, the default configuration lost 2 functions (`FUN_000121e8`, `FUN_000485a0`);
+* anchored at register-only callees, `FUN_0001fdbc`'s 63 memset calls grew phantom stack
+  arguments from the caller's own save slots (EXACT -> 0.522).
 
-**Rejected: competing `stackoffset` writes.** `MOSURA_STACKARG=1` shows the same call
-resolving `sp_off` as both -24 and -20, one stack slot apart, which looked like successive
-analysis rounds overwriting `FuncCallSpecs::stackoffset` and stranding trials registered
-under the earlier value. Making the field single-valued (first write wins, conflicts logged)
-measured 539/501 -- IDENTICAL to the plain assignment -- and instrumenting the conflict path
-showed it firing **zero** times over the whole corpus. `stackoffset` is written exactly once
-per `Funcdata`; the two values come from the two separate decompile invocations the prototype
-pass performs, not from rounds competing within one analysis. Reverted. The offer/registration
-mismatch is real, but its cause is elsewhere.
+Standing after: pass 544 (from 522), losses vs default 38 (from 60), union 582, default emit
+byte-identical.
+
+### Open thread 4 -- phantom saved-slot trials wherever the offset resolves
+
+The remaining barrier to resolving stack offsets at EVERY call (as Ghidra does): once the
+offset is known, the caller's own saved-register slots (`PUSH EDX ; PUSH EBP` prologue saves)
+translate into the callee's parameter window and become trials. They survive realism -- the
+slot IS written, and the value DOES trace to a real input -- and `is_saved_slot`'s
+`own_saved` veto is inert exactly where it is needed, because `callee_writes_cfg` bails on
+any function containing calls, and a function with no calls needs no veto. The emitted
+symptom is unmistakable: calls grow arguments that are the caller's own saved registers plus
+return-address-shaped constants (`func_0x...(.., param_1, 0x1fe19)`).
+
+A robust `own_saved` (prologue/epilogue save-restore pairing that does not require walking
+through calls) would close it, and with it the anchor's gate could widen toward Ghidra's
+uniform coverage. 38 pass losses and the 2 known default-config hazards are the measured
+stake.
+
+### The single-shot ceiling is Ghidra-parity, measured against the oracle
+
+Asked about `FUN_0001fdbc` with the callee present but unanalyzed (raw import, both functions
+created), Ghidra emits `FUN_00050480()` -- ZERO arguments on all 63 calls. The default
+single-pass keeps 62 of 63. Argument recovery for calls to known functions is, in Ghidra,
+fed by the DATABASE (`ActionDefaultParams` copies the callee's prototype); mosura's
+whole-program prototype pass is the port of that database, and under it `FUN_0001fdbc` and
+`FUN_00023514` are both EXACT. The pass is the faithful configuration; its remaining 38
+losses are the work-list.
 
 ### Unrelated pre-existing failure
 
