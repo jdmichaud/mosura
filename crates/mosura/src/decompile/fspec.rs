@@ -1680,8 +1680,31 @@ pub fn resolve_spacebase_relative(f: &mut Funcdata, call: OpId, phvn: VarnodeId)
     // Ghidra warns "This function may have set the stack pointer" when the resolved reference is not
     // in a spacebase space; mosura models no warning header, so the diagnostic is dropped (the
     // offset is still recorded, exactly as Ghidra does after warning).
-    f.call_specs.entry(call).or_default().stackoffset = Some(loc.offset);
-    ph_log("resolve", call, &format!("off={:#x}", loc.offset));
+    // Ghidra's `stackoffset` is the stack pointer AT THE CALL OP. On x86 the call instruction
+    // pushes its own return address first — the p-code is `INT_SUB ESP,4 ; STORE ; CALL` — so the
+    // value Ghidra records already includes that push, and a stack argument then translates into
+    // the callee's frame at the convention's stack `<pentry>` offset (`+4` for `__watcall`, i.e.
+    // just past the return address).
+    //
+    // mosura's placeholder binds its free spacebase reference to the PRE-push stack pointer: the
+    // manufactured ops take the CALL's own `SeqNum`, so they are not ordered against the same
+    // instruction's `INT_SUB`. Every stack range therefore translated one slot too high and matched
+    // no entry, so no stack argument was ever registered as a trial.
+    //
+    // Worked example, `FUN_000190bc`. Its prologue pushes EBX, ECX, EDX, EBP and then the argument
+    // `PUSH 0x2c8c4`, so the stack pointer at the call is -24 and the argument sits at -20. We
+    // recorded -20, translating the argument to +0 — below the parameter area — and dropped it.
+    // Ghidra, asked about the same function, emits `FUN_0004245c(0x2c8c4)`.
+    //
+    // Correcting the recorded offset by the return address restores Ghidra's semantics for every
+    // consumer at once, rather than each of them compensating. The size comes from the space's own
+    // address size, not from the `stackshift` cspec attribute — Ghidra parses that attribute and
+    // deliberately ignores it ("Allow this attribute for backward compatibility", fspec.cc:2580),
+    // so keying on it would diverge from the reference.
+    let return_address = f.spaces.get(loc.space).addr_size as u64;
+    let at_call_op = loc.offset.wrapping_sub(return_address);
+    f.call_specs.entry(call).or_default().stackoffset = Some(at_call_op);
+    ph_log("resolve", call, &format!("off={:#x} at_call_op={at_call_op:#x}", loc.offset));
 
     if let Some(slot) = f.call_specs.get(&call).and_then(|c| c.stack_placeholder_slot) {
         if f.op(call).input(slot) == Some(phvn) {
