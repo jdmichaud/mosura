@@ -611,9 +611,18 @@ impl ParamList {
                     let t = &active.trial[i];
                     (t.addr, t.size, t.entry.unwrap(), t.is_unref())
                 };
-                // Ghidra restricts this to stack (IPTR_SPACEBASE) params; only reached during
-                // sub-call recovery, which isn't wired yet (is_recover_subcall == false here).
-                if is_unref && is_subcall {
+                // Ghidra sets `seenchain` from an unref trial ONLY for a STACK location — the inner
+                // `if (trial.getAddress().getSpace()->getType() == IPTR_SPACEBASE)`. The reasoning is
+                // specific to the stack: an unreferenced REGISTER may be an input the caller passes
+                // straight through, whereas a stack slot cannot, since caller and callee stack
+                // offsets differ. Entries live in the register space or on the stack, so "not the
+                // register space" is that test.
+                //
+                // Without it, one synthesized REGISTER hole set `seenchain` at the first trial and
+                // every later trial in the section was marked inactive regardless of chain length,
+                // which discarded real arguments — `FUN_00033370`'s `MOV EBX,0x8ce58` among them.
+                let on_stack = Some(addr.space) != active.reg_space;
+                if is_unref && is_subcall && on_stack {
                     seenchain = true;
                 }
                 let slotgroup = self.entry[ei].get_slot(addr, size - 1) as i64;

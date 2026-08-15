@@ -1406,8 +1406,8 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // range ever reaches the trial branch is a measurement, not a guess.
             if std::env::var("MOSURA_STACKARG").is_ok() {
                 eprintln!(
-                    "STACKARG call={} range={:#x}+{} sp_off={:?} trans={:#x} tryregister={tryregister}",
-                    call.0, off, size,
+                    "STACKARG call@{:#x} (op {}) range={:#x}+{} sp_off={:?} trans={:#x} tryregister={tryregister}",
+                    f.op(call).seqnum.pc.offset, call.0, off, size,
                     super::fspec::spacebase_offset(f, call), trans_off
                 );
             }
@@ -1450,9 +1450,22 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 if !src.is_input() || Some(src.loc.space) != f.spaces.by_name("register") {
                     return false;
                 }
-                // Only a register the convention preserves — a killedbycall register in a stack
-                // slot is a genuine spill, not a save.
-                if f.proto_model.has_effect(src.loc, src.size) != effect::UNAFFECTED {
+                // A register the convention PRESERVES is a save by definition. A register the
+                // convention KILLS is normally a spill — but not when this function demonstrably
+                // saves and restores it, which is what the save/restore walk records in
+                // `own_saved`. The convention's opinion is about calls in general; the walk is
+                // evidence about THIS function.
+                //
+                // `FUN_00013160` is the specimen: `PUSH EDX ; PUSH EBP ; MOV EBP,ESP ; … ; POP EBP ;
+                // POP EDX ; RET`. Under watcall EDX is an argument register and therefore
+                // killedbycall, so the convention alone reads its save slot as outgoing argument
+                // storage — and once the call's stack-pointer offset resolves, that slot translates
+                // to the callee's first stack-argument address and becomes a spurious trial. The
+                // spurious trial then extends the range `force_inactive_chain` fills holes over,
+                // promoting register holes into parameters of this function.
+                let preserved = f.proto_model.has_effect(src.loc, src.size) == effect::UNAFFECTED;
+                let saved_here = f.own_saved.as_ref().is_some_and(|s| s.contains(&src.loc.offset));
+                if !preserved && !saved_here {
                     return false;
                 }
                 src.descend.iter().any(|&d| {
