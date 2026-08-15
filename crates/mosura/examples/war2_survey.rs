@@ -439,7 +439,7 @@ fn main() {
     // CLEAR the stamped dirs first. `create_dir_all` alone leaves earlier files in place, so a
     // re-emit that produces fewer functions — or renumbers them — blends two runs into one
     // directory that is a snapshot of neither. That is not hypothetical: the pre-stamping
-    // `war2-survey/src/` holds .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
+    // `war2-survey/src/` held .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
     // Only reachable for a new stamp (nothing to clear), a `-dirty` stamp, or --force.
     if !probing {
         for d in arm_dirs.iter().chain([&raw_dir]) {

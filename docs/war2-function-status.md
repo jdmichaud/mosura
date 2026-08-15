@@ -96,9 +96,14 @@ graph does not move at all.
 WAR2 measurement that regresses will be tempting to blame on it. Diff against the durable
 post-land base, not against anything older:
 
-- `war2-survey/src.landed-c0ac350/` + `manifest.landed-c0ac350.tsv` — the post-land emission.
-- `war2-survey/src.stageB-08ca850/` + `manifest.stageB-08ca850.tsv` — the pre-land state, kept only
-  to explain this table.
+- `war2-survey/manifest.landed-c0ac350.tsv` — the post-land emission.
+- `war2-survey/manifest.stageB-08ca850.tsv` — the pre-land state, kept only to explain this table.
+
+  The paired `src.<stamp>/` trees were deleted in the 2026-08-15 cleanup of `war2-survey/` as
+  regenerable output. That costs the *source-identity* method described just below, which needs
+  both emits' `.c` on disk; re-emit a stamp with `war2_survey <exe> <out>` at the commit named to
+  get it back. The manifests are the half worth keeping — they carry the original bytes each emit
+  was scored against, which no re-run reproduces if the binary is not to hand.
 
 **Method note worth reusing:** byte-stability of the byte-clean set was proven by *source
 identity* (diff each function's emitted `.c` by VA) rather than by re-running compile+compare.
@@ -482,6 +487,13 @@ Smell markers across all 1286 emitted decompiles:
 5. **merge.rs:1205 panic** — 117 functions, one bug.
 
 ## Reproducing
+
+> **This three-process harness is superseded and no longer runnable.** `recompile_check` replaced
+> it by doing compile, relink, align and score in one program; `compile.sh` also reads
+> `war2-survey/src/`, which the 2026-08-15 cleanup removed. See
+> [`war2-recompile-remeasure.md`](war2-recompile-remeasure.md) for the current pipeline. Kept here
+> because the numbers in this file were produced by it, and its `RELOC_EXACT` verdict — masking
+> relocation sites rather than resolving them — does not exist in the replacement.
 
 ```
 cargo run --release --example war2_survey   # decompile + emit C for every function

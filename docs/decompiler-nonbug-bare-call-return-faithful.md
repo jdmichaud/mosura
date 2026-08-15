@@ -51,7 +51,8 @@ land corpus-inert scaffolding).
 
 The residual `extraout_` reads (93 after Stage 1) are a mix of genuine killed-by-call reads
 (faithful) and possible effect-model/regalloc divergence — each needs its OWN per-case
-`analyzeHeadless` diff before any change (e.g. `war2-survey-v2/raw/00051b2d.c`). That is a scoped
-investigation, distinct from the (non-faithful) bare-return target closed here. The dominant
-remaining WAR2 mismatch driver is codegen/register-allocation, and the COMPILE_FAIL tail is the
-C-cluster type-inference foundation (task #4) — both deep, both user investment calls.
+`analyzeHeadless` diff before any change (specimen: `FUN_00051b2d`, whose TU
+`war2_survey <exe> <out> --only 0x51b2d` prints read-only). That is a scoped investigation,
+distinct from the (non-faithful) bare-return target closed here. The dominant remaining WAR2
+mismatch driver is codegen/register-allocation, and the COMPILE_FAIL tail is the C-cluster
+type-inference foundation (task #4) — both deep, both user investment calls.
