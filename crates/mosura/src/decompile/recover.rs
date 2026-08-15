@@ -694,21 +694,95 @@ pub fn init_active_input(f: &mut Funcdata) {
     // pointer at each call has to be recovered before any stack range can be tried as an argument.
     let spacebase = f.proto_model.input.as_ref().and_then(|pl| pl.get_spacebase(&f.spaces));
     for call in calls {
+        // Ghidra `ActionFuncLink::funcLinkInput`'s INPUT-LOCKED branch (coreaction.cc:1485-1509):
+        // a call whose callee's prototype is KNOWN builds its inputs directly from that prototype
+        // and never opens trial recovery — `initActiveInput` is gated `(!inputlocked)||varargs`
+        // (:1482), so `isInputActive` stays false and neither `guardCalls`' trial registration nor
+        // `checkInputTrialUse` ever runs on the call. mosura's input-lock is a RECOVERED callee
+        // prototype (`CallSpec::reads_recovered` — the whole-program pass's port of the database
+        // prototype `ActionDefaultParams` would copy).
+        //
+        // Register-only prototypes take this branch; a prototype naming STACK storage keeps the
+        // trial path, whose stack-argument handling is measured and fixed (the anchored
+        // placeholder). Ghidra's locked branch covers stack parameters too (the `opStackLoad`
+        // arm); porting that half retires the trial override entirely and is the follow-on.
+        //
+        // What the pre-built input buys beyond skipping the trials: the varnode is created at the
+        // PROTOTYPE's width, pre-heritage, so the heritage range for the register is at least that
+        // wide. Trials get their width from the heritaged range instead — the width of whatever
+        // the caller happens to read elsewhere. Measured on WAR2's `FUN_00015224` family: the
+        // caller's only EAX read is the callee's 1-byte return (`test al,al`), so the heritage
+        // range is AL, the trial commits 1 byte, the caller's own parameter comes out `xunknown1`,
+        // and Watcom materializes the byte with an `AND EAX,0xff` the original does not have. The
+        // callee's own prototype says 4; building the input at 4 passes the register through
+        // untouched.
         let mut active = ParamActive::new(reg);
         active.is_recover_subcall = true;
         // fspec.cc:5335 — `maxdelay = getMaxInputDelay(); if (maxdelay > 0) maxdelay = 3;`
         active.set_max_pass(if maxdelay > 0 { 3 } else { CALL_MAXPASS });
-        // The container goes in FIRST: `createPlaceholder` -> `setStackPlaceholderSlot` reserves the
-        // slot on the trial container too (fspec.hh:1671), and mosura's `isInputActive` test is the
-        // presence of this entry.
+        // The container goes in FIRST: `createPlaceholder` -> `setStackPlaceholderSlot` reserves
+        // the slot on the trial container too (fspec.hh:1671), and mosura's `isInputActive` test
+        // is the presence of this entry.
         f.active_inputs.insert(call, active);
+        locked_register_inputs(f, call);
         if let Some(sb) = spacebase {
-            // coreaction.cc:1511-1512. Ghidra's preceding input-locked branch (which would instead
-            // hang the flag on the first locked STACK parameter and skip the placeholder) is
-            // unreachable here: mosura's call prototypes are never input-locked.
+            // coreaction.cc:1511-1512. For a locked call this still runs — Ghidra skips the
+            // placeholder only when a locked STACK parameter carried the spacebase flag instead
+            // (:1500-1505), and the register-only locked calls handled above have none.
             super::fspec::create_placeholder(f, call, sb);
         }
     }
+}
+
+/// Ghidra `ActionFuncLink::funcLinkInput`'s locked-with-varargs shape (coreaction.cc:1485-1498
+/// under `isDotdotdot`), register half: register one trial per recovered parameter at the
+/// PROTOTYPE's storage and width, `markActive` it (Ghidra :1491 — "Parameter is not optional",
+/// which also marks it CHECKED, locking the verdict), and append the matching free input varnode.
+/// The container stays open, so `guard_calls` keeps offering ranges and call-site evidence can ADD
+/// arguments beyond the prototype.
+///
+/// The varargs shape rather than the plain locked one, deliberately: a recovered prototype is
+/// USE-based — the callee's body is authoritative about the parameters it reads and blind to the
+/// ones it merely receives — so it UNDER-states. Locking to it drops arguments the caller plainly
+/// passes: measured on WAR2, the plain-locked form lost 25 functions, e.g.
+/// `func_0x0004c978(0xbe6, 0x4921c)` truncated to one argument because the callee never touches
+/// its second parameter. The union (prototype as a floor, extras by evidence) is the monotone rule
+/// this campaign already measured, expressed through Ghidra's own varargs machinery.
+///
+/// What the pre-built input buys beyond the locked verdict: the varnode is created at the
+/// PROTOTYPE's width, pre-heritage, so the register's heritage range is at least that wide.
+/// Organic trials get their width from the heritaged range — the width of whatever the caller
+/// happens to read elsewhere. Measured on WAR2's `FUN_00015224` family: the caller's only EAX read
+/// is the callee's 1-byte return (`test al,al`), so the range was AL, the trial committed 1 byte,
+/// the caller's own parameter came out `xunknown1`, and Watcom materialized the byte with an
+/// `AND EAX,0xff` the original does not have. The prototype says 4; the pre-built input passes the
+/// register through untouched.
+///
+/// A prototype naming STACK storage keeps the plain trial path (whose stack handling is measured
+/// and fixed — the anchored placeholder); porting the `opStackLoad` arm is the follow-on.
+fn locked_register_inputs(f: &mut Funcdata, call: OpId) -> bool {
+    let Some(cs) = f.call_specs.get(&call) else { return false };
+    if !cs.reads_recovered {
+        return false;
+    }
+    let Some(reads) = cs.reads.clone() else { return false };
+    let Some(reg) = f.spaces.by_name("register") else { return false };
+    if reads.is_empty() || !reads.iter().all(|(a, _)| a.space == reg) {
+        return false;
+    }
+    for (addr, sz) in reads {
+        let ti = {
+            let active = f.active_inputs.get_mut(&call).expect("container inserted first");
+            let ti = active.register_trial(addr, sz);
+            active.trial[ti].mark_active();
+            ti
+        };
+        let invn = f.new_varnode(sz, addr);
+        f.op_append_input(call, invn);
+        let slot = f.op(call).num_inputs() - 1;
+        f.active_inputs.get_mut(&call).unwrap().trial[ti].op_slot = slot as u32;
+    }
+    true
 }
 
 /// Keep the call's real arguments: the contiguous prefix of candidate registers (from RDI) whose
@@ -987,12 +1061,28 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // watcall's EAX/EDX/EBX/ECX) silently takes the recovered registers after it down too. Given the
     // callee's real list the recovered registers are CONSECUTIVE groups and there is no hole for the
     // latch to catch — the rule stays faithful and simply has nothing to fire on.
-    let recovered = f
-        .call_specs
-        .get(&call)
-        .and_then(|cs| cs.reads.as_ref())
-        .filter(|r| !r.is_empty())
-        .map(|r| recovered_input_list(r));
+    // A register-only recovered prototype no longer arrives here as a MODEL: its parameters are
+    // pre-registered as fixed active trials with pre-built inputs (`locked_register_inputs`,
+    // Ghidra's locked-with-varargs shape), and the CONVENTION list does the union fillin over
+    // fixed-plus-organic trials. Substituting the recovered list as the model here would cap the
+    // arguments at the prototype — measured at 25 lost functions, because a use-based prototype
+    // under-states (a parameter the callee ignores leaves no trace in it). Prototypes naming STACK
+    // storage still take the model path below, whose stack handling is separately measured.
+    let locked_register = f.call_specs.get(&call).is_some_and(|cs| {
+        cs.reads_recovered
+            && cs.reads.as_ref().is_some_and(|r| {
+                !r.is_empty() && f.spaces.by_name("register").is_some_and(|reg| r.iter().all(|(a, _)| a.space == reg))
+            })
+    });
+    let recovered = if locked_register {
+        None
+    } else {
+        f.call_specs
+            .get(&call)
+            .and_then(|cs| cs.reads.as_ref())
+            .filter(|r| !r.is_empty())
+            .map(|r| recovered_input_list(r))
+    };
     let committed = recovered.is_some();
     let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
     // What the convention's own list would have marked used, computed before the mutable borrow.
