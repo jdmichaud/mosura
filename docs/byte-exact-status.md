@@ -415,6 +415,33 @@ Both directions being present at once means the recovered prototype is right in 
 extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
 not a global loosening or tightening.
 
+## FINDING — local declaration order steers Watcom's register allocator
+
+Measured during the FUN_0006c6f0 hand-convergence (the single-function compile loop, ~1s per
+probe). With the C otherwise byte-identical, permuting ONLY the order of the local variable
+declarations changes the emitted registers:
+
+| declaration order | exactly-matched instruction rows (of 536) |
+| --- | --- |
+| decompiler's natural order | 172 |
+| same declarations, reversed | 173 |
+| hill-climbed permutation (~200 probes) | 183 |
+
+Watcom's allocator breaks ties using symbol order, so the declaration sequence is a live input
+to code generation. printc currently emits locals in the decompiler's internal variable-numbering
+order -- an artifact of SSA/merge processing that carries no information about the original
+source -- which means every function's register assignment is conditioned on an arbitrary
+choice.
+
+This qualifies as an EmitChoices axis on all three rules: it is semantics-preserving, it is not
+derivable from the IR (the original's declaration order left no trace except through the
+allocation itself), and the compiler distinguishes it. Unlike the existing axes it is
+high-dimensional (n! orders), so the arm mechanism cannot enumerate it -- but a cheap
+deterministic heuristic (declare in FIRST-USE order, which is how humans write and how the
+original sources were likely ordered) may capture most of the value, with per-function search as
+the refinement. Sizing it corpus-wide: emit with first-use-ordered declarations and diff the
+EXACT count.
+
 ## How to size a fix before writing it
 
 Every estimate in this document must come from one query: **how many functions would become
