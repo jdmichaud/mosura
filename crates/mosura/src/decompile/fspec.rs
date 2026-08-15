@@ -1094,8 +1094,14 @@ pub struct CallSpec {
     /// sentinel) — the state in which `guardCalls` refuses to register a spacebase range as a
     /// parameter trial, because it cannot express the range in the callee's frame.
     pub stackoffset: Option<u64>,
-    /// Ghidra `FuncCallSpecs::extrapop` (fspec.hh:1362): this call site's stack-pointer change,
-    /// seeded from the prototype model. `None` until `ActionExtraPopSetup` has modelled it.
+    /// Ghidra `FuncCallSpecs::extrapop` (fspec.hh:1362): this call site's stack-pointer change
+    /// across the call, RECOVERED from the callee's own return instruction (`RET` vs `RET n`,
+    /// [`crate::recompile::convention::callee_stack_cleanup`]) plus the return-address slot.
+    /// `None` when the callee's returns are unknown or disagree -- the model's (usually unknown)
+    /// extrapop then applies, which is what `ActionExtraPopSetup` models as an INDIRECT.
+    pub extrapop: Option<i32>,
+    /// Ghidra `FuncCallSpecs::effectiveExtraPop` (fspec.hh:1656): the extrapop as modelled --
+    /// `None` until `ActionExtraPopSetup` (known case) or the stack solver has set it.
     pub effective_extrapop: Option<i32>,
     /// Ghidra `FuncCallSpecs::inputConsume` (fspec.hh:1660): per input slot, how many BYTES of the
     /// argument this callee actually consumes — 0 meaning "no information". Written only by
@@ -1721,6 +1727,13 @@ pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
     // inputs). Measured on WAR2's FUN_0001fdbc under the prototype pass: with the anchor applied
     // at its 63 register-only memset calls, 59 of them grew phantom stack arguments from the
     // caller's save slots, EXACT -> 0.522.
+    // The corrected binding applies where a recovered prototype names STACK storage (Ghidra's
+    // locked-branch condition, coreaction.cc:1498). The unconditional form was tried twice --
+    // thread 4's endgame -- and both times cost the default configuration the same two functions
+    // (FUN_000121e8, FUN_000485a0): with resolution live at every call, solver-guessed extrapop
+    // deltas at multi-call functions drift the recorded offsets, and mis-windowed stack slots
+    // become trials. Recovered per-call extrapop (CallSpec::extrapop) removes the INDIRECT at
+    // known-cleanup calls entirely, which is the road to retiring this gate.
     let stack_param = f.call_specs.get(&call).is_some_and(|c| {
         c.reads_recovered
             && c.reads.as_ref().is_some_and(|r| {

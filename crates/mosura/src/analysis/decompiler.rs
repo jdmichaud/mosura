@@ -293,6 +293,14 @@ fn record_callee_effects(
         Vec<(crate::decompile::space::Address, u32)>,
     )>;
     let mut cache: std::collections::HashMap<u64, Effects> = std::collections::HashMap::new();
+    // The callee's stack-cleanup contract (RET vs RET n), per callee, memoized: the same callee is
+    // called many times per function (63 memset calls in FUN_0001fdbc alone).
+    let mut cleanup_cache: std::collections::HashMap<u64, Option<u32>> = std::collections::HashMap::new();
+    // The stack pointer's register offset, for reading `RET n` off the lifted p-code.
+    let esp_off = f
+        .spaces
+        .by_name("stack")
+        .and_then(|st| f.spaces.get(st).spacebase.first().map(|&(a, _)| a.offset));
     for call in calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
@@ -367,6 +375,22 @@ fn record_callee_effects(
             let cs = f.call_specs.entry(call).or_default();
             cs.reads = Some(slots);
             cs.reads_recovered = true;
+            // The call site's stack-pointer change, from the callee's own return instruction:
+            // Ghidra's `ActionDefaultParams` copies the callee's whole prototype onto the call --
+            // extrapop included (coreaction.cc:2327) -- and `ActionExtraPopSetup` then takes its
+            // KNOWN branch: an `INT_ADD sp, extrapop` after the call instead of an INDIRECT
+            // before it. That INDIRECT is what every stack-offset resolution downstream has to
+            // fold through, on solver-guessed deltas; with the recovered value there is nothing
+            // to guess. extrapop counts the return-address slot plus whatever the callee's
+            // `RET n` pops (x86 cdecl's cspec value is 4 -- the slot alone).
+            if let Some(sp) = esp_off {
+                let cl = *cleanup_cache
+                    .entry(target)
+                    .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
+                if let Some(n) = cl {
+                    cs.extrapop = Some(4 + n as i32);
+                }
+            }
             if let Some((regs, _)) = eff {
                 cs.overwrites = regs;
             }
@@ -380,6 +404,68 @@ fn record_callee_effects(
         cs.overwrites = regs;
         cs.reads = Some(reads);
     }
+}
+
+/// The callee's stack-cleanup contract, read from its own return instructions over a walk of its
+/// reachable body: `Some(n)` when every return agrees it pops `n` argument bytes, `None` when the
+/// body cannot be fully walked (indirect flow, budget) or the returns disagree -- an unseen return
+/// could contradict the seen ones, so partial coverage answers nothing rather than guessing.
+/// Nested calls are tolerated: another function's returns do not change what THIS one's `RET n`
+/// says. The p-code reading itself is [`crate::recompile::convention::callee_stack_cleanup`].
+fn callee_cleanup(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: u64,
+    sp: u64,
+) -> Option<u32> {
+    use crate::decompile::opcode::OpCode;
+    use crate::decompile::space::Address;
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut frontier: Vec<u64> = vec![entry];
+    let mut insns: Vec<crate::sleigh::Instruction> = Vec::new();
+    let mut budget = 512usize;
+    while let Some(pc) = frontier.pop() {
+        if !seen.insert(pc) {
+            continue;
+        }
+        budget = budget.checked_sub(1)?;
+        let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
+        if bytes.is_empty() {
+            return None;
+        }
+        let insn = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
+        if insn.bytes.is_empty() {
+            return None;
+        }
+        let mut fallthrough = true;
+        for o in &insn.ops {
+            match OpCode::from_u32(o.opcode) {
+                Some(OpCode::Return) => fallthrough = false,
+                Some(OpCode::Branchind) => return None, // unresolvable flow: returns may be unseen
+                Some(OpCode::Branch) => {
+                    let v = o.ins.first().and_then(|a| a.as_var())?;
+                    if v.space != "const" {
+                        fallthrough = false;
+                        frontier.push(v.offset);
+                    }
+                }
+                Some(OpCode::Cbranch) => {
+                    let v = o.ins.first().and_then(|a| a.as_var())?;
+                    if v.space != "const" {
+                        frontier.push(v.offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let next = pc + insn.bytes.len() as u64;
+        insns.push(insn);
+        if fallthrough {
+            frontier.push(next);
+        }
+    }
+    crate::recompile::convention::callee_stack_cleanup(&insns, sp)
 }
 
 /// One straight-line pass over a callee's body, recovering BOTH halves of its prototype: the

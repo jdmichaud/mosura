@@ -499,10 +499,10 @@ impl Action for ActionExtraPopSetup {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         use super::fspec::EXTRAPOP_UNKNOWN;
+        // The containing model's extrapop is only the FALLBACK: Ghidra gates per call on
+        // `fc->getExtraPop() == 0` (coreaction.cc:1447), never on the evaluation model, so a
+        // call with recovered extrapop is modelled even under a zero-extrapop model.
         let extrapop = data.proto_model.extrapop;
-        if extrapop == 0 {
-            return 0; // stack pointer is undisturbed
-        }
         // Ghidra reads the stack space's spacebase register (`stackspace->getSpacebase(0)`).
         let Some(stack) = data.spaces.by_name("stack") else { return 0 };
         let Some(&(sb_addr, sb_size)) = data.spaces.get(stack).spacebase.first() else {
@@ -518,6 +518,15 @@ impl Action for ActionExtraPopSetup {
         let mut count = 0;
         for call in calls {
             if data.op(call).is_dead() {
+                continue;
+            }
+            // Ghidra reads `fc->getExtraPop()` -- the CALL's own extrapop, which
+            // `ActionDefaultParams` seeds from the callee's prototype when one is known
+            // (coreaction.cc:2327 copies the whole proto, extrapop included). mosura's per-call
+            // value is recovered from the callee's own RET by the whole-program pass; a call
+            // without one falls back to the containing model's, exactly as before.
+            let extrapop = data.call_specs.get(&call).and_then(|c| c.extrapop).unwrap_or(extrapop);
+            if extrapop == 0 {
                 continue;
             }
             let pc = data.op(call).seqnum.pc;
