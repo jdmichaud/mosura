@@ -66,7 +66,29 @@ gate existed:
 Standing after: pass 544 (from 522), losses vs default 38 (from 60), union 582, default emit
 byte-identical.
 
-### Open thread 4 -- phantom saved-slot trials wherever the offset resolves
+### Open thread 4 -- phantom stack trials wherever the offset resolves wrong
+
+REFINED (post `b6c7d31`, `MOSURA_SAVEDSLOT=1` on `FUN_000121e8`): the surviving phantom at the
+losses examined is the RETURN-ADDRESS slot, not the save slots. A stale return address is a
+constant-valued stack write -- `STORE(ESP, next_pc)` converted to a stack COPY of a constant --
+and once a mis-resolved stack offset lets it translate into the parameter window it is
+INDISTINGUISHABLE from a `PUSH imm` argument: written (realistic), consumed only by the call
+(ancestorOpUse accepts). No value-side guard can reject it; only correct GEOMETRY can, by
+keeping it at `trans 0`, below the parameter area. The `is_saved_slot` guard behaved correctly
+in the instrumented case (`copy_found=false` for a slot no input register is copied into is
+the right answer -- it is not a save slot).
+
+The offsets go wrong at calls still on the OLD placeholder geometry (post-call INDIRECT
+binding), which is every call whose recovered prototype does not name stack storage. The
+endgame is therefore to make the ANCHORED binding unconditional -- one offset convention for
+every call, return-address slots excluded by geometry everywhere, save slots vetoed by
+`is_saved_slot`'s copy check, and the remaining trials genuinely arguments. The two default-
+config losses the unconditional anchor produced when first tried (`FUN_000121e8`,
+`FUN_000485a0`) are the test cases to hold: at correct offsets their RA slots leave the
+window, and their save slots must be caught by the copy check or by the restore-side
+double-use.
+
+### Superseded framing (kept for the record)
 
 The remaining barrier to resolving stack offsets at EVERY call (as Ghidra does): once the
 offset is known, the caller's own saved-register slots (`PUSH EDX ; PUSH EBP` prologue saves)

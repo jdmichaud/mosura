@@ -1481,13 +1481,23 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 if !preserved && !saved_here {
                     return false;
                 }
-                src.descend.iter().any(|&d| {
+                let copy_found = src.descend.iter().any(|&d| {
                     f.op(d).code() == super::opcode::OpCode::Copy
                         && f.op(d).output.is_some_and(|o| {
                             let ov = f.vn(o);
                             ov.loc.space == spc && ov.loc.offset == off && ov.size == size
                         })
-                })
+                });
+                if std::env::var_os("MOSURA_SAVEDSLOT").is_some() {
+                    eprintln!(
+                        "[savedslot] call@{:#x} slot={}+{:#x}/{} src={}+{:#x} preserved={preserved} saved_here={saved_here} copy_found={copy_found} ndesc={}",
+                        f.op(call).seqnum.pc.offset,
+                        f.spaces.get(spc).name, off, size,
+                        f.spaces.get(src.loc.space).name, src.loc.offset,
+                        src.descend.len()
+                    );
+                }
+                copy_found
             })
         };
         if std::env::var_os("MOSURA_ARG_DEBUG").is_some()
