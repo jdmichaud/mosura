@@ -17,6 +17,48 @@ tree, not by joining verdict files).
 | recovered callee prototype treated as fact, not candidate | 433 |
 | **call arguments the chain rule was discarding** | **514** |
 | + prototype-pass arm, selected per function | 539 |
+| **range offset canonicalized to its space** (default config) | **539** |
+| + prototype-pass arm, selected per function | **557** |
+
+Current standing: **539** in the default single-pass configuration, **557** with the
+prototype-pass arm unioned in. The prototype pass alone measures 501.
+
+### One address per location
+
+`wrap_offset` existed but was called in exactly three places in the decompiler, so the
+invariant "an offset is canonical for its space" held only where someone remembered it. The
+same stack slot reached `guard_calls` as both `0xffffffec` and `0xffffffffffffffe8`; two
+spellings are two `Address`es, so a trial created under one never matched the varnode under
+the other and the argument was dropped at commit. Canonicalizing before the `Address` is
+formed (`c38ce6a`) is worth +3 on the default configuration and, more importantly, removes a
+whole class of silent mismatch that is not x86-specific -- any space narrower than 64 bits
+has it.
+
+### Open thread 3 -- a trailing stack trial is never created
+
+Of the 56 functions the prototype pass still breaks, 35 are a SINGLE divergence and 22 of
+those are one `missing PUSH <const>`: the pass drops the last stack argument. Specimen
+`FUN_00023514` (`sb2/src/00579.c`), which the default renders exactly as
+`func_0x000234b0(param_1, 10, 0x10, 4, 9)` and the pass truncates to four arguments.
+
+`MOSURA_MONO=1` shows the final round as `committed=true recovered_entries=5 model_used=4`
+with only FOUR trials in the container. So the callee's recovered prototype DOES name five
+parameters -- there is simply no trial object for the fifth, and `fillin_map` can only mark
+trials that exist. The monotone rule (`145853b`) cannot help for the same reason: it promotes
+existing trials.
+
+`buildTrialMap` synthesizes hole trials only for holes that PRECEDE a used group, which is
+faithful to Ghidra -- there, the trailing trial exists because heritage created it from the
+real stack varnode. So the defect is upstream in heritage: `MOSURA_STACKARG=1` shows the
+correct offer being made (`trans=0x0`) while the trials that reach the container sit at
+`stack+0x4` and `stack+0x14`. Why the offered slot is not the one registered is the next
+question, and it is worth 22 functions on the pass configuration.
+
+### Unrelated pre-existing failure
+
+`disasm_pcode_ratchet` fails (`disasm parity regressed: 244 < 254`). It fails identically
+with the working tree stashed, and no commit in this line of work touches disassembler code.
+It is inherited, not caused here, and wants its own investigation.
 
 The +81 was two coupled defects — see the commit for `force_inactive_chain`'s missing
 `IPTR_SPACEBASE` test and the killedbycall-register save slot. Gained 81, lost 0.
