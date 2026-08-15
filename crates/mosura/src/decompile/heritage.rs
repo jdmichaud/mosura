@@ -1498,6 +1498,16 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();
                     if active.which_trial(trans_addr, size).is_none() {
+                        if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+                            eprintln!(
+                                "[register] call@{:#x} {}+{:#x}/{}",
+                                f.op(call).seqnum.pc.offset,
+                                f.spaces.get(trans_addr.space).name,
+                                trans_addr.offset,
+                                size
+                            );
+                        }
+                        let active = f.active_inputs.get_mut(&call).unwrap();
                         let ti = active.register_trial(trans_addr, size);
                         let invn = f.new_varnode(size, addr);
                         // heritage.cc:1503 — the new CALL input joins THIS round's renaming, so it

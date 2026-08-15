@@ -6,26 +6,25 @@
 
 ## The measurement
 
-**433 of 2948 compilable functions are byte-exact**: the C mosura emits, compiled with Watcom
-10.0a and relinked at the original's addresses, reproduces the original's bytes exactly —
-relocation sites resolved and *verified to the same targets*, not masked. 3023 functions are
-emitted; 75 fail to compile.
+**514 of 2948 compilable functions are byte-exact** from a single default configuration, and
+**539** if the prototype-pass arm is selected per function (verified by recompiling the materialized
+tree, not by joining verdict files).
 
 | step | EXACT |
 | --- | --- |
 | baseline, re-measured | 421 |
 | callee stack-cleanup recovery (`recompile::convention`) | 432 |
-| recovered callee prototype treated as fact, not candidate | **433** |
-| per-function selection over the `return-width` axis | +2 (measured on the 421 baseline; not re-run since) |
+| recovered callee prototype treated as fact, not candidate | 433 |
+| **call arguments the chain rule was discarding** | **514** |
+| + prototype-pass arm, selected per function | 539 |
 
-Two instrument defects were fixed first, and the numbers before them are not comparable:
+The +81 was two coupled defects — see the commit for `force_inactive_chain`'s missing
+`IPTR_SPACEBASE` test and the killedbycall-register save slot. Gained 81, lost 0.
 
-- A `CALL` pushes its return address as a constant, so one byte of upstream size drift made every
-  later call report an `immediate` divergence it did not have — 5741 rows across 1722 functions.
-- With that constant erased those pairs became `encoding`, the class meaning "not reachable from
-  C, do not work on this function". That would have written **122 functions** off the work-list
-  for a difference entirely downstream of a fixable one. They are `layout-shift` now, marked
-  derived so they can never head a work-list.
+Two instrument defects were fixed before any of this, and numbers predating them are not
+comparable: a pushed return address made every call downstream of a size change report a false
+`immediate` (5741 rows / 1722 functions), and erasing it turned those into `encoding`, the class
+meaning "not reachable from C" — which would have written 122 functions off the work-list.
 
 ## The work-list, by measured marginal value
 
