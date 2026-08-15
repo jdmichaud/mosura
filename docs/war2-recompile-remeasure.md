@@ -121,6 +121,13 @@ the changed op in the `MOSURA_OPACTION` trace.
 
 - `--only` is read-only, but with `MOSURA_PROTO_PASS=1` it still runs the whole-program prototype
   pass first, so debug output covers **every** function. Filter on the call address.
+- **`git checkout` reverts the source and leaves the built binary.** Every measurement here runs
+  binaries by path (`$EX/war2_survey`), not through `cargo run`, so nothing rebuilds them for you.
+  Revert a change, forget the rebuild, and the next emit silently carries the reverted behaviour.
+  This produced a 60-function error: three source-level checks — `git status`, `git grep HEAD`, a
+  full diff of every changed file — all agreed the tree was clean while the binary disagreed, which
+  is exactly the confidence that makes it dangerous. Compare `stat` on the binary against the source
+  before trusting a measurement, or rebuild unconditionally.
 - `pgrep -f recompile_check` matches your own wait-loop shell. Use `pgrep -x`.
 - Two runs' manifests may number functions differently. Join on the **VA** column, never on `idx`.
 - A backgrounded `nohup ... &` inside a tool call can be killed at session teardown; use the
