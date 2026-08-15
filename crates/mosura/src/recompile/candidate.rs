@@ -198,14 +198,28 @@ fn fixup_width(location: u8, wide: bool) -> usize {
 /// Find `name`'s segment and offset, tolerating the leading-underscore convention and falling
 /// back to the first code segment when the object publishes nothing under that name.
 fn locate(module: &OmfModule, name: &str) -> Result<(usize, usize), String> {
-    let stripped = name.trim_start_matches('_');
+    // Underscores are decoration, on either end: Watcom's register convention APPENDS one
+    // (`FUN_00069980_`), its cdecl PREPENDS one. The old test trimmed only the front, so the
+    // appended form never matched here -- and the fallback below then "succeeded" at offset 0,
+    // which meant the caller's own trailing-underscore retry (see `verify`) never ran.
+    let stripped = name.trim_matches('_');
     for (sym, seg, off) in &module.publics {
-        if sym == name || sym.trim_start_matches('_') == stripped {
+        if sym == name || sym.trim_matches('_') == stripped {
             return Ok((*seg, *off as usize));
         }
     }
     for (i, seg) in module.segments.iter().enumerate() {
         if seg.is_code() && !seg.data.is_empty() {
+            // The offset-0 guess is for objects that publish no code symbol at all. When the
+            // code segment HAS publics and none matched, guessing is how a function with a
+            // leading jump table got compared against its own table: Watcom emits a switch's
+            // table at the FRONT of `_TEXT`, the function's public sits past it (offset 32 on
+            // WAR2's FUN_00069980), and the guessed slice [0..first_public] was 8 relocated
+            // table words decoded as code -- similarity 0.009 against a candidate that was
+            // never the function. A miss among named symbols is an error, not a guess.
+            if module.publics.iter().any(|(_, si, _)| *si == i + 1) {
+                return Err(format!("no public matching `{name}` in the code segment"));
+            }
             return Ok((i + 1, 0));
         }
     }
