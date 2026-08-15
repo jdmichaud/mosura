@@ -1477,6 +1477,22 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 })
             })
         };
+        if std::env::var_os("MOSURA_ARG_DEBUG").is_some()
+            && f.spaces.get(spc).kind != super::space::SpaceKind::Spacebase
+            && f.is_input_active(call)
+        {
+            // Which register ranges are even OFFERED as argument trials, and what the convention
+            // says about each. A trial that is never registered looks identical, in every later
+            // instrument, to one registered and then rejected — and the two have opposite fixes.
+            eprintln!(
+                "[offer] call@{:#x} range={}+{:#x}/{} tryregister={tryregister} saved={is_saved_slot} char={:?}",
+                f.op(call).seqnum.pc.offset,
+                f.spaces.get(spc).name,
+                off,
+                size,
+                f.proto_model.characterize_as_input_param(trans_addr, size)
+            );
+        }
         if tryregister && !is_saved_slot && f.is_input_active(call) {
             match f.proto_model.characterize_as_input_param(trans_addr, size) {
                 super::fspec::Containment::ContainsJustified => {
