@@ -632,7 +632,49 @@ fn main() {
             .unwrap_or(*va + 512)
             .min(*va + 8192)
             .min(0x7_c4a0); // obj1 (code) end
-        let mut end = next.max(*va + 1);
+        // The function's extent is mosura's OWN recorded body, not the gap to the next entry.
+        //
+        // `[entry, next-entry)` attributes to a function everything the linker happened to place
+        // after it, and what follows a function is very often DATA. Measured on WAR2: the body is
+        // smaller than the gap for 2140 of 3023 functions, totalling 49,359 bytes of data counted
+        // as code. The worst is `FUN_00075801` -- a 48-byte comparator followed by a 7,727-byte
+        // table -- which was compared as 2591 instructions against the 20 it really has, and read
+        // as a catastrophic decompiler failure when the decompilation is exactly right.
+        //
+        // The body is clamped on both sides rather than trusted outright, because neither bound is
+        // free:
+        //   * never past `next` -- 11 functions have bodies that run beyond the following entry,
+        //     which would make two functions claim the same bytes;
+        //   * never below `cov_hi` -- if body computation ever UNDER-states a function, truncating
+        //     the original would hide a real failure by comparing against less than the function.
+        // Both bounds are facts already established above, so this only ever pulls the end IN from
+        // the heuristic, never pushes it out.
+        let body_end = prog
+            .function_manager
+            .function_at(Address::new(ram, *va))
+            .and_then(|f| f.body().max_address())
+            .map(|a| a.offset + 1);
+        let mut end = match body_end {
+            Some(b) => next.min(b.max(cov_hi)).max(*va + 1),
+            None => next.max(*va + 1),
+        };
+        // INSTRUMENT (`MOSURA_EXTENT=1`): the three candidate answers to "where does this
+        // function end" -- the next-entry heuristic actually used, mosura's own recorded body, and
+        // the decompiler's instruction coverage -- so the choice between them is a measurement.
+        if std::env::var("MOSURA_EXTENT").is_ok() {
+            let body_end = prog
+                .function_manager
+                .function_at(Address::new(ram, *va))
+                .and_then(|f| f.body().max_address())
+                .map(|a| a.offset + 1);
+            println!(
+                "EXTENT\t{:08x}\t{}\t{}\t{}",
+                *va,
+                end - *va,
+                body_end.map(|b| b.saturating_sub(*va) as i64).unwrap_or(-1),
+                cov_hi.saturating_sub(*va)
+            );
+        }
         let mut region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
         // Trim trailing padding, but NEVER below the end of the last decoded instruction. The
         // trimmer used to strip any trailing 0x00/0x90/0xcc, and the last byte of a real operand is
