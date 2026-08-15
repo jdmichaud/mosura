@@ -60,8 +60,21 @@ it removes the arguments that were already right, including `FUN_00033370`'s
 discards a good committed decision rather than refining it, because the second evaluation runs
 against a graph where the earlier evidence is no longer visible either.
 
-So the fix is not "re-evaluate everything later". It has to be narrower — re-evaluate only the trial
-whose backing varnode CHANGED since it was judged, which is a different and smaller question.
+**And the narrow version fails too, which rules out the whole family.** Recording on each trial the
+varnode its verdict was formed against, then re-evaluating on re-open ONLY the trials whose slot no
+longer holds that varnode, is also a regression — worse than the broad version. `FUN_00033370` drops
+from `func_0x000332c4(param_1, param_2, 0x8ce58)` to two arguments, and `FUN_00015820` loses EAX as
+well as EDX.
+
+The reason is the opposite of the assumption behind both attempts. The LATE verdict is not the
+better one. By the time a re-open happens the graph has been transformed — constants folded, values
+merged through MULTIEQUALs — and `ancestor_op_use` fails on values it previously accepted. The early
+verdict is usually the sound one; it is simply taken while the slot still holds the wrong varnode.
+
+So the fix is not in the re-open mechanism at any granularity. The question is why the slot holds the
+incoming EDX at the moment the trial is first judged, instead of the constant the caller stores
+immediately before the call — a heritage/ordering question about when `guard_calls`' manufactured
+read is linked, not an argument-recovery one.
 
 ## The work-list, by measured marginal value
 
