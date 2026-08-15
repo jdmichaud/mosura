@@ -196,6 +196,37 @@ principle — Ghidra's hole-filling is deliberate, since C has no gaps, so slots
 arguments once slot 3 is one. The answer has to come from a correct callee prototype, and for this
 specimen that prototype is only correct if EBX is propagated through the callee to its own callees.
 
+### Half two, located: a spurious STACK trial drags the register holes in
+
+The 82 losses have one shape, and it is not the hole-filling being wrong in general. Comparing the
+trial set at the call, instrumented with `MOSURA_ARG_DEBUG=1`:
+
+| case | trials at the call |
+| --- | --- |
+| `FUN_00033370` — fix GAINS it | `EAX hole · EDX hole · EBX real` |
+| `FUN_00013160` — fix LOSES it | `EAX real · EDX real · EBX hole · ECX hole · stack+0x4 real` |
+| `FUN_0001193c` — fix LOSES it | identical shape |
+
+Where the fix helps, the real argument sits at the HIGHEST slot and the holes below it are genuine
+pass-throughs — filling them is correct, because C has no gaps. Where it hurts, a `stack+0x4` trial
+at the far end extends `max`, so the tail hole-filling promotes the two register holes into
+parameters of the CALLER, and Watcom then saves and restores those registers.
+
+**That stack trial is spurious.** `FUN_00013160` is `PUSH EDX ; PUSH EBP ; MOV EBP,ESP ; … ; CALL`
+and pushes nothing as an argument, so the callee's first stack-argument slot maps onto the caller's
+**saved EBP**. The mis-ported `seenchain` was accidentally masking it — which is why half one cannot
+land alone and why the masking looked like correct behaviour for so long.
+
+So the chain is three layers, not two:
+
+1. `force_inactive_chain` mis-ports Ghidra's stack-only test and kills real register arguments.
+2. Fixing that exposes hole-promotion, which is *correct* in itself.
+3. Hole-promotion only misfires because a spurious stack trial extends its range — and that trial
+   exists because the caller's saved registers are being mapped to the callee's argument slots,
+   i.e. a spacebase-offset question, not an argument-recovery one.
+
+Fix (3) first; (1) then lands on its own and (2) needs no change.
+
 **Eliminated: the heritage marking on the manufactured varnode.** `build_input_from_trials`'s
 `isUnref` branch calls `set_active_heritage()` on the varnode it manufactures, which Ghidra does
 not (`vn = data.newVarnode(sz, addr)` and nothing else). That looked like the mechanism — the
