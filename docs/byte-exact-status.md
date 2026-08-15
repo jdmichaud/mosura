@@ -54,6 +54,16 @@ correct offer being made (`trans=0x0`) while the trials that reach the container
 `stack+0x4` and `stack+0x14`. Why the offered slot is not the one registered is the next
 question, and it is worth 22 functions on the pass configuration.
 
+**Rejected: competing `stackoffset` writes.** `MOSURA_STACKARG=1` shows the same call
+resolving `sp_off` as both -24 and -20, one stack slot apart, which looked like successive
+analysis rounds overwriting `FuncCallSpecs::stackoffset` and stranding trials registered
+under the earlier value. Making the field single-valued (first write wins, conflicts logged)
+measured 539/501 -- IDENTICAL to the plain assignment -- and instrumenting the conflict path
+showed it firing **zero** times over the whole corpus. `stackoffset` is written exactly once
+per `Funcdata`; the two values come from the two separate decompile invocations the prototype
+pass performs, not from rounds competing within one analysis. Reverted. The offer/registration
+mismatch is real, but its cause is elsewhere.
+
 ### Unrelated pre-existing failure
 
 `disasm_pcode_ratchet` fails (`disasm parity regressed: 244 < 254`). It fails identically
