@@ -622,16 +622,32 @@ fn main() {
             cov_hi = *va;
         }
 
-        // Function byte extent = [entry, next-entry), trailing padding trimmed. This is mosura's
-        // own function-boundary view (the authoritative "original bytes"); the compare stage diffs
-        // the recompiled object against exactly these bytes at the entry VA.
-        let next = entry_offs
-            .iter()
-            .copied()
-            .find(|&o| o > *va)
-            .unwrap_or(*va + 512)
-            .min(*va + 8192)
-            .min(0x7_c4a0); // obj1 (code) end
+        // The upper bound on a function: the next function's entry, or the end of the memory block
+        // containing it, whichever comes first. Both are facts the loader established.
+        //
+        // This replaces three invented constants, each of which would have truncated silently:
+        //   * `.min(*va + 8192)` -- no function may exceed 8 KB. Nothing checks this, and a larger
+        //     function would simply have been compared against its first 8 KB and reported as a
+        //     decompiler failure. Zero functions in WAR2 reach it, so it never fired; it was a
+        //     tripwire waiting for a bigger subject.
+        //   * `.min(0x7_c4a0)` -- this binary's code-section end, hardcoded into a tool that is
+        //     supposed to work on any binary. Correct here by coincidence, wrong everywhere else.
+        //   * `.unwrap_or(*va + 512)` -- an arbitrary extent for the LAST function, which has no
+        //     next entry. WAR2's last function is 207 bytes, so this never fired either.
+        //
+        // The block end answers the same question the constants were guessing at, and answers it
+        // for whatever binary is loaded.
+        let block_end = prog
+            .memory
+            .block_at(Address::new(ram, *va))
+            .map(|b| b.end().offset + 1);
+        let next_entry = entry_offs.iter().copied().find(|&o| o > *va);
+        let next = match (next_entry, block_end) {
+            (Some(n), Some(b)) => n.min(b),
+            (Some(n), None) => n,
+            (None, Some(b)) => b,
+            (None, None) => *va + 1,
+        };
         // The function's extent is mosura's OWN recorded body, not the gap to the next entry.
         //
         // `[entry, next-entry)` attributes to a function everything the linker happened to place

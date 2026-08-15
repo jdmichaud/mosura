@@ -16,7 +16,9 @@ pub struct Subject {
     pub name: String,
     /// Address in the original image, and the coordinate system both sides are compared in.
     pub va: u64,
-    /// Extent recorded for the function, including any inter-function padding.
+    /// Extent recorded for the function: its recorded BODY, bounded by the next entry and by the
+    /// containing memory block. It may still carry trailing alignment padding, which
+    /// [`trim_padding`] removes on semantics rather than on a byte pattern.
     pub len: usize,
 }
 
@@ -134,8 +136,8 @@ fn byte_verdict(original: &[NormInsn], candidate: &[NormInsn], relinked: &Candid
 
 /// Drop the alignment padding a linker leaves between functions.
 ///
-/// A recorded extent runs to the next function's entry, so it includes whatever the linker put in
-/// between. At byte level that has to be pattern-matched against a list of the forms each compiler
+/// A recorded extent can still end on the alignment padding a linker leaves between functions. At
+/// byte level that would have to be pattern-matched against a list of the forms each compiler
 /// happens to use; at instruction level it is simply the trailing run of no-ops, decided on
 /// semantics ([`NormInsn::is_nop`]) and therefore correct for spellings nobody has enumerated.
 pub fn trim_padding(mut insns: Vec<NormInsn>) -> Vec<NormInsn> {

@@ -135,11 +135,25 @@ fn main() {
             continue;
         };
         let unit_flags: Vec<String> = if recover_flags {
+            // A short read means the recorded extent runs past readable memory. Truncating
+            // silently would compare the candidate against FEWER original bytes than the function
+            // has, which reads as agreement about bytes that were never examined -- the failure
+            // mode is a false EXACT, so it has to be audible.
             let mut obytes = Vec::with_capacity(r.len);
             for k in 0..r.len {
                 match prog.memory.byte_at(Address::new(space, r.va + k as u64)) {
                     Some(b) => obytes.push(b),
-                    None => break,
+                    None => {
+                        eprintln!(
+                            "{}: extent runs past readable memory -- {} of {} bytes readable from {:#x}; \
+                             verdict covers only what was read",
+                            r.name,
+                            obytes.len(),
+                            r.len,
+                            r.va
+                        );
+                        break;
+                    }
                 }
             }
             let insns = mosura::recompile::insn::normalize(
