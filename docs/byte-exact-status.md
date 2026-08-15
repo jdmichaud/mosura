@@ -26,6 +26,43 @@ comparable: a pushed return address made every call downstream of a size change 
 `immediate` (5741 rows / 1722 functions), and erasing it turned those into `encoding`, the class
 meaning "not reachable from C" — which would have written 122 functions off the work-list.
 
+## Open thread 2 — a trial rejected on an early graph is never reconsidered
+
+The next mechanism in the call-argument family, distinct from the two the +81 fix addressed. It is
+NOT "the trial was never registered" and NOT "the chain rule killed it".
+
+Specimen `FUN_00015820`, one divergence from exact: the original is
+`MOV EDX,0x8f040 ; MOV EAX,0x8f000 ; CALL 0x12f24` and we emit `func_0x00012f24(0x8f000)` — the
+second argument is dropped. `MOSURA_ARG_DEBUG=1` shows the whole story:
+
+```
+[why] slot=2 verdict=Inactive uses=[Copy@0x15821 Multiequal Call@0x1584e Call@0x15871 Call@0x15881 …]
+[why] slot=2 verdict=Active   uses=[Call@0x1584e]
+```
+
+Early on the varnode at that slot is the INCOMING EDX — saved at entry by `PUSH EDX`, used all over
+the function — and `ancestor_op_use` correctly rejects it, because it is genuinely not used only by
+this call. Later it refines to the `MOV EDX,0x8f040` value whose only consumer IS this call, and the
+same machinery correctly judges it **Active**. So the analysis reaches the right answer; the answer
+just arrives after the verdict is frozen.
+
+Two things freeze it. `build_input_from_trials` ends with `delete_unused_trials` (fspec.cc:5740),
+and a pruned trial cannot return because its range is already heritaged so `guard_calls` never
+re-offers it. And `Funcdata::reopen_input` flips `active` alone, which is inert —
+`check_input_trial_use` skips any trial already `CHECKED` and the container is still fully-checked,
+so the second round re-commits the identical decision.
+
+**Measured and rejected: clearing the verdicts on re-open.** Making `reopen_input` clear
+CHECKED/DEFNOUSE/ACTIVE/USED and resetting the pass state, with the pruning deferred until after the
+second round, is a REGRESSION — and a bad one. On the specimens it does not add the missing argument;
+it removes the arguments that were already right, including `FUN_00033370`'s
+`func_0x000332c4(param_1, param_2, 0x8ce58)` which the +81 fix had made exact. Clearing a verdict
+discards a good committed decision rather than refining it, because the second evaluation runs
+against a graph where the earlier evidence is no longer visible either.
+
+So the fix is not "re-evaluate everything later". It has to be narrower — re-evaluate only the trial
+whose backing varnode CHANGED since it was judged, which is a different and smaller question.
+
 ## The work-list, by measured marginal value
 
 Not "which class is biggest" — which class, if *eliminated*, leaves functions with **no**
