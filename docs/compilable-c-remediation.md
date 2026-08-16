@@ -1,0 +1,126 @@
+# Compilable C — survey and remediation plan
+
+**Status: planned, not started.** The 64-bit strand is being worked separately (see the last
+section); everything else here is recorded for later.
+
+71 of WAR2's 2,893 non-library functions (2.5%) emit C that does not compile. This is the
+complete population — mined from the cached compile logs, all 71 matched to their diagnostics,
+not a sample.
+
+The goal is not "make the 71 compile". Several of the causes below make *other* functions compile
+into the wrong arithmetic, and at least one family cannot be expressed in C at all. Getting the
+count to zero by adding definitions would hide more than it fixes.
+
+## Verified findings
+
+| cause | scale | what it actually is |
+| --- | --- | --- |
+| prelude helper vocabulary is a fixed list | **45 distinct** `CONCAT`/`SUB` variants referenced vs ~20 defined | an open-ended emitter met by an enumerated header |
+| Ghidra subfield syntax `x._4_1_` | 33 TUs, 32 fail; **130 of 146 uses are stack locals** | not C; Ghidra's name for an *unnamed field* of an aggregate |
+| `typedef double int8/uint8/xunknown8` | ~9 fail, unknown number silently miscompile | integer arithmetic rendered as floating point |
+| invented widths | `uint16` ×22, up to **20 bytes** | no 386 register or operation holds these |
+| `INT_CARRY(...)` with elided arguments | 7 | the raw *opcode name* leaking; the C form (`CARRY4`) already exists |
+| `spacebase *`, `switch (switchD)` | 4 | internal names escaping into C; `switchD` gates the two largest functions |
+| `break` outside a breakable statement | 4 | structurer defect |
+| pointer + pointer arithmetic, type mismatches | ~5 | type-recovery defects |
+| `#define POPCOUNT(x) (0)` | every user | **always wrong, never fails** |
+
+Related and already filed:
+[`decompiler-bug-guarded-store-hoisted.md`](decompiler-bug-guarded-store-hoisted.md) — a store the
+subject performs only on the taken branch is emitted unconditionally. Wrong code, two verified
+specimens.
+
+## Design principles (agreed before the plan)
+
+These came out of working the 64-bit case and they govern the rest.
+
+**Facts versus choices.** Instruction semantics, register widths and endianness are facts — they
+*are* the target, and analysis must stay faithful to them. Type assignment, variable merging and
+rendering are choices, and may legitimately be target-informed. The 64-bit width of `EDX:EAX` is
+a fact; `typedef double int8` is a choice, and a wrong one.
+
+**The target licenses representation, never value.** "Watcom 10.0a has no 64-bit integer type"
+answers *what may I write*, not *what does this program compute*. It can never license narrowing:
+if a program genuinely computes 64-bit, narrowing on the strength of the target produces a
+different program, and it does so exactly where the analysis understood least.
+
+**Narrowing beats lowering.** Where dataflow can prove a wide value unnecessary, the emitted C
+compiles to the original's own instructions. Legalizing a genuine wide operation into 32-bit
+pieces is correct but reproduces nothing. So prove it away first; legalize only the residue.
+
+**No mode flag through analysis.** A switch that changes analysis behaviour forks the IR away
+from Ghidra, and Ghidra is the oracle — the rule-trace diff, the parity gates and the fixtures all
+assume one comparable IR. Divergence belongs at a late, identified stage where it stays a bounded
+delta.
+
+**Cannot legalize is a first-class outcome.** Better to route a function off-band than to emit
+something that compiles into different behaviour.
+
+## Open design questions — settle these before implementing
+
+Recorded because each one is a place where the obvious fix is a workaround.
+
+**1. Generating the prelude is not obviously right.** "Emit whatever helpers a TU references" makes
+a 20-byte `CONCAT1010` *compile*, which is worse than failing — it converts a visible defect into
+an invisible one. The inverted design is to generate helpers only for widths the target can hold
+and treat anything wider as a defect signal, turning the generator into a detector. `CONCAT22`
+(a 4-byte result) is legitimate; `CONCAT1010` is not.
+
+**2. The subfields may be a type-recovery problem, not a splitting problem.** `x._4_1_` is Ghidra
+saying it could not *name* the field. With 130 of 146 uses on stack locals, the original probably
+had a struct on the stack — in which case the right C is a struct with named fields, not N
+scalars. This matters for reproduction: a struct local and several scalars allocate differently.
+Ask the oracle whether Ghidra splits these before choosing a frame.
+
+**3. Functions that can never be byte-exact are in the denominator.** 87 TUs use `swi`/`in`/
+`cpuid`; **zero** are byte-exact, and the prelude itself concedes these declarations make the C
+compile but do not make `int 3` reproducible. Same class of measurement error as counting library
+functions, which was already corrected once. Decide: track separately, or keep with a documented
+unreachable floor.
+
+**4. There is no contract for "compilable C".** The prelude is sediment — its own comments record
+that one missing declaration accounted for 74 of 156 failures at the time. Each entry is a patch
+for something the renderer emitted that is not C. If the contract existed — *a renderer may only
+emit constructs it can define, over types the target can hold* — most of these families would stop
+being fixable-in-the-prelude by construction, and the header would shrink to genuine runtime
+support. That contract is the actual deliverable; the phases below are its consequences.
+
+## Phases
+
+**Phase 1 — stop being silently wrong.** `typedef double int8` and `POPCOUNT → 0` produce
+plausible C that computes the wrong thing. Replace with definitions that fail to compile rather
+than miscompile. This will *raise* the failure count, which is the point. **Risk-free: zero
+currently-byte-exact functions use the 8-byte types or `CONCAT44`.**
+
+**Phase 2 — prelude generation, in its inverted form** (see open question 1). Generate for
+target-representable widths; make anything wider a reported defect rather than a definition.
+
+**Phase 3 — the 64-bit narrowing.** Being worked now; see below.
+
+**Phase 4 — the stack aggregates.** Largest population. Gated on open question 2 — establish
+whether this is type recovery or variable splitting *before* implementing.
+
+**Phase 5 — internal names escaping into C.** `INT_CARRY`, `spacebase`, `switchD` are one family,
+not three gaps: the renderer emitting identifiers it never declared. Fix as one, ideally by making
+that impossible rather than by handling each name.
+
+**Phase 6 — the genuine defects.** The guarded-store hoist (filed); `break` outside a breakable
+statement; pointer + pointer arithmetic. Each wants its own bug doc and an oracle classification
+first.
+
+**Cross-cutting — the off-band path.** Needed by Phase 1 and open question 3.
+
+Suggested order: 1 → 3 → 2 → 4 → 5 → 6, correctness before compile count.
+
+## The 64-bit strand (in progress)
+
+Settled by measurement on WAR2:
+
+* **No function computes in 64 bits.** Zero high-half reads across all 25 multiplies; all 10
+  divides are extension idioms (6 sign-extend, 3 zero-extend, 1 `cwtd` at 16-bit width).
+* **Ghidra emits `longlong` for the same code**, so this is not a mis-port — it is a deliberate
+  improvement over Ghidra, whose output is meant to be read rather than compiled.
+* The two cases need *different* techniques, and conflating them was an error in the first draft
+  of this plan: a multiply's high half is genuinely **dead** (liveness), while a divide's high half
+  is **consumed by the divide itself** and is instead a recognisable **extension idiom** (pattern).
+* `typedef double int8` is ours, not Ghidra's, and is a defect independent of any of this.

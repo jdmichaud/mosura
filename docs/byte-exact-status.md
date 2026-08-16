@@ -415,6 +415,12 @@ Both directions being present at once means the recovered prototype is right in 
 extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
 not a global loosening or tightening.
 
+## Compilable C
+
+71 of 2,893 non-library functions emit C that does not compile, and several of the causes make
+OTHER functions compile into the wrong arithmetic. Survey, design principles and phased plan:
+[`compilable-c-remediation.md`](compilable-c-remediation.md).
+
 ## P3 — which equivalent C source
 
 The source-form evidence base is [`byte-exact-source-forms.md`](byte-exact-source-forms.md): the
