@@ -112,7 +112,56 @@ first.
 
 Suggested order: 1 → 3 → 2 → 4 → 5 → 6, correctness before compile count.
 
-## The 64-bit strand (in progress)
+## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
+
+Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the
+diagnosis twice. Wide (>= 8 byte) varnodes are created by exactly **two** mechanisms:
+
+**A. `PIECE` + `INT_RIGHT` — an overlapping/misaligned stack access.** Three of four specimens,
+always the same shape:
+
+```
+s0xfffffff0:8 = PIECE r0x4:4  s0xfffffff0:4      <- built to service a straddling read
+u0x10039:8    = INT_RIGHT s0xfffffff0:8 #0x10
+s0xfffffff2:4 = SUBPIECE u0x10039:8 #0x0
+```
+
+`FUN_00042200` is the worked case. The subject stores 4 bytes at `ebp-4` and then loads 4 bytes
+at `ebp-6` — overlapping the store by two bytes — and shifts right 16 to pull out the low word.
+Ghidra refines the stack region and emits `uStack_c = (short)param_1; ... (int)uStack_c`. mosura
+builds an 8-byte value spanning both accesses and extracts from it.
+
+This is **not** a rule gap. `RuleConcatShift` (`concat(V,W) >> c => zext(V)`) is ported, wired at
+pool slot 34 and unit-tested, and it correctly DECLINES here: the shift is 16, less than the low
+part's 32 bits, so it straddles and no extension identity applies. The divergence is upstream, in
+how heritage refines a memory range under overlapping accesses of different offsets and sizes.
+
+**It is therefore the same root cause as the subfield family** (open question 2), not a separate
+problem — which consolidates two of the families in this document into one piece of work.
+
+Also disproved along the way: **no multiply produces a wide varnode.** `FUN_00042200`'s
+`INT_MULT` is `r0x4:4 = INT_MULT r0x4:4 r0xc:4`, fully 32-bit. The "25 functions with mul/imul"
+correlation was a red herring — those functions contain multiplies AND wide values, unrelated.
+The dead-high-half narrowing proposed earlier would have fixed nothing.
+
+## The genuinely-64-bit strand
+
+**B. `INT_SEXT` + `INT_SDIV` — the division extension idiom.** The only mechanism that is really
+about wide arithmetic:
+
+```
+u0x76d00:8 = INT_SEXT r0xa86a8:4
+u0x77400:8 = INT_SDIV #0xf42400:8 u0x76d00:8
+```
+
+Ten functions, all extension idioms (6 sign-extend, 3 zero-extend, 1 `cwtd` at 16-bit). Ghidra
+emits `longlong` for these too, so narrowing them is a deliberate improvement over Ghidra rather
+than a mis-port, and it is licensed by a checkable precondition: a dividend that is the extension
+of a narrower value, divided by a value of that width, is a division at that width.
+
+This is the tractable, well-scoped part of the original 64-bit plan, and it stands.
+
+## Original 64-bit notes (superseded in part by the correction above)
 
 Settled by measurement on WAR2:
 
