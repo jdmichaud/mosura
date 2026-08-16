@@ -182,6 +182,79 @@ substantial — it is the majority of the wide-value population, the subfield fa
 general quality of stack-variable recovery, which the `FUN_0006c6f0` convergence showed is
 pervasive.
 
+## CORRECTION 2 — the divide non-narrowing traced to its root: late dead-code removal
+
+Established by running Ghidra's own OPACTION_DEBUG trace on the WAR2 function and mosura's
+trace beside it — not by reading source. Three claims made from source-reading died on the
+traces in one session: "Ghidra emits `longlong` for these too" (it narrows the unsigned case),
+"`subvar_subpiece` is what narrows this divide" (it is `subcommute`), and a first-draft "800x
+churn" figure (a scope confound — see the measurement note below).
+
+**New capability: `oracle/ghidra_scripts/DumpDecompDebug.java`.** `scripts/trace-diff.sh` can
+only trace Ghidra's shipped datatest fixtures, so questions about WAR2 functions used to be
+answered by inference from `ruleaction.cc`. The script dumps Ghidra's decompiler debug
+savefile for any WAR2 VA, which `oracle/capture_trace <sleighdir> <xml> --trace` replays under
+OPACTION_DEBUG so Ghidra names its own mechanisms:
+
+```sh
+GHIDRA_POSTSCRIPT=DumpDecompDebug.java GHIDRA_POSTSCRIPT_ARGS=<outdir> \
+  WAR2_MANIFEST=<manifest.tsv> GHIDRA_DIST=<dist> scripts/ghidra-decompile-war2.sh 0002a4f0
+./oracle/capture_trace <ghidra-src-or-dist-root> <outdir>/0002a4f0.xml --trace
+```
+
+(`enableDebug` requires `setOptions` explicitly or the savefile writer NPEs on a null options
+block; the non-debug path never encodes options, which is why `DecompileFunctions.java` gets
+away without it.)
+
+**Measurement note — scope the trace before comparing.** `MOSURA_TRACE=1` on `dumpwar2`
+captures every decompile in `analyze_le_file` (4,718 distinct instruction addresses), not just
+the requested function; the target's own decompile is only the final contiguous block of the
+trace. A first-draft comparison missed this and reported the whole-analysis count (462,152)
+against Ghidra's single function (~585) as "800x churn". Scoped correctly, `FUN_0002a4f0`'s
+decompile is **1,525 successful applications vs Ghidra's ~585 — 2.6x** (earlyremoval 723 vs
+199, propagatecopy 333 vs 141). Same counting surface both sides (`debug_mod_print` returns
+early on an empty modify list, exactly like `debugModPrint`).
+
+**The verified causal chain on `FUN_0002a4f0`** (lifts byte-identical, checked):
+
+1. Ghidra runs its **`deadcode` action immediately after heritage** (trace: `heritage ->
+   returnrecovery -> deadcode -> first rule`), which removes the imul's dead flag web (the
+   `CF = INT_NOTEQUAL(SEXT48(lo), product)` overflow computation and its consumers) before
+   any rule fires. mosura's early `consume` action leaves that web alive; it decays ~800
+   blocks later through rule collapse plus `earlyremoval`.
+2. With the flag compare alive, the 8-byte product is **not lone-descended**, so mosura's
+   `subcommute` — a faithful port; Ghidra's own guard is
+   `if (base->loneDescend() != op) return 0;` — **correctly declines** at the imul's
+   `SUB84`. In Ghidra it fires (DEBUG 159): `SUB84(SEXT48(x) * #0x9c4, 0) -> x * #0x9c4`,
+   and the multiply is 4-byte before the divide is ever considered.
+3. Because the multiply stays wide in mosura, its low half stays SUBPIECE-defined, so at the
+   divide's `ZEXT` the rule `subzext` matches (in Ghidra the pattern no longer exists) and
+   rewrites `ZEXT -> INT_AND`, off the path `shiftpiece`/`piece2sext` need.
+4. Meanwhile `doublesub` merges the divide's `SUB84 -> SUB42` chain into a direct **2-byte**
+   SUBPIECE of the 8-byte quotient. In Ghidra, `subcommute` dissolved the `SUB84` first
+   (DEBUG 168: `SUB84(A / B, 0) -> SUB84(A,0) / SUB84(B,0)`, its INT_SDIV arm requiring
+   sign-extended inputs — the soundness precondition), so `doublesub` never fires there.
+5. When `subvar_subpiece` finally narrows the product (~860 blocks later) and
+   `shiftpiece`/`piece2sext` rebuild `SEXT48(x)`, the divide's only SUBPIECE retains 2 bytes
+   — too narrow for `subcommute`'s arm to ever fire soundly. The divide stays 8-byte; the C
+   gets `int8`.
+6. The do/undo round trips (`subzext` then `subvar_subpiece` undoing it; the doublesub'd
+   chain) are a visible slice of the 2.6x churn — same root.
+
+**The build item is therefore dead-code timing/behavior parity, not a divide rule.** Every
+rule involved is already faithfully ported and every guard behaved correctly; what differs is
+that Ghidra removes dead ops (flag webs above all) in an ActionDeadCode pass right after
+heritage, and mosura does not. Remaining investigation, bounded and specimen-driven: establish
+whether mosura's counterpart is mis-positioned in the schedule or mis-behaving on this web
+(the op to step is the `INT_NOTEQUAL` CF compare at `0x2a5f5`), against
+`coreaction.cc` ActionDeadCode and the consume-bit machinery it relies on.
+
+**Scope note on which divides Ghidra can narrow at all:** `RuleSubCommute`'s DIV/SDIV arms
+require input 0 to be *written* by an extension. `FUN_0006c6f0`/`FUN_0006cfd0` divide a wide
+**constant** by `SEXT48(x)` (`#0xf42400 / SEXT48(x)`), so the guard declines and Ghidra
+itself emits `longlong` there — consistent with the hand-convergence notes. Dead-code parity
+recovers the `FUN_0002a4f0` class (extension-fed dividend), not the constant-dividend class.
+
 ## The genuinely-64-bit strand
 
 **B. `INT_SEXT` + `INT_SDIV` — the division extension idiom.** The only mechanism that is really
@@ -192,9 +265,9 @@ u0x76d00:8 = INT_SEXT r0xa86a8:4
 u0x77400:8 = INT_SDIV #0xf42400:8 u0x76d00:8
 ```
 
-Ten functions, all extension idioms (6 sign-extend, 3 zero-extend, 1 `cwtd` at 16-bit). Ghidra
-emits `longlong` for these too, so narrowing them is a deliberate improvement over Ghidra rather
-than a mis-port, and it is licensed by a checkable precondition: a dividend that is the extension
+Ten functions, all extension idioms (6 sign-extend, 3 zero-extend, 1 `cwtd` at 16-bit). Ghidra emits `longlong` only for the SIGNED ones (`subflow.cc` has INT_DIV/INT_REM arms and
+NO INT_SDIV/INT_SREM arm, so Ghidra structurally cannot narrow a signed divide); it DOES narrow
+the unsigned case, which mosura does not — see CORRECTION 2, and it is licensed by a checkable precondition: a dividend that is the extension
 of a narrower value, divided by a value of that width, is a division at that width.
 
 This is the tractable, well-scoped part of the original 64-bit plan, and it stands.
