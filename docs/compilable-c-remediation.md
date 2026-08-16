@@ -144,6 +144,44 @@ Also disproved along the way: **no multiply produces a wide varnode.** `FUN_0004
 correlation was a red herring — those functions contain multiplies AND wide values, unrelated.
 The dead-high-half narrowing proposed earlier would have fixed nothing.
 
+## Mechanism A scoped — it is a porting project, not a wiring fix
+
+Measured, so the next session does not repeat it.
+
+**The producer is `normalize_write_size`, not refinement.** Instrumenting every `PIECE` creation
+site in `heritage.rs` (`MOSURA_PIECE_SRC=1`) on `FUN_00042200` shows the specimen's wide value
+built by the guard/normalize path:
+
+```
+[piece] normalize_write_size#1 @0x42209 inputs=[("stack", -12, 4), ("stack", -16, 4)]
+```
+
+Normalize widens a narrow write to the full merged range by concatenating it with the
+pre-existing bytes. That is correct behaviour *for an unrefined range* — and the range is
+unrefined because mosura's refinement is scoped to SIMD.
+
+**Ghidra's ordering is what we lack.** `placeMultiequals` (heritage.cc:2610) refines EVERY
+heritaged range whose `size > 4 && max_write < size`, with no space restriction, and it does so
+**before** the normalize at :2629. mosura ports the family faithfully in `refine_overlaps` but
+restricts it two ways — collection to the register space, and within that to laned/SIMD offsets —
+and has a second partial path (`refine_ranges`) that fires only on a space's re-entry passes.
+
+**Widening the scope is NOT sufficient — measured.** Parameterising `refine_overlaps` by space and
+running it over the stack with the laned restriction lifted changed **nothing**: same `PIECE` from
+`normalize_write_size`, byte-identical C. The range is not intercepted at the point where it is
+normalized, so the fix is about *where refinement runs in the sequence*, not which spaces it
+covers. Reverted.
+
+This confirms the code's own note (`heritage.rs`, "THE REFINEMENT CARVE-OUT IS NOT WIRED HERE
+YET"): the general case is a held piece of work with a measured payoff (`stackreturn` to 1.000,
+`deindirect2` restored), and landing it means wiring refinement into the `placeMultiequals`
+equivalent ahead of normalize on the shared merged ranges — not extending an existing call.
+
+Cost: substantial, touching heritage sequencing, with corpus-wide blast radius. Value: also
+substantial — it is the majority of the wide-value population, the subfield family, and the
+general quality of stack-variable recovery, which the `FUN_0006c6f0` convergence showed is
+pervasive.
+
 ## The genuinely-64-bit strand
 
 **B. `INT_SEXT` + `INT_SDIV` — the division extension idiom.** The only mechanism that is really
