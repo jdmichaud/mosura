@@ -184,7 +184,21 @@ impl WatcomDos {
 
 impl Toolchain for WatcomDos {
     fn id(&self) -> String {
-        format!("watcom-{}", self.version)
+        // The PRELUDE is part of this toolchain's identity, because it is prepended to every unit
+        // before compilation (`compile_batch` below) -- it is a compiler input exactly as the
+        // source is, and the trait's contract for `id` is "anything else that changes the bytes
+        // it emits".
+        //
+        // Leaving it out is not a missed optimization, it is a WRONG-RESULT bug, and the cache's
+        // confirm-the-source safety net cannot catch it: that check compares `unit.source`, which
+        // is identical across two runs that differ only in prelude, so the stale entry is served
+        // as a match. Measured while hand-converging FUN_0006c6f0: a run with no `prelude.h`
+        // present failed to compile (every `xunknown4` an undeclared identifier), and every later
+        // run WITH the prelude kept returning that cached COMPILE_FAIL in 0.2s -- a false verdict
+        // that survives until the entry is deleted by hand.
+        let mut h = super::cache::Fnv::new();
+        h.write(self.prelude.as_bytes());
+        format!("watcom-{}-{}", self.version, h.hex())
     }
 
     fn compile_batch(&self, units: &[CompileUnit]) -> Vec<CompileOutput> {
@@ -230,5 +244,27 @@ impl Toolchain for WatcomDos {
             pending = next_round;
         }
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recompile::toolchain::Toolchain;
+
+    /// The prelude is prepended to every unit, so it changes the bytes the compiler emits and
+    /// must be part of this toolchain's identity — the cache keys on `id`, and its confirm-the-
+    /// source safety net cannot catch a prelude change (the unit's own source is unchanged).
+    ///
+    /// Without this, a run whose prelude was missing cached its COMPILE_FAIL under the same key
+    /// the fixed run then hit, and the false verdict survived every later run.
+    #[test]
+    fn the_prelude_is_part_of_the_toolchain_identity() {
+        let work = std::env::temp_dir().join("mosura-wc-id-test");
+        let a = WatcomDos::new("/nonexistent", &work, "10.0a").expect("work dir").with_prelude("typedef int int4;");
+        let b = WatcomDos::new("/nonexistent", &work, "10.0a").expect("work dir").with_prelude("typedef long int4;");
+        assert_ne!(a.id(), b.id(), "different preludes are different compilers as far as the cache is concerned");
+        let c = WatcomDos::new("/nonexistent", &work, "10.0a").expect("work dir").with_prelude("typedef int int4;");
+        assert_eq!(a.id(), c.id(), "the same prelude is the same identity");
     }
 }

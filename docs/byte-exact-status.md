@@ -415,6 +415,20 @@ Both directions being present at once means the recovered prototype is right in 
 extent, so the next step is per-slot evidence (which callee reads which storage, at what width),
 not a global loosening or tightening.
 
+## P3 — which equivalent C source
+
+The source-form evidence base is [`byte-exact-source-forms.md`](byte-exact-source-forms.md): the
+catalog of binary-evidence -> C-shape mappings measured against Watcom 10.0a, the one-second
+single-function probe loop, the plateau analysis from hand-converging WAR2's largest honestly-
+measured function (27 -> 177 of 536 instructions matching), and the design the evidence implies
+for an automated P3 search. Working artifacts are preserved in `oracle/war2-convergence/`.
+
+That session also produced a WRONG-CODE defect, filed separately:
+[`decompiler-bug-guarded-store-hoisted.md`](decompiler-bug-guarded-store-hoisted.md) — a store
+the subject performs only on the taken side of a test is emitted unconditionally, so the
+recompiled program writes where the original does not. Two verified specimens; not yet compared
+against Ghidra.
+
 ## FINDING — local declaration order steers Watcom's register allocator
 
 Measured during the FUN_0006c6f0 hand-convergence (the single-function compile loop, ~1s per

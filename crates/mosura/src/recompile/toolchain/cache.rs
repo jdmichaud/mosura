@@ -114,16 +114,23 @@ impl<T: Toolchain> Toolchain for Cached<T> {
 
 /// 128-bit FNV-1a. Only ever used to pick a filename — correctness rests on the stored-source
 /// comparison, not on this.
-struct Fnv {
-    hi: u64,
-    lo: u64,
+/// The content digest both the cache slot and a toolchain's [`Toolchain::id`] are built from —
+/// one definition, because an `id` that digests differently from the slot key is exactly the
+/// inconsistency the cache's confirm-the-source rule exists to prevent.
+pub(crate) struct Fnv {
+    pub(crate) hi: u64,
+    pub(crate) lo: u64,
 }
 
 impl Fnv {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { hi: 0x6c62272e07bb0142, lo: 0x62b821756295c58d }
     }
-    fn write(&mut self, bytes: &[u8]) {
+    /// The digest so far, as a stable hex string.
+    pub(crate) fn hex(&self) -> String {
+        format!("{:016x}{:016x}", self.hi, self.lo)
+    }
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
         for b in bytes {
             self.lo ^= *b as u64;
             // 128-bit multiply by the FNV prime (2^88 + 0x13b), done in two limbs.
