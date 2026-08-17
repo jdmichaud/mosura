@@ -77,10 +77,20 @@ typedef struct mosura_no_such_integer_width_on_this_target undefined7;
 typedef unsigned char uint1; typedef unsigned short uint2; typedef unsigned int uint4;
 typedef signed char int1; typedef short int2; typedef int int4;
 typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsigned int xunknown4;
-typedef unsigned int xunknown3; typedef unsigned int xunknown5;
-typedef unsigned char undefined3; typedef unsigned int undefined5;
-typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
-typedef unsigned int uint6; typedef int int6; typedef unsigned int uint10; typedef int int10;
+typedef unsigned int xunknown3;
+typedef struct mosura_no_such_integer_width_on_this_target xunknown5;
+typedef unsigned char undefined3;
+typedef struct mosura_no_such_integer_width_on_this_target undefined5;
+typedef unsigned int uint3; typedef unsigned int int3;
+/* Wrong-WIDTH integer stand-ins retired (Phase 2): 5/6/10-byte integers do not exist on this
+   target, and `unsigned int` silently truncated them. 3-byte values FIT their 4-byte container
+   (sub-register pieces), so uint3/int3 stay. */
+typedef struct mosura_no_such_integer_width_on_this_target uint5;
+typedef struct mosura_no_such_integer_width_on_this_target int5;
+typedef struct mosura_no_such_integer_width_on_this_target uint6;
+typedef struct mosura_no_such_integer_width_on_this_target int6;
+typedef struct mosura_no_such_integer_width_on_this_target uint10;
+typedef struct mosura_no_such_integer_width_on_this_target int10;
 typedef int code(); typedef unsigned int pointer;
 /* CALLOTHER intrinsics. Ghidra renders an unmodelled instruction as a call to a named user-op, and
    the x86 SLEIGH spec names the software interrupt `swi`, the port read `in`, and `cpuid`.
@@ -120,6 +130,30 @@ typedef unsigned char bool;
 #define SEXT14(x) ((int)(signed char)(x))
 #define SEXT24(x) ((int)(short)(x))
 #define SEXT12(x) ((short)(signed char)(x))
+/* The CLOSED in-contract vocabulary, completed (Phase 2). Ghidra's emitter is open-ended over
+   width pairs; the header used to be an enumeration that could miss a member (one missing
+   declaration once accounted for 74 of 156 compile failures). Below are the in-contract
+   combinations the proven set above does not cover, derived mechanically: SUB<s><o> for source
+   s<=4; ZEXT/SEXT<s><o> for s<o<=4 (3-byte operands live in their 4-byte container, masked or
+   shift-extended where the container lies); CARRY/SCARRY/SBORROW over 1/2/4. Anything outside
+   this grammar is out of contract and stays a tripwire. `build_prelude()` asserts the closure. */
+#define SUB31(x,n) ((unsigned char)((unsigned int)(x)>>((n)*8)))
+#define SUB32(x,n) ((unsigned short)((unsigned int)(x)>>((n)*8)))
+#define SUB43(x,n) ((unsigned int)((unsigned int)(x)>>((n)*8))&0xffffff)
+#define SUB22(x,n) (x)
+#define SUB33(x,n) (x)
+#define SUB11(x,n) (x)
+#define ZEXT13(x) ((unsigned int)(unsigned char)(x))
+#define ZEXT23(x) ((unsigned int)(unsigned short)(x))
+#define ZEXT34(x) ((unsigned int)(x)&0xffffff)
+#define ZEXT33(x) ((unsigned int)(x)&0xffffff)
+#define SEXT13(x) ((int)(signed char)(x))
+#define SEXT23(x) ((int)(short)(x))
+#define SEXT34(x) (((int)((unsigned int)(x)<<8))>>8)
+#define CARRY2(a,b) ((((unsigned int)(unsigned short)(a)+(unsigned int)(unsigned short)(b)))>0xffffU)
+#define SCARRY4(a,b) ((int)(((~((unsigned int)(a)^(unsigned int)(b)))&((unsigned int)(a)^((unsigned int)(a)+(unsigned int)(b))))>>31))
+#define SCARRY1(a,b) SCARRY4((int)(signed char)(a),(int)(signed char)(b))
+#define SCARRY2(a,b) SCARRY4((int)(short)(a),(int)(short)(b))
 #define SBORROW4(a,b) ((int)((((unsigned int)(a)^(unsigned int)(b))&((unsigned int)(a)^((unsigned int)(a)-(unsigned int)(b))))>>31))
 #define SBORROW1(a,b) SBORROW4((int)(signed char)(a),(int)(signed char)(b))
 #define SBORROW2(a,b) SBORROW4((int)(short)(a),(int)(short)(b))
@@ -158,6 +192,55 @@ typedef unsigned char bool;
 /// what it produced outside the contract, in its own manifest, at emit time — the prelude's
 /// incomplete-struct tripwire (Phase 1) remains only as the backstop behind it. Off-band
 /// handling per the plan: the TU is still written and still fails loudly; nothing is hidden.
+/// Assemble the prelude, asserting the CLOSED in-contract helper vocabulary is fully defined —
+/// every SUB/ZEXT/SEXT over sources <= 4 bytes, every CONCAT with h+l <= 4, and the
+/// carry/borrow family over 1/2/4 must have a `#define`; and no in-contract name may alias the
+/// out-of-contract tripwire. The assertion is what makes the header a CONTRACT rather than an
+/// enumeration that can silently miss a member (docs/compilable-c-remediation.md, Phase 2).
+fn build_prelude() -> &'static str {
+    let defined: std::collections::HashSet<&str> = PRELUDE
+        .lines()
+        .filter_map(|l| l.strip_prefix("#define "))
+        .filter_map(|l| l.split('(').next())
+        .collect();
+    let mut expected: Vec<String> = Vec::new();
+    for s in 1..=4u32 {
+        for o in 1..=s {
+            expected.push(format!("SUB{s}{o}"));
+        }
+        for o in s..=4u32 {
+            expected.push(format!("ZEXT{s}{o}"));
+            if s < o || s == o {
+                // SEXT identity (s==o) is never emitted; extension only
+            }
+            if s < o {
+                expected.push(format!("SEXT{s}{o}"));
+            }
+        }
+    }
+    for h in 1..=3u32 {
+        for l in 1..=3u32 {
+            if h + l <= 4 {
+                expected.push(format!("CONCAT{h}{l}"));
+            }
+        }
+    }
+    for n in [1u32, 2, 4] {
+        expected.push(format!("CARRY{n}"));
+        expected.push(format!("SCARRY{n}"));
+        expected.push(format!("SBORROW{n}"));
+    }
+    for name in &expected {
+        assert!(defined.contains(name.as_str()), "in-contract helper {name} is not defined in the prelude");
+        let def_line = PRELUDE.lines().find(|l| l.starts_with(&format!("#define {name}("))).unwrap();
+        assert!(
+            !def_line.contains("mosura_no_such_integer_width"),
+            "in-contract helper {name} aliases the out-of-contract tripwire"
+        );
+    }
+    PRELUDE
+}
+
 fn contract_violations(tu: &str) -> Vec<String> {
     let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let split_pair = |d: &str| -> Option<(u32, u32)> {
@@ -203,7 +286,7 @@ fn contract_violations(tu: &str) -> Vec<String> {
                 w,
                 "int8" | "uint8" | "xunknown8" | "xunknown6" | "xunknown7" | "undefined6"
                     | "undefined7" | "undefined8" | "int5" | "uint5" | "int6" | "uint6"
-                    | "int10" | "uint10"
+                    | "int10" | "uint10" | "xunknown5" | "undefined5"
             )
         };
         if bad {
@@ -454,7 +537,7 @@ fn main() {
         let out = std::path::PathBuf::from(
             args.next().expect("usage: war2_survey --prelude-only <out_dir>"),
         );
-        std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
+        std::fs::write(out.join("prelude.h"), build_prelude()).unwrap();
         println!("wrote {}", out.join("prelude.h").display());
         return;
     }
@@ -558,7 +641,7 @@ fn main() {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::create_dir_all(&raw_dir).unwrap();
-        std::fs::write(out.join("prelude.h"), PRELUDE).unwrap();
+        std::fs::write(out.join("prelude.h"), build_prelude()).unwrap();
     }
     // compile.sh reads <out>/src/$n.c and <out>/manifest.tsv; compare.py reads <out>/manifest.tsv.
     // Pointing the bare names at the current stamp keeps both working unchanged.
