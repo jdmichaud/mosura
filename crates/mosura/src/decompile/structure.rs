@@ -293,7 +293,7 @@ pub struct Structured {
     /// Per basic block: whether it is too complicated to print inside a condition — Ghidra's
     /// `BlockBasic::isComplex` (block.cc:2388), precomputed from `Funcdata` at build. Read by
     /// [`is_complex`](Self::is_complex) (the `ruleBlockOr` orblock guard, blockaction.cc:1342).
-    complex: Vec<bool>,
+    pub complex: Vec<bool>,
     /// Reverse-post-order number per leaf block — Ghidra's `FlowBlock::index` set by
     /// [`structure_loops`] (`findSpanningTree`). Loop ordering (`compare_ends`/`compare_head`) keys on
     /// it. Indexed by leaf block id.
@@ -3210,13 +3210,31 @@ pub fn structure(f: &Funcdata) -> Structured {
     // Per-block print complexity — Ghidra's `BlockBasic::isComplex` (block.cc:2388): count the
     // ops that print as statements (a conservative `calc_explicit`); more than two (the branch
     // counts as one) makes the block too complex to fold into a condition.
-    let complex: Vec<bool> = (0..f.num_blocks())
+    //
+    // FROZEN AT THE FIRST COLLAPSE: Ghidra takes these verdicts once per CFG (the collapse runs
+    // behind `graph.getSize() != 0`, blockaction.cc:2172) and never revisits them — the graph the
+    // first mainloop-iteration collapse sees still has the delayed-heritage shapes (a loop
+    // re-reading a global counts its unmerged reload as a crossing statement). mosura's
+    // re-deriving builds must reuse that first verdict (`Funcdata::structure_complex`) or the
+    // late, cleaned graph flips WhileDo-overflow and short-circuit decisions Ghidra froze early.
+    let complex: Vec<bool> = if let Some(c) =
+        f.structure_complex.as_ref().filter(|c| c.len() == f.num_blocks())
+    {
+        c.clone()
+    } else {
+        (0..f.num_blocks())
         .map(|b| {
             let bid = BlockId(b as u32);
             let mut statement = if f.block(bid).out_edges.len() >= 2 { 1 } else { 0 };
             for &op in &f.block(bid).ops {
                 let o = f.op(op);
-                if o.is_marker() {
+                // Skip dead ops: mosura's block op lists retain removed ops (output cleared,
+                // inputs gutted) — Ghidra's `BlockBasic::isComplex` walks a live-only list. A
+                // gutted flag-compare (`IntEqual out=None`) counted as a statement here pushed
+                // forcomma's loop-head past the threshold, and the WhileDo printed in overflow
+                // syntax (`while(true){if(...)break;}`) instead of the comma-condition form —
+                // the ground_truth_parity for/loop-comma gates.
+                if o.is_marker() || o.is_dead() {
                     continue;
                 }
                 let yes = if matches!(o.code(), OpCode::Call | OpCode::Callind | OpCode::Callother) {
@@ -3233,6 +3251,13 @@ pub fn structure(f: &Funcdata) -> Structured {
                 };
                 if yes {
                     statement += 1;
+                    if std::env::var_os("MOSURA_COMPLEX").is_some() {
+                        eprintln!(
+                            "COMPLEX blk{b} stmt#{statement}: {:x}:{} {:?} out={:?}",
+                            o.seqnum.pc.offset, o.seqnum.uniq, o.code(),
+                            o.output.map(|v| (f.vn(v).loc.offset, f.vn(v).descend.len()))
+                        );
+                    }
                 }
                 if statement > 2 {
                     return true;
@@ -3240,7 +3265,8 @@ pub fn structure(f: &Funcdata) -> Structured {
             }
             false
         })
-        .collect();
+        .collect()
+    };
     let n = f.num_blocks();
     let mut s = Structured {
         collapse_count: 0,

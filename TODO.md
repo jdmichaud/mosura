@@ -594,14 +594,47 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
 
 ## Open defects found during the E1032 instrument (2026-08-17)
 
-- **`ground_truth_parity`: 4 tests failing since `c370f1d`** (the five post-fullloop deadcode
-  sweep removals, 571→585 EXACT): `for_comma_condition_inline`, `loop_comma_condition_inline`
-  (walk_ recovers `while(true)` instead of a `for`), `callee_register_return_is_recovered_with_
-  its_argument`, `computed_goto_table_is_refused_once_function_bodies_are_current`. Bisected —
-  every commit 3c80d4b→ok, c370f1d→FAILED; NOT caused by later work (fails at every subsequent
-  commit with clean trees). The sweep removal was faithful, so per the porting rule the failures
-  point at non-Ghidra code that composed with the sweeps (the for-recovery/return-recovery paths
-  these tests pin). Un-triaged; needs its own instrument session.
+- **`ground_truth_parity`: 4 failing tests — ALL RESOLVED (2026-08-17).** Four distinct roots,
+  none of them the c370f1d deadcode sweeps per se (that bisect anchor held only for the comma
+  tests; computed_goto was born failing at its own introduction commit):
+  - `for_comma_condition_inline`: gutted dead ops in block op lists counted as statements in the
+    structurer's `is_complex` (a dead `IntEqual out=None` flag compare), pushing the loop head
+    past the threshold -> WhileDo printed in overflow syntax. Fixed: skip dead ops (Ghidra's
+    `BlockBasic::isComplex` walks a live-only list). Oracle-verified: Ghidra prints the same
+    for-loop with an EMPTY initializer, which exposed a second mis-port -- `findInitializer`
+    requires a WRITTEN initializer (`block.cc:3229`); mosura's def-less carry printed
+    `for (param_1 = param_1; ...)` self-assigns.
+  - `loop_comma_condition_inline`: Ghidra freezes every collapse-time verdict at the FIRST
+    structure build (`ActionBlockStructure::apply` returns early once built, blockaction.cc:2172)
+    -- typically mainloop iteration 1, BEFORE delayed ram heritage merges a loop's global reload,
+    so loopcomma's head counts 3 statements -> overflow `while(true)` form. mosura's re-deriving
+    orientation builds recomputed `complex` on the late graph and flipped the verdict. Fixed:
+    `Funcdata::structure_complex` pins the first collapse's verdicts, cleared exactly at
+    `structure_reset()`. Both walk_ shapes now byte-match the oracle; the WAR2 nested-if family
+    (14 EXACT) that briefly regressed under the dead-skip alone came back +1 (sb38: 586 EXACT).
+  - `callee_register_return_is_recovered_with_its_argument`: the call-arg monotone union
+    resurrected a POSITIONAL HOLE (`fillin_map` marks inactive trials between actives used AND
+    active) as a phantom middle argument -- `func(xRam, param_2, param_2)`. Fixed: the union's
+    evidence bar is the PRE-FILLIN active verdict (`check_input_trial_use`'s "the caller placed
+    this value"), matching the adaptation's own stated rationale.
+  - `computed_goto_table_is_refused_once_function_bodies_are_current`: `RuleConcatCommute` fired
+    on `PIECE(#0, x & 3)` because mosura's `is_free` excludes constants where Ghidra's
+    `Varnode::isFree` (= `!(written|input)`, varnode.hh:238) includes them -- the `hi->isFree()`
+    guard (ruleaction.cc:4530) is what reserves the constant-hi PIECE for `RuleConcatZero`'s
+    clean `INT_ZEXT`. The manufactured `& 0xffffffff00000003` mask defeated the jump-table
+    index-range analysis; the BRANCHIND fell back to an indirect call, no ComputedJump refs
+    formed, and the AddressTable collision rule had nothing to refuse. Fixed at the rule site
+    (free-or-constant guard); oracle-verified (full 4-case switch recovered).
+
+- **`is_free` vs Ghidra `Varnode::isFree` — systematic audit needed.** mosura: `!(INSERT |
+  CONSTANT)`; Ghidra: `!(written | input)` — they disagree exactly on CONSTANTS (free in
+  Ghidra, not in mosura). Every ported `isFree()` call translated as `is_free()` shares the
+  hazard; RuleConcatCommute was one measured casualty (above). Audit each call site or align
+  the definition (the flag-model divergence also touches addrtied: registers are NOT blanket
+  addrtied in Ghidra — measured `ZF addrtied=0` via CAPTURE_FLAGS_AT — while mosura's
+  `alloc_varnode` marks spacebase/ram-space varnodes; a definitional alignment needs its own
+  measured session).
+
 - **Port I/O ops dropped in `FUN_0005c5ec` — FIXED (2026-08-17).** Not a dataflow loss: the
   final IR carried every CALLOTHER; printc's statement catch-all required an OUTPUT to emit, so
   a void userop (`out(port, val)`) produced no statement — Ghidra's `emitExpression` no-output

@@ -1152,9 +1152,29 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     let model_used: Option<std::collections::HashSet<(Address, u32)>> = if committed {
         f.proto_model.input.clone().and_then(|m| {
             f.active_inputs.get(&call).map(|a| {
+                // PRE-FILLIN ACTIVE is the evidence bar. The monotone rule's whole rationale
+                // (below) is that the CALL SITE shows an argument the callee ignores "because the
+                // caller still has to place the value" — and active-before-fillin is precisely
+                // `check_input_trial_use`'s verdict that the value was placed to feed this call.
+                // `fillin_map` additionally marks the POSITIONAL HOLES between actives used AND
+                // active (an inactive trial sandwiched in the model's group order), which carry
+                // no call-site evidence at all; resurrecting one puts a phantom middle argument
+                // back after the recovered list correctly excluded it. Measured on regout's
+                // `use_ -> bump_` (`add ebx,eax; ret`): trials EAX active, EBX active, EDX a dead
+                // passthrough of param_2 — the model probe hole-filled EDX between them and the
+                // union re-marked it, emitting `func_0x08048106(xRam..., param_2, param_2)` where
+                // the verified reference (and the callee's own two-register prototype) has two
+                // arguments.
+                let pre_active: std::collections::HashSet<(Address, u32)> =
+                    a.trial.iter().filter(|t| t.is_active()).map(|t| (t.addr, t.size)).collect();
                 let mut probe = a.clone();
                 m.fillin_map(&mut probe);
-                probe.trial.iter().filter(|t| t.is_used()).map(|t| (t.addr, t.size)).collect()
+                probe
+                    .trial
+                    .iter()
+                    .filter(|t| t.is_used() && pre_active.contains(&(t.addr, t.size)))
+                    .map(|t| (t.addr, t.size))
+                    .collect()
             })
         })
     } else {

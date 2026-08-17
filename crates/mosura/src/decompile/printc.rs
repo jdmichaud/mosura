@@ -1403,13 +1403,18 @@ impl<'a> PrintC<'a> {
         if self.f.block(head).in_edges.len() == 2 {
             let init_slot = 1 - slot;
             let initvn = self.f.op(phi).input(init_slot)?;
-            // Ghidra `findInitializer` (block.cc:3223): a *written* initializer's def must be a
-            // NON-MARKER op sitting in the pre-loop block (the head's init-slot in-edge), which flows
-            // only to the loop. Otherwise there is no for-initializer and the loop stays a plain
-            // while — never emit a raw phi/marker as the init (`for (x = MULTIEQUAL(...); ...)`). A
-            // folded-constant initializer has no def op; mosura carries the varnode as before.
+            // Ghidra `findInitializer` (block.cc:3223): the initializer must be WRITTEN
+            // (`if (!initVn->isWritten()) return NULL`) by a NON-MARKER op sitting in the
+            // pre-loop block (the head's init-slot in-edge), which flows only to the loop.
+            // Otherwise there is no for-initializer and the header's first clause stays EMPTY —
+            // never emit a raw phi/marker as the init (`for (x = MULTIEQUAL(...); ...)`), and
+            // never a def-less varnode: an input or a pre-loop global version carried here
+            // renders as the self-assignment Ghidra does not print (forcomma's oracle says
+            // `for (; param_1[1] != param_2; …)` where the def-less carry produced
+            // `for (param_1 = param_1; …)`). A constant init (`for (i = 0; …)`) still prints
+            // when a real pre-loop `COPY #0` op exists — that op IS the initializer.
             let ok = match self.f.vn(initvn).def {
-                None => true,
+                None => false,
                 Some(def) => {
                     let db = self.f.op(def).parent;
                     !self.f.op(def).is_marker()

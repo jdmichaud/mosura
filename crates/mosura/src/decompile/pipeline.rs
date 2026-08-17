@@ -736,6 +736,12 @@ impl Action for ActionBlockStructure {
             return 0;
         }
         let s = super::structure::structure(data);
+        // Freeze the first collapse's per-block complexity verdicts (Ghidra collapses once per
+        // CFG and never revisits them; see `Funcdata::structure_complex`). Later re-deriving
+        // builds (orientation stages, FinalStructure, printc's fallback) reuse this vector.
+        if data.structure_complex.is_none() {
+            data.structure_complex = Some(s.complex.clone());
+        }
         let count = s.collapse_count;
         data.structure = Some(s);
         count

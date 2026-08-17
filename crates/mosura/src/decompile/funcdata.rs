@@ -139,6 +139,18 @@ pub struct Funcdata {
     /// or invalidated — consumers rebuild, except `ActionReturnSplit`, which SKIPS, exactly as
     /// Ghidra's `getSize() == 0` gate does (blockaction.cc:2276).
     pub structure: Option<super::structure::Structured>,
+    /// The per-basic-block print-complexity verdicts (`BlockBasic::isComplex`, block.cc:2388) as
+    /// decided by the FIRST structure collapse, persisted across the orientation stages' cache
+    /// drops. In Ghidra the collapse runs ONCE per CFG (`ActionBlockStructure::apply` returns
+    /// early on `graph.getSize() != 0`, blockaction.cc:2172) and every verdict it took — the
+    /// WhileDo overflow choice among them (`ruleBlockWhileDo`, blockaction.cc:1538) — is frozen
+    /// in the persistent graph until `structureReset()`. That first collapse typically runs at
+    /// mainloop iteration 1, BEFORE the delayed ram heritage merges a loop's global reload into
+    /// its phi web — so loopcomma's `while(true)` overflow form and the WAR2 nested-if families
+    /// hinge on the iteration-1 statement counts. mosura's re-deriving builds recomputed
+    /// `complex` on the late graph and silently flipped those verdicts; this cache pins them to
+    /// the first build, cleared exactly where Ghidra clears the structure (CFG mutation).
+    pub structure_complex: Option<Vec<bool>>,
     pub active_output: Option<super::fspec::ParamActive>,
     /// Width of the return storage the function was found to actually produce, recorded when the
     /// output trials commit.
@@ -323,6 +335,7 @@ impl Funcdata {
             active_output: None,
             return_bytes_consumed: 0,
             structure: None,
+            structure_complex: None,
             calls_awaiting_output: Default::default(),
             reopened_inputs: Default::default(),
             blocks_unreachable: false,
@@ -649,6 +662,7 @@ impl Funcdata {
     /// cache is the whole equivalent.)
     pub fn structure_reset(&mut self) {
         self.structure = None;
+        self.structure_complex = None;
     }
 
     pub fn set_blocks(&mut self, blocks: Vec<BlockBasic>) {

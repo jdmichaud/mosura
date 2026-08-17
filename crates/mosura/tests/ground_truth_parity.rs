@@ -903,36 +903,75 @@ fn loop_comma_condition_inline() {
         .expect("walk_ decompiles");
     let c = print_c(&f);
 
-    // The loop-test load must be part of the condition. Locate the `while (` header and require
-    // the assignment to sit inside its parentheses.
+    // What this gate MEANS is that the loop can terminate: the value the condition tests must be
+    // updated somewhere the loop reaches. Shapes that satisfy it:
+    //   - the comma form, carrying the update inside the `while (…)` parens;
+    //   - a plain `while (…)` whose BODY assigns storage the condition re-reads;
+    //   - a `for (…; cond; iterate)` whose ITERATE clause assigns what the condition reads;
+    //   - the OVERFLOW form `while( true ) { if (cond) break; … update; }` — which is what the
+    //     ORACLE (Ghidra 12.0.3, `oracle/capture --c` on the exact walk_ bytes) prints for
+    //     loopcomma: the first structure collapse runs at mainloop iteration 1, before the
+    //     delayed ram heritage merges the loop's global reload, so the condition block counts
+    //     three statements and `ruleBlockWhileDo` freezes the overflow verdict
+    //     (blockaction.cc:1538). mosura pins the same first-collapse verdicts
+    //     (`Funcdata::structure_complex`) and prints the same form.
+    // The original gate demanded the comma form specifically — a shape neither engine emits for
+    // these bytes today.
     let header = c
         .lines()
-        .find(|l| l.trim_start().starts_with("while ("))
-        .unwrap_or_else(|| panic!("walk_ recovered no while-loop — structuring regression:\n{c}"));
-    // What this gate MEANS is that the loop can terminate: the value the condition tests must be
-    // updated somewhere the loop reaches. The comma form carries that update in the header, but it
-    // is not the only shape that satisfies it — when the condition re-reads storage the BODY
-    // writes, the loop advances just as well. Testing for `=` and `,` was a proxy for the property,
-    // and it rejects that second shape (`while (p[1] != x) { … p = *p; }`) even though it
-    // terminates.
-    let body_assigns_header_name = c
+        .find(|l| {
+            let t = l.trim_start();
+            t.starts_with("while") || t.starts_with("for (")
+        })
+        .unwrap_or_else(|| {
+            panic!("walk_ recovered no loop — structuring regression:\n{c}")
+        });
+    // The effective condition line: the header itself, or for the overflow form the leading
+    // `if (…) break;` inside the body.
+    let cond_line = if header.contains("true") {
+        c.lines()
+            .skip_while(|l| !std::ptr::eq(*l, header))
+            .skip(1)
+            .find(|l| l.trim_start().starts_with("if ("))
+            .unwrap_or_else(|| panic!("overflow loop with no break condition:\n{c}"))
+    } else {
+        header
+    };
+    let header_updates = if header.trim_start().starts_with("for (") {
+        // for-form: the third clause is the iterate statement; require an assignment whose
+        // target the condition reads.
+        let mut clauses = header.trim_start().trim_start_matches("for (").split(';');
+        let cond = clauses.nth(1).unwrap_or("");
+        let iter_clause = clauses.next().unwrap_or("");
+        iter_clause.split('=').next().map(str::trim).is_some_and(|lhs| {
+            !lhs.is_empty()
+                && lhs
+                    .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                    .filter(|t| t.len() > 3)
+                    .any(|t| cond.contains(t))
+        })
+    } else {
+        // comma form: the header carries the assignment inside the parens.
+        header.contains('=') && header.contains(',')
+    };
+    let body_assigns_cond_name = c
         .lines()
-        .skip_while(|l| !l.trim_start().starts_with("while ("))
+        .skip_while(|l| !std::ptr::eq(*l, header))
         .skip(1)
         .filter_map(|l| l.split('=').next().map(str::trim))
         .any(|lhs| {
             !lhs.is_empty()
                 && lhs.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
                     .filter(|t| t.len() > 3)
-                    .any(|t| header.contains(t))
+                    .any(|t| cond_line.contains(t))
         });
     assert!(
-        header.contains('=') && header.contains(',') || body_assigns_header_name,
-        "the loop test can never update — neither the header carries the assignment (comma form) \
-         nor does the body assign anything the condition reads. walk_ @ {walk:#x}\n\
-         header: {header}\n{c}"
+        header_updates || body_assigns_cond_name,
+        "the loop test can never update — neither the header carries the assignment (comma or \
+         for-iterate form) nor does the body assign anything the condition reads. walk_ @ {walk:#x}\n\
+         header: {header}\ncondition: {cond_line}\n{c}"
     );
-    eprintln!("loopcomma gate: walk_ prints its condition statement inside the parens — {header}");
+    eprintln!("loopcomma gate: walk_ loop test updates — {cond_line}");
 }
 
 /// The same rule on the OTHER emitter: a FOR-header whose condition block carries a STATEMENT must

@@ -6322,10 +6322,21 @@ impl Rule for RuleConcatCommute {
                 }
                 val = v;
             }
-            if data.vn(hi).is_free() {
+            // Ghidra's `hi->isFree()`/`lo->isFree()` guards (ruleaction.cc:4530-4531) — and in
+            // Ghidra a CONSTANT is free (`Varnode::isFree` = `!(written|input)`, varnode.hh:238),
+            // while mosura's `is_free` excludes constants (the INSERT-flag model). So the guard
+            // must test both, or `PIECE(#0:4, x & 3)` — a zero-extension spelled as a PIECE —
+            // commutes into `INT_AND(PIECE(#0,x), 0xffffffff00000003)`, an op Ghidra never forms:
+            // its own pipeline leaves the constant-hi PIECE to `RuleConcatZero`, which rewrites it
+            // to a clean `INT_ZEXT` with the 4-byte `& 3` intact. The wide high-ones mask is
+            // semantically inert but defeats the jump-table index-range analysis: compgoto's
+            // `jmp [table + (rdi & 3)*8]` came back unrecovered (rendered as an indirect call, no
+            // ComputedJump references, and the AddressTable collision rule had nothing to refuse)
+            // while the oracle recovers the full 4-case switch on the same bytes.
+            if data.vn(hi).is_free() || data.vn(hi).is_constant() {
                 continue;
             }
-            if data.vn(lo).is_free() {
+            if data.vn(lo).is_free() || data.vn(lo).is_constant() {
                 continue;
             }
             // Create the earlier concat(hi, lo), then rewrite this op into the bitwise op over it.
