@@ -25,7 +25,7 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **585** |
+| default, single pass | **592** |
 | prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
 | both, best-of per function (`recompile_select`) | **593** |
 
@@ -49,7 +49,11 @@ improvement class is structural: guards survive to the structurer instead of a b
 a late sweep being merged away (e.g. `FUN_00038a0c`, whose guarded call was previously hoisted
 above its test with the conditions merged). Note the filed guarded-store-hoist specimens in
 `FUN_0006c6f0` are NOT fixed by this -- that bug's mechanism is upstream of the late sweeps and
-stays open. The union and prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
+stays open. 585 -> **592** is the implied/explicit classification ported whole — checkImpliedCover's
+LOAD-vs-STORE and call-crossing arms, the implied-extended cover, and the descendants-first
+decision order — which fixed the post-store re-read wrong-VALUE defect and retired the
+conservative multi-use-LOAD stand-in (7 wins, 0 losses, 4 more SAME_SHAPE). The union and
+prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm

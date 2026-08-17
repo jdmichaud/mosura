@@ -94,6 +94,16 @@ impl Cover {
         // Exact: the individual ranges, not their hull. See `spans`.
         self.spans.get(&block).is_some_and(|v| v.iter().any(|&(lo, hi)| lo <= point && point <= hi))
     }
+
+    /// Ghidra `Cover::contain(op, 2)` (cover.cc): the op is contained AND not on the cover
+    /// boundary (`boundary(op) == 0`). The tail exclusion (`point < hi`) is load-bearing: a
+    /// single-use LOAD feeding directly into the same-address STORE has that store AS its cover's
+    /// stop point, and Ghidra deliberately lets it stay implied — the `iRam = iRam + 1` increment
+    /// idiom. (The def-point boundary can't collide here: reads sit at odd positions `2i+1`, defs
+    /// at even `2i+2`.)
+    pub fn contains_op_interior(&self, block: usize, point: i32) -> bool {
+        self.spans.get(&block).is_some_and(|v| v.iter().any(|&(lo, hi)| lo <= point && point < hi))
+    }
 }
 
 /// The single-read cover of `v`: its live range from its def to exactly one read `read_op`
@@ -358,6 +368,45 @@ pub fn def_point_cover(f: &Funcdata, v: VarnodeId, pos: &OpPositions) -> Cover {
 }
 
 /// Covers for every non-constant varnode that has storage life.
+/// Ghidra `Cover::rebuild` (cover.cc:477): the cover of `v` EXTENDED through implied consumers.
+/// When a reading op's output is implied, the expression built over `v` prints at that output's
+/// own use sites, so the ref-point walk continues through it (cover.cc:487-494) and `v` is live
+/// all the way to wherever the printed expression lands. `is_implied` is the classification state
+/// at query time — Ghidra decides descendants first (`ActionMarkImplied::apply`,
+/// coreaction.cc:3432) and rebuilds covers lazily under a dirty bit, which this reproduces by
+/// passing the decision state in. Direct reads come from [`cover_of`]; each deeper ref point is
+/// `v`'s single-read cover to that op ([`cover_to_read`] = Ghidra's `addRefPoint(op, vn)`).
+pub fn extended_cover(
+    f: &Funcdata,
+    v: VarnodeId,
+    pos: &OpPositions,
+    is_implied: &dyn Fn(VarnodeId) -> bool,
+) -> Cover {
+    let mut cov = cover_of(f, v, pos);
+    let mut path: Vec<VarnodeId> = vec![v];
+    let mut seen: FxHashSet<VarnodeId> = FxHashSet::default();
+    seen.insert(v);
+    let mut i = 0;
+    while i < path.len() {
+        let cur = path[i];
+        i += 1;
+        for &op in &f.vn(cur).descend {
+            if f.op(op).is_dead() {
+                continue;
+            }
+            if cur != v {
+                cov.merge_from(&cover_to_read(f, v, op, pos));
+            }
+            if let Some(out) = f.op(op).output {
+                if is_implied(out) && seen.insert(out) {
+                    path.push(out);
+                }
+            }
+        }
+    }
+    cov
+}
+
 pub fn all_covers(f: &Funcdata) -> HashMap<VarnodeId, Cover> {
     let pos = op_positions(f);
     let mut out = HashMap::new();

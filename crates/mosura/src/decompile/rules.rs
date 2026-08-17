@@ -5565,7 +5565,7 @@ pub(super) fn functional_equality_level(data: &Funcdata, vn1: VarnodeId, vn2: Va
 }
 
 /// Ghidra `functionalEquality` (expression.cc): are `vn1` and `vn2` provably the same value?
-fn functional_equality(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> bool {
+pub(super) fn functional_equality(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> bool {
     functional_equality_level(data, vn1, vn2) == 0
 }
 

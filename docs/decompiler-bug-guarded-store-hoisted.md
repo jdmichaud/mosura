@@ -42,11 +42,26 @@ MISMATCH or COMPILE_FAIL, **zero EXACT functions were affected, and zero verdict
 direction**. So no byte-exact function was ever silently wrong through this mechanism, and the
 fix regressed nothing.
 
-**Still open, and separate:** specimen 2 also shows the post-store re-read defect — the
-condition re-reads the just-stored slot and re-applies the `-1` (`slot + -1` where Ghidra
-snapshots the OLD value into `iVar7` first). That is the known mergesnip/ActionMarkExplicit gap
-(Task #1 B-iii), not part of this print path, and it is still a wrong-VALUE rendering at sites
-where the snapshot COPY gets inlined.
+**The post-store re-read (wrong VALUE) — also classified and FIXED (2026-08-17).** Specimen 2's
+condition re-read the just-stored slot and re-applied the `-1` (`slot + -1` computing `old-2`
+where the machine computes `old-1`). Not the mergesnip gap this note first guessed: the site's
+LOAD result is a plain unique with ONE consumer, and the defect was in the implied/explicit
+classification — three unported pieces of Ghidra's `ActionMarkImplied`, now real:
+
+* `checkImpliedCover`'s LOAD-vs-STORE and load/call-crossing arms (coreaction.cc:3384-3406) with
+  faithful `isPossibleAlias`/`isPossibleAliasStep` (:3279/:3303) — a LOAD whose value would
+  print past a possibly-aliasing STORE (or any call) must be explicit;
+* `Cover::rebuild`'s extension through implied consumers (cover.cc:487) — the crossing test must
+  see where the expression actually PRINTS, which is the consumers' use sites; with the
+  `contain(op,2)` boundary exclusion that keeps `iRam = iRam + 1` legally inline;
+* `ActionMarkImplied::apply`'s descendants-first traversal (coreaction.cc:3416) replacing
+  mosura's flat per-varnode loops — the order is load-bearing, because the extended cover
+  depends on the consumers' own just-made decisions.
+
+The conservative mosura-only "multi-use LOADs are always explicit" stand-in retired with it.
+mosura now emits Ghidra's exact semantics at the site: `iVar4 = slot; slot = iVar4 + -1;
+if (iVar4 + -1 < 1)`. Corpus: EXACT 585 -> 592 (7 wins, 0 losses), 4 more MISMATCH ->
+SAME_SHAPE, nothing regressed. With both fixes in, every defect this document filed is closed.
 
 ---
 

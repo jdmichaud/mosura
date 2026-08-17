@@ -12,8 +12,9 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::block::BlockId;
-use super::cover::{all_covers, Cover};
+use super::cover::{all_covers, extended_cover, op_positions, Cover, OpPositions};
 use super::funcdata::Funcdata;
+use super::op::OpId;
 use super::opcode::OpCode;
 use super::space::{Address, SpaceId};
 use super::types::{type_order, Datatype};
@@ -195,13 +196,61 @@ fn mark_explicit(f: &Funcdata, h: &mut HighVariables, covers: &HashMap<VarnodeId
     for (i, &rep) in of.iter().enumerate() {
         members.entry(rep).or_default().push(VarnodeId(i as u32));
     }
-    (0..f.num_varnodes() as u32)
-        .map(VarnodeId)
-        .map(|v| {
-            explicit_leading(f, v)
-                .unwrap_or_else(|| explicit_trailing(f, &of, &of, &members, covers, v))
-        })
-        .collect()
+    classify_explicit(f, &of, &of, &members, covers)
+}
+
+/// Ghidra `ActionMarkImplied::apply` (coreaction.cc:3416): decide every varnode's
+/// explicit/implied state with a depth-first walk that settles DESCENDANTS FIRST ("All
+/// descendants are traced first", :3432). The order is load-bearing, not a traversal detail:
+/// `check_implied_cover` tests the candidate's cover EXTENDED through consumers already decided
+/// implied (`Cover::rebuild`, cover.cc:487 — Ghidra gets the same effect from its lazy
+/// cover-dirty rebuild), so whether a LOAD crosses a STORE depends on the decisions made for the
+/// expressions consuming it. A flat per-varnode loop got this wrong in whichever direction the
+/// arena order happened to run.
+fn classify_explicit(
+    f: &Funcdata,
+    persist_of: &[u32],
+    ih_of: &[u32],
+    ih_members: &HashMap<u32, Vec<VarnodeId>>,
+    covers: &HashMap<VarnodeId, Cover>,
+) -> Vec<bool> {
+    let ctx = ImpliedCtx::new(f);
+    let n = f.num_varnodes();
+    let mut decision: Vec<Option<bool>> = vec![None; n];
+    let mut in_stack = vec![false; n];
+    for i in 0..n as u32 {
+        if decision[i as usize].is_some() {
+            continue;
+        }
+        let mut stack: Vec<(VarnodeId, usize)> = vec![(VarnodeId(i), 0)];
+        in_stack[i as usize] = true;
+        while let Some(&(v, di)) = stack.last() {
+            let dlen = f.vn(v).descend.len();
+            if di < dlen {
+                stack.last_mut().unwrap().1 = di + 1;
+                let dop = f.vn(v).descend[di];
+                if let Some(out) = f.op(dop).output {
+                    let oi = out.0 as usize;
+                    // Ghidra pushes only undecided outputs (:3448); `in_stack` guards the phi
+                    // back-edges Ghidra's flags make unreachable.
+                    if decision[oi].is_none() && !in_stack[oi] {
+                        in_stack[oi] = true;
+                        stack.push((out, 0));
+                    }
+                }
+            } else {
+                if decision[v.0 as usize].is_none() {
+                    let e = explicit_leading(f, v).unwrap_or_else(|| {
+                        explicit_trailing(f, persist_of, ih_of, ih_members, covers, &ctx, &decision, v)
+                    });
+                    decision[v.0 as usize] = Some(e);
+                }
+                in_stack[v.0 as usize] = false;
+                stack.pop();
+            }
+        }
+    }
+    decision.into_iter().map(|d| d.unwrap_or(true)).collect()
 }
 
 /// The leading arms of the explicitness chain (Ghidra `ActionMarkExplicit::baseExplicit`,
@@ -244,6 +293,8 @@ pub(crate) fn explicit_trailing(
     ih_of: &[u32],
     ih_members: &HashMap<u32, Vec<VarnodeId>>,
     covers: &HashMap<VarnodeId, Cover>,
+    ctx: &ImpliedCtx,
+    decision: &[Option<bool>],
     v: VarnodeId,
 ) -> bool {
     let vn = f.vn(v);
@@ -285,16 +336,14 @@ pub(crate) fn explicit_trailing(
     if dn > 1 {
         // A `multlist` member (`ActionMarkExplicit`, coreaction.cc:3256): `2..=max_implied_ref`
         // descendants. A value feeding a MULTIEQUAL/INDIRECT is the merged variable itself
-        // (baseExplicit's marker-descendant bail, :3076). A multi-use LOAD stays named — its
-        // implied-cover analysis (checkImpliedCover's LOAD-vs-STORE/CALL arms, :3384-3406) is not
-        // ported, so we conservatively never inline it (an under-approximation of Ghidra that can
-        // only leave it explicit, never emit wrong code). Otherwise the `multipleInteraction`
+        // (baseExplicit's marker-descendant bail, :3076). Otherwise the `multipleInteraction`
         // flow-into rule (:3091) and the `processMultiplier` term count (:3166) decide, falling
-        // through to the same implied-cover test as the single-use case.
+        // through to the same implied-cover test as the single-use case. (A former mosura-only
+        // arm forced every multi-use LOAD explicit while checkImpliedCover's LOAD arms were
+        // unported; those arms are now real, so the conservative arm is retired and Ghidra's own
+        // test decides — Ghidra freely duplicates `iVar7 + -1` from an inline LOAD when no store
+        // intervenes.)
         if vn.descend.iter().any(|&u| f.op(u).is_marker()) {
-            return true;
-        }
-        if vn.def.is_some_and(|d| f.op(d).code() == OpCode::Load) {
             return true;
         }
         if is_purged_top(f, persist_of, v) {
@@ -303,11 +352,11 @@ pub(crate) fn explicit_trailing(
         if process_multiplier(f, persist_of, v, MAX_TERM_DUPLICATION) {
             return true;
         }
-        return !implied_cover_ok(f, ih_of, ih_members, covers, v);
+        return !check_implied_cover(f, ih_of, ih_members, covers, ctx, decision, v);
     }
     // Single use (`dn == 1`): inline unless the implied-cover test fails, or it feeds a marker
     // standing for the same variable, in which case it materializes as an assignment.
-    if !implied_cover_ok(f, ih_of, ih_members, covers, v) {
+    if !check_implied_cover(f, ih_of, ih_members, covers, ctx, decision, v) {
         return true;
     }
     let user = vn.descend[0];
@@ -321,14 +370,216 @@ pub(crate) fn explicit_trailing(
     }
 }
 
+/// Ghidra `ActionMarkImplied::isPossibleAliasStep` (coreaction.cc:3279): if either pointer is
+/// `other + <non-constant>` (through INT_ADD/PTRSUB/PTRADD/INT_XOR), the two provably differ.
+fn is_possible_alias_step(f: &Funcdata, vn1: VarnodeId, vn2: VarnodeId) -> bool {
+    let var = [vn1, vn2];
+    for i in 0..2 {
+        let Some(def) = f.vn(var[i]).def else { continue };
+        let opc = f.op(def).code();
+        if !matches!(opc, OpCode::IntAdd | OpCode::Ptrsub | OpCode::Ptradd | OpCode::IntXor) {
+            continue;
+        }
+        if f.op(def).input(0) != Some(var[1 - i]) {
+            continue;
+        }
+        if f.op(def).input(1).is_some_and(|c| f.vn(c).is_constant()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Ghidra `ActionMarkImplied::isPossibleAlias` (coreaction.cc:3303): false ONLY when the two
+/// pointer expressions provably hold different values, recursing to `depth` through matching
+/// COPY/extension/negation wrappers and INT_ADD/PTRSUB/PTRADD terms.
+fn is_possible_alias(f: &Funcdata, vn1: VarnodeId, vn2: VarnodeId, depth: u32) -> bool {
+    if vn1 == vn2 {
+        return true; // Definite alias
+    }
+    if !f.vn(vn1).is_written() || !f.vn(vn2).is_written() {
+        if f.vn(vn1).is_constant() && f.vn(vn2).is_constant() {
+            return f.vn(vn1).loc.offset == f.vn(vn2).loc.offset;
+        }
+        return is_possible_alias_step(f, vn1, vn2);
+    }
+    if !is_possible_alias_step(f, vn1, vn2) {
+        return false;
+    }
+    let op1 = f.vn(vn1).def.unwrap();
+    let op2 = f.vn(vn2).def.unwrap();
+    let (mut opc1, mut mult1) = (f.op(op1).code(), 1i64);
+    let (mut opc2, mut mult2) = (f.op(op2).code(), 1i64);
+    if opc1 == OpCode::Ptrsub {
+        opc1 = OpCode::IntAdd;
+    } else if opc1 == OpCode::Ptradd {
+        opc1 = OpCode::IntAdd;
+        mult1 = f.op(op1).input(2).map_or(1, |c| f.vn(c).loc.offset as i32 as i64);
+    }
+    if opc2 == OpCode::Ptrsub {
+        opc2 = OpCode::IntAdd;
+    } else if opc2 == OpCode::Ptradd {
+        opc2 = OpCode::IntAdd;
+        mult2 = f.op(op2).input(2).map_or(1, |c| f.vn(c).loc.offset as i32 as i64);
+    }
+    if opc1 != opc2 {
+        return true;
+    }
+    if depth == 0 {
+        return true; // Couldn't find absolute difference
+    }
+    let depth = depth - 1;
+    match opc1 {
+        OpCode::Copy | OpCode::IntZext | OpCode::IntSext | OpCode::Int2comp | OpCode::IntNegate => {
+            is_possible_alias(f, f.op(op1).input(0).unwrap(), f.op(op2).input(0).unwrap(), depth)
+        }
+        OpCode::IntAdd => {
+            let (a0, a1) = (f.op(op1).input(0).unwrap(), f.op(op1).input(1).unwrap());
+            let (b0, b1) = (f.op(op2).input(0).unwrap(), f.op(op2).input(1).unwrap());
+            if f.vn(a1).is_constant() && f.vn(b1).is_constant() {
+                let val1 = (mult1 as u64).wrapping_mul(f.vn(a1).loc.offset);
+                let val2 = (mult2 as u64).wrapping_mul(f.vn(b1).loc.offset);
+                if val1 == val2 {
+                    return is_possible_alias(f, a0, b0, depth);
+                }
+                return !super::rules::functional_equality(f, a0, b0);
+            }
+            if mult1 != mult2 {
+                return true;
+            }
+            if super::rules::functional_equality(f, a0, b0) {
+                return is_possible_alias(f, a1, b1, depth);
+            }
+            if super::rules::functional_equality(f, a1, b1) {
+                return is_possible_alias(f, a0, b0, depth);
+            }
+            if super::rules::functional_equality(f, a0, b1) {
+                return is_possible_alias(f, a1, b0, depth);
+            }
+            if super::rules::functional_equality(f, a1, b0) {
+                return is_possible_alias(f, a0, b1, depth);
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+/// `ActionMarkImplied::checkImpliedCover`'s LOAD-vs-STORE and load/call-crossing arms
+/// (coreaction.cc:3384-3406), against the candidate's cover EXTENDED through implied consumers
+/// (`Cover::rebuild`, cover.cc:487 — Ghidra's lazy dirty-bit rebuild sees the descendants'
+/// just-decided implied marks; mosura passes the decision state in). A LOAD whose value would
+/// print past a STORE to a possibly-aliasing address must be explicit — inlining it would re-read
+/// post-write memory (the wrong-VALUE defect worked in
+/// docs/decompiler-bug-guarded-store-hoisted.md's follow-up). Same for a LOAD or call result
+/// printing past any call. Returns `true` on violation.
+fn implied_load_call_violation(
+    f: &Funcdata,
+    pos: &OpPositions,
+    stores: &[OpId],
+    calls: &[OpId],
+    cov: &Cover,
+    v: VarnodeId,
+) -> bool {
+    let Some(def) = f.vn(v).def else { return false };
+    let dcode = f.op(def).code();
+    if dcode == OpCode::Load {
+        for &st in stores {
+            let Some((b, j)) = pos.get(st) else { continue };
+            if !cov.contains_op_interior(b, 2 * j as i32 + 1) {
+                continue;
+            }
+            // The LOAD crosses a STORE. Ghidra is "cavalier and lets it through unless we can
+            // verify that the pointers are actually the same": same address space, and the
+            // pointers possibly alias at depth 2.
+            let (Some(s_spc), Some(l_spc)) = (f.op(st).input(0), f.op(def).input(0)) else {
+                continue;
+            };
+            if f.vn(s_spc).loc.offset != f.vn(l_spc).loc.offset {
+                continue;
+            }
+            let (Some(s_ptr), Some(l_ptr)) = (f.op(st).input(1), f.op(def).input(1)) else {
+                continue;
+            };
+            if is_possible_alias(f, s_ptr, l_ptr, 2) {
+                return true;
+            }
+        }
+    }
+    if dcode == OpCode::Load || f.op(def).is_call() {
+        for &c in calls {
+            let Some((b, j)) = pos.get(c) else { continue };
+            if cov.contains_op_interior(b, 2 * j as i32 + 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Positioning and op inventory shared across one classification run: op positions plus the live
+/// STOREs and calls the LOAD/call-crossing arms scan.
+pub(crate) struct ImpliedCtx {
+    pos: OpPositions,
+    stores: Vec<OpId>,
+    calls: Vec<OpId>,
+}
+
+impl ImpliedCtx {
+    fn new(f: &Funcdata) -> Self {
+        let pos = op_positions(f);
+        let (mut stores, mut calls) = (Vec::new(), Vec::new());
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.is_dead() {
+                continue;
+            }
+            match o.code() {
+                OpCode::Store => stores.push(op),
+                OpCode::Call | OpCode::Callind => calls.push(op),
+                _ => {}
+            }
+        }
+        ImpliedCtx { pos, stores, calls }
+    }
+}
+
+/// Ghidra `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376), all three arms in Ghidra's
+/// order: LOAD-vs-STORE, load/call-crossing, then the input inflate arm ([`implied_cover_ok`]).
+/// The first two test the candidate's cover EXTENDED through already-decided implied consumers,
+/// which is why classification runs descendants-first ([`classify_explicit`]). Returns `true`
+/// when the value may stay implied.
+fn check_implied_cover(
+    f: &Funcdata,
+    ih_of: &[u32],
+    ih_members: &HashMap<u32, Vec<VarnodeId>>,
+    covers: &HashMap<VarnodeId, Cover>,
+    ctx: &ImpliedCtx,
+    decision: &[Option<bool>],
+    v: VarnodeId,
+) -> bool {
+    let load_or_call =
+        f.vn(v).def.is_some_and(|d| f.op(d).code() == OpCode::Load || f.op(d).is_call());
+    if load_or_call {
+        let ext = extended_cover(f, v, &ctx.pos, &|x| decision[x.0 as usize] == Some(false));
+        if implied_load_call_violation(f, &ctx.pos, &ctx.stores, &ctx.calls, &ext, v) {
+            return false;
+        }
+    }
+    implied_cover_ok(f, ih_of, ih_members, covers, v)
+}
+
 /// `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) input-cover arm, via `Merge::
 /// inflateTest`: a value can stay implied only if no def-op input's HighVariable has ANOTHER live
 /// instance whose range intersects the value's own cover — otherwise the inlined expression would
 /// read a value REDEFINED between its def and its use. Copy shadows / partial-piece copy shadows of
 /// the input are exempt. Returns `true` when the value can be implied (no cover violation).
 ///
-/// The LOAD-vs-STORE and load/call-crossing arms (:3384-3406) are not ported: multi-use LOADs are
-/// kept explicit by the caller, and single-use LOADs matched Ghidra without them.
+/// The LOAD-vs-STORE and load/call-crossing arms (:3384-3406) live in [`check_implied_cover`],
+/// which runs them against the implied-extended cover before falling through to this arm.
+/// ("Single-use LOADs matched Ghidra without them" was believed and is false — the post-store
+/// re-read defect in docs/decompiler-bug-guarded-store-hoisted.md was exactly a single-use LOAD
+/// implied across an aliasing STORE.)
 fn implied_cover_ok(
     f: &Funcdata,
     ih_of: &[u32],
@@ -2229,15 +2480,12 @@ pub fn mark_explicit_flags(f: &mut Funcdata) {
     for (i, &rep) in ih_of.iter().enumerate() {
         ih_members.entry(rep).or_default().push(VarnodeId(i as u32));
     }
+    // (Constants come back `false` from `explicit_leading`, so the old constant special-case is
+    // subsumed by the shared traversal.)
+    let explicit = classify_explicit(f, &high_of, &ih_of, &ih_members, &covers);
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
-        let explicit = if f.vn(v).is_constant() {
-            false // a constant renders as a literal, never a named variable
-        } else {
-            explicit_leading(f, v)
-                .unwrap_or_else(|| explicit_trailing(f, &high_of, &ih_of, &ih_members, &covers, v))
-        };
-        if explicit {
+        if explicit[i as usize] && !f.vn(v).is_constant() {
             f.vn_mut(v).set_explicit();
         } else {
             f.vn_mut(v).set_implied();
