@@ -1321,16 +1321,12 @@ pub fn universal_action() -> ActionGroup {
                         // ActionUnreachable (:5490, group `base`) opens Ghidra's mainloop, ahead
                         // of ActionVarnodeProps/ActionHeritage.
                         .then(super::determinedbranch::ActionUnreachable)
-                        // ActionVarnodeProps (:5491, group `base`) belongs at Ghidra's slot right
-                        // here, between ActionUnreachable and ActionHeritage. It is HELD out of the
-                        // pipeline, not missing: wiring it drops the corpus 0.9578 -> 0.9454 and
-                        // 58/60 -> 57/60. The port is faithful and the two obvious explanations
-                        // were checked and ruled out — mosura's `nzm` defaults to `calc_mask(size)`
-                        // and `consume` to `!0`, both matching Ghidra's constructor
-                        // (varnode.cc:586/601). So the zero-consume arm really does fire and really
-                        // does hurt, which by the porting rule means something downstream of it in
-                        // mosura is wrong. Diagnosing that is the follow-up; see docs/coverage.md.
-                        // .then(ActionVarnodeProps)
+                        // ActionVarnodeProps (:5491, group `base`) at Ghidra's slot, between
+                        // ActionUnreachable and ActionHeritage. (Held out before the schedule
+                        // fixes; re-wired and re-measured after ActionDeadCode returned to :5503,
+                        // which changed when `consume` — the input to this action's zero-consume
+                        // arm — is computed.)
+                        .then(ActionVarnodeProps)
                         .then(ActionHeritage)
                         // ActionParamDouble (:5493, group `protorecovery`), Ghidra's slot directly
                         // after the mainloop ActionHeritage: a call argument built by a PIECE whose
