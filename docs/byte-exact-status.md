@@ -25,7 +25,7 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **590** |
+| default, single pass | **585** |
 | prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
 | both, best-of per function (`recompile_select`) | **593** |
 
@@ -66,7 +66,13 @@ standalone oracle is — the full story is coverage.md's ActionConstantPtr row. 
 byte-identical WAR2 emissions** (sb34) through the Phase-4 refinement carve-out + stand-in
 retirement, the per-fixture cspec threading (`raw_funcdata_flow_image_arch` — datatest-path
 only; WAR2 threads its own `__watcall` ids), and `buildReturnOutput`'s multi-piece PIECE
-reassembly (never fires on watcall's single-EAX verdicts; mixfloatint 0.857 → 1.000). The union
+reassembly (never fires on watcall's single-EAX verdicts; mixfloatint 0.857 → 1.000). 590 →
+**585** (sb35) is the E1032 partial-symbol resolution (`compilable-c-remediation.md`, Phase 4
+addendum): three faithful ports (baseExplicit's lone-descendant escapes, the deadcode
+ram-blanket retirement, the `numInstances` gate) took COMPILE_FAIL 22 → 14 and partial
+accessors to zero corpus-wide; the −5 net EXACT is the retired blanket's persist-store ordering,
+which had been byte-exact-friendlier than Ghidra's real pipeline (oracle prints the same swapped
+order — FUN_000165f4 verified; the ordering story is a named emitter-side follow-up). The union
 and prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18

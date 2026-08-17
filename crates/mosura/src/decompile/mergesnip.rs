@@ -15,8 +15,8 @@
 //! (and declines to merge) — it never snips; this pass adds the snip as a graph-mutating action.
 //!
 //! Placement: after `ActionInferTypes` + the cleanup pool (Ghidra's late "merge" phase runs after
-//! `ActionInferTypes`/cleanup, before naming/casts/print), before the read-only merge in printc; a
-//! `deadcode` sweep follows. This is a once-pass approximation of Ghidra's iterating merge phase
+//! `ActionInferTypes`/cleanup, before naming/casts/print), before the read-only merge in printc; NO
+//! dead-code follows (Ghidra runs none after its merge actions — the snip orphans nothing). This is a once-pass approximation of Ghidra's iterating merge phase
 //! (tied to the mainloop-repeat backlog). The candidate set is gated on the real `addrtied` flag
 //! (Ghidra `Merge::mergeAddrTied`, `merge.cc:631`), which [`super::varnodeprops::mark_addrtied`]
 //! sets before the first pool (and again just before this pass, so pool-created ram/stack varnodes

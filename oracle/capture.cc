@@ -208,6 +208,27 @@ int main(int argc, char **argv) {
       Funcdata *fd = conf->symboltab->getGlobalScope()->addFunction(entry, "func")->getFunction();
       conf->allacts.getCurrent()->reset(*fd);
       conf->allacts.getCurrent()->perform(*fd);
+      // Instrument (CAPTURE_FLAGS_AT=<hexaddr>): dump the boolean properties of every varnode
+      // within 16 bytes of the given offset, to answer "what flags does GHIDRA give this
+      // storage?" questions (addrtied/persist/mapped drive merge grouping, explicitness and
+      // dead-code retention — the E1032 partial-symbol investigation).
+      const char *flagsAt = getenv("CAPTURE_FLAGS_AT");
+      if (flagsAt != (const char *)0) {
+        uintb target = strtoull(flagsAt, (char **)0, 16);
+        VarnodeLocSet::const_iterator viter;
+        for (viter = fd->beginLoc(); viter != fd->endLoc(); ++viter) {
+          Varnode *vn = *viter;
+          if (vn->getOffset() < target || vn->getOffset() >= target + 16) continue;
+          cerr << "FLAGS " << vn->getSpace()->getName() << ":0x" << hex << vn->getOffset()
+               << ":" << dec << vn->getSize()
+               << " addrtied=" << vn->isAddrTied()
+               << " persist=" << vn->isPersist()
+               << " mapped=" << vn->isMapped()
+               << " explicit=" << vn->isExplicit()
+               << " implied=" << vn->isImplied()
+               << " free=" << vn->isFree() << endl;
+        }
+      }
       conf->print->setOutputStream(&cout);
       conf->print->docFunction(fd);
       cout << endl;

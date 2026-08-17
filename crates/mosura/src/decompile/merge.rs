@@ -267,15 +267,105 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
         return Some(true);
     }
     if vn.is_addrtied() {
-        // (Ghidra's `baseExplicit` has no sub-case here. mosura used to carry a hand-rolled
-        // "SUBPIECE-of-addrtied is an internal copymarker" test at this point, standing in for the
-        // CPUI_SUBPIECE arm of `Merge::markInternalCopies` while there was no VariablePiece to
-        // express it. That arm is now ported (see [`copy_marker_nonprinting`]), which suppresses the
-        // statement at its real slot and leaves the narrow piece explicit — so it renders as a piece
-        // accessor by name, exactly as Ghidra does. The adaptation is retired.)
-        return Some(true);
+        // Address-tied is explicit ("pointers may reference it", coreaction.cc:3022) — EXCEPT two
+        // lone-descendant escapes (coreaction.cc:3029-3047) that FALL THROUGH to the ordinary
+        // implied heuristics:
+        //   - a lone `INT_ZEXT` whose output is itself addrtied and contains this varnode at its
+        //     least-significant base (`0 == vnout->contains(*vn)`, :3031-3034);
+        //   - a lone `PIECE` where this varnode is NOT the root of its CONCAT tree
+        //     (`PieceNode::findRoot`, :3036-3043; the `isPartialRoot` re-assert needs the
+        //     protoPartial marking mosura lacks — never set, so the escape stands).
+        // Any other use, or several uses, stays explicit. The SUBPIECE `overlapJoin` sub-case
+        // (:3023-3028) also answers explicit — same as the default, handled at its print slot by
+        // [`copy_marker_nonprinting`].
+        //
+        // The PIECE escape is load-bearing for byte-granular global updates: a `mov byte [g], 1`
+        // into a 4-byte global heritages as `g = PIECE(SUBPIECE(old >> 8), 1)`, and the 3-byte
+        // SUBPIECE output lands at the global's address+1 — addrtied. Ghidra marks it IMPLIED
+        // (measured on WAR2 FUN_00021b84's site with `CAPTURE_FLAGS_AT`: `ram:0x8196d:3
+        // addrtied=1 ... explicit=0 implied=1`) and prints it inline, `CONCAT31((unkint3)uVar4,
+        // 1)`. Marking it explicit instead materialized the statement `uRam._1_3_ = …` — the
+        // partial-symbol accessor whose 3-byte width no emitter rewrite can legalize (the WAR2
+        // E1032 family).
+        let use_op = match vn.descend.as_slice() {
+            [only] => *only,
+            _ => return Some(true),
+        };
+        match f.op(use_op).code() {
+            OpCode::IntZext => {
+                let Some(out) = f.op(use_op).output else { return Some(true) };
+                let outvn = f.vn(out);
+                // `Varnode::contains` == 0: same space, same start offset (the LE least-
+                // significant base), and this varnode fits inside the output's storage.
+                let contains_at_base = outvn.is_addrtied()
+                    && outvn.loc.space == vn.loc.space
+                    && outvn.loc.offset == vn.loc.offset
+                    && vn.size <= outvn.size;
+                if !contains_at_base {
+                    return Some(true);
+                }
+            }
+            OpCode::Piece => {
+                if piece_find_root(f, v) == v {
+                    return Some(true);
+                }
+            }
+            _ => return Some(true),
+        }
+        return None; // fall through to the trailing/implied heuristics (coreaction.cc:3049…)
     }
     None
+}
+
+/// Ghidra `PieceNode::findRoot` (op.cc:824): from an addrtied (or protoPartial) varnode, climb
+/// through the `PIECE` op whose output's storage CONTAINS it at the matching position — for little
+/// endian, the low piece (slot 1) sits at the output's own address and the high piece (slot 0) at
+/// `output + sizeof(low)` (op.cc:836-838) — to the maximal containing varnode of the CONCAT tree.
+/// Among several position-matching `PIECE` readers Ghidra attaches to the earliest
+/// (`PcodeOp::compareOrder`, :841-846); mosura compares block-schedule position within a shared
+/// block and keeps the first candidate across blocks (the cross-block tie needs a dominator walk
+/// no merge-phase caller carries; a piece feeding position-matched PIECEs in two different blocks
+/// reconverges to the same root either way). mosura has no protoPartial marking, so only the
+/// addrtied climb is live, and no join space, so the `renormalize` is a no-op.
+fn piece_find_root(f: &Funcdata, v: VarnodeId) -> VarnodeId {
+    let mut v = v;
+    while f.vn(v).is_addrtied() {
+        let vn = f.vn(v);
+        let mut piece_op: Option<OpId> = None;
+        for &d in &vn.descend {
+            let op = f.op(d);
+            if op.code() != OpCode::Piece {
+                continue;
+            }
+            let Some(out) = op.output else { continue };
+            let slot = if op.input(0) == Some(v) { 0usize } else { 1 };
+            let mut addr = f.vn(out).loc;
+            if slot == 0 {
+                let Some(sib) = op.input(1) else { continue };
+                addr.offset = addr.offset.wrapping_add(f.vn(sib).size as u64);
+            }
+            if addr == vn.loc {
+                piece_op = match piece_op {
+                    None => Some(d),
+                    Some(prev) => {
+                        let (pa, pb) = (f.op(d).parent, f.op(prev).parent);
+                        if pa == pb && pa.is_some() {
+                            let bl = f.block(pa.unwrap());
+                            let pos = |o| bl.ops.iter().position(|&x| x == o);
+                            if pos(d) < pos(prev) { Some(d) } else { Some(prev) }
+                        } else {
+                            Some(prev)
+                        }
+                    }
+                };
+            }
+        }
+        match piece_op.and_then(|p| f.op(p).output) {
+            Some(out) => v = out,
+            None => break,
+        }
+    }
+    v
 }
 
 /// The trailing arms of the explicitness chain (`baseExplicit`'s written/marker/use-count terms

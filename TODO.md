@@ -591,3 +591,26 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
 the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.
+
+## Open defects found during the E1032 instrument (2026-08-17)
+
+- **`ground_truth_parity`: 4 tests failing since `c370f1d`** (the five post-fullloop deadcode
+  sweep removals, 571→585 EXACT): `for_comma_condition_inline`, `loop_comma_condition_inline`
+  (walk_ recovers `while(true)` instead of a `for`), `callee_register_return_is_recovered_with_
+  its_argument`, `computed_goto_table_is_refused_once_function_bodies_are_current`. Bisected —
+  every commit 3c80d4b→ok, c370f1d→FAILED; NOT caused by later work (fails at every subsequent
+  commit with clean trees). The sweep removal was faithful, so per the porting rule the failures
+  point at non-Ghidra code that composed with the sweeps (the for-recovery/return-recovery paths
+  these tests pin). Un-triaged; needs its own instrument session.
+- **Port I/O ops dropped in `FUN_0005c5ec`**: the `in al,0x21`/`out dx,al` CALLOTHERs are lifted
+  (coverage spans them) but absent from the final C, while the oracle prints all four `in()`/
+  `out()` calls on the same bytes and cspec (repro: scratchpad `e1032-02345.xml`, mosura dumpc
+  vs `oracle/capture --c`). Other WAR2 TUs (02334, 02344, 02351) render `out()` fine — a
+  per-function dataflow loss, not a userop-table gap. Wrong code (side effects vanish).
+- **Persist-store ordering vs byte-exactness** (the −5 EXACT from the deadcode-blanket
+  retirement, sb35): when a global store's value survives only through the call-INDIRECT /
+  return-copy chain (RulePropagateCopy legitimately rewires the INDIRECT input — Ghidra's marker
+  guards permit it, its C prints the same late/swapped order, FUN_000165f4 oracle-verified), the
+  materialized statement order no longer matches the original store schedule. Byte-exact wants
+  the original order; Ghidra-fidelity produces the swap. Emitter-side follow-up (an EmitChoices
+  arm reordering independent persist stores to their original addresses, or acceptance).

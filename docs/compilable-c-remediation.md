@@ -155,7 +155,39 @@ every survivor named and attributed (2 constant-dividend divides, 2 unrecovered 
 indices, 3 POPCOUNT, 3 spacebase, 5 genuine wide residues incl. two libc functions); EXACT 590
 held with zero transitions; `stackreturn` 0.868 → **1.000** (the held port's predicted number);
 fixture corpus 0.9569 → 0.9586; `FUN_00042200` (the worked mechanism-A specimen) emits plain C
-with no PIECE/INT_RIGHT. Tracked follow-ups: `mixfloatint` −0.025 — CLOSED (2026-08-17): the
+with no PIECE/INT_RIGHT.
+
+**Phase 4 addendum — the 8 E1032 stragglers. CLOSED (2026-08-17), one mechanism, zero emitter
+work.** The 8 unattributed COMPILE_FAILs surviving Phase 4 were all `E1032` on 3-byte
+partial-symbol accessors (`x._1_3_`/`x._0_3_`) — the one width `compilable_partial_symbols`
+deliberately cannot deref-legalize (no `uint3` in C). Instrumented against the oracle on the
+same bytes and cspec (fixtures under scratchpad, plus a new `CAPTURE_FLAGS_AT=<hexaddr>`
+varnode-flags dump mode in `oracle/capture`): Ghidra's IR carries the SAME addrtied 3-byte
+SUBPIECE piece (`ram:0x8196d:3 addrtied=1`) but marks it `implied` and prints it inline —
+`CONCAT31((unkint3)uVar4,1)` — with the superseded byte-stores dead-eliminated. Three faithful
+fixes, no `printCompilableC` needed:
+1. `ActionMarkExplicit::baseExplicit`'s two lone-descendant ESCAPES for addrtied varnodes
+   (coreaction.cc:3029-3047: lone `INT_ZEXT` into a containing whole; lone `PIECE` when not the
+   CONCAT-tree root, `PieceNode::findRoot` op.cc:824) were unported — `explicit_leading`
+   returned explicit unconditionally, materializing the `._N_M_` statement.
+2. The deadcode blanket "every written ram varnode is live" root was a non-Ghidra adaptation —
+   Ghidra's global live-out is the persist guard structure (returnCopy + call INDIRECTs), so
+   superseded intermediate byte-stores die; the blanket kept them, and their covers forced the
+   pieces explicit (the implied-cover conflict).
+3. printc's `high_ram_off` explicit arm ignored the `numInstances() > 1` half of the rule it
+   cites — a SINGLETON high at a ram offset must fall through to the escapes.
+
+Measured (sb35): **COMPILE_FAIL 22 → 14** (all 8 compile; partial accessors corpus-wide 8 files
+→ 0), fixture corpus 0.9620 → **0.9679** (`revisit` 0.767 → 1.000 — its `iRam.._2_2_` defect was
+this exact family; `condmulti` 0.845 → 0.968; none down). EXACT 590 → 585: the adaptation's
+ordering had been byte-exact-friendlier than Ghidra's real pipeline for 6 functions whose
+persist-store INDIRECT input copy-propagates (Ghidra's marker guards permit it; its C prints the
+same swapped order — oracle-verified on FUN_000165f4) — the persist-store ordering byte-exact
+story is a named emitter-side follow-up. The remaining 14 COMPILE_FAIL = the 11 contract-flagged
+non-library functions + 3 singletons (E1082 statement-after-label, E1010 type mismatch, E1011
+undeclared `xStack_4`).
+
+Tracked follow-ups: `mixfloatint` −0.025 — CLOSED (2026-08-17): the
 fixture declares `x86:LE:64:default:windows` and the datatest paths were pinning the gcc cspec
 (fixed by threading each fixture's own arch, `raw_funcdata_flow_image_arch`), and the RETURN kept
 only the low XMM0 lane (fixed by porting `buildReturnOutput`'s multi-piece PIECE reassembly,

@@ -10,19 +10,23 @@ use mosura::{datatest, paths};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let stem = args.get(1).expect("fixture stem");
-    // Same resolution as the corpus tests (checkout first, vendored fallback) — the direct
-    // ghidra_src join broke whenever only the vendored languages were present.
-    let sla = paths::language_dir("x86").join("x86-64.sla");
-    // Load through the spec cache so the dump sees exactly what the pipeline/tests see —
-    // including the laned (vector) registers the cache loader attaches (a direct
-    // `Spec::from_sla` would silently miss them and dump a lane-blind decompile).
-    let spec = mosura::speccache::get(&sla).expect("x86-64.sla parses");
-    let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
-    let path = paths::datatests_dir().join(format!("{stem}.xml"));
+    // A bare stem resolves in the datatests dir; a path (contains '/' or ends .xml) is used
+    // as-is, so ad-hoc fixtures (e.g. scratchpad extracts of corpus functions) dump too.
+    let path = if stem.contains('/') || stem.ends_with(".xml") {
+        std::path::PathBuf::from(stem)
+    } else {
+        paths::datatests_dir().join(format!("{stem}.xml"))
+    };
     let dt = datatest::parse_file(&path).unwrap();
+    // The fixture's own language, resolved like the analysis pipeline (`lang::load_cached`:
+    // .ldefs → .sla + .pspec context sets, laned registers attached) — the same honor-the-
+    // declared-arch rule as `raw_funcdata_flow_image_arch`, extended to the SLEIGH tables so
+    // an `x86:LE:32:*` fixture decodes 32-bit instead of through the old hardcoded x86-64 pair.
+    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("fixture language loads");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
     if args.iter().any(|a| a == "--pre") {
         // The lifted p-code BEFORE any action runs — the input heritage actually sees.
         print!("{}", f.print_raw());

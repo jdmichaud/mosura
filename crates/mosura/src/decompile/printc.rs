@@ -266,9 +266,19 @@ impl<'a> PrintC<'a> {
             return e;
         }
         // A value merged into a global's HighVariable is that global (Ghidra `baseExplicit`'s
-        // `numInstances() > 1` rule for the addrtied case): it materializes the store `iRam.. = ..`
-        // and must not be inlined into the hidden same-high COPY that carries it there.
-        if self.high_ram_off.contains_key(&self.high_of[v.0 as usize]) {
+        // `numInstances() > 1` rule, coreaction.cc:3020): it materializes the store `iRam.. = ..`
+        // and must not be inlined into the hidden same-high COPY that carries it there. MERGED is
+        // the operative word — the rule is the instance count, so a SINGLETON high at a ram
+        // offset falls past it exactly as Ghidra's does: the 3-byte SUBPIECE piece of a
+        // byte-granular global update stays eligible for `explicit_leading`'s lone-PIECE implied
+        // escape and prints inline (`CONCAT31((int3)(uRam >> 8), 1)`), not as the non-compiling
+        // `uRam._1_3_ = …` statement.
+        if self.high_ram_off.contains_key(&self.high_of[v.0 as usize])
+            && self
+                .high_members
+                .get(&self.high_of[v.0 as usize])
+                .is_some_and(|m| m.len() > 1)
+        {
             return true;
         }
         // The TRAILING classification chain (written/marker/use-count + `checkImpliedCover`) is the
