@@ -139,8 +139,25 @@ constant-dividend divides (`16000000 / (int8)x`, `FUN_0006c6f0`/`FUN_0006cfd0`) 
 too, so that residue is representation work under the Phase-2 contract (legalize to 32-bit
 pieces or off-band), not a schedule or rule gap. Mechanism A remains Phase 4.
 
-**Phase 4 — the stack aggregates.** Largest population. Gated on open question 2 — establish
-whether this is type recovery or variable splitting *before* implementing.
+**Phase 4 — the stack aggregates. CORE LANDED (2026-08-17).** The heritage refinement is
+wired at Ghidra's real slot — the `placeMultiequals` carve-out (heritage.cc:2610-2616),
+general over all spaces: `buildRefinement`/`splitByRefinement`/`splitPieces`/`refineRead`/
+`refineWrite`/`refineInput` plus `refinement`'s task-list surgery (the range replaced by its
+partition pieces in both the local list and `globaldisjoint`, mid-iteration, re-collecting on
+the first piece). The hold that kept this out — split inputs needing `fillinMap` re-joining and
+the call-output reassembly — was STALE: both consumers had landed since (recover.rs
+`fillin_map`; ActionActiveReturn's `findPreexistingWhole` 2-trial fix). Open question 2 is
+thereby answered: it was variable splitting (heritage), and the subfield family fell with it.
+
+Measured: **COMPILE_FAIL 93 → 22** (71 functions compile again — the wide-type tripwire AND
+the E1032 subfield family, one root as predicted); the contract-flagged work list **86 → 14**,
+every survivor named and attributed (2 constant-dividend divides, 2 unrecovered switch
+indices, 3 POPCOUNT, 3 spacebase, 5 genuine wide residues incl. two libc functions); EXACT 590
+held with zero transitions; `stackreturn` 0.868 → **1.000** (the held port's predicted number);
+fixture corpus 0.9569 → 0.9586; `FUN_00042200` (the worked mechanism-A specimen) emits plain C
+with no PIECE/INT_RIGHT. Tracked follow-ups: `mixfloatint` −0.025 (the SIMD-scoped
+`refine_overlaps` stand-in now overlaps the general path — reconcile/retire it), and 3
+SAME_SHAPE → MISMATCH shape shifts.
 
 **Phase 5 — internal names escaping into C. DONE (2026-08-17), one family as planned.**
 `INT_CARRY(...)` (with elided arguments!) was the printc catch-all fallback — a port GAP, since

@@ -20,7 +20,7 @@ use super::dominator::Dominators;
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::space::SpaceId;
+use super::space::{Address, SpaceId};
 use super::varnode::VarnodeId;
 
 /// An SSA location key: `(space, offset, size)`.
@@ -166,6 +166,13 @@ impl LocationMap {
     pub fn clear(&mut self) {
         self.themap.clear();
     }
+
+    /// Ghidra's `globaldisjoint.find(addr)` + `erase(iter)` pair in `Heritage::refinement`
+    /// (heritage.cc:1929-1931): remove the range starting EXACTLY at `off`, returning the pass it
+    /// was heritaged on so the refined pieces can be re-added at the same pass.
+    pub fn erase(&mut self, space: SpaceId, off: u64) -> Option<i32> {
+        self.themap.get_mut(&space)?.remove(&off).map(|sp| sp.pass)
+    }
 }
 
 /// Ghidra `MemRange` (`heritage.hh:60`): one address range queued for SSA conversion, carrying
@@ -253,6 +260,17 @@ impl TaskList {
     /// The ranges, in address order.
     pub fn ranges(&self) -> &[MemRange] {
         &self.tasklist
+    }
+
+    /// Ghidra `disjoint.erase(memiter)` in `Heritage::refinement` (heritage.cc:1928): remove the
+    /// range at `pos` (about to be replaced by its partition pieces).
+    pub fn remove(&mut self, pos: usize) -> MemRange {
+        self.tasklist.remove(pos)
+    }
+
+    /// Number of ranges.
+    pub fn len(&self) -> usize {
+        self.tasklist.len()
     }
 
     /// Ghidra `TaskList::clear`.
@@ -1868,6 +1886,210 @@ struct Collected {
 /// `range` is taken by `&mut` because Ghidra's collect clears the range's `new_addresses` property
 /// when it finds a FULL-width marker from a previous pass (`heritage.cc:334`: "Previous pass covered
 /// everything") — which then suppresses re-guarding at `heritage.cc:2629`.
+/// Ghidra `Heritage::buildRefinement` (heritage.cc:1704): mark each Varnode's start and
+/// one-past-end positions in the refinement array.
+fn build_refinement(refine: &mut [u32], range_off: u64, f: &Funcdata, vnlist: &[VarnodeId]) {
+    for &v in vnlist {
+        let vn = f.vn(v);
+        let diff = vn.loc.offset.wrapping_sub(range_off) as usize;
+        refine[diff] = 1;
+        refine[diff + vn.size as usize] = 1;
+    }
+}
+
+/// Ghidra `Heritage::splitByRefinement` (heritage.cc:1733): cut `vn` into free VARNODE pieces
+/// whose boundaries match the refinement partition (the arithmetic-only sibling above serves the
+/// `refine_ranges` re-entry path). Empty result = already refined.
+fn split_varnode_by_refinement(
+    f: &mut Funcdata,
+    vn: VarnodeId,
+    range_off: u64,
+    refine: &[u32],
+) -> Vec<VarnodeId> {
+    let (spc, mut curoff, mut sz) = {
+        let v = f.vn(vn);
+        (v.loc.space, v.loc.offset, v.size as i64)
+    };
+    let space_high = f.spaces.get(spc).highest();
+    // `Space::wrap_offset` replicated without holding the `f.spaces` borrow (signed remainder,
+    // as in Ghidra's `AddrSpace::wrapOffset`).
+    let wrap = move |off: u64| -> u64 {
+        if off <= space_high {
+            return off;
+        }
+        let Some(m) = (space_high as i64).checked_add(1) else { return off };
+        if m == 0 {
+            return off;
+        }
+        let mut r = (off as i64) % m;
+        if r < 0 {
+            r += m;
+        }
+        r as u64
+    };
+    let mut split = Vec::new();
+    let diff = wrap(curoff.wrapping_sub(range_off)) as usize;
+    let mut cutsz = refine[diff] as i64;
+    if sz <= cutsz {
+        return split; // already refined
+    }
+    split.push(f.new_varnode(cutsz as u32, Address::new(spc, curoff)));
+    sz -= cutsz;
+    while sz > 0 {
+        curoff = curoff.wrapping_add(cutsz as u64);
+        let diff = wrap(curoff.wrapping_sub(range_off)) as usize;
+        cutsz = refine[diff] as i64;
+        if cutsz > sz {
+            cutsz = sz; // final piece
+        }
+        split.push(f.new_varnode(cutsz as u32, Address::new(spc, curoff)));
+        sz -= cutsz;
+    }
+    split
+}
+
+/// Ghidra `Heritage::splitPieces` (heritage.cc:563), little-endian arm (mosura's decompiler
+/// carries no endianness flag — same reduction as `concat_pieces`/`normalize_write_size`): give
+/// each piece a defining SUBPIECE of `startvn`, inserted AFTER the defining op (or at the start
+/// block's head for an input).
+fn split_pieces(
+    f: &mut Funcdata,
+    vnlist: &[VarnodeId],
+    insertop: Option<OpId>,
+    baseoff: u64,
+    startvn: VarnodeId,
+) {
+    let seq = match insertop {
+        Some(op) => f.op(op).seqnum,
+        None => super::op::SeqNum { pc: f.addr, uniq: 0 },
+    };
+    let mut prev = insertop;
+    for &vn in vnlist {
+        let diff = f.vn(vn).loc.offset.wrapping_sub(baseoff);
+        let c = f.new_const(4, diff);
+        let newop = f.new_op(OpCode::Subpiece, seq, vec![startvn, c]);
+        f.op_set_output(newop, vn);
+        match prev {
+            Some(op) => f.op_insert_after(newop, op),
+            None => f.op_insert_begin(newop, super::block::BlockId(0)),
+        }
+        // keep the SUBPIECEs in piece order after the write, as Ghidra's advancing insertiter does
+        prev = Some(newop);
+    }
+}
+
+/// Ghidra `Heritage::refineRead` (heritage.cc:1772): replace a free read with the concatenation
+/// of its refined pieces.
+fn refine_read(f: &mut Funcdata, vn: VarnodeId, range_off: u64, refine: &[u32]) {
+    let newvn = split_varnode_by_refinement(f, vn, range_off, refine);
+    if newvn.is_empty() {
+        return;
+    }
+    let size = f.vn(vn).size;
+    let replacevn = f.new_unique(size);
+    debug_assert_eq!(f.vn(vn).descend.len(), 1, "refining a free read with one descendant");
+    let op = f.vn(vn).descend[0];
+    let slot = (0..f.op(op).num_inputs())
+        .find(|&i| f.op(op).input(i) == Some(vn))
+        .expect("read is an input of its lone descendant");
+    concat_pieces(f, &newvn, Some(op), replacevn);
+    f.op_set_input(op, slot, replacevn);
+    if f.vn(vn).descend.is_empty() {
+        f.delete_varnode(vn);
+    }
+}
+
+/// Ghidra `Heritage::refineWrite` (heritage.cc:1806): retarget the def onto a temporary and
+/// SUBPIECE it into the refined pieces.
+fn refine_write(f: &mut Funcdata, vn: VarnodeId, range_off: u64, refine: &[u32]) {
+    let newvn = split_varnode_by_refinement(f, vn, range_off, refine);
+    if newvn.is_empty() {
+        return;
+    }
+    let size = f.vn(vn).size;
+    let baseoff = f.vn(vn).loc.offset;
+    let replacevn = f.new_unique(size);
+    let def = f.vn(vn).def.expect("write has a def");
+    f.op_set_output(def, replacevn);
+    split_pieces(f, &newvn, Some(def), baseoff, replacevn);
+    f.total_replace(vn, replacevn);
+    f.delete_varnode(vn);
+}
+
+/// Ghidra `Heritage::refineInput` (heritage.cc:1836): SUBPIECE an input into its refined pieces
+/// and mask it out of later heritage collection.
+fn refine_input(f: &mut Funcdata, vn: VarnodeId, range_off: u64, refine: &[u32]) {
+    let newvn = split_varnode_by_refinement(f, vn, range_off, refine);
+    if newvn.is_empty() {
+        return;
+    }
+    let baseoff = f.vn(vn).loc.offset;
+    split_pieces(f, &newvn, None, baseoff, vn);
+    f.vn_mut(vn).set_write_mask();
+}
+
+/// Ghidra `Heritage::refinement` (heritage.cc:1890) at its real slot — the `placeMultiequals`
+/// carve-out (heritage.cc:2610-2616): find the common refinement of every read/write/input in
+/// the range, split them all to match, and replace the range in BOTH the local task list and
+/// `globaldisjoint` with the partition pieces (same pass). Returns the task-list position of the
+/// first piece, or `None` for no non-trivial refinement. General over every space — the
+/// restriction that held this port was the interception POINT, not the space set
+/// (docs/compilable-c-remediation.md, "Mechanism A scoped").
+fn refinement(
+    f: &mut Funcdata,
+    disjoint: &mut TaskList,
+    pos: usize,
+    c: &Collected,
+) -> Option<usize> {
+    let range = disjoint.ranges()[pos];
+    let size = range.size as usize;
+    if size > 1024 {
+        return None;
+    }
+    let mut refine = vec![0u32; size + 1]; // fencepost for the one-past-end position
+    build_refinement(&mut refine, range.off, f, &c.read);
+    build_refinement(&mut refine, range.off, f, &c.write);
+    build_refinement(&mut refine, range.off, f, &c.input);
+    refine.pop();
+    // boundary points -> partition sizes
+    let mut lastpos = 0usize;
+    for curpos in 1..size {
+        if refine[curpos] != 0 {
+            refine[lastpos] = (curpos - lastpos) as u32;
+            lastpos = curpos;
+        }
+    }
+    if lastpos == 0 {
+        return None; // no non-trivial refinement
+    }
+    refine[lastpos] = (size - lastpos) as u32;
+    remove13_refinement(&mut refine);
+    for &v in &c.read {
+        refine_read(f, v, range.off, &refine);
+    }
+    for &v in &c.write {
+        refine_write(f, v, range.off, &refine);
+    }
+    for &v in &c.input {
+        refine_input(f, v, range.off, &refine);
+    }
+    // Alter the disjoint cover (both locally and globally) to reflect the refinement.
+    let removed = disjoint.remove(pos);
+    let cur_pass = f.globaldisjoint.erase(removed.space, removed.off).unwrap_or(f.heritage_pass);
+    let mut cut = 0usize;
+    let mut addr = removed.off;
+    let mut at = pos;
+    while cut < size {
+        let sz = refine[cut];
+        disjoint.insert(at, removed.space, addr, sz, removed.flags);
+        f.globaldisjoint.add(removed.space, addr, sz, cur_pass);
+        at += 1;
+        cut += sz as usize;
+        addr = addr.wrapping_add(sz as u64);
+    }
+    Some(pos)
+}
+
 fn collect(f: &Funcdata, locset: &LocSet, range: &mut MemRange) -> (Collected, u32) {
     let mut c = Collected::default();
     let mut maxsize = 0u32;
@@ -2084,28 +2306,40 @@ fn guard_input(f: &mut Funcdata, range: &MemRange, input: &[VarnodeId]) {
 /// full `(space, offset, size)` tuple, which — given the invariant — names the same thing. That is
 /// why the phi/rename machinery below needs no change to reconstruct Ghidra's whole-range SSA:
 /// the merge happens HERE, in the cover, not in the renamer.
-fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &TaskList) -> u32 {
+fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &mut TaskList) -> u32 {
     let internal = super::space::SpaceKind::Internal;
     // The ranges actually brought into SSA form this pass — the cover the phi/rename walk uses.
     let mut cover: Vec<MemRange> = Vec::new();
     let mut locset = LocSet::build(f);
-    for r in disjoint.ranges() {
-        let mut memrange = *r;
-        let (mut c, _maxsize) = collect(f, &locset, &mut memrange);
-        // THE REFINEMENT CARVE-OUT (heritage.cc:2610-2616) IS NOT WIRED HERE YET. Ghidra
-        // partitions a range wider than 4 bytes that no single write covers, and its own
-        // post-heritage IR for mixfloatint confirms the split (`CONCAT44(XMM0_Db(i),XMM0_Da(i))`).
-        // The port is written and measured (held on task #6, with its per-fixture numbers): it
-        // takes stackreturn to 1.000 and restores deindirect2, but its DOWNSTREAM consumer — the
-        // param recovery that re-joins two adjacent input trials landing in one ParamEntry
-        // (`ParamListStandard::fillinMap`) — is unported, so the split params reach the printer as
-        // a CONCAT with a bogus high half. Landing it alone would be half a subsystem (AGENT.md
-        // rule 2), so it waits on that consumer. Until then `refine_overlaps` covers the laned case.
+    let mut i = 0usize;
+    while i < disjoint.len() {
+        let mut memrange = disjoint.ranges()[i];
+        let (mut c, maxsize) = collect(f, &locset, &mut memrange);
+        // THE REFINEMENT CARVE-OUT at its real slot (heritage.cc:2610-2616): a range wider than
+        // 4 bytes that no single write covers is partitioned at the common access boundaries
+        // BEFORE guard/normalize see it — the interception point whose absence produced the
+        // mechanism-A wide values (PIECE + INT_RIGHT from `normalize_write_size` servicing
+        // overlapping stack accesses; docs/compilable-c-remediation.md). The hold on this wiring
+        // is RESOLVED: the downstream consumers it waited for — `ParamListStandard::fillinMap`
+        // (recover.rs `fillin_map`) and the call-output `findPreexistingWhole` 2-trial reassembly
+        // (ActionActiveReturn) — are both ported now.
+        if memrange.size > 4 && maxsize < memrange.size {
+            if let Some(newpos) = refinement(f, disjoint, i, &c) {
+                // varnodes were split and replaced — the collection snapshot is stale
+                locset = LocSet::build(f);
+                i = newpos;
+                memrange = disjoint.ranges()[i];
+                let (c2, _) = collect(f, &locset, &mut memrange);
+                c = c2;
+            }
+        }
         if c.read.is_empty() {
             if c.write.is_empty() && c.input.is_empty() {
+                i += 1;
                 continue;
             }
             if f.spaces.get(memrange.space).kind == internal || memrange.old_addresses() {
+                i += 1;
                 continue;
             }
         }
@@ -2116,6 +2350,7 @@ fn place_multiequals(f: &mut Funcdata, dom: &Dominators, disjoint: &TaskList) ->
         guard_input(f, &memrange, &c.input);
         guard(f, &memrange, memrange.new_addresses(), &mut c.read, &mut c.write);
         cover.push(memrange);
+        i += 1;
     }
     if cover.is_empty() {
         return 0;
@@ -2324,7 +2559,7 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         return 0;
     }
     let t0 = std::time::Instant::now();
-    let n = place_multiequals(f, dom, &disjoint);
+    let n = place_multiequals(f, dom, &mut disjoint);
     if super::action::perf::enabled() {
         super::action::perf::record("heritage", "place_multiequals", t0.elapsed());
     }
