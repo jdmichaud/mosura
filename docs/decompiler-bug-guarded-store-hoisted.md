@@ -1,9 +1,56 @@
-# Decompiler bug → decompiler agent: a guarded store is hoisted out of its guard (WRONG CODE)
+# Decompiler bug: a guarded store is hoisted out of its guard (WRONG CODE) — FIXED
 
-**Owner: decompiler track.** Surfaced by the FUN_0006c6f0 byte-exact hand-convergence
-(see [`byte-exact-source-forms.md`](byte-exact-source-forms.md)). **Not yet classified against
-Ghidra** — the oracle comparison is the first thing the fix should do, and the recipe is at the
-bottom.
+**CLASSIFIED AGAINST GHIDRA AND FIXED (2026-08-17): a MIS-PORT in the print path.** Surfaced by
+the FUN_0006c6f0 byte-exact hand-convergence (see
+[`byte-exact-source-forms.md`](byte-exact-source-forms.md)).
+
+## Classification and fix
+
+Oracle run per the mandated forced-callee recipe (all eight callees created first,
+`5ee67=EAX+EDX+EBX` forced): **Ghidra guards both specimens.** It renders the side-effecting
+block INSIDE the short-circuit's second arm as a comma expression:
+
+```c
+if ((_DAT_000a8770[0xb] == 0) ||
+   (iVar7 = _DAT_000a8770[0xb] + -1, _DAT_000a8770[0xb] = iVar7, iVar7 != 0)) {
+```
+
+mosura's IR and partition were CORRECT the whole time — the store sat in its own basic block
+between the two CBRANCHes, the same graph Ghidra has (verified with `--raw` + `MOSURA_CFG=1`
+against the oracle's `DumpBlocks` fields). The defect was purely in printing, and the merge of
+the two conditions was never the problem — Ghidra merges them too.
+
+The mechanism, from `PrintC::emitBlockCondition` (printc.cc:2836-2869) and
+`emitBlockBasic` (:2680-2720):
+
+* the **statements pass** (`no_branch` arm, :2840-2845) descends into `getBlock(0)` ONLY — the
+  left spine, which executes unconditionally — so only those statements print above the `if`;
+* the **condition pass** emits block 0 under the incoming modifiers and block 1 with
+  `setMod(comma_separate)` — "Notice comma_separate placed only on second block" — so a
+  side-effecting second block prints as `(stmt, stmt, cond)` inside its paren, guarded by the
+  short-circuit.
+
+mosura had the whole `comma_separate` machinery ported (loop headers used it) but wired neither
+half for `if` conditions: `emit_structured_body`'s CondAnd/CondOr arm emitted BOTH components'
+statements above the test, and `render_cond_expr` rendered operand 1 under the inherited
+modifier. Both fixed in `printc.rs` to Ghidra's contract. Both specimens now emit guarded code
+— specimen 1 in exactly Ghidra's comma form, specimen 2 as nested `if`s (correct, and closer to
+the original's block shape than Ghidra's rendering).
+
+**Blast radius, measured (sb18 → sb19):** 219 functions' emitted C changed; every one was
+MISMATCH or COMPILE_FAIL, **zero EXACT functions were affected, and zero verdicts moved in any
+direction**. So no byte-exact function was ever silently wrong through this mechanism, and the
+fix regressed nothing.
+
+**Still open, and separate:** specimen 2 also shows the post-store re-read defect — the
+condition re-reads the just-stored slot and re-applies the `-1` (`slot + -1` where Ghidra
+snapshots the OLD value into `iVar7` first). That is the known mergesnip/ActionMarkExplicit gap
+(Task #1 B-iii), not part of this print path, and it is still a wrong-VALUE rendering at sites
+where the snapshot COPY gets inlined.
+
+---
+
+The original filing follows, kept for the record.
 
 This is the most serious class in the campaign: the emitted C is not merely shaped differently
 from the original, it **computes something different**. Every other finding from that session is

@@ -1409,8 +1409,18 @@ impl<'a> PrintC<'a> {
                 // swapped-sense fold) XORs in the per-side negation mosura deferred rather than
                 // swapping CFG edges (Ghidra's `negateCondition` on `bl`/`orblock`).
                 let (f0, f1) = s.blocks[idx].cond_flip;
+                // Operand 0 renders under the INCOMING modifier (only-branch for an `if`,
+                // comma_separate for a loop header) — its statements either hoisted above the
+                // `if` by the statements pass or comma'd in place by the loop. Operand 1 ALWAYS
+                // renders under `comma_separate`: Ghidra `PrintC::emitBlockCondition`
+                // (printc.cc:2853-2858) does `unsetMod(only_branch); setMod(comma_separate)` for
+                // getBlock(1) only, which is what keeps a side-effecting second block guarded —
+                // `(a) || (stmt, stmt, b)` — instead of hoisted.
                 let a = self.render_cond_operand(s, comps[0], neg ^ operand_oriented(self.f, s, comps[0]) ^ f0);
+                let saved = self.comma_separate;
+                self.comma_separate = true;
                 let b = self.render_cond_operand(s, comps[1], neg ^ operand_oriented(self.f, s, comps[1]) ^ f1);
+                self.comma_separate = saved;
                 format!("{a} {conn} {b}")
             }
             _ => {
@@ -1570,12 +1580,17 @@ impl<'a> PrintC<'a> {
         let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);
         match kind {
             FlowKind::Basic(bid) => self.emit_basic(bid, indent, out),
-            // a short-circuit condition: its operands are inlined by render_condition; emit
-            // only any side-effecting statements they carry (rare)
+            // A short-circuit condition's statements pass. Ghidra `PrintC::emitBlockCondition`'s
+            // `no_branch` arm (printc.cc:2840-2845) descends into getBlock(0) ONLY — the left
+            // spine, which executes unconditionally. The SECOND block's statements are guarded by
+            // the short-circuit and print INSIDE the condition's second paren instead
+            // (`comma_separate` placed only on the second block, :2856-2858; see
+            // `render_cond_expr`). Emitting both components here hoisted block 1's guarded stores
+            // above the test — the wrong-code family of
+            // docs/decompiler-bug-guarded-store-hoisted.md (classified against Ghidra 2026-08-17:
+            // Ghidra emits `(a) || (stmt, stmt, b)`).
             FlowKind::CondAnd | FlowKind::CondOr => {
-                for c in comps {
-                    self.emit_structured(s, c, indent, out);
-                }
+                self.emit_structured(s, comps[0], indent, out);
             }
             FlowKind::Switch => {
                 let head = exit_basic(s, comps[0]);
