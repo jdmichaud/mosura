@@ -161,11 +161,17 @@ this phase: printc stays the faithful Ghidra renderer — a printc change must b
 rendering (cited) or an explicit `MOSURA_*` failure channel; every compilability mechanism
 lives in the emitter layer (war2_survey / EmitChoices arms).
 
-**Phase 6 — the genuine defects.** The guarded-store hoist is **FIXED** (classified MIS-PORT
-and repaired — printc's `comma_separate` contract; the post-store re-read fixed with it via the
-`ActionMarkImplied` port; see `decompiler-bug-guarded-store-hoisted.md`, both defects closed).
-Remaining: `break` outside a breakable statement; pointer + pointer arithmetic. Each wants its
-own bug doc and an oracle classification first.
+**Phase 6 — the genuine defects. DONE (2026-08-17), all three classified, two were wrong code.**
+The guarded-store hoist: **FIXED** (MIS-PORT in printc's `comma_separate` contract; the
+post-store re-read fixed with it via the `ActionMarkImplied` port —
+`decompiler-bug-guarded-store-hoisted.md`, both closed). The `break`-outside-breakable family
+(E1000, 3 TUs): **classified and FIXED** — also wrong code underneath (a jump-table target
+bound for the switch EXIT was attributed by address order to a neighboring case, which then
+executed the wrong body; `decompiler-bug-switch-exit-case.md`; all three TUs now compile, zero
+EXACT movement). The pointer+pointer family: **classified as NOT an independent defect** in the
+current tree — every specimen is a knock-on of the mechanism-A wide-value class (`CONCAT44`
+etc. feeding pointer arithmetic through the Phase-1 tripwire), already flagged per-function by
+the contract column; the family folds into Phase 4.
 
 **Cross-cutting — the off-band path.** Needed by Phase 1 and open question 3.
 
