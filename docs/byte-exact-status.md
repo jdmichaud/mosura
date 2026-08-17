@@ -25,7 +25,7 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **586** |
+| default, single pass | **590** |
 | prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
 | both, best-of per function (`recompile_select`) | **593** |
 
@@ -56,11 +56,13 @@ conservative multi-use-LOAD stand-in (7 wins, 0 losses, 4 more SAME_SHAPE). 592 
 `ActionVarnodeProps` at Ghidra's :5491 slot (the fixture corpus IMPROVES; the -2 is Ghidra's own
 RulePiecePathology heuristic meeting mosura's correct 4-byte return recovery on the `xor al,al`
 return idiom — the whole chain verified faithful link by link, callers zero, see coverage.md's
-ActionVarnodeProps row). 590 -> **586** is `ActionConstantPtr` at :5665
-(the last unported mainloop member; coverage.md has the full composition state) — the 4 losses
-are add-tree reassociation left by the action's do/undo cycle with `ptrsub_undo`, the one
-composition residue whose Ghidra-full-program ground truth the function-slice oracle cannot
-reach; the datatest corpus, where the oracle IS valid, is identical. The union and
+ActionVarnodeProps row). `ActionConstantPtr` (:5665, the last
+unported mainloop member) landed at **590 — byte-identical emissions**: its composition was
+closed against a data-block-equipped app oracle (the term order and the surviving anchored
+form are Ghidra's; the missing `spacebaseConstant` type lock was the root cause of an
+85-EXACT do/undo cascade), and the byte-exact emitter models Ghidra's STANDALONE global-scope
+context (`Program::global_scope_all_loaded`), where the action is silent exactly as the
+standalone oracle is — the full story is coverage.md's ActionConstantPtr row. The union and
 prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18

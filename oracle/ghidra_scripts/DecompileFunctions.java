@@ -34,6 +34,19 @@ public class DecompileFunctions extends GhidraScript {
                 if (!line.isEmpty()) vas.add(line);
             }
         }
+        // Optional extra args `data=<hexstart>:<hexlen>`: create a zero-initialized data block,
+        // so the program's global scope can resolve symbols for addresses the function references
+        // (ActionConstantPtr's queryContainer, coreaction.cc:1152). Without a covering block the
+        // action is structurally silent in this per-function recipe — the trace-blindness recorded
+        // in docs/coverage.md's ActionConstantPtr row.
+        for (int i = 1; i < args.length; i++) {
+            if (!args[i].startsWith("data=")) continue;
+            String[] kv = args[i].substring(5).split(":");
+            long start = Long.parseLong(kv[0], 16);
+            long len = Long.parseLong(kv[1], 16);
+            currentProgram.getMemory().createInitializedBlock(
+                "data" + kv[0], toAddr(start), len, (byte) 0, monitor, false);
+        }
         DecompInterface d = new DecompInterface();
         d.openProgram(currentProgram);
         for (String va : vas) {

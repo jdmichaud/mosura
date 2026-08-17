@@ -41,6 +41,16 @@ public class DumpDecompDebug extends GhidraScript {
         }
         File outDir = new File(args[1]);
         outDir.mkdirs();
+        // Optional `data=<hexstart>:<hexlen>` args — see DecompileFunctions.java; required for any
+        // question involving ActionConstantPtr, whose symbol query needs the address in a block.
+        for (int i = 2; i < args.length; i++) {
+            if (!args[i].startsWith("data=")) continue;
+            String[] kv = args[i].substring(5).split(":");
+            long start = Long.parseLong(kv[0], 16);
+            long len = Long.parseLong(kv[1], 16);
+            currentProgram.getMemory().createInitializedBlock(
+                "data" + kv[0], toAddr(start), len, (byte) 0, monitor, false);
+        }
         for (String va : vas) {
             println("===== FUNC " + va + " =====");
             // A fresh interface per function: the debug savefile is armed per decompile, and

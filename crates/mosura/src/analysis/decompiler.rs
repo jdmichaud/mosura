@@ -106,6 +106,9 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.compiler_spec_id,
         );
         f.readonly_ranges = readonly_ranges.clone();
+        // Which Ghidra global-scope context this decompile models is the PROGRAM's property —
+        // application (default) or standalone — see `Program::global_scope_all_loaded`.
+        f.global_scope_all_loaded = program.global_scope_all_loaded;
         // CALLEE-EVIDENCE EFFECTS, before the pipeline: for each direct call, record which
         // registers the CALLEE overwrites that the default convention calls `<unaffected>`.
         // `guard_calls` consults this per call site, so a callee that does not honour the

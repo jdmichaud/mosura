@@ -177,9 +177,12 @@ fn is_pointer(f: &Funcdata, spc: SpaceId, vn: VarnodeId, op: OpId, slot: usize) 
     let _ = needexact;
     // `Architecture::resolveConstant`, flat arm: wrap into the space.
     let rampoint = f.spaces.get(spc).wrap_offset(v.loc.offset);
-    // The global-scope query (see the module header): an entry exists iff the address is in a
-    // loaded image block. The entry sits exactly at `rampoint`, so `needexacthit` holds.
-    f.is_loaded(rampoint).then_some(rampoint)
+    // The global-scope query (see the module header): under the APPLICATION scope model an
+    // entry exists iff the address is in a loaded image block; under the STANDALONE model no
+    // undeclared symbol resolves and the action is silent — matching each context's oracle
+    // (`Funcdata::global_scope_all_loaded`). The entry sits exactly at `rampoint`, so
+    // `needexacthit` holds.
+    (f.global_scope_all_loaded && f.is_loaded(rampoint)).then_some(rampoint)
 }
 
 /// The action. `localcount` caps the passes at 4, as Ghidra's member does.

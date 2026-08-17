@@ -492,6 +492,12 @@ fn main() {
 
     eprintln!("loading WAR2 via analyze_le_file ...");
     let mut prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
+    // The byte-exact emitter models Ghidra's STANDALONE global-scope context (no auto-resolved
+    // symbols, ActionConstantPtr silent): the binary is this tool's oracle, its source wrote
+    // plain address constants, and the application context's anchored `(&xRam..)[..]` forms cost
+    // 89 EXACT + 16 new COMPILE_FAILs when measured (sb25). Both contexts are real Ghidra; this
+    // selects the one whose output reproduces. See `Program::global_scope_all_loaded`.
+    prog.global_scope_all_loaded = false;
     // PASS 1 — recover every function's prototype, so pass 2's callers can consult the callee
     // instead of guessing it from one call site. Costs one decompile per function; the emit that
     // follows is the second.

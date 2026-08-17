@@ -47,6 +47,15 @@ pub enum CommentKind {
 /// The whole-program database (Ghidra `Program`).
 #[derive(Clone, Debug)]
 pub struct Program {
+    /// Which Ghidra global-scope context the decompiles of this program model (see
+    /// `Funcdata::global_scope_all_loaded`). Defaults to the APPLICATION model — a program
+    /// database that resolves a symbol for any loaded address, matching the analyzeHeadless
+    /// oracle recipes. The byte-exact emitter selects the STANDALONE model instead: the binary
+    /// is its oracle, the original source wrote plain address constants, and the standalone
+    /// context (no auto-symbols, `ActionConstantPtr` silent) reproduces them — measured at
+    /// 590 vs 501 EXACT on WAR2. Both are real Ghidra contexts; this field says which
+    /// environment is being modeled, not how analysis behaves.
+    pub global_scope_all_loaded: bool,
     pub spaces: SpaceManager,
     /// The default (code/data) address space — `ram` on x86-64. The snapshot's loaded
     /// memory map is the blocks in this space.
@@ -152,6 +161,7 @@ impl Program {
         addr_size_bits: u32,
     ) -> Program {
         Program {
+            global_scope_all_loaded: true,
             spaces,
             default_space,
             language_id: language_id.to_string(),

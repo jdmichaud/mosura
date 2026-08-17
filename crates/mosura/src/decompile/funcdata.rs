@@ -113,6 +113,16 @@ pub struct Funcdata {
     /// recomputed (`ActionRestructureVarnode`), which is exactly when Ghidra's Scope changes.
     pub stack_syms_cache: Option<Vec<super::varmap::StackSymbol>>,
     pub readonly_ranges: Vec<(u64, u64)>,
+    /// Which Ghidra GLOBAL-SCOPE behavior this Funcdata models. Ghidra has two: the APPLICATION
+    /// resolves a symbol for any address inside a loaded memory block (its program database
+    /// auto-answers `queryContainer` — why `&DAT_...` exists for unnamed addresses), while the
+    /// STANDALONE decompiler (datatest fixtures, capture_trace) answers only explicitly declared
+    /// symbols — its `ActionConstantPtr` is silent on undeclared addresses. mosura's analysis
+    /// boundary models the application (`true`); the fixture loader leaves the standalone default
+    /// (`false`), matching the oracle each context is validated against. Measured: grounding the
+    /// query on the image alone made the fixture corpus emit `&xRam` forms its (silent-action)
+    /// oracle lacks — 0.9569 -> 0.9382.
+    pub global_scope_all_loaded: bool,
     /// Calls whose committed argument list contained a linked-but-UNWRITTEN varnode, awaiting the
     /// output commit that should give it a definition (see [`Self::reopen_input`]).
     pub calls_awaiting_output: std::collections::BTreeSet<OpId>,
@@ -317,6 +327,7 @@ impl Funcdata {
             reopened_inputs: Default::default(),
             blocks_unreachable: false,
             readonly_ranges: Vec::new(),
+            global_scope_all_loaded: false,
             stack_syms_cache: None,
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
@@ -777,6 +788,15 @@ impl Funcdata {
         );
         let sb_vn = self.new_const(sz, 0);
         self.vn_mut(sb_vn).ty = Some(sb_type);
+        // Ghidra: `updateType(sb_type, true, true)` — the LOCK is load-bearing, not decoration.
+        // Unlocked, the next ActionInferTypes pass rederives the constant's type from its op
+        // context, the pointer evaporates, RulePtraddUndo/RulePtrsubUndo see a non-pointer base
+        // and dismantle the whole transform back to a (reassociated) INT_ADD — the do/undo cycle
+        // recorded in docs/coverage.md's ActionConstantPtr row. Locked, `getLocalType` keeps the
+        // Pointer(Spacebase) seed each pass, the PTRSUB output derives Pointer(Unknown(1)) via
+        // the spacebase getSubType arm, and both undo guards decline — Ghidra's chain, verified
+        // against the app oracle on FUN_00025e90 with a data block (`(&UNK_000804ba)[...]`).
+        self.vn_mut(sb_vn).set_typelock();
         self.vn_mut(sb_vn).set_spacebase();
         let newconst = self.new_const(sz, origval);
         self.vn_mut(newconst).set_ptr_check();
