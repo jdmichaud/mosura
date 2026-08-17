@@ -62,8 +62,12 @@ closed against a data-block-equipped app oracle (the term order and the survivin
 form are Ghidra's; the missing `spacebaseConstant` type lock was the root cause of an
 85-EXACT do/undo cascade), and the byte-exact emitter models Ghidra's STANDALONE global-scope
 context (`Program::global_scope_all_loaded`), where the action is silent exactly as the
-standalone oracle is — the full story is coverage.md's ActionConstantPtr row. The union and
-prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
+standalone oracle is — the full story is coverage.md's ActionConstantPtr row. **590 held with
+byte-identical WAR2 emissions** (sb34) through the Phase-4 refinement carve-out + stand-in
+retirement, the per-fixture cspec threading (`raw_funcdata_flow_image_arch` — datatest-path
+only; WAR2 threads its own `__watcall` ids), and `buildReturnOutput`'s multi-piece PIECE
+reassembly (never fires on watcall's single-EAX verdicts; mixfloatint 0.857 → 1.000). The union
+and prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm

@@ -155,8 +155,11 @@ every survivor named and attributed (2 constant-dividend divides, 2 unrecovered 
 indices, 3 POPCOUNT, 3 spacebase, 5 genuine wide residues incl. two libc functions); EXACT 590
 held with zero transitions; `stackreturn` 0.868 → **1.000** (the held port's predicted number);
 fixture corpus 0.9569 → 0.9586; `FUN_00042200` (the worked mechanism-A specimen) emits plain C
-with no PIECE/INT_RIGHT. Tracked follow-ups: `mixfloatint` −0.025 (the SIMD-scoped
-`refine_overlaps` stand-in now overlaps the general path — reconcile/retire it), and 3
+with no PIECE/INT_RIGHT. Tracked follow-ups: `mixfloatint` −0.025 — CLOSED (2026-08-17): the
+fixture declares `x86:LE:64:default:windows` and the datatest paths were pinning the gcc cspec
+(fixed by threading each fixture's own arch, `raw_funcdata_flow_image_arch`), and the RETURN kept
+only the low XMM0 lane (fixed by porting `buildReturnOutput`'s multi-piece PIECE reassembly,
+coreaction.cc:1850-1904) — mixfloatint 0.857 → 1.000, byte-identical to the oracle. Remaining: 3
 SAME_SHAPE → MISMATCH shape shifts.
 
 **Phase 5 — internal names escaping into C. DONE (2026-08-17), one family as planned.**

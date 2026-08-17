@@ -6,7 +6,7 @@
 //! CircleRange range-pullback, and switchmulti needs the addrtied heritage guards — those forms
 //! are tracked under A6-1 and are not yet asserted.
 
-use mosura::decompile::build::raw_funcdata_flow_image;
+use mosura::decompile::build::{raw_funcdata_flow_image, raw_funcdata_flow_image_arch};
 use mosura::decompile::pipeline;
 use mosura::{datatest, paths};
 
@@ -22,7 +22,7 @@ fn tables(name: &str) -> Option<(Vec<Vec<u64>>, Vec<Vec<u64>>)> {
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::datatests_dir().join(format!("{name}.xml"))).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
-    let mut f = raw_funcdata_flow_image(spec, "func", &img, dt.chunks[0].offset, &ctx);
+    let mut f = raw_funcdata_flow_image_arch(spec, "func", &img, dt.chunks[0].offset, &ctx, &dt.arch);
     let mut heur: Vec<Vec<u64>> = f.switch_targets.values().cloned().collect();
     heur.sort();
     pipeline::decompile(&mut f);

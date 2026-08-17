@@ -318,6 +318,40 @@ pub fn raw_funcdata_flow_image(
     )
 }
 
+/// Like [`raw_funcdata_flow_image`] but resolving the calling convention from a datatest's
+/// declared `<binaryimage arch="…">` string instead of the corpus default. Ghidra's harness
+/// decompiles each savefile under ITS OWN language/cspec pair — `SleighArchitecture::
+/// resolveArchitecture` (sleigh_arch.cc) splits the archid at the last `:` into language id and
+/// compiler spec id — so a `x86:LE:64:default:windows` fixture (mixfloatint, statuscmp) runs
+/// under the Win64 `__fastcall` groups, not gcc SysV. Building those under the gcc default
+/// mis-read the parameter storage wholesale: EDX/R9D became mid-list SysV entries whose leading
+/// holes (RDI/RSI/RCX/R8) filled in as phantom unreferenced parameters, and the real stack args
+/// at 0x28/0x30 — Win64's first slots past the shadow space, but four holes deep into gcc's
+/// stack entry — died to the inactive-chain rule.
+pub fn raw_funcdata_flow_image_arch(
+    spec: &Spec,
+    name: impl Into<String>,
+    chunks: &[(u64, &[u8])],
+    entry: u64,
+    context: &[u32],
+    arch: &str,
+) -> Funcdata {
+    let (language_id, compiler_id) = match arch.rfind(':') {
+        Some(i) => (&arch[..i], &arch[i + 1..]),
+        None => (DEFAULT_LANG_ID, DEFAULT_COMPILER_ID),
+    };
+    raw_funcdata_flow_image_overrides(
+        spec,
+        name,
+        chunks,
+        entry,
+        context,
+        &std::collections::HashSet::new(),
+        language_id,
+        compiler_id,
+    )
+}
+
 /// Like [`raw_funcdata_flow_image`] but honoring `call_return` — the instruction addresses the
 /// analysis marked with a `FlowOverride::CALL_RETURN` (shared-return tail calls: a `jmp` whose flow
 /// reference was retyped to a call by `SharedReturnAnalyzer`). At such an address the terminal

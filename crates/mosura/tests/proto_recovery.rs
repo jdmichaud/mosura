@@ -4,7 +4,7 @@
 //! Storage only — parameter *width* (the heritage normalize-read-size over-widening) and *type*
 //! are tracked separately; this pins the storage locations and ordering, which is the contract.
 
-use mosura::decompile::build::raw_funcdata_flow_image;
+use mosura::decompile::build::raw_funcdata_flow_image_arch;
 use mosura::decompile::pipeline;
 use mosura::{datatest, paths};
 
@@ -18,7 +18,7 @@ fn proto_of(name: &str) -> Option<(Vec<u64>, Option<u64>)> {
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let dt = datatest::parse_file(&paths::datatests_dir().join(format!("{name}.xml"))).unwrap();
     let img: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
-    let mut f = raw_funcdata_flow_image(spec, "func", &img, dt.chunks[0].offset, &ctx);
+    let mut f = raw_funcdata_flow_image_arch(spec, "func", &img, dt.chunks[0].offset, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let p = f.func_proto();
     Some((p.params.iter().map(|s| s.addr.offset).collect(), p.output.map(|o| o.addr.offset)))

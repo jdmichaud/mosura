@@ -632,34 +632,96 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
     count
 }
 
-/// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1837): rewrite each RETURN to
+/// Ghidra `ActionReturnRecovery::buildReturnOutput` (coreaction.cc:1836): rewrite each RETURN to
 /// carry exactly the recovered return value. The used trials (marked by [`derive_output_map`], in
 /// `sortTrials` order) name the RETURN input slots that hold it; every other candidate input is
 /// dropped, so the scratch-register writes that fed them die as dead code.
 ///
-/// Ghidra's multi-piece branches (coreaction.cc:1848-1904 — a return split across two or more
-/// storage units, reassembled with a `PIECE` at a `constructJoinAddress` varnode) are NOT ported:
-/// they need join-space support, exactly as the same case in
-/// [`build_call_output_from_trials`] does. A multi-piece verdict therefore commits its
-/// least-significant piece only. This is reachable solely on a convention whose return storage is a
-/// register PAIR; the single-register conventions in scope (SysV `RAX`/`XMM0`, `__watcall` `EAX`)
-/// never produce one.
+/// A MULTI-PIECE verdict — the return storage heritaged (or lane-lifted) as separate pieces, each
+/// its own trial — is reassembled with a `PIECE` op inserted before the RETURN, whose output is a
+/// single varnode spanning the whole (coreaction.cc:1850-1867 two-piece case, :1869-1904 the
+/// several-piece chain), `writeMask`ed so the new varnode causes no additional heritage. This is
+/// what turns a 4-byte-lane `movaps` return setup back into the convention's whole return register:
+/// mixfloatint's `addsd` sum reaches its RETURN as two 4-byte XMM0 lane trials, the PIECE rebuilds
+/// the 8-byte `XMM0_Qa` value, and `RuleHumptyDumpty` then collapses `PIECE(SUB(sum,4),SUB(sum,0))`
+/// into the sum itself — Ghidra's own trace fires exactly that extra HumptyDumpty at the RETURN.
+/// Without the branch the RETURN kept only the least-significant lane and the prototype degraded to
+/// a truncated `SUB84(...)` integer return.
+///
+/// The whole's address: Ghidra asks `constructJoinAddress` (translate.cc:817), which for pieces
+/// that are CONTIGUOUS in a little-endian space answers the low piece's address (checking a whole
+/// register of the combined size is actually named there before skipping the join space). mosura's
+/// used trials can only be contiguous pieces of the ONE entry [`derive_output_map`] selected — a
+/// register the compiler spec names — so the low address IS that check's answer; the formal
+/// JoinRecord branch (non-contiguous pieces, i.e. a register-PAIR return convention) needs join-
+/// space support mosura lacks and commits the least-significant piece only, exactly as the same
+/// case in [`build_call_output_from_trials`] does.
 fn build_return_output(f: &mut Funcdata) {
     // The used trials, in trial order — Ghidra breaks at the first not-used trial (coreaction.cc:1843).
-    let used: Vec<u32> = {
+    let used: Vec<(u32, Address, u32)> = {
         let active = f.active_output.as_ref().unwrap();
         (0..active.num_trials())
-            .map_while(|i| active.trial[i].is_used().then_some(active.trial[i].op_slot))
+            .map_while(|i| {
+                let t = &active.trial[i];
+                t.is_used().then_some((t.op_slot, t.addr, t.size))
+            })
             .collect()
     };
     for ret in live_returns(f) {
         let n = f.op(ret).num_inputs();
-        // slot 0 is the return-address reference and is always kept (coreaction.cc:1841).
-        let keep = used.iter().copied().find(|&s| (s as usize) < n).map(|s| s as usize);
-        for slot in (1..n).rev() {
-            if Some(slot) != keep {
-                f.op_remove_input(ret, slot);
+        // The used trials' varnodes at this RETURN — Ghidra's `newparam` past the slot-0
+        // return-address reference, stopping at a slot past this op's inputs (coreaction.cc:1846).
+        let mut pieces: Vec<(VarnodeId, Address, u32)> = Vec::new();
+        for &(slot, addr, size) in &used {
+            if (slot as usize) >= n {
+                break;
             }
+            pieces.push((f.op(ret).input(slot as usize).unwrap(), addr, size));
+        }
+        let value: Option<VarnodeId> = match pieces.as_slice() {
+            // Easy zero or one return varnode case (coreaction.cc:1848).
+            [] => None,
+            &[(vn, _, _)] => Some(vn),
+            // Two piece concatenation case (coreaction.cc:1850): trial 0 is the least-significant
+            // piece, trial 1 the most-significant (`sortTrials` order).
+            &[(lovn, lo_a, lo_s), (hivn, hi_a, hi_s)] => {
+                if lo_a.space == hi_a.space && lo_a.offset.wrapping_add(lo_s as u64) == hi_a.offset {
+                    let seq = f.op(ret).seqnum;
+                    let newop = f.new_op(OpCode::Piece, seq, vec![hivn, lovn]);
+                    let whole = f.new_output(newop, lo_s + hi_s, lo_a);
+                    f.vn_mut(whole).set_write_mask(); // coreaction.cc:1861
+                    f.op_insert_before(newop, ret);
+                    Some(whole)
+                } else {
+                    Some(lovn) // JoinRecord case — unported (see above)
+                }
+            }
+            // Several varnodes from a single container (coreaction.cc:1869): concatenate the
+            // contiguous run into a single result, one PIECE per step, breaking at the first gap.
+            _ => {
+                let (mut preexist, cur_a, mut cur_s) = pieces[0];
+                for &(vn, a, s) in &pieces[1..] {
+                    if a.space != cur_a.space || cur_a.offset.wrapping_add(cur_s as u64) != a.offset
+                    {
+                        break; // coreaction.cc:1899 — offmatch mismatch ends the run
+                    }
+                    let seq = f.op(ret).seqnum;
+                    let newop = f.new_op(OpCode::Piece, seq, vec![vn, preexist]);
+                    let whole = f.new_output(newop, cur_s + s, cur_a);
+                    f.vn_mut(whole).set_write_mask(); // coreaction.cc:1892
+                    f.op_insert_before(newop, ret);
+                    preexist = whole;
+                    cur_s += s;
+                }
+                Some(preexist)
+            }
+        };
+        // opSetAllInput(retop, newparam): slot 0 (the return-address reference) plus the value.
+        for slot in (1..n).rev() {
+            f.op_remove_input(ret, slot);
+        }
+        if let Some(v) = value {
+            f.op_append_input(ret, v);
         }
     }
 }

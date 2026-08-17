@@ -42,7 +42,7 @@ fn main() {
         let entry = dt.chunks[0].offset;
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let t0 = Instant::now();
-            let mut f = build::raw_funcdata_flow_image(&spec, "func", &image, entry, &ctx);
+            let mut f = build::raw_funcdata_flow_image_arch(&spec, "func", &image, entry, &ctx, &dt.arch);
             let t1 = Instant::now();
             pipeline::decompile(&mut f);
             let t2 = Instant::now();

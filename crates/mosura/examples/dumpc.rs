@@ -10,7 +10,9 @@ use mosura::{datatest, paths};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let stem = args.get(1).expect("fixture stem");
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    // Same resolution as the corpus tests (checkout first, vendored fallback) — the direct
+    // ghidra_src join broke whenever only the vendored languages were present.
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     // Load through the spec cache so the dump sees exactly what the pipeline/tests see —
     // including the laned (vector) registers the cache loader attaches (a direct
     // `Spec::from_sla` would silently miss them and dump a lane-blind decompile).
@@ -20,7 +22,7 @@ fn main() {
     let dt = datatest::parse_file(&path).unwrap();
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     if args.iter().any(|a| a == "--pre") {
         // The lifted p-code BEFORE any action runs — the input heritage actually sees.
         print!("{}", f.print_raw());

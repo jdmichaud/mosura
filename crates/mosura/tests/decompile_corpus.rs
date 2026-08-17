@@ -61,7 +61,7 @@ fn decompile_track_corpus_report() {
         let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
         let entry = dt.chunks[0].offset;
         let c = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+            let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
             pipeline::decompile(&mut f);
             printc::print_c(&f)
         }));
@@ -93,10 +93,18 @@ fn decompile_track_corpus_report() {
 
 /// Regression for the `refineInput`/`guardInput` heritage fix (`heritage.cc:1836`/`:1952`): an XMM
 /// float parameter read 8 bytes wide (`XMM0_Qa`) sits in a register range that a later `movaps`
-/// return-setup writes in 4-byte lanes. `refine_overlaps` must keep this *input-like* read (no
+/// return-setup writes in 4-byte lanes. The refinement must keep this *input-like* read (no
 /// dominating lane write) whole, so it links as one parameter — not `refineRead`'s
 /// `CONCAT(input_hi, input_lo)` of two free pieces that nothing rejoins. Before the fix mixfloatint's
 /// float param rendered as `CONCAT44(...)`; after it is a single clean register read.
+///
+/// Also the full-signature regression for two later fixes that each mangled this fixture's
+/// prototype: (1) the per-fixture cspec threading (`raw_funcdata_flow_image_arch`) — mixfloatint
+/// declares `x86:LE:64:default:windows`, and under the gcc default its Win64-positional storage
+/// mis-read as four phantom SysV hole params plus dropped stack args; (2) `buildReturnOutput`'s
+/// multi-piece PIECE reassembly (coreaction.cc:1850) — without it the RETURN kept only the low
+/// 4-byte XMM0 lane and the float8 return degraded to `SUB84(...)`. The expected line is Ghidra's
+/// own oracle output for this fixture, byte for byte.
 #[test]
 fn mixfloatint_float_param_stays_whole() {
     let sla = paths::language_dir("x86").join("x86-64.sla");
@@ -110,12 +118,16 @@ fn mixfloatint_float_param_stays_whole() {
     let dt = datatest::parse_file(&path).expect("parse mixfloatint");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
         !c.contains("CONCAT"),
         "mixfloatint's whole XMM float param was CONCAT-split (refineInput regression):\n{c}"
+    );
+    assert!(
+        c.contains("float8 func(float8 param_1, int4 param_2, float8 param_3, int4 param_4, int4 param_5, int4 param_6)"),
+        "mixfloatint's Win64 prototype regressed (cspec threading / multi-piece return):\n{c}"
     );
 }
 
@@ -141,7 +153,7 @@ fn deindirect_args_land_on_correct_call() {
     let dt = datatest::parse_file(&path).expect("parse deindirect");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     // The parameterized call carries exactly the two hoisted args; the other indirect call is empty.
@@ -171,7 +183,7 @@ fn indproto_if_else_uses_positive_condition() {
     let dt = datatest::parse_file(&path).expect("parse indproto");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -200,7 +212,7 @@ fn orcompare_recovers_logical_or() {
     let dt = datatest::parse_file(&path).expect("parse orcompare");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -235,7 +247,7 @@ fn pointerrel_negated_condition_normalizes() {
     let dt = datatest::parse_file(&path).expect("parse pointerrel");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(
@@ -263,7 +275,7 @@ fn piecestruct_folds_shifts_to_concat() {
     let dt = datatest::parse_file(&path).expect("parse piecestruct");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
-    let mut f = build::raw_funcdata_flow_image(spec, "func", &image, entry, &ctx);
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, &ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let c = printc::print_c(&f);
     assert!(

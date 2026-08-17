@@ -438,7 +438,6 @@ mod tests {
             );
         }
     }
-    use super::*;
 
     #[test]
     fn borland_banner_reads_family_and_era() {

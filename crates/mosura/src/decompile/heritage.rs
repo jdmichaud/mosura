@@ -26,11 +26,6 @@ use super::varnode::VarnodeId;
 /// An SSA location key: `(space, offset, size)`.
 type Loc = (SpaceId, u64, u32);
 
-/// The per-pass widening re-entry computation ([`widening_ranges`]): the merged ranges, the set of
-/// range bases `(space, base)` that widened vs their prior-pass heritage, and each merged range's
-/// maximum contained write size (Ghidra's `collect` `maxsize`, keyed by range base).
-type WideningRanges = (LocationMap, HashSet<(SpaceId, u64)>, HashMap<(SpaceId, u64), u32>);
-
 /// Ghidra `LocationMap` (`heritage.hh:38`): a fine-grained record of which `(addr, size)` ranges
 /// have been brought into SSA form and in which heritage pass. This is Ghidra's `globaldisjoint`;
 /// it replaces a per-*space* "done" flag so an individual location can be (re-)heritaged in a later
@@ -284,18 +279,8 @@ impl TaskList {
     }
 }
 
-/// The x86-64 vector (XMM/YMM/ZMM) register file begins at register offset `0x1200`; everything
-/// below it (GP/flags/segment/x87) is scalar. `movaps`/`xorps` write these *laned* registers in
-/// 4-byte lanes while floats read 8 bytes, so they need Ghidra's `refinement` partition
-/// (the [`refinement`] carve-out) rather than the whole-range `guard()` normalize
-/// ([`normalize_ranges`]).
-const XMM_BASE: u64 = 0x1200;
 
-/// Whether a register offset falls in the laned (XMM) vector file, so its overlapping accesses are
-/// partitioned by the [`refinement`] carve-out and skipped by [`normalize_ranges`].
-fn is_laned_register(spaces: &super::space::SpaceManager, sp: SpaceId, off: u64) -> bool {
-    spaces.by_name("register") == Some(sp) && off >= XMM_BASE
-}
+
 
 /// Per-space heritage bookkeeping (Ghidra's `HeritageInfo`, `heritage.cc:179`). Heritage is
 /// an *iterating* process in Ghidra: `heritage()` is called once per pass, and a space only
@@ -379,85 +364,7 @@ fn write_loc(f: &Funcdata, op: OpId) -> Option<Loc> {
 }
 
 
-/// This pass's merged ranges, the range bases that WIDENED vs their prior-pass heritage, and each
-/// merged range's maximum contained write size — the widening re-entry computation shared by
-/// [`normalize_ranges`] and [`remove_revisited_markers`] so both act on EXACTLY the same widening,
-/// non-refinement ranges (a divergence would leave the hybrid IR of half-normalized re-heritage).
-///
-/// Builds the merged ranges in a clone of `globaldisjoint` (Ghidra's `disjoint` task list): the
-/// cumulative prior-pass ranges, plus every eligible free-access footprint this pass in address order
-/// (matching `beginLoc`'s address-ordered walk, `heritage.cc:2699`), so a re-entered range takes its
-/// cumulative width and the LocationMap left-overlap merge is faithful. Write-masked varnodes are
-/// excluded (Ghidra's `collect` skips them, `heritage.cc:326`) — a marker already rewritten to a
-/// SUBPIECE by [`remove_revisited_markers`] is no longer a write of its narrow location.
-///
-/// A base is *widened* when its merged range is wider than the prior range covering it (`globaldisjoint`
-/// holds only prior-pass ranges, so a wider merge is a genuine re-heritage of a grown range,
-/// `heritage.cc:2711`). `max_write` is Ghidra's `collect` `maxsize` (`heritage.cc:336`); a range wider
-/// than 4 bytes that no single write covers is Ghidra's *refinement* (partition) case
-/// (`placeMultiequals`, `heritage.cc:2610`: `size > 4 && max < size`), which both callers skip (mosura
-/// keeps non-laned refinement a deliberate no-op — a scoping the general [`refinement`]
-/// carve-out has since superseded; the flag remains only where laned identification is needed).
-fn widening_ranges(f: &Funcdata, pass: i32) -> WideningRanges {
-    let infos = build_info_list(&f.spaces);
-    let eligible = |sp: SpaceId| {
-        let info = &infos[sp.0 as usize];
-        info.is_heritaged() && info.delay <= pass
-    };
-    let mut footprints: Vec<Loc> = Vec::new();
-    let mut writes: Vec<Loc> = Vec::new();
-    for b in 0..f.num_blocks() {
-        for &op in &f.blocks()[b].ops {
-            for slot in 0..f.op(op).num_inputs() {
-                if let Some((sp, off, sz)) = read_loc(f, op, slot) {
-                    let vn = f.vn(f.op(op).input(slot).unwrap());
-                    if eligible(sp)
-                        && !is_laned_register(&f.spaces, sp, off)
-                        && !vn.is_heritage_known()
-                        && !vn.is_write_mask()
-                    {
-                        footprints.push((sp, off, sz));
-                    }
-                }
-            }
-            if let Some((sp, off, sz)) = write_loc(f, op) {
-                if eligible(sp)
-                    && !is_laned_register(&f.spaces, sp, off)
-                    && !f.vn(f.op(op).output.unwrap()).is_write_mask()
-                {
-                    footprints.push((sp, off, sz));
-                    writes.push((sp, off, sz));
-                }
-            }
-        }
-    }
-    if footprints.is_empty() {
-        return (LocationMap::default(), HashSet::new(), HashMap::new());
-    }
-    footprints.sort_unstable_by_key(|&(sp, off, sz)| (sp.0, off, sz));
-    let mut merged = f.globaldisjoint.clone();
-    for &(sp, off, sz) in &footprints {
-        merged.add(sp, off, sz, pass);
-    }
-    let widened: HashSet<(SpaceId, u64)> = footprints
-        .iter()
-        .filter_map(|&(sp, off, _)| {
-            let (base, size) = merged.merged_range(sp, off)?;
-            match f.globaldisjoint.merged_range(sp, base) {
-                Some((_, prior)) if size > prior => Some((sp, base)),
-                _ => None,
-            }
-        })
-        .collect();
-    let mut max_write: HashMap<(SpaceId, u64), u32> = HashMap::new();
-    for (sp, off, sz) in writes {
-        if let Some((base, _)) = merged.merged_range(sp, off) {
-            let e = max_write.entry((sp, base)).or_insert(0);
-            *e = (*e).max(sz);
-        }
-    }
-    (merged, widened, max_write)
-}
+
 
 
 /// Faithful port of Ghidra's `Heritage::removeRevisitedMarkers` (`heritage.cc:244`), driven per

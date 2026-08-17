@@ -2842,7 +2842,6 @@ mod tests {
         let _ = f.new_output_unique(r4, 4);
         f.set_blocks(vec![BlockBasic { ops: vec![o1, o2, o3, r8, r4], ..Default::default() }]);
 
-        let covers = all_covers(&f);
         let mut h = HighVariables::new(f.num_varnodes());
         let pieces = merge_addrtied(&f, &mut h);
         // Identity: per (address, size).
