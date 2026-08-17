@@ -2204,7 +2204,7 @@ impl Rule for RuleSubExtComm {
 
 /// `RuleHumptyDumpty` (`ruleaction.cc:5214`): simplify break-and-rejoin —
 /// `concat(sub(V,c), sub(V,0)) => V`, and the partial variant `concat(sub(V,c), sub(V,d)) =>
-/// sub(V,d)`. This rejoins the SUBPIECE pieces that heritage refinement (`refine_overlaps`) splits
+/// sub(V,d)`. This rejoins the SUBPIECE pieces that the heritage `refinement` carve-out splits
 /// an overlapping SIMD/sub-register write into — the high `PIECE` input is `sub(V,c)`, the low is
 /// `sub(V,d)`, and when they tile `V` exactly the whole thing collapses back to `V`.
 pub struct RuleHumptyDumpty;
