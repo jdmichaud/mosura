@@ -281,6 +281,13 @@ fn contract_violations(tu: &str) -> Vec<String> {
             split_pair(d).is_some_and(|(src, _)| src > 4)
         } else if w == "POPCOUNT" {
             true
+        } else if w.starts_with("MOSURA_") || w == "spacebase" {
+            // Phase 5: internal names escaping into C. `MOSURA_*` are printc's own explicit
+            // placeholders (unrenderable op / unrecovered switch index); `spacebase` is the
+            // TYPE_SPACEBASE datatype name reaching a declaration (upstream type-assignment
+            // question — Ghidra's own C for the specimen is equally non-compiling, rendering
+            // the raw stack pointer as `register0x00000010`).
+            true
         } else {
             matches!(
                 w,

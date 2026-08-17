@@ -1162,7 +1162,28 @@ impl<'a> PrintC<'a> {
             // POPCOUNT (Ghidra `TypeOpPopcount`, typeop.cc:2558, a `TypeOpFunc` named "POPCOUNT"):
             // renders `POPCOUNT(x)` via `opFunc`.
             OpCode::Popcount => (format!("POPCOUNT({})", self.render_var(a(0)).0), 16),
-            other => (format!("{}(...)", other.name()), 16),
+            // INT_CARRY / INT_SCARRY (Ghidra `TypeOpIntCarry`/`TypeOpIntScarry`, typeop.cc:1345/
+            // 1358 — `TypeOpFunc`s whose operator name is `CARRY`/`SCARRY` + the input size):
+            // exactly the SBORROW shape above. These used to fall through to the placeholder
+            // below — the `INT_CARRY(...)` internal-name leak of docs/compilable-c-remediation.md
+            // Phase 5; the closed prelude defines CARRY1/2/4 and SCARRY1/2/4.
+            OpCode::IntCarry => {
+                let sz = self.f.vn(a(0)).size;
+                let l = self.render_var(a(0)).0;
+                let r = self.render_var(a(1)).0;
+                (format!("CARRY{sz}({l},{r})"), 16)
+            }
+            OpCode::IntScarry => {
+                let sz = self.f.vn(a(0)).size;
+                let l = self.render_var(a(0)).0;
+                let r = self.render_var(a(1)).0;
+                (format!("SCARRY{sz}({l},{r})"), 16)
+            }
+            // The placeholder for an op printc cannot render. Ghidra has NO counterpart: its
+            // token table is total, so reaching here is a mosura port gap by definition. The
+            // MOSURA_ prefix is load-bearing — the survey's contract detector flags it, so a new
+            // gap becomes a manifest-reported defect instead of a silent internal name.
+            other => (format!("MOSURA_UNRENDERED_{}(...)", other.name()), 16),
         }
     }
 
@@ -1619,7 +1640,10 @@ impl<'a> PrintC<'a> {
                 let idx = head
                     .and_then(|b| self.switch_index(b))
                     .map(|v| self.render_var(v).0)
-                    .unwrap_or_else(|| "switchD".to_string());
+                    // Placeholder for a switch whose index recovery failed — a mosura jumptable
+                    // gap (Ghidra's emitBlockSwitch always has an operand). MOSURA_ prefix =
+                    // contract-detector visible; the fix that retires it is recovery work.
+                    .unwrap_or_else(|| "MOSURA_SWITCH_INDEX_UNRECOVERED".to_string());
                 // emit the switch-head block's statements first (Ghidra `emitBlockSwitch`:
                 // `getSwitchBlock()->emit` with `no_branch`) — the head may carry statements that
                 // collapsed into it (e.g. the entry block once its bounds guard is folded away);

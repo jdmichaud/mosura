@@ -142,9 +142,24 @@ pieces or off-band), not a schedule or rule gap. Mechanism A remains Phase 4.
 **Phase 4 — the stack aggregates.** Largest population. Gated on open question 2 — establish
 whether this is type recovery or variable splitting *before* implementing.
 
-**Phase 5 — internal names escaping into C.** `INT_CARRY`, `spacebase`, `switchD` are one family,
-not three gaps: the renderer emitting identifiers it never declared. Fix as one, ideally by making
-that impossible rather than by handling each name.
+**Phase 5 — internal names escaping into C. DONE (2026-08-17), one family as planned.**
+`INT_CARRY(...)` (with elided arguments!) was the printc catch-all fallback — a port GAP, since
+Ghidra's token table is total: `TypeOpIntCarry`/`TypeOpIntScarry` are `TypeOpFunc`s rendering
+`CARRY<n>(a,b)`/`SCARRY<n>(a,b)` exactly like the SBORROW arm mosura already had. Both arms
+ported; with the Phase-2 closed prelude defining the whole carry family, the seven affected
+functions went **COMPILE_FAIL → MISMATCH (103 → 96)** — arguments restored, honestly comparing
+again. The remaining two names are mosura RECOVERY gaps with no Ghidra counterpart path, made
+impossible to hide rather than patched: the fallback now emits `MOSURA_UNRENDERED_<OP>(...)`,
+the failed switch index `MOSURA_SWITCH_INDEX_UNRECOVERED`, and the contract detector flags any
+`MOSURA_*` identifier and the `spacebase` type name — every renderer escape is a per-function
+manifest defect now. `spacebase * pVar` was oracle-classified before touching: Ghidra's own C
+for the specimen (`FUN_00060270`, ESP saved to globals) is equally non-compiling
+(`register0x00000010`), so there is no compilable-C question — the mosura/Ghidra delta is
+upstream type assignment (the locked `Pointer(Spacebase)` reaching a declared local where
+Ghidra carries `undefined1 *`), recorded as its own item. Standing rule adopted with JD during
+this phase: printc stays the faithful Ghidra renderer — a printc change must be Ghidra's own
+rendering (cited) or an explicit `MOSURA_*` failure channel; every compilability mechanism
+lives in the emitter layer (war2_survey / EmitChoices arms).
 
 **Phase 6 — the genuine defects.** The guarded-store hoist is **FIXED** (classified MIS-PORT
 and repaired — printc's `comma_separate` contract; the post-store re-read fixed with it via the

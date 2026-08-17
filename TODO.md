@@ -554,6 +554,18 @@ Note for measurement: **no committed binary carries debug info** — no `-g` in
 `oracle/analysis-corpus/build.sh`, and the DOS-era games have `e32_debuglen = 0` with no
 CodeView/HLL marker — so this track needs its own corpus and does not perturb existing goldens.
 
+## Recompile-emitter generalization (deferred by JD, 2026-08-17 — not a priority yet)
+
+`war2_survey`/`recompile_check` carry WAR2.EXE inheritance that should become **per-target
+(32-bit Watcom), not per-binary**: the emit/manifest/TU-assembly layer, the representability
+contract (`build_prelude`'s closed vocabulary + `contract_violations` — widths are already a
+target property, not a WAR2 one), the declaration safety net, and the standalone-scope
+selection all generalize as "the Watcom-x86-32 emitter"; only the input loading and per-binary
+bookkeeping are binary-specific. The ground-truth corpus's `watprog` column is the natural
+second consumer that proves the split. Keep the printc separation rule while doing it: printc
+stays the faithful Ghidra renderer; every compilability mechanism lives in the emitter layer
+(or an `EmitChoices` arm), never in printc.
+
 ## Prototype findings worth carrying forward (from the approximation era)
 
 These were the *symptoms* that motivate the faithful port; all are subsumed by P1–P6.
