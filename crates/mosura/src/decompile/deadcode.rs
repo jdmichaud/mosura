@@ -175,6 +175,15 @@ impl super::action::Action for ActionDeadCode {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let before = (0..data.num_ops() as u32).filter(|&i| !data.op(OpId(i)).is_dead()).count();
+        // Ghidra's `ActionDeadCode::apply` is ONE pass: it computes the consume masks, runs the
+        // `neverConsumed` sweep, and removes unreached ops. mosura's two halves are
+        // `consume::calc_consume` (masks + neverConsumed, coreaction.cc:3925/4046) and the
+        // whole-varnode sweep below; they are composed HERE so that every pipeline instance of
+        // "deadcode" behaves like Ghidra's one action. (They used to run as separate members at
+        // separate slots — `consume` between nzmask and infertypes, the sweep after the pools —
+        // neither at Ghidra's :5503; docs/compilable-c-remediation.md CORRECTION 2 records what
+        // that did to rule outcomes.)
+        super::consume::calc_consume(data);
         dead_code(data);
         let after = (0..data.num_ops() as u32).filter(|&i| !data.op(OpId(i)).is_dead()).count();
         (before - after) as u32

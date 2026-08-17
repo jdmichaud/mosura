@@ -1142,26 +1142,6 @@ impl Action for ActionNonzeroMask {
 /// The consume-analysis half of Ghidra `ActionDeadCode` (`coreaction.cc:3925`), split out as its
 /// own action ([`super::consume::calc_consume`]) so `Varnode::consume` is fresh when the rule pool
 /// runs — mirroring how [`ActionNonzeroMask`] is factored out of the rule that reads `nzm`. It
-/// reads `nzm` (comparison/int2float/call-parameter transfers), so it runs *after* the mask pass.
-/// Nothing consumes the field yet (the SubVariableFlow rules land next), so it is output-neutral.
-pub struct ActionConsume;
-
-impl Action for ActionConsume {
-    fn name(&self) -> &str {
-        "consume"
-    }
-    fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        super::consume::calc_consume(data);
-        // The consume sweep is the analysis prelude of Ghidra's ActionDeadCode (coreaction.cc:
-        // 3925+), whose count reports only actual dead-code changes — mosura's deletion half
-        // (deadcode.rs) counts those. Recomputing consume is analysis, never a data-flow change,
-        // so it must not drive a rule_repeatapply fixpoint. (Was an unconditional `1` — the
-        // return-1 mis-port class, cf. ActionNonzeroMask; inside the mainloop restart it would
-        // never converge. This edit overlaps the parked consume-default brick, which owns the
-        // remaining `Varnode::consume` default fix — see consume-model-misport.)
-        0
-    }
-}
 
 /// The universal decompile action: heritage, simplification, dead-code removal, then type recovery
 /// and the pointer-arithmetic rewrite (PTRADD/PTRSUB), a cleanup pass, and a final dead-code sweep.
@@ -1185,6 +1165,18 @@ pub fn universal_action() -> ActionGroup {
         // rule could ever resolve it, so no call site could learn its stack offset and mosura
         // registered zero STACK input trials anywhere.
         .then(ActionHeritage)
+        // The rest of the priming prefix — Ghidra's mainloop members between ActionHeritage
+        // (:5492) and ActionRestrictLocal (:5502), so that entering the mainloop at RestrictLocal
+        // is an EXACT rotation from the first iteration on: ActionParamDouble (:5493), the two
+        // ActionDirectWrite (:5497-5498) whose marks the first ActionDeadCode's addrforce-clear
+        // reads, then ActionResolveCalls (= ActionActiveParam + ActionReturnRecovery,
+        // :5499-5500). Without these the first mainloop iteration ran RestrictLocal/DeadCode with
+        // no directwrite marks at all. (Segmentize/InternalStorage/ForceGoto are unported;
+        // ActionUnreachable (:5490) cannot precede the priming heritage because mosura builds the
+        // CFG inside ActionHeritage's first call — its mainloop instance covers later cycles.)
+        .then(ActionParamDouble)
+        .then(super::directwrite::ActionDirectWrite::new(true))
+        .then(super::directwrite::ActionDirectWrite::new(false))
         .then(ActionResolveCalls)
         // ★ The two-phase fullloop (task #8 Brick C1): Ghidra `actfullloop` (rule_repeatapply,
         // coreaction.cc:5487) wrapping `actmainloop` (rule_repeatapply, :5489) with
@@ -1207,10 +1199,11 @@ pub fn universal_action() -> ActionGroup {
         //   longer over-fires the spurious frame-base COPY (task #27 S3); the single-use base then
         //   folds to `PTRSUB(RSP, -k)` in the same pass's ptrarith, so every stack address is a
         //   PTRSUB the ScopeLocal naming resolves.
-        // - ActionNonzeroMask → ActionConsume → ActionInferTypes (:5507-5508): the analysis
-        //   recomputes, refreshed every iteration as Ghidra does (consume is the analysis half of
-        //   Ghidra's ActionDeadCode, coreaction.cc:3925+ — the slot the parked consume-default
-        //   brick re-uses). InferTypes-in-the-loop is what forms the clean array subscript (task
+        // - ActionNonzeroMask → ActionInferTypes (:5507-5508): the analysis recomputes,
+        //   refreshed every iteration as Ghidra does; the consume masks NonzeroMask reads are
+        //   recomputed by the :5503 ActionDeadCode earlier in the same iteration (consume is the
+        //   analysis half of Ghidra's ActionDeadCode, coreaction.cc:3925+, and runs inside
+        //   mosura's ActionDeadCode too — the slot the parked consume-default brick re-uses). InferTypes-in-the-loop is what forms the clean array subscript (task
         //   #22-A-2b): pass N's ptrarith creates `PTRSUB(RSP, array_start)`, pass N+1's
         //   ActionInferTypes types it as a pointer to the ScopeLocal symbol (TYPE_SPACEBASE
         //   getSubType), so the next ptrarith Array arm folds the index into `PTRADD(array, i,
@@ -1242,15 +1235,27 @@ pub fn universal_action() -> ActionGroup {
                         // pass != 0) and reconcile addrtied/addrforce with it, so RuleSubRight /
                         // ActionConditionalConst's phi guards / SubVariableFlow see the net
                         // classification (pass 0 syncs against the ActionHeritage probe boundary).
-                        // Ghidra `ActionRestrictLocal` (:5502) runs BEFORE both the deadcode
-                        // (:5503) that collects the callee-save chain and the actstackstall pool
-                        // (:5651) that creates it, so what it observes is the stack COPY left by
-                        // the PREVIOUS iteration's pool.
+                        // Ghidra `ActionRestrictLocal` (:5502) runs BEFORE the deadcode (:5503)
+                        // that collects the callee-save chain, so what it observes is the graph
+                        // left by the PREVIOUS iteration's pool.
                         .then(super::restrictlocal::ActionRestrictLocal)
+                        // ActionDeadCode at Ghidra's :5503 — INSIDE the mainloop, after
+                        // RestrictLocal and BEFORE restructure/spacebase/nzmask/infertypes and the
+                        // pools, so every pool pass runs on a dead-code-swept graph. The slot is
+                        // load-bearing for RULE OUTCOMES, not just hygiene — verified on WAR2
+                        // FUN_0002a4f0 with parallel OPACTION_DEBUG traces: this sweep kills the
+                        // imul's dead flag web (CF = INT_NOTEQUAL(SEXT48(lo), product)), which
+                        // makes the wide product lone-descended, which lets RuleSubCommute narrow
+                        // the multiply and then the divide. With the slot empty the flag web
+                        // survived into the pool, subcommute's loneDescend guard declined, and
+                        // subzext/doublesub took the IR down a path where the divide stays 8-byte
+                        // (docs/compilable-c-remediation.md, CORRECTION 2). The action recomputes
+                        // the consume masks itself (as Ghidra's does), so ActionNonzeroMask below
+                        // reads fresh masks — Ghidra's :5503 -> :5507 order.
+                        .then(super::deadcode::ActionDeadCode)
                         .then(ActionRestructureVarnode::default())
                         .then(ActionSpacebase)
                         .then(ActionNonzeroMask)
-                        .then(ActionConsume)
                         .then(ActionInferTypes::default())
                         // Ghidra `actstackstall` (coreaction.cc:5509, rule_repeatapply; mainloop
                         // slot :5651-5656): an INNER fixpoint group {oppool1, ActionLaneDivide}.
@@ -1294,8 +1299,11 @@ pub fn universal_action() -> ActionGroup {
                         // Ghidra ActionRedundBranch (:5658, "deadcontrolflow"), directly after
                         // actstackstall: splice single-in/single-out block pairs and drop branches
                         // whose exits all reach the same block.
+                        // (Ghidra has NO dead-code member between ActionRedundBranch and actprop2
+                        // — :5658-:5666 run RedundBranch, BlockStructure, ConstantPtr, actprop2
+                        // directly. A deadcode here was a rotation-era addition; removed when the
+                        // real :5503 slot above was restored. BlockStructure/ConstantPtr unported.)
                         .then(super::determinedbranch::ActionRedundBranch)
-                        .then(super::deadcode::ActionDeadCode)
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
                         // ActionUnreachable (:5673, group `unreachable`), Ghidra's slot directly
@@ -1348,8 +1356,13 @@ pub fn universal_action() -> ActionGroup {
                         // Run once, as the standalone instance below the heritage group used to be,
                         // every call stays at `passes=1/3` forever and `buildInputFromTrials` is
                         // never reached. That was invisible while mosura pinned `maxPass` to 0.
-                        .then(ActionResolveCalls)
-                        .then(super::deadcode::ActionDeadCode),
+                        // (No dead-code here: Ghidra's cycle order is ... ActiveParam/
+                        // ReturnRecovery -> RestrictLocal -> DeadCode, so in the rotated frame the
+                        // one mainloop DeadCode sits after RestrictLocal at the TOP of the next
+                        // iteration. The former tail instance here was that slot displaced by one
+                        // member — before RestrictLocal instead of after — which also left the
+                        // FIRST pool pass with no dead-code sweep at all.)
+                        .then(ActionResolveCalls),
                 )
                 // The actfullloop tail (Ghidra coreaction.cc:5678-5689), the mosura-present members
                 // at Ghidra's order — each re-evaluates at the end of every fullloop round, and a

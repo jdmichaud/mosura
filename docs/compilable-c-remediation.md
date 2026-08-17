@@ -241,7 +241,16 @@ early on an empty modify list, exactly like `debugModPrint`).
 6. The do/undo round trips (`subzext` then `subvar_subpiece` undoing it; the doublesub'd
    chain) are a visible slice of the 2.6x churn — same root.
 
-**The build item is therefore dead-code timing/behavior parity, not a divide rule.** Every
+**RESOLVED — the fix landed and the chain held.** `ActionDeadCode` was restored to Ghidra's
+`:5503` mainloop slot (one action composing consume + sweep, exactly two pipeline instances at
+Ghidra's two slots; the invented `ActionConsume` member and the two misplaced sweep instances
+removed; the priming prefix gained `ParamDouble` + `DirectWrite x2`). Measured results:
+`FUN_0002a4f0`'s divide narrows to Ghidra's 32-bit form; per-function churn 1,525 -> 654
+applications (Ghidra ~585); corpus **EXACT 566 -> 571 with zero losses**, COMPILE_FAIL 71 -> 69.
+The constant-dividend divides (`FUN_0006c6f0`/`FUN_0006cfd0`) stay wide on both sides, as
+Ghidra's own guard dictates — that residue is real 64-bit rendering work, not a schedule bug.
+
+**The build item was therefore dead-code timing/behavior parity, not a divide rule.** Every
 rule involved is already faithfully ported and every guard behaved correctly; what differs is
 that Ghidra removes dead ops (flag webs above all) in an ActionDeadCode pass right after
 heritage, and mosura does not. Remaining investigation, bounded and specimen-driven: establish

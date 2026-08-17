@@ -25,14 +25,20 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **564** |
+| default, single pass | **571** |
 | prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
-| both, best-of per function (`recompile_select`) | **591** |
+| both, best-of per function (`recompile_select`) | **593** |
 
 (The default's 539 -> 564 is the function-extent fix -- a measurement correction, recorded in
 its own commit. The pass's 501 -> 560 and the union's 557 -> 591 are this thread: the anchored
 placeholder (`19d8060`), the locked-with-varargs prototype port (`b6c7d31`), and recovered
-per-call extrapop (`d854c22`). The pass is 4 functions behind the default, from 63 behind.)
+per-call extrapop (`d854c22`). 564 -> 566 and union 593 are the stack-convention prototypes and
+switch modify lists (`ad4d860`). 566 -> **571** is restoring Ghidra's `ActionDeadCode` to its
+real mainloop slot (coreaction.cc:5503) -- a schedule mis-rotation had left the first rule-pool
+pass with no dead-code sweep at all, which silently changed RULE OUTCOMES corpus-wide (the
+worked chain is in `compilable-c-remediation.md`, CORRECTION 2). 5 wins, 0 losses, 2 fewer
+COMPILE_FAILs, and per-function rule-pool churn fell from 2.6x Ghidra to 1.12x. The union and
+prototype-pass rows are as of `ad4d860`; re-measure them before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm
