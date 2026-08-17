@@ -260,7 +260,13 @@ fn block_index_of(blocks: &[FlowBlock], rpo: &[i32], b: usize) -> i32 {
 /// (printc.cc:2746) emits every element. Treating the result as one root instead silently drops
 /// every component but the entry's — measured on WAR2 `FUN_00077dcb`, where Ghidra (given the same
 /// liveness) produces the same two components and prints both.
+#[derive(Clone)]
 pub struct Structured {
+    /// The number of composite nodes the collapse created — the `>0` signal Ghidra's
+    /// `ActionBlockStructure` feeds the mainloop repeat (`count += collapse.getChangeCount()`,
+    /// blockaction.cc:2180). Ghidra counts individual rule applications; mosura counts the
+    /// composite nodes those applications appended, which is nonzero exactly when Ghidra's is.
+    pub collapse_count: u32,
     pub blocks: Vec<FlowBlock>,
     pub roots: Vec<usize>,
     /// The unstructured branches, keyed by the basic block whose exit emits them — filled by
@@ -3237,6 +3243,7 @@ pub fn structure(f: &Funcdata) -> Structured {
         .collect();
     let n = f.num_blocks();
     let mut s = Structured {
+        collapse_count: 0,
         blocks,
         roots: Vec::new(),
         gotos: HashMap::new(),
@@ -3272,6 +3279,7 @@ pub fn structure(f: &Funcdata) -> Structured {
 
     // Collapse everything (Ghidra's CollapseStructure::collapseAll).
     s.collapse_all();
+    s.collapse_count = (s.blocks.len().saturating_sub(f.num_blocks())) as u32;
 
     // The top-level components are what `self.order` already holds: mosura maintains it exactly as
     // Ghidra maintains `BlockGraph::list` (`install` does `order.retain(not-a-component)` then
@@ -3338,13 +3346,26 @@ impl super::action::Action for ActionOrientBranches {
         if data.table_recovery_probe {
             return 0;
         }
-        let negations = structure(data).branch_negations(data);
-        let mut changed = 0;
+        // Rebuild rather than consume the mainloop cache: Ghidra's persistent graph references
+        // live PcodeOps, so ops the cleanup pool rewrote are seen fresh through it; mosura's
+        // `Structured` SNAPSHOTS condition-derived state (`oriented`, `complex`) at build, so the
+        // mainloop-era cache is stale exactly where this stage is sensitive. (Measured: consuming
+        // it flipped orientation on the for-loop fixtures, dropping eleven from 1.000.) The
+        // stale cache is dropped; FinalStructure rebuilds after all mutation is done.
+        data.structure = None;
+        let s = structure(data);
+        let negations = s.branch_negations(data);
+        if negations.is_empty() {
+            return 0;
+        }
+        // Setting `boolean_flip` invalidates any cached structure: the build bakes the
+        // orientation into `oriented`/`negated` (see the field comment), where Ghidra's
+        // persistent graph is mutated in place by `negateCondition`. mosura re-derives, so the
+        // cache is simply dropped and the next builder (FinalStructure or a consumer) rebuilds.
         for bid in negations {
             data.block_negate_condition(bid);
-            changed = 1;
         }
-        changed
+        1
     }
 }
 
@@ -3372,7 +3393,11 @@ impl super::action::Action for ActionPreferComplement {
         if data.table_recovery_probe {
             return 0;
         }
-        let splits = structure(data).if_else_splits();
+        // Same rebuild-not-consume reasoning as ActionOrientBranches above: the condnegate pool
+        // just rewrote conditions, which the snapshot-based cache cannot see.
+        data.structure = None;
+        let s = structure(data);
+        let splits = s.if_else_splits();
         let mut changed = 0;
         for bid in splits {
             let Some(&cbr) = data.block(bid).ops.last() else {
@@ -3386,6 +3411,8 @@ impl super::action::Action for ActionPreferComplement {
             data.flip_in_place_execute(bid);
             changed = 1;
         }
+        // The cache stays empty either way — ActionFinalStructure rebuilds on the final ops.
+        let _ = s;
         changed
     }
 }
@@ -3670,6 +3697,7 @@ mod tests {
             blocks[a].out_labels.push(0);
         }
         Structured {
+            collapse_count: 0,
             blocks,
             roots: Vec::new(),
             gotos: HashMap::new(),

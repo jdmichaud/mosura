@@ -460,14 +460,20 @@ impl Action for ActionReturnSplit {
         if data.num_blocks() == 0 {
             return 0;
         }
-        // Ghidra reads `data.getStructure()`, the structured graph `ActionBlockStructure` leaves on
-        // the Funcdata at slot :5659 — inside the same fullloop iteration, so it is present by the
-        // time this runs. mosura's structurer is a pure function rather than cached state, so this
-        // builds it here, the same way the in-pipeline `ActionOrientBranches` does.
-        let s = super::structure::structure(data);
-        if s.blocks.is_empty() {
-            return 0; // Ghidra: some other restructuring happened first
-        }
+        // Ghidra reads `data.getStructure()`, the graph `ActionBlockStructure` left on the
+        // Funcdata at mainloop slot :5659 — and SKIPS when it is empty: "Some other
+        // restructuring happened first" (blockaction.cc:2276). A fullloop-tail action that
+        // removed blocks (DoNothing, SwitchNorm's folds) reset the structure, and Ghidra defers
+        // the split to the next round rather than splitting against a stale view. mosura's old
+        // fresh-build here could never take that gate; consuming the cache restores it.
+        // Read IN PLACE (Ghidra never consumes the graph here): the collect-then-split shape
+        // below ends the borrow before any mutation, and a performed split invalidates the cache
+        // through `node_split`'s own `structure_reset`. (A `take()` without restore here made
+        // every fullloop round consume the cache, whose rebuild then counted as a change — an
+        // infinite fullloop.)
+        let Some(s) = data.structure.as_ref() else {
+            return 0; // some other restructuring happened first
+        };
         // Collect every edge to split first, then split — Ghidra accumulates across all RETURNs
         // before touching the graph (blockaction.cc:2287-2312).
         let mut splitedge: Vec<(BlockId, usize)> = Vec::new();

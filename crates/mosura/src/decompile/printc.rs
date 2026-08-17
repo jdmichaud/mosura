@@ -2599,7 +2599,19 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         .collect();
 
     let t0 = std::time::Instant::now();
-    let s = structure(f);
+    // Consume the structure `ActionFinalStructure` left on the Funcdata (Ghidra: printc emits
+    // `fd->getStructure()`, printc.cc:2660) — nothing runs between that slot and here, so it is
+    // exactly what a fresh build would produce. The rebuild arm covers callers that print
+    // without the full pipeline (probes, tests); the leaf-count check turns a missed
+    // `structure_reset` into a loud rebuild instead of silently emitting a stale tree.
+    let cached_valid = f.structure.as_ref().is_some_and(|c| {
+        c.blocks.iter().filter(|b| matches!(b.kind, FlowKind::Basic(_))).count() == f.num_blocks()
+    });
+    debug_assert!(
+        f.structure.is_none() || cached_valid,
+        "stale structure cache: a CFG mutation missed structure_reset"
+    );
+    let s = if cached_valid { f.structure.clone().unwrap() } else { structure(f) };
     if super::action::perf::enabled() {
         super::action::perf::record("print", "structure", t0.elapsed());
     }

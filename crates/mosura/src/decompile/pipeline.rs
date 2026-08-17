@@ -714,6 +714,53 @@ impl Action for ActionVarnodeProps {
     }
 }
 
+/// Ghidra `ActionBlockStructure` (blockaction.cc:2169, group `blockrecovery`, mainloop slot
+/// :5659): build the structured block hierarchy if the CFG changed since it was last built.
+/// `graph.getSize() != 0` maps to the cache being `Some`; `installSwitchDefaults`
+/// (funcdata_block.cc:687, the jump tables' default-edge marks) is derived inside mosura's
+/// `structure()` build from the jumptable records, so the slot's ordering obligation is met by
+/// construction. The returned collapse count drives the mainloop repeat exactly as Ghidra's
+/// `count += collapse.getChangeCount()` does — a CFG change late in an iteration buys one more
+/// quiescing round over the settled graph.
+pub struct ActionBlockStructure;
+
+impl Action for ActionBlockStructure {
+    fn name(&self) -> &str {
+        "blockstructure"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.structure.is_some() {
+            return 0; // already structured, CFG unchanged (Ghidra blockaction.cc:2175)
+        }
+        if data.num_blocks() == 0 {
+            return 0;
+        }
+        let s = super::structure::structure(data);
+        let count = s.collapse_count;
+        data.structure = Some(s);
+        count
+    }
+}
+
+/// Ghidra `ActionFinalStructure` (blockaction.cc:2186, slot after `ActionSetCasts`): the final
+/// structuring pass whose result the printer emits. Ghidra's runs `orderBlocks`/
+/// `finalizePrinting`/`scopeBreak`/`markUnstructured`/`markLabelBumpUp` over the persistent
+/// graph; mosura's `structure()` build performs all of those internally, so this slot builds
+/// (or keeps) the cache that `printc` then consumes instead of re-deriving.
+pub struct ActionFinalStructure;
+
+impl Action for ActionFinalStructure {
+    fn name(&self) -> &str {
+        "finalstructure"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        if data.structure.is_none() && data.num_blocks() != 0 {
+            data.structure = Some(super::structure::structure(data));
+        }
+        0
+    }
+}
+
 /// Ghidra `ActionStartCleanUp` (coreaction.hh:58, group `cleanup`, slot :5692): mark the start of
 /// the clean-up phase by stamping the varnode creation index.
 ///
@@ -1299,11 +1346,12 @@ pub fn universal_action() -> ActionGroup {
                         // Ghidra ActionRedundBranch (:5658, "deadcontrolflow"), directly after
                         // actstackstall: splice single-in/single-out block pairs and drop branches
                         // whose exits all reach the same block.
-                        // (Ghidra has NO dead-code member between ActionRedundBranch and actprop2
-                        // — :5658-:5666 run RedundBranch, BlockStructure, ConstantPtr, actprop2
-                        // directly. A deadcode here was a rotation-era addition; removed when the
-                        // real :5503 slot above was restored. BlockStructure/ConstantPtr unported.)
+                        // Ghidra :5658-:5666: RedundBranch, BlockStructure, ConstantPtr,
+                        // actprop2 — no dead-code member between them (a deadcode here was a
+                        // rotation-era addition, removed when the real :5503 slot was restored).
+                        // ActionConstantPtr (:5665) remains unported.
                         .then(super::determinedbranch::ActionRedundBranch)
+                        .then(ActionBlockStructure)
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
                         // ActionUnreachable (:5673, group `unreachable`), Ghidra's slot directly
@@ -1487,6 +1535,10 @@ pub fn universal_action() -> ActionGroup {
         // from IR rather than deciding casts at render time. Runs after the final ActionInferTypes so
         // the committed types are settled. Currently the def-side `castOutput` only.
         .then(super::setcasts::ActionSetCasts)
+        // Ghidra's tail order is ...NameVars, SetCasts, FinalStructure, PrototypeWarnings, Stop
+        // (coreaction.cc:5735+): the final structure is built AFTER the casts land, and nothing
+        // that follows mutates the graph — printc consumes exactly this build.
+        .then(ActionFinalStructure)
 }
 
 /// The post-orientation rule pool (task #1): once [`ActionOrientBranches`](super::structure::

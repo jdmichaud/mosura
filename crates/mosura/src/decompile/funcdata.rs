@@ -120,6 +120,15 @@ pub struct Funcdata {
     pub reopened_inputs: std::collections::BTreeSet<OpId>,
     pub blocks_unreachable: bool,
     pub return_bytes_consumed: u32,
+    /// The structured block hierarchy — Ghidra `Funcdata::sblocks` read via `getStructure()`.
+    /// Built by `ActionBlockStructure` (mainloop, coreaction.cc:5659) and `ActionFinalStructure`
+    /// (tail, after SetCasts); cleared by [`Self::structure_reset`] whenever the CFG mutates
+    /// (Ghidra calls `structureReset()` from every block-editing method, funcdata_block.cc) and
+    /// by the orientation-mutating structure actions (whose flag writes mosura's re-deriving
+    /// build bakes in, where Ghidra mutates the persistent graph in place). `None` = not built
+    /// or invalidated — consumers rebuild, except `ActionReturnSplit`, which SKIPS, exactly as
+    /// Ghidra's `getSize() == 0` gate does (blockaction.cc:2276).
+    pub structure: Option<super::structure::Structured>,
     pub active_output: Option<super::fspec::ParamActive>,
     /// Width of the return storage the function was found to actually produce, recorded when the
     /// output trials commit.
@@ -303,6 +312,7 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             return_bytes_consumed: 0,
+            structure: None,
             calls_awaiting_output: Default::default(),
             reopened_inputs: Default::default(),
             blocks_unreachable: false,
@@ -606,7 +616,16 @@ impl Funcdata {
         self.blocks.len()
     }
     /// Install the basic-block list (built by `cfg::build_cfg`).
+    /// Ghidra `Funcdata::structureReset` (funcdata_block.cc:704): any change to the CFG
+    /// invalidates the structured hierarchy. (Ghidra also re-derives loop structure and forward
+    /// dominators here; mosura derives both inside the next `structure()` build, so clearing the
+    /// cache is the whole equivalent.)
+    pub fn structure_reset(&mut self) {
+        self.structure = None;
+    }
+
     pub fn set_blocks(&mut self, blocks: Vec<BlockBasic>) {
+        self.structure_reset();
         self.blocks = blocks;
     }
     /// The instruction-address range `[first, last]` of a block, from its ops' seqnums.
@@ -875,6 +894,7 @@ impl Funcdata {
     /// is_cpool_transformed/stop_type_propagation/store_unmapped` as op addlflags; mosura has no
     /// counterpart for those, so they are simply absent rather than approximated.
     pub fn clone_block_ops(&mut self, b: super::block::BlockId, bprime: super::block::BlockId, inedge: usize) {
+        self.structure_reset();
         use super::op::flags as opf;
         use super::varnode::flags as vnf;
         const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE;
@@ -973,6 +993,7 @@ impl Funcdata {
     /// general out-edge case is unimplemented, since it would need MULTIEQUALs in the out-blocks),
     /// must have more than one in-edge, and must have no duplicate in-edges.
     pub fn node_split(&mut self, b: super::block::BlockId, inedge: usize) {
+        self.structure_reset();
         assert!(
             self.blocks[b.0 as usize].out_edges.is_empty(),
             "cannot (currently) nodesplit a block with out flow"
@@ -1006,6 +1027,7 @@ impl Funcdata {
 
     /// Ghidra `BlockGraph::removeEdge` (block.cc): drop the edge `from` -> `to` from both sides.
     pub fn remove_edge(&mut self, from: super::block::BlockId, to: super::block::BlockId) {
+        self.structure_reset();
         let oi = self.blocks[from.0 as usize]
             .out_edges
             .iter()
@@ -1027,6 +1049,7 @@ impl Funcdata {
     /// Preserving the in-index is the load-bearing part: it keeps the target's MULTIEQUAL input
     /// slots lined up with their incoming edges across the surgery.
     pub fn move_out_edge(&mut self, blold: super::block::BlockId, slot: usize, blnew: super::block::BlockId) {
+        self.structure_reset();
         let outbl = self.blocks[blold.0 as usize].out_edges[slot];
         let i = self.blocks[outbl.0 as usize]
             .in_edges
@@ -1040,12 +1063,14 @@ impl Funcdata {
 
     /// Ghidra `BlockGraph::addEdge` (block.cc): append a new edge `from` -> `to`.
     pub fn add_edge(&mut self, from: super::block::BlockId, to: super::block::BlockId) {
+        self.structure_reset();
         self.blocks[from.0 as usize].out_edges.push(to);
         self.blocks[to.0 as usize].in_edges.push(from);
     }
 
     /// Ghidra `BlockGraph::newBlockBasic` (block.cc): append an empty basic block.
     pub fn new_block_basic(&mut self) -> super::block::BlockId {
+        self.structure_reset();
         self.blocks.push(super::block::BlockBasic::default());
         super::block::BlockId(self.blocks.len() as u32 - 1)
     }
@@ -1066,6 +1091,7 @@ impl Funcdata {
         fora_block1ishigh: bool,
         forb_block1ishigh: bool,
     ) -> super::block::BlockId {
+        self.structure_reset();
         let newblock = self.new_block_basic();
         let swapa = if fora_block1ishigh {
             self.remove_edge(block1, exita);
@@ -1110,6 +1136,7 @@ impl Funcdata {
     /// neighbour's list, the same way `block_remove_internal_preserving` and `branch_remove_internal`
     /// already do.
     pub fn replace_edges_thru(&mut self, bl: super::block::BlockId, inslot: usize, outslot: usize) {
+        self.structure_reset();
         let inb = self.blocks[bl.0 as usize].in_edges[inslot];
         let outb = self.blocks[bl.0 as usize].out_edges[outslot];
         let inblock_outslot = self.blocks[inb.0 as usize]
@@ -1138,6 +1165,7 @@ impl Funcdata {
     /// `structureReset()`; mosura rebuilds the structured graph from scratch in `structure.rs`
     /// rather than caching it, so there is nothing to invalidate.
     pub fn remove_from_flow_split(&mut self, bl: super::block::BlockId, flipflow: bool) {
+        self.structure_reset();
         // The order matters: each call deletes one in-edge and one out-edge, so the second call's
         // (0,0) names whichever pair is left.
         if flipflow {
