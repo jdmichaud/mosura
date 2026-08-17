@@ -106,6 +106,18 @@ fixed yet".
 
 **Phase 2 — prelude generation, in its inverted form** (see open question 1). Generate for
 target-representable widths; make anything wider a reported defect rather than a definition.
+**Detector half DONE (2026-08-17):** `war2_survey` now classifies every rendered TU against
+the representability contract at emit time (`contract_violations`) — `CONCAT<h><l>` is out
+when h+l > 4, `SUB`/`ZEXT`/`SEXT` when the SOURCE width exceeds 4 (the result may fit but the
+operand cannot exist), the impossible-width typedefs and `POPCOUNT` always — and reports in
+its own channel: a `contract` manifest column (`ok` / `wide:<constructs>`) plus an emit-time
+summary. Measured: **86 of 3,022 TUs, 50 distinct constructs, widths 5-29 bytes** — top:
+`CONCAT24` x38 TUs, `CONCAT44` x31, `xunknown8` x31, `xunknown6` x19. The 10-byte family
+(`int10`, `CONCAT210`, `CONCAT810`) is the x87 80-bit spill width; the rest is the mechanism-A
+stack-PIECE family. Emissions byte-identical (detector is read-only). The generation half —
+the prelude's in-contract vocabulary emitted from use rather than enumerated — is cosmetic
+now that Phase 1's tripwire backstops the out-of-contract names with a better error than
+"undeclared identifier"; the load-bearing part was mosura reporting its own defects.
 
 **Phase 3 — the 64-bit narrowing. PARTIALLY LANDED, remainder rescoped.** The extension-idiom
 divides narrowed as a free consequence of restoring `ActionDeadCode` to its :5503 slot (the

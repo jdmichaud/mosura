@@ -146,6 +146,73 @@ typedef unsigned char bool;
 /// function against a known library. So "was it identified" IS "is it library code" here, and it
 /// is asked through [`Function::name_is_default`] so this file does not carry a second copy of
 /// the placeholder format.
+/// Phase 2 of docs/compilable-c-remediation.md — the emit-time REPRESENTABILITY CONTRACT.
+/// Scan a rendered TU for constructs whose integer width the target cannot hold (Watcom 10.0a
+/// x86-32: no integer wider than 4 bytes) and return them, deduplicated. `CONCAT<h><l>` is
+/// out when h+l > 4; `SUB<src><out>`/`ZEXT`/`SEXT` when the SOURCE width exceeds 4 (the result
+/// may fit, but the operand it extracts from cannot exist); the impossible-width typedefs and
+/// `POPCOUNT` always. Multi-digit width pairs are parsed longest-source-first, matching
+/// Ghidra's `CONCAT102` = (10,2), never (1,02) — widths are printed without padding.
+///
+/// This is the generator-as-detector design (plan open question 1): the emitter itself reports
+/// what it produced outside the contract, in its own manifest, at emit time — the prelude's
+/// incomplete-struct tripwire (Phase 1) remains only as the backstop behind it. Off-band
+/// handling per the plan: the TU is still written and still fails loudly; nothing is hidden.
+fn contract_violations(tu: &str) -> Vec<String> {
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let split_pair = |d: &str| -> Option<(u32, u32)> {
+        // widths are 1..=2 digits each, source first; prefer the 2-digit source on ambiguity
+        for cut in [2usize, 1] {
+            if d.len() > cut {
+                if let (Ok(a), Ok(b)) = (d[..cut].parse(), d[cut..].parse()) {
+                    // no width is printed with a leading zero
+                    if !d[cut..].starts_with('0') {
+                        return Some((a, b));
+                    }
+                }
+            }
+        }
+        None
+    };
+    let mut i = 0;
+    let b = tu.as_bytes();
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    while i < b.len() {
+        if !is_ident(b[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && is_ident(b[i]) {
+            i += 1;
+        }
+        let w = &tu[start..i];
+        if start > 0 && is_ident(b[start - 1]) {
+            continue;
+        }
+        let bad = if let Some(d) = w.strip_prefix("CONCAT") {
+            split_pair(d).is_some_and(|(h, l)| h + l > 4)
+        } else if let Some(d) =
+            w.strip_prefix("SUB").or_else(|| w.strip_prefix("ZEXT")).or_else(|| w.strip_prefix("SEXT"))
+        {
+            split_pair(d).is_some_and(|(src, _)| src > 4)
+        } else if w == "POPCOUNT" {
+            true
+        } else {
+            matches!(
+                w,
+                "int8" | "uint8" | "xunknown8" | "xunknown6" | "xunknown7" | "undefined6"
+                    | "undefined7" | "undefined8" | "int5" | "uint5" | "int6" | "uint6"
+                    | "int10" | "uint10"
+            )
+        };
+        if bad {
+            out.insert(w.to_string());
+        }
+    }
+    out.into_iter().collect()
+}
+
 fn kind_of(name: &str) -> &'static str {
     if mosura::analysis::program::function::Function::name_is_default(name) {
         "user"
@@ -584,9 +651,13 @@ fn main() {
     writeln!(mf, "# war2_survey emit @ {stamp}").unwrap();
     writeln!(
         mf,
-        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind"
+        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract"
     )
     .unwrap();
+    let mut contract_bad = 0usize;
+    let mut contract_counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut contract_hist: std::collections::BTreeMap<String, usize> = Default::default();
+    let _ = &contract_hist;
 
     // RECOMPILATION RENDERING. Ghidra picks between `while (a = a-1, a != -1)` and
     // `while( true ) { a = a-1; if (a == -1) break; }` on a READABILITY threshold
@@ -617,7 +688,7 @@ fn main() {
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
             let head = head.replace(['\t', '\n'], " ");
             let head: String = head.chars().take(120).collect();
-            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0\t{}", kind_of(name)).unwrap();
+            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0\t{}\t", kind_of(name)).unwrap();
             continue;
         };
         ok += 1;
@@ -897,12 +968,21 @@ fn main() {
         }
         std::fs::write(src_dir.join(format!("{idx:05}.c")), &tu).unwrap();
 
+        let violations = contract_violations(&tu);
+        if !violations.is_empty() {
+            contract_hist.entry(violations.join(",")).or_insert(0usize);
+            for v in &violations {
+                *contract_counts.entry(v.clone()).or_insert(0usize) += 1;
+            }
+            contract_bad += 1;
+        }
         let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(
             mf,
-            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}",
+            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}\t{}",
             smells.join(","),
             kind_of(name),
+            if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
         )
         .unwrap();
 
@@ -912,6 +992,16 @@ fn main() {
     }
     mf.flush().unwrap();
     eprintln!("EMIT done: ok={ok} fail={fail} in {:?}", t0.elapsed());
+    if contract_bad > 0 {
+        let mut top: Vec<_> = contract_counts.iter().collect();
+        top.sort_by(|a, b| b.1.cmp(a.1));
+        let head: Vec<String> = top.iter().take(10).map(|(k, v)| format!("{k}x{v}")).collect();
+        eprintln!(
+            "CONTRACT: {contract_bad} TU(s) carry constructs the target cannot represent \
+             (manifest column `contract`, docs/compilable-c-remediation.md Phase 2): {}",
+            head.join(" ")
+        );
+    }
     eprintln!("manifest: {}", manifest_path.display());
 }
 
