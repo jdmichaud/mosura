@@ -461,6 +461,15 @@ impl Funcdata {
         self.readonly_ranges.iter().any(|&(s, e)| s <= addr && end <= e)
     }
 
+    /// Is `addr` inside a loaded image chunk? The mosura analog of Ghidra's global-scope
+    /// `queryContainer` hit — the application's database resolves a symbol for any address
+    /// inside a loaded memory block (which is why `&DAT_...` references exist for addresses no
+    /// one named), so `ActionConstantPtr`'s symbol query grounds on the image itself. `image`
+    /// is populated by both entry paths (the fixture loader and the analysis boundary).
+    pub fn is_loaded(&self, addr: u64) -> bool {
+        self.image.iter().any(|(s, b)| *s <= addr && addr < s + b.len() as u64)
+    }
+
     /// The recovered stack symbols, computed once and cached (see [`Self::stack_syms_cache`]).
     pub fn stack_syms(&mut self) -> &[super::varmap::StackSymbol] {
         if self.stack_syms_cache.is_none() {
@@ -736,6 +745,59 @@ impl Funcdata {
     fn const_check_enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var_os("MOSURA_CONSTCHECK").is_some())
+    }
+
+    /// Ghidra `Funcdata::spacebaseConstant` (funcdata.cc:358): rewrite the constant read by
+    /// `op` at `slot` into `PTRSUB(<ram-spacebase constant>, #offset)` — the IR form of "the
+    /// address of a global" that `ActionConstantPtr` produces, `RulePtrArith` folds, and printc
+    /// renders off the global's name.
+    ///
+    /// Translation notes, each a deliberate reduction of Ghidra's general form:
+    /// * `extra` (offset from the symbol entry's start) is always 0 here because the synthesized
+    ///   query entry sits exactly at `rampoint` — the INT_ADD arm (funcdata.cc:420) is therefore
+    ///   unreachable and not ported until a real global symbol table exists.
+    /// * Ghidra's COPY special case REUSES the copy op as the final op of the calculation
+    ///   (funcdata.cc:375-388, via `insertInput`); mosura takes the general insert-before path
+    ///   for COPY too — the leftover `COPY(ptrsub_out)` collapses to the identical graph via
+    ///   `RulePropagateCopy` in the next pool pass.
+    /// * `wordsize` is 1 on every mosura target, so the `byteToAddress` conversions are identity.
+    pub fn spacebase_constant(
+        &mut self,
+        op: OpId,
+        slot: usize,
+        rampoint: u64,
+        origval: u64,
+        origsize: u32,
+        ram: SpaceId,
+    ) {
+        let sz = self.spaces.get(ram).addr_size;
+        let sb_type = super::types::Datatype::Pointer(
+            sz,
+            Box::new(super::types::Datatype::Spacebase(ram)),
+        );
+        let sb_vn = self.new_const(sz, 0);
+        self.vn_mut(sb_vn).ty = Some(sb_type);
+        self.vn_mut(sb_vn).set_spacebase();
+        let newconst = self.new_const(sz, origval);
+        self.vn_mut(newconst).set_ptr_check();
+        let addop = self.new_op_before_sized(op, super::opcode::OpCode::Ptrsub, vec![sb_vn, newconst], sz);
+        let mut outvn = self.op(addop).output.expect("ptrsub output");
+        // `getTypePointerStripArray(sz, entrytype, wordsize)` with the synthesized entry's
+        // TYPE_UNKNOWN: a pointer to unknown, unlocked.
+        self.vn_mut(outvn).ty = Some(super::types::Datatype::Pointer(
+            sz,
+            Box::new(super::types::Datatype::Unknown(1)),
+        ));
+        let _ = rampoint; // == origval while `extra` is structurally 0 (see the note above)
+        if sz < origsize {
+            let z = self.new_op_before_sized(op, super::opcode::OpCode::IntZext, vec![outvn], origsize);
+            outvn = self.op(z).output.expect("zext output");
+        } else if origsize < sz {
+            let c = self.new_const(4, 0);
+            let sub = self.new_op_before_sized(op, super::opcode::OpCode::Subpiece, vec![outvn, c], origsize);
+            outvn = self.op(sub).output.expect("subpiece output");
+        }
+        self.op_set_input(op, slot, outvn);
     }
 
     /// A fresh temporary in the `unique` space.

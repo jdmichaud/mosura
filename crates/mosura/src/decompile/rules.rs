@@ -123,6 +123,17 @@ impl Rule for RuleConstFold {
         if code == OpCode::Copy {
             return 0;
         }
+        // Ghidra `PcodeOp::isCollapsible` (op.cc:118) refuses any op flagged `nocollapse`, and
+        // `TypeOpPtrsub` sets it (typeop.cc:2303: "as an operation this is really addition …
+        // but the typing information doesn't allow this to be commutative"). Without this,
+        // `ActionConstantPtr`'s `PTRSUB(<ram spacebase>, #addr)` — BOTH inputs constants — folds
+        // straight back to the bare constant and the whole global-reference transform evaporates,
+        // leaving only add-tree reassociation churn. `TypeOpPtradd` carries the same flag
+        // (typeop.cc:2227); the remaining nocollapse TypeOps are specials `eval_const` cannot
+        // evaluate anyway.
+        if code == OpCode::Ptrsub || code == OpCode::Ptradd {
+            return 0;
+        }
         let Some(out) = data.op(op).output else { return 0 };
         let inrefs = data.op(op).inrefs.clone();
         if inrefs.is_empty() {

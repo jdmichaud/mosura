@@ -1349,9 +1349,13 @@ pub fn universal_action() -> ActionGroup {
                         // Ghidra :5658-:5666: RedundBranch, BlockStructure, ConstantPtr,
                         // actprop2 — no dead-code member between them (a deadcode here was a
                         // rotation-era addition, removed when the real :5503 slot was restored).
-                        // ActionConstantPtr (:5665) remains unported.
                         .then(super::determinedbranch::ActionRedundBranch)
                         .then(ActionBlockStructure)
+                        // ActionConstantPtr (:5665, group `typerecovery`): infer constants that
+                        // are really data-space pointers, rewriting them to
+                        // `PTRSUB(<ram spacebase>, #addr)` so actprop2's RulePtrArith below folds
+                        // global address arithmetic the same pass, exactly Ghidra's ordering.
+                        .then(super::constantptr::ActionConstantPtr::new())
                         .then(ptrarith_pool())
                         .then(super::determinedbranch::ActionDeterminedBranch)
                         // ActionUnreachable (:5673, group `unreachable`), Ghidra's slot directly

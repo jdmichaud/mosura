@@ -925,6 +925,25 @@ impl<'a> PrintC<'a> {
         // versions so its printed type is not the locked `Pointer(Spacebase)`). Resolve the offset to a
         // ScopeLocal symbol. The offset varnode is pointer-width, so on a 32-bit target it holds the
         // wrapped `0xffffffdc` rather than `-0x24` — [`frame_off`] applies Ghidra's sign extension.
+        // ActionConstantPtr's global reference: `PTRSUB(#0 <ram spacebase>, #addr)` — the base
+        // is a CONSTANT carrying the spacebase flag, unlike the stack arm below whose base is
+        // the stack-pointer register. Renders as the address of the global at `addr`, named by
+        // the same persist branch a direct ram varnode uses (`buildVariableName`'s stem + space
+        // + address) — the survey's declaration safety net picks the name up like any other
+        // `<prefix>Ram<hex>` reference.
+        if self.f.vn(base).is_constant() && self.f.vn(base).is_spacebase() {
+            let ram = self.ram_space.unwrap_or(self.f.vn(base).loc.space);
+            let pointee = self
+                .f
+                .op(op)
+                .output
+                .map(|o| self.type_of(o))
+                .and_then(|t| t.ptr_to().cloned())
+                .unwrap_or(Datatype::Unknown(1));
+            let addr = self.f.spaces.get(ram).wrap_offset(off);
+            let name = super::varmap::build_internal_variable_name(&self.f.spaces, ram, addr, &pointee);
+            return if deref { name } else { format!("&{name}") };
+        }
         if self.f.vn(base).is_spacebase() {
             let foff = self.frame_off(off);
             return self.render_spacebase_ptrsub(foff, deref);

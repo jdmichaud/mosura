@@ -60,6 +60,10 @@ pub mod addlflags {
     /// This — not a location-set membership test — is how Ghidra distinguishes "free access this
     /// round" from "already linked in an earlier pass" at the same address.
     pub const ACTIVEHERITAGE: u32 = 0x01;
+    /// Ghidra `Varnode::ptrcheck` (varnode.hh:121): "this constant varnode was already checked
+    /// as a possible pointer" — `ActionConstantPtr` sets it after the symbol search so each
+    /// constant is evaluated at most once across the action's (up to 4) passes.
+    pub const PTRCHECK: u32 = 0x08;
     /// Ghidra `Varnode::writemask` (varnode.hh:120): "Should not be considered a write in heritage
     /// calculation." Set by `Heritage::removeRevisitedMarkers` on the narrow varnode whose defining
     /// MULTIEQUAL/INDIRECT was rewritten to a SUBPIECE of a wider re-heritaged range, so the later
@@ -232,6 +236,15 @@ impl Varnode {
     /// mark this value a spacebase (stack-pointer) register. Set on every SSA version of the base
     /// register, not just the input, so the pointer-arithmetic / nonzero-mask / type-inference rules
     /// that key on `is_spacebase()` recognise stack-relative arithmetic.
+    /// Ghidra `Varnode::isPtrCheck` (addl flag `ptrcheck`).
+    pub fn is_ptr_check(&self) -> bool {
+        self.addlflags & addlflags::PTRCHECK != 0
+    }
+    /// Ghidra `Varnode::setPtrCheck`.
+    pub fn set_ptr_check(&mut self) {
+        self.addlflags |= addlflags::PTRCHECK;
+    }
+
     pub fn set_spacebase(&mut self) {
         self.flags |= flags::SPACEBASE;
     }

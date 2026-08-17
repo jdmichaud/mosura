@@ -16,6 +16,7 @@ pub mod circlerange;
 pub mod condconst;
 pub mod condexe;
 pub mod consume;
+pub mod constantptr;
 pub mod cover;
 pub mod deadcode;
 pub mod determinedbranch;
