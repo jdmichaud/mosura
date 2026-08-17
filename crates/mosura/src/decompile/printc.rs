@@ -120,6 +120,13 @@ struct PrintC<'a> {
     /// once — keyed by width too, so two differently-sized slots at one offset (a `recover_stack`
     /// granularity artefact, e.g. stackreturn's 8- and 4-byte `-0x10` slots) stay distinct.
     stack_declared: std::collections::HashSet<i64>,
+    /// Goto-record targets subsumed by a switch's exit-bound cases (`case N: break;`) — the
+    /// direct head→exit edges Ghidra represents as goto-typed cases (`BlockSwitch::addCase`
+    /// with `f_goto_goto`, block.cc:3552, printed by `emitBlockSwitch`'s `getGotoType` arm and
+    /// retyped `break` by scopeBreak). Without the suppression the cut edge ALSO flushes as a
+    /// stray top-level `break;` before the switch — the E1000 family of
+    /// docs/compilable-c-remediation.md Phase 6.
+    switch_exit_suppress: std::collections::HashSet<BlockId>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -1604,6 +1611,9 @@ impl<'a> PrintC<'a> {
         let Some(records) = s.node_gotos.get(&idx) else { return };
         let pad = "  ".repeat(indent);
         for r in records {
+            if self.switch_exit_suppress.contains(&r.target) {
+                continue; // represented as the enclosing switch's `case N: break;`
+            }
             // Ghidra's `emitGotoStatement` (printc.cc:2303): `break` for `f_break_goto` (scopeBreak
             // reclassified a loop-exit goto), else `goto LABEL`.
             if r.is_break {
@@ -1644,21 +1654,79 @@ impl<'a> PrintC<'a> {
                     // gap (Ghidra's emitBlockSwitch always has an operand). MOSURA_ prefix =
                     // contract-detector visible; the fix that retires it is recovery work.
                     .unwrap_or_else(|| "MOSURA_SWITCH_INDEX_UNRECOVERED".to_string());
-                // emit the switch-head block's statements first (Ghidra `emitBlockSwitch`:
+                // Per-target attribution by STRUCTURE — Ghidra `getIndexByBlock`: map each
+                // table target to the block CONTAINING it (or, for a target whose leading
+                // instructions were optimized away, the next block by start address — the
+                // FUN_0005ce84 case-2 target 0x5cea9 lands in a range gap), then walk parents to
+                // the owning case component. A target owned by NO case jumps straight past the
+                // switch: Ghidra represents that cut edge as a goto-typed case
+                // (`BlockSwitch::addCase` with `f_goto_goto`, block.cc:3552; scopeBreak retypes
+                // it `break`), i.e. `case N: break;`, with the switch falling through to the
+                // post-switch code. The old address-order rule (`min case entry >= target`)
+                // attributed such a label to a NEIGHBORING case — case 2 executed case 4's body,
+                // wrong code — and the cut edge's goto record flushed as a stray top-level
+                // `break;` (the E1000 family of docs/compilable-c-remediation.md Phase 6).
+                let case_of_target = |t: u64| -> Option<usize> {
+                    // position in comps[1..] owning the block at/after t; None = exit-bound
+                    let mut best: Option<(u64, BlockId)> = None;
+                    for b in (0..self.f.num_blocks() as u32).map(BlockId) {
+                        let Some((a, e)) = self.f.block_range(b) else { continue };
+                        if a <= t && t <= e {
+                            best = Some((a, b));
+                            break;
+                        }
+                        if a > t && best.is_none_or(|(ba, _)| a < ba) {
+                            best = Some((a, b));
+                        }
+                    }
+                    let (_, ob) = best?;
+                    let mut node = ob.0 as usize;
+                    loop {
+                        if let Some(pos) = comps[1..].iter().position(|&c| c == node) {
+                            return Some(pos);
+                        }
+                        match s.blocks.get(node).and_then(|fb| fb.parent) {
+                            Some(p) if p != node => node = p,
+                            _ => return None,
+                        }
+                    }
+                };
+                let (mut labels_of_case, mut exit_bound): (Vec<Vec<i64>>, Vec<i64>) =
+                    (vec![Vec::new(); comps.len() - 1], Vec::new());
+                if let Some(pc) = head_pc {
+                    if let Some(targets) = self.f.switch_targets.get(&pc).cloned() {
+                        let jt_labels = self
+                            .f
+                            .jumptables
+                            .iter()
+                            .find(|jt| jt.op_addr == pc && jt.normalized && jt.labels.len() == targets.len())
+                            .map(|jt| jt.labels.clone());
+                        for (i, &t) in targets.iter().enumerate() {
+                            let lab = jt_labels.as_ref().map_or(i as i64, |l| l[i]);
+                            match case_of_target(t) {
+                                Some(pos) => labels_of_case[pos].push(lab),
+                                None => {
+                                    exit_bound.push(lab);
+                                    if let Some(b) = (0..self.f.num_blocks() as u32)
+                                        .map(BlockId)
+                                        .find(|&b| self.f.block_range(b).is_some_and(|(a, _)| a >= t))
+                                    {
+                                        // the cut edge's own goto record is represented by the
+                                        // `case N: break;` below — suppress its flush
+                                        self.switch_exit_suppress.insert(b);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // emit the switch-head block's statements (AFTER the exit-suppression above is computed — the head's own cut-edge record flushes here and must see it) (Ghidra `emitBlockSwitch`:
                 // `getSwitchBlock()->emit` with `no_branch`) — the head may carry statements that
                 // collapsed into it (e.g. the entry block once its bounds guard is folded away);
                 // the BRANCHIND and the inlined index computation are skipped by `emit_basic`.
                 self.emit_structured(s, comps[0], indent, out);
-                // the entry addresses of the case blocks, so a recovered target can be matched to
-                // the case block it enters (Ghidra `getIndexByBlock`) even when the block start
-                // shifted past the target (leading case instructions optimized away)
-                let case_addrs: Vec<u64> = comps[1..]
-                    .iter()
-                    .filter_map(|&c| entry_basic(s, c))
-                    .filter_map(|cb| self.f.block_range(cb).map(|(a, _)| a))
-                    .collect();
                 let _ = writeln!(out, "{pad}switch ({idx}) {{");
-                for &case in &comps[1..] {
+                for (ci, &case) in comps[1..].iter().enumerate() {
                     if let (Some(pc), Some(cb)) = (head_pc, entry_basic(s, case)) {
                         let addr = self.f.block_range(cb).map(|(a, _)| a).unwrap_or(0);
                         // the folded-in out-of-range target prints as `default:` (Ghidra
@@ -1666,7 +1734,7 @@ impl<'a> PrintC<'a> {
                         if self.f.switch_defaults.get(&pc) == Some(&addr) {
                             let _ = writeln!(out, "{pad}default:");
                         } else {
-                            for v in self.case_labels(pc, addr, &case_addrs) {
+                            for v in &labels_of_case[ci] {
                                 let _ = writeln!(out, "{pad}case {v}:");
                             }
                         }
@@ -1681,6 +1749,10 @@ impl<'a> PrintC<'a> {
                     if !terminal {
                         let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
                     }
+                }
+                for v in &exit_bound {
+                    let _ = writeln!(out, "{pad}case {v}:");
+                    let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
                 }
                 let _ = writeln!(out, "{pad}}}");
             }
@@ -2048,27 +2120,6 @@ impl<'a> PrintC<'a> {
     /// `getLabelByIndex(getIndexByBlock(block,j))`). Each recovered target is attributed to the
     /// case block it enters — the first case block at or after the target address, since a case
     /// block can start a few bytes past its recovered target (leading instructions get CSE'd /
-    /// hoisted out). A table `ActionSwitchNorm` normalized carries the real case labels — the
-    /// unnormalized switch-variable values `buildLabels` recovered (switchloop `case 1..9`);
-    /// otherwise fall back to the position-index heuristic (exact only for the canonical 0-based
-    /// dense form).
-    fn case_labels(&self, head_pc: u64, case_addr: u64, case_addrs: &[u64]) -> Vec<i64> {
-        let Some(targets) = self.f.switch_targets.get(&head_pc) else { return Vec::new() };
-        let labels = self
-            .f
-            .jumptables
-            .iter()
-            .find(|jt| jt.op_addr == head_pc && jt.normalized && jt.labels.len() == targets.len())
-            .map(|jt| &jt.labels);
-        targets
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &t)| {
-                let owner = case_addrs.iter().copied().filter(|&a| a >= t).min()?;
-                (owner == case_addr).then(|| labels.map_or(i as i64, |l| l[i]))
-            })
-            .collect()
-    }
 
     /// A label name for a goto target basic block, by its entry address.
     fn lab_name(&self, b: BlockId) -> String {
@@ -2573,6 +2624,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         stack_space: f.spaces.by_name("stack"),
         stack_syms: super::varmap::recover_scope(f),
         stack_declared: std::collections::HashSet::new(),
+        switch_exit_suppress: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),

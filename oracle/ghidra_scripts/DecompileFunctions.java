@@ -40,12 +40,24 @@ public class DecompileFunctions extends GhidraScript {
         // action is structurally silent in this per-function recipe — the trace-blindness recorded
         // in docs/coverage.md's ActionConstantPtr row.
         for (int i = 1; i < args.length; i++) {
-            if (!args[i].startsWith("data=")) continue;
-            String[] kv = args[i].substring(5).split(":");
-            long start = Long.parseLong(kv[0], 16);
-            long len = Long.parseLong(kv[1], 16);
-            currentProgram.getMemory().createInitializedBlock(
-                "data" + kv[0], toAddr(start), len, (byte) 0, monitor, false);
+            if (args[i].startsWith("data=")) {
+                String[] kv = args[i].substring(5).split(":");
+                long start = Long.parseLong(kv[0], 16);
+                long len = Long.parseLong(kv[1], 16);
+                currentProgram.getMemory().createInitializedBlock(
+                    "data" + kv[0], toAddr(start), len, (byte) 0, monitor, false);
+            } else if (args[i].startsWith("bytes=")) {
+                // Real content, not zeros: `bytes=<hexaddr>:<hexbytes>` — needed when the
+                // question depends on VALUES (a jump table between functions, string data).
+                String[] kv = args[i].substring(6).split(":");
+                long start = Long.parseLong(kv[0], 16);
+                byte[] bs = new byte[kv[1].length() / 2];
+                for (int j = 0; j < bs.length; j++)
+                    bs[j] = (byte) Integer.parseInt(kv[1].substring(2 * j, 2 * j + 2), 16);
+                var blk = currentProgram.getMemory().createInitializedBlock(
+                    "bytes" + kv[0], toAddr(start), bs.length, (byte) 0, monitor, false);
+                currentProgram.getMemory().setBytes(toAddr(start), bs);
+            }
         }
         DecompInterface d = new DecompInterface();
         d.openProgram(currentProgram);

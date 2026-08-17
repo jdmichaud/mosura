@@ -472,6 +472,13 @@ impl Funcdata {
         self.readonly_ranges.iter().any(|&(s, e)| s <= addr && end <= e)
     }
 
+    /// The basic block whose entry is exactly `addr`, if any.
+    pub fn block_at_entry(&self, addr: u64) -> Option<super::block::BlockId> {
+        (0..self.num_blocks() as u32)
+            .map(super::block::BlockId)
+            .find(|&b| self.block_range(b).is_some_and(|(a, _)| a == addr))
+    }
+
     /// Is `addr` inside a loaded image chunk? The mosura analog of Ghidra's global-scope
     /// `queryContainer` hit — the application's database resolves a symbol for any address
     /// inside a loaded memory block (which is why `&DAT_...` references exist for addresses no
