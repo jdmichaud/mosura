@@ -25,7 +25,7 @@ decompile of every function and a second compile round, and buys 18 functions.
 
 | configuration | EXACT |
 | --- | --- |
-| default, single pass | **571** |
+| default, single pass | **585** |
 | prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
 | both, best-of per function (`recompile_select`) | **593** |
 
@@ -37,8 +37,19 @@ switch modify lists (`ad4d860`). 566 -> **571** is restoring Ghidra's `ActionDea
 real mainloop slot (coreaction.cc:5503) -- a schedule mis-rotation had left the first rule-pool
 pass with no dead-code sweep at all, which silently changed RULE OUTCOMES corpus-wide (the
 worked chain is in `compilable-c-remediation.md`, CORRECTION 2). 5 wins, 0 losses, 2 fewer
-COMPILE_FAILs, and per-function rule-pool churn fell from 2.6x Ghidra to 1.12x. The union and
-prototype-pass rows are as of `ad4d860`; re-measure them before quoting.)
+COMPILE_FAILs, and per-function rule-pool churn fell from 2.6x Ghidra to 1.12x.
+
+571 -> **585** is the follow-up audit of the five post-fullloop dead-code sweeps, all of which
+were non-Ghidra (Ghidra's universalAction has NO ActionDeadCode after the fullloop). Four were
+inert; the one load-bearing sweep existed only because `condnegate_pool` lacked
+`RuleEarlyRemoval` -- in Ghidra, RuleCondNegate/RuleBoolNegate live in oppool1 next to
+RuleEarlyRemoval, so the pool cleans its own fold-orphans. Restoring that discipline and
+deleting all five sweeps: **14 wins, 0 losses**, 7 further MISMATCH -> SAME_SHAPE. The visible
+improvement class is structural: guards survive to the structurer instead of a block emptied by
+a late sweep being merged away (e.g. `FUN_00038a0c`, whose guarded call was previously hoisted
+above its test with the conditions merged). Note the filed guarded-store-hoist specimens in
+`FUN_0006c6f0` are NOT fixed by this -- that bug's mechanism is upstream of the late sweeps and
+stays open. The union and prototype-pass rows are as of `ad4d860`; re-measure before quoting.)
 
 The prototype pass alone is still 38 behind the default. Against the default it wins 18
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm

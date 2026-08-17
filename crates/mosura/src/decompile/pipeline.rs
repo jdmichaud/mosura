@@ -1415,8 +1415,10 @@ pub fn universal_action() -> ActionGroup {
         // ActionStartCleanUp (:5692, group `cleanup`), Ghidra's slot directly before the cleanup
         // rule pool and after ActionMappedLocalSync.
         .then(ActionStartCleanUp)
+        // (No dead-code after the cleanup pool: Ghidra's universalAction has NO ActionDeadCode
+        // anywhere after the fullloop — the cleanup rules are self-contained. The sweep that sat
+        // here was audited over the whole-image trace and removed zero live ops.)
         .then(cleanup_pool())
-        .then(super::deadcode::ActionDeadCode)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
         // branch negations in the IR, mirroring Ghidra's final ActionNormalizeBranches placement
         // (after type recovery, where the guards are in final simplified form). ActionOrientBranches
@@ -1424,14 +1426,14 @@ pub fn universal_action() -> ActionGroup {
         // condnegate_pool then materializes and normalizes the negation so printc reads the positive
         // condition directly instead of negating at print time.
         .then(super::structure::ActionOrientBranches)
+        // condnegate_pool cleans its own fold-orphans via RuleEarlyRemoval, exactly as Ghidra's
+        // oppool1 does for the same two rules — no standalone sweep after it.
         .then(condnegate_pool())
-        .then(super::deadcode::ActionDeadCode)
         // Materialize the if/else normal-form flip in the IR (Ghidra ActionPreferComplement /
         // BlockIf::preferComplement, block.cc:3093 — scoped to if/else). Runs after the condnegate
         // pool so it sees the mechanism-B-materialized conditions; opFlipInPlaceExecute rewrites the
         // comparison into normal form (via replace_lessequal), retiring the print-time if_else_flip.
         .then(super::structure::ActionPreferComplement)
-        .then(super::deadcode::ActionDeadCode)
         // Re-sync addrtied before the merge phase (Ghidra's ActionMappedLocalSync slot,
         // coreaction.cc:2298: the late syncVarnodesWithSymbols before merge). Creation marks every
         // pool-created ram/stack varnode addrtied (e.g. partialmerge's SubVariableFlow-narrowed
@@ -1444,17 +1446,16 @@ pub fn universal_action() -> ActionGroup {
         // flag, so it fires on ram globals / aliased stack slots but not on non-aliased stack temps.
         // The snapshot only survives as a named temp once ActionMarkExplicit keeps printc from
         // inlining the single-use COPY (Task #1 B-iii); until then printc inlines it, so partialmerge
-        // stays flat while the wire is live. A deadcode sweep follows.
+        // stays flat while the wire is live. (The snip inserts COPYs and orphans nothing — Ghidra
+        // runs no dead-code after its merge actions, and neither does mosura.)
         .then(super::mergesnip::ActionMergeRequired)
-        .then(super::deadcode::ActionDeadCode)
         // The graph-mutating half of Ghidra's ActionMergeRequired: mergeMarker -> mergeOp ->
         // trimOpInput (merge.cc:889/719/692), run after mergeAddrTied above. For each MULTIEQUAL,
         // trim (snip into a predecessor-end COPY) the first input whose HighVariable Cover conflicts
         // with the output's — so the read-only merge in printc no longer fuses the phi output into a
-        // conflicting address-tied global (floatcast's `fVar1 = fRam80;` init). A deadcode sweep
-        // follows the inserted COPYs.
+        // conflicting address-tied global (floatcast's `fVar1 = fRam80;` init). (Trim inserts
+        // COPYs and orphans nothing; no dead-code follows, matching Ghidra.)
         .then(super::merge::ActionMergeMarkerTrim)
-        .then(super::deadcode::ActionDeadCode)
         // Ghidra ActionDominantCopy (coreaction.cc:5723, after ActionMergeCopy): collapse the
         // same-source COPY groups the merge trimming inserted into one dominant COPY
         // (Merge::processCopyTrims/buildDominantCopy, merge.cc:1415/1151).
@@ -1505,6 +1506,13 @@ pub fn universal_action() -> ActionGroup {
 fn condnegate_pool() -> ActionPool {
     // Label distinct from RuleCondNegate's own `condnegate` — see `ptrarith_pool`.
     ActionPool::new("condnegatepool")
+        // RuleEarlyRemoval first, as in Ghidra's oppool1 (coreaction.cc:5510) — Ghidra registers
+        // RuleCondNegate/RuleBoolNegate in THAT pool (:5607-5608), so the comparisons orphaned by a
+        // RuleBoolNegate fold are cleaned by the pool itself. Extracting the rules into this late
+        // pool without earlyremoval left 8-31 dead comparison ops per function for a standalone
+        // deadcode sweep that Ghidra's schedule does not have (audit: no post-fullloop
+        // ActionDeadCode exists in universalAction).
+        .with(RuleEarlyRemoval)
         .with(super::rules::RuleCondNegate)
         .with(RuleBoolNegate)
         .with(super::rules::RuleIntLessEqual)

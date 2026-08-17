@@ -96,6 +96,16 @@ conditions is running without checking that the block between them is free of si
 Ghidra hoists it too, it is a shared limitation and the byte-exact campaign needs its own guard
 rather than a port fix.
 
+## Partial family fix that did NOT fix the filed specimens (2026-08-17)
+
+Removing the five non-Ghidra post-fullloop dead-code sweeps (and giving `condnegate_pool` its
+Ghidra-discipline `RuleEarlyRemoval`) un-hoisted the same emitted SHAPE in 14 other functions —
+e.g. `FUN_00038a0c`, where `call; if (A && B)` became `if (A) { call; if (B) }` — worth +14
+EXACT. Mechanism there: a late sweep emptied a block, the empty block was merged away, and the
+structurer then saw one combined condition. **Both specimens above are unchanged**, so this
+function's hoist is produced upstream of the late sweeps; classify against Ghidra before
+hunting further (recipe below).
+
 ## Blast radius
 
 Unknown and worth measuring before the fix, because the corpus sweep is cheap: the emitted
