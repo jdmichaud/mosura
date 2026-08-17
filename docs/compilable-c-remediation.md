@@ -87,15 +87,34 @@ support. That contract is the actual deliverable; the phases below are its conse
 
 ## Phases
 
-**Phase 1 — stop being silently wrong.** `typedef double int8` and `POPCOUNT → 0` produce
-plausible C that computes the wrong thing. Replace with definitions that fail to compile rather
-than miscompile. This will *raise* the failure count, which is the point. **Risk-free: zero
-currently-byte-exact functions use the 8-byte types or `CONCAT44`.**
+**Phase 1 — stop being silently wrong. DONE (2026-08-17).** `typedef double int8` (and every
+impossible-width integer typedef: `uint8`/`xunknown8`/`xunknown6`/`xunknown7`/`undefined6-8`),
+`CONCAT44`, and `POPCOUNT → 0` now alias/`sizeof` an incomplete
+`struct mosura_no_such_integer_width_on_this_target` — every declaration, cast, or use is a
+compile error naming the problem. Measured exactly as predicted: **EXACT 590 unchanged, zero
+transitions; 23 MISMATCH → COMPILE_FAIL (68 → 91)** — twenty-three functions that compiled
+into wrong x87 arithmetic now fail honestly. The legitimate float types (`float8`/`float10`)
+are untouched; the wrong-WIDTH integer stand-ins (`uint5/6/10` as `unsigned int`) are Phase 2's
+contract to retire.
+
+Design intent, to keep straight: the incomplete struct is a TRIPWIRE, not the product. The
+invariant (an unrepresentable width must never compile silently) is permanent; the mechanism is
+temporary — the end state is the open-question-4 contract, where the EMITTER refuses or
+off-bands out-of-contract constructs with its own diagnostic at emit time, nothing ever reaches
+the tripwire, and a Watcom error mentioning that struct always means "a defect Phase 2+ has not
+fixed yet".
 
 **Phase 2 — prelude generation, in its inverted form** (see open question 1). Generate for
 target-representable widths; make anything wider a reported defect rather than a definition.
 
-**Phase 3 — the 64-bit narrowing.** Being worked now; see below.
+**Phase 3 — the 64-bit narrowing. PARTIALLY LANDED, remainder rescoped.** The extension-idiom
+divides narrowed as a free consequence of restoring `ActionDeadCode` to its :5503 slot (the
+imul flag web died pre-pool, `RuleSubCommute`'s chain fired — `FUN_0002a4f0` now emits the
+32-bit divide; the planned bespoke narrowing rule was never needed). Still wide: the
+constant-dividend divides (`16000000 / (int8)x`, `FUN_0006c6f0`/`FUN_0006cfd0`) — Ghidra's own
+`SubCommute` guard declines them (input 0 must be written by an extension) and emits `longlong`
+too, so that residue is representation work under the Phase-2 contract (legalize to 32-bit
+pieces or off-band), not a schedule or rule gap. Mechanism A remains Phase 4.
 
 **Phase 4 — the stack aggregates.** Largest population. Gated on open question 2 — establish
 whether this is type recovery or variable splitting *before* implementing.
@@ -104,9 +123,11 @@ whether this is type recovery or variable splitting *before* implementing.
 not three gaps: the renderer emitting identifiers it never declared. Fix as one, ideally by making
 that impossible rather than by handling each name.
 
-**Phase 6 — the genuine defects.** The guarded-store hoist (filed); `break` outside a breakable
-statement; pointer + pointer arithmetic. Each wants its own bug doc and an oracle classification
-first.
+**Phase 6 — the genuine defects.** The guarded-store hoist is **FIXED** (classified MIS-PORT
+and repaired — printc's `comma_separate` contract; the post-store re-read fixed with it via the
+`ActionMarkImplied` port; see `decompiler-bug-guarded-store-hoisted.md`, both defects closed).
+Remaining: `break` outside a breakable statement; pointer + pointer arithmetic. Each wants its
+own bug doc and an oracle classification first.
 
 **Cross-cutting — the off-band path.** Needed by Phase 1 and open question 3.
 

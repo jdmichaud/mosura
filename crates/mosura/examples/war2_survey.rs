@@ -58,12 +58,27 @@ use mosura::decompile::space::Address;
 // integral`. Every mapping here lies about width; this one at least lies compilably.
 const PRELUDE: &str = "\
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
-typedef unsigned int undefined4; typedef double undefined8; typedef unsigned char byte;
-typedef unsigned char uint1; typedef unsigned short uint2; typedef unsigned int uint4; typedef double uint8;
-typedef signed char int1; typedef short int2; typedef int int4; typedef double int8;
-typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsigned int xunknown4; typedef double xunknown8;
-typedef unsigned int xunknown3; typedef double xunknown6; typedef unsigned int xunknown5; typedef double xunknown7;
-typedef unsigned char undefined3; typedef unsigned int undefined5; typedef double undefined6; typedef double undefined7;
+typedef unsigned int undefined4; typedef unsigned char byte;
+/* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).
+   These used to be `typedef double ...` so the C compiled -- into x87 FLOAT arithmetic where the
+   subject computes in integers, which is ALWAYS WRONG and never fails. An incomplete struct makes
+   every declaration, cast, and operation on these types a loud compile error naming the problem
+   (Phase 1 of docs/compilable-c-remediation.md: better an honest COMPILE_FAIL than a silent
+   miscompile; measured: zero byte-exact functions use any of them). */
+struct mosura_no_such_integer_width_on_this_target;
+typedef struct mosura_no_such_integer_width_on_this_target undefined8;
+typedef struct mosura_no_such_integer_width_on_this_target uint8;
+typedef struct mosura_no_such_integer_width_on_this_target int8;
+typedef struct mosura_no_such_integer_width_on_this_target xunknown8;
+typedef struct mosura_no_such_integer_width_on_this_target xunknown6;
+typedef struct mosura_no_such_integer_width_on_this_target xunknown7;
+typedef struct mosura_no_such_integer_width_on_this_target undefined6;
+typedef struct mosura_no_such_integer_width_on_this_target undefined7;
+typedef unsigned char uint1; typedef unsigned short uint2; typedef unsigned int uint4;
+typedef signed char int1; typedef short int2; typedef int int4;
+typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsigned int xunknown4;
+typedef unsigned int xunknown3; typedef unsigned int xunknown5;
+typedef unsigned char undefined3; typedef unsigned int undefined5;
 typedef unsigned int uint3; typedef unsigned int int3; typedef unsigned int uint5; typedef unsigned int int5;
 typedef unsigned int uint6; typedef int int6; typedef unsigned int uint10; typedef int int10;
 typedef int code(); typedef unsigned int pointer;
@@ -93,7 +108,9 @@ typedef unsigned char bool;
 #define CONCAT21(h,l) (((unsigned int)(unsigned short)(h)<<8)|(unsigned char)(l))
 #define CONCAT22(h,l) (((unsigned int)(unsigned short)(h)<<16)|(unsigned short)(l))
 #define CONCAT31(h,l) (((unsigned int)(h)<<8)|(unsigned char)(l))
-#define CONCAT44(h,l) ((double)(unsigned int)(h)*4294967296.0+(double)(unsigned int)(l))
+/* CONCAT44 builds a 64-bit value -- unrepresentable here (see the incomplete-struct note
+   above); the old double-arithmetic definition compiled into wrong code. Loud now. */
+#define CONCAT44(h,l) (sizeof(struct mosura_no_such_integer_width_on_this_target))
 #define ZEXT11(x) ((unsigned char)(x))
 #define ZEXT12(x) ((unsigned short)(unsigned char)(x))
 #define ZEXT14(x) ((unsigned int)(unsigned char)(x))
@@ -108,7 +125,8 @@ typedef unsigned char bool;
 #define SBORROW2(a,b) SBORROW4((int)(short)(a),(int)(short)(b))
 #define CARRY4(a,b) ((unsigned int)(a)>(unsigned int)~(unsigned int)(b))
 #define CARRY1(a,b) ((((unsigned int)(unsigned char)(a)+(unsigned int)(unsigned char)(b)))>0xffU)
-#define POPCOUNT(x) (0)
+/* POPCOUNT(x) was `(0)` -- always wrong, never failing. Loud now (Phase 1). */
+#define POPCOUNT(x) (sizeof(struct mosura_popcount_not_modelled))
 ";
 
 /// The commit that produced an emit: `<short-sha>` or `<short-sha>-dirty`. Falls back to
