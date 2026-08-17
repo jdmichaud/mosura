@@ -393,10 +393,12 @@ pub(crate) fn explicit_trailing(
     }
     if let Some(def) = vn.def {
         // a phi is a merged variable, an INDIRECT is an opaque `extraout_*`, and a CALL's return
-        // value is always named (`baseExplicit`, coreaction.cc:3015 `def->isCall()`).
+        // value is always named (`baseExplicit`, coreaction.cc:3015 `def->isCall()` — the call
+        // FLAG, which `TypeOpCallother` also sets, typeop.cc:814: a userop's result, e.g.
+        // `in(0x21)`, is named exactly like a call's).
         if matches!(
             f.op(def).code(),
-            OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind
+            OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind | OpCode::Callother
         ) {
             return true;
         }
@@ -626,7 +628,10 @@ impl ImpliedCtx {
             }
             match o.code() {
                 OpCode::Store => stores.push(op),
-                OpCode::Call | OpCode::Callind => calls.push(op),
+                // Ghidra's crossing test is `op->isCall()` (checkImpliedCover, the call FLAG) —
+                // CALLOTHER carries it too (typeop.cc:814): a userop with side effects (port I/O)
+                // blocks inlining a load/persist read across it exactly like a CALL.
+                OpCode::Call | OpCode::Callind | OpCode::Callother => calls.push(op),
                 _ => {}
             }
         }
@@ -728,7 +733,7 @@ fn is_mark_candidate(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
     let vn = f.vn(v);
     let Some(def) = vn.def.filter(|_| vn.is_written()) else { return false };
     match f.op(def).code() {
-        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind => return false,
+        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind | OpCode::Callother => return false,
         OpCode::Ptradd | OpCode::Ptrsub => return false,
         OpCode::Copy => {
             if let Some(inv) = f.op(def).input(0) {
@@ -757,7 +762,7 @@ fn is_core_explicit(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
     let vn = f.vn(v);
     let Some(def) = vn.def.filter(|_| vn.is_written()) else { return true };
     match f.op(def).code() {
-        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind => return true,
+        OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind | OpCode::Callother => return true,
         OpCode::Ptradd | OpCode::Ptrsub => {
             return vn.descend.iter().any(|&u| f.op(u).code() == OpCode::Multiequal)
         }

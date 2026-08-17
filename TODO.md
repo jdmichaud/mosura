@@ -602,11 +602,15 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
   commit with clean trees). The sweep removal was faithful, so per the porting rule the failures
   point at non-Ghidra code that composed with the sweeps (the for-recovery/return-recovery paths
   these tests pin). Un-triaged; needs its own instrument session.
-- **Port I/O ops dropped in `FUN_0005c5ec`**: the `in al,0x21`/`out dx,al` CALLOTHERs are lifted
-  (coverage spans them) but absent from the final C, while the oracle prints all four `in()`/
-  `out()` calls on the same bytes and cspec (repro: scratchpad `e1032-02345.xml`, mosura dumpc
-  vs `oracle/capture --c`). Other WAR2 TUs (02334, 02344, 02351) render `out()` fine — a
-  per-function dataflow loss, not a userop-table gap. Wrong code (side effects vanish).
+- **Port I/O ops dropped in `FUN_0005c5ec` — FIXED (2026-08-17).** Not a dataflow loss: the
+  final IR carried every CALLOTHER; printc's statement catch-all required an OUTPUT to emit, so
+  a void userop (`out(port, val)`) produced no statement — Ghidra's `emitExpression` no-output
+  branch (printc.cc:2273) prints it bare. Plus `Callother` was missing from the call-class
+  (`isCall()`) arms: `baseExplicit`'s call-output-explicit rule and `checkImpliedCover`'s
+  call-crossing list both include it (`TypeOpCallother` opflags `special|call|nocollapse`,
+  typeop.cc:814). 112 WAR2 emissions gained their previously-dropped I/O (02334's `out()`
+  sightings were expression-position survivors only); zero verdict transitions (585 EXACT / 14
+  COMPILE_FAIL hold), dominant-cause "missing" 921 → 906, fixture corpus 0.9679 unchanged.
 - **Persist-store ordering vs byte-exactness** (the −5 EXACT from the deadcode-blanket
   retirement, sb35): when a global store's value survives only through the call-INDIRECT /
   return-copy chain (RulePropagateCopy legitimately rewires the INDIRECT input — Ghidra's marker

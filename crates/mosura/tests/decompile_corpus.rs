@@ -88,7 +88,7 @@ fn decompile_track_corpus_report() {
     }
     eprintln!("\n=== decompile-track corpus @ {sha}: avg {avg:.4}, >=0.70: {good}/{} ===", scored.len());
 
-    assert!(decompiled >= 40, "decompile track only handled {decompiled} datatests — regressed");
+    assert!(decompiled >= 60, "decompile track only handled {decompiled} datatests — regressed");
 }
 
 /// Regression for the `refineInput`/`guardInput` heritage fix (`heritage.cc:1836`/`:1952`): an XMM

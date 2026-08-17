@@ -1992,6 +1992,20 @@ impl<'a> PrintC<'a> {
                 }
                 _ => {
                     let mut stmt = None;
+                    if o.output.is_none() && !o.is_dead() {
+                        // Ghidra `PrintC::emitExpression`'s no-output branch (printc.cc:2273):
+                        // a LIVE op with no output that reaches `emitStatement` prints as a BARE
+                        // expression statement — `op->getOpcode()->push(this, op, NULL)`. The
+                        // reachable case is a void CALLOTHER (a `define pcodeop` with no result,
+                        // e.g. the port write `out(0x21, val)`): side-effecting, kept live by
+                        // dead-code's sink set, and previously DROPPED here because this arm
+                        // only emitted when an output existed — the whole I/O prologue of WAR2's
+                        // FUN_0005c5ec vanished from the C while the oracle prints all four
+                        // `in()`/`out()` calls on the same bytes. The dead-check matters: mosura's
+                        // block op lists retain removed ops (output cleared, inputs gutted), and
+                        // the output requirement was what filtered them here.
+                        stmt = Some(self.render_op(op).0);
+                    }
                     if let Some(outv) = o.output {
                         // A COPY or SUBPIECE between two Varnodes of the SAME HighVariable is a hidden
                         // internal copy (Ghidra `Merge::markInternalCopies` → `opMarkNonPrinting`,
