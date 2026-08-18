@@ -83,9 +83,20 @@ tried left to right, so put the reference rendering first.
 
 ## Reading the output
 
-`--out` is one row per function: `idx va name verdict bytes primary sim classes`, where verdict is
-`EXACT` / `SAME_CODE` (same program, different encodings) / `SAME_SHAPE` (same computation,
-different registers or constants) / `MISMATCH` / `COMPILE_FAIL`.
+`--out` is one row per function: `idx va name verdict bytes primary sim equal orig_n cand_n
+classes`, where verdict is `EXACT` / `SAME_CODE` (same program, different encodings) /
+`SAME_SHAPE` (same computation, different registers or constants) / `MISMATCH` /
+`COMPILE_FAIL` / `EMIT_FAIL` (no source was emitted) / `OBJ_ERROR`. `equal`/`orig_n`/`cand_n`
+are the aligner's instruction counts; rows without a candidate (the last three verdicts)
+carry `0 / orig_n / 0` so the global similarity is recomputable from the file alone:
+
+    global sim = Σ equal / Σ max(orig_n, cand_n)
+
+the fraction of the corpus's instructions that recompile identically, instruction-weighted so
+a function weighs what it is worth in code. The run prints it under `=== global similarity ===`
+next to the unweighted per-function mean (more sensitive to small-function progress). Both are
+trend diagnostics between verdict transitions, not targets — the verdicts stay the ground
+truth.
 
 `--divergences` is one row per individual difference, and is what to work from:
 

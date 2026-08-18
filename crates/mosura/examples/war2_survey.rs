@@ -729,6 +729,46 @@ fn main() {
     // Next-entry map (same code object) → function byte extent [entry, next_entry).
     let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
 
+    // The decompiler-independent bounds on a function's extent.
+    //
+    // `next` is the upper bound: the next function's entry, or the end of the memory block
+    // containing it, whichever comes first. Both are facts the loader established.
+    //
+    // This replaces three invented constants, each of which would have truncated silently:
+    //   * `.min(*va + 8192)` -- no function may exceed 8 KB. Nothing checks this, and a larger
+    //     function would simply have been compared against its first 8 KB and reported as a
+    //     decompiler failure. Zero functions in WAR2 reach it, so it never fired; it was a
+    //     tripwire waiting for a bigger subject.
+    //   * `.min(0x7_c4a0)` -- this binary's code-section end, hardcoded into a tool that is
+    //     supposed to work on any binary. Correct here by coincidence, wrong everywhere else.
+    //   * `.unwrap_or(*va + 512)` -- an arbitrary extent for the LAST function, which has no
+    //     next entry. WAR2's last function is 207 bytes, so this never fired either.
+    //
+    // The block end answers the same question the constants were guessing at, and answers it
+    // for whatever binary is loaded.
+    //
+    // The second bound is the function manager's own recorded body end, when it has one.
+    //
+    // Factored out of the OK path so the DECOMPILE_FAIL row records a real extent too: a
+    // failed function still weighs its full size in any corpus-level aggregate (the global
+    // similarity), and a recorded 0 reads as "excluded" downstream.
+    let extent_bounds = |va: u64| -> (u64, Option<u64>) {
+        let block_end = prog.memory.block_at(Address::new(ram, va)).map(|b| b.end().offset + 1);
+        let next_entry = entry_offs.iter().copied().find(|&o| o > va);
+        let next = match (next_entry, block_end) {
+            (Some(n), Some(b)) => n.min(b),
+            (Some(n), None) => n,
+            (None, Some(b)) => b,
+            (None, None) => va + 1,
+        };
+        let body_end = prog
+            .function_manager
+            .function_at(Address::new(ram, va))
+            .and_then(|f| f.body().max_address())
+            .map(|a| a.offset + 1);
+        (next, body_end)
+    };
+
     let mut mf: std::io::BufWriter<Box<dyn std::io::Write>> = std::io::BufWriter::new(if probing {
         Box::new(std::io::sink())
     } else {
@@ -778,7 +818,17 @@ fn main() {
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
             let head = head.replace(['\t', '\n'], " ");
             let head: String = head.chars().take(120).collect();
-            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t0\t0\t0\t\t{head}\t0\t0\t0\t{}\t", kind_of(name)).unwrap();
+            // Extent from the decompiler-independent bounds alone -- no coverage to clamp
+            // with and no padding trim. This is the row's WEIGHT downstream, not a diff
+            // extent: there is no candidate to diff against.
+            let (next, body_end) = extent_bounds(*va);
+            let flen = match body_end {
+                Some(b) => next.min(b),
+                None => next,
+            }
+            .max(*va + 1)
+                - *va;
+            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t{flen}\t0\t0\t\t{head}\t0\t0\t0\t{}\t", kind_of(name)).unwrap();
             continue;
         };
         ok += 1;
@@ -807,32 +857,6 @@ fn main() {
             cov_hi = *va;
         }
 
-        // The upper bound on a function: the next function's entry, or the end of the memory block
-        // containing it, whichever comes first. Both are facts the loader established.
-        //
-        // This replaces three invented constants, each of which would have truncated silently:
-        //   * `.min(*va + 8192)` -- no function may exceed 8 KB. Nothing checks this, and a larger
-        //     function would simply have been compared against its first 8 KB and reported as a
-        //     decompiler failure. Zero functions in WAR2 reach it, so it never fired; it was a
-        //     tripwire waiting for a bigger subject.
-        //   * `.min(0x7_c4a0)` -- this binary's code-section end, hardcoded into a tool that is
-        //     supposed to work on any binary. Correct here by coincidence, wrong everywhere else.
-        //   * `.unwrap_or(*va + 512)` -- an arbitrary extent for the LAST function, which has no
-        //     next entry. WAR2's last function is 207 bytes, so this never fired either.
-        //
-        // The block end answers the same question the constants were guessing at, and answers it
-        // for whatever binary is loaded.
-        let block_end = prog
-            .memory
-            .block_at(Address::new(ram, *va))
-            .map(|b| b.end().offset + 1);
-        let next_entry = entry_offs.iter().copied().find(|&o| o > *va);
-        let next = match (next_entry, block_end) {
-            (Some(n), Some(b)) => n.min(b),
-            (Some(n), None) => n,
-            (None, Some(b)) => b,
-            (None, None) => *va + 1,
-        };
         // The function's extent is mosura's OWN recorded body, not the gap to the next entry.
         //
         // `[entry, next-entry)` attributes to a function everything the linker happened to place
@@ -850,11 +874,7 @@ fn main() {
         //     the original would hide a real failure by comparing against less than the function.
         // Both bounds are facts already established above, so this only ever pulls the end IN from
         // the heuristic, never pushes it out.
-        let body_end = prog
-            .function_manager
-            .function_at(Address::new(ram, *va))
-            .and_then(|f| f.body().max_address())
-            .map(|a| a.offset + 1);
+        let (next, body_end) = extent_bounds(*va);
         let mut end = match body_end {
             Some(b) => next.min(b.max(cov_hi)).max(*va + 1),
             None => next.max(*va + 1),
@@ -863,11 +883,6 @@ fn main() {
         // function end" -- the next-entry heuristic actually used, mosura's own recorded body, and
         // the decompiler's instruction coverage -- so the choice between them is a measurement.
         if std::env::var("MOSURA_EXTENT").is_ok() {
-            let body_end = prog
-                .function_manager
-                .function_at(Address::new(ram, *va))
-                .and_then(|f| f.body().max_address())
-                .map(|a| a.offset + 1);
             println!(
                 "EXTENT\t{:08x}\t{}\t{}\t{}",
                 *va,

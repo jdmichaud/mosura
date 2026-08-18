@@ -128,10 +128,12 @@ fn main() {
 
     let mut units = Vec::new();
     let mut kept: Vec<&Row> = Vec::new();
+    let mut emit_failed: Vec<&Row> = Vec::new();
     for r in &selected {
         let path = Path::new(srcdir).join(format!("{}.c", r.idx));
         let Ok(source) = std::fs::read_to_string(&path) else {
             eprintln!("{}: no source at {}", r.name, path.display());
+            emit_failed.push(r);
             continue;
         };
         let unit_flags: Vec<String> = if recover_flags {
@@ -188,18 +190,53 @@ fn main() {
 
     let resolver = emitted_symbol_address;
 
+    // The weight a candidate-less row carries in the global similarity: its original
+    // instruction count, from lifting the recorded extent.
+    let orig_insns_of = |row: &Row| -> usize {
+        let mut obytes = Vec::with_capacity(row.len);
+        for k in 0..row.len {
+            match prog.memory.byte_at(Address::new(space, row.va + k as u64)) {
+                Some(b) => obytes.push(b),
+                None => break,
+            }
+        }
+        mosura::recompile::insn::normalize(LANG, &obytes, row.va, &mosura::recompile::insn::NoReloc)
+            .expect("language tables")
+            .len()
+    };
+
     let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut causes: BTreeMap<&'static str, usize> = BTreeMap::new();
     let (mut identical, mut reloc_only) = (0usize, 0usize);
-    let mut tsv = String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tclasses\n");
+    // Global similarity: the micro-average over instructions, sum(equal) / sum(max(orig,cand)),
+    // so a function weighs what it is worth in code and a candidate that bloats past the
+    // original weighs its bloat. This surfaces progress that the EXACT count cannot: on this
+    // corpus the byte-exact functions are 20% of the population but 5% of the code bytes, so
+    // an unweighted mean is flattered by small trivial functions. Functions that produced no
+    // candidate at all (emit failure, compile failure, unreadable object) count as ZERO with
+    // their full original weight, never excluded -- excluding them would make "it finally
+    // compiles, but mismatches" LOWER the score. The unweighted mean is reported as a
+    // secondary, being more sensitive to progress on small functions. Either number is a
+    // trend diagnostic between verdict transitions, not a target: alignment can rise while
+    // semantics diverge, so the verdicts stay the ground truth.
+    let (mut agg_equal, mut agg_denom) = (0u64, 0u64);
+    let (mut sim_sum, mut sim_n) = (0f64, 0usize);
+    let mut tsv =
+        String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\n");
     let mut divs = String::from(DIVERGENCE_HEADER);
     for (row, out) in kept.iter().zip(outs.iter()) {
         if !out.ok() {
             *census.entry("COMPILE_FAIL").or_default() += 1;
+            let n = orig_insns_of(row);
+            agg_denom += n as u64;
+            sim_n += 1;
             if verbose {
                 println!("=== {} : COMPILE_FAIL ===\n{}", row.name, out.log.trim());
             }
-            tsv.push_str(&format!("{}\t{:08x}\t{}\tCOMPILE_FAIL\t\t\t\n", row.idx, row.va, row.name));
+            tsv.push_str(&format!(
+                "{}\t{:08x}\t{}\tCOMPILE_FAIL\t\t\t\t0\t{n}\t0\t\n",
+                row.idx, row.va, row.name
+            ));
             continue;
         }
         let mut obytes = Vec::with_capacity(row.len);
@@ -214,6 +251,13 @@ fn main() {
             Ok(c) => c,
             Err(e) => {
                 *census.entry("OBJ_ERROR").or_default() += 1;
+                let n = orig_insns_of(row);
+                agg_denom += n as u64;
+                sim_n += 1;
+                tsv.push_str(&format!(
+                    "{}\t{:08x}\t{}\tOBJ_ERROR\t\t\t\t0\t{n}\t0\t\n",
+                    row.idx, row.va, row.name
+                ));
                 eprintln!("{}: {e}", row.name);
                 continue;
             }
@@ -225,6 +269,10 @@ fn main() {
             ByteVerdict::Different => {}
         }
         *census.entry(diff.verdict.as_str()).or_default() += 1;
+        agg_equal += diff.equal_insns as u64;
+        agg_denom += diff.orig_insns.max(diff.cand_insns) as u64;
+        sim_sum += diff.similarity;
+        sim_n += 1;
         if let Some(p) = diff.primary {
             *causes.entry(p.as_str()).or_default() += 1;
         }
@@ -236,7 +284,7 @@ fn main() {
             .collect::<Vec<_>>()
             .join(",");
         tsv.push_str(&format!(
-            "{}\t{:08x}\t{}\t{}\t{:?}\t{}\t{:.3}\t{}\n",
+            "{}\t{:08x}\t{}\t{}\t{:?}\t{}\t{:.3}\t{}\t{}\t{}\t{}\n",
             row.idx,
             row.va,
             row.name,
@@ -244,6 +292,9 @@ fn main() {
             checked.bytes,
             diff.primary.map(|p| p.as_str()).unwrap_or(""),
             diff.similarity,
+            diff.equal_insns,
+            diff.orig_insns,
+            diff.cand_insns,
             classes
         ));
         if div_path.is_some() {
@@ -273,6 +324,20 @@ fn main() {
         }
     }
 
+    // A selected function with no emitted source never reached the compiler, but it is still
+    // part of the corpus being measured: it scores zero at its full weight, same as a compile
+    // failure, and gets a row so the global number is recomputable from the TSV alone.
+    for row in &emit_failed {
+        *census.entry("EMIT_FAIL").or_default() += 1;
+        let n = orig_insns_of(row);
+        agg_denom += n as u64;
+        sim_n += 1;
+        tsv.push_str(&format!(
+            "{}\t{:08x}\t{}\tEMIT_FAIL\t\t\t\t0\t{n}\t0\t\n",
+            row.idx, row.va, row.name
+        ));
+    }
+
     eprintln!("\n=== byte-clean ===");
     eprintln!("{identical:6}  identical (relocations resolved AND matching)");
     eprintln!("{reloc_only:6}  identical outside relocation sites, but a site disagrees");
@@ -287,6 +352,14 @@ fn main() {
     eprintln!("\n=== verdicts ===");
     for (k, v) in &census {
         eprintln!("{v:6}  {k}");
+    }
+    if sim_n > 0 {
+        eprintln!("=== global similarity ===");
+        eprintln!(
+            "{:.4}  insn-weighted ({agg_equal}/{agg_denom} instructions over {sim_n} functions)",
+            agg_equal as f64 / agg_denom.max(1) as f64
+        );
+        eprintln!("{:.4}  unweighted mean of per-function sim", sim_sum / sim_n as f64);
     }
     if !causes.is_empty() {
         eprintln!("=== dominant cause ===");
