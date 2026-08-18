@@ -229,6 +229,18 @@ regressions if net-positive, or (b) emit `--arms 'default;local-width=storage'` 
 `recompile_select` take the per-function union — the designed mechanism for a searched
 axis (a second *print+compile* round, not a second decompile).
 
+**Probed, worked, deferred — the entry-snapshot family** (sibling run 01336-01341 plus
+~8 more near-frontier byte-global sites): the original snapshots a byte global into a
+byte LOCAL at function entry (`MOV AL,[g]` above the branch) and widens at the use;
+the reference rendering (oracle-verified identical) propagates the copy and reads the
+global inline at the call. The byte-reproducing shape is probe-validated EXACT
+(`uint1 uVar2 = xRam0008032c;` at entry). It cannot be produced at render time: the
+entry COPY is rule-propagated out of the final IR (faithfully — Ghidra's is too), so the
+materialization needs a survey-side IR edit at the dominating position, and since arms
+share one Funcdata, that means cloning `f` per arm or keying the edit to the arm — a
+design decision (the arms' "same recovered IR" rule is exactly what it would bend).
+Value-safety gate when built: the global must have no write between entry and the use.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 

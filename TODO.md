@@ -595,11 +595,15 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
 ## Open defects found during the near-frontier argument session (2026-08-18)
 
 - **E1010 regression specimen `02583`/`FUN_00066100`** (sb53, MISMATCH → COMPILE_FAIL):
-  `pcVar5 = CONCAT11(..., 0xf)` — a 2-byte CONCAT assigned to a `char *`-typed variable
-  (plus `pcVar4 = 0xff;` pointer-from-int warnings). The possible-output-creations port
-  changed this function's dataflow enough to surface the pre-existing
-  CONCAT-into-pointer typing family here. Chase with the oracle: what does Ghidra type
-  these variables as on the same bytes?
+  sharpened 2026-08-18 second pass — `pcVar5 = CONCAT11(..)` is a 2-byte PARTIAL WRITE
+  into a 4-byte `code *`-typed HighVariable; printc names the whole variable where
+  Ghidra prints partial-symbol syntax (`var._0_2_`, `PrintC::pushPartialSymbol` — itself
+  uncompilable C, so the byte-exact route is contract/off-band, not a cast). Two real
+  questions: why the merge united a 2-byte piece with the pointer-typed whole under the
+  new dataflow (the upstream fix), and why the contract detector's partial-accessor net
+  missed a partial WRITE (the tripwire fix). The standalone oracle is context-poor here
+  (no function at the stored addresses, so no code* typing) — an app-oracle comparison
+  is needed for the merge question.
 
 - **Dropped call arguments at trial-machinery level** (specimen `FUN_00011954` @0x11954,
   fixture `ma00047` in the pinned tree's datatests): the oracle recovers
