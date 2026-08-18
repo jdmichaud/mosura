@@ -126,6 +126,16 @@ toolchain story — including why
 the remaining LEA-fold/allocation/callee-save divergences are a bounded compiler
 residual, not workable defects — is `war2-toolchain-synthesis.md`.
 
+**592 → 605 (sb44): the hardware shift-mask elision — F1's first resolved sub-shape.**
+Ghidra faithfully prints the SLEIGH lifter's shift-count mask (`1 << (x & 0x1f)` — the
+oracle prints it too, verified on FUN_00038d88), but the x86 shift instruction performs
+that mask itself, so Watcom materializes the printed one as a real `AND CL,0x1f` the
+originals never have. New `EmitChoices` axis `shift-mask=hardware` (decompile/emit.rs —
+passes all three axis-honesty rules; the elision applies only to an implied single-use
+`INT_AND(x, 0x1f)` on a ≤4-byte shift), set by war2_survey on every arm like the
+loop-overflow form. +13 EXACT, 0 regressions; extra AND-0x1f rows 94 → 25; global
+similarity 0.3858 → **0.3868**.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

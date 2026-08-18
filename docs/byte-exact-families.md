@@ -31,6 +31,13 @@ divergence does.
 
 ### F1 — truth-value / byte-width complex (largest reach)
 
+**Progress (2026-08-18):** the first resolved sub-shape is the **hardware shift-count
+mask** — `1 << (x & 0x1f)` is Ghidra's faithful rendering of the SLEIGH lifter's own
+mask (oracle-verified on specimen `01308`/`FUN_00038d88`), and Watcom materializes it as
+`AND CL,0x1f`. Resolved via the `shift-mask=hardware` EmitChoices axis: +13 EXACT on
+sb44, 0 regressions, extra AND-0x1f rows 94 → 25. Much of the near-miss
+`selection MOV>AND` signature was this, not merged booleans.
+
 Symptoms, with corpus-wide function reach (overlapping sets):
 
 | symptom | functions |
@@ -43,6 +50,23 @@ Symptoms, with corpus-wide function reach (overlapping sets):
 The original works at full register width — zeroes with `XOR EAX,EAX`, moves `MOV EAX,1`
 — where our C makes Watcom work in byte registers and then normalize (`MOV AL,1`,
 `AND EAX,0xff`, `SETNZ AL`).
+
+**Triage of the remaining sub-shapes (2026-08-18, both oracle-verified faithful-Ghidra
+— fixes are design-level, not axes to bolt on):**
+
+- **The widening idiom** (the family's mass: 591 functions missing `XOR reg,reg`, 305
+  with extra `AND reg,0xff`, plus MOVSX-vs-zero-extend signedness flips): the original
+  source held narrow memory values in **int-typed locals**, widening once at the load
+  (`XOR EBX,EBX; MOV BX,[mem]`); Ghidra's narrowing rules compare/use the narrow value
+  directly and the oracle prints exactly our C (specimens `00183`/`FUN_0001562c`,
+  `01308`). The byte-reproducing emission needs locals declared at widened width with the
+  conversion at the def — the analog of the existing `return-width` axis, for locals.
+  Design sketch, not yet implemented.
+- **Merged-boolean returns** (`extra SETcc`, 234 functions, not all this shape): the
+  original returns constants on separate paths; Ghidra (oracle-verified on `00697`)
+  merges to `return x != 0;`, which Watcom materializes with `TEST/SETNZ/AND`. The
+  byte-reproducing form needs the return **split back per path** — a structural
+  transform, heavier than any existing axis.
 
 Specimen `00697`/`FUN_000260c4` (13 near-miss functions share its exact signature): the
 original returns constants on separate paths (`MOV EAX,1`; the zero path reuses the

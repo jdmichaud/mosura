@@ -127,6 +127,10 @@ struct PrintC<'a> {
     /// stray top-level `break;` before the switch — the E1000 family of
     /// docs/compilable-c-remediation.md Phase 6.
     switch_exit_suppress: std::collections::HashSet<BlockId>,
+    /// [`EmitChoices::shift_mask`] == `Hardware`: elide the lifter's own shift-count mask
+    /// (`x << (c & 0x1f)` renders `x << c` where the AND is provably the hardware's — see
+    /// `shift_bin`). Default false = the reference rendering.
+    elide_hw_shift_mask: bool,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -983,6 +987,58 @@ impl<'a> PrintC<'a> {
         if deref { inner } else { format!("&{inner}") }
     }
 
+    /// A shift, under [`EmitChoices`]' `shift-mask` axis. With `hardware` selected, a count
+    /// that is the lifter's own hardware mask renders without it — `x << c` instead of
+    /// `x << (c & 0x1f)` — because the target's shift instruction performs exactly that mask
+    /// itself, making the two renderings the same computation (the measured probe is the
+    /// axis doc in `emit.rs`). Under the default the arm is `bin` verbatim.
+    fn shift_bin(&mut self, op: super::op::OpId, sym: &str) -> (String, u8) {
+        let prec = 11u8;
+        if self.elide_hw_shift_mask {
+            if let Some(x) = self.hw_masked_count(op) {
+                let l = self.cast_operand(op, 0, prec, false);
+                let r = self.operand(x, prec, true);
+                return (format!("{l} {sym} {r}"), prec);
+            }
+        }
+        let l = self.cast_operand(op, 0, prec, false);
+        let r = self.cast_operand(op, 1, prec, true);
+        (format!("{l} {sym} {r}"), prec)
+    }
+
+    /// The unmasked count behind a shift whose count is the HARDWARE's mask, or `None`.
+    ///
+    /// Provably-the-hardware's means: the shifted operand is 4 bytes or narrower (x86 masks
+    /// the count mod 32 for every non-64-bit shift), and the count is an implied, single-use
+    /// `INT_AND(x, #0x1f)` — reached through the printer-transparent COPY/ZEXT links, each
+    /// itself implied and single-use so eliding the AND removes it from the output entirely.
+    fn hw_masked_count(&self, op: super::op::OpId) -> Option<VarnodeId> {
+        let o = self.f.op(op);
+        if self.f.vn(o.input(0)?).size > 4 {
+            return None;
+        }
+        let mut c = o.input(1)?;
+        loop {
+            let vn = self.f.vn(c);
+            if vn.is_constant() || self.is_explicit(c) || vn.descend.len() != 1 {
+                return None;
+            }
+            let d = vn.def?;
+            match self.f.op(d).code() {
+                OpCode::Copy | OpCode::IntZext => c = self.f.op(d).input(0)?,
+                OpCode::IntAnd => {
+                    let m = self.f.op(d).input(1)?;
+                    let mvn = self.f.vn(m);
+                    if mvn.is_constant() && mvn.constant_value() == 0x1f {
+                        return self.f.op(d).input(0);
+                    }
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// Render an op as a C expression with its precedence.
     fn render_op(&mut self, op: super::op::OpId) -> (String, u8) {
         let o = self.f.op(op);
@@ -1029,8 +1085,8 @@ impl<'a> PrintC<'a> {
             // addition. (The print-time `stack_addr` INT_ADD adaptation is retired — task #22-A.)
             OpCode::IntAdd => bin(self, "+", 12),
             OpCode::IntSub => bin(self, "-", 12),
-            OpCode::IntLeft => bin(self, "<<", 11),
-            OpCode::IntRight | OpCode::IntSright => bin(self, ">>", 11),
+            OpCode::IntLeft => self.shift_bin(op, "<<"),
+            OpCode::IntRight | OpCode::IntSright => self.shift_bin(op, ">>"),
             OpCode::IntLess | OpCode::IntSless => bin(self, "<", 10),
             OpCode::IntLessequal | OpCode::IntSlessequal => bin(self, "<=", 10),
             OpCode::IntEqual => bin(self, "==", 9),
@@ -2663,6 +2719,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         stack_syms: super::varmap::recover_scope(f),
         stack_declared: std::collections::HashSet::new(),
         switch_exit_suppress: std::collections::HashSet::new(),
+        elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),

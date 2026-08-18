@@ -64,6 +64,32 @@ pub enum ReturnWidth {
     Storage,
 }
 
+/// Whether a shift count renders with the **lifter's hardware mask** or without it.
+///
+/// x86's shift instructions mask their count to 5 bits themselves, and the SLEIGH semantics
+/// say so: `SHL r32,CL` lifts with an explicit `CL & 0x1f` before the shift. The reference
+/// decompiler prints that faithfully — `1 << (x & 0x1f)` — a true statement about the ISA.
+/// `1 << x` is the *same computation* on any target whose shift instruction performs the
+/// mask: the compiler emits the bare shift and the hardware masks. Both render the same
+/// recovered IR; C forces a choice; which one the original source spelled is not derivable
+/// from the IR (though no known period source spells the hardware's own mask). Measured
+/// probe (rule 3): Watcom 10.0a materializes the printed mask as a real `AND CL,0x1f` —
+/// WAR2 `FUN_00038d88`, whose original has none, and 64 functions / 94 divergence rows
+/// corpus-wide on sb43-5r.
+///
+/// The elision applies only where the mask is provably the hardware's: an implied
+/// `INT_AND(x, 0x1f)` feeding (possibly through the printer-transparent ZEXT/COPY) the
+/// count of a shift whose shifted operand is 4 bytes or narrower, used only by that shift.
+/// Anything else keeps the faithful rendering under either value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftMask {
+    /// Print the count as recovered — the lifter's hardware mask included. The reference
+    /// behaviour, and the default.
+    Recovered,
+    /// Elide the mask the shift instruction itself performs.
+    Hardware,
+}
+
 /// The choice vector.
 ///
 /// Adding an axis is: a field, an entry in [`EmitChoices::AXES`], and arms in [`EmitChoices::get`]
@@ -72,11 +98,12 @@ pub enum ReturnWidth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitChoices {
     pub return_width: ReturnWidth,
+    pub shift_mask: ShiftMask,
 }
 
 impl Default for EmitChoices {
     fn default() -> Self {
-        Self { return_width: ReturnWidth::Recovered }
+        Self { return_width: ReturnWidth::Recovered, shift_mask: ShiftMask::Recovered }
     }
 }
 
@@ -91,11 +118,19 @@ pub struct Axis {
 
 impl EmitChoices {
     /// Every axis this build knows about.
-    pub const AXES: &'static [Axis] = &[Axis {
-        name: "return-width",
-        values: &["recovered", "value", "storage"],
-        doc: "declare the return type at the width of the value, or of the convention's storage",
-    }];
+    pub const AXES: &'static [Axis] = &[
+        Axis {
+            name: "return-width",
+            values: &["recovered", "value", "storage"],
+            doc: "declare the return type at the width of the value, or of the convention's storage",
+        },
+        Axis {
+            name: "shift-mask",
+            values: &["recovered", "hardware"],
+            doc: "print the shift count with the lifter's hardware mask, or elide the mask the \
+                  shift instruction itself performs",
+        },
+    ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
     pub fn axes() -> &'static [Axis] {
@@ -109,6 +144,10 @@ impl EmitChoices {
                 ReturnWidth::Recovered => "recovered",
                 ReturnWidth::Value => "value",
                 ReturnWidth::Storage => "storage",
+            }),
+            "shift-mask" => Some(match self.shift_mask {
+                ShiftMask::Recovered => "recovered",
+                ShiftMask::Hardware => "hardware",
             }),
             _ => None,
         }
@@ -124,6 +163,13 @@ impl EmitChoices {
                     "recovered" => ReturnWidth::Recovered,
                     "value" => ReturnWidth::Value,
                     "storage" => ReturnWidth::Storage,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "shift-mask" => {
+                self.shift_mask = match value {
+                    "recovered" => ShiftMask::Recovered,
+                    "hardware" => ShiftMask::Hardware,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

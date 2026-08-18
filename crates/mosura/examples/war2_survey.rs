@@ -590,6 +590,18 @@ fn main() {
                 .collect()
         })
         .unwrap_or_else(|| vec![EmitChoices::default()]);
+    // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
+    // and the target's shift instructions perform the `& 0x1f` count mask themselves, so every
+    // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in
+    // decompile/emit.rs carries the measured probe — under the faithful rendering 64 functions
+    // gained a materialized `AND CL,0x1f` the originals never had).
+    let arms: Vec<EmitChoices> = arms
+        .into_iter()
+        .map(|mut a| {
+            a.shift_mask = mosura::decompile::emit::ShiftMask::Hardware;
+            a
+        })
+        .collect();
 
     // Artifacts are STAMPED with the commit that produced them: `src.<stamp>/`, `raw.<stamp>/`,
     // `manifest.<stamp>.tsv`, with the unsuffixed names as symlinks to the current stamp.
