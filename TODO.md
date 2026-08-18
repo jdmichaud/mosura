@@ -646,13 +646,17 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
   transitions (586 EXACT / 14 COMPILE_FAIL) with 38 emissions improved (deeper propagation);
   full suite green in the canonical config.
 
-- **Environment: `GHIDRA_SRC` must point at the PIN, which is absent on this machine.** Two
-  tests are env-dependent in opposite directions: `disasm_pcode_ratchet` needs a ghidra tree
-  for 10 goldens (fails 244<254 without one), while `printc::tests::pointer_in_integral_op_is_
-  cast` FAILS when `GHIDRA_SRC` names the 12.0.3 dist (`/data/tools/ghidra_12.0.3_PUBLIC/
-  build/dist/...`) because `paths::language_dir` is checkout-first and the dist's x86-64.sla
-  differs from the vendored pin. Either restore the pinned checkout at
-  `~/projects/mosura/ghidra` or split the oracle-tree env from the sla-resolution env.
+- **Environment tangle — RESOLVED (2026-08-17).** The two "env-dependent" tests were: (a)
+  `disasm_pcode_ratchet` missing four languages (ARM/6502/MIPS/PowerPC) from the vendored
+  subset — now vendored byte-verbatim from the pin (`verify-vendored-ghidra.sh` green, ratchet
+  floor raised 254 → 338 and passing with NO env); (b) `pointer_in_integral_op_is_cast` was not
+  flaky at all — it SILENTLY SKIPPED without a checkout (direct `ghidra_src().join(...)` with
+  no vendored fallback) and genuinely failed when run: its expected string pinned a
+  pre-ConcatCommute rendering (`(uint8)param_1 & 0xf`), while the oracle prints
+  `(uint4)param_1 & 0xf` inside a zext — expectation updated to the oracle's current form. All
+  16 direct-path sla loads (10 tests + 6 examples) now route through `paths::language_dir`, so
+  none can silently skip again. The `/data/tools` pinned checkout had a stale local injection
+  (`x86-32-watcom.cspec` + ldefs edit, superseded by `specs/`) — restored to pristine.
 
 - **Port I/O ops dropped in `FUN_0005c5ec` — FIXED (2026-08-17).** Not a dataflow loss: the
   final IR carried every CALLOTHER; printc's statement catch-all required an OUTPUT to emit, so

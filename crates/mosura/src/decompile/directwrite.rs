@@ -164,7 +164,7 @@ mod tests {
     /// The SysV `<default_proto>` model (x86-64-gcc.cspec) for the param-recognition tests. `None`
     /// (test skips) when the Ghidra tree isn't present — the same gate the corpus tests use.
     fn sysv_proto_model() -> Option<super::super::fspec::ProtoModel> {
-        let sla = crate::paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = crate::paths::language_dir("x86").join("x86-64.sla");
         let spec = crate::speccache::get(&sla)?;
         crate::analysis::cspec::default_proto_model(spec, "x86:LE:64:default", "gcc", &SpaceManager::standard())
     }

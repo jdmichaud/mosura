@@ -2854,7 +2854,7 @@ mod tests {
 
     #[test]
     fn emits_c_for_a_straight_line_function() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }
@@ -2875,7 +2875,7 @@ mod tests {
 
     #[test]
     fn emits_structured_control_flow() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }
@@ -2897,7 +2897,7 @@ mod tests {
     /// from the `.sla` (`Spec::userops`) onto the `Funcdata`.
     #[test]
     fn callother_renders_as_userop_name() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }
@@ -2926,7 +2926,7 @@ mod tests {
     /// pointer in `&` = E1079); post-fix it casts the operand.
     #[test]
     fn pointer_in_integral_op_is_cast() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }
@@ -2936,11 +2936,15 @@ mod tests {
         let mut f = raw_funcdata_flow(&spec, "func", &bytes, 0x1000, &ctx);
         pipeline::decompile(&mut f);
         let c = print_c(&f);
-        // The pointer `param_1` fed to `&` must carry an integral cast (Ghidra `(uint)param_1`),
-        // not be left bare (`param_1 & 0xfU`, the E1079 pre-fix rendering). x86-64's 8-byte
-        // pointer casts to `uint8`; WAR2's 4-byte pointer would render `(uint)`.
+        // The pointer `param_1` fed to `&` must carry an integral cast, not be left bare
+        // (`param_1 & 0xfU`, the E1079 pre-fix rendering). The cast WIDTH follows the operation:
+        // `and eax, 0xf` is a 4-byte op, and the oracle (Ghidra 12.0.3, `capture --c` on these
+        // exact bytes) prints `(uint8)((uint4)param_1 & 0xf) + *param_1` — the pointer's cast is
+        // `(uint4)`. (The historical `(uint8)param_1 & 0xf` expectation pinned a pre-ConcatCommute
+        // rendering in which the PIECE-spelled zero-extension commuted into a wide 8-byte AND; the
+        // constant-hi `isFree` guard now declines that commute, exactly as Ghidra's does.)
         assert!(
-            c.contains("(uint8)param_1 & 0xf"),
+            c.contains("(uint4)param_1 & 0xf"),
             "pointer param_1 fed to `&` must be cast (E1079), got:\n{c}"
         );
     }
@@ -2954,7 +2958,7 @@ mod tests {
     /// names it `puVar3`, never `extraout_`. Pre-fix mosura mis-rendered it `*extraout_RDI`.
     #[test]
     fn relayed_indirect_register_is_not_named_extraout() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }

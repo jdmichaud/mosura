@@ -14,7 +14,7 @@ use std::fs;
 
 /// Floor on golden instructions mosura reproduces across all fixtures. Bump as the
 /// engine widens; a drop is a regression.
-const EXPECTED_DISASM_PASS: usize = 254;
+const EXPECTED_DISASM_PASS: usize = 338;
 
 fn norm(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")

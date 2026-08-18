@@ -8,7 +8,7 @@ use mosura::{datatest, paths};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let stem = args.get(1).expect("fixture stem");
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
     let ctx = spec.context_from_sets(&[("addrsize", 2), ("opsize", 1), ("rexprefix", 0), ("longMode", 1)]);
     let path = paths::datatests_dir().join(format!("{stem}.xml"));

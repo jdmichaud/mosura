@@ -1746,7 +1746,7 @@ mod tests {
     /// which is why the action is inert on mosura's corpus target.
     #[test]
     fn likelytrash_decodes_from_the_cspec() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86.sla");
+        let sla = paths::language_dir("x86").join("x86.sla");
         if !sla.exists() {
             return;
         }
@@ -1766,7 +1766,7 @@ mod tests {
 
     #[test]
     fn pipeline_runs_end_to_end() {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             return;
         }

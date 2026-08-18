@@ -111,7 +111,7 @@ impl CspecSettings {
 /// caller skips) when the Ghidra tree isn't present — the same gate the corpus tests use.
 #[cfg(test)]
 pub(crate) fn test_sysv_proto_model() -> Option<ProtoModel> {
-    let sla = crate::paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = crate::paths::language_dir("x86").join("x86-64.sla");
     let spec = crate::speccache::get(&sla)?;
     let pm = CspecSettings::default_for(spec).proto_model;
     pm.input.is_some().then_some(pm)
@@ -556,7 +556,7 @@ mod tests {
     use crate::{datatest, paths};
 
     fn x86_64() -> Option<(Spec, Vec<u32>)> {
-        let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+        let sla = paths::language_dir("x86").join("x86-64.sla");
         if !sla.exists() {
             eprintln!("skip: {} not found", sla.display());
             return None;

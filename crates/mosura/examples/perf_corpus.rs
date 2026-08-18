@@ -9,7 +9,7 @@ use std::time::Instant;
 
 fn main() {
     let only: Option<String> = std::env::args().nth(1);
-    let sla = paths::ghidra_src().join("Ghidra/Processors/x86/data/languages/x86-64.sla");
+    let sla = paths::language_dir("x86").join("x86-64.sla");
     let t0 = Instant::now();
     let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();
     let spec_ms = t0.elapsed().as_secs_f64() * 1e3;

@@ -10,10 +10,11 @@ sibling checkout is absent (SLEIGH-gated tests used to `return` early without ta
   fetches and verifies. The `.sla` files are the deterministic sleigh-compile of that pin's
   `.slaspec` sources (the compile `setup-ghidra.sh` performs); everything else is byte-verbatim
   from the checkout.
-- **Contents**: `Processors/{x86,AARCH64,RISCV,68000,Z80}/data/languages/` (the six language
-  families mosura loads: specs + compiled `.sla`), `Processors/{x86,AARCH64,RISCV,68000}/data/patterns/`
-  (the **Function Start Search** byte patterns — Z80 ships none), and `datatests/` (the decompiler
-  conformance fixtures). `LICENSE`/`NOTICE` are Ghidra's own (Apache-2.0) — this subset is redistributed
+- **Contents**: `Processors/{x86,AARCH64,RISCV,68000,Z80,ARM,6502,MIPS,PowerPC}/data/languages/`
+  (every language family the disasm goldens and decompile paths load: specs + compiled `.sla`),
+  `Processors/{x86,AARCH64,RISCV,68000,ARM,MIPS,PowerPC}/data/patterns/` (the **Function Start
+  Search** byte patterns — Z80 and 6502 ship none), and `datatests/` (the decompiler conformance
+  fixtures). `LICENSE`/`NOTICE` are Ghidra's own (Apache-2.0) — this subset is redistributed
   under that license, unmodified.
 - **Resolution order** (`crates/mosura/src/paths.rs`): `GHIDRA_SRC` env → the sibling checkout
   (`<workspace>/../ghidra`) → this vendored copy. A developer with a checkout sees the checkout;
