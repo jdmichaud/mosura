@@ -138,6 +138,27 @@ pub enum CompareForm {
     Complement,
 }
 
+/// Whether a boolean returned right after the `if` that tests it renders as the merged
+/// expression or as per-path constant returns.
+///
+/// The decompiler's rules collapse "set 1 on this path, 0 on that" into a single boolean
+/// (`return x != 0;` — the reference rendering, oracle-verified on WAR2 `FUN_000260c4`),
+/// and Watcom materializes the boolean with `TEST/SETNZ/AND`. The original source returned
+/// constants on separate paths, which compiles to a branch and lets the compiler reuse
+/// known register values (the measured original returns the call's own EAX=0 on the zero
+/// path). Splitting the return back is value-identical BY CONSTRUCTION when the returned
+/// boolean is the very varnode the structured `if` just tested: on the taken path it is 1,
+/// on the skip path 0. A ternary spelling was probed and does NOT reproduce the bytes —
+/// the return must be structurally inside the branch. Measured probe: the split form is
+/// EXACT on the specimen; 15 near-frontier functions share its exact signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnSplit {
+    /// The merged boolean return — the reference behaviour, and the default.
+    Recovered,
+    /// Split into per-path constant returns where the gate proves value-identity.
+    Paths,
+}
+
 /// The choice vector.
 ///
 /// Adding an axis is: a field, an entry in [`EmitChoices::AXES`], and arms in [`EmitChoices::get`]
@@ -149,6 +170,7 @@ pub struct EmitChoices {
     pub shift_mask: ShiftMask,
     pub local_width: LocalWidth,
     pub compare_form: CompareForm,
+    pub return_split: ReturnSplit,
 }
 
 impl Default for EmitChoices {
@@ -158,6 +180,7 @@ impl Default for EmitChoices {
             shift_mask: ShiftMask::Recovered,
             local_width: LocalWidth::Recovered,
             compare_form: CompareForm::Recovered,
+            return_split: ReturnSplit::Recovered,
         }
     }
 }
@@ -197,6 +220,12 @@ impl EmitChoices {
             doc: "render constant comparisons canonically, or complemented (x < c as x <= c-1) \
                   where the adjustment is value-identical",
         },
+        Axis {
+            name: "return-split",
+            values: &["recovered", "paths"],
+            doc: "return a tail boolean as the merged expression, or as per-path constant \
+                  returns when it is the varnode the preceding if just tested",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -223,6 +252,10 @@ impl EmitChoices {
             "compare-form" => Some(match self.compare_form {
                 CompareForm::Recovered => "recovered",
                 CompareForm::Complement => "complement",
+            }),
+            "return-split" => Some(match self.return_split {
+                ReturnSplit::Recovered => "recovered",
+                ReturnSplit::Paths => "paths",
             }),
             _ => None,
         }
@@ -259,6 +292,13 @@ impl EmitChoices {
                 self.compare_form = match value {
                     "recovered" => CompareForm::Recovered,
                     "complement" => CompareForm::Complement,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "return-split" => {
+                self.return_split = match value {
+                    "recovered" => ReturnSplit::Recovered,
+                    "paths" => ReturnSplit::Paths,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

@@ -87,12 +87,12 @@ The canonical measurement is now the UNION of two emission arms — `local-width
 searched axis (`decompile/emit.rs`), so the survey emits both renderings and the
 selection takes the per-function best on the byte verdict:
 
-    war2_survey <exe> <out> --arms 'default;local-width=storage;compare-form=complement'
+    war2_survey <exe> <out> --arms 'default;local-width=storage;compare-form=complement,return-split=paths'
     recompile_check <exe> <out>/manifest.tsv <out>/src                                  recover <WATCOM> --cache <cache> --out <sbNN>.tsv
     recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+local-width-storage recover <WATCOM> --cache <cache> --out <sbNN>-lw.tsv
-    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+compare-form-complement recover <WATCOM> --cache <cache> --out <sbNN>-cf.tsv
+    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+compare-form-complement+return-split-paths recover <WATCOM> --cache <cache> --out <sbNN>-cf.tsv
     recompile_select default=<sbNN>.tsv:<out>/src lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
-                     cf=<sbNN>-cf.tsv:<out>/src-shift-mask-hardware+compare-form-complement \
+                     cf=<sbNN>-cf.tsv:<out>/src-shift-mask-hardware+compare-form-complement+return-split-paths \
                      --out <sbNN>-select.tsv --out-src <out>/union
     recompile_check <exe> <out>/manifest.tsv <out>/union recover <WATCOM> --cache <cache> --out <sbNN>-union.tsv
 

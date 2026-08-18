@@ -218,6 +218,19 @@ extracts materialize as explicit unsigned temps whose def renders `(uint1)x` —
 IS the mask, value-identically, and it is the C shape measured to reproduce the
 original's selection. +6 EXACT, every one a SAME_SHAPE promotion, zero other movement.
 
+**645 → 659 (sb57): the `return-split` axis — merged-boolean returns.** The rules
+collapse per-path constant returns into one boolean (`return x != 0;`, oracle-verified
+faithful), which Watcom materializes with `TEST/SETNZ/AND`; the original returned
+constants inside the branch, letting the compiler reuse known register values (the
+measured zero path returns the call's own EAX=0). A ternary spelling was probed and does
+NOT reproduce the bytes — the return must sit structurally inside the branch, so the
+axis is a structured-emission transform: the tail pair [plain `if` testing B] +
+[sole-statement `return (zext of) B'`] renders as `return 1;` injected at the body's end
+plus `return 0;` on the fall-through, when B and B' provably hold the same value (same
+varnode, or same bool opcode over pairwise-identical operands — the rules duplicate the
+predicate rather than CSE it, measured in the IR). Bundled into the third arm (no extra
+compile round). +14 EXACT, all MISMATCH promotions, zero other movement.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

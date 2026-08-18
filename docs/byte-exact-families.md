@@ -63,11 +63,12 @@ The original works at full register width — zeroes with `XOR EAX,EAX`, moves `
   conversion at the def — the analog of the existing `return-width` axis, for locals.
   Design sketch, not yet implemented.
 - **The widening idiom — worked design (probed 2026-08-18, see below).**
-- **Merged-boolean returns** (`extra SETcc`, 234 functions, not all this shape): the
-  original returns constants on separate paths; Ghidra (oracle-verified on `00697`)
-  merges to `return x != 0;`, which Watcom materializes with `TEST/SETNZ/AND`. The
-  byte-reproducing form needs the return **split back per path** — a structural
-  transform, heavier than any existing axis.
+- **Merged-boolean returns — LANDED as the `return-split` axis (sb57, +14 EXACT)**: the
+  tail-pair pattern (`if (B) {body} return B;`) splits back to per-path constant returns
+  under a provable value-identity gate. The ternary spelling measurably does NOT work;
+  the split must be structural. Remaining shapes in the 234-function `extra SETcc`
+  census: booleans stored to variables/globals, returned through φs of non-adjacent
+  paths, or tested by a *different* if — each needs its own gate extension.
 
 Specimen `00697`/`FUN_000260c4` (13 near-miss functions share its exact signature): the
 original returns constants on separate paths (`MOV EAX,1`; the zero path reuses the
