@@ -63,6 +63,17 @@ The original works at full register width — zeroes with `XOR EAX,EAX`, moves `
   conversion at the def — the analog of the existing `return-width` axis, for locals.
   Design sketch, not yet implemented.
 - **The widening idiom — worked design (probed 2026-08-18, see below).**
+- **The comma-clause SETcc mechanism NAMED (2026-08-18 late): most remaining extra SETccs
+  are Watcom materializing a statement-carrying short-circuit clause** — our faithful
+  collapsed rendering (`if (a && (stmt, b))`) forces the clause's boolean into a value;
+  the originals wrote nested ifs and stay branch-only. Hand probe on specimen `01304`:
+  the nested form removes every materialization row (2 branch-polarity rows remain). A
+  `cond-form=nested` axis was implemented and REVERTED as wrong code: the un-collapse
+  must mirror `render_cond_expr`'s exact per-node negation/orientation algebra (each
+  condition node carries its own `negated`, XOR-folded by the collapse rules), and a
+  simple De Morgan flatten inverted a predicate. The design stands with that trap
+  documented; the implementation must drive the split through the real condition
+  renderer, not a reimplementation.
 - **The general merged-boolean design (next in line, 221 functions still carry extra
   SETcc)**: the remaining shapes materialize a boolean that is BOTH branched on and kept
   as a value (specimens `00211`, `01304`: `SETcc + AND` beside the very `Jcc` that tests
