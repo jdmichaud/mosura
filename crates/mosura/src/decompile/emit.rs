@@ -90,6 +90,31 @@ pub enum ShiftMask {
     Hardware,
 }
 
+/// Whether a narrow register-resident local declares at the width of its **value** or of
+/// the register it lives in — [`ReturnWidth`]'s question, asked of locals.
+///
+/// The original of WAR2's `FUN_00031044` widens a byte global into a full register at the
+/// def (`XOR EAX,EAX ; MOV AL,[m]`) — an int-typed local in the source; the reference
+/// decompiler recovers the value's width (`xunknown1`), under which the compiler works in
+/// the byte register and re-widens at every use (`AND EAX,0xff`). Declaring the local at
+/// storage width reproduces the original byte-for-byte (measured probe: the one-token
+/// retype turned the function EXACT). And the opposite choice is real too: of 18 EXACT
+/// functions declaring narrow locals, blanket widening broke 6 — the original sometimes
+/// used a genuinely narrow local. Not derivable from the IR, so searched (rule 1: both
+/// are faithful renderings; the gate below keeps them value-identical).
+///
+/// Value-safety gate (enforced at the declaration site, not here): only locals whose
+/// every def is narrow-valued — a narrow load, copy, or call return — widen. A def that
+/// truncates a wider expression or wraps narrow arithmetic keeps the narrow declaration
+/// under either value, because widening those changes the computed value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalWidth {
+    /// Declare at the value's width — the reference behaviour, and the default.
+    Recovered,
+    /// Declare width-gated narrow register locals at their register's width.
+    Storage,
+}
+
 /// The choice vector.
 ///
 /// Adding an axis is: a field, an entry in [`EmitChoices::AXES`], and arms in [`EmitChoices::get`]
@@ -99,11 +124,16 @@ pub enum ShiftMask {
 pub struct EmitChoices {
     pub return_width: ReturnWidth,
     pub shift_mask: ShiftMask,
+    pub local_width: LocalWidth,
 }
 
 impl Default for EmitChoices {
     fn default() -> Self {
-        Self { return_width: ReturnWidth::Recovered, shift_mask: ShiftMask::Recovered }
+        Self {
+            return_width: ReturnWidth::Recovered,
+            shift_mask: ShiftMask::Recovered,
+            local_width: LocalWidth::Recovered,
+        }
     }
 }
 
@@ -130,6 +160,12 @@ impl EmitChoices {
             doc: "print the shift count with the lifter's hardware mask, or elide the mask the \
                   shift instruction itself performs",
         },
+        Axis {
+            name: "local-width",
+            values: &["recovered", "storage"],
+            doc: "declare narrow register locals at the width of the value, or of the register \
+                  they live in (value-safe defs only)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -148,6 +184,10 @@ impl EmitChoices {
             "shift-mask" => Some(match self.shift_mask {
                 ShiftMask::Recovered => "recovered",
                 ShiftMask::Hardware => "hardware",
+            }),
+            "local-width" => Some(match self.local_width {
+                LocalWidth::Recovered => "recovered",
+                LocalWidth::Storage => "storage",
             }),
             _ => None,
         }
@@ -170,6 +210,13 @@ impl EmitChoices {
                 self.shift_mask = match value {
                     "recovered" => ShiftMask::Recovered,
                     "hardware" => ShiftMask::Hardware,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "local-width" => {
+                self.local_width = match value {
+                    "recovered" => LocalWidth::Recovered,
+                    "storage" => LocalWidth::Storage,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

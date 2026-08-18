@@ -81,6 +81,25 @@ Only useful with `--arms`. Picks, per function, the first arm that reassembles *
 `--out-src` materializes the winning sources as a directory you can actually recompile. Arms are
 tried left to right, so put the reference rendering first.
 
+## The union (arms + per-function selection)
+
+The canonical measurement is now the UNION of two emission arms — `local-width` is a
+searched axis (`decompile/emit.rs`), so the survey emits both renderings and the
+selection takes the per-function best on the byte verdict:
+
+    war2_survey <exe> <out> --arms 'default;local-width=storage'
+    recompile_check <exe> <out>/manifest.tsv <out>/src                                  recover <WATCOM> --cache <cache> --out <sbNN>.tsv
+    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+local-width-storage recover <WATCOM> --cache <cache> --out <sbNN>-lw.tsv
+    recompile_select default=<sbNN>.tsv:<out>/src lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
+                     --out <sbNN>-select.tsv --out-src <out>/union
+    recompile_check <exe> <out>/manifest.tsv <out>/union recover <WATCOM> --cache <cache> --out <sbNN>-union.tsv
+
+The union verdict is taken from the MATERIALIZED tree's own recompile (the last step),
+never by joining verdict files. Trap (measured): `--out-src` must land INSIDE the survey
+tree (`<out>/union`) — `recompile_check` resolves `../prelude.h` from the source dir, and
+a union dir beside the tree compiles every unit against a missing prelude (2,622
+COMPILE_FAILs that look like a catastrophe and are a path bug).
+
 ## Reading the output
 
 `--out` is one row per function: `idx va name verdict bytes primary sim equal orig_n cand_n

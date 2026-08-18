@@ -131,6 +131,10 @@ struct PrintC<'a> {
     /// (`x << (c & 0x1f)` renders `x << c` where the AND is provably the hardware's — see
     /// `shift_bin`). Default false = the reference rendering.
     elide_hw_shift_mask: bool,
+    /// [`EmitChoices::local_width`] == `Storage`: declare width-gated narrow register locals
+    /// at register width (see `storage_widened_local`). Default false = the reference
+    /// rendering.
+    widen_narrow_locals: bool,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -562,8 +566,63 @@ impl<'a> PrintC<'a> {
         let n = format!("{prefix}Var{}", self.var_counter);
         self.names.insert(id, n.clone());
         // a genuine local — declared at the body top (register/temp locals have no frame offset).
-        self.decls.push((n.clone(), ty, None));
+        // Under `local-width=storage` a width-gated narrow local declares at register width
+        // (the name keeps the value type's prefix — Ghidra's naming is not part of the axis).
+        let declared = self.storage_widened_local(id, v).unwrap_or(ty);
+        self.decls.push((n.clone(), declared, None));
         n
+    }
+
+    /// The widened declaration type for local `v` under [`EmitChoices::local_width`] ==
+    /// `Storage`, or `None` to keep the recovered width.
+    ///
+    /// The gate keeps the two axis values VALUE-IDENTICAL (the axis-honesty rule): a local
+    /// qualifies only when
+    ///
+    /// - it is 1 or 2 bytes wide in register/temporary storage (a stack slot's width is frame
+    ///   layout, and a memory-resident width is the program's own),
+    /// - no member of its HighVariable is a function input (widening a param is a signature
+    ///   change — tier 2 introduces a local copy instead), and
+    /// - every written member's def carries a narrow VALUE into the local unchanged — a copy,
+    ///   load, call return, phi, or the across-call INDIRECT relay. Arithmetic defs are
+    ///   excluded because the narrow type's wrap is part of the computed value, and
+    ///   truncating defs (SUBPIECE/CAST) are excluded conservatively rather than relying on
+    ///   their printed casts to preserve the truncation.
+    ///
+    /// Under the gate, the widened local holds the identical low bytes with zeros (or sign)
+    /// above, every narrow use re-truncates implicitly, and every widening use sees the value
+    /// the original program's own def-site widening produced (the measured probes:
+    /// FUN_00031044, FUN_0001562c — docs/byte-exact-families.md, the local-width design).
+    fn storage_widened_local(&self, id: u32, v: VarnodeId) -> Option<Datatype> {
+        if !self.widen_narrow_locals {
+            return None;
+        }
+        let vn = self.f.vn(v);
+        if vn.size != 1 && vn.size != 2 {
+            return None;
+        }
+        if Some(vn.loc.space) == self.stack_space || Some(vn.loc.space) == self.ram_space {
+            return None;
+        }
+        for &m in self.high_members.get(&id)? {
+            let mvn = self.f.vn(m);
+            if mvn.is_input() {
+                return None;
+            }
+            let Some(d) = mvn.def else { continue };
+            match self.f.op(d).code() {
+                OpCode::Copy
+                | OpCode::Load
+                | OpCode::Call
+                | OpCode::Callind
+                | OpCode::Callother
+                | OpCode::Indirect
+                | OpCode::Multiequal => {}
+                _ => return None,
+            }
+        }
+        let widened = widen_to_storage(&self.type_of(v), 4);
+        (widened.size() == 4).then_some(widened)
     }
 
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
@@ -2720,6 +2779,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         stack_declared: std::collections::HashSet::new(),
         switch_exit_suppress: std::collections::HashSet::new(),
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
+        widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),

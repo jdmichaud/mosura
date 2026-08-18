@@ -156,7 +156,14 @@ component remains on top, so re-measure after F1, but the floor is the policy.
 | 3 | `selection JZ>JNZ` + 2 `immediate MOV` | branch polarity + swapped constant arms |
 | 5 | pure regalloc runs | register substitution — the declaration-order lever (byte-exact-status FINDING) |
 
-#### The `local-width` axis — worked design (probe-validated, not yet implemented)
+#### The `local-width` axis — IMPLEMENTED (tier 1); design below
+
+**Landed (sb45):** axis `local-width={recovered,storage}` in `decompile::emit`, gate in
+`printc::storage_widened_local` (register/temp storage, size 1/2, no input members,
+value-safe defs only). Deployed per the searched-axis mechanism: two arms + per-function
+selection; the materialized union recompiles to **612 EXACT** (+7 over the default arm).
+Tier 2 (param widening via introduced local copies; inline narrow reads via
+`force_explicit`) remains open.
 
 The widening idiom's fix, shaped like `return-width` but for locals. Probes (all through
 the 1-second single-function loop, sources in the session scratchpad):

@@ -136,6 +136,17 @@ passes all three axis-honesty rules; the elision applies only to an implied sing
 loop-overflow form. +13 EXACT, 0 regressions; extra AND-0x1f rows 94 → 25; global
 similarity 0.3858 → **0.3868**.
 
+**605 → 612 (sb45): the `local-width` axis, deployed as arms + per-function selection.**
+The widening-idiom fix (`byte-exact-families.md`, the worked design): narrow register
+locals whose every def is value-safe declare at register width under
+`local-width=storage`. A searched axis, so deployed as the union: the survey emits
+`--arms 'default;local-width=storage'`, `recompile_select` picks per function on the
+byte verdict, and the MATERIALIZED union tree recompiles to **612 EXACT** (default arm
+605, storage arm alone 598 — it wins 7 the default misses and breaks 14 the default
+keeps, which is exactly why the union, not a default flip, is the deployment). Global
+similarity 0.3868 → **0.3870** on the union. Canonical trees: `/data/be2/sb45{,-lw,
+-select,-union}.tsv`, union sources at `/data/be2/sb45/union`.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the
