@@ -61,10 +61,36 @@ source module).
 
 Specimen `00556`/`FUN_00023210`: original ends `ADD EDX,0x12; MOV EAX,EDX` — arithmetic
 performed on the variable's own register, then moved to the return register — where our C
-lets Watcom fold both into `LEA EAX,[EDX+0x12]`. The source-shape question is "assign
-then return" vs "return the expression". Smallest, crispest family: one mechanism, an
-immediately answerable triage (is our C Ghidra's C for the specimen?), and 15 quick EXACT
-candidates.
+lets Watcom fold both into `LEA EAX,[EDX+0x12]`.
+
+**DISPOSITION (pilot, 2026-08-18): not a mosura defect at any layer — a toolchain
+fingerprint.** The chain of evidence:
+
+1. Our C is Ghidra's C for the specimen (oracle-verified; body statement identical).
+2. No source shape avoids the fold: expression return, assign-then-return, fully
+   sequential statements, `return x = ...` — all five variants compile to the LEA.
+3. No wcc386 10.0a flag set avoids it while keeping register allocation: every `-o`
+   letter the compiler accepts (`-ob/-oh/-ok` are rejected outright), `-onatx`, `-ox`,
+   `-or`, `-3r/-4r/-5r`, and the empty set all fold; only `-od` produces the `ADD` — and
+   `-od` spills every local to the frame, which the original does not.
+4. The original binary is systematic about it: **zero** `LEA reg,[reg+imm]` folds in
+   380KB (none in any EXACT function, and the 39 hex hits in MISMATCH originals are not
+   this form), while scaled LEAs (`[EDX*4]`) appear freely — but only into a *different*
+   register; in-place scaling is `SHL`. Our compiler emits both LEA forms opportunistically
+   (`LEA EAX,[EAX*4]` ×41, `LEA EAX,[EDX+0x1a]` ×22 in the extras).
+
+The original's code generator has a recognizably different peephole policy from the
+wcc386 10.0a we compile with, under every switch it accepts. The 10.0a identification
+came from the warcraft2-re side (runtime library matching); library version and compiler
+binary version need not agree. `/data/tools/watcom/` holds installable images for 9.5b,
+10.0 (incl. a 3-16-1994 beta), 10.6, and 11.0 — the discriminator is cheap once a tree
+exists: compile the specimen, look for the fold. If the true compiler differs, a version
+swap moves not just F2's ~300 functions but potentially a large slice of the 2210
+MISMATCH population at once, which makes settling the version a prerequisite for every
+further family session — otherwise family analyses chase compiler ghosts.
+
+**Cross-cutting consequence:** until the compiler version is settled, every family
+disposition below carries an implicit "under wcc386 10.0a" qualifier.
 
 ### F3 — callee-save divergence (do not target directly)
 
@@ -86,12 +112,15 @@ rather than attacking it head-on.
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
-## Proposed order
+## Proposed order (revised after the F2 pilot)
 
-1. **F2 as the pilot** — one mechanism, 15 near-miss functions, fast verdict on the loop
-   itself (census → specimen → triage → fix at the named layer → re-measure).
-2. **F1** — the mass lever, but a complex; expect it to split into 2–3 mechanisms during
-   instrumentation.
-3. **SAME_SHAPE clusters** — win density, likely emitter-side levers.
-4. Re-run this census (both TSVs + the awks above) after each family lands; F3 should
+1. ~~F2 as the pilot~~ — **done**; verdict above: toolchain fingerprint, blocked on
+   compiler-version identification, not on mosura.
+2. **Settle the compiler version** — stand up candidate Watcom trees (10.0 first: same
+   era, image on the shelf) and re-verdict the corpus under each. Discriminator: the F2
+   fold sites and the EXACT count. Prerequisite for every further family session.
+3. **F1** — the mass lever, but a complex; expect it to split into 2–3 mechanisms during
+   instrumentation. Re-triage after the version question settles.
+4. **SAME_SHAPE clusters** — win density, likely emitter-side levers.
+5. Re-run this census (both TSVs + the awks above) after each family lands; F3 should
    shrink on its own.
