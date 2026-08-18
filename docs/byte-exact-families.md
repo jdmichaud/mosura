@@ -63,6 +63,15 @@ The original works at full register width — zeroes with `XOR EAX,EAX`, moves `
   conversion at the def — the analog of the existing `return-width` axis, for locals.
   Design sketch, not yet implemented.
 - **The widening idiom — worked design (probed 2026-08-18, see below).**
+- **The general merged-boolean design (next in line, 221 functions still carry extra
+  SETcc)**: the remaining shapes materialize a boolean that is BOTH branched on and kept
+  as a value (specimens `00211`, `01304`: `SETcc + AND` beside the very `Jcc` that tests
+  the same predicate; the originals stay branch-only and resolve each later use
+  per-path). The generalization of `return-split`: render uses of `B` that are dominated
+  by the then-edge as `1` and by the else-edge as `0` — a dominance-gated constant
+  substitution at emission, value-identical by the same argument as the landed axis.
+  Needs the dominator query at print time and a per-use gate; design ready, not yet
+  implemented.
 - **Merged-boolean returns — LANDED as the `return-split` axis (sb57, +14 EXACT)**: the
   tail-pair pattern (`if (B) {body} return B;`) splits back to per-path constant returns
   under a provable value-identity gate. The ternary spelling measurably does NOT work;
