@@ -626,14 +626,33 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
     formed, and the AddressTable collision rule had nothing to refuse. Fixed at the rule site
     (free-or-constant guard); oracle-verified (full 4-case switch recovered).
 
-- **`is_free` vs Ghidra `Varnode::isFree` — systematic audit needed.** mosura: `!(INSERT |
-  CONSTANT)`; Ghidra: `!(written | input)` — they disagree exactly on CONSTANTS (free in
-  Ghidra, not in mosura). Every ported `isFree()` call translated as `is_free()` shares the
-  hazard; RuleConcatCommute was one measured casualty (above). Audit each call site or align
-  the definition (the flag-model divergence also touches addrtied: registers are NOT blanket
-  addrtied in Ghidra — measured `ZF addrtied=0` via CAPTURE_FLAGS_AT — while mosura's
-  `alloc_varnode` marks spacebase/ram-space varnodes; a definitional alignment needs its own
-  measured session).
+- **`is_free` vs Ghidra `Varnode::isFree` — AUDIT DONE (2026-08-17).** The definition is now
+  Ghidra's (`!(WRITTEN|INPUT)`, varnode.hh:238 — constants ARE free). What the audit found:
+  Ghidra has THREE distinct predicates and mosura's old `!(INSERT|CONSTANT)` had conflated them:
+  (a) `isFree` — 100+ translated rule guards, now correct by construction after the flip;
+  (b) `isHeritageKnown` (insert|constant|annotation) — 15 rules use it; 13 ports were already
+  faithful, `RulePropagateCopy` spelled it `is_free` (blocked constant propagation post-flip;
+  converted) and `RuleLessEqual` was missing both operand guards entirely (added,
+  ruleaction.cc:2270);
+  (c) `printRaw`'s literal `(flags&(insert|constant))==0` free-tag — restored as the exact
+  expression at the print site.
+  Two `makeFree` mis-ports fixed (`new_output`/`op_set_output` left INSERT on displaced
+  outputs; varnode.cc `makeFree` clears insert|input|indirect_creation) — restoring the
+  invariant `INSERT <=> (WRITTEN|INPUT)` that makes the flip exact. The `calls_awaiting_output`
+  ordering-repair predicate was silently keying on that mis-port artifact AND matching every
+  constant argument; respelled as `is_free() && !is_constant()`. Registers addrtied=0 in Ghidra
+  (measured) remains a separate un-audited divergence (mosura blankets spacebase/ram only — its
+  own session). Measured: fixture corpus 0.9700 held exactly; WAR2 sb39 zero verdict
+  transitions (586 EXACT / 14 COMPILE_FAIL) with 38 emissions improved (deeper propagation);
+  full suite green in the canonical config.
+
+- **Environment: `GHIDRA_SRC` must point at the PIN, which is absent on this machine.** Two
+  tests are env-dependent in opposite directions: `disasm_pcode_ratchet` needs a ghidra tree
+  for 10 goldens (fails 244<254 without one), while `printc::tests::pointer_in_integral_op_is_
+  cast` FAILS when `GHIDRA_SRC` names the 12.0.3 dist (`/data/tools/ghidra_12.0.3_PUBLIC/
+  build/dist/...`) because `paths::language_dir` is checkout-first and the dist's x86-64.sla
+  differs from the vendored pin. Either restore the pinned checkout at
+  `~/projects/mosura/ghidra` or split the oracle-tree env from the sla-resolution env.
 
 - **Port I/O ops dropped in `FUN_0005c5ec` — FIXED (2026-08-17).** Not a dataflow loss: the
   final IR carried every CALLOTHER; printc's statement catch-all required an OUTPUT to emit, so

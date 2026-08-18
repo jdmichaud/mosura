@@ -877,7 +877,12 @@ impl Funcdata {
     pub fn new_output(&mut self, op: OpId, size: u32, loc: Address) -> VarnodeId {
         if let Some(old) = self.ops[op.0 as usize].output.take() {
             self.varnodes[old.0 as usize].def = None;
-            self.varnodes[old.0 as usize].flags &= !flags::WRITTEN;
+            // Ghidra `opUnsetOutput` -> `VarnodeBank::makeFree` (varnode.cc): the displaced
+            // varnode clears `insert|input|indirect_creation` alongside its def/written — it is
+            // genuinely FREE again. Leaving INSERT set broke the invariant `INSERT <=>
+            // (WRITTEN|INPUT)` that makes `is_free` equal Ghidra's `isFree`.
+            self.varnodes[old.0 as usize].flags &=
+                !(flags::WRITTEN | flags::INPUT | flags::INSERT | flags::INDIRECT_CREATION);
         }
         let v = self.alloc_varnode(size, loc, flags::WRITTEN | flags::INSERT);
         self.varnodes[v.0 as usize].def = Some(op);
@@ -1957,7 +1962,9 @@ impl Funcdata {
         }
         if let Some(old) = self.ops[op.0 as usize].output.take() {
             self.varnodes[old.0 as usize].def = None;
-            self.varnodes[old.0 as usize].flags &= !flags::WRITTEN;
+            // makeFree, as in `new_output` above.
+            self.varnodes[old.0 as usize].flags &=
+                !(flags::WRITTEN | flags::INPUT | flags::INSERT | flags::INDIRECT_CREATION);
         }
         if let Some(olddef) = self.varnodes[vid.0 as usize].def.take() {
             self.ops[olddef.0 as usize].output = None;
@@ -2282,8 +2289,12 @@ impl Funcdata {
                 let _ = write!(s, "(0x{:x}:{})", sq.pc.offset, sq.uniq);
             }
         }
-        if vn.is_free() {
-            s.push_str("(free)"); // Ghidra: `(flags & (insert|constant)) == 0`
+        // Ghidra `Varnode::printRaw` (varnode.cc:752) tags `(free)` on LITERALLY
+        // `(flags & (insert|constant)) == 0` — NOT `isFree()` (`!(written|input)`). The two
+        // notions differ on constants and on mid-mutation states; the print criterion must stay
+        // Ghidra's exact expression or ir-parity diverges (a constant would tag "(free)").
+        if vn.flags & (super::varnode::flags::INSERT | super::varnode::flags::CONSTANT) == 0 {
+            s.push_str("(free)");
         }
         s
     }

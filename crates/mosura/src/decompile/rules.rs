@@ -842,7 +842,10 @@ impl Rule for RulePropagateCopy {
                 continue;
             }
             let invn = data.op(def).input(0).unwrap();
-            if invn == vn || data.vn(invn).is_free() {
+            // Ghidra: `if (!invn->isHeritageKnown()) continue;` — "Don't propagate free's away
+            // from their first use". A CONSTANT is heritage-known (and free), so it propagates;
+            // spelling this `is_free()` under the aligned definition wrongly blocked constants.
+            if invn == vn || !data.vn(invn).is_heritage_known() {
                 continue; // self-copy, or source not heritage-known
             }
             if data.op(op).is_marker() && data.vn(invn).is_constant() {
@@ -1244,6 +1247,12 @@ impl Rule for RuleLessEqual {
             return 0;
         }
         let (l0, l1) = (data.op(less_op).input(0).unwrap(), data.op(less_op).input(1).unwrap());
+        // Ghidra ruleaction.cc:2270-2271: both compare operands must be heritage-known before the
+        // value-identity tests below can be trusted (a free varnode's identity is only its
+        // storage, which same-value matching must not equate across unrenamed versions).
+        if !data.vn(l0).is_heritage_known() || !data.vn(l1).is_heritage_known() {
+            return 0;
+        }
         let (e0, e1) = (data.op(equal_op).input(0).unwrap(), data.op(equal_op).input(1).unwrap());
         let matches = (same_value(data, l0, e0) && same_value(data, l1, e1))
             || (same_value(data, l0, e1) && same_value(data, l1, e0));
@@ -6322,21 +6331,16 @@ impl Rule for RuleConcatCommute {
                 }
                 val = v;
             }
-            // Ghidra's `hi->isFree()`/`lo->isFree()` guards (ruleaction.cc:4530-4531) — and in
-            // Ghidra a CONSTANT is free (`Varnode::isFree` = `!(written|input)`, varnode.hh:238),
-            // while mosura's `is_free` excludes constants (the INSERT-flag model). So the guard
-            // must test both, or `PIECE(#0:4, x & 3)` — a zero-extension spelled as a PIECE —
-            // commutes into `INT_AND(PIECE(#0,x), 0xffffffff00000003)`, an op Ghidra never forms:
-            // its own pipeline leaves the constant-hi PIECE to `RuleConcatZero`, which rewrites it
-            // to a clean `INT_ZEXT` with the 4-byte `& 3` intact. The wide high-ones mask is
-            // semantically inert but defeats the jump-table index-range analysis: compgoto's
-            // `jmp [table + (rdi & 3)*8]` came back unrecovered (rendered as an indirect call, no
-            // ComputedJump references, and the AddressTable collision rule had nothing to refuse)
-            // while the oracle recovers the full 4-case switch on the same bytes.
-            if data.vn(hi).is_free() || data.vn(hi).is_constant() {
+            // Ghidra's `hi->isFree()`/`lo->isFree()` guards (ruleaction.cc:4530-4531). A
+            // CONSTANT is free (`is_free`, varnode.rs), so a constant piece declines the
+            // commute — `PIECE(#0:4, x & 3)`, a zero-extension spelled as a PIECE, is left to
+            // `RuleConcatZero`'s clean `INT_ZEXT` with the 4-byte `& 3` intact, never commuted
+            // into `INT_AND(PIECE(#0,x), 0xffffffff00000003)` (semantically inert but it defeated
+            // the jump-table index-range analysis — the compgoto ComputedJump failure).
+            if data.vn(hi).is_free() {
                 continue;
             }
-            if data.vn(lo).is_free() || data.vn(lo).is_constant() {
+            if data.vn(lo).is_free() {
                 continue;
             }
             // Create the earlier concat(hi, lo), then rewrite this op into the bitwise op over it.

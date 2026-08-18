@@ -165,8 +165,19 @@ impl Varnode {
     pub fn is_written(&self) -> bool {
         self.flags & flags::WRITTEN != 0
     }
+    /// Ghidra `Varnode::isFree` (varnode.hh:238): `(flags & (written|input)) == 0` — not linked
+    /// into SSA. **A CONSTANT is free** (it is neither written nor input); Ghidra rule guards
+    /// like `if (vn->isFree()) return 0` therefore DECLINE constants, and every faithful
+    /// translation must too. The previous definition here — `!(INSERT | CONSTANT)` — inverted
+    /// that: constants counted as not-free, so `RuleConcatCommute` commuted `PIECE(#0, x & 3)`
+    /// into the wide-mask AND Ghidra never forms (the compgoto jump-table failure). INSERT is
+    /// set/cleared in lockstep with WRITTEN/INPUT at every mutation site (and `makeFree` clears
+    /// them together), so for NON-constants the two definitions agree; the flip changes behavior
+    /// exactly at constants, aligning every translated `isFree()` guard with its original.
+    /// Sites needing "free and not a constant" spell it `is_free() && !is_constant()`, exactly
+    /// as Ghidra spells `isFree() && !isConstant()`.
     pub fn is_free(&self) -> bool {
-        self.flags & (flags::INSERT | flags::CONSTANT) == 0
+        self.flags & (flags::WRITTEN | flags::INPUT) == 0
     }
     /// Ghidra `Varnode::isHeritageKnown` — the value sits in the SSA tree (`insert`), or is a
     /// constant/annotation. Used by `RuleMultiCollapse` to refuse a MULTIEQUAL whose inputs are

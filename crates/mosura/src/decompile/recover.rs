@@ -1413,10 +1413,16 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     // not been committed yet — `ActionActiveReturn` runs in the fullloop tail, after this. Record
     // the call so the output commit can re-open it; without that the argument prints as a constant
     // and the caller emits an instruction to produce a value the original passed implicitly.
+    // The state to detect, spelled against the ALIGNED flag model: an argument varnode that is
+    // FREE and not a constant — no def, no input marking. (The previous spelling
+    // `!written && !is_free && !input` keyed on the old makeFree mis-port, which left INSERT on
+    // a displaced call output; it also matched EVERY constant argument, since a constant was
+    // "not free" under the old definition. With `makeFree` clearing INSERT and constants free,
+    // the uncommitted-output class is exactly the free non-constants among the resolved args.)
     let unwritten = newparam
         .iter()
         .skip(1)
-        .any(|&v| !f.vn(v).is_written() && !f.vn(v).is_free() && !f.vn(v).is_input());
+        .any(|&v| f.vn(v).is_free() && !f.vn(v).is_constant());
     if unwritten {
         f.calls_awaiting_output.insert(call);
     }
