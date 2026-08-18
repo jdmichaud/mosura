@@ -209,6 +209,15 @@ under three value-identity gates (plain integer constant, no required cast on it
 union: +9 EXACT, every one a SAME_SHAPE promotion, zero other movement. The canonical
 arms invocation is now `default;local-width=storage;compare-form=complement`.
 
+**639 → 645 (sb56): tier-2 extract materialization.** A multi-use `x & 0xff` byte
+extract of a register value term-duplicates at each use in the reference rendering, and
+Watcom selects `MOV EDX,EAX; AND EDX,0xff`; the original widens the byte ONCE into its
+own register (`XOR EDX,EDX; MOV DL,AL` — specimen FUN_0003925c, whose sibling run
+01328-01335 was the residue of the caller-contracts fix). Under the storage arm such
+extracts materialize as explicit unsigned temps whose def renders `(uint1)x` — the cast
+IS the mask, value-identically, and it is the C shape measured to reproduce the
+original's selection. +6 EXACT, every one a SAME_SHAPE promotion, zero other movement.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

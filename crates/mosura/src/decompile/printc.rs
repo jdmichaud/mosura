@@ -105,6 +105,13 @@ fn reg64_name(offset: u64) -> Option<&'static str> {
     })
 }
 
+/// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
+#[derive(Debug, Clone, Copy)]
+enum Tier2Widen {
+    NarrowLoad,
+    Extract(u32),
+}
+
 struct PrintC<'a> {
     f: &'a Funcdata,
     h: HighVariables,
@@ -138,14 +145,24 @@ struct PrintC<'a> {
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
     complement_compares: bool,
-    /// Tier 2 of the same axis value: narrow LOAD outputs materialized as explicit widened
-    /// temps (members of `force_explicit` too). The original of the probed shape
-    /// (`FUN_0001562c`) reads narrow memory ONCE into a zero-extended register
-    /// (`XOR EBX,EBX; MOV BX,[EDX]`) and compares wide; the reference rendering inlines the
-    /// narrow read (`*param_2 == 9`) and the compiler re-narrows. Gated on the consuming
-    /// comparison's constant being positive at its width, which makes the extension sign
-    /// value-irrelevant; the temp declares UNSIGNED (the measured originals zero-extend).
-    tier2_widen: std::collections::HashSet<VarnodeId>,
+    /// Tier 2 of the same axis value: values materialized as explicit widened temps
+    /// (members of `force_explicit` too), keyed to how their def statement renders.
+    ///
+    /// `NarrowLoad`: the original of the probed shape (`FUN_0001562c`) reads narrow memory
+    /// ONCE into a zero-extended register (`XOR EBX,EBX; MOV BX,[EDX]`) and compares wide;
+    /// the reference rendering inlines the narrow read and the compiler re-narrows. Gated
+    /// on the consuming comparison's constant being positive at its width, which makes the
+    /// extension sign value-irrelevant; the temp declares UNSIGNED (the measured originals
+    /// zero-extend) and its def carries a `(uintN)` reinterpret cast.
+    ///
+    /// `Extract(width)`: a multi-use `x & 0xff`/`x & 0xffff` byte/word extract of a wider
+    /// register value. The original of the probed shape (`FUN_0003925c`) widens the byte
+    /// ONCE into its own register (`XOR EDX,EDX; MOV DL,AL`) and indexes/passes the temp;
+    /// the reference rendering term-duplicates the AND at each use, and the compiler
+    /// selects the longer `MOV EDX,EAX; AND EDX,0xff`. The def renders `(uint1)x` — the
+    /// cast IS the mask, value-identically — which is the C shape measured to reproduce
+    /// the original selection (EXACT under the corrected argument binding).
+    tier2_widen: std::collections::HashMap<VarnodeId, Tier2Widen>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -608,10 +625,10 @@ impl<'a> PrintC<'a> {
         if !self.widen_narrow_locals {
             return None;
         }
-        // Tier-2 materialized load temps widen UNSIGNED regardless of the recovered
+        // Tier-2 materialized temps widen UNSIGNED regardless of the recovered
         // signedness — the field doc on `tier2_widen` carries the measured justification,
-        // and the positive-constant gate on membership makes the sign value-irrelevant.
-        if self.tier2_widen.contains(&v) {
+        // and the membership gates make the sign value-irrelevant.
+        if self.tier2_widen.contains_key(&v) {
             return Some(Datatype::Uint(4));
         }
         let vn = self.f.vn(v);
@@ -1434,13 +1451,22 @@ impl<'a> PrintC<'a> {
     /// (`XOR EBX,EBX; MOV BX,[EDX]`), instead of sign-extending through the recovered
     /// signed pointee type.
     fn assign_rhs(&mut self, op: OpId, outv: VarnodeId) -> String {
-        let (rhs, prec) = self.render_op(op);
-        if self.tier2_widen.contains(&outv) {
-            let sz = self.f.vn(outv).size;
-            let r = if prec < 14 { format!("({rhs})") } else { rhs };
-            return format!("({}){r}", Datatype::Uint(sz).name());
+        match self.tier2_widen.get(&outv).copied() {
+            Some(Tier2Widen::NarrowLoad) => {
+                let (rhs, prec) = self.render_op(op);
+                let sz = self.f.vn(outv).size;
+                let r = if prec < 14 { format!("({rhs})") } else { rhs };
+                format!("({}){r}", Datatype::Uint(sz).name())
+            }
+            Some(Tier2Widen::Extract(width)) => {
+                // the cast IS the mask: `(uint1)x` computes x & 0xff, and the assignment
+                // into the uint4 temp zero-extends — the measured original shape
+                let x = self.f.op(op).input(0).unwrap();
+                let inner = self.operand(x, 14, false);
+                format!("({}){inner}", Datatype::Uint(width).name())
+            }
+            None => self.render_op(op).0,
         }
-        rhs
     }
 
     /// Find the loop variable: a MULTIEQUAL in the loop head `head` whose tail-slot input is a
@@ -2879,7 +2905,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
-        tier2_widen: std::collections::HashSet::new(),
+        tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),
@@ -3028,31 +3054,59 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
     if p.widen_narrow_locals {
         for opid in f.op_ids() {
             let o = f.op(opid);
-            if o.code() != OpCode::Load || o.is_dead() {
+            if o.is_dead() {
                 continue;
             }
-            let Some(out) = o.output else { continue };
-            let sz = f.vn(out).size;
-            if sz != 1 && sz != 2 {
-                continue;
-            }
-            let cmp_pos_const = f.vn(out).descend.iter().any(|&r| {
-                let ro = f.op(r);
-                matches!(ro.code(), OpCode::IntEqual | OpCode::IntNotequal)
-                    && ro.input(0).zip(ro.input(1)).is_some_and(|(a, b)| {
-                        let konst = if a == out { b } else if b == out { a } else { return false };
-                        let kvn = f.vn(konst);
-                        // nonzero: a compare against zero stays inline — the originals
-                        // compare memory directly there (`CMP word ptr [..],0`), measured
-                        // on FUN_0001562c's second clause
-                        kvn.is_constant()
-                            && kvn.constant_value() != 0
-                            && (kvn.constant_value() >> (kvn.size * 8 - 1)) & 1 == 0
-                    })
-            });
-            if cmp_pos_const {
-                p.force_explicit.insert(out);
-                p.tier2_widen.insert(out);
+            match o.code() {
+                OpCode::Load => {
+                    let Some(out) = o.output else { continue };
+                    let sz = f.vn(out).size;
+                    if sz != 1 && sz != 2 {
+                        continue;
+                    }
+                    let cmp_pos_const = f.vn(out).descend.iter().any(|&r| {
+                        let ro = f.op(r);
+                        matches!(ro.code(), OpCode::IntEqual | OpCode::IntNotequal)
+                            && ro.input(0).zip(ro.input(1)).is_some_and(|(a, b)| {
+                                let konst =
+                                    if a == out { b } else if b == out { a } else { return false };
+                                let kvn = f.vn(konst);
+                                // nonzero: a compare against zero stays inline — the originals
+                                // compare memory directly there (`CMP word ptr [..],0`), measured
+                                // on FUN_0001562c's second clause
+                                kvn.is_constant()
+                                    && kvn.constant_value() != 0
+                                    && (kvn.constant_value() >> (kvn.size * 8 - 1)) & 1 == 0
+                            })
+                    });
+                    if cmp_pos_const {
+                        p.force_explicit.insert(out);
+                        p.tier2_widen.insert(out, Tier2Widen::NarrowLoad);
+                    }
+                }
+                OpCode::IntAnd => {
+                    // multi-use byte/word extract of a register value (see `tier2_widen`)
+                    let Some(out) = o.output else { continue };
+                    if f.vn(out).size != 4 || f.vn(out).descend.len() < 2 {
+                        continue;
+                    }
+                    let Some((x, m)) = o.input(0).zip(o.input(1)) else { continue };
+                    let mvn = f.vn(m);
+                    if !mvn.is_constant() || f.vn(x).is_constant() {
+                        continue;
+                    }
+                    let width = match mvn.constant_value() {
+                        0xff => 1,
+                        0xffff => 2,
+                        _ => continue,
+                    };
+                    if p.is_explicit(out) {
+                        continue; // already a named variable; only the rendering would change
+                    }
+                    p.force_explicit.insert(out);
+                    p.tier2_widen.insert(out, Tier2Widen::Extract(width));
+                }
+                _ => {}
             }
         }
     }
