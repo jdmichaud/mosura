@@ -79,6 +79,46 @@ The prototype pass alone is still 38 behind the default. Against the default it 
 functions and loses 56, and those 56 are the work-list below: eliminating them retires the arm
 and with it the doubled decompile and compile.
 
+### The global similarity gauge (sb43 baseline: 0.3841)
+
+The EXACT count is the target but it is a step function: a change that takes a
+500-instruction function from 60% aligned to 95% aligned moves it not at all.
+`recompile_check` therefore also reports a **global similarity** — the micro-average over
+instructions,
+
+    Σ equal / Σ max(orig_n, cand_n)   over every measured function
+
+the fraction of the corpus's instructions that recompile identically, instruction-weighted.
+The weighting is the point: on sb42/43 the 586 byte-exact functions are 20% of the
+population but only **5% of the code bytes**, so the unweighted per-function mean (also
+printed) is flattered by small trivial functions and near-blind to the big ones, which is
+where the remaining work lives.
+
+Conventions, all load-bearing:
+
+* A function that produced no candidate — EMIT_FAIL (now a real TSV row rather than a lost
+  eprintln), COMPILE_FAIL, OBJ_ERROR — scores **zero at its full original-instruction
+  weight**, never excluded: excluding it would make "it finally compiles, but mismatches"
+  LOWER the score. The survey records a real extent even on DECOMPILE_FAIL manifest rows
+  for exactly this reason — a recorded 0 reads as "excluded" downstream.
+* The denominator is the EXACT denominator (library excluded, everything else in), so the
+  two headline numbers stay comparable.
+* The TSV's `equal`/`orig_n`/`cand_n` columns make the number recomputable from the file
+  alone: `awk -F'\t' 'NR>1{e+=$8; d+=($9>$10?$9:$10)} END{print e/d}'`.
+
+Baseline (sb43, emit `a6b4b04`, sources byte-identical to sb42): **0.3841** insn-weighted
+(53614/139581 over 2893 functions), 0.5430 unweighted; verdicts unchanged (586 EXACT / 84
+SAME_SHAPE / 1 SAME_CODE / 2210 MISMATCH / 11 COMPILE_FAIL / 1 EMIT_FAIL). The −0.0011 vs
+sb42's re-score is purely the DECOMPILE_FAIL function's 379 instructions entering the
+denominator at weight 0.
+
+This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
+emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
+approximation over faithfulness. This one compares recompiled **machine code against the
+original binary** — the thing byte-exactness is a count of — and it is a trend diagnostic
+between verdict transitions, never a target: alignment can rise while semantics diverge,
+so the verdicts stay the ground truth.
+
 ### One address per location
 
 `wrap_offset` existed but was called in exactly three places in the decompiler, so the
