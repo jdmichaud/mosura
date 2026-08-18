@@ -147,6 +147,19 @@ worked failure modes are in byte-exact-status.md). The byte-extract idiom at suc
 (`XOR EDX,EDX; MOV DL,AL` vs our `MOV EDX,EAX; AND EDX,0xff`) remains a SAME_SHAPE-class
 residue.
 
+### Measured and rejected — caller-side `modify` propagation (sb54)
+
+The natural completion of the caller-side contracts (parm landed at sb52) is propagating
+the callee's recovered `modify [..]` list to caller externs. Measured: **net −15 EXACT**
+(17 regressions, 2 gains, 4,484 TUs patched). The regression pattern says something real
+about the original build: its callers compile under Watcom's DEFAULT assumption — a bare
+extern's callee preserves everything but EAX — so Blizzard's headers carried no
+per-function modify pragmas, and matching the callers means keeping our externs equally
+bare. The definition-side modify list stays (the callee's own body proves it, and it is
+worth 39% of the historical instruction deficit); the caller side must not know it.
+The FUN_00011954 residual (argument-load hoisted above a call the original loads after)
+is therefore a scheduling-policy residue, not a contract one.
+
 ### F3 — callee-save divergence (compiler policy — do not target)
 
 716 functions missing a prologue `PUSH`; missing saves outnumber extra saves 1231 to
