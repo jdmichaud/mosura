@@ -592,6 +592,22 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
 the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.
 
+## Open defects found during the near-frontier argument session (2026-08-18)
+
+- **Dropped call arguments at trial-machinery level** (specimen `FUN_00011954` @0x11954,
+  fixture `ma00047` in the pinned tree's datatests): the oracle recovers
+  `func_0x000594cc(xRam0008126c, 0x2b)`; mosura drops both args (EAX trial marked
+  definitely-not-used, EDX trial deactivated between passes) and dead-codes the
+  `MOV EDX,0x2b`. Trace-diff names the divergence neighborhood: Ghidra runs
+  `RuleStoreVarnode`/`RuleSub2Add`/`RuleCollapseConstants` at each CALL pc (the
+  return-address stores through the rule path) where mosura's `recover_stack` pre-model
+  neutralized them; the composition difference feeds the ancestor/trial judgments.
+  Near-frontier reach: `missing MOV Ereg,const` = 25 rows, plus knock-on missing
+  PUSH/POP saves. E1082's neighborhood — instrument the trial D-flag judgment next.
+- **Pipeline does not terminate on garbage decode** (found via the trace.rs arch bug: a
+  32-bit fixture decoded with x86-64 tables spun 57 CPU-minutes). Ghidra bounds its
+  mainloop; check whether mosura's restart/pass caps are ported everywhere.
+
 ## Open defects found during the E1032 instrument (2026-08-17)
 
 - **`ground_truth_parity`: 4 failing tests — ALL RESOLVED (2026-08-17).** Four distinct roots,
