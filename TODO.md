@@ -640,9 +640,15 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
   outputs; varnode.cc `makeFree` clears insert|input|indirect_creation) — restoring the
   invariant `INSERT <=> (WRITTEN|INPUT)` that makes the flip exact. The `calls_awaiting_output`
   ordering-repair predicate was silently keying on that mis-port artifact AND matching every
-  constant argument; respelled as `is_free() && !is_constant()`. Registers addrtied=0 in Ghidra
-  (measured) remains a separate un-audited divergence (mosura blankets spacebase/ram only — its
-  own session). Measured: fixture corpus 0.9700 held exactly; WAR2 sb39 zero verdict
+  constant argument; respelled as `is_free() && !is_constant()`. RESOLVED (2026-08-17), the addrtied follow-up: the
+  divergence was the ACCESSOR, not the flags — Ghidra `Varnode::isAddrTied` (varnode.hh:250) is
+  the COMPOUND `(flags & (addrtied|insert)) == (addrtied|insert)`, so a flagged-but-FREE global
+  answers false (this is why CAPTURE_FLAGS_AT printed `addrtied=0` for ZF and why the loopcomma
+  investigation's register-addrtied theory kept failing). mosura's flag-only accessor now
+  matches the compound; flag SETTING (spacebase/ram at alloc, registers never) already agreed.
+  Verdict-neutral everywhere: full suite green, fixture corpus 0.9700, WAR2 sb40 zero verdict
+  transitions AND zero changed emissions vs sb39.
+  Measured: fixture corpus 0.9700 held exactly; WAR2 sb39 zero verdict
   transitions (586 EXACT / 14 COMPILE_FAIL) with 38 emissions improved (deeper propagation);
   full suite green in the canonical config.
 

@@ -29,11 +29,21 @@ fn x86_64() -> Option<(&'static Spec, Vec<u32>)> {
 /// Run `oracle/capture <ghidra> <fixture> --ir <action>` (through the disk cache under
 /// `build/oracle-cache/`) and return Ghidra's IR dump.
 fn ghidra_ir(fixture: &std::path::Path, action: &str) -> Option<String> {
+    // Same non-empty guard as the corpus's `ghidra_c`: a capture spawn that fails (no Ghidra
+    // tree at `GHIDRA_SRC`/the sibling checkout, and no warm cache entry) yields empty stdout,
+    // which must SKIP the test loudly — not proceed into assertions over an empty oracle.
     let r = mosura::oraclecache::capture(fixture, &["--ir", action]);
-    if r.is_none() {
-        eprintln!("skip: oracle/capture not built");
+    match r {
+        None => {
+            eprintln!("skip: oracle/capture not built");
+            None
+        }
+        Some(text) if text.trim().is_empty() => {
+            eprintln!("skip: oracle/capture produced no output (no Ghidra tree and cold cache)");
+            None
+        }
+        some => some,
     }
-    r
 }
 
 /// The set of instruction addresses appearing in a `printRaw`-style dump — lines of the

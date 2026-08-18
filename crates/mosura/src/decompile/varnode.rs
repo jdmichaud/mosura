@@ -204,8 +204,17 @@ impl Varnode {
     pub fn is_readonly(&self) -> bool {
         self.flags & flags::READONLY != 0
     }
+    /// Ghidra `Varnode::isAddrTied` (varnode.hh:250): `(flags & (addrtied|insert)) ==
+    /// (addrtied|insert)` — the storage-tied property holds only for a varnode that is ALSO in
+    /// the SSA tree. The ADDRTIED flag itself is stamped at creation on every stack/ram varnode
+    /// (`alloc_varnode`, as Ghidra's `queryProperties` stamps it), FREE ones included; the
+    /// compound is what keeps a not-yet-heritaged global read from counting as address-tied in
+    /// `isComplex`/`baseExplicit`/merge gates. The previous flag-only reading answered true for
+    /// free globals mid-pipeline — states Ghidra masks out (measured with `CAPTURE_FLAGS_AT`:
+    /// the addrtied report there is this compound, which is how a flagged-but-free varnode
+    /// reports `addrtied=0`).
     pub fn is_addrtied(&self) -> bool {
-        self.flags & flags::ADDRTIED != 0
+        self.flags & (flags::ADDRTIED | flags::INSERT) == (flags::ADDRTIED | flags::INSERT)
     }
     /// Ghidra `Varnode::isAddrForce` — this value is forced into a particular storage location.
     pub fn is_addr_force(&self) -> bool {
