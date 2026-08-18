@@ -251,11 +251,15 @@ Value-safety gate when built: the global must have no write between entry and th
   The residual is a constant-store scheduling tangle (which register carries which
   constant to which of five adjacent global stores) — per-site permutation territory.
   A variable-reuse render choice would need coalescing machinery; parked.
-- **Index-extract cluster** (13 identical signatures, specimen `01262`): the byte index
-  load must materialize INSIDE the short-circuit chain (the original loads it lazily
-  after the null guard; a statement-level temp hoists the deref above the guard —
-  measured, and semantically unsafe). The expressible form is a condition-block
-  statement (the comma-expression machinery); parked until that rendering is designed.
+- **Index-extract cluster** (13 identical signatures, specimen `01262`): worked further —
+  the comma-expression materialization RENDERS correctly (the tier-2 gate extended
+  through the ZEXT-between-load-and-scale prints the temp inside the short-circuit
+  clause, behind the null guard, at the load op's own position), but the bytes still
+  diverge: Watcom keeps `AND EAX,0xff` + register-AND-test where the original widens
+  differently and tests the table byte memory-direct (`TEST [mem],8`). The remaining
+  unknown is Watcom's TEST-mem selection condition; the gate extension was reverted per
+  the probe discipline (no specimen win, no ship). Next lever: small out-of-corpus C
+  experiments against wcc386 to map the TEST-mem selection, then revisit.
 
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
