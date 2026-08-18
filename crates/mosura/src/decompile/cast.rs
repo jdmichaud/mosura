@@ -58,25 +58,245 @@ use super::types::{type_order, Datatype};
 ///   - `pointerrel`  `fStack_18 = (float4)piStack_10[-1] + fStack_18;`   FLOAT_ADD slot 0
 ///   - `partialsplit` `*(xunknown4 *)((int8)puVar3 + 8) = 0;`             INT_ADD   slot 0
 ///   - `stackstring`  `func_0x00101000((int8)&xStack_20 + 4);`            INT_ADD   slot 0
+/// Ghidra `CastStrategy::IntPromotionCode` (cast.hh:48). C promotes sub-int integers to
+/// `int` before arithmetic; these codes describe how an expression IS or WILL BE affected,
+/// and the `checkIntPromotion*` predicates below decide when that promotion forces a cast
+/// the plain type-reconciliation of [`cast_standard`] would not print. The measured stake
+/// (WAR2 `FUN_00048478`): `SEXT(x << 5)` with a 2-byte `x` must render
+/// `(int4)(int2)(param_1 << 5)` — the `(int2)` re-truncation is what makes the C compute
+/// the IR's 2-byte shift under ANSI promotion; without it the recompiled code promotes
+/// FIRST (`MOVSX` before `SHL`) and both the bytes AND the value diverge.
+pub const NO_PROMOTION: i32 = -1;
+pub const UNKNOWN_PROMOTION: i32 = 0;
+pub const UNSIGNED_EXTENSION: i32 = 1;
+pub const SIGNED_EXTENSION: i32 = 2;
+pub const EITHER_EXTENSION: i32 = 3;
+/// `CastStrategy::promoteSize` — `TypeFactory::getSizeOfInt`, 4 on every target this port
+/// carries.
+const PROMOTE_SIZE: u32 = 4;
+
+/// Ghidra `CastStrategyC::localExtensionType` (cast.cc:139): how the value would naturally
+/// extend, judged from local properties only.
+fn local_extension_type(f: &Funcdata, v: super::varnode::VarnodeId) -> i32 {
+    let natural = match high_type_read_facing(f, v) {
+        Datatype::Uint(_) | Datatype::Bool | Datatype::Unknown(_) => UNSIGNED_EXTENSION,
+        Datatype::Int(_) | Datatype::Char => SIGNED_EXTENSION,
+        _ => return UNKNOWN_PROMOTION,
+    };
+    let vn = f.vn(v);
+    if vn.is_constant() {
+        // high bit clear: the value reads the same under either extension
+        if !signbit_negative(vn.constant_value(), vn.size) {
+            return EITHER_EXTENSION;
+        }
+        return natural;
+    }
+    if vn.is_explicit() {
+        return natural;
+    }
+    let Some(d) = vn.def else { return UNKNOWN_PROMOTION };
+    let defop = f.op(d);
+    if defop.is_bool_output() {
+        return EITHER_EXTENSION;
+    }
+    match defop.code() {
+        OpCode::Cast | OpCode::Load => natural,
+        c if c == OpCode::Call || c == OpCode::Callind || c == OpCode::Callother => natural,
+        OpCode::IntAnd => {
+            // masking with a positive constant: extension-agnostic
+            if let Some(m) = defop.input(1) {
+                let mvn = f.vn(m);
+                if mvn.is_constant() {
+                    if !signbit_negative(mvn.constant_value(), mvn.size) {
+                        return EITHER_EXTENSION;
+                    }
+                    return natural;
+                }
+            }
+            UNKNOWN_PROMOTION
+        }
+        _ => UNKNOWN_PROMOTION,
+    }
+}
+
+/// Ghidra `signbit_negative` (address.cc): the value's high bit, at its own width.
+fn signbit_negative(val: u64, size: u32) -> bool {
+    if size == 0 || size > 8 {
+        return false;
+    }
+    (val >> (size * 8 - 1)) & 1 == 1
+}
+
+/// Ghidra `CastStrategyC::intPromotionType` (cast.cc:178): the promotion code of the whole
+/// expression defining `v`, recursing one level through the defining op.
+pub fn int_promotion_type(f: &Funcdata, v: super::varnode::VarnodeId) -> i32 {
+    let vn = f.vn(v);
+    if vn.size >= PROMOTE_SIZE {
+        return NO_PROMOTION;
+    }
+    if vn.is_constant() {
+        return local_extension_type(f, v);
+    }
+    if vn.is_explicit() {
+        return NO_PROMOTION;
+    }
+    let Some(d) = vn.def else { return UNKNOWN_PROMOTION };
+    let o = f.op(d);
+    let ext = |slot: usize| o.input(slot).map_or(UNKNOWN_PROMOTION, |x| local_extension_type(f, x));
+    match o.code() {
+        OpCode::IntAnd => {
+            // either side provably zero-extending makes the AND zero-extended
+            if ext(1) & UNSIGNED_EXTENSION != 0 || ext(0) & UNSIGNED_EXTENSION != 0 {
+                return UNSIGNED_EXTENSION;
+            }
+            UNKNOWN_PROMOTION
+        }
+        OpCode::IntRight => {
+            let val = ext(0);
+            if val & UNSIGNED_EXTENSION != 0 {
+                return val;
+            }
+            UNKNOWN_PROMOTION
+        }
+        OpCode::IntSright => {
+            let val = ext(0);
+            if val & SIGNED_EXTENSION != 0 {
+                return val;
+            }
+            UNKNOWN_PROMOTION
+        }
+        OpCode::IntXor | OpCode::IntOr | OpCode::IntDiv | OpCode::IntRem => {
+            if ext(0) & UNSIGNED_EXTENSION == 0 || ext(1) & UNSIGNED_EXTENSION == 0 {
+                return UNKNOWN_PROMOTION;
+            }
+            UNSIGNED_EXTENSION
+        }
+        OpCode::IntSdiv | OpCode::IntSrem => {
+            if ext(0) & SIGNED_EXTENSION == 0 || ext(1) & SIGNED_EXTENSION == 0 {
+                return UNKNOWN_PROMOTION;
+            }
+            SIGNED_EXTENSION
+        }
+        OpCode::IntNegate | OpCode::Int2comp => {
+            if ext(0) & SIGNED_EXTENSION != 0 {
+                return SIGNED_EXTENSION;
+            }
+            UNKNOWN_PROMOTION
+        }
+        OpCode::IntAdd | OpCode::IntSub | OpCode::IntLeft | OpCode::IntMult => UNKNOWN_PROMOTION,
+        _ => NO_PROMOTION,
+    }
+}
+
+/// Ghidra `CastStrategyC::checkIntPromotionForCompare` (cast.cc:107).
+fn check_int_promotion_for_compare(f: &Funcdata, op: OpId, slot: usize) -> bool {
+    let o = f.op(op);
+    let Some(vn) = o.input(slot) else { return false };
+    let ext1 = int_promotion_type(f, vn);
+    if ext1 == NO_PROMOTION {
+        return false;
+    }
+    if ext1 == UNKNOWN_PROMOTION {
+        return true; // promotion happens and we don't know its sign: cast required
+    }
+    let Some(other) = o.input(1 - slot) else { return false };
+    let ext2 = int_promotion_type(f, other);
+    if ext1 & ext2 != 0 {
+        return false; // a shared extension: those bits are not the determining factor
+    }
+    if ext2 == NO_PROMOTION {
+        return false; // both sides end up extended the same way
+    }
+    true
+}
+
+/// Ghidra `CastStrategyC::checkIntPromotionForExtension` (cast.cc:126).
+fn check_int_promotion_for_extension(f: &Funcdata, op: OpId) -> bool {
+    let o = f.op(op);
+    let Some(vn) = o.input(0) else { return false };
+    let ext = int_promotion_type(f, vn);
+    if ext == NO_PROMOTION {
+        return false;
+    }
+    if ext == UNKNOWN_PROMOTION {
+        return true;
+    }
+    // an explicit extension matching the promotion's own sign is redundant
+    if ext & UNSIGNED_EXTENSION != 0 && o.code() == OpCode::IntZext {
+        return false;
+    }
+    if ext & SIGNED_EXTENSION != 0 && o.code() == OpCode::IntSext {
+        return false;
+    }
+    true
+}
+
 pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
     let o = f.op(op);
     let in_vn = o.input(slot)?;
     let cur = high_type_read_facing(f, in_vn);
     let sz = f.vn(in_vn).size;
     match o.code() {
-        OpCode::IntSless | OpCode::IntSlessequal => cast_standard(&Datatype::base_int(sz), &cur, true, true),
-        OpCode::IntLess | OpCode::IntLessequal => cast_standard(&Datatype::Uint(sz), &cur, true, false),
-        OpCode::IntSext => cast_standard(&Datatype::base_int(sz), &cur, true, false),
-        OpCode::IntSdiv | OpCode::IntSrem => cast_standard(&Datatype::base_int(sz), &cur, true, true),
-        OpCode::IntDiv | OpCode::IntRem => cast_standard(&Datatype::Uint(sz), &cur, true, true),
+        // The comparison/shift/divide arms consult the integer-promotion predicates FIRST —
+        // Ghidra's per-op `getInputCast` overrides (typeop.cc:939/:1003/:1027..., :1550,
+        // :1592, :1645-:1705) return the required type OUTRIGHT when promotion would change
+        // the compared/extended/shifted value, forcing the truncating cast that
+        // `cast_standard` alone would not print.
+        OpCode::IntSless | OpCode::IntSlessequal => {
+            if check_int_promotion_for_compare(f, op, slot) {
+                return Some(Datatype::base_int(sz));
+            }
+            cast_standard(&Datatype::base_int(sz), &cur, true, true)
+        }
+        OpCode::IntLess | OpCode::IntLessequal => {
+            if check_int_promotion_for_compare(f, op, slot) {
+                return Some(Datatype::Uint(sz));
+            }
+            cast_standard(&Datatype::Uint(sz), &cur, true, false)
+        }
+        OpCode::IntSext => {
+            if check_int_promotion_for_extension(f, op) {
+                return Some(Datatype::base_int(sz));
+            }
+            cast_standard(&Datatype::base_int(sz), &cur, true, false)
+        }
+        OpCode::IntSdiv | OpCode::IntSrem => {
+            let promo = int_promotion_type(f, in_vn);
+            if promo != NO_PROMOTION && promo & SIGNED_EXTENSION == 0 {
+                return Some(Datatype::base_int(sz));
+            }
+            cast_standard(&Datatype::base_int(sz), &cur, true, true)
+        }
+        OpCode::IntDiv | OpCode::IntRem => {
+            let promo = int_promotion_type(f, in_vn);
+            if promo != NO_PROMOTION && promo & UNSIGNED_EXTENSION == 0 {
+                return Some(Datatype::Uint(sz));
+            }
+            cast_standard(&Datatype::Uint(sz), &cur, true, true)
+        }
         OpCode::IntEqual | OpCode::IntNotequal => {
             let t0 = high_type_read_facing(f, o.input(0)?);
             let t1 = high_type_read_facing(f, o.input(1)?);
             let req = if type_order(&t1, &t0) == std::cmp::Ordering::Less { t1 } else { t0 };
+            if check_int_promotion_for_compare(f, op, slot) {
+                return Some(req);
+            }
             cast_standard(&req, &cur, false, false)
         }
-        OpCode::IntRight if slot == 0 => cast_standard(&Datatype::Uint(sz), &cur, true, true),
-        OpCode::IntSright if slot == 0 => cast_standard(&Datatype::base_int(sz), &cur, true, true),
+        OpCode::IntRight if slot == 0 => {
+            let promo = int_promotion_type(f, in_vn);
+            if promo != NO_PROMOTION && promo & UNSIGNED_EXTENSION == 0 {
+                return Some(Datatype::Uint(sz));
+            }
+            cast_standard(&Datatype::Uint(sz), &cur, true, true)
+        }
+        OpCode::IntSright if slot == 0 => {
+            let promo = int_promotion_type(f, in_vn);
+            if promo != NO_PROMOTION && promo & SIGNED_EXTENSION == 0 {
+                return Some(Datatype::base_int(sz));
+            }
+            cast_standard(&Datatype::base_int(sz), &cur, true, true)
+        }
         OpCode::IntAnd | OpCode::IntOr | OpCode::IntXor | OpCode::IntNegate => {
             cast_standard(&Datatype::Uint(sz), &cur, false, true)
         }

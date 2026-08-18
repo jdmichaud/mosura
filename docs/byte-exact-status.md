@@ -147,6 +147,18 @@ keeps, which is exactly why the union, not a default flip, is the deployment). G
 similarity 0.3868 → **0.3870** on the union. Canonical trees: `/data/be2/sb45{,-lw,
 -select,-union}.tsv`, union sources at `/data/be2/sb45/union`.
 
+**612 → 616 (sb46): the integer-promotion cast machinery, ported whole.** Tier 2's first
+specimen (`FUN_00048478`: original `SHL ECX,5; MOVSX ECX,CX` — shift narrow, THEN extend)
+exposed a PORT DEFECT, not an axis: Ghidra's `CastStrategyC` promotion predicates
+(`intPromotionType` / `localExtensionType` / `checkIntPromotionForCompare` /
+`checkIntPromotionForExtension`, cast.cc:107-247) force the truncating cast that makes
+ANSI C compute the IR's narrow arithmetic — `(int4)(int2)(param_1 << 5)` — and the port's
+`input_cast` lacked the whole mechanism, silently dropping the `(int2)` (a VALUE
+divergence under promotion, not just bytes). Ported into `cast.rs` with the per-op
+consumers (comparisons, SEXT, div/rem, shifts; ZEXT stays with its documented
+transparent-render adaptation). Oracle-verified rendering; +4 EXACT, 0 regressions,
+global similarity 0.3870 → **0.3889** on the union.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

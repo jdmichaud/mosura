@@ -162,8 +162,10 @@ component remains on top, so re-measure after F1, but the floor is the policy.
 `printc::storage_widened_local` (register/temp storage, size 1/2, no input members,
 value-safe defs only). Deployed per the searched-axis mechanism: two arms + per-function
 selection; the materialized union recompiles to **612 EXACT** (+7 over the default arm).
-Tier 2 (param widening via introduced local copies; inline narrow reads via
-`force_explicit`) remains open.
+Tier 2's first sub-shape resolved differently than designed: the entry-widening
+originals (`SHL then MOVSX`) were a **port defect** — the missing integer-promotion cast
+machinery (see byte-exact-status.md, 612 → 616) — not a temp-introduction problem.
+Inline narrow reads via `force_explicit` (the `00183` shape) remain open.
 
 The widening idiom's fix, shaped like `return-width` but for locals. Probes (all through
 the 1-second single-function loop, sources in the session scratchpad):
