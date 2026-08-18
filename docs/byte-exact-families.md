@@ -242,6 +242,21 @@ share one Funcdata, that means cloning `f` per arm or keying the edit to the arm
 design decision (the arms' "same recovered IR" rule is exactly what it would bend).
 Value-safety gate when built: the global must have no write between entry and the use.
 
+**Probed and parked (2026-08-18 late session), with the findings that matter:**
+
+- **Byte-width shift cluster** (9 identical signatures, specimen `00847`/`FUN_0002b054`):
+  compound. The byte-shift half is the original REUSING the param's variable
+  (`g1 = p; p = 1 << p; g2 = p;` — the reuse creates the dependency that forces the
+  original's store order and register flow; probed: it aligns the whole shift group).
+  The residual is a constant-store scheduling tangle (which register carries which
+  constant to which of five adjacent global stores) — per-site permutation territory.
+  A variable-reuse render choice would need coalescing machinery; parked.
+- **Index-extract cluster** (13 identical signatures, specimen `01262`): the byte index
+  load must materialize INSIDE the short-circuit chain (the original loads it lazily
+  after the null guard; a statement-level temp hoists the deref above the guard —
+  measured, and semantically unsafe). The expressible form is a condition-block
+  statement (the comma-expression machinery); parked until that rendering is designed.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
