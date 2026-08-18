@@ -81,7 +81,7 @@ Corpus-wide on sb43 sources (`/data/be2/sb43-5r.tsv`):
 
 | | `-4r` profile | `-5r` profile |
 | --- | --- | --- |
-| EXACT | 586 | **591** (+6, −1) |
+| EXACT | 586 | **591** (+6, −1) → **592** with the per-function digit (below) |
 | SHL>LEA divergence rows | 157 | **12** |
 | candidate in-place scaled LEAs | 470 | **76** |
 | global similarity | 0.3841 | 0.3858 |
@@ -89,6 +89,15 @@ Corpus-wide on sb43 sources (`/data/be2/sb43-5r.tsv`):
 The profile base is now `-5r` (`recompile::buildconfig::watcom_10_0a`). The
 `selection SHL>LEA` family in `byte-exact-families.md` was a **flags** family, not a
 compiler one.
+
+The lone `-5r` regression exposed one more real fact: **WAR2's own build mixed tuning
+levels.** Exactly one contiguous module — 9 functions, 0x69fb0..0x6e6e0, 18 sites —
+contains in-place scaled LEAs, the form `-5r` can never emit, and measurably improves
+under `-4r` (its EXACT function returns, neighbors gain similarity). A per-module CFLAGS
+difference in Blizzard's Makefile. The CPU digit is therefore recovered **per function**
+(`buildconfig::Evidence::in_place_scaled_lea`): presence of the form proves pre-Pentium
+tuning and downgrades that function to `-4r`; the evidence is one-sided, so absence
+keeps `-5r`. EXACT 591 → **592**; the only verdict change is that function.
 
 ## What genuinely remains, stated precisely
 

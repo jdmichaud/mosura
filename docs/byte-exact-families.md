@@ -99,8 +99,10 @@ evidence plus new measurements. Outcome for this family, in two halves:
 - The `SHL>LEA` sub-family was **flags, and is FIXED**: `-5r` (Pentium tuning — the CPU
   digit is tuning, not an instruction-set floor; the emitted code is pure 386 ISA)
   suppresses the in-place scaled LEA in 10.0a. Profile base changed `-4r` → `-5r`:
-  SHL>LEA rows 157 → 12, EXACT 586 → **591** (+6/−1) on sb43 sources
-  (`/data/be2/sb43-5r.tsv`).
+  SHL>LEA rows 157 → 12, EXACT 586 → **591** (+6/−1) on sb43 sources — and → **592**
+  once the CPU digit became per-function evidence: WAR2's one `-4r` module (9 functions,
+  0x69fb0..0x6e6e0, detected by its in-place scaled LEAs, a form `-5r` cannot emit) is
+  downgraded per function by `buildconfig` (`/data/be2/sb43-5r.tsv`).
 - The `MOV>LEA` add-fold half **stands as a compiler fingerprint**: every shipped
   revision measured (9.5b, 10.0-LA beta, 10.0a wcc386+wpp386, 10.6, 11.0, OW2) folds
   under every accepted flag except `-od`; WAR2 never does. WAR2's compiler is an

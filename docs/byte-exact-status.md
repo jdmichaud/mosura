@@ -117,7 +117,12 @@ tuned for Pentium, and 10.0a's `-5r` suppresses the in-place scaled-LEA selectio
 (`SHL EAX,2` where `-4r` emits `LEA EAX,[EAX*4]` — a tuning choice between equally
 386-legal encodings, found via the Open Watcom source's CPU_586 gate on V_LEA_GOOD's
 OP_LSHIFT arm). +6/−1 EXACT, SHL>LEA divergence rows 157 → 12, global similarity
-0.3841 → **0.3858** (`/data/be2/sb43-5r.tsv`). The full toolchain story — including why
+0.3841 → **0.3858** (`/data/be2/sb43-5r.tsv`). 591 → **592**: WAR2's own build was not
+uniform — one contiguous module (9 functions, 0x69fb0..0x6e6e0) carries the in-place
+scaled-LEA form `-5r` can never emit, so the CPU digit is now per-function EVIDENCE
+(`buildconfig::Evidence::in_place_scaled_lea`: presence proves pre-Pentium tuning,
+downgrades that function to `-4r`; absence keeps the profile's `-5r`). The full
+toolchain story — including why
 the remaining LEA-fold/allocation/callee-save divergences are a bounded compiler
 residual, not workable defects — is `war2-toolchain-synthesis.md`.
 

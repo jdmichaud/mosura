@@ -34,6 +34,18 @@ pub struct Evidence {
     /// and the epilogue is bare pops. A function whose original saves first was not compiled the
     /// other way, and compiling it that way costs at least three bytes no matter what the C says.
     pub saves_before_frame: bool,
+    /// The body contains an in-place scaled LEA (`LEA EAX,[EAX*4]`-family — the destination is
+    /// its own index register). Under `-5r` the code generator never selects this form: the
+    /// CPU_586 arm of the LEA verifier (Open Watcom `i86ver.c`, `V_LEA_GOOD`/`OP_LSHIFT`,
+    /// `op1 == result && _CPULevel( CPU_586 )`) rewrites in-place scaling to `SHL`. So its
+    /// presence PROVES the function was compiled with pre-Pentium tuning; the evidence is
+    /// one-sided — absence proves nothing, and the default stays the profile's `-5r`.
+    ///
+    /// Measured on WAR2 (docs/war2-toolchain-synthesis.md): exactly one contiguous module —
+    /// 9 functions, 0x69fb0..0x6e6e0, 18 sites — carries the form inside an otherwise
+    /// Pentium-tuned build. A per-module CFLAGS difference in the original Makefile, which is
+    /// why the CPU digit is per-function evidence and not only a profile constant.
+    pub in_place_scaled_lea: bool,
 }
 
 /// A rule mapping evidence to option changes, for one toolchain.
@@ -41,6 +53,7 @@ pub struct Evidence {
 pub struct Rule {
     pub when_frame_prologue: Option<bool>,
     pub when_saves_before_frame: Option<bool>,
+    pub when_in_place_scaled_lea: Option<bool>,
     pub add: Vec<String>,
     pub remove: Vec<String>,
 }
@@ -62,6 +75,9 @@ impl Profile {
                 continue;
             }
             if r.when_saves_before_frame.is_some_and(|w| w != ev.saves_before_frame) {
+                continue;
+            }
+            if r.when_in_place_scaled_lea.is_some_and(|w| w != ev.in_place_scaled_lea) {
                 continue;
             }
             out.retain(|f| !r.remove.contains(f));
@@ -97,12 +113,23 @@ pub fn watcom_10_0a() -> Profile {
     Profile {
         name: "watcom-10.0a".into(),
         base: ["-5r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
-        rules: vec![Rule {
-            when_frame_prologue: Some(true),
-            when_saves_before_frame: None,
-            add: vec!["-d1+".into()],
-            remove: vec!["-of".into(), "-of+".into()],
-        }],
+        rules: vec![
+            Rule {
+                when_frame_prologue: Some(true),
+                when_saves_before_frame: None,
+                when_in_place_scaled_lea: None,
+                add: vec!["-d1+".into()],
+                remove: vec!["-of".into(), "-of+".into()],
+            },
+            // The per-function CPU-digit downgrade: see `Evidence::in_place_scaled_lea`.
+            Rule {
+                when_frame_prologue: None,
+                when_saves_before_frame: None,
+                when_in_place_scaled_lea: Some(true),
+                add: vec!["-4r".into()],
+                remove: vec!["-5r".into()],
+            },
+        ],
     }
 }
 
@@ -127,6 +154,19 @@ pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
             None => break, // anything else ends the prologue
         }
         let _ = i;
+    }
+    // Body evidence (whole function, not just the prologue): an in-place scaled LEA — the
+    // destination register is its own index. `LEA EAX,[EAX*0x4 + 0x0]` matches;
+    // `LEA EAX,[EDX*0x4 + 0x0]` (cross-register, legal at every CPU level) does not.
+    for insn in insns {
+        if let Some(rest) = insn.text.strip_prefix("LEA ") {
+            if let Some((dest, addr)) = rest.split_once(',') {
+                if addr.contains(&format!("[{dest}*0x")) {
+                    ev.in_place_scaled_lea = true;
+                    break;
+                }
+            }
+        }
     }
     ev
 }
@@ -303,7 +343,28 @@ mod tests {
     #[test]
     fn the_frame_flag_is_applied_only_where_there_is_a_frame() {
         let p = watcom_10_0a();
-        assert!(p.flags_for(&Evidence { frame_prologue: true, saves_before_frame: false }).contains(&"-d1+".to_string()));
+        assert!(p
+            .flags_for(&Evidence { frame_prologue: true, ..Evidence::default() })
+            .contains(&"-d1+".to_string()));
         assert!(!p.flags_for(&Evidence::default()).contains(&"-d1+".to_string()));
+    }
+
+    /// An in-place scaled LEA in the body is proof of pre-Pentium tuning — `-5r` can never
+    /// emit the form — so the profile downgrades that function's CPU digit to `-4r`.
+    /// Cross-register scaled LEAs are legal at every level and must not trigger it.
+    #[test]
+    fn in_place_scaled_lea_downgrades_the_cpu_digit() {
+        // lea eax,[eax*4+0]; ret  — the -4r signature (WAR2's 0x69fb0..0x6e6e0 module)
+        let ev = detect(&lift("8d048500000000c3"), ESP, EBP);
+        assert!(ev.in_place_scaled_lea);
+        // lea eax,[edx*4+0]; ret  — cross-register, non-evidence
+        let ev2 = detect(&lift("8d049500000000c3"), ESP, EBP);
+        assert!(!ev2.in_place_scaled_lea);
+
+        let p = watcom_10_0a();
+        let f = p.flags_for(&ev);
+        assert!(f.contains(&"-4r".to_string()) && !f.contains(&"-5r".to_string()));
+        let f2 = p.flags_for(&ev2);
+        assert!(f2.contains(&"-5r".to_string()) && !f2.contains(&"-4r".to_string()));
     }
 }
