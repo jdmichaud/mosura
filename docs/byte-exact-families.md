@@ -62,6 +62,7 @@ The original works at full register width — zeroes with `XOR EAX,EAX`, moves `
   `01308`). The byte-reproducing emission needs locals declared at widened width with the
   conversion at the def — the analog of the existing `return-width` axis, for locals.
   Design sketch, not yet implemented.
+- **The widening idiom — worked design (probed 2026-08-18, see below).**
 - **Merged-boolean returns** (`extra SETcc`, 234 functions, not all this shape): the
   original returns constants on separate paths; Ghidra (oracle-verified on `00697`)
   merges to `return x != 0;`, which Watcom materializes with `TEST/SETNZ/AND`. The
@@ -154,6 +155,42 @@ component remains on top, so re-measure after F1, but the floor is the policy.
 | 5 | `immediate CMP` + `selection JL>JLE` | comparison canonicalization: original `<=k`, candidate `<k+1` (or v.v.) |
 | 3 | `selection JZ>JNZ` + 2 `immediate MOV` | branch polarity + swapped constant arms |
 | 5 | pure regalloc runs | register substitution — the declaration-order lever (byte-exact-status FINDING) |
+
+#### The `local-width` axis — worked design (probe-validated, not yet implemented)
+
+The widening idiom's fix, shaped like `return-width` but for locals. Probes (all through
+the 1-second single-function loop, sources in the session scratchpad):
+
+- `01043`/`FUN_00031044`: `xunknown1 xVar1` → `uint4 xVar1`, one token — **EXACT** (the
+  original's `XOR EAX,EAX; MOV AL,[m]` reappears; the extra `AND EAX,0xff` vanishes).
+- `00183`/`FUN_0001562c`: introducing `uint4 t = *(uint2 *)param_2;` for an *inline*
+  narrow compare — **EXACT** (`XOR EBX,EBX; MOV BX,[EDX]` reproduced; Watcom emits the
+  pair, not MOVZX, under the recovered flags).
+- Counterexamples exist: of the 18 currently-EXACT functions declaring narrow locals, a
+  blanket widening keeps 12 EXACT and **breaks 6** — the original sometimes chose narrow,
+  so the axis is genuinely **searched** (emit.rs rule: the original's choice is not
+  derivable from the IR).
+
+**Tier 1 (the axis proper)** — `local-width` = `recovered` | `storage`: an explicit local
+HighVariable of size 1/2 with register storage declares at 4 bytes, keeping its recovered
+signedness (`uintN`/`xunknownN` → `uint4`, `intN` → `int4` — originals measurably use
+both `XOR+MOV` zero-extension and `MOVSX`). Value-safety gate: every def's rvalue must be
+narrow-valued (narrow load, narrow global copy, narrow call return) — a def that
+truncates a wider expression or wraps narrow arithmetic keeps the narrow declaration
+under either axis value, because widening those changes the computed value. Population:
+918 sources declare narrow locals; 670 are MISMATCH.
+
+**Tier 2 (temp introduction, follow-up)** — two well-defined sites the axis alone cannot
+reach: (a) narrow *params* the original widens at entry (`MOVSX EDX,AX` — 85 functions
+carry missing MOVSX; signature must stay narrow, so the widening is a introduced local
+copy); (b) *inline* narrow memory reads in wide contexts (the `00183` shape — printc's
+`force_explicit` machinery is the natural hook). Both need their own probes before
+implementation.
+
+**Deployment decision (open)**: (a) flip the survey default and accept measured
+regressions if net-positive, or (b) emit `--arms 'default;local-width=storage'` and let
+`recompile_select` take the per-function union — the designed mechanism for a searched
+axis (a second *print+compile* round, not a second decompile).
 
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
