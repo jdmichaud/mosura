@@ -136,6 +136,17 @@ evidence plus new measurements. Outcome for this family, in two halves:
   dials set between the shipped snapshots). Not closable by source or flags; do not
   chase per-function.
 
+### F1-adjacent finding — caller-side register contracts (FIXED, sb52)
+
+The missing-XOR census led to it: what looked like a widening site in `FUN_0003925c` was
+a mis-bound call — the caller compiled its arguments into default-order registers because
+the bare `extern` carries no `parm` pragma, while the callee's recovered storage is
+nonstandard. Every cross-TU call to the 155 nonstandard callees mis-bound. Fixed by a
+survey post-pass (definition-side parm map + arity and directional-width gates; the
+worked failure modes are in byte-exact-status.md). The byte-extract idiom at such sites
+(`XOR EDX,EDX; MOV DL,AL` vs our `MOV EDX,EAX; AND EDX,0xff`) remains a SAME_SHAPE-class
+residue.
+
 ### F3 — callee-save divergence (compiler policy — do not target)
 
 716 functions missing a prologue `PUSH`; missing saves outnumber extra saves 1231 to

@@ -418,12 +418,30 @@ fn nondefault_parm_regs(
         return None;
     }
     let reg = f.spaces.by_name("register")?;
-    let mut names = Vec::new();
+    let mut storages = Vec::new();
     for s in &slots {
         if s.addr.space != reg {
             return None;
         }
-        let n = table.iter().find(|&&(o, sz, _)| o == s.addr.offset && sz == s.size)?;
+        storages.push((s.addr.offset, s.size));
+    }
+    nondefault_parm_from_storages(&storages, table)
+}
+
+/// The storage-list core of [`nondefault_parm_regs`], shared with the CALLER-side extern
+/// pragmas: the `parm [..]` list for an ordered register-storage list, or `None` when the
+/// list is exactly Watcom's positional default (the pragma would be a no-op), a register is
+/// not in the table, or EBP/ESP appears.
+fn nondefault_parm_from_storages(
+    storages: &[(u64, u32)],
+    table: &[(u64, u32, &'static str)],
+) -> Option<String> {
+    if storages.is_empty() {
+        return None;
+    }
+    let mut names = Vec::new();
+    for &(off, size) in storages {
+        let n = table.iter().find(|&&(o, sz, _)| o == off && sz == size)?;
         // The frame and stack pointers are not argument storage under any Watcom convention, and
         // naming one in a `parm` list is rejected outright: `E1122: Illegal register modified by
         // '<name>' #pragma`, which fails the whole translation unit. Recovering a parameter in EBP
@@ -436,10 +454,10 @@ fn nondefault_parm_regs(
     }
     // What Watcom assigns by position, for these same sizes.
     let order = ["a", "d", "b", "c"];
-    let default: Vec<String> = slots
+    let default: Vec<String> = storages
         .iter()
         .enumerate()
-        .map(|(i, s)| match (order.get(i), s.size) {
+        .map(|(i, s)| match (order.get(i), s.1) {
             (Some(p), 4) => format!("e{p}x"),
             (Some(p), 2) => format!("{p}x"),
             (Some(p), 1) => format!("{p}l"),
@@ -797,6 +815,18 @@ fn main() {
     )
     .unwrap();
     let mut contract_bad = 0usize;
+    // va -> the function's own nondefault `parm [..]` list (None = default order). Filled by
+    // the emit loop, consumed by the caller-side pragma post-pass below it.
+    let mut parm_map: std::collections::BTreeMap<u64, Option<(String, Vec<u32>)>> = Default::default();
+    // caller idx -> (callee va -> argument count at the caller's call sites, None on
+    // disagreement between sites). The post-pass applies a callee's pragma only where the
+    // caller's arity matches the pragma's parameter count: the callee's rendered params are
+    // its USED slots only, and a pragma shorter than the caller's argument list makes
+    // Watcom overflow the extra arguments to the stack (measured: FUN_000345f4 passes
+    // three args to a callee whose only USED param is BX — `parm [bx]` turned two
+    // register moves into three PUSHes).
+    let mut caller_calls: std::collections::BTreeMap<u64, std::collections::BTreeMap<u64, Option<Vec<u32>>>> =
+        Default::default();
     let mut contract_counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut contract_hist: std::collections::BTreeMap<String, usize> = Default::default();
     let _ = &contract_hist;
@@ -1009,6 +1039,53 @@ fn main() {
                 .and_then(|insns| mosura::recompile::callee_stack_cleanup(&insns, sp))
         });
         let contract = own_contract(&f, &watreg, stack_convention, cleanup);
+        // CALLER-SIDE REGISTER CONTRACTS, definition-side truth. The `parm [..]` pragma
+        // below tells Watcom the callee's true argument registers — but only in the callee's
+        // own TU; a caller compiles against a bare `extern int func_0xNNN();` and Watcom
+        // binds the argument list POSITIONALLY to the default order, inverting every call to
+        // a callee whose recovered storage is nonstandard (measured: FUN_0003925c passed its
+        // table index in EAX where the original — and the callee's own pragma,
+        // FUN_00038828 `parm [edx] [eax]` — take it in EDX; 155 callees carry a nondefault
+        // order). The pragma each caller needs is EXACTLY the one the callee's own TU
+        // declares, so it is collected here per function and PREPENDED to every TU that
+        // externs the callee in a post-pass after the loop, when the map is complete —
+        // deriving it caller-side from `CallSpec::reads` was measured wrong (reads is the
+        // read-before-write evidence SET, not slot-ordered parameter storage: sb48's first
+        // cut broke 8 EXACT callers whose callees' own recovery says default order).
+        parm_map.insert(
+            *va,
+            nondefault_parm_regs(&f, &watreg).map(|decl| {
+                let sizes = mosura::decompile::printc::rendered_param_slots(&f)
+                    .iter()
+                    .map(|sl| sl.size)
+                    .collect();
+                (decl, sizes)
+            }),
+        );
+        {
+            let m = caller_calls.entry(*va).or_default();
+            for opid in f.op_ids() {
+                let op = f.op(opid);
+                if op.code() != OpCode::Call || op.flags & (flags::DEAD | flags::MARKER) != 0 {
+                    continue;
+                }
+                let Some(t) = op.input(0) else { continue };
+                let callee = f.vn(t).loc.offset;
+                let sizes: Vec<u32> =
+                    (1..op.num_inputs()).filter_map(|i| op.input(i)).map(|v| f.vn(v).size).collect();
+                match m.entry(callee) {
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
+                        if e.get().as_ref() != Some(&sizes) {
+                            e.insert(None);
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(v_) => {
+                        v_.insert(Some(sizes));
+                    }
+                }
+            }
+        }
+
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
             let ac = print_c_with(&f, theta);
@@ -1108,6 +1185,75 @@ fn main() {
         }
     }
     mf.flush().unwrap();
+    // CALLER-SIDE PRAGMA POST-PASS (see the parm_map comment in the loop): now that every
+    // function's own `parm [..]` recovery is known, prepend to each written TU the pragma
+    // for every nonstandard callee it externs. Textual, after the fact, because a caller can
+    // be emitted before its callee's contract exists; the extern lines name the callees.
+    // `--only` probe prints are not patched (they never hit disk).
+    if only.is_empty() {
+        // idx (the file stem) -> va, to find each TU's own call-arity map.
+        let idx_va: std::collections::HashMap<String, u64> =
+            entries.iter().enumerate().map(|(i, (va, _))| (format!("{i:05}"), *va)).collect();
+        let ext_re = |src: &str| -> Vec<u64> {
+            let mut out = Vec::new();
+            for line in src.lines() {
+                if let Some(rest) = line.strip_prefix("extern ") {
+                    if let Some(pos) = rest.find("func_0x") {
+                        if let Ok(va) = u64::from_str_radix(
+                            rest[pos + 7..].split(|c: char| !c.is_ascii_hexdigit()).next().unwrap_or(""),
+                            16,
+                        ) {
+                            out.push(va);
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let mut patched = 0usize;
+        for d in &arm_dirs {
+            let Ok(entries) = std::fs::read_dir(d) else { continue };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.extension().and_then(|x| x.to_str()) != Some("c") {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&path) else { continue };
+                let caller_va = path
+                    .file_stem()
+                    .and_then(|st| st.to_str())
+                    .and_then(|st| idx_va.get(st));
+                let lines: String = ext_re(&src)
+                    .into_iter()
+                    .filter_map(|cva| {
+                        let (decl, psizes) = parm_map.get(&cva).and_then(|d| d.as_ref())?;
+                        // arity AND width gate: every call site in this TU must pass exactly
+                        // the pragma's parameter count, each argument at the parameter's own
+                        // width. A width mismatch is as fatal as an arity one — a 16-bit
+                        // `parm [bx]` meeting a 4-byte argument overflows it to the STACK
+                        // (measured: FUN_0002c8xx's `PUSH 0xc` where the original loads EBX).
+                        let asizes = caller_va
+                            .and_then(|va| caller_calls.get(va))
+                            .and_then(|m| m.get(&cva))
+                            .cloned()
+                            .flatten()?;
+                        // Per slot the pragma register must be AT LEAST the argument's width:
+                        // a narrower argument binds the register's low part (measured EXACT —
+                        // the byte index into `parm [edx]`), while a narrower REGISTER
+                        // overflows the argument to the stack (the `parm [bx]` failure above).
+                        (asizes.len() == psizes.len()
+                            && asizes.iter().zip(psizes).all(|(a, p)| a <= p))
+                        .then(|| format!("#pragma aux func_0x{cva:08x} parm {decl};\n"))
+                    })
+                    .collect();
+                if !lines.is_empty() {
+                    std::fs::write(&path, format!("{lines}{src}")).unwrap();
+                    patched += 1;
+                }
+            }
+        }
+        eprintln!("caller-side parm pragmas: {patched} TU(s) patched");
+    }
     eprintln!("EMIT done: ok={ok} fail={fail} in {:?}", t0.elapsed());
     if contract_bad > 0 {
         let mut top: Vec<_> = contract_counts.iter().collect();

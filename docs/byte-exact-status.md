@@ -167,6 +167,22 @@ both measured on `FUN_0001562c`: positive constants only (extension sign becomes
 value-irrelevant) and nonzero only (the originals compare zero against memory directly —
 `CMP word ptr [..],0`). +3 EXACT on the union, zero regressions.
 
+**619 → 622 (sb52): caller-side register contracts.** The definition-side `parm [..]`
+pragma told Watcom a callee's true argument registers only in the callee's own TU; every
+CALLER compiled against a bare extern and bound its arguments POSITIONALLY to the default
+order — a silent semantic mis-compile for every cross-TU call to the 155 callees with
+nonstandard recovered storage (specimen FUN_0003925c: its table index went to EAX where
+the original and the callee both use EDX). The survey now collects each function's own
+parm recovery during the emit loop and prepends the pragma to every TU that externs the
+callee, in a post-pass, under two measured gates: ARITY (the callee's rendered params are
+its USED slots only — a short pragma overflows the caller's extra args to the stack) and
+DIRECTIONAL WIDTH (per slot the pragma register must be at least the argument's width —
+a byte argument binds `parm [edx]`'s low part, EXACT; a 4-byte argument into `parm [bx]`
+goes to the stack). Three wrong derivations were measured and discarded on the way:
+`CallSpec::reads` order (8 EXACT broken — reads is evidence, not slot order), ungated
+arity (FUN_000345f4), ungated width (FUN_0002c8xx). 124 TUs patched; +3 EXACT, 6
+MISMATCH → SAME_SHAPE, zero regressions; global similarity 0.3890 → **0.3894**.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the
