@@ -135,6 +135,14 @@ struct PrintC<'a> {
     /// at register width (see `storage_widened_local`). Default false = the reference
     /// rendering.
     widen_narrow_locals: bool,
+    /// Tier 2 of the same axis value: narrow LOAD outputs materialized as explicit widened
+    /// temps (members of `force_explicit` too). The original of the probed shape
+    /// (`FUN_0001562c`) reads narrow memory ONCE into a zero-extended register
+    /// (`XOR EBX,EBX; MOV BX,[EDX]`) and compares wide; the reference rendering inlines the
+    /// narrow read (`*param_2 == 9`) and the compiler re-narrows. Gated on the consuming
+    /// comparison's constant being positive at its width, which makes the extension sign
+    /// value-irrelevant; the temp declares UNSIGNED (the measured originals zero-extend).
+    tier2_widen: std::collections::HashSet<VarnodeId>,
     var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
@@ -596,6 +604,12 @@ impl<'a> PrintC<'a> {
     fn storage_widened_local(&self, id: u32, v: VarnodeId) -> Option<Datatype> {
         if !self.widen_narrow_locals {
             return None;
+        }
+        // Tier-2 materialized load temps widen UNSIGNED regardless of the recovered
+        // signedness — the field doc on `tier2_widen` carries the measured justification,
+        // and the positive-constant gate on membership makes the sign value-irrelevant.
+        if self.tier2_widen.contains(&v) {
+            return Some(Datatype::Uint(4));
         }
         let vn = self.f.vn(v);
         if vn.size != 1 && vn.size != 2 {
@@ -1341,8 +1355,23 @@ impl<'a> PrintC<'a> {
     fn render_assign(&mut self, op: OpId) -> String {
         let outv = self.f.op(op).output.unwrap();
         let lhs = self.lvalue_of(outv);
-        let rhs = self.render_op(op).0;
+        let rhs = self.assign_rhs(op, outv);
         format!("{lhs} = {rhs}")
+    }
+
+    /// The rhs of an assignment statement. For a tier-2 widened load temp (`tier2_widen`)
+    /// the narrow rvalue gets an unsigned reinterpret cast — `(uint2)*param_2` — so the C's
+    /// conversion to the widened temp ZERO-extends the way the measured originals do
+    /// (`XOR EBX,EBX; MOV BX,[EDX]`), instead of sign-extending through the recovered
+    /// signed pointee type.
+    fn assign_rhs(&mut self, op: OpId, outv: VarnodeId) -> String {
+        let (rhs, prec) = self.render_op(op);
+        if self.tier2_widen.contains(&outv) {
+            let sz = self.f.vn(outv).size;
+            let r = if prec < 14 { format!("({rhs})") } else { rhs };
+            return format!("({}){r}", Datatype::Uint(sz).name());
+        }
+        rhs
     }
 
     /// Find the loop variable: a MULTIEQUAL in the loop head `head` whose tail-slot input is a
@@ -2152,7 +2181,7 @@ impl<'a> PrintC<'a> {
                             });
                         if !hidden && self.is_explicit(outv) {
                             let lhs = self.lvalue_of(outv);
-                            let rhs = self.render_op(op).0;
+                            let rhs = self.assign_rhs(op, outv);
                             stmt = Some(format!("{lhs} = {rhs}"));
                         }
                     }
@@ -2780,6 +2809,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         switch_exit_suppress: std::collections::HashSet::new(),
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
+        tier2_widen: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),
@@ -2920,6 +2950,43 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
     for &root in &s.roots {
         p.detect_for_loops(&s, root);
     }
+    // local-width=storage, tier 2 (see the `tier2_widen` field doc): a narrow LOAD whose
+    // value a comparison consumes against a positive-at-width constant materializes as an
+    // explicit unsigned widened temp — the statement prints at the load op's own position,
+    // so no read moves across a store. Population BEFORE the body emit so the explicitness
+    // decision sees it.
+    if p.widen_narrow_locals {
+        for opid in f.op_ids() {
+            let o = f.op(opid);
+            if o.code() != OpCode::Load || o.is_dead() {
+                continue;
+            }
+            let Some(out) = o.output else { continue };
+            let sz = f.vn(out).size;
+            if sz != 1 && sz != 2 {
+                continue;
+            }
+            let cmp_pos_const = f.vn(out).descend.iter().any(|&r| {
+                let ro = f.op(r);
+                matches!(ro.code(), OpCode::IntEqual | OpCode::IntNotequal)
+                    && ro.input(0).zip(ro.input(1)).is_some_and(|(a, b)| {
+                        let konst = if a == out { b } else if b == out { a } else { return false };
+                        let kvn = f.vn(konst);
+                        // nonzero: a compare against zero stays inline — the originals
+                        // compare memory directly there (`CMP word ptr [..],0`), measured
+                        // on FUN_0001562c's second clause
+                        kvn.is_constant()
+                            && kvn.constant_value() != 0
+                            && (kvn.constant_value() >> (kvn.size * 8 - 1)) & 1 == 0
+                    })
+            });
+            if cmp_pos_const {
+                p.force_explicit.insert(out);
+                p.tier2_widen.insert(out);
+            }
+        }
+    }
+
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
     // signature + declarations + body, as Ghidra does.
     let t0 = std::time::Instant::now();

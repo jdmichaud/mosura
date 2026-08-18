@@ -159,6 +159,14 @@ consumers (comparisons, SEXT, div/rem, shifts; ZEXT stays with its documented
 transparent-render adaptation). Oracle-verified rendering; +4 EXACT, 0 regressions,
 global similarity 0.3870 → **0.3889** on the union.
 
+**616 → 619 (sb47): local-width tier 2 — materialized narrow loads.** Under the storage
+arm, a narrow LOAD consumed by a comparison against a nonzero positive-at-width constant
+materializes as an explicit unsigned widened temp (`uint4 t = (uint2)*p;` — the probed
+`XOR EBX,EBX; MOV BX,[EDX]` shape), printed at the load op's own position. Two gates,
+both measured on `FUN_0001562c`: positive constants only (extension sign becomes
+value-irrelevant) and nonzero only (the originals compare zero against memory directly —
+`CMP word ptr [..],0`). +3 EXACT on the union, zero regressions.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

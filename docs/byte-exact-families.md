@@ -165,7 +165,11 @@ selection; the materialized union recompiles to **612 EXACT** (+7 over the defau
 Tier 2's first sub-shape resolved differently than designed: the entry-widening
 originals (`SHL then MOVSX`) were a **port defect** — the missing integer-promotion cast
 machinery (see byte-exact-status.md, 612 → 616) — not a temp-introduction problem.
-Inline narrow reads via `force_explicit` (the `00183` shape) remain open.
+Inline narrow reads landed as tier 2 proper (sb47, +3 EXACT): `force_explicit` +
+unsigned widened temps for narrow loads compared against nonzero positive constants —
+both gates measured on `FUN_0001562c` (its second clause, a zero compare, stays inline
+because the originals compare zero against memory directly). Widening the use-context
+gate (arithmetic, call args, switch indices) is the remaining iteration.
 
 The widening idiom's fix, shaped like `return-width` but for locals. Probes (all through
 the 1-second single-function loop, sources in the session scratchpad):
