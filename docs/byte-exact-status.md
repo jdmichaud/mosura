@@ -183,6 +183,22 @@ goes to the stack). Three wrong derivations were measured and discarded on the w
 arity (FUN_000345f4), ungated width (FUN_0002c8xx). 124 TUs patched; +3 EXACT, 6
 MISMATCH → SAME_SHAPE, zero regressions; global similarity 0.3890 → **0.3894**.
 
+**622 → 630 (sb53): possible-output indirect creations — the dropped-arguments port
+defect.** The missing-XOR trail's second find: an argument that is a PREVIOUS call's
+still-unrecovered return was judged unrealistic by the ancestor walk and dropped (with
+the arguments behind it force-deactivated by the hole rule, and the callee-save
+PUSH/POPs lost as knock-on — specimen FUN_00011954, oracle recovers both args). Two
+faithful pieces were missing: Ghidra flags an indirect creation's constant as
+indirect-zero ONLY when the range is not a possible output of the call
+(funcdata_op.cc:726 + heritage.cc:1468-1484 — mosura's composition gate: output not yet
+committed + `characterize_as_output` == contains-justified), and
+`AncestorRealistic::enterNode`'s INDIRECT arm accepts non-zero creations as POSSIBLE
+OUTPUTS (funcdata_varnode.cc:2045-2050) where the port rejected every creation flat.
++8 EXACT, 4 more SAME_SHAPE, global similarity 0.3894 → **0.3962** (+1,054 matched
+instructions — recovered arguments across hundreds of MISMATCH functions), one
+MISMATCH → COMPILE_FAIL typing regression filed (FUN_00066100, the E1010
+CONCAT-into-pointer family).
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

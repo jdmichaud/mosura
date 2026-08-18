@@ -145,8 +145,20 @@ fn realistic_faithful(f: &Funcdata, vn: VarnodeId, killed_by_call: bool, seen: &
         OpCode::Piece => f.op(def).input(1).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen)),
         OpCode::Indirect => {
             // Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2045-2057).
-            if f.vn(vn).is_indirect_creation() || f.vn(vn).is_return_address() {
-                false // indirect-creation clobber / return-address storage — never a real value
+            if f.vn(vn).is_indirect_creation() {
+                // Backtracking is stopped by a call (:2046). An indirect-ZERO input (the flagged
+                // constant of a definite clobber, funcdata_op.cc:726) pops FAILKILL; any other
+                // creation is a POSSIBLE OUTPUT of the call and pops SUCCESS (:2048-2050) — this
+                // is what lets an argument that is a previous call's still-unrecovered return
+                // survive the realism check. (The flattened walk folds failkill into fail; the
+                // solid-vs-kill MULTIEQUAL arbitration is flattened by the `any` above, as
+                // before.) `trial->setIndCreateFormed()` (:2047) gates Ghidra's final-check pass,
+                // which mosura does not carry yet.
+                !f.op(def).input(0).is_some_and(|z| {
+                    f.vn(z).is_constant() && f.vn(z).is_indirect_creation()
+                })
+            } else if f.vn(vn).is_return_address() {
+                false // storage address location is completely invalid (:2052)
             } else if killed_by_call && !indirect_is_store(f, def) {
                 // A killed-by-call register trial whose value flows THROUGH a *call* passthrough is
                 // invalid (:2054). Guarded by `!isIndirectStore` (:2052): a STORE-modeling passthrough
@@ -1023,6 +1035,23 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         };
         if checked {
             continue;
+        }
+        // INSTRUMENT: the trial's actual input varnode and its def, so a wrong verdict names
+        // its evidence (the flags alone cannot distinguish "wrong input wired" from "right
+        // input judged wrong").
+        if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+            let d = f.op(call).input(slot).map(|v| {
+                let vn = f.vn(v);
+                let def = vn.def.map(|d| format!("{:?}@{:#x}:{}", f.op(d).code(), f.op(d).seqnum.pc.offset, f.op(d).seqnum.uniq));
+                format!(
+                    "{}+{:#x}/{} written={} def={:?}",
+                    f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, vn.is_written(), def
+                )
+            });
+            eprintln!(
+                "[eval] call@{:#x} trial#{ti} slot={slot} kbc={killed_by_call} input={:?}",
+                f.op(call).seqnum.pc.offset, d
+            );
         }
         let verdict = match f.op(call).input(slot) {
             None => Verdict::NoUse,

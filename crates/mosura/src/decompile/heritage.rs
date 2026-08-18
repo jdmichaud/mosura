@@ -959,8 +959,31 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // (funcdata_op.cc:726) splices the INDIRECT BEFORE the call with `opInsertBefore`, and
             // `collectOutputTrialVarnodes` (fspec.cc:5543) walks BACKWARD from the call to gather the
             // output trials — `resolve_call_output` mirrors that backward scan.
+            //
+            // POSSIBLE-OUTPUT creations (Ghidra heritage.cc:1468-1484 + funcdata_op.cc:726): a
+            // killed-by-call range that the model characterizes as potential RETURN storage of a
+            // call whose output recovery is still open is a possible output, and its creation's
+            // constant is NOT flagged `indirect_creation` — which is exactly what lets a LATER
+            // call's argument trial walk through it as a realistic ancestor
+            // (`AncestorRealistic::enterNode` CPUI_INDIRECT, funcdata_varnode.cc:2045-2050:
+            // creation with a non-indirect-zero input pops SUCCESS). Ghidra's gate is
+            // `fc->isOutputActive()` on the call's own output ParamActive; mosura's call-output
+            // recovery is the `calls_awaiting_output` backward scan with no per-call active, so
+            // the composition-faithful spelling of "output recovery still open" is "the call has
+            // no committed output varnode yet". Measured on WAR2 FUN_00011954: the EAX argument
+            // of the third call is the second call's return, whose creation this gate keeps
+            // walkable — without it the trial is marked definitely-not-used and BOTH arguments
+            // (the return and the constant 0x2b behind it) are dropped from the emitted call.
+            let possibleoutput = f.op(call).output.is_none()
+                && f.proto_model.characterize_as_output(trans_addr, size)
+                    == super::fspec::Containment::ContainsJustified;
             let seq = f.op(call).seqnum;
             let zero = f.new_const(size, 0);
+            if !possibleoutput {
+                // funcdata_op.cc:726: `if (!possibleout) newin->setFlags(Varnode::indirect_creation)`
+                // — the flagged constant IS Ghidra's `isIndirectZero`, the definite clobber.
+                f.vn_mut(zero).set_indirect_creation();
+            }
             let ind = f.new_op(OpCode::Indirect, seq, vec![zero]);
             f.op_mut(ind).guarded_op = Some(call); // Ghidra's iop: the causing call
             let out = f.new_output(ind, size, addr);

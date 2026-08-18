@@ -594,6 +594,13 @@ the approximation-era feature work on the now-removed `src/decomp/` prototype. K
 
 ## Open defects found during the near-frontier argument session (2026-08-18)
 
+- **E1010 regression specimen `02583`/`FUN_00066100`** (sb53, MISMATCH → COMPILE_FAIL):
+  `pcVar5 = CONCAT11(..., 0xf)` — a 2-byte CONCAT assigned to a `char *`-typed variable
+  (plus `pcVar4 = 0xff;` pointer-from-int warnings). The possible-output-creations port
+  changed this function's dataflow enough to surface the pre-existing
+  CONCAT-into-pointer typing family here. Chase with the oracle: what does Ghidra type
+  these variables as on the same bytes?
+
 - **Dropped call arguments at trial-machinery level** (specimen `FUN_00011954` @0x11954,
   fixture `ma00047` in the pinned tree's datatests): the oracle recovers
   `func_0x000594cc(xRam0008126c, 0x2b)`; mosura drops both args (EAX trial marked
