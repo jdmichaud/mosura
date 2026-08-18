@@ -1103,6 +1103,16 @@ pub struct CallSpec {
     /// Ghidra `FuncCallSpecs::effectiveExtraPop` (fspec.hh:1656): the extrapop as modelled --
     /// `None` until `ActionExtraPopSetup` (known case) or the stack solver has set it.
     pub effective_extrapop: Option<i32>,
+    /// BEYOND-GHIDRA bookkeeping for `stackvars::recover_stack`'s call-mechanism model: the
+    /// return-address push amount it already CANCELLED at this call (the push rewritten to an
+    /// identity COPY, the retaddr store materialized at its slot). Ghidra keeps the push in the
+    /// IR, so its extrapop machinery restores the whole `+4`; mosura's pre-model has already
+    /// restored it, and every later extrapop consumer must subtract this or the ret-pop is
+    /// counted twice — measured on WAR2 FUN_0003495c, where the unknown-extrapop solver's `+4`
+    /// guess on top of the neutralized push shifted every post-call stack resolution by +4,
+    /// landing a call's return address inside the (correctly) aliased locals as
+    /// `aiStack_18[0] = 0x34a6d;` and breaking the structure into gotos (the E1082 family).
+    pub push_neutralized: Option<i64>,
     /// Ghidra `FuncCallSpecs::inputConsume` (fspec.hh:1660): per input slot, how many BYTES of the
     /// argument this callee actually consumes — 0 meaning "no information". Written only by
     /// `RulePiecePathology` (ruleaction.cc:10521), which discovers that a wide argument's high

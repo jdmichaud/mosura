@@ -189,19 +189,31 @@ non-library functions + the singletons, dispositioned (2026-08-17):
   arm named the slot symbol-style but never declared it; it now declares like the mapped arms
   (also retiring a bogus top-level `int xStack00000000;` global the survey's fallback scan had
   synthesized for FUN_00072bf5's frame slot).
-- E1010 (ptr/int compare, FUN_000636f0) — FAITHFUL GHIDRA RENDERING: `CastStrategyC::
-  castStandard` with `care_ptr_uint=false` (the `TypeOpIntLess::getInputCast` care-flags)
-  deliberately skips casting a pointer under a uint requirement (cast.cc), so Ghidra prints the
-  same mixed compare. Representation/contract territory like the partials; the upstream typing
-  question (why `uVar5` commits uint4 while the loop bound stays pointer) folds into
-  type-inference work.
-- E1082 (label-before-`}`, FUN_0003495c) — MECHANISM IDENTIFIED, own session: the isolated
-  fixture matches the oracle cleanly, but the WAR2 whole-program path over-recovers the calls
-  to FUN_00034790/FUN_00034918 with STACK-ARRAY ADDRESS arguments the oracle does not have;
-  the escape aliases the call sites' return-address push slots, materializes the pushes as
-  literal stores (`aiStack_18[0] = 0x34a6d;`), and the leaked return-flow edge becomes the
-  `goto LAB_00034a80` whose label lands before `}`. Root to chase: the call-argument trials
-  handing ESP-relative addresses to those callees.
+- E1010 (ptr/int compare, FUN_000636f0) — RESOLVED as a knock-on of the E1082 fix below: with
+  the call-mechanism stack modeling corrected, the function's pointer typing unified and the
+  compare prints `uVar5 < (uint4)(param_1 + 0x1c)`. (The faithful-rendering analysis stands:
+  `CastStrategyC::castStandard` with `care_ptr_uint=false` skips casting a pointer under a uint
+  requirement, so a genuinely mixed compare would still print uncast, exactly as Ghidra's does.)
+- E1082 (label-before-`}`, FUN_0003495c) — FIXED (2026-08-17), three composed defects in the
+  call-mechanism stack model:
+  1. `ActionExtraPopSetup` ran BEFORE `stackvars::recover_stack`, so the unknown-extrapop
+     INDIRECT (an ESP write `symbolic_value` cannot evaluate) knocked ESP out of the sval walk at
+     the FIRST call of each path — every later call's return-address store stayed a raw STORE for
+     the late rules to place. Reordered: the walk now sees the pristine lift and all calls
+     convert at their sval-exact (dead, unaliased) slots.
+  2. The unknown-extrapop solver's `+4` guess double-counted the ret-pop on calls whose push
+     `recover_stack` had already neutralized to an identity COPY (Ghidra keeps the push, so its
+     `+4` restores it; mosura's pre-model had already restored it) — every post-call solution ran
+     `+4` high, landing return addresses inside the (CORRECTLY) aliased locals as
+     `aiStack_18[0] = 0x34a6d;` and shattering the structure into gotos. New
+     `CallSpec::push_neutralized` records the cancelled amount; the solver guess and
+     `ActionExtraPopSetup`'s known branch both subtract it.
+  3. The "over-recovered stack-address arguments" theory was WRONG: the callees genuinely take
+     two pointer args (`FUN_00034918(xunknown2*, xunknown2*)` — oracle-verified under borland
+     fastcall, which recovers the same `&xStack_18, &xStack_1c`), and the aliasing they cause is
+     correct. Only the composition above was broken.
+  Measured (sb42): COMPILE_FAIL 13 → **11** — every remaining failure is contract-attributed —
+  EXACT 586 held across 289 changed emissions, +1 MISMATCH → SAME_SHAPE.
 
 Tracked follow-ups: `mixfloatint` −0.025 — CLOSED (2026-08-17): the
 fixture declares `x86:LE:64:default:windows` and the datatest paths were pinning the gcc cspec

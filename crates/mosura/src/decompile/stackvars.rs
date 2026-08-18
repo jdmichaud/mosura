@@ -124,6 +124,9 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, OpId, i64)> {
                 _ => {}
             }
         }
+        if std::env::var("MOSURA_RSDEBUG").is_ok() {
+            eprintln!("RS match call@{:x} store={:?} push={:?}", pc.offset, store.is_some(), push.is_some());
+        }
         if let (Some(s), Some((p, amt))) = (store, push) {
             out.insert(call, (s, p, amt));
         }
@@ -186,6 +189,9 @@ pub fn recover_stack(f: &mut Funcdata) {
                 OpCode::Store if retaddr_stores.contains(&op) => {
                     if let (Some(addr), Some(val)) = (o.input(1), o.input(2)) {
                         if let Some(&c) = sval.get(&loc_of(f, addr)) {
+                            if std::env::var("MOSURA_RSDEBUG").is_ok() {
+                                eprintln!("RS store@{:x} slot={:x}", o.seqnum.pc.offset, c);
+                            }
                             let size = f.vn(val).size;
                             f.op_set_all_input(op, &[val]);
                             f.op_set_opcode(op, OpCode::Copy);
@@ -207,6 +213,11 @@ pub fn recover_stack(f: &mut Funcdata) {
                         if let Some(v) = sval.get_mut(&sp) {
                             *v += amt;
                         }
+                        // Record the cancelled push so the extrapop consumers (the KNOWN-case
+                        // INT_ADD and the unknown-case solver guess) model only the delta BEYOND
+                        // the return-address pop this rewrite already restored. Without it the
+                        // ret-pop counts twice (see `CallSpec::push_neutralized`).
+                        f.call_specs.entry(op).or_default().push_neutralized = Some(amt);
                     }
                 }
                 _ => {}
@@ -452,7 +463,23 @@ impl StackSolver {
                     // Ghidra's literal guess (coreaction.cc:219): the call pops 4 bytes. It is
                     // what cancels the `RSP = RSP - 4` the x86 `call` p-code performs, leaving the
                     // stack pointer net-unchanged across a call that pops no arguments.
-                    self.guess.push(StackEqn { var1: i, var2, rhs: 4 });
+                    // Ghidra's guess assumes the call's `RSP -= 4` push is still in the IR, so
+                    // `+4` restores it. `recover_stack` may have already cancelled the push
+                    // (rewritten to an identity COPY) — the INDIRECT's input then renames to the
+                    // PRE-push value and the modeled delta beyond it is 0, not 4. Subtract the
+                    // cancelled amount or every post-call solution is +4 (the E1082 family).
+                    let neutralized = f
+                        .op(op)
+                        .guarded_op()
+                        .and_then(|call| f.call_specs.get(&call))
+                        .and_then(|cs| cs.push_neutralized)
+                        .unwrap_or(0);
+                    let rhs = 4 - neutralized as i32;
+                    if std::env::var("MOSURA_SPFLOW_DEBUG").is_ok() {
+                        let d2 = f.vn(othervn).def.map(|d| (f.op(d).code(), f.op(d).seqnum.pc.offset));
+                        eprintln!("SPFLOW-GUESS var{i} = var{var2} + {rhs} (var2 def={d2:x?})");
+                    }
+                    self.guess.push(StackEqn { var1: i, var2, rhs });
                 }
                 OpCode::Multiequal => {
                     for j in 0..f.op(op).num_inputs() {

@@ -58,8 +58,17 @@ impl Action for ActionHeritage {
             // orphaned, and the later CFG build strands the INDIRECT in a block away from the CALL
             // it guards — which then reads as a marker-only "do nothing" block and trips
             // `blockRemoveInternal`'s "deleting op with descendants".)
-            ActionExtraPopSetup.apply(data);
+            // `recover_stack` FIRST: its sval walk models each call's return-address push from
+            // the pristine lift ops. Run the other way, ExtraPopSetup's unknown-case INDIRECT
+            // (an ESP write `symbolic_value` cannot evaluate) knocked ESP out of the tracked
+            // state at the first call of each path, so every LATER call's retaddr store stayed
+            // an unconverted raw STORE for the late rules to place with solver-derived offsets —
+            // one +4 composition slip away from landing return addresses inside aliased locals
+            // (WAR2 FUN_0003495c, the E1082 family). With the walk first, every call converts at
+            // its sval-exact slot and ExtraPopSetup models only the residual delta (see
+            // `CallSpec::push_neutralized`).
             super::stackvars::recover_stack(data);
+            ActionExtraPopSetup.apply(data);
             // Open return-value and argument recovery before heritage (Ghidra
             // `ActionPrototypeTypes`, coreaction.cc:4651, and `ActionFuncLink::funcLinkInput`,
             // coreaction.cc:1483). Both containers start EMPTY: the candidates are registered per
@@ -526,6 +535,15 @@ impl Action for ActionExtraPopSetup {
             // value is recovered from the callee's own RET by the whole-program pass; a call
             // without one falls back to the containing model's, exactly as before.
             let extrapop = data.call_specs.get(&call).and_then(|c| c.extrapop).unwrap_or(extrapop);
+            // `recover_stack`'s call-mechanism model may have already cancelled this call's
+            // return-address push; the delta left to model is what the callee pops BEYOND the
+            // return address (see `CallSpec::push_neutralized`). Without the subtraction the
+            // known case inserts `esp + 4` on top of the cancelled push — the same ret-pop
+            // double-count the solver's guess had.
+            let neutralized =
+                data.call_specs.get(&call).and_then(|c| c.push_neutralized).unwrap_or(0) as i32;
+            let extrapop =
+                if extrapop != EXTRAPOP_UNKNOWN { extrapop - neutralized } else { extrapop };
             if extrapop == 0 {
                 continue;
             }
