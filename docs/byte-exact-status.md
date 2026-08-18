@@ -112,6 +112,15 @@ SAME_SHAPE / 1 SAME_CODE / 2210 MISMATCH / 11 COMPILE_FAIL / 1 EMIT_FAIL). The �
 sb42's re-score is purely the DECOMPILE_FAIL function's 379 instructions entering the
 denominator at weight 0.
 
+**586 → 591 (sb43 sources, `-5r`).** The build profile's CPU digit was wrong: WAR2 was
+tuned for Pentium, and 10.0a's `-5r` suppresses the in-place scaled-LEA selection
+(`SHL EAX,2` where `-4r` emits `LEA EAX,[EAX*4]` — a tuning choice between equally
+386-legal encodings, found via the Open Watcom source's CPU_586 gate on V_LEA_GOOD's
+OP_LSHIFT arm). +6/−1 EXACT, SHL>LEA divergence rows 157 → 12, global similarity
+0.3841 → **0.3858** (`/data/be2/sb43-5r.tsv`). The full toolchain story — including why
+the remaining LEA-fold/allocation/callee-save divergences are a bounded compiler
+residual, not workable defects — is `war2-toolchain-synthesis.md`.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

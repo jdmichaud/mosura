@@ -302,6 +302,23 @@ already extracts the maximum *classification* the **available** version set supp
 classification gain would need more constructs, not more versions — every revision we have media
 for is now measured.
 
+### CONFIRMED BY VENDOR DOCUMENTATION (2026-08-18): the promotion is an a-level fix
+
+The 10.0a CD's own `A_LEVEL/README.A` (the GA→a patch changelog, shipped beside 1,266
+bpatch deltas and `APPLYA.BAT`) documents the promoting byte compare as a **fix**: *"A
+compare of an unsigned type shorter than an int and a constant which could be
+represented in that type would be done as the original type instead of being promoted
+to an integer."* So the excursion's left edge is the a-level patch itself, measured AND
+documented. WAR2 carries the promotion at 103 instruction-verified byte-load sites
+(`dumpfp`), so its compiler is at-or-after a-level. The full WAR2 toolchain synthesis —
+including the LEA-fold table across the lineage and the `-5r` in-place-scale gate that
+moved the recompile profile off `-4r` — is
+[`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md). (Provenance caution for
+[`watcom-detection.md`](watcom-detection.md)'s banner table: the shelf's
+`Watcom_C++_10.0.iso` is the 10.0a disc under another name — volume `WATCOM_C10A`,
+identical listing — so a "10.0 retail" row sourced from it is 10.0a data; no genuine GA
+media has been found in any public archive.)
+
 ## 10.0a is a one-release excursion — the strongest form of the argument
 
 The 10.0 **beta** (LA preprod, 16 Mar 1994) was the last inferred row. Unpacked with the vendor's

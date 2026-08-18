@@ -85,10 +85,18 @@ impl Profile {
 ///
 /// Deliberately NOT here: `-of`/`-of+`. Both force the other prologue path, and every WAR2
 /// function that saves registers before its frame is evidence against them.
+/// `-5r`, not `-4r`: the CPU digit is a TUNING level, not a convention change, and WAR2 was
+/// tuned for Pentium. Measured 2026-08-18 (docs/war2-toolchain-synthesis.md): 10.0a's code
+/// generator carries a CPU_586 gate that suppresses the in-place scaled-LEA selection
+/// (`SHL EAX,2` instead of `LEA EAX,[EAX*4]` — the gate survives into Open Watcom source as
+/// the `op1 == result && _CPULevel( CPU_586 )` arm of V_LEA_GOOD's OP_LSHIFT case). WAR2
+/// uses the SHL form everywhere. Corpus-wide on sb43 sources: SHL>LEA divergence rows
+/// 157 -> 12, EXACT 586 -> 591 (+6/-1). `-4r` had itself replaced `-3r` on the same kind of
+/// evidence (V_GOOD_CLR needs CPU_486 — the warcraft2-re byte-zero-store finding).
 pub fn watcom_10_0a() -> Profile {
     Profile {
         name: "watcom-10.0a".into(),
-        base: ["-4r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
+        base: ["-5r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
         rules: vec![Rule {
             when_frame_prologue: Some(true),
             when_saves_before_frame: None,

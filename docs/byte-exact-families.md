@@ -92,13 +92,33 @@ further family session — otherwise family analyses chase compiler ghosts.
 **Cross-cutting consequence:** until the compiler version is settled, every family
 disposition below carries an implicit "under wcc386 10.0a" qualifier.
 
-### F3 — callee-save divergence (do not target directly)
+**UPDATE (same day — the version question is now settled as far as it can be):**
+[`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md) assembles both projects'
+evidence plus new measurements. Outcome for this family, in two halves:
 
-716 functions missing a prologue `PUSH`; but missing saves outnumber extra saves 1231 to
-150, and the missing registers span EBX/ECX/EDX/EDI/ESI evenly. The original uses more
-registers than our candidate — predominantly **knock-on** of upstream value/shape
-divergences (fewer live values → fewer registers → fewer saves). Re-measure after F1/F2
-rather than attacking it head-on.
+- The `SHL>LEA` sub-family was **flags, and is FIXED**: `-5r` (Pentium tuning — the CPU
+  digit is tuning, not an instruction-set floor; the emitted code is pure 386 ISA)
+  suppresses the in-place scaled LEA in 10.0a. Profile base changed `-4r` → `-5r`:
+  SHL>LEA rows 157 → 12, EXACT 586 → **591** (+6/−1) on sb43 sources
+  (`/data/be2/sb43-5r.tsv`).
+- The `MOV>LEA` add-fold half **stands as a compiler fingerprint**: every shipped
+  revision measured (9.5b, 10.0-LA beta, 10.0a wcc386+wpp386, 10.6, 11.0, OW2) folds
+  under every accepted flag except `-od`; WAR2 never does. WAR2's compiler is an
+  interim 10.0-line codegen build (a-level front end — the byte-compare promotion is a
+  documented a-level fix, verified at 103 disassembled sites — with selection/allocation
+  dials set between the shipped snapshots). Not closable by source or flags; do not
+  chase per-function.
+
+### F3 — callee-save divergence (compiler policy — do not target)
+
+716 functions missing a prologue `PUSH`; missing saves outnumber extra saves 1231 to
+150, spanning EBX/ECX/EDX/EDI/ESI evenly. Originally read here as knock-on of upstream
+value/shape divergences; the warcraft2-re investigation had already measured the real
+mechanism (`analysis/openwatcom-investigation/cgflag-bxsidi-save-no-modify.md`): **the
+target's compiler saves callee-save registers even when not modified**, where 10.0a's
+`SaveRegs()` intersects with the used set. A compiler-policy member of the pile-B
+residual ([`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md)) — some knock-on
+component remains on top, so re-measure after F1, but the floor is the policy.
 
 ### SAME_SHAPE clusters (84 functions, every fix +1 EXACT)
 
@@ -112,15 +132,16 @@ rather than attacking it head-on.
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
-## Proposed order (revised after the F2 pilot)
+## Proposed order (revised after the F2 pilot and the toolchain synthesis)
 
-1. ~~F2 as the pilot~~ — **done**; verdict above: toolchain fingerprint, blocked on
-   compiler-version identification, not on mosura.
-2. **Settle the compiler version** — stand up candidate Watcom trees (10.0 first: same
-   era, image on the shelf) and re-verdict the corpus under each. Discriminator: the F2
-   fold sites and the EXACT count. Prerequisite for every further family session.
+1. ~~F2 as the pilot~~ — **done**: SHL half fixed by `-5r` (+5 net EXACT); add-fold half
+   is compiler policy, parked.
+2. ~~Settle the compiler version~~ — **done** as far as media exists:
+   [`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md). The pile-B compiler
+   families (F2's add-fold, F3, load scheduling, pure-regalloc allocation order) are a
+   bounded residual — parked, not worked.
 3. **F1** — the mass lever, but a complex; expect it to split into 2–3 mechanisms during
-   instrumentation. Re-triage after the version question settles.
-4. **SAME_SHAPE clusters** — win density, likely emitter-side levers.
-5. Re-run this census (both TSVs + the awks above) after each family lands; F3 should
-   shrink on its own.
+   instrumentation (the merged-boolean-return sub-shape is decompiler-side and live).
+4. **SAME_SHAPE clusters** — win density; note the pure-regalloc runs are pile-B.
+5. Re-run this census (both TSVs + the awks above) after each family lands, against the
+   `-5r` baseline (`/data/be2/sb43-5r.tsv`, `/data/be2/sb43-5r-div.tsv`).
