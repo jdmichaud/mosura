@@ -115,6 +115,29 @@ pub enum LocalWidth {
     Storage,
 }
 
+/// Whether a comparison against a constant renders in its **canonical** or **complemented**
+/// form.
+///
+/// The decompiler canonicalizes comparison constants (`x >= 4` and `3 < x` are one IR
+/// object, and the reference rendering prints the strict form Ghidra's rules normalize to —
+/// oracle-verified on WAR2 `FUN_000207b8`: both print `3 < u`). The original programmer
+/// wrote whichever form they wrote, and the compiled bytes differ (`CMP EAX,4` vs
+/// `CMP EAX,3` with complementary jump senses). Both renderings are the same predicate on
+/// every input; which one the source used is not derivable from the IR, so it is searched.
+/// Measured reach on sb53: 22 near-frontier `immediate CMP` divergence rows with the
+/// constants off by one in both directions.
+///
+/// The complement applies only where it is value-identical: one operand a plain integer
+/// constant, no required cast on that slot, and the ±1 adjustment representable at the
+/// constant's width (no wrap at either bound).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareForm {
+    /// The canonical rendering — the reference behaviour, and the default.
+    Recovered,
+    /// The complemented rendering: `x < c` ⇄ `x <= c-1`, `c < x` ⇄ `c+1 <= x`.
+    Complement,
+}
+
 /// The choice vector.
 ///
 /// Adding an axis is: a field, an entry in [`EmitChoices::AXES`], and arms in [`EmitChoices::get`]
@@ -125,6 +148,7 @@ pub struct EmitChoices {
     pub return_width: ReturnWidth,
     pub shift_mask: ShiftMask,
     pub local_width: LocalWidth,
+    pub compare_form: CompareForm,
 }
 
 impl Default for EmitChoices {
@@ -133,6 +157,7 @@ impl Default for EmitChoices {
             return_width: ReturnWidth::Recovered,
             shift_mask: ShiftMask::Recovered,
             local_width: LocalWidth::Recovered,
+            compare_form: CompareForm::Recovered,
         }
     }
 }
@@ -166,6 +191,12 @@ impl EmitChoices {
             doc: "declare narrow register locals at the width of the value, or of the register \
                   they live in (value-safe defs only)",
         },
+        Axis {
+            name: "compare-form",
+            values: &["recovered", "complement"],
+            doc: "render constant comparisons canonically, or complemented (x < c as x <= c-1) \
+                  where the adjustment is value-identical",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -188,6 +219,10 @@ impl EmitChoices {
             "local-width" => Some(match self.local_width {
                 LocalWidth::Recovered => "recovered",
                 LocalWidth::Storage => "storage",
+            }),
+            "compare-form" => Some(match self.compare_form {
+                CompareForm::Recovered => "recovered",
+                CompareForm::Complement => "complement",
             }),
             _ => None,
         }
@@ -217,6 +252,13 @@ impl EmitChoices {
                 self.local_width = match value {
                     "recovered" => LocalWidth::Recovered,
                     "storage" => LocalWidth::Storage,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "compare-form" => {
+                self.compare_form = match value {
+                    "recovered" => CompareForm::Recovered,
+                    "complement" => CompareForm::Complement,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

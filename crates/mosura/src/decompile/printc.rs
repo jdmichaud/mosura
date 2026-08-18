@@ -135,6 +135,9 @@ struct PrintC<'a> {
     /// at register width (see `storage_widened_local`). Default false = the reference
     /// rendering.
     widen_narrow_locals: bool,
+    /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
+    /// complemented form where value-identical (see `cmp_bin`). Default false.
+    complement_compares: bool,
     /// Tier 2 of the same axis value: narrow LOAD outputs materialized as explicit widened
     /// temps (members of `force_explicit` too). The original of the probed shape
     /// (`FUN_0001562c`) reads narrow memory ONCE into a zero-extended register
@@ -1112,6 +1115,72 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// An ordered comparison, under [`EmitChoices`]' `compare-form` axis. The reference
+    /// rendering is the canonical form the decompiler's rules normalize to; under
+    /// `complement` a comparison against a plain integer constant renders the other spelling
+    /// of the same predicate — `x < c` ⇄ `x <= c-1`, `c < x` ⇄ `c+1 <= x` — which compiles to
+    /// the complementary CMP constant and jump sense (the axis doc in emit.rs carries the
+    /// measured probe). Gated to be value-identical: the constant's slot must need no cast,
+    /// its type must be a plain integer, and the ±1 adjustment must not wrap at the
+    /// constant's width and signedness.
+    fn cmp_bin(&mut self, op: super::op::OpId, strict: bool) -> (String, u8) {
+        let prec = 10u8;
+        if self.complement_compares {
+            if let Some(r) = self.complemented_cmp(op, strict) {
+                return (r, prec);
+            }
+        }
+        let sym = if strict { "<" } else { "<=" };
+        let l = self.cast_operand(op, 0, prec, false);
+        let r = self.cast_operand(op, 1, prec, true);
+        (format!("{l} {sym} {r}"), prec)
+    }
+
+    fn complemented_cmp(&mut self, op: super::op::OpId, strict: bool) -> Option<String> {
+        let prec = 10u8;
+        let o = self.f.op(op);
+        let signed = matches!(o.code(), OpCode::IntSless | OpCode::IntSlessequal);
+        let (cslot, vslot) = if self.f.vn(o.input(1)?).is_constant() {
+            (1usize, 0usize)
+        } else if self.f.vn(o.input(0)?).is_constant() {
+            (0usize, 1usize)
+        } else {
+            return None;
+        };
+        let cvn = o.input(cslot)?;
+        if self.get_input_cast(op, cslot).is_some() {
+            return None; // a required cast on the constant is not reproducible on the adjusted literal
+        }
+        if !matches!(self.type_of(cvn), Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Bool)
+        {
+            return None;
+        }
+        let size = self.f.vn(cvn).size;
+        let bits = u64::from(size) * 8;
+        let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        let c = self.f.vn(cvn).constant_value() & mask;
+        // `x < c` -> `x <= c-1` and `c <= x` -> `c-1 < x` decrement; the other two increment.
+        let dec = (cslot == 1) == strict;
+        let adj = if dec { c.wrapping_sub(1) } else { c.wrapping_add(1) } & mask;
+        // no wrap at the bound, at the constant's own width and signedness
+        let valid = if signed {
+            let smin = 1u64 << (bits - 1);
+            let smax = smin - 1;
+            if dec { c != smin } else { c != smax }
+        } else if dec {
+            c != 0
+        } else {
+            c != mask
+        };
+        if !valid {
+            return None;
+        }
+        let lit = render_const(adj, size);
+        let other = self.cast_operand(op, vslot, prec, cslot == 0);
+        let sym = if strict { "<=" } else { "<" };
+        Some(if cslot == 1 { format!("{other} {sym} {lit}") } else { format!("{lit} {sym} {other}") })
+    }
+
     /// Render an op as a C expression with its precedence.
     fn render_op(&mut self, op: super::op::OpId) -> (String, u8) {
         let o = self.f.op(op);
@@ -1160,8 +1229,8 @@ impl<'a> PrintC<'a> {
             OpCode::IntSub => bin(self, "-", 12),
             OpCode::IntLeft => self.shift_bin(op, "<<"),
             OpCode::IntRight | OpCode::IntSright => self.shift_bin(op, ">>"),
-            OpCode::IntLess | OpCode::IntSless => bin(self, "<", 10),
-            OpCode::IntLessequal | OpCode::IntSlessequal => bin(self, "<=", 10),
+            OpCode::IntLess | OpCode::IntSless => self.cmp_bin(op, true),
+            OpCode::IntLessequal | OpCode::IntSlessequal => self.cmp_bin(op, false),
             OpCode::IntEqual => bin(self, "==", 9),
             OpCode::IntNotequal => bin(self, "!=", 9),
             OpCode::IntAnd => bin(self, "&", 8),
@@ -2809,6 +2878,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         switch_exit_suppress: std::collections::HashSet::new(),
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
+        complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         tier2_widen: std::collections::HashSet::new(),
         var_counter: 0,
         ret_val: None,

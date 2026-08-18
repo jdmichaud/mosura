@@ -199,6 +199,16 @@ instructions — recovered arguments across hundreds of MISMATCH functions), one
 MISMATCH → COMPILE_FAIL typing regression filed (FUN_00066100, the E1010
 CONCAT-into-pointer family).
 
+**630 → 639 (sb55): the `compare-form` axis.** The decompiler canonicalizes comparison
+constants (`x >= 4` and `3 < x` are one IR object; the oracle prints the canonical form,
+verified on FUN_000207b8) but the original programmer wrote whichever spelling they
+wrote, and the bytes differ (`CMP EAX,4`/complementary jump vs `CMP EAX,3`). New axis
+`compare-form={recovered,complement}` renders the other spelling of the same predicate
+under three value-identity gates (plain integer constant, no required cast on its slot,
+±1 representable at the constant's width and signedness). Deployed as a third arm in the
+union: +9 EXACT, every one a SAME_SHAPE promotion, zero other movement. The canonical
+arms invocation is now `default;local-width=storage;compare-form=complement`.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the
