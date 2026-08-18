@@ -183,9 +183,25 @@ this exact family; `condmulti` 0.845 → 0.968; none down). EXACT 590 → 585: t
 ordering had been byte-exact-friendlier than Ghidra's real pipeline for 6 functions whose
 persist-store INDIRECT input copy-propagates (Ghidra's marker guards permit it; its C prints the
 same swapped order — oracle-verified on FUN_000165f4) — the persist-store ordering byte-exact
-story is a named emitter-side follow-up. The remaining 14 COMPILE_FAIL = the 11 contract-flagged
-non-library functions + 3 singletons (E1082 statement-after-label, E1010 type mismatch, E1011
-undeclared `xStack_4`).
+story is a named emitter-side follow-up. The remaining COMPILE_FAIL (13 as of sb41) = the 11 contract-flagged
+non-library functions + the singletons, dispositioned (2026-08-17):
+- E1011 (`xStack_4` undeclared, FUN_0007b900) — FIXED: `render_spacebase_ptrsub`'s unmapped-slot
+  arm named the slot symbol-style but never declared it; it now declares like the mapped arms
+  (also retiring a bogus top-level `int xStack00000000;` global the survey's fallback scan had
+  synthesized for FUN_00072bf5's frame slot).
+- E1010 (ptr/int compare, FUN_000636f0) — FAITHFUL GHIDRA RENDERING: `CastStrategyC::
+  castStandard` with `care_ptr_uint=false` (the `TypeOpIntLess::getInputCast` care-flags)
+  deliberately skips casting a pointer under a uint requirement (cast.cc), so Ghidra prints the
+  same mixed compare. Representation/contract territory like the partials; the upstream typing
+  question (why `uVar5` commits uint4 while the loop bound stays pointer) folds into
+  type-inference work.
+- E1082 (label-before-`}`, FUN_0003495c) — MECHANISM IDENTIFIED, own session: the isolated
+  fixture matches the oracle cleanly, but the WAR2 whole-program path over-recovers the calls
+  to FUN_00034790/FUN_00034918 with STACK-ARRAY ADDRESS arguments the oracle does not have;
+  the escape aliases the call sites' return-address push slots, materializes the pushes as
+  literal stores (`aiStack_18[0] = 0x34a6d;`), and the leaked return-flow edge becomes the
+  `goto LAB_00034a80` whose label lands before `}`. Root to chase: the call-argument trials
+  handing ESP-relative addresses to those callees.
 
 Tracked follow-ups: `mixfloatint` −0.025 — CLOSED (2026-08-17): the
 fixture declares `x86:LE:64:default:windows` and the datatest paths were pinning the gcc cspec

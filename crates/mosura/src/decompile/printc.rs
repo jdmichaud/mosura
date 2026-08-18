@@ -906,8 +906,17 @@ impl<'a> PrintC<'a> {
             // No mapped symbol (Ghidra `pushUnnamedLocation`): name by the raw frame slot. The slot's
             // width is unknown here, so the name takes the `undefined1` stem Ghidra's `defaultType`
             // carries (`MapState`'s `getBase(1,TYPE_UNKNOWN)`, varmap.cc:1261).
+            //
+            // DECLARED like the mapped arms above. Ghidra prints an unmapped location bare (its C
+            // is not compilable there), but mosura already renders it with the symbol-style
+            // `xStack_N` name — and a symbol-style name without a declaration is the worst of
+            // both: `&xStack_4` passed as a call argument compiled to `E1011: Symbol 'xStack_4'
+            // has not been declared` (WAR2 FUN_0007b900, whose slot is address-taken and never
+            // otherwise read, so no other path declared it).
             None => {
-                let name = self.stack_slot_name(off, &Datatype::Unknown(1));
+                let ty = Datatype::Unknown(1);
+                let name = self.stack_slot_name(off, &ty);
+                self.declare_stack(off, &name, ty);
                 if deref { name } else { format!("&{name}") }
             }
         }
