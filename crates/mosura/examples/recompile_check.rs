@@ -99,10 +99,10 @@ fn main() {
     // An explicit `--only` overrides the exclusion: naming a function is a request for it, and
     // silently returning nothing would look like a broken filter.
     let excluded: Vec<&Row> =
-        rows.iter().filter(|r| !include_library && only.is_empty() && r.kind == "library").collect();
+        rows.iter().filter(|r| !include_library && only.is_empty() && (r.kind == "library" || r.kind == "asm")).collect();
     let selected: Vec<&Row> = rows
         .iter()
-        .filter(|r| include_library || !only.is_empty() || r.kind != "library")
+        .filter(|r| include_library || !only.is_empty() || (r.kind != "library" && r.kind != "asm"))
         .filter(|r| {
             only.is_empty()
                 || only.iter().any(|o| {

@@ -430,6 +430,49 @@ pub fn testmem_from_evidence(
     out
 }
 
+/// Does this function contain instructions PLAIN C cannot produce under this toolchain?
+///
+/// Deliberately NOT a claim of "hand-written assembly": Watcom's `#pragma aux ... = <bytes>`
+/// embeds machine code inline into compiled C (per JD — and the corpus's `INT 0x21` wrapper
+/// singletons may well be exactly that), and this detector cannot tell an .asm module from
+/// aux-pragma-carrying C. It does not need to: either way the function is un-recompilable
+/// from the plain C the emitter produces, which is what the `asm` manifest class excludes.
+/// Revival condition: if the emitter ever renders aux-pragma inlines, the embedded-C subset
+/// comes back in scope and this classification must be revisited.
+///
+/// The trigger census on WAR2 (63 functions): 32 software interrupts (`INT 0x21`/`0x31`/
+/// `0x10` — DOS, DPMI, BIOS), 20 port I/O, 7 `PUSHFD`, plus CPUID and the CALL-CS
+/// dispatcher — the DOS-extender support layer, in 35 runs of which 5 are 3+ contiguous
+/// functions (module-granular).
+///
+/// Signature instructions no PLAIN wcc386-compiled C contains under the recovered profile:
+///
+/// - `PUSHFD`/`POPFD` — direct EFLAGS manipulation (the CPU-detection modules);
+/// - `CPUID` — no intrinsic in this compiler generation;
+/// - `IN`/`OUT` — port I/O;
+/// - `INT n` — software interrupts issued inline;
+/// - a `CALL` through a `CS:`-override table (the hand dispatcher idiom).
+///
+/// Deliberately NOT signatures, both measured: `ES:` (the compiler's inlined memcpy is
+/// `REP MOVSD ES:EDI,ESI`) and `JMP CS:[..]` (the compiler's OWN switch tables carry the
+/// CS override — two SAME_SHAPE functions tripped the first draft through their compiled
+/// switches; `CALL CS:[..]` appears in exactly two functions corpus-wide, neither of them
+/// verified-compiled). Calibration requirement: ZERO functions that recompile
+/// EXACT/SAME_SHAPE from C may trip this — a compiled function flagged hand-asm would
+/// silently shrink the denominator.
+pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
+    insns.iter().any(|x| {
+        let t = &x.text;
+        t.starts_with("PUSHFD")
+            || t.starts_with("POPFD")
+            || t.starts_with("CPUID")
+            || t.starts_with("IN ")
+            || t.starts_with("OUT ")
+            || t.starts_with("INT ")
+            || (t.starts_with("CALL") && t.contains("CS:["))
+    })
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack

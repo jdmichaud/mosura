@@ -311,6 +311,19 @@ fn kind_of(name: &str) -> &'static str {
     }
 }
 
+/// The manifest `kind`, with the not-C classification: a default-named function whose
+/// ORIGINAL instructions carry hand-assembly signatures (`buildconfig::looks_hand_written`
+/// — calibrated: zero EXACT/SAME_SHAPE functions trip it) is `asm`, and the measurement
+/// excludes it exactly as it excludes `library` — un-recompilable from C by construction,
+/// so keeping it in the denominator misstates the C-recompilation target.
+fn kind_of_insns(name: &str, insns: &[mosura::recompile::insn::NormInsn]) -> &'static str {
+    let k = kind_of(name);
+    if k == "user" && mosura::recompile::buildconfig::looks_hand_written(insns) {
+        return "asm";
+    }
+    k
+}
+
 /// The subject's language. WAR2 is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
 
@@ -1264,11 +1277,15 @@ fn main() {
             contract_bad += 1;
         }
         let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
+        // the not-C classification reads the original's decoded instructions (see kind_of_insns)
+        let norm_insns_for_kind =
+            mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc)
+                .unwrap_or_default();
         writeln!(
             mf,
             "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}\t{}",
             smells.join(","),
-            kind_of(name),
+            kind_of_insns(name, &norm_insns_for_kind),
             if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
         )
         .unwrap();

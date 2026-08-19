@@ -525,6 +525,34 @@ way library functions already are (a not-C classification pass over hand-asm sig
 segment overrides, PUSHFD/POPFD, stack-parm MUL, string ops in nonstandard frames). The
 remaining real work: the two switch-index recoveries, the spacebase leak, the E1010 merge.
 
+### The not-C classification (sb84) — the denominator now measures the real target
+
+Per JD's challenge, the class is precisely scoped: it flags functions containing
+instructions PLAIN C cannot produce under this toolchain (software interrupts, port I/O,
+`PUSHFD`, `CPUID`, the CALL-CS dispatcher) — deliberately NOT a claim of "entirely asm",
+since Watcom's `#pragma aux ... = <bytes>` embeds machine code into compiled C and the
+detector cannot tell an .asm module from aux-pragma-carrying C. Either way the function is
+un-recompilable from the plain C the emitter produces, which is what the exclusion means;
+if aux-pragma emission ever lands, the embedded subset comes back in scope (revival note in
+`buildconfig::looks_hand_written`).
+
+Calibrated before adoption: zero EXACT/SAME_SHAPE functions trip it (the first draft's bare
+`CS:[` signature caught two compiled switches — Watcom's OWN switch tables carry the CS
+override — and was narrowed to CALL-only, which appears in exactly two functions
+corpus-wide, neither verified-compiled). Trigger census: 32 software interrupts
+(`INT 0x21`/`0x31`/`0x10`), 20 port I/O, 7 `PUSHFD`; 5 contiguous runs of 3+ (module-granular),
+singletons likely aux-pragma wrappers.
+
+| | before | after |
+| --- | --- | --- |
+| denominator | 2893 fns / 139,578 insns | **2830 fns / 135,438 insns** |
+| EXACT | 683 | **683** (24.1%) |
+| WGSS | 0.4085 | **0.4165** |
+| COMPILE_FAIL | 12 | **7** |
+
+The remaining 7 CFs are all genuine C-side work: the `spacebase` leak, E1010, two
+cast-to-nonscalar, the two switch-index recoveries, and one more to characterize.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.
