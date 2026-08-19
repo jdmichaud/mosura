@@ -473,6 +473,30 @@ The union's diagnostic reading now: recovered is within 1 of the two-input union
 evidence mis-read left) and 5 of the full board, 4 of which are butterflies. `local-width`
 stays for those 4.
 
+### THE UNION RETIRED (sb74) — the recovered tree dominates
+
+JD's objective for this arc: remove the union altogether. Reached by closing its content:
+
+- **The decision-interaction round**: recovered per-site choices interact — a tier-2
+  materialization CREATES the statement-carrying clause `cond-form` wants to nest, but
+  candidacy had been assessed on the reference print where the clause did not exist
+  (`FUN_00025d9c`: the materialized comma re-triggered the SETcc the nested form removes).
+  The driver now runs the evidence rules a second time over the first round's own rendering
+  and merges (`print_c_recovered_report`); one extra round reaches the fixed point.
+- **The no-immediate compare readout**: `TEST r,r` + sign-family branch at a compare site
+  means the source spelled the ZERO constant (`FUN_00012ca0`: original `TEST EBX,EBX; JL` =
+  `0 <= x`; ours compiled `CMP EBX,-1; JLE` = `-1 < x`). The complement rule now reads it.
+
+Result: **recovered 665 EXACT / 0.4044 WGSS, and ZERO functions where the reference beats
+it** — dominance, so default+recovered selection is mathematically inert. The canonical
+measurement is now the recovered tree alone (the exact emission a compilerless field run
+ships). The `local-width` arm's four tail-merge butterflies remain measurable as an optional
+diagnostic margin (+4 when selected in), parked with the allocation policy — chasing them
+with a fake evidence rule would be the butterfly-chasing this project refuses.
+
+The arc's full trajectory, one emission with no compiler:
+621 (reference) → 627 → 643 → 647 → 651 → 663 → **665 EXACT**, WGSS 0.3963 → **0.4044**.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

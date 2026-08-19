@@ -1144,6 +1144,18 @@ fn main() {
                 widen_local_reps: widen.0,
                 tier2_sites: widen.1,
             };
+            // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
+            // tier-2 materialization creates the statement-carrying clause cond-form nests —
+            // so re-assess candidacy on the rendering the first round produces and merge.
+            let (_, report2) =
+                mosura::decompile::printc::print_c_recovered_report(&f, &arms[0], &recovered);
+            let mut recovered = recovered;
+            recovered.nested_sites.extend(
+                mosura::recompile::buildconfig::nested_conds_from_evidence(
+                    &report2.cond_nest_candidates,
+                    &insns,
+                ),
+            );
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes);
             let rtu = match &contract {

@@ -83,18 +83,22 @@ tried left to right, so put the reference rendering first.
 
 ## The union (arms + per-function selection)
 
-The canonical measurement is THREE selection inputs — the reference rendering, the RECOVERED
-tree, and the one still-searched arm — selected per function on the byte verdict (reference
-first):
+**THE UNION IS RETIRED (2026-08-18).** The canonical measurement is the RECOVERED tree — one
+emission whose per-site choices are read from the original's own instructions by the target
+profile, the same emission a compilerless field run ships:
+
+    war2_survey <exe> <out> --arms 'default' --recovered <out>/recovered
+    recompile_check <exe> <out>/manifest.tsv <out>/recovered recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
+
+Retirement was measured, not assumed: the recovered tree DOMINATES the reference rendering
+(zero functions where `src/` is EXACT and `recovered/` is not, sb74), so selection between
+them adds nothing. The one still-searched arm (`local-width=storage`) holds only the four
+tail-merge butterflies — functions where blanket widening perturbs Watcom's epilogue merging;
+no evidence maps to that, and they are parked with the allocation policy. To re-measure that
+margin (a diagnostic, not the canonical number):
 
     war2_survey <exe> <out> --arms 'default;local-width=storage' --recovered <out>/recovered
-    recompile_check <exe> <out>/manifest.tsv <out>/src        recover <WATCOM> --cache <cache> --out <sbNN>.tsv
-    recompile_check <exe> <out>/manifest.tsv <out>/recovered  recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
-    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+local-width-storage recover <WATCOM> --cache <cache> --out <sbNN>-lw.tsv
-    recompile_select default=<sbNN>.tsv:<out>/src rec=<sbNN>-rec.tsv:<out>/recovered \
-                     lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
-                     --out <sbNN>-select.tsv --out-src <out>/union
-    recompile_check <exe> <out>/manifest.tsv <out>/union recover <WATCOM> --cache <cache> --out <sbNN>-union.tsv
+    # check all three, then recompile_select default/rec/lw as before
 
 **Arm 2 (compare-form + return-split + cond-form as a blanket per-function arm) is RETIRED
 (2026-08-18):** the recovered tree makes the same choices per site and took over its whole

@@ -197,6 +197,27 @@ pub fn complement_compares_from_evidence(
             out.insert(pc);
         }
     }
+    // The NO-IMMEDIATE form: a comparison against 0/-1 on a register-computed value compiles
+    // to `TEST r,r` + a sign-family branch when the source spelled the ZERO constant, and to
+    // `CMP r,-1` when it spelled the -1 form (measured on FUN_00012ca0: original
+    // `TEST EBX,EBX ; JL` = `0 <= x`; ours `CMP EBX,-1 ; JLE` = `-1 < x`). A self-TEST at the
+    // site therefore says the source used the zero spelling: complement iff OUR rendering is
+    // the -1 form (the complemented one is 0), keep iff ours already is.
+    for &(pc, ours, complemented) in sites {
+        if out.contains(&pc) || (ours != 0 && complemented != 0) {
+            continue;
+        }
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let self_test = (i.saturating_sub(3)..=i).rev().any(|j| {
+            let t = &insns[j].text;
+            t.strip_prefix("TEST ")
+                .and_then(|r| r.split_once(','))
+                .is_some_and(|(a, b)| a.trim() == b.trim())
+        });
+        if self_test && complemented == 0 {
+            out.insert(pc);
+        }
+    }
     out
 }
 

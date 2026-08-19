@@ -3263,6 +3263,21 @@ pub fn print_c_recovered(f: &Funcdata, choices: &EmitChoices, recovered: &Recove
     print_c_inner(f, choices, recovered).0
 }
 
+/// [`print_c_recovered`], also returning the report AS RENDERED UNDER those decisions.
+/// Needed because recovered decisions can interact: a tier-2 materialization creates a
+/// statement-carrying short-circuit clause that `cond-form` would nest, but the clause did
+/// not exist on the reference print where candidacy was first assessed (measured:
+/// `FUN_00025da0` — the materialized comma re-triggered the SETcc the nested form removes).
+/// The driver runs the evidence rules again over this report and merges — one extra round
+/// reaches the fixed point in practice.
+pub fn print_c_recovered_report(
+    f: &Funcdata,
+    choices: &EmitChoices,
+    recovered: &RecoveredChoices,
+) -> (String, EmitReport) {
+    print_c_inner(f, choices, recovered)
+}
+
 fn print_c_inner(
     f: &Funcdata,
     choices: &EmitChoices,
