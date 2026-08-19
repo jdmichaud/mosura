@@ -408,6 +408,28 @@ pub fn entry_snapshots_from_evidence(
     out
 }
 
+/// Decide the testmem rendering PER LOAD from the original's bytes — the self-announcing
+/// readout: a memory-direct `TEST ... ptr [..],imm` at the load's address means the SOURCE
+/// read the wider element and masked (this compiler compiles `(*(int*)T & 8)` to the byte
+/// `TEST` and a narrow-typed access to load+AND — measured battery, 15 shapes), so the deref
+/// renders at int width. A `MOV`-then-`AND` at the site means the source really read narrow.
+pub fn testmem_from_evidence(
+    candidates: &[(crate::decompile::varnode::VarnodeId, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<crate::decompile::varnode::VarnodeId> {
+    let mut out = std::collections::HashSet::new();
+    for &(v, pc) in candidates {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        // the flag-setting instruction sits at the load's address or a couple later (the IR
+        // op's address is the load; the original's TEST replaces load+and+test entirely)
+        let window = &insns[i..(i + 3).min(insns.len())];
+        if window.iter().any(|x| x.text.starts_with("TEST ") && x.text.contains("ptr [")) {
+            out.insert(v);
+        }
+    }
+    out
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack

@@ -1161,6 +1161,10 @@ fn main() {
                     &report.snapshot_candidates,
                     &insns,
                 ),
+                testmem_sites: mosura::recompile::buildconfig::testmem_from_evidence(
+                    &report.testmem_candidates,
+                    &insns,
+                ),
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —

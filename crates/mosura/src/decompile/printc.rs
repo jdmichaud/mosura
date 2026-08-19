@@ -119,6 +119,15 @@ pub struct EmitReport {
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
     /// branch-only is what the split rendering compiles to.
     pub return_split_candidates: Vec<u64>,
+    /// Every masked narrow load — a LOAD of less than int width whose (possibly
+    /// zext-linked) single value use is an `INT_AND` with a constant that fits the loaded
+    /// width, feeding an equality against zero — as `(load output, instruction address)`.
+    /// The original's instruction at that address is a self-announcing readout: a
+    /// memory-direct `TEST [mem],imm` means the SOURCE read the wider element and masked
+    /// (this compiler shrinks a wide masked test back to the byte — measured battery,
+    /// docs/watcom-codegen-fingerprint.md), so the deref renders at int width; a load+AND
+    /// means the source really read narrow.
+    pub testmem_candidates: Vec<(VarnodeId, u64)>,
     /// Every input-flagged narrow RAM value consumed as a call argument, as
     /// `(value, global address, size)` — the entry-snapshot candidates. The original either
     /// snapshots the global into a register at entry (ONE narrow load from that absolute
@@ -170,6 +179,9 @@ pub struct RecoveredChoices {
     /// DECLARED width: the value's own size (bare narrow load in the original) or int width
     /// (the original pre-zeroes the container — the widening idiom on a global).
     pub snapshot_sites: std::collections::HashMap<VarnodeId, u32>,
+    /// Masked narrow loads whose deref renders at INT width (the original's memory-direct
+    /// `TEST` says the source read the wider element).
+    pub testmem_sites: std::collections::HashSet<VarnodeId>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -1462,9 +1474,20 @@ impl<'a> PrintC<'a> {
                 (format!("({}){}", ty.name(), self.operand(in0, 14, false)), 14)
             }
             OpCode::Load => {
-                let (addr, sz) = (a(1), self.f.vn(o.output.unwrap()).size);
-                let vty = self.type_of(o.output.unwrap());
-                self.render_mem(addr, sz, &vty)
+                let out = o.output.unwrap();
+                let (addr, sz) = (a(1), self.f.vn(out).size);
+                // testmem (see EmitReport::testmem_candidates): the original's memory-direct
+                // TEST proves the source read the wider element and masked, so the deref
+                // prints at int width — the mask keeps the value identical, and this
+                // compiler shrinks the wide masked test back to the original's byte TEST.
+                if self.recovered.testmem_sites.contains(&out) {
+                    let w = self.f.size_of_int();
+                    let vty = Datatype::Uint(w);
+                    self.render_mem(addr, w, &vty)
+                } else {
+                    let vty = self.type_of(out);
+                    self.render_mem(addr, sz, &vty)
+                }
             }
             // PTRADD/PTRSUB used as a value (not a LOAD/STORE pointer): C pointer arithmetic
             // scales by the element implicitly, so `base + index` (Ghidra `opPtradd` non-value
@@ -3728,6 +3751,53 @@ fn print_c_inner(
                 p.snapshot_names.insert(v, n);
             }
         }
+    }
+
+    // testmem candidates (see EmitReport::testmem_candidates): masked narrow loads feeding a
+    // zero-equality — the shape whose original-instruction readout distinguishes an int-wide
+    // source access from a narrow one.
+    for opid in f.op_ids() {
+        let o = f.op(opid);
+        if o.is_dead() || o.code() != OpCode::Load {
+            continue;
+        }
+        let Some(out) = o.output else { continue };
+        if f.vn(out).size == 0 || f.vn(out).size >= f.size_of_int() {
+            continue;
+        }
+        // the value, looked through a single ZEXT if present
+        let mut val = out;
+        let uses: Vec<_> = f.vn(val).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
+        if uses.len() == 1 && f.op(uses[0]).code() == OpCode::IntZext {
+            if let Some(z) = f.op(uses[0]).output {
+                val = z;
+            }
+        }
+        let anduse: Vec<_> = f.vn(val).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
+        if anduse.len() != 1 || f.op(anduse[0]).code() != OpCode::IntAnd {
+            continue;
+        }
+        let ao = f.op(anduse[0]);
+        let narrow_bits = u64::from(f.vn(out).size) * 8;
+        let narrow_mask = if narrow_bits >= 64 { u64::MAX } else { (1u64 << narrow_bits) - 1 };
+        let const_fits = ao.input(1).is_some_and(|k| {
+            f.vn(k).is_constant() && f.vn(k).constant_value() & !narrow_mask == 0
+        });
+        if !const_fits {
+            continue;
+        }
+        let cmp0 = ao.output.is_some_and(|av| {
+            f.vn(av).descend.iter().all(|&u| {
+                let uo = f.op(u);
+                matches!(uo.code(), OpCode::IntEqual | OpCode::IntNotequal)
+                    && uo.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 0)
+                    || uo.code() == OpCode::BoolNegate
+            })
+        });
+        if !cmp0 {
+            continue;
+        }
+        p.report.testmem_candidates.push((out, o.seqnum.pc.offset));
     }
 
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
