@@ -473,6 +473,48 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
     })
 }
 
+/// Decide persist-store EMISSION ORDER per run from the original's bytes. The candidates
+/// are runs of consecutive pure global-store statements
+/// ([`crate::decompile::printc::EmitReport::store_runs`], in our statement order); the
+/// readout is the ORIGINAL's own store instruction for each address (`MOV [0xADDR],..` /
+/// `MOV .. ptr [0xADDR],..` — the DESTINATION operand), ordered by instruction position.
+/// Only a complete, unambiguous readout acts: every address found exactly once, and the
+/// resulting order differing from ours. Returns `first-op → ops in emission order`.
+pub fn store_orders_from_evidence(
+    runs: &[Vec<(crate::decompile::op::OpId, u64, u32)>],
+    insns: &[NormInsn],
+) -> std::collections::HashMap<crate::decompile::op::OpId, Vec<crate::decompile::op::OpId>> {
+    let mut out = std::collections::HashMap::new();
+    for run in runs {
+        let mut order: Vec<(usize, crate::decompile::op::OpId)> = Vec::new();
+        let mut ok = true;
+        for &(op, addr, _sz) in run {
+            let dest = format!("[0x{addr:x}],");
+            let hits: Vec<usize> = insns
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| x.text.starts_with("MOV ") && x.text.contains(&dest))
+                .map(|(i, _)| i)
+                .collect();
+            if hits.len() != 1 {
+                ok = false;
+                break;
+            }
+            order.push((hits[0], op));
+        }
+        if !ok {
+            continue;
+        }
+        order.sort_by_key(|&(i, _)| i);
+        let ops: Vec<_> = order.iter().map(|&(_, op)| op).collect();
+        let ours: Vec<_> = run.iter().map(|r| r.0).collect();
+        if ops != ours {
+            out.insert(ours[0], ops);
+        }
+    }
+    out
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack

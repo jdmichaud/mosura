@@ -119,6 +119,17 @@ pub struct EmitReport {
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
     /// branch-only is what the split rendering compiles to.
     pub return_split_candidates: Vec<u64>,
+    /// Runs of two or more CONSECUTIVE pure global-store statements, as
+    /// `(op, global address, size)` per store in OUR statement order — the persist-store
+    /// ordering candidates. Ghidra's rendering order for adjacent global stores is
+    /// oracle-verified faithful yet differs from the original's; the order decides both
+    /// Watcom's scheduling and its immediate-vs-register store selection (probe: reordering
+    /// two stores alone took `FUN_000165f4` MISMATCH → EXACT). A target rule reads the
+    /// original's own store sequence at those addresses and returns the emission order.
+    /// Pure = the stored value renders without reading memory (a constant, an input, or a
+    /// named local), and every address is a distinct constant global, so any order computes
+    /// the same state.
+    pub store_runs: Vec<Vec<(OpId, u64, u32)>>,
     /// Every masked narrow load — a LOAD of less than int width whose (possibly
     /// zext-linked) single value use is an `INT_AND` with a constant that fits the loaded
     /// width, feeding an equality against zero — as `(load output, instruction address)`.
@@ -182,6 +193,9 @@ pub struct RecoveredChoices {
     /// Masked narrow loads whose deref renders at INT width (the original's memory-direct
     /// `TEST` says the source read the wider element).
     pub testmem_sites: std::collections::HashSet<VarnodeId>,
+    /// Per store-run emission orders, keyed by the run's FIRST op in block order: the ops
+    /// re-emitted in the original's store order (`store_runs` evidence).
+    pub store_orders: std::collections::HashMap<OpId, Vec<OpId>>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -2685,7 +2699,30 @@ impl<'a> PrintC<'a> {
         // BETWEEN two statements of one basic block, never before the first — and it is local to
         // `emitBlockBasic`, so two blocks emitted back to back do not get one.
         let mut separator = false;
-        for op in self.f.block(b).ops.clone() {
+        // persist-store ordering (EmitReport::store_runs): a flagged run re-emits in the
+        // recovered order; ops of the run reached later in block order are skipped.
+        let mut reordered: std::collections::HashSet<OpId> = std::collections::HashSet::new();
+        let block_ops = self.f.block(b).ops.clone();
+        for op in block_ops {
+            if reordered.contains(&op) {
+                continue;
+            }
+            if let Some(order) = self.recovered.store_orders.get(&op).cloned() {
+                for ro in order {
+                    reordered.insert(ro);
+                    let stmtxt = self.render_assign(ro);
+                    if self.comma_separate {
+                        if separator {
+                            let _ = write!(out, ", ");
+                        }
+                        let _ = write!(out, "{stmtxt}");
+                        separator = true;
+                    } else {
+                        let _ = writeln!(out, "{pad}{stmtxt};");
+                    }
+                }
+                continue;
+            }
             if self.suppressed.contains(&op) {
                 continue; // emitted in a for-loop header (initializer / iterator)
             }
@@ -3798,6 +3835,120 @@ fn print_c_inner(
             continue;
         }
         p.report.testmem_candidates.push((out, o.seqnum.pc.offset));
+    }
+
+    // store-run candidates (see EmitReport::store_runs): per block, maximal runs of
+    // consecutive statement ops that are pure stores to distinct constant globals.
+    {
+        let ram = f.spaces.by_name("ram");
+        for bi in 0..f.num_blocks() as u32 {
+            let bid = BlockId(bi);
+            let mut run: Vec<(OpId, u64, u32)> = Vec::new();
+            let mut flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
+                if run.len() >= 2 {
+                    let mut addrs: Vec<u64> = run.iter().map(|r| r.1).collect();
+                    addrs.sort_unstable();
+                    addrs.dedup();
+                    if addrs.len() == run.len() {
+                        rep.store_runs.push(run.clone());
+                    }
+                }
+                run.clear();
+            };
+            for &op in &f.block(bid).ops {
+                let o = f.op(op);
+                // mirror emit_basic's skip set, NOT is_dead/is_marker: the persist-store
+                // INDIRECT is dead-flagged yet prints its assignment (measured — the first
+                // scan found zero runs corpus-wide because of this)
+                if p.suppressed.contains(&op) || p.nonprinting.contains(&op) {
+                    continue;
+                }
+                let stmt = o.output.is_some_and(|v| p.is_explicit(v))
+                    || matches!(o.code(), OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother | OpCode::Return | OpCode::Cbranch | OpCode::Branch | OpCode::Branchind);
+                if !stmt {
+                    continue; // implied — folds into a later statement, does not break a run
+                }
+                // a pure global store: a COPY — or the persist-store INDIRECT the pipeline
+                // restructures a store crossing a call into (measured: FUN_000165f4's
+                // second store renders from `r0x8f1a0 = INDIRECT u..` at the call) — whose
+                // output is an addrtied ram vn at a constant address, and whose value
+                // renders without reading memory (recursive purity over the implied tree:
+                // constants, non-ram inputs/locals, and pure arithmetic; no loads, no
+                // calls).
+                fn pure_expr(f: &Funcdata, p: &PrintC, v: VarnodeId, depth: u32) -> bool {
+                    let r = f.vn(v);
+                    let ram = f.spaces.by_name("ram");
+                    if r.is_constant() {
+                        return true;
+                    }
+                    if Some(r.loc.space) == ram {
+                        return false;
+                    }
+                    if r.is_input() || p.is_explicit(v) {
+                        return true;
+                    }
+                    if depth == 0 {
+                        return false;
+                    }
+                    let Some(d) = r.def else { return false };
+                    let o = f.op(d);
+                    matches!(
+                        o.code(),
+                        OpCode::Copy
+                            | OpCode::IntZext
+                            | OpCode::IntSext
+                            | OpCode::IntAnd
+                            | OpCode::IntOr
+                            | OpCode::IntXor
+                            | OpCode::IntAdd
+                            | OpCode::IntSub
+                            | OpCode::IntMult
+                            | OpCode::IntLeft
+                            | OpCode::IntRight
+                            | OpCode::Subpiece
+                    ) && (0..o.num_inputs()).all(|i| {
+                        o.input(i).is_some_and(|x| pure_expr(f, p, x, depth - 1))
+                    })
+                }
+                // The PRINTING op for a persist store is either the direct COPY to the
+                // addrtied global, or — when the pipeline restructures the store through a
+                // call — the COPY to an explicit UNIQUE that the naming machinery renders AS
+                // the global (`high_ram_off`; the INDIRECT itself renders None). Both carry
+                // the statement; the address comes from the vn or from the name mapping.
+                let pure_store = (|| {
+                    if o.code() != OpCode::Copy || p.nonprinting.contains(&op) {
+                        return None;
+                    }
+                    let out = o.output?;
+                    let vn = f.vn(out);
+                    if !p.is_explicit(out) {
+                        return None;
+                    }
+                    let addr = if Some(vn.loc.space) == ram && vn.is_addrtied() {
+                        vn.loc.offset
+                    } else {
+                        *p.high_ram_off.get(&p.high_of[out.0 as usize])?
+                    };
+                    let rhs = o.input(0)?;
+                    pure_expr(f, &p, rhs, 4).then_some((out, addr, vn.size))
+                })();
+                if std::env::var_os("MOSURA_STORE_DEBUG").is_some() {
+                    let od = o.output.map(|v| {
+                        let vn = f.vn(v);
+                        format!("{:?} sp{} off{:#x} expl={}", v, vn.loc.space.0, vn.loc.offset, p.is_explicit(v))
+                    });
+                    eprintln!(
+                        "[srun] op={:?} pc={:#x} code={:?} out={:?} pure={:?}",
+                        op, o.seqnum.pc.offset, o.code(), od, pure_store
+                    );
+                }
+                match pure_store {
+                    Some((_, addr, sz)) => run.push((op, addr, sz)),
+                    None => flush(&mut run, &mut p.report),
+                }
+            }
+            flush(&mut run, &mut p.report);
+        }
     }
 
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble

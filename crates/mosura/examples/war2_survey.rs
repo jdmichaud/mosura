@@ -1178,6 +1178,10 @@ fn main() {
                     &report.testmem_candidates,
                     &insns,
                 ),
+                store_orders: mosura::recompile::buildconfig::store_orders_from_evidence(
+                    &report.store_runs,
+                    &insns,
+                ),
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
@@ -1191,6 +1195,15 @@ fn main() {
                     &insns,
                 ),
             );
+            if std::env::var_os("MOSURA_EMIT_DEBUG").is_some() {
+                eprintln!(
+                    "[recover] runs={} orders={} snap={} testmem={}",
+                    report.store_runs.len(),
+                    recovered.store_orders.len(),
+                    recovered.snapshot_sites.len(),
+                    recovered.testmem_sites.len()
+                );
+            }
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes);
             let rtu = match &contract {
