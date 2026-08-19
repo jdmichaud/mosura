@@ -73,7 +73,14 @@ The original works at full register width — zeroes with `XOR EAX,EAX`, moves `
   condition node carries its own `negated`, XOR-folded by the collapse rules), and a
   simple De Morgan flatten inverted a predicate. The design stands with that trap
   documented; the implementation must drive the split through the real condition
-  renderer, not a reimplementation.
+  renderer, not a reimplementation. **DONE (sb58): `cond-form=nested` landed faithfully**
+  — `collect_conj_clauses` mirrors only the recursion-where-`&&` decision (per-node
+  `cond_flip` and `operand_oriented` XORed into each operand's effective negation) and
+  every clause's text comes from `render_cond_expr` itself; the specimen reproduces the
+  hand probe exactly (all materializations gone, 2 polarity rows remain). Zero verdict
+  wins yet — every comma-clause function carries co-resident divergences — but +37/−14
+  sub-verdict sim movers inside the arm; the axis is the foundation the polarity and
+  scheduling families will stack on.
 - **The general merged-boolean design (next in line, 221 functions still carry extra
   SETcc)**: the remaining shapes materialize a boolean that is BOTH branched on and kept
   as a value (specimens `00211`, `01304`: `SETcc + AND` beside the very `Jcc` that tests

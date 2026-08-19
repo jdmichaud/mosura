@@ -149,6 +149,9 @@ struct PrintC<'a> {
     /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
     /// Default false.
     split_bool_returns: bool,
+    /// [`EmitChoices::cond_form`] == `Nested`: render statement-carrying `&&` clauses as
+    /// nested ifs (see `try_emit_if_nested`). Default false.
+    nest_cond_stmts: bool,
     /// Tier 2 of the same axis value: values materialized as explicit widened temps
     /// (members of `force_explicit` too), keyed to how their def statement renders.
     ///
@@ -2257,10 +2260,146 @@ impl<'a> PrintC<'a> {
         out.push_str(&buf);
     }
 
+    /// Collect the PRINTED `&&` clauses of a condition, mirroring `render_cond_expr`'s
+    /// recursion decision EXACTLY — the connective at a node is `&&` iff `is_and != neg`,
+    /// and each operand's effective negation is `neg ^ operand_oriented ^ cond_flip` — but
+    /// producing `(component, effective_neg)` pairs instead of text. Every clause's TEXT is
+    /// later produced by `render_cond_expr` itself at the collected negation, so no
+    /// negation algebra lives here beyond the recursion test (the measured trap: a
+    /// hand-rolled De Morgan flatten inverted a predicate; see `EmitChoices::cond_form`).
+    /// A subtree whose printed connective is `||` stays one clause.
+    fn collect_conj_clauses(&self, s: &Structured, idx: usize, neg: bool, out_clauses: &mut Vec<(usize, bool)>) {
+        if matches!(s.blocks[idx].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+            let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
+            if (is_and != neg) && s.blocks[idx].components.len() == 2 {
+                let comps = s.blocks[idx].components.clone();
+                let (f0, f1) = s.blocks[idx].cond_flip;
+                self.collect_conj_clauses(s, comps[0], neg ^ operand_oriented(self.f, s, comps[0]) ^ f0, out_clauses);
+                self.collect_conj_clauses(s, comps[1], neg ^ operand_oriented(self.f, s, comps[1]) ^ f1, out_clauses);
+                return;
+            }
+        }
+        out_clauses.push((idx, neg));
+    }
+
+    /// Whether a BASIC condition clause carries statements of its own — anything that would
+    /// print before its boolean (an explicit-output op, a store, a call). `None` = not a
+    /// basic clause (compound clauses keep their statements inside their own parens).
+    fn basic_clause_stmts(&self, s: &Structured, idx: usize) -> Option<(BlockId, bool)> {
+        let FlowKind::Basic(bid) = s.blocks[idx].kind else { return None };
+        let mut has = false;
+        for &op in &self.f.block(bid).ops {
+            let o = self.f.op(op);
+            if o.is_dead() || o.is_marker() {
+                continue;
+            }
+            match o.code() {
+                OpCode::Cbranch | OpCode::Branch => {}
+                OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => has = true,
+                _ => {
+                    if o.output.is_some_and(|v| self.is_explicit(v)) {
+                        has = true;
+                    }
+                }
+            }
+        }
+        Some((bid, has))
+    }
+
+    /// The `cond-form=nested` rendering (the axis doc in emit.rs carries the measured probe
+    /// and the faithfulness trap): a plain `if` whose printed `&&` spine carries
+    /// statement-bearing BASIC clauses prints as nested ifs split before each such clause —
+    /// the clause's statements then run exactly when every earlier clause held, which is
+    /// short-circuit evaluation spelled structurally. Clause text comes from
+    /// `render_cond_expr` at the exact effective negation `collect_conj_clauses` recorded,
+    /// so the printed predicates are the collapsed rendering's own, regrouped. Returns
+    /// false (fall back to collapsed) when a gate declines.
+    fn try_emit_if_nested(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+        let fb = &s.blocks[idx];
+        if !matches!(fb.kind, FlowKind::If) {
+            return false;
+        }
+        let negated = fb.negated;
+        let (cond_idx, body_idx) = (fb.components[0], fb.components[1]);
+        let mut clauses = Vec::new();
+        self.collect_conj_clauses(s, cond_idx, negated, &mut clauses);
+        if clauses.len() < 2 {
+            return false;
+        }
+        // the win condition: some non-first BASIC clause carries statements; and no goto
+        // records anywhere in the condition (their placement is the collapsed form's)
+        let mut split_at = vec![false; clauses.len()];
+        let mut any_split = false;
+        for (i, &(c, _)) in clauses.iter().enumerate() {
+            if s.node_gotos.get(&c).is_some() {
+                return false;
+            }
+            if let Some((_, has)) = self.basic_clause_stmts(s, c) {
+                if has && i > 0 {
+                    split_at[i] = true;
+                    any_split = true;
+                }
+            }
+        }
+        if !any_split || s.node_gotos.get(&cond_idx).is_some() {
+            return false;
+        }
+        let mut buf = String::new();
+        let mut depth = indent;
+        let mut pending: Vec<String> = Vec::new();
+        let mut opened = 0usize;
+        for (i, &(c, neg)) in clauses.iter().enumerate() {
+            if split_at[i] {
+                let pad = "  ".repeat(depth);
+                let joined = pending.join(" && ");
+                let _ = writeln!(buf, "{pad}if ({joined}) {{");
+                depth += 1;
+                opened += 1;
+                pending.clear();
+            }
+            // a BASIC clause's statements print at the current level (clause 0's before the
+            // first `if`, exactly where the collapsed form hoists them); its boolean renders
+            // WITHOUT comma_separate so the leaf arm does not print them a second time.
+            // Compound (||) clauses render under comma_separate and keep their statements
+            // inside their own parens, as the collapsed form does.
+            match self.basic_clause_stmts(s, c) {
+                Some((bid, _)) => {
+                    self.emit_basic(bid, depth, &mut buf);
+                    let saved = self.comma_separate;
+                    self.comma_separate = false;
+                    let e = self.render_cond_expr(s, c, neg);
+                    self.comma_separate = saved;
+                    pending.push(format!("({e})"));
+                }
+                None => {
+                    let saved = self.comma_separate;
+                    self.comma_separate = true;
+                    let e = self.render_cond_expr(s, c, neg);
+                    self.comma_separate = saved;
+                    pending.push(format!("({e})"));
+                }
+            }
+        }
+        let pad = "  ".repeat(depth);
+        let joined = pending.join(" && ");
+        let _ = writeln!(buf, "{pad}if ({joined}) {{");
+        depth += 1;
+        opened += 1;
+        self.emit_structured(s, body_idx, depth, &mut buf);
+        for k in (0..opened).rev() {
+            let _ = writeln!(buf, "{}}}", "  ".repeat(indent + k));
+        }
+        out.push_str(&buf);
+        true
+    }
+
     fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
         let fb = &s.blocks[idx];
         let (comps, negated) = (fb.components.clone(), fb.negated);
         let has_else = matches!(fb.kind, FlowKind::IfElse);
+        if self.nest_cond_stmts && !else_if && !has_else && self.try_emit_if_nested(s, idx, indent, out) {
+            return;
+        }
 
         // Ghidra emits the condition block (with `no_branch`) before deciding the merge; buffer its
         // leading statements so the pending-brace decision can see whether anything printed.
@@ -3040,6 +3179,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
+        nest_cond_stmts: choices.cond_form == super::emit::CondForm::Nested,
         tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
         ret_val: None,

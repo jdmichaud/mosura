@@ -159,6 +159,32 @@ pub enum ReturnSplit {
     Paths,
 }
 
+/// Whether a short-circuit condition whose inner clause carries statements renders
+/// collapsed (`if (a && (stmt, b))`) or as nested ifs (`if (a) { stmt; if (b) ... }`).
+///
+/// The two are the same program by the definition of short-circuit evaluation, and the
+/// reference decompiler prints the collapsed form its structuring rules built. Watcom
+/// compiles the comma clause by MATERIALIZING the clause's boolean (`SETcc` + mask beside
+/// the very branch that tests it — measured on WAR2 specimen `01304`), where the original
+/// — written as nested ifs — stays branch-only; the nested hand probe removed every
+/// materialization row. Applies only to a plain un-`else`'d `if` (nesting changes where an
+/// else would fire) whose printed `&&` spine carries statement clauses; everything else
+/// keeps the collapsed rendering under either value.
+///
+/// FAITHFULNESS TRAP (measured, first implementation reverted as wrong code): the split
+/// must be driven THROUGH `render_cond_expr`'s own negation algebra — each condition node
+/// carries `cond_flip` and per-operand orientation XORed into the effective negation — so
+/// the clause list is collected by mirroring only the recursion-where-`&&` decision and
+/// delegating every clause's TEXT to the real renderer at the collected effective
+/// negation. A hand-rolled De Morgan flatten inverted a predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondForm {
+    /// The collapsed short-circuit — the reference behaviour, and the default.
+    Collapsed,
+    /// Nested ifs at statement-carrying clause boundaries.
+    Nested,
+}
+
 /// The choice vector.
 ///
 /// Adding an axis is: a field, an entry in [`EmitChoices::AXES`], and arms in [`EmitChoices::get`]
@@ -171,6 +197,7 @@ pub struct EmitChoices {
     pub local_width: LocalWidth,
     pub compare_form: CompareForm,
     pub return_split: ReturnSplit,
+    pub cond_form: CondForm,
 }
 
 impl Default for EmitChoices {
@@ -181,6 +208,7 @@ impl Default for EmitChoices {
             local_width: LocalWidth::Recovered,
             compare_form: CompareForm::Recovered,
             return_split: ReturnSplit::Recovered,
+            cond_form: CondForm::Collapsed,
         }
     }
 }
@@ -226,6 +254,12 @@ impl EmitChoices {
             doc: "return a tail boolean as the merged expression, or as per-path constant \
                   returns when it is the varnode the preceding if just tested",
         },
+        Axis {
+            name: "cond-form",
+            values: &["collapsed", "nested"],
+            doc: "render statement-carrying short-circuit clauses collapsed (comma form) or \
+                  as nested ifs",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -256,6 +290,10 @@ impl EmitChoices {
             "return-split" => Some(match self.return_split {
                 ReturnSplit::Recovered => "recovered",
                 ReturnSplit::Paths => "paths",
+            }),
+            "cond-form" => Some(match self.cond_form {
+                CondForm::Collapsed => "collapsed",
+                CondForm::Nested => "nested",
             }),
             _ => None,
         }
@@ -299,6 +337,13 @@ impl EmitChoices {
                 self.return_split = match value {
                     "recovered" => ReturnSplit::Recovered,
                     "paths" => ReturnSplit::Paths,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "cond-form" => {
+                self.cond_form = match value {
+                    "collapsed" => CondForm::Collapsed,
+                    "nested" => CondForm::Nested,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
