@@ -116,8 +116,21 @@ Specimen `00556`/`FUN_00023210`: original ends `ADD EDX,0x12; MOV EAX,EDX` — a
 performed on the variable's own register, then moved to the return register — where our C
 lets Watcom fold both into `LEA EAX,[EDX+0x12]`.
 
-**DISPOSITION (pilot, 2026-08-18): not a mosura defect at any layer — a toolchain
-fingerprint.** The chain of evidence:
+**DISPOSITION REOPENED (2026-08-19).** The pilot's disposition below rested on point 4 —
+"the original binary is systematic about it: **zero** `LEA reg,[reg+imm]` folds in 380KB".
+That measurement was a hex-pattern scan and is **wrong**: WAR2 contains 336 such folds in 226
+functions (excluding address-of-local `[ESP/EBP+imm]` forms; 586/312 counting those too),
+six of them in byte-EXACT functions, and a compiler patched to refuse the fold
+loses all six ([`watcom-nofold-patch.md`](watcom-nofold-patch.md)). WAR2's compiler folds
+exactly as 10.0a does, so this family is NOT a toolchain fingerprint — it is a source-shape
+difference between our C and the original's, which is ordinary recovery work. The ~15
+near-frontier functions and 188 divergence rows come OFF the parked pile and are eligible for
+the family loop. Points 1-3 below (our C is Ghidra's C; no source shape or flag we tried
+avoids the fold) still stand as measurements — they now describe the puzzle to solve rather
+than a reason to stop.
+
+**DISPOSITION (pilot, 2026-08-18) — superseded, kept for the chain:** not a mosura defect at
+any layer — a toolchain fingerprint. The chain of evidence:
 
 1. Our C is Ghidra's C for the specimen (oracle-verified; body statement identical).
 2. No source shape avoids the fold: expression return, assign-then-return, fully
