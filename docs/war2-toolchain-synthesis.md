@@ -20,16 +20,21 @@ WAR2's application code (not its CRT — Blizzard's own functions) simultaneousl
   is a *documented a-level fix*.
 
 **Pile B — behaviors 10.0a does not produce under any accepted flag.**
-- ~~**No `LEA reg,[reg+imm]` copy+add folds** — zero in 380 KB~~ **— REFUTED 2026-08-19,
-  see [`watcom-nofold-patch.md`](watcom-nofold-patch.md).** WAR2 contains **336 such folds
-  across 226 functions** (counted by disassembling every user function's original bytes and
-  excluding `[ESP/EBP+imm]` address-of-local forms — 586/312 counting those too;
-  `examples/dumplea`); the "zero" came from a HEX-PATTERN scan, the method this project's own
-  `recompile/buildconfig.rs` module doc warns misses encodings. Six of those functions are
-  byte-EXACT with stock 10.0a, and a compiler patched to refuse the fold breaks all six
-  (corpus 687 → 681 EXACT). WAR2's compiler folds exactly as 10.0a does. The stale text is
-  kept below struck through, because the reasoning built on it is what the correction has to
-  reach: ~~zero in 380 KB~~ — where every shipped
+- ~~**No `LEA reg,[reg+imm]` copy+add folds** — zero in 380 KB~~ **— sub-claim WRONG, member
+  RECLASSIFIED (not the hypothesis refuted), 2026-08-19; see
+  [`watcom-nofold-patch.md`](watcom-nofold-patch.md).** The "zero in 380KB" was a HEX-PATTERN
+  scan (the method `recompile/buildconfig.rs`'s module doc warns misses encodings);
+  disassembling every original finds **336 such folds across 226 functions** (586/312 with
+  `[ESP/EBP+imm]` address-of-local forms; `examples/dumplea`), six in byte-EXACT functions. So
+  WAR2 folds; "never folds" is dead. It does **not** follow that WAR2 folds under 10.0a's
+  conditions — the F2 rows show it declines where 10.0a folds. The right experiment (no-fold
+  INVARIANCE, not a wholesale toggle) shows the fold is not F2's discriminator at all; F2's
+  real difference is an emission-side mutation/liveness question of **unmeasured**
+  winnability. Net effect on this document's thesis: this ONE of pile-B's four legs is not a
+  "compiler produces what we can't" divergence — but the interim-build hypothesis stands for
+  the other three legs (allocation order, callee-saves, scheduling), which this correction
+  does not touch. The struck text below is kept because later reasoning refers to it: ~~zero
+  in 380 KB~~ — where every shipped
   revision measured (9.5b, 10.0-LA beta, 10.0a `wcc386` *and* `wpp386`, 10.6, 11.0, OW2)
   folds the probe `x % 4 + 0x12` into `LEA EAX,[EDX+0x12]` under `-onatx`, `-onasx`,
   `-os`, `-ot`, `-or`, `-3r/-4r/-5r`, and bare flags. Only `-od` (no optimizer, spills
@@ -146,8 +151,11 @@ against empirical probes of the store's compilers:
   WRONG — the gate is present in 10.0a's own binary at `0x717d8`, found once the site was
   located directly ([`watcom-nofold-patch.md`](watcom-nofold-patch.md)); `-os` simply does
   not push `OptForSize` past 50. The dial-under-development argument loses that support.
-  What survives is stronger and direct: the entire difference between "folds" and "does not
-  fold" is ONE ARM OF ONE SWITCH, which is now located, patched on a copy, and measurable.
+  What survives is direct: the fold decision is ONE ARM OF ONE SWITCH, now located, patched
+  on a copy, and measured — and the measurement (see `watcom-nofold-patch.md`) is that
+  disabling the fold does NOT reproduce WAR2, because the fold was never F2's discriminator.
+  So this line of attack on the fold is spent; the productive remaining pile-B dials are the
+  two below.
 - **The allocation order is one table**: `386rgtbl.c`'s `DoubleRegs[] = EAX, EDX, ECX,
   EBX, ESI, EDI` — matching 10.0a's observed behavior; WAR2's allocator prefers ECX/EBX
   where 10.0a picks EDX (warcraft2-re's `ecx-allocator-mystery`), i.e. the interim build's

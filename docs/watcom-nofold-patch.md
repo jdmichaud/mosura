@@ -138,7 +138,16 @@ untouched. Corpus runs with the patched compiler use a SEPARATE object cache
 (`/data/be2/cache-nofold`) — the cache is keyed on source content and toolchain id, and the
 patch does not change the id, so sharing a cache would silently serve stock objects.
 
-## Result: the hypothesis is FALSIFIED, and it took a bigger claim down with it
+## Result — and what this experiment can and cannot test
+
+**Read this before trusting the conclusions: the wholesale-no-fold patch tests the wrong
+proposition.** Turning folding OFF everywhere tests "WAR2 *never* folds" — a strawman.
+It CANNOT test the real hypothesis, "WAR2's fold CONDITIONS differ from 10.0a's", because
+WAR2 both folds (336 sites) and declines to fold (the F2 rows) — a wholesale toggle can
+match neither state. Any conclusion of the form "hypothesis dead, WAR2 folds like 10.0a"
+drawn from this patch is a construct-validity error and was retracted 2026-08-19. The
+load-bearing result is not the ± you get from the toggle; it is the *invariance* finding
+below.
 
 Measured on sb93's recovered tree (2797 C functions), stock baseline 687 EXACT / 0.4355 WGSS:
 
@@ -156,8 +165,10 @@ then disassembled, and every one of them contains the fold:
 00980  LEA EDX,[EAX + 0x7c]      02053  LEA EAX,[EBX + 0x1]
 ```
 
-So WAR2's compiler **does** fold `reg+imm` into `LEA`, exactly as our 10.0a does. The
-experiment did its job: one dial, one measurement, hypothesis dead.
+So WAR2's compiler **does** fold `reg+imm` into `LEA` — the "never folds" reading is dead.
+It does NOT follow that WAR2 folds *under the same conditions* as 10.0a; the F2 rows are
+direct evidence it declines to fold where 10.0a folds. What the no-fold run is actually
+good for is the invariance test two sections down.
 
 **And it exposed a wrong foundational measurement.** `war2-toolchain-synthesis.md` recorded
 pile-B's largest member as "**zero** `LEA reg,[reg+imm]` folds in 380KB … the 39 hex hits in
@@ -176,11 +187,22 @@ i.e. the genuine copy+add fold only)          226 functions   336 sites
 encoding of the same instruction"), applied to the one conclusion nobody re-checked because
 it had been declared settled.
 
-**Consequences.** Pile-B loses its biggest member: there is no no-fold code generator to
-hypothesise. The `F2 missing ADD + MOV>LEA` family is therefore NOT compiler identity — it is
-a source-shape difference, i.e. ordinary recovery work, and its ~15 near-frontier functions
-and 188 divergence rows come off the parked pile. What remains of pile-B is the allocation
-order, the callee-save policy, and load scheduling, none of which this experiment touched.
+**Consequences — stated carefully, after an over-correction was itself corrected
+(2026-08-19).** Two things change and one does NOT:
+
+1. The *sub-claim* "zero folds in 380KB" is factually wrong (336 exist). That correction
+   stands on the recount alone.
+2. The fold is not F2's discriminator (the invariance test below): F2's real difference is
+   a register-mutation/liveness question on OUR emission side, **whose winnability is
+   UNMEASURED** — the pilot's "no source shape avoids the fold" is a live hint it may not be
+   recoverable at all, i.e. could still be compiler identity. F2 is therefore *unresolved*,
+   not "ordinary recovery work"; it stays parked pending the specific test named below.
+3. **The interim-compiler hypothesis is NOT overturned.** It rests on four observations; only
+   the fold was examined here, and it turns out not to be a "compiler produces what we can't"
+   divergence but an emission question. The other three — allocation order, callee-save
+   policy, load scheduling — were never touched by this experiment and remain the interim
+   build's to explain. The correct summary is "one of pile-B's four legs was mismeasured and
+   reclassified", not "pile-B refuted".
 
 **A stronger positive result the experiment also proves (verified 2026-08-19, Fable
 re-audit).** If F2's `missing ADD + MOV>LEA` were a fold-DECISION difference, compiling our
@@ -190,11 +212,16 @@ unchanged), and zero functions corpus-wide went MISMATCH → EXACT. The pilot `0
 why directly — under no-fold our C emits `MOV EAX,EDX ; ADD EAX,0x12` while the original is
 `ADD EDX,0x12 ; MOV EAX,EDX`: the divergence moved from the fold instruction to the
 MUTATION TARGET (we increment EAX, a fresh value; the original increments EDX in place and
-keeps it live). So F2 is not merely "eligible for the family loop" — it is *proven* to be an
-emission-side source-shape problem: recovering `x += k` (in-place mutation, x still live)
-where we currently emit `y = x + k` (fresh value). That is the variable-liveness / coalescing
-question, on our side of the compiler. Payoff is UNMEASURED — it may entangle with allocation
-the way the widen-after family did — but the cause is now located precisely.
+keeps it live). So F2's difference is *located* — it is the `x += k` (in-place mutation)
+versus `y = x + k` (fresh value) question, a variable-liveness / coalescing matter on our
+emission side — but it is NOT proven to be *winnable* there. Two things are unmeasured, and
+one cuts against it: the payoff (it may entangle with allocation, as the widen-after family
+did), and — sharper — the pilot found that "no source shape avoids the fold" (five variants
+all → LEA), which means it is not yet shown that ANY C we can emit, even one that reuses the
+variable, makes 10.0a produce the in-place `ADD EDX,0x12 ; MOV EAX,EDX` form. If it cannot,
+F2 is compiler identity after all. **The discriminating test (unmeasured):** hand-write C
+that mutates the variable in place with it live afterward, and see whether 10.0a emits the
+original's form or still folds/copies. Until that runs, F2 is *unresolved*, and stays parked.
 
 The patched compiler is kept (documented above) as a reusable instrument: the method —
 locate a dial in OW source, find it in the 10.0a binary with mosura, patch a copy, measure —
