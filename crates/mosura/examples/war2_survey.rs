@@ -1132,6 +1132,10 @@ fn main() {
                     &report.cond_nest_candidates,
                     &insns,
                 ),
+                narrow_return: mosura::recompile::buildconfig::narrow_return_from_evidence(
+                    &report.return_width_candidates,
+                    &insns,
+                ),
             };
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes);

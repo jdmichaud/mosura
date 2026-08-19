@@ -231,6 +231,47 @@ pub fn nested_conds_from_evidence(
     out
 }
 
+/// Decide the `return-width` axis PER FUNCTION from the original's bytes. The candidates are
+/// the RETURN sites where the value is narrower than the recovered storage
+/// ([`crate::decompile::printc::EmitReport::return_width_candidates`]); the readout is the
+/// ORIGINAL's last write to the A-register family before each RET:
+///
+/// - a narrow write (`MOV AL,..`, `SETcc AL`, `MOV AX,..`) — the original returns with the
+///   high bytes untouched, so the source's return type was narrow: declare at the VALUE's
+///   width (the reference decompiler's own rendering);
+/// - a full-register write (`AND EAX,0xff`, `MOVZX EAX,..`, `XOR EAX,EAX`, a `CALL`) — the
+///   original materializes the widening, which is what the widened declaration compiles to.
+///
+/// Narrow only when EVERY return site reads narrow — one declaration covers all of them.
+pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[NormInsn]) -> bool {
+    if candidates.is_empty() {
+        return false;
+    }
+    let writes_a = |t: &str| -> Option<bool> {
+        // Some(narrow?) when the instruction writes the A register family
+        let dst = t.split_whitespace().nth(1)?.split(',').next()?;
+        match dst {
+            "AL" | "AH" | "AX" => Some(true),
+            "EAX" => Some(false),
+            _ => {
+                if t.starts_with("CALL") {
+                    Some(false) // a call defines the full return register
+                } else {
+                    None
+                }
+            }
+        }
+    };
+    candidates.iter().all(|&(ret_pc, _, _)| {
+        let Some(end) = insns.iter().position(|x| x.addr >= ret_pc) else { return false };
+        insns[..end]
+            .iter()
+            .rev()
+            .find_map(|x| writes_a(&x.text))
+            .unwrap_or(false)
+    })
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack

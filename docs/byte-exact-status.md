@@ -387,6 +387,31 @@ so the field emission is also a strict addition to the development union. The bo
 headline configurations: field (one emission, no compiler) **643 / 0.3986**; dev union (four
 inputs, compiler-verified) **663 / 0.3972**.
 
+### `return-width` RECOVERED (sb67) — the fourth conversion, found by the census loop
+
+The 9-function `extra AND EAX,0xff` near-frontier cluster decoded to the `return-width`
+axis's OTHER side: our default declares the recovered storage width (4), which forces Watcom
+to materialize a widening the original never performs — the original returns with the byte in
+`AL` and the high bytes untouched, i.e. a narrow contract. The ORACLE settles the reference:
+Ghidra prints `xunknown1` (the value's width), so our wide default was the deviation for this
+population — while the 86-function bool-return family measured the opposite way earlier
+(originals that DO widen), which is exactly why this is a per-function recovered choice and
+not a constant.
+
+Evidence rule (`buildconfig::narrow_return_from_evidence`): the ORIGINAL's last write to the
+A-register family before each RET — narrow (`MOV AL`, `SETcc AL`, `MOV AX`) means the source's
+return type was narrow; full (`AND EAX,0xff`, `MOVZX`, `XOR EAX,EAX`, a `CALL`) means the
+widened declaration is right. Narrow only when every return site agrees. Candidates from
+`EmitReport::return_width_candidates` (RETURN sites where the value is narrower than the
+recovered storage).
+
+| board | EXACT | WGSS |
+| --- | --- | --- |
+| field (one emission, no compiler) | 643 → **647** | 0.3986 → **0.3991** |
+| dev union (four inputs) | 663 → **668** | 0.3972 → 0.3973 |
+
+Five MISMATCH → EXACT, zero regressions, suite green.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

@@ -111,6 +111,13 @@ pub struct EmitReport {
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
     /// branch-only is what the split rendering compiles to.
     pub return_split_candidates: Vec<u64>,
+    /// Every RETURN whose value is narrower than the recovered return storage, as
+    /// `(RETURN instruction address, value size, recovered storage size)`. The target rule
+    /// reads the ORIGINAL's last write to the return register before that address: a narrow
+    /// write (`MOV AL,..`) with no widening means the original's contract really was narrow —
+    /// the reference decompiler's `return-width=value` — while a full-register write
+    /// (`AND EAX,0xff`, `MOVZX`, a call) means the widened declaration is right.
+    pub return_width_candidates: Vec<(u64, u32, u32)>,
     /// Every statement-carrying short-circuit the `cond-form` axis could nest, as
     /// `(key, clause branch addresses)` where `key` is the FIRST clause's CBRANCH address —
     /// stable and recomputable at apply time. The clause addresses give the target rule the
@@ -133,6 +140,10 @@ pub struct RecoveredChoices {
     /// Short-circuit keys (first-clause branch address) to render as nested ifs
     /// (`cond-form`).
     pub nested_sites: std::collections::HashSet<u64>,
+    /// The function's return declaration stays at the VALUE's width (the reference
+    /// decompiler's rendering) instead of the recovered storage width — per function, since
+    /// one declaration covers every RETURN (`return-width`).
+    pub narrow_return: bool,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -3422,7 +3433,23 @@ fn print_c_inner(
         // four-byte register — and a narrower declared type deletes the widening the original
         // performs. The convention is the stable statement of how wide a returned value is.
         let vn = f.vn(v);
-        widen_to_storage(&p.type_of(v), return_width(f, vn, choices)).name()
+        // record the candidacy for the target profile: every RETURN site, when the value is
+        // narrower than what the recovery credited
+        let recovered_w = f.output_storage_size.unwrap_or(vn.size);
+        if vn.size < recovered_w {
+            for id in f.op_ids() {
+                let o = f.op(id);
+                if !o.is_dead() && o.code() == OpCode::Return {
+                    p.report.return_width_candidates.push((
+                        o.seqnum.pc.offset,
+                        vn.size,
+                        recovered_w,
+                    ));
+                }
+            }
+        }
+        let w = if p.recovered.narrow_return { vn.size } else { return_width(f, vn, choices) };
+        widen_to_storage(&p.type_of(v), w).name()
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params
