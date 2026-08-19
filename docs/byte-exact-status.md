@@ -577,6 +577,21 @@ switch-index recoveries (`03017`/`03018`), and `02911` — a genuine 64-bit mult
 both halves consumed, unwritable in plain C but carrying no textual asm signature; it
 stays a characterized CF rather than force-classified.
 
+**The switch-index CFs fixed (sb90–sb92) — the COMPILE_FAIL floor is reached.** The two
+giant decoders (`FUN_000793e0`, `FUN_0007a5b0`) are multi-entry dispatchers; the unrecovered
+switch was a COMPUTED jump (`BRANCHIND(i*0x10 + BASE)` into 16-byte code stanzas, no table
+load), which `trace_table_index` now strips exactly as it strips the loaded-table form. Two
+follow-on renderings in the same functions: pointer+pointer `+` (an inference artifact) casts
+the addend to unsigned at int width on both the `IntAdd` and `Ptradd` paths — value-identical
+on the flat target, loud as a cast.
+
+CF ledger: **2** — `02583` (the E1010 partial-write merge question) and `02911` (a 64-bit
+multiply original plain C cannot express). Every other zero is gone from the denominator.
+WGSS reads 0.4153, DOWN from 0.4194 — deliberately reported without spin: the two decoders
+now score `equal/max(orig,cand)` with huge candidates instead of 0/orig_n, and the max()
+convention penalizes candidate bloat by design; the number is honest, and the functions are
+compiling for the first time.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

@@ -1486,7 +1486,24 @@ impl<'a> PrintC<'a> {
             // A frame-pointer-relative address is now a `PTRSUB(RSP, off)` (the typed spacebase
             // pointer), named off the ScopeLocal table by `render_ptrsub`; a plain `INT_ADD` is just
             // addition. (The print-time `stack_addr` INT_ADD adaptation is retired — task #22-A.)
-            OpCode::IntAdd => bin(self, "+", 12),
+            OpCode::IntAdd => {
+                // pointer + pointer is not C (E1081, measured on FUN_000793e0's decoder —
+                // a type-inference artifact where an offset carries a pointer type). The
+                // addend casts to unsigned at int width: value-identical on this flat
+                // target, and the loud shape stays greppable as the cast.
+                let both_ptr = o.input(0).zip(o.input(1)).is_some_and(|(x, y)| {
+                    matches!(self.type_of(x), Datatype::Pointer(..))
+                        && matches!(self.type_of(y), Datatype::Pointer(..))
+                });
+                if both_ptr {
+                    let l = self.operand(a(0), 12, false);
+                    let r = self.operand(a(1), 12, true);
+                    let w = self.f.size_of_int();
+                    (format!("{l} + ({}){r}", Datatype::Uint(w).name()), 12)
+                } else {
+                    bin(self, "+", 12)
+                }
+            }
             OpCode::IntSub => bin(self, "-", 12),
             OpCode::IntLeft => self.shift_bin(op, "<<"),
             OpCode::IntRight | OpCode::IntSright => self.shift_bin(op, ">>"),
@@ -1567,7 +1584,14 @@ impl<'a> PrintC<'a> {
                 let (base, index) = (a(0), a(1));
                 let l = self.operand(base, 12, false);
                 let r = self.operand(index, 12, true);
-                (format!("{l} + {r}"), 12)
+                // a pointer-typed INDEX is the same E1081 artifact as pointer+pointer on
+                // IntAdd (FUN_000793e0) — the index casts to unsigned at int width
+                if matches!(self.type_of(index), Datatype::Pointer(..)) {
+                    let w = self.f.size_of_int();
+                    (format!("{l} + ({}){r}", Datatype::Uint(w).name()), 12)
+                } else {
+                    (format!("{l} + {r}"), 12)
+                }
             }
             // `render_ptrsub` returns the address expression already carrying any leading `&` (a scalar
             // stack local / struct field) or none (an array decay), so it is used verbatim.
@@ -2986,6 +3010,17 @@ impl<'a> PrintC<'a> {
                     v = (0..o.num_inputs()).filter_map(|k| o.input(k)).find(|&iv| self.f.vn(iv).def.is_some())?;
                 }
                 OpCode::IntSext | OpCode::IntZext | OpCode::Subpiece | OpCode::Copy => v = o.input(0)?,
+                // the COMPUTED jump (no table load): `BRANCHIND(i*K + BASE)` dispatches into
+                // K-byte code stanzas; the index is the scaled operand — the same stripping
+                // the Load arm does for `LOAD(i*K + TABLE)` (measured: FUN_000793e0's fifth
+                // dispatcher, i*0x10 + 0x797f0, whose four siblings normalized while it did
+                // not)
+                OpCode::IntMult => {
+                    if o.input(1).is_some_and(|m| self.f.vn(m).is_constant()) {
+                        return o.input(0);
+                    }
+                    return None;
+                }
                 _ => return None,
             }
         }
