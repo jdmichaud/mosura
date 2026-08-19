@@ -125,6 +125,33 @@ payloads — another a-level pressing; GA media remains extinct.
 Next per JD: OW 1.0 source reconnaissance (`open_watcom_1.0.0-src.zip`, already in store —
 and the oldest OW source in existence) for the four pile-B decision procedures.
 
+## OW 1.0 source reconnaissance (2026-08-19) — the pile-B dials located
+
+Level-1 recon over `open_watcom_1.0.0-src.zip` (the oldest OW source in existence), read
+against empirical probes of the store's compilers:
+
+- **The add-fold is one decision point**: `bld/cg/intel/c/i86ver.c`, `V_LEA_GOOD` /
+  `V_LEA` — the `OP_ADD`/`OP_SUB` arm returns TRUE (fold to LEA) on any CPU ≥ 286. OW 1.0
+  carries a size gate (`OptForSize > 50 → FALSE`) that MEASURABLY DOES NOT EXIST in 10.0a
+  or 10.5 (both fold under `-os` — probed): the gate postdates 10.5, proving this exact
+  dial was being worked on in WAR2's era. An interim build with the fold disabled (the
+  gate's ancestor, or a development state returning FALSE) is textually plausible in a way
+  it never was before.
+- **The allocation order is one table**: `386rgtbl.c`'s `DoubleRegs[] = EAX, EDX, ECX,
+  EBX, ESI, EDI` — matching 10.0a's observed behavior; WAR2's allocator prefers ECX/EBX
+  where 10.0a picks EDX (warcraft2-re's `ecx-allocator-mystery`), i.e. the interim build's
+  table was ORDERED DIFFERENTLY.
+- Both dials are DATA or SMALL CODE in the compiled compiler: the verifier's `OP_MUL` arm
+  carries a searchable signature (the 3/5/9 constant triple beside the `OP_ADD` arm), and
+  the register table is a byte sequence of hw_reg_set masks.
+
+**The level-2 experiment this enables — the dial-patched verifier**: locate `V_LEA`'s
+`OP_ADD` arm in 10.0a's own `wcc386.exe` (via the 3/5/9 signature; the binary is a DOS/4GW
+LE image, which mosura can load and decompile — dogfood), patch it to refuse the fold,
+re-run the corpus. If the add-fold rows convert, repeat for the `DoubleRegs` order. Each
+patch is falsifiable against the four discriminators before a corpus run. This is compiler
+binary surgery and a new phase — awaiting JD's go.
+
 ## What genuinely remains, stated precisely
 
 After `-5r`, WAR2's compiler still differs from the shipped 10.0a in:
