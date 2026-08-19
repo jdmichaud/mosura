@@ -586,11 +586,13 @@ fn main() {
         })
         .unwrap_or_default();
 
-    // `--arms <θ>[;<θ>...]` emits the corpus under several EMISSION CHOICE VECTORS in ONE pass —
-    // e.g. `--arms 'default;return-width=storage'`. Each θ is a different rendering of the SAME
-    // recovered program (see `decompile::emit::EmitChoices` for the rules that keep that true), so
-    // this is the generate half of the byte-exact search: which rendering the original compiler was
-    // given is not derivable from the IR, and the compiler in the loop is what decides it.
+    // `--arms <θ>[;<θ>...]` — INVESTIGATION TOOL, NOT A PRODUCT OPTION (JD, 2026-08-18): it
+    // emits the corpus under several EMISSION CHOICE VECTORS in one pass so multiple rendering
+    // hypotheses can be validated against the compiler in one run — the generate half of the
+    // byte-exact search that CALIBRATES the recovered evidence rules. The product path has no
+    // arms: the flagless run emits `src/` (reference) and `recovered/` (the canonical,
+    // field-shipped emission), and nothing selects among renderings. Each θ is a different
+    // rendering of the SAME recovered program (see `decompile::emit::EmitChoices`).
     //
     // One pass rather than one run per arm, because decompiling is θ-independent and is essentially
     // the whole cost: a second arm adds a `print_c_with` per function (milliseconds) instead of a
@@ -613,11 +615,23 @@ fn main() {
     // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in
     // decompile/emit.rs carries the measured probe — under the faithful rendering 64 functions
     // gained a materialized `AND CL,0x1f` the originals never had).
-    let recovered_dir: Option<std::path::PathBuf> = rest
-        .iter()
-        .position(|a| a == "--recovered")
-        .and_then(|i| rest.get(i + 1))
-        .map(std::path::PathBuf::from);
+    // The RECOVERED tree is the PRODUCT: one emission whose per-site choices are read from
+    // the original's own instructions by the target profile — what a compilerless field run
+    // ships, and since the union's retirement (docs/war2-recompile-remeasure.md) also the
+    // canonical measurement. Emitted ALWAYS, to `<out>/recovered` unless `--recovered <dir>`
+    // overrides; `--no-recovered` skips it (probe/diagnostic runs).
+    let recovered_dir: Option<std::path::PathBuf> = if rest.iter().any(|a| a == "--no-recovered")
+    {
+        None
+    } else {
+        Some(
+            rest.iter()
+                .position(|a| a == "--recovered")
+                .and_then(|i| rest.get(i + 1))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| out.join("recovered")),
+        )
+    };
     if let Some(d) = &recovered_dir {
         std::fs::create_dir_all(d).unwrap();
     }

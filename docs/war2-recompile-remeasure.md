@@ -87,8 +87,14 @@ tried left to right, so put the reference rendering first.
 emission whose per-site choices are read from the original's own instructions by the target
 profile, the same emission a compilerless field run ships:
 
-    war2_survey <exe> <out> --arms 'default' --recovered <out>/recovered
+    war2_survey <exe> <out>
     recompile_check <exe> <out>/manifest.tsv <out>/recovered recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
+
+No flags: the survey always emits `src/` (the reference rendering) and `recovered/` (the
+canonical emission). `--arms` remains as an INVESTIGATION TOOL only — it validates several
+rendering hypotheses against the compiler in one run, which is how the recovered evidence
+rules get calibrated — and is not a product option; nothing in the canonical path selects
+among renderings.
 
 Retirement was measured, not assumed: the recovered tree DOMINATES the reference rendering
 (zero functions where `src/` is EXACT and `recovered/` is not, sb74), so selection between
