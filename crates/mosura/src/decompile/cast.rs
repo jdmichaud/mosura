@@ -71,9 +71,9 @@ pub const UNKNOWN_PROMOTION: i32 = 0;
 pub const UNSIGNED_EXTENSION: i32 = 1;
 pub const SIGNED_EXTENSION: i32 = 2;
 pub const EITHER_EXTENSION: i32 = 3;
-/// `CastStrategy::promoteSize` — `TypeFactory::getSizeOfInt`, 4 on every target this port
-/// carries.
-const PROMOTE_SIZE: u32 = 4;
+// `CastStrategy::promoteSize` is `TypeFactory::getSizeOfInt` — per-target, read from
+// [`Funcdata::size_of_int`]. It was a `const 4` here; see that method for why a constant is
+// wrong on any target whose `int` is not 4 bytes (x86-16 among the vendored cspecs).
 
 /// Ghidra `CastStrategyC::localExtensionType` (cast.cc:139): how the value would naturally
 /// extend, judged from local properties only.
@@ -131,7 +131,7 @@ fn signbit_negative(val: u64, size: u32) -> bool {
 /// expression defining `v`, recursing one level through the defining op.
 pub fn int_promotion_type(f: &Funcdata, v: super::varnode::VarnodeId) -> i32 {
     let vn = f.vn(v);
-    if vn.size >= PROMOTE_SIZE {
+    if vn.size >= f.size_of_int() {
         return NO_PROMOTION;
     }
     if vn.is_constant() {

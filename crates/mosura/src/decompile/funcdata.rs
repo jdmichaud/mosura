@@ -644,6 +644,27 @@ impl Funcdata {
     pub fn blocks(&self) -> &[BlockBasic] {
         &self.blocks
     }
+    /// Ghidra `TypeFactory::getSizeOfInt` (type.hh:813) — the size of the core `int`, the
+    /// width C's integer promotion promotes TO and the width a plain `int` local declares at.
+    ///
+    /// Ghidra takes it from the compiler spec's `<data_organization><integer_size>` when the
+    /// spec declares one (type.cc:4591) and otherwise INFERS it (`setupSizes`, type.cc:3136):
+    /// the stack pointer's own size, capped at 4 because "int is rarely bigger than 4 bytes",
+    /// falling back to 1 when there is no stack space at all. This is the inference arm; the
+    /// cspec override is not ported because no cspec parsing in this tree reads
+    /// `data_organization` yet — **revival condition:** when it does, consult it first here.
+    ///
+    /// Why this must not be a constant: `x86-16.cspec` (vendored) declares `integer_size 2`,
+    /// and the inference gives 2 there as well. Hardcoding 4 — as the integer-promotion port
+    /// originally did — silently mis-analyses every non-32-bit target while being invisible
+    /// on x86-32/64, where the inference also yields 4.
+    pub fn size_of_int(&self) -> u32 {
+        self.spaces
+            .by_name("stack")
+            .map(|s| self.spaces.get(s).addr_size.min(4))
+            .unwrap_or(1)
+    }
+
     pub fn block(&self, id: super::block::BlockId) -> &BlockBasic {
         &self.blocks[id.0 as usize]
     }

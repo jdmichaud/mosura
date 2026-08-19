@@ -636,10 +636,13 @@ impl<'a> PrintC<'a> {
         // signedness — the field doc on `tier2_widen` carries the measured justification,
         // and the membership gates make the sign value-irrelevant.
         if self.tier2_widen.contains_key(&v) {
-            return Some(Datatype::Uint(4));
+            return Some(Datatype::Uint(self.f.size_of_int()));
         }
         let vn = self.f.vn(v);
-        if vn.size != 1 && vn.size != 2 {
+        // narrower than the target's `int` — the width a C local would declare at
+        // ([`Funcdata::size_of_int`]); `4` here was an x86-32 assumption.
+        let int_size = self.f.size_of_int();
+        if vn.size == 0 || vn.size >= int_size {
             return None;
         }
         if Some(vn.loc.space) == self.stack_space || Some(vn.loc.space) == self.ram_space {
@@ -662,8 +665,8 @@ impl<'a> PrintC<'a> {
                 _ => return None,
             }
         }
-        let widened = widen_to_storage(&self.type_of(v), 4);
-        (widened.size() == 4).then_some(widened)
+        let widened = widen_to_storage(&self.type_of(v), int_size);
+        (widened.size() == int_size).then_some(widened)
     }
 
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
@@ -1108,15 +1111,26 @@ impl<'a> PrintC<'a> {
 
     /// The unmasked count behind a shift whose count is the HARDWARE's mask, or `None`.
     ///
-    /// Provably-the-hardware's means: the shifted operand is 4 bytes or narrower (x86 masks
-    /// the count mod 32 for every non-64-bit shift), and the count is an implied, single-use
-    /// `INT_AND(x, #0x1f)` — reached through the printer-transparent COPY/ZEXT links, each
-    /// itself implied and single-use so eliding the AND removes it from the output entirely.
+    /// "Provably the hardware's" is established by PROVENANCE, not by matching a constant:
+    /// the masking `INT_AND` must have been emitted by the LIFTER as part of the shift
+    /// instruction's own semantics, which is exactly the case when the AND and the shift
+    /// carry the same source-instruction address. A mask the *program* computed is a
+    /// separate instruction and fails the test.
+    ///
+    /// This is what keeps the axis target-independent. Matching `#0x1f` and rejecting
+    /// operands wider than 4 bytes — the first implementation — encoded x86-32's shift
+    /// semantics as constants: x86-64's 64-bit shifts mask with `0x3f`, and on a target
+    /// whose shift instruction does NOT mask (or masks differently — ARM's `LSL` takes the
+    /// low 8 bits of the count register), an `x & 0x1f` in the IR would be the program's own
+    /// arithmetic and eliding it would change the computed value. Under the provenance test
+    /// the elision is valid wherever it fires, on any architecture: if the ISA masks, C's
+    /// bare shift compiles to that same masking instruction.
+    ///
+    /// The count must also be implied and single-use through the printer-transparent
+    /// COPY/ZEXT links, so eliding the AND removes it from the output entirely.
     fn hw_masked_count(&self, op: super::op::OpId) -> Option<VarnodeId> {
         let o = self.f.op(op);
-        if self.f.vn(o.input(0)?).size > 4 {
-            return None;
-        }
+        let shift_pc = o.seqnum.pc;
         let mut c = o.input(1)?;
         loop {
             let vn = self.f.vn(c);
@@ -1128,8 +1142,8 @@ impl<'a> PrintC<'a> {
                 OpCode::Copy | OpCode::IntZext => c = self.f.op(d).input(0)?,
                 OpCode::IntAnd => {
                     let m = self.f.op(d).input(1)?;
-                    let mvn = self.f.vn(m);
-                    if mvn.is_constant() && mvn.constant_value() == 0x1f {
+                    // the lifter's own mask: same source instruction as the shift
+                    if self.f.vn(m).is_constant() && self.f.op(d).seqnum.pc == shift_pc {
                         return self.f.op(d).input(0);
                     }
                     return None;
@@ -3349,7 +3363,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
                 OpCode::Load => {
                     let Some(out) = o.output else { continue };
                     let sz = f.vn(out).size;
-                    if sz != 1 && sz != 2 {
+                    if sz == 0 || sz >= f.size_of_int() {
                         continue;
                     }
                     let cmp_pos_const = f.vn(out).descend.iter().any(|&r| {
@@ -3373,9 +3387,9 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
                     }
                 }
                 OpCode::IntAnd => {
-                    // multi-use byte/word extract of a register value (see `tier2_widen`)
+                    // multi-use byte/word extract of an int-width register value
                     let Some(out) = o.output else { continue };
-                    if f.vn(out).size != 4 || f.vn(out).descend.len() < 2 {
+                    if f.vn(out).size != f.size_of_int() || f.vn(out).descend.len() < 2 {
                         continue;
                     }
                     let Some((x, m)) = o.input(0).zip(o.input(1)) else { continue };

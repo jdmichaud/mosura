@@ -244,6 +244,25 @@ changed** — the wrong-code population — with +2 EXACT and similarity 0.3968 
 zero regressions. Correctness and the diagnostic moved together, which is what a
 faithful port is supposed to do.
 
+**Target-independence audit (2026-08-18, after the five axes landed).** The axes are
+deliberate departures from Ghidra's rendering, so the question "are these Watcom-specific,
+and do they pollute other targets?" was audited rather than assumed. Layering held:
+`decompile/` carries no compiler conditional (the only "Watcom" strings in `emit.rs` are the
+probe citations its own axis contract requires), the `-5r` profile lives in
+`recompile::buildconfig`, the caller pragmas and arm selection in `war2_survey`, and every
+axis DEFAULTS to Ghidra's rendering — a different target that selects no arm gets the
+faithful port untouched. Three ISA/ABI constants had leaked in anyway and were replaced:
+`PROMOTE_SIZE = 4` in the integer-promotion port (the serious one — **default path, every
+target**, where Ghidra parameterizes as `TypeFactory::getSizeOfInt`; the vendored
+`x86-16.cspec` declares `integer_size 2`), the `shift-mask` axis's `0x1f`/≤4-byte gate (x86-32
+shift semantics; now established by PROVENANCE — the mask is the hardware's iff the lifter
+emitted it within the shift instruction, which generalizes correctly to every ISA), and
+`local-width`'s `Uint(4)` widths (now the target's int size; "1 or 2 bytes" became "narrower
+than int"). `Funcdata::size_of_int` ports Ghidra's own inference (`TypeFactory::setupSizes`,
+type.cc:3136 — the stack pointer's width capped at 4). Measured: the default arm's emitted C
+is **byte-identical corpus-wide** and verdicts are unchanged (661 EXACT, 0.3973) — the fix is
+parameterization, not behaviour.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

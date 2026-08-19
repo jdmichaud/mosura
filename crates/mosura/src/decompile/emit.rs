@@ -34,6 +34,16 @@
 //!   attributed divergence to the axis worth perturbing is compiler-specific and lives with the
 //!   codegen model in [`crate::recompile`]. An `if target == watcom` in this file is the failure
 //!   mode the separation exists to prevent.
+//! - **No axis encodes an ISA or ABI constant, either.** The subtler form of the same failure:
+//!   an axis with no target conditional at all can still bake one target's facts into a
+//!   literal — a `0x1f` shift mask (x86-32's, not x86-64's and not ARM's), a `4` for the width
+//!   of `int` (not x86-16's). A gate must read the target's own properties
+//!   ([`Funcdata::size_of_int`], Ghidra's `TypeFactory::getSizeOfInt`) or establish the fact by
+//!   PROVENANCE (the shift mask is the hardware's iff the LIFTER emitted it as part of the shift
+//!   instruction — same source address), never by matching a constant that happens to be right
+//!   here. Audited 2026-08-18 after all five axes landed: three such constants were found and
+//!   replaced; on x86-32 the emitted corpus was byte-identical before and after, which is what
+//!   makes it parameterization rather than a behaviour change.
 //! - Axes are reachable **by name** ([`EmitChoices::axes`], [`EmitChoices::set`]). A search that
 //!   enumerates them reflectively keeps working when an axis is added; one that names its axes in
 //!   code must be edited every time, which is the difference between a search that grows and a
