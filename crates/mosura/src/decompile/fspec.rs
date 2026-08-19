@@ -74,10 +74,29 @@ impl ParamEntry {
     }
 
     /// Ghidra `ParamEntry::justifiedContain` (fspec.cc:248): if `[addr,addr+sz)` lies within
-    /// this entry (and `sz` is in `[minsize,size]`), return the little-endian-justified byte
-    /// offset of the parameter within the entry; else `None`. For a register entry a parameter
-    /// sits at the base (offset 0) and may be a low sub-register (e.g. `EDI` in `RDI`).
+    /// this entry (and `sz` is in `[minsize,size]`), return the endian-justified byte offset of
+    /// the parameter within the entry; else `None`. For a register entry a parameter sits at
+    /// the base (offset 0) and may be a low sub-register (e.g. `EDI` in `RDI`).
+    ///
+    /// `spaces` supplies the space's endianness — Ghidra reaches it through the `AddrSpace *`
+    /// its `Address` carries, and `isLeftJustified()` (fspec.hh:82) is
+    /// `force_left_justify || !spaceid->isBigEndian()`.
+    pub fn justified_contain_with(&self, spaces: &SpaceManager, addr: Address, sz: u32) -> Option<u64> {
+        // Ghidra's `force_left_justify` flag (fspec.hh:82, set from the `<pentry>`'s
+        // `extension="left"`) has no counterpart in mosura's ParamEntry — no cspec this port
+        // reads sets it. Revival condition: model the flag, then OR it in here.
+        let left = !spaces.is_big_endian(self.space);
+        self.justified_contain_impl(addr, sz, left)
+    }
+
+    /// The little-endian reading, for callers that have no `SpaceManager` at hand. Every such
+    /// caller is a latent big-endian defect — the endianness-aware entry point above is the
+    /// one to move to (TODO.md's endianness sweep).
     pub fn justified_contain(&self, addr: Address, sz: u32) -> Option<u64> {
+        self.justified_contain_impl(addr, sz, true)
+    }
+
+    fn justified_contain_impl(&self, addr: Address, sz: u32, left_justified: bool) -> Option<u64> {
         if addr.space != self.space || sz < self.minsize || sz > self.size {
             return None;
         }
@@ -89,6 +108,13 @@ impl ParamEntry {
             return None;
         }
         if self.alignment != 0 {
+            if !left_justified {
+                // fspec.cc:277-281 — right-justified (big-endian): measure back from the last
+                // alignment boundary the range ends on.
+                let endaddr = addr.offset + sz as u64 - 1 - self.addressbase;
+                let res = (endaddr + 1) % self.alignment as u64;
+                return Some(if res == 0 { 0 } else { self.alignment as u64 - res });
+            }
             // An ALIGNED entry (fspec.cc:269-282) is a run of equal-sized slots, not one datum:
             // a parameter is justified within its own slot, so the offset is taken modulo the
             // alignment rather than from the entry base. Little-endian is always left-justified
@@ -99,7 +125,13 @@ impl ParamEntry {
             // value, and `ActionUnjustifiedParams` then widened the same stack slot forever.
             return Some((addr.offset - self.addressbase) % self.alignment as u64);
         }
-        // little-endian: justify to the least-significant bytes, i.e. offset from the base.
+        // Ghidra delegates the unaligned case to `Address::justifiedContain` (fspec.cc:252),
+        // which flips for a big-endian space unless `force_left_justify`.
+        if !left_justified {
+            let off1 = self.addressbase + (self.size as u64 - 1);
+            let off2 = addr.offset + (sz as u64 - 1);
+            return Some(off1 - off2);
+        }
         Some(addr.offset - self.addressbase)
     }
 

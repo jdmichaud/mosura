@@ -150,6 +150,7 @@ fn build_from_instrs(
     laned: &[(i32, u32)],
     cspec: CspecSettings,
     ram_addr_size: u32,
+    big_endian: bool,
     userops: &std::collections::HashMap<u64, String>,
     reg_table: &[((u64, u32), String)],
 ) -> Funcdata {
@@ -158,6 +159,9 @@ fn build_from_instrs(
     // `getDefaultDataSpace()->getAddrSize()`. Applied BEFORE the `<stackpointer>` below, because the
     // stack space is contained in ram and the local/param ranges are derived from these sizes.
     spaces.set_ram_addr_size(ram_addr_size);
+    // The processor's endianness (Ghidra `AddrSpace::isBigEndian`, space.hh:145). Every
+    // byte-ordering decision in the decompiler branches on it — see `SpaceManager::is_big_endian`.
+    spaces.set_big_endian(big_endian);
     // The `stack` space's spacebase register, from the compiler spec's `<stackpointer>`. This is
     // what `ActionSpacebase` marks and what lets a stack-relative access become a `stack` Varnode;
     // leaving the x86-64 default in place on another target yields no stack frame at all.
@@ -236,6 +240,7 @@ pub fn raw_funcdata(
         &spec.laned,
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
+        spec.big_endian,
         &spec.userops,
         &spec.register_table(),
     )
@@ -297,6 +302,7 @@ pub fn raw_funcdata_flow(
         &spec.laned,
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
+        spec.big_endian,
         &spec.userops,
         &spec.register_table(),
     )
@@ -486,6 +492,7 @@ pub fn raw_funcdata_flow_image_overrides(
                 &spec.laned,
                 cspec.clone(),
                 ram_addr_size,
+                spec.big_endian,
                 &spec.userops,
                 &spec.register_table(),
             );
@@ -557,6 +564,7 @@ pub fn raw_funcdata_flow_image_overrides(
             &spec.laned,
             cspec,
             ram_addr_size,
+            spec.big_endian,
             &spec.userops,
             &spec.register_table(),
         );

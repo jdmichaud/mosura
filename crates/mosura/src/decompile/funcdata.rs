@@ -984,13 +984,15 @@ impl Funcdata {
         for i in 0..inlist.len() {
             let v = inlist[i];
             let (vloc, vsize) = (self.vn(v).loc, self.vn(v).size);
-            // Ghidra: `addr.justifiedContain(sz, vn->getAddr(), vn->getSize(), false)` — the
-            // little-endian offset of the old input inside the new container.
+            // Ghidra `addr.justifiedContain(sz, vn->getAddr(), vn->getSize(), false)`
+            // (funcdata_varnode.cc:512) — the ENDIAN-AWARE offset of the old input inside the
+            // new container. Was `vloc.offset - addr.offset`, the little-endian arm inlined.
+            let sa = self.spaces.justified_contain(addr, sz, vloc, vsize, false);
             assert!(
-                self.vn(v).is_input() && sz > vsize && vloc.offset >= addr.offset,
+                self.vn(v).is_input() && sz > vsize && sa.is_some(),
                 "bad adjustment to input varnode"
             );
-            let sa = vloc.offset - addr.offset;
+            let sa = sa.unwrap();
             let uniq = self.num_ops() as u32;
             let k = self.new_const(4, sa);
             let subop = self.new_op(

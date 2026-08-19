@@ -600,7 +600,38 @@ direction is already parameterized (`fspec::default_local_range(.., stack_grows_
 and every `Datatype::Pointer(8, ..)` in the tree is inside a `#[cfg(test)]` module, where
 fixing an architecture is legitimate.
 
-**OPEN — the decompiler assumes LITTLE-ENDIAN throughout.** `Space`/`SpaceManager` carry no
+**IN PROGRESS (2026-08-18) — foundation landed, ~24 sites remain.** Done: endianness on the
+space model (`Space::big_endian`, `SpaceManager::{set_big_endian, is_big_endian}`), threaded
+from the processor spec through every builder; Ghidra's central primitive
+`Address::justifiedContain` ported as `SpaceManager::justified_contain` (address.cc:131,
+with the `forceleft` escape hatch); `ParamEntry::justified_contain_with` carrying Ghidra's
+`isLeftJustified` and BOTH big-endian arms (aligned fspec.cc:277-281 and unaligned :252);
+`Funcdata::adjust_inputs` converted off inlined LE arithmetic; and
+`crates/mosura/tests/big_endian.rs` — a PowerPC function that decompiles end-to-end plus a
+justified-contain flip test, so the big-endian arms have something that executes them (no
+other test in the tree decompiles a BE target).
+
+REMAINING, per site — each needs its Ghidra conditional ported and a shape added to
+`tests/big_endian.rs` that exercises it:
+- `fspec.rs` ParamList methods (`find_entry`, `find_entry_index`, and the two containment
+  loops, ~lines 245/261/298/360) still call the LE-default `justified_contain`; they need
+  `&SpaceManager` threaded from their callers (`recover.rs` ×3, `printc.rs:3041`,
+  `analysis/decompiler.rs:381`), which all have a `Funcdata` in scope.
+- `rules.rs`: PIECE low-part selection (:3758), piece address arithmetic (:1759),
+  `Varnode::overlap` offset (:7921), RuleExpandLoad's `lsbCut` (:10153), contiguous-register
+  halves (:10401).
+- `heritage.rs`: truncation offsets (:1050, :1092 — Ghidra flips at heritage.cc:1624) and the
+  unrepresentable big-endian branch at :1638 (heritage.cc:539).
+- `merge.rs` (:2316-2332), `mergesnip.rs` (:191), `recover.rs` (:78, :1794),
+  `lanedivide.rs` (:229, :266 — Ghidra reorders lanes in build{Store,Load}),
+  `transform.rs` (:727 — `bytePos = size - bytePos - byteSize`), `double.rs` (:98).
+
+**Why it is NOT one commit:** the big-endian arms are unverifiable except by a big-endian
+target actually exercising them, so each site should land with a test shape that reaches it.
+Writing 24 blind arms would be exactly the unverified-code failure this project's rules
+forbid.
+
+**Historical note — the decompiler assumed LITTLE-ENDIAN throughout.** `Space`/`SpaceManager` carry no
 endianness at all, and **31 comment-marked production sites** in `decompile/` encode LE
 ordering directly (PIECE low-part selection `rules.rs:3758`, SUBPIECE containment
 `mergesnip.rs:191`, lane indexing `lanedivide.rs:229/266`, …). Ghidra parameterizes this:

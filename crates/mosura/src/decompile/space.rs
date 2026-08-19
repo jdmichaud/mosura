@@ -31,6 +31,13 @@ pub struct Space {
     pub kind: SpaceKind,
     /// Address size in bytes (e.g. 8 for a 64-bit `ram`).
     pub addr_size: u32,
+    /// Ghidra `AddrSpace::isBigEndian` (space.hh:145) — whether values in this space are
+    /// stored most-significant byte first. Per SPACE, not per program: the SLEIGH spec gives
+    /// each space its own `bigendian` attribute defaulting to the processor's
+    /// ([`crate::sleigh::engine::Spec`] mirrors this), and Ghidra's decompiler branches on it
+    /// in 132 places — PIECE operand order, SUBPIECE byte offsets, lane indexing. Set by the
+    /// spec-driven builder; `false` on a hand-built manager, matching the x86 tests.
+    pub big_endian: bool,
     /// Bytes per addressable unit (1 for byte-addressable spaces).
     pub wordsize: u32,
     /// Number of heritage passes to delay before this space first enters SSA construction
@@ -309,6 +316,57 @@ impl SpaceManager {
     /// It is not cosmetic. `Space::highest` masks every offset to `addr_size`, `LaneDivide`'s default
     /// lane width branches on `addr_size != 4`, and `ScopeInternal::buildVariableName`'s field width
     /// is `2*addr.getAddrSize()` — so the name of every global on a 32-bit target depends on it.
+    /// Set every space's endianness from the processor spec (Ghidra: each `AddrSpace` carries
+    /// the `bigendian` attribute of its `<space>` element, defaulting to the language's). The
+    /// builder calls this once; `const`/`unique` follow the processor like every other space,
+    /// which is what Ghidra does (`AddrSpaceManager` builds them with the same flag).
+    pub fn set_big_endian(&mut self, big: bool) {
+        for s in &mut self.spaces {
+            s.big_endian = big;
+        }
+    }
+
+    /// Ghidra `Address::justifiedContain` (address.cc:131) — the ENDIAN-AWARE offset of the
+    /// range `(op2, sz2)` inside the range `(addr, sz)`, or `None` when it is not properly
+    /// contained. Offset 0 means the two ranges' LEAST-significant bytes coincide, which on a
+    /// big-endian space is the far end of the container, hence the flip.
+    ///
+    /// `forceleft` forces the little-endian reading regardless of endianness — Ghidra's own
+    /// escape hatch, used where the container is addressed left-to-right by construction
+    /// (`ParamEntry`'s `force_left_justify` flag).
+    ///
+    /// This is the primitive the hand-rolled `offset - base` arithmetic scattered through the
+    /// port was standing in for; every such site is little-endian-only until it calls this.
+    pub fn justified_contain(
+        &self,
+        addr: Address,
+        sz: u32,
+        op2: Address,
+        sz2: u32,
+        forceleft: bool,
+    ) -> Option<u64> {
+        if addr.space != op2.space || sz == 0 || sz2 == 0 {
+            return None;
+        }
+        if op2.offset < addr.offset {
+            return None;
+        }
+        let off1 = addr.offset + (sz as u64 - 1);
+        let off2 = op2.offset + (sz2 as u64 - 1);
+        if off2 > off1 {
+            return None;
+        }
+        if self.is_big_endian(addr.space) && !forceleft {
+            return Some(off1 - off2);
+        }
+        Some(op2.offset - addr.offset)
+    }
+
+    /// Ghidra `AddrSpace::isBigEndian` for a space id.
+    pub fn is_big_endian(&self, id: SpaceId) -> bool {
+        self.spaces[id.0 as usize].big_endian
+    }
+
     pub fn set_ram_addr_size(&mut self, size: u32) {
         let Some(ram) = self.by_name("ram") else { return };
         if size > 0 {
@@ -353,6 +411,7 @@ impl SpaceManager {
             name: name.to_string(),
             kind,
             addr_size,
+            big_endian: false,
             wordsize,
             delay,
             deadcodedelay: delay,
