@@ -1719,6 +1719,19 @@ impl<'a> PrintC<'a> {
                 let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
                 // De Morgan swaps the connective under negation
                 let conn = if is_and != neg { "&&" } else { "||" };
+                // INSTRUMENT: the full negation algebra per node, so a printed connective
+                // that contradicts the built structure names its own term (the wrong-code
+                // specimen: CondAnd printed as `||` with positive leaves).
+                if std::env::var_os("MOSURA_COND_DEBUG").is_some() {
+                    let (f0, f1) = s.blocks[idx].cond_flip;
+                    eprintln!(
+                        "[cond] node={idx} kind={:?} neg_in={neg} conn={conn} flip=({f0},{f1}) or0={} or1={} comps={:?}",
+                        s.blocks[idx].kind,
+                        operand_oriented(self.f, s, s.blocks[idx].components[0]),
+                        operand_oriented(self.f, s, s.blocks[idx].components[1]),
+                        s.blocks[idx].components,
+                    );
+                }
                 // A leaf whose CBRANCH was oriented (Ghidra's BlockCondition::negateCondition
                 // distributed the NOT to it — its negation is materialized positive in the IR) prints
                 // directly, so flip the pending negation off for that operand. Nested compounds return

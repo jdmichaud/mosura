@@ -592,7 +592,35 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
 the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.
 
-## WRONG-CODE: condition rendering inverts a connective (found 2026-08-18, PRIORITY)
+## FIXED (2026-08-18, sb59): the short-circuit fold's opcode was non-Ghidra
+
+Root cause, from Ghidra's own source: `newBlockCondition` (block.cc:2949) takes
+`INT_OR` iff `b1->getFalseOut() == b2`, its ONLY caller is `ruleBlockOr`
+(blockaction.cc:1367), and that caller negates `bl` first when `i==1`
+(`FlowBlock::negateCondition` → `swapEdges`) precisely so the test holds — so the
+short-circuit fold ALWAYS yields OR. ANDs arise only later, when
+`BlockCondition::negateCondition` (block.cc:3023) flips the opcode while distributing
+the NOT into both children. mosura evaluated the opcode test as if it ran BEFORE the
+fix-up (`i == 0 { CondOr } else { CondAnd }`), so the `i==1` fold baked one negation
+into the KIND and recorded the same negation again in `cond_flip.0`; the double count
+cancelled wrong on shapes the enclosing `if` negates later.
+
+Fix: install `CondOr` always (structure.rs), keeping the deferred `cond_flip` — mosura's
+deferral is consistent once the folded VALUE is Ghidra's. Measured: specimen
+`FUN_00038bfc` now prints the oracle's `(X||Y) && P`; **64 of 3022 TUs' default C
+changed** (the wrong-code population — every one previously emitted an inverted
+connective); corpus 659 → **661 EXACT**, similarity 0.3968 → 0.3973, zero regressions.
+The `short_circuit_and_merges` unit test asserted the wrong model and now asserts
+Ghidra's (a `CondOr` of two deferred negations printing `a && b` under the `if`'s
+negation).
+
+Audit note that stands: the byte-checker scored this wrong program as two cosmetic
+divergence rows, so `selection`/`branch-target` rows on paired `Jcc`s are NOT proof of
+mere polarity — semantic inversions hide there. The 64 changed TUs are the closed
+population for THIS bug; the general lesson is to oracle-check condition text when a
+polarity row appears.
+
+## ~~WRONG-CODE: condition rendering inverts a connective (found 2026-08-18, PRIORITY)~~
 
 Specimen `01304`/`FUN_00038bfc`, fixture `pol01304` in the pinned tree's datatests. The
 original computes `((c=='X' || c=='Y') && p==1)` — both char-tests funnel INTO the

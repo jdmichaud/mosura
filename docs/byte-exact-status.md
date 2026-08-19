@@ -231,6 +231,19 @@ varnode, or same bool opcode over pairwise-identical operands — the rules dupl
 predicate rather than CSE it, measured in the IR). Bundled into the third arm (no extra
 compile round). +14 EXACT, all MISMATCH promotions, zero other movement.
 
+**659 → 661 (sb59): the short-circuit fold opcode corrected to Ghidra's — a WRONG-CODE
+fix.** `newBlockCondition` takes `INT_OR` iff `b1->getFalseOut() == b2`, and its only
+caller negates `bl` first so that always holds: Ghidra's short-circuit fold never
+produces an AND (ANDs come from `BlockCondition::negateCondition` flipping one later,
+while distributing the NOT into both children). mosura read the test as pre-fix-up, so
+`i==1` folds baked a negation into the KIND *and* recorded it again in `cond_flip` — the
+double count printed inverted connectives wherever the enclosing `if` negates the
+composite (specimen `FUN_00038bfc`: the original's `(X||Y) && P` emitted as
+`(X||Y) || P`, oracle-verified). Installing `CondOr` always: **64 of 3022 TUs' default C
+changed** — the wrong-code population — with +2 EXACT and similarity 0.3968 → 0.3973,
+zero regressions. Correctness and the diagnostic moved together, which is what a
+faithful port is supposed to do.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

@@ -895,9 +895,26 @@ impl Structured {
             }
             let continuation = self.out(orblock)[1 - j];
             let out = vec![continuation, clauseblock];
-            // opcode: (bl->getFalseOut()==orblock) after the negates → i==0 gives OR, i==1 AND.
-            let kind = if i == 0 { FlowKind::CondOr } else { FlowKind::CondAnd };
-            let n = self.install(vec![b, orblock], kind, out, ins);
+            // ALWAYS `CondOr` — Ghidra's `newBlockCondition` (block.cc:2949) picks
+            // `INT_OR` iff `b1->getFalseOut() == b2`, and `ruleBlockOr` guarantees exactly
+            // that before calling it: the `i==1` arm runs `bl->negateCondition(true)`
+            // (blockaction.cc:1358), which is `FlowBlock::negateCondition` →
+            // `swapEdges()`, so orblock becomes bl's FALSE out. The test is evaluated
+            // AFTER the fix-up, and `newBlockCondition` has no other caller — so the
+            // short-circuit fold never produces an AND. ANDs appear only when a later
+            // negation flips one: `BlockCondition::negateCondition` (block.cc:3023) flips
+            // `opc` OR↔AND *while* distributing the NOT into both children and swapping
+            // the composite's own edges. mosura keeps that negation deferred (`cond_flip`
+            // + the printer's De Morgan), which is consistent — but only if the folded
+            // value is Ghidra's to begin with.
+            //
+            // The previous `i == 0 { CondOr } else { CondAnd }` read the opcode test as if
+            // it ran BEFORE the negate, and its `cond_flip.0` then recorded a negation the
+            // AND kind had already baked in — the two cancelled into a WRONG PROGRAM on
+            // shapes where the composite is itself negated later (specimen
+            // `FUN_00038bfc`: the original's `(X||Y) && P` printed as `(X||Y) || P`;
+            // oracle-verified, TODO.md's priority wrong-code entry).
+            let n = self.install(vec![b, orblock], FlowKind::CondOr, out, ins);
             // The deferred per-side negations: bl flipped when i==1, orblock flipped when j==0.
             self.blocks[n].cond_flip = (i == 1, j == 0);
             return true;
@@ -3548,9 +3565,26 @@ mod tests {
     fn short_circuit_and_merges() {
         // A=0 out [merge=3(false), B=1(true)]; B=1 out [merge=3(false), then=2(true)]; 2 -> 3
         //   i.e. if (a && b) then(2); merge=3
+        //
+        // The fold is a `CondOr`, NOT a `CondAnd`: Ghidra's `newBlockCondition` (block.cc:2949)
+        // takes `INT_OR` iff `b1->getFalseOut() == b2`, and `ruleBlockOr` negates `bl` first
+        // (i==1 here) so that always holds — the composite is `(!a) || (!b)`, i.e. "go to the
+        // merge", with both sides' negations recorded in `cond_flip`. The printed `a && b`
+        // comes from the enclosing `if` negating it (De Morgan at print, Ghidra's
+        // `BlockCondition::negateCondition` deferred). This test asserted `CondAnd` while the
+        // fold baked one negation into the kind AND recorded it again in `cond_flip.0` — the
+        // double count printed inverted connectives on later-negated shapes (TODO.md's
+        // wrong-code entry, specimen FUN_00038bfc).
         let s = structure(&cfg(4, &[(0, 3), (0, 1), (1, 3), (1, 2), (2, 3)]));
         assert_eq!(active(&s), 1);
-        assert!(kinds(&s).contains(&FlowKind::CondAnd), "kinds: {:?}", kinds(&s));
+        assert!(kinds(&s).contains(&FlowKind::CondOr), "kinds: {:?}", kinds(&s));
+        let cond = s.blocks.iter().position(|b| matches!(b.kind, FlowKind::CondOr)).expect("fold");
+        assert_eq!(s.blocks[cond].components, vec![0, 1]);
+        // i==1 (orblock on bl's true edge) and j==0 (clause on orblock's false edge): both
+        // sides carry a deferred negation.
+        assert_eq!(s.blocks[cond].cond_flip, (true, true), "both negations deferred");
+        // Ghidra's forced order: false = orblock's continuation (the then-block), true = clause.
+        assert_eq!(s.blocks[cond].out_edges, vec![2, 3]);
     }
 
     #[test]
