@@ -470,6 +470,20 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
             || t.starts_with("OUT ")
             || t.starts_with("INT")
             || (t.starts_with("CALL") && t.contains("CS:["))
+            // segment-register saves/loads: flat-model compiled C never touches them (the
+            // hand-optimized blitters open with PUSH ES — FUN_0007a5b0). EXACT matches:
+            // a prefix test here matched PUSH ESI/ESP and flagged 47 verified-compiled
+            // functions — the calibration bar caught it before adoption.
+            || t == "PUSH ES"
+            || t == "PUSH DS"
+            || t == "PUSH FS"
+            || t == "PUSH GS"
+            || t == "POP ES"
+            || t == "POP DS"
+            || t == "POP FS"
+            || t == "POP GS"
+            || t.starts_with("MOV ES,")
+            || t.starts_with("MOV DS,")
     })
 }
 

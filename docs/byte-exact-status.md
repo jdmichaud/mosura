@@ -592,6 +592,23 @@ now score `equal/max(orig,cand)` with huge candidates instead of 0/orig_n, and t
 convention penalizes candidate bloat by design; the number is honest, and the functions are
 compiling for the first time.
 
+**The blitters were never C (sb93).** Chasing the two newly-compiling decoders' candidate
+bloat led to their originals' first instructions: `PUSH ES` — segment-register saves, stack
+parameters, stanza dispatch. Hand-optimized assembly, not compiled C. The segment-op
+signatures joined the classifier as EXACT matches — the prefix draft matched `PUSH ESI` and
+flagged 47 verified-compiled functions, which the zero-false-positive calibration bar caught
+before adoption (the bar's second save). 25 functions reclassified; the denominator is now
+**2797 C functions (96 asm / 130 library)**.
+
+| | value |
+| --- | --- |
+| EXACT | **687** (24.6% of C functions) |
+| WGSS | **0.4355** |
+| COMPILE_FAIL | **2** (`02583` E1010; `02911` 64-bit original) |
+
+The WGSS jump (0.4153 → 0.4355) is the two giant false-C decoders leaving the denominator —
+the same honesty that put them IN as zeros while they were believed compilable C.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.
