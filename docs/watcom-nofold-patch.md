@@ -182,6 +182,20 @@ a source-shape difference, i.e. ordinary recovery work, and its ~15 near-frontie
 and 188 divergence rows come off the parked pile. What remains of pile-B is the allocation
 order, the callee-save policy, and load scheduling, none of which this experiment touched.
 
+**A stronger positive result the experiment also proves (verified 2026-08-19, Fable
+re-audit).** If F2's `missing ADD + MOV>LEA` were a fold-DECISION difference, compiling our
+C without folding would convert those functions. It does not: all **15** F2-signature
+near-frontier functions are byte-for-byte INVARIANT under the no-fold compiler (verdicts
+unchanged), and zero functions corpus-wide went MISMATCH → EXACT. The pilot `00556` shows
+why directly — under no-fold our C emits `MOV EAX,EDX ; ADD EAX,0x12` while the original is
+`ADD EDX,0x12 ; MOV EAX,EDX`: the divergence moved from the fold instruction to the
+MUTATION TARGET (we increment EAX, a fresh value; the original increments EDX in place and
+keeps it live). So F2 is not merely "eligible for the family loop" — it is *proven* to be an
+emission-side source-shape problem: recovering `x += k` (in-place mutation, x still live)
+where we currently emit `y = x + k` (fresh value). That is the variable-liveness / coalescing
+question, on our side of the compiler. Payoff is UNMEASURED — it may entangle with allocation
+the way the widen-after family did — but the cause is now located precisely.
+
 The patched compiler is kept (documented above) as a reusable instrument: the method —
 locate a dial in OW source, find it in the 10.0a binary with mosura, patch a copy, measure —
 now has a worked example, and the remaining pile-B dials are candidates for the same
