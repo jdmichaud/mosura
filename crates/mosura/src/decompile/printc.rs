@@ -106,6 +106,33 @@ pub struct EmitReport {
     /// than the axis (per function) can act on; whether that finer grain is needed is the
     /// measurement in byte-exact-status.md.
     pub compare_sites: Vec<(u64, u64, u64)>,
+    /// Every tail pair the `return-split` axis could rewrite, keyed by the guarding `if`'s
+    /// CBRANCH instruction address. The target rule reads whether the ORIGINAL materialized
+    /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
+    /// branch-only is what the split rendering compiles to.
+    pub return_split_candidates: Vec<u64>,
+    /// Every statement-carrying short-circuit the `cond-form` axis could nest, as
+    /// `(key, clause branch addresses)` where `key` is the FIRST clause's CBRANCH address —
+    /// stable and recomputable at apply time. The clause addresses give the target rule the
+    /// span to scan: a `SETcc` inside it means the original materialized a clause boolean
+    /// (the collapsed comma form); none means branch-only (the nested form).
+    pub cond_nest_candidates: Vec<(u64, Vec<u64>)>,
+}
+
+/// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
+/// the field path, where no compiler exists to arbitrate searched arms. Each set is keyed by
+/// instruction addresses out of [`EmitReport`]'s candidate lists; membership means "render
+/// this site the non-reference way". An empty set everywhere reproduces the reference print.
+#[derive(Debug, Default, Clone)]
+pub struct RecoveredChoices {
+    /// Comparison sites to render complemented (`compare-form`).
+    pub complement_sites: std::collections::HashSet<u64>,
+    /// Guarding-if branch addresses whose tail boolean return splits per path
+    /// (`return-split`).
+    pub return_split_sites: std::collections::HashSet<u64>,
+    /// Short-circuit keys (first-clause branch address) to render as nested ifs
+    /// (`cond-form`).
+    pub nested_sites: std::collections::HashSet<u64>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -151,12 +178,10 @@ struct PrintC<'a> {
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
     complement_compares: bool,
-    /// PER-SITE complement decisions, keyed by instruction address — the RECOVERED form of the
-    /// same axis. A target profile reads the original's own compare immediate at each site
-    /// ([`EmitReport::compare_sites`]) and returns the sites whose source spelled the
-    /// complement; no compiler and no search is involved. Finer than the axis, which is
-    /// per function: 101 WAR2 functions want the complement at some sites and not others.
-    complement_sites: std::collections::HashSet<u64>,
+    /// PER-SITE decisions recovered from the original's bytes by a target profile — the
+    /// field-path counterpart of the searched axes (see [`RecoveredChoices`]). Empty under a
+    /// plain [`print_c_with`].
+    recovered: RecoveredChoices,
     /// [`EmitChoices::return_split`] == `Paths`: split a tail boolean return into per-path
     /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
     /// Default false.
@@ -1194,7 +1219,8 @@ impl<'a> PrintC<'a> {
         if let Some(site) = site {
             self.report.compare_sites.push(site);
         }
-        let recovered_here = site.is_some_and(|(pc, _, _)| self.complement_sites.contains(&pc));
+        let recovered_here =
+            site.is_some_and(|(pc, _, _)| self.recovered.complement_sites.contains(&pc));
         if self.complement_compares || recovered_here {
             if let Some(r) = self.complemented_cmp(op, strict) {
                 return (r, prec);
@@ -2132,8 +2158,7 @@ impl<'a> PrintC<'a> {
                 let mut i = 0usize;
                 while i < comps.len() {
                     let c = comps[i];
-                    if self.split_bool_returns
-                        && i + 2 == comps.len()
+                    if i + 2 == comps.len()
                         && matches!(s.blocks[c].kind, FlowKind::If)
                         && s.node_gotos.get(&c).is_none()
                         && s.node_gotos.get(&comps[i + 1]).is_none()
@@ -2142,7 +2167,18 @@ impl<'a> PrintC<'a> {
                             self.plain_if_condition_vn(s, c),
                             self.sole_bool_return(s, comps[i + 1]),
                         ) {
-                            if self.same_bool_value(cond, ret_b) {
+                            // structural candidacy holds — record it for the target profile
+                            // (on EVERY print, both axis values), then apply under the axis
+                            // OR a recovered per-site decision
+                            let key = self.plain_if_branch_pc(s, c);
+                            if let Some(pc) = key {
+                                self.report.return_split_candidates.push(pc);
+                            }
+                            let apply = self.split_bool_returns
+                                || key.is_some_and(|pc| {
+                                    self.recovered.return_split_sites.contains(&pc)
+                                });
+                            if apply && self.same_bool_value(cond, ret_b) {
                                 let negated = s.blocks[c].negated;
                                 let (then_k, tail_k) = if negated { (0, 1) } else { (1, 0) };
                                 self.emit_if_with_tail(s, c, indent, out, &format!("return {then_k};"));
@@ -2250,6 +2286,18 @@ impl<'a> PrintC<'a> {
 
     /// The CBRANCH condition varnode of a plain `if` whose condition component is a single
     /// basic block (short-circuit chains decline — the identity gate below needs one vn).
+    /// The instruction address of the plain `if`'s CBRANCH — the stable per-site key the
+    /// recovered `return-split` decisions are made against (an address in the ORIGINAL, since
+    /// every op carries its lifting address).
+    fn plain_if_branch_pc(&self, s: &Structured, if_idx: usize) -> Option<u64> {
+        let fb = &s.blocks[if_idx];
+        let FlowKind::Basic(bid) = s.blocks[*fb.components.first()?].kind else { return None };
+        let cb = self.f.block(bid).ops.iter().rev().copied().find(|&op| {
+            !self.f.op(op).is_dead() && self.f.op(op).code() == OpCode::Cbranch
+        })?;
+        Some(self.f.op(cb).seqnum.pc.offset)
+    }
+
     fn plain_if_condition_vn(&self, s: &Structured, if_idx: usize) -> Option<VarnodeId> {
         let fb = &s.blocks[if_idx];
         let FlowKind::Basic(bid) = s.blocks[*fb.components.first()?].kind else { return None };
@@ -2438,6 +2486,26 @@ impl<'a> PrintC<'a> {
         if !any_split || s.node_gotos.get(&cond_idx).is_some() {
             return false;
         }
+        // structural candidacy holds — record `(key, clause branch pcs)` for the target
+        // profile (on EVERY print), then apply under the axis OR a recovered decision
+        let clause_pcs: Vec<u64> = clauses
+            .iter()
+            .filter_map(|&(c, _)| {
+                exit_basic(s, c).and_then(|bid| {
+                    self.f.block(bid).ops.iter().rev().copied().find_map(|op| {
+                        (!self.f.op(op).is_dead() && self.f.op(op).code() == OpCode::Cbranch)
+                            .then(|| self.f.op(op).seqnum.pc.offset)
+                    })
+                })
+            })
+            .collect();
+        let key = clause_pcs.first().copied();
+        if let Some(k) = key {
+            self.report.cond_nest_candidates.push((k, clause_pcs.clone()));
+        }
+        if !(self.nest_cond_stmts || key.is_some_and(|k| self.recovered.nested_sites.contains(&k))) {
+            return false;
+        }
         let mut buf = String::new();
         let mut depth = indent;
         let mut pending: Vec<String> = Vec::new();
@@ -2491,7 +2559,7 @@ impl<'a> PrintC<'a> {
         let fb = &s.blocks[idx];
         let (comps, negated) = (fb.components.clone(), fb.negated);
         let has_else = matches!(fb.kind, FlowKind::IfElse);
-        if self.nest_cond_stmts && !else_if && !has_else && self.try_emit_if_nested(s, idx, indent, out) {
+        if !else_if && !has_else && self.try_emit_if_nested(s, idx, indent, out) {
             return;
         }
 
@@ -3164,18 +3232,14 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
 
 /// Emit with RECOVERED per-site decisions — the field path: the choices come from evidence in
 /// the original's bytes (a target profile), not from a search that would need a compiler.
-pub fn print_c_recovered(
-    f: &Funcdata,
-    choices: &EmitChoices,
-    complement_sites: &std::collections::HashSet<u64>,
-) -> String {
-    print_c_inner(f, choices, complement_sites).0
+pub fn print_c_recovered(f: &Funcdata, choices: &EmitChoices, recovered: &RecoveredChoices) -> String {
+    print_c_inner(f, choices, recovered).0
 }
 
 fn print_c_inner(
     f: &Funcdata,
     choices: &EmitChoices,
-    sites: &std::collections::HashSet<u64>,
+    recovered: &RecoveredChoices,
 ) -> (String, EmitReport) {
     let reg_space = f.spaces.by_name("register");
 
@@ -3297,7 +3361,7 @@ fn print_c_inner(
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         report: EmitReport::default(),
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
-        complement_sites: sites.clone(),
+        recovered: recovered.clone(),
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
         nest_cond_stmts: choices.cond_form == super::emit::CondForm::Nested,
         tier2_widen: std::collections::HashMap::new(),

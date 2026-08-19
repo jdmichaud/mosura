@@ -1119,11 +1119,21 @@ fn main() {
                 &mosura::recompile::insn::NoReloc,
             )
             .unwrap_or_default();
-            let sites = mosura::recompile::buildconfig::complement_compares_from_evidence(
-                &report.compare_sites,
-                &insns,
-            );
-            let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &sites);
+            let recovered = mosura::decompile::printc::RecoveredChoices {
+                complement_sites: mosura::recompile::buildconfig::complement_compares_from_evidence(
+                    &report.compare_sites,
+                    &insns,
+                ),
+                return_split_sites: mosura::recompile::buildconfig::split_returns_from_evidence(
+                    &report.return_split_candidates,
+                    &insns,
+                ),
+                nested_sites: mosura::recompile::buildconfig::nested_conds_from_evidence(
+                    &report.cond_nest_candidates,
+                    &insns,
+                ),
+            };
+            let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes);
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
@@ -1131,6 +1141,9 @@ fn main() {
             };
             if only.is_empty() {
                 std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();
+            } else {
+                println!("/* ===== RECOVERED (no-compiler field path) ===== */");
+                println!("{rtu}");
             }
         }
         let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);

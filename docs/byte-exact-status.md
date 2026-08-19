@@ -354,6 +354,33 @@ takes the set. `war2_survey --recovered <dir>` emits that single tree.
 other three axes are not converted yet. 397 TUs differ from the default; the gain is +6 EXACT
 and +0.0010 WGSS over it.
 
+### `return-split` and `cond-form` RECOVERED (sb65) — the field path overtakes the search
+
+Both remaining boolean-shape axes converted in one pass, both determinate readouts: the
+candidate is recorded by the printer (`EmitReport::return_split_candidates` — the guarding
+branch's address; `EmitReport::cond_nest_candidates` — first-clause key plus the clause span),
+and the Watcom rules read whether the ORIGINAL materialized a boolean or stayed branch-only
+(`buildconfig::split_returns_from_evidence` — any `SETcc` from the branch to function end
+means merged; `nested_conds_from_evidence` — any `SETcc` inside the clause span means the
+collapsed comma form). Branch-only is what the split/nested renderings compile to, so the
+readout IS the decision. All decisions per site; a `RecoveredChoices` carrier threads them
+through `print_c_recovered`, and candidacy is recorded on every print (default rendering
+byte-invariant, verified corpus-wide).
+
+| emission | compiler | EXACT | WGSS |
+| --- | --- | --- | --- |
+| default, one emission | no | 621 | 0.3963 |
+| recovered: compare-form only (sb64) | no | 627 | 0.3973 |
+| **recovered: + return-split + cond-form (sb65)** | **no** | **643** | **0.3986** |
+| searched union of three arms | yes | 661 | 0.3972 |
+
+**The no-compiler emission now BEATS the searched union on weighted global similarity**
+(0.3986 vs 0.3972) while trailing by 18 EXACT. Both directions are the same explanation:
+per-site recovery applies the right choice inside functions that never reach EXACT — where an
+arm's per-function selection helps only if the whole function lands — and the EXACT residue is
+local-width's ~16 (the one axis whose evidence measured too weak to recover) plus a couple of
+per-function wins. 486 TUs differ from the default.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

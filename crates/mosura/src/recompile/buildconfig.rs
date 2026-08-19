@@ -180,6 +180,57 @@ pub fn complement_compares_from_evidence(
     out
 }
 
+/// Decide the `return-split` axis PER SITE from the original's bytes. The candidate is a tail
+/// pair `if (B) {body} return B;` keyed by the guarding branch's address
+/// ([`crate::decompile::printc::EmitReport::return_split_candidates`]); the readout is whether
+/// the ORIGINAL materialized the tail boolean or stayed branch-only:
+///
+/// - branch-only (no `SETcc` from the branch to the function's end) — the source returned
+///   constants inside the branch, which is exactly what the split rendering compiles to;
+/// - a `SETcc` in that region — the source really computed a boolean value, keep the merged
+///   `return B;`.
+///
+/// Target-specific (x86 `SETcc` mnemonics and this compiler family's materialization shape),
+/// hence beside the Watcom profile.
+pub fn split_returns_from_evidence(
+    candidates: &[u64],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &pc in candidates {
+        let Some(i) = insns.iter().position(|x| x.addr >= pc) else { continue };
+        let materialized = insns[i..].iter().any(|x| x.text.starts_with("SET"));
+        if !materialized {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
+/// Decide the `cond-form` axis PER SITE from the original's bytes. The candidate is a
+/// statement-carrying short-circuit keyed by its first clause's branch address, with every
+/// clause's branch address supplied as the span to scan
+/// ([`crate::decompile::printc::EmitReport::cond_nest_candidates`]). The readout: a `SETcc`
+/// inside the clause span means the original materialized a clause boolean — the collapsed
+/// comma form compiles to exactly that — while a branch-only span means nested ifs.
+pub fn nested_conds_from_evidence(
+    candidates: &[(u64, Vec<u64>)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for (key, span) in candidates {
+        let (Some(&lo), Some(&hi)) = (span.iter().min(), span.iter().max()) else { continue };
+        let materialized = insns
+            .iter()
+            .filter(|x| x.addr >= lo && x.addr <= hi)
+            .any(|x| x.text.starts_with("SET"));
+        if !materialized {
+            out.insert(*key);
+        }
+    }
+    out
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
