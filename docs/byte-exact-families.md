@@ -116,8 +116,26 @@ Specimen `00556`/`FUN_00023210`: original ends `ADD EDX,0x12; MOV EAX,EDX` — a
 performed on the variable's own register, then moved to the return register — where our C
 lets Watcom fold both into `LEA EAX,[EDX+0x12]`.
 
-**DISPOSITION — one leg refuted, the family UNRESOLVED (2026-08-19; a first over-correction
-was itself corrected).** The pilot's disposition below rested on two things. Point 4 —
+**DISPOSITION RESOLVED (2026-08-19, after the battery below): F2 is RESULT-REGISTER
+ASSIGNMENT — compiler identity, and the SAME dial as the regalloc class.** The discriminating
+test ran: seven C shapes for the pilot (expression; `t += k`; `t = t + k`; reuse-after-store;
+volatile; and both via-call forms) — **all seven fold**. No ordinary C makes 10.0a emit the
+original's `ADD EDX,0x12 ; MOV EAX,EDX`, so the difference is not reachable from our side.
+Reading the pilot's original explains why, and it is NOT liveness (EDX is dead after — it is
+popped): the value sits in EDX because `IDIV` writes the remainder there, and the ORIGINAL's
+codegen assigns the add's result to **op1's own register** (in-place `ADD`, then a copy to the
+return register), where 10.0a assigns it to the **destination** register and therefore needs
+the `LEA`. That is a result-register-assignment preference — the same underlying dial as the
+`regalloc` divergence class and warcraft2-re's `ecx-allocator-mystery`, not a fold decision
+and not an emission question.
+
+**Consequence — a falsifiable PREDICTION for the allocation-order experiment, recorded before
+it runs:** if the interim build's difference is register-assignment preference, then patching
+10.0a's allocation dials toward WAR2's observed preference should move F2's rows *together
+with* the `regalloc MOV>MOV` class. If the regalloc rows move and F2 does not (or vice versa),
+this unification is wrong.
+
+**Prior disposition (superseded twice — kept because the flip-flop is instructive):** The pilot's disposition below rested on two things. Point 4 —
 "the original binary is systematic about it: **zero** `LEA reg,[reg+imm]` folds in 380KB" —
 is **factually wrong**: it was a hex-pattern scan, and disassembling every original finds 336
 such folds in 226 functions (586/312 with address-of-local forms), six in byte-EXACT

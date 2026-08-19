@@ -223,6 +223,19 @@ F2 is compiler identity after all. **The discriminating test (unmeasured):** han
 that mutates the variable in place with it live afterward, and see whether 10.0a emits the
 original's form or still folds/copies. Until that runs, F2 is *unresolved*, and stays parked.
 
+**UPDATE — that test RAN (2026-08-19); F2 is resolved as COMPILER IDENTITY.** Seven C shapes
+for the pilot `00556` (expression; `t += k`; `t = t + k`; reuse-after-store; volatile; and
+both via-call forms) — **all seven fold** to `LEA EAX,[EDX + 0x12]`. So no emission change
+reaches the original's form. Reading the original shows why, and it is NOT liveness (EDX is
+dead — it gets popped): `IDIV` leaves the remainder in EDX, and the original's codegen assigns
+the add's result to **op1's own register** (in-place `ADD`, then a copy to the return
+register), where 10.0a assigns it to the **destination** register and therefore needs the
+`LEA`. F2 is a result-register-assignment difference — the same dial as the `regalloc` class
+and warcraft2-re's `ecx-allocator-mystery` — not a fold decision and not an emission question.
+`byte-exact-families.md` records the falsifiable prediction this generates for the
+allocation-order experiment (F2's rows should move together with the regalloc class, or the
+unification is wrong).
+
 The patched compiler is kept (documented above) as a reusable instrument: the method —
 locate a dial in OW source, find it in the 10.0a binary with mosura, patch a copy, measure —
 now has a worked example, and the remaining pile-B dials are candidates for the same
