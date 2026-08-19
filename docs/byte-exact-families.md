@@ -327,6 +327,21 @@ actively harmful, as the probe table predicted. Reverted rather than shipped. Re
 condition: implement the narrow-local materialization first (tier-2's sibling — it keeps the
 value NARROW where `local-width=storage` widens it), then re-test the cast on top of it.
 
+**The zero-store family (7 near-frontier functions, specimen `00878`/`FUN_0002c08c`):
+mechanism identified, implementation deferred.** The original stores zero to a byte global
+through a REGISTER (`XOR BL,BL ; MOV [..],BL`) where our C's `= 0` compiles to the immediate
+store. Probed exhaustively: no flag set (`-osnax` breaks the multiply decomposition), no
+plain source shape (`= 0`, `(char)0`, `'\0'`, a fresh zero local, a REUSED widened local)
+avoids Watcom folding the constant into the store — **except the self-xor: `b ^= b` compiles
+to exactly the original's `XOR reg,reg ; MOV [..],reg`.** The byte-reproducing rendering
+therefore needs a compound recovered form: materialize the guard's loaded byte as a variable
+(the store target was just compared from it in every specimen), self-xor it, store it. The
+probe of that combination reaches all-regalloc residue (Watcom splits our one variable across
+AL/ECX where the original keeps EBX throughout, costing a PUSH/POP) — so the family's ceiling
+under our allocator is near-SAME_SHAPE, and the remaining gap is the parked allocation
+policy. Alternative reading kept open: the interim build may simply not fold `b = 0`
+into stores, making this pile-B outright.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
