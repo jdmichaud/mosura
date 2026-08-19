@@ -342,6 +342,15 @@ under our allocator is near-SAME_SHAPE, and the remaining gap is the parked allo
 policy. Alternative reading kept open: the interim build may simply not fold `b = 0`
 into stores, making this pile-B outright.
 
+**Widen-after flavor: measured and rejected (sb83).** The 7-function
+`missing XOR | missing MOV | extra AND` trio shows the widening idiom scheduled AFTER the
+load (`MOV AX,[..]` then `XOR EDX,EDX ; MOV DX,AX` — reg-to-reg into a different container).
+A classifier extension recognizing it measured net −1 (one EXACT regression, zero wins), and
+the blanket `local-width` arm ALSO mismatches the specimen — the declaration width is not
+the binding constraint for this shape; the divergence involves cross-register allocation
+(the original splits load-register from widened-register where our rendering keeps one
+variable). Reverted; the trio stays in the census as allocation-adjacent.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
