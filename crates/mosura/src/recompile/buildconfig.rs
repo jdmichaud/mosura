@@ -529,6 +529,125 @@ pub fn store_orders_from_evidence(
     out
 }
 
+/// One ORIGINAL call site's argument-register setup window.
+///
+/// For each direct CALL, the LAST write to each watcall argument register before the call,
+/// in instruction order — the readout for [`param_orders_from_evidence`]. `const_class` is
+/// whether every observed setup is a register materialization the source can reorder
+/// (`MOV reg,imm`, `MOV reg,reg`, the self-`XOR` zero); a memory LOAD in the window makes
+/// the site unusable, because the compiler schedules parameter loads by its own policy
+/// (measured: `FUN_00073328` — no pragma order, argument order, or temp materialization
+/// moves the `[EBP+8]`/`[EBP+0xc]` load pair; that sub-shape is the parked load-scheduling
+/// residual, docs/war2-toolchain-synthesis.md).
+#[derive(Debug, Clone)]
+pub struct CallSetupSite {
+    pub callee: u64,
+    pub call_addr: u64,
+    /// `(argument-register offset, setup instruction index)` in instruction order.
+    pub setups: Vec<(u64, usize)>,
+    pub const_class: bool,
+}
+
+/// Scan one function's ORIGINAL instructions for direct-call argument-setup windows.
+///
+/// `arg_regs` is the target's argument-register bases in convention order (watcall:
+/// EAX, EDX, EBX, ECX), each owning the 4-byte container `[base, base+4)` so partial
+/// writes (`DL`, `AH`) attribute to their register. The backward walk stops at control
+/// transfers; instructions that only read (compares, stores) are stepped over — the
+/// original interleaves independent statements with argument setup.
+pub fn call_setup_sites(insns: &[NormInsn], arg_regs: &[u64]) -> Vec<CallSetupSite> {
+    const WINDOW: usize = 16;
+    let family = |off: u64, sz: u32| -> Option<u64> {
+        arg_regs.iter().copied().find(|&b| off >= b && off + sz as u64 <= b + 4)
+    };
+    // Which argument register this instruction WRITES, if any: any semantic op whose output
+    // lands inside an argument register's container. Flag registers live outside them.
+    let writes = |insn: &NormInsn| -> Option<u64> {
+        insn.sem.iter().find_map(|op| match op.out {
+            Some(SemArg::Reg(o, sz)) => family(o, sz),
+            _ => None,
+        })
+    };
+    // A setup the SOURCE can reorder: a constant materialization, a register-to-register
+    // copy, or the self-XOR zero. A LOAD (or any arithmetic) is the compiler's scheduling.
+    let const_class = |insn: &NormInsn| -> bool {
+        match insn.sem.as_slice() {
+            [SemOp { opcode: CPUI_COPY, out: Some(SemArg::Reg(..)), ins }] => {
+                matches!(ins.as_slice(), [SemArg::Const(..)] | [SemArg::Reg(..)])
+            }
+            _ => {
+                insn.mnemonic == "XOR"
+                    && insn.sem.iter().any(|op| {
+                        op.opcode == CPUI_INT_XOR
+                            && matches!(op.out, Some(SemArg::Reg(..)))
+                            && matches!(op.ins.as_slice(),
+                                [SemArg::Reg(a, s1), SemArg::Reg(b, s2)] if a == b && s1 == s2)
+                    })
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for (i, call) in insns.iter().enumerate() {
+        if !call.is_call {
+            continue;
+        }
+        let Some(callee) = call.target else { continue };
+        let mut seen: Vec<(u64, usize, bool)> = Vec::new();
+        for j in (i.saturating_sub(WINDOW)..i).rev() {
+            let insn = &insns[j];
+            if insn.is_call || insn.is_branch {
+                break;
+            }
+            if let Some(reg) = writes(insn) {
+                if !seen.iter().any(|&(r, ..)| r == reg) {
+                    seen.push((reg, j, const_class(insn)));
+                }
+            }
+        }
+        if seen.len() < 2 {
+            continue;
+        }
+        let all_const = seen.iter().all(|&(.., c)| c);
+        seen.sort_by_key(|&(_, j, _)| j);
+        out.push(CallSetupSite {
+            callee,
+            call_addr: call.addr,
+            setups: seen.iter().map(|&(r, j, _)| (r, j)).collect(),
+            const_class: all_const,
+        });
+    }
+    out
+}
+
+/// Decide each SITE's declared parameter order from its own setup sequence.
+///
+/// The compiler generates register-parameter materializations in REVERSE declared order
+/// (Open Watcom `bldcall.c`: `AssgnParms` reverses the parm list before `ParmIns`;
+/// probe-verified three ways on `FUN_0004d0f8` — `parm [edx] [ebx] [eax]` with arguments
+/// permuted to keep every value in its original register reproduces the original's
+/// `MOV EAX / MOV EBX / MOV EDX` sequence byte-exactly). So the original's setup order at a
+/// call site is the reverse of the parameter order its source declared, and our slot-order
+/// rendering diverges exactly where the source's order was not storage order.
+///
+/// PER SITE, not per callee — measured (sb94 first cut): a per-callee two-thirds consensus
+/// broke two EXACT callers whose own sites read slot order, because other sites' majority
+/// overrode a direct readout that was sitting right there. Different TUs may carry
+/// different declaration orders for one callee without inconsistency: the pragma and the
+/// argument permutation are emitted together per TU, so every TU's bindings are internally
+/// correct, exactly like the caller-side register contracts. (Why one callee's sites can
+/// disagree at all — `FUN_00058bec`: eight sites read `EAX,EBX,EDX`, two read `EAX,EDX,EBX`
+/// — is unresolved; per-site follows the bytes either way.) Returns
+/// `call address → declared parameter order` (register offsets) for const-class sites.
+pub fn param_orders_from_evidence(
+    sites: &[CallSetupSite],
+) -> std::collections::HashMap<u64, Vec<u64>> {
+    sites
+        .iter()
+        .filter(|s| s.const_class)
+        .map(|s| (s.call_addr, s.setups.iter().rev().map(|&(r, _)| r).collect()))
+        .collect()
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
@@ -675,6 +794,7 @@ const CPUI_COPY: u32 = 1;
 const CPUI_STORE: u32 = 3;
 const CPUI_INT_ADD: u32 = 19;
 const CPUI_INT_SUB: u32 = 20;
+const CPUI_INT_XOR: u32 = 26;
 
 /// Per-function options for a whole program.
 #[derive(Debug, Default, Clone)]
@@ -785,6 +905,75 @@ mod tests {
             .flags_for(&Evidence { frame_prologue: true, ..Evidence::default() })
             .contains(&"-d1+".to_string()));
         assert!(!p.flags_for(&Evidence::default()).contains(&"-d1+".to_string()));
+    }
+
+    /// Watcall argument-register bases (x86:LE:32 register-space offsets), convention order.
+    const ARG_REGS: [u64; 4] = [0x0, 0x8, 0xc, 0x4];
+
+    /// The FUN_0004d0f8 shape: three constant materializations before a call are read in
+    /// instruction order, and the declared parameter order is their REVERSE (the compiler
+    /// generates register parameters back-to-front).
+    #[test]
+    fn call_setup_order_reads_and_reverses_into_a_declaration_order() {
+        // mov eax,0xbe2 ; mov ebx,0x4d08c ; mov edx,3 ; call 0x2000 ; ret
+        let insns = lift("b8e20b0000bb8cd00400ba03000000e8ec0f0000c3");
+        let sites = call_setup_sites(&insns, &ARG_REGS);
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].callee, 0x2000);
+        assert!(sites[0].const_class);
+        let order: Vec<u64> = sites[0].setups.iter().map(|&(r, _)| r).collect();
+        assert_eq!(order, vec![0x0, 0xc, 0x8]); // EAX, EBX, EDX — the original's setup order
+        let p = param_orders_from_evidence(&sites);
+        assert_eq!(p[&sites[0].call_addr], vec![0x8, 0xc, 0x0]); // parm [edx] [ebx] [eax]
+    }
+
+    /// A memory load in the window makes the site unusable: parameter-load scheduling is the
+    /// compiler's own policy (the parked residual), not a source-order readout.
+    #[test]
+    fn a_load_in_the_window_disqualifies_the_site() {
+        // mov edx,[0x11f18] ; mov eax,5 ; call 0x2000
+        let insns = lift("8b1518f10100b805000000e8f00f0000");
+        let sites = call_setup_sites(&insns, &ARG_REGS);
+        assert_eq!(sites.len(), 1);
+        assert!(!sites[0].const_class);
+        assert!(param_orders_from_evidence(&sites).is_empty());
+    }
+
+    /// The window stops at an intervening call — a register set up before it belongs to that
+    /// call's own site, not this one's. The self-XOR zero counts as a reorderable setup.
+    #[test]
+    fn an_intervening_call_bars_the_window_and_self_xor_is_a_setup() {
+        // xor ebx,ebx ; call 0x2000 ; xor edx,edx ; mov eax,3 ; call 0x3000 ; ret
+        let insns = lift("31dbe8f90f000031d2b803000000e8ed1f0000c3");
+        let sites = call_setup_sites(&insns, &ARG_REGS);
+        // the 0x2000 site has only one visible setup — no order information, dropped
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].callee, 0x3000);
+        assert!(sites[0].const_class);
+        let order: Vec<u64> = sites[0].setups.iter().map(|&(r, _)| r).collect();
+        assert_eq!(order, vec![0x8, 0x0]); // EDX, EAX
+    }
+
+    /// Each site is its own direct readout — sites of ONE callee may legitimately derive
+    /// different orders (measured: a per-callee majority broke two EXACT callers whose own
+    /// sites read slot order), and a non-const site derives nothing.
+    #[test]
+    fn each_site_is_its_own_readout() {
+        let site = |addr: u64, order: &[u64], cc: bool| CallSetupSite {
+            callee: 0x2000,
+            call_addr: addr,
+            setups: order.iter().map(|&r| (r, 0)).collect(),
+            const_class: cc,
+        };
+        let sites = vec![
+            site(0x1000, &[0x0, 0xc, 0x8], true),
+            site(0x1100, &[0x0, 0x8, 0xc], true),
+            site(0x1200, &[0x0, 0x8, 0xc], false),
+        ];
+        let p = param_orders_from_evidence(&sites);
+        assert_eq!(p[&0x1000], vec![0x8, 0xc, 0x0]);
+        assert_eq!(p[&0x1100], vec![0xc, 0x8, 0x0]);
+        assert!(!p.contains_key(&0x1200));
     }
 
     /// An in-place scaled LEA in the body is proof of pre-Pentium tuning — `-5r` can never

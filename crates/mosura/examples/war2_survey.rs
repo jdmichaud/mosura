@@ -881,6 +881,86 @@ fn main() {
     // instruction — with this on.
     mosura::decompile::structure::set_force_loop_overflow(true);
     let watreg = watcom_reg_table();
+
+    // PARAMETER-ORDER EVIDENCE, a pre-pass over the ORIGINAL bytes (docs/byte-exact-families.md,
+    // the permutation family). The compiler materializes register arguments in REVERSE declared
+    // order, so the setup sequence at each original call site is a readout of the parameter
+    // order its source declared — a PER-SITE recovered choice our slot-order rendering gets
+    // wrong wherever the source's order was not storage order. Probe-verified byte-exact on
+    // FUN_0004d0f8 (`parm [edx] [ebx] [eax]`, arguments permuted to keep each value in its
+    // original register). Per site, not per callee: the first cut's per-callee consensus broke
+    // two EXACT callers whose own sites read slot order (sb94 first measure) — different TUs
+    // may carry different declaration orders for one callee, because the pragma and the
+    // permutation are emitted together per TU and every TU's bindings are internally correct.
+    //
+    // Callees whose own recovered storage is nondefault are EXCLUDED: their callers get the
+    // contract pragma from the post-pass below, one pragma per callee per TU, and the two
+    // mechanisms must not both claim it. The exclusion needs each such callee's decompile,
+    // which its own emit will repeat — a few seconds of duplicate work over ~a hundred callees.
+    let arg_reg_offs: Vec<u64> = ["eax", "edx", "ebx", "ecx"]
+        .iter()
+        .filter_map(|n| watreg.iter().find(|&&(_, sz, nm)| sz == 4 && nm == *n).map(|&(o, ..)| o))
+        .collect();
+    let mut order_excluded: std::collections::HashSet<u64> = Default::default();
+    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if arg_reg_offs.len() == 4 {
+        let t = std::time::Instant::now();
+        let entry_set: std::collections::HashSet<u64> = entries.iter().map(|e| e.0).collect();
+        let mut sites = Vec::new();
+        for (va, _) in &entries {
+            let (next, body_end) = extent_bounds(*va);
+            let end = match body_end {
+                Some(b) => next.min(b),
+                None => next,
+            }
+            .max(*va + 1);
+            let region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
+            let insns = mosura::recompile::insn::normalize(
+                SURVEY_LANG,
+                &region,
+                *va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default();
+            sites.extend(
+                mosura::recompile::buildconfig::call_setup_sites(&insns, &arg_reg_offs)
+                    .into_iter()
+                    .filter(|s| entry_set.contains(&s.callee)),
+            );
+        }
+        let mut orders = mosura::recompile::buildconfig::param_orders_from_evidence(&sites);
+        // An order that IS the convention's slot order renders identically — drop the no-ops.
+        orders.retain(|_, p| p.as_slice() != &arg_reg_offs[..p.len().min(arg_reg_offs.len())]);
+        // The callees still claimed by at least one site, for the nondefault exclusion.
+        let claimed: std::collections::HashSet<u64> = sites
+            .iter()
+            .filter(|s| orders.contains_key(&s.call_addr))
+            .map(|s| s.callee)
+            .collect();
+        for callee in claimed {
+            let nondefault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decompile_function(&prog, Address::new(ram, callee))
+            }))
+            .ok()
+            .flatten()
+            .map(|f| nondefault_parm_regs(&f, &watreg).is_some())
+            .unwrap_or(true);
+            if nondefault {
+                order_excluded.insert(callee);
+            }
+        }
+        eprintln!(
+            "param-order evidence: {} sites with a recovered nondefault declaration order \
+             ({} callees excluded: nondefault storage or no decompile) in {:.1}s",
+            orders.len(),
+            order_excluded.len(),
+            t.elapsed().as_secs_f64()
+        );
+        orders
+    } else {
+        Default::default()
+    };
+    let order_excluded = order_excluded;
+
     let t0 = std::time::Instant::now();
     let (mut ok, mut fail) = (0usize, 0usize);
     for (idx, (va, name)) in entries.iter().enumerate() {
@@ -1156,6 +1236,71 @@ fn main() {
                 &report.tier2_candidates,
                 &insns,
             );
+            // ARGUMENT-ORDER RECOVERY: apply each site's own recovered declaration order.
+            // The rendered argument list permutes and the TU declares the matching
+            // `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU,
+            // so all of a callee's sites here must derive the SAME order and every one
+            // must qualify (its own evidence present, arity matching, every argument
+            // reorder-safe) — one failing site vetoes the callee for the whole TU.
+            let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
+            let mut order_pragmas: Vec<String> = Vec::new();
+            {
+                let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
+                    Default::default();
+                for (addr, callee, safe) in &report.call_order_candidates {
+                    by_callee.entry(*callee).or_default().push((*addr, safe));
+                }
+                for (callee, csites) in by_callee {
+                    if callee == *va || order_excluded.contains(&callee) {
+                        continue;
+                    }
+                    let mut tu_p: Option<&Vec<u64>> = None;
+                    let ok = csites.iter().all(|(addr, safe)| {
+                        let Some(p) = site_orders.get(addr) else { return false };
+                        let n = p.len();
+                        if n > arg_reg_offs.len() || safe.len() != n || !safe.iter().all(|&s| s) {
+                            return false;
+                        }
+                        let mut sp: Vec<u64> = p.clone();
+                        sp.sort_unstable();
+                        let mut sd: Vec<u64> = arg_reg_offs[..n].to_vec();
+                        sd.sort_unstable();
+                        if sp != sd {
+                            return false;
+                        }
+                        match tu_p {
+                            None => {
+                                tu_p = Some(p);
+                                true
+                            }
+                            Some(q) => q == p,
+                        }
+                    });
+                    let Some(p) = tu_p else { continue };
+                    if !ok {
+                        continue;
+                    }
+                    let n = p.len();
+                    let default = &arg_reg_offs[..n];
+                    let perm: Vec<usize> =
+                        p.iter().map(|r| default.iter().position(|d| d == r).unwrap()).collect();
+                    for (addr, _) in &csites {
+                        call_arg_orders.insert(*addr, perm.clone());
+                    }
+                    let names: Vec<&str> = p
+                        .iter()
+                        .filter_map(|r| {
+                            watreg.iter().find(|&&(o, sz, _)| o == *r && sz == 4).map(|t| t.2)
+                        })
+                        .collect();
+                    if names.len() == n {
+                        order_pragmas.push(format!(
+                            "#pragma aux func_0x{callee:08x} parm [{}];",
+                            names.join("] [")
+                        ));
+                    }
+                }
+            }
             let recovered = mosura::decompile::printc::RecoveredChoices {
                 complement_sites: mosura::recompile::buildconfig::complement_compares_from_evidence(
                     &report.compare_sites,
@@ -1187,6 +1332,7 @@ fn main() {
                     &report.store_runs,
                     &insns,
                 ),
+                call_arg_orders,
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
@@ -1214,6 +1360,13 @@ fn main() {
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
                 None => rtu,
+            };
+            // The permuted argument order is value-identical only under its pragma — the two
+            // are one decision, emitted together (see call_arg_orders above).
+            let rtu = if order_pragmas.is_empty() {
+                rtu
+            } else {
+                format!("{}\n{rtu}", order_pragmas.join("\n"))
             };
             if only.is_empty() {
                 std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();

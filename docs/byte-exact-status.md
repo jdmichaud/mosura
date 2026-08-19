@@ -609,6 +609,46 @@ before adoption (the bar's second save). 25 functions reclassified; the denomina
 The WGSS jump (0.4153 → 0.4355) is the two giant false-C decoders leaving the denominator —
 the same honesty that put them IN as zeros while they were believed compilable C.
 
+**687 → 694 (sb94): argument-order recovery — the C parameter DECLARATION order read per
+site.** Found by re-running the census on sb93 (the families doc's standing item 5): 35
+functions' entire divergence was a pure PERMUTATION of identical instruction texts, and the
+dominant sub-shape was call-argument constant setups rotated (`MOV EAX,0xbe2; MOV EBX,..;
+MOV EDX,3` vs ours EBX, EDX, EAX). Mechanism, source-confirmed then probe-confirmed: Watcom
+materializes register arguments in REVERSE declared-parameter order (OW 1.0 `bldcall.c`,
+`AssgnParms` reverses the parm list before `ParmIns`), so the original's setup sequence is a
+direct readout of the parameter order the source declared — invisible in the bytes when it
+matches storage order, divergent otherwise, and OUR slot-order rendering is exactly the
+storage-order assumption. The recovery: per SITE, `buildconfig::call_setup_sites` reads the
+window of last-writes to the argument registers before each original CALL;
+`param_orders_from_evidence` reverses it into the declared order; the caller renders the
+argument list permuted WITH the matching full-arity `#pragma aux <callee> parm [..]` — the
+two are one decision, per TU (`printc::RecoveredChoices::call_arg_orders` +
+`EmitReport::call_order_candidates`). Probe P3 on `FUN_0004d0f8`: `parm [edx] [ebx] [eax]`
+with arguments `(3, 0x4d08c, 0xbe2)` — EXACT.
+
+Two gates, both MEASURED on their own regressions before landing:
+
+* **Per site, not per callee.** One callee's sites can disagree (`FUN_00058bec`: eight read
+  `EAX,EBX,EDX`, two read `EAX,EDX,EBX` — why is unresolved), and the first cut's
+  two-thirds per-callee consensus broke two EXACT callers whose own sites read slot order.
+  Different TUs may carry different orders for one callee: pragma + permutation are emitted
+  together per TU, so each TU's bindings are internally consistent.
+* **Constant arguments only.** Permuting register-held variables re-orders their shuffle
+  and ripples the allocator through the whole function: three SAME_SHAPE siblings
+  (`FUN_00019e38/e98/ef8`) fell to MISMATCH as pure regalloc cascades under an identifier
+  permutation. A constant's materialization is one immediate move at the call.
+
++7 EXACT (all seven predicted by the census: `00012360`, `00021a24`, `0002d318`,
+`00040490`, `0004c570`, `0004d0f8`, `00072c37`), zero regressions, WGSS 0.4355 → **0.4361**.
+Callees whose own recovered storage is nondefault are excluded (the caller-contract pragma
+post-pass owns those TUs' pragmas; 15 callees). The permutation family's residual 28: the
+probed load-scheduling class (`FUN_00073328` — no pragma order, argument order, or temp
+shape moves Watcom's `[EBP+8]`/`[EBP+0xc]` load pair; pile-B), a ~10-function independent-
+STATEMENT-order subfamily (stores/INCs/CALLs displaced across a neighbor — the persist-store
+ordering mechanism's generalization, unworked), the pure-allocation pairs (pile-B), and
+displaced single-constant sites whose windows carry no order information (one visible
+setup) or identifier co-arguments.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

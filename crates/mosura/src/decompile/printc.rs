@@ -160,6 +160,17 @@ pub struct EmitReport {
     /// span to scan: a `SETcc` inside it means the original materialized a clause boolean
     /// (the collapsed comma form); none means branch-only (the nested form).
     pub cond_nest_candidates: Vec<(u64, Vec<u64>)>,
+    /// Every direct call with arguments, as `(call instruction address, callee address,
+    /// per-argument reorder-safety)` — the argument-order candidates. C argument order is
+    /// invisible in the bytes when it matches the convention's storage order, but the
+    /// compiler MATERIALIZES register arguments in reverse declared order, so the original's
+    /// setup sequence at its call sites is a readout of the parameter order its source
+    /// declared (`buildconfig::param_orders_from_evidence`). An argument is reorder-safe
+    /// when it is a CONSTANT: its materialization is one immediate move at the call.
+    /// Identifier arguments measured UNSAFE — permuting register-held variables re-orders
+    /// their shuffle and ripples the allocation through the whole function (three
+    /// SAME_SHAPE siblings fell to MISMATCH as pure regalloc cascades).
+    pub call_order_candidates: Vec<(u64, u64, Vec<bool>)>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -196,6 +207,11 @@ pub struct RecoveredChoices {
     /// Per store-run emission orders, keyed by the run's FIRST op in block order: the ops
     /// re-emitted in the original's store order (`store_runs` evidence).
     pub store_orders: std::collections::HashMap<OpId, Vec<OpId>>,
+    /// Per call site, the argument order to RENDER, keyed by the call instruction's address:
+    /// `perm[j]` is the reference rendering's argument index that prints at position `j`.
+    /// Value-identical only together with a matching `#pragma aux ... parm [..]` in the same
+    /// TU (the caller emits both from one per-callee decision — `call_order_candidates`).
+    pub call_arg_orders: std::collections::HashMap<u64, Vec<usize>>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -1620,7 +1636,31 @@ impl<'a> PrintC<'a> {
                         .collect();
                     eprintln!("CALLARGS {name} op={} args=[{}]", op.0, facts.join(" | "));
                 }
-                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                let mut args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                // Argument-order candidates and the recovered permutation (`call_arg_orders`):
+                // C argument order is a recoverable choice — see EmitReport::call_order_candidates.
+                // Candidacy is recorded on every print, in the REFERENCE order the permutation
+                // will index into. Safety per argument: CONSTANTS ONLY. A constant's
+                // materialization is local to the call; permuting register-held variables
+                // re-orders their whole shuffle and ripples the compiler's allocation through
+                // the function (measured: three SAME_SHAPE siblings — FUN_00019e38/e98/ef8 —
+                // fell to MISMATCH under an identifier permutation, a pure regalloc cascade).
+                if let Some(t) = o.input(0) {
+                    let safe: Vec<bool> =
+                        (1..o.num_inputs()).map(|i| self.f.vn(a(i)).is_constant()).collect();
+                    if !safe.is_empty() {
+                        self.report.call_order_candidates.push((
+                            o.seqnum.pc.offset,
+                            self.f.vn(t).loc.offset,
+                            safe,
+                        ));
+                    }
+                }
+                if let Some(perm) = self.recovered.call_arg_orders.get(&o.seqnum.pc.offset) {
+                    if perm.len() == args.len() {
+                        args = perm.iter().map(|&j| args[j].clone()).collect();
+                    }
+                }
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {

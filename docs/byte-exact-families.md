@@ -5,6 +5,11 @@
 --divergences`) joined with `/data/be2/sb43.tsv`. Regenerate both rather than quote after
 any change; every count below is one awk over those files.*
 
+*Re-censused at sb93 (687 EXACT / 0.4355, `/data/be2/sb93-rec{,-div}.tsv`): single-class
+marginal values were missing 60 / operand-form 32 / extra 11 / regalloc 9 / selection 7 /
+immediate 4; 27 functions one substantive row from EXACT, 154 within three. That pass
+surfaced F5 below (landed sb94). F1–F4 counts above remain the sb43 measurement.*
+
 ## Method, and what a family is NOT
 
 Families are clustered by **symptom** — the class and text of the diverging instructions —
@@ -402,6 +407,53 @@ parked unless a specimen proves the shape.
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
+### F5 — the permutation family (sb93 census re-run): argument DECLARATION order, RESOLVED
+
+The sb93 re-census (687 EXACT / 0.4355) surfaced a family the sb43 numbers had buried:
+**35 functions whose entire substantive divergence is a pure permutation of identical
+instruction texts** — right instructions, wrong order. The detector is one awk (per
+function, the orig-text multiset equals the cand-text multiset). Dominant sub-shape:
+call-argument constant setups rotated (`MOV EAX,0xbe2 ; MOV EBX,0x4d08c ; MOV EDX,0x3`
+against ours `EBX, EDX, EAX`) — 5 near-frontier callers of ONE callee (`FUN_00058bec`)
+shared it exactly.
+
+**Mechanism (source + probe).** Watcom materializes register arguments in REVERSE declared
+order (OW 1.0 `bldcall.c`: `AssgnParms` → `ReverseParmNodeList` → `ParmIns`). So the
+original's setup sequence reads out the C parameter order the source DECLARED, which is
+invisible exactly when it matches the convention's storage order — and our rendering
+assumes storage order always. Probes on `FUN_0004d0f8` (the 1-second loop): ANSI prototype
+— no change; `parm [eax ebx edx]` single-bracket — pragma ignored (one bracket group per
+parameter is the syntax); `parm [eax] [ebx] [edx]` + args permuted — order follows the
+declaration; **`parm [edx] [ebx] [eax]` + `(3, 0x4d08c, 0xbe2)` — EXACT.**
+
+**Landed (sb94, +7 EXACT, zero movement elsewhere, WGSS 0.4361):** per-site evidence
+(`buildconfig::call_setup_sites` + `param_orders_from_evidence`), rendered as permuted
+argument list + full-arity caller pragma per TU (`RecoveredChoices::call_arg_orders`).
+Two measured gates: per SITE not per callee (a per-callee consensus broke two EXACT
+callers whose own sites read slot order — one callee's sites genuinely disagree, reason
+unresolved), and CONSTANT arguments only (an identifier permutation demoted three
+SAME_SHAPE siblings to MISMATCH as a pure regalloc cascade — variable reorder perturbs
+the allocator function-wide). Full entry: byte-exact-status.md sb94.
+
+**Residual (28 functions), classified:**
+
+- **Load scheduling — pile-B, now with a direct probe.** `FUN_00073328` forwards two stack
+  params; the original loads `[EBP+0xc]` then `[EBP+8]`, 10.0a loads ascending — and NO
+  source shape moves it (pragma order, argument order, explicit temps all probed). Also
+  `0006b496`/`00068bca` (load pairs) and the `00025a04/25de4/26004` triplet (a widening
+  pair displaced).
+- **Independent-STATEMENT order (~10, unworked and workable):** stores, INCs, and CALLs
+  displaced across one neighboring statement (`000125bc`, `00034590`, `0004c270`,
+  `0005d500`/`0005d57c`, `00025260`, `0003e7ec`, `0003ef60`, `0003e858`, `0005bbdc`) —
+  the persist-store ordering mechanism generalized beyond stores. Needs its own
+  candidate/evidence design; op addresses carry the original schedule.
+- **Displaced single constants (~6):** windows with one visible setup carry no order
+  information, and their co-arguments are identifiers/loads (`00011954`, `00011b9c`,
+  `00030bf4`, `00050a90`, `00021a48`, `000469b4`).
+- **Pure allocation pairs (pile-B):** `000294b8`, `000464b4`. **Masking order:**
+  `0004d528` (`AND AL,0xc0` vs `AND EAX,0xff` swapped — not a call site). **Encoding:**
+  `00074734` (`MOV EBP,ESP`, the other spelling — parked).
+
 ## Proposed order (revised after the F2 pilot and the toolchain synthesis)
 
 1. ~~F2 as the pilot~~ — **done**: SHL half fixed by `-5r` (+5 net EXACT); add-fold half
@@ -413,5 +465,9 @@ Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (6
 3. **F1** — the mass lever, but a complex; expect it to split into 2–3 mechanisms during
    instrumentation (the merged-boolean-return sub-shape is decompiler-side and live).
 4. **SAME_SHAPE clusters** — win density; note the pure-regalloc runs are pile-B.
-5. Re-run this census (both TSVs + the awks above) after each family lands, against the
-   `-5r` baseline (`/data/be2/sb43-5r.tsv`, `/data/be2/sb43-5r-div.tsv`).
+5. Re-run this census (both TSVs + the awks above) after each family lands — done at sb93
+   (surfaced F5, landed sb94); current baseline `/data/be2/sb94-rec{,-div}.tsv`.
+6. **F5 residual** — the independent-statement-order subfamily (~10 fns) is the next
+   candidate, with the measured caveat that specimen `000125bc`'s C statement order ALREADY
+   matches the original (the divergence is a compiler hoist its shape triggers) — probe each
+   specimen before designing machinery.
