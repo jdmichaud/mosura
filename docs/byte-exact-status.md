@@ -497,6 +497,34 @@ with a fake evidence rule would be the butterfly-chasing this project refuses.
 The arc's full trajectory, one emission with no compiler:
 621 (reference) → 627 → 643 → 647 → 651 → 663 → **665 EXACT**, WGSS 0.3963 → **0.4044**.
 
+### The 12 COMPILE_FAILs decomposed (sb82)
+
+Each CF scores zero at full weight in the WGSS denominator, so the population was
+characterized function by function:
+
+- **3× EFLAGS/CPU-detection code** (`00387`, `02077`, `02871`): PUSHFD/POPFD flag games and
+  `cpuid` — the POPCOUNT prelude tripwire fails them loudly, correctly (the alternative was
+  the old silent `(0)`). `00387` carries 8 hand-asm signature instructions; these originals
+  are almost certainly hand-written assembly, not compiled C.
+- **3× 64-bit values** (`02813`, `02911`, `02950`): `uint8` locals on a compiler with NO
+  64-bit type — probed: wcc386 10.0a rejects `__int64` outright. `02950`'s original is a
+  raw `MUL [EBP+0xc]` with a `CALL CS:[..]` dispatcher — stack-parameter passing and a
+  segment override, again hand-assembly signatures. A 64-bit-consuming original cannot have
+  been written in this compiler's C.
+- **2× cast-to-nonscalar** (`02714`, `02716`): E1037; `02714` contains `REP MOVSD`
+  (possibly Watcom's inlined memcpy — not conclusive either way).
+- **2× jumptable index unrecovered** (`03017`, `03018`): `MOSURA_SWITCH_INDEX_UNRECOVERED`
+  — genuine recovery work, the known gap.
+- **1× `spacebase` symbol leak** (`02474`): the stack-model name printed into C — a real
+  rendering bug, findable.
+- **1× E1010 partial write** (`02583`): the filed merge-question specimen.
+
+Consequence: roughly half the CF population is likely **hand-written assembly** — those are
+un-recompilable from C by construction and belong OUT of the C-recompilation denominator the
+way library functions already are (a not-C classification pass over hand-asm signatures:
+segment overrides, PUSHFD/POPFD, stack-parm MUL, string ops in nonstandard frames). The
+remaining real work: the two switch-index recoveries, the spacebase leak, the E1010 merge.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.
