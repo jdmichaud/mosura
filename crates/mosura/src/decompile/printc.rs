@@ -91,20 +91,6 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
     true
 }
 
-/// The 64-bit name of an x86-64 integer register by offset (for `extraout_*` etc.).
-fn reg64_name(offset: u64) -> Option<&'static str> {
-    Some(match offset {
-        0x0 => "RAX",
-        0x38 => "RDI",
-        0x30 => "RSI",
-        0x10 => "RDX",
-        0x08 => "RCX",
-        0x80 => "R8",
-        0x88 => "R9",
-        _ => return None,
-    })
-}
-
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
 #[derive(Debug, Clone, Copy)]
 enum Tier2Widen {
@@ -544,9 +530,15 @@ impl<'a> PrintC<'a> {
         if is_reg && vn.is_indirect_creation() {
             if let Some(def) = vn.def {
                 if self.f.op(def).code() == OpCode::Indirect {
-                    if let Some(r) = reg64_name(vn.loc.offset) {
-                        return format!("extraout_{r}");
-                    }
+                    // Ghidra names the register through the TRANSLATOR
+                    // (`glb->translate->getRegisterName(space, offset, size)`,
+                    // database.cc:2495) and falls back to the literal `var` when the
+                    // architecture names no register there. This was a hardcoded x86-64
+                    // offset table that ignored the varnode's SIZE, so on a 32-bit target it
+                    // named `EAX` "RAX" (measured: 14 such names in the WAR2 corpus, where
+                    // the oracle prints `extraout_ECX` / `extraout_CL`).
+                    let r = self.f.register_name(vn.loc.offset, vn.size).unwrap_or("var");
+                    return format!("extraout_{r}");
                 }
             }
         }

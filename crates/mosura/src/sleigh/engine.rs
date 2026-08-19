@@ -509,6 +509,29 @@ impl Spec {
             _ => None,
         })
     }
+    /// Every named register varnode as `((offset, size), name)` — the table behind Ghidra's
+    /// `Translate::getRegisterName(space, offset, size)`, which is how the decompiler names a
+    /// register in output (`extraout_<reg>`, `in_<reg>`, `unaff_<reg>`). The processor `.sla`
+    /// is the authority, so this works on any architecture; a hardcoded offset table is right
+    /// for exactly one and silently wrong elsewhere (measured: an x86-64 table named WAR2's
+    /// 32-bit EAX `RAX`).
+    pub fn register_table(&self) -> Vec<((u64, u32), String)> {
+        let Some(reg_space) = self.spaces.iter().find(|s| s.name == "register").map(|s| s.index)
+        else {
+            return Vec::new();
+        };
+        self.symbols
+            .iter()
+            .enumerate()
+            .filter_map(|(id, sym)| match sym {
+                Some(Symbol::Varnode { space, offset, size }) if *space == reg_space => {
+                    Some(((*offset, *size as u32), self.symbol_name(id as u32).to_string()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn operand(&self, id: u32) -> Option<&OperandSym> {
         match self.symbol(id) {
             Some(Symbol::Operand(o)) => Some(o),

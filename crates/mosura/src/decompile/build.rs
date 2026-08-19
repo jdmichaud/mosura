@@ -151,6 +151,7 @@ fn build_from_instrs(
     cspec: CspecSettings,
     ram_addr_size: u32,
     userops: &std::collections::HashMap<u64, String>,
+    reg_table: &[((u64, u32), String)],
 ) -> Funcdata {
     let mut spaces = SpaceManager::standard();
     // The `ram` (default data) space's address size, from the SLEIGH spec — Ghidra's
@@ -165,6 +166,10 @@ fn build_from_instrs(
     }
     let ram = spaces.by_name("ram").expect("standard ram space");
     let mut f = Funcdata::new(name, Address::new(ram, base), spaces);
+    // The architecture's register names, from the processor `.sla` — Ghidra reaches the same
+    // table through `glb->translate->getRegisterName` when it names `extraout_<reg>` and
+    // friends (database.cc:2495).
+    f.reg_names = reg_table.iter().cloned().collect();
     // The architecture's laned (vector) registers, wrapped for `ActionLaneDivide`. Sourced from the
     // processor spec's `vector_lane_sizes` via the loader ([`Spec::laned`]); empty ⇒ no lane splitting.
     f.laned = LanedRegisterSet::from_size_masks(laned.iter().copied());
@@ -232,6 +237,7 @@ pub fn raw_funcdata(
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
         &spec.userops,
+        &spec.register_table(),
     )
 }
 
@@ -292,6 +298,7 @@ pub fn raw_funcdata_flow(
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
         &spec.userops,
+        &spec.register_table(),
     )
 }
 
@@ -480,6 +487,7 @@ pub fn raw_funcdata_flow_image_overrides(
                 cspec.clone(),
                 ram_addr_size,
                 &spec.userops,
+                &spec.register_table(),
             );
         partial.image = chunks.iter().map(|(a, b)| (*a, b.to_vec())).collect();
         // Ghidra `FlowInfo::recoverJumpTables` -> `newAddress` (flow.cc:806): feed the targets
@@ -542,7 +550,16 @@ pub fn raw_funcdata_flow_image_overrides(
     // so draining it yields every decoded instruction exactly once, in creation order.
     let ordered: Vec<crate::sleigh::Instruction> = flow_order.iter().filter_map(|a| decoded.remove(a)).collect();
     let mut f =
-        build_from_instrs(name, entry, ordered, &spec.laned, cspec, ram_addr_size, &spec.userops);
+        build_from_instrs(
+            name,
+            entry,
+            ordered,
+            &spec.laned,
+            cspec,
+            ram_addr_size,
+            &spec.userops,
+            &spec.register_table(),
+        );
     f.switch_targets = switch_targets;
     f.switch_defaults = switch_defaults;
     f.jumptables = jumpvec.into_values().collect();

@@ -263,6 +263,17 @@ type.cc:3136 — the stack pointer's width capped at 4). Measured: the default a
 is **byte-identical corpus-wide** and verdicts are unchanged (661 EXACT, 0.3973) — the fix is
 parameterization, not behaviour.
 
+**Register naming was the fourth leak (sb61).** `printc` named `extraout_*` from a
+seven-entry x86-64 offset table that ignored the varnode's SIZE, so WAR2's 32-bit `EAX`
+printed as `RAX` at 14 sites where the oracle prints `extraout_ECX`/`extraout_CL`. Ghidra
+names it through the TRANSLATOR (`glb->translate->getRegisterName(space, offset, size)`,
+database.cc:2495) with a literal `var` fallback; mosura now carries the processor's own
+SLEIGH register table (`Spec::register_table` → `Funcdata::reg_names`, threaded like
+`userops`), so the names are right on any architecture. 17 TUs renamed; verdicts hold at
+661 EXACT with one MISMATCH → SAME_SHAPE (renaming shifts Watcom's symbol-order allocation
+tie-break — the declaration-order finding in this document, seen from the other side).
+The sweep's one remaining gap, endianness, is filed in TODO.md rather than half-fixed.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the

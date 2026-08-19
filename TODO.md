@@ -592,6 +592,29 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
 the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.
 
+## Target-independence sweep (2026-08-18) — one gap left OPEN: endianness
+
+The audit that fixed four leaked target constants (int size, shift mask, local widths,
+register naming — see byte-exact-status.md) also swept for the rest. Clean: stack growth
+direction is already parameterized (`fspec::default_local_range(.., stack_grows_negative)`),
+and every `Datatype::Pointer(8, ..)` in the tree is inside a `#[cfg(test)]` module, where
+fixing an architecture is legitimate.
+
+**OPEN — the decompiler assumes LITTLE-ENDIAN throughout.** `Space`/`SpaceManager` carry no
+endianness at all, and **31 comment-marked production sites** in `decompile/` encode LE
+ordering directly (PIECE low-part selection `rules.rs:3758`, SUBPIECE containment
+`mergesnip.rs:191`, lane indexing `lanedivide.rs:229/266`, …). Ghidra parameterizes this:
+**132 `isBigEndian` call sites** in its decompiler C++. `coverage.md` already notes one
+instance in passing (RuleExpandLoad's inert `lsbCut` arm) but the gap is not tracked as a
+whole.
+
+Not fixable in one pass and deliberately NOT half-fixed: it needs endianness on the space
+model plus each of the 31 sites ported to Ghidra's actual conditional. Sizing note: this
+blocks the vendored big-endian processors (MIPS, PowerPC, 68k — the FID work already
+carries a 68k BE column, so the project does target them). **Revival condition:** the first
+big-endian decompile target. Until then every LE assumption is *correct for every target
+mosura decompiles*, which is why it has been invisible.
+
 ## FIXED (2026-08-18, sb59): the short-circuit fold's opcode was non-Ghidra
 
 Root cause, from Ghidra's own source: `newBlockCondition` (block.cc:2949) takes

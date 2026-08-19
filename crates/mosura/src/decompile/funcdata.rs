@@ -21,6 +21,11 @@ pub struct Funcdata {
     pub addr: Address,
     /// The architecture's address spaces.
     pub spaces: SpaceManager,
+    /// The architecture's register names by `(offset, size)` — mosura's stand-in for Ghidra's
+    /// `glb->translate->getRegisterName` (database.cc:2495), filled from the processor `.sla`
+    /// by the spec-driven builder. Empty on a hand-built `Funcdata`, which then names
+    /// registers Ghidra's no-name way (`var`).
+    pub reg_names: std::collections::HashMap<(u64, u32), String>,
     varnodes: Vec<Varnode>,
     ops: Vec<PcodeOp>,
     blocks: Vec<BlockBasic>,
@@ -311,6 +316,7 @@ impl Funcdata {
         // without it `ScopeLocal` would map no stack local at all.
         let proto_model = super::fspec::ProtoModel::with_default_ranges(&spaces);
         Funcdata {
+            reg_names: std::collections::HashMap::new(),
             name: name.into(),
             addr,
             spaces,
@@ -658,6 +664,12 @@ impl Funcdata {
     /// and the inference gives 2 there as well. Hardcoding 4 — as the integer-promotion port
     /// originally did — silently mis-analyses every non-32-bit target while being invisible
     /// on x86-32/64, where the inference also yields 4.
+    /// Ghidra `Translate::getRegisterName` — the name of the register at `(offset, size)` in
+    /// the register space, or `None` when the architecture names no such register.
+    pub fn register_name(&self, offset: u64, size: u32) -> Option<&str> {
+        self.reg_names.get(&(offset, size)).map(String::as_str)
+    }
+
     pub fn size_of_int(&self) -> u32 {
         self.spaces
             .by_name("stack")
