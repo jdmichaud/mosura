@@ -381,6 +381,12 @@ arm's per-function selection helps only if the whole function lands — and the 
 local-width's ~16 (the one axis whose evidence measured too weak to recover) plus a couple of
 per-function wins. 486 TUs differ from the default.
 
+**sb66 — the recovered tree joins the dev-time selection: 661 → 663 EXACT.** Per-site
+recovery wins two mixed-want functions (`01859`, `02294`) that NO per-function arm can reach,
+so the field emission is also a strict addition to the development union. The board's two
+headline configurations: field (one emission, no compiler) **643 / 0.3986**; dev union (four
+inputs, compiler-verified) **663 / 0.3972**.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

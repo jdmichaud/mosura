@@ -83,18 +83,25 @@ tried left to right, so put the reference rendering first.
 
 ## The union (arms + per-function selection)
 
-The canonical measurement is now the UNION of two emission arms — `local-width` is a
-searched axis (`decompile/emit.rs`), so the survey emits both renderings and the
-selection takes the per-function best on the byte verdict:
+The canonical measurement is the UNION of the searched arms PLUS the recovered tree,
+selected per function on the byte verdict (reference first):
 
-    war2_survey <exe> <out> --arms 'default;local-width=storage;compare-form=complement,return-split=paths'
-    recompile_check <exe> <out>/manifest.tsv <out>/src                                  recover <WATCOM> --cache <cache> --out <sbNN>.tsv
+    war2_survey <exe> <out> --arms 'default;local-width=storage;compare-form=complement,return-split=paths,cond-form=nested' --recovered <out>/recovered
+    recompile_check <exe> <out>/manifest.tsv <out>/src        recover <WATCOM> --cache <cache> --out <sbNN>.tsv
+    recompile_check <exe> <out>/manifest.tsv <out>/recovered  recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
     recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+local-width-storage recover <WATCOM> --cache <cache> --out <sbNN>-lw.tsv
-    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+compare-form-complement+return-split-paths recover <WATCOM> --cache <cache> --out <sbNN>-cf.tsv
-    recompile_select default=<sbNN>.tsv:<out>/src lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
-                     cf=<sbNN>-cf.tsv:<out>/src-shift-mask-hardware+compare-form-complement+return-split-paths \
+    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+compare-form-complement+return-split-paths+cond-form-nested recover <WATCOM> --cache <cache> --out <sbNN>-cf.tsv
+    recompile_select default=<sbNN>.tsv:<out>/src rec=<sbNN>-rec.tsv:<out>/recovered \
+                     lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
+                     cf=<sbNN>-cf.tsv:<out>/src-shift-mask-hardware+compare-form-complement+return-split-paths+cond-form-nested \
                      --out <sbNN>-select.tsv --out-src <out>/union
     recompile_check <exe> <out>/manifest.tsv <out>/union recover <WATCOM> --cache <cache> --out <sbNN>-union.tsv
+
+The `--recovered` tree is the FIELD emission — per-site choices decided from the original's
+own instructions by the target profile (`buildconfig::*_from_evidence`), no compiler in the
+loop. It participates in the dev-time selection because per-site decisions win mixed-want
+functions no per-function arm can (sb66: +2 EXACT over the three-arm union), and standalone
+it IS what a field `mosura recompile` would ship (sb65: 643 EXACT / 0.3986 WGSS).
 
 The union verdict is taken from the MATERIALIZED tree's own recompile (the last step),
 never by joining verdict files. Trap (measured): `--out-src` must land INSIDE the survey
