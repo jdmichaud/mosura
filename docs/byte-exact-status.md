@@ -563,6 +563,20 @@ pattern). And the signature list gained the mnemonic variants the first census m
 now exactly the honest core: E1010 (`02583`), the two cast-to-nonscalar (`02714`/`02716`),
 the two switch-index recoveries (`03017`/`03018`), and `02911`.
 
+**The int8-divide CFs fixed by a value-identical narrow rendering (sb89).** Ghidra models
+the 32-bit `IDIV`'s 64-bit dividend as 8-byte arithmetic
+(`SUBPIECE(INT_SDIV(sext K, sext x), 0)`), and 8-byte integers are undeclarable on this
+target — the loud xunknown8 tripwire failed both functions. The 4-byte rendering `K / x`
+compiles to the very IDIV the original executes, so it is value-identical to the ORIGINAL
+everywhere including the INT_MIN/-1 trap the 64-bit model would avoid. Gated on: low-half
+extraction at int width, divide-family def wider than int, each operand a
+matching-signedness extension of an int-width value or a constant representable at int
+width. COMPILE_FAIL 6 → **4**, WGSS 0.4186 → **0.4194** (the two functions rejoin the
+scored population at their real similarity). The remaining four: E1010 (`02583`), the two
+switch-index recoveries (`03017`/`03018`), and `02911` — a genuine 64-bit multiply with
+both halves consumed, unwritable in plain C but carrying no textual asm signature; it
+stays a characterized CF rather than force-classified.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

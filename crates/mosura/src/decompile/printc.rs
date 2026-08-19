@@ -791,6 +791,49 @@ impl<'a> PrintC<'a> {
         (widened.size() == int_size).then_some(widened)
     }
 
+    /// The 4-byte rendering of a wide divide/remainder whose operands are extensions of
+    /// int-width values (see the Subpiece arm's int8-divide comment), or `None`.
+    fn narrow_divide(&mut self, wide: VarnodeId) -> Option<(String, u8)> {
+        let d = self.f.vn(wide).def?;
+        let o = self.f.op(d);
+        let (sym, signed) = match o.code() {
+            OpCode::IntSdiv => ("/", true),
+            OpCode::IntDiv => ("/", false),
+            OpCode::IntSrem => ("%", true),
+            OpCode::IntRem => ("%", false),
+            _ => return None,
+        };
+        let int_size = self.f.size_of_int();
+        if self.f.vn(wide).size <= int_size {
+            return None;
+        }
+        let mut narrow = |v: VarnodeId, right: bool| -> Option<String> {
+            let vn = self.f.vn(v);
+            if vn.is_constant() {
+                let k = vn.constant_value();
+                let bits = u64::from(int_size) * 8;
+                let ok = if signed {
+                    let s = k as i64;
+                    s >= -(1i64 << (bits - 1)) && s < (1i64 << (bits - 1))
+                } else {
+                    bits >= 64 || k < (1u64 << bits)
+                };
+                return ok.then(|| render_const(k & if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 }, int_size));
+            }
+            let dd = vn.def?;
+            let ext_ok = match self.f.op(dd).code() {
+                OpCode::IntSext => signed,
+                OpCode::IntZext => !signed,
+                _ => false,
+            };
+            let src = self.f.op(dd).input(0)?;
+            (ext_ok && self.f.vn(src).size == int_size).then(|| self.operand(src, 13, right))
+        };
+        let l = narrow(o.input(0)?, false)?;
+        let r = narrow(o.input(1)?, true)?;
+        Some((format!("{l} {sym} {r}"), 13))
+    }
+
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
     fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
         if let Some(n) = self.snapshot_names.get(&v) {
@@ -1407,6 +1450,20 @@ impl<'a> PrintC<'a> {
                 let in0 = a(0);
                 let off =
                     if self.f.vn(a(1)).is_constant() { self.f.vn(a(1)).constant_value() } else { 1 };
+                // The int8-divide idiom: Ghidra models the 32-bit IDIV/DIV's wide dividend as
+                // 8-byte arithmetic (`SUBPIECE(INT_SDIV(sext K, sext x), 0)`), and 8-byte
+                // integers are UNDECLARABLE on this target (the xunknown8 tripwire) — the two
+                // measured COMPILE_FAILs. The 4-byte rendering `K / x` compiles to the very
+                // IDIV the original executes, so it is value-identical to the ORIGINAL
+                // everywhere, including the INT_MIN/-1 trap the 64-bit model would avoid.
+                // Gate: low-half extraction at int width, divide-family def at wider width,
+                // each operand a matching-signedness extension of an int-width value or a
+                // constant representable at int width under that signedness.
+                if off == 0 && self.f.vn(o.output.unwrap()).size == self.f.size_of_int() {
+                    if let Some(t) = self.narrow_divide(in0) {
+                        return t;
+                    }
+                }
                 let out_ty = self.type_of(o.output.unwrap());
                 let in_ty = self.type_of(in0);
                 if is_subpiece_cast(&out_ty, &in_ty, off) {
