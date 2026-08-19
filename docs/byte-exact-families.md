@@ -351,6 +351,20 @@ the binding constraint for this shape; the divergence involves cross-register al
 (the original splits load-register from widened-register where our rendering keeps one
 variable). Reverted; the trio stays in the census as allocation-adjacent.
 
+**Stored-boolean battery (sb86 era): the question closes NEGATIVELY.** Seven shapes
+compiled against the profile: `g = (a==b)`, the branch-and-store `if (a==b) g=1; else
+g=0;`, the ternary, a bool local, and call-arg forms. Result: **Watcom's optimizer converts
+branch-and-store BACK into `SETcc`** — no C shape avoids materialization for a stored
+boolean under `-onatx`. The only branch-preserving context is DIVERGING call arguments
+(`if (a==b) return f(1); return f(0);` stays branch-only, because the continuations
+differ). Consequence: the remaining extra-`SETcc` census (184 functions corpus-wide, but
+only 7 near-frontier) is NOT reachable by any rendering or recovery for the store-shaped
+sites — the originals' branch-only stores are the interim build's selection policy
+(pile-B) or flow shapes ours doesn't reproduce for other reasons. The landed recoveries
+(return-split, cond-form) already cover the shapes that CAN be reached; call-arg splitting
+is expressible but its near-frontier population is within the 7 and duplicates calls —
+parked unless a specimen proves the shape.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 

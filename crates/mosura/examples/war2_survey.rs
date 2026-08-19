@@ -70,6 +70,11 @@ typedef struct mosura_no_such_integer_width_on_this_target undefined8;
 typedef struct mosura_no_such_integer_width_on_this_target uint8;
 typedef struct mosura_no_such_integer_width_on_this_target int8;
 typedef struct mosura_no_such_integer_width_on_this_target xunknown8;
+/* Ghidra's internal TypeSpacebase — the stack-pointer's pointee. Never a value type in
+   real output, but a pointer to it can reach a declaration (stack-switching code stores
+   ESP-derived pointers; FUN_00060270). An incomplete struct keeps the pointer declarable
+   and every cast legal while staying loud and greppable, like the xunknown widths above. */
+typedef struct mosura_spacebase spacebase;
 typedef struct mosura_no_such_integer_width_on_this_target xunknown6;
 typedef struct mosura_no_such_integer_width_on_this_target xunknown7;
 typedef struct mosura_no_such_integer_width_on_this_target undefined6;
