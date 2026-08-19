@@ -284,11 +284,26 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
     };
     candidates.iter().all(|&(ret_pc, _, _)| {
         let Some(end) = insns.iter().position(|x| x.addr >= ret_pc) else { return false };
-        insns[..end]
-            .iter()
-            .rev()
-            .find_map(|x| writes_a(&x.text))
-            .unwrap_or(false)
+        let Some(last) = insns[..end].iter().rposition(|x| writes_a(&x.text).is_some()) else {
+            return false;
+        };
+        if writes_a(&insns[last].text) != Some(true) {
+            return false; // full-register write — the widened declaration is right
+        }
+        // A narrow last write PRECEDED by the container zero is the WIDENING IDIOM
+        // (`XOR EAX,EAX ; MOV AL,[m] ; RET` — measured on FUN_00031044): the function
+        // returns the zero-extended value in full EAX, so the contract is wide. Same
+        // consumed-zero scan as `widened_sites_from_evidence`: stop if anything between
+        // writes the A family.
+        for x in insns[last.saturating_sub(3)..last].iter().rev() {
+            if x.text == "XOR EAX,EAX" {
+                return false; // wide: the narrow write completes a widening
+            }
+            if writes_a(&x.text).is_some() {
+                break;
+            }
+        }
+        true
     })
 }
 

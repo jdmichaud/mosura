@@ -446,6 +446,33 @@ use-site-evidence question, documented as this axis's remaining gap.
 | field (one emission, no compiler) | **651** | **0.4032** |
 | dev union (default + recovered + local-width) | **668** | 0.3973 |
 
+### The "12 lw-only wins" decomposed (sb72–sb73) — no use-site population exists
+
+Worked as JD asked, and the honest outcome is that the use-site-evidence hypothesis
+DISSOLVED under instrumentation. The 12 functions the blanket arm still won decomposed into:
+
+- **9 were a plain bug**: the caller-side `parm` pragma post-pass patched arm directories but
+  not the recovered tree, so recovered TUs externed nonstandard callees with no contract.
+  Fixed (one line — the recovered dir joins the pass): field 651 → 660.
+- **~3 were a `return-width` evidence mis-read**: `XOR EAX,EAX ; MOV AL,[m] ; RET` is the
+  widening idiom feeding the return — the last write is narrow but the contract is WIDE. The
+  rule now runs the same consumed-zero back-scan before calling a return narrow: 660 → 663.
+- **4 are codegen butterflies, not evidence**: the difference is EPILOGUE TAIL-MERGING (the
+  original duplicates `POP;POP;RET` per return path; our rendering shares one via `JMP`), and
+  the widened local merely perturbs Watcom out of merging. No principled rule maps
+  "duplicated epilogues" to "widen this local" — these are the arm's earned keep, same class
+  as the parked allocation policy.
+
+| board | EXACT | WGSS |
+| --- | --- | --- |
+| field (one emission, no compiler) | 651 → **663** | 0.4032 → **0.4039** |
+| two-input union (default + recovered) | **664** | |
+| three-input union (+ local-width) | **668** | |
+
+The union's diagnostic reading now: recovered is within 1 of the two-input union (a single
+evidence mis-read left) and 5 of the full board, 4 of which are butterflies. `local-width`
+stays for those 4.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

@@ -1270,7 +1270,14 @@ fn main() {
             out
         };
         let mut patched = 0usize;
-        for d in &arm_dirs {
+        // the recovered tree externs the same callees and needs the same contracts — its
+        // omission cost EXACT verdicts that looked like evidence-rule failures (the sb71
+        // "12 lw-only wins" turned out partly to be TUs missing their callee pragmas)
+        let mut all_dirs = arm_dirs.clone();
+        if let Some(d) = &recovered_dir {
+            all_dirs.push(d.clone());
+        }
+        for d in &all_dirs {
             let Ok(entries) = std::fs::read_dir(d) else { continue };
             for e in entries.flatten() {
                 let path = e.path();
