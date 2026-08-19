@@ -288,6 +288,16 @@ Value-safety gate when built: the global must have no write between entry and th
   the probe discipline (no specimen win, no ship). Next lever: small out-of-corpus C
   experiments against wcc386 to map the TEST-mem selection, then revisit.
 
+**WRONG-CODE reframing of the branch-polarity residue (2026-08-18, filed as PRIORITY in
+TODO.md):** specimen `01304`'s "2 polarity rows" are a semantic inversion — the original
+computes `(X||Y) && P`, the oracle prints it, mosura's structure BUILDS it
+(`CondAnd[CondOr,P]`), and the render prints `(X||Y) || P`. The deferred-negation
+adaptation (`cond_flip`/`operand_oriented` XORs standing in for Ghidra's materialized
+`negateCondition`) is internally inconsistent for this shape. Two consequences: part of
+the "branch polarity" class is wrong code, not rendering choice; and the byte-checker
+under-reports semantic inversions as cosmetic rows — treat `selection` rows on paired
+`Jcc`s as suspect until the fix and the corpus audit land.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 

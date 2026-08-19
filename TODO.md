@@ -592,6 +592,25 @@ Detailed grounding (Ghidra source refs + why each approximation was net-negative
 `decompiler-plan.md`, `floats-plan.md`, `switches-plan.md`, `type-system-plan.md` describe
 the approximation-era feature work on the now-removed `src/decomp/` prototype. Kept for reference; the live plan is `port-plan.md`.
 
+## WRONG-CODE: condition rendering inverts a connective (found 2026-08-18, PRIORITY)
+
+Specimen `01304`/`FUN_00038bfc`, fixture `pol01304` in the pinned tree's datatests. The
+original computes `((c=='X' || c=='Y') && p==1)` — both char-tests funnel INTO the
+p-test — and the ORACLE prints exactly that. Mosura's STRUCTURE is right (the collapse
+installs `CondAnd[CondOr[X,Y], P]`, MOSURA_STRUCT-verified) but the RENDER prints
+`(... || ...) || (p == '\x01')`: the connective was De Morgan'd (`is_and != neg`) while
+the leaves printed positive — the deferred-negation adaptation (`cond_flip` +
+`operand_oriented` XORs at print, standing in for Ghidra's materialized
+`negateCondition`) is internally inconsistent for this shape. A WRONG PROGRAM emitted
+under the default rendering, and the byte-checker scored it as just 2 divergence rows
+(`selection`/`branch-target`) — the "branch-polarity family" is at least partly
+wrong-code, and the checker cannot distinguish semantic inversion from cosmetic
+polarity. Fix direction per CLAUDE.md: the adaptation is now standing between us and
+correctness — replace with Ghidra's real structure (negateCondition materializes the
+flip into the condition ops at collapse time) or prove the XOR algebra and fix the
+inconsistent term. Audit afterwards: every && / || in the corpus emitted before the fix
+is suspect; the polarity-row census (branch-target+selection Jcc pairs) is the sweep.
+
 ## Open defects found during the near-frontier argument session (2026-08-18)
 
 - **E1010 regression specimen `02583`/`FUN_00066100`** (sb53, MISMATCH → COMPILE_FAIL):
