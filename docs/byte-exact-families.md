@@ -298,6 +298,35 @@ the "branch polarity" class is wrong code, not rendering choice; and the byte-ch
 under-reports semantic inversions as cosmetic rows — treat `selection` rows on paired
 `Jcc`s as suspect until the fix and the corpus audit land.
 
+### F4 — the MOVSX / narrow-compare family (14 near-frontier functions): WORKED, ceiling is SAME_SHAPE
+
+Signature `selection MOV>MOVSX` (+ `TEST>CMP` or `extra SAR`). The original compares in a
+16-BIT register (`MOV AX,[EDX] ; CMP AX,9`); our C's `*param_2 == 9` takes C's integer
+promotion and Watcom emits `MOVSX EAX,[EDX] ; CMP EAX,9`. Probed to the end on specimen
+`01923`/`FUN_0004cb60`:
+
+| C shape | result |
+| --- | --- |
+| baseline (`*p == 9 && p[1] == 0`) | MISMATCH, 6 rows |
+| narrow local only | MISMATCH — load narrows, compare still promotes (`CWDE`) |
+| **narrow constant cast only** (`== (int2)9`) | MISMATCH **9 rows — WORSE**: Watcom switches to `CMP word ptr [EDX],9`, losing the load |
+| narrow local + narrow cast | 5 rows — first clause EXACT |
+| both locals + casts + comma clause | SETcc materialization (the comma-clause mechanism) |
+| **narrow locals + narrow casts + NESTED ifs** | **SAME_SHAPE, 2 rows** |
+| …plus single-variable reuse | SAME_SHAPE, same 2 rows |
+
+So the recipe is a three-part combination — narrow local materialization, short-typed
+comparison constants, and `cond-form=nested` — and its ceiling on this specimen is
+SAME_SHAPE: the last two rows are the allocator choosing `DX` where the original uses `AX`,
+which is parked pile-B (`DoubleRegs[]`).
+
+**Measured and rejected: a `compare-width=narrow` axis** (the cast alone, which was the one
+cheap piece). Implemented, emitted as a fourth arm, and scored: **590 EXACT against the
+default arm's 621, winning ZERO functions uniquely** — the cast without the local is
+actively harmful, as the probe table predicted. Reverted rather than shipped. Revival
+condition: implement the narrow-local materialization first (tier-2's sibling — it keeps the
+value NARROW where `local-width=storage` widens it), then re-test the cast on top of it.
+
 Top near-miss substitution texts for the record: `MOV EAX,0x1`→`MOV AL,0x1` (68 rows),
 `MOV CL,AL`→`MOV CL,[EBP-4]` (23), `MOV EAX,0x1`→`AND EAX,0xff` (21).
 
