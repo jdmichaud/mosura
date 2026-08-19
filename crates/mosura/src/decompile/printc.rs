@@ -91,6 +91,16 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
     true
 }
 
+/// What an emission recorded about the CHOICES it faced — the input a target profile needs to
+/// decide those choices from the original bytes instead of by search.
+#[derive(Debug, Default, Clone)]
+pub struct EmitReport {
+    /// Every local the `local-width` axis would re-declare, as `(varnode, defining
+    /// instruction address)`. The address is what a target rule scores: it is where the
+    /// ORIGINAL either widened the value or kept it narrow.
+    pub local_width_candidates: Vec<(VarnodeId, u64)>,
+}
+
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
 #[derive(Debug, Clone, Copy)]
 enum Tier2Widen {
@@ -128,6 +138,9 @@ struct PrintC<'a> {
     /// at register width (see `storage_widened_local`). Default false = the reference
     /// rendering.
     widen_narrow_locals: bool,
+    /// Choices this print faced, for a target profile to decide from evidence — see
+    /// [`EmitReport`].
+    report: EmitReport,
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
     complement_compares: bool,
@@ -624,6 +637,15 @@ impl<'a> PrintC<'a> {
         if !self.widen_narrow_locals {
             return None;
         }
+        self.local_width_candidate(id, v)
+    }
+
+    /// The gate WITHOUT the axis switch — "is this local one the `local-width` axis would
+    /// re-declare, and at what type". Enumerating candidates independently of the chosen value
+    /// is what lets a target profile decide the value from evidence in the original bytes (no
+    /// compiler in the field; see byte-exact-status.md, "From searched axes to RECOVERED
+    /// choices"). [`EmitReport::local_width_candidates`] is this set, recorded during a print.
+    fn local_width_candidate(&self, id: u32, v: VarnodeId) -> Option<Datatype> {
         // Tier-2 materialized temps widen UNSIGNED regardless of the recovered
         // signedness — the field doc on `tier2_widen` carries the measured justification,
         // and the membership gates make the sign value-irrelevant.
@@ -3077,7 +3099,17 @@ pub fn print_c(f: &Funcdata) -> String {
 ///
 /// Every θ renders the same recovered program; see [`EmitChoices`] for the rules that keep that
 /// true, and for why an axis is not a place to repair a decompilation defect.
+/// [`print_c_with`], also returning what the print recorded about the choices it faced — the
+/// input a target profile scores against the original's bytes (see [`EmitReport`]).
+pub fn print_c_report(f: &Funcdata, choices: &EmitChoices) -> (String, EmitReport) {
+    print_c_inner(f, choices)
+}
+
 pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
+    print_c_inner(f, choices).0
+}
+
+fn print_c_inner(f: &Funcdata, choices: &EmitChoices) -> (String, EmitReport) {
     let reg_space = f.spaces.by_name("register");
 
     // Parameters: the recovered function prototype (Ghidra `ActionInputPrototype` →
@@ -3196,6 +3228,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         switch_exit_suppress: std::collections::HashSet::new(),
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
+        report: EmitReport::default(),
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
         nest_cond_stmts: choices.cond_form == super::emit::CondForm::Nested,
@@ -3405,6 +3438,30 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
         }
     }
 
+    // Record the `local-width` candidate set — the locals the axis would re-declare, with the
+    // address of each one's DEFINING instruction. Recorded on EVERY print (both axis values),
+    // because a target profile needs the candidates to decide the value from the original's
+    // bytes. One entry per HighVariable, since that is what gets one declaration.
+    {
+        let reps: Vec<u32> = p.high_members.keys().copied().collect();
+        for rep in reps {
+            let Some(members) = p.high_members.get(&rep) else { continue };
+            let Some(&v) = members.first() else { continue };
+            if p.local_width_candidate(rep, v).is_none() {
+                continue;
+            }
+            // the defining instruction address of the value (any written member; they share
+            // the variable, and the first written one is where the original establishes it)
+            let pc = members
+                .iter()
+                .filter_map(|&m| f.vn(m).def.map(|d| f.op(d).seqnum.pc.offset))
+                .min();
+            if let Some(pc) = pc {
+                p.report.local_width_candidates.push((v, pc));
+            }
+        }
+    }
+
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
     // signature + declarations + body, as Ghidra does.
     let t0 = std::time::Instant::now();
@@ -3452,7 +3509,7 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
     }
     out.push_str(&body);
     out.push_str("}\n");
-    out
+    (out, p.report)
 }
 
 #[cfg(test)]

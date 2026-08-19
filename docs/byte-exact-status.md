@@ -302,6 +302,34 @@ axis re-declares. The address-anchored rule points the right way (+0.0134 where 
 −0.0043 where narrow defs exist but are NOT widened, which is the correct negative), but it
 covers only 28 functions while the arm changes 945 TUs.
 
+**RESULT (machinery built, rule calibrated):** the printer now records its own candidate set
+(`printc::EmitReport::local_width_candidates` — every local the axis would re-declare, with
+the address of its defining instruction, recorded on every print regardless of the axis
+value), and the Watcom profile scores exactly that set
+(`buildconfig::local_width_from_evidence` — target-specific by construction, hence beside the
+profile and not in `decompile::emit`). Measured over all 2,892 user functions:
+
+| emission | EXACT | mean per-function sim |
+| --- | --- | --- |
+| default arm | 621 | 0.5554 |
+| **RECOVERED (rule decides per function, no compiler)** | **621** | **0.5550** |
+| searched union of the two arms | 637 | 0.5630 | ← ceiling, needs a compiler |
+
+Where the rule chose `storage` (271 functions): **50 better, 41 worse, 180 unchanged.** So
+the def-site signature is a real but *weak* signal, and it recovers essentially none of the
+16-function benefit the search finds. **`local-width` is not viable as a recovered axis on
+def-site evidence alone.** Next lever if it is worth pursuing: score the USE sites too (does
+the original re-narrow at each use, or keep the value wide?), since Watcom's choice depends on
+the whole live range, not one instruction. Note the ceiling is only 16 functions (2.5%), so
+the investment should be weighed against the other axes — whose evidence is far more
+determinate: `compare-form` reads the original's own `CMP` constant, `return-split` and
+`cond-form` read whether the original materialized a boolean (`SETcc`) or branched. Those are
+direct readouts, not correlations, and they are the ones to convert next.
+
+**The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
+in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
+function of the original's instructions.
+
 **Why the coverage gap, and the fix:** the probe enumerated candidates its own way (ops whose
 output is a narrow register varnode with a `MOV` at that address) instead of the candidate set
 the axis actually uses (`printc::storage_widened_local`'s gate — HighVariable members, def
