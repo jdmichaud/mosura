@@ -1157,6 +1157,10 @@ fn main() {
                 ),
                 widen_local_reps: widen.0,
                 tier2_sites: widen.1,
+                snapshot_sites: mosura::recompile::buildconfig::entry_snapshots_from_evidence(
+                    &report.snapshot_candidates,
+                    &insns,
+                ),
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —

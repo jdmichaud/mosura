@@ -119,6 +119,14 @@ pub struct EmitReport {
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
     /// branch-only is what the split rendering compiles to.
     pub return_split_candidates: Vec<u64>,
+    /// Every input-flagged narrow RAM value consumed as a call argument, as
+    /// `(value, global address, size)` — the entry-snapshot candidates. The original either
+    /// snapshots the global into a register at entry (ONE narrow load from that absolute
+    /// address — `MOV AL,[0x8032c]` before the branch, probe-validated EXACT as
+    /// `uint1 uVarN = xRamX;` at body top) or references memory at each use. Rendering the
+    /// snapshot is value-identical by SSA construction: the uses read the INPUT version of
+    /// the global, which is definitionally its entry value.
+    pub snapshot_candidates: Vec<(VarnodeId, u64, u32)>,
     /// Every RETURN whose value is narrower than the recovered return storage, as
     /// `(RETURN instruction address, value size, recovered storage size)`. The target rule
     /// reads the ORIGINAL's last write to the return register before that address: a narrow
@@ -157,6 +165,11 @@ pub struct RecoveredChoices {
     pub widen_local_reps: std::collections::HashSet<u32>,
     /// Values whose tier-2 materialization applies (`local-width` tier 2, per site).
     pub tier2_sites: std::collections::HashSet<VarnodeId>,
+    /// Input-flagged narrow RAM values rendered as an entry snapshot — a declared temp
+    /// initialized from the global at body top, uses reading the temp. The value is the
+    /// DECLARED width: the value's own size (bare narrow load in the original) or int width
+    /// (the original pre-zeroes the container — the widening idiom on a global).
+    pub snapshot_sites: std::collections::HashMap<VarnodeId, u32>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -199,6 +212,10 @@ struct PrintC<'a> {
     /// Choices this print faced, for a target profile to decide from evidence — see
     /// [`EmitReport`].
     report: EmitReport,
+    /// Entry-snapshot temps: value → temp name (uses render the name), plus the declaration
+    /// list `(name, type, initializer)` printed with the locals.
+    snapshot_names: HashMap<VarnodeId, String>,
+    snapshot_decls: Vec<(String, Datatype, String)>,
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
     complement_compares: bool,
@@ -750,6 +767,9 @@ impl<'a> PrintC<'a> {
 
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
     fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
+        if let Some(n) = self.snapshot_names.get(&v) {
+            return (n.clone(), 16);
+        }
         let vn = self.f.vn(v);
         if vn.is_constant() {
             // A float-typed constant prints as a C float literal (Ghidra `pushConstant` →
@@ -3402,6 +3422,8 @@ fn print_c_inner(
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         report: EmitReport::default(),
+        snapshot_names: HashMap::new(),
+        snapshot_decls: Vec::new(),
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         recovered: recovered.clone(),
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
@@ -3663,6 +3685,51 @@ fn print_c_inner(
         }
     }
 
+    // Entry-snapshot candidates (see EmitReport::snapshot_candidates): input-flagged narrow
+    // RAM values consumed as call arguments. Recorded on every print; under a recovered
+    // decision the value becomes a declared temp initialized from the global at body top,
+    // with every use reading the temp. The global expression is rendered BEFORE the
+    // substitution registers, so the initializer names the global itself.
+    {
+        let ram = f.spaces.by_name("ram");
+        for i in 0..f.num_varnodes() as u32 {
+            let v = VarnodeId(i);
+            let vn = f.vn(v);
+            if !vn.is_input()
+                || Some(vn.loc.space) != ram
+                || vn.size == 0
+                || vn.size >= f.size_of_int()
+            {
+                continue;
+            }
+            // the probe family's shape: EVERY use is a call argument. A value also stored or
+            // computed with (measured: FUN_00011a50's store use) perturbs allocation when
+            // materialized — outside the validated shape, so not a candidate.
+            let live: Vec<_> = vn
+                .descend
+                .iter()
+                .copied()
+                .filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker())
+                .collect();
+            let all_call_args = !live.is_empty()
+                && live.iter().all(|&u| {
+                    matches!(f.op(u).code(), OpCode::Call | OpCode::Callind)
+                        && f.op(u).inrefs.iter().skip(1).any(|&a| a == v)
+                });
+            if !all_call_args {
+                continue;
+            }
+            p.report.snapshot_candidates.push((v, vn.loc.offset, vn.size));
+            if let Some(&w) = p.recovered.snapshot_sites.get(&v) {
+                let gexpr = p.render_var(v).0;
+                p.var_counter += 1;
+                let n = format!("uVar{}", p.var_counter);
+                p.snapshot_decls.push((n.clone(), Datatype::Uint(w.max(vn.size)), gexpr));
+                p.snapshot_names.insert(v, n);
+            }
+        }
+    }
+
     // emit the body first so every local has been named (and recorded in `p.decls`), then assemble
     // signature + declarations + body, as Ghidra does.
     let t0 = std::time::Instant::now();
@@ -3705,7 +3772,12 @@ fn print_c_inner(
             }
         }
     }
-    if !p.decls.is_empty() {
+    // entry-snapshot temps: declarations WITH initializers, after the plain locals — the
+    // initializer reads the global at body top, which is the value's SSA entry version
+    for (name, ty, init) in &p.snapshot_decls {
+        let _ = writeln!(out, "  {} {} = {};", ty.name(), name, init);
+    }
+    if !p.decls.is_empty() || !p.snapshot_decls.is_empty() {
         out.push('\n');
     }
     out.push_str(&body);

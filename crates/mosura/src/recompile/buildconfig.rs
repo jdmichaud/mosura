@@ -328,6 +328,86 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
     })
 }
 
+/// Decide the entry-snapshot rendering PER VALUE from the original's bytes. The candidate is
+/// an input-flagged narrow RAM value used as a call argument
+/// ([`crate::decompile::printc::EmitReport::snapshot_candidates`]); the readout is whether
+/// the ORIGINAL loads that global into a narrow register EXACTLY ONCE (`MOV AL,[0x8032c]` —
+/// the snapshot the source's local produced; probe-validated EXACT rendered as
+/// `uint1 uVarN = xRamX;` at body top) or references the address per use / not at all as a
+/// plain narrow load. More than one such load means per-use re-reads — not a snapshot.
+/// Returns `value → declared width`: the value's own size for a bare narrow load
+/// (`MOV AL,[g]` — the byte-typed local, high bytes untouched), or the int width when the
+/// container is PRE-ZEROED at the load (`XOR EAX,EAX ; MOV AL,[g]` — the widening idiom on
+/// a global; measured regression: declaring those `uint1` made the call re-widen with an
+/// `AND EAX,0xff` the original never has). Same consumed-zero scan as everywhere else.
+pub fn entry_snapshots_from_evidence(
+    candidates: &[(crate::decompile::varnode::VarnodeId, u64, u32)],
+    insns: &[NormInsn],
+) -> std::collections::HashMap<crate::decompile::varnode::VarnodeId, u32> {
+    let mut out = std::collections::HashMap::new();
+    for &(v, addr, sz) in candidates {
+        let pat = format!(",[0x{addr:x}]");
+        let matches_load = |x: &&NormInsn| {
+            x.text.ends_with(&pat)
+                && x.text.strip_prefix("MOV ").is_some_and(|r| {
+                    matches!(
+                        r.split(',').next().unwrap_or(""),
+                        "AL" | "BL" | "CL" | "DL" | "AX" | "BX" | "CX" | "DX"
+                    )
+                })
+        };
+        if insns.iter().filter(matches_load).count() != 1 {
+            continue;
+        }
+        let i = insns.iter().position(|x| matches_load(&x)).unwrap();
+        // POSITION gate (the last measured false-positive class): the snapshot shape loads in
+        // the ENTRY REGION — before the function's first branch (`MOV AL,[g]` above the
+        // `CMP/JZ`, the probe family). A single load sitting AT the use (just before the call,
+        // past branches) is the inline shape; hoisting it to body top MOVES the instruction
+        // and diverges (measured: FUN_0002ba30's load right before its CALL).
+        // Stricter than "before the first branch": a straight-line prefix can defer the load
+        // many instructions in (measured: FUN_0002ba30 loads 7 deep, mid-computation), and
+        // our snapshot prints at BODY TOP — so the original's load must sit right after the
+        // prologue, allowing only the container zero between (the probe family's shape).
+        let prologue_end = insns
+            .iter()
+            .position(|x| {
+                !(x.text.starts_with("PUSH ") || x.text == "MOV EBP,ESP")
+            })
+            .unwrap_or(0);
+        if i > prologue_end + 1 {
+            continue;
+        }
+        let dst = insns[i].text.strip_prefix("MOV ").unwrap().split(',').next().unwrap();
+        let container = match dst {
+            "AL" | "AH" | "AX" => "EAX",
+            "BL" | "BH" | "BX" => "EBX",
+            "CL" | "CH" | "CX" => "ECX",
+            _ => "EDX",
+        };
+        let zero = format!("XOR {container},{container}");
+        let subs: [&str; 4] = match container {
+            "EAX" => ["AL", "AH", "AX", "EAX"],
+            "EBX" => ["BL", "BH", "BX", "EBX"],
+            "ECX" => ["CL", "CH", "CX", "ECX"],
+            _ => ["DL", "DH", "DX", "EDX"],
+        };
+        let mut widened = false;
+        for x in insns[i.saturating_sub(3)..i].iter().rev() {
+            if x.text == zero {
+                widened = true;
+                break;
+            }
+            let d = x.text.split_whitespace().nth(1).and_then(|r| r.split(',').next());
+            if x.text.starts_with("CALL") || d.is_some_and(|d| subs.contains(&d)) {
+                break;
+            }
+        }
+        out.insert(v, if widened { 4 } else { sz });
+    }
+    out
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
