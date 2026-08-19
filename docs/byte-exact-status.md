@@ -553,6 +553,16 @@ singletons likely aux-pragma wrappers.
 The remaining 7 CFs are all genuine C-side work: the `spacebase` leak, E1010, two
 cast-to-nonscalar, the two switch-index recoveries, and one more to characterize.
 
+**Classification refinements (sb87–sb88):** the `spacebase` CF turned out to be a
+hand-asm-signature function (stack-switching support) already leaving via the `asm` class —
+but the internal type CAN reach a declaration, so the prelude now typedefs it as an
+incomplete struct (declarable pointers, legal casts, loud and greppable, the xunknown-width
+pattern). And the signature list gained the mnemonic variants the first census missed
+(`PUSHF` 16-bit form, `INT3`), calibrated again at zero EXACT/SAME_SHAPE trips: 71 asm /
+2822 C functions. Board: **687 EXACT (24.3%), WGSS 0.4186, 6 COMPILE_FAILs** — the CF set is
+now exactly the honest core: E1010 (`02583`), the two cast-to-nonscalar (`02714`/`02716`),
+the two switch-index recoveries (`03017`/`03018`), and `02911`.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

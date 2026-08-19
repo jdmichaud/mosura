@@ -463,12 +463,12 @@ pub fn testmem_from_evidence(
 pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
     insns.iter().any(|x| {
         let t = &x.text;
-        t.starts_with("PUSHFD")
-            || t.starts_with("POPFD")
+        t.starts_with("PUSHF")
+            || t.starts_with("POPF")
             || t.starts_with("CPUID")
             || t.starts_with("IN ")
             || t.starts_with("OUT ")
-            || t.starts_with("INT ")
+            || t.starts_with("INT")
             || (t.starts_with("CALL") && t.contains("CS:["))
     })
 }
