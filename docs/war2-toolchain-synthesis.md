@@ -99,6 +99,32 @@ difference in Blizzard's Makefile. The CPU digit is therefore recovered **per fu
 tuning and downgrades that function to `-4r`; the evidence is one-sided, so absence
 keeps `-5r`. EXACT 591 → **592**; the only verdict change is that function.
 
+## Watcom 10.5 measured (2026-08-19) — a release the fingerprint work never covered
+
+The store held `Watcom CPP 10.5 (ISO).7z` (files stamped July 1995 — exactly WAR2's build
+window) and it was absent from the measured list. Its DOS-hosted `wcc386.exe` was extracted
+by building OW 1.0's own `wpack` unpacker natively and unpacking the installer's spanned
+`PCK00017` archive; the compiler runs in the harness via a tree swap.
+
+Results, all three quick discriminators plus the runtime:
+
+- **Codegen: indistinguishable from 10.0a on our dials.** The reg+imm LEA fold probe folds
+  (`LEA EAX,[EDX+0x12]`), the byte-compare promotion promotes, `-5r` selects `SHL` over the
+  in-place scaled LEA — byte-for-byte the same probe outputs as 10.0a.
+- **Runtime: decisively NOT WAR2's.** Against WAR2's 130 name-matched library functions
+  (OMF-paged module extraction, relocation-masked byte compare): **10.0a CLIB3R = 50
+  byte-identical / 80 differing; 10.5 CLIB3R = 19 / 111.** WAR2 links the 10.0a-era runtime.
+
+Consequences: 10.5 is eliminated as WAR2's toolchain; the interim-build hypothesis SURVIVES
+and narrows — the no-fold code generator is not 10.5 any more than it was 10.0a or 10.6, and
+the runtime pins Blizzard's tree to 10.0a-era libraries with a codegen between shipped
+snapshots. Also closed: the second 10.0 ISO in the store (`Watcom_C++_10.0.iso`) differs by
+hash from `WATCOM_C10A.ISO` but carries the same `A_LEVEL/` patch set and 1994-09-01
+payloads — another a-level pressing; GA media remains extinct.
+
+Next per JD: OW 1.0 source reconnaissance (`open_watcom_1.0.0-src.zip`, already in store —
+and the oldest OW source in existence) for the four pile-B decision procedures.
+
 ## What genuinely remains, stated precisely
 
 After `-5r`, WAR2's compiler still differs from the shipped 10.0a in:
