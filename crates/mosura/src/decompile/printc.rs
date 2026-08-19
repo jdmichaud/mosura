@@ -95,10 +95,18 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
 /// decide those choices from the original bytes instead of by search.
 #[derive(Debug, Default, Clone)]
 pub struct EmitReport {
-    /// Every local the `local-width` axis would re-declare, as `(varnode, defining
-    /// instruction address)`. The address is what a target rule scores: it is where the
-    /// ORIGINAL either widened the value or kept it narrow.
-    pub local_width_candidates: Vec<(VarnodeId, u64)>,
+    /// Every DECLARED local the `local-width` axis would re-declare, as `(HighVariable
+    /// representative, defining instruction address)`. The address is what a target rule
+    /// scores: it is where the ORIGINAL either widened the value (`XOR r32,r32` near a
+    /// narrow write into its low part, or a full-register write) or kept it narrow.
+    /// Filtered to candidates with an EXPLICIT member — an inline value never declares, so
+    /// widening it is inert and its presence only diluted the per-function calibration.
+    pub local_width_candidates: Vec<(u32, u64)>,
+    /// Every tier-2 materialization candidate of the same axis (narrow loads and byte/word
+    /// extracts the `Storage` value would force explicit), as `(value, op address)`. Scored
+    /// by the same def-site classifier; VarnodeIds are stable within one decompile, which is
+    /// the report → recovered-print lifetime.
+    pub tier2_candidates: Vec<(VarnodeId, u64)>,
     /// Every constant comparison the `compare-form` axis could complement, as
     /// `(instruction address, constant as rendered, constant if complemented)`. A target rule
     /// reads the ORIGINAL's own compare immediate at that address and knows which spelling the
@@ -144,6 +152,11 @@ pub struct RecoveredChoices {
     /// decompiler's rendering) instead of the recovered storage width — per function, since
     /// one declaration covers every RETURN (`return-width`).
     pub narrow_return: bool,
+    /// HighVariable representatives whose declaration widens to int width (`local-width`,
+    /// per declared local instead of the arm's whole-function blanket).
+    pub widen_local_reps: std::collections::HashSet<u32>,
+    /// Values whose tier-2 materialization applies (`local-width` tier 2, per site).
+    pub tier2_sites: std::collections::HashSet<VarnodeId>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -683,7 +696,10 @@ impl<'a> PrintC<'a> {
     /// the original program's own def-site widening produced (the measured probes:
     /// FUN_00031044, FUN_0001562c — docs/byte-exact-families.md, the local-width design).
     fn storage_widened_local(&self, id: u32, v: VarnodeId) -> Option<Datatype> {
-        if !self.widen_narrow_locals {
+        if !(self.widen_narrow_locals
+            || self.recovered.widen_local_reps.contains(&id)
+            || self.tier2_widen.contains_key(&v))
+        {
             return None;
         }
         self.local_width_candidate(id, v)
@@ -3536,8 +3552,9 @@ fn print_c_inner(
     // value a comparison consumes against a positive-at-width constant materializes as an
     // explicit unsigned widened temp — the statement prints at the load op's own position,
     // so no read moves across a store. Population BEFORE the body emit so the explicitness
-    // decision sees it.
-    if p.widen_narrow_locals {
+    // decision sees it. The loop ALWAYS runs — candidacy is recorded on every print for the
+    // target profile — and the axis/recovered decision gates only the application inside.
+    {
         for opid in f.op_ids() {
             let o = f.op(opid);
             if o.is_dead() {
@@ -3566,8 +3583,11 @@ fn print_c_inner(
                             })
                     });
                     if cmp_pos_const {
-                        p.force_explicit.insert(out);
-                        p.tier2_widen.insert(out, Tier2Widen::NarrowLoad);
+                        p.report.tier2_candidates.push((out, o.seqnum.pc.offset));
+                        if p.widen_narrow_locals || p.recovered.tier2_sites.contains(&out) {
+                            p.force_explicit.insert(out);
+                            p.tier2_widen.insert(out, Tier2Widen::NarrowLoad);
+                        }
                     }
                 }
                 OpCode::IntAnd => {
@@ -3589,8 +3609,11 @@ fn print_c_inner(
                     if p.is_explicit(out) {
                         continue; // already a named variable; only the rendering would change
                     }
-                    p.force_explicit.insert(out);
-                    p.tier2_widen.insert(out, Tier2Widen::Extract(width));
+                    p.report.tier2_candidates.push((out, o.seqnum.pc.offset));
+                    if p.widen_narrow_locals || p.recovered.tier2_sites.contains(&out) {
+                        p.force_explicit.insert(out);
+                        p.tier2_widen.insert(out, Tier2Widen::Extract(width));
+                    }
                 }
                 _ => {}
             }
@@ -3609,6 +3632,10 @@ fn print_c_inner(
             if p.local_width_candidate(rep, v).is_none() {
                 continue;
             }
+            // only locals that DECLARE — an inline value's widening is inert
+            if !members.iter().any(|&m| p.is_explicit(m)) {
+                continue;
+            }
             // the defining instruction address of the value (any written member; they share
             // the variable, and the first written one is where the original establishes it)
             let pc = members
@@ -3616,7 +3643,7 @@ fn print_c_inner(
                 .filter_map(|&m| f.vn(m).def.map(|d| f.op(d).seqnum.pc.offset))
                 .min();
             if let Some(pc) = pc {
-                p.report.local_width_candidates.push((v, pc));
+                p.report.local_width_candidates.push((rep, pc));
             }
         }
     }

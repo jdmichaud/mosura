@@ -83,19 +83,28 @@ tried left to right, so put the reference rendering first.
 
 ## The union (arms + per-function selection)
 
-The canonical measurement is the UNION of the searched arms PLUS the recovered tree,
-selected per function on the byte verdict (reference first):
+The canonical measurement is THREE selection inputs — the reference rendering, the RECOVERED
+tree, and the one still-searched arm — selected per function on the byte verdict (reference
+first):
 
-    war2_survey <exe> <out> --arms 'default;local-width=storage;compare-form=complement,return-split=paths,cond-form=nested' --recovered <out>/recovered
+    war2_survey <exe> <out> --arms 'default;local-width=storage' --recovered <out>/recovered
     recompile_check <exe> <out>/manifest.tsv <out>/src        recover <WATCOM> --cache <cache> --out <sbNN>.tsv
     recompile_check <exe> <out>/manifest.tsv <out>/recovered  recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
     recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+local-width-storage recover <WATCOM> --cache <cache> --out <sbNN>-lw.tsv
-    recompile_check <exe> <out>/manifest.tsv <out>/src-shift-mask-hardware+compare-form-complement+return-split-paths+cond-form-nested recover <WATCOM> --cache <cache> --out <sbNN>-cf.tsv
     recompile_select default=<sbNN>.tsv:<out>/src rec=<sbNN>-rec.tsv:<out>/recovered \
                      lw=<sbNN>-lw.tsv:<out>/src-shift-mask-hardware+local-width-storage \
-                     cf=<sbNN>-cf.tsv:<out>/src-shift-mask-hardware+compare-form-complement+return-split-paths+cond-form-nested \
                      --out <sbNN>-select.tsv --out-src <out>/union
     recompile_check <exe> <out>/manifest.tsv <out>/union recover <WATCOM> --cache <cache> --out <sbNN>-union.tsv
+
+**Arm 2 (compare-form + return-split + cond-form as a blanket per-function arm) is RETIRED
+(2026-08-18):** the recovered tree makes the same choices per site and took over its whole
+contribution but ONE function (`00097`), whose winning difference is a single comparison
+spelled `0 <= x` vs `-1 < x` against a register-computed value — no immediate exists in the
+original's compare, so the immediate-readout evidence rule correctly abstains. Revival path
+for that residual: extend `complement_compares_from_evidence` to read the original's `Jcc`
+mnemonic at no-immediate sites. The retirement drops 792 marginal TU compiles per cold
+remeasure. The AXES remain in `decompile::emit` — the recovered decisions render through
+them per site.
 
 The `--recovered` tree is the FIELD emission — per-site choices decided from the original's
 own instructions by the target profile (`buildconfig::*_from_evidence`), no compiler in the

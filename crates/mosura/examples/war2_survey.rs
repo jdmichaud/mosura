@@ -1119,6 +1119,11 @@ fn main() {
                 &mosura::recompile::insn::NoReloc,
             )
             .unwrap_or_default();
+            let widen = mosura::recompile::buildconfig::widened_sites_from_evidence(
+                &report.local_width_candidates,
+                &report.tier2_candidates,
+                &insns,
+            );
             let recovered = mosura::decompile::printc::RecoveredChoices {
                 complement_sites: mosura::recompile::buildconfig::complement_compares_from_evidence(
                     &report.compare_sites,
@@ -1136,6 +1141,8 @@ fn main() {
                     &report.return_width_candidates,
                     &insns,
                 ),
+                widen_local_reps: widen.0,
+                tier2_sites: widen.1,
             };
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes);

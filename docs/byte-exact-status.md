@@ -412,6 +412,40 @@ recovered storage).
 
 Five MISMATCH → EXACT, zero regressions, suite green.
 
+### `local-width` per-site recovery + the arm verdicts (sb69–sb71)
+
+Arm 2 RETIRED (compare-form/return-split/cond-form as a blanket arm): its whole union
+contribution was one function, and after the per-site improvements below the three-input
+union ties the four-input high anyway — the retirement is free. 792 marginal TU compiles
+dropped per cold remeasure.
+
+`local-width` converted to PER-SITE recovery next, calibrated in three measured rounds on
+the arm's actual winners (the discriminator hunt runs on winners, not on theory):
+
+1. naive def-site classifier: field 636 / 0.4009 — 16 EXACT regressions. Two false-positive
+   classes, both then named:
+2. **the consumed zero** — `XOR EAX,EAX ; MOV AL,a ; MOV AL,b`: the zero belongs to the
+   FIRST load; the second value's widening is a mask AFTER it. Fix: the back-scan stops when
+   an intervening instruction writes the container.
+3. **the ABI artifact** — a `CALL` defines full EAX because the convention says so, not
+   because the source variable was int; widening byte locals holding call results broke
+   EXACT functions. Fix: abstain on call-defined candidates (their readout is at the USES,
+   which the def-site rule does not model).
+
+Result: field **651 EXACT / 0.4032 WGSS** (from 647/0.3991), one residual regression.
+Candidate precision also fixed: only DECLARED locals report (inline values' widening is
+inert and diluted the earlier per-function calibration), and tier-2 candidacy records on
+every print (the report print was silently empty before — the axis-gated loop never ran).
+
+**Arm 1 STAYS**: two-input union 656 vs three-input 668 — the blanket arm still wins 12
+functions whose widening the def-site evidence cannot justify. That population is the
+use-site-evidence question, documented as this axis's remaining gap.
+
+| board | EXACT | WGSS |
+| --- | --- | --- |
+| field (one emission, no compiler) | **651** | **0.4032** |
+| dev union (default + recovered + local-width) | **668** | 0.3973 |
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.
