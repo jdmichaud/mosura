@@ -613,6 +613,14 @@ fn main() {
     // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in
     // decompile/emit.rs carries the measured probe — under the faithful rendering 64 functions
     // gained a materialized `AND CL,0x1f` the originals never had).
+    let recovered_dir: Option<std::path::PathBuf> = rest
+        .iter()
+        .position(|a| a == "--recovered")
+        .and_then(|i| rest.get(i + 1))
+        .map(std::path::PathBuf::from);
+    if let Some(d) = &recovered_dir {
+        std::fs::create_dir_all(d).unwrap();
+    }
     let arms: Vec<EmitChoices> = arms
         .into_iter()
         .map(|mut a| {
@@ -1096,6 +1104,33 @@ fn main() {
             };
             if only.is_empty() {
                 std::fs::write(arm_dirs[ai].join(format!("{idx:05}.c")), &atu).unwrap();
+            }
+        }
+        // RECOVERED emission (`--recovered <dir>`): the field path — per-site choices decided
+        // from evidence in the ORIGINAL's own instructions by the target profile, with no
+        // compiler and no search. Emitted alongside the searched arms only so the two can be
+        // compared; in the field this is the single emission.
+        if let Some(dir) = &recovered_dir {
+            let (_, report) = mosura::decompile::printc::print_c_report(&f, &arms[0]);
+            let insns = mosura::recompile::insn::normalize(
+                SURVEY_LANG,
+                &region,
+                *va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default();
+            let sites = mosura::recompile::buildconfig::complement_compares_from_evidence(
+                &report.compare_sites,
+                &insns,
+            );
+            let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &sites);
+            let (rtu, _) = build_tu(&rc, *va, false, &gsizes);
+            let rtu = match &contract {
+                Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
+                None => rtu,
+            };
+            if only.is_empty() {
+                std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();
             }
         }
         let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);

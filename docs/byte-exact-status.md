@@ -326,6 +326,34 @@ determinate: `compare-form` reads the original's own `CMP` constant, `return-spl
 `cond-form` read whether the original materialized a boolean (`SETcc`) or branched. Those are
 direct readouts, not correlations, and they are the ones to convert next.
 
+### `compare-form` RECOVERED — the first field-viable win (sb64)
+
+The second axis converted, and this one's evidence is a direct readout rather than a
+correlation: at each candidate comparison the ORIGINAL's own `CMP`/`TEST` immediate says which
+spelling the source used. Measured over WAR2's candidate sites:
+
+- **452 sites** want the complemented rendering, **749** want it as rendered, 204 match neither
+  (the value was transformed), 96 have no compare in the window.
+- **101 functions want BOTH at different sites** — so the recovered form is *finer than the
+  axis*, which is per function. Recovery can beat search here, not merely match it.
+
+Implemented per site: `printc::EmitReport::compare_sites` records every candidate with the two
+spellings; `buildconfig::complement_compares_from_evidence` (target-specific — x86 compare
+mnemonics, and the flag-setting compare sits at or just before the IR op's address, since that
+address is usually the `Jcc`) returns the sites to complement; `printc::print_c_recovered`
+takes the set. `war2_survey --recovered <dir>` emits that single tree.
+
+| emission | compiler needed | EXACT | WGSS |
+| --- | --- | --- | --- |
+| default, one emission | no | 621 | 0.3963 |
+| **RECOVERED, one emission** | **no** | **627** | **0.3973** |
+| searched union of three arms | yes | 661 | 0.3972 |
+
+**The field path already matches the searched union's global similarity** — 0.3973 against
+0.3972 — from ONE emission with no compiler, while trailing it by 34 on EXACT because the
+other three axes are not converted yet. 397 TUs differ from the default; the gain is +6 EXACT
+and +0.0010 WGSS over it.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

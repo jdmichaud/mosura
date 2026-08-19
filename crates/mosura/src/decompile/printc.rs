@@ -99,6 +99,13 @@ pub struct EmitReport {
     /// instruction address)`. The address is what a target rule scores: it is where the
     /// ORIGINAL either widened the value or kept it narrow.
     pub local_width_candidates: Vec<(VarnodeId, u64)>,
+    /// Every constant comparison the `compare-form` axis could complement, as
+    /// `(instruction address, constant as rendered, constant if complemented)`. A target rule
+    /// reads the ORIGINAL's own compare immediate at that address and knows which spelling the
+    /// source used — a direct readout, not a correlation. Recorded per SITE, which is finer
+    /// than the axis (per function) can act on; whether that finer grain is needed is the
+    /// measurement in byte-exact-status.md.
+    pub compare_sites: Vec<(u64, u64, u64)>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -144,6 +151,12 @@ struct PrintC<'a> {
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
     complement_compares: bool,
+    /// PER-SITE complement decisions, keyed by instruction address — the RECOVERED form of the
+    /// same axis. A target profile reads the original's own compare immediate at each site
+    /// ([`EmitReport::compare_sites`]) and returns the sites whose source spelled the
+    /// complement; no compiler and no search is involved. Finer than the axis, which is
+    /// per function: 101 WAR2 functions want the complement at some sites and not others.
+    complement_sites: std::collections::HashSet<u64>,
     /// [`EmitChoices::return_split`] == `Paths`: split a tail boolean return into per-path
     /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
     /// Default false.
@@ -1177,7 +1190,12 @@ impl<'a> PrintC<'a> {
     /// constant's width and signedness.
     fn cmp_bin(&mut self, op: super::op::OpId, strict: bool) -> (String, u8) {
         let prec = 10u8;
-        if self.complement_compares {
+        let site = self.compare_site(op, strict);
+        if let Some(site) = site {
+            self.report.compare_sites.push(site);
+        }
+        let recovered_here = site.is_some_and(|(pc, _, _)| self.complement_sites.contains(&pc));
+        if self.complement_compares || recovered_here {
             if let Some(r) = self.complemented_cmp(op, strict) {
                 return (r, prec);
             }
@@ -1186,6 +1204,41 @@ impl<'a> PrintC<'a> {
         let l = self.cast_operand(op, 0, prec, false);
         let r = self.cast_operand(op, 1, prec, true);
         (format!("{l} {sym} {r}"), prec)
+    }
+
+    /// `(instruction address, our constant, complemented constant)` for a comparison the
+    /// `compare-form` axis could rewrite — the same gate as [`Self::complemented_cmp`],
+    /// reporting the two spellings instead of rendering one. See [`EmitReport::compare_sites`].
+    fn compare_site(&mut self, op: super::op::OpId, strict: bool) -> Option<(u64, u64, u64)> {
+        let o = self.f.op(op);
+        let pc = o.seqnum.pc.offset;
+        let signed = matches!(o.code(), OpCode::IntSless | OpCode::IntSlessequal);
+        let cslot = if self.f.vn(o.input(1)?).is_constant() {
+            1usize
+        } else if self.f.vn(o.input(0)?).is_constant() {
+            0usize
+        } else {
+            return None;
+        };
+        let cvn = o.input(cslot)?;
+        if self.get_input_cast(op, cslot).is_some() {
+            return None;
+        }
+        let size = self.f.vn(cvn).size;
+        let bits = u64::from(size) * 8;
+        let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        let c = self.f.vn(cvn).constant_value() & mask;
+        let dec = (cslot == 1) == strict;
+        let adj = if dec { c.wrapping_sub(1) } else { c.wrapping_add(1) } & mask;
+        let valid = if signed {
+            let smin = 1u64 << (bits - 1);
+            if dec { c != smin } else { c != smin - 1 }
+        } else if dec {
+            c != 0
+        } else {
+            c != mask
+        };
+        valid.then_some((pc, c, adj))
     }
 
     fn complemented_cmp(&mut self, op: super::op::OpId, strict: bool) -> Option<String> {
@@ -3102,14 +3155,28 @@ pub fn print_c(f: &Funcdata) -> String {
 /// [`print_c_with`], also returning what the print recorded about the choices it faced — the
 /// input a target profile scores against the original's bytes (see [`EmitReport`]).
 pub fn print_c_report(f: &Funcdata, choices: &EmitChoices) -> (String, EmitReport) {
-    print_c_inner(f, choices)
+    print_c_inner(f, choices, &Default::default())
 }
 
 pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
-    print_c_inner(f, choices).0
+    print_c_inner(f, choices, &Default::default()).0
 }
 
-fn print_c_inner(f: &Funcdata, choices: &EmitChoices) -> (String, EmitReport) {
+/// Emit with RECOVERED per-site decisions — the field path: the choices come from evidence in
+/// the original's bytes (a target profile), not from a search that would need a compiler.
+pub fn print_c_recovered(
+    f: &Funcdata,
+    choices: &EmitChoices,
+    complement_sites: &std::collections::HashSet<u64>,
+) -> String {
+    print_c_inner(f, choices, complement_sites).0
+}
+
+fn print_c_inner(
+    f: &Funcdata,
+    choices: &EmitChoices,
+    sites: &std::collections::HashSet<u64>,
+) -> (String, EmitReport) {
     let reg_space = f.spaces.by_name("register");
 
     // Parameters: the recovered function prototype (Ghidra `ActionInputPrototype` →
@@ -3230,6 +3297,7 @@ fn print_c_inner(f: &Funcdata, choices: &EmitChoices) -> (String, EmitReport) {
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         report: EmitReport::default(),
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
+        complement_sites: sites.clone(),
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
         nest_cond_stmts: choices.cond_form == super::emit::CondForm::Nested,
         tier2_widen: std::collections::HashMap::new(),

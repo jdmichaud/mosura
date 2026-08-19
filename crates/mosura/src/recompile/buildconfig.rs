@@ -140,6 +140,46 @@ pub fn local_width_from_evidence(
     }
 }
 
+/// Decide the `compare-form` axis PER SITE from the original's bytes — the second recovered
+/// choice, and a determinate one: at each candidate comparison the ORIGINAL's own `CMP`/`TEST`
+/// immediate says which spelling the source used. Returns the site addresses to complement.
+///
+/// Target-specific (x86 compare mnemonics and the Watcom-era flag-then-branch shape), hence
+/// here rather than in `decompile::emit`. The flag-setting compare sits at the site's address
+/// or a few instructions before it — the IR op's address is usually the `Jcc` that consumes
+/// the flags — so the scan walks back a short window.
+///
+/// Measured on WAR2: 452 sites want the complement, 749 want the rendering as-is, and 101
+/// functions want BOTH at different sites, which is why this is per site where the axis is
+/// per function.
+pub fn complement_compares_from_evidence(
+    sites: &[(u64, u64, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, ours, complemented) in sites {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let cmp = (i.saturating_sub(3)..=i).rev().find_map(|j| {
+            let t = &insns[j].text;
+            (t.starts_with("CMP ") || t.starts_with("TEST ")).then_some(&insns[j])
+        });
+        let Some(cmp) = cmp else { continue };
+        let Some(k) = cmp.text.rsplit(',').next().map(str::trim).and_then(|last| {
+            let neg = last.starts_with('-');
+            let v = u64::from_str_radix(last.trim_start_matches('-').strip_prefix("0x")?, 16).ok()?;
+            Some(if neg { v.wrapping_neg() } else { v })
+        }) else {
+            continue;
+        };
+        // only act on an unambiguous readout: the original's immediate is one spelling or the
+        // other, never both (they differ by one, so equality decides)
+        if k == complemented && k != ours {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
