@@ -274,6 +274,42 @@ SLEIGH register table (`Spec::register_table` → `Funcdata::reg_names`, threade
 tie-break — the declaration-order finding in this document, seen from the other side).
 The sweep's one remaining gap, endianness, is filed in TODO.md rather than half-fixed.
 
+## From searched axes to RECOVERED choices (the field constraint)
+
+The arms are development-time scaffolding. In the field mosura has **no compiler**, so there
+is no verifier and no way to arbitrate arms: it must emit ONE rendering. An axis is therefore
+a placeholder for a recovery problem — the choice has to be decided from evidence in the
+ORIGINAL BYTES, the way `buildconfig::Evidence` already decides the per-function CPU digit
+(`in_place_scaled_lea`), the callee stack cleanup (from the callee's `RET`), and the caller
+`parm` pragmas (from the callee's body). None of those touch a compiler.
+
+Architecture, per JD: the AXIS stays target-agnostic in `decompile::emit` (the `emit.rs` rules
+already forbid a compiler conditional there); the EVIDENCE RULE that picks its value is
+target-specific and belongs with the Watcom profile in `recompile::buildconfig`, exactly as
+`Profile::flags_for(&Evidence)` does for flags.
+
+**First calibration — `local-width`, measured on sb63 (both arms' verdicts + per-function
+similarity), two candidate rules:**
+
+| rule | coverage | storage better / worse | mean Δ sim |
+| --- | --- | --- | --- |
+| per-function: "the original contains `XOR r32,r32` + narrow `MOV` anywhere" | 1163 fns | 177 / 245 | **−0.0042** |
+| address-anchored: the ORIGINAL instruction at a narrow value's DEF widens it | 28 fns | 9 / 7 | **+0.0134** |
+
+Read: the per-function scan is **anti-correlated** — the widening idiom appears in 40% of
+functions for unrelated reasons, so its presence says nothing about the specific local the
+axis re-declares. The address-anchored rule points the right way (+0.0134 where it fires, and
+−0.0043 where narrow defs exist but are NOT widened, which is the correct negative), but it
+covers only 28 functions while the arm changes 945 TUs.
+
+**Why the coverage gap, and the fix:** the probe enumerated candidates its own way (ops whose
+output is a narrow register varnode with a `MOV` at that address) instead of the candidate set
+the axis actually uses (`printc::storage_widened_local`'s gate — HighVariable members, def
+value-safety, explicitness). An evidence rule can only be calibrated against the SAME
+candidates the rendering keys on. **Next step:** expose the candidate enumeration from the
+axis (target-agnostic), have the Watcom profile score those exact candidates against the
+original's instruction at each def, and re-measure recovered-vs-searched.
+
 This is NOT the retired similarity-score chase (TODO.md "Direction"): that gauge compared
 emitted C **text against Ghidra's rendering** and was chased as a target, which rewarded
 approximation over faithfulness. This one compares recompiled **machine code against the
