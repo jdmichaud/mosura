@@ -2,7 +2,11 @@
 
 *Re-measured from scratch on branch `be2`. Regenerate rather than quote these after any change:
 `war2_survey <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
-<WATCOM> --out <tsv> --divergences <tsv>`.*
+<WATCOM> --out <tsv> --divergences <tsv>`. Before ANY corpus round, run the ~3-minute
+`scripts/war2-smoke.sh` gate — 15 pinned mechanism sentinels (expected verdicts in
+`scripts/war2-smoke.expected.tsv`, baseline 734/8e3ad7b) that fail on drift in either
+direction; it exists because two full corpus rounds were burned on state corruption a
+probe would have caught in minutes (the sb99 retrospective).*
 
 ## The measurement
 
