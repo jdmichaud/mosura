@@ -2410,6 +2410,17 @@ impl Funcdata {
             self.opactdbg_active = false;
             return;
         }
+        // `MOSURA_TRACE_FUNC=<name>`: additionally scope the facility to ONE function — the
+        // whole-program survey decompiles thousands of funcdatas per run, and an unscoped
+        // trace of that flood is unusable (and was why the trace could previously only be
+        // read through the single-function fixture harness, whose builder lacks the survey's
+        // stack pre-model and under-fires the machinery being traced).
+        static FUNC: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        let func_sel = FUNC.get_or_init(|| std::env::var("MOSURA_TRACE_FUNC").ok()).as_deref();
+        if func_sel.is_some_and(|n| n != self.name) {
+            self.opactdbg_active = false;
+            return;
+        }
         self.opactdbg_active = match Self::opaction_filter() {
             None => false,
             Some("") | Some("1") => true,

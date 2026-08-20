@@ -19,7 +19,7 @@ use super::rules::{
     RuleNegateIdentity, RuleBitUndistribute, RuleBooleanUndistribute, RuleBooleanDedup,
     RuleSubNormal, RuleSubRight, RuleOrConsume, RuleEqual2Constant,
     RuleLessEqual2Zero, RuleShiftBitops, RuleHumptyOr, RuleAndPiece, RulePositiveDiv,
-    RuleAndCommute, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
+    RuleAndCommute, RuleAndCompare, RuleFloatRange, RuleFloatCast, RuleIgnoreNan,
     RuleSubvarAnd, RuleSubvarSubpiece, RuleSubvarCompZero, RuleSubvarSext, RuleSubvarShift,
     RuleSubvarZext, RuleLessOne, RuleXorSwap, RuleLzcountShiftBool, RuleFloatSign, RuleNegateNegate,
     RuleFuncPtrEncoding, RuleUnsigned2Float, RuleInt2FloatCollapse, RuleDumptyHumpLate,
@@ -218,6 +218,7 @@ pub fn default_rule_pool() -> ActionPool {
         .with(RuleAndCommute) // (27)
         .with(RuleAndPiece) // (28)
         .with(RuleAndZext) // (29)
+        .with(RuleAndCompare) // (30)
         .with(RuleDoubleSub) // (31)
         .with(RuleDoubleShift) // (32)
         .with(RuleDoubleArithShift) // (33)

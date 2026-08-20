@@ -4222,12 +4222,15 @@ impl Rule for RuleNotDistribute {
 /// Works for INT_EQUAL and INT_NOTEQUAL.
 ///
 /// Faithful port (unit-tested), but **not wired into [`default_rule_pool`]** yet: the trace diff
-/// shows mosura fires it where Ghidra does not (e.g. 3× on forloop_varused vs Ghidra's 0×, regressing
-/// it 0.984→0.970). Ghidra's per-op rule priority landed (**Task #7**, `c88ff35`) and the over-fire is
-/// UNCHANGED — so priority was not the blocker. The real cause (trace-diff Ghidra-only list): Ghidra
-/// fires `addmultcollapse`/`sub2add` in its MAIN rule loop, while mosura runs them in a separate
-/// `ptrarith_pool`, so mosura's intermediate graph reaches an `(V&mask)==0` shape Ghidra never has.
-/// Wire it once those rules run in the main loop (**Task #8**).
+/// showed mosura firing it where Ghidra does not (3× on forloop_varused vs Ghidra's 0×, regressing
+/// it 0.984→0.970) — measured when `addmultcollapse`/`sub2add` still ran in a separate
+/// `ptrarith_pool`, so mosura's intermediate graph reached an `(V&mask)==0` shape Ghidra never has.
+/// That prerequisite (**Task #8**) has since landed: both rules run in the MAIN pool at Ghidra's
+/// actprop positions (pipeline.rs (42)/(52) vs coreaction.cc:5553/:5563), and the rule is WIRED at
+/// Ghidra's own slot (AndZext → AndCompare → DoubleSub, coreaction.cc:5540-5542). The activation
+/// evidence: on WAR2's FUN_00017e00 the faithful-convention trace-diff shows Ghidra firing
+/// `andcompare` 10× and `andpiece` 2× on the shapes it creates, mosura zero of either — the
+/// sequence alignment put the first hard divergence exactly at Ghidra's `andcompare @ 0x17e28`.
 pub struct RuleAndCompare;
 
 impl Rule for RuleAndCompare {

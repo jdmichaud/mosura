@@ -968,6 +968,29 @@ transitions — zero regressions**, 54 TUs changed, WGSS 0.4626 → 0.4628. Land
 round; the family's remaining ~56 MISMATCH members carry other divergences and keep their
 77-row spelling improvement.
 
+**738 → 739 EXACT (sb102): `RuleAndCompare` wired at Ghidra's slot — the inert-rule leads
+run down on the survey path.** The faithful-convention trace instrument (the watcom cspec
+registered into the oracle distribution) named three implemented-but-inert rules; verified
+on the SURVEY path with the new per-function trace scope (`MOSURA_TRACE_FUNC`):
+`multicollapse` fires fine (fixture artifact of the isolated builder, which lacks the
+survey's stack pre-model); `andpiece` is downstream of `andcompare`; and `andcompare` was
+the one real gap — implemented, deliberately unwired behind a STALE prerequisite. The doc
+said "wire once `addmultcollapse`/`sub2add` run in the main loop (Task #8)"; both have
+since been in the main pool at Ghidra's exact actprop positions, so only the wiring
+remained. The sequence-aligned trace pair put the first hard rule divergence precisely at
+Ghidra's `andcompare @ 0x17e28`.
+
+Wired at Ghidra's own registration slot (AndZext → AndCompare → DoubleSub,
+coreaction.cc:5540-5542). The historical over-fire that justified unwiring (forloop_varused
+0.984 → 0.970) is GONE — conformance suite green — confirming the pool placement was the
+cause exactly as the old doc theorized. Corpus: **+1 EXACT (`FUN_00035b40`, the census's
+`TEST AH,0x2` member) — 739**, zero EXACT regressions, WGSS 0.4630 → 0.4633, one
+same-sim label shuffle (0x4d37c SS→MM at 0.667 unchanged, 0x58840 MM→SS).
+
+Also landed on the way: the `MOSURA_TRACE_FUNC` per-function trace scope (the survey path
+was untraceable before — 3023 decompiles flood the single-function facility), and the
+sequence-alignment reading of trace pairs (first-divergence, not just counts).
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
