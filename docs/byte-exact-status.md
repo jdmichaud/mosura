@@ -899,14 +899,30 @@ windows is a weak decoder whose soundness holes each demanded a patch. The decom
 own dataflow already answers the same questions exactly — "is R live across this call",
 "is R saved only around calls to X" — for every caller, with a real CFG.
 
-**The parked design (prerequisite for reopening this):** a two-phase whole-program pass in
-the survey (the param-order pre-pass shape): phase 1 extracts per-(caller, callee)
-testimony from each DECOMPILED caller's dataflow; phase 2 emits per-TU contracts =
-body-truth corrected by that caller's own testimony. No byte windows anywhere. Expected
-yield from the experiments: the 11b9c argument-position family (+4 measured under the best
-veto) plus the residue ledger: `FUN_00031d58` (needs transitive), `FUN_00011128` /
-`FUN_0004dee0` (need blanket — their originals declared their callees' conservative
-headers), `FUN_0005d500`/`FUN_0005d57c`, `FUN_00014754`.
+**The design was then BUILT AND MEASURED in its proper form** — blanket body-truth
+narrowed by a per-caller survival veto computed as a first-access walk over the CALLER'S
+RAW CFG (`survives_call` on a throwaway `cfg::build_cfg` clone; building the CFG in place
+corrupted the whole pipeline, 734 → 139, caught by the corpus gate — and note the harness
+trap it exposed: a broken binary's param-order pre-pass cache POISONS every later emit
+under the same `-dirty` stamp). Untainted result: **733** — the closest of every round
+(−5 EXACT / +4 EXACT / +2 SAME_SHAPE, WGSS 0.4626 → 0.4633) and still not dominating.
+The five losses, diagnosed and recorded:
+
+- `FUN_0005d00a`, `FUN_00071caf` — thunks whose OWN inherited contract (transitive) and
+  whose callee's DECLARED pragma (blanket-minus-veto) now disagree within one TU, so
+  Watcom saves the difference and cannot tail-call. An internal CONSISTENCY defect of the
+  experiment, not model incompleteness — the named first fix if reopened: one per-TU
+  contract value per callee, used by BOTH the pragma and the own-contract inheritance.
+- `FUN_00014754` — a spill-slot appears (`SUB ESP,4`): contract-narrowing changed
+  allocation pressure in a direction no read-across testimony describes.
+- `FUN_000459a0` — argument-register shuffling (`MOV EDI,EDX` / `MOV EDX,EBX` + save)
+  where the original's wider assumed kills made the original allocator's choice.
+
+Stable gains across every sound round: `FUN_00011b9c` (the founding specimen),
+`FUN_00031d58` (sb98's residue), `FUN_000362f0`, `FUN_0004f850`. PARKED per the
+workarounds-checkpoint stop-rule (one mechanism, at most one soundness fix): net −1 does
+not clear the zero-regression bar, and each further rule would reopen the spiral. The
+experiment code is reverted, not landed; this entry is its record.
 
 **What LANDED from the frontier (this commit — verdicts identical to sb98,
 verdict-for-verdict, WGSS 0.4626 unchanged):**
