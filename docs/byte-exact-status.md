@@ -822,6 +822,51 @@ natural source for a logging/printf family.) Declared per TU from the decompiler
 `caller_cleans` facts (survey `build_tu` `vararg_callees`), zero-argument call sites
 excepted (an `(int, ...)` prototype cannot be called with no arguments — E1027).
 
+**700 → 734 EXACT, WGSS 0.4402 → 0.4626 (sb98): the EMITTER half — the callee's
+caller-pops contract, WITH its recovered kill set, declared per TU.** The survey's
+`build_tu` now emits, for every callee the decompiler recovered as caller-cleaned,
+`#pragma aux <name> parm caller [] modify [<regs>];` above the unprototyped
+`extern int <name>();` — empty register set = every argument on the stack, `caller` =
+caller pops (OW's vararg call class, CALLER_POPS|HAS_VARARGS over the default aux info,
+cfeinfo.c:668), and `modify` = THAT CALLEE'S OWN recovered clobber set
+(`CallSpec::cdecl_modify`: `callee_writes_cfg` with `calls_clobber=true` — writes minus
+saved-and-restored, sub-registers normalized, nested calls counted as the convention's kill
+set). Watcom then emits the original's whole shape itself: arguments pushed right-to-left,
+`ADD ESP,n` after the call, and the caller's prologue saves of exactly the registers the
+callee kills that the caller's own contract must preserve.
+
+Every clause was measured in, not assumed:
+
+- `extern int f(int, ...);` (OW's own vararg trigger) scored +17 EXACT but 42 new
+  COMPILE_FAILs — all `E1071` where the first argument is a POINTER
+  (`func_0x0005a824(pxRam0008128c, ...)`): a prototype's fixed parameter type-checks what
+  the original never type-checked. The PRAGMA form keeps the call unprototyped.
+- `parm caller []` alone: +18 EXACT, zero failures — but specimen `FUN_000191b8` stalled at
+  sim 0.500, `missing=6`: its prologue/epilogue saves of EBX ECX EDX, which Watcom emits
+  only when the callee's declared contract KILLS registers the caller's `modify [eax]` must
+  preserve.
+- A blanket `modify [eax ebx ecx edx]` (the era's cdecl kill set — CdeclInfo.save cleared
+  EAX ECX EDX and, until the change commented "AFS Nov-21-94", EBX; OW 1.0
+  cprag86.c:154-157): 729 EXACT including 191b8 — but SIX of the pragma-only winners fell
+  back (the 0x31c60 window family), their callees' true contracts being NARROWER than the
+  blanket. Two callee populations ⇒ per-callee evidence is the only shape that fits both.
+- Per-callee `cdecl_modify`: **734 EXACT (+34)**, both populations reconciled.
+
+The sb97 → sb98 transitions are 34 MISMATCH → EXACT (incl. specimen `FUN_000191b8`,
+`FUN_0005cf70`, the 0x318d8/0x31c60 window family, 0x6a7d0–0x6a970, 0x658fc/0x659ec) and
+3 MISMATCH → SAME_SHAPE — **zero regressions of any kind against the landed baseline**.
+WGSS **0.4402 → 0.4626** (+3126 matched instructions), the largest jump of the campaign:
+`missing` as dominant cause fell 830 → ~700 as ~300 caller-cleaned sites gained their
+pushes, cleanup adds, and prologue saves.
+
+**Named residue:** `FUN_00031d58` was EXACT under the pragma-only form and is MISMATCH
+(regalloc=12) under per-callee modify: its callee CONTAINS a call, so the
+`calls_clobber=true` walk inflates that callee's set to the full convention kill set, while
+the original's model of it was evidently narrower. The refinement, when the family is next
+worked: resolve nested calls with the NESTED callee's own recovered contract instead of the
+convention's blanket (a transitive fixed point over the call graph), which is also what the
+original compiler knew from its headers.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild

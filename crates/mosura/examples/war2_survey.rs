@@ -8,7 +8,7 @@
 //!
 //! Usage: cargo run -q --release --example war2_survey -- <war2.exe> <out_dir>
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::sync::Mutex;
 
@@ -1257,7 +1257,7 @@ fn main() {
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
             let ac = print_c_with(&f, theta);
-            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default());
+            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default(), &Default::default());
             let atu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{atu}"),
                 None => atu,
@@ -1408,7 +1408,48 @@ fn main() {
             // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
             let volatiles =
                 mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns);
-            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles);
+            // VARARG CALLEES: targets of calls the decompiler recovered as caller-cleaned
+            // (`CallSpec::caller_cleans` — evidence: the callee's RET pops nothing AND the
+            // original fallthrough is `ADD ESP,n`), each with its own recovered modify set
+            // (`CallSpec::cdecl_modify`). The pragma is pre-rendered here because the register
+            // NAMES come from the same spec-built table as every other contract
+            // (`own_contract`'s); a blanket kill set was measured wrong in BOTH directions —
+            // without `modify` Watcom assumes preserves-all and drops the 191b8 family's
+            // prologue saves; with a uniform `modify [eax ebx ecx edx]` it invents saves the
+            // 0x31c60 family's originals do not have (6 EXACT lost). Per-callee evidence is the
+            // only shape that fits both.
+            let vararg_callees: HashMap<u64, String> = f
+                .call_specs
+                .iter()
+                .filter(|(_, cs)| cs.caller_cleans.unwrap_or(0) > 0)
+                .filter_map(|(&op, cs)| {
+                    let t = f.op(op).input(0)?;
+                    let va = f.vn(t).loc.offset;
+                    if va == 0 {
+                        return None;
+                    }
+                    let mut spec = "parm caller []".to_string();
+                    if let Some(m) = cs.cdecl_modify.as_ref() {
+                        let mut regs: Vec<&str> = m
+                            .iter()
+                            .filter_map(|off| {
+                                watreg.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2)
+                            })
+                            .filter(|r| *r != "ebp" && *r != "esp")
+                            .collect();
+                        // EAX is the return register — always in the contract even for a
+                        // callee whose body the walk saw writing nothing else.
+                        if !regs.contains(&"eax") {
+                            regs.push("eax");
+                        }
+                        regs.sort();
+                        regs.dedup();
+                        spec.push_str(&format!(" modify [{}]", regs.join(" ")));
+                    }
+                    Some((va, spec))
+                })
+                .collect();
+            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles, &vararg_callees);
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
                 None => rtu,
@@ -1427,7 +1468,7 @@ fn main() {
                 println!("{rtu}");
             }
         }
-        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default());
+        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default(), &Default::default());
         let tu = if let Some(decl) = contract.clone() {
             // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
             // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
@@ -1704,6 +1745,15 @@ fn build_tu(
     // Globals to declare `volatile` — a RECOVERED qualifier (buildconfig::
     // volatile_globals_from_evidence); empty for every rendering but the recovered one.
     volatiles: &HashSet<u64>,
+    // Callees to declare VARARG (`extern int f(int, ...);`) — a RECOVERED linkage fact from the
+    // decompiler's per-call model selection (`CallSpec::caller_cleans`: the original caller pops
+    // this callee's arguments while the callee's own RET pops none). OW 1.0 cfeinfo.c:668 gives
+    // a vararg function `CALLER_POPS | HAS_VARARGS` on top of the DEFAULT (watcall) aux info —
+    // parms DefaultVarParms={0} (all on the stack), watcall save set, watcall `name_` objname —
+    // so the ellipsis prototype alone reproduces the original's push/call/`add esp,K` sequence
+    // and register saves, with linkage unchanged. Empty for every rendering but the recovered
+    // one.
+    vararg_callees: &HashMap<u64, String>,
 ) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
@@ -1747,6 +1797,22 @@ fn build_tu(
     let mut fs: Vec<_> = funcs.into_iter().collect();
     fs.sort();
     for f in fs {
+        // The recovered caller-pops contract, by callee VA parsed back out of the rendered
+        // name — expressed as a PRAGMA on the unprototyped declaration, NOT as an
+        // `(int, ...)` prototype: `parm caller []` (empty register set = every argument on
+        // the stack, `caller` = caller pops) reproduces OW's vararg call class
+        // (CALLER_POPS|HAS_VARARGS over the default aux info, cfeinfo.c:668) while leaving
+        // the call UNPROTOTYPED, so a pointer first argument stays legal. The prototype form
+        // was measured first: its fixed `int` parameter made Watcom reject every TU whose
+        // first argument is a pointer (E1071, 42 TUs — e.g. FUN_00011c98's
+        // `func_0x0005a824(pxRam0008128c, ...)`).
+        let va = f
+            .strip_prefix("func_0x")
+            .or_else(|| f.strip_prefix("FUN_"))
+            .and_then(|h| u64::from_str_radix(h, 16).ok());
+        if let Some(spec) = va.and_then(|va| vararg_callees.get(&va)) {
+            decls.push_str(&format!("#pragma aux {f} {spec};\n"));
+        }
         decls.push_str(&format!("extern int {f}();\n"));
     }
     // Ram globals + synthetic register vars. If ever indexed, declare as pointer.

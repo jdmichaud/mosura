@@ -309,6 +309,9 @@ fn record_callee_effects(
     // The callee's stack-cleanup contract (RET vs RET n), per callee, memoized: the same callee is
     // called many times per function (63 memset calls in FUN_0001fdbc alone).
     let mut cleanup_cache: std::collections::HashMap<u64, Option<u32>> = std::collections::HashMap::new();
+    // The caller-cleaned callee's own modify set (calls_clobber=true walk), per callee, memoized
+    // like the cleanup contract — same callees, same fan-in.
+    let mut modify_cache: std::collections::HashMap<u64, Option<Vec<u64>>> = std::collections::HashMap::new();
     // The stack pointer's register offset, for reading `RET n` off the lifted p-code.
     let esp_off = f
         .spaces
@@ -364,7 +367,16 @@ fn record_callee_effects(
                     eprintln!("[cdecl-evd] call@{pc:#x} target={target:#x} caller_cleans={n:?}");
                 }
                 if let Some(n) = n {
-                    f.call_specs.entry(call).or_default().caller_cleans = Some(n);
+                    let modify = modify_cache
+                        .entry(target)
+                        .or_insert_with(|| {
+                            callee_writes_cfg(program, spec, ctx, target, reg, f, true)
+                                .map(|(w, _)| w)
+                        })
+                        .clone();
+                    let cs = f.call_specs.entry(call).or_default();
+                    cs.caller_cleans = Some(n);
+                    cs.cdecl_modify = modify;
                 }
             }
         }

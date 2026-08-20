@@ -1169,6 +1169,16 @@ pub struct CallSpec {
     /// register pentries stop manufacturing trials (and the killing chain) at a call that takes
     /// no register arguments.
     pub caller_cleans: Option<u32>,
+    /// The caller-cleaned callee's own recovered MODIFY set (register offsets, sub-registers
+    /// normalized to their containing 32-bit register): what its body visibly clobbers at
+    /// return — writes minus saved-and-restored, nested calls counted as clobbering the
+    /// convention's kill set (`callee_writes_cfg(_, calls_clobber=true)`). Recovered ONLY for
+    /// `caller_cleans` callees; the emitter renders it as the callee pragma's `modify [..]`
+    /// clause, because Watcom emits the caller's prologue saves only when the callee's declared
+    /// contract kills a register the caller's own contract must preserve. `None` = the walk
+    /// could not complete (indirect flow, budget) — the declaration then omits the clause and
+    /// the default (preserves-all) assumption stands.
+    pub cdecl_modify: Option<Vec<u64>>,
     /// BEYOND-GHIDRA bookkeeping for `stackvars::recover_stack`'s call-mechanism model: the
     /// return-address push amount it already CANCELLED at this call (the push rewritten to an
     /// identity COPY, the retaddr store materialized at its slot). Ghidra keeps the push in the
