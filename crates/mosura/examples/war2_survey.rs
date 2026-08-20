@@ -1358,10 +1358,8 @@ fn main() {
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             // VOLATILE RECOVERY: globals whose original store sites show the blocked order
             // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
-            let volatiles = mosura::recompile::buildconfig::volatile_globals_from_evidence(
-                &report.volatile_candidates,
-                &insns,
-            );
+            let volatiles =
+                mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns);
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles);
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),

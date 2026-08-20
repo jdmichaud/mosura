@@ -649,8 +649,9 @@ ordering mechanism's generalization, unworked), the pure-allocation pairs (pile-
 displaced single-constant sites whose windows carry no order information (one visible
 setup) or identifier co-arguments.
 
-**694 → 695 (sb95): VOLATILE recovery — the first recovered source QUALIFIER, shipped at
-its calibrated core.** The F5 statement-order residual decomposed under the probe loop into
+**694 → 699 (sb95): VOLATILE recovery — the first recovered source QUALIFIER, decided by a
+MODEL of the original compiler's scheduler.** The F5 statement-order residual decomposed
+under the probe loop into
 something better than statement order: in five specimens the C statement order already
 matches the original (oracle-confirmed on `FUN_0005d500` — Ghidra prints the same order),
 and the divergence is Watcom's INSTRUCTION SCHEDULER moving the next statement's evaluation
@@ -671,7 +672,10 @@ zeroed, a call made, the flag re-tested). The recovered chain:
 `printc::EmitReport::volatile_candidates` (per pure-global-store statement, the next
 statement's min op pc + its RAM reads + work-free/const-rhs flags) →
 `buildconfig::volatile_globals_from_evidence` → `build_tu` renders the qualifier on the
-declaration (recovered tree only).
+declaration (recovered tree only). The DECISION lives in `recompile::watsched` — a model
+of OW 1.0's `inssched.c` (see below), NOT part of the Ghidra port: it models the TARGET
+toolchain, beside the profile, placed in `recompile/` by design (it consumes the
+original's decoded instructions and answers a recompile-layer question).
 
 **The calibration is the story — measured trajectory −28 → −8 → −5 → +2 → +1-clean:** the
 blanket order-readout mass-marked consecutive-store runs whose shared materialization the
@@ -681,17 +685,46 @@ global LOADS in the original — the IR often has no op for a global read, so th
 blind exactly where hoisting is most visible, `FUN_0005f440` both ways) to 689; the
 materialization-adjacency veto (a constant store whose register materialization is
 separated from it by foreign work is not volatile — `FUN_000121e8`) to 696 with six
-regressions; and the shipped rule accepts ANCHORED-READ positives only: **+1 EXACT
-(FUN_00034590), zero regressions, WGSS 0.4361 → 0.4362, 29 TUs marked.** The residual is
-named, not hidden: four of the five probe-proven volatiles flow through op-invisible
-constant-materialization evidence that is field-indistinguishable from the false class —
-real, unreachable on order evidence alone (the `local-width` verdict shape). The SYSTEMIC
-next step, per JD's direction to model rather than calibrate: simulate the scheduler's own
-dependency predicate (`InsOrderDependant`, inssched.c:419 — jumps, calls against visible
-memory, stack ops, CC chains, `DataDependant` both directions, segment implicits) plus its
-priority walk over the original's instructions to compute WOULD-MOVE; positive evidence
-becomes "program order preserved where motion was licensed", which reaches the four residual
-volatiles without the false class.
+regressions; the anchored-read-only cut reached +1 clean. Every gate was an approximation
+of one question the calibration could not answer: WOULD the scheduler have moved anything
+here?
+
+**The model answers it directly (`recompile::watsched`, per JD's direction to model from
+the OW source rather than calibrate).** The original's per-block instruction order is a
+fixed point of its own scheduler under the source's constraints, so: re-simulate each
+window with no barriers — if the prediction reproduces the original, the order proves
+nothing; if it does not, a stored global whose barrier alone restores it was volatile.
+Ported: the dependency predicate (`InsOrderDependant`, inssched.c:419 — a later jump
+depends on everything, a call cannot rise above a visible store, stack ops never reorder,
+data dependence both ways), volatile as depends-on-everything (redefby.c:144), the
+`RELAX_ALIAS` model (redefby.c:70 — register-addressed accesses do not alias named
+globals under `-oa`), the bottom-up priority walk (`ScheduleIns`, inssched.c:766: min
+stall cost, then height, then `InsStallable`, then source order) with the 486/586
+operand-stall rows (386funit.c — identical integer rows at both CPU digits). Corrections
+the diagnostic loop forced, each measured on real windows: emitted MOVs are `FU_ALUX`,
+not no-stall (`Move1[]`'s `G_MOV*` rows — `FU_NO` marks non-emitting reductions); the
+scheduler sees IR granularity, so read-modify-writes and store-value materializations
+fold into their stores (the encoder splits them AFTER scheduling), and the zero-XOR
+idiom's register reads are formal; prologue/epilogue are attached after scheduling and
+leave the windows; a call READS its argument registers (`LinkParms` makes the parm union
+a call operand). Decision gates, each with its measured counterexample: the CAUSAL gate
+(a barrier is depends-on-everything and dampens any motion — it explains the original
+only when the predicted motion CROSSES its store; `FUN_00012840`); the SELECTION veto
+(a non-zero byte constant stored through a register proves non-volatile — volatile
+compiles the immediate form, the zero idiom does not flip; four independent
+measurements); the CONFIDENCE gate (priority approximations accumulate — only ≤3
+displaced atoms count; `FUN_00019344`'s LEA/ADD chain, whose order even a faithful cost
+hand-computation cannot reproduce — plausibly the interim build's own priority, pile-B);
+and the BLAST-RADIUS gate (the model validates one window, the declaration reaches every
+access — only globals accessed ≤2 times in the function mark; a dozen deep-MISMATCH
+functions had lost up to 0.32 alignment to wide marks).
+
+**Result: 694 → 699 EXACT, zero regressions, WGSS 0.4359, 78 TUs marked** — all five
+probed specimens convert with exactly their minimal probe sets, validated by a
+15-function diagnostic battery (`dumpsched`, the gitignored dump-family) spanning every
+measured true positive and every false-positive class from the calibration era. Named
+residues: `FUN_00021a48` (true volatile, confidence-gated out — its window displaces four
+atoms) and `FUN_00019344` (protected by the same gate).
 
 **Layering note (JD's best-practice flag, recorded rather than glossed):** volatility is
 really a PROGRAM fact about a global — in Ghidra's own model it is a symbol/database

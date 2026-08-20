@@ -446,12 +446,11 @@ the allocator function-wide). Full entry: byte-exact-status.md sb94.
   every probed member our statement order already matches the original (oracle-confirmed
   on `FUN_0005d500`). The store-adjacent five (`000125bc`, `00034590`, `0004c270`,
   `0005d500`/`0005d57c`) are **VOLATILE globals** — the original source's qualifier blocks
-  the hoist our plain declaration permits; all five hand-probed byte-exact, ONE
-  field-recoverable (`FUN_00034590`, the anchored-read evidence; +1 EXACT, zero
-  regressions), four probe-proven but field-indistinguishable from the measured
-  false-positive class (op-invisible constant materializations cross a store in both
-  directions — the calibration trajectory −28 → −8 → −5 → +2 → +1-clean is in
-  byte-exact-status.md sb95). The displacement members (`0003e7ec`, `0003ef60`,
+  the hoist our plain declaration permits; all five hand-probed byte-exact and ALL FIVE
+  field-recovered by the scheduler MODEL (`recompile::watsched`, a port-model of OW 1.0's
+  inssched.c — +5 EXACT, zero regressions, sb95). The calibrated-gates era that preceded
+  it (trajectory −28 → −8 → −5 → +2 → +1-clean) is kept in byte-exact-status.md as the
+  record of why modeling beats calibrating. The displacement members (`0003e7ec`, `0003ef60`,
   `0003e858`, `0005bbdc`, `00025260`) are the interim build's instruction-motion policy —
   probed at both CPU digits, five `-o` subsets, volatile casts, and the
   increment-in-condition spelling; nothing moves them: **pile-B**.

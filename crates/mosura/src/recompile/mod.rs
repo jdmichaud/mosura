@@ -37,6 +37,7 @@ pub mod report;
 pub mod toolchain;
 pub mod verify;
 pub mod vocab;
+pub mod watsched;
 
 pub use buildconfig::{BuildConfig, Evidence, Profile};
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
