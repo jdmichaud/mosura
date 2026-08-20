@@ -312,6 +312,12 @@ fn record_callee_effects(
     // The caller-cleaned callee's own modify set (calls_clobber=true walk), per callee, memoized
     // like the cleanup contract — same callees, same fan-in.
     let mut modify_cache: std::collections::HashMap<u64, Option<Vec<u64>>> = std::collections::HashMap::new();
+    // The caller-cleaned family's contracts use the BLANKET walk (sb98's landed semantics)
+    // while the general population uses the transitive one — TWO different computations
+    // that must never share a cache entry: a callee reached through both paths (one site
+    // caller-cleaned, another not) previously got whichever ran first, an order-dependent
+    // contamination that surfaced as two caller-cleaned pragmas losing ECX.
+    let mut cleaned_cache: std::collections::HashMap<u64, Option<Vec<u64>>> = std::collections::HashMap::new();
     // THE PER-(TU, CALLEE) CONTRACT MAP — Increment 1 of the reopened sb99 design
     // (docs/byte-exact-status.md): ONE value per callee for this caller, transitive
     // body-truth NARROWED by this caller's own survival testimony, consumed by BOTH the
@@ -369,6 +375,29 @@ fn record_callee_effects(
             None => Vec::new(),
         }
     };
+    // Each call op's argument-register read set, from the whole-program prototype recovery
+    // (empty when the pass is off — the walks then behave exactly as the landed baseline).
+    let call_reads: std::collections::HashMap<crate::decompile::op::OpId, Vec<u64>> = {
+        let mut m = std::collections::HashMap::new();
+        for &c in &calls {
+            if let Some(t) = f.op(c).input(0) {
+                let va = f.vn(t).loc.offset;
+                if let Some(p) = program.recovered_protos.get(&va) {
+                    let regspace = f.spaces.by_name("register");
+                    let regs: Vec<u64> = p
+                        .params
+                        .iter()
+                        .filter(|prm| Some(prm.addr.space) == regspace)
+                        .map(|prm| prm.addr.offset)
+                        .collect();
+                    if !regs.is_empty() {
+                        m.insert(c, regs);
+                    }
+                }
+            }
+        }
+        m
+    };
     let sites_of: std::collections::HashMap<u64, Vec<(usize, usize)>> = {
         let mut m: std::collections::HashMap<u64, Vec<(usize, usize)>> = std::collections::HashMap::new();
         for &c in &calls {
@@ -387,7 +416,7 @@ fn record_callee_effects(
         .spaces
         .by_name("stack")
         .and_then(|st| f.spaces.get(st).spacebase.first().map(|&(a, _)| a.offset));
-    for call in calls {
+    for &call in &calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
         // value — the same field printc reads to name `func_0x<addr>`. Testing `is_constant()`
@@ -448,7 +477,7 @@ fn record_callee_effects(
                     // them PER CALLEE needs the callers' dataflow testimony
                     // (docs/byte-exact-status.md sb99, the parked design); until then the
                     // measured-landed blanket stands.
-                    let modify = modify_cache
+                    let modify = cleaned_cache
                         .entry(target)
                         .or_insert_with(|| {
                             callee_writes_cfg(program, spec, ctx, target, reg, f, NestedCalls::Blanket)
@@ -480,7 +509,25 @@ fn record_callee_effects(
                                 // and flag offsets never render.
                                 .filter(|&c| matches!(c & !3, 0 | 4 | 8 | 0xc | 0x18 | 0x1c))
                                 .filter(|&c| {
-                                    sites.iter().any(|&pos| survives_call(probe, reg, pos, c))
+                                    sites
+                                        .iter()
+                                        .any(|&pos| {
+                                            // The veto walks run WITHOUT the arity map:
+                                            // survival-into-a-later-call's-argument is
+                                            // exactness testimony (below), not license to
+                                            // narrow the landed kill sets — threading it
+                                            // here rewrote increment-1 contracts under the
+                                            // prototype pass (FUN_00012360's 0x58ff8 lost
+                                            // its ECX kill and the EXACT with it).
+                                            survives_call(
+                                                probe,
+                                                reg,
+                                                pos,
+                                                c,
+                                                &Default::default(),
+                                                &Default::default(),
+                                            )
+                                        })
                                 })
                                 .collect::<Vec<u64>>()
                         })
@@ -488,7 +535,8 @@ fn record_callee_effects(
                     w.retain(|c| !veto.contains(c));
                 }
                 w.retain(|&c| !tu_preserve_veto.contains(&(c & !3)));
-                f.call_specs.entry(call).or_default().cdecl_modify = Some(w);
+                let cs = f.call_specs.entry(call).or_default();
+                cs.cdecl_modify = Some(w);
             }
         }
         // THE CALLEE'S OWN RECOVERED PROTOTYPE, when the whole-program pass has established one.
@@ -558,6 +606,37 @@ fn record_callee_effects(
         let cs = f.call_specs.entry(call).or_default();
         cs.overwrites = regs;
         cs.reads = Some(reads);
+    }
+
+    // EXACTNESS (contract-design Increment 2), computed once every call's contract is
+    // known: one of a call's own argument registers (its callee's recovered register
+    // parameters) surviving the call — reaching a later plain read, a later call's matching
+    // argument, or riding THROUGH intervening calls whose recovered contracts preserve it —
+    // proves this TU declared the callee `modify exact` (OW CallZap folds parm.used into
+    // the zap otherwise, i86reg.c:263; the 12c58 zero riding one definition through a loop's
+    // two calls). Inert without the whole-program prototype pass (`call_reads` empty).
+    if !call_reads.is_empty() {
+        let call_kills: std::collections::HashMap<crate::decompile::op::OpId, Vec<u64>> = calls
+            .iter()
+            .filter_map(|&c| {
+                f.call_specs.get(&c).and_then(|cs| cs.cdecl_modify.clone()).map(|k| (c, k))
+            })
+            .collect();
+        for &call in &calls {
+            let Some(own) = call_reads.get(&call) else { continue };
+            let exact = if let (Some(&pos), Some(probe)) = (call_pos.get(&call), cfg_probe.as_ref())
+            {
+                own.iter().any(|&r| {
+                    matches!(r & !3, 0 | 4 | 8 | 0xc)
+                        && survives_call(probe, reg, pos, r, &call_reads, &call_kills)
+                })
+            } else {
+                false
+            };
+            if exact {
+                f.call_specs.entry(call).or_default().cdecl_exact = true;
+            }
+        }
     }
 }
 
@@ -725,11 +804,6 @@ fn callee_cleanup(
     crate::recompile::convention::callee_stack_cleanup(&insns, sp)
 }
 
-/// One callee's TRANSITIVE clobber contract — [`callee_writes_cfg`] with nested calls
-/// resolved by recursion, memoized whole-program in [`Program::contract_cache`] so the fixed
-/// point over the call graph is walked once per callee, not once per caller. A callee already
-/// on the recursion stack (`InProgress`) is a call-graph cycle: the asking edge gets `None`
-/// and falls back to the convention's kill set, conservatively.
 /// Per-caller SURVIVAL testimony on the caller's RAW CFG — the sb99 design's veto,
 /// landed: does any path from `start` (the position just after a call) reach a READ of a
 /// register overlapping `cand` before an op writes it, before any further call (whose own
@@ -746,6 +820,16 @@ fn survives_call(
     reg: crate::decompile::space::SpaceId,
     start: (usize, usize),
     cand: u64,
+    // Per-call argument-register reads (each CALL op's callee's recovered read set) — the
+    // raw graph carries no argument inputs, so a value flowing INTO a later call's argument
+    // register is invisible to the plain operand scan. With the whole-program prototype
+    // recovery on, this map makes that flow a READ: reaching a call whose callee reads
+    // `cand` (unwritten since `start`) proves survival exactly as a plain read does.
+    // Empty map = the baseline behavior.
+    call_reads: &std::collections::HashMap<crate::decompile::op::OpId, Vec<u64>>,
+    // Per-call RECOVERED kill sets (`CallSpec::cdecl_modify`), for walking through preserving
+    // calls; empty map = every call ends the path (the veto-collection behavior).
+    call_kills: &std::collections::HashMap<crate::decompile::op::OpId, Vec<u64>>,
 ) -> bool {
     use crate::decompile::opcode::OpCode;
     let lo = cand & !3;
@@ -767,9 +851,24 @@ fn survives_call(
                     }
                 }
             }
-            if o.output.is_some_and(|v| overlaps(f, v))
-                || matches!(o.code(), OpCode::Call | OpCode::Callind | OpCode::Return)
-            {
+            if matches!(o.code(), OpCode::Call | OpCode::Callind) {
+                if call_reads.get(&opid).is_some_and(|rs| rs.iter().any(|&r| (r & !3) == lo)) {
+                    return true;
+                }
+                // A call whose RECOVERED CONTRACT preserves `cand` is transparent to the
+                // walk: the value rides through it (the loop shape — EDX set once, received
+                // by every iteration's calls, surviving each via the other's preservation).
+                // No contract, or a contract killing `cand`, ends the path conservatively.
+                if call_kills
+                    .get(&opid)
+                    .is_some_and(|ks| !ks.iter().any(|&k| (k & !3) == lo))
+                {
+                    continue;
+                }
+                open = false;
+                break;
+            }
+            if o.output.is_some_and(|v| overlaps(f, v)) || o.code() == OpCode::Return {
                 open = false;
                 break;
             }

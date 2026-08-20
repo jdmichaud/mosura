@@ -1432,6 +1432,20 @@ fn main() {
             //                      the recompiler hoists argument setups across calls the
             //                      original could not (FUN_00011b9c / callee 0x1f734).
             let mut callee_aux: HashMap<u64, (Option<String>, Option<String>)> = HashMap::new();
+            // EXACTNESS (contract-design Increment 2): recovered in the analysis
+            // (CallSpec::cdecl_exact — an argument register surviving its own call on the
+            // raw CFG, arity from the whole-program prototype recovery). One site's
+            // testimony covers the TU's single declaration.
+            let exact_callees: std::collections::HashSet<u64> = f
+                .call_specs
+                .iter()
+                .filter(|(_, cs)| cs.cdecl_exact)
+                .filter_map(|(&op, _)| {
+                    let t = f.op(op).input(0)?;
+                    let va = f.vn(t).loc.offset;
+                    (va != 0).then_some(va)
+                })
+                .collect();
             for (&op, cs) in f.call_specs.iter() {
                 let Some(t) = f.op(op).input(0) else { continue };
                 let va = f.vn(t).loc.offset;
@@ -1457,7 +1471,8 @@ fn main() {
                     }
                     regs.sort();
                     regs.dedup();
-                    e.1 = Some(format!("modify [{}]", regs.join(" ")));
+                    let kw = if exact_callees.contains(&va) { "modify exact" } else { "modify" };
+                    e.1 = Some(format!("{kw} [{}]", regs.join(" ")));
                 }
             }
             // A callee can carry a recovered param order without any CallSpec entry (the

@@ -1179,6 +1179,16 @@ pub struct CallSpec {
     /// could not complete (indirect flow, budget) — the declaration then omits the clause and
     /// the default (preserves-all) assumption stands.
     pub cdecl_modify: Option<Vec<u64>>,
+    /// Increment 2 of the contract design: was this callee declared `modify EXACT` in this
+    /// TU? OW `CallZap` (i86reg.c:263) adds `state->parm.used` — the call's own argument
+    /// registers — to the scheduler-visible kill set UNLESS the declaration carried
+    /// `ROUTINE_MODIFY_EXACT`. The observable signature (the 12c58 pass-through class): a
+    /// register that IS one of the call's own argument registers and provably SURVIVES that
+    /// call in the caller's CFG was compiled under an `exact` declaration — a non-exact one
+    /// would have zapped it. Recovered per (TU, callee) like the kill set itself; `false`
+    /// (no testimony) emits the plain `modify [..]`, whose parm.used behavior matches the
+    /// baseline.
+    pub cdecl_exact: bool,
     /// BEYOND-GHIDRA bookkeeping for `stackvars::recover_stack`'s call-mechanism model: the
     /// return-address push amount it already CANCELLED at this call (the push rewritten to an
     /// identity COPY, the retaddr store materialized at its slot). Ghidra keeps the push in the
