@@ -312,6 +312,75 @@ fn record_callee_effects(
     // The caller-cleaned callee's own modify set (calls_clobber=true walk), per callee, memoized
     // like the cleanup contract — same callees, same fan-in.
     let mut modify_cache: std::collections::HashMap<u64, Option<Vec<u64>>> = std::collections::HashMap::new();
+    // THE PER-(TU, CALLEE) CONTRACT MAP — Increment 1 of the reopened sb99 design
+    // (docs/byte-exact-status.md): ONE value per callee for this caller, transitive
+    // body-truth NARROWED by this caller's own survival testimony, consumed by BOTH the
+    // emitted callee pragma and the thunk own-contract inheritance (which therefore agree
+    // by construction — the consistency defect that cost 0x5d00a/0x71caf in the sb99
+    // rounds cannot recur). Caller-cleaned callees are EXEMPT from the veto: their full
+    // recovered kill set is the landed sb98 result, and the veto on them re-broke measured
+    // EXACTs in the add-direction (FUN_00011128, FUN_0004dee0).
+    //
+    // The CFG for the survival walk is built on a throwaway CLONE with the pipeline's own
+    // builder — building it in place corrupts the later pipeline (measured 734 → 139).
+    let cfg_probe: Option<crate::decompile::funcdata::Funcdata> = if calls.is_empty() {
+        None
+    } else {
+        let mut probe = f.clone();
+        crate::decompile::cfg::build_cfg(&mut probe);
+        Some(probe)
+    };
+    let call_pos: std::collections::HashMap<crate::decompile::op::OpId, (usize, usize)> = {
+        let mut m = std::collections::HashMap::new();
+        if let Some(probe) = cfg_probe.as_ref() {
+            for (bi, blk) in probe.blocks().iter().enumerate() {
+                for (oi, &opid) in blk.ops.iter().enumerate() {
+                    if calls.contains(&opid) {
+                        m.insert(opid, (bi, oi + 1));
+                    }
+                }
+            }
+        }
+        m
+    };
+    // Vetoes are keyed by TARGET and unioned over ALL of this caller's call sites to it:
+    // the emitted pragma is one declaration per (TU, callee), so the contract must satisfy
+    // every site's testimony — and every call op to one callee then carries the SAME
+    // contract, by construction.
+    let mut veto_cache: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+    // THE NO-SAVE TESTIMONY, the survival veto's complement: a GPR the CALLER's own
+    // contract must preserve (it neither clobbers it at return nor saves-and-restores it)
+    // cannot have been killed by ANY callee this TU calls — the original compiler's own
+    // codegen would otherwise have forced the save our recompile demonstrably adds
+    // (FUN_00072c37 grew PUSH/POP ESI around a callee whose transitive truth clobbers ESI;
+    // the original's declaration evidently preserved it). Computed from the caller's own
+    // body walk: writes ∪ restored = every register it touches; the six pragma GPRs outside
+    // that union are preserved-without-saving, and veto every non-caller-cleaned contract.
+    let tu_preserve_veto: Vec<u64> = {
+        let own = callee_writes_cfg(program, spec, ctx, f.addr.offset, reg, f, NestedCalls::Blanket);
+        match own {
+            Some((w, r)) => [0u64, 4, 8, 0xc, 0x18, 0x1c]
+                .into_iter()
+                .filter(|&g| {
+                    !w.iter().chain(r.iter()).any(|&o| (o & !3) == g)
+                })
+                .collect(),
+            // The caller's own walk failed (indirect flow): no testimony, veto nothing.
+            None => Vec::new(),
+        }
+    };
+    let sites_of: std::collections::HashMap<u64, Vec<(usize, usize)>> = {
+        let mut m: std::collections::HashMap<u64, Vec<(usize, usize)>> = std::collections::HashMap::new();
+        for &c in &calls {
+            if let (Some(t), Some(&pos)) = (f.op(c).input(0), call_pos.get(&c)) {
+                let va = f.vn(t).loc.offset;
+                if va != 0 {
+                    m.entry(va).or_default().push(pos);
+                }
+            }
+        }
+        m
+    };
 
     // The stack pointer's register offset, for reading `RET n` off the lifted p-code.
     let esp_off = f
@@ -390,6 +459,36 @@ fn record_callee_effects(
                     cs.caller_cleans = Some(n);
                     cs.cdecl_modify = modify;
                 }
+            }
+        }
+        // THE CALLEE'S CONTRACT for this call — see the map's doc at `cfg_probe` above.
+        // Caller-cleaned calls are handled in their own branch below (blanket, no veto).
+        if f.call_specs.get(&call).and_then(|c| c.caller_cleans).unwrap_or(0) == 0 {
+            let m = modify_cache
+                .entry(target)
+                .or_insert_with(|| transitive_contract(program, spec, ctx, target, reg, f))
+                .clone();
+            if let Some(mut w) = m {
+                if let (Some(sites), Some(probe)) = (sites_of.get(&target), cfg_probe.as_ref()) {
+                    let veto = veto_cache
+                        .entry(target)
+                        .or_insert_with(|| {
+                            w.iter()
+                                .copied()
+                                // Only the six pragma-expressible GPRs are worth walking:
+                                // ESP/EBP are rejected by Watcom in a modify list (E1122)
+                                // and flag offsets never render.
+                                .filter(|&c| matches!(c & !3, 0 | 4 | 8 | 0xc | 0x18 | 0x1c))
+                                .filter(|&c| {
+                                    sites.iter().any(|&pos| survives_call(probe, reg, pos, c))
+                                })
+                                .collect::<Vec<u64>>()
+                        })
+                        .clone();
+                    w.retain(|c| !veto.contains(c));
+                }
+                w.retain(|&c| !tu_preserve_veto.contains(&(c & !3)));
+                f.call_specs.entry(call).or_default().cdecl_modify = Some(w);
             }
         }
         // THE CALLEE'S OWN RECOVERED PROTOTYPE, when the whole-program pass has established one.
@@ -631,6 +730,63 @@ fn callee_cleanup(
 /// point over the call graph is walked once per callee, not once per caller. A callee already
 /// on the recursion stack (`InProgress`) is a call-graph cycle: the asking edge gets `None`
 /// and falls back to the convention's kill set, conservatively.
+/// Per-caller SURVIVAL testimony on the caller's RAW CFG — the sb99 design's veto,
+/// landed: does any path from `start` (the position just after a call) reach a READ of a
+/// register overlapping `cand` before an op writes it, before any further call (whose own
+/// contract re-opens the question)? A read proves THIS TU was compiled against a
+/// declaration in which the register SURVIVES the callee — different callers of one callee
+/// were provably built against different declarations (0x5cf88: the 191b8 wrapper family
+/// saves EDX around it, the 0x292c7 caller reads EDX straight across it), which is why the
+/// contract, like the pragma that carries it, is per-TU. Real blocks make the walk sound
+/// where the parked byte-window first cut was not: conditional paths are walked, a jump
+/// target's reads only count when reached FROM the call, and noreturn fallthrough into
+/// foreign bytes cannot happen — the CFG ends where the function does.
+fn survives_call(
+    f: &crate::decompile::funcdata::Funcdata,
+    reg: crate::decompile::space::SpaceId,
+    start: (usize, usize),
+    cand: u64,
+) -> bool {
+    use crate::decompile::opcode::OpCode;
+    let lo = cand & !3;
+    let overlaps = |f: &crate::decompile::funcdata::Funcdata, v: crate::decompile::VarnodeId| {
+        let vn = f.vn(v);
+        vn.loc.space == reg && vn.loc.offset < lo + 4 && vn.loc.offset + vn.size as u64 > lo
+    };
+    let mut seen = vec![false; f.num_blocks()];
+    let mut work: Vec<(usize, usize)> = vec![start];
+    while let Some((b, i0)) = work.pop() {
+        let blk = &f.blocks()[b];
+        let mut open = true; // the path is still asking about the pre-call value
+        for &opid in &blk.ops[i0..] {
+            let o = f.op(opid);
+            for slot in 0..o.num_inputs() {
+                if let Some(v) = o.input(slot) {
+                    if overlaps(f, v) {
+                        return true;
+                    }
+                }
+            }
+            if o.output.is_some_and(|v| overlaps(f, v))
+                || matches!(o.code(), OpCode::Call | OpCode::Callind | OpCode::Return)
+            {
+                open = false;
+                break;
+            }
+        }
+        if open {
+            for &succ in &blk.out_edges {
+                let si = succ.0 as usize;
+                if !seen[si] {
+                    seen[si] = true;
+                    work.push((si, 0));
+                }
+            }
+        }
+    }
+    false
+}
+
 fn transitive_contract(
     program: &Program,
     spec: &crate::sleigh::engine::Spec,

@@ -1052,6 +1052,36 @@ is a readout of that pair through `CallZap` + the scheduler. The reopened contra
 (byte-exact-status sb99, parked with its ledger) is where all three threads — kills,
 exactness, arity — land as one recovery.
 
+**741 → 743 EXACT, WGSS 0.4635 → 0.4656 (ct1): the CONTRACT DESIGN, Increment 1 —
+per-(TU, callee) declarations from three testimonies, landed.** The sb99 park reopened on
+JD's greenlight, built as the specification the CallZap investigation defined. One contract
+value per (TU, callee), computed in `record_callee_effects` and consumed by every
+downstream reader (callee pragma, thunk inheritance — which now agree BY CONSTRUCTION: a
+thunk's post-call window is empty, so its veto is empty, so both read plain transitive; the
+sb99 consistency defect cannot recur):
+
+- **body-truth**: `transitive_contract` (the call-graph fixed point) — what the callee
+  visibly clobbers;
+- **survival veto** (`survives_call`, the CFG first-access walk on a `build_cfg` CLONE,
+  vetoes UNIONED over all of the TU's sites per callee): a register the caller reads back
+  across a call was declared preserved in THIS TU;
+- **no-save veto** (the complement, named by round 1's single loss `FUN_00072c37`): a GPR
+  the caller's own contract must preserve and never saves-and-restores cannot have been
+  declared killed by ANY callee it calls — the original compiler's codegen would have
+  forced the very PUSH/POP our recompile added. Computed from the caller's own body walk
+  (writes ∪ restored), applied to every non-caller-cleaned contract.
+
+Caller-cleaned callees stay EXEMPT from both vetoes (their full recovered kill set is the
+landed sb98 result; the add-direction evidence stands). Round 1: 742 (+2/−1, the loss
+diagnosed same day into the third testimony). Round 2: **743 — `FUN_00011b9c` (the
+founding argument-position specimen) and `FUN_000362f0` EXACT, `FUN_0004b750` → SAME_SHAPE,
+ZERO losses of any kind**. WGSS +435 matched instructions over the sb102 baseline. The
+smoke sentinel for 11b9c flips to EXACT with this landing (re-pinned).
+
+Increments 2 (exactness — `ROUTINE_MODIFY_EXACT` recovery, the 12c58 pass-through class)
+and 3 (arity via the prototype pass, now that recovered contracts suppress the
+rematerialization that sank its solo round) remain pre-registered next steps.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
