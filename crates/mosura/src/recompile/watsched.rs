@@ -54,7 +54,7 @@
 use super::insn::{NormInsn, SemArg};
 
 const CPUI_INT_XOR: u32 = 26;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const CPUI_LOAD: u32 = 2;
 const CPUI_STORE: u32 = 3;
@@ -165,7 +165,18 @@ fn modelable(insn: &NormInsn) -> bool {
     ) || m.starts_with("SET")
 }
 
+/// Per-call register-effect overrides for the model — the PER-SITE ZAP CHECKER's knob.
+/// Keyed by the CALL instruction's address: `(reads, writes)` as `(offset, size)` register
+/// lists, the candidate declarations' implied effects (OW `CallZap`, i86reg.c:256:
+/// writes = kill set ∪ parm.used ∪ EAX unless `exact`; reads = parm.used). A call with no
+/// entry keeps the conservative fixed model below.
+pub type CallEffects = HashMap<u64, (Vec<(u64, u32)>, Vec<(u64, u32)>)>;
+
 fn facts(insn: &NormInsn, barriers: &HashSet<u64>) -> Facts {
+    facts_with(insn, barriers, &HashMap::new())
+}
+
+fn facts_with(insn: &NormInsn, barriers: &HashSet<u64>, effects: &CallEffects) -> Facts {
     let mut f = Facts {
         reg_reads: Vec::new(),
         reg_writes: Vec::new(),
@@ -211,20 +222,26 @@ fn facts(insn: &NormInsn, barriers: &HashSet<u64>) -> Facts {
         }
     }
     if insn.is_call {
-        // watcall caller-saved effects: EAX, ECX, EDX (+ flags are written by nearly
-        // every instruction and read only by Jcc/ADC-class, which the reg model covers).
-        f.reg_writes.push((0x0, 4));
-        f.reg_writes.push((0x4, 4));
-        f.reg_writes.push((0x8, 4));
-        // ...and a call READS its argument registers: Watcom's own IR makes the parm
-        // union an operand of the call instruction (`LinkParms` / CALL_OP_USED,
-        // bldcall.c), so argument materializations pin between their call and the
-        // previous one. Which registers are live arguments is invisible in machine
-        // code — conservatively, all four watcall argument registers.
-        f.reg_reads.push((0x0, 4));
-        f.reg_reads.push((0x4, 4));
-        f.reg_reads.push((0x8, 4));
-        f.reg_reads.push((0xc, 4));
+        if let Some((reads, writes)) = effects.get(&insn.addr) {
+            // The checker's candidate declarations for THIS call (see [`CallEffects`]).
+            f.reg_reads.extend(reads.iter().copied());
+            f.reg_writes.extend(writes.iter().copied());
+        } else {
+            // watcall caller-saved effects: EAX, ECX, EDX (+ flags are written by nearly
+            // every instruction and read only by Jcc/ADC-class, which the reg model covers).
+            f.reg_writes.push((0x0, 4));
+            f.reg_writes.push((0x4, 4));
+            f.reg_writes.push((0x8, 4));
+            // ...and a call READS its argument registers: Watcom's own IR makes the parm
+            // union an operand of the call instruction (`LinkParms` / CALL_OP_USED,
+            // bldcall.c), so argument materializations pin between their call and the
+            // previous one. Which registers are live arguments is invisible in machine
+            // code — conservatively, all four watcall argument registers.
+            f.reg_reads.push((0x0, 4));
+            f.reg_reads.push((0x4, 4));
+            f.reg_reads.push((0x8, 4));
+            f.reg_reads.push((0xc, 4));
+        }
     }
     // InsStallable (inssched.c:125): +3 per indexed operand, +2 per register operand,
     // +1 per named-memory operand; +3 for an indexed result.
@@ -426,10 +443,19 @@ fn reduce(win: &[NormInsn], facts: &[Facts]) -> (Vec<usize>, Vec<Facts>) {
 /// model cannot class. The original is scheduler-stable iff the returned order is
 /// ascending.
 pub fn schedule(insns: &[NormInsn], barriers: &HashSet<u64>) -> Option<Vec<usize>> {
+    schedule_with(insns, barriers, &HashMap::new())
+}
+
+/// [`schedule`] with per-call effect overrides — the checker's entry.
+pub fn schedule_with(
+    insns: &[NormInsn],
+    barriers: &HashSet<u64>,
+    effects: &CallEffects,
+) -> Option<Vec<usize>> {
     if insns.is_empty() {
         return Some(Vec::new());
     }
-    let raw: Vec<Facts> = insns.iter().map(|x| facts(x, barriers)).collect();
+    let raw: Vec<Facts> = insns.iter().map(|x| facts_with(x, barriers, effects)).collect();
     if raw.iter().any(|f| !f.modeled) {
         return None;
     }
@@ -589,6 +615,53 @@ pub fn windows(insns: &[NormInsn]) -> Vec<std::ops::Range<usize>> {
 /// the store above it or by its own source global's store below; barriers are monotone
 /// for order and the both-marked probe on FUN_00034590 measured EXACT). No explanation,
 /// or unmodeled content, abstains.
+/// THE PER-SITE ZAP CHECKER (the contract design's verifier): would the CANDIDATE per-call
+/// declarations make the scheduler model REORDER a window that the conservative baseline
+/// model keeps in the original's order? COMPARATIVE by design: a window the baseline
+/// already fails to keep ascending carries no signal (the model's own imprecision — the
+/// volatile machinery's territory), so only a candidate-caused regression refuses. A
+/// window containing a candidate call the model cannot handle at all (`schedule_with` =
+/// `None` under the candidate but not the baseline) also refuses, conservatively.
+///
+/// `true` = the candidate breaks at least one window: DO NOT emit these declarations for
+/// this TU; fall back to the landed rendering (zero-regression by construction).
+pub fn order_regressed(insns: &[NormInsn], candidate: &CallEffects) -> bool {
+    let none = HashSet::new();
+    let baseline = HashMap::new();
+    let ascending = |v: &[usize]| v.windows(2).all(|p| p[0] < p[1]);
+    for w in windows(insns) {
+        let win = &insns[w.clone()];
+        if !win.iter().any(|x| x.is_call && candidate.contains_key(&x.addr)) {
+            continue; // the candidate does not touch this window
+        }
+        let base_ok = schedule_with(win, &none, &baseline).as_deref().map(|v| ascending(v));
+        if base_ok != Some(true) {
+            continue; // no baseline signal here
+        }
+        match schedule_with(win, &none, candidate).as_deref().map(|v| ascending(v)) {
+            Some(true) => {}
+            other => {
+                if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
+                    let calls: Vec<String> = win
+                        .iter()
+                        .filter(|x| x.is_call && candidate.contains_key(&x.addr))
+                        .map(|x| format!("{:#x}", x.addr))
+                        .collect();
+                    eprintln!(
+                        "[zapcheck]   window {:#x}..{:#x} verdict={:?} candidate-calls=[{}]",
+                        win.first().map(|x| x.addr).unwrap_or(0),
+                        win.last().map(|x| x.addr).unwrap_or(0),
+                        other,
+                        calls.join(",")
+                    );
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn volatile_globals(insns: &[NormInsn]) -> HashSet<u64> {
     let mut marked = HashSet::new();
     let none = HashSet::new();

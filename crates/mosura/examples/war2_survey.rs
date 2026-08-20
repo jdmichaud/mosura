@@ -773,6 +773,23 @@ fn main() {
             t.elapsed().as_secs_f64()
         );
     }
+    // THE PER-SITE ZAP CHECKER's world order: the LANDED (prototype-less) program is
+    // PRIMARY — every function decompiles from it first, and every definition-side global
+    // map (the caller-side parm network, caller_calls, param-order evidence) is built from
+    // those landed funcdatas, so the prototype pass cannot leak into fallen-back TUs
+    // through OTHER functions' changed signatures (measured: 12360 fell back yet drifted
+    // SAME_SHAPE because its PREPENDED caller-side pragmas came from pp-shaped callee
+    // definitions). The pp decompile is a per-TU UPGRADE, adopted only when (a) the
+    // scheduler model keeps every call-bearing window of the original a fixed point under
+    // the candidate declarations, and (b) the function's OWN parameter signature is
+    // unchanged (its definition-side row stays the landed one).
+    let prog_pp: Option<analysis::program::Program> = if prog.recovered_protos.is_empty() {
+        None
+    } else {
+        let base = prog.clone(); // carries the recovered prototypes
+        prog.recovered_protos = std::collections::HashMap::new(); // the landed world
+        Some(base)
+    };
     let prog = prog;
     let ram = prog.default_space;
     eprintln!("{} functions", prog.function_manager.function_count());
@@ -909,16 +926,29 @@ fn main() {
     // single-function probe at five minutes. A probe at the same stamp now loads in
     // milliseconds; a stamp change re-derives.
     let order_cache = out.join(format!("param-orders.{stamp}.tsv"));
-    let cached_orders: Option<(std::collections::HashMap<u64, Vec<u64>>, std::collections::HashSet<u64>)> =
+    let cached_orders: Option<(
+        std::collections::HashMap<u64, Vec<u64>>,
+        std::collections::HashSet<u64>,
+        std::collections::HashSet<u64>,
+    )> =
         std::fs::read_to_string(&order_cache).ok().map(|s| {
             let mut m = std::collections::HashMap::new();
             let mut ex = std::collections::HashSet::new();
+            let mut net = std::collections::HashSet::new();
             for line in s.lines() {
                 let mut it = line.split('\t');
                 match (it.next(), it.next()) {
                     (Some("X"), Some(va)) => {
                         if let Ok(v) = u64::from_str_radix(va, 16) {
                             ex.insert(v);
+                            net.insert(v);
+                        }
+                    }
+                    // "C\t<callee>" — an order-claimed callee (the upgrade gate's network;
+                    // rows added when the zap checker landed, re-derived on stamp change).
+                    (Some("C"), Some(va)) => {
+                        if let Ok(v) = u64::from_str_radix(va, 16) {
+                            net.insert(v);
                         }
                     }
                     (Some(addr), Some(rest)) => {
@@ -933,10 +963,12 @@ fn main() {
                     _ => {}
                 }
             }
-            (m, ex)
+            (m, ex, net)
         });
-    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if let Some((m, ex)) = cached_orders {
+    let mut order_networked: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if let Some((m, ex, net)) = cached_orders {
         order_excluded = ex;
+        order_networked = net;
         eprintln!("param-order evidence: {} sites (cached at {stamp})", m.len());
         m
     } else if arg_reg_offs.len() == 4 {
@@ -973,6 +1005,8 @@ fn main() {
             .filter(|s| orders.contains_key(&s.call_addr))
             .map(|s| s.callee)
             .collect();
+        order_networked.extend(claimed.iter().copied());
+        // excluded callees are equally order-networked (their storage is nondefault)
         for callee in claimed {
             let nondefault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 decompile_function(&prog, Address::new(ram, callee))
@@ -1001,6 +1035,11 @@ fn main() {
             for x in &order_excluded {
                 body.push_str(&format!("X\t{x:x}\n"));
             }
+            for c in &order_networked {
+                if !order_excluded.contains(c) {
+                    body.push_str(&format!("C\t{c:x}\n"));
+                }
+            }
             let _ = std::fs::write(&order_cache, body);
         }
         orders
@@ -1011,6 +1050,18 @@ fn main() {
 
     let t0 = std::time::Instant::now();
     let (mut ok, mut fail) = (0usize, 0usize);
+    // Sorted-entry extents for the zap checker's ORIGINAL-instruction windows (the gap to
+    // the next entry, the pre-pass's own fallback extent).
+    let next_entry: HashMap<u64, u64> = entries
+        .windows(2)
+        .map(|w| (w[0].0, w[1].0))
+        .chain(entries.last().map(|l| (l.0, l.0 + 0x1000)))
+        .collect();
+    // Memoized landed-world answer to "does this callee declare NONDEFAULT parameter
+    // storage?" — the definition-side network the caller-side parm post-pass keys on. An
+    // upgraded arg list at such a callee can flip that post-pass's arity/width gates
+    // (0x3925c's `parm [edx] [eax]` callee), so upgrades refuse those TUs precisely.
+    let mut nondefault_storage: HashMap<u64, bool> = HashMap::new();
     for (idx, (va, name)) in entries.iter().enumerate() {
         if !only.is_empty() && !only.contains(va) {
             continue;
@@ -1019,10 +1070,77 @@ fn main() {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             decompile_function(&prog, Address::new(ram, *va))
         }));
-        let f: Option<Funcdata> = match outcome {
+        let mut f: Option<Funcdata> = match outcome {
             Ok(Some(f)) => Some(f),
             _ => None,
         };
+        // PER-TU UPGRADE under the zap checker (see `prog_pp` above): try the
+        // prototype-informed decompile; adopt it only if the scheduler model accepts the
+        // candidate call effects AND the function's own parameter signature is unchanged.
+        if let (Some(fl), Some(pp)) = (f.as_ref(), prog_pp.as_ref()) {
+            let ext = next_entry.get(va).copied().unwrap_or(*va + 0x1000).saturating_sub(*va);
+            let reg_bytes = prog.memory.read_window(Address::new(ram, *va), ext as usize);
+            let insns = mosura::recompile::insn::normalize(
+                SURVEY_LANG,
+                &reg_bytes,
+                *va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default();
+            let outcome2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                decompile_function(pp, Address::new(ram, *va))
+            }));
+            if let Ok(Some(f2)) = outcome2 {
+                let cand = candidate_call_effects(&f2);
+                let sig_stable = nondefault_parm_regs(&f2, &watreg)
+                    == nondefault_parm_regs(fl, &watreg);
+                // The parm-pragma network gate: an upgraded arg list can flip the
+                // caller-side parm/order pragma eligibility (arity/width gates) for
+                // callees with NONDEFAULT parameter signatures — outside the scheduler
+                // model's scope (measured: 0x3925c's `parm [edx] [eax]` callee). Round 1
+                // simply refuses upgrades for TUs calling into that network.
+                let mut networked = false;
+                for op in f2.op_ids() {
+                    let o = f2.op(op);
+                    if o.code() != OpCode::Call || o.flags & (flags::DEAD | flags::MARKER) != 0 {
+                        continue;
+                    }
+                    let Some(t) = o.input(0) else { continue };
+                    let callee = f2.vn(t).loc.offset;
+                    if callee == 0 {
+                        continue;
+                    }
+                    let nd = *nondefault_storage.entry(callee).or_insert_with(|| {
+                        order_networked.contains(&callee)
+                            || std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                decompile_function(&prog, Address::new(ram, callee))
+                            }))
+                            .ok()
+                            .flatten()
+                            .map(|cf| nondefault_parm_regs(&cf, &watreg).is_some())
+                            .unwrap_or(true)
+                    });
+                    if nd {
+                        networked = true;
+                        break;
+                    }
+                }
+                let ok = sig_stable
+                    && !networked
+                    && !cand.is_empty()
+                    && !insns.is_empty()
+                    && !mosura::recompile::watsched::order_regressed(&insns, &cand);
+                if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
+                    eprintln!(
+                        "[zapcheck] {name}: {}",
+                        if ok { "UPGRADE adopted" } else { "landed rendering kept" }
+                    );
+                }
+                if ok {
+                    f = Some(f2);
+                }
+            }
+        }
         let Some(f) = f else {
             fail += 1;
             let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
@@ -1810,6 +1928,44 @@ fn compilable_partial_symbols(c: &str) -> String {
 /// Scan the decompiled C for identifier families that need a top-level declaration to form a
 /// standalone translation unit, synthesize those declarations + the typedef prelude, and return
 /// the full TU text plus a list of decompiler-artifact "smell" tags.
+/// The candidate per-call register effects for the zap checker: for each direct call with
+/// a recovered contract, OW `CallZap`'s arithmetic (i86reg.c:256) under the candidate
+/// declarations — writes = kill set ∪ (parm.used ∪ EAX unless `exact`), reads = parm.used
+/// (this call's register-located argument inputs). Calls without a contract get no entry
+/// and keep the model's conservative fixed behavior.
+fn candidate_call_effects(f: &Funcdata) -> mosura::recompile::watsched::CallEffects {
+    let mut out = mosura::recompile::watsched::CallEffects::new();
+    let Some(reg) = f.spaces.by_name("register") else { return out };
+    for opid in f.op_ids() {
+        let o = f.op(opid);
+        if o.code() != OpCode::Call || o.flags & (flags::DEAD | flags::MARKER) != 0 {
+            continue;
+        }
+        let Some(cs) = f.call_specs.get(&opid) else { continue };
+        let Some(kill) = cs.cdecl_modify.as_ref() else { continue };
+        let parms: Vec<(u64, u32)> = (1..o.num_inputs())
+            .filter_map(|i| o.input(i))
+            .filter_map(|v| {
+                let vn = f.vn(v);
+                (vn.loc.space == reg && vn.loc.offset < 0x20)
+                    .then_some((vn.loc.offset, vn.size))
+            })
+            .collect();
+        let mut writes: Vec<(u64, u32)> =
+            kill.iter().filter(|&&k| k < 0x20).map(|&k| (k & !3, 4)).collect();
+        if !cs.cdecl_exact {
+            for &(p, sz) in &parms {
+                writes.push((p, sz));
+            }
+            writes.push((0, 4));
+        }
+        writes.sort_unstable();
+        writes.dedup();
+        out.insert(o.seqnum.pc.offset, (parms, writes));
+    }
+    out
+}
+
 fn build_tu(
     c: &str,
     self_va: u64,

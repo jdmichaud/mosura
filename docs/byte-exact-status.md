@@ -1082,6 +1082,30 @@ Increments 2 (exactness — `ROUTINE_MODIFY_EXACT` recovery, the 12c58 pass-thro
 and 3 (arity via the prototype pass, now that recovered contracts suppress the
 rematerialization that sank its solo round) remain pre-registered next steps.
 
+**743 → 743 (zc1): the SCHEDULER-BASED CHECKER built and landed; increment 3 parked at
+its fourth coupling.** The verifier the contract design's parks demanded: per TU, the
+prototype-informed decompile is adopted only as a GATED UPGRADE over the landed world —
+`watsched::order_regressed` (the scheduler model with per-call effects parameterized via
+`CallEffects`; comparative, so the model's own imprecision never blocks) plus two
+structural gates learned at the smoke gate (~3 min per catch, five hardening iterations,
+zero corpus rounds wasted): the LANDED world stays PRIMARY (every definition-side global
+map — the caller-side parm network, caller_calls — builds from prototype-less funcdatas,
+so upgrades cannot leak into fallen-back TUs through other functions' signatures), own
+parameter-signature stability, and refusal for TUs calling any NONDEFAULT-STORAGE callee
+(the parm post-pass's arity/width gates key on call arg sizes; memoized landed decompiles
+answer per callee).
+
+Round 1: 742 upgrades adopted, 393 TUs changed, **verdict-neutral 743** — +6 EXACT
+(`FUN_000294dc` and friends) traded against −6, with the historical scheduler-order losses
+GONE (12360/11b9c-class all held; the checker does its dimension). The surviving loss
+mechanism, named on `FUN_00034fe0`: REGISTER-ALLOCATION PRESSURE — an upgraded arity
+changes which values survive calls, the allocator reaches for ESI/EDI, and a `PUSH EDI`
+the original lacks cascades. Structurally outside a scheduler model (order, not
+allocation); the honest next unlock is an allocation-aware gate, a new modeling pile.
+Parked per pre-registration at +6/−6; the machinery lands env-gated
+(`MOSURA_PROTO_PASS=1`), default-off, landed tree untouched (sentinels + default smoke
+prove byte-identity).
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
