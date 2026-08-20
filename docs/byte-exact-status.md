@@ -1014,6 +1014,44 @@ other direction — the stricter-correct comparison surfaced no false EXACTs. WG
 0.4635. The remaining ~56 family members keep their now-truthful rows; their other
 divergence classes stand.
 
+**The "missing MOV before calls" lever, run to ground (post-741; two experiments, both
+parked, one mechanism named).** OW source reading (JD's directive): the placement of
+argument setups around calls is governed by the SCHEDULER's dependence test
+(`inssched.c` — `StackOp` makes calls barriers only against other stack ops;
+`ReDefinedBy` blocks register motion via the call's ZAP set) and the zap comes from
+`CallZap` (i86reg.c:256):
+
+```
+zap = state->modify;                        // declared kills
+if (!ROUTINE_MODIFY_EXACT)
+    zap |= state->parm.used | return | EAX; // + THIS call's own argument registers
+```
+
+So placement encodes BOTH the callee's declared kill set AND — through `parm.used` — the
+call's ARITY. Two recompile-side consequences, each measured to a verdict:
+
+- **Prototype pass as default** (arity → zap): corpus round, net −24 (717; 31 real gains
+  incl. `FUN_00011b9c` and the 63-memset `FUN_0001fdbc`, 53 losses). The dominant loss is
+  NOT the historical phantom-constant defect (the locked parms bind pre-heritage now,
+  measured on 11b9c): it is REMATERIALIZATION — a value the original passed through calls
+  for free (`XOR EDX,EDX` reborn at `FUN_00012c58`) because our call's `parm.used` kills
+  the register the original's declaration preserved. A trailing-valueless-arg trim was
+  built and measured INERT: by print time the valueless arguments are genuine `const 0`
+  varnodes (the indirect-creation placeholder collapses upstream) — the detection needs an
+  analysis-time channel, recorded for the reopened design.
+- **Project-wide `modify exact [eax]` default** (the warcraft2-re toolchain.md
+  convention): corpus round, net −11 with ZERO gains (730) — refuted as a BLANKET callee
+  declaration. The toolchain finding describes the original functions' OWN prologue
+  contracts; call sites prove per-callee variation (the sb98 vararg family's caller saves,
+  `FUN_00011128`'s EBX/ECX). Both experiment codes reverted.
+
+**The durable yield is the specification**: the sb99 latent (the original build's per-TU
+declarations) has exactly the shape `(kill set, exact?)` per callee, and the proto pass's
+arity recovery participates through `parm.used`. Every observed placement/remat divergence
+is a readout of that pair through `CallZap` + the scheduler. The reopened contract design
+(byte-exact-status sb99, parked with its ledger) is where all three threads — kills,
+exactness, arity — land as one recovery.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
