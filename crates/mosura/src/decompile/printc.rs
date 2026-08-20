@@ -3976,7 +3976,7 @@ fn print_c_inner(
         for bi in 0..f.num_blocks() as u32 {
             let bid = BlockId(bi);
             let mut run: Vec<(OpId, u64, u32)> = Vec::new();
-            let mut flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
+            let flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
                 if run.len() >= 2 {
                     let mut addrs: Vec<u64> = run.iter().map(|r| r.1).collect();
                     addrs.sort_unstable();

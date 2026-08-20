@@ -916,11 +916,11 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 f.spaces.get(spc).name,
                 off,
                 size,
-                f.proto_model.characterize_as_input_param(trans_addr, size)
+                characterize_for_call(f, call, trans_addr, size)
             );
         }
         if tryregister && !is_saved_slot && f.is_input_active(call) {
-            match f.proto_model.characterize_as_input_param(trans_addr, size) {
+            match characterize_for_call(f, call, trans_addr, size) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();
                     if active.which_trial(trans_addr, size).is_none() {
@@ -1028,6 +1028,25 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
 /// `trans_addr`, but `registerTrial` is then called with the truncated address converted BACK to the
 /// caller's perspective (heritage.cc:1232), where the `contains_justified` branch above registers
 /// its trial in callee-frame coordinates. It makes no difference for a register range, which is the
+
+/// Ghidra `FuncCallSpecs::getProto().characterizeAsInputParam` at `Heritage::guardCalls`
+/// (heritage.cc:1495) — the CALL'S OWN model's verdict, which is the default convention's
+/// except at a caller-cleaned (`__cdecl`) call
+/// ([`Funcdata::input_list_for_call`](super::funcdata::Funcdata::input_list_for_call)): there
+/// the stack-only list characterizes every register range `NoContainment`, so `__watcall`'s
+/// register pentries seed no trials at a call that passes nothing in registers.
+fn characterize_for_call(
+    f: &Funcdata,
+    call: OpId,
+    trans_addr: super::space::Address,
+    size: u32,
+) -> super::fspec::Containment {
+    match f.input_list_for_call(call) {
+        Some(pl) => pl.characterize_as_param(trans_addr, size),
+        None => super::fspec::Containment::NoContainment,
+    }
+}
+
 /// only kind that reaches here today.
 fn guard_call_overlapping_input(
     f: &mut Funcdata,

@@ -269,6 +269,15 @@ pub struct Funcdata {
     /// `guardCalls` all read it. Empty ([`super::fspec::ProtoModel::empty`]) for a hand-built
     /// `Funcdata`, so a test graph with no compiler spec recovers no convention.
     pub proto_model: super::fspec::ProtoModel,
+    /// The compiler spec's named `__cdecl` prototype's INPUT list, when the spec declares one
+    /// ([`crate::analysis::cspec::named_input_paramlist`]) — the model
+    /// [`input_list_for_call`](Self::input_list_for_call) substitutes for `proto_model.input` at
+    /// a call whose ORIGINAL caller pops the arguments itself
+    /// ([`super::fspec::CallSpec::caller_cleans`]). Ghidra's shape: every `FuncCallSpecs` IS-a
+    /// `FuncProto` owning a model per call (fspec.hh:1640); mosura keeps one override list
+    /// because the corpus has exactly two conventions in play. `None` (specs without the named
+    /// prototype, hand-built `Funcdata`) means every call keeps the default model.
+    pub cdecl_input: Option<super::fspec::ParamList>,
     /// The stack pointer register, decoded from the compiler spec's `<stackpointer>` (Ghidra
     /// `CompilerSpec::decode`; reached in the decompiler as `glb->translate->getSpacebase`). Stack
     /// recovery, the alias probe and `ActionDirectWrite` all key on it.
@@ -363,6 +372,7 @@ impl Funcdata {
             nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model,
+            cdecl_input: None,
             stack_pointer: None,
             aggressive_ext_trim: false,
             funcptr_align: 0,
@@ -606,6 +616,22 @@ impl Funcdata {
     }
     pub fn op(&self, id: OpId) -> &PcodeOp {
         &self.ops[id.0 as usize]
+    }
+    /// The INPUT [`ParamList`](super::fspec::ParamList) governing `call`'s arguments — Ghidra's
+    /// per-call prototype model (`FuncCallSpecs` IS-a `FuncProto`, fspec.hh:1640). The default
+    /// model's list, EXCEPT at a call whose original caller pops the arguments itself
+    /// ([`CallSpec::caller_cleans`](super::fspec::CallSpec::caller_cleans)): there the cspec's
+    /// named `__cdecl` stack-only list applies, so `__watcall`'s register pentries neither
+    /// characterize register ranges as parameters (heritage's guard) nor seed register trials
+    /// whose kill-chain strips the real stack argument (`ActiveParam::fillin_map`'s
+    /// `force_inactive_chain` — the measured blocker on FUN_000191b8's cluster).
+    pub fn input_list_for_call(&self, call: OpId) -> Option<&super::fspec::ParamList> {
+        if self.call_specs.get(&call).and_then(|c| c.caller_cleans).unwrap_or(0) > 0 {
+            if let Some(l) = self.cdecl_input.as_ref() {
+                return Some(l);
+            }
+        }
+        self.proto_model.input.as_ref()
     }
     pub fn op_mut(&mut self, id: OpId) -> &mut PcodeOp {
         &mut self.ops[id.0 as usize]

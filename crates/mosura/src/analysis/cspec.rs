@@ -120,6 +120,38 @@ fn decode_default_input_paramlist(
     decode_param_list(spec, spaces, input, false)
 }
 
+/// A NAMED `<prototype>`'s **input** [`ParamList`] — the same decode as
+/// [`default_input_paramlist`] over a `<prototype name="...">` declared OUTSIDE
+/// `<default_proto>` (Ghidra models these as additional prototype models on the compiler
+/// spec). First consumer: the decompiler's per-call model selection — a caller-cleaned
+/// call under `__watcall` takes the cspec's `__cdecl` stack-only list
+/// (`FuncCallSpecs` owns its model in Ghidra; docs/byte-exact-status.md sb96).
+///
+/// Cached per `(language_id, compiler_spec_id)`; the name is part of neither key because
+/// today exactly one name is asked for — extend the key before adding a second.
+pub fn named_input_paramlist(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    name: &str,
+    spaces: &SpaceManager,
+) -> Option<ParamList> {
+    assert_eq!(name, "__cdecl", "cache key does not cover other names yet");
+    static CACHE: OnceLock<CspecCache<Option<ParamList>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+        let text = std::fs::read_to_string(path).ok()?;
+        let doc = roxmltree::Document::parse(&text).ok()?;
+        let proto = doc.descendants().find(|n| {
+            n.tag_name().name() == "prototype"
+                && n.attribute("name") == Some("__cdecl")
+                && !n.ancestors().any(|a| a.tag_name().name() == "default_proto")
+        })?;
+        let input = proto.children().find(|n| n.tag_name().name() == "input")?;
+        decode_param_list(spec, spaces, input, false)
+    })
+}
+
 /// The `<default_proto>` **output** (return) [`ParamList`] of `(language_id, compiler_spec_id)` —
 /// Ghidra `ParamListStandardOut::decode` over the `<output>` element (`fspec.cc:1776`, which just
 /// runs `ParamListStandard::decode` with `is_output`). `None` when the cspec / its default prototype

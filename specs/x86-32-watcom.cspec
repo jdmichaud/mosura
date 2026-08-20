@@ -118,4 +118,35 @@
       </killedbycall>
     </prototype>
   </default_proto>
+  <!-- Watcom's __cdecl (the mixed-language/vararg convention; OW C User's Guide ch. 3
+       "Calling Conventions": arguments all on the STACK pushed right to left, the CALLER
+       removes them, result in EAX, EAX/ECX/EDX not preserved). Selected PER CALL by the
+       decompiler when the call site shows caller cleanup (ADD ESP,K after the CALL) —
+       Ghidra's FuncCallSpecs-owns-its-model shape. extrapop 4 = the return-address slot
+       alone, exactly Ghidra's x86 cdecl. -->
+  <prototype name="__cdecl" extrapop="4" stackshift="4">
+    <input>
+      <pentry minsize="1" maxsize="500" align="4">
+        <addr offset="4" space="stack"/>
+      </pentry>
+    </input>
+    <output>
+      <pentry minsize="1" maxsize="4">
+        <register name="EAX"/>
+      </pentry>
+    </output>
+    <unaffected>
+      <register name="EBX"/>
+      <register name="ESI"/>
+      <register name="EDI"/>
+      <register name="EBP"/>
+      <register name="ESP"/>
+      <register name="DF"/>
+    </unaffected>
+    <killedbycall>
+      <register name="EAX"/>
+      <register name="ECX"/>
+      <register name="EDX"/>
+    </killedbycall>
+  </prototype>
 </compiler_spec>

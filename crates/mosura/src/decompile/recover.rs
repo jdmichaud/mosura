@@ -1175,11 +1175,13 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
             .map(|r| recovered_input_list(r))
     };
     let committed = recovered.is_some();
-    let Some(input) = recovered.or_else(|| f.proto_model.input.clone()) else { return };
+    // The CALL'S OWN model's list (Ghidra: `FuncCallSpecs` IS-a `FuncProto`; a caller-cleaned
+    // call takes the cspec's `__cdecl` stack-only list, everything else the default convention).
+    let Some(input) = recovered.or_else(|| f.input_list_for_call(call).cloned()) else { return };
     // What the convention's own list would have marked used, computed before the mutable borrow.
     // Used below to keep propagation monotone.
     let model_used: Option<std::collections::HashSet<(Address, u32)>> = if committed {
-        f.proto_model.input.clone().and_then(|m| {
+        f.input_list_for_call(call).cloned().and_then(|m| {
             f.active_inputs.get(&call).map(|a| {
                 // PRE-FILLIN ACTIVE is the evidence bar. The monotone rule's whole rationale
                 // (below) is that the CALL SITE shows an argument the callee ignores "because the

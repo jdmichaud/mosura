@@ -46,6 +46,29 @@ pub fn callee_stack_cleanup(insns: &[Instruction], sp: u64) -> Option<u32> {
     answer
 }
 
+/// The CALLER-side argument cleanup at one call site: `Some(n)` iff `insn` (the call's
+/// fallthrough instruction) does nothing but move the stack pointer UP by a fixed `n > 0`
+/// bytes — Watcom's `ADD ESP,n` after a `__cdecl`/vararg call (`83 C4 n` / `81 C4 n`). The
+/// evidence half of per-call prototype-model selection: a call the CALLER cleans while the
+/// callee's own `RET` pops nothing is a caller-parms call, not `__watcall`.
+///
+/// Deliberately rejects instructions with memory or flow ops (`POP reg` also adds 4 to ESP,
+/// but popping a VALUE is indistinguishable there from popping an argument; Watcom's cdecl
+/// cleanup idiom is the ADD).
+pub fn caller_stack_cleanup(insn: &Instruction, sp: u64) -> Option<u32> {
+    use OpCode::*;
+    if insn.ops.iter().any(|o| {
+        matches!(
+            OpCode::from_u32(o.opcode),
+            Some(Return | Call | Callind | Branch | Cbranch | Branchind | Load | Store)
+        )
+    }) {
+        return None;
+    }
+    let n = cleanup_of(&insn.ops, sp)?;
+    (n > 0 && n % 4 == 0 && n <= 500).then_some(n)
+}
+
 /// The cleanup performed by one return instruction: how far it moves the stack pointer, less the
 /// slot it consumed for the return address.
 fn cleanup_of(ops: &[PcodeOp], sp: u64) -> Option<u32> {

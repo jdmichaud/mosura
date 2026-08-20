@@ -351,6 +351,22 @@ fn record_callee_effects(
             if let Some(n) = cl {
                 f.call_specs.entry(call).or_default().extrapop = Some(4 + n as i32);
             }
+            // PER-CALL MODEL EVIDENCE: the caller popping this call's arguments itself. Only
+            // meaningful when the callee's `RET` provably pops nothing (`cl == Some(0)`) — a
+            // `RET n` callee plus a caller ADD would be double cleanup, i.e. not a convention
+            // we recognize. The fallthrough instruction is re-disassembled from bytes rather
+            // than searched in `f`'s ops so the test cannot confuse the ORIGINAL `ADD ESP,n`
+            // with the extrapop INT_ADD the decompiler itself inserts at the call's pc.
+            if cl == Some(0) {
+                let pc = f.op(call).seqnum.pc.offset;
+                let n = caller_cleanup_after(program, spec, ctx, pc, sp);
+                if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+                    eprintln!("[cdecl-evd] call@{pc:#x} target={target:#x} caller_cleans={n:?}");
+                }
+                if let Some(n) = n {
+                    f.call_specs.entry(call).or_default().caller_cleans = Some(n);
+                }
+            }
         }
         // THE CALLEE'S OWN RECOVERED PROTOTYPE, when the whole-program pass has established one.
         //
@@ -555,6 +571,32 @@ fn callee_cleanup(
         }
     }
     crate::recompile::convention::callee_stack_cleanup(&insns, sp)
+}
+
+/// The caller-side cleanup at one CALL site: disassemble the call instruction at `pc` (for its
+/// length), then its fallthrough instruction; `Some(n)` when the latter is `ESP = ESP + n`
+/// ([`crate::recompile::convention::caller_stack_cleanup`]) — the original caller removing the
+/// arguments it pushed.
+fn caller_cleanup_after(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    pc: u64,
+    sp: u64,
+) -> Option<u32> {
+    use crate::decompile::space::Address;
+    let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
+    let call = spec.disassemble_ctx(&bytes, pc, ctx).into_iter().next()?;
+    if call.bytes.is_empty() {
+        return None;
+    }
+    let next = pc + call.bytes.len() as u64;
+    let bytes = program.memory.read_window(Address::new(program.default_space, next), 16);
+    let insn = spec.disassemble_ctx(&bytes, next, ctx).into_iter().next()?;
+    if insn.bytes.is_empty() {
+        return None;
+    }
+    crate::recompile::convention::caller_stack_cleanup(&insn, sp)
 }
 
 /// One straight-line pass over a callee's body, recovering BOTH halves of its prototype: the

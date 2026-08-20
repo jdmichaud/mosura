@@ -778,6 +778,58 @@ input list, no register trials, no chain. Needs: a `__cdecl` prototype beside `_
 in `specs/x86-32-watcom.cspec` (grounded in Watcom's own convention docs), named-prototype
 loading, and the CallSpec model override threaded through trial creation.
 
+**700 → 700 EXACT, WGSS 0.4377 → 0.4402 (sb97): PER-CALL MODEL SELECTION — the chain
+blocker falls, arguments land corpus-wide.** Implemented exactly as sb96 named it, in
+Ghidra's own shape (`FuncCallSpecs` IS-a `FuncProto` owning its model, fspec.hh:1640 —
+Ghidra fills it from the database's per-function prototype; mosura recovers it from bytes):
+
+- **Evidence** (`CallSpec::caller_cleans`, analysis/decompiler.rs beside the extrapop
+  hoist): the callee's own RET provably pops nothing (`callee_cleanup == Some(0)`) AND the
+  call's fallthrough instruction is `ESP = ESP + n` (`recompile::convention::
+  caller_stack_cleanup` — rejects POP/memory/flow forms; n > 0, dword-aligned, ≤ 500). The
+  fallthrough is RE-DISASSEMBLED FROM BYTES, so the test cannot confuse the original `ADD
+  ESP,n` with the extrapop INT_ADD the decompiler itself inserts at the call's pc.
+- **Model** (`specs/x86-32-watcom.cspec`): a named `__cdecl` prototype beside the
+  `__watcall` default — stack-only input pentry (offset 4, align 4), extrapop 4, EAX
+  result — decoded by `analysis::cspec::named_input_paramlist` (the same `decode_param_list`
+  over `<prototype name=>` outside `<default_proto>`), threaded as
+  `Funcdata::cdecl_input`.
+- **Selection** (`Funcdata::input_list_for_call`): consumed at BOTH trial-facing sites —
+  heritage `guardCalls`' characterize (register ranges at a caller-cleaned call answer
+  `NoContainment`, so `__watcall`'s pentries seed no register trials and no kill-chain) and
+  `recover`'s input build + monotone probe. Inert by construction on any target whose cspec
+  lacks the named prototype (`cdecl_input = None` ⇒ default model everywhere).
+
+Measured (fresh sb97 emit + full recompile): **320 TUs' rendered sources change — every
+one previously MISMATCH; the verdict table is IDENTICAL verdict-for-verdict** (700 EXACT,
+73 SAME_SHAPE, 1 SAME_CODE, 1 COMPILE_FAIL); WGSS **0.4377 → 0.4402** (+471 matched
+instructions — the recovered pushes now render at ~300 call sites). Specimen
+`FUN_000191b8` renders `func_0x0005cf88(0x8c958)` — the dropped-argument chain closed end
+to end — sim unchanged at 0.357 because the residue is the EMITTER half: the TU must
+declare the callee's contract so Watcom itself emits `push/call/add esp,n` and saves the
+registers the callee kills.
+
+**The emitter half, grounded in OW 1.0 source before writing it:** a vararg function takes
+`CallClass |= CALLER_POPS | HAS_VARARGS` ON TOP of the default (watcall) aux info
+(cfeinfo.c:668) — parameters `DefaultVarParms = {0}` (all on the stack, pdefn386.h),
+watcall save set and watcall `name_` objname UNCHANGED — so the plain ellipsis prototype
+`extern int f(int, ...);` reproduces the original's whole call sequence, register saves
+included, with linkage untouched. (`__cdecl` proper is close but differently named — objname
+`_*`, cprag86.c:104 — and its kill set once included EBX: the `HW_CTurnOff( CdeclInfo.save,
+HW_EBX )` line is commented out with "AFS Nov-21-94", cprag86.c:155. The observed caller
+saves — 191b8 pushes EBX ECX EDX — match the vararg-watcall reading, which is also the
+natural source for a logging/printf family.) Declared per TU from the decompiler's own
+`caller_cleans` facts (survey `build_tu` `vararg_callees`), zero-argument call sites
+excepted (an `(int, ...)` prototype cannot be called with no arguments — E1027).
+
+**Harness note, for the runbook file:** the first sb97 check was run against the wrong
+Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
+or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
+verdict shifts on a small source diff = wrong harness invocation, exactly as the runbook
+says; the canonical path is
+`/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`. Purge the
+poisoned entries (they are keyed on content, so they do NOT age out) before re-running.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

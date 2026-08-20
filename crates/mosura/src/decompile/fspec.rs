@@ -1158,6 +1158,17 @@ pub struct CallSpec {
     /// Ghidra `FuncCallSpecs::effectiveExtraPop` (fspec.hh:1656): the extrapop as modelled --
     /// `None` until `ActionExtraPopSetup` (known case) or the stack solver has set it.
     pub effective_extrapop: Option<i32>,
+    /// Evidence for PER-CALL prototype-model selection — Ghidra's architecture carries this
+    /// natively (`FuncCallSpecs` IS-a `FuncProto` with its OWN model, fspec.hh:1640, filled from
+    /// the database's per-function prototype; mosura's whole-program pass recovers it from bytes
+    /// instead). `Some(n)`: the ORIGINAL caller pops `n > 0` argument bytes itself (`ADD ESP,n`
+    /// at this call's fallthrough, [`crate::recompile::convention::caller_stack_cleanup`]) while
+    /// the callee's own `RET` pops none — the `__cdecl`/vararg convention at this ONE call.
+    /// Consumers ([`super::funcdata::Funcdata::input_list_for_call`]) then characterize the
+    /// call's inputs against the cspec's named `__cdecl` stack-only list, so `__watcall`'s
+    /// register pentries stop manufacturing trials (and the killing chain) at a call that takes
+    /// no register arguments.
+    pub caller_cleans: Option<u32>,
     /// BEYOND-GHIDRA bookkeeping for `stackvars::recover_stack`'s call-mechanism model: the
     /// return-address push amount it already CANCELLED at this call (the push rewritten to an
     /// identity COPY, the retaddr store materialized at its slot). Ghidra keeps the push in the

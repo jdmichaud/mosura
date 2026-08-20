@@ -49,6 +49,24 @@ fn resolve_proto_model(spec: &Spec, language_id: &str, compiler_id: &str) -> Pro
         .unwrap_or_else(|| ProtoModel::with_default_ranges(&spaces))
 }
 
+/// The compiler spec's NAMED `__cdecl` prototype's input list, when it declares one — the
+/// per-call override model for caller-cleaned calls
+/// ([`Funcdata::input_list_for_call`](super::funcdata::Funcdata::input_list_for_call)). Same
+/// space setup as [`resolve_proto_model`], for the same `<stackpointer>`-ordering reason.
+fn resolve_cdecl_input(
+    spec: &Spec,
+    language_id: &str,
+    compiler_id: &str,
+) -> Option<crate::decompile::fspec::ParamList> {
+    let mut spaces = SpaceManager::standard();
+    if let Some((space, offset, size)) =
+        crate::analysis::cspec::default_stack_pointer(spec, language_id, compiler_id, &spaces)
+    {
+        spaces.set_stack_pointer(Address::new(space, offset), size);
+    }
+    crate::analysis::cspec::named_input_paramlist(spec, language_id, compiler_id, "__cdecl", &spaces)
+}
+
 /// The stack pointer register from the compiler spec's `<stackpointer>`
 /// ([`crate::analysis::cspec::default_stack_pointer`]) — target-specific, so never a constant.
 fn resolve_stack_pointer(
@@ -77,6 +95,9 @@ fn default_ram_addr_size(spec: &Spec) -> u32 {
 struct CspecSettings {
     /// `<default_proto>` — the calling convention (input/output ParamLists + call effects).
     proto_model: ProtoModel,
+    /// The named `__cdecl` prototype's input list, if the spec declares one — the per-call
+    /// override for caller-cleaned calls.
+    cdecl_input: Option<crate::decompile::fspec::ParamList>,
     /// `<stackpointer>` — the spacebase register and its size.
     stack_pointer: Option<(Address, u32)>,
     /// `<aggressivetrim signext=>` — `RuleSubvarSext`'s `aggressive` argument.
@@ -90,6 +111,7 @@ impl CspecSettings {
     fn resolve(spec: &Spec, language_id: &str, compiler_id: &str) -> CspecSettings {
         CspecSettings {
             proto_model: resolve_proto_model(spec, language_id, compiler_id),
+            cdecl_input: resolve_cdecl_input(spec, language_id, compiler_id),
             stack_pointer: resolve_stack_pointer(spec, language_id, compiler_id),
             aggressive_ext_trim: crate::analysis::cspec::aggressive_ext_trim(language_id, compiler_id),
             funcptr_align: crate::analysis::cspec::funcptr_align(language_id, compiler_id),
@@ -180,6 +202,13 @@ fn build_from_instrs(
     // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
     // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
     f.proto_model = cspec.proto_model;
+    // The named `__cdecl` input list (None unless the cspec declares the prototype) — consulted
+    // per call by `input_list_for_call` when the call site's own evidence says the CALLER pops
+    // the arguments.
+    f.cdecl_input = cspec.cdecl_input;
+    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        eprintln!("[cdecl-load] cdecl_input loaded: {}", f.cdecl_input.is_some());
+    }
     // The stack pointer register from the compiler spec's `<stackpointer>`; keyed on by stack
     // recovery, the alias probe and ActionDirectWrite. Target-specific, hence never a constant.
     f.stack_pointer = cspec.stack_pointer.map(|(a, _)| a);
