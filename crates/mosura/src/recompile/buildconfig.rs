@@ -221,6 +221,54 @@ pub fn complement_compares_from_evidence(
     out
 }
 
+/// Decide the `unsigned-cmp` sites from the original's own compare immediate
+/// ([`crate::decompile::printc::EmitReport::allones_cmp_candidates`]): at the site, an
+/// original `CMP`/`TEST` whose FIRST operand is a 32-bit register and whose immediate
+/// equals the candidate's width-mask (`CMP EDX,0xff` for a 1-byte constant,
+/// `CMP EDX,0xffff` for 2) is the ZERO-EXTENDED spelling — the source compared an
+/// unsigned narrow value, and the recovered rendering prints `(uintN)x == 0xffN`. A
+/// compare at the CONSTANT'S OWN width (`CMP DL,0xff`) is ambiguous — the imm8 encodes
+/// both spellings — and recovers nothing. Target-specific (x86 text forms, this
+/// compiler's immediate-width selection), hence beside the Watcom profile.
+pub fn unsigned_cmps_from_evidence(
+    candidates: &[(u64, u32)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, size) in candidates {
+        let mask = (1u64 << (u64::from(size) * 8)) - 1;
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let Some(cmp) = (i.saturating_sub(3)..=i).rev().find_map(|j| {
+            let t = &insns[j].text;
+            (t.starts_with("CMP ") || t.starts_with("TEST ")).then_some(&insns[j])
+        }) else {
+            continue;
+        };
+        // The compared register must be WIDER than the constant for the immediate's value
+        // to disambiguate the spelling.
+        let wide_reg = cmp
+            .text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|ops| ops.split(',').next())
+            .is_some_and(|r| r.starts_with('E'));
+        if !wide_reg {
+            continue;
+        }
+        let Some(k) = cmp.text.rsplit(',').next().map(str::trim).and_then(|last| {
+            let neg = last.starts_with('-');
+            let v = u64::from_str_radix(last.trim_start_matches('-').strip_prefix("0x")?, 16).ok()?;
+            Some(if neg { v.wrapping_neg() } else { v })
+        }) else {
+            continue;
+        };
+        if k == mask {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the `return-split` axis PER SITE from the original's bytes. The candidate is a tail
 /// pair `if (B) {body} return B;` keyed by the guarding branch's address
 /// ([`crate::decompile::printc::EmitReport::return_split_candidates`]); the readout is whether

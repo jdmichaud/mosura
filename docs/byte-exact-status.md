@@ -941,6 +941,33 @@ verdict-for-verdict, WGSS 0.4626 unchanged):**
   today only by the inheritance) and the `NestedCalls` walk parameterization;
 - `CallSpec::cdecl_modify` computation stays at sb98's landed blanket semantics.
 
+**734 → 738 EXACT (sb100): the UNSIGNED-COMPARE spelling recovered from the original's
+immediate width — the first frontier run fully under the new experiment discipline.** The
+SAME_SHAPE census named a 10-member `immediate` class; its sharpest family (60 functions,
+77 rows corpus-wide): equality against an all-ones narrow constant, where Ghidra (verified
+on the oracle: `*(char *)(x + 0x1e) != -1`) and mosura both type the operand signed and
+print `-1`, while the ORIGINAL compares the zero-extended value against `0xff` — imm32 vs
+imm8, a binary-observable spelling. Under Watcom's UNSIGNED-default plain `char` the
+signed rendering is not merely a byte difference: `(char)x != -1` zero-extends and can
+never be false, so the recovered arm's unsigned form is also the semantically faithful one
+for the target.
+
+Recovery, in the standard purity shape: printc records `allones_cmp_candidates`
+`(pc, width)` on every equality print (report-only, default render byte-identical to
+Ghidra's); `buildconfig::unsigned_cmps_from_evidence` reads the ORIGINAL compare at the
+site and selects only the unambiguous form — a WIDER (32-bit) register against the
+width-mask immediate (`CMP EDX,0xff`); a compare at the constant's own width
+(`CMP DL,0xff`) encodes both spellings and recovers nothing. The chosen site renders
+`(uint1)x != 0xff` — re-zero-extending the same value, compiling to the original's exact
+sequence.
+
+Pre-registered (memory: experiment-discipline): class = binary-observable fact; ceiling
+5–12; budget 2 corpus rounds; park on any regression. Round 1: **+4 EXACT
+(`FUN_000260f4`, `FUN_000261e8`, `FUN_0003b088`, `FUN_0003e038`), the ONLY verdict
+transitions — zero regressions**, 54 TUs changed, WGSS 0.4626 → 0.4628. Landed in one
+round; the family's remaining ~56 MISMATCH members carry other divergences and keep their
+77-row spelling improvement.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild

@@ -107,6 +107,16 @@ pub struct EmitReport {
     /// by the same def-site classifier; VarnodeIds are stable within one decompile, which is
     /// the report → recovered-print lifetime.
     pub tier2_candidates: Vec<(VarnodeId, u64)>,
+    /// Every EQUALITY against an ALL-ONES narrow constant — `x == -1` / `x != -1` where the
+    /// constant is 1 or 2 bytes wide — as `(instruction address, constant byte width)`. The
+    /// spelling is ambiguous in the decompiler (Ghidra types the operand signed and prints
+    /// `-1`) but not in the ORIGINAL bytes: a compare of a WIDER register against the
+    /// zero-extended immediate (`CMP EDX,0xff`, imm32) is the `unsigned == 0xff` source
+    /// form, while the sign-extended imm8 is the `-1` form. Under Watcom's UNSIGNED-default
+    /// plain `char`, the `-1` rendering is not merely a byte difference — the compare can
+    /// never be true — so the recovered arm's unsigned form is also the semantically
+    /// faithful one for the target.
+    pub allones_cmp_candidates: Vec<(u64, u32)>,
     /// Every constant comparison the `compare-form` axis could complement, as
     /// `(instruction address, constant as rendered, constant if complemented)`. A target rule
     /// reads the ORIGINAL's own compare immediate at that address and knows which spelling the
@@ -181,6 +191,11 @@ pub struct EmitReport {
 pub struct RecoveredChoices {
     /// Comparison sites to render complemented (`compare-form`).
     pub complement_sites: std::collections::HashSet<u64>,
+    /// Sites from [`EmitReport::allones_cmp_candidates`] whose ORIGINAL compare immediate is
+    /// the zero-extended (unsigned) spelling — render `(uintN)x == 0xffN` instead of the
+    /// signed `x == -1` (see the candidate's doc; decided by
+    /// [`crate::recompile::buildconfig::unsigned_cmps_from_evidence`]).
+    pub unsigned_cmp_sites: std::collections::HashSet<u64>,
     /// Guarding-if branch addresses whose tail boolean return splits per path
     /// (`return-split`).
     pub return_split_sites: std::collections::HashSet<u64>,
@@ -1364,6 +1379,46 @@ impl<'a> PrintC<'a> {
         (format!("{l} {sym} {r}"), prec)
     }
 
+    /// Equality/inequality, with the ALL-ONES-narrow-constant candidate channel (see
+    /// [`EmitReport::allones_cmp_candidates`]): the default rendering is exactly the plain
+    /// binary form; a site the recovered choice selects prints the UNSIGNED spelling —
+    /// `(uintN)other == 0xffN` — which re-zero-extends the same value and compiles to the
+    /// original's wider-register compare against the zero-extended immediate.
+    fn eq_bin(&mut self, op: super::op::OpId, sym: &'static str) -> (String, u8) {
+        let prec = 9u8;
+        let o = self.f.op(op);
+        let pc = o.seqnum.pc.offset;
+        let site = o.input(0).zip(o.input(1)).and_then(|(x, y)| {
+            let cslot = if self.f.vn(y).is_constant() {
+                1usize
+            } else if self.f.vn(x).is_constant() {
+                0usize
+            } else {
+                return None;
+            };
+            let cvn = if cslot == 0 { x } else { y };
+            let size = self.f.vn(cvn).size;
+            if !(size == 1 || size == 2) {
+                return None;
+            }
+            let mask = (1u64 << (u64::from(size) * 8)) - 1;
+            (self.f.vn(cvn).constant_value() & mask == mask).then_some((cslot, size, mask))
+        });
+        if let Some((cslot, size, mask)) = site {
+            self.report.allones_cmp_candidates.push((pc, size));
+            if self.recovered.unsigned_cmp_sites.contains(&pc) {
+                let other = self.cast_operand(op, 1 - cslot, 13, false);
+                return (
+                    format!("({}){other} {sym} 0x{mask:x}", Datatype::Uint(size).name()),
+                    prec,
+                );
+            }
+        }
+        let l = self.cast_operand(op, 0, prec, false);
+        let r = self.cast_operand(op, 1, prec, true);
+        (format!("{l} {sym} {r}"), prec)
+    }
+
     /// `(instruction address, our constant, complemented constant)` for a comparison the
     /// `compare-form` axis could rewrite — the same gate as [`Self::complemented_cmp`],
     /// reporting the two spellings instead of rendering one. See [`EmitReport::compare_sites`].
@@ -1525,8 +1580,8 @@ impl<'a> PrintC<'a> {
             OpCode::IntRight | OpCode::IntSright => self.shift_bin(op, ">>"),
             OpCode::IntLess | OpCode::IntSless => self.cmp_bin(op, true),
             OpCode::IntLessequal | OpCode::IntSlessequal => self.cmp_bin(op, false),
-            OpCode::IntEqual => bin(self, "==", 9),
-            OpCode::IntNotequal => bin(self, "!=", 9),
+            OpCode::IntEqual => self.eq_bin(op, "=="),
+            OpCode::IntNotequal => self.eq_bin(op, "!="),
             OpCode::IntAnd => bin(self, "&", 8),
             OpCode::IntXor | OpCode::BoolXor => bin(self, "^", 7),
             OpCode::IntOr => bin(self, "|", 6),

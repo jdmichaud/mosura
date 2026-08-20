@@ -1382,6 +1382,10 @@ fn main() {
                     &insns,
                 ),
                 call_arg_orders,
+                unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
+                    &report.allones_cmp_candidates,
+                    &insns,
+                ),
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
