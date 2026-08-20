@@ -77,7 +77,23 @@ impl Candidate {
                 continue;
             }
             let site_end = self.base + (f.offset + f.width) as u64;
-            let value = if f.self_relative { target.wrapping_sub(site_end) } else { target };
+            // OMF fixups are ADDITIVE (TIS OMF 1.1: the computed value is added to the field's
+            // existing content) — the compiler writes any `symbol ± k` addend INTO the field.
+            // Replacing instead of adding silently dropped every such addend: `(long)shortvar`
+            // compiles as `MOV EAX,[var-2]; SAR EAX,16` (the original's own idiom at
+            // FUN_00045ee0, `MOV EAX,[0x971d2]` for the short at 0x971d4), and the bare-target
+            // patch turned the candidate's identical instruction into `[0x971d4]` — a
+            // manufactured ±k "wrong neighboring global" family, 58 functions / 92 rows of
+            // harness artifact. The self-relative arm keeps replace semantics: the toolchain
+            // demonstrably writes call fields the current arithmetic already matches (739 EXACT
+            // functions' call sites), and OMF's self-relative addend interacts with the
+            // module-local site offset in a way this loader's `base` normalization already
+            // absorbs.
+            let value = if f.self_relative {
+                target.wrapping_sub(site_end)
+            } else {
+                target.wrapping_add(f.placeholder)
+            };
             for (i, b) in value.to_le_bytes()[..f.width.min(8)].iter().enumerate() {
                 out[f.offset + i] = *b;
             }
@@ -112,7 +128,11 @@ impl Relocator for Candidate {
             } else {
                 let masked = if size >= 8 { value } else { value & ((1u64 << (size * 8)) - 1) };
                 if masked == f.placeholder || value == f.placeholder {
-                    return Some(target);
+                    // Additive OMF semantics (see `relinked_bytes`): the linked value is the
+                    // target PLUS the field's addend, so the differ must display the same sum
+                    // or every `symbol ± k` operand prints as `symbol` and diffs as a phantom
+                    // neighboring-global access.
+                    return Some(target.wrapping_add(f.placeholder));
                 }
             }
         }

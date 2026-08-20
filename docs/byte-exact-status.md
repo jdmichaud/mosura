@@ -991,6 +991,29 @@ Also landed on the way: the `MOSURA_TRACE_FUNC` per-function trace scope (the su
 was untraceable before — 3023 decompiles flood the single-function facility), and the
 sequence-alignment reading of trace pairs (first-divergence, not just counts).
 
+**739 → 741 EXACT (sb102 re-measured): the "wrong neighboring global" family was a HARNESS
+ARTIFACT — OMF fixups are additive, the checker replaced.** Family B's strict sub-census
+(58 functions, 92 rows of `MOV` at `symbol ± 1/2/4`) chased through heritage (both
+decompilers piece the dword pair identically — `CONCAT22(r0x8f2b0, r0x8f2ae)` in BOTH
+traces), then through the emitted C (our reads are the CORRECT shorts), landed on the
+specimen that could not lie: `FUN_00045ee0`, SAME_SHAPE 0.939 with exactly two divergent
+rows, where the ORIGINAL's own idiom is `MOV EAX,[0x971d2]; SAR EAX,0x10` — load the dword
+TWO BYTES BEFORE a short and shift — i.e. the field's operand is `symbol − 2`.
+
+TIS OMF 1.1 fixups are ADDITIVE: the computed target is added to the field's existing
+content, and the compiler writes any `symbol ± k` addend INTO the field.
+`Candidate::relinked_bytes` REPLACED the field with the bare resolved target, and the
+differ's `Relocator::resolve` displayed the same bare target — so every candidate
+`symbol ± k` operand compared and printed as `symbol`, manufacturing phantom
+neighboring-global accesses. Fixed in both places (absolute arm only; the self-relative
+call arithmetic is left as the 739 EXACT functions' call sites prove it).
+
+Re-measured (same emit tree, cached objects re-compared): **+2 EXACT
+(`FUN_00045ee0`, `FUN_0004f580` — byte-exact all along), 741**, zero movements in any
+other direction — the stricter-correct comparison surfaced no false EXACTs. WGSS 0.4633 →
+0.4635. The remaining ~56 family members keep their now-truthful rows; their other
+divergence classes stand.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
