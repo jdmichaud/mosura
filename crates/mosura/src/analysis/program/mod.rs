@@ -44,6 +44,17 @@ pub enum CommentKind {
     Repeatable,
 }
 
+/// One callee's memoized transitive clobber contract (see `Program::contract_cache`).
+#[derive(Clone, Debug)]
+pub enum CalleeContract {
+    /// The walk for this callee is on the current recursion stack — a call-graph cycle; the
+    /// edge that found it falls back to the convention's kill set.
+    InProgress,
+    /// The finished answer: `None` when the walk could not complete (indirect flow, budget,
+    /// unreadable bytes).
+    Done(Option<Vec<u64>>),
+}
+
 /// The whole-program database (Ghidra `Program`).
 #[derive(Clone, Debug)]
 pub struct Program {
@@ -146,6 +157,15 @@ pub struct Program {
     /// `FlowOverride::None` entries are absent; see
     /// [`overridden_flow_props`](crate::analysis::flowtype::overridden_flow_props).
     pub flow_overrides: std::collections::HashMap<(u32, u64), crate::analysis::flowtype::FlowOverride>,
+    /// Whole-program memoization of per-callee TRANSITIVE clobber contracts
+    /// ([`crate::analysis::decompiler`]'s `transitive_contract`): callee VA → what its body
+    /// visibly destroys at return, nested calls resolved with the NESTED callee's own contract
+    /// (fixed point over the call graph; a cycle or unresolvable edge falls back to the
+    /// convention's kill set). Shared behind `Arc` so a cloned `Program` keeps the same cache —
+    /// same image, same contracts. `InProgress` marks a walk on the current recursion stack
+    /// (cycle detection).
+    pub contract_cache:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, CalleeContract>>>,
 }
 
 impl Program {
@@ -187,6 +207,7 @@ impl Program {
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),
             flow_overrides: std::collections::HashMap::new(),
+            contract_cache: Default::default(),
         }
     }
 

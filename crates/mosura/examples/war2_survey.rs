@@ -1291,7 +1291,11 @@ fn main() {
             // must qualify (its own evidence present, arity matching, every argument
             // reorder-safe) — one failing site vetoes the callee for the whole TU.
             let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
-            let mut order_pragmas: Vec<String> = Vec::new();
+            // Per-callee `parm [..]` clauses from param-order recovery — merged below with the
+            // caller-pops and modify clauses into ONE `#pragma aux` per callee: Watcom treats a
+            // second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission
+            // would silently drop whichever clause came first.
+            let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
             {
                 let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
                     Default::default();
@@ -1342,10 +1346,7 @@ fn main() {
                         })
                         .collect();
                     if names.len() == n {
-                        order_pragmas.push(format!(
-                            "#pragma aux func_0x{callee:08x} parm [{}];",
-                            names.join("] [")
-                        ));
+                        order_parms.insert(callee, format!("parm [{}]", names.join("] [")));
                     }
                 }
             }
@@ -1418,34 +1419,59 @@ fn main() {
             // prologue saves; with a uniform `modify [eax ebx ecx edx]` it invents saves the
             // 0x31c60 family's originals do not have (6 EXACT lost). Per-callee evidence is the
             // only shape that fits both.
-            let vararg_callees: HashMap<u64, String> = f
-                .call_specs
-                .iter()
-                .filter(|(_, cs)| cs.caller_cleans.unwrap_or(0) > 0)
-                .filter_map(|(&op, cs)| {
-                    let t = f.op(op).input(0)?;
-                    let va = f.vn(t).loc.offset;
-                    if va == 0 {
-                        return None;
+            // ONE `#pragma aux` spec per callee, merging every recovered contract clause:
+            //   parm [..]        — param-order recovery (order_parms above), register callees;
+            //   parm caller []   — caller-cleaned (cdecl/vararg) callees;
+            //   modify [..]      — the callee's own recovered clobber set, EVERY callee that
+            //                      has one (`CallSpec::cdecl_modify`): a bare extern under
+            //                      Watcom's default (save = HW_FULL) claims preserves-all, and
+            //                      the recompiler hoists argument setups across calls the
+            //                      original could not (FUN_00011b9c / callee 0x1f734).
+            let mut callee_aux: HashMap<u64, (Option<String>, Option<String>)> = HashMap::new();
+            for (&op, cs) in f.call_specs.iter() {
+                let Some(t) = f.op(op).input(0) else { continue };
+                let va = f.vn(t).loc.offset;
+                if va == 0 {
+                    continue;
+                }
+                let e = callee_aux.entry(va).or_default();
+                if cs.caller_cleans.unwrap_or(0) > 0 {
+                    e.0 = Some("parm caller []".to_string());
+                }
+                if let Some(m) = cs.cdecl_modify.as_ref() {
+                    let mut regs: Vec<&str> = m
+                        .iter()
+                        .filter_map(|off| {
+                            watreg.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2)
+                        })
+                        .filter(|r| *r != "ebp" && *r != "esp")
+                        .collect();
+                    // EAX is the return register — always in the contract even for a callee
+                    // whose body the walk saw writing nothing else.
+                    if !regs.contains(&"eax") {
+                        regs.push("eax");
                     }
-                    let mut spec = "parm caller []".to_string();
-                    if let Some(m) = cs.cdecl_modify.as_ref() {
-                        let mut regs: Vec<&str> = m
-                            .iter()
-                            .filter_map(|off| {
-                                watreg.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2)
-                            })
-                            .filter(|r| *r != "ebp" && *r != "esp")
-                            .collect();
-                        // EAX is the return register — always in the contract even for a
-                        // callee whose body the walk saw writing nothing else.
-                        if !regs.contains(&"eax") {
-                            regs.push("eax");
-                        }
-                        regs.sort();
-                        regs.dedup();
-                        spec.push_str(&format!(" modify [{}]", regs.join(" ")));
-                    }
+                    regs.sort();
+                    regs.dedup();
+                    e.1 = Some(format!("modify [{}]", regs.join(" ")));
+                }
+            }
+            // A callee can carry a recovered param order without any CallSpec entry (the
+            // contract walks all failed) — its pragma must still be emitted.
+            let mut callee_aux = callee_aux;
+            for &va in order_parms.keys() {
+                callee_aux.entry(va).or_default();
+            }
+            let vararg_callees: HashMap<u64, String> = callee_aux
+                .into_iter()
+                .filter_map(|(va, (cleans, modify))| {
+                    let parm = cleans.or_else(|| order_parms.get(&va).cloned());
+                    let spec = match (parm, modify) {
+                        (Some(p), Some(m)) => format!("{p} {m}"),
+                        (Some(p), None) => p,
+                        (None, Some(m)) => m,
+                        (None, None) => return None,
+                    };
                     Some((va, spec))
                 })
                 .collect();
@@ -1456,11 +1482,7 @@ fn main() {
             };
             // The permuted argument order is value-identical only under its pragma — the two
             // are one decision, emitted together (see call_arg_orders above).
-            let rtu = if order_pragmas.is_empty() {
-                rtu
-            } else {
-                format!("{}\n{rtu}", order_pragmas.join("\n"))
-            };
+            // order_parms are folded into the per-callee pragma inside build_tu now.
             if only.is_empty() {
                 std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();
             } else {
@@ -1604,31 +1626,63 @@ fn main() {
                     .file_stem()
                     .and_then(|st| st.to_str())
                     .and_then(|st| idx_va.get(st));
-                let lines: String = ext_re(&src)
-                    .into_iter()
-                    .filter_map(|cva| {
-                        let (decl, psizes) = parm_map.get(&cva).and_then(|d| d.as_ref())?;
-                        // arity AND width gate: every call site in this TU must pass exactly
-                        // the pragma's parameter count, each argument at the parameter's own
-                        // width. A width mismatch is as fatal as an arity one — a 16-bit
-                        // `parm [bx]` meeting a 4-byte argument overflows it to the STACK
-                        // (measured: FUN_0002c8xx's `PUSH 0xc` where the original loads EBX).
-                        let asizes = caller_va
-                            .and_then(|va| caller_calls.get(va))
-                            .and_then(|m| m.get(&cva))
-                            .cloned()
-                            .flatten()?;
-                        // Per slot the pragma register must be AT LEAST the argument's width:
-                        // a narrower argument binds the register's low part (measured EXACT —
-                        // the byte index into `parm [edx]`), while a narrower REGISTER
-                        // overflows the argument to the stack (the `parm [bx]` failure above).
-                        (asizes.len() == psizes.len()
-                            && asizes.iter().zip(psizes).all(|(a, p)| a <= p))
-                        .then(|| format!("#pragma aux func_0x{cva:08x} parm {decl};\n"))
-                    })
-                    .collect();
-                if !lines.is_empty() {
-                    std::fs::write(&path, format!("{lines}{src}")).unwrap();
+                // A TU may ALREADY declare `#pragma aux` for this callee (build_tu's
+                // recovered contract clauses: `parm caller []` and/or `modify [..]`). Watcom
+                // treats a SECOND `#pragma aux` for the same symbol as a REPLACEMENT, so the
+                // parm clause must be MERGED INTO the existing line, never prepended beside
+                // it — the prepended form silently destroyed the order recovery of every
+                // modify-annotated callee (measured: the nine-sibling 0x392xx family lost
+                // EXACT, FUN_0003925c's `parm [edx] [eax]` replaced by `modify [eax edx]`).
+                // An existing line that already carries a `parm` clause wins outright (the
+                // per-site order recovery and the caller-cleaned contract both outrank the
+                // definition-side default order).
+                let mut prepend = String::new();
+                let mut merges: Vec<(String, String)> = Vec::new();
+                for cva in ext_re(&src) {
+                    let Some((decl, psizes)) = parm_map.get(&cva).and_then(|d| d.as_ref())
+                    else {
+                        continue;
+                    };
+                    // arity AND width gate: every call site in this TU must pass exactly
+                    // the pragma's parameter count, each argument at the parameter's own
+                    // width. A width mismatch is as fatal as an arity one — a 16-bit
+                    // `parm [bx]` meeting a 4-byte argument overflows it to the STACK
+                    // (measured: FUN_0002c8xx's `PUSH 0xc` where the original loads EBX).
+                    let Some(asizes) = caller_va
+                        .and_then(|va| caller_calls.get(va))
+                        .and_then(|m| m.get(&cva))
+                        .cloned()
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    // Per slot the pragma register must be AT LEAST the argument's width:
+                    // a narrower argument binds the register's low part (measured EXACT —
+                    // the byte index into `parm [edx]`), while a narrower REGISTER
+                    // overflows the argument to the stack (the `parm [bx]` failure above).
+                    if !(asizes.len() == psizes.len()
+                        && asizes.iter().zip(psizes).all(|(a, p)| a <= p))
+                    {
+                        continue;
+                    }
+                    let tag = format!("#pragma aux func_0x{cva:08x} ");
+                    match src.lines().find(|l| l.starts_with(&tag)) {
+                        Some(l) if l.contains(" parm ") => {}
+                        Some(l) => merges.push((
+                            l.to_string(),
+                            format!("{tag}parm {decl} {}", &l[tag.len()..]),
+                        )),
+                        None => {
+                            prepend.push_str(&format!("#pragma aux func_0x{cva:08x} parm {decl};\n"))
+                        }
+                    }
+                }
+                if !prepend.is_empty() || !merges.is_empty() {
+                    let mut out = src.clone();
+                    for (from, to) in &merges {
+                        out = out.replacen(from.as_str(), to.as_str(), 1);
+                    }
+                    std::fs::write(&path, format!("{prepend}{out}")).unwrap();
                     patched += 1;
                 }
             }

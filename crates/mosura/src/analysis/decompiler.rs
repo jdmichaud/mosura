@@ -149,7 +149,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // BODY, and every instruction in the body contributes its writes and restores
             // regardless of path. Walk that.
             let cfg = own_effects_over_body(program, spec, ctx, entry, reg, &f)
-                .or_else(|| callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, true));
+                .or_else(|| callee_writes_cfg(program, spec, ctx, entry.offset, reg, &f, NestedCalls::Blanket).map(|(w, r)| (w, r)));
             f.own_modify = cfg.as_ref().map(|(w, _)| w.clone());
             // Registers the function SAVES AND RESTORES are callee-saved, not arguments. Every
             // prologue does `push ebp`, which READS the incoming EBP — without this the custom
@@ -312,6 +312,7 @@ fn record_callee_effects(
     // The caller-cleaned callee's own modify set (calls_clobber=true walk), per callee, memoized
     // like the cleanup contract — same callees, same fan-in.
     let mut modify_cache: std::collections::HashMap<u64, Option<Vec<u64>>> = std::collections::HashMap::new();
+
     // The stack pointer's register offset, for reading `RET n` off the lifted p-code.
     let esp_off = f
         .spaces
@@ -333,7 +334,7 @@ fn record_callee_effects(
         // The COMPLETE write set over the callee's whole CFG — computed whether or not the
         // straight-line scan succeeded, because the downgrade it feeds is exactly the case the
         // straight-line scan cannot reach.
-        if let Some((w, _)) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
+        if let Some((w, _)) = callee_writes_cfg(program, spec, ctx, target, reg, f, NestedCalls::Fail) {
             f.call_specs.entry(call).or_default().writes_all = Some(w);
         }
         // The call site's stack-pointer change, from the callee's own return instruction —
@@ -367,10 +368,21 @@ fn record_callee_effects(
                     eprintln!("[cdecl-evd] call@{pc:#x} target={target:#x} caller_cleans={n:?}");
                 }
                 if let Some(n) = n {
+                    // The callee's clobber contract for the caller-pops pragma — the
+                    // LANDED sb98 semantics: body writes with nested calls as the
+                    // convention's BLANKET kill set. NOT the transitive fixed-point: the
+                    // original's DECLARED contract is a per-TU latent (headers/pragmas of
+                    // the original build), and it provably sides with the blanket at some
+                    // callees (FUN_00011128 saves EBX/ECX around 0x52874, whose transitive
+                    // truth is narrower) and with the transitive truth at others
+                    // (FUN_00031d58's callee — the standing residue). Choosing between
+                    // them PER CALLEE needs the callers' dataflow testimony
+                    // (docs/byte-exact-status.md sb99, the parked design); until then the
+                    // measured-landed blanket stands.
                     let modify = modify_cache
                         .entry(target)
                         .or_insert_with(|| {
-                            callee_writes_cfg(program, spec, ctx, target, reg, f, true)
+                            callee_writes_cfg(program, spec, ctx, target, reg, f, NestedCalls::Blanket)
                                 .map(|(w, _)| w)
                         })
                         .clone();
@@ -489,7 +501,36 @@ fn own_effects_over_body(
             }
             let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
             for o in &insn.ops {
+                // A BRANCH out of this function's recorded body to another function's entry
+                // is a TAIL CALL (the thunk shape SharedReturn rewrites to call+return): the
+                // tail-callee's contract IS this function's, and without it a thunk gets no
+                // `modify` list at all — Watcom then assumes the default (preserve
+                // everything), must save what the callee kills, and can no longer emit the
+                // original's bare `JMP` (FUN_00072357 grew PUSH EBX/ECX + CALL + RET).
+                if OpCode::from_u32(o.opcode) == Some(OpCode::Branch) {
+                    if let Some(v) = o.ins.first().and_then(|a| a.as_var()) {
+                        if v.space != "const"
+                            && !body.contains(Address::new(program.default_space, v.offset))
+                        {
+                            if let Some(w2) =
+                                transitive_contract(program, spec, ctx, v.offset, reg, f)
+                            {
+                                for off in w2 {
+                                    if !writes.contains(&off) {
+                                        writes.push(off);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call) | Some(OpCode::Callind)) {
+                    // A nested call contributes the convention's kill set — the LANDED
+                    // semantics of the function's own `modify` list. (Resolving it with the
+                    // nested callee's transitive contract instead can only SHRINK this
+                    // list, and a narrower own-contract forces Watcom to SAVE the
+                    // difference — a corpus-wide regression risk with no grounding: the
+                    // original's own declared contract is as unobservable as its callees'.)
                     for e in f.proto_model.effectlist.iter() {
                         if e.space == reg
                             && e.effect == crate::decompile::fspec::effect::KILLEDBYCALL
@@ -585,6 +626,35 @@ fn callee_cleanup(
     crate::recompile::convention::callee_stack_cleanup(&insns, sp)
 }
 
+/// One callee's TRANSITIVE clobber contract — [`callee_writes_cfg`] with nested calls
+/// resolved by recursion, memoized whole-program in [`Program::contract_cache`] so the fixed
+/// point over the call graph is walked once per callee, not once per caller. A callee already
+/// on the recursion stack (`InProgress`) is a call-graph cycle: the asking edge gets `None`
+/// and falls back to the convention's kill set, conservatively.
+fn transitive_contract(
+    program: &Program,
+    spec: &crate::sleigh::engine::Spec,
+    ctx: &[u32],
+    entry: u64,
+    reg: crate::decompile::space::SpaceId,
+    f: &crate::decompile::funcdata::Funcdata,
+) -> Option<Vec<u64>> {
+    use crate::analysis::program::CalleeContract;
+    {
+        let cache = program.contract_cache.lock().unwrap();
+        match cache.get(&entry) {
+            Some(CalleeContract::Done(v)) => return v.clone(),
+            Some(CalleeContract::InProgress) => return None,
+            None => {}
+        }
+    }
+    program.contract_cache.lock().unwrap().insert(entry, CalleeContract::InProgress);
+    let r = callee_writes_cfg(program, spec, ctx, entry, reg, f, NestedCalls::Transitive)
+        .map(|(w, _)| w);
+    program.contract_cache.lock().unwrap().insert(entry, CalleeContract::Done(r.clone()));
+    r
+}
+
 /// The caller-side cleanup at one CALL site: disassemble the call instruction at `pc` (for its
 /// length), then its fallthrough instruction; `Some(n)` when the latter is `ESP = ESP + n`
 /// ([`crate::recompile::convention::caller_stack_cleanup`]) — the original caller removing the
@@ -630,6 +700,20 @@ fn caller_cleanup_after(
 ///
 /// Conservative by construction — anything that could write a register this walk cannot see returns
 /// `None`: a nested CALL, an indirect branch or call, or running past the instruction budget.
+/// How [`callee_writes_cfg`] accounts a nested call inside the walked body.
+#[derive(Clone, Copy, PartialEq)]
+enum NestedCalls {
+    /// Withhold the whole answer (the downgrade question: unknown means unusable).
+    Fail,
+    /// The convention's kill set (the function's own `modify` list: a contained call destroys
+    /// whatever the convention lets a call destroy).
+    Blanket,
+    /// Resolve a DIRECT nested call with the nested callee's own transitive contract
+    /// ([`transitive_contract`], memoized whole-program in `Program::contract_cache`);
+    /// indirect, cyclic, or failed edges fall back to the blanket.
+    Transitive,
+}
+
 fn callee_writes_cfg(
     program: &Program,
     spec: &crate::sleigh::engine::Spec,
@@ -637,7 +721,7 @@ fn callee_writes_cfg(
     entry: u64,
     reg: crate::decompile::space::SpaceId,
     f: &crate::decompile::funcdata::Funcdata,
-    calls_clobber: bool,
+    nested: NestedCalls,
 ) -> Option<(Vec<u64>, Vec<u64>)> {
     use crate::decompile::opcode::OpCode;
     use crate::decompile::space::Address;
@@ -673,13 +757,39 @@ fn callee_writes_cfg(
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => fallthrough = false,
-                Some(OpCode::Call) | Some(OpCode::Callind) => {
+                Some(op @ (OpCode::Call | OpCode::Callind)) => {
                     // For the DOWNGRADE question ("does this callee leave the register alone?") a
                     // nested call is unknown and the whole answer must be withheld. For the
                     // function's OWN `modify` list the answer is known: whatever the convention
-                    // lets a call destroy, this function destroys too by containing one.
-                    if !calls_clobber {
-                        return None;
+                    // lets a call destroy, this function destroys too by containing one. The
+                    // TRANSITIVE mode resolves a direct nested call with the NESTED callee's own
+                    // contract instead — the knowledge the original compiler's callers visibly
+                    // had (FUN_00012360 hoists a zeroed EBX across a call whose transitive body
+                    // preserves it; the convention blanket said killed and cost the hoist).
+                    let resolved: Option<Vec<u64>> = match nested {
+                        NestedCalls::Fail => return None,
+                        NestedCalls::Blanket => None,
+                        NestedCalls::Transitive => {
+                            if op == OpCode::Call {
+                                o.ins
+                                    .first()
+                                    .and_then(|a| a.as_var())
+                                    .filter(|v| v.space != "const")
+                                    .and_then(|v| {
+                                        transitive_contract(program, spec, ctx, v.offset, reg, f)
+                                    })
+                            } else {
+                                None // indirect: unknowable, fall to the blanket
+                            }
+                        }
+                    };
+                    if let Some(w) = resolved {
+                        for off in w {
+                            if !writes.contains(&off) {
+                                writes.push(off);
+                            }
+                        }
+                        continue;
                     }
                     for e in f.proto_model.effectlist.iter() {
                         if e.space == reg && e.effect == crate::decompile::fspec::effect::KILLEDBYCALL
@@ -742,8 +852,14 @@ fn callee_writes_cfg(
     }
     if std::env::var_os("MOSURA_MODIFY").is_some() {
         eprintln!(
-            "MODIFY entry={entry:#x} writes={:x?} restored={:x?} calls_clobber={calls_clobber}",
-            writes, restored
+            "MODIFY entry={entry:#x} writes={:x?} restored={:x?} nested={}",
+            writes,
+            restored,
+            match nested {
+                NestedCalls::Fail => "fail",
+                NestedCalls::Blanket => "blanket",
+                NestedCalls::Transitive => "transitive",
+            }
         );
     }
     writes.retain(|o| !restored.contains(o));

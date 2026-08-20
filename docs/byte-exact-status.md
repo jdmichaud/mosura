@@ -867,6 +867,60 @@ worked: resolve nested calls with the NESTED callee's own recovered contract ins
 convention's blanket (a transitive fixed point over the call graph), which is also what the
 original compiler knew from its headers.
 
+**734 → 734 (sb99): the GENERAL per-callee contract — explored to its fundamentals,
+measured at every step, and PARKED with its design written down.** The near-miss census
+after sb98 named argument-position divergences: our recompile hoists an argument setup
+across a neighboring call (`FUN_00011b9c`'s `MOV EDX,0x49790` above `CALL 0x1f734`) or
+declines a hoist the original made (`FUN_00012360`'s zeroed EBX) — because a bare `extern`
+under Watcom's default aux info claims the callee preserves everything
+(`HW_CAsgn( DefaultInfo.save, HW_FULL )`, OW 1.0 cmodel.c:381), while the original build
+was compiled against richer per-callee declarations. Extending sb98's `modify [..]`
+pragmas to EVERY callee was measured through five full corpus rounds:
+
+- blanket (`calls_clobber`) contracts on all callees: **707** (−31/+4) — nested-call
+  inflation invents saves;
+- TRANSITIVE contracts (`transitive_contract`, a memoized fixed point over the call graph
+  in `Program::contract_cache`): **720** — better, and it healed sb98's residue
+  `FUN_00031d58`;
+- + single-pragma-per-callee MERGE (Watcom treats a second `#pragma aux` for one symbol as
+  a REPLACEMENT — split emission silently destroyed the order recovery of every
+  modify-annotated callee, the nine-sibling 0x392xx family): **730**;
+- + a caller-side "survival veto" read from straight-line byte windows after call sites:
+  **722 → 731 → 734-even** across three soundness patches (settled-set, noreturn
+  fallthrough, jump-following) and a per-caller restructure.
+
+**The fundamental, per the checkpoint JD called** (the veto iteration was becoming
+workarounds-on-workarounds): the ground truth is the ORIGINAL BUILD'S PER-TU DECLARATIONS
+— a latent. The callee's body-truth provably differs from it in BOTH directions
+(0x58834's callers hold EDX across it though the body clobbers it; 0x52874's callers save
+EBX/ECX though the body preserves them) and DIFFERENT callers were built against DIFFERENT
+declarations of the same callee (0x5cf88). Reading the callers' testimony from byte
+windows is a weak decoder whose soundness holes each demanded a patch. The decompiler's
+own dataflow already answers the same questions exactly — "is R live across this call",
+"is R saved only around calls to X" — for every caller, with a real CFG.
+
+**The parked design (prerequisite for reopening this):** a two-phase whole-program pass in
+the survey (the param-order pre-pass shape): phase 1 extracts per-(caller, callee)
+testimony from each DECOMPILED caller's dataflow; phase 2 emits per-TU contracts =
+body-truth corrected by that caller's own testimony. No byte windows anywhere. Expected
+yield from the experiments: the 11b9c argument-position family (+4 measured under the best
+veto) plus the residue ledger: `FUN_00031d58` (needs transitive), `FUN_00011128` /
+`FUN_0004dee0` (need blanket — their originals declared their callees' conservative
+headers), `FUN_0005d500`/`FUN_0005d57c`, `FUN_00014754`.
+
+**What LANDED from the frontier (this commit — verdicts identical to sb98,
+verdict-for-verdict, WGSS 0.4626 unchanged):**
+- the pragma MERGE in the caller-side post-pass (a real latent collision bug — inert
+  today only because each callee currently carries at most one pragma source at a time);
+- thunk TAIL-CALL contract inheritance: a `Branch` out of the recorded body to another
+  function's entry contributes that function's transitive contract to `own_modify`
+  (`FUN_00072357` = `JMP unlink_` gets `modify [eax ecx ebx]`, so Watcom needn't save and
+  can emit the original's bare `JMP`) — measured verdict-neutral standalone, load-bearing
+  under any future contract extension;
+- `transitive_contract` + `Program::contract_cache` (the fixed-point machinery, used
+  today only by the inheritance) and the `NestedCalls` walk parameterization;
+- `CallSpec::cdecl_modify` computation stays at sb98's landed blanket semantics.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
