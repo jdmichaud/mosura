@@ -34,6 +34,12 @@ pub fn mark_addrtied(f: &mut Funcdata) {
     let ram = f.spaces.by_name("ram");
     let stack = f.spaces.by_name("stack");
     let boundary = f.alias_boundary;
+    if std::env::var_os("MOSURA_ALIAS_DEBUG").is_some() {
+        let nstack = (0..f.num_varnodes() as u32)
+            .filter(|&i| Some(f.vn(VarnodeId(i)).loc.space) == stack && !f.vn(VarnodeId(i)).is_free())
+            .count();
+        eprintln!("[alias] boundary={boundary:?} stack_vns={nstack}");
+    }
     for i in 0..f.num_varnodes() as u32 {
         let id = VarnodeId(i);
         let vn = f.vn(id);
@@ -46,12 +52,22 @@ pub fn mark_addrtied(f: &mut Funcdata) {
             f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED | flags::PERSIST;
         } else if Some(space) == stack {
             if boundary.is_some_and(|b| (vn.loc.offset as i64) >= b) {
-                // An aliased stack slot stays addrtied.
+                // An aliased stack slot stays addrtied — and is NOT nolocalalias (the flag
+                // reconciles both ways, per-pass, exactly as the attribute is re-derived on
+                // every `restructureVarnode`).
                 f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED;
+                f.vn_mut(id).flags &= !flags::NOLOCALALIAS;
             } else {
                 // A non-aliased local: nolocalalias ⇒ clear addrtied, and addrforce with it
-                // ("if addrtied is cleared, so should addrforce", funcdata_varnode.cc:1060-1062).
+                // ("if addrtied is cleared, so should addrforce", funcdata_varnode.cc:1060-1062)
+                // — and STORE the attribute itself (Ghidra varmap.cc:1375
+                // `setAttribute(symbol, Varnode::nolocalalias)`, reaching varnodes via
+                // `syncVarnodesWithSymbols`). This is the producer `RuleIndirectCollapse`'s
+                // live-call arm was waiting for (rules.rs documented it INERT): a call-guarded
+                // INDIRECT on a local no pointer can reach collapses, exactly Ghidra's 24
+                // firings on the war2split fixture that mosura fired zero of.
                 f.vn_mut(id).flags &= !(flags::ADDRTIED | flags::ADDRFORCE);
+                f.vn_mut(id).flags |= flags::NOLOCALALIAS;
             }
         }
     }
