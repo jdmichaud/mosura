@@ -902,7 +902,44 @@ fn main() {
         .filter_map(|n| watreg.iter().find(|&&(_, sz, nm)| sz == 4 && nm == *n).map(|&(o, ..)| o))
         .collect();
     let mut order_excluded: std::collections::HashSet<u64> = Default::default();
-    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if arg_reg_offs.len() == 4 {
+    // The evidence is a pure function of the ORIGINAL binary and the code that reads it, so
+    // it is cached beside the manifest keyed by the emit stamp. The exclusion set costs a
+    // mini-decompile of every claimed callee (~170 on WAR2 — minutes), which a full emit
+    // amortizes but which made every `--only` PROBE pay the whole pre-pass: JD measured a
+    // single-function probe at five minutes. A probe at the same stamp now loads in
+    // milliseconds; a stamp change re-derives.
+    let order_cache = out.join(format!("param-orders.{stamp}.tsv"));
+    let cached_orders: Option<(std::collections::HashMap<u64, Vec<u64>>, std::collections::HashSet<u64>)> =
+        std::fs::read_to_string(&order_cache).ok().map(|s| {
+            let mut m = std::collections::HashMap::new();
+            let mut ex = std::collections::HashSet::new();
+            for line in s.lines() {
+                let mut it = line.split('\t');
+                match (it.next(), it.next()) {
+                    (Some("X"), Some(va)) => {
+                        if let Ok(v) = u64::from_str_radix(va, 16) {
+                            ex.insert(v);
+                        }
+                    }
+                    (Some(addr), Some(rest)) => {
+                        if let Ok(a) = u64::from_str_radix(addr, 16) {
+                            let p: Vec<u64> = rest
+                                .split(',')
+                                .filter_map(|x| u64::from_str_radix(x, 16).ok())
+                                .collect();
+                            m.insert(a, p);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (m, ex)
+        });
+    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if let Some((m, ex)) = cached_orders {
+        order_excluded = ex;
+        eprintln!("param-order evidence: {} sites (cached at {stamp})", m.len());
+        m
+    } else if arg_reg_offs.len() == 4 {
         let t = std::time::Instant::now();
         let entry_set: std::collections::HashSet<u64> = entries.iter().map(|e| e.0).collect();
         let mut sites = Vec::new();
@@ -955,6 +992,17 @@ fn main() {
             order_excluded.len(),
             t.elapsed().as_secs_f64()
         );
+        if !probing || !order_cache.exists() {
+            let mut body = String::new();
+            for (a, p) in &orders {
+                let hx: Vec<String> = p.iter().map(|x| format!("{x:x}")).collect();
+                body.push_str(&format!("{a:x}\t{}\n", hx.join(",")));
+            }
+            for x in &order_excluded {
+                body.push_str(&format!("X\t{x:x}\n"));
+            }
+            let _ = std::fs::write(&order_cache, body);
+        }
         orders
     } else {
         Default::default()

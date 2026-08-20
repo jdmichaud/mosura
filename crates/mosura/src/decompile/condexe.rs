@@ -841,8 +841,19 @@ impl ConditionalExecution {
         } else {
             1 - self.prea_inslot
         };
-        // Every op except the trailing branch must be removable.
-        let ops = data.block(self.iblock).ops.clone();
+        // Every op except the trailing branch must be removable. LIVE ops only: Ghidra's
+        // block lists hold only live ops (dead ones are unlinked), while mosura's keep
+        // gutted ops in place — the same divergence the structurer's `is_complex` fix
+        // documents. A gutted MULTIEQUAL (dead, output stripped) in this walk panicked
+        // `test_removability` on eight WAR2 functions the moment known-extrapop modelling
+        // changed their heritage rounds (sb96).
+        let ops: Vec<OpId> = data
+            .block(self.iblock)
+            .ops
+            .iter()
+            .copied()
+            .filter(|&o| !data.op(o).is_dead())
+            .collect();
         let n = ops.len();
         if n == 0 {
             return false;

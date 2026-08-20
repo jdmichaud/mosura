@@ -740,6 +740,44 @@ the end — both CPU digits, five optimization-letter subsets, volatile casts, t
 increment-in-condition spelling — nothing moves them: the interim build's instruction-motion
 policy, pile-B.
 
+**699 → 700 (sb96): per-call extrapop for EVERY call — the missing-argument door opens.**
+The missing-only census (60 functions, the largest single-class population) is dominated by
+dropped STACK arguments to caller-cleaned callees (`PUSH <string> ; CALL ; ADD ESP,4` — the
+logging/vararg family, ~25-30 functions). The chain, instrumented end to end on specimen
+`FUN_000191b8`: per-call extrapop (from the callee's own RET) was populated only inside the
+recovered-prototype branch — i.e. only under the off-by-default prototype pass — so the
+DEFAULT configuration modelled every watcall call as EXTRAPOP_UNKNOWN; the unknown-case
+INDIRECT chain left every stack placeholder unresolvable (`PH abort-UNRESOLVED` at all nine
+calls), `spacebase_offset` stayed None, and `guard_calls` never offered a stack range.
+HOISTED to run for every direct call (analysis/decompiler.rs — Ghidra carries extrapop on
+every analyzed function's prototype and `ActionDefaultParams` copies it onto the call,
+coreaction.cc:2327). With it: placeholders resolve at every call, the recorded offsets are
+Ghidra-semantics correct (the specimen's argument translates to `+4`, exactly watcall's
+stack pentry), the stack trial registers, links to the push's value, and is judged ACTIVE.
+
+Landed effects, zero regressions: `FUN_000420f0` MISMATCH → EXACT (700); COMPILE_FAIL 2 → 1
+— the E1010 partial-write specimen `FUN_00066100` (`02583`), half of the "honest core" CF
+ledger, now COMPILES; the eternal EMIT_FAIL healed — `FUN_0001aab0`'s decompile panic was a
+gutted no-output MULTIEQUAL in `ConditionalExecution`'s block walk (mosura's block lists
+keep dead ops where Ghidra's are live-only — the `is_complex` precedent; condexe.rs now
+filters, and seven sibling functions the known-extrapop heritage rounds newly panicked are
+clean); WGSS **0.4359 → 0.4377**, the largest jump since the argument-recovery era —
+correct stack modelling improves alignment broadly across MISMATCH functions.
+
+**The named blocker for the rest of the cluster — measured, not guessed:** with the trial
+now ACTIVE, `[fillin:chain]` strips it: four inactive register trials (the watcall model's
+register entries, crossed by the caller's own saved registers) build `chainlength > 2` in
+`force_inactive_chain`, and the faithful arithmetic (verified against fspec.cc:1111 line by
+line) deactivates the later active stack trial. The oracle recovers these arguments only
+because the raw-import runs the DEFAULT cspec — stack-only entries, no register trials, no
+chain; under the watcall model Ghidra's own arithmetic would drop them too. The fix is the
+one Ghidra's architecture already carries (`FuncCallSpecs` IS a `FuncProto` with its own
+model): PER-CALL MODEL SELECTION — a caller-cleaned call (`ADD ESP,K` after it, the same
+evidence channel as the recovered extrapop) is a cdecl/vararg call and takes a stack-only
+input list, no register trials, no chain. Needs: a `__cdecl` prototype beside `__watcall`
+in `specs/x86-32-watcom.cspec` (grounded in Watcom's own convention docs), named-prototype
+loading, and the CallSpec model override threaded through trial creation.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

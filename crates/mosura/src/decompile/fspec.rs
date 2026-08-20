@@ -391,16 +391,39 @@ impl ParamList {
         if active.num_trials() == 0 {
             return;
         }
+        let dump = |tag: &str, active: &ParamActive| {
+            if std::env::var_os("MOSURA_FILLIN_DEBUG").is_some() {
+                let v: Vec<String> = active
+                    .trial
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "g{:?}o{:#x}{}{}{}",
+                            t.entry,
+                            t.addr.offset,
+                            if t.is_active() { "A" } else { "-" },
+                            if t.is_definitely_not_used() { "U" } else { "-" },
+                            if t.is_unref() { "r" } else { "-" }
+                        )
+                    })
+                    .collect();
+                eprintln!("[fillin:{tag}] {}", v.join(" "));
+            }
+        };
         self.build_trial_map(active);
+        dump("map", active);
         self.force_exclusion_group(active);
+        dump("excl", active);
         let starts = self.separate_sections(active);
         let nsec = starts.len() - 1;
         for i in 0..nsec {
             self.force_no_use(active, starts[i], starts[i + 1]);
         }
+        dump("nouse", active);
         for i in 0..nsec {
             self.force_inactive_chain(active, 2, starts[i], starts[i + 1], self.resource_start[i]);
         }
+        dump("chain", active);
         for t in active.trial.iter_mut() {
             if t.is_active() {
                 t.mark_used();

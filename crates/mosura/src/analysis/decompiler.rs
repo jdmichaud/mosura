@@ -333,6 +333,25 @@ fn record_callee_effects(
         if let Some((w, _)) = callee_writes_cfg(program, spec, ctx, target, reg, f, false) {
             f.call_specs.entry(call).or_default().writes_all = Some(w);
         }
+        // The call site's stack-pointer change, from the callee's own return instruction —
+        // per-callee knowledge Ghidra carries on every analyzed function's prototype in its
+        // database (`ActionDefaultParams` copies it onto the call, coreaction.cc:2327),
+        // INDEPENDENT of whether the whole-program pass recovered the callee's parameters.
+        // This used to live inside the recovered-proto branch below, so the DEFAULT
+        // configuration modelled every watcall call as EXTRAPOP_UNKNOWN: the INDIRECT chain
+        // left every stack placeholder unresolvable (PH abort-UNRESOLVED at all nine calls
+        // of FUN_000191b8) and every stack argument was silently dropped — the dominant
+        // mechanism of the missing-only census (docs/byte-exact-status.md, open thread 1b's
+        // endgame). extrapop counts the return-address slot plus whatever the callee's
+        // `RET n` pops.
+        if let Some(sp) = esp_off {
+            let cl = *cleanup_cache
+                .entry(target)
+                .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
+            if let Some(n) = cl {
+                f.call_specs.entry(call).or_default().extrapop = Some(4 + n as i32);
+            }
+        }
         // THE CALLEE'S OWN RECOVERED PROTOTYPE, when the whole-program pass has established one.
         //
         // `callee_effects` below answers the same question by walking the callee's body in a
@@ -388,22 +407,6 @@ fn record_callee_effects(
             let cs = f.call_specs.entry(call).or_default();
             cs.reads = Some(slots);
             cs.reads_recovered = true;
-            // The call site's stack-pointer change, from the callee's own return instruction:
-            // Ghidra's `ActionDefaultParams` copies the callee's whole prototype onto the call --
-            // extrapop included (coreaction.cc:2327) -- and `ActionExtraPopSetup` then takes its
-            // KNOWN branch: an `INT_ADD sp, extrapop` after the call instead of an INDIRECT
-            // before it. That INDIRECT is what every stack-offset resolution downstream has to
-            // fold through, on solver-guessed deltas; with the recovered value there is nothing
-            // to guess. extrapop counts the return-address slot plus whatever the callee's
-            // `RET n` pops (x86 cdecl's cspec value is 4 -- the slot alone).
-            if let Some(sp) = esp_off {
-                let cl = *cleanup_cache
-                    .entry(target)
-                    .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
-                if let Some(n) = cl {
-                    cs.extrapop = Some(4 + n as i32);
-                }
-            }
             if let Some((regs, _)) = eff {
                 cs.overwrites = regs;
             }
