@@ -649,6 +649,64 @@ ordering mechanism's generalization, unworked), the pure-allocation pairs (pile-
 displaced single-constant sites whose windows carry no order information (one visible
 setup) or identifier co-arguments.
 
+**694 → 695 (sb95): VOLATILE recovery — the first recovered source QUALIFIER, shipped at
+its calibrated core.** The F5 statement-order residual decomposed under the probe loop into
+something better than statement order: in five specimens the C statement order already
+matches the original (oracle-confirmed on `FUN_0005d500` — Ghidra prints the same order),
+and the divergence is Watcom's INSTRUCTION SCHEDULER moving the next statement's evaluation
+above a global store in our build only. The mechanism is source-grounded in OW 1.0, not
+inferred: `Schedule()` (cg/c/inssched.c) is gated on `INS_SCHEDULING`, which the recovered
+profile's `-onatx` carries through its `x` — `Set_OX` sets it (cc/c/coptions.c:1236) — so
+the scheduler runs on every function we compile at EITHER CPU digit (the earlier probe's
+"-4r doesn't change it, so not the scheduler" reasoning was confounded: both digits carried
+`-onatx`). `volatile` is a FULL scheduling barrier: `ReDefinedBy` answers TRUE for any
+volatile memory operand against every result-writing instruction (cg/c/redefby.c:144), so
+nothing crosses it — including register-only constant materializations, exactly as probed.
+The scoreboard is the second effect: `scinfo.c`'s `N_VOLATILE` is never reusable/lookupable,
+which is why a spurious volatile flips register-reuse stores to immediate forms.
+Hand-probes reproduced all five
+byte-exactly (`FUN_000125bc` — only `cRam0008032c`, its sibling global must stay plain;
+`FUN_00034590`; `FUN_0004c270`; `FUN_0005d500`/`5d57c` — the ISR-flag pattern: a flag
+zeroed, a call made, the flag re-tested). The recovered chain:
+`printc::EmitReport::volatile_candidates` (per pure-global-store statement, the next
+statement's min op pc + its RAM reads + work-free/const-rhs flags) →
+`buildconfig::volatile_globals_from_evidence` → `build_tu` renders the qualifier on the
+declaration (recovered tree only).
+
+**The calibration is the story — measured trajectory −28 → −8 → −5 → +2 → +1-clean:** the
+blanket order-readout mass-marked consecutive-store runs whose shared materialization the
+original hoisted above them (`FUN_00010d40`'s `MOV AH,0xff` run, 666 EXACT); the
+between-instruction gate recovered to 686; read anchors (locating the next statement's
+global LOADS in the original — the IR often has no op for a global read, so the op walk is
+blind exactly where hoisting is most visible, `FUN_0005f440` both ways) to 689; the
+materialization-adjacency veto (a constant store whose register materialization is
+separated from it by foreign work is not volatile — `FUN_000121e8`) to 696 with six
+regressions; and the shipped rule accepts ANCHORED-READ positives only: **+1 EXACT
+(FUN_00034590), zero regressions, WGSS 0.4361 → 0.4362, 29 TUs marked.** The residual is
+named, not hidden: four of the five probe-proven volatiles flow through op-invisible
+constant-materialization evidence that is field-indistinguishable from the false class —
+real, unreachable on order evidence alone (the `local-width` verdict shape). The SYSTEMIC
+next step, per JD's direction to model rather than calibrate: simulate the scheduler's own
+dependency predicate (`InsOrderDependant`, inssched.c:419 — jumps, calls against visible
+memory, stack ops, CC chains, `DataDependant` both directions, segment implicits) plus its
+priority walk over the original's instructions to compute WOULD-MOVE; positive evidence
+becomes "program order preserved where motion was licensed", which reaches the four residual
+volatiles without the false class.
+
+**Layering note (JD's best-practice flag, recorded rather than glossed):** volatility is
+really a PROGRAM fact about a global — in Ghidra's own model it is a symbol/database
+property, not a per-TU rendering choice — so its systematic home is the analysis layer's
+program model, aggregated corpus-wide (union of per-function positives, vetoes crossing
+function boundaries), with the emitter merely projecting the fact onto declarations. The
+shipped rule is the minimal-scope version: per-function evidence, per-TU declaration —
+correct C, deliberately small blast radius while the evidence rule is young. Promoting the
+fact to the program model is the shape to grow toward when the scheduler-model evidence
+lands; nothing in the current cut blocks that move. The remaining
+F5 statement-displacement members (`INC`/`CALL` displaced across neighbors) were probed to
+the end — both CPU digits, five optimization-letter subsets, volatile casts, the
+increment-in-condition spelling — nothing moves them: the interim build's instruction-motion
+policy, pile-B.
+
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
 in one pass, because the candidate enumeration is exposed and the scoring rule is a pure
 function of the original's instructions.

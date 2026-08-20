@@ -648,6 +648,148 @@ pub fn param_orders_from_evidence(
         .collect()
 }
 
+/// Decide which globals were declared VOLATILE, from the original's instruction order at
+/// each store site.
+///
+/// The recovered profile's `-onatx` carries `x` = `Set_OX`, which sets `INS_SCHEDULING`
+/// (OW 1.0 cc/c/coptions.c:1236), so Watcom's instruction scheduler (cg/c/inssched.c
+/// `Schedule`) runs on every function we compile and moves a following statement's
+/// evaluation — loads, register copies, even constant materializations — above a
+/// preceding non-volatile global store. A `volatile` memory operand is a FULL barrier in
+/// its dependency DAG: `ReDefinedBy` answers TRUE against every result-writing
+/// instruction (cg/c/redefby.c:144), so nothing crosses a volatile store — and the
+/// scoreboard never reuses a volatile location's value (cg/c/scinfo.c, `N_VOLATILE`),
+/// which is why a SPURIOUS volatile also flips register-reuse stores to immediate forms.
+/// So the original's order at a store site is a readout:
+///
+/// * next-statement work sitting just BELOW the store, where a non-volatile compilation
+///   hoists it → the source declared the global volatile (probed byte-exact on
+///   `FUN_00034590`, `FUN_0004c270`, `FUN_0005d500`/`5d57c`, `FUN_000125bc` — all the
+///   ISR-flag pattern: a flag written, a call made, the flag re-tested);
+/// * next-statement work ABOVE the store (a crossing) → not volatile there — a VETO for
+///   the global (measured: `FUN_000125bc`'s second global, whose spurious `volatile`
+///   blocked a hoist the original performed).
+///
+/// Candidates come from [`crate::decompile::printc::EmitReport::volatile_candidates`];
+/// each store is located in the original by its unique destination (as
+/// [`store_orders_from_evidence`] does), and the positive window is a few bytes past the
+/// store so a constant materialization the IR has no op for (`MOV DL,0x1` between the
+/// store and the next statement's first op) does not defeat adjacency. One positive site
+/// and no veto anywhere in the function marks the global volatile for this TU.
+pub fn volatile_globals_from_evidence(
+    candidates: &[(u64, u32, u64, u64, bool, Vec<u64>, bool)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    const WINDOW: u64 = 16;
+    let mut positive: std::collections::HashSet<u64> = Default::default();
+    let mut veto: std::collections::HashSet<u64> = Default::default();
+    // The unique original instruction reading or writing a given global, by operand side.
+    let unique = |pat: &str| -> Option<usize> {
+        let mut it = insns.iter().enumerate().filter(|(_, x)| x.text.contains(pat));
+        match (it.next(), it.next()) {
+            (Some((i, _)), None) => Some(i),
+            _ => None,
+        }
+    };
+    for (addr, _sz, next_min, next_root, next_workfree, reads, const_rhs) in candidates {
+        let (addr, next_min, next_root) = (*addr, *next_min, *next_root);
+        // The store's locator: the unique MOV WRITING this address. Uniqueness is over the
+        // writes only — a read-position `CMP word ptr [g],0` also contains `[g],` and
+        // defeated the match for exactly the probed ISR-flag shape (store, call, re-test).
+        let dest = format!("[0x{addr:x}],");
+        let mut writes = insns
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.mnemonic == "MOV" && x.text.contains(&dest));
+        let ((i, _), None) = (match writes.next() { Some(w) => w, None => continue }, writes.next())
+        else {
+            continue;
+        };
+        let store_addr = insns[i].addr;
+        let store_end = insns.get(i + 1).map(|x| x.addr).unwrap_or(store_addr);
+        // A CONSTANT-valued store through a register whose materialization is NOT
+        // immediately above the store: the compiler interleaved foreign work through the
+        // store's own components, which a volatile store does not permit — a veto
+        // (measured: `MOV AH,0x1 ; MOV EDX,-3 ; MOV [g],AH` — FUN_000121e8, previously
+        // EXACT, whose spurious volatile flipped the register-form store to an
+        // immediate-form one). The zero idioms sit adjacent (`XOR EDX,EDX ; MOV [g],EDX`)
+        // and keep their evidence.
+        if *const_rhs {
+            let fam = |n: &str| match n {
+                "AL" | "AH" | "AX" | "EAX" => Some("EAX"),
+                "BL" | "BH" | "BX" | "EBX" => Some("EBX"),
+                "CL" | "CH" | "CX" | "ECX" => Some("ECX"),
+                "DL" | "DH" | "DX" | "EDX" => Some("EDX"),
+                _ => None,
+            };
+            let src_fam = insns[i].text.rsplit(',').next().and_then(fam);
+            if let Some(f0) = src_fam {
+                let prev_writes = i > 0
+                    && insns[i - 1]
+                        .text
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|r| r.split(',').next())
+                        .and_then(fam)
+                        == Some(f0);
+                if !prev_writes {
+                    veto.insert(addr);
+                    continue;
+                }
+            }
+        }
+        // The strongest readout: the next statement's GLOBAL READS, located in the
+        // original by their source operand. The IR often has no op for such a read (the
+        // global is an INDIRECT-versioned varnode, not a LOAD), so the op-tree walk is
+        // blind exactly where the compiler's hoisting is most visible — measured both
+        // ways: FUN_0005f440's original hoists `MOV AX,[0x88cfe]` above the store (a
+        // crossing the op walk could not see — spurious volatile pinned it), and
+        // FUN_00034590's original keeps `MOV EAX,[0x84618]` below it (the true positive).
+        let mut read_pos = false;
+        let mut read_veto = false;
+        let mut read_anchored = false;
+        for r in reads {
+            // The load's printed forms: `MOV EAX,[0x...]` (the accumulator moffs) or
+            // `MOV EBX,dword ptr [0x...]`; a memory-side compare/test reads too. A MOV
+            // WRITING the address is the one non-read shape.
+            let cell = format!("[0x{r:x}]");
+            let is_read = |x: &NormInsn| {
+                x.text.contains(&cell)
+                    && !(x.mnemonic == "MOV" && x.text.contains(&format!("[0x{r:x}],")))
+            };
+            let mut it = insns.iter().filter(|x| is_read(x));
+            let (Some(first), None) = (it.next(), it.next()) else { continue };
+            read_anchored = true;
+            let a = first.addr;
+            if a < store_addr {
+                read_veto = true;
+            } else if a > store_addr && a <= store_end + WINDOW {
+                read_pos = true;
+            }
+        }
+        if read_veto || next_min < store_addr {
+            veto.insert(addr);
+            continue;
+        }
+        if read_pos {
+            positive.insert(addr);
+        }
+        // No fallback beyond the anchored reads: op-invisible constant materializations
+        // cross a store in BOTH directions without leaving an IR op or a locatable load,
+        // so order evidence without an anchor under-determines volatility. Measured, both
+        // ways: a four-store run whose shared `MOV AH,0xff` the original hoisted above it
+        // mass-marked itself volatile (FUN_00010d40, −28 EXACT at the blanket rule), and
+        // `FUN_000485a0`'s argument constants hoisted above two stores defeated every
+        // attribution refinement. The cost of anchored-only is one known true positive
+        // (FUN_000125bc — its evidence is a constant materialization kept below the store,
+        // real but field-indistinguishable from the false class): +4 of the probed +5,
+        // zero regressions, against +5/−6 for the widest calibrated fallback.
+        let _ = (next_min, next_root, next_workfree, store_end, read_anchored);
+    }
+    positive.retain(|a| !veto.contains(a));
+    positive
+}
+
 /// Watcom C/C++32 10.0a as WAR2 was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
@@ -975,6 +1117,77 @@ mod tests {
         assert_eq!(p[&0x1100], vec![0xc, 0x8, 0x0]);
         assert!(!p.contains_key(&0x1200));
     }
+
+    /// A store whose following statement's work stayed just below it reads as volatile; a
+    /// crossing (work above the store) vetoes the global even when another site is positive.
+    #[test]
+    fn volatile_reads_the_blocked_order_and_a_crossing_vetoes() {
+        // xor edx,edx ; mov [0x95090],edx ; mov eax,[0x84618] ; ret
+        let insns = lift("31d2891590500900a118460800c3");
+        // store insn at 0x1002; the next statement READS [0x84618], whose unique load sits
+        // at 0x1008 — below the store: the blocked order, volatile
+        let v = volatile_globals_from_evidence(
+            &[(0x95090, 4, 0x100d, 0x100d, false, vec![0x84618], false)],
+            &insns,
+        );
+        assert!(v.contains(&0x95090));
+        // the same global with the next statement's op-visible work ABOVE the store — veto,
+        // even alongside the positive
+        let v = volatile_globals_from_evidence(
+            &[
+                (0x95090, 4, 0x100d, 0x100d, false, vec![0x84618], false),
+                (0x95090, 4, 0x1000, 0x100d, false, vec![], false),
+            ],
+            &insns,
+        );
+        assert!(v.is_empty());
+        // a read anchored ABOVE the store is the same veto (the original hoisted the load;
+        // the op walk is blind to it — FUN_0005f440's shape)
+        // mov eax,[0x84618] ; mov [0x95090],eax ; ret
+        let hoisted = lift("a118460800a390500900c3");
+        let v = volatile_globals_from_evidence(
+            &[(0x95090, 4, 0x100a, 0x100a, false, vec![0x84618], false)],
+            &hoisted,
+        );
+        assert!(v.is_empty());
+        // work far past the window is no evidence either way
+        let v =
+            volatile_globals_from_evidence(&[(0x95090, 4, 0x1100, 0x1100, false, vec![], false)], &insns);
+        assert!(v.is_empty());
+        // a WORK-FREE control statement (bare return, plain goto, zero-argument call)
+        // staying below the store cannot hoist — no evidence (else every function-tail
+        // store reads volatile)
+        let v =
+            volatile_globals_from_evidence(&[(0x95090, 4, 0x1008, 0x1008, true, vec![], false)], &insns);
+        assert!(v.is_empty());
+        // evidence WITHOUT an anchored read is no evidence at all — op-invisible
+        // materializations cross a store in both directions (the calibration trajectory
+        // in the doc comment): a store-store pair with work kept between them stays
+        // unmarked under the anchored-only rule, exactly like the adjacent pair
+        // mov [0x99581],ah ; mov dl,1 ; mov [0x99582],dl
+        let kept = lift("882581950900b201881582950900");
+        let v =
+            volatile_globals_from_evidence(&[(0x99581, 1, 0x1008, 0x1008, false, vec![], false)], &kept);
+        assert!(v.is_empty());
+        // a CONSTANT store whose register materialization is separated from it by foreign
+        // work — the compiler interleaved through the store's own components: veto, which
+        // outranks even an anchored positive read below the store
+        // mov ah,1 ; mov edx,0xfffffffd ; mov [0x8efe6],ah ; mov eax,[0x81288]
+        let inter = lift("b401bafdffffff8825e68e0800a188120800");
+        let v = volatile_globals_from_evidence(
+            &[(0x8efe6, 1, 0x1011, 0x1011, false, vec![0x81288], true)],
+            &inter,
+        );
+        assert!(v.is_empty());
+        // the zero idiom sits adjacent and keeps its anchored evidence
+        // xor edx,edx ; mov [0x95090],edx ; mov eax,[0x84618]
+        let v = volatile_globals_from_evidence(
+            &[(0x95090, 4, 0x100d, 0x100d, false, vec![0x84618], true)],
+            &insns,
+        );
+        assert!(v.contains(&0x95090));
+    }
+
 
     /// An in-place scaled LEA in the body is proof of pre-Pentium tuning — `-5r` can never
     /// emit the form — so the profile downgrades that function's CPU digit to `-4r`.

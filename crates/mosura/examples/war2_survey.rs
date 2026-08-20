@@ -1209,7 +1209,7 @@ fn main() {
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
             let ac = print_c_with(&f, theta);
-            let (atu, _) = build_tu(&ac, *va, false, &gsizes);
+            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default());
             let atu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{atu}"),
                 None => atu,
@@ -1356,7 +1356,13 @@ fn main() {
                 );
             }
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
-            let (rtu, _) = build_tu(&rc, *va, false, &gsizes);
+            // VOLATILE RECOVERY: globals whose original store sites show the blocked order
+            // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
+            let volatiles = mosura::recompile::buildconfig::volatile_globals_from_evidence(
+                &report.volatile_candidates,
+                &insns,
+            );
+            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles);
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
                 None => rtu,
@@ -1375,7 +1381,7 @@ fn main() {
                 println!("{rtu}");
             }
         }
-        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes);
+        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default());
         let tu = if let Some(decl) = contract.clone() {
             // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
             // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
@@ -1649,6 +1655,9 @@ fn build_tu(
     self_va: u64,
     non_contig: bool,
     gsizes: &std::collections::HashMap<u64, u32>,
+    // Globals to declare `volatile` — a RECOVERED qualifier (buildconfig::
+    // volatile_globals_from_evidence); empty for every rendering but the recovered one.
+    volatiles: &HashSet<u64>,
 ) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
@@ -1737,7 +1746,8 @@ fn build_tu(
             .and_then(|a| gsizes.get(&a).copied())
             .and_then(|sz| sized_ctype(*pfx, sz))
             .unwrap_or_else(|| ctype_for(*pfx).to_string());
-        names.insert(format!("{ty} {n};"));
+        let vq = if ram_addr_of(n).is_some_and(|a| volatiles.contains(&a)) { "volatile " } else { "" };
+        names.insert(format!("{vq}{ty} {n};"));
     }
     // SAFETY NET: every `<prefix>Ram<hex>` global the body references MUST be declared, or the
     // translation unit does not compile at all. The identifier scan above misses some — FUN_00074744
@@ -1770,7 +1780,8 @@ fn build_tu(
                 .and_then(|a| gsizes.get(&a).copied())
                 .and_then(|sz| sized_ctype(pfx, sz))
                 .unwrap_or_else(|| ctype_for(pfx).to_string());
-            extra.push(format!("{ty} {cap};"));
+            let vq = if ram_addr_of(cap).is_some_and(|a| volatiles.contains(&a)) { "volatile " } else { "" };
+            extra.push(format!("{vq}{ty} {cap};"));
         }
         names.extend(extra);
     }

@@ -160,6 +160,24 @@ pub struct EmitReport {
     /// span to scan: a `SETcc` inside it means the original materialized a clause boolean
     /// (the collapsed comma form); none means branch-only (the nested form).
     pub cond_nest_candidates: Vec<(u64, Vec<u64>)>,
+    /// Every pure-global-store statement with a following statement in its block, as
+    /// `(global address, size, next statement's minimum op pc, next statement's root pc,
+    /// next statement is a terminator)` — the VOLATILE candidates.
+    /// The compiler freely hoists a following statement's evaluation (loads, constant
+    /// materializations) above a non-volatile store; a `volatile` store blocks it, and the
+    /// original's instruction order at the site is the readout: next-statement work sitting
+    /// just BELOW the store where a non-volatile compilation hoists it means the source
+    /// declared the global volatile (probed byte-exact on five specimens — the ISR-flag
+    /// pattern: a flag zeroed, a call made, the flag re-tested). Work ABOVE the store
+    /// (a crossing) vetoes: the original was not volatile there
+    /// (`buildconfig::volatile_globals_from_evidence`). The last field is WORK-FREE: a
+    /// control statement with no evaluable operands (a bare `return`, a plain goto, a
+    /// zero-argument call) — nothing in it can hoist, so its staying below the store
+    /// discriminates nothing; without the exclusion every function-tail store reads
+    /// volatile. A value statement always carries work (its operand materialization may be
+    /// op-invisible — a constant's `MOV DL,1` — which is why the rule's positive window
+    /// spans a few bytes past the store instead of demanding strict adjacency).
+    pub volatile_candidates: Vec<(u64, u32, u64, u64, bool, Vec<u64>, bool)>,
     /// Every direct call with arguments, as `(call instruction address, callee address,
     /// per-argument reorder-safety)` — the argument-order candidates. C argument order is
     /// invisible in the bytes when it matches the convention's storage order, but the
@@ -3973,9 +3991,68 @@ fn print_c_inner(
     // consecutive statement ops that are pure stores to distinct constant globals.
     {
         let ram = f.spaces.by_name("ram");
+        // The earliest original instruction a statement's evaluation reaches: the root op's
+        // pc and, recursively, its IMPLIED operands' defs (explicit/input/constant operands
+        // evaluate elsewhere; markers carry synthetic positions). Feeds the volatile
+        // candidates: this is the instruction a hoisting compiler would move above a
+        // preceding non-volatile store.
+        fn stmt_scan(f: &Funcdata, p: &PrintC, op: OpId, depth: u32, reads: &mut Vec<u64>) -> u64 {
+            let o = f.op(op);
+            let ram = f.spaces.by_name("ram");
+            let mut m = o.seqnum.pc.offset;
+            if depth == 0 {
+                return m;
+            }
+            // Input 0 of a call or branch is its TARGET — an annotation, not a read
+            // (it prints as a ram-space constant and polluted the read set with callee
+            // addresses, which then disabled the constant-work fallback).
+            let first = match o.code() {
+                OpCode::Call
+                | OpCode::Callind
+                | OpCode::Callother
+                | OpCode::Branch
+                | OpCode::Cbranch
+                | OpCode::Branchind => 1,
+                _ => 0,
+            };
+            for i in first..o.num_inputs() {
+                let Some(v) = o.input(i) else { continue };
+                let r = f.vn(v);
+                if r.is_constant() {
+                    continue;
+                }
+                // A RAM-global operand — direct, or a value NAMED as the global — has no
+                // local temp: C re-reads the memory at every use, so the LOAD belongs to
+                // THIS statement even though the IR has no op for it. Record the address
+                // (the target rule locates the load in the original) and, when a def
+                // exists, keep descending.
+                let ram_addr = if Some(r.loc.space) == ram {
+                    Some(r.loc.offset)
+                } else {
+                    p.high_ram_off.get(&p.high_of[v.0 as usize]).copied()
+                };
+                if let Some(a) = ram_addr {
+                    reads.push(a);
+                }
+                if r.is_input() {
+                    continue;
+                }
+                // An explicit LOCAL's def evaluated at its own statement — stop there.
+                if p.is_explicit(v) && ram_addr.is_none() {
+                    continue;
+                }
+                let Some(d) = r.def else { continue };
+                if matches!(f.op(d).code(), OpCode::Multiequal | OpCode::Indirect) {
+                    continue;
+                }
+                m = m.min(stmt_scan(f, p, d, depth - 1, reads));
+            }
+            m
+        }
         for bi in 0..f.num_blocks() as u32 {
             let bid = BlockId(bi);
             let mut run: Vec<(OpId, u64, u32)> = Vec::new();
+            let mut stmts: Vec<(OpId, Option<(u64, u32, bool)>)> = Vec::new();
             let mut flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
                 if run.len() >= 2 {
                     let mut addrs: Vec<u64> = run.iter().map(|r| r.1).collect();
@@ -4078,8 +4155,81 @@ fn print_c_inner(
                     Some((_, addr, sz)) => run.push((op, addr, sz)),
                     None => flush(&mut run, &mut p.report),
                 }
+                // The volatile candidates need only "this statement ASSIGNS global G" — no
+                // purity, no Copy-only gate (nothing gets reordered; the persist-store shape
+                // that prints through a SUBPIECE is a store here too). Markers never print.
+                let store_target = (|| {
+                    if matches!(o.code(), OpCode::Multiequal | OpCode::Indirect) {
+                        return None;
+                    }
+                    let out = o.output?;
+                    let vn = f.vn(out);
+                    if !p.is_explicit(out) {
+                        return None;
+                    }
+                    let addr = if Some(vn.loc.space) == ram && vn.is_addrtied() {
+                        vn.loc.offset
+                    } else {
+                        *p.high_ram_off.get(&p.high_of[out.0 as usize])?
+                    };
+                    // Whether the stored VALUE is a constant — the target rule's
+                    // materialization-adjacency veto applies only to those.
+                    let const_rhs = o.input(0).is_some_and(|v| f.vn(v).is_constant());
+                    Some((addr, vn.size, const_rhs))
+                })();
+                // Markers never print, and a self-assignment (the return-site
+                // re-materialization COPY whose source is the same HighVariable) prints
+                // nothing either — both shadowed the REAL following statement when admitted.
+                let self_assign = o.code() == OpCode::Copy
+                    && o.output.zip(o.input(0)).is_some_and(|(a, b)| {
+                        p.high_of[a.0 as usize] == p.high_of[b.0 as usize]
+                    });
+                if !matches!(o.code(), OpCode::Multiequal | OpCode::Indirect) && !self_assign {
+                    stmts.push((op, store_target));
+                }
             }
             flush(&mut run, &mut p.report);
+            // volatile candidates: each pure global store paired with its FOLLOWING
+            // statement's earliest evaluation pc (see EmitReport::volatile_candidates).
+            for w in stmts.windows(2) {
+                if let (_, Some((addr, sz, const_rhs))) = w[0] {
+                    let next = f.op(w[1].0);
+                    let mut reads: Vec<u64> = Vec::new();
+                    let min_pc = stmt_scan(f, &p, w[1].0, 8, &mut reads);
+                    reads.retain(|&a| a != addr);
+                    reads.sort_unstable();
+                    reads.dedup();
+                    // Control statements evaluate nothing beyond their annotation slot
+                    // (branch target, call target, return address); a value statement's
+                    // operands always evaluate here.
+                    let workfree = matches!(
+                        next.code(),
+                        OpCode::Return
+                            | OpCode::Branch
+                            | OpCode::Cbranch
+                            | OpCode::Branchind
+                            | OpCode::Call
+                            | OpCode::Callind
+                            | OpCode::Callother
+                    ) && (1..next.num_inputs())
+                        .all(|i| next.input(i).is_none_or(|v| f.vn(v).is_constant()));
+                    if std::env::var_os("MOSURA_STORE_DEBUG").is_some() {
+                        eprintln!(
+                            "[vol] store {:#x} sz{} | next op={:?} {:?} root_pc={:#x} min_pc={:#x} workfree={} reads={:x?}",
+                            addr, sz, w[1].0, next.code(), next.seqnum.pc.offset, min_pc, workfree, reads
+                        );
+                    }
+                    p.report.volatile_candidates.push((
+                        addr,
+                        sz,
+                        min_pc,
+                        next.seqnum.pc.offset,
+                        workfree,
+                        reads,
+                        const_rhs,
+                    ));
+                }
+            }
         }
     }
 

@@ -442,11 +442,19 @@ the allocator function-wide). Full entry: byte-exact-status.md sb94.
   source shape moves it (pragma order, argument order, explicit temps all probed). Also
   `0006b496`/`00068bca` (load pairs) and the `00025a04/25de4/26004` triplet (a widening
   pair displaced).
-- **Independent-STATEMENT order (~10, unworked and workable):** stores, INCs, and CALLs
-  displaced across one neighboring statement (`000125bc`, `00034590`, `0004c270`,
-  `0005d500`/`0005d57c`, `00025260`, `0003e7ec`, `0003ef60`, `0003e858`, `0005bbdc`) —
-  the persist-store ordering mechanism generalized beyond stores. Needs its own
-  candidate/evidence design; op addresses carry the original schedule.
+- **~~Independent-STATEMENT order~~ — WORKED (sb95), and it was not statement order:** in
+  every probed member our statement order already matches the original (oracle-confirmed
+  on `FUN_0005d500`). The store-adjacent five (`000125bc`, `00034590`, `0004c270`,
+  `0005d500`/`0005d57c`) are **VOLATILE globals** — the original source's qualifier blocks
+  the hoist our plain declaration permits; all five hand-probed byte-exact, ONE
+  field-recoverable (`FUN_00034590`, the anchored-read evidence; +1 EXACT, zero
+  regressions), four probe-proven but field-indistinguishable from the measured
+  false-positive class (op-invisible constant materializations cross a store in both
+  directions — the calibration trajectory −28 → −8 → −5 → +2 → +1-clean is in
+  byte-exact-status.md sb95). The displacement members (`0003e7ec`, `0003ef60`,
+  `0003e858`, `0005bbdc`, `00025260`) are the interim build's instruction-motion policy —
+  probed at both CPU digits, five `-o` subsets, volatile casts, and the
+  increment-in-condition spelling; nothing moves them: **pile-B**.
 - **Displaced single constants (~6):** windows with one visible setup carry no order
   information, and their co-arguments are identifiers/loads (`00011954`, `00011b9c`,
   `00030bf4`, `00050a90`, `00021a48`, `000469b4`).
@@ -467,7 +475,8 @@ the allocator function-wide). Full entry: byte-exact-status.md sb94.
 4. **SAME_SHAPE clusters** — win density; note the pure-regalloc runs are pile-B.
 5. Re-run this census (both TSVs + the awks above) after each family lands — done at sb93
    (surfaced F5, landed sb94); current baseline `/data/be2/sb94-rec{,-div}.tsv`.
-6. **F5 residual** — the independent-statement-order subfamily (~10 fns) is the next
-   candidate, with the measured caveat that specimen `000125bc`'s C statement order ALREADY
-   matches the original (the divergence is a compiler hoist its shape triggers) — probe each
-   specimen before designing machinery.
+6. ~~F5 residual — the independent-statement-order subfamily~~ — **worked (sb95)**: five
+   were volatile-qualified globals (one field-recovered, four probe-proven but unreachable
+   on field evidence), the rest pile-B instruction motion. The F5 book is closed; the live
+   frontier reverts to the `missing`-only mass (60 functions — the dropped-call-arguments
+   family, open threads 1/2).
