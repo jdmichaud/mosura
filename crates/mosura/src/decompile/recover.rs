@@ -312,10 +312,18 @@ fn only_op_use(
     marked.insert(invn);
     let mut res = true;
     let mut i = 0;
+    let trace = std::env::var("MOSURA_AOU_PC").ok().and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+        .is_some_and(|pc| f.op(opmatch).seqnum.pc.offset == pc);
     'outer: while i < varlist.len() {
         let (vn, base_flags) = varlist[i];
         i += 1;
         for op in f.vn(vn).descend.clone() {
+            if trace {
+                eprintln!("[oou] vn {}+{:#x} reader {:?}@{:#x} (opmatch slot{opslot} inputmatch={})",
+                    f.spaces.get(f.vn(vn).loc.space).name, f.vn(vn).loc.offset,
+                    f.op(op).code(), f.op(op).seqnum.pc.offset,
+                    f.op(op).input(opslot) == Some(vn));
+            }
             if op == opmatch && f.op(op).input(opslot) == Some(vn) {
                 // The parameter/return use we are evaluating — Ghidra skips ONLY the trial's own
                 // slot (funcdata_varnode.cc:1823-1825). A use of the value at ANOTHER slot of the
@@ -1067,6 +1075,9 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
                     let aou = ancestor_op_use(
                         f, TRIM_RECURSE_MAX, v, call, slot, 0, 0, addr, false, &mut HashSet::new(),
                     );
+                    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+                        eprintln!("[aou] call@{:#x} trial#{ti} slot={slot} -> {aou}", f.op(call).seqnum.pc.offset);
+                    }
                     if aou { Verdict::Active } else { Verdict::Inactive }
                 } else if vn_is_input {
                     Verdict::Inactive
