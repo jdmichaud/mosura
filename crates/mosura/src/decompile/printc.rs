@@ -2919,6 +2919,25 @@ impl<'a> PrintC<'a> {
     }
 
     /// Emit one basic block's statements (skipping control-flow and inlined ops).
+    /// MOSURA_HIGH_DEBUG=<hex reg off>: print every frozen high class containing a varnode at
+    /// that register offset — the merge-grouping view (which defs share one printed variable).
+    fn debug_high_classes(&self) {
+        let Ok(v) = std::env::var("MOSURA_HIGH_DEBUG") else { return };
+        let Ok(off) = u64::from_str_radix(v.trim_start_matches("0x"), 16) else { return };
+        let Some(reg) = self.f.spaces.by_name("register") else { return };
+        for (h, members) in &self.high_members {
+            if !members.iter().any(|&m| self.f.vn(m).loc.space == reg && self.f.vn(m).loc.offset == off) {
+                continue;
+            }
+            eprintln!("[high] class {h}:");
+            for &m in members {
+                let vn = self.f.vn(m);
+                let def = vn.def.map(|d| (format!("{:?}", self.f.op(d).code()), self.f.op(d).seqnum.pc.offset));
+                eprintln!("[high]   v{} {}+{:#x}:{} def {:?}", m.0, self.f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, def);
+            }
+        }
+    }
+
     fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         if self.labels.contains(&b) {
@@ -2932,6 +2951,15 @@ impl<'a> PrintC<'a> {
         // recovered order; ops of the run reached later in block order are skipped.
         let mut reordered: std::collections::HashSet<OpId> = std::collections::HashSet::new();
         let block_ops = self.f.block(b).ops.clone();
+        if std::env::var_os("MOSURA_STMT_PC").is_some() {
+            for &op in &block_ops {
+                let o = self.f.op(op);
+                if !o.is_dead() {
+                    eprintln!("[stmt] blk{} pc {:#x} {:?} out {:?}", b.0, o.seqnum.pc.offset, o.code(),
+                        o.output.map(|v| (self.f.spaces.get(self.f.vn(v).loc.space).name.clone(), self.f.vn(v).loc.offset)));
+                }
+            }
+        }
         for op in block_ops {
             if reordered.contains(&op) {
                 continue;
@@ -2947,7 +2975,11 @@ impl<'a> PrintC<'a> {
                         let _ = write!(out, "{stmtxt}");
                         separator = true;
                     } else {
-                        let _ = writeln!(out, "{pad}{stmtxt};");
+                        if std::env::var_os("MOSURA_STMT_PC").is_some() {
+                            let _ = writeln!(out, "{pad}{stmtxt}; /*pc {:x} op {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
+                        } else {
+                            let _ = writeln!(out, "{pad}{stmtxt};");
+                        }
                     }
                 }
                 continue;
@@ -3064,6 +3096,8 @@ impl<'a> PrintC<'a> {
                         out.push_str(", ");
                     }
                     out.push_str(&stmt);
+                } else if std::env::var_os("MOSURA_STMT_PC").is_some() {
+                    let _ = writeln!(out, "{pad}{stmt}; /*pc {:x} {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
                 } else {
                     let _ = writeln!(out, "{pad}{stmt};");
                 }
@@ -4200,6 +4234,7 @@ fn print_c_inner(
     // could not reduce the graph to a single node is normal (see [`Structured::roots`]); emitting
     // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
     // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
+    p.debug_high_classes();
     for &root in &s.roots {
         p.emit_structured(&s, root, 1, &mut body);
     }

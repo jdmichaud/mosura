@@ -74,6 +74,16 @@ impl HighVariables {
     }
 
     fn union(&mut self, a: u32, b: u32) {
+        if let Ok(watch) = std::env::var("MOSURA_MERGE_WATCH") {
+            MERGE_PHASE.with(|ph| {
+                let _ = ph; // used in the print below
+            });
+            if let Ok(w) = u32::from_str_radix(watch.trim_start_matches("0x"), 16) {
+                if self.find(a) == self.find(w) || self.find(b) == self.find(w) || a == w || b == w {
+                    MERGE_PHASE.with(|ph| eprintln!("[union] {a} <- {b} (watch {w}) phase {}", ph.get()));
+                }
+            }
+        }
         let (ra, rb) = (self.find(a), self.find(b));
         if ra != rb {
             self.parent[ra as usize] = rb;
@@ -900,6 +910,7 @@ pub fn merge_required_only(f: &Funcdata) -> HighVariables {
 /// indirect *creation* has a constant `#0` data input, filtered by `mergeable`, so it never merges —
 /// matching Ghidra's `isIndirectCreation` skip.)
 fn merge_markers(f: &Funcdata, h: &mut HighVariables, pieces: &VariablePieces) {
+    set_phase("markers");
     for op in f.op_ids() {
         let o = f.op(op);
         if o.is_dead() || !o.is_marker() {
@@ -950,6 +961,7 @@ fn merge_adjacent(
     covers: &HashMap<VarnodeId, Cover>,
     explicit: &[bool],
 ) {
+    set_phase("adjacent");
     for op in f.op_ids().collect::<Vec<_>>() {
         let o = f.op(op);
         if o.is_dead() || o.is_call() {
@@ -1262,7 +1274,17 @@ impl VariablePieces {
 /// one also becomes a piece. mosura gates each Varnode on `addrtied` — the same population this
 /// function has always operated on, so the change here is purely partition-vs-union. Widening the
 /// population is a separate step; it can only add pieces, which can only *forbid* merges.
+thread_local! {
+    /// MOSURA_MERGE_WATCH diagnostic: which merge phase is running (set by the drivers).
+    static MERGE_PHASE: std::cell::Cell<&'static str> = const { std::cell::Cell::new("?") };
+}
+
+fn set_phase(p: &'static str) {
+    MERGE_PHASE.with(|ph| ph.set(p));
+}
+
 fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
+    set_phase("addrtied");
     // Ghidra `unifyAddress` gates on `!isFree` (heritaged), NOT on having a Cover: an address-forced
     // write held to the end of the function has no explicit reader (so mosura's Cover is empty) but
     // is still an instance of the storage's variable and must be unified, else the `guardReturns`
@@ -1273,6 +1295,12 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
         let vn = f.vn(v);
         if vn.is_free() || !vn.is_addrtied() {
             continue;
+        }
+        if std::env::var_os("MOSURA_MERGE_WATCH").is_some()
+            && f.spaces.get(vn.loc.space).kind == crate::decompile::space::SpaceKind::Processor
+            && f.spaces.get(vn.loc.space).delay == 0
+        {
+            eprintln!("[addrtied-reg] v{} {}+{:#x}:{} flags {:#x}", v.0, f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, vn.flags);
         }
         by_storage.entry((vn.loc.space, vn.loc.offset, vn.size)).or_default().push(v);
     }
@@ -1333,6 +1361,7 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
 /// an address-tied value taken before that address is overwritten) as two distinct HighVariables,
 /// so the printer renders it as an explicit `iVar = <snapshot>` assignment (see printc's
 /// cross-high COPY arm, Ghidra `Merge::markInternalCopies`).
+fn merge_copy_phase_marker() { set_phase("copy") }
 fn merge_copy(
     f: &Funcdata,
     h: &mut HighVariables,
@@ -1340,6 +1369,7 @@ fn merge_copy(
     covers: &HashMap<VarnodeId, Cover>,
     explicit: &[bool],
 ) {
+    set_phase("copy");
     for b in 0..f.num_blocks() as u32 {
         let ops = f.block(BlockId(b)).ops.clone();
         for op in ops {
