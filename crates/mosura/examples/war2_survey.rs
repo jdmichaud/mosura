@@ -1385,6 +1385,20 @@ fn main() {
                         } else {
                             eprintln!("[shadow] {name} network-eligible consts={}", appended_consts.len());
                         }
+                    } else if pragmas_equal && sig_of(&lt) == sig_of(&ct) {
+                        // ORDER-ONLY deltas stay REFUSED — measured 2026-08-21: the whole
+                        // pool is 6 TUs (one callee, 0x38828), the LANDED pairing already
+                        // follows the byte-derived site-order evidence (`parm [edx] [eax]`,
+                        // original `XOR EDX,EDX; MOV DL,AL; MOV EAX,const`), and adopting
+                        // the prototype-ordered permutation changed renders with sims
+                        // UNMOVED at 0.636 — the recorded 3925c inversion wart, confirmed
+                        // live. The census classifier stays for future shadow runs.
+                        if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
+                            if let Some(cs2) = order_only_delta(&lt, &ct) {
+                                let list: Vec<String> = cs2.iter().map(|c| format!("{c:#x}")).collect();
+                                eprintln!("[shadow-order] {name} callees [{}]", list.join(" "));
+                            }
+                        }
                     }
                 }
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
@@ -2285,6 +2299,83 @@ fn parm_clauses_stable(landed: &str, cand: &str) -> bool {
         }
     }
     true
+}
+
+/// Order-changing census (missing-args thread): the render delta consists ONLY of call
+/// lines whose top-level argument lists hold the SAME multiset in a DIFFERENT order —
+/// every other line verbatim. Returns the callees of the permuted calls.
+fn order_only_delta(landed: &str, cand: &str) -> Option<Vec<u64>> {
+    let ll: Vec<&str> = landed.lines().collect();
+    let cl: Vec<&str> = cand.lines().collect();
+    if ll.len() != cl.len() {
+        return None;
+    }
+    let args_of = |line: &str| -> Option<(u64, Vec<String>)> {
+        let i = line.find("func_0x")?;
+        let callee = u64::from_str_radix(line.get(i + 7..i + 15)?, 16).ok()?;
+        let open = line[i..].find('(')? + i;
+        let mut depth = 0i32;
+        let mut end = None;
+        for (j, ch) in line[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let inner = &line[open + 1..end?];
+        let mut args = Vec::new();
+        let (mut d, mut start) = (0i32, 0usize);
+        for (j, ch) in inner.char_indices() {
+            match ch {
+                '(' | '[' => d += 1,
+                ')' | ']' => d -= 1,
+                ',' if d == 0 => {
+                    args.push(inner[start..j].trim().to_string());
+                    start = j + 1;
+                }
+                _ => {}
+            }
+        }
+        if !inner[start..].trim().is_empty() {
+            args.push(inner[start..].trim().to_string());
+        }
+        Some((callee, args))
+    };
+    let mut callees = Vec::new();
+    for (l, c) in ll.iter().zip(cl.iter()) {
+        if l == c {
+            continue;
+        }
+        let (Some((k1, mut a1)), Some((k2, mut a2))) = (args_of(l), args_of(c)) else { return None };
+        if k1 != k2 || a1.len() != a2.len() || a1 == a2 {
+            return None;
+        }
+        // outside the arg lists the lines must agree
+        let strip = |line: &str, args: &[String]| -> String {
+            let mut t = line.to_string();
+            for a in args {
+                t = t.replacen(a.as_str(), "", 1);
+            }
+            t
+        };
+        if strip(l, &a1) != strip(c, &a2) {
+            return None;
+        }
+        a1.sort();
+        a2.sort();
+        if a1 != a2 {
+            return None; // different multiset — not a pure permutation
+        }
+        callees.push(k1);
+    }
+    if callees.is_empty() { None } else { Some(callees) }
 }
 
 fn pass_through_only(landed: &str, cand: &str, va: u64) -> bool {
