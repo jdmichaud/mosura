@@ -770,11 +770,50 @@ fn main() {
     // adopts only where the models prove the original's placements survive.
     if std::env::var("MOSURA_PROTO_PASS").as_deref() != Ok("0") {
         let t = std::time::Instant::now();
-        prog.recovered_protos = analysis::interface::recover_prototypes(&prog);
+        // A `--only` probe restricts the pass to the probed functions' DIRECT STATIC CALLEES
+        // (see `recover_prototypes_for`): scan each probed extent's original bytes for CALL
+        // targets that are known function entries. The probed functions themselves are
+        // included (harmless, and a probed function calling another probed one is covered
+        // regardless of scan order).
+        let probe_scope: Option<std::collections::HashSet<u64>> = if only.is_empty()
+            || std::env::var("MOSURA_PROBE_FULL").as_deref() == Ok("1")
+        {
+            None
+        } else {
+            let entry_offs: std::collections::BTreeSet<u64> =
+                prog.function_manager.functions().map(|f| f.entry.offset).collect();
+            let mut scope: std::collections::HashSet<u64> = only.iter().copied().collect();
+            for &va in &only {
+                let end = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
+                let region = prog
+                    .memory
+                    .read_window(Address::new(prog.default_space, va), (end - va) as usize);
+                let insns = mosura::recompile::insn::normalize(
+                    SURVEY_LANG,
+                    &region,
+                    va,
+                    &mosura::recompile::insn::NoReloc,
+                )
+                .unwrap_or_default();
+                scope.extend(
+                    insns
+                        .iter()
+                        .filter(|i| i.is_call)
+                        .filter_map(|i| i.target)
+                        .filter(|t| entry_offs.contains(t)),
+                );
+            }
+            Some(scope)
+        };
+        prog.recovered_protos = match &probe_scope {
+            None => analysis::interface::recover_prototypes(&prog),
+            Some(scope) => analysis::interface::recover_prototypes_for(&prog, scope),
+        };
         eprintln!(
-            "prototype pass: {} functions in {:.1}s",
+            "prototype pass: {} functions in {:.1}s{}",
             prog.recovered_protos.len(),
-            t.elapsed().as_secs_f64()
+            t.elapsed().as_secs_f64(),
+            if probe_scope.is_some() { " (probe scope: direct callees only)" } else { "" }
         );
     }
     // THE PER-SITE ZAP CHECKER's world order: the LANDED (prototype-less) program is

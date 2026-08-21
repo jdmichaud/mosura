@@ -29,6 +29,26 @@ use super::program::Program;
 /// itself a claim, and the wrong one.
 pub fn recover_prototypes(program: &Program) -> HashMap<u64, FuncProto> {
     let entries: Vec<u64> = program.function_manager.functions().map(|f| f.entry.offset).collect();
+    recover_prototypes_of(program, entries)
+}
+
+/// [`recover_prototypes`] restricted to `scope` — the probe path (`war2_survey --only`): a
+/// probed function's decompile consults `recovered_protos` only at its OWN call sites (lookup
+/// by direct static callee VA; an indirect call has no static target to look up), and every
+/// other upgrade-gate input comes from the landed world or per-callee lazy caches. So a probe
+/// needs exactly the probed functions' direct callees recovered, not the whole program — the
+/// whole-program pass was the probe's second ~100s of fixed cost.
+pub fn recover_prototypes_for(program: &Program, scope: &std::collections::HashSet<u64>) -> HashMap<u64, FuncProto> {
+    let entries: Vec<u64> = program
+        .function_manager
+        .functions()
+        .map(|f| f.entry.offset)
+        .filter(|o| scope.contains(o))
+        .collect();
+    recover_prototypes_of(program, entries)
+}
+
+fn recover_prototypes_of(program: &Program, entries: Vec<u64>) -> HashMap<u64, FuncProto> {
     let ram = program.default_space;
     let mut out = HashMap::with_capacity(entries.len());
     for entry in entries {
