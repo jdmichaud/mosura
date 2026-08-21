@@ -517,7 +517,23 @@ impl Action for ActionReturnSplit {
                 .map(|i| in_edge_gotos_to(&s, data.block(parent).in_edges[i], parent))
                 .collect();
             if std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok() {
-                eprintln!("RETSPLIT candidate: {} in-edges, {} marked", n, marked.iter().filter(|&&m| m).count());
+                eprintln!("RETSPLIT candidate ret@{:x}: {} in-edges, {} marked", data.op(op).seqnum.pc.offset, n, marked.iter().filter(|&&m| m).count());
+                for i in 0..n {
+                    let pred = data.block(parent).in_edges[i];
+                    let node = s.blocks.iter().position(|fb| fb.kind == super::structure::FlowKind::Basic(pred));
+                    eprintln!("RETSPLIT   edge {i}: pred {:?} node {:?} gotos_here {:?} parent_blk {:?}",
+                        pred, node,
+                        s.gotos.get(&pred).map(|v| v.iter().map(|g| g.target).collect::<Vec<_>>()),
+                        parent);
+                    if let Some(mut nd) = node {
+                        loop {
+                            if let Some(v) = s.node_gotos.get(&nd) {
+                                eprintln!("RETSPLIT     node {nd} records {:?}", v.iter().map(|g| (g.target, g.conditional)).collect::<Vec<_>>());
+                            }
+                            match s.blocks[nd].parent { Some(p) if p != nd => nd = p, _ => break }
+                        }
+                    }
+                }
             }
             if !marked.iter().any(|&m| m) {
                 continue;

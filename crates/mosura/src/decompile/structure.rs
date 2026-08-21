@@ -645,6 +645,14 @@ impl Structured {
         if !self.blocks[b].is_switch_out() {
             return false;
         }
+        macro_rules! decline {
+            ($($t:tt)*) => {{
+                if std::env::var("MOSURA_STRUCT").is_ok() {
+                    eprintln!("  STRUCT rule_switch DECLINE blk{}: {}", b, format!($($t)*));
+                }
+                return false;
+            }};
+        }
         let sizeout = self.out(b).len();
         // Find the "obvious" exit block: a self-edge (exit back to the top of a switch loop), or a
         // successor with more than one in- or out-edge.
@@ -663,17 +671,17 @@ impl Structured {
                 for i in 0..sizeout {
                     let curbl = self.out(b)[i];
                     if is_goto_in(self, ins, curbl, 0) {
-                        return false; // in cannot be a goto
+                        decline!("goto-in to case blk{curbl}");
                     }
                     if self.blocks[curbl].is_switch_out() {
-                        return false; // must resolve nested switch first
+                        decline!("nested switch blk{curbl}");
                     }
                     if self.out(curbl).len() == 1 {
                         if self.blocks[curbl].is_goto_out(0) {
-                            return false; // out cannot be goto
+                            decline!("goto-out from case blk{curbl}");
                         }
                         match exitblock {
-                            Some(e) if e != self.out(curbl)[0] => return false,
+                            Some(e) if e != self.out(curbl)[0] => decline!("case blk{curbl} exits to blk{} not blk{e}", self.out(curbl)[0]),
                             Some(_) => {}
                             None => exitblock = Some(self.out(curbl)[0]),
                         }
@@ -683,12 +691,12 @@ impl Structured {
             Some(e) => {
                 for k in 0..ins[e].len() {
                     if is_goto_in(self, ins, e, k) {
-                        return false; // no in gotos to exitblock
+                        decline!("goto-in to exit blk{e}");
                     }
                 }
                 for k in 0..self.out(e).len() {
                     if self.blocks[e].is_goto_out(k) {
-                        return false; // no out gotos from exitblock
+                        decline!("goto-out from exit blk{e}");
                     }
                 }
                 for i in 0..sizeout {
@@ -697,24 +705,24 @@ impl Structured {
                         continue; // the switch can go straight to the exit block
                     }
                     if ins[curbl].len() > 1 {
-                        return false; // a case can only have the switch fall into it
+                        decline!("case blk{curbl} has {} ins", ins[curbl].len());
                     }
                     if is_goto_in(self, ins, curbl, 0) {
-                        return false;
+                        decline!("goto-in to case blk{curbl}");
                     }
                     if self.out(curbl).len() > 1 {
-                        return false; // at most 1 exit from a case
+                        decline!("case blk{curbl} has {} outs", self.out(curbl).len());
                     }
                     if self.out(curbl).len() == 1 {
                         if self.blocks[curbl].is_goto_out(0) {
-                            return false;
+                            decline!("goto-out from case blk{curbl}");
                         }
                         if self.out(curbl)[0] != e {
-                            return false; // which must be to the exitblock
+                            decline!("case blk{curbl} exits blk{} not exit blk{e}", self.out(curbl)[0]);
                         }
                     }
                     if self.blocks[curbl].is_switch_out() {
-                        return false; // nested switch must be resolved first
+                        decline!("nested switch blk{curbl}");
                     }
                 }
             }
@@ -3101,6 +3109,7 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
         let Some(&defaddr) = f.switch_defaults.get(&f.op(last).seqnum.pc.offset) else {
             continue;
         };
+        let mut hit = false;
         for oi in 0..s.blocks[b].out_edges.len() {
             let t = s.blocks[b].out_edges[oi];
             let FlowKind::Basic(tb) = s.blocks[t].kind else {
@@ -3108,8 +3117,20 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
             };
             if f.block_range(tb).map(|(a, _)| a) == Some(defaddr) {
                 s.blocks[b].set_out_edge_flag(oi, edge_flags::DEFAULTSWITCH_EDGE);
+                hit = true;
                 break;
             }
+        }
+        if std::env::var("MOSURA_SWD_DEBUG").is_ok() {
+            let outs: Vec<_> = s.blocks[b]
+                .out_edges
+                .iter()
+                .map(|&t| match s.blocks[t].kind {
+                    FlowKind::Basic(tb) => f.block_range(tb).map(|(a, _)| a),
+                    _ => None,
+                })
+                .collect();
+            eprintln!("[swdflag] pc {:x} defaddr {:x} hit {} outs {:x?}", f.op(last).seqnum.pc.offset, defaddr, hit, outs);
         }
     }
 }

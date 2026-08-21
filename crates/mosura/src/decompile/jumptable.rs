@@ -153,6 +153,21 @@ pub(crate) fn find_default(f: &Funcdata, indop: OpId, path: &HashSet<VarnodeId>)
         }
         // `guardtarget = cbranchblock->getOut(1-indpath)`: the edge that does not enter the switch.
         let other = blk.out_edges.iter().copied().find(|&o| o != ind_block)?;
+        // The default ADDRESS must be the edge target's BLOCK START, not its first live op's pc:
+        // the recovery partial dead-codes differently than the final graph (FUN_00014f70's tail
+        // MOV died in the partial, recording 0x151a0 for a block at 0x15199 — the final default
+        // edge then never matched `install_switch_defaults`, the structurer cut it to a goto
+        // BEFORE the switch, and the whole 7-case body dead-coded: 157→37 insns). When the
+        // out-of-range edge is the TAKEN edge, the CBRANCH's own target annotation carries the
+        // stable address; the fallthrough/live-op forms remain the fallback.
+        if blk.out_edges.get(1) == Some(&other) {
+            if let Some(tgt) = f.op(last).input(0) {
+                let loc = f.vn(tgt).loc;
+                if loc.space == f.op(last).seqnum.pc.space {
+                    return Some(loc.offset);
+                }
+            }
+        }
         return f.block(other).ops.first().map(|&op| f.op(op).seqnum.pc.offset);
     }
     None

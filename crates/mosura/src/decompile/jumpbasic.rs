@@ -1104,18 +1104,31 @@ fn backup2switch(data: &Funcdata, mut output: u64, outvn: VarnodeId, invn: Varno
 /// `findSmallestNormal` prefers (early-stops on) a candidate whose range matches it
 /// (jumptable.cc:1178). `0` on an initial recovery.
 pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matchsize: u64) -> Option<JumpTable> {
-    let target_vn = data.op(indop).input(0)?;
-    let rootbl = data.op(indop).parent?;
+    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
+        eprintln!("[jtrec] {:x}: try (nzmask {} matchsize {})", data.op(indop).seqnum.pc.offset, usenzmask, matchsize);
+    }
+    let jtdbg0 = std::env::var("MOSURA_JT_DEBUG").is_ok();
+    let Some(target_vn) = data.op(indop).input(0) else {
+        if jtdbg0 { eprintln!("[jtrec] {:x}: FAIL no input0", data.op(indop).seqnum.pc.offset); }
+        return None;
+    };
+    let Some(rootbl) = data.op(indop).parent else {
+        if jtdbg0 { eprintln!("[jtrec] {:x}: FAIL no parent block", data.op(indop).seqnum.pc.offset); }
+        return None;
+    };
 
+    let jtdbg = std::env::var("MOSURA_JT_DEBUG").is_ok();
     // recoverModel: pathMeld + guards + normalized switch variable & range.
     let path_meld = find_determining_varnodes(data, indop, 0);
     if path_meld.empty() {
+        if jtdbg { eprintln!("[jtrec] {:x}: FAIL meld empty", data.op(indop).seqnum.pc.offset); }
         return None;
     }
     let guards = analyze_guards(data, rootbl, -1, indop, usenzmask);
     let (_varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, matchsize);
     let count = range.get_size();
     if count == 0 || count > MAX_TABLE_SIZE {
+        if jtdbg { eprintln!("[jtrec] {:x}: FAIL range size {} (min {:x})", data.op(indop).seqnum.pc.offset, count, range.get_min()); }
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
     }
 
@@ -1127,8 +1140,12 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
     let mut targets = Vec::with_capacity(count as usize);
     let mut curval = range.get_min();
     loop {
-        let addr = jumptable::emulate(data, target_vn, start_vn, curval, 0)?;
+        let Some(addr) = jumptable::emulate(data, target_vn, start_vn, curval, 0) else {
+            if jtdbg { eprintln!("[jtrec] {:x}: FAIL emulate at val {:x}", data.op(indop).seqnum.pc.offset, curval); }
+            return None;
+        };
         if !jumptable::in_image(data, addr) {
+            if jtdbg { eprintln!("[jtrec] {:x}: FAIL target {:x} not in image (val {:x})", data.op(indop).seqnum.pc.offset, addr, curval); }
             return None; // sanityCheck: every target must be a real address in the image
         }
         targets.push(addr);
@@ -1137,6 +1154,7 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
         }
     }
 
+    if jtdbg { eprintln!("[jtrec] {:x}: OK {} targets", data.op(indop).seqnum.pc.offset, targets.len()); }
     // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
     let path = jumptable::backtrace_set(data, target_vn);
     let default = jumptable::find_default(data, indop, &path);
@@ -1306,6 +1324,10 @@ fn fold_in_one_guard(
     if !no_intervening_statement(data, switchbl) {
         return false;
     }
+    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
+        eprintln!("[jtfold] cbranch {:x} indpath {} pos {:?} flags {:#x}",
+            data.op(cbranch).seqnum.pc.offset, indpath, pos, data.op(cbranch).flags);
+    }
     match pos {
         None => {
             // addBlockToSwitch + setLastAsDefault + pushBranch: the guard's exit edge becomes the
@@ -1331,10 +1353,39 @@ fn fold_in_one_guard(
 /// unconditional BRANCH and move its `slot` out-edge to become a new out-edge of the switch block
 /// (`bblocks.moveOutEdge`). The BRANCHIND handles the new edge implicitly.
 fn push_branch(data: &mut Funcdata, cb: BlockId, slot: usize, switchbl: BlockId) {
+    // Ghidra's pushBranch ends in structureReset (funcdata_block.cc:419); the edge surgery
+    // below invalidates any cached structure, and a stale cache mis-aims ActionReturnSplit's
+    // nodeSplit in the SAME actfullloop iteration (FUN_00014f70's default edge landed on the
+    // wrong tail block, deadlocking rule_switch against the goto cutter).
+    data.structure_reset();
     let Some(&cbranch) = data.block(cb).ops.last() else { return };
     let moved = data.block(cb).out_edges[slot];
     data.op_remove_input(cbranch, 1); // remove the conditional variable
     data.op_set_opcode(cbranch, OpCode::Branch);
+    // Ghidra needs no more: its CFG is authoritative and the op's target annotation is inert.
+    // mosura REBUILDS the CFG from op annotations on a pipeline restart (`build_one(Some)` →
+    // `cfg::build_cfg` reads `branch_target`), so a BRANCH still annotated with the guard's OLD
+    // taken target (the out-of-range exit) resurrects an unconditional jump PAST the switch —
+    // FUN_00014f70 rendered `goto LAB_00015199;` dead-coding its entire 7-case switch (157→37
+    // insns). Retarget the annotation at the branch's REAL new destination: the block it now
+    // falls into.
+    let dest = data
+        .block(cb)
+        .out_edges
+        .iter()
+        .enumerate()
+        .find(|&(i, _)| i != slot)
+        .map(|(_, &b)| b)
+        .unwrap_or(switchbl);
+    if let Some(&first) = data.block(dest).ops.first() {
+        let target = data.op(first).seqnum.pc;
+        let anno = data.new_code_ref(target);
+        data.op_set_input(cbranch, 0, anno);
+    }
+    let jtdbg = std::env::var("MOSURA_JT_DEBUG").is_ok();
+    if jtdbg {
+        eprintln!("[jtpush] cb {:?} slot {} moved {:?} switchbl {:?}", cb, slot, moved, switchbl);
+    }
     data.block_mut(cb).out_edges.remove(slot);
     // The moved block's in-edge is REPLACED in place, keeping its MULTIEQUAL slot order intact.
     let ins = &mut data.block_mut(moved).in_edges;
@@ -1342,6 +1393,10 @@ fn push_branch(data: &mut Funcdata, cb: BlockId, slot: usize, switchbl: BlockId)
         ins[i] = switchbl;
     }
     data.block_mut(switchbl).out_edges.push(moved);
+    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
+        eprintln!("[jtpush] after: cb outs {:?} switch outs {:?} moved ins {:?}",
+            data.block(cb).out_edges, data.block(switchbl).out_edges, data.block(moved).in_edges);
+    }
 }
 
 /// Ghidra `BlockBasic::noInterveningStatement` (block.cc:2712): the switch block must contain no

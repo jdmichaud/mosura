@@ -2294,6 +2294,7 @@ impl<'a> PrintC<'a> {
             }
             FlowKind::Switch => {
                 // computed before `idx` is shadowed by the rendered switch operand below
+                let idx0 = idx;
                 let scope_exit = self.next_flow_after(s, idx);
                 let head = exit_basic(s, comps[0]);
                 let head_pc = head.and_then(|b| {
@@ -2383,18 +2384,74 @@ impl<'a> PrintC<'a> {
                         }
                     }
                 }
+                // A CUT DEFAULT EDGE prints as a `default:` arm INSIDE the switch — Ghidra's
+                // goto-typed case (BlockSwitch addCase f_goto_goto) — never as the head node's
+                // raw record flush, which lands as an unconditional `goto` BETWEEN the head's
+                // statements and the `switch` and dead-codes the entire dispatch
+                // (FUN_00014f70: the guard-fold default edge was goto-cut, its record printed
+                // `goto LAB_00015199;` before the switch, and Watcom deleted all 7 cases —
+                // 157→37 insns). The suppression is computed HERE, before the head emits (its
+                // record flush honors it); the arms render at the switch tail below.
+                let mut default_cuts: Vec<BlockId> = Vec::new();
+                {
+                    let case_blocks: std::collections::HashSet<BlockId> = comps[1..]
+                        .iter()
+                        .filter_map(|&c| entry_basic(s, c))
+                        .collect();
+                    let mut chain = s
+                        .blocks
+                        .iter()
+                        .position(|fb| head.is_some_and(|h| fb.kind == FlowKind::Basic(h)));
+                    while let Some(node) = chain {
+                        if let Some(recs) = s.node_gotos.get(&node) {
+                            for r in recs.clone() {
+                                if self.switch_exit_suppress.contains(&r.target)
+                                    || case_blocks.contains(&r.target)
+                                    || default_cuts.contains(&r.target)
+                                {
+                                    continue;
+                                }
+                                default_cuts.push(r.target);
+                                self.switch_exit_suppress.insert(r.target);
+                            }
+                        }
+                        chain = s.blocks[node].parent.filter(|&p| p != node && p != idx0);
+                    }
+                }
                 // emit the switch-head block's statements (AFTER the exit-suppression above is computed — the head's own cut-edge record flushes here and must see it) (Ghidra `emitBlockSwitch`:
                 // `getSwitchBlock()->emit` with `no_branch`) — the head may carry statements that
                 // collapsed into it (e.g. the entry block once its bounds guard is folded away);
                 // the BRANCHIND and the inlined index computation are skipped by `emit_basic`.
                 self.emit_structured(s, comps[0], indent, out);
                 let _ = writeln!(out, "{pad}switch ({idx}) {{");
+                // The default case: the component whose entry block is the FIRST at-or-after
+                // the recorded default address. `find_default` records the STATIC edge target;
+                // a block's live range can start LATER once dead code trims its prefix, so an
+                // exact match against `block_range().0` is unstable in both directions (the
+                // 56c3c default label vanished when the recorded address became stable while
+                // the live start stayed shifted).
+                let default_case: Option<usize> = head_pc
+                    .and_then(|pc| self.f.switch_defaults.get(&pc).copied())
+                    .and_then(|d| {
+                        comps[1..]
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(ci, &case)| {
+                                let cb = entry_basic(s, case)?;
+                                let (a, _) = self.f.block_range(cb)?;
+                                (a >= d).then_some((a, ci))
+                            })
+                            .min()
+                            .map(|(_, ci)| ci)
+                    });
                 for (ci, &case) in comps[1..].iter().enumerate() {
-                    if let (Some(pc), Some(cb)) = (head_pc, entry_basic(s, case)) {
-                        let addr = self.f.block_range(cb).map(|(a, _)| a).unwrap_or(0);
+                    if head_pc.is_some() && entry_basic(s, case).is_some() {
                         // the folded-in out-of-range target prints as `default:` (Ghidra
-                        // `BlockSwitch` CaseOrder.isdefault), never a case value
-                        if self.f.switch_defaults.get(&pc) == Some(&addr) {
+                        // `BlockSwitch` CaseOrder.isdefault), never a case value — but only
+                        // when the component carries no case labels of its own: a default
+                        // COINCIDING with labeled cases (4ce2c's out-of-range target is also
+                        // cases -2..0) keeps its labels, exactly the byte-exact rendering.
+                        if Some(ci) == default_case && labels_of_case[ci].is_empty() {
                             let _ = writeln!(out, "{pad}default:");
                         } else {
                             for v in &labels_of_case[ci] {
@@ -2440,6 +2497,15 @@ impl<'a> PrintC<'a> {
                         _ => {
                             let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
                         }
+                    }
+                }
+                for b in &default_cuts {
+                    let _ = writeln!(out, "{pad}default:");
+                    if scope_exit == Some(*b) {
+                        let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
+                    } else {
+                        self.labels.insert(*b);
+                        let _ = writeln!(out, "{}goto {};", "  ".repeat(indent + 1), self.lab_name(*b));
                     }
                 }
                 let _ = writeln!(out, "{pad}}}");
