@@ -2318,20 +2318,31 @@ impl<'a> PrintC<'a> {
                 // attributed such a label to a NEIGHBORING case — case 2 executed case 4's body,
                 // wrong code — and the cut edge's goto record flushed as a stray top-level
                 // `break;` (the E1000 family of docs/compilable-c-remediation.md Phase 6).
-                let case_of_target = |t: u64| -> Option<usize> {
-                    // position in comps[1..] owning the block at/after t; None = exit-bound
-                    let mut best: Option<(u64, BlockId)> = None;
-                    for b in (0..self.f.num_blocks() as u32).map(BlockId) {
-                        let Some((a, e)) = self.f.block_range(b) else { continue };
-                        if a <= t && t <= e {
-                            best = Some((a, b));
-                            break;
+                // Per-target attribution by EDGE IDENTITY — Ghidra `getIndexByBlock` keys on
+                // the switch block's out-edges, never on addresses. The CFG build created the
+                // BRANCHIND's out-edges from the table targets in first-appearance dedup order
+                // (cfg.rs BRANCHIND arm), so replicating that dedup pairs table index -> edge
+                // -> BlockId. Address-based attribution broke the moment ActionReturnSplit
+                // CLONED a return block: two blocks then share one address range, the scan
+                // bound a case to the wrong one, and 4ce2c printed a headless `return;` inside
+                // the switch plus a goto to a label nothing emitted (E1018).
+                let edge_block_of_target = |targets: &[u64]| -> std::collections::HashMap<u64, BlockId> {
+                    let mut map = std::collections::HashMap::new();
+                    let Some(hb) = head else { return map };
+                    let outs = &self.f.block(hb).out_edges;
+                    let mut next = 0usize;
+                    for &t in targets {
+                        if map.contains_key(&t) {
+                            continue;
                         }
-                        if a > t && best.is_none_or(|(ba, _)| a < ba) {
-                            best = Some((a, b));
+                        if next < outs.len() {
+                            map.insert(t, outs[next]);
+                            next += 1;
                         }
                     }
-                    let (_, ob) = best?;
+                    map
+                };
+                let case_of_block = |ob: BlockId| -> Option<usize> {
                     let mut node = ob.0 as usize;
                     loop {
                         if let Some(pos) = comps[1..].iter().position(|&c| c == node) {
@@ -2353,15 +2364,13 @@ impl<'a> PrintC<'a> {
                             .iter()
                             .find(|jt| jt.op_addr == pc && jt.normalized && jt.labels.len() == targets.len())
                             .map(|jt| jt.labels.clone());
+                        let edge_of = edge_block_of_target(&targets);
                         for (i, &t) in targets.iter().enumerate() {
                             let lab = jt_labels.as_ref().map_or(i as i64, |l| l[i]);
-                            match case_of_target(t) {
+                            let landing = edge_of.get(&t).copied();
+                            match landing.and_then(case_of_block) {
                                 Some(pos) => labels_of_case[pos].push(lab),
                                 None => {
-                                    let landing = (0..self.f.num_blocks() as u32)
-                                        .map(BlockId)
-                                        .filter(|&b| self.f.block_range(b).is_some_and(|(a, _)| a >= t))
-                                        .min_by_key(|&b| self.f.block_range(b).map(|(a, _)| a));
                                     exit_bound.push((lab, landing));
                                     if let Some(b) = landing {
                                         // the cut edge's own goto record is represented at the
@@ -2419,6 +2428,13 @@ impl<'a> PrintC<'a> {
                     let _ = writeln!(out, "{pad}case {v}:");
                     match landing {
                         Some(b) if scope_exit != Some(*b) => {
+                            // The label must be PLANNED, not assumed: the structure's own goto
+                            // records may no longer target this block (ActionReturnSplit gave
+                            // another path its own return and retired the shared label —
+                            // 4ce2c compiled to E1018 when the goto named a label nothing
+                            // emitted). Registering the target here makes its basic emit the
+                            // label when it renders.
+                            self.labels.insert(*b);
                             let _ = writeln!(out, "{}goto {};", "  ".repeat(indent + 1), self.lab_name(*b));
                         }
                         _ => {

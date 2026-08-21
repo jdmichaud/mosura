@@ -1142,8 +1142,18 @@ impl Funcdata {
                 } else if self.vn(orig_vn).is_annotation() {
                     let m = self.vn(orig_vn).loc;
                     self.new_code_ref(m)
+                } else if self.vn(orig_vn).is_free() {
+                    // RETURN's slot-0 flow marker: Ghidra models it as a constant (trivially
+                    // clonable); mosura keeps the return-address varnode free and outside SSA.
+                    // A free varnode has no def to redirect — mint a fresh free varnode at the
+                    // same storage for the clone, exactly what cloning Ghidra's constant does.
+                    assert!(
+                        self.op(orig).code() == OpCode::Return && i == 0,
+                        "can't clone a free varnode (non-marker)"
+                    );
+                    let (loc, size) = (self.vn(orig_vn).loc, self.vn(orig_vn).size);
+                    self.new_varnode(size, loc)
                 } else {
-                    assert!(!self.vn(orig_vn).is_free(), "can't clone a free varnode");
                     match self.vn(orig_vn).def.and_then(|d| orig_to_clone.get(&d).copied()) {
                         Some(c) => self.op(c).output.expect("cloned op has an output"),
                         None => orig_vn,

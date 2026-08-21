@@ -392,21 +392,34 @@ mod tests {
 /// Ghidra `ActionReturnSplit::isSplittable` (blockaction.cc:2241): a block ending in RETURN can be
 /// split only if nothing substantive else happens in it.
 fn is_splittable(data: &Funcdata, b: BlockId) -> bool {
+    let dbg = std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok();
     for &op in &data.block(b).ops {
         match data.op(op).code() {
             OpCode::Multiequal => continue,
             OpCode::Copy | OpCode::Return => {
-                for i in 0..data.op(op).num_inputs() {
+                // RETURN's slot 0 is the flow marker: Ghidra models it as a CONSTANT (its
+                // input scan passes it via isConstant), mosura as the return-address
+                // varnode, which stays free — same semantic slot, exempt either way.
+                let first = if data.op(op).code() == OpCode::Return { 1 } else { 0 };
+                for i in first..data.op(op).num_inputs() {
                     let vn = data.op(op).input(i).expect("input");
                     if data.vn(vn).is_constant() || data.vn(vn).is_annotation() {
                         continue;
                     }
                     if data.vn(vn).is_free() {
+                        if dbg {
+                            eprintln!("RETSPLIT   free input on {:?}@{:x}", data.op(op).code(), data.op(op).seqnum.pc.offset);
+                        }
                         return false;
                     }
                 }
             }
-            _ => return false,
+            other => {
+                if dbg {
+                    eprintln!("RETSPLIT   non-copy op {:?}@{:x}", other, data.op(op).seqnum.pc.offset);
+                }
+                return false;
+            }
         }
     }
     true
@@ -471,7 +484,11 @@ impl Action for ActionReturnSplit {
         // through `node_split`'s own `structure_reset`. (A `take()` without restore here made
         // every fullloop round consume the cache, whose rebuild then counted as a change — an
         // infinite fullloop.)
+        let dbg = std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok();
         let Some(s) = data.structure.as_ref() else {
+            if dbg {
+                eprintln!("RETSPLIT skip: no structure cache");
+            }
             return 0; // some other restructuring happened first
         };
         // Collect every edge to split first, then split — Ghidra accumulates across all RETURNs
@@ -484,9 +501,15 @@ impl Action for ActionReturnSplit {
         for op in returns {
             let Some(parent) = data.op(op).parent else { continue };
             if data.block(parent).in_edges.len() <= 1 {
+                if dbg {
+                    eprintln!("RETSPLIT ret@{:x}: in-degree {} <= 1", data.op(op).seqnum.pc.offset, data.block(parent).in_edges.len());
+                }
                 continue;
             }
             if !is_splittable(data, parent) {
+                if dbg {
+                    eprintln!("RETSPLIT ret@{:x}: not splittable", data.op(op).seqnum.pc.offset);
+                }
                 continue;
             }
             let n = data.block(parent).in_edges.len();
