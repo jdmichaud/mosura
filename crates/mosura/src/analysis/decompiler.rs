@@ -570,9 +570,13 @@ fn record_callee_effects(
             // entry whose maximum size is 2, so every such argument was dropped and a five-argument
             // call came out with one. An exclusion entry (a register) is a slot dedicated whole to
             // one parameter, so the convention's own declared width is the slot width. A
-            // non-exclusion entry (the stack overflow area) is a region shared by many parameters
-            // and its declared size says nothing about any one of them, so a stack parameter keeps
-            // the width that was recovered for it.
+            // non-exclusion entry (the stack overflow area) parcels out ALIGNMENT-strided slots:
+            // the region's total size says nothing about one parameter, but the granule does —
+            // the caller pushes whole granules (dwords under watcall/cdecl) however few bytes the
+            // callee reads. Keeping the recovered 1-byte width made the caller's 4-byte push fail
+            // justification against the injected entry and scrambled the site's value↔slot
+            // pairing (FUN_000659ec's inverted arguments), so a stack width rounds up to the
+            // granule.
             let slots: Vec<(crate::decompile::space::Address, u32)> = proto
                 .params
                 .iter()
@@ -584,8 +588,12 @@ fn record_callee_effects(
                         .and_then(|pl| {
                             pl.entry
                                 .iter()
-                                .find(|e| e.is_exclusion_slot() && e.justified_contain(p.addr, p.size).is_some())
-                                .map(|e| e.size)
+                                .find(|e| e.justified_contain(p.addr, p.size).is_some())
+                                .map(|e| if e.is_exclusion_slot() {
+                                    e.size
+                                } else {
+                                    p.size.div_ceil(e.alignment.max(1)) * e.alignment.max(1)
+                                })
                         })
                         .unwrap_or(p.size);
                     (p.addr, width.max(p.size))

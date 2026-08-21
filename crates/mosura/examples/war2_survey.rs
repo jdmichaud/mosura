@@ -1142,8 +1142,32 @@ fn main() {
                 // cost-model's job (regalloc.c CalcSavings/GiveBestReg), recorded in the
                 // thread memory. Until then the allocation gate below covers the
                 // call-crossing half, and the own-params half rides the corpus verdict.
-                let sig_stable = nondefault_parm_regs(&f2, &watreg)
-                    == nondefault_parm_regs(fl, &watreg);
+                // Signature stability, three conditions (the first was the original gate;
+                // the residual-defect census after the zero-cost kernel named the others):
+                //   1. nondefault-storage stability (full count+storage equality was a
+                //      measured dead end — every gain grows its own signature);
+                //   2. EXISTING params stay verbatim — storage AND size. The prototype
+                //      pass widened FUN_00034fe0's `char param_3` to `xunknown4` (the
+                //      injected 4-byte call-slot width coarsened the type) and the
+                //      re-typed TU compiles differently;
+                //   3. a STACK-convention function stays stack: FUN_00073338 (own
+                //      `parm caller []`, one stack param) grew FIVE register params —
+                //      an injected callee arity manufactured phantom own-params from
+                //      entry-reaching register reads. Register growth on a stack-param
+                //      landed signature contradicts the recovered convention.
+                let sig_stable = {
+                    let lp = mosura::decompile::printc::rendered_param_slots(fl);
+                    let cp = mosura::decompile::printc::rendered_param_slots(&f2);
+                    let prefix_ok = cp.len() >= lp.len()
+                        && lp.iter().zip(cp.iter()).all(|(a, b)| a.addr == b.addr && a.size == b.size);
+                    let reg_space = f2.spaces.by_name("register");
+                    let landed_has_stack = lp.iter().any(|sl| Some(sl.addr.space) != reg_space);
+                    let grows_registers =
+                        cp.len() > lp.len() && cp[lp.len()..].iter().any(|sl| Some(sl.addr.space) == reg_space);
+                    nondefault_parm_regs(&f2, &watreg) == nondefault_parm_regs(fl, &watreg)
+                        && prefix_ok
+                        && !(landed_has_stack && grows_registers)
+                };
                 // The parm-pragma network gate, PRESENCE FORM — deliberately blunt: any
                 // call into a NONDEFAULT-STORAGE callee refuses the upgrade. The precise
                 // form (refuse only on CHANGED ordered arg signatures at such callees) was
@@ -1694,6 +1718,9 @@ fn main() {
                     continue;
                 }
                 let e = callee_aux.entry(va).or_default();
+                if std::env::var_os("MOSURA_AUX_DEBUG").is_some() {
+                    eprintln!("[auxdbg] callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
+                }
                 if cs.caller_cleans.unwrap_or(0) > 0 {
                     e.0 = Some("parm caller []".to_string());
                 }
