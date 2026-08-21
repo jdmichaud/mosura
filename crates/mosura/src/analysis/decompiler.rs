@@ -686,6 +686,7 @@ fn own_effects_over_body(
                 return None;
             }
             let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
+        let is_push = insn.mnemonic.eq_ignore_ascii_case("PUSH");
             for o in &insn.ops {
                 // A BRANCH out of this function's recorded body to another function's entry
                 // is a TAIL CALL (the thunk shape SharedReturn rewrites to call+return): the
@@ -1017,6 +1018,7 @@ fn callee_writes_cfg(
         }
         let mut fallthrough = true;
         let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
+        let is_push = insn.mnemonic.eq_ignore_ascii_case("PUSH");
         for o in &insn.ops {
             match OpCode::from_u32(o.opcode) {
                 Some(OpCode::Return) => fallthrough = false,
@@ -1157,6 +1159,9 @@ fn callee_effects(
     // these is the callee's own value, not an argument the caller supplied.
     let mut written_any: Vec<u64> = Vec::new();
     let mut reads: Vec<(Address, u32)> = Vec::new();
+    // Census-only companion: register reads sourced by PUSH insns (prologue saves read their
+    // register; without the save/restore pairing they masquerade as arguments).
+    let mut push_reads: Vec<u64> = Vec::new();
     let mut pc = entry;
     for _ in 0..64 {
         let bytes = program.memory.read_window(Address::new(program.default_space, pc), 16);
@@ -1168,6 +1173,7 @@ fn callee_effects(
             break;
         }
         let is_pop = insn.mnemonic.eq_ignore_ascii_case("POP");
+        let is_push = insn.mnemonic.eq_ignore_ascii_case("PUSH");
         seq += 1;
         let mut is_ret = false;
         for o in &insn.ops {
@@ -1175,7 +1181,23 @@ fn callee_effects(
                 Some(OpCode::Return) => is_ret = true,
                 // Anything that leaves the straight line: stop and claim nothing.
                 Some(OpCode::Call) | Some(OpCode::Callind) | Some(OpCode::Branch)
-                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => return None,
+                | Some(OpCode::Branchind) | Some(OpCode::Cbranch) => {
+                    // SHADOW CENSUS (missing-args thread): reads collected BEFORE the exit
+                    // are valid reads-before-write whatever follows — count what the bail
+                    // discards.
+                    if std::env::var_os("MOSURA_SCAN_SHADOW").is_some() && !reads.is_empty() {
+                        let rs: Vec<String> = reads
+                            .iter()
+                            .filter(|(a, _)| !push_reads.contains(&a.offset))
+                            .map(|(a, sz)| format!("{:#x}/{sz}", a.offset))
+                            .collect();
+                        if !rs.is_empty() {
+                            eprintln!("[scanbail] callee {entry:#x} at {:?} prefix-reads [{}]",
+                                OpCode::from_u32(o.opcode), rs.join(" "));
+                        }
+                    }
+                    return None;
+                }
                 _ => {}
             }
             // Inputs BEFORE the output, so an instruction that reads and writes the same register
@@ -1214,6 +1236,9 @@ fn callee_effects(
                     && !reads.iter().any(|&(a, _)| a == addr)
                 {
                     reads.push((addr, v.size));
+                    if is_push {
+                        push_reads.push(v.offset);
+                    }
                 }
             }
             let Some(out) = &o.out else { continue };
