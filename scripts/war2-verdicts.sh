@@ -4,8 +4,14 @@
 #   scripts/war2-verdicts.sh <rec.tsv>                  census of one measurement
 #   scripts/war2-verdicts.sh <baseline.tsv> <cand.tsv>  census of both + per-function
 #                                                       verdict flips + WGSS movement
+#   scripts/war2-verdicts.sh --loss <rec.tsv> [N]       WGSS-loss ranking: lost insn
+#                                                       weight by dominant cause + the
+#                                                       top-N contributing functions
+#                                                       (default 20) with orig/cand
+#                                                       instruction counts
 #
-# Column contract (recompile_check --out): 1 idx, 2 va, 3 name, 4 verdict, 7 sim.
+# Column contract (recompile_check --out): 1 idx, 2 va, 3 name, 4 verdict, 7 sim,
+# 6 primary cause, 9 orig_n, 10 cand_n.
 # A header row starting with "idx" is skipped. Functions are joined BY NAME, never by
 # row order, so the comparison stays honest if a tree gains or loses functions.
 #
@@ -17,7 +23,31 @@
 # FILENAME, immune to the empty-first-file NR==FNR trap.
 set -euo pipefail
 
-usage() { echo "usage: $0 <rec.tsv> [<candidate.tsv>]" >&2; exit 2; }
+usage() { echo "usage: $0 [--loss] <rec.tsv> [<candidate.tsv>|N]" >&2; exit 2; }
+if [ "${1:-}" = "--loss" ]; then
+  shift
+  [ $# -ge 1 ] || usage
+  n="${2:-20}"
+  # census by cause (portable awk: no asorti — ranking is an external sort)
+  awk -F'\t' '
+    FNR==1 && $1=="idx" { next }
+    {
+      loss = $9 * (1 - $7)
+      tot += loss; w += $9
+      cause[$6 == "" ? "(none)" : $6] += loss
+    }
+    END {
+      printf "== loss: total insn weight %d, lost %.0f => WGSS %.4f\n", w, tot, 1 - tot / w
+      for (k in cause) printf "  %9.0f lost  %s\n", cause[k], k
+    }
+  ' "$1"
+  echo "== top $n contributors (lost weight | name | sim | orig->cand insns | verdict | cause)"
+  awk -F'\t' '
+    FNR==1 && $1=="idx" { next }
+    { printf "%9.1f  %-16s sim %.3f  n %4d->%-4d  %-10s %s\n", $9 * (1 - $7), $3, $7, $9, $10, $4, $6 }
+  ' "$1" | sort -rn | sed -n "1,${n}p"
+  exit 0
+fi
 [ $# -ge 1 ] && [ $# -le 2 ] || usage
 
 tmpdir=$(mktemp -d)
