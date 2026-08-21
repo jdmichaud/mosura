@@ -764,7 +764,11 @@ fn main() {
     // So the missing piece is binding a propagated parameter to the value live in its storage at
     // the call, which is a heritage-ordering problem rather than a prototype problem.
     // `MOSURA_PROTO_PASS=1` enables the pass for work on exactly that.
-    if std::env::var("MOSURA_PROTO_PASS").as_deref() == Ok("1") {
+    // DEFAULT-ON since the checker-gated landing at 746 (set MOSURA_PROTO_PASS=0 to get
+    // the bare landed world): the whole-program prototype pass feeds per-TU upgrades that
+    // the gate stack (scheduler fixed-point, allowed-set, collision, network, signature)
+    // adopts only where the models prove the original's placements survive.
+    if std::env::var("MOSURA_PROTO_PASS").as_deref() != Ok("0") {
         let t = std::time::Instant::now();
         prog.recovered_protos = analysis::interface::recover_prototypes(&prog);
         eprintln!(
@@ -1128,7 +1132,50 @@ fn main() {
                         break;
                     }
                 }
+                // PHASE-2 HYPOTHESIS (allocator model): an ADDED own-parameter whose
+                // register the original body WRITES with ordinary instructions (not the
+                // calls' convention effects, not the PUSH/POP save pair) is a live-in
+                // COLLIDING with the body's own register usage — the FUN_0005ed78 shape
+                // (its body uses EBX; the upgrade's param_3 arrives in EBX and the whole
+                // function reallocates). Fixture quartet: must refuse 5ed78, adopt
+                // 294dc/3b00c/5f33b.
+                let no_collision = {
+                    let slots = |f: &Funcdata| -> Vec<u64> {
+                        let reg = f.spaces.by_name("register");
+                        mosura::decompile::printc::rendered_param_slots(f)
+                            .iter()
+                            .filter(|sl| Some(sl.addr.space) == reg)
+                            .map(|sl| sl.addr.offset & !3)
+                            .collect()
+                    };
+                    let old_slots = slots(fl);
+                    let added: Vec<u64> =
+                        slots(&f2).into_iter().filter(|r| !old_slots.contains(r)).collect();
+                    if added.is_empty() {
+                        true
+                    } else {
+                        let mut body_writes: std::collections::HashSet<u64> =
+                            std::collections::HashSet::new();
+                        for x in &insns {
+                            if x.is_call
+                                || x.mnemonic == "PUSH"
+                                || x.mnemonic == "POP"
+                            {
+                                continue;
+                            }
+                            for op in &x.sem {
+                                if let Some(mosura::recompile::insn::SemArg::Reg(o, _)) = op.out {
+                                    if o < 0x20 {
+                                        body_writes.insert(o & !3);
+                                    }
+                                }
+                            }
+                        }
+                        !added.iter().any(|r| body_writes.contains(r))
+                    }
+                };
                 let ok = sig_stable
+                    && no_collision
                     && !networked
                     && !cand.is_empty()
                     && !insns.is_empty()

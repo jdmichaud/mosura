@@ -1131,6 +1131,31 @@ A full-signature stability gate was measured on the way and REFUSES EVERY upgrad
 gains grow their own signatures — the arity recovery working); recorded so it is not
 re-derived.
 
+**743 → 746 EXACT (zc2): the COLLISION HYPOTHESIS closes phase 2's cheap half — the
+checker-gated prototype pass LANDS, default-on.** The quartet fixture did its job in
+minutes: the phase-2 question ("which own-arity growths are allocation-safe?") is answered
+for the measured corpus by ONE more gate — an ADDED own-parameter whose register the
+original body WRITES with ordinary instructions (calls' convention effects and the
+PUSH/POP save pair excluded) is a live-in colliding with the body's own usage; refuse.
+Quartet: refuses `FUN_0005ed78` (its body uses EBX; param_3 arrives in EBX), adopts
+`FUN_0003b00c`/`FUN_0005f33b`; over-refuses `FUN_000294dc` (body writes EDX somewhere —
+not necessarily overlapping the live-in), the known conservatism a full
+`CalcSavings`/`GiveBestReg` kernel could recover.
+
+Corpus, one pre-registered round: **746 EXACT — +3 (`FUN_0003b00c`, `FUN_0005f33b`,
+`FUN_0003adec`), ZERO losses of any kind, +1 MISMATCH → SAME_SHAPE** — the first
+arity-recovery configuration to clear the zero-regression bar. 364 TUs upgraded. The
+prototype pass is now DEFAULT-ON in the survey (`MOSURA_PROTO_PASS=0` restores the bare
+landed world); per-emit cost roughly doubles (the pass ~97s + per-TU dual decompiles +
+gate walks) — the runbook cost model updated.
+
+The full gate stack that makes it safe, in firing order: scheduler fixed-point
+(`order_regressed` — placement), allowed-set (`allocation_regressed` — killed-crossing
+values), collision (own live-ins vs body usage), nondefault-storage network (the parm
+post-pass's arity gates), signature (nondefault-storage stability). Remaining headroom on
+this thread: the over-refusals (294dc-class, 26b18-class) recoverable by the full
+allocator cost kernel — parked with its fixture until measured worth building.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
