@@ -1133,7 +1133,7 @@ fn main() {
             let outcome2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 decompile_function(pp, Address::new(ram, *va))
             }));
-            if let Ok(Some(f2)) = outcome2 {
+            if let Ok(Some(mut f2)) = outcome2 {
                 let cand = candidate_call_effects(&f2);
                 // Signature gate: NONDEFAULT-storage stability only. A full count+storage
                 // comparison was measured to refuse every upgrade — own-arity growth IS the
@@ -1261,6 +1261,130 @@ fn main() {
                     if pass_through_only(&lt, &ct, *va) {
                         ok = true;
                         passthrough = true;
+                    }
+                }
+                // SHADOW CENSUS (MOSURA_KERNEL_SHADOW=1; missing-args thread): would the
+                // zero-cost kernel, extended to NETWORK refusals under a tightened guard,
+                // adopt this TU? Counted only — nothing adopts. The tightening beyond
+                // pass_through_only: a changed callee pragma may not touch anything BEFORE
+                // its `modify` clause (its `parm [..]`/`parm caller []` half must be
+                // verbatim), killing the 3925c order-inversion hazard that sank the old
+                // precise-network relaxation (1da00/2d1f0).
+                // DEFAULT-ON since the round-2 landing (targeted 299: 121/121 EXACT held,
+                // +5, zero losses). MOSURA_KERNEL_NET=0 restores the refusal.
+                let net_kernel = std::env::var("MOSURA_KERNEL_NET").as_deref() != Ok("0");
+                if (std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() || net_kernel)
+                    && !ok
+                    && sig_stable
+                    && networked
+                    && !cand.is_empty()
+                    && !insns.is_empty()
+                    && !mosura::recompile::watsched::order_regressed(&insns, &cand)
+                {
+                    let lt = print_c(fl);
+                    let ct = print_c(&f2);
+                    // ROUND-2 TIGHTENING (measured separation on the round-1 gain/loss sets):
+                    //   - callee pragmas fully VERBATIM — round 1's nine EXACT losses all
+                    //     carried `modify` → `modify exact` deltas (the exactness keyword's
+                    //     caller-side codegen, −11 solo in the ledger); the six gains had
+                    //     zero pragma deltas;
+                    //   - the OWN signature identical (no arity growth);
+                    //   - every appended CONSTANT must have its materializing write in the
+                    //     ORIGINAL bytes (`MOV reg,K` / `XOR reg,reg` for 0) — gains restore
+                    //     an instruction the original HAS (237dc's `MOV ECX,0x1`), losses
+                    //     invented one it lacks (12c58's `(0, 0)`).
+                    let mut appended_consts: Vec<(u64, u32, u64)> = Vec::new();
+                    // The TU's pragma lines are assembled from call_specs AFTER the loop
+                    // (callee_aux), so a render comparison cannot see them — 1da00's only
+                    // delta was `modify` → `modify exact` and a text check was vacuous.
+                    // Compare the SPECS: per callee, (caller_cleans, cdecl_modify,
+                    // cdecl_exact) must agree between the landed and candidate decompiles.
+                    let spec_view = |f: &Funcdata| -> std::collections::BTreeMap<u64, (Option<u32>, Option<Vec<u64>>, bool)> {
+                        let mut m = std::collections::BTreeMap::new();
+                        for (&op, cs) in f.call_specs.iter() {
+                            let Some(t) = f.op(op).input(0) else { continue };
+                            let cva = f.vn(t).loc.offset;
+                            if cva != 0 {
+                                m.insert(cva, (cs.caller_cleans, cs.cdecl_modify.clone(), cs.cdecl_exact));
+                            }
+                        }
+                        m
+                    };
+                    let ops_input0: std::collections::HashMap<mosura::decompile::op::OpId, u64> = f2
+                        .call_specs
+                        .keys()
+                        .filter_map(|&op| {
+                            let t = f2.op(op).input(0)?;
+                            let va = f2.vn(t).loc.offset;
+                            (va != 0).then_some((op, va))
+                        })
+                        .collect();
+                    let (sv_l, sv_c) = (spec_view(fl), spec_view(&f2));
+                    let pragmas_equal = sv_l == sv_c;
+                    if std::env::var_os("MOSURA_SHADOW_DEBUG").is_some() && !pragmas_equal {
+                        for (k, v) in &sv_c {
+                            if sv_l.get(k) != Some(v) {
+                                eprintln!("[shadow-diff] {name} callee {k:#x} landed {:?} cand {:?}", sv_l.get(k), v);
+                                break;
+                            }
+                        }
+                    }
+                    let sig_of = |t: &str| t.lines().find(|l| l.contains(&format!("FUN_{va:08x}("))).map(str::to_string);
+                    // Byte evidence, WINDOWED at the call: the appended constant's
+                    // materializing write must sit within the 12 instructions before a call
+                    // to that callee (stopping at intervening calls/branches) — an extent-
+                    // wide search whitelisted 157a0's distant `XOR EDX,EDX` for a zero the
+                    // original never materializes at this site.
+                    let const_evidence = |appends: &[(u64, u32, u64)]| -> bool {
+                        appends.iter().all(|&(callee, pos, k)| {
+                            if callee == 0 {
+                                return false;
+                            }
+                            let Some(&r) = arg_reg_offs.get(pos as usize) else { return false };
+                            insns.iter().enumerate().filter(|(_, x)| x.is_call && x.target == Some(callee)).any(|(ci, _)| {
+                                insns[..ci]
+                                    .iter()
+                                    .rev()
+                                    .take(12)
+                                    .take_while(|x| !x.is_call && !x.is_branch)
+                                    .any(|x| {
+                                        x.sem.iter().any(|op| {
+                                            matches!(op.out, Some(mosura::recompile::insn::SemArg::Reg(o, _)) if o & !3 == r)
+                                                && (op.ins.iter().any(|i| matches!(i, mosura::recompile::insn::SemArg::Const(v, _) if *v == k))
+                                                    || (k == 0
+                                                        && x.mnemonic == "XOR"
+                                                        && x.sem.iter().any(|op| matches!(op.out, Some(mosura::recompile::insn::SemArg::Reg(o, _)) if o & !3 == r))))
+                                        })
+                                    })
+                            })
+                        })
+                    };
+                    if pass_through_report(&lt, &ct, *va, Some(&mut appended_consts))
+                        && pragmas_equal
+                        && sig_of(&lt) == sig_of(&ct)
+                        && const_evidence(&appended_consts)
+                    {
+                        if net_kernel {
+                            // Landed via the round-2 targeted measurement. The adoption's
+                            // PURPOSE is the appended arguments; the pragma-relevant spec
+                            // fields stay the LANDED ones BY CONSTRUCTION — the gate asserts
+                            // spec equality, but 1da00's `modify exact` still drifted in
+                            // post-gate emission state during the first full round, so the
+                            // invariant is enforced rather than assumed.
+                            let landed_specs = spec_view(fl);
+                            for (&op, cs) in f2.call_specs.iter_mut() {
+                                let Some(t) = ops_input0.get(&op) else { continue };
+                                if let Some((cleans, modify, exact)) = landed_specs.get(t) {
+                                    cs.caller_cleans = *cleans;
+                                    cs.cdecl_modify = modify.clone();
+                                    cs.cdecl_exact = *exact;
+                                }
+                            }
+                            ok = true;
+                            passthrough = true;
+                        } else {
+                            eprintln!("[shadow] {name} network-eligible consts={}", appended_consts.len());
+                        }
                     }
                 }
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
@@ -2141,7 +2265,33 @@ fn candidate_call_effects(f: &Funcdata) -> mosura::recompile::watsched::CallEffe
 ///
 /// Measured on the force-adoption census (x-alloc round, 2026-08-22): adopts exactly the
 /// 3 gains {26b18, 294dc, 6b4e0}, refuses all 6 protected EXACTs.
+/// Shadow-census tightening: every callee-pragma line that CHANGES between the landed
+/// and candidate renders must keep everything before its `modify` clause verbatim — the
+/// `parm [..]` / `parm caller []` half is the caller-side marshalling contract, and a
+/// changed one re-pairs positional arguments (the 3925c inversion wart).
+fn parm_clauses_stable(landed: &str, cand: &str) -> bool {
+    let ll: Vec<&str> = landed.lines().collect();
+    let cl: Vec<&str> = cand.lines().collect();
+    if ll.len() != cl.len() {
+        return false;
+    }
+    for (l, c) in ll.iter().zip(cl.iter()) {
+        if l == c || !l.starts_with("#pragma aux func_0x") {
+            continue;
+        }
+        let head = |x: &str| x.split(" modify").next().unwrap_or(x).to_string();
+        if head(l) != head(c) {
+            return false;
+        }
+    }
+    true
+}
+
 fn pass_through_only(landed: &str, cand: &str, va: u64) -> bool {
+    pass_through_report(landed, cand, va, None)
+}
+
+fn pass_through_report(landed: &str, cand: &str, va: u64, mut consts: Option<&mut Vec<(u64, u32, u64)>>) -> bool {
     let fun = format!("FUN_{va:08x}");
     let own_pragma = format!("#pragma aux {fun}");
     let ll: Vec<&str> = landed.lines().collect();
@@ -2288,6 +2438,22 @@ fn pass_through_only(landed: &str, cand: &str, va: u64) -> bool {
             };
             if is_const(elem) {
                 // bound from the original's own dataflow — the MOV imm already exists
+                if let Some(out) = consts.as_deref_mut() {
+                    let t = elem.strip_prefix('-').unwrap_or(elem);
+                    let v = if let Some(h) = t.strip_prefix("0x") {
+                        u64::from_str_radix(h, 16).unwrap_or(0)
+                    } else {
+                        t.parse().unwrap_or(0)
+                    };
+                    let v = if elem.starts_with('-') { (v as i64).wrapping_neg() as u64 } else { v };
+                    // The callee, for windowed byte-evidence: only direct `func_0x...` call
+                    // lines qualify (an appended const on any other line form refuses).
+                    let callee = l
+                        .find("func_0x")
+                        .and_then(|i| u64::from_str_radix(l.get(i + 7..i + 15)?, 16).ok())
+                        .unwrap_or(0);
+                    out.push((callee, pos, v));
+                }
             } else {
                 let Some(n) = param_at(inserted, at) else { return false };
                 if n == 0 || n - 1 != pos {
