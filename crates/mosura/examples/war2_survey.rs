@@ -17,7 +17,7 @@ use mosura::decompile::funcdata::Funcdata;
 use mosura::decompile::op::flags;
 use mosura::decompile::opcode::OpCode;
 use mosura::decompile::emit::EmitChoices;
-use mosura::decompile::printc::{print_c_with};
+use mosura::decompile::printc::{print_c, print_c_with};
 use mosura::decompile::space::Address;
 
 // Sized-int / undefined typedefs a compilable-C emitter would prepend (Ghidra decompiler C).
@@ -1216,18 +1216,33 @@ fn main() {
                         !added.iter().any(|r| body_writes.contains(r))
                     }
                 };
-                let ok = sig_stable
-                    && no_collision
+                let other_ok = sig_stable
                     && !networked
                     && !cand.is_empty()
                     && !insns.is_empty()
-                    && !mosura::recompile::watsched::order_regressed(&insns, &cand)
-                    // The allocation gate (register-allocator model, phase 1): a candidate
-                    // that kills a register the original visibly carries across the call
-                    // would have re-homed that value (FUN_00034fe0's PUSH EDI shape).
+                    && !mosura::recompile::watsched::order_regressed(&insns, &cand);
+                // The allocation gate (register-allocator model, phase 1): a candidate
+                // that kills a register the original visibly carries across the call
+                // would have re-homed that value (FUN_00034fe0's PUSH EDI shape).
+                let alloc_ok = no_collision
                     && !mosura::recompile::watsched::allocation_regressed(&insns, &cand);
+                let mut ok = other_ok && alloc_ok;
+                let mut passthrough = false;
+                if other_ok && !alloc_ok {
+                    // Allocator model phase 2, the ZERO-COST kernel (see `pass_through_only`):
+                    // a collision/allocation refusal whose whole delta is appended
+                    // self-move pass-throughs cannot change the allocator's assignment.
+                    let lt = print_c(fl);
+                    let ct = print_c(&f2);
+                    if pass_through_only(&lt, &ct, *va) {
+                        ok = true;
+                        passthrough = true;
+                    }
+                }
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
-                    let reason = if ok {
+                    let reason = if passthrough {
+                        "adopted:passthrough"
+                    } else if ok {
                         "adopted"
                     } else if !sig_stable {
                         "refused:signature"
@@ -2073,6 +2088,195 @@ fn candidate_call_effects(f: &Funcdata) -> mosura::recompile::watsched::CallEffe
     }
     out
 }
+
+/// The allocator cost kernel's ZERO-COST special case (phase 2 of the register-allocator
+/// model; OW regalloc.c GiveBestReg/CountRegMoves grounding): an upgrade whose ONLY effect
+/// is appending pass-through arguments in their own arrival registers adds no
+/// register-register moves and no conflict-graph edges, so the allocator's assignment is
+/// provably unchanged — CalcSavings needn't be computed when its delta is zero. Decided on
+/// the RENDERED text of the landed vs candidate decompiles, line-zipped strictly:
+///
+///   - callee `#pragma aux func_0x...` lines may differ (they ARE the arity/exactness
+///     recovery being adopted);
+///   - the own signature may only APPEND `xunknown4 param_N` parameters (an existing
+///     param's storage or TYPE changing — 34fe0's char→xunknown4 — refuses);
+///   - a call may only APPEND `param_N` arguments, each at argument position N−1: the
+///     position IS the register (Watcom slots args by position), and position N−1 means
+///     the value is consumed in the register it arrives in — a self-move. A duplicated or
+///     displaced param (5ed78's `(p1,p2,p3,p1)`), a reordered prefix (659ec, 73338), or
+///     any other body change refuses. A CONSTANT literal may append at any position: the
+///     prototype pass binds it from the ORIGINAL's own dataflow, so the materializing
+///     `MOV imm` already exists in the original bytes (6b4e0's `(0xa8744, 4)`) — declaring
+///     it moves nothing;
+///   - the own `#pragma aux FUN_...` line must be IDENTICAL (73338's upgrade silently
+///     dropped its `parm caller []` fact);
+///   - any other differing line, or a line-count change, refuses.
+///
+/// Measured on the force-adoption census (x-alloc round, 2026-08-22): adopts exactly the
+/// 3 gains {26b18, 294dc, 6b4e0}, refuses all 6 protected EXACTs.
+fn pass_through_only(landed: &str, cand: &str, va: u64) -> bool {
+    let fun = format!("FUN_{va:08x}");
+    let own_pragma = format!("#pragma aux {fun}");
+    let ll: Vec<&str> = landed.lines().collect();
+    let cl: Vec<&str> = cand.lines().collect();
+    if ll.len() != cl.len() {
+        return false;
+    }
+    let param_at = |args: &str, from: usize| -> Option<u32> {
+        // the appended text at `from` must be `param_<N>` up to `,` or `)`
+        let rest = &args[from..];
+        let rest = rest.strip_prefix(", ").unwrap_or(rest);
+        let num = rest.strip_prefix("param_")?;
+        let digits: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
+    };
+    for (l, c) in ll.iter().zip(cl.iter()) {
+        if l == c {
+            continue;
+        }
+        if l.starts_with(&own_pragma) || c.starts_with(&own_pragma) {
+            return false; // own contract facts must survive verbatim
+        }
+        if l.starts_with("#pragma aux func_0x") && c.starts_with("#pragma aux func_0x") {
+            continue; // the callee-contract recovery itself
+        }
+        // First divergence: the candidate may only INSERT `param_N` arguments where the
+        // landed line closes an argument list.
+        let d = l.bytes().zip(c.bytes()).take_while(|(a, b)| a == b).count();
+        let (ltail, ctail) = (&l[d..], &c[d..]);
+        // signature growth out of `(void)`
+        let is_sig = l.contains(&format!(" {fun}("));
+        if is_sig && ltail.starts_with("void)") && ctail.starts_with("xunknown4 param_") {
+            // candidate params must be exactly `xunknown4 param_1..param_K)`+same suffix
+            let suffix = &ltail["void".len()..];
+            let Some(body) = ctail.strip_suffix(suffix) else { return false };
+            let mut k = 1u32;
+            let mut rest = body;
+            loop {
+                let Some(r) = rest.strip_prefix(&format!("xunknown4 param_{k}")) else { return false };
+                if r.is_empty() {
+                    break;
+                }
+                let Some(r) = r.strip_prefix(", ") else { return false };
+                rest = r;
+                k += 1;
+            }
+            continue;
+        }
+        // appended text: candidate tail = inserted + landed tail, inserted at a `)` boundary
+        if !ctail.ends_with(ltail) {
+            return false;
+        }
+        let inserted = &ctail[..ctail.len() - ltail.len()];
+        if inserted.is_empty() {
+            return false;
+        }
+        if is_sig {
+            // appended params: `, xunknown4 param_N`* closing where the landed list closed
+            if !ltail.starts_with(')') {
+                return false;
+            }
+            let mut rest = inserted;
+            while !rest.is_empty() {
+                let Some(r) = rest.strip_prefix(", xunknown4 param_") else { return false };
+                let digits: String = r.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+                if digits.is_empty() {
+                    return false;
+                }
+                rest = &r[digits.len()..];
+            }
+            continue;
+        }
+        // appended call args at the close of an argument list
+        if !ltail.starts_with(')') {
+            return false;
+        }
+        // argument position of the first appended arg = top-level commas before `d` since
+        // the call's opening paren (nesting-aware), or 0 straight after `(`
+        let head = &l[..d];
+        let open = {
+            let mut depth = 0i32;
+            let mut open = None;
+            for (i, ch) in head.char_indices() {
+                match ch {
+                    '(' => {
+                        depth += 1;
+                        if depth == 1 {
+                            open = Some(i);
+                        }
+                    }
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            // the innermost still-open paren nearest `d`
+            let mut depth = 0i32;
+            let mut last_open = open;
+            for (i, ch) in head.char_indices() {
+                match ch {
+                    '(' => {
+                        depth += 1;
+                        last_open = Some(i);
+                    }
+                    ')' => {
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+            let _ = depth;
+            last_open
+        };
+        let Some(open) = open else { return false };
+        let mut pos = 0u32;
+        let mut depth = 0i32;
+        let arg_head = &head[open + 1..];
+        let empty_list = arg_head.trim().is_empty();
+        for ch in arg_head.chars() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => pos += 1,
+                _ => {}
+            }
+        }
+        if !empty_list {
+            pos += 1; // the appended arg comes after the existing ones
+        }
+        let mut at = 0usize;
+        let mut rest = inserted;
+        let is_const = |t: &str| -> bool {
+            let t = t.strip_prefix('-').unwrap_or(t);
+            if let Some(h) = t.strip_prefix("0x") {
+                !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit())
+            } else {
+                !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
+            }
+        };
+        while !rest.is_empty() {
+            let elem = {
+                let r = rest.strip_prefix(", ").unwrap_or(rest);
+                let end = r.find([',', ')']).unwrap_or(r.len());
+                &r[..end]
+            };
+            if is_const(elem) {
+                // bound from the original's own dataflow — the MOV imm already exists
+            } else {
+                let Some(n) = param_at(inserted, at) else { return false };
+                if n == 0 || n - 1 != pos {
+                    return false; // not a self-move: value would need a register move
+                }
+            }
+            let step = if at == 0 && empty_list { elem.to_string() } else { format!(", {elem}") };
+            let Some(r) = rest.strip_prefix(&step) else { return false };
+            rest = r;
+            at += step.len();
+            pos += 1;
+        }
+    }
+    true
+}
+
 
 fn build_tu(
     c: &str,
