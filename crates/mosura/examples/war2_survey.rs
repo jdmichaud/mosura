@@ -1105,7 +1105,16 @@ fn main() {
                 // call-crossing half, and the own-params half rides the corpus verdict.
                 let sig_stable = nondefault_parm_regs(&f2, &watreg)
                     == nondefault_parm_regs(fl, &watreg);
-                // The parm-pragma network gate (see nondefault_storage's doc above).
+                // The parm-pragma network gate, PRESENCE FORM — deliberately blunt: any
+                // call into a NONDEFAULT-STORAGE callee refuses the upgrade. The precise
+                // form (refuse only on CHANGED ordered arg signatures at such callees) was
+                // measured and does NOT land: it released ~300 more adoptions for ZERO
+                // gains and two fresh EXACT losses (0x1da00, 0x2d1f0) — the census's
+                // 122-function "network pool" of near-misses does not resolve through
+                // arity alone, and the relaxation only buys risk. (The ordered-signature
+                // hazard it did catch — the locked-prototype arg order inverting the
+                // positional pairing under a `parm [..]` pragma at 0x3925c — is subsumed
+                // by presence-refusal.)
                 let mut networked = false;
                 for op in f2.op_ids() {
                     let o = f2.op(op);
@@ -1135,10 +1144,7 @@ fn main() {
                 // PHASE-2 HYPOTHESIS (allocator model): an ADDED own-parameter whose
                 // register the original body WRITES with ordinary instructions (not the
                 // calls' convention effects, not the PUSH/POP save pair) is a live-in
-                // COLLIDING with the body's own register usage — the FUN_0005ed78 shape
-                // (its body uses EBX; the upgrade's param_3 arrives in EBX and the whole
-                // function reallocates). Fixture quartet: must refuse 5ed78, adopt
-                // 294dc/3b00c/5f33b.
+                // COLLIDING with the body's own register usage — the FUN_0005ed78 shape.
                 let no_collision = {
                     let slots = |f: &Funcdata| -> Vec<u64> {
                         let reg = f.spaces.by_name("register");
@@ -1157,10 +1163,7 @@ fn main() {
                         let mut body_writes: std::collections::HashSet<u64> =
                             std::collections::HashSet::new();
                         for x in &insns {
-                            if x.is_call
-                                || x.mnemonic == "PUSH"
-                                || x.mnemonic == "POP"
-                            {
+                            if x.is_call || x.mnemonic == "PUSH" || x.mnemonic == "POP" {
                                 continue;
                             }
                             for op in &x.sem {
@@ -1185,10 +1188,22 @@ fn main() {
                     // would have re-homed that value (FUN_00034fe0's PUSH EDI shape).
                     && !mosura::recompile::watsched::allocation_regressed(&insns, &cand);
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
-                    eprintln!(
-                        "[zapcheck] {name}: {}",
-                        if ok { "UPGRADE adopted" } else { "landed rendering kept" }
-                    );
+                    let reason = if ok {
+                        "adopted"
+                    } else if !sig_stable {
+                        "refused:signature"
+                    } else if !no_collision {
+                        "refused:collision"
+                    } else if networked {
+                        "refused:network"
+                    } else if cand.is_empty() || insns.is_empty() {
+                        "refused:no-candidate"
+                    } else if mosura::recompile::watsched::order_regressed(&insns, &cand) {
+                        "refused:scheduler"
+                    } else {
+                        "refused:allocation"
+                    };
+                    eprintln!("[zapcheck] {name}: {reason}");
                 }
                 if ok {
                     f = Some(f2);
