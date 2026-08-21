@@ -1108,33 +1108,23 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
     let rootbl = data.op(indop).parent?;
 
     // recoverModel: pathMeld + guards + normalized switch variable & range.
-    let mut path_meld = find_determining_varnodes(data, indop, 0);
+    let path_meld = find_determining_varnodes(data, indop, 0);
     if path_meld.empty() {
         return None;
     }
     let guards = analyze_guards(data, rootbl, -1, indop, usenzmask);
-    let (varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, matchsize);
+    let (_varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, matchsize);
     let count = range.get_size();
     if count == 0 || count > MAX_TABLE_SIZE {
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
     }
 
-    // findUnnormalized (jumptable.cc:1462): peel the normalized variable (`start_vn`) back to the
-    // unnormalized switch variable the user's `switch` reads — `ActionSwitchNorm`'s fold target.
-    let switchvn = find_unnormalized(data, &mut path_meld, varnode_index, &guards);
-
-    // buildAddresses: emulate the address calculation for each value in the normalized range. The
-    // case label for each target is the *unnormalized* value producing it — `buildLabels`
-    // (jumptable.cc:1506) reverse-emulating each normalized-range value to `switchvn` via
-    // `backup2Switch` (switchloop: normalized 0..8 → labels 1..9). Recorded here where the bounded
-    // range is known — on the final graph the range is lost (only the build-time partial's
-    // edge-feedback phi widening bounds it), exactly why Ghidra saves the recovery-time model
-    // (`origmodel`) for the later `ActionSwitchNorm`. On any reverse-emulation failure the labels
-    // are dropped whole (Ghidra pushes NO_LABEL + warns; mosura's printer needs the complete set,
-    // so an incomplete set declines normalization and the print-time fallback remains).
+    // buildAddresses: emulate the address calculation for each value in the normalized range.
+    // Labels are NOT built here — Ghidra builds them at `ActionSwitchNorm` time (`recoverLabels`,
+    // jumptable.cc:2714) on the FINAL graph, against the freshly re-recovered model. What survives
+    // from recovery is the normalized value range (`origmodel`'s value set, saved by
+    // `matchModel`'s `saveModel()`), recorded in `norm_range` below.
     let mut targets = Vec::with_capacity(count as usize);
-    let mut labels = Vec::with_capacity(count as usize);
-    let mut labels_ok = true;
     let mut curval = range.get_min();
     loop {
         let addr = jumptable::emulate(data, target_vn, start_vn, curval, 0)?;
@@ -1142,16 +1132,9 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
             return None; // sanityCheck: every target must be a real address in the image
         }
         targets.push(addr);
-        match backup2switch(data, curval, start_vn, switchvn) {
-            Some(v) => labels.push(v as i64),
-            None => labels_ok = false,
-        }
         if !range.get_next(&mut curval) {
             break;
         }
-    }
-    if !labels_ok {
-        labels.clear();
     }
 
     // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
@@ -1161,8 +1144,8 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
         op_addr: data.op(indop).seqnum.pc.offset,
         targets,
         default,
-        labels,
-        switchvn_loc: Some((data.vn(switchvn).loc, data.vn(switchvn).size)),
+        labels: Vec::new(),
+        norm_range: Some(range),
         normalized: false,
     })
 }
@@ -1184,8 +1167,8 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
 /// 4557): +1 per table actually normalized this call. Ghidra gates each table on `!jt->isLabelled()`
 /// so a table is folded (and counted) at most once across the repeating `actfullloop`; mosura's
 /// analogue is the `normalized` flag — an already-normalized table is skipped, so the count bottoms
-/// out at 0 and a repeating caller converges. (`foldInGuards`, the second counted arm, is not
-/// ported.)
+/// out at 0 and a repeating caller converges. `foldInGuards` runs inside `normalize_one` (once,
+/// at normalization), so its changes are covered by the same count.
 pub fn switch_norm(data: &mut Funcdata) -> u32 {
     if data.table_recovery_probe {
         return 0;
@@ -1216,30 +1199,183 @@ fn branchind_at(data: &Funcdata, op_addr: u64) -> Option<OpId> {
     })
 }
 
-/// matchModel + foldInNormalization for one recovered table. The case labels were computed at
-/// recovery time from the saved model (`jt.labels`); here we re-instantiate the switch variable on
-/// the final graph (Ghidra `matchModel`) and fold the `BRANCHIND` onto it (`foldInNormalization`).
-/// Returns whether the table was folded (the [`switch_norm`] change count).
+/// Ghidra `ActionSwitchNorm`'s per-table work (coreaction.cc:4551): `JumpTable::matchModel` +
+/// `recoverLabels` + `foldInNormalization`, then `foldInGuards`. The model is RE-RECOVERED on the
+/// FINAL graph (`matchModel` → `recoverModel(fd)`, jumptable.cc:2683 — "Create a current instance
+/// of the model"): `find_determining_varnodes` + `analyze_guards` + `find_smallest_normal` (with
+/// `matchsize` = the recovered table's size) + `find_unnormalized`. The labels are then built HERE
+/// (`recoverLabels` → `buildLabels`, jumptable.cc:1506) by enumerating the SAVED recovery-time
+/// range (`origmodel`'s value set, our `norm_range`) and reverse-emulating each value through the
+/// fresh model's `normalvn` down to its `switchvn` — so the folded switch operand and the printed
+/// case values derive from ONE walk and cohere by construction. (An earlier adaptation saved
+/// recovery-time labels and re-found the fold target BY STORAGE; an in-place normalization —
+/// `ADD EAX,3`, pre- and post-ADD values sharing EAX — matched the wrong instance and emitted a
+/// dispatch rotated by the bias.)
+///
+/// Deviations from Ghidra, both conservative: on a fresh-model/table size mismatch Ghidra folds
+/// anyway with per-case warnings ("may not be properly labeled", jumptable.cc:1518) — mosura
+/// declines and leaves the table unnormalized (printer index-label fallback, the rendering
+/// Ghidra's `JumpModelTrivial` arm produces when no model is recoverable at all); likewise a
+/// failed reverse-emulation drops the fold rather than emitting `NO_LABEL` cases. `foldInGuards`
+/// runs once, at normalization time, rather than re-attempting unfolded guards every actfullloop
+/// pass (Ghidra keeps the model's guard records alive on the JumpTable object).
 fn normalize_one(data: &mut Funcdata, indop: OpId, jt: &mut JumpTable) -> bool {
-    let Some((loc, size)) = jt.switchvn_loc else { return false };
-    if jt.labels.len() != jt.targets.len() || jt.targets.is_empty() {
-        return false; // labels incomplete — keep the cached table, leave the print-time heuristics
-    }
-    // matchModel: re-find the switch variable on the final graph — it is a determining varnode of
-    // the BRANCHIND at the storage the saved model recorded. (Its bounded range is not recoverable
-    // on the final graph — only the build-time partial's edge-feedback widening bounds it — so the
-    // labels come from the saved model, exactly as Ghidra's `buildLabels` reads `origmodel`.)
-    let path_meld = find_determining_varnodes(data, indop, 0);
-    let Some(switchvn) = (0..path_meld.num_common_varnode())
-        .map(|i| path_meld.get_varnode(i))
-        .find(|&v| data.vn(v).loc == loc && data.vn(v).size == size)
-    else {
+    if jt.targets.is_empty() {
         return false;
-    };
-    // foldInNormalization (jumptable.cc:1551): point the BRANCHIND at the switch variable; the
-    // address computation becomes dead and is removed by the following ActionDeadCode.
+    }
+    let Some(origrange) = jt.norm_range else { return false };
+    // matchModel: recoverModel on the final graph.
+    let Some(rootbl) = data.op(indop).parent else { return false };
+    let mut path_meld = find_determining_varnodes(data, indop, 0);
+    if path_meld.empty() {
+        return false;
+    }
+    let guards = analyze_guards(data, rootbl, -1, indop, true);
+    let (varnode_index, range, normalvn, _start_op) =
+        find_smallest_normal(data, &path_meld, &guards, jt.targets.len() as u64);
+    if range.get_size() != jt.targets.len() as u64 {
+        // Ghidra: "Could not find normalized switch variable to match jumptable" (with the
+        // addresstable.size()==1 arm issuing a multistage restart — mosura's staged build-time
+        // recovery already re-recovers 1-entry tables).
+        return false;
+    }
+    let switchvn = find_unnormalized(data, &mut path_meld, varnode_index, &guards);
+    // recoverLabels → buildLabels (jumptable.cc:1506): enumerate ORIGMODEL's range, invert each
+    // value through the fresh model (backup2Switch(fd, val, normalvn, switchvn)).
+    let mut labels = Vec::with_capacity(jt.targets.len());
+    let mut curval = origrange.get_min();
+    loop {
+        match backup2switch(data, curval, normalvn, switchvn) {
+            Some(v) => labels.push(v as i64),
+            None => return false,
+        }
+        if labels.len() >= jt.targets.len() {
+            break; // address table may have been truncated (sanity check)
+        }
+        if !origrange.get_next(&mut curval) {
+            break;
+        }
+    }
+    if labels.len() != jt.targets.len() {
+        return false;
+    }
+    // foldInNormalization (jumptable.cc:1546): repoint the BRANCHIND at the unnormalized switch
+    // variable; the intervening address computation dies. (switchVarConsume nzmask markup for
+    // subvariable truncation is not ported.)
     data.op_set_input(indop, 0, switchvn);
+    jt.labels = labels;
     jt.normalized = true;
+    // foldInGuards (jumptable.cc:1555): fold each live guard of the CURRENT model into the switch.
+    let mut folded_default: Option<usize> = None;
+    for g in &guards {
+        let Some(cbranch) = g.cbranch else { continue };
+        if data.op(cbranch).is_dead() {
+            continue;
+        }
+        fold_in_one_guard(data, cbranch, g.indpath, indop, &mut folded_default);
+    }
+    true
+}
+
+/// Ghidra `JumpBasic::foldInOneGuard` (jumptable.cc:1373): make the guard's out-of-range target a
+/// `default` out-edge of the switch itself. If the target is not yet among the switch's out-edges,
+/// move the edge (`Funcdata::pushBranch`); if it is, neuter the guard by rewriting its condition
+/// to a constant (the later determined-branch pass removes it). Only one folded default per table.
+fn fold_in_one_guard(
+    data: &mut Funcdata,
+    cbranch: OpId,
+    indpath: i32,
+    indop: OpId,
+    folded_default: &mut Option<usize>,
+) -> bool {
+    let Some(cb) = data.op(cbranch).parent else { return false };
+    // It's possible the guard branch has been converted between the switch recovery and now.
+    if data.block(cb).out_edges.len() != 2 {
+        return false;
+    }
+    let indpath = indpath as usize; // no flip-path in mosura's canonical CFG
+    let Some(switchbl) = data.op(indop).parent else { return false };
+    if data.block(cb).out_edges[indpath] != switchbl {
+        return false; // guard must go directly into the switch block
+    }
+    let guardtarget = data.block(cb).out_edges[1 - indpath];
+    let pos = data.block(switchbl).out_edges.iter().position(|&b| b == guardtarget);
+    if folded_default.is_some() && pos != *folded_default {
+        return false; // there can be only one folded target
+    }
+    if !no_intervening_statement(data, switchbl) {
+        return false;
+    }
+    match pos {
+        None => {
+            // addBlockToSwitch + setLastAsDefault + pushBranch: the guard's exit edge becomes the
+            // switch's (last) default out-edge.
+            let newpos = data.block(switchbl).out_edges.len();
+            push_branch(data, cb, 1 - indpath, switchbl);
+            *folded_default = Some(newpos);
+        }
+        Some(p) => {
+            // The default is already a switch out-edge: force the guard's condition constant so
+            // the branch always takes the switch path (no isBooleanFlip in mosura).
+            let val: u64 = if indpath == 0 { 0 } else { 1 };
+            let sz = data.op(cbranch).input(1).map(|v| data.vn(v).size).unwrap_or(1);
+            let c = data.new_extended_constant(sz, val as u128, cbranch);
+            data.op_set_input(cbranch, 1, c);
+            *folded_default = Some(p);
+        }
+    }
+    true
+}
+
+/// Ghidra `Funcdata::pushBranch` (funcdata_block.cc:403): turn the guard CBRANCH into an
+/// unconditional BRANCH and move its `slot` out-edge to become a new out-edge of the switch block
+/// (`bblocks.moveOutEdge`). The BRANCHIND handles the new edge implicitly.
+fn push_branch(data: &mut Funcdata, cb: BlockId, slot: usize, switchbl: BlockId) {
+    let Some(&cbranch) = data.block(cb).ops.last() else { return };
+    let moved = data.block(cb).out_edges[slot];
+    data.op_remove_input(cbranch, 1); // remove the conditional variable
+    data.op_set_opcode(cbranch, OpCode::Branch);
+    data.block_mut(cb).out_edges.remove(slot);
+    // The moved block's in-edge is REPLACED in place, keeping its MULTIEQUAL slot order intact.
+    let ins = &mut data.block_mut(moved).in_edges;
+    if let Some(i) = ins.iter().position(|&b| b == cb) {
+        ins[i] = switchbl;
+    }
+    data.block_mut(switchbl).out_edges.push(moved);
+}
+
+/// Ghidra `BlockBasic::noInterveningStatement` (block.cc:2712): the switch block must contain no
+/// op that prints as a statement — a call, STORE/NEW, an address-tied definition, or a value read
+/// outside the block — for the guard fold to be legal.
+fn no_intervening_statement(data: &Funcdata, bl: BlockId) -> bool {
+    for &op in &data.block(bl).ops {
+        let o = data.op(op);
+        if o.is_marker() {
+            continue;
+        }
+        let opc = o.code();
+        if matches!(opc, OpCode::Branch | OpCode::Cbranch | OpCode::Branchind) {
+            continue;
+        }
+        if o.is_call() {
+            return false;
+        }
+        if matches!(opc, OpCode::Store | OpCode::New) {
+            return false;
+        }
+        if matches!(opc, OpCode::Copy | OpCode::Subpiece) {
+            continue;
+        }
+        let Some(outvn) = o.output else { continue };
+        if data.vn(outvn).is_addrtied() {
+            return false;
+        }
+        for &reader in &data.vn(outvn).descend {
+            if data.op(reader).parent != Some(bl) {
+                return false;
+            }
+        }
+    }
     true
 }
 
@@ -1560,15 +1696,16 @@ mod tests {
         assert_eq!(jt.op_addr, 0x4c);
         assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300]);
         assert_eq!(jt.default, Some(0x300), "the out-of-range edge is the default case");
-        // The switch variable IS the guarded index (nothing to peel): identity labels.
-        assert_eq!(jt.labels, vec![0, 1, 2]);
-        assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)));
+        // Labels are built at ActionSwitchNorm time now (recoverLabels on the final graph);
+        // recovery saves only the normalized range for the later enumeration (origmodel).
+        assert!(jt.labels.is_empty());
+        let r = jt.norm_range.expect("normalized range saved for recoverLabels");
+        assert_eq!((r.get_min(), r.get_size()), (0, 3));
 
         // A multistage re-recovery (`usenzmask=false`, jumptable.cc:1052) is bounded by the guard
         // alone — same table, independent of any nzmask narrowing.
         let jt2 = recover_jumpbasic(&mut f, branchind, false, 0).expect("recovers with nzmask off");
         assert_eq!(jt2.targets, vec![0x1100, 0x1200, 0x1300]);
-        assert_eq!(jt2.labels, vec![0, 1, 2]);
 
         // The table lifecycle protocol (`jumptable::recover_staged` = Funcdata::recoverJumpTable,
         // funcdata_block.cc:639-673 + matchModel/checkForMultistage/recoverMultistage):
@@ -1662,13 +1799,14 @@ mod tests {
 
         let jt = recover_jumpbasic(&mut f, branchind, true, 0).expect("recovers the table");
         assert_eq!(jt.targets, vec![0x1100, 0x1200, 0x1300], "targets from the normalized range");
-        assert_eq!(jt.labels, vec![1, 2, 3], "labels reverse-emulated to the unnormalized index");
-        assert_eq!(jt.switchvn_loc, Some((f.vn(index).loc, 8)), "switchvn is the peeled index");
+        assert!(jt.labels.is_empty(), "labels are built at ActionSwitchNorm time, not recovery");
 
-        // ActionSwitchNorm: matchModel re-finds `index` on the graph and folds the BRANCHIND.
+        // ActionSwitchNorm: matchModel re-recovers the model on the graph, recoverLabels builds
+        // the labels by reverse-emulating the saved range through it, and the BRANCHIND folds.
         f.jumptables = vec![jt];
         switch_norm(&mut f);
         assert!(f.jumptables[0].normalized);
+        assert_eq!(f.jumptables[0].labels, vec![1, 2, 3], "labels reverse-emulated to the unnormalized index");
         assert_eq!(f.op(branchind).input(0), Some(index), "BRANCHIND folded onto the switch variable");
     }
 }

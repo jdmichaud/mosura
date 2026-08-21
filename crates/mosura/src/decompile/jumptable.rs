@@ -30,15 +30,18 @@ pub struct JumpTable {
     /// switch (Ghidra `JumpTable::defaultBlock`, set by `JumpBasic::foldInOneGuard`). `None` when
     /// no guard branches directly into the switch.
     pub default: Option<u64>,
-    /// The case label (switch-variable value) for each target — Ghidra `JumpTable::label`, computed
-    /// by `JumpBasic::buildLabels` at recovery time (where the switch variable's bounded range is
-    /// known). Parallel to `targets`: a switch on `iVar` with cases `1..9`, not `0..8`.
+    /// The case label (switch-variable value) for each target — Ghidra `JumpTable::label`. Filled
+    /// by `recoverLabels` at `ActionSwitchNorm` time (jumptable.cc:2714): the labels are computed
+    /// on the FINAL graph, from the same model instance whose switch variable the fold repoints
+    /// the `BRANCHIND` at, so the printed operand and case values cohere by construction. Empty
+    /// until then. Parallel to `targets`: a switch on `iVar` with cases `1..9`, not `0..8`.
     pub labels: Vec<i64>,
-    /// Storage location and size of the *unnormalized* switch variable found during recovery
-    /// (`JumpBasic::findUnnormalized` on the recovery partial; kept as Ghidra keeps the saved model
-    /// `origmodel`). `ActionSwitchNorm` re-instantiates the variable on the final graph at this
-    /// address (`matchModel`) to fold the `BRANCHIND` onto it.
-    pub switchvn_loc: Option<(super::space::Address, u32)>,
+    /// The value range of the *normalized* switch variable found at recovery — the value set the
+    /// address table was emulated from, in table order. This is the surviving piece of Ghidra's
+    /// saved recovery-time model (`origmodel`, `JumpTable::saveModel`): `recoverLabels` enumerates
+    /// THESE values (`buildLabels`'s `origrange`, jumptable.cc:1510) while inverting them through
+    /// the freshly re-recovered model's varnodes.
+    pub norm_range: Option<super::circlerange::CircleRange>,
     /// Set once `ActionSwitchNorm`'s `foldInNormalization` has repointed the `BRANCHIND` at the
     /// switch variable, so the printer reads that variable directly and uses `labels`.
     pub normalized: bool,

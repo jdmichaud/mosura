@@ -15935,7 +15935,7 @@ mod tests {
             targets,
             default: None,
             labels,
-            switchvn_loc: None,
+            norm_range: None,
             normalized: false,
         }];
         (f, bi)

@@ -89,6 +89,8 @@ impl Default for CircleRange {
     }
 }
 
+impl Eq for CircleRange {}
+
 impl PartialEq for CircleRange {
     /// Ghidra `CircleRange::operator==` (`rangeutil.hh:331`).
     fn eq(&self, op2: &CircleRange) -> bool {
