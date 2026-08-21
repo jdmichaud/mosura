@@ -48,6 +48,24 @@ pub struct CandFixup {
     pub resolved: Option<u64>,
     /// The placeholder value the compiler wrote at the site.
     pub placeholder: u64,
+    /// For a module-local reference to bytes OUTSIDE the function's own extent (a switch's
+    /// jump table, which Watcom emits at the front of `_TEXT`): the referenced segment
+    /// offset. Such a site has no meaning at the original's addresses until
+    /// [`Candidate::resolve_tables`] proves the referenced table corresponds to one in the
+    /// original image; until then `resolved` stays `None` and the site diffs.
+    pub local_data: Option<u64>,
+}
+
+/// A jump table carried in the compiled object's own code segment, outside the function's
+/// extent: Watcom places a switch's table at the front of `_TEXT`, each entry a 4-byte
+/// segment-relative fixup targeting a case block inside the function.
+#[derive(Debug, Clone)]
+pub struct CandTable {
+    /// The table's starting offset within the code segment.
+    pub seg_off: u64,
+    /// Each entry's target, as an offset from the FUNCTION's start (entry fixup target
+    /// minus the function's own segment offset) — layout-independent case positions.
+    pub entries_fnrel: Vec<u64>,
 }
 
 /// A function extracted from a compiled object, ready to be compared against the original.
@@ -62,6 +80,8 @@ pub struct Candidate {
     /// Fixups whose symbol the resolver could not place. These are carried rather than dropped:
     /// an unresolved site is a limit of the comparison and has to be visible in the verdict.
     pub unresolved: Vec<String>,
+    /// Jump tables found in the object's code segment outside the function extent.
+    pub tables: Vec<CandTable>,
 }
 
 impl Candidate {
@@ -99,6 +119,49 @@ impl Candidate {
             }
         }
         out
+    }
+}
+
+impl Candidate {
+    /// Resolve module-local jump-table references by TABLE CORRESPONDENCE against the
+    /// original image (JD-approved metric rule, 2026-08-22: every linker-filled reference
+    /// compares by what it denotes, never by the literal address).
+    ///
+    /// A table-base operand (`JMP [EAX*4 + base]`) is a linker-filled address exactly like
+    /// a call target: the compiler said "this function's table", the number is layout. The
+    /// resolution is gated on CONTENT: from the candidate table's function-relative entry
+    /// targets we construct the byte string the original's table must hold (each entry =
+    /// the function's VA plus the same offset), and `find` searches the original image for
+    /// it. Found at `P` ⇒ the tables correspond entry-for-entry and the reference resolves
+    /// to `P` (plus the within-table displacement); not found — wrong size, wrong order,
+    /// any entry targeting a different case — ⇒ the site stays unresolved and diffs, so a
+    /// candidate with a WRONG table still fails. Nothing the compiler decides is masked.
+    pub fn resolve_tables(&mut self, find: &dyn Fn(&[u8]) -> Option<u64>) {
+        for f in &mut self.fixups {
+            if f.resolved.is_some() {
+                continue;
+            }
+            let Some(referenced) = f.local_data else { continue };
+            let Some(table) = self
+                .tables
+                .iter()
+                .find(|t| referenced >= t.seg_off && referenced < t.seg_off + 4 * t.entries_fnrel.len() as u64)
+            else {
+                continue;
+            };
+            let expected: Vec<u8> = table
+                .entries_fnrel
+                .iter()
+                .flat_map(|k| ((self.base.wrapping_add(*k)) as u32).to_le_bytes())
+                .collect();
+            if let Some(p) = find(&expected) {
+                // Additive-fixup convention (see `relinked_bytes`): the field's own content
+                // (the addend, e.g. a folded index bias) is added on top, so the resolved
+                // value carries only the displacement — mirroring the external-symbol arm.
+                let displacement = referenced.wrapping_sub(f.placeholder);
+                f.resolved = Some(p.wrapping_add(displacement).wrapping_sub(table.seg_off));
+            }
+        }
     }
 }
 
@@ -186,6 +249,7 @@ pub fn load_object_function(
             FixupTarget::External(i) => module.externals.get(i - 1).cloned(),
             _ => None,
         };
+        let mut local_data = None;
         let resolved = match &symbol {
             Some(s) => match resolver.address_of(s) {
                 Some(a) => Some(a.wrapping_add(f.displacement)),
@@ -194,14 +258,64 @@ pub fn load_object_function(
                     None
                 }
             },
-            // A fixup into one of this module's own segments is already correct relative to the
-            // function's own base: a self-reference inside a single-function TU lands at `base`.
-            None => Some(base.wrapping_add(f.displacement)),
+            // A module-local fixup denotes segment offset `displacement + addend` (OMF
+            // additive: the field's content joins the sum). Inside the function's extent it
+            // is a self-reference — the address is `base` plus the offset FROM THE
+            // FUNCTION's start (`start` need not be 0: a switch's jump table precedes the
+            // public). Outside the extent it references module-local DATA (that table),
+            // which has no meaning at the original's addresses until `resolve_tables`
+            // proves correspondence — record the referenced offset and leave it unresolved.
+            None => {
+                let referenced = f.displacement.wrapping_add(placeholder);
+                let fun = (start as u64)..(end as u64);
+                if fun.contains(&referenced) {
+                    // relinked_bytes adds the addend back, so carry displacement only.
+                    Some(base.wrapping_add(f.displacement).wrapping_sub(start as u64))
+                } else {
+                    local_data = Some(referenced);
+                    None
+                }
+            }
         };
-        fixups.push(CandFixup { offset, width, symbol, self_relative: f.self_relative, resolved, placeholder });
+        fixups.push(CandFixup { offset, width, symbol, self_relative: f.self_relative, resolved, placeholder, local_data });
     }
 
-    Ok(Candidate { bytes, base, fixups, unresolved })
+    // Collect the jump tables the object carries OUTSIDE the function's extent: runs of
+    // consecutive 4-byte module-local fixups whose targets all land INSIDE the extent (a
+    // switch's table dispatches into its own function). Entry targets are recorded relative
+    // to the function start, making them layout-independent for `resolve_tables`.
+    let mut entry_sites: Vec<(u64, u64)> = Vec::new(); // (segment offset, target seg offset)
+    for f in &module.fixups {
+        if f.segment != seg_idx || f.self_relative || fixup_width(f.location, f.wide) != 4 {
+            continue;
+        }
+        if matches!(f.target, FixupTarget::External(_)) {
+            continue;
+        }
+        if f.offset + 4 <= start || f.offset >= end {
+            let mut ph = 0u64;
+            for i in 0..4 {
+                if let Some(b) = seg.data.get(f.offset + i) {
+                    ph |= (*b as u64) << (8 * i);
+                }
+            }
+            entry_sites.push((f.offset as u64, f.displacement.wrapping_add(ph)));
+        }
+    }
+    entry_sites.sort_unstable();
+    let mut tables: Vec<CandTable> = Vec::new();
+    for (off, target) in entry_sites {
+        let in_fun = target >= start as u64 && target < end as u64;
+        match tables.last_mut() {
+            Some(t) if off == t.seg_off + 4 * t.entries_fnrel.len() as u64 && in_fun => {
+                t.entries_fnrel.push(target - start as u64);
+            }
+            _ if in_fun => tables.push(CandTable { seg_off: off, entries_fnrel: vec![target - start as u64] }),
+            _ => {}
+        }
+    }
+
+    Ok(Candidate { bytes, base, fixups, unresolved, tables })
 }
 
 /// OMF `LLLL` location code → field width. Mirrors the loader's own reading of the same field.

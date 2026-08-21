@@ -22,7 +22,7 @@ use mosura::analysis;
 use mosura::decompile::space::Address;
 use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
 use mosura::recompile::{
-    emitted_symbol_address, verify, ByteVerdict, DivergenceClass, FnKey, Subject, Verdict,
+    emitted_symbol_address, ByteVerdict, DivergenceClass, FnKey, Subject, Verdict,
     DIVERGENCE_HEADER,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -247,7 +247,36 @@ fn main() {
             }
         }
         let subject = Subject { name: row.name.clone(), va: row.va, len: row.len };
-        let checked = match verify(LANG, &obytes, &subject, out.object.as_ref().unwrap(), &resolver) {
+        // Table-correspondence search window: the original's jump tables sit near the
+        // function (WAR2 places them in the inter-function gap right before the entry).
+        // Nearest match to the function wins if the same content appears more than once.
+        let win_lo = row.va.saturating_sub(0x2_0000);
+        let win = prog.memory.read_window(Address::new(space, win_lo), (0x4_0000 + row.len).min(0x10_0000));
+        let find_near = |needle: &[u8]| -> Option<u64> {
+            if needle.is_empty() {
+                return None;
+            }
+            let mut best: Option<u64> = None;
+            let mut pos = 0usize;
+            while pos + needle.len() <= win.len() {
+                match win[pos..].windows(needle.len()).position(|w| w == needle) {
+                    Some(rel) => {
+                        let p = win_lo + (pos + rel) as u64;
+                        let better = match best {
+                            None => true,
+                            Some(b) => p.abs_diff(row.va) < b.abs_diff(row.va),
+                        };
+                        if better {
+                            best = Some(p);
+                        }
+                        pos += rel + 1;
+                    }
+                    None => break,
+                }
+            }
+            best
+        };
+        let checked = match mosura::recompile::verify_with_image(LANG, &obytes, &subject, out.object.as_ref().unwrap(), &resolver, Some(&find_near)) {
             Ok(c) => c,
             Err(e) => {
                 *census.entry("OBJ_ERROR").or_default() += 1;

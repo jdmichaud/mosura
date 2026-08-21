@@ -7,6 +7,8 @@
 
 use super::align::{FnDiff, compare};
 use super::candidate::{Candidate, SymbolResolver, load_object_function};
+#[allow(unused_imports)]
+use super::candidate::CandTable;
 use super::insn::{NoReloc, NormInsn, normalize};
 
 /// What is being checked: a function's identity in the original image.
@@ -77,9 +79,28 @@ pub fn verify(
     object: &[u8],
     resolver: &dyn SymbolResolver,
 ) -> Result<Checked, VerifyError> {
-    let relinked = load_object_function(object, &subject.name, subject.va, resolver)
+    verify_with_image(lang, original_bytes, subject, object, resolver, None)
+}
+
+/// [`verify`] with access to the original IMAGE around the function: `find_near` searches it
+/// for a byte pattern and returns the match's VA. It powers the table-correspondence rule
+/// ([`Candidate::resolve_tables`]) — a module-local jump-table reference resolves to the
+/// original's table address exactly when the original holds a content-corresponding table.
+/// Without it (`None`), such references stay unresolved and diff, the historical behavior.
+pub fn verify_with_image(
+    lang: &str,
+    original_bytes: &[u8],
+    subject: &Subject,
+    object: &[u8],
+    resolver: &dyn SymbolResolver,
+    find_near: Option<&dyn Fn(&[u8]) -> Option<u64>>,
+) -> Result<Checked, VerifyError> {
+    let mut relinked = load_object_function(object, &subject.name, subject.va, resolver)
         .or_else(|_| load_object_function(object, &format!("{}_", subject.name), subject.va, resolver))
         .map_err(VerifyError::Object)?;
+    if let Some(find) = find_near {
+        relinked.resolve_tables(find);
+    }
     let original = trim_padding(normalize(lang, original_bytes, subject.va, &NoReloc).map_err(VerifyError::Language)?);
     // Decode the RELINKED bytes with no relocator. The relinking has already written each
     // resolvable fixup's real value into the bytes, so running the relocator over them again is a

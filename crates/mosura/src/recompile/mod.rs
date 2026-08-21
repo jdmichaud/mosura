@@ -41,10 +41,10 @@ pub mod watsched;
 
 pub use buildconfig::{BuildConfig, Evidence, Profile};
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
-pub use candidate::{Candidate, CandFixup, SymbolResolver, load_object_function};
+pub use candidate::{CandTable, Candidate, CandFixup, SymbolResolver, load_object_function};
 pub use convention::callee_stack_cleanup;
 pub use insn::{NormInsn, normalize};
 pub use report::{DIVERGENCE_HEADER, FnKey, write_divergence_rows};
 pub use toolchain::{CompileOutput, CompileUnit, Toolchain};
-pub use verify::{ByteVerdict, Checked, Subject, emitted_symbol_address, trim_padding, verify};
+pub use verify::{ByteVerdict, Checked, Subject, emitted_symbol_address, trim_padding, verify, verify_with_image};
 pub use vocab::Vocabulary;
