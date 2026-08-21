@@ -1092,13 +1092,16 @@ fn main() {
             }));
             if let Ok(Some(f2)) = outcome2 {
                 let cand = candidate_call_effects(&f2);
+                // Signature gate: NONDEFAULT-storage stability only. A full count+storage
+                // comparison was measured to refuse every upgrade — own-arity growth IS the
+                // recovery working (the gains carry it too); judging which growths are
+                // allocation-safe (entry liveness, re-homing) is the phase-2 allocator
+                // cost-model's job (regalloc.c CalcSavings/GiveBestReg), recorded in the
+                // thread memory. Until then the allocation gate below covers the
+                // call-crossing half, and the own-params half rides the corpus verdict.
                 let sig_stable = nondefault_parm_regs(&f2, &watreg)
                     == nondefault_parm_regs(fl, &watreg);
-                // The parm-pragma network gate: an upgraded arg list can flip the
-                // caller-side parm/order pragma eligibility (arity/width gates) for
-                // callees with NONDEFAULT parameter signatures — outside the scheduler
-                // model's scope (measured: 0x3925c's `parm [edx] [eax]` callee). Round 1
-                // simply refuses upgrades for TUs calling into that network.
+                // The parm-pragma network gate (see nondefault_storage's doc above).
                 let mut networked = false;
                 for op in f2.op_ids() {
                     let o = f2.op(op);
@@ -1129,7 +1132,11 @@ fn main() {
                     && !networked
                     && !cand.is_empty()
                     && !insns.is_empty()
-                    && !mosura::recompile::watsched::order_regressed(&insns, &cand);
+                    && !mosura::recompile::watsched::order_regressed(&insns, &cand)
+                    // The allocation gate (register-allocator model, phase 1): a candidate
+                    // that kills a register the original visibly carries across the call
+                    // would have re-homed that value (FUN_00034fe0's PUSH EDI shape).
+                    && !mosura::recompile::watsched::allocation_regressed(&insns, &cand);
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
                     eprintln!(
                         "[zapcheck] {name}: {}",

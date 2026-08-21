@@ -1106,6 +1106,31 @@ Parked per pre-registration at +6/−6; the machinery lands env-gated
 (`MOSURA_PROTO_PASS=1`), default-off, landed tree untouched (sentinels + default smoke
 prove byte-identity).
 
+**743 → 743 landed / 746 measured behind the gate (zc2): the register-allocator model,
+phase 1 — the allowed-set condition — built; phase 2's question isolated to a
+four-specimen fixture.** `watsched::allocation_regressed`: a register the ORIGINAL
+demonstrably carries across a call (written before, read after, straight-line) was in the
+allocator's allowed set for that live range, so a candidate declaration killing it would
+have re-homed the value — the FUN_00034fe0 `PUSH EDI` shape, now refused (grounded in
+regalloc.c's structure: `AssignConflicts` → savings-sorted `GiveBestReg` under an
+allowed set).
+
+The full gate stack (scheduler fixed-point + allowed-set + nondefault-storage network +
+signature) measured **746 EXACT: +4 (`FUN_000294dc`, `FUN_0003b00c`, `FUN_0005f33b`,
+`FUN_0003adec`) − 1 (`FUN_0005ed78`)** — net +3, but the campaign's bar is
+zero-regression, so the config stays DEFAULT-OFF and the baseline holds at 743. The one
+loss shares its shape with two of the gains — own parameter count GROWS under the
+prototype pass (1→3) — and the count is NOT the discriminator (`FUN_0005f33b` grows 0→3
+and stays EXACT). The real question, isolated: do the added live-in parameter registers
+COLLIDE with the original body's own register usage (5ed78's original saves and uses EBX;
+param_3 arrives in EBX)? Answering it per function is the phase-2 cost kernel
+(`CalcSavings`/`GiveBestReg`), and the quartet is its ready-made fixture: a correct model
+must adopt 294dc/3b00c/5f33b and refuse 5ed78.
+
+A full-signature stability gate was measured on the way and REFUSES EVERY upgrade (all
+gains grow their own signatures — the arity recovery working); recorded so it is not
+re-derived.
+
 **Harness note, for the runbook file:** the first sb97 check was run against the wrong
 Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's `Bad command
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild

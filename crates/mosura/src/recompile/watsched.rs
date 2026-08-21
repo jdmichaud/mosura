@@ -662,6 +662,60 @@ pub fn order_regressed(insns: &[NormInsn], candidate: &CallEffects) -> bool {
     false
 }
 
+/// THE ALLOCATION GATE (the register-allocator model, phase 1 — the allowed-set necessary
+/// condition from OW's allocator structure, regalloc.c `AssignConflicts`/`GiveBestReg`): a
+/// register the ORIGINAL demonstrably keeps live ACROSS a call — written before it, read
+/// after it before any redefinition, on the straight-line window — was in the allocator's
+/// allowed set for that live range, so the call's declared kill set cannot have contained
+/// it. A CANDIDATE declaration that kills such a register would have forced the original's
+/// allocator to a different home (the measured FUN_00034fe0 shape: the upgraded arity
+/// killed a crossing value's register and the recompiled allocator reached for EDI, adding
+/// a PUSH the original lacks). Conservative and cost-model-free: phase 2 (the
+/// CalcSavings/GiveBestReg kernel) is only needed if this leaves adoptions behind.
+///
+/// `true` = some candidate call kills a register the original visibly carries across it:
+/// refuse the upgrade.
+pub fn allocation_regressed(insns: &[NormInsn], candidate: &CallEffects) -> bool {
+    for (i, x) in insns.iter().enumerate() {
+        if !x.is_call {
+            continue;
+        }
+        let Some((_, writes)) = candidate.get(&x.addr) else { continue };
+        // Registers live INTO the call's fallthrough: for each candidate-killed GPR, scan
+        // forward on the straight line for a read-before-write of it. The window ends at
+        // flow (a branch target's liveness belongs to other paths) or at the next call
+        // (its own contract re-opens the question) — the same conservative shape as the
+        // veto walks, byte-level because this is the ORIGINAL's observed allocation.
+        for &(w, _) in writes {
+            let lo = w & !3;
+            if !matches!(lo, 0 | 4 | 8 | 0xc | 0x18 | 0x1c) {
+                continue;
+            }
+            let mut settled = false;
+            'scan: for y in insns.iter().skip(i + 1).take(24) {
+                for op in &y.sem {
+                    for a in &op.ins {
+                        if let SemArg::Reg(o, sz) = *a {
+                            if o < lo + 4 && o + sz as u64 > lo && !settled {
+                                return true; // original reads the pre-call value: killed-crossing
+                            }
+                        }
+                    }
+                    if let Some(SemArg::Reg(o, sz)) = op.out {
+                        if o < lo + 4 && o + sz as u64 > lo {
+                            settled = true;
+                        }
+                    }
+                }
+                if y.is_call || y.is_branch {
+                    break 'scan;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn volatile_globals(insns: &[NormInsn]) -> HashSet<u64> {
     let mut marked = HashSet::new();
     let none = HashSet::new();
