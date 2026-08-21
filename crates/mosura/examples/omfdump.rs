@@ -16,6 +16,19 @@ fn main() {
         println!("  {n} seg={seg} off={off:#x}");
     }
     println!("fixups: {}", m.fixups.len());
+    for f in &m.fixups {
+        if m.segments.get(f.segment - 1).map(|s| s.is_code()).unwrap_or(false) {
+            println!(
+                "  seg={} off={:#x} loc={} wide={} selfrel={} target={:?} disp={:#x}",
+                f.segment, f.offset, f.location, f.wide, f.self_relative, f.target, f.displacement
+            );
+        }
+    }
+    if let Some(s1) = m.segments.first() {
+        print!("_TEXT[0..0x20]: ");
+        for b in s1.data.iter().take(0x20) { print!("{b:02x} "); }
+        println!();
+    }
     println!("externals: {}", m.externals.len());
 
     // The extraction the checker performs, on the same object.

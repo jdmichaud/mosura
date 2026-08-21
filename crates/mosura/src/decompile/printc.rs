@@ -2293,6 +2293,8 @@ impl<'a> PrintC<'a> {
                 self.emit_structured(s, comps[0], indent, out);
             }
             FlowKind::Switch => {
+                // computed before `idx` is shadowed by the rendered switch operand below
+                let scope_exit = self.next_flow_after(s, idx);
                 let head = exit_basic(s, comps[0]);
                 let head_pc = head.and_then(|b| {
                     self.f.block(b).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind).map(|op| self.f.op(op).seqnum.pc.offset)
@@ -2341,7 +2343,7 @@ impl<'a> PrintC<'a> {
                         }
                     }
                 };
-                let (mut labels_of_case, mut exit_bound): (Vec<Vec<i64>>, Vec<i64>) =
+                let (mut labels_of_case, mut exit_bound): (Vec<Vec<i64>>, Vec<(i64, Option<BlockId>)>) =
                     (vec![Vec::new(); comps.len() - 1], Vec::new());
                 if let Some(pc) = head_pc {
                     if let Some(targets) = self.f.switch_targets.get(&pc).cloned() {
@@ -2356,13 +2358,15 @@ impl<'a> PrintC<'a> {
                             match case_of_target(t) {
                                 Some(pos) => labels_of_case[pos].push(lab),
                                 None => {
-                                    exit_bound.push(lab);
-                                    if let Some(b) = (0..self.f.num_blocks() as u32)
+                                    let landing = (0..self.f.num_blocks() as u32)
                                         .map(BlockId)
-                                        .find(|&b| self.f.block_range(b).is_some_and(|(a, _)| a >= t))
-                                    {
-                                        // the cut edge's own goto record is represented by the
-                                        // `case N: break;` below — suppress its flush
+                                        .filter(|&b| self.f.block_range(b).is_some_and(|(a, _)| a >= t))
+                                        .min_by_key(|&b| self.f.block_range(b).map(|(a, _)| a));
+                                    exit_bound.push((lab, landing));
+                                    if let Some(b) = landing {
+                                        // the cut edge's own goto record is represented at the
+                                        // `case N:` below (as `break;` or `goto LAB;`) —
+                                        // suppress its out-of-place flush after the head
                                         self.switch_exit_suppress.insert(b);
                                     }
                                 }
@@ -2400,9 +2404,27 @@ impl<'a> PrintC<'a> {
                         let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
                     }
                 }
-                for v in &exit_bound {
+                // Ghidra `BlockSwitch::scopeBreak` (block.cc:3621): a goto-typed case whose
+                // target IS the switch's scope exit prints as an (empty) `break`; any other
+                // cut target keeps its formal `goto` — collapsing both to `break` sent
+                // FUN_0004ce2c's case -3 (original: straight to the function epilogue) back
+                // through the do-while's live test instead, a rotated CONTROL flow the byte
+                // comparison caught in the jump table's first entry.
+                for (v, landing) in &exit_bound {
+                    if std::env::var("MOSURA_SWITCH_DEBUG").is_ok() {
+                        eprintln!("[swexit] case {v}: landing {:?} range {:?} scope_exit {:?} range {:?}",
+                            landing, landing.and_then(|b| self.f.block_range(b)),
+                            scope_exit, scope_exit.and_then(|b| self.f.block_range(b)));
+                    }
                     let _ = writeln!(out, "{pad}case {v}:");
-                    let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
+                    match landing {
+                        Some(b) if scope_exit != Some(*b) => {
+                            let _ = writeln!(out, "{}goto {};", "  ".repeat(indent + 1), self.lab_name(*b));
+                        }
+                        _ => {
+                            let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
+                        }
+                    }
                 }
                 let _ = writeln!(out, "{pad}}}");
             }
@@ -2540,6 +2562,37 @@ impl<'a> PrintC<'a> {
                 let _ = writeln!(out, "{pad}do {{");
                 self.emit_structured(s, comps[0], indent + 1, out);
                 let _ = writeln!(out, "{pad}}} while( true );");
+            }
+        }
+    }
+
+    /// The basic block control flows to AFTER the structured node `node` completes — Ghidra's
+    /// `FlowBlock::nextFlowAfter` chain as `BlockSwitch::scopeBreak`'s `curexit` consumes it
+    /// (block.cc:3613): the next sibling in a List; a loop's own test for the last component
+    /// of a loop body (the loop repeats); recurse upward out of conditional arms.
+    fn next_flow_after(&self, s: &Structured, mut node: usize) -> Option<BlockId> {
+        loop {
+            let Some(parent) = s.blocks[node].parent else {
+                // A top-level node: the function body is the SEQUENCE of `Structured::roots`
+                // (`PrintC::emitBlockGraph` emits every top-level component in order), so flow
+                // continues at the next root's entry.
+                let pos = s.roots.iter().position(|&r| r == node)?;
+                return entry_basic(s, *s.roots.get(pos + 1)?);
+            };
+            let comps = &s.blocks[parent].components;
+            let pos = comps.iter().position(|&c| c == node)?;
+            match s.blocks[parent].kind {
+                FlowKind::List => {
+                    if let Some(&next) = comps.get(pos + 1) {
+                        return entry_basic(s, next);
+                    }
+                    node = parent;
+                }
+                FlowKind::WhileDo | FlowKind::InfLoop => return entry_basic(s, comps[0]),
+                // After a do-while body's tail comes the loop's test — the body component's
+                // own exit basic (mosura keeps the condition there; `render_condition` reads it).
+                FlowKind::DoWhile => return exit_basic(s, comps[0]),
+                _ => node = parent,
             }
         }
     }
