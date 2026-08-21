@@ -58,7 +58,9 @@ cat -- "$1" > "$base" || { echo "unreadable: $1" >&2; exit 2; }
 
 census() { # $1 = file, $2 = display name
   echo "== census: $2"
-  awk -F'\t' 'FNR==1 && $1=="idx" {next} {n[$4]++} END {for (v in n) printf "  %5d %s\n", n[v], v}' "$1" | sort -k2
+  awk -F'\t' 'FNR==1 && $1=="idx" {next} {n[$4]++; w+=$9; loss+=$9*(1-$7)}
+    END {for (v in n) printf "  %5d %s\n", n[v], v
+         if (w > 0) printf "  WGSS %.4f (insn-weighted, %d weight)\n", 1-loss/w, w}' "$1" | sort -k2
 }
 
 census "$base" "$1"
