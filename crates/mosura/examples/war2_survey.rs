@@ -1898,20 +1898,42 @@ fn main() {
                     (va != 0).then_some(va)
                 })
                 .collect();
-            for (&op, cs) in f.call_specs.iter() {
+            // DETERMINISTIC per-callee merge. `f.call_specs` is a HashMap, and the old
+            // last-writer-wins fold made the TU's single pragma a RANDOM DRAW whenever two
+            // sites of one callee carried different recovered specs (caller 0x3342c's
+            // 0x63be5: one site caller_cleans+6-reg blanket, one site 5-reg transitive —
+            // emitted `modify exact [eax]` or `[eax ecx]` depending on hash order; the
+            // standing few-function jitter between byte-identical rounds). Merge instead:
+            // sites in sorted op order, caller_cleans from ANY site that has it (cdecl
+            // evidence anywhere is cdecl everywhere), modify = UNION of the sites' sets —
+            // the one declaration must be sound for every site it covers.
+            let mut merged: HashMap<u64, (bool, Option<std::collections::BTreeSet<u64>>)> =
+                HashMap::new();
+            let mut sites: Vec<u32> = f.call_specs.keys().map(|op| op.0).collect();
+            sites.sort_unstable();
+            for opi in sites {
+                let op = mosura::decompile::op::OpId(opi);
+                let cs = &f.call_specs[&op];
                 let Some(t) = f.op(op).input(0) else { continue };
                 let va = f.vn(t).loc.offset;
                 if va == 0 {
                     continue;
                 }
-                let e = callee_aux.entry(va).or_default();
                 if std::env::var_os("MOSURA_AUX_DEBUG").is_some() {
                     eprintln!("[auxdbg] callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
                 }
-                if cs.caller_cleans.unwrap_or(0) > 0 {
+                let e = merged.entry(va).or_default();
+                e.0 |= cs.caller_cleans.unwrap_or(0) > 0;
+                if let Some(m) = cs.cdecl_modify.as_ref() {
+                    e.1.get_or_insert_with(Default::default).extend(m.iter().copied());
+                }
+            }
+            for (va, (cleans, modify)) in merged {
+                let e = callee_aux.entry(va).or_default();
+                if cleans {
                     e.0 = Some("parm caller []".to_string());
                 }
-                if let Some(m) = cs.cdecl_modify.as_ref() {
+                if let Some(m) = modify {
                     let mut regs: Vec<&str> = m
                         .iter()
                         .filter_map(|off| {
