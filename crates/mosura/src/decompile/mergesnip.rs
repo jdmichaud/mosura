@@ -434,7 +434,7 @@ mod tests {
         f.set_blocks(vec![BlockBasic { ops: vec![store, add], ..Default::default() }]);
 
         // The snip is gated on the real ADDRTIED flag, which the pipeline sets before this pass.
-        super::super::varnodeprops::mark_addrtied(&mut f);
+        super::super::varnodeprops::mark_addrtied(&mut f, true);
         merge_required(&mut f);
 
         // The ADD must now read a unique COPY of the pre-store value, not the ram varnode directly.
@@ -461,7 +461,7 @@ mod tests {
         let _t = f.new_output(add, 4, Address::new(uniq, 0x10));
         f.set_blocks(vec![BlockBasic { ops: vec![add], ..Default::default() }]);
 
-        super::super::varnodeprops::mark_addrtied(&mut f);
+        super::super::varnodeprops::mark_addrtied(&mut f, true);
         merge_required(&mut f);
 
         assert_eq!(f.op(add).input(0), Some(g_read), "unrelated read must not be snipped");

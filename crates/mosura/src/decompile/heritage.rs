@@ -704,14 +704,23 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
         effect::UNKNOWN_EFFECT
     } else if f.spaces.get(spc).kind == super::space::SpaceKind::Spacebase {
-        // A NON-aliased stack slot. mosura's alias-boundary adaptation suppresses the passthrough
-        // INDIRECT here (Ghidra would emit one — every stack address falls through its register-only
-        // effect list to unknown_effect); that adaptation is unchanged. What changed is that the
-        // range no longer bails out of the whole function: Ghidra decides the INDIRECT and decides
-        // the input trial SEPARATELY, and a stack slot holding an outgoing argument must still reach
-        // the trial branch below. Spelling it as `unaffected` keeps the INDIRECT suppressed, because
-        // the guarding tail only fires for unknown_effect/return_address/killedbycall.
-        effect::UNAFFECTED
+        // A NON-aliased stack slot falls through to Ghidra's default `unknown_effect` exactly
+        // like an aliased one — `ProtoModel::lookupEffect` has no stack entries — so it gets the
+        // passthrough INDIRECT at every call, and `RuleIndirectCollapse` removes it later when
+        // the slot carries `nolocalalias` (set by `mark_addrtied` from the per-pass alias
+        // boundary). That is Ghidra's cycle: guard first, decide aliasing at the restructure
+        // passes, collapse what proved private.
+        //
+        // The adaptation this replaces spelled the slot `unaffected` on the strength of the
+        // heritage-time alias probe alone — a probe that runs on a clone with dead code removed,
+        // BEFORE ActiveParam makes a `MOV EAX,ESP` the call's argument. WAR2's FUN_00066da8
+        // stores a marker into a stack buffer, passes the buffer's address to a call, and tests
+        // the buffer afterwards: the escape was invisible to the probe, no INDIRECT was made,
+        // the pre-call store flowed through the call, the test constant-folded, and the whole
+        // 61-line body collapsed to three lines (oracle sweep; trace-diff: RuleIndirectCollapse
+        // 24 firings in Ghidra, 2 here). No adaptation is grandfathered once it produces the
+        // wrong program.
+        effect::UNKNOWN_EFFECT
     } else {
         return;
     };
@@ -2612,16 +2621,22 @@ mod tests {
         let before = f.op(pass).input(0).unwrap();
         assert!(!f.vn(before).is_constant() && f.vn(before).loc.space == stack, "passthrough before-value is a free stack read");
 
-        // a stack slot below the boundary (offset -32 < -16) ⇒ not aliased ⇒ no guard.
+        // a stack slot below the boundary (offset -32 < -16) ⇒ not (yet) aliased, but guarded all
+        // the same: Ghidra's `hasEffect` falls through its register-only effect list to
+        // `unknown_effect` for every stack address, so the slot gets a passthrough and
+        // `RuleIndirectCollapse` removes it later once the slot proves `nolocalalias`.
         guard_calls(&mut f, (stack, (-32i64) as u64, 8));
-        assert_eq!(indirects(&f).len(), 2, "non-aliased stack slot is left untouched");
+        let inds = indirects(&f);
+        assert_eq!(inds.len(), 3, "passthrough for the non-aliased stack slot too (unknown_effect)");
+        let npass = *inds.iter().find(|&&op| f.op(op).output.is_some_and(|o| f.vn(o).loc.space == stack && f.vn(o).loc.offset == (-32i64) as u64)).unwrap();
+        assert!(!f.vn(f.op(npass).output.unwrap()).is_indirect_creation(), "stack passthrough is not a creation");
 
         // a ram global ⇒ passthrough (Ghidra `lookupEffect` returns `unknown_effect` for any address
         // not in the register-only EffectRecord list): free before-value, and addr-forced because an
         // unmapped ram global is addr-tied (holdind = fl & addrtied).
         guard_calls(&mut f, (ram, 0x100074, 4));
         let inds = indirects(&f);
-        assert_eq!(inds.len(), 3, "passthrough for the ram global across the call");
+        assert_eq!(inds.len(), 4, "passthrough for the ram global across the call");
         let gpass = *inds.iter().find(|&&op| f.op(op).output.is_some_and(|o| f.vn(o).loc.space == ram)).unwrap();
         let gout = f.op(gpass).output.unwrap();
         assert!(!f.vn(gout).is_indirect_creation(), "ram passthrough is not a creation");

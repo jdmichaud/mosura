@@ -1840,3 +1840,59 @@ list's exit basic and dropped the operand, call and all. Found with the oracle r
 correct, IR intact, trace identical → printer. One arm ported, fixture + strict regression test
 committed. Corpus: 0 flips, 765 EXACT, weighted +181 insn-sim — the largest WGSS move since the
 WGSS-first bar (the defect touched every do-while ending in a short-circuit condition).
+
+### zc30 (2026-08-22): the WAR2 oracle sweep, `AncestorRealistic`, and the stack-slot guard — WGSS 0.4817 → 0.4821
+
+**The sweep.** `examples/war2_oracle_sweep.rs` renders every user function's bytes as a standalone
+fixture through both decompilers — Ghidra's C (`oracle/capture --c`, cached by `oraclecache`)
+and mosura's pure pipeline — and scores them with `ccompare::similarity`: a Watcom-independent
+"how far from Ghidra" signal per function, ranked by `scripts/war2-osweep-rank.py` and compared
+run-to-run by `scripts/war2-osweep-cmp.py`. First run over 2715 scorable functions: mean 0.9273,
+691 exact matches, 208 below 0.8. The do-while port (zc29) had shown the largest WGSS yield of the
+campaign came from a Ghidra divergence on a WAR2 fixture; the sweep is that search made
+systematic.
+
+**Finding #1 → two faithful ports.** The lowest score (FUN_00066da8, 0.085) was a 61-line body
+collapsed to three calls. The trial log named it: the buffer address passed to the call — a
+dedicated `mov eax,esp` COPY — was judged no-use, because mosura's flattened `realistic_faithful`
+recursed through the COPY into the ESP passthrough INDIRECT and applied the killed-by-call
+rejection there. Ghidra's `AncestorRealistic::enterNode` pops `pop_solid` at a non-incidental,
+different-address COPY (a minimal walk over the COPY chain that only rules out an
+unaffected/non-direct-write input). Replaced with a port of the class itself: the explicit state
+stack, `execute`/`enter_node`/`upon_pop`/`check_conditional_exe`, the solid-vs-failkill
+MULTIEQUAL arbitration the old walk flattened with `any`, the SUBPIECE/PIECE offset arms, the
+trial flags (`indcreate_formed`/`condexe_effect`/`ancestor_realistic`/`ancestor_solid` — the
+last two were read by `mark_best_inactive` but never set), the stack-vs-register branch of
+`checkInputTrialUse` (`allowFail`), and `finalInputCheck`. Second piece: `guard_calls` spelled a
+non-aliased stack slot `unaffected`; Ghidra's `hasEffect` gives `unknown_effect` for every stack
+address (passthrough INDIRECT, collapsed later under `nolocalalias`, which is set only at the
+aliasyes restructure passes and never cleared). `mark_addrtied` now follows that.
+
+**The faithful walk exposed a mosura-only defect.** The alias probe in `ActionHeritage` (a clone
+simplified to find aliased slots) ran `resolve_call_args` without `ActionDirectWrite`;
+`AncestorRealistic` fails any input the walk reaches that is not marked a direct write (Ghidra's
+DirectWrite always precedes ActiveParam). On the clone a `mov eax,ebx` ← `mov ebx,eax_in`
+argument chain was judged no-use, `fillin_map`'s dnu-chain rule dropped the struct-pointer
+register behind it, the probe saw no escape, and every by-address stack struct lost its field
+stores (59c6c/58694/30550 in the first re-sweep: 23 up, 9 down). The probe now runs the two
+DirectWrite instances first. Re-sweep after the fix: **23 up, 0 down, weighted +134**
+(66da8 0.085 → 0.936).
+
+**Corpus zc30 vs zc29: 0 flips, 765 EXACT, WGSS 0.4817 → 0.4821 (weighted net +53.1; 15 up,
+11 down).** Every down is a MISMATCH→MISMATCH similarity dip whose standalone render is
+unchanged against Ghidra (3ffdc, 30e38, 1cfbc: identical sweep scores in both worlds) — i.e. a
+recomposition inside the survey's prototype/stack kernel, not a faithfulness regression: 30e38's
+dropped stack argument crosses ≥5 of the new passthrough INDIRECTs and exhausts
+`ancestorOpUse`'s `trim_recurse_max = 5` exactly as Ghidra's walk does (Ghidra's own render of
+that call is `func_0x00063bb0()`); 5886c's extra argument is Ghidra's `CONCAT22(extraout_var,
+in_CS)` junk in mosura's spelling; 5ee20/643e0 lose the saved-EBP "argument" (`xStack_c`), which
+Ghidra also rejects (`!isDirectWrite` on the EBP input). Smoke 21/21, lib tests 732/0, fixture +
+strict test `tests/ancestor_copy_solid.rs`.
+
+**Frontiers opened by the sweep (next):** (1) the stack branch of `checkInputTrialUse` still
+lacks Ghidra's `hasLocalAlias` / local-range / `callee_pop` pre-tests — they are what kills the
+caller-local-slot trials behind every by-address struct's junk field arguments
+(59c6c/58694/30550/5ee20); (2) the return side still uses the flattened `is_realistic`;
+(3) `Varnode::incidental_copy` (x86.pspec ST0–ST7) is not carried; (4) the sweep's remaining
+classes: FUN_0006c6f0 (weighted 123.6), the if-condition comma-statement class (14 functions /
+776 lost weight, e.g. FUN_0003c040), call-argument/prototype divergences (FUN_000686bc).

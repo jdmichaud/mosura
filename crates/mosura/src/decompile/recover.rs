@@ -22,11 +22,11 @@
 
 use std::collections::HashSet;
 
-use super::fspec::{trial_flags, Containment, ParamActive, ParamEntry, ParamList};
+use super::fspec::{trial_flags, Containment, ParamActive, ParamEntry, ParamList, ParamTrial};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
-use super::space::Address;
+use super::space::{Address, SpaceKind};
 use super::varnode::VarnodeId;
 
 /// x86-64 register offsets, for the hand-built SysV fixtures below. The recovery itself no longer
@@ -58,8 +58,8 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
         // where the trial varnode ITSELF is directly an input is rejected by the caller
         // ([`return_trial_kept`]), mirroring `AncestorRealistic::execute`'s early-return (:2205). (The
         // `isUnaffected`/`!isDirectWrite` sub-cases Ghidra also fails, :2036/2038, are inert here — the
-        // reached inputs are the argument registers, never callee-saved/unaffected storage — matching
-        // the same approximation in [`realistic_faithful`].)
+        // reached inputs are the argument registers, never callee-saved/unaffected storage — an
+        // approximation the call-argument side no longer makes: see [`AncestorRealistic`].)
         return !v.is_return_address();
     }
     if !seen.insert(vn) {
@@ -100,82 +100,390 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
     }
 }
 
-/// Realism for a value reached while walking BACK from a *call argument* trial — a port of Ghidra
-/// `AncestorRealistic::enterNode` (funcdata_varnode.cc:2033) for the register-input case. It differs
-/// from [`is_realistic`] in exactly one place: the unwritten-input base case. `is_realistic` is the
-/// return-register port, where the trial *is* the candidate register and an unwritten input is never a
-/// real return (Ghidra `AncestorRealistic::execute` funcdata_varnode.cc:2211 early-returns false when
-/// `op->getIn(slot)->isInput()`). But an input reached *through* a copy/subpiece/piece/zext chain is a
-/// value flowing from the caller — Ghidra's `enterNode` returns `pop_success` for it (a "normal
-/// parameter, not active movement, but valid"). So here an unwritten input is REALISTIC unless it is a
-/// return-address storage location (Ghidra's `pop_fail`). (The `isUnaffected`/`!isDirectWrite`
-/// sub-cases that Ghidra also fails are inert for SysV call-input trials: the candidates are the
-/// argument registers, never callee-saved/unaffected storage — and mosura carries no such flag on the
-/// raw-decompile path.) The top-level "trial itself is the input" case is handled by the caller
-/// ([`check_input_trial_use`]), mirroring the `execute` early-return.
+/// Ghidra `AncestorRealistic` (funcdata.hh:43, funcdata_varnode.cc:1996-2245): is the data-flow
+/// into a parameter trial *realistic* — does the value show active movement into the trial's
+/// storage, rather than being an untouched input or a call-killed leftover? A depth-first
+/// traversal back through the trial's ancestors over an explicit state stack: every node is
+/// entered once ([`Self::enter_node`]) and backtracked out of once ([`Self::upon_pop`]). The
+/// arbitration happens at MULTIEQUALs: a *solid* movement (COPY, LOAD, arithmetic) on one input
+/// can override a *failkill* (a killed-by-call creation) on another — unless the trial is not
+/// allowed a failing path, or the failing path cannot be attributed to conditional execution
+/// ([`Self::check_conditional_exe`]), in which case the trial is slated for `final_input_check`.
 ///
-/// `killed_by_call` carries the trial's `ParamTrial::killedbycall` flag (Ghidra's
-/// `trial->isKilledByCall()`), which every *register* trial sets ([`ParamActive::register_trial`],
-/// fspec.cc:1963): when a value flows THROUGH a call via a passthrough INDIRECT (`newIndirectOp`), a
-/// killed-by-call register trial is invalid — the callee overwrote the register, so the value at the
-/// second call is not the caller's argument (Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT,
-/// funcdata_varnode.cc:2052-2054). This drops the spurious `extraout_RSI` a preceding call's
-/// passthrough leaks into the next call's arg slot; it was inert until the faithful cspec effect list
-/// made caller-saved argument registers passthrough (`unknown_effect`) rather than killed-by-call
-/// creations.
-fn realistic_faithful(f: &Funcdata, vn: VarnodeId, killed_by_call: bool, seen: &mut HashSet<VarnodeId>) -> bool {
-    let v = f.vn(vn);
-    if v.is_constant() {
-        return true;
+/// A dedicated COPY into the trial storage (`MOV EAX,ESP` feeding a call) is itself solid
+/// movement: Ghidra walks the COPY chain only far enough to rule out an unaffected / non-direct-
+/// write input and then pops `PopSolid` WITHOUT entering whatever defines the chain's head. The
+/// flattened walk this replaces recursed through the COPY into the head's defining INDIRECT and
+/// applied the killed-by-call rejection there — dropping the argument (WAR2's FUN_00066da8: the
+/// stack-buffer address passed to a call was judged no-use, and the body collapsed; the oracle
+/// keeps the argument).
+///
+/// Visitation marks use a set instead of Ghidra's `Varnode::mark` bit (same semantics). The op
+/// flags `PcodeOp::isIncidentalCopy` and `isStoreUnmapped` read as `false`: mosura carries
+/// neither (the first is set only on `incidentalcopy` injection payloads, flow.cc:1202; the second
+/// only on STOREs by `ActionInternalStorage`, coreaction.cc:4960, so it can never hold for the
+/// COPY-chain ops the walk tests it on). Nor is the varnode-level `Varnode::incidental_copy`
+/// property (x86.pspec `<incidentalcopy>`: ST0-ST7) carried.
+struct AncestorRealistic {
+    state_stack: Vec<AncestorState>,
+    marked: HashSet<VarnodeId>,
+    multi_depth: i32,
+    allow_failing_path: bool,
+}
+
+/// Ghidra `AncestorRealistic::State` (funcdata.hh:46): a node in the depth-first traversal.
+#[derive(Clone, Copy)]
+struct AncestorState {
+    /// Operation along the path to the Varnode.
+    op: OpId,
+    /// `vn = op.input(slot)`.
+    slot: usize,
+    /// `seen_solid0` / `seen_solid1` / `seen_kill`.
+    flags: u32,
+    /// Offset of the (eventual) trial value, within a possibly larger register.
+    offset: i64,
+}
+
+mod ancestor_state {
+    pub const SEEN_SOLID0: u32 = 1; // a solid movement into the Varnode occurred on at least one path to MULTIEQUAL
+    pub const SEEN_SOLID1: u32 = 2; // a solid movement into anything other than slot 0 occurred
+    pub const SEEN_KILL: u32 = 4; // the Varnode is killed by a call on at least one path to MULTIEQUAL
+}
+
+impl AncestorState {
+    /// Constructor given a Varnode read (funcdata.hh:60).
+    fn new(op: OpId, slot: usize) -> Self {
+        AncestorState { op, slot, flags: 0, offset: 0 }
     }
-    if !v.is_written() {
-        return !v.is_return_address(); // a traversed-to input: pop_success unless a return address
+    /// Constructor from an old state pulled back through a CPUI_SUBPIECE (funcdata.hh:69): the
+    /// data ultimately in the SUBPIECE output is copied from a non-zero offset within the input.
+    fn from_subpiece(f: &Funcdata, op: OpId, old: &AncestorState) -> Self {
+        let in1 = f.op(op).input(1).expect("a SUBPIECE has two inputs");
+        AncestorState { op, slot: 0, flags: 0, offset: old.offset + f.vn(in1).loc.offset as i64 }
     }
-    if !seen.insert(vn) {
-        return false;
+    fn solid_slot(&self) -> usize {
+        if self.flags & ancestor_state::SEEN_SOLID0 != 0 { 0 } else { 1 }
     }
-    let def = v.def.unwrap();
-    match f.op(def).code() {
-        OpCode::Copy | OpCode::Subpiece | OpCode::IntZext | OpCode::IntSext => {
-            f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen))
+    fn mark_solid(&mut self, s: usize) {
+        self.flags |= if s == 0 { ancestor_state::SEEN_SOLID0 } else { ancestor_state::SEEN_SOLID1 };
+    }
+    fn mark_kill(&mut self) {
+        self.flags |= ancestor_state::SEEN_KILL;
+    }
+    fn seen_solid(&self) -> bool {
+        self.flags & (ancestor_state::SEEN_SOLID0 | ancestor_state::SEEN_SOLID1) != 0
+    }
+    fn seen_kill(&self) -> bool {
+        self.flags & ancestor_state::SEEN_KILL != 0
+    }
+}
+
+/// Ghidra `AncestorRealistic` traversal commands (funcdata.hh:79).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AncestorCmd {
+    /// Extending path into new Varnode.
+    EnterNode,
+    /// Backtracking, from path that contained a reasonable ancestor.
+    PopSuccess,
+    /// Backtracking, from path with successful, solid, movement, via COPY, LOAD, or other arith/logical.
+    PopSolid,
+    /// Backtracking, from path with a bad ancestor.
+    PopFail,
+    /// Backtracking, from path with a bad ancestor, specifically killedbycall.
+    PopFailKill,
+}
+
+impl AncestorRealistic {
+    fn new() -> Self {
+        AncestorRealistic { state_stack: Vec::new(), marked: HashSet::new(), multi_depth: 0, allow_failing_path: false }
+    }
+
+    /// Ghidra `AncestorRealistic::execute` (funcdata_varnode.cc:2205): perform a full ancestor
+    /// check on the input `slot` of `op` for `trial`. `allow_fail` is true if we allow and test
+    /// for failing paths due to conditional execution.
+    fn execute(&mut self, f: &Funcdata, op: OpId, slot: usize, trial: &mut ParamTrial, allow_fail: bool) -> bool {
+        self.allow_failing_path = allow_fail;
+        self.marked.clear(); // make sure to clear out any old data
+        self.state_stack.clear();
+        self.multi_depth = 0;
+        // If the parameter itself is an input, we don't consider this realistic, we expect to see
+        // active movement into the parameter. There are some cases where this doesn't happen, but
+        // they are rare and failure here doesn't necessarily mean further analysis won't still
+        // declare this a parameter
+        let Some(vn) = f.op(op).input(slot) else { return false };
+        if f.vn(vn).is_input() && !trial.has_cond_exe_effect() {
+            return false; // make sure we are not retesting
         }
-        OpCode::Multiequal => {
-            f.op(def).inrefs.clone().iter().any(|&i| realistic_faithful(f, i, killed_by_call, seen))
+        // Run the depth first traversal
+        let mut command = AncestorCmd::EnterNode;
+        self.state_stack.push(AncestorState::new(op, slot)); // start by entering the initial node
+        while !self.state_stack.is_empty() {
+            // continue until all paths have been exhausted
+            command = match command {
+                AncestorCmd::EnterNode => self.enter_node(f, trial),
+                pop => self.upon_pop(f, trial, pop),
+            };
         }
-        OpCode::Piece => f.op(def).input(1).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen)),
-        OpCode::Indirect => {
-            // Ghidra `AncestorRealistic::enterNode` CPUI_INDIRECT (funcdata_varnode.cc:2045-2057).
-            if f.vn(vn).is_indirect_creation() {
-                // Backtracking is stopped by a call (:2046). An indirect-ZERO input (the flagged
-                // constant of a definite clobber, funcdata_op.cc:726) pops FAILKILL; any other
-                // creation is a POSSIBLE OUTPUT of the call and pops SUCCESS (:2048-2050) — this
-                // is what lets an argument that is a previous call's still-unrecovered return
-                // survive the realism check. (The flattened walk folds failkill into fail; the
-                // solid-vs-kill MULTIEQUAL arbitration is flattened by the `any` above, as
-                // before.) `trial->setIndCreateFormed()` (:2047) gates Ghidra's final-check pass,
-                // which mosura does not carry yet.
-                !f.op(def).input(0).is_some_and(|z| {
-                    f.vn(z).is_constant() && f.vn(z).is_indirect_creation()
-                })
-            } else if f.vn(vn).is_return_address() {
-                false // storage address location is completely invalid (:2052)
-            } else if killed_by_call && !indirect_is_store(f, def) {
-                // A killed-by-call register trial whose value flows THROUGH a *call* passthrough is
-                // invalid (:2054). Guarded by `!isIndirectStore` (:2052): a STORE-modeling passthrough
-                // is not a call clobber — the value flows through it, so keep traversing.
-                false
-            } else {
-                f.op(def).input(0).is_some_and(|i| realistic_faithful(f, i, killed_by_call, seen))
+        match command {
+            AncestorCmd::PopSuccess => {
+                trial.set_ancestor_realistic();
+                true
             }
+            AncestorCmd::PopSolid => {
+                trial.set_ancestor_realistic();
+                trial.set_ancestor_solid();
+                true
+            }
+            _ => false,
         }
-        _ => true,
+    }
+
+    /// Ghidra `AncestorRealistic::enterNode` (funcdata_varnode.cc:2033): analyze a new node that
+    /// has just entered, during the depth-first traversal. Returns the command indicating the next
+    /// traversal step: push (`EnterNode`), or pop (`PopSuccess`, `PopFail`, `PopSolid`...).
+    fn enter_node(&mut self, f: &Funcdata, trial: &mut ParamTrial) -> AncestorCmd {
+        use AncestorCmd::*;
+        let state = *self.state_stack.last().expect("enter_node runs with a node on the stack");
+        // If the node has already been visited, we truncate the traversal to prevent cycles.
+        // We always return success assuming the proper result will get returned along the first path
+        let state_vn = f.op(state.op).input(state.slot).expect("the traversed slot is a live input");
+        if self.marked.contains(&state_vn) {
+            return PopSuccess;
+        }
+        let v = f.vn(state_vn);
+        if !v.is_written() {
+            if v.is_input() {
+                if v.is_unaffected() {
+                    return PopFail;
+                }
+                if v.is_persist() {
+                    return PopSuccess; // a global input, not active movement, but a valid possibility
+                }
+                if !v.is_direct_write() {
+                    return PopFail;
+                }
+            }
+            return PopSuccess; // probably a normal parameter, not active movement, but valid
+        }
+        self.marked.insert(state_vn); // mark that the varnode has now been visited
+        let op = v.def.expect("a written varnode has a defining op");
+        match f.op(op).code() {
+            OpCode::Indirect => {
+                if v.is_indirect_creation() {
+                    // backtracking is stopped by a call
+                    trial.set_ind_create_formed();
+                    let in0 = f.op(op).input(0).expect("an INDIRECT has two inputs");
+                    if f.vn(in0).is_constant() && f.vn(in0).is_indirect_creation() {
+                        // `isIndirectZero`: true only if not a possible output
+                        return PopFailKill; // truncate this path, indicating killedbycall
+                    }
+                    return PopSuccess; // otherwise it could be valid
+                }
+                if !indirect_is_store(f, op) {
+                    // if flow goes THROUGH a call
+                    if v.is_return_address() {
+                        return PopFail; // storage address location is completely invalid
+                    }
+                    if trial.is_killed_by_call() {
+                        return PopFail; // "likely" killedbycall is invalid
+                    }
+                }
+                self.state_stack.push(AncestorState::new(op, 0));
+                EnterNode // enter the new node
+            }
+            OpCode::Subpiece => {
+                // Extracting to a temporary, or to the same storage location, or otherwise
+                // incidental are viewed as just another node on the path to traverse
+                let in0 = f.op(op).input(0).expect("a SUBPIECE has two inputs");
+                let in1 = f.op(op).input(1).expect("a SUBPIECE has two inputs");
+                if f.spaces.get(v.loc.space).kind == SpaceKind::Internal
+                    || varnode_overlap(f, state_vn, in0) == f.vn(in1).loc.offset as i64
+                {
+                    self.state_stack.push(AncestorState::from_subpiece(f, op, &state));
+                    return EnterNode; // push into the new node
+                }
+                // For other SUBPIECES, do a minimal traversal to rule out unaffected or other
+                // invalid inputs, but otherwise treat it as valid, active, movement into the parameter
+                let mut cur = op;
+                loop {
+                    let vn = f.op(cur).input(0).expect("a COPY/SUBPIECE has an input");
+                    if !self.marked.contains(&vn) && f.vn(vn).is_input() {
+                        if f.vn(vn).is_unaffected() || !f.vn(vn).is_direct_write() {
+                            return PopFail;
+                        }
+                    }
+                    match f.vn(vn).def {
+                        Some(d) if matches!(f.op(d).code(), OpCode::Copy | OpCode::Subpiece) => cur = d,
+                        _ => break,
+                    }
+                }
+                PopSolid // treat the COPY as a solid movement
+            }
+            OpCode::Copy => {
+                // Copies to a temporary, or between varnodes with same storage location, or
+                // otherwise incidental are viewed as just another node on the path to traverse
+                let in0 = f.op(op).input(0).expect("a COPY has an input");
+                if f.spaces.get(v.loc.space).kind == SpaceKind::Internal || v.loc == f.vn(in0).loc {
+                    self.state_stack.push(AncestorState::new(op, 0));
+                    return EnterNode; // push into the new node
+                }
+                // For other COPIES, do a minimal traversal to rule out unaffected or other
+                // invalid inputs, but otherwise treat it as valid, active, movement into the parameter
+                let mut vn = in0;
+                loop {
+                    if !self.marked.contains(&vn) && f.vn(vn).is_input() && !f.vn(vn).is_direct_write() {
+                        return PopFail;
+                    }
+                    // (`op->isStoreUnmapped()` — never set in mosura, see the type docs)
+                    let Some(d) = f.vn(vn).def else { break };
+                    match f.op(d).code() {
+                        OpCode::Copy | OpCode::Subpiece => vn = f.op(d).input(0).expect("a COPY/SUBPIECE has an input"),
+                        OpCode::Piece => vn = f.op(d).input(1).expect("a PIECE has two inputs"), // follow least significant piece
+                        _ => break,
+                    }
+                }
+                PopSolid // treat the COPY as a solid movement
+            }
+            OpCode::Multiequal => {
+                self.multi_depth += 1;
+                self.state_stack.push(AncestorState::new(op, 0));
+                EnterNode // nothing to check, start traversing inputs of MULTIEQUAL
+            }
+            OpCode::Piece => {
+                if v.size > trial.size {
+                    // Did we already pull-back from a SUBPIECE? If the trial is getting pieced
+                    // together and then truncated in a register, this is evidence of artificial
+                    // data-flow.
+                    let in0 = f.op(op).input(0).expect("a PIECE has two inputs");
+                    let in1 = f.op(op).input(1).expect("a PIECE has two inputs");
+                    if state.offset == 0 && f.vn(in1).size <= trial.size {
+                        // Truncation corresponds to least significant piece, follow slot=1
+                        self.state_stack.push(AncestorState::new(op, 1));
+                        return EnterNode;
+                    } else if state.offset == f.vn(in1).size as i64 && f.vn(in0).size <= trial.size {
+                        // Truncation corresponds to most significant piece, follow slot=0
+                        self.state_stack.push(AncestorState::new(op, 0));
+                        return EnterNode;
+                    }
+                    if f.spaces.get(v.loc.space).kind != SpaceKind::Spacebase {
+                        return PopFail;
+                    }
+                }
+                PopSolid
+            }
+            _ => PopSolid, // any other LOAD or arithmetic/logical operation is viewed as solid movement
+        }
+    }
+
+    /// Ghidra `AncestorRealistic::uponPop` (funcdata_varnode.cc:2138): backtrack into a previously
+    /// visited node. `pop_command` is the type of pop being performed; returns the command to
+    /// execute (push or pop) after the current pop.
+    fn upon_pop(&mut self, f: &Funcdata, trial: &mut ParamTrial, pop_command: AncestorCmd) -> AncestorCmd {
+        use AncestorCmd::*;
+        let n = self.state_stack.len();
+        let state_op = self.state_stack[n - 1].op;
+        if f.op(state_op).code() == OpCode::Multiequal {
+            // All the interesting action happens for MULTIEQUAL branch points. `prevstate` is
+            // `state_stack[n - 2]`: the state previous to the one being popped.
+            let num_input = f.op(state_op).num_inputs();
+            let mut pop_command = pop_command;
+            if pop_command == PopFail {
+                // for a pop_fail, we always pop and pass along the fail
+                self.multi_depth -= 1;
+                self.state_stack.pop();
+                return pop_command;
+            } else if pop_command == PopSolid && self.multi_depth == 1 && num_input == 2 {
+                let slot = self.state_stack[n - 1].slot;
+                self.state_stack[n - 2].mark_solid(slot); // indicate we have seen a "solid" that could override a "failkill"
+            } else if pop_command == PopFailKill {
+                self.state_stack[n - 2].mark_kill(); // indicate we have seen a "failkill" along at least one path of MULTIEQUAL
+            }
+            self.state_stack[n - 1].slot += 1; // move to the next sibling
+            if self.state_stack[n - 1].slot == num_input {
+                // if we have traversed all siblings
+                let prevstate = self.state_stack[n - 2];
+                if prevstate.seen_solid() {
+                    // if we have seen an overriding "solid" along at least one path
+                    pop_command = PopSuccess; // this is always a success
+                    if prevstate.seen_kill() {
+                        // UNLESS we have seen a failkill
+                        if self.allow_failing_path {
+                            let state = self.state_stack[n - 1];
+                            if !self.check_conditional_exe(f, &state) {
+                                // that can NOT be attributed to conditional execution
+                                pop_command = PopFail; // in which case we fail despite having solid movement
+                            } else {
+                                trial.set_cond_exe_effect(); // slate this trial for additional testing
+                            }
+                        } else {
+                            pop_command = PopFail;
+                        }
+                    }
+                } else if prevstate.seen_kill() {
+                    // if we have seen a failkill without solid movement
+                    pop_command = PopFailKill; // this is always a failure
+                } else {
+                    pop_command = PopSuccess; // seeing neither solid nor failkill is still a success
+                }
+                self.multi_depth -= 1;
+                self.state_stack.pop();
+                return pop_command;
+            }
+            return EnterNode;
+        }
+        self.state_stack.pop();
+        pop_command
+    }
+
+    /// Ghidra `AncestorRealistic::checkConditionalExe` (funcdata_varnode.cc:1998): are there two
+    /// input flows, one of which is a normal *solid* flow? `state` is the MULTIEQUAL's own node
+    /// and its own solid slot is consulted, exactly as Ghidra does (the solid marks land on the
+    /// previous state, so this reads slot 1 unless the MULTIEQUAL node itself was marked).
+    fn check_conditional_exe(&self, f: &Funcdata, state: &AncestorState) -> bool {
+        let Some(bl) = f.op(state.op).parent else { return false };
+        if f.block(bl).in_edges.len() != 2 {
+            return false;
+        }
+        let solid_block = f.block(bl).in_edges[state.solid_slot()];
+        if f.block(solid_block).out_edges.len() != 1 {
+            return false;
+        }
+        true
+    }
+}
+
+/// Ghidra `Varnode::overlap(const Varnode &)` (varnode.cc:178) over `Address::overlap`
+/// (address.cc): the relative point of overlap of `a` within `b` — the byte offset of `a`'s least
+/// significant byte inside `b` — or -1 when `a` does not lie in `b` (different space, a constant,
+/// or out of range).
+fn varnode_overlap(f: &Funcdata, a: VarnodeId, b: VarnodeId) -> i64 {
+    let (va, vb) = (f.vn(a), f.vn(b));
+    let address_overlap = |skip: u64| -> i64 {
+        if va.loc.space != vb.loc.space {
+            return -1; // must be in same address space to overlap
+        }
+        let spc = f.spaces.get(va.loc.space);
+        if spc.kind == SpaceKind::Constant {
+            return -1; // must not be constants
+        }
+        let dist = spc.wrap_offset(va.loc.offset.wrapping_add(skip).wrapping_sub(vb.loc.offset));
+        if dist >= vb.size as u64 {
+            return -1; // but must fall before op+size
+        }
+        dist as i64
+    };
+    if !f.spaces.is_big_endian(va.loc.space) {
+        address_overlap(0) // little endian
+    } else {
+        let over = address_overlap(va.size as u64 - 1); // big endian
+        if over != -1 { vb.size as i64 - 1 - over } else { -1 }
     }
 }
 
 /// Ghidra `PcodeOp::isIndirectStore` (op.hh): whether an INDIRECT models a `CPUI_STORE` (vs. a call
 /// clobber/passthrough). mosura carries no explicit flag, so it is read from the INDIRECT's guarded
 /// (causing) op — a STORE means the value flows through the store; a CALL/CALLIND is the call
-/// passthrough the killed-by-call check in [`realistic_faithful`] rejects.
+/// passthrough the killed-by-call check in [`AncestorRealistic`] rejects.
 fn indirect_is_store(f: &Funcdata, indirect: OpId) -> bool {
     f.op(indirect).guarded_op().is_some_and(|g| f.op(g).code() == OpCode::Store)
 }
@@ -965,6 +1273,11 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
         // check here is that same gate, expressed where mosura keeps the recovered list.
         check_input_trial_use(f, call);
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
+            // `ActionActiveParam::apply`: a call slated by a conditional-execution effect gets
+            // its final realism pass before the commit.
+            if f.active_inputs[&call].needs_final_check() {
+                final_input_check(f, call);
+            }
             // coreaction.cc:1752-1754 — deriveInputMap decides which trials are the parameters and
             // leaves them in parameter order; buildInputFromTrials then commits that list.
             derive_input_map(f, call);
@@ -993,7 +1306,7 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
 /// (fspec.cc:5638-5651). Each not-yet-checked argument trial gets one of three verdicts:
 ///   - `AncestorRealistic::execute` accepts it (the value has a realistic caller-set ancestor — a
 ///     top-level input trial is rejected, but an input reached *through* a copy chain is accepted,
-///     [`realistic_faithful`]) AND [`ancestor_op_use`] confirms it is used only to feed this call ⇒
+///     [`AncestorRealistic`]) AND [`ancestor_op_use`] confirms it is used only to feed this call ⇒
 ///     `markActive` (a genuine argument);
 ///   - realistic but not only-used-here ⇒ `markInactive` (Ghidra: "not actively used" — dataflow
 ///     preserved);
@@ -1064,12 +1377,20 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         let verdict = match f.op(call).input(slot) {
             None => Verdict::NoUse,
             Some(v) => {
+                // Ghidra branches on the trial varnode's space (fspec.cc:5600-5650): a stack
+                // (spacebase) trial runs `AncestorRealistic` with `allowFail = false` and is
+                // no-use when unrealistic; a register trial runs with `allowFail = true`, and an
+                // unrealistic INPUT is merely inactive ("not likely a parameter but maybe"). A
+                // trial that passes under a conditional-execution effect slates the call for
+                // [`final_input_check`]. (The stack branch's `hasLocalAlias` / local-range /
+                // `callee_pop` pre-tests are not carried here.)
+                let is_stack = f.spaces.get(f.vn(v).loc.space).kind == SpaceKind::Spacebase;
                 let vn_is_input = f.vn(v).is_input();
-                // `AncestorRealistic::execute`: a top-level input trial is not realistic (the
-                // early-return at funcdata_varnode.cc:2211), but a written chain reaching an input via
-                // traversal is (`realistic_faithful`). The trial's killed-by-call flag gates the
-                // passthrough-INDIRECT case (funcdata_varnode.cc:2054).
-                let realistic = !vn_is_input && realistic_faithful(f, v, killed_by_call, &mut HashSet::new());
+                let mut trial = f.active_inputs[&call].trial[ti].clone();
+                let realistic = AncestorRealistic::new().execute(f, call, slot, &mut trial, !is_stack);
+                // Carry the flags the walk set (`indcreate_formed`, `condexe_effect`,
+                // `ancestor_realistic`, `ancestor_solid`) back onto the live trial.
+                f.active_inputs.get_mut(&call).unwrap().trial[ti].flags = trial.flags;
                 if realistic {
                     let addr = f.vn(v).loc;
                     let aou = ancestor_op_use(
@@ -1078,8 +1399,15 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
                     if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
                         eprintln!("[aou] call@{:#x} trial#{ti} slot={slot} -> {aou}", f.op(call).seqnum.pc.offset);
                     }
-                    if aou { Verdict::Active } else { Verdict::Inactive }
-                } else if vn_is_input {
+                    if aou {
+                        if trial.has_cond_exe_effect() {
+                            f.active_inputs.get_mut(&call).unwrap().mark_needs_final_check();
+                        }
+                        Verdict::Active
+                    } else {
+                        Verdict::Inactive
+                    }
+                } else if vn_is_input && !is_stack {
                     Verdict::Inactive
                 } else {
                     Verdict::NoUse
@@ -1139,6 +1467,25 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     active.finish_pass();
     if active.get_num_passes() > active.get_max_pass() {
         active.mark_fully_checked();
+    }
+}
+
+/// Ghidra `FuncCallSpecs::finalInputCheck` (fspec.cc:5565): trials marked active under a
+/// conditional-execution effect are re-run through [`AncestorRealistic`] with no failing path
+/// allowed, now that the control-flow has settled; one that no longer passes is marked no-use.
+fn final_input_check(f: &mut Funcdata, call: OpId) {
+    let mut ancestor_real = AncestorRealistic::new();
+    let n = f.active_inputs[&call].num_trials();
+    for i in 0..n {
+        let mut trial = f.active_inputs[&call].trial[i].clone();
+        if !trial.is_active() || !trial.has_cond_exe_effect() {
+            continue;
+        }
+        let slot = trial.op_slot as usize;
+        if !ancestor_real.execute(f, call, slot, &mut trial, false) {
+            trial.mark_no_use();
+        }
+        f.active_inputs.get_mut(&call).unwrap().trial[i] = trial;
     }
 }
 

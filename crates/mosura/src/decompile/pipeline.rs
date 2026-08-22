@@ -97,6 +97,18 @@ impl Action for ActionHeritage {
                     // locations never enter SSA (task #8).
                     Some(i64::MIN)
                 } else {
+                    // The probe's ActiveParam/ReturnRecovery must see the same varnode marks the
+                    // real mainloop pass sees: Ghidra's `AncestorRealistic` fails any input
+                    // reached by the walk that `ActionDirectWrite` has not marked a direct write
+                    // (funcdata_varnode.cc:2038/:2089), and in Ghidra the two DirectWrite
+                    // instances (coreaction.cc:5497-5498) always precede ActionActiveParam.
+                    // Without them here, a `mov eax,ebx` ← `mov ebx,eax_in` argument chain was
+                    // judged no-use on the clone, `fillin_map`'s dnu-chain rule then dropped the
+                    // struct-pointer register behind it, the pointer never reached the call, and
+                    // the probe reported NO aliased slot — the field stores of every by-address
+                    // stack struct died (WAR2 59c6c/58694/30550, oracle re-sweep).
+                    super::directwrite::ActionDirectWrite::new(true).apply(&mut probe);
+                    super::directwrite::ActionDirectWrite::new(false).apply(&mut probe);
                     super::recover::resolve_return(&mut probe);
                     super::recover::resolve_call_args(&mut probe);
                     // Suppress the MOSURA_TRACE trace here: this rule pool runs on a throwaway
@@ -422,7 +434,10 @@ impl Action for ActionMarkAddrTied {
         "markaddrtied"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        super::varnodeprops::mark_addrtied(data);
+        // No alias analysis has run at this slot (mosura-only pass, before the first
+        // restructure): reconcile addrtied/addrforce, but do not pre-mark `nolocalalias` —
+        // Ghidra sets that only under `unmappedAliasCheck` (the aliasyes restructure passes).
+        super::varnodeprops::mark_addrtied(data, false);
         // Analysis convention: recomputing varnode property flags is never a data-flow change, so it
         // must not drive a rule_repeatapply fixpoint — same convention as ActionNonzeroMask
         // (coreaction.hh:300) and ActionSpacebase (coreaction.hh:277). (Ghidra's
@@ -461,7 +476,7 @@ impl Action for ActionRestructureVarnode {
         if aliasyes {
             data.alias_boundary = super::alias::alias_boundary(data);
         }
-        super::varnodeprops::mark_addrtied(data);
+        super::varnodeprops::mark_addrtied(data, aliasyes);
         self.numpass += 1;
         // Ghidra returns 0 (coreaction.cc:2296): scope/property maintenance is analysis, never a
         // data-flow change driving the repeatapply fixpoint (syncVarnodesWithSymbols' update count

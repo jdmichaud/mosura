@@ -1048,8 +1048,11 @@ pub mod trial_flags {
     pub const ACTIVE: u32 = 8; // hint: written/used in dataflow (a likely parameter)
     pub const UNREF: u32 = 0x10; // synthesized to fill a hole — no backing varnode
     pub const KILLEDBYCALL: u32 = 0x20; // storage is overwritten by a call
-    pub const ANCESTOR_REALISTIC: u32 = 0x100; // AncestorRealistic accepted it
-    pub const ANCESTOR_SOLID: u32 = 0x200; // ...via a solid (real-movement) path
+    pub const REM_FORMED: u32 = 0x40; // the trial is built out of a remainder operation
+    pub const INDCREATE_FORMED: u32 = 0x80; // the trial is built out of an indirect creation
+    pub const CONDEXE_EFFECT: u32 = 0x100; // this trial may be affected by conditional execution
+    pub const ANCESTOR_REALISTIC: u32 = 0x200; // trial has a realistic ancestor
+    pub const ANCESTOR_SOLID: u32 = 0x400; // solid movement into the Varnode
 }
 
 /// Ghidra `ParamTrial` (fspec.hh:210): one candidate parameter at a storage location.
@@ -1106,6 +1109,30 @@ impl ParamTrial {
 
     pub fn is_definitely_not_used(&self) -> bool {
         self.flags & trial_flags::DEFNOUSE != 0
+    }
+    /// Ghidra `ParamTrial::isKilledByCall` (fspec.hh:254).
+    pub fn is_killed_by_call(&self) -> bool {
+        self.flags & trial_flags::KILLEDBYCALL != 0
+    }
+    /// Ghidra `ParamTrial::setIndCreateFormed` (fspec.hh:257): formed by indirect creation.
+    pub fn set_ind_create_formed(&mut self) {
+        self.flags |= trial_flags::INDCREATE_FORMED;
+    }
+    /// Ghidra `ParamTrial::setCondExeEffect` / `hasCondExeEffect` (fspec.hh:259-260): possibly
+    /// affected by conditional execution.
+    pub fn set_cond_exe_effect(&mut self) {
+        self.flags |= trial_flags::CONDEXE_EFFECT;
+    }
+    pub fn has_cond_exe_effect(&self) -> bool {
+        self.flags & trial_flags::CONDEXE_EFFECT != 0
+    }
+    /// Ghidra `ParamTrial::setAncestorRealistic` (fspec.hh:261): has a realistic ancestor.
+    pub fn set_ancestor_realistic(&mut self) {
+        self.flags |= trial_flags::ANCESTOR_REALISTIC;
+    }
+    /// Ghidra `ParamTrial::setAncestorSolid` (fspec.hh:263): solid movement into the Varnode.
+    pub fn set_ancestor_solid(&mut self) {
+        self.flags |= trial_flags::ANCESTOR_SOLID;
     }
     /// Record the matched entry (index into [`ParamList::entry`]) and its group (the sort key) —
     /// Ghidra `ParamTrial::setEntry` (fspec.hh:242).
@@ -1313,6 +1340,9 @@ pub struct ParamActive {
     maxpass: i32,
     /// Ghidra `ParamActive::isfullychecked` (fspec.hh:291): all trials examined, no new ones expected.
     isfullychecked: bool,
+    /// Ghidra `ParamActive::needsfinalcheck` (fspec.hh:292): should a final pass be made on trials
+    /// (to take into account control-flow changes).
+    needsfinalcheck: bool,
     /// Ghidra `ParamActive::stackplaceholder` (fspec.hh:288): which CALL input slot holds the stack
     /// placeholder. `-1` = none yet, `-2` = it has been found and released (Ghidra's
     /// `freePlaceholderSlot` sentinel). Ghidra's companion `slotbase` is deliberately NOT ported:
@@ -1365,6 +1395,7 @@ impl ParamActive {
             numpasses: 0,
             maxpass: 0,
             isfullychecked: false,
+            needsfinalcheck: false,
             stackplaceholder: -1,
         }
     }
@@ -1419,6 +1450,13 @@ impl ParamActive {
     /// Ghidra `ParamActive::isFullyChecked` (fspec.hh:308).
     pub fn is_fully_checked(&self) -> bool {
         self.isfullychecked
+    }
+    /// Ghidra `ParamActive::needsFinalCheck` / `markNeedsFinalCheck` (fspec.hh:303-304).
+    pub fn needs_final_check(&self) -> bool {
+        self.needsfinalcheck
+    }
+    pub fn mark_needs_final_check(&mut self) {
+        self.needsfinalcheck = true;
     }
     /// Ghidra `ParamActive::markFullyChecked` (fspec.hh:309).
     pub fn mark_fully_checked(&mut self) {

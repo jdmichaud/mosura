@@ -30,7 +30,14 @@ use super::varnode::{flags, VarnodeId};
 
 /// Reconcile `addrtied`/`addrforce`/`persist`/`mapped` on the memory varnodes with the current
 /// alias classification (Ghidra `syncVarnodesWithSymbols` + `markUnaliased`). See the module docs.
-pub fn mark_addrtied(f: &mut Funcdata) {
+/// `unmapped_alias_check` is Ghidra's `syncVarnodesWithSymbols(..., unmappedAliasCheck)` argument —
+/// `aliasyes`, true only from the second `ActionRestructureVarnode` pass on (coreaction.cc:2279),
+/// once the `AliasChecker` has actually run over the graph. Before that, Ghidra sets NO
+/// `nolocalalias` (`fl = 0` for an unmapped varnode), so a call-guarded INDIRECT on a stack slot
+/// survives into the pass where the alias analysis can see the slot's address escaping; marking
+/// the flag unconditionally let `RuleIndirectCollapse` fold the guard in pass 0, before the
+/// `MOV EAX,ESP`-to-call escape was ever examined (WAR2's FUN_00066da8 collapse).
+pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
     let ram = f.spaces.by_name("ram");
     let stack = f.spaces.by_name("stack");
     let boundary = f.alias_boundary;
@@ -52,11 +59,14 @@ pub fn mark_addrtied(f: &mut Funcdata) {
             f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED | flags::PERSIST;
         } else if Some(space) == stack {
             if boundary.is_some_and(|b| (vn.loc.offset as i64) >= b) {
-                // An aliased stack slot stays addrtied — and is NOT nolocalalias (the flag
-                // reconciles both ways, per-pass, exactly as the attribute is re-derived on
-                // every `restructureVarnode`).
+                // An aliased stack slot stays addrtied. Ghidra can set nolocalalias but never
+                // clears it (funcdata_varnode.cc:1063) — the boundary only ever moves down as
+                // escapes are discovered, so an aliased slot was never marked.
                 f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED;
-                f.vn_mut(id).flags &= !flags::NOLOCALALIAS;
+            } else if !unmapped_alias_check {
+                // Pass 0: no alias analysis has run, so Ghidra's `fl = 0` — addrtied is cleared
+                // ("we can CLEAR but not SET"), but nolocalalias is NOT set.
+                f.vn_mut(id).flags &= !(flags::ADDRTIED | flags::ADDRFORCE);
             } else {
                 // A non-aliased local: nolocalalias ⇒ clear addrtied, and addrforce with it
                 // ("if addrtied is cleared, so should addrforce", funcdata_varnode.cc:1060-1062)
@@ -94,7 +104,7 @@ mod tests {
 
         // a pointer to offset -16 escaped, so everything at/above -16 is aliased
         f.alias_boundary = Some(-16);
-        mark_addrtied(&mut f);
+        mark_addrtied(&mut f, true);
 
         // ram global: mapped | addrtied | persist
         assert!(f.vn(g).is_addrtied() && f.vn(g).is_persist());
@@ -116,7 +126,7 @@ mod tests {
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let stk = f.new_input(8, Address::new(stack, (-8i64) as u64));
         assert_eq!(f.alias_boundary, None);
-        mark_addrtied(&mut f);
+        mark_addrtied(&mut f, true);
         assert!(!f.vn(stk).is_addrtied());
     }
 }
