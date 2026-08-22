@@ -1775,6 +1775,25 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         // unwritten varnode be re-opened once outputs commit, which is the shape Ghidra's repeated
         // fullloop already assumes.
         if unref {
+            // A RE-COMMIT (the mosura-only `reopen_input` round, open thread 1) must not
+            // manufacture a second varnode for the hole: `delete_unused_trials` renumbered this
+            // trial's slot to the position of the one manufactured on the first commit, and the
+            // heritage pass in between has already renamed that varnode (linked it to its reaching
+            // def or made it a function input). Manufacturing again left a FREE read of an
+            // already-heritaged register at the call, which the next heritage classifies as
+            // "new read in an old range" (`prev == 2`) and answers with a deadcode-delay bump and a
+            // restart — on nearly every survey decompile (Ghidra: ~0.25%), with the register space
+            // pre-live through pass 1 of the restarted run. Ghidra commits exactly once, so its one
+            // manufactured varnode is the one the next pass renames; reusing ours is that shape.
+            if slot > 0 && slot < n {
+                if let Some(prev) = f.op(call).input(slot) {
+                    let pv = f.vn(prev);
+                    if !pv.is_constant() && pv.loc == addr && pv.size == sz {
+                        newparam.push(prev);
+                        continue;
+                    }
+                }
+            }
             let v = f.new_varnode(sz, addr);
             f.vn_mut(v).set_active_heritage();
             newparam.push(v);

@@ -1964,6 +1964,21 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
                 // a recovery partial is throwaway, so restarting the real decompile for it would
                 // be wrong.
                 if dead_removed(f, space) && !f.table_recovery_probe {
+                    if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
+                        // Name the read that re-heritages an old range after dead removal: the
+                        // varnode, its one-line provenance, and its readers.
+                        let v = f.vn(vid);
+                        let readers: Vec<String> = v
+                            .descend
+                            .iter()
+                            .map(|&o| format!("{:?}@{:#x}", f.op(o).code(), f.op(o).seqnum.pc.offset))
+                            .collect();
+                        eprintln!(
+                            "RESTART trigger {}+{:#x}/{} input={} written={} pass={} readers={}",
+                            f.spaces.get(v.loc.space).name, v.loc.offset, v.size, v.is_input(), v.is_written(),
+                            f.heritage_pass, readers.join(",")
+                        );
+                    }
                     bump_deadcode_delay(f, space);
                 }
                 disjoint.add(space, base, msize, MemRange::OLD_ADDRESSES);
