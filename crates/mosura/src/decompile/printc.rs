@@ -941,7 +941,11 @@ impl<'a> PrintC<'a> {
                 matches!(co.code(), OpCode::Cast | OpCode::Copy | OpCode::Ptradd)
                     && co.output.is_some_and(|o2| is_addr_use(self, o2))
             });
-        if !in_ptr_context {
+        // SUM-ORDER CENSUS (MOSURA_SUMORD_CENSUS=1): size the lever outside pointer context
+        // — the reorder is computed for every chain and reported with its context; only
+        // pointer-context chains change the print.
+        let census = std::env::var_os("MOSURA_SUMORD_CENSUS").is_some();
+        if !in_ptr_context && !census {
             return None;
         }
         // flatten the left spine: ((A + K) + B) prints A, K, B
@@ -983,6 +987,12 @@ impl<'a> PrintC<'a> {
         order.sort_by_key(|&k| pcs[k]); // stable: ties keep the reference order
         if order.iter().enumerate().all(|(k, &j)| k == j) {
             return None;
+        }
+        if census {
+            eprintln!("[sumord] pc {:#x} ctx={} terms={}", self.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
+            if !in_ptr_context {
+                return None;
+            }
         }
         let mut placed: Vec<(OpId, usize)> = terms.clone();
         for (k, &j) in order.iter().enumerate() {

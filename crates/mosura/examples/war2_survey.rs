@@ -1348,14 +1348,32 @@ fn main() {
                     // delta was `modify` → `modify exact` and a text check was vacuous.
                     // Compare the SPECS: per callee, (caller_cleans, cdecl_modify,
                     // cdecl_exact) must agree between the landed and candidate decompiles.
-                    let spec_view = |f: &Funcdata| -> std::collections::BTreeMap<u64, (Option<u32>, Option<Vec<u64>>, bool)> {
-                        let mut m = std::collections::BTreeMap::new();
+                    // DETERMINISTIC per-callee view (second leak of the run-to-run jitter,
+                    // found by the full double-emit after d45c4ed): the old fold inserted
+                    // per site over the HashMap, last-writer-wins, so `pragmas_equal` below
+                    // was a random draw whenever a callee had two sites with different
+                    // specs — the network kernel then adopted or refused by hash order
+                    // (FUN_0004ac88 / callee 0x5dd14: `adopted:passthrough` vs
+                    // `refused:network` across runs). The view now merges exactly as the
+                    // TU's pragma emission does (caller_cleans from any site, modify = union,
+                    // exact from any site), so equality of views is equality of the pragmas
+                    // that would be emitted.
+                    let spec_view = |f: &Funcdata| -> std::collections::BTreeMap<u64, (Option<u32>, Option<std::collections::BTreeSet<u64>>, bool)> {
+                        let mut m: std::collections::BTreeMap<u64, (Option<u32>, Option<std::collections::BTreeSet<u64>>, bool)> =
+                            std::collections::BTreeMap::new();
                         for (&op, cs) in f.call_specs.iter() {
                             let Some(t) = f.op(op).input(0) else { continue };
                             let cva = f.vn(t).loc.offset;
-                            if cva != 0 {
-                                m.insert(cva, (cs.caller_cleans, cs.cdecl_modify.clone(), cs.cdecl_exact));
+                            if cva == 0 {
+                                continue;
                             }
+                            let e = m.entry(cva).or_default();
+                            // the pop count: the largest any site recovered (None < Some)
+                            e.0 = e.0.max(cs.caller_cleans.filter(|&n| n > 0));
+                            if let Some(mm) = cs.cdecl_modify.as_ref() {
+                                e.1.get_or_insert_with(Default::default).extend(mm.iter().copied());
+                            }
+                            e.2 |= cs.cdecl_exact;
                         }
                         m
                     };
@@ -1425,7 +1443,7 @@ fn main() {
                                 let Some(t) = ops_input0.get(&op) else { continue };
                                 if let Some((cleans, modify, exact)) = landed_specs.get(t) {
                                     cs.caller_cleans = *cleans;
-                                    cs.cdecl_modify = modify.clone();
+                                    cs.cdecl_modify = modify.as_ref().map(|s| s.iter().copied().collect());
                                     cs.cdecl_exact = *exact;
                                 }
                             }
@@ -3043,7 +3061,7 @@ fn aggregate_ram_globals(
     // original instruction stream.
     let evidenced = |addr: u64, size: u32| -> bool {
         let own = format!("0x{addr:x}");
-        let widened = (size < 4).then(|| format!("0x{:x}", addr - (4 - size) as u64));
+        let widened = (size < 4).then(|| format!("0x{:x}", addr.saturating_sub((4 - size) as u64)));
         insns.iter().any(|x| {
             x.text.contains(&own) || widened.as_deref().is_some_and(|w| x.text.contains(w))
         })
