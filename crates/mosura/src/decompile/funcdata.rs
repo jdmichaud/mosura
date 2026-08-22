@@ -631,6 +631,25 @@ impl Funcdata {
                 return Some(l);
             }
         }
+        // A callee whose RECOVERED prototype is STACK-ONLY (no register params, at least one
+        // stack param) takes the stack-only list too — same principle as the caller-cleaned
+        // arm and as `recover_input_params`' own-prototype branch ("ask the right list"): the
+        // register-convention list reads the empty register slots ahead of the stack entry as
+        // HOLES, and `force_inactive_chain` (fspec.cc:1111, faithful) latches on the run and
+        // kills the real stack trial. Measured on FUN_000624e0's nine `PUSH x; CALL 0x30db8`
+        // sites: the stack trial evaluates ACTIVE and wires, then the fillin drops it —
+        // rendered `func()` with the PUSH missing. Watcom spells this callee `parm []` with
+        // callee-pops (extrapop carries the RET n separately).
+        if let Some(reads) = self.call_specs.get(&call).and_then(|c| {
+            (c.reads_recovered || c.caller_cleans.is_some()).then(|| c.reads.as_ref()).flatten()
+        }) {
+            let reg = self.spaces.by_name("register");
+            if !reads.is_empty() && reads.iter().all(|(a, _)| Some(a.space) != reg) {
+                if let Some(l) = self.cdecl_input.as_ref() {
+                    return Some(l);
+                }
+            }
+        }
         self.proto_model.input.as_ref()
     }
     pub fn op_mut(&mut self, id: OpId) -> &mut PcodeOp {
