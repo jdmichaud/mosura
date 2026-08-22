@@ -2250,6 +2250,19 @@ impl<'a> PrintC<'a> {
                 self.comma_separate = saved;
                 format!("{a} {conn} {b}")
             }
+            // Ghidra `PrintC::emitBlockLs` under `only_branch` (printc.cc:2787-2790): a
+            // BlockList emitted as a loop's trailing condition — the do-while body, re-emitted
+            // after `while (` — emits ONLY its last sub-block. That block may be a
+            // BlockCondition whose second operand carries statements (`(a) || (stmt, b)`).
+            // Reading one CBRANCH off the list's exit basic instead lost exactly that:
+            // FUN_0004d0f8's `(iVar1 == 0) || (iVar1 = func_0x000123dc(..), iVar1 == 0)` printed
+            // as `iVar1 == 0` and the call vanished from the output (oracle-verified on the
+            // fixture). Under `comma_separate` Ghidra's emitBlockLs emits every sub-block, which
+            // the arm below already does through `emit_structured`, so the descent is gated.
+            FlowKind::List if !self.comma_separate => {
+                let last = *comps.last().expect("a List has components");
+                self.render_cond_expr(s, last, neg)
+            }
             _ => {
                 // Under `comma_separate` this leaf IS a `BlockBasic` being emitted inside the
                 // parens (`PrintC::emitBlockBasic`, printc.cc:2699-2720): its statements print
