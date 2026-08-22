@@ -22,7 +22,8 @@
 
 use std::collections::HashSet;
 
-use super::fspec::{trial_flags, Containment, ParamActive, ParamEntry, ParamList, ParamTrial};
+use super::alias::AliasChecker;
+use super::fspec::{trial_flags, Containment, ParamActive, ParamEntry, ParamList, ParamTrial, EXTRAPOP_UNKNOWN};
 use super::funcdata::Funcdata;
 use super::op::OpId;
 use super::opcode::OpCode;
@@ -1233,6 +1234,11 @@ fn call_specs_in_dominance_order(f: &Funcdata) -> Vec<OpId> {
 pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
     let mut count = 0u32;
     let calls: Vec<OpId> = call_specs_in_dominance_order(f);
+    // Ghidra `ActionActiveParam::apply` (coreaction.cc:1731): one deferred `AliasChecker` over the
+    // function's stack space for the whole pass; `checkInputTrialUse` asks it about every stack
+    // trial, and the escapes are gathered at the first question, from the graph as it stands then.
+    let stack_space = f.spaces.by_name("stack");
+    let mut aliascheck = AliasChecker::gather(f, stack_space, true);
     // Set up EVERY call's trial container before checking any (Ghidra creates each `FuncCallSpecs`'
     // `ParamActive` at heritage-time `guardCalls`, so all are `isInputActive` during
     // `ActionActiveParam`). `check_call_double_use`/`checkCallDoubleUse` (funcdata_varnode.cc:1756)
@@ -1271,7 +1277,7 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
         // `ActionActiveParam` does all of its work under `if (fc->isInputActive())` — so
         // `checkInputTrialUse` never runs on a call whose prototype is known. Skipping the realism
         // check here is that same gate, expressed where mosura keeps the recovered list.
-        check_input_trial_use(f, call);
+        check_input_trial_use(f, call, &mut aliascheck);
         if f.active_inputs.get(&call).is_some_and(|a| a.is_fully_checked()) {
             // `ActionActiveParam::apply`: a call slated by a conditional-execution effect gets
             // its final realism pass before the commit.
@@ -1317,7 +1323,7 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
 ///     fspec.cc:5650-5651) — the value is unaffected/killed-by-call, not an argument.
 /// The structural removal is deferred to [`build_input_from_trials`]; freeing keeps the slot count
 /// stable across passes. Then advance the pass counter and gate fully-checked.
-fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
+fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChecker) {
     /// Trial disposition, in Ghidra's `ParamTrial` terms.
     enum Verdict {
         Active,   // markActive — a genuine argument
@@ -1329,6 +1335,21 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
     let recovered: Vec<(Address, u32)> =
         f.call_specs.get(&call).and_then(|cs| cs.reads.clone()).unwrap_or_default();
     let ntrials = f.active_inputs.get(&call).map_or(0, |a| a.num_trials());
+    // fspec.cc:5585-5598 — when the model's extrapop is unknown (`__watcall`), the callee's own
+    // recovered extrapop is HARD evidence about which stack trials are active: a callee that pops
+    // its parameters pops exactly the bytes they occupy. (`getExtraPop`, not the effective one —
+    // "too unreliable"; an extrapop of 4 might be a _cdecl convention and does not necessarily
+    // mean that there are no parameters.) mosura's `CallSpec::extrapop` is the callee's `RET n`
+    // plus the return-address slot, `None` when unknown — Ghidra's `extrapop_unknown`.
+    // (`hasModel()`: mosura's function always carries a model.)
+    let mut callee_pop = f.proto_model.extrapop == EXTRAPOP_UNKNOWN;
+    let mut expop: i32 = 0;
+    if callee_pop {
+        expop = f.call_specs.get(&call).and_then(|cs| cs.extrapop).unwrap_or(EXTRAPOP_UNKNOWN);
+        if expop == EXTRAPOP_UNKNOWN || expop <= 4 {
+            callee_pop = false;
+        }
+    }
     // How many trials this evaluation actually sees. Print it beside the `[trials]` line from
     // `build_input_from_trials` and the two must agree: a trial registered after the evaluation
     // has run is never given a verdict, and an unevaluated trial is dropped from the argument
@@ -1377,16 +1398,44 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
         let verdict = match f.op(call).input(slot) {
             None => Verdict::NoUse,
             Some(v) => {
-                // Ghidra branches on the trial varnode's space (fspec.cc:5600-5650): a stack
-                // (spacebase) trial runs `AncestorRealistic` with `allowFail = false` and is
-                // no-use when unrealistic; a register trial runs with `allowFail = true`, and an
-                // unrealistic INPUT is merely inactive ("not likely a parameter but maybe"). A
-                // trial that passes under a conditional-execution effect slates the call for
-                // [`final_input_check`]. (The stack branch's `hasLocalAlias` / local-range /
-                // `callee_pop` pre-tests are not carried here.)
+                // Ghidra branches on the trial varnode's space (fspec.cc:5600-5650). A stack
+                // (spacebase) trial, fspec.cc:5605-5622: a slot the callee can reach through an
+                // escaped pointer (`hasLocalAlias`) is no-use; so is one outside the model's local
+                // range (the caller's own incoming-parameter slots); when the callee's recovered
+                // extrapop is known (`callee_pop`) the trials INSIDE the popped bytes are active
+                // and the rest no-use, with no realism walk at all; otherwise `AncestorRealistic`
+                // runs with `allowFail = false` and an unrealistic stack trial is no-use. A register
+                // trial runs with `allowFail = true`, and an unrealistic INPUT is merely inactive
+                // ("not likely a parameter but maybe"). A trial that passes under a
+                // conditional-execution effect slates the call for [`final_input_check`].
                 let is_stack = f.spaces.get(f.vn(v).loc.space).kind == SpaceKind::Spacebase;
                 let vn_is_input = f.vn(v).is_input();
                 let mut trial = f.active_inputs[&call].trial[ti].clone();
+                let stack_pretest = if !is_stack {
+                    None
+                } else if aliascheck.has_local_alias(f, v) {
+                    Some((Verdict::NoUse, "hasLocalAlias"))
+                } else if !f.proto_model.localrange.in_range(f.vn(v).loc, 1) {
+                    Some((Verdict::NoUse, "localrange"))
+                } else if callee_pop {
+                    let end = trial.addr.offset.wrapping_add((trial.size - 1) as u64) as i32;
+                    Some((if end < expop { Verdict::Active } else { Verdict::NoUse }, "callee_pop"))
+                } else {
+                    None
+                };
+                if let Some((verdict, why)) = stack_pretest {
+                    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+                        eprintln!(
+                            "[stack-pretest] call@{:#x} trial#{ti} slot={slot} vn=stack+{:#x} {why} callee_pop={callee_pop} expop={expop} alias_boundary={:#x} alias={:x?} -> {}",
+                            f.op(call).seqnum.pc.offset,
+                            f.vn(v).loc.offset,
+                            aliascheck.alias_boundary(),
+                            aliascheck.alias(),
+                            match verdict { Verdict::Active => "active", Verdict::Inactive => "inactive", Verdict::NoUse => "nouse" }
+                        );
+                    }
+                    verdict
+                } else {
                 let realistic = AncestorRealistic::new().execute(f, call, slot, &mut trial, !is_stack);
                 // Carry the flags the walk set (`indcreate_formed`, `condexe_effect`,
                 // `ancestor_realistic`, `ancestor_solid`) back onto the live trial.
@@ -1411,6 +1460,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId) {
                     Verdict::Inactive
                 } else {
                     Verdict::NoUse
+                }
                 }
             }
         };
