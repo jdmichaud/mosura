@@ -75,14 +75,17 @@ awk -F'\t' -v basefile="$base" '
     seen[$3]=1
     if (!($3 in v)) { printf "  only in candidate: %s (%s)\n", $3, $4; onlyc++; next }
     if (v[$3] != $4) { printf "  FLIP %-16s %s -> %s\n", $3, v[$3], $4; flips++ }
-    if (s[$3] != $7) { d=$7-s[$3]; net+=d; moved++; if (d*d > big*big) { big=d; bigf=$3 } }
+    if (s[$3] != $7) { d=$7-s[$3]; net+=d; wnet+=d*$9; moved++; if (d>0) up++; else down++; if (d*d > big*big) { big=d; bigf=$3 } }
+    w+=$9
   }
   END {
     for (f in v) if (!(f in seen)) { printf "  only in baseline: %s (%s)\n", f, v[f]; onlyb++ }
     printf "  flips: %d\n", flips+0
-    printf "  wgss:  %d functions moved, net %+.3f", moved+0, net+0
+    printf "  wgss:  %d functions moved (%d up, %d down), net %+.3f sim", moved+0, up+0, down+0, net+0
     if (moved) printf " (largest: %s %+.3f)", bigf, big
     printf "\n"
+    # the landing bar is insn-WEIGHTED: sum of (sim delta x orig insn count), and its WGSS effect
+    if (moved && w > 0) printf "  wgss:  weighted net %+.1f insn-sim (WGSS %+.5f)\n", wnet, wnet/w
     if (onlyb+onlyc) printf "  membership drift: %d baseline-only, %d candidate-only\n", onlyb+0, onlyc+0
   }
 ' "$base" "$cand"
