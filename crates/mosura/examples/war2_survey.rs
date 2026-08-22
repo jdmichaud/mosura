@@ -1842,6 +1842,19 @@ fn main() {
                 // addresses, so the decision is the recovered mode itself. MOSURA_SUMORD=0
                 // restores the reference term order for A/B rounds.
                 sum_order: std::env::var("MOSURA_SUMORD").as_deref() != Ok("0"),
+                // statement interleave (allocator thread lever 3): OFF — measured at probe
+                // scale (2026-08-22) as a loser: re-sequencing a block's independent
+                // statements into the original's instruction order broke 3 of 5 EXACT
+                // functions (125bc, 2911c, 31c60) and moved the motivating 31c0c not at
+                // all. The original's order is the SCHEDULER's output, not the source's
+                // statement order, and the scheduler does not round-trip its own output
+                // (source-sequence tie-breaks). The census and the orders machinery stay
+                // for a model-inverse variant; MOSURA_ILV=1 enables the blind form.
+                ilv_orders: if std::env::var("MOSURA_ILV").as_deref() == Ok("1") {
+                    mosura::decompile::printc::interleave_orders(&f, &insns)
+                } else {
+                    Default::default()
+                },
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
@@ -1863,6 +1876,11 @@ fn main() {
                     recovered.snapshot_sites.len(),
                     recovered.testmem_sites.len()
                 );
+            }
+            if std::env::var_os("MOSURA_ILV_CENSUS").is_some() {
+                for (pa, pb, k) in mosura::decompile::printc::interleave_census(&f, &insns) {
+                    eprintln!("[ilv] {name} {pa:#x} {pb:#x} {k}");
+                }
             }
             let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
             // VOLATILE RECOVERY: globals whose original store sites show the blocked order

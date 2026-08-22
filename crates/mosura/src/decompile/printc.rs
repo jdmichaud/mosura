@@ -236,6 +236,13 @@ pub struct RecoveredChoices {
     /// as written (FUN_000294b8: the masked-multiply term's `AND` precedes the zero-extend
     /// `AND` in the original; Ghidra prints it second, and the two instructions transpose).
     pub sum_order: bool,
+    /// Statement-interleave orders (allocator thread lever 3): per basic block whose
+    /// independent adjacent statements the original computed in the reverse order, keyed
+    /// by the block's first re-emitted statement op, the block's assign/gstore/store
+    /// statements in the ORIGINAL's order (`interleave_orders`). Statements of other kinds
+    /// (calls, control) keep their positions; the re-emitted ops are skipped when the block
+    /// walk reaches them, as `store_orders` does.
+    pub ilv_orders: std::collections::HashMap<OpId, Vec<OpId>>,
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -3156,6 +3163,43 @@ impl<'a> PrintC<'a> {
             if reordered.contains(&op) {
                 continue;
             }
+            if let Some(order) = self.recovered.ilv_orders.get(&op).cloned() {
+                // interleave re-emission: each op goes through the same printability
+                // tests as the walk below (a non-explicit output is an inline value and
+                // emits nothing; suppressed/nonprinting ops likewise), rendered as the
+                // walk would render it.
+                for ro in order {
+                    reordered.insert(ro);
+                    if self.suppressed.contains(&ro) || self.nonprinting.contains(&ro) {
+                        continue;
+                    }
+                    let o = self.f.op(ro);
+                    let stmtxt = match o.code() {
+                        OpCode::Store => {
+                            let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
+                            let sz = self.f.vn(vv).size;
+                            let vty = self.type_of(vv);
+                            let lhs = self.render_mem(addr, sz, &vty).0;
+                            let val = self.render_var(vv).0;
+                            format!("{lhs} = {val}")
+                        }
+                        _ => match o.output {
+                            Some(outv) if self.is_explicit(outv) => self.render_assign(ro),
+                            _ => continue,
+                        },
+                    };
+                    if self.comma_separate {
+                        if separator {
+                            let _ = write!(out, ", ");
+                        }
+                        let _ = write!(out, "{stmtxt}");
+                        separator = true;
+                    } else {
+                        let _ = writeln!(out, "{pad}{stmtxt};");
+                    }
+                }
+                continue;
+            }
             if let Some(order) = self.recovered.store_orders.get(&op).cloned() {
                 for ro in order {
                     reordered.insert(ro);
@@ -3805,6 +3849,226 @@ pub fn print_c_with(f: &Funcdata, choices: &EmitChoices) -> String {
 
 /// Emit with RECOVERED per-site decisions — the field path: the choices come from evidence in
 /// the original's bytes (a target profile), not from a search that would need a compiler.
+/// STATEMENT-INTERLEAVE CENSUS (allocator thread): adjacent statement pairs of one basic
+/// block that are mutually independent (no SSA dataflow between them, no memory
+/// conflict under the `-oa` aliasing model: a register-addressed access never aliases a
+/// named global, two named globals alias only when their ranges overlap, two
+/// register-addressed accesses are assumed to conflict, a call conflicts with everything)
+/// whose ORIGINAL computation order — each statement anchored at the earliest original
+/// address among its op and inline subtree — is the reverse of the printed order. Each
+/// entry: `(anchor of the first-printed statement, anchor of the second, kind tag)`.
+/// A pure census: nothing is re-emitted.
+/// One statement's effects for the interleave analysis (see `interleave_census`).
+#[derive(Default, Clone)]
+struct IlvEff {
+    op: Option<OpId>,
+    anchor: Option<u64>,
+    writes: Vec<VarnodeId>,
+    reads: Vec<VarnodeId>,
+    gwrites: Vec<(u64, u32)>,
+    greads: Vec<(u64, u32)>,
+    pwrite: bool,
+    pread: bool,
+    call: bool,
+    kind: &'static str,
+}
+
+fn ilv_independent(a: &IlvEff, b: &IlvEff) -> bool {
+    let overlap = |x: &[(u64, u32)], y: &[(u64, u32)]| -> bool {
+        x.iter().any(|&(p, ps)| y.iter().any(|&(q, qs)| p < q + qs as u64 && q < p + ps as u64))
+    };
+    if a.call || b.call || a.kind == "other" || b.kind == "other" {
+        return false;
+    }
+    if b.reads.iter().any(|r| a.writes.contains(r)) || a.reads.iter().any(|r| b.writes.contains(r)) {
+        return false;
+    }
+    if (a.pwrite && (b.pread || b.pwrite)) || (b.pwrite && a.pread) {
+        return false;
+    }
+    if overlap(&a.gwrites, &b.greads) || overlap(&a.gwrites, &b.gwrites) || overlap(&a.greads, &b.gwrites) {
+        return false;
+    }
+    true
+}
+
+/// The statements of every basic block with their effects and ORIGINAL anchors. A
+/// statement is anchored at the earliest original address among its op and inline subtree,
+/// except that named-global accesses take the address of the original instruction that
+/// performs them (nearest at or before the statement, else the first after): Ghidra
+/// materializes a global read as a COPY placed at the consumer or at the aliasing store
+/// that forces the snapshot, so the IR's op addresses say nothing about where the
+/// original loaded it — the instruction stream does. Ram-to-ram COPYs (the merge's
+/// global-to-global artifact, rendered as the global itself) are not statements.
+fn ilv_block_stmts(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> Vec<Vec<IlvEff>> {
+    use crate::recompile::insn::SemArg;
+    let ram = f.spaces.by_name("ram");
+    let mut gaccess: Vec<(u64, u64, u32, bool)> = Vec::new();
+    for x in insns {
+        for op in &x.sem {
+            if let Some(SemArg::Mem(ref sp, a, w)) = op.out {
+                if sp == "ram" {
+                    gaccess.push((x.addr, a, w, true));
+                }
+            }
+            for i in &op.ins {
+                if let SemArg::Mem(ref sp, a, w) = *i {
+                    if sp == "ram" {
+                        gaccess.push((x.addr, a, w, false));
+                    }
+                }
+            }
+        }
+    }
+    fn walk(f: &Funcdata, ram: Option<super::space::SpaceId>, op: OpId, e: &mut IlvEff, depth: usize) {
+        let o = f.op(op);
+        let snapshot = o.code() == OpCode::Copy
+            && o.input(0).is_some_and(|v| Some(f.vn(v).loc.space) == ram);
+        if !snapshot && Some(o.seqnum.pc.space) == ram {
+            e.anchor = Some(e.anchor.map_or(o.seqnum.pc.offset, |a: u64| a.min(o.seqnum.pc.offset)));
+        }
+        if let Some(out) = o.output {
+            e.writes.push(out);
+            let vn = f.vn(out);
+            if Some(vn.loc.space) == ram {
+                e.gwrites.push((vn.loc.offset, vn.size));
+            }
+        }
+        match o.code() {
+            OpCode::Store => e.pwrite = true,
+            OpCode::Load => e.pread = true,
+            OpCode::Call | OpCode::Callind => e.call = true,
+            _ => {}
+        }
+        for k in 0..o.num_inputs() {
+            let Some(v) = o.input(k) else { continue };
+            let vn = f.vn(v);
+            if vn.is_constant() {
+                continue;
+            }
+            e.reads.push(v);
+            if Some(vn.loc.space) == ram {
+                e.greads.push((vn.loc.offset, vn.size));
+            }
+            if depth < 24 && !vn.is_explicit() && !vn.is_input() && vn.descend.len() == 1 {
+                if let Some(d) = vn.def {
+                    walk(f, ram, d, e, depth + 1);
+                }
+            }
+        }
+    }
+    let mut blocks_out = Vec::new();
+    for blk in f.blocks() {
+        let mut stmts: Vec<IlvEff> = Vec::new();
+        for &op in &blk.ops {
+            let o = f.op(op);
+            if o.is_dead() || o.is_marker() {
+                continue;
+            }
+            let kind = match o.code() {
+                OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect | OpCode::Return => continue,
+                OpCode::Store => "store",
+                OpCode::Call | OpCode::Callind => "call",
+                _ => match o.output {
+                    Some(v) if o.code() == OpCode::Copy
+                        && Some(f.vn(v).loc.space) == ram
+                        && o.input(0).is_some_and(|i| Some(f.vn(i).loc.space) == ram) => continue,
+                    Some(v) if f.vn(v).is_explicit() => {
+                        if Some(f.vn(v).loc.space) == ram { "gstore" } else { "assign" }
+                    }
+                    Some(_) => continue,
+                    None => "other",
+                },
+            };
+            let mut e = IlvEff { op: Some(op), kind, ..Default::default() };
+            walk(f, ram, op, &mut e, 0);
+            let here = o.seqnum.pc.offset;
+            let nearest = |range: (u64, u32), write: bool| -> Option<u64> {
+                let hits: Vec<u64> = gaccess
+                    .iter()
+                    .filter(|&&(_, a, w, is_w)| is_w == write && a < range.0 + range.1 as u64 && range.0 < a + w as u64)
+                    .map(|&(addr, ..)| addr)
+                    .collect();
+                hits.iter().copied().filter(|&a| a <= here).max().or_else(|| hits.iter().copied().min())
+            };
+            for &r in &e.greads {
+                if let Some(a) = nearest(r, false) {
+                    e.anchor = Some(e.anchor.map_or(a, |x: u64| x.min(a)));
+                }
+            }
+            for &r in &e.gwrites {
+                if let Some(a) = nearest(r, true) {
+                    e.anchor = Some(e.anchor.map_or(a, |x: u64| x.min(a)));
+                }
+            }
+            if std::env::var_os("MOSURA_ILV_DEBUG").is_some() {
+                eprintln!("[ilv-stmt] pc {:#x} {:?} kind={} anchor={:?}", here, o.code(), kind, e.anchor);
+            }
+            stmts.push(e);
+        }
+        blocks_out.push(stmts);
+    }
+    blocks_out
+}
+
+/// STATEMENT-INTERLEAVE CENSUS (allocator thread): adjacent statement pairs of one basic
+/// block that are mutually independent (no SSA dataflow between them, no memory
+/// conflict under the `-oa` aliasing model: a register-addressed access never aliases a
+/// named global, two named globals alias only when their ranges overlap, two
+/// register-addressed accesses are assumed to conflict, a call conflicts with everything)
+/// whose ORIGINAL computation order is the reverse of the printed order. Each entry:
+/// `(anchor of the first-printed statement, anchor of the second, kind tag)`. Pure census.
+pub fn interleave_census(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> Vec<(u64, u64, String)> {
+    let mut out = Vec::new();
+    for stmts in ilv_block_stmts(f, insns) {
+        for w in stmts.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if let (Some(pa), Some(pb)) = (a.anchor, b.anchor) {
+                if pb < pa && ilv_independent(a, b) {
+                    out.push((pa, pb, format!("{}<->{}", a.kind, b.kind)));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// STATEMENT-INTERLEAVE ORDERS (allocator thread lever 3): per basic block, the
+/// assign/gstore/store statements re-sequenced into the original's computation order by
+/// bubble-swapping adjacent INDEPENDENT pairs whose anchors invert — every swap is legal
+/// on its own, so the result respects every dependency the census model knows. Keyed by
+/// the block's first statement op (in block order); absent when nothing moves.
+pub fn interleave_orders(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> std::collections::HashMap<OpId, Vec<OpId>> {
+    let mut out = std::collections::HashMap::new();
+    for stmts in ilv_block_stmts(f, insns) {
+        let mut seq: Vec<IlvEff> = stmts.into_iter().filter(|e| matches!(e.kind, "assign" | "gstore" | "store")).collect();
+        if seq.len() < 2 {
+            continue;
+        }
+        let reference: Vec<OpId> = seq.iter().filter_map(|e| e.op).collect();
+        let n = seq.len();
+        for _ in 0..n {
+            let mut swapped = false;
+            for i in 0..n - 1 {
+                if let (Some(pa), Some(pb)) = (seq[i].anchor, seq[i + 1].anchor) {
+                    if pb < pa && ilv_independent(&seq[i], &seq[i + 1]) {
+                        seq.swap(i, i + 1);
+                        swapped = true;
+                    }
+                }
+            }
+            if !swapped {
+                break;
+            }
+        }
+        let order: Vec<OpId> = seq.iter().filter_map(|e| e.op).collect();
+        if order != reference {
+            out.insert(reference[0], order);
+        }
+    }
+    out
+}
+
 pub fn print_c_recovered(f: &Funcdata, choices: &EmitChoices, recovered: &RecoveredChoices) -> String {
     print_c_inner(f, choices, recovered).0
 }
