@@ -1910,8 +1910,9 @@ passenger of the junk stack args and Ghidra kills `EBX` at that CALLIND where mo
 counter survives — a separate call-guard divergence; 72e77 reaches Ghidra's argument count;
 27298 is a type reshuffle). Corpus zc31 vs zc30: WGSS 0.4821 → 0.4826 (weighted +60.2; +189
 up / −129 down) **but 5 verdict regressions**: 4 EXACT→MISMATCH (31c60/31dc4/31f74/32100, plus
-the sibling family 32c48/323c0/32924 at −0.276) and 12e40 SAME_SHAPE→MISMATCH. Not landed
-(zero-regression bar); the port is committed on branch `stack-pretests` (off b555c38).
+the sibling family 32c48/323c0/32924 at −0.276) and 12e40 SAME_SHAPE→MISMATCH. Not landed at
+that point (zero-regression bar); parked on branch `stack-pretests` until the restart defect below
+was fixed — then landed as zc33 (see below).
 
 **12e40** is legitimate: its only alias root is the real `lea` escape of `axStack_d4` into the
 same call, and the old "`9`" argument was the buffer's first field — the exact junk the pre-test
@@ -1941,3 +1942,40 @@ So the faithful port is right and the regression is the re-open repair's side ef
 visible because `AliasChecker` now consults the live graph at ActiveParam time. Fixing it means
 retiring/reshaping the re-open repair (thread 1) — or, narrower, not re-manufacturing a
 hole-filler on re-commit — and is a JD decision. Until then the pre-tests stay unlanded.
+
+### zc32 (2026-08-22): the spurious-restart defect fixed — a re-committed call reuses its hole-filler
+
+JD's call on the zc31 finding: fix the old bug first. The cause was one line of composition:
+mosura's re-open repair gives a call a second commit once outputs land, and the first commit's
+manufactured hole-filler is itself free, so every call with an unreferenced parameter slot got
+that second commit — whose unref branch manufactured a SECOND free varnode after the heritage
+pass in between had renamed the first. `delete_unused_trials` already renumbers the used trials'
+slots to the new input positions (Ghidra's `deleteUnusedTrials`), so the re-commit now reuses the
+varnode sitting at the trial's slot when it carries the trial's address and size. Ghidra commits
+exactly once; this makes the mosura-only second commit idempotent on holes. A compact env-gated
+trigger print (`MOSURA_RESTART_DEBUG`) now names the read that re-heritages an old range.
+
+Measured: standalone sweep bumps 29 → 0 with byte-identical scores (the standalone pipeline
+never re-ran on a bump); the FUN_00031c60 probe's own decompiles no longer restart (the 4
+remaining bumps are callee decompiles with a 1-byte `char` hole inside an already-heritaged
+`EDX`, which Ghidra bumps on a first commit too); corpus zc32 vs zc30: 0 flips, WGSS 0.4821
+unchanged (+2.5 weighted, one mover up); lib tests 732/0. Landed as d7bb5e9; the parked
+`stack-pretests` branch merged on top as 0f38e00 and measured as zc33.
+
+### zc33 (2026-08-22): the stack pre-tests land — WGSS 0.4821 → 0.4831
+
+With the re-commit fix underneath, the faithful stack branch of `checkInputTrialUse`
+(`hasLocalAlias` / local range / `callee_pop`, 0f38e00) measures zc33 vs zc32: **765 EXACT held,
+WGSS 0.4821 → 0.4831 (weighted +125.6, the second-largest move of the campaign after the do-while
+port), 41 up / 24 down, one flip: FUN_00012e40 SAME_SHAPE → MISMATCH (weight 11, similarity
+unchanged 0.455)**. That flip is the filter doing its job: the corpus render passed
+`(axStack_d4, param_2, param_3, param_4, 9)` where the `9` is the by-address buffer's own first
+field and the rest are hole-filled passengers; the standalone render is `func_0x00057220(axStack_d4)`
+on both sides (sweep score 1.0). JD's call: land it. The 31c60/32c48 families that blocked zc31 no
+longer move. Lib tests 732/0 on the merged tree; the merged tree's standalone re-sweep reproduces
+the port's 60 up / 12 down exactly, i.e. the restart fix is inert standalone.
+
+Still open from the sweep: the return side still uses the flattened `is_realistic`; the 5761c
+CALLIND class (mosura's loop counter survives a call Ghidra kills `EBX` at — `extraout_EBX`);
+`Varnode::incidental_copy`; and the sweep's remaining classes (FUN_0006c6f0, the if-condition
+comma-statement class, FUN_000686bc).
