@@ -1896,3 +1896,48 @@ caller-local-slot trials behind every by-address struct's junk field arguments
 (3) `Varnode::incidental_copy` (x86.pspec ST0–ST7) is not carried; (4) the sweep's remaining
 classes: FUN_0006c6f0 (weighted 123.6), the if-condition comma-statement class (14 functions /
 776 lost weight, e.g. FUN_0003c040), call-argument/prototype divergences (FUN_000686bc).
+
+### zc31 (2026-08-22, NOT landed): the stack branch of `checkInputTrialUse` — and the spurious-restart defect it exposed
+
+Ported Ghidra's three pre-tests for STACK trials (fspec.cc:5605-5622) ahead of the realism walk:
+`AliasChecker::hasLocalAlias` (now a faithful `AliasChecker` struct in alias.rs, gathered once per
+`ActionActiveParam` pass, unsigned boundary arithmetic), the model's local range, and `callee_pop`
+(model extrapop unknown — `__watcall` — and the callee's recovered `RET n` above 4: trials inside
+the popped bytes are active, the rest no-use, no realism walk). Standalone fixtures now match
+Ghidra's argument lists exactly (59c6c `(param_1, &xStack_18)`, 58694, 30550, 66da8). Oracle
+re-sweep vs osweep3: 60 up / 12 down, weighted +35.5 (downs: 5761c's `iVar3+1` was a hole-filled
+passenger of the junk stack args and Ghidra kills `EBX` at that CALLIND where mosura's loop
+counter survives — a separate call-guard divergence; 72e77 reaches Ghidra's argument count;
+27298 is a type reshuffle). Corpus zc31 vs zc30: WGSS 0.4821 → 0.4826 (weighted +60.2; +189
+up / −129 down) **but 5 verdict regressions**: 4 EXACT→MISMATCH (31c60/31dc4/31f74/32100, plus
+the sibling family 32c48/323c0/32924 at −0.276) and 12e40 SAME_SHAPE→MISMATCH. Not landed
+(zero-regression bar); the port is committed on branch `stack-pretests` (off b555c38).
+
+**12e40** is legitimate: its only alias root is the real `lea` escape of `axStack_d4` into the
+same call, and the old "`9`" argument was the buffer's first field — the exact junk the pre-test
+kills (Ghidra kills it too); the old C compiled closer by accident.
+
+**The 31c60 family is a composition defect outside the port**, traced end to end with the
+survey probe (`MOSURA_ARG_DEBUG`, `MOSURA_OPACTION`, `MOSURA_RESTART_DEBUG`):
+1. The pushed arguments at `call@0x31c7d` are killed by `hasLocalAlias` because the alias walk
+   sees an escape root at the call-time ESP — the **flag ops of the caller's `add esp,8`
+   cleanup** (`INT_CARRY/INT_SCARRY/INT_EQUAL@0x31c82`), dead code in Ghidra by pass 1.
+2. They are alive because the emitted decompile is a **restarted** one in which the register
+   space carries `deadcodedelay=1`, so every register varnode is pre-live at pass 1
+   (`[deadcode-prelive] space=register heritage_pass=1 deadcodedelay=1`). Ghidra's standalone
+   render of 31c60 has no "Heritage AFTER dead removal" warning — Ghidra does not restart here
+   (5 of ~2000 Ghidra standalone renders do; mosura's standalone pipeline bumps 29, and the
+   survey world restarted 10 of 10 decompiles in the 31c60 probe).
+3. The bump fires on a **free `EDX` hole-filler read by `call@0x31cb0`** that is "new in an
+   already-heritaged range" (`prev==2`): the call is committed more than once — after passes 1,
+   3 and 4 — because mosura's *re-open repair* for the call-recovery ordering defect (open
+   thread 1: `Funcdata` "Re-open a call's input recovery") re-runs `build_input_from_trials`
+   once outputs land, and each commit manufactures a fresh `new_varnode` for the unreferenced
+   `EDX` slot (EDX never appears in the function's own ops, so it is a hole every time). Ghidra
+   commits once (`clearActiveInput`), so its one hole-filler is renamed by the next pass and
+   never reads as new.
+
+So the faithful port is right and the regression is the re-open repair's side effect, made
+visible because `AliasChecker` now consults the live graph at ActiveParam time. Fixing it means
+retiring/reshaping the re-open repair (thread 1) — or, narrower, not re-manufacturing a
+hole-filler on re-commit — and is a JD decision. Until then the pre-tests stay unlanded.
