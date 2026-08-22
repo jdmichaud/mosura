@@ -1758,3 +1758,26 @@ reproduces the original); 3 const/const call sites refused only by the default-r
 check. The "declare locals in first-use order" proposal above is already the printer's
 behavior for register locals (stack locals follow Ghidra's storage order); what remains of that
 finding is the per-function search, i.e. measured selection again.
+
+### Review addendum (2026-08-22, later): a second determinism leak, and what the review found
+
+A full double-emit (`diff -rq detX/recovered detY/recovered` over all 3023 TUs — the test the
+probe-level check after `d45c4ed` should have been) found two TUs still varying between runs,
+in the RAW print: a callee's call ARITY flipped (`func_0x0005dd14(param_1)` vs
+`(param_1, param_2)`). The callee's own prototype was stable; the kernel gate was not — the
+survey's `spec_view` folded `f.call_specs` per callee last-writer-wins, so `pragmas_equal`
+and with it the network kernel's adopt/refuse (`adopted:passthrough` vs `refused:network`)
+was a random draw for multi-site callees. Fixed with the same deterministic merge as the
+pragma emission (pop count = max over sites, modify = union, exact = any). Consequence to
+note honestly: the network-kernel landing (`405c526`, "+5 zero-loss") was measured under that
+random gate; zc27 re-measures the deterministic version.
+
+Other review findings: the status doc had not been updated since `d76c1de` (fixed above);
+the smoke set pinned no sentinel for any of the day's landings (now 20 sentinels: 294b8/25f50
+sum-order, 45aa4 aggregation, 3342c deterministic pragma merge, 36b30 stack-append kernel);
+`war2-verdicts.sh` reported only the unweighted sim net while the bar is weighted (fixed,
+`a970c90`); "declaration order inert" was over-generalized from one probe (the 6c6f0 finding
+above stands — first-use order is already the printer's behavior, the per-function search is
+measured selection); the sum-order lever's pointer-context gate covers 120 chains while 670
+chains outside pointer context would reorder under the same evidence (unmeasured A/B
+candidate, `MOSURA_SUMORD_CENSUS=1`).
