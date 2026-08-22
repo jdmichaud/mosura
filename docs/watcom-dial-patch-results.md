@@ -349,7 +349,7 @@ MISMATCH): held** — 0 of 60.
 affected — `FUN_0006dd90`, in the 60-function MISMATCH sample — and it reached no EXACT under any
 permutation, so the 12/3, 19/3, 6/0 and 60/0 results above stand as measured. The harness in
 `held-patches/declorder_ceiling.py` now matches `Stack` without the underscore; §3.5 reports the
-MISMATCH sample re-run under the corrected instrument.
+MISMATCH sample re-run under the corrected instrument, which lands on the same result.
 
 Beyond the three conversions the axis also moves similarity without reaching EXACT: the
 `FUN_0003320c`/`33254`/`3333c`/`33380`/`333c4` sibling family each go 0.500 → 0.727, and
@@ -384,6 +384,26 @@ cannot cover it. What has changed is that the remaining prize is now measured ra
 estimated, and it is small.
 
 ---
+
+### 3.5 The MISMATCH sample, re-run under the corrected instrument
+
+Fixing the freeze regex changes the candidate list (`FUN_0006dd90` and its family are now frozen
+rather than permuted), and because the 60-function sample is an even stride over that list, the
+sample membership shifts. The re-run is therefore a *fresh* 60-function sample, not the same one
+re-scored — which makes it an independent replication rather than a correction:
+
+```
+candidates: 60 functions with 2..4 movable locals, verdict in ['MISMATCH'],
+            class filter = regalloc, sim floor = 0.0
+=== CEILING: 0 of 60 candidate functions have a byte-exact declaration order ===
+```
+
+**0 of 60 again**, on a different 60 functions. Similarity gains: 7 of 60 functions move, total
++0.375 (pre-fix sample: 4 of 60, +0.327 — different members, so the two totals are not directly
+comparable; both say the same thing, which is that the gains are small and thinly spread).
+`FUN_0006dd90` is correctly absent from the corrected candidate set.
+
+Prediction B3 (< 5 % of MISMATCH reachable) therefore holds on two independent samples.
 
 ## 4. Dial A, tie order — the patch that was actually justified, measured once
 
