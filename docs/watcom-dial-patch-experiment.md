@@ -1,6 +1,21 @@
 # The Watcom dial-patch experiment — handoff
 
-**Status:** proposed, not started. This document is a complete brief for an agent picking
+> **STATUS: RUN AND CONCLUDED, 2026-08-22. Results in
+> [`watcom-dial-patch-results.md`](watcom-dial-patch-results.md).** Both dials were patched and
+> measured; both are refuted. Read the results document before acting on anything below.
+>
+> Three corrections to this brief that matter if you use it again:
+> - **§4 Dial A's premise is wrong for 10.0a.** `DoubleRegs` in the OW 1.0 order
+>   (`EAX,EDX,ECX,EBX,…`) does not exist in 10.0a. 10.0a has ONE table, at file `0x7ba50`, in the
+>   order `EAX,EDX,EBX,ECX,ESI,EDI,BP,SP`, and it is also the parameter table. That order is
+>   identical in 8.5a, 9.5b, 10.0 beta, 10.0a and 10.6; the split first appears in 11.0.
+> - **§8's validation specimens no longer discriminate.** Three of the six strict regalloc-only
+>   functions convert to byte-exact under *stock* 10.0a by reordering local declarations in our
+>   emitted C, so their conversion is not evidence for any dial.
+> - **§3's environment note is wrong about the load base**: `VA = file offset − 0x2200` for
+>   wcc386 10.0a's code and rodata.
+
+**Status (original):** proposed, not started. This document is a complete brief for an agent picking
 up the experiment cold. Read it end to end before touching anything. It is written to be
 self-contained, but it links the existing documents you MUST also read rather than
 recopying them.

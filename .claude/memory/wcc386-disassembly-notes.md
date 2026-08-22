@@ -20,7 +20,26 @@ until `05ee0b9` added LX support. It is NOT one image:
   compressed (entropy ~6) and NOT another LE/LX image — the `LE` bytes at `0xcb70` / `0x72925` /
   `0x73e6d` are coincidences inside strings; their header fields are garbage.
 
-**Load base: file offset == address.** Established by pointer-matching: u32s equal to the file
+> ### ⚠️ CORRECTED 2026-08-22 — the load base is NOT file offset
+>
+> **For the code and read-only data region, `VA = file offset − 0x2200`.** Pinned on a datum with
+> no interpretive slack: the 4-byte register-allocation table is at **file** `0x7ba50`, and the
+> accessor at file `0x4052b` is `MOV EAX,0x79850 ; RET`, while file `0x79850` holds unrelated
+> instruction-encoding tables. Six pointer slots (`RegSets[RL_DOUBLE]` at file `0x7bb54`, plus
+> five `ParmSets`/`Parm8087` entries) all store `0x79850`. Searching for a table's *file* offset
+> as a dword finds nothing; searching for `file − 0x2200` finds every reference.
+>
+> The pointer-matching below was a coincidence: the dword `0x755dc` in the file is a pointer to
+> the `__GETDS`/`__EPI` symbol blob at file `0x777dc`, **not** to the `-of` help text that happens
+> to sit at file `0x755dc`. Two strings 0x2200 apart, and the search matched the wrong one.
+>
+> Practical consequence: offsets quoted below (`0x3ff36`, `0x482f1`, `0x404a2` …) are **file**
+> offsets — correct for `dumpraw` and for patching, which is what they were used for — but their
+> runtime addresses are `0x2200` lower. Absolute addresses appearing *inside* instructions
+> (`[0x7f8b0]`, `[0x7f89c]`, `[0x7f884]`) are VAs and are **not** file offsets.
+> Worked through in `docs/watcom-dial-patch-results.md` §4.2.
+
+**Load base: file offset == address.** *(superseded — see the correction above.)* Established by pointer-matching: u32s equal to the file
 offsets of `Access violation` (`0x206e`) and the `-of` help text (`0x755dc`) appear in the file, and
 no other base matches. So a raw disassembly can be read at face value.
 
