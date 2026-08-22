@@ -241,4 +241,48 @@ Two things worth keeping from the attempt:
 
 ---
 
-*(Item 2 follows)*
+## 4. Item 2 — pre-registration, re-scoped
+
+The handoff's success criterion is *"one shape reproduces BOTH `FUN_0004b750`'s site A and
+`FUN_00073328`'s load pair"*. **That criterion cannot be met, and §0.2 is why**: the two are in
+different classes. `FUN_00073328`'s pair is two `[EBP+disp]` loads — equal `stallable`, so the
+source-order key decides and the order is reachable. `FUN_0004b750` site A is a
+register-copy/constant pair — `stallable` 2 vs 0, decided above the id key, so no C shape reaches
+it. Re-registering accordingly, before probing:
+
+- **The specimen is `FUN_00073328`** (`/data/be2/zc27/recovered/02867.c`), the whole function
+  being `func_0x00072e77(param_1, param_2);` with both parameters stack-passed
+  (`parm caller []`). Original: `MOV EDX,[EBP+0xc]` then `MOV EAX,[EBP+0x8]` — the **second**
+  argument's load first. Ours: the reverse.
+- **Candidate shapes**, ranked from the source reading before any compile (call lowering is
+  right-to-left: `GenFuncCall` `cexpr2.c:2107-2121` builds the parm tree last-argument-deepest,
+  `LinearizeTree` walks post-order, `TGAddParm` `tree.c:843` appends, `BGAddParm`
+  `bldcall.c:211` prepends, and `ParmIns` `bldcall.c:590` creates the moves walking the list
+  last-parm-first):
+  1. `volatile` on the passed values — cannot coalesce into the entry parm temp, so the load is
+     materialized at the call in right-to-left order (and volatile is a full DAG barrier).
+  2. the argument as a memory object that is not the enclosing function's own parm.
+  3. an explicit temp per argument (`t1 = x; t2 = y; g(t1,t2);`) — defining MOVs created in
+     **statement** order, left-to-right. This is *not* the already-refuted "hoisted temp" probe:
+     that one was run on a reg/const pair, which is `stallable`-decided and immune to any id
+     change.
+  4. a nested `{ }` scope with a declaration under `-d1+` — `DoDBBegBlock` emits an `OP_NOP`
+     (`dbsyms.c:745-755`) that `BuildDag` treats as `link_all` (`inssched.c:533-537`), a
+     zero-byte scheduling wall. Pins whole statements, cannot fall mid-call-setup.
+  5. narrower/unprototyped callee parameter types — **expect null**; a conversion is added at the
+     same point in the walk, changing opcodes but not order.
+  6. `#pragma aux … parm reverse` — **refuted by reading, no probe spent**: `REVERSE_PARMS` flips
+     both `GenFuncCall` (`cexpr2.c:2034`) and `TGAddParm` (`tree.c:856`) and the two cancel.
+- **Prediction F1.** At least one of shapes 1–4 reproduces the original's order on the specimen.
+- **Prediction F2.** Shape 5 produces no order change (listed so a null there is not read as
+  informative).
+- **Control.** Any shape that reproduces the specimen must be checked against
+  `FUN_0004b750`'s five constant-first sites, which must NOT move.
+- **Deliverable either way.** If a shape is found, design the lever and report the pool it would
+  cover and its blast radius — **design it, do not land it**, per the handoff. If none is found,
+  report the null and the re-partition of the 31-pair pool into the reachable equal-`stallable`
+  subset and the permanently-unreachable reg/const subset.
+
+---
+
+*(Item 2 measurement follows)*
