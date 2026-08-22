@@ -143,4 +143,102 @@ requirement costs one batched run of 44 units, not a corpus round.
 
 ---
 
-*(measurement follows)*
+## 2. Item 1 — the measurement
+
+### 2.1 Method
+
+For each candidate, every permutation of the movable declarations was compiled against stock
+10.0a and grouped by emitted-code identity (the divergence table's candidate-side rows are a
+faithful fingerprint: for a SAME_SHAPE function every instruction aligns, and zero rows means
+byte-exact). Batched one permutation-round per dosemu session.
+Harness: `held-patches/declorder_classes.py`; predicate: `held-patches/predict_regs.py`.
+
+### 2.2 The 12 ceiling candidates: the predicate fails, 2 of 12
+
+| idx | function | widths | measured classes | predicted classes | |
+| --- | --- | --- | --- | --- | --- |
+| 00262 | `FUN_0001798c` | 4,4 | 2 | 2 | OK |
+| 00278 | `FUN_00018afc` | 1,4,4 | **1** | 6 | FAIL |
+| 01104 | `FUN_00032bd4` | 4,4 | **1** | 2 | FAIL |
+| 01112 | `FUN_0003320c` | 4,4,2 | **2** | 6 | FAIL |
+| 01113 | `FUN_00033254` | 4,4,2 | **2** | 6 | FAIL |
+| 01116 | `FUN_0003333c` | 4,4,4 | **2** | 6 | FAIL |
+| 01118 | `FUN_00033380` | 4,4,4 | **2** | 6 | FAIL |
+| 01120 | `FUN_000333c4` | 4,4,4 | **2** | 6 | FAIL |
+| 01678 | `FUN_000464b4` | 4,1,1 | **2** | 4 | FAIL |
+| 01908 | `FUN_0004c6c0` | 4,4 | **1** | 2 | FAIL |
+| 02458 | `FUN_0005fb24` | 4,4 | 2 | 2 | OK |
+| 02675 | `FUN_0006a720` | 4,4,4 | **2** | 6 | FAIL |
+
+**2 of 12**, and both passes are two-local functions where the predicate has only two options to
+choose between — the other two two-local functions measure **one** class and it fails them.
+**Prediction E1: refuted. Prediction E2: held**, though for a weaker reason than the real one —
+I expected an arithmetic mismatch on one function; the failure is structural and hits nine.
+**Prediction E3: held** — `FUN_0006a720` is the sharpest case, and the predicate names a distinct
+order for each of its six permutations where measurement finds two outcomes.
+
+### 2.3 What the measurement found instead: declaration order is a BINARY lever
+
+Every multi-local candidate collapses its permutations into **at most two** classes:
+
+```
+FUN_0006a720   3 int4 locals, 6 orders -> 2 outcomes   {p0,p2,p5} | {p1,p3,p4}
+FUN_0003320c   3 locals,      6 orders -> 2 outcomes   {p0,p3,p5} | {p1,p2,p4}   (x5 family)
+FUN_000464b4   3 locals,      6 orders -> 2 outcomes   {p1,p2,p3} = EXACT | {p0,p4,p5}
+FUN_00018afc   3 locals,      6 orders -> 1 outcome
+```
+
+Three same-width `int4` locals in `FUN_0006a720`: a positional mapping onto the register table
+predicts six assignments; the compiler produces **two**. So declaration order does not index the
+register table. It flips **one residual tie** and nothing else.
+
+That names the assumption that broke — number 6 of the eleven: `CountRegMoves` decides most
+registers **by score**, and where a score is strictly maximal, table order never enters. Only the
+choice the scores leave tied is reachable, and predicting *which* choice that is requires the
+scores, which require the instruction stream, which requires the compiler.
+
+### 2.4 The blast radius, probed in full: zero
+
+The handoff requires all currently-EXACT functions with ≥2 movable temps be compiled, not sampled
+("the aggregation arm lost five EXACTs to a three-function sample"). All 44 were:
+
+| | count |
+| --- | --- |
+| currently-EXACT functions probed | **44** (32 with 2 locals, 9 with 3, 3 with 4) |
+| with more than one permutation class — i.e. breakable by reordering | **0** |
+| with exactly one class — declaration order cannot change them at all | **44** |
+
+Including three functions with 24 permutations each, all collapsing to one class. **A
+declaration-order arm cannot break a single currently-EXACT function.** The blast radius is not
+332 (dial-patch §4.8, which measured a *compiler* dial) and not 44 — it is zero.
+
+This is self-consistent with §2.3: a function is byte-exact because our C already produces the
+original's assignment, and it does so because that assignment is score-determined rather than
+tie-determined — which is exactly the condition under which declaration order has nothing to flip.
+
+---
+
+## 3. Item 1 — verdict
+
+> **The model-inverse is CLOSED NEGATIVELY, on the handoff's own terms.**
+> The predicate derived from source — the only one the mechanism supports — reproduces the
+> measured partition on 2 of 12 candidates, both trivial. The reason is structural, not a
+> detail to patch: declaration order reaches only the residual tie that `CountRegMoves` leaves,
+> and identifying that tie needs the scores, hence the instruction stream, hence the compiler.
+> A compiler-free predicate of this kind does not exist. Per the handoff, the permutation search
+> stays a **ceiling, not a lever**.
+
+Two things worth keeping from the attempt:
+
+1. **Declaration order is a binary lever, not an n! one.** On every multi-local function measured
+   it produces at most two distinct outputs. That makes *measured selection* — compile both, keep
+   the better — cost about two compiles per function rather than n!, which is the first hard cost
+   figure for the "measured selection / arms revival" question `allocator-model-thread` parks for
+   JD. The prize is still only the ~+3 EXACT of the ceiling, so the cost side improving does not
+   by itself make it worth building; but the number is now known rather than feared.
+2. **The risk is zero, measured in full.** Whatever is built on this axis cannot regress a
+   currently-EXACT function. That retires the blast-radius worry that shaped the handoff's design.
+
+---
+
+*(Item 2 follows)*
