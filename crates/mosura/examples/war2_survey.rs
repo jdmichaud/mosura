@@ -1709,7 +1709,7 @@ fn main() {
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
             let ac = print_c_with(&f, theta);
-            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default(), &Default::default());
+            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default(), &Default::default(), &[]);
             let atu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{atu}"),
                 None => atu,
@@ -1971,7 +1971,13 @@ fn main() {
                     Some((va, spec))
                 })
                 .collect();
-            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles, &vararg_callees);
+            let (rc, aggregates) = aggregate_ram_globals(&rc, &insns, &gsizes, &volatiles);
+            if std::env::var_os("MOSURA_AGG_DEBUG").is_some() && !aggregates.is_empty() {
+                for (_, d) in &aggregates {
+                    eprintln!("[agg] {name}: {d}");
+                }
+            }
+            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles, &vararg_callees, &aggregates);
             let rtu = match &contract {
                 Some(decl) => format!("#pragma aux {name} {decl};\n{rtu}"),
                 None => rtu,
@@ -1986,7 +1992,7 @@ fn main() {
                 println!("{rtu}");
             }
         }
-        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default(), &Default::default());
+        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default(), &Default::default(), &[]);
         let tu = if let Some(decl) = contract.clone() {
             // REGISTER CONVENTION THAT IS NOT THE DEFAULT PREFIX. The decompiler recovers each
             // parameter's true STORAGE (Ghidra's `ParameterPieces::addr`), but a C signature can
@@ -2672,6 +2678,11 @@ fn build_tu(
     // and register saves, with linkage unchanged. Empty for every rendering but the recovered
     // one.
     vararg_callees: &HashMap<u64, String>,
+    // Aggregated-global array declarations (`aggregate_ram_globals`): (base_name, decl_line).
+    // The base name appears indexed in the body, so it must be declared as the array here and
+    // kept out of the pointer/scalar classification; empty for every rendering but the
+    // recovered one.
+    aggregates: &[(String, String)],
 ) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
@@ -2767,8 +2778,14 @@ fn build_tu(
         .collect();
 
     let mut names: BTreeSet<String> = BTreeSet::new();
+    // Aggregated arrays declare here verbatim; their base names index into the body text, so
+    // they would otherwise classify as pointer globals.
+    let agg_names: HashSet<&str> = aggregates.iter().map(|(n, _)| n.as_str()).collect();
+    for (_, d) in aggregates {
+        names.insert(d.clone());
+    }
     for (n, pfx) in &scalar_idents {
-        if ptr_idents.contains(n) || declared_locals.contains(n.as_str()) {
+        if ptr_idents.contains(n) || declared_locals.contains(n.as_str()) || agg_names.contains(n.as_str()) {
             continue;
         }
         // Prefer the width the decompiler recovered for this address over the prefix's default.
@@ -2801,6 +2818,7 @@ fn build_tu(
             }
             if declared_locals.contains(cap)
                 || ptr_idents.contains(cap)
+                || agg_names.contains(cap)
                 || names.iter().any(|d| d.split_whitespace().any(|t| t.trim_end_matches(';') == cap))
             {
                 continue;
@@ -2816,7 +2834,7 @@ fn build_tu(
         names.extend(extra);
     }
     for n in &ptr_idents {
-        if declared_locals.contains(n.as_str()) {
+        if declared_locals.contains(n.as_str()) || agg_names.contains(n.as_str()) {
             continue;
         }
         // mosura's name prefixes carry the recovered type: `p` is a pointer, and the SECOND letter
@@ -2924,6 +2942,150 @@ fn classify_ident(
             scalar_idents.insert((w.to_string(), 'u'));
         }
     }
+}
+
+/// GLOBAL AGGREGATION (allocator thread, lever 2): adjacent same-type scalar Ram globals that
+/// the ORIGINAL's own instruction stream accesses as one object allocate DIFFERENTLY as
+/// separate extern symbols than as one array — Watcom's conflict-tie machinery keys on symbol
+/// structure. Measured with 10.0a probes: FUN_00045aa4's EAX/EDX role swap vanishes under
+/// `short v[4]` (byte-exact shape), FUN_00031c0c's AX/CX likewise (5 rows + a spurious ECX
+/// save → 1 row, with the statement-interleave residue a separate lever). The rewrite indexes
+/// the run's BASE symbol (`iRam<base>[k]`), whose `<pfx>Ram<hex>` name keeps relocation
+/// resolution unchanged; element addresses and widths are identical, so the transform is
+/// semantics-preserving by construction.
+///
+/// Gates: adjacency runs (addr + size == next, same elem type, members evidenced in the
+/// original bytes — own address or the dword-widened addr-(4-size) appearing in some
+/// original instruction, none volatile, none used with `[`/`.`) are detected broadly, but
+/// the TU aggregates only when EVERY detected run is a SHORT (size-2) run of >=3 — the
+/// pure configuration the corpus measured safe. MOSURA_AGG=0 disables.
+///
+/// WHY THIS NARROW: the full corpus A/B (zc19 -> zc20, gate = any adjacent same-type run
+/// of >=2) measured the transform as a TIE-RESHUFFLER, not a recovery — 403 TUs fired,
+/// winners and losers in comparable numbers in every shape class (5 EXACT lost / 1 gained,
+/// net -1.8 weighted sim). Access patterns CANNOT distinguish array-source from
+/// adjacent-scalars-source (both compile to identical bytes when the allocation happens to
+/// agree), so a static byte gate cannot call the coin flip. The one class that measured
+/// strictly safe and net-positive is short runs of >=3 (16 pure TUs: +6.3 weighted,
+/// zero verdict regressions, FUN_00045aa4 SAME_SHAPE->EXACT). The abandoned ~235 weighted
+/// positive mass in coin-flip TUs is harvestable only by measured per-TU selection — an
+/// arms-style architecture decision, recorded in the allocator-model thread.
+fn aggregate_ram_globals(
+    c: &str,
+    insns: &[mosura::recompile::insn::NormInsn],
+    gsizes: &std::collections::HashMap<u64, u32>,
+    volatiles: &HashSet<u64>,
+) -> (String, Vec<(String, String)>) {
+    if std::env::var("MOSURA_AGG").as_deref() == Ok("0") {
+        return (c.to_string(), Vec::new());
+    }
+    // Ram identifiers in the text, with per-name exclusion when any occurrence is followed by
+    // `[` (already indexed / pointer-classified downstream) or `.` (partial-symbol accessor).
+    let bytes = c.as_bytes();
+    let mut names: std::collections::HashMap<String, (u64, bool)> = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_ident(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        let tok = &c[start..i];
+        let Some(addr) = ram_addr_of(tok) else { continue };
+        let excluded = matches!(bytes.get(i), Some(b'[') | Some(b'.'));
+        let e = names.entry(tok.to_string()).or_insert((addr, false));
+        e.1 |= excluded;
+    }
+    // Candidate members: recovered scalar size, spellable type, not volatile.
+    let mut members: Vec<(u64, u32, String, String)> = Vec::new(); // (addr, size, elem_ty, name)
+    for (name, &(addr, excluded)) in &names {
+        if excluded || volatiles.contains(&addr) {
+            continue;
+        }
+        let Some(&size) = gsizes.get(&addr) else { continue };
+        if !matches!(size, 1 | 2 | 4) {
+            continue;
+        }
+        let pfx = name.chars().next().unwrap_or('x');
+        if pfx == 'p' {
+            continue;
+        }
+        let ty = sized_ctype(pfx, size).unwrap_or_else(|| ctype_for(pfx).to_string());
+        members.push((addr, size, ty, name.clone()));
+    }
+    members.sort();
+    // Byte evidence: the member's address — or its dword-widened load address — appears in the
+    // original instruction stream.
+    let evidenced = |addr: u64, size: u32| -> bool {
+        let own = format!("0x{addr:x}");
+        let widened = (size < 4).then(|| format!("0x{:x}", addr - (4 - size) as u64));
+        insns.iter().any(|x| {
+            x.text.contains(&own) || widened.as_deref().is_some_and(|w| x.text.contains(w))
+        })
+    };
+    // PURITY: runs are detected under the broad criteria (any scalar size, length >=2,
+    // loose evidence) exactly as the zc20 full-fire round did; the TU aggregates ONLY when
+    // every detected run is a tight one (size-2, length >=3). A mixed TU — tight runs next
+    // to rejected siblings — is an UNMEASURED hybrid, and the zc21 partial round measured
+    // the 21 such TUs net NEGATIVE; the pure-16 configuration is the one that measured
+    // +6.3 weighted with zero verdict regressions.
+    let mut runs: Vec<(usize, usize)> = Vec::new(); // [k, end)
+    let mut k = 0;
+    while k < members.len() {
+        let (base_addr, size, ref ty, _) = members[k];
+        let mut end = k + 1;
+        while end < members.len() {
+            let (a, s, ref t, _) = members[end];
+            if s == size && t == ty && a == base_addr + ((end - k) as u64) * size as u64 {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        if end - k >= 2 && (k..end).all(|j| evidenced(members[j].0, members[j].1)) {
+            runs.push((k, end));
+        }
+        k = end;
+    }
+    let mut rename: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut decls: Vec<(String, String)> = Vec::new();
+    if !runs.is_empty() && runs.iter().all(|&(k, end)| members[k].1 == 2 && end - k >= 3) {
+        for &(k, end) in &runs {
+            let base = members[k].3.clone();
+            let ty = &members[k].2;
+            for (slot, j) in (k..end).enumerate() {
+                rename.insert(members[j].3.clone(), format!("{base}[{slot}]"));
+            }
+            decls.push((base.clone(), format!("{ty} {base}[{}];", end - k)));
+        }
+    }
+    if rename.is_empty() {
+        return (c.to_string(), Vec::new());
+    }
+    // Token-wise rewrite: member -> base[k]. Single pass, so the inserted base name is never
+    // itself re-visited.
+    let mut out = String::with_capacity(c.len() + 64);
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_ident(bytes[i]) {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        let tok = &c[start..i];
+        match rename.get(tok) {
+            Some(r) => out.push_str(r),
+            None => out.push_str(tok),
+        }
+    }
+    (out, decls)
 }
 
 fn ctype_for(prefix: char) -> &'static str {
