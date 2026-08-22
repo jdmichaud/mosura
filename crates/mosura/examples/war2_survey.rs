@@ -1838,6 +1838,10 @@ fn main() {
                     &report.allones_cmp_candidates,
                     &insns,
                 ),
+                // sum-order (allocator thread lever 1): the evidence is the IR's own original
+                // addresses, so the decision is the recovered mode itself. MOSURA_SUMORD=0
+                // restores the reference term order for A/B rounds.
+                sum_order: std::env::var("MOSURA_SUMORD").as_deref() != Ok("0"),
             };
             // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
