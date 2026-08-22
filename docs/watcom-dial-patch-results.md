@@ -494,4 +494,198 @@ lever: it is the population a source-side reordering arm can help *or* break.
 
 ---
 
-*(§5 — Dial B — follows)*
+## 5. Dial B — the instruction scheduler
+
+### 5.1 The priority chain, located whole
+
+`ScheduleIns` (`inssched.c:766`) is a bottom-up list scheduler whose priority chain is, in order:
+min `StallCost`; max `height`; the `INS_INDEX_ADJUST` + `DataDependant` special case; max
+`stallable` (= `InsStallable`); `sequence == last_seq` (avoid `fxch`); and finally
+`curr->ins->id > best->ins->id` — "choose the one that came last in the source order".
+
+The whole chain is in the 10.0a binary at file `0x6615a`–`0x661c4`, and maps one-to-one onto the
+source (`dag->height` at +0x14, `dag->stallable` at +0x10 masked to a byte, `dag->ins` at +0x04,
+`ins->sequence` at +0x3a, `ins->id` at +0x34):
+
+```
+6615a  MOV EAX,[EDI+0x14] / CMP EAX,[ECX+0x14] / JLE   ; curr->height > best->height
+66169  TEST byte [EAX+0x40],0x80 / CALL 0x659be        ; INS_INDEX_ADJUST + DataDependant
+66180  MOV EAX,[EDI+0x10] / AND 0xff / CMP / JA        ; curr->stallable > best->stallable
+66197  MOV AX,[EAX+0x3a] / CMP AX,[EBP-0x4]            ; sequence == last_seq
+661b7  MOV EAX,[EAX+0x34] / CMP EAX,[EDX+0x34] / JLE   ; curr->ins->id > best->ins->id
+661c2  MOV ECX,EDI                                     ; best = curr
+```
+
+`InsStallable` itself is at file `0x656d2`, also verified by disassembly. 10.0a strength-reduced
+the shared `+3` into a loop-carried `LEA`, so the indexed-operand and indexed-result bonuses
+share one immediate:
+
+```
+656f1  CMP CL,0x3 / JC 0x656ff / JBE 0x6570b     ; switch( op->n.class )
+656f8  CMP CL,0x4 / JZ 0x65706                   ;   N_INDEXED
+656ff  CMP CL,0x1 / JZ 0x6570f                   ;   N_MEMORY
+65706  MOV EDX,[EBP-0x4]                         ; N_INDEXED : += 3
+6570b  INC EDX / INC EDX                         ; N_REGISTER: += 2   <- weight site
+6570f  INC EDX                                   ; N_MEMORY  : += 1   <- weight site
+65714  LEA EDI,[EDX+0x3]                         ; the shared +3      <- weight site
+```
+
+The brief's claim that the weights are `N_INDEXED +3, N_REGISTER +2, N_MEMORY +1` is **correct**,
+verified against both OW 1.0.0 source and the 10.0a machine code. **Prediction C1 held**: they
+are small immediates, editable in place with no instruction changing length, and — unlike Dial
+A's table — nothing else consumes them.
+
+### 5.2 The specimen set
+
+The five pure adjacent-transposition functions, each SAME_SHAPE with exactly two divergence rows
+(`operand-form=2`), plus `FUN_00019344` as an EXACT control:
+
+```
+00643  000249a0  orig  MOV EAX,ESI  /  MOV EDX,0x19            ours: constant first
+01873  0004b750  orig  MOV EAX,ECX  /  MOV EDX,0x2             ours: constant first
+02654  00068bca  orig  MOV EDX,[EAX*4+0xa867c] / MOV EBX,[ESP+8]
+02701  0006b496  orig  MOV EDX,[EAX+0x874]     / MOV EBX,[ESP+8]
+02867  00073328  orig  MOV EDX,[EBP+0xc]       / MOV EAX,[EBP+8]
+```
+
+### 5.3 Screen: four operand-weight variants, all null
+
+`/data/dialpatch/patch_dialB_weights.py`, each an in-place edit at `InsStallable`, each with its
+own cache dir:
+
+| variant | edit | specimens converted | control |
+| --- | --- | --- | --- |
+| `reg0` | `0x6570b` `42 42` → `90 90` (N_REGISTER 2→0) | **0 of 5** | EXACT held |
+| `reg1` | `0x6570b` `42 42` → `42 90` (N_REGISTER 2→1) | **0 of 5** | EXACT held |
+| `idx1` | `0x65716` `03` → `01` (N_INDEXED 3→1) | **0 of 5** | EXACT held |
+| `idx5` | `0x65716` `03` → `05` (N_INDEXED 3→5) | **0 of 5** | EXACT held |
+
+Every one of the five transposed pairs stayed transposed under every weight setting. The only
+movement was collateral: `FUN_000249a0` picked up unrelated `extra`/`missing` rows under `reg0`
+and `reg1`. **No variant cleared the pre-registered ≥3-of-5 bar, so no corpus round was run.**
+
+### 5.4 Diagnostic: which key actually decides these pairs
+
+A null on the weights leaves the question of which key does decide. Two further **diagnostic**
+patches (explicitly not corpus candidates — they exist to answer "which key", not "is this the
+original's setting"):
+
+- `idorder` — `0x661bd` `7e` → `7d` (`JLE`→`JGE`): reverse the final source-order tie-break so
+  the instruction that came **first** in source order wins.
+- `reg0+idorder` — both together: remove the `stallable` separation *and* reverse the source key.
+
+| patch | `000249a0` | `0004b750` | `00068bca` | `0006b496` | `00073328` | control `00019344` |
+| --- | --- | --- | --- | --- | --- | --- |
+| stock | SS 0.968 | SS 0.957 | SS 0.667 | SS 0.778 | SS 0.714 | **EXACT** |
+| `idorder` | SS 0.935 | SS 0.915 | SS 0.667 | SS 0.778 | **EXACT** | broken → SS 0.930 |
+| `reg0+idorder` | MM 0.887 | SS 0.745 | SS 0.667 | SS 0.778 | **EXACT** | broken → SS 0.930 |
+
+Reading, and it is a clean partition of the class:
+
+1. **Pairs whose two instructions have equal `stallable` are decided by the source-order key.**
+   `FUN_00073328`'s pair is two `[EBP+disp]` loads — same operand class, so no weight can ever
+   separate them — and it converts to **EXACT** the moment the `ins->id` tie-break is reversed.
+   The same is true of the `XOR reg,reg` pairs in the control and the two constant loads in
+   `FUN_0004b750`, which flip (and break) for the same reason. **Prediction C3's mechanism held
+   exactly.** `ins->id` is assigned as the code generator builds instructions, so these orders
+   are a function of the IR our C produces — not of a scheduler dial.
+2. **Pairs whose instructions differ in `stallable`** (register copy vs constant; indexed load vs
+   stack load) are unmoved by the weights *and* unmoved by the source key — `FUN_00068bca` and
+   `FUN_0006b496` sit at 0.667/0.778 under every one of the six compilers tried. They are
+   separated earlier in the chain, by `StallCost` or `height`.
+
+### 5.5 The finding that closes the class
+
+`FUN_0004b750` under `reg0+idorder` went from 2 divergence rows to 12, and the shape says why:
+
+```
+orig  MOV EDX,0x2   cand  MOV EAX,ECX        <- site 1
+orig  MOV EDX,0x1   cand  MOV EAX,ECX        <- site 2
+orig  MOV EDX,0x3   cand  MOV EAX,ECX        <- site 3
+orig  MOV EDX,0x6   cand  MOV EAX,ECX        <- site 4  (and site 5)
+```
+
+At **five** of the six call sites in this one function the original emits the **constant first** —
+i.e. it follows stock 10.0a's rule exactly — and at the **sixth** it emits the register copy
+first. The combined patch flipped all six to register-first: it fixed the sixth and broke the
+other five.
+
+The two site shapes are identical. **No global setting of any scheduler dial can produce both
+orders**, because a dial cannot distinguish them. This is brief §6's "a dial that can only be
+all-on or all-off can match NEITHER mixed state", demonstrated on this class rather than argued.
+
+> **Conclusion (Dial B): the operand weights are REFUTED, and the arg-setup MOV-pair class is
+> reclassified out of compiler identity.**
+> The weights are the brief's named Dial-B candidate and they are verified correct in 10.0a; no
+> setting of them moves any specimen. The pairs that *can* be moved are moved by the **source
+> order** key, which is downstream of our C. And the class contains a function where the original
+> follows 10.0a's rule at five sites and deviates at one — which no dial can reproduce.
+>
+> Correction to the record: `allocator-model-thread` attributes this class to
+> "`InsStallable`: register operand +2 → placed nearest the consumer". That attribution does not
+> survive contact with the compiler — setting that weight to 0 or 1 leaves every pair where it
+> was. Pile-B member #11 ("call-site MOV-pair placement") should not be counted as evidence for
+> the interim build.
+>
+> What is *not* settled: whether our emitter can reach the required IR order. Earlier probes
+> found no pragma/argument/temp shape that moves `FUN_00073328`'s pair, and that remains true —
+> but the reason is now known to be IR-generation order, not scheduler policy, which is a
+> narrower and more tractable target.
+
+---
+
+## 6. Where this leaves the interim-build hypothesis
+
+The brief put the prior at "40 % to move EXACT by ≥30, 35 % to move it by <10, 25 % to move
+nothing", and said either result would be decisive. The outcome is the third, with a mechanism:
+
+| leg of the hypothesis | status after this run | evidence |
+| --- | --- | --- |
+| **LEA fold** | already reclassified before this run | `watcom-nofold-patch.md` |
+| **`DoubleRegs` allocation order** | **REFUTED** | the order is identical in 8.5a, 9.5b, 10.0 beta, 10.0a and 10.6; the split that introduces the other order first appears in 11.0 (§1) |
+| **allocation tie-break** | **REFUTED in the tested direction** | one-byte `JG`→`JGE`: 764 → 432 EXACT, WGSS 0.4801 → 0.3156, **zero** functions gained EXACT, all six clean specimens got worse (§4) |
+| **load scheduling / scheduler priority** | **operand weights refuted; class reclassified** | four weight variants move nothing; the movable pairs move on the *source-order* key; one function follows 10.0a's rule at 5 of 6 identical sites (§5) |
+| **callee-save policy** | untouched — not tested here | — |
+
+Three of the five legs are now closed, and two of them closed *against* the hypothesis with
+direct measurement rather than inference. The register-allocation dial in particular is not
+where the WAR2 residue lives: its cleanest specimens convert with **no compiler patch at all**,
+by reordering local declarations in our own emitted C (§3).
+
+**The single most useful correction for anyone continuing:** 10.0a's 4-byte allocation order is
+`EAX, EDX, EBX, ECX, ESI, EDI, EBP, ESP`, not the OW 1.0 `DoubleRegs` order, and that table is
+also the parameter table. Any model note or lever reasoning that quotes `ECX` before `EBX` for
+10.0a is wrong at positions 2 and 3.
+
+### What is worth doing next, in order
+
+1. **Nothing further with a patched compiler on Dial A.** It is closed. The remaining narrow
+   variant (removing the `GivenRegisters`-reuse preference, `0x59ea5` `75`→`EB`) is a distinct
+   hypothesis with no evidence behind it; opening it would be tuning, not testing.
+2. **The declaration-order axis is real, sized, and small** (§3.3): about +3 EXACT plus a little
+   WGSS. If it is built, it belongs in the recovered arm as a model-inverse — infer the original
+   declaration order from the registers the original chose, the way `param_orders_from_evidence`
+   infers declared parameter order from argument setup — not as a blind reordering, which §4.7
+   shows would put 332 currently-EXACT functions at risk.
+3. **The 332 number in §4.7 is the thing to remember before building any allocator lever**: that
+   is how many of our EXACT functions are riding on a tie whose direction happens to agree.
+
+## 7. Artifacts
+
+Everything is under `/data/dialpatch` (scratch) and reproducible from this document.
+
+| path | what |
+| --- | --- |
+| `stock/WCC386.EXE` | pristine 10.0a compiler, read-only, sha256 `c3666de9…` |
+| `WATCOM/` | the working copy that gets patched; restored to stock, verified |
+| `patch_dialA_ebx_ecx.py` | table-order patch (built, **rejected** in the isolation battery) |
+| `patch_dialA_tieorder.py` | the measured Dial-A patch, `0x59ea3` `7f`→`7d` |
+| `patch_dialB_weights.py` | the four `InsStallable` weight variants |
+| `patch_dialB_idorder.py` | the source-order tie-break diagnostic, `0x661bd` `7e`→`7d` |
+| `find_regtables.py`, `maptables.py`, `census_doubleregs.py`, `findrefs.py` | the binary-search instruments used in §1 |
+| `permute.py`, `declorder_ceiling.py` | the declaration-order probe and the ceiling census |
+| `/data/be2/zc26-dialA-tieorder-rec.tsv`, `…-div.tsv` | the Dial-A corpus measurement |
+| `/data/be2/cache-dialA-tieorder`, `cache-dialB-*`, `cache-declorder` | the separate caches, one per patched compiler |
+
+The reference install at `warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM` was never
+written to; its sha256 is unchanged.
