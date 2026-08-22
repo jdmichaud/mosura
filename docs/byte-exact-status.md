@@ -1804,3 +1804,17 @@ Full report: `docs/watcom-dial-patch-results.md` (worktree `/data/wt-dialpatch`,
 - Net for the interim-build hypothesis: four of six legs closed against it on measurement; the
   compiler-level investigation is closed. The residue is on our side — IR generation order and
   declaration order — with small, sized prizes.
+
+### Sum-order outside pointer context — measured at probe scale, parked (2026-08-22)
+
+Census (`MOSURA_SUMORD_CENSUS=1`, zc26): 120 chains in pointer context (the landed gate) vs 670
+outside it, in 203 functions (183 MISMATCH, 5 SAME_SHAPE, 4 EXACT). Pre-registered: all 4 EXACT
+hold, 1–3 SAME_SHAPE convert, park on any EXACT regression. Probe of all nine EXACT/SAME_SHAPE
+members under `MOSURA_SUMORD_CTX=all`: FUN_0004f130 EXACT → SAME_SHAPE 0.915, FUN_00018afc
+SAME_SHAPE → MISMATCH, FUN_0004bdb0 0.846 → 0.769, FUN_0005f9b4 0.879 → 0.939, the rest unchanged.
+Every diff is two load terms swapped by their original addresses. Reading: outside address
+formation the scheduler places independent loads and ALU ops freely, so a term's byte position
+is the scheduler's output, not the source's evaluation order — the same finding as the statement
+interleave lever, one level down. The pointer-context gate is therefore a mechanism, not a
+coincidence: address formation pins Watcom's tree-evaluation order; plain sums do not. Parked
+without a corpus round; the switch stays, default pointer-only.

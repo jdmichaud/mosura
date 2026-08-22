@@ -945,7 +945,10 @@ impl<'a> PrintC<'a> {
         // — the reorder is computed for every chain and reported with its context; only
         // pointer-context chains change the print.
         let census = std::env::var_os("MOSURA_SUMORD_CENSUS").is_some();
-        if !in_ptr_context && !census {
+        // MOSURA_SUMORD_CTX=all lifts the pointer-context gate (the non-pointer A/B: census
+        // 120 ptr vs 670 non-ptr chains on zc26); default stays pointer context only.
+        let all_ctx = std::env::var("MOSURA_SUMORD_CTX").as_deref() == Ok("all");
+        if !in_ptr_context && !census && !all_ctx {
             return None;
         }
         // flatten the left spine: ((A + K) + B) prints A, K, B
@@ -990,7 +993,7 @@ impl<'a> PrintC<'a> {
         }
         if census {
             eprintln!("[sumord] pc {:#x} ctx={} terms={}", self.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
-            if !in_ptr_context {
+            if !in_ptr_context && !all_ctx {
                 return None;
             }
         }
