@@ -452,6 +452,12 @@ fn record_callee_effects(
                 .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
             if let Some(n) = cl {
                 f.call_specs.entry(call).or_default().extrapop = Some(4 + n as i32);
+                // SHADOW CENSUS (stack-args frontier): a callee popping its own stack
+                // bytes (`RET n`, n>0) declares n/4 stack argument slots — the watcall
+                // overflow family the trial chain currently starves.
+                if n > 0 && std::env::var_os("MOSURA_STACKARG_SHADOW").is_some() {
+                    eprintln!("[stackarg] call@{:#x} callee {target:#x} pops {n}", f.op(call).seqnum.pc.offset);
+                }
             }
             // PER-CALL MODEL EVIDENCE: the caller popping this call's arguments itself. Only
             // meaningful when the callee's `RET` provably pops nothing (`cl == Some(0)`) — a
