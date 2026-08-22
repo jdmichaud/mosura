@@ -1688,3 +1688,73 @@ To become a search it needs:
 - **Both compile paths must keep agreeing.** The shell battery and the mosura driver scored
   168/2449/335/71 identically at the time they were cross-checked; a divergence means one of them
   is measuring something else.
+
+## zc19–zc26 (2026-08-22) — the WGSS-first bar, the allocator thread, and the asymptote
+
+**Bar change (JD):** judge by WGSS movement + zero verdict regressions, not EXACT flips —
+multi-defect functions advance one defect at a time. `scripts/war2-verdicts.sh` now prints the
+insn-weighted net and its WGSS effect beside the flips. Canonical record: `/data/be2/zc*-rec.tsv`.
+
+**Landed (each measured alone, zero verdict regressions):**
+
+| commit | what | round | effect |
+| --- | --- | --- | --- |
+| `f6a1275` | stack-append kernel enabled (refused the day before on EXACT-count grounds) | zc19 vs zc18 | 36b30 +0.115 sim |
+| `d45c4ed` | deterministic per-callee pragma merge | zc23 vs zc19 | 0 flips; 3 movers −0.039 sim |
+| `e039e8c` | global-aggregation arm, pure short-run gate | zc24 vs zc23 | FUN_00045aa4 → EXACT |
+| `30eff96` | sum-order recovered choice (printc) | zc26 vs zc24 | +5 EXACT, +33.3 insn-sim |
+
+**Baseline: zc26 = 764 EXACT / WGSS 0.4801** (from 758 / 0.4797).
+
+**The determinism bug.** The TU's single `#pragma aux <callee>` was folded over `f.call_specs`
+(a HashMap) last-writer-wins; two sites of one callee with different recovered specs made the
+pragma a random draw per process (caller 0x3342c / callee 0x63be5: `modify exact [eax]` vs
+`[eax ecx]`). This was the standing "N functions moved on byte-identical code" jitter between
+rounds — the noise floor under every landing gate to date. Fixed by merging deterministically
+(sorted op order; caller_cleans from any site; modify = union). Two probe runs are now
+byte-identical; a full double-emit comparison is recorded below.
+
+**The allocator thread — what the model turned out to be.** The Watcom allocator (OW
+`regalloc.c`: savings-sorted conflicts, ShellSort with strict `>`, conflict list built by
+PREPEND, `GiveBestReg` scoring by `CountRegMoves` with `DoubleRegs` table order and a
+`GivenRegisters` reuse tie-break) is deterministic, so every regalloc defect is our C presenting
+a different IR structure than the original source. Corpus divergence census (new
+`recompile_check --divergences`, zc19: 77,793 rows): extra 16,662 / missing 13,832 /
+**regalloc 13,582** / selection 12,251 / operand-form 8,788 / layout-shift 7,980 /
+branch-target 2,599 / immediate 1,961 / encoding 138. The "model" materialized as
+source-shape levers, each confirmed byte-for-byte with the real compiler (`dumpwc` probes):
+
+- **sum-term order** — Ghidra's canonical term order ≠ the source's; Watcom evaluates terms as
+  written. Evidence = each term's earliest inline-op address (IR). Landed (above). Its first cut
+  (constants last, bare variables after computed terms) regressed FUN_00031100 (EXACT) and
+  FUN_0005fb24 in zc25: only the PC-evidenced swap among computed terms is a recovery; every
+  secondary ordering rule is a coin flip.
+- **global aggregation** — adjacent shorts declared as one array allocate differently than as
+  separate symbols (FUN_00045aa4, `short v[4]`). The full-fire A/B (zc20: any adjacent
+  same-type run) was a tie-reshuffler — 403 TUs fired, 5 EXACT lost / 1 gained, winners ≈
+  losers in every shape class — because access patterns cannot distinguish array-source from
+  adjacent-scalars-source; only the assignment outcome can. Landed gate = the one class that
+  measured strictly safe (short runs of ≥3 in pure TUs, 16 TUs). ~235 insn-sim of positive
+  movement sits in coin-flip TUs, reachable only by per-TU measured selection.
+- **statement interleave** (`172b1aa`, OFF) — census 462 fns / 1,088 inverted independent
+  adjacent pairs; the blind lever broke 3 of 5 EXACT probes (a single global-read snapshot
+  moved one statement later, to where the original's LOAD sits, turned FUN_00031c60 into
+  SAME_SHAPE 0.679). The original's instruction order is the SCHEDULER's output, not the
+  source's statement order, and the scheduler does not round-trip its own output.
+- **arg-setup order** (parked, no code) — 31 transposed `MOV` pairs before calls. Neither
+  `parm` order + permutation, nor nested/hoisted call forms, nor Watcom 10.6 moves the pair;
+  the watsched model (faithful to `InsStallable`) predicts our order and 5 of 6 sites in
+  FUN_0004b750 — the 6th is the original deviating from its own compiler's policy.
+  Pile-B (compiler identity), with FUN_00073328's load pair and the model's 19344 holdout.
+
+**The asymptote.** +0.0004 WGSS for the day, with three independent levers each ending at the
+same wall: the residue is the original compiler's tie-breaking (scheduler priority, allocator
+tie order), which no C shape reaches with 10.0a. The experiment that can move the number is at
+the compiler level — `docs/watcom-dial-patch-experiment.md` (handed off). Open decompiler-side
+items, priced: per-TU measured selection (arms revival; the coin-flip mass); the emitter
+shared-return arm re-earning the ReturnSplit doctrine trade (3e038/4d0f8/6fd88, ~42
+insn-sim); the model-inverse interleave (choose the statement order whose watsched simulation
+reproduces the original); 3 const/const call sites refused only by the default-register-set
+check. The "declare locals in first-use order" proposal above is already the printer's
+behavior for register locals (stack locals follow Ghidra's storage order); what remains of that
+finding is the per-function search, i.e. measured selection again.
