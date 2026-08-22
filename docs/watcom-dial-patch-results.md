@@ -697,8 +697,8 @@ nothing", and said either result would be decisive. The outcome is the third, wi
 | **F2 unified with the regalloc dial** | **REFUTED** — the pre-registered co-move check failed | the regalloc `MOV>MOV` class grew +86.8 % under the patch while F2's `MOV>LEA` rows moved +5.1 % (§4.7) |
 | **callee-save policy** | untouched — not tested here | — |
 
-Four of the six legs are now closed, and two of them closed *against* the hypothesis with
-direct measurement rather than inference. The register-allocation dial in particular is not
+Four of the six legs are now closed, and every leg tested in this run closed *against* the
+hypothesis — on direct measurement rather than on inference. The register-allocation dial in particular is not
 where the WAR2 residue lives: its cleanest specimens convert with **no compiler patch at all**,
 by reordering local declarations in our own emitted C (§3).
 
