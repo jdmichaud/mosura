@@ -1113,6 +1113,10 @@ fn main() {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             decompile_function(&prog, Address::new(ram, *va))
         }));
+        // which world produced the final `f`: the landed program, or the prototype-injected
+        // probe program (`prog_pp`) after a kernel adoption — the shared-return arm re-decompiles
+        // the SAME world.
+        let mut f_from_pp = false;
         let mut f: Option<Funcdata> = match outcome {
             Ok(Some(f)) => Some(f),
             _ => None,
@@ -1490,6 +1494,7 @@ fn main() {
                 }
                 if ok {
                     f = Some(f2);
+                    f_from_pp = true;
                 }
             }
         }
@@ -1741,6 +1746,10 @@ fn main() {
         // compiler and no search. Emitted alongside the searched arms only so the two can be
         // compared; in the field this is the single emission.
         if let Some(dir) = &recovered_dir {
+            // The whole recovered rendering, as a function of the Funcdata, so the shared-return
+            // arm below can render an alternative decompile of the same world under identical
+            // per-site decisions and choose between the two texts.
+            let render = |f: &Funcdata| -> String {
             let (_, report) = mosura::decompile::printc::print_c_report(&f, &arms[0]);
             let insns = mosura::recompile::insn::normalize(
                 SURVEY_LANG,
@@ -2025,6 +2034,41 @@ fn main() {
             // The permuted argument order is value-identical only under its pragma — the two
             // are one decision, emitted together (see call_arg_orders above).
             // order_parms are folded into the per-callee pragma inside build_tu now.
+            rtu
+            };
+            let rtu = render(&f);
+            // SHARED-RETURN ARM (allocator thread; re-earns the ActionReturnSplit doctrine
+            // trade): where Ghidra's split fired, render the same world WITHOUT the split and
+            // keep that rendering iff it is fully structured (no goto, no label). The split is
+            // Ghidra's goto elimination — where the unsplit form already has no goto the split
+            // only deforms structure (do-while -> while(true)+returns; 3e038/6fd88 lost EXACT/
+            // SAME_SHAPE to it), and where the unsplit form needs gotos the split repairs it
+            // (1ea4c/462d0/463fc gained EXACT from it). Measured on the six trade members:
+            // the rule separates 5 of 6; the sixth (4d0f8) is the recorded do-while
+            // structuring gap. MOSURA_SHARED_RET=0 disables.
+            let rtu = if f.return_splits > 0 && std::env::var("MOSURA_SHARED_RET").as_deref() != Ok("0") {
+                mosura::decompile::blockjoin::set_skip_return_split(true);
+                let alt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match (f_from_pp, prog_pp.as_ref()) {
+                        (true, Some(pp)) => decompile_function(pp, Address::new(ram, *va)),
+                        _ => decompile_function(&prog, Address::new(ram, *va)),
+                    }
+                }));
+                mosura::decompile::blockjoin::set_skip_return_split(false);
+                match alt {
+                    Ok(Some(fa)) => {
+                        let t = render(&fa);
+                        let structured = !t.contains("goto ") && !t.contains("LAB_");
+                        if std::env::var_os("MOSURA_SHARED_RET_DEBUG").is_some() {
+                            eprintln!("[sharedret] {name}: splits={} unsplit structured={structured} -> {}", f.return_splits, if structured { "UNSPLIT" } else { "split" });
+                        }
+                        if structured { t } else { rtu }
+                    }
+                    _ => rtu,
+                }
+            } else {
+                rtu
+            };
             if only.is_empty() {
                 std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();
             } else {

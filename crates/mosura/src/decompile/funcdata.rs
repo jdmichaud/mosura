@@ -232,6 +232,8 @@ pub struct Funcdata {
     /// recomputed classification chain must not be consulted at all (see
     /// [`super::printc`]'s `is_explicit`).
     pub classified_upto: Option<usize>,
+    /// How many RETURN-block clones `ActionReturnSplit` performed on this decompile.
+    pub return_splits: u32,
     /// The function's HighVariables (Ghidra's `Merge`/`Varnode::high`), frozen by
     /// [`super::merge::ActionMergeType`] at Ghidra's merge slot — after the last merge action
     /// (`ActionMergeType`, coreaction.cc:5727) and *before* `ActionSetCasts` (:5735).
@@ -368,6 +370,7 @@ impl Funcdata {
             directwrite_pending_clear: false,
             table_recovery_probe: false,
             classified_upto: None,
+            return_splits: 0,
             highs: None,
             nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),

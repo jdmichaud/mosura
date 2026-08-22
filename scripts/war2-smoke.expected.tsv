@@ -1,5 +1,6 @@
 # pinned smoke-set expectations — baseline ct1 (contract design increment 1, 743 EXACT)
 # + zc26 sentinels (764 EXACT): 294b8/25f50 sum-order, 45aa4 aggregation, 3342c deterministic pragma merge, 36b30 stack-append kernel
+# + zc28 sentinel (765 EXACT): 3e038 shared-return arm
 # idx	va	name	expected_verdict
 00289	000191b8	FUN_000191b8	EXACT
 01578	000420f0	FUN_000420f0	EXACT
@@ -21,3 +22,4 @@
 01123	0003342c	FUN_0003342c	MISMATCH
 01230	00036b30	FUN_00036b30	MISMATCH
 01659	00045aa4	FUN_00045aa4	EXACT
+01482	0003e038	FUN_0003e038	EXACT

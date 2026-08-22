@@ -465,6 +465,18 @@ fn in_edge_gotos_to(s: &super::structure::Structured, pred: BlockId, parent: Blo
 /// exit.
 pub struct ActionReturnSplit;
 
+thread_local! {
+    /// Shared-return arm (survey recovered path): while set, `ActionReturnSplit` performs no
+    /// split, so a re-decompile of the same world yields the pre-split rendering the arm
+    /// compares against. Never set around a reference decompile.
+    static SKIP_RETURN_SPLIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Set/clear the shared-return arm's skip switch for the current thread.
+pub fn set_skip_return_split(on: bool) {
+    SKIP_RETURN_SPLIT.with(|c| c.set(on));
+}
+
 impl Action for ActionReturnSplit {
     fn name(&self) -> &str {
         "returnsplit"
@@ -485,6 +497,12 @@ impl Action for ActionReturnSplit {
         // every fullloop round consume the cache, whose rebuild then counted as a change — an
         // infinite fullloop.)
         let dbg = std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok();
+        // MOSURA_RETSPLIT=0: measurement switch for the shared-return arm investigation
+        // (renders the pre-41a1665 unsplit shape); NOT a doctrine change — the action stays
+        // on by default.
+        if std::env::var("MOSURA_RETSPLIT").as_deref() == Ok("0") || SKIP_RETURN_SPLIT.with(|c| c.get()) {
+            return 0;
+        }
         let Some(s) = data.structure.as_ref() else {
             if dbg {
                 eprintln!("RETSPLIT skip: no structure cache");
@@ -551,6 +569,7 @@ impl Action for ActionReturnSplit {
             data.node_split(parent, inedge);
             count += 1;
         }
+        data.return_splits += count;
         count
     }
 }
