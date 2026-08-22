@@ -341,6 +341,29 @@ available is +0.327 spread over 4 functions.
 gain.** It is real, it is on our side of the fence, and it is small. It does not need a compiler
 patch, and it is not a route to "tens of functions".
 
+### 3.4 Reconciling with the existing FINDING in `byte-exact-status.md`
+
+That section proposes two things this measurement settles.
+
+- It proposes sizing the axis by *"emit with first-use-ordered declarations and diff the EXACT
+  count"*, and describes printc's current order as "the decompiler's internal variable-numbering
+  order — an artifact of SSA/merge processing". **printc already emits first-use order.**
+  `printc.rs` pushes a local into `p.decls` the moment it is first named during body emission
+  (`self.decls.push((n.clone(), declared, None))` in the local-naming path), and the final sort
+  only moves *stack* locals — `(None, None) => Ordering::Equal` under a stable sort leaves
+  register/temp locals in insertion order. The `iVarN` numbering follows the same walk, which is
+  why the two descriptions look different but are the same order. So the cheap heuristic the
+  finding proposes is already in place; there is no first-use arm left to build.
+- The sizing done here is stronger than the one proposed: instead of diffing one heuristic order,
+  it searches **every** permutation per function, so §3.3's numbers are an upper bound over all
+  declaration orders, not the score of one candidate. The headroom above what printc already does
+  is the +3 EXACT above.
+
+The finding's own framing still holds and is worth keeping: the axis is semantics-preserving, the
+compiler distinguishes it, and it is high-dimensional (n! orders) so an enumerate-and-measure arm
+cannot cover it. What has changed is that the remaining prize is now measured rather than
+estimated, and it is small.
+
 ---
 
 ## 4. Dial A, tie order — the patch that was actually justified, measured once
