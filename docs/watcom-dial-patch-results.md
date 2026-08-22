@@ -58,6 +58,34 @@ EXACT is reachable by changing the order in which locals are DECLARED in our emi
   `FUN_0004b750`'s 6th call site) toward the original. If the holdouts do not move, the operand
   weights are not the difference.
 
+### PR-4 — Dial A, tie order (registered before the corpus run)
+
+The live Dial-A hypothesis after the table-order leg died (§2) is the brief's own §4 "tie-order"
+version. The located predicate is `GiveBestReg`'s equal-score test (`regalloc.c:855–861`,
+10.0a file offset `0x59ea3`); the minimal order-changing edit is `JG` → `JGE`, which makes the
+**last** entry of the register table win an equal-score tie instead of the first.
+
+- **Prediction D1 (isolation).** The parameter-passing convention is unaffected: incoming
+  arguments still arrive in EAX, EDX, EBX, ECX.
+- **Prediction D2 (breadth).** Because `saves == best_saves` is the *common* case (most candidate
+  registers score 0), this edit will not be a narrow tie flip — it will shift allocation toward
+  the tail of the table across most functions, including allocating EBP as a general temp.
+- **Prediction D3 (the discriminating test).**
+  - *Under the interim-build/dial hypothesis* (WAR2's compiler broke allocation ties the other
+    way): the patched corpus should convert a substantial share of the regalloc residue, i.e.
+    EXACT should RISE, and in particular the strict regalloc-only specimens should flip.
+  - *Under the declaration-order model established in §3* (the tie is decided by the order the
+    temps reach the allocator, which our C controls): the patch should convert essentially
+    nothing and should destroy a large fraction of the existing 764 EXACT, because those 764 are
+    exact under the stock first-wins rule.
+  I predict the second: **EXACT falls sharply (I pre-register "below 300"), WGSS falls, and none
+  of the six strict specimens converts.** If EXACT instead rises, the declaration-order model is
+  wrong and the interim-build hypothesis is alive.
+- **Interpretation limit, registered in advance.** Per brief §6, a change this broad can support
+  only a directional/invariance reading. A large fall refutes "WAR2's compiler broke ties
+  last-wins"; it does **not** by itself prove no tie-break dial differs, only that this one, in
+  this direction, is not it.
+
 ---
 
 *(results follow — sections filled in as each measurement completes)*
