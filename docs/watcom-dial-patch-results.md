@@ -794,8 +794,14 @@ Everything is under `/data/dialpatch` (scratch) and reproducible from this docum
 | `patch_dialB_idorder.py` | the source-order tie-break diagnostic, `0x661bd` `7e`→`7d` |
 | `find_regtables.py`, `maptables.py`, `census_doubleregs.py`, `findrefs.py` | the binary-search instruments used in §1 |
 | `permute.py`, `declorder_ceiling.py` | the declaration-order probe and the ceiling census |
+| `f2_comove.py` | the pre-registered F2 co-move count (§4.7) |
+| `/data/be2/zc26-div.tsv` | baseline divergence table, regenerated with this build (§4.7) |
 | `/data/be2/zc26-dialA-tieorder-rec.tsv`, `…-div.tsv` | the Dial-A corpus measurement |
-| `/data/be2/cache-dialA-tieorder`, `cache-dialB-*`, `cache-declorder` | the separate caches, one per patched compiler |
+| `/data/be2/zc26-stockcontrol-rec.tsv`, `zc26-stockfresh-rec.tsv` | the two stock controls (§4.5) |
+| `/data/dialpatch/dialB-*.tsv`, `dialB-screen.log` | the Dial-B screen and diagnostics (§5.3–5.5) |
+| `/data/dialpatch/ceiling*/` and `ceiling-*.log` | the declaration-order ceiling censuses (§3.3) |
+| `/data/be2/cache-dialA-tieorder`, `cache-dialB-*`, `cache-declorder`, `cache-stockfresh` | the separate caches, one per compiler |
+| `/data/ow100-src` | Open Watcom 1.0.0 source, extracted from `/data/tools/watcom/open_watcom_1.0.0-src.zip` |
 
 The reference install at `warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM` was never
 written to; its sha256 is unchanged.
