@@ -1265,14 +1265,20 @@ fn main() {
                     if pass_through_only(&lt, &ct, *va) {
                         ok = true;
                         passthrough = true;
-                    } else if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
-                        // SHADOW (stack-args frontier): would a STACK-APPEND class admit
-                        // this refusal? Appended arbitrary-expression args count only when
-                        // the ORIGINAL site pushes at least as many values (PUSH insns in
-                        // the 12-insn pre-call window — the const-evidence pattern).
+                    } else {
+                        // STACK-APPEND kernel (stack-args frontier): a refusal whose whole
+                        // delta is appended args is admitted when every arbitrary-expression
+                        // element is backed by at least that many PUSH insns in the
+                        // original's 12-insn pre-call window (the const-evidence pattern)
+                        // and the signature line is untouched. Landed under the WGSS-first
+                        // bar (2026-08-22): the evidence-gated pool is 2 TUs, micro-round
+                        // 36b30 sim 0.471→0.586, 6d680 unchanged, no verdict regressions.
+                        // MOSURA_KERNEL_STACKAPP=0 restores the refusal.
+                        let stack_kernel = std::env::var("MOSURA_KERNEL_STACKAPP").as_deref() != Ok("0");
                         let mut consts2: Vec<(u64, u32, u64)> = Vec::new();
                         let mut stacks: Vec<(u64, u32)> = Vec::new();
-                        if pass_through_report(&lt, &ct, *va, Some(&mut consts2), Some(&mut stacks))
+                        if (stack_kernel || std::env::var_os("MOSURA_KERNEL_SHADOW").is_some())
+                            && pass_through_report(&lt, &ct, *va, Some(&mut consts2), Some(&mut stacks))
                             && !stacks.is_empty()
                         {
                             let mut push_ev = std::collections::HashMap::new();
@@ -1295,14 +1301,16 @@ fn main() {
                             for &(c, _) in &stacks {
                                 *need.entry(c).or_insert(0usize) += 1;
                             }
-                            // STACK-APPEND adoption measured SUB-THRESHOLD and not landed
-                            // (2026-08-21): the whole evidence-gated pool is 2 TUs, both
-                            // MISMATCH; the micro-round moved 36b30 0.471→0.586 and 6d680
-                            // not at all — ~+0.00006 WGSS, no EXACT, below the cost of its
-                            // own full gate. The shadow census stays for future re-pricing.
-                            let _ = sig_of2;
-                            if need.iter().all(|(c, n)| push_ev.get(c).copied().unwrap_or(0) >= *n) {
-                                eprintln!("[shadow-stack] {name} appends {:?}", need.iter().map(|(c, n)| (format!("{c:#x}"), *n)).collect::<Vec<_>>());
+                            if need.iter().all(|(c, n)| push_ev.get(c).copied().unwrap_or(0) >= *n)
+                                && sig_of2(&lt) == sig_of2(&ct)
+                            {
+                                if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
+                                    eprintln!("[shadow-stack] {name} appends {:?}", need.iter().map(|(c, n)| (format!("{c:#x}"), *n)).collect::<Vec<_>>());
+                                }
+                                if stack_kernel {
+                                    ok = true;
+                                    passthrough = true;
+                                }
                             }
                         }
                     }
