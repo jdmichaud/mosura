@@ -285,4 +285,92 @@ it. Re-registering accordingly, before probing:
 
 ---
 
-*(Item 2 measurement follows)*
+## 5. Item 2 — the measurement
+
+### 5.1 Probes on the specimen shape
+
+`dumpwc`, stock 10.0a, flags `-5r -fpi87 -s -onatx -d1+`. Target order is the original's:
+`MOV EDX,[EBP+0xc]` then `MOV EAX,[EBP+0x8]`.
+
+| probe | emitted order | verdict |
+| --- | --- | --- |
+| baseline (our recovered shape) | `EAX,[EBP+8]` then `EDX,[EBP+0xc]` | reproduces our divergence exactly |
+| **shape 1 — `volatile` parameters** | **`EDX,[EBP+0xc]` then `EAX,[EBP+8]`** | **reproduces the original** |
+| shape 3 — explicit temp per argument, statements reversed | unchanged from baseline | inert; the temps are copy-propagated away |
+| baseline at `-od` (scheduler off) | `EDX,[EBP+0x14]` then `EAX,[EBP+0x10]` | **the original's order** |
+
+The `-od` row is the diagnostic one. **The original's pair is in the UNSCHEDULED order** — the
+call walk's right-to-left creation order — and our C lets the scheduler reorder it. That is why a
+barrier works and why the id-key patch worked in the dial-patch run: both stop the reordering.
+`volatile` is a full DAG barrier, so it reaches the same result at `-onatx`.
+
+### 5.2 Verified on the real function
+
+Declaring `FUN_00073328`'s two parameters `volatile` in its recovered TU and re-running against
+the original: **EXACT, 7/7 instructions, 0 divergence rows.** **Prediction F1 holds**, on the
+first-ranked candidate.
+
+### 5.3 The pool, split — and "equal `stallable`" turns out to be necessary, not sufficient
+
+Corpus-wide census of adjacent transposed pairs (`held-patches/transposed_census.py` over
+`zc27-div.tsv`), scoring each instruction's `InsStallable` from its disassembly:
+
+| bucket | pairs | functions |
+| --- | --- | --- |
+| **`stallable` UNEQUAL — permanently unreachable from C** | **31** | 28 |
+| `stallable` equal — *candidate* for the source-order key | 39 | 38 |
+| shape not scorable by the census (`SAR`, `PUSH`, `CALL`, …) | 17 | 15 |
+| total | 87 | 81 |
+
+The 31 unreachable pairs are, to within the census's precision, the pool `allocator-model-thread`
+records as pile-B member #11 ("31 adjacent transposed `MOV` pairs"). If that identity holds on
+inspection, the member was the *unreachable* subset all along, and the 39 equal-`stallable` pairs
+are a separate pool nobody had separated out.
+
+**But equal `stallable` does not imply reachable, and two measured counterexamples prove it.**
+`FUN_00068bca` and `FUN_0006b496` each hold a pair of two indexed loads — `stallable` 3 and 3 —
+yet neither moves under the dial-patch `idorder` patch, and neither moves under a `volatile`
+barrier on the accessed slot (tested here: both stay SAME_SHAPE at 0.667 / 0.778 with the same
+two rows). They are separated *above* `stallable`, by `StallCost` or `height`. So the 39 are
+candidates requiring per-site verification, not a reachable pool.
+
+### 5.4 The prize, and the design
+
+Of the 38 functions holding an equal-`stallable` pair, only **3** have that pair as their *only*
+divergence — the rest are MISMATCH functions where fixing the pair is WGSS-only. Of those 3, two
+are the counterexamples above. **The confirmed EXACT prize for Item 2 is one function**,
+`FUN_00073328`. The other 35 functions' pairs would each shave two rows off a larger residue,
+with reachability unverified per site.
+
+The lever, **designed and not landed**, per the handoff:
+
+- **Trigger.** A per-site recovered choice, keyed like `call_setup_sites`: the original holds two
+  adjacent instructions in the opposite order to ours, both scoring equal `InsStallable`.
+- **Action.** Emit a scheduling barrier at that site. `volatile` on the values involved is one
+  expression of it; `watsched` already models the scheduler, so the model can say whether a
+  barrier at that point reproduces the original's window — which is exactly the fixed-point
+  criterion the existing volatile lever uses (`volatile-recovery-and-scheduler`).
+- **Gate.** Fire only where the barrier's window contains nothing else the scheduler currently
+  moves. `volatile` is a *full* DAG barrier: in `FUN_00073328` (7 instructions) there is nothing
+  else to freeze, but in a larger function it would freeze legitimate motion too. The existing
+  volatile lever's gates — ≤3 displaced atoms, ≤2 accesses blast radius — are the right shape.
+- **Per-site verification is mandatory**, because §5.3 shows the static `stallable` test admits
+  sites that do not move.
+- **Expected yield: +1 EXACT and a thin WGSS tail.** That is below the campaign's landing bar as
+  a standalone lever; it is worth building only if it falls out of extending the existing volatile
+  arm to a new anchor rather than as new machinery.
+
+---
+
+## 6. Verdict
+
+| item | outcome |
+| --- | --- |
+| **Item 1 — declaration-order model-inverse** | **CLOSED NEGATIVELY.** The source-derived predicate reproduces the measured permutation partition on 2 of 12 candidates, both trivial. Declaration order is a *binary* lever, not a positional one: it reaches only the tie `CountRegMoves` leaves, and identifying that tie needs the compiler. Blast radius measured in full: **zero** of 44 currently-EXACT functions are breakable. |
+| **Item 2 — arg-setup IR order** | **PARTIALLY REACHABLE, prize +1 EXACT.** 31 of 87 transposed pairs are `stallable`-decided and permanently out of reach of any C shape. A scheduling barrier reproduces `FUN_00073328` exactly. Equal `stallable` is necessary but not sufficient — two counterexamples measured. |
+
+Neither item clears the landing bar on its own. What the pair of them changes is the *map*: two
+residue pools previously filed under compiler identity are now split into a part that is
+provably unreachable (31 pairs, and the whole reg/const class) and a part that is reachable but
+small (+1 EXACT confirmed, +3 for the declaration axis as a ceiling). Nothing was landed, and
+the zc27 baseline is unchanged at 764 EXACT / WGSS 0.4801.
