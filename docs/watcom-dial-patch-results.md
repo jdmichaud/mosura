@@ -437,6 +437,19 @@ Same recovered tree as the baseline (`/data/be2/zc26/recovered`, byte-identical 
 are identical *by construction*, so any movement is the compiler), `recover` flags, **separate
 cache** `/data/be2/cache-dialA-tieorder`.
 
+**Control first.** The recorded `zc26-rec.tsv` baseline was produced by a previous session's
+binary. Re-measuring the same tree with **this** build and the **stock** compiler
+(`/data/be2/zc26-stockcontrol-rec.tsv`) reproduces it exactly:
+
+```
+== zc26-rec.tsv -> zc26-stockcontrol-rec.tsv
+  flips: 0
+  wgss:  0 functions moved, net +0.000
+```
+
+764 EXACT / WGSS 0.4801 both times. So the movement below is the patched byte and nothing else —
+not the build, not the harness, not the cache.
+
 ```
 $ bash scripts/war2-verdicts.sh /data/be2/zc26-rec.tsv /data/be2/zc26-dialA-tieorder-rec.tsv
 == census: zc26 (stock 10.0a)              == census: zc26 + tie-order patch
