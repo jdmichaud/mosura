@@ -1781,3 +1781,26 @@ above stands — first-use order is already the printer's behavior, the per-func
 measured selection); the sum-order lever's pointer-context gate covers 120 chains while 670
 chains outside pointer context would reorder under the same evidence (unmeasured A/B
 candidate, `MOSURA_SUMORD_CENSUS=1`).
+
+### Dial-patch results (2026-08-22, separate agent) — corrections to the entries above
+
+Full report: `docs/watcom-dial-patch-results.md` (worktree `/data/wt-dialpatch`, branch
+`dial-patch`). What it changes in this document's preceding entries:
+
+- **10.0a's 4-byte allocation order is `EAX, EDX, EBX, ECX, ESI, EDI, BP, SP`** — one table,
+  which is also the parameter table; the OW 1.0 `DoubleRegs` order (`ECX` before `EBX`) quoted in
+  the allocator-thread entry first appears in 11.0. Table-order dial: refuted on binary evidence
+  across 8.5a–10.6.
+- **Allocation tie-break dial refuted in the tested direction**: one byte (`JG`→`JGE`) turned
+  764 → 432 EXACT with zero gains. 332 of our 764 EXACT functions ride on a tie whose direction
+  happens to agree — the blast radius of any allocator lever.
+- **Declaration order is live**, contradicting the "inert" note above: reordering only the local
+  declarations converts 464b4, 5fb24 and 1798c to EXACT under stock 10.0a. Ceiling over every
+  permutation: +3 EXACT (3/12 SAME_SHAPE∩regalloc; 0/60 MISMATCH on two samples) plus sim on the
+  3320c family (0.50→0.73) and 47c6c (0.49→0.75). Build only as a model-inverse.
+- **Scheduler operand weights refuted**; the movable arg-setup pairs flip on the final
+  source-order key (`ins->id`, i.e. IR generation order — ours). The "pile-B member #11" added
+  above is withdrawn. F2 does not co-move with the regalloc class: the unification is refuted.
+- Net for the interim-build hypothesis: four of six legs closed against it on measurement; the
+  compiler-level investigation is closed. The residue is on our side — IR generation order and
+  declaration order — with small, sized prizes.
