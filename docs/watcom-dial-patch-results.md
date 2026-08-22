@@ -328,4 +328,155 @@ patch, and it is not a route to "tens of functions".
 
 ---
 
-*(§4 — the tie-order corpus measurement — follows when the run completes)*
+## 4. Dial A, tie order — the patch that was actually justified, measured once
+
+### 4.1 The source predicate
+
+`GiveBestReg` (`bld/cg/c/regalloc.c:843–868`) walks `RegSets[tree->idx]` **in table order**,
+scores each candidate with `CountRegMoves`, and replaces the incumbent on:
+
+```c
+                    if( ( saves > best_saves )
+                     || ( saves == best_saves
+                       && HW_Subset( GivenRegisters, reg )
+                       && !HW_Subset( GivenRegisters, best ) ) ) {
+                        best = reg;
+                        best_saves = saves;
+                    }
+```
+
+Strict `>`, so on a pure score tie the **first** (earliest table) entry wins. The minimal
+order-changing edit — the brief's §4 "tie-order" dial, and the one the near-symmetric
+substitution argument explicitly does *not* refute — is `>` → `>=`, making the **last** entry win.
+
+### 4.2 The located site, with independent corroboration
+
+At file offset `0x59ea3`, disassembled with mosura's own decoder (`examples/dumpraw`):
+
+```
+59e9c  MOV ECX,dword ptr [ESP]        ; best_saves
+59e9f  MOV EDX,EAX
+59ea1  CMP EAX,ECX                    ; saves vs best_saves
+59ea3  JG  0x59ec8                    ; saves >  best_saves  -> take      <-- the patch site
+59ea5  JNZ 0x59ecd                    ; saves != best_saves  -> skip
+59ea7  MOV EDX,dword ptr [0x7f884]    ; GivenRegisters
+59ead  AND EDX,ESI                    ;  & reg
+59eaf  CMP EDX,ESI
+59eb1  JNZ 0x59ecd                    ; !HW_Subset(Given,reg)  -> skip
+59eb3  MOV EDX,dword ptr [0x7f884]    ; GivenRegisters  (SAME address, second time)
+59eb9  AND EDX,EBP                    ;  & best
+59ebb  CMP EDX,EBP
+59ebd  SETNZ DL                       ; !HW_Subset(Given,best)
+59ec0  AND EDX,0xff
+59ec6  JZ  0x59ecd                    ; HW_Subset(Given,best) -> skip
+59ec8  MOV EBP,ESI                    ; best = reg
+59eca  MOV dword ptr [ESP],EAX        ; best_saves = saves
+59ecd  CMP byte ptr [ESP + 0x1c],0x1  ; the loop's following  if( greed != TRUE )
+```
+
+Corroboration independent of the source reading: the *same* absolute address `0x7f884` is loaded
+twice, matching the two `HW_Subset( GivenRegisters, … )` calls, and the join falls straight into
+`regalloc.c:863`'s `greed != TRUE` test. There is no other site in the image with that shape.
+
+**File↔address correction.** `.claude/memory/wcc386-disassembly-notes.md` records "Load base:
+file offset == address" for this image. That is wrong for the code/rodata region by `0x2200`:
+the four-byte allocation table sits at **file** `0x7ba50`, and the accessor at file `0x4052b` is
+`MOV EAX,0x79850 ; RET`, while file `0x79850` holds unrelated encoding tables. Six pointer slots
+(`RegSets[RL_DOUBLE]` and five `ParmSets`/`Parm8087` entries) all store `0x79850`. So
+**VA = file − 0x2200** here. The earlier derivation matched string *file offsets* that happen to
+appear as dwords; those dwords are pointers to different strings 0x2200 further on (the dword
+`0x755dc` points at the `__GETDS`/`__EPI` symbol blob at file `0x777dc`, not at the `-of` help
+text at file `0x755dc`). All patch offsets in this document are **file** offsets, verified by
+disassembling the file at that offset, so they are unaffected.
+
+### 4.3 The patch
+
+`/data/dialpatch/patch_dialA_tieorder.py` — idempotent, asserts a four-byte pre-image window
+(`39 c8 7f 23`, i.e. the `CMP` plus the jump, so a wrong file cannot be half-patched), copies the
+target to `.stock` before writing, applied only to the copy at `/data/dialpatch/WATCOM`.
+
+| file offset | before | after | effect |
+| --- | --- | --- | --- |
+| `0x59ea3` | `7f` (`JG rel8`) | `7d` (`JGE rel8`) | equal-score ties take the **later** table entry |
+
+The `rel8` displacement `0x23` is unchanged, so nothing moves.
+
+```
+sha256  stock    c3666de94f6fa6800f452dae8acf45505ecdb62f0ade2cc27cc86c2d9e8e2b6b
+sha256  patched  7934c9d2c8daf2b928da6ca39e66a2765a877b5d20c9e471c8a50fab5b94d4eb
+```
+
+### 4.4 Isolation battery (brief §5.5)
+
+| probe | stock vs patched | reading |
+| --- | --- | --- |
+| four register arguments | incoming args still EAX, EDX, EBX, ECX; only the *temps* holding them move (ESI/EDI → EDI/EBP) | **Prediction D1 held** — the calling convention is untouched, so unlike the table-order patch this is a real allocation dial |
+| single-temp function | temp moves EDX → EBP | **Prediction D2 held** — `saves == best_saves` is the common case, so the edit is broad, not a narrow tie flip; it shifts allocation toward the tail of the table and will hand out EBP |
+
+D2 is the honest limit on this patch, registered before the run: it is a *directional* change of
+a real dial, but a broad one, so per §6 it supports a directional/invariance reading only.
+
+### 4.5 The corpus measurement
+
+Same recovered tree as the baseline (`/data/be2/zc26/recovered`, byte-identical C — the sources
+are identical *by construction*, so any movement is the compiler), `recover` flags, **separate
+cache** `/data/be2/cache-dialA-tieorder`.
+
+```
+$ bash scripts/war2-verdicts.sh /data/be2/zc26-rec.tsv /data/be2/zc26-dialA-tieorder-rec.tsv
+== census: zc26 (stock 10.0a)              == census: zc26 + tie-order patch
+  WGSS 0.4801                                WGSS 0.3156
+      1 COMPILE_FAIL                             1 COMPILE_FAIL
+    764 EXACT                                  432 EXACT
+   1966 MISMATCH                              2270 MISMATCH
+      1 SAME_CODE                                1 SAME_CODE
+     65 SAME_SHAPE                              93 SAME_SHAPE
+```
+
+Flip census, 386 flips:
+
+| direction | count |
+| --- | --- |
+| EXACT → MISMATCH | 270 |
+| EXACT → SAME_SHAPE | 62 |
+| SAME_SHAPE → MISMATCH | 44 |
+| MISMATCH → SAME_SHAPE | 10 |
+| **anything → EXACT** | **0** |
+
+The six strict regalloc-only specimens under the patch: `FUN_0001798c` SAME_SHAPE 0.700 → 0.500,
+`FUN_000464b4` 0.846 → MISMATCH 0.359, `FUN_0005fb24` 0.784 → MISMATCH 0.566, `FUN_0002724c`
+0.655 → MISMATCH 0.379, `FUN_0006a720` 0.789 → MISMATCH 0.273, `FUN_00073936` 0.500 → MISMATCH
+0.250. **None converted; all six got worse.**
+
+### 4.6 Verdict against the pre-registration
+
+- **D1 (isolation): held.** Calling convention unaffected.
+- **D2 (breadth): held.** Broad, tail-of-table shift, EBP allocated as a temp.
+- **D3 (direction): held decisively.** EXACT fell, WGSS fell, no specimen converted. The
+  registered numeric threshold "below 300" was **not** met — EXACT landed at 432, not under 300.
+  The direction was right and the magnitude estimate was too aggressive; recording that rather
+  than rounding it into a win.
+
+> **Conclusion (Dial A, tie-order leg): REFUTED, in this direction.**
+> If WAR2's compiler had broken equal-score register ties last-wins, the six clean specimens were
+> the functions that should have converted. Not one did, and across 2,797 functions **not a
+> single function anywhere gained EXACT**. Combined with §1 (the table order did not move across
+> the whole era) and §3 (three of the six specimens convert with no compiler patch at all), the
+> register-allocation dial is not where the WAR2 residue lives.
+>
+> Registered limit, restated: this refutes *this* dial in *this* direction. It does not prove no
+> allocation dial whatsoever differs — e.g. the `GivenRegisters`-reuse preference could have been
+> absent in an earlier build, which is a narrower edit (`0x59ea5`, `75` → `EB`) and a separate
+> hypothesis. It was not run: one well-justified patch per dial, measured once.
+
+### 4.7 A useful by-product: how much of our EXACT mass rides on the tie-break
+
+432 of the 764 EXACT functions are byte-identical under **both** compilers, and no function
+outside that set became EXACT. So **432 functions contain no allocation tie whose direction
+matters, and 332 do** — those 332 are byte-exact today partly *because* 10.0a's first-wins rule
+happens to agree with the original's. That is a blast-radius number for any future allocator
+lever: it is the population a source-side reordering arm can help *or* break.
+
+---
+
+*(§5 — Dial B — follows)*
