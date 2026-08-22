@@ -497,7 +497,43 @@ The six strict regalloc-only specimens under the patch: `FUN_0001798c` SAME_SHAP
 > absent in an earlier build, which is a narrower edit (`0x59ea5`, `75` → `EB`) and a separate
 > hypothesis. It was not run: one well-justified patch per dial, measured once.
 
-### 4.7 A useful by-product: how much of our EXACT mass rides on the tie-break
+### 4.7 The pre-registered F2 co-move check — FAILED, and that refutes the unification
+
+`byte-exact-families.md` recorded this before the experiment ran, and the brief (§2 item 3, §8)
+makes it the double-confirmation for a positive Dial-A result:
+
+> if the interim build's difference is result-register-assignment preference, patching the
+> allocation dial toward WAR2's preference should move F2's rows **together with** the
+> `regalloc MOV>MOV` class. If the regalloc rows move and F2 does not (or vice versa), the
+> unification is wrong.
+
+F2's dial-patch-relevant half is the `selection MOV>LEA` signature (the `SHL>LEA` half was
+already fixed by `-5r`). Counted over the full divergence tables, baseline (`zc26-div.tsv`,
+regenerated with this build) against the tie-order patched run:
+
+| class | baseline rows | patched rows | delta | base fns | patch fns |
+| --- | --- | --- | --- | --- | --- |
+| F2 `selection MOV>LEA` | 177 | 186 | **+9 (+5.1 %)** | 138 | 147 |
+| `selection LEA>MOV` | 120 | 117 | −3 | 91 | 90 |
+| `regalloc MOV>MOV` | 6,602 | 12,330 | **+5,728 (+86.8 %)** | 1,327 | 2,014 |
+| `regalloc` (all) | 13,556 | 28,536 | +14,980 | 1,504 | 2,217 |
+| all rows | 77,737 | 100,081 | +22,344 | 2,032 | 2,364 |
+
+**The regalloc class nearly doubled; F2 did not move.** The +9 rows F2 gained are consistent with
+ordinary cascade from functions that broke elsewhere, not with a response to the dial.
+
+The prediction was written to be falsifiable in exactly this way, so it should be read at its
+word: **F2 is not the same dial as the regalloc class, and the unification recorded in
+`byte-exact-families.md` and `war2-compiler-identity` is refuted.**
+
+Registered limit: this is an *invariance* reading, and a sound one. The patch moved the
+allocation dial hard — hard enough to double the regalloc class and destroy 332 EXACT functions.
+F2 sat through that essentially unchanged. Whatever decides F2's `MOV>LEA` rows, it is not the
+register-allocation tie-break. (It does **not** follow that F2 is recoverable — F2's own
+disposition, "no ordinary C makes 10.0a emit the original's `ADD EDX,k ; MOV EAX,EDX`", is
+untouched by this and stays open.)
+
+### 4.8 A useful by-product: how much of our EXACT mass rides on the tie-break
 
 432 of the 764 EXACT functions are byte-identical under **both** compilers, and no function
 outside that set became EXACT. So **432 functions contain no allocation tie whose direction
@@ -658,9 +694,10 @@ nothing", and said either result would be decisive. The outcome is the third, wi
 | **`DoubleRegs` allocation order** | **REFUTED** | the order is identical in 8.5a, 9.5b, 10.0 beta, 10.0a and 10.6; the split that introduces the other order first appears in 11.0 (§1) |
 | **allocation tie-break** | **REFUTED in the tested direction** | one-byte `JG`→`JGE`: 764 → 432 EXACT, WGSS 0.4801 → 0.3156, **zero** functions gained EXACT, all six clean specimens got worse (§4) |
 | **load scheduling / scheduler priority** | **operand weights refuted; class reclassified** | four weight variants move nothing; the movable pairs move on the *source-order* key; one function follows 10.0a's rule at 5 of 6 identical sites (§5) |
+| **F2 unified with the regalloc dial** | **REFUTED** — the pre-registered co-move check failed | the regalloc `MOV>MOV` class grew +86.8 % under the patch while F2's `MOV>LEA` rows moved +5.1 % (§4.7) |
 | **callee-save policy** | untouched — not tested here | — |
 
-Three of the five legs are now closed, and two of them closed *against* the hypothesis with
+Four of the six legs are now closed, and two of them closed *against* the hypothesis with
 direct measurement rather than inference. The register-allocation dial in particular is not
 where the WAR2 residue lives: its cleanest specimens convert with **no compiler patch at all**,
 by reordering local declarations in our own emitted C (§3).
@@ -680,7 +717,7 @@ also the parameter table. Any model note or lever reasoning that quotes `ECX` be
    declaration order from the registers the original chose, the way `param_orders_from_evidence`
    infers declared parameter order from argument setup — not as a blind reordering, which §4.7
    shows would put 332 currently-EXACT functions at risk.
-3. **The 332 number in §4.7 is the thing to remember before building any allocator lever**: that
+3. **The 332 number in §4.8 is the thing to remember before building any allocator lever**: that
    is how many of our EXACT functions are riding on a tie whose direction happens to agree.
 
 ## 7. Artifacts
