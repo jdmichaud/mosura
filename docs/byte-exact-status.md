@@ -1818,3 +1818,14 @@ is the scheduler's output, not the source's evaluation order — the same findin
 interleave lever, one level down. The pointer-context gate is therefore a mechanism, not a
 coincidence: address formation pins Watcom's tree-evaluation order; plain sums do not. Parked
 without a corpus round; the switch stays, default pointer-only.
+
+### zc28 (2026-08-22): the shared-return arm lands — 765 EXACT / WGSS 0.4802
+
+Re-earns the ActionReturnSplit doctrine trade. The toggle (`MOSURA_RETSPLIT=0`) flips the six
+trade members symmetrically, so the discriminator had to come from the renderings: the three
+gains' unsplit forms carry gotos the split repairs; the two clean-unsplit losses are pure
+deformation; 4d0f8 is the separate do-while structuring gap. The arm re-decompiles the same
+world with the split suppressed and keeps the unsplit rendering iff it is fully structured.
+Census: the split fires in 284 functions (8 EXACT, all held at probe scale). Corpus: 3e038 →
+EXACT, 6fd88 → SAME_SHAPE, zero verdict regressions, weighted net +7.3 (5 movers up, 5 down —
+the downs, 1ed58/280f0/397a8/397f8, are the rule's refinement target).
