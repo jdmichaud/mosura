@@ -281,9 +281,14 @@ The two axes are independent and do different things:
   `allocator-model-thread`'s "statement order changes scheduling, NOT roles — 464b4" already
   recorded.
 
-Mechanism, stated as far as it is traced: local declaration order sets the order the front end
-creates the auto symbols, which sets the order `AddConflictNode` creates conflict nodes
-(`conflict.c:61–63`, a LIFO prepend, so `ConfList` is in reverse creation order); that order is
+Mechanism (the front-end link, marked "inferred" in an earlier revision of this document, has
+since been traced through OW 1.0.0 source — see `docs/declorder-irorder-results.md` §1): local
+declaration order sets the order the front end creates the auto symbols
+(`cdecl2.c:623` appends to the symbol chain, `cgen2.c:1670` walks it forward, `makeaddr.c:590`
+creates the `N_TEMP`), and **two prepends then cancel** — `AllocName` (`namelist.c:97`) puts
+`Names[N_TEMP]` in reverse creation order, and `RoughSortTemps` (`dataflo.c:112-121`) walks that
+list forward while `AddConflictNode` (`conflict.c:61`) prepends, restoring creation order. So
+`ConfList` is in **declaration order, head = first declared**; that order is
 the input permutation to `SortConflicts`' diminishing-gap sort, whose comparator is a strict `>`
 on `savings` — so the order of an equal-`savings` run in the output is a deterministic function of
 that input permutation (not a stable copy of it); `AssignConflicts` then walks the sorted list
@@ -710,10 +715,24 @@ Reading, and it is a clean partition of the class:
    `FUN_0004b750`, which flip (and break) for the same reason. **Prediction C3's mechanism held
    exactly.** `ins->id` is assigned as the code generator builds instructions, so these orders
    are a function of the IR our C produces — not of a scheduler dial.
-2. **Pairs whose instructions differ in `stallable`** (register copy vs constant; indexed load vs
-   stack load) are unmoved by the weights *and* unmoved by the source key — `FUN_00068bca` and
-   `FUN_0006b496` sit at 0.667/0.778 under every one of the six compilers tried. They are
-   separated earlier in the chain, by `StallCost` or `height`.
+2. **Register-copy-vs-constant pairs are separated by `stallable` itself** — `MOV reg,reg` scores
+   2 (one `N_REGISTER` operand), `MOV reg,const` scores 0 — and `stallable` sits *above* the
+   source-order key in the chain. They move only when BOTH the separation is removed and the key
+   is reversed: under `reg0` alone `FUN_0004b750`'s site A is still divergent, under `idorder`
+   alone it is still divergent, and only under `reg0+idorder` does it flip. **Consequence: under
+   stock weights no instruction-creation order can flip a register/constant pair**, because the
+   scheduler decides them before it ever reaches the id key.
+3. **Indexed-load-vs-stack-load pairs move under nothing.** `FUN_00068bca` and `FUN_0006b496` sit
+   at 0.667/0.778 under all six compilers tried, including `reg0+idorder`. They are separated
+   still earlier, by `StallCost` or `height`.
+
+> **Correction, 2026-08-22 (later the same day).** An earlier revision of this section lumped
+> register-copy-vs-constant pairs together with case 3 as "unmoved by the weights *and* unmoved by
+> the source key … separated by `StallCost` or `height`". That was wrong on both counts, and the
+> recorded divergence tables say so: `dialB-reg0-div.tsv` and `dialB-idorder-div.tsv` each still
+> carry `0x4b767`, while `dialB-combo-div.tsv` does not. The mistake mattered — it is what led the
+> follow-on handoff to treat the whole arg-setup class as instruction-creation order and therefore
+> reachable from C. Only the equal-`stallable` subset is.
 
 ### 5.5 The finding that closes the class
 
