@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Dial A: swap EBX and ECX in wcc386 10.0a's 4-byte allocation-order table.
 
-The table lives at file offset 0x7ba50 (this image loads at base 0, so offset == address; see
-.claude/memory/wcc386-disassembly-notes.md).  It is the `DoubleRegs`-family table of
+The table lives at FILE offset 0x7ba50; its runtime address is 0x79850 (this image's code and
+rodata load at file - 0x2200, established by the accessor `MOV EAX,0x79850 ; RET` at file
+0x4052b).  It is the `DoubleRegs`-family table of
 bld/cg/intel/386/c/386rgtbl.c: nine `hw_reg_set` words, each one little-endian u32, terminated
 by HW_EMPTY.
 

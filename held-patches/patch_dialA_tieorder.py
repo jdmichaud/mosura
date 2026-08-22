@@ -18,8 +18,10 @@ candidates already in `GivenRegisters`) the EARLIER table entry wins.  Changing 
 to `>=` makes the LATER table entry win instead -- it reverses the tie-break direction without
 disabling anything and without touching the table itself.
 
-In the 10.0a binary that predicate is at file 0x59e9c (this image loads at base 0, so offset ==
-address); verified by disassembly with mosura's own decoder:
+In the 10.0a binary that predicate is at FILE offset 0x59e9c; verified by disassembly with
+mosura's own decoder. (File offsets are what this script patches. The runtime address is
+file - 0x2200 for this image's code and rodata; the absolute 0x7f884 appearing INSIDE the
+instructions below is a VA, not a file offset.)
 
     59e9c  MOV ECX,dword ptr [ESP]        ; best_saves
     59e9f  MOV EDX,EAX

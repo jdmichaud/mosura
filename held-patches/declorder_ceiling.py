@@ -30,7 +30,10 @@ WORK = '/data/dialpatch/ceiling'
 DECL = re.compile(r'^  ([A-Za-z_][A-Za-z0-9_ ]*?)\s+(\*?\s*)([A-Za-z_][A-Za-z0-9_]*)\s*(\[[^\]]*\])?;\s*$')
 # Ghidra names stack-resident locals with a Stack_/local_ marker; those must not be permuted
 # because their declaration order IS their frame layout.
-FROZEN = re.compile(r'Stack_|^local_|^in_|^unaff_|^extraout_')
+# NOTE: the corpus uses TWO stack-local naming families -- Ghidra's underscored `auStack_98`
+# and an unsuffixed `iStack00000004` / `pxStack0000000c` form (307 occurrences in zc26). Match
+# `Stack` without the underscore so both are frozen; an earlier version missed the second family.
+FROZEN = re.compile(r'Stack|^local_|^in_|^unaff_|^extraout_')
 
 
 def split_decls(text):
@@ -101,7 +104,8 @@ def main():
         cands = [cands[int(i * step)] for i in range(sample)]
         print(f'sampled {len(cands)} candidates by even stride (reproducible)')
     print(f'candidates: {len(cands)} functions with 2..{maxlocals} movable locals, '
-          f'verdict in {sorted(want_verdicts)}, regalloc in classes')
+          f'verdict in {sorted(want_verdicts)}, '
+          f'class filter = {need_class or "(none)"}, sim floor = {sim_floor}')
     if not cands:
         return
     for c in cands:

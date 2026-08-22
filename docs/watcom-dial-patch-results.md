@@ -125,9 +125,10 @@ the binary, corroborate independently.
 | `HW_SP` | `0x00000800` | `00 08 00 00` |
 | `HW_EMPTY` | `0` | `00 00 00 00` |
 
-Searching `BINB/WCC386.EXE` (541,364 bytes, sha256 `c3666de9…`; this image loads at base 0, so
-file offset == address — `.claude/memory/wcc386-disassembly-notes.md`) for each OW 1.0.0 table's
-byte signature finds **ten of them, at consecutive addresses, in source order**:
+Searching `BINB/WCC386.EXE` (541,364 bytes, sha256 `c3666de9…`) for each OW 1.0.0 table's byte
+signature finds **ten of them, at consecutive addresses, in source order**. All offsets in this
+document are **file** offsets; the runtime address is `file − 0x2200` (§4.2 — this corrects
+`.claude/memory/wcc386-disassembly-notes.md`, which said the two were equal):
 
 ```
 0x7b790  Reg64Order      EAX,EBX,ESI,EDI,EDX,ECX,BP,SP
@@ -142,7 +143,13 @@ byte signature finds **ten of them, at consecutive addresses, in source order**:
 0x7bacc  ST0Reg / STIReg / STParmReg
 ```
 
-Ten independent hits at consecutive, source-ordered addresses settles the encoding beyond doubt.
+Eight of those are distinctive whole-table signature matches at consecutive, source-ordered
+addresses; the last row lumps three small FP tables whose 8-byte signatures are not distinctive on
+their own (`ST0Reg`'s matches 61 places image-wide) and rests on contiguity with `QuadReg`. Eight
+independent matches in source order settles the encoding beyond doubt.
+
+(`BP` and `SP` are the names `cgi86reg.h` gives masks `0x400` and `0x800`; there is no separate
+`HW_EBP`/`HW_ESP`. Where this document writes `EBP, ESP` it means those same two entries.)
 
 ### The table the campaign has been assuming is not 10.0a's table
 
@@ -163,7 +170,7 @@ OW 1.0.0 has **two** tables there — `DoubleRegs` (EAX,EDX,**ECX,EBX**,…) for
 `0x7bce8`, `0x7bcf4`, `0x7bd10`, `0x7bd14`).
 
 **So for byte-exactness work the 10.0a allocation order for 4-byte values is
-EAX, EDX, EBX, ECX, ESI, EDI, EBP, ESP.** Every model note that quotes the OW 1.0.0 `DoubleRegs`
+EAX, EDX, EBX, ECX, ESI, EDI, BP, SP.** Every model note that quotes the OW 1.0.0 `DoubleRegs`
 order for 10.0a is wrong at positions 2 and 3.
 
 ### Dating the drift — the table order is invariant across WAR2's whole era
@@ -277,11 +284,14 @@ The two axes are independent and do different things:
 Mechanism, stated as far as it is traced: local declaration order sets the order the front end
 creates the auto symbols, which sets the order `AddConflictNode` creates conflict nodes
 (`conflict.c:61–63`, a LIFO prepend, so `ConfList` is in reverse creation order); that order is
-the input permutation to `SortConflicts`' shellsort, which is unstable and only swaps on strict
-`>`, so it fixes the relative order *within* every equal-`savings` run; `AssignConflicts` then
-walks the sorted list head-to-tail and `GiveBestReg` (`regalloc.c:843–868`) walks
-`RegSets[tree->idx]` **in table order**, taking the strict-max `CountRegMoves` score and, on a
-tie, the **first** entry. So the conflict processed first takes the earlier table entry. The
+the input permutation to `SortConflicts`' diminishing-gap sort, whose comparator is a strict `>`
+on `savings` — so the order of an equal-`savings` run in the output is a deterministic function of
+that input permutation (not a stable copy of it); `AssignConflicts` then walks the sorted list
+head-to-tail and `GiveBestReg` (`regalloc.c:843–868`) walks `RegSets[tree->idx]` **in table
+order**, taking the strict-max `CountRegMoves` score. On a score tie it keeps the **first** entry
+unless the later candidate is already inside `GivenRegisters` and the incumbent is not — the
+secondary preference whose own patch site is named in §6. So, absent that preference, the
+conflict processed first takes the earlier table entry. The
 front-end link (declaration order → symbol creation order) is inferred from the measurements
 above rather than traced through 10.0a's own code.
 
@@ -331,6 +341,15 @@ what a perfect model-inverse emitter arm could win.
 
 **Prediction B2 (15–35 %): held** — 25 % on the registered set. **Prediction B3 (< 5 % on
 MISMATCH): held** — 0 of 60.
+
+*Instrument defect, disclosed.* The freeze regex in the first run of the harness was
+`Stack_|^local_|^in_|^unaff_|^extraout_`, which matches Ghidra's underscored stack names
+(`auStack_98`) but **not** the corpus's second stack-local family (`iStack00000004`,
+`pxStack0000000c` — 307 occurrences in zc26). Exactly one candidate across all four sets was
+affected — `FUN_0006dd90`, in the 60-function MISMATCH sample — and it reached no EXACT under any
+permutation, so the 12/3, 19/3, 6/0 and 60/0 results above stand as measured. The harness in
+`held-patches/declorder_ceiling.py` now matches `Stack` without the underscore; §3.5 reports the
+MISMATCH sample re-run under the corrected instrument.
 
 Beyond the three conversions the axis also moves similarity without reaching EXACT: the
 `FUN_0003320c`/`33254`/`3333c`/`33380`/`333c4` sibling family each go 0.500 → 0.727, and
@@ -575,17 +594,20 @@ min `StallCost`; max `height`; the `INS_INDEX_ADJUST` + `DataDependant` special 
 `stallable` (= `InsStallable`); `sequence == last_seq` (avoid `fxch`); and finally
 `curr->ins->id > best->ins->id` — "choose the one that came last in the source order".
 
-The whole chain is in the 10.0a binary at file `0x6615a`–`0x661c4`, and maps one-to-one onto the
+The whole chain is in the 10.0a binary at file `0x66143`–`0x661c4`, and maps one-to-one onto the
 source (`dag->height` at +0x14, `dag->stallable` at +0x10 masked to a byte, `dag->ins` at +0x04,
-`ins->sequence` at +0x3a, `ins->id` at +0x34):
+`ins->sequence` at +0x3a, `ins->id` at +0x34). Each line below is labelled with the address of
+its FIRST instruction, and elides intermediate loads:
 
 ```
-6615a  MOV EAX,[EDI+0x14] / CMP EAX,[ECX+0x14] / JLE   ; curr->height > best->height
-66169  TEST byte [EAX+0x40],0x80 / CALL 0x659be        ; INS_INDEX_ADJUST + DataDependant
-66180  MOV EAX,[EDI+0x10] / AND 0xff / CMP / JA        ; curr->stallable > best->stallable
-66197  MOV AX,[EAX+0x3a] / CMP AX,[EBP-0x4]            ; sequence == last_seq
-661b7  MOV EAX,[EAX+0x34] / CMP EAX,[EDX+0x34] / JLE   ; curr->ins->id > best->ins->id
-661c2  MOV ECX,EDI                                     ; best = curr
+66143  TEST ECX,ECX / JZ ... / CMP EAX,[EBP-0x1c] / JGE / JNZ  ; best == NULL || curr_cost < best_cost
+6615a  MOV EAX,[EDI+0x14] / CMP EAX,[ECX+0x14] / JLE           ; curr->height > best->height
+66169  MOV EAX,[EDI+0x4] / TEST byte [EAX+0x40],0x80 / CALL 0x659be
+                                                               ; INS_INDEX_ADJUST + DataDependant
+66180  MOV EAX,[EDI+0x10] / AND 0xff / CMP / JA                ; curr->stallable > best->stallable
+66197  MOV EAX,[EDI+0x4] / MOV AX,[EAX+0x3a] / CMP AX,[EBP-0x4] ; sequence == last_seq
+661b7  MOV EAX,[EAX+0x34] / CMP EAX,[EDX+0x34] / JLE           ; curr->ins->id > best->ins->id
+661c2  MOV ECX,EDI                                             ; best = curr
 ```
 
 `InsStallable` itself is at file `0x656d2`, also verified by disassembly. 10.0a strength-reduced
@@ -668,19 +690,27 @@ Reading, and it is a clean partition of the class:
 
 ### 5.5 The finding that closes the class
 
-`FUN_0004b750` under `reg0+idorder` went from 2 divergence rows to 12, and the shape says why:
+`FUN_0004b750` under `reg0+idorder` went from 2 divergence rows to 12. Disassembling the
+function's ORIGINAL bytes gives six `MOV EAX,ECX` / `MOV EDX,imm` argument-setup sites:
 
 ```
-orig  MOV EDX,0x2   cand  MOV EAX,ECX        <- site 1
-orig  MOV EDX,0x1   cand  MOV EAX,ECX        <- site 2
-orig  MOV EDX,0x3   cand  MOV EAX,ECX        <- site 3
-orig  MOV EDX,0x6   cand  MOV EAX,ECX        <- site 4  (and site 5)
+4b767  MOV EAX,ECX ; MOV EDX,0x2      <- register copy FIRST      (1 site)
+4b77a  MOV EDX,0x2 ; MOV EAX,ECX      <- constant first
+4b786  MOV EDX,0x1 ; MOV EAX,ECX      <- constant first
+4b79c  MOV EDX,0x2 ; MOV EAX,ECX      <- constant first
+4b7b2  MOV EDX,0x3 ; MOV EAX,ECX      <- constant first
+4b7c8  MOV EDX,0x6 ; MOV EAX,ECX      <- constant first           (5 sites)
 ```
 
-At **five** of the six call sites in this one function the original emits the **constant first** —
-i.e. it follows stock 10.0a's rule exactly — and at the **sixth** it emits the register copy
-first. The combined patch flipped all six to register-first: it fixed the sixth and broke the
-other five.
+At **five** of the six sites the original emits the **constant first** — i.e. it follows stock
+10.0a's rule exactly — and at the **sixth** (`0x4b767`) it emits the register copy first. Under
+the combined patch `0x4b767` disappears from the divergences (fixed) and all five constant-first
+sites appear (broken): it fixed the sixth and broke the other five.
+
+(The 12 rows are 6 transposed pairs, not 6 argument-setup sites: five are the constant/register
+pairs above, and the sixth is `0x4b758 MOV EBX,0x18` ⇄ `MOV EDX,0x87cd8`, a constant-vs-constant
+pair — also equal-`stallable`, and also broken by `idorder` alone, which is why that variant
+shows `operand-form=4` for this function.)
 
 The two site shapes are identical. **No global setting of any scheduler dial can produce both
 orders**, because a dial cannot distinguish them. This is brief §6's "a dial that can only be
@@ -726,7 +756,7 @@ where the WAR2 residue lives: its cleanest specimens convert with **no compiler 
 by reordering local declarations in our own emitted C (§3).
 
 **The single most useful correction for anyone continuing:** 10.0a's 4-byte allocation order is
-`EAX, EDX, EBX, ECX, ESI, EDI, EBP, ESP`, not the OW 1.0 `DoubleRegs` order, and that table is
+`EAX, EDX, EBX, ECX, ESI, EDI, BP, SP`, not the OW 1.0 `DoubleRegs` order, and that table is
 also the parameter table. Any model note or lever reasoning that quotes `ECX` before `EBX` for
 10.0a is wrong at positions 2 and 3.
 
