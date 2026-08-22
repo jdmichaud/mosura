@@ -57,6 +57,21 @@ EXACT is reachable by changing the order in which locals are DECLARED in our emi
   them should reorder the watsched holdout windows (`FUN_00073328`, `FUN_00019344`,
   `FUN_0004b750`'s 6th call site) toward the original. If the holdouts do not move, the operand
   weights are not the difference.
+- **Screening gate, registered before any Dial-B patch is compiled.** Several one-byte weight
+  variants are possible. To avoid "tune until something moves", they are screened at *probe*
+  scale on a fixed specimen set and **at most one** earns a corpus round. The specimen set is the
+  five pure adjacent-transposition functions, each SAME_SHAPE with exactly two divergence rows —
+  `FUN_000249a0`, `FUN_0004b750`, `FUN_00068bca`, `FUN_0006b496`, `FUN_00073328` — plus
+  `FUN_00019344` as an EXACT **control that must not break**.
+  A variant earns a corpus round only if it **converts ≥3 of the 5** specimens to EXACT **and**
+  leaves the control EXACT. If no variant clears that bar, the result is reported as a null and
+  no corpus round is run.
+- **Prediction C3.** I expect no variant to clear the bar. `FUN_00073328`'s transposed pair is
+  `MOV EDX,[EBP+0xc]` / `MOV EAX,[EBP+0x8]` — two operands of the *same* class, so no operand
+  weight can separate them; that pair falls through to the scheduler's last tie-break,
+  `curr->ins->id > best->ins->id` (source order), which is ours, not the compiler's. If a single
+  weight cannot even in principle move one of the five, the "operand weights" hypothesis cannot
+  be the whole of pile-B member #11.
 
 ### PR-4 — Dial A, tie order (registered before the corpus run)
 
