@@ -1252,15 +1252,59 @@ fn main() {
                     && !mosura::recompile::watsched::allocation_regressed(&insns, &cand);
                 let mut ok = other_ok && alloc_ok;
                 let mut passthrough = false;
+                // DEFAULT-ON since the round-2 landing (targeted 299: 121/121 EXACT held,
+                // +5, zero losses). MOSURA_KERNEL_NET=0 restores the refusal.
+                let net_kernel = std::env::var("MOSURA_KERNEL_NET").as_deref() != Ok("0");
                 if other_ok && !alloc_ok {
                     // Allocator model phase 2, the ZERO-COST kernel (see `pass_through_only`):
                     // a collision/allocation refusal whose whole delta is appended
                     // self-move pass-throughs cannot change the allocator's assignment.
                     let lt = print_c(fl);
                     let ct = print_c(&f2);
+                    let sig_of2 = |t: &str| t.lines().find(|l| l.contains(&format!("FUN_{va:08x}("))).map(str::to_string);
                     if pass_through_only(&lt, &ct, *va) {
                         ok = true;
                         passthrough = true;
+                    } else if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
+                        // SHADOW (stack-args frontier): would a STACK-APPEND class admit
+                        // this refusal? Appended arbitrary-expression args count only when
+                        // the ORIGINAL site pushes at least as many values (PUSH insns in
+                        // the 12-insn pre-call window — the const-evidence pattern).
+                        let mut consts2: Vec<(u64, u32, u64)> = Vec::new();
+                        let mut stacks: Vec<(u64, u32)> = Vec::new();
+                        if pass_through_report(&lt, &ct, *va, Some(&mut consts2), Some(&mut stacks))
+                            && !stacks.is_empty()
+                        {
+                            let mut push_ev = std::collections::HashMap::new();
+                            for (i, x) in insns.iter().enumerate() {
+                                if x.is_call {
+                                    if let Some(t) = x.target {
+                                        let pushes = insns[..i]
+                                            .iter()
+                                            .rev()
+                                            .take(12)
+                                            .take_while(|y| !y.is_call && !y.is_branch)
+                                            .filter(|y| y.mnemonic == "PUSH")
+                                            .count();
+                                        let e = push_ev.entry(t).or_insert(0usize);
+                                        *e = (*e).max(pushes);
+                                    }
+                                }
+                            }
+                            let mut need = std::collections::HashMap::new();
+                            for &(c, _) in &stacks {
+                                *need.entry(c).or_insert(0usize) += 1;
+                            }
+                            // STACK-APPEND adoption measured SUB-THRESHOLD and not landed
+                            // (2026-08-21): the whole evidence-gated pool is 2 TUs, both
+                            // MISMATCH; the micro-round moved 36b30 0.471→0.586 and 6d680
+                            // not at all — ~+0.00006 WGSS, no EXACT, below the cost of its
+                            // own full gate. The shadow census stays for future re-pricing.
+                            let _ = sig_of2;
+                            if need.iter().all(|(c, n)| push_ev.get(c).copied().unwrap_or(0) >= *n) {
+                                eprintln!("[shadow-stack] {name} appends {:?}", need.iter().map(|(c, n)| (format!("{c:#x}"), *n)).collect::<Vec<_>>());
+                            }
+                        }
                     }
                 }
                 // SHADOW CENSUS (MOSURA_KERNEL_SHADOW=1; missing-args thread): would the
@@ -1270,9 +1314,6 @@ fn main() {
                 // its `modify` clause (its `parm [..]`/`parm caller []` half must be
                 // verbatim), killing the 3925c order-inversion hazard that sank the old
                 // precise-network relaxation (1da00/2d1f0).
-                // DEFAULT-ON since the round-2 landing (targeted 299: 121/121 EXACT held,
-                // +5, zero losses). MOSURA_KERNEL_NET=0 restores the refusal.
-                let net_kernel = std::env::var("MOSURA_KERNEL_NET").as_deref() != Ok("0");
                 if (std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() || net_kernel)
                     && !ok
                     && sig_stable
@@ -1359,7 +1400,7 @@ fn main() {
                             })
                         })
                     };
-                    if pass_through_report(&lt, &ct, *va, Some(&mut appended_consts))
+                    if pass_through_report(&lt, &ct, *va, Some(&mut appended_consts), None)
                         && pragmas_equal
                         && sig_of(&lt) == sig_of(&ct)
                         && const_evidence(&appended_consts)
@@ -2379,10 +2420,10 @@ fn order_only_delta(landed: &str, cand: &str) -> Option<Vec<u64>> {
 }
 
 fn pass_through_only(landed: &str, cand: &str, va: u64) -> bool {
-    pass_through_report(landed, cand, va, None)
+    pass_through_report(landed, cand, va, None, None)
 }
 
-fn pass_through_report(landed: &str, cand: &str, va: u64, mut consts: Option<&mut Vec<(u64, u32, u64)>>) -> bool {
+fn pass_through_report(landed: &str, cand: &str, va: u64, mut consts: Option<&mut Vec<(u64, u32, u64)>>, mut stack_appends: Option<&mut Vec<(u64, u32)>>) -> bool {
     let fun = format!("FUN_{va:08x}");
     let own_pragma = format!("#pragma aux {fun}");
     let ll: Vec<&str> = landed.lines().collect();
@@ -2527,6 +2568,28 @@ fn pass_through_report(landed: &str, cand: &str, va: u64, mut consts: Option<&mu
                 let end = r.find([',', ')']).unwrap_or(r.len());
                 &r[..end]
             };
+            if !is_const(elem) && !elem.starts_with("param_") && stack_appends.is_some() {
+                // STACK-APPEND class (stack-args frontier): an arbitrary expression element
+                // is acceptable only when byte evidence backs it — the caller checks that
+                // the original site PUSHes at least as many values as appended (the
+                // const-evidence pattern, PUSH form). Reported for that check.
+                let callee = l
+                    .find("func_0x")
+                    .and_then(|i| u64::from_str_radix(l.get(i + 7..i + 15)?, 16).ok())
+                    .unwrap_or(0);
+                if callee == 0 {
+                    return false;
+                }
+                if let Some(out) = stack_appends.as_deref_mut() {
+                    out.push((callee, pos));
+                }
+                let step = if at == 0 && empty_list { elem.to_string() } else { format!(", {elem}") };
+                let Some(r) = rest.strip_prefix(&step) else { return false };
+                rest = r;
+                at += step.len();
+                pos += 1;
+                continue;
+            }
             if is_const(elem) {
                 // bound from the original's own dataflow — the MOV imm already exists
                 if let Some(out) = consts.as_deref_mut() {
