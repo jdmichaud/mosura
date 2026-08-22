@@ -1829,3 +1829,14 @@ world with the split suppressed and keeps the unsplit rendering iff it is fully 
 Census: the split fires in 284 functions (8 EXACT, all held at probe scale). Corpus: 3e038 →
 EXACT, 6fd88 → SAME_SHAPE, zero verdict regressions, weighted net +7.3 (5 movers up, 5 down —
 the downs, 1ed58/280f0/397a8/397f8, are the rule's refinement target).
+
+### zc29 (2026-08-22): the do-while condition port — WGSS 0.4802 → 0.4817
+
+The 4d0f8 "structuring gap" was a printer defect: Ghidra's `emitBlockLs` under `only_branch`
+emits only the body list's last sub-block — the `BlockCondition` — and `emitBlockCondition`
+prints its second operand with statements (`(a) || (stmt, b)`); mosura read one CBRANCH off the
+list's exit basic and dropped the operand, call and all. Found with the oracle recipe
+(`capture --c`, `dumpc --raw`, `MOSURA_STRUCT=1`, `trace-diff.sh`) in that order: structure
+correct, IR intact, trace identical → printer. One arm ported, fixture + strict regression test
+committed. Corpus: 0 flips, 765 EXACT, weighted +181 insn-sim — the largest WGSS move since the
+WGSS-first bar (the defect touched every do-while ending in a short-circuit condition).
