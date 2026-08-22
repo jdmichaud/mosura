@@ -177,6 +177,16 @@ transfer to the 10.0a binary. Confirm each against the binary before trusting it
   cleanly with no confound), (b) patch toward that, (c) predict which specimens should flip and
   by the F2 prediction (§2 item 3) which other class should co-move, (d) measure against the
   prediction, not against the raw row count.
+- **Crucial distinction — table-order vs tie-order.** The `DoubleRegs` cancellation used the
+  near-symmetric substitution counts (EAX→EDX 689 ≈ EDX→EAX 675) to refute a **table-preference**
+  dial, and that reasoning is correct: a fixed list-order preference biases substitutions one way.
+  But the same symmetry does NOT refute a **tie-order** dial — reversing which of two equal-savings
+  temps is processed FIRST swaps *both* their roles in the same function, producing symmetric
+  counts by construction. So the live Dial-A hypothesis is not "the register list is ordered
+  differently" (refuted) but "the conflict-list processing order or the equal-savings tie-break is
+  different" (the `conflict.c:61` prepend order, or `GiveBestReg`'s `GivenRegisters`-reuse tie-break).
+  Do not let the old symmetry argument talk you out of the tie-order version — it only kills the
+  table-order version.
 
 ### Dial B — the instruction scheduler priority (`inssched.c`)
 
@@ -226,9 +236,13 @@ already have the model to tell us exactly which functions and windows to watch.
    script that asserts the pre-image bytes** and refuses on mismatch; record sha256 before and
    after. Copy the whole `WATCOM` tree to scratch, patch the copy's `BINB/WCC386.EXE`.
 5. **Validate the patch in isolation BEFORE any corpus run.** Compile a battery of small probes
-   (`dumpwc` against the patched compiler) proving: the targeted transform changed to the
-   intended shape, and the NEIGHBORING transforms are byte-identical to stock. A patch with
-   collateral damage is worse than no patch — you'll misread the corpus delta.
+   (`dumpwc` against the patched compiler — point it at the copy with `DUMPWC_WATCOM=<copy>/WATCOM`)
+   proving: the targeted transform changed to the intended shape, and the NEIGHBORING transforms
+   are byte-identical to stock. A patch with collateral damage is worse than no patch — you'll
+   misread the corpus delta. Sanity check on determinism (guaranteed post-commit d45c4ed): two
+   compiles of the SAME source tree with the SAME compiler must produce `cmp`-identical objects;
+   any difference between two compiles of the same tree with DIFFERENT compilers is therefore the
+   compiler, which is the signal you want.
 6. **Corpus run with a SEPARATE cache** (`--cache /data/be2/cache-dialpatch`). Emit is already
    done (reuse the zc26 recovered tree — the C doesn't change, only the compiler does), so this
    is `recompile_check` only, pointed at the patched WATCOM dir and the separate cache.
@@ -253,11 +267,13 @@ This is where the fold experiment went wrong the first time, so read it twice.
   strict single-class specimens (regalloc-only, SAME_SHAPE) are the only clean measurement; a
   dial is confirmed by converting THOSE, and the cascade (if the dial is real) then unwinds
   additional multi-class functions as a bonus you observe, not as your primary metric.
-- **Near-symmetric substitution kills a fixed-order hypothesis.** If EAX→EDX and EDX→EAX occur
-  in comparable numbers, a table REORDER cannot be the cause (it would bias one way). This is
-  already true of the current data — so if you're patching `DoubleRegs` order, you must first
-  explain why the symmetry doesn't refute you (e.g. the real dial is a savings/tie-break rule,
-  not the list order). Don't skip this; it's the check the fold member never got for months.
+- **Near-symmetric substitution kills a table-order hypothesis but NOT a tie-order one.** If
+  EAX→EDX and EDX→EAX occur in comparable numbers, a table REORDER cannot be the cause (it would
+  bias one way) — but a tie-ORDER reversal produces symmetry BY CONSTRUCTION (it swaps both roles
+  in one function; see §4 Dial A "table-order vs tie-order"). So the symmetry refutes only the
+  `DoubleRegs`-reorder version; it says nothing about a conflict-processing-order or equal-savings
+  tie-break dial, which is the version actually worth patching. This exact confusion cancelled the
+  dial once; don't let it cancel the right hypothesis too.
 - **Pre-register the ceiling and the specimens.** Before the corpus run, write down: which
   named functions you predict flip, how many EXACT you'd call a success, and the F2 co-move
   prediction. Then measure. A result you can reinterpret freely after seeing it proves nothing.
