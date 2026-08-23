@@ -260,6 +260,9 @@ struct PrintC<'a> {
     /// `va_start(<var>, param_N)` and the `N` of the anchor parameter.
     va_start_ops: HashSet<OpId>,
     va_last_named: u32,
+    /// The ops currently being rendered, innermost last — the top is the op whose operand is
+    /// being printed (Ghidra's `readOp` in `opIntZext`/`opIntSext`).
+    render_stack: Vec<OpId>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -919,14 +922,19 @@ impl<'a> PrintC<'a> {
         if self.is_explicit(out) {
             return false;
         }
-        // Ghidra answers per READ SITE (`readOp` is the op being printed); mosura renders the
-        // extension from its def, so an implied multi-reader extension is hidden only when every
-        // site implies it.
-        let readers = self.f.vn(out).descend.clone();
-        if readers.is_empty() {
-            return false;
+        // Ghidra answers per READ SITE: `readOp` is the op whose operand is being printed — the
+        // enclosing render (`render_stack`); the extension's own entry is the top.
+        let n = self.render_stack.len();
+        let read_op = if n >= 2 && self.render_stack[n - 1] == op {
+            Some(self.render_stack[n - 2])
+        } else {
+            // printed as a statement of its own (explicit) or at the top: no read site
+            None
+        };
+        match read_op {
+            Some(r) if self.f.vn(out).descend.contains(&r) => self.extension_implied_at(op, out, r),
+            _ => false,
         }
-        readers.iter().all(|&r| self.extension_implied_at(op, out, r))
     }
 
     fn extension_implied_at(&self, _op: OpId, out: VarnodeId, read_op: OpId) -> bool {
@@ -1749,6 +1757,14 @@ impl<'a> PrintC<'a> {
 
     /// Render an op as a C expression with its precedence.
     fn render_op(&mut self, op: super::op::OpId) -> (String, u8) {
+        // Ghidra's `readOp`: the op whose operand is being printed is the enclosing render.
+        self.render_stack.push(op);
+        let r = self.render_op_inner(op);
+        self.render_stack.pop();
+        r
+    }
+
+    fn render_op_inner(&mut self, op: super::op::OpId) -> (String, u8) {
         let o = self.f.op(op);
         let a = |i: usize| o.input(i).unwrap();
         let bin = |s: &mut Self, sym: &str, prec: u8| {
@@ -4529,6 +4545,7 @@ fn print_c_inner(
         names: HashMap::new(),
         va_start_ops: HashSet::new(),
         va_last_named: 0,
+        render_stack: Vec::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
