@@ -903,6 +903,60 @@ impl<'a> PrintC<'a> {
         Some((format!("{l} {sym} {r}"), 13))
     }
 
+    /// Ghidra `CastStrategyC::isExtensionCastImplied` (cast.cc:249): C's integer promotion
+    /// performs the extension `op` describes when its (implied) output feeds an arithmetic or
+    /// comparison op whose other operand is a constant no wider than `int` or an explicit
+    /// variable, of the same metatype as the extended value; PTRADD's index likewise.
+    fn is_extension_cast_implied(&self, op: OpId) -> bool {
+        let out = self.f.op(op).output.unwrap();
+        if self.is_explicit(out) {
+            return false;
+        }
+        // Ghidra answers per READ SITE (`readOp` is the op being printed); mosura renders the
+        // extension from its def, so an implied multi-reader extension is hidden only when every
+        // site implies it.
+        let readers = self.f.vn(out).descend.clone();
+        if readers.is_empty() {
+            return false;
+        }
+        readers.iter().all(|&r| self.extension_implied_at(op, out, r))
+    }
+
+    fn extension_implied_at(&self, _op: OpId, out: VarnodeId, read_op: OpId) -> bool {
+        let ro = self.f.op(read_op);
+        let metatype = meta_class(&self.type_of(out));
+        match ro.code() {
+            OpCode::Ptradd => true,
+            OpCode::IntAdd
+            | OpCode::IntSub
+            | OpCode::IntMult
+            | OpCode::IntDiv
+            | OpCode::IntAnd
+            | OpCode::IntOr
+            | OpCode::IntXor
+            | OpCode::IntEqual
+            | OpCode::IntNotequal
+            | OpCode::IntLess
+            | OpCode::IntLessequal
+            | OpCode::IntSless
+            | OpCode::IntSlessequal => {
+                let Some(slot) = (0..ro.num_inputs()).find(|&i| ro.input(i) == Some(out)) else { return false };
+                let Some(other) = ro.input(1 - slot) else { return false };
+                // Integer tokens do not naturally indicate their size, and integers bigger than
+                // the promotion size are NOT naturally extended.
+                if self.f.vn(other).is_constant() {
+                    if self.f.vn(other).size > self.f.size_of_int() {
+                        return false;
+                    }
+                } else if !self.is_explicit(other) {
+                    return false;
+                }
+                meta_class(&self.type_of(other)) == metatype
+            }
+            _ => false,
+        }
+    }
+
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
     fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
         if let Some(n) = self.snapshot_names.get(&v) {
@@ -1675,8 +1729,28 @@ impl<'a> PrintC<'a> {
             (format!("{l} {sym} {r}"), prec)
         };
         match o.code() {
-            // COPY and ZEXT (the implicit x86 32→64 zero-extension) stay transparent
-            OpCode::Copy | OpCode::IntZext => self.render_var(a(0)),
+            OpCode::Copy => self.render_var(a(0)),
+            // Ghidra `PrintC::opIntZext` (printc.cc:786): a zero-extension whose types make it a
+            // C cast (`CastStrategyC::isZextCast`: out int/uint, in uint/bool) prints `(uint2)x`
+            // unless integer promotion already implies it (`isExtensionCastImplied`, cast.cc:249);
+            // otherwise the functional `ZEXT<in><out>(x)`. (Formerly every ZEXT printed bare — the
+            // 16-bit `iRam = (uint2)byte * 2` lost its cast and Watcom promoted to 32 bits:
+            // `XOR EAX,EAX` for the original's `XOR AH,AH`, WAR2 FUN_00019344/000207b8.)
+            OpCode::IntZext => {
+                let in0 = a(0);
+                let out = o.output.unwrap();
+                let (outty, inty) = (self.type_of(out), self.type_of(in0));
+                if is_zext_cast(&outty, &inty) {
+                    if self.is_extension_cast_implied(op) {
+                        self.render_var(in0)
+                    } else {
+                        (format!("({}){}", outty.name(), self.operand(in0, 14, false)), 14)
+                    }
+                } else {
+                    let (insize, outsize) = (self.f.vn(in0).size, self.f.vn(out).size);
+                    (format!("ZEXT{insize}{outsize}({})", self.render_var(in0).0), 16)
+                }
+            }
             // SUBPIECE (Ghidra `PrintC::opSubpiece`, printc.cc:843): a truncation renders as a C
             // cast when `CastStrategyC::isSubpieceCast` holds (offset 0 + scalar in/out metatypes),
             // otherwise as the functional `SUB<insize><outsize>(x, off)` (`opFunc`,
@@ -1715,11 +1789,25 @@ impl<'a> PrintC<'a> {
                 // `iVar2 = iRam000a86a8;` — the int-width value itself (`narrow_wide_locals`).
                 (self.cast_operand(op, 0, 14, false), 14)
             }
+            // Ghidra `PrintC::opIntSext` (printc.cc:799): the sign-extension counterpart —
+            // `isSextCast` (out int/uint, in int/bool) → `(int4)x` unless promotion implies it,
+            // else `SEXT<in><out>(x)`. The input itself may also need a `(int{m})` cast (e.g.
+            // from undefined), giving Ghidra's `(int8)(int4)x`.
             OpCode::IntSext => {
-                let n = self.f.vn(o.output.unwrap()).size;
-                // the widening renders `(int{n})`; the input itself may also need a `(int{m})`
-                // cast (e.g. from undefined), giving Ghidra's `(int8)(int4)x`
-                (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14)
+                let in0 = a(0);
+                let out = o.output.unwrap();
+                let (outty, inty) = (self.type_of(out), self.type_of(in0));
+                let n = self.f.vn(out).size;
+                if is_sext_cast(&outty, &inty) {
+                    if self.is_extension_cast_implied(op) {
+                        self.render_var(in0)
+                    } else {
+                        (format!("({}){}", outty.name(), self.cast_operand(op, 0, 14, false)), 14)
+                    }
+                } else {
+                    let insize = self.f.vn(in0).size;
+                    (format!("SEXT{insize}{n}({})", self.render_var(in0).0), 16)
+                }
             }
             OpCode::IntMult => bin(self, "*", 13),
             OpCode::IntDiv | OpCode::IntSdiv => bin(self, "/", 13),
@@ -3895,6 +3983,32 @@ fn narrow_wide_locals(f: &Funcdata, high_of: &[u32]) -> HashSet<VarnodeId> {
         }
     }
     out
+}
+
+/// Ghidra `type_metatype` classes, as far as the cast rules compare them.
+fn meta_class(dt: &Datatype) -> u8 {
+    match dt {
+        Datatype::Int(_) | Datatype::Char => 1,
+        Datatype::Uint(_) => 2,
+        Datatype::Bool => 3,
+        Datatype::Unknown(_) => 4,
+        Datatype::Pointer(..) => 5,
+        Datatype::Float(_) => 6,
+        Datatype::Code => 7,
+        _ => 8,
+    }
+}
+
+/// Ghidra `CastStrategyC::isZextCast` (cast.cc:457): the extension is a C cast when the output
+/// is an integer and the input unsigned or boolean.
+fn is_zext_cast(outtype: &Datatype, intype: &Datatype) -> bool {
+    matches!(meta_class(outtype), 1 | 2) && matches!(meta_class(intype), 2 | 3)
+}
+
+/// Ghidra `CastStrategyC::isSextCast` (cast.cc:443): the output an integer, the input signed or
+/// boolean.
+fn is_sext_cast(outtype: &Datatype, intype: &Datatype) -> bool {
+    matches!(meta_class(outtype), 1 | 2) && matches!(meta_class(intype), 1 | 3)
 }
 
 /// Widen a recovered type to the width of the storage the value actually occupies.

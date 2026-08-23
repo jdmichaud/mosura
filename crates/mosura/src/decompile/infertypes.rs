@@ -417,14 +417,22 @@ impl<'a> TypeInfer<'a> {
             }
             Load => self.propagate_load_store(op, invn, outvn, inslot, outslot, alttype, false),
             Store => self.propagate_load_store(op, invn, outvn, inslot, outslot, alttype, true),
-            // A pointer flows through an `add a constant/index` to its result (Ghidra
-            // `TypeOpIntAdd::propagateType`): `ptr + i*elemsize` and `ptr + k*elemsize` stay the
-            // same element pointer. A non-pointer INT_ADD carries no type (the INT/UINT constant-
-            // index refinement is faithfully deferred, as before).
+            // Ghidra `TypeOpIntAdd::propagateType` (typeop.cc:1181): a pointer flows through an
+            // `add a constant/index` to its result (`ptr + i*elemsize` stays the same element
+            // pointer); an INT/UINT type flows from one input ONTO A CONSTANT in slot 1
+            // (:1186-1195 — the constant takes the other operand's signedness). The latter is what
+            // makes `CastStrategyC::isExtensionCastImplied` hide the promotion cast on
+            // `uRam0008032c + 0x80248`: the constant's metatype matches the extended operand's.
             IntAdd => {
-                let _ = outvn;
                 if !matches!(alttype, Datatype::Pointer(..)) {
-                    return None;
+                    if !(alttype.is_int_meta() || matches!(alttype, Datatype::Uint(_))) {
+                        return None;
+                    }
+                    if outslot != 1 || !self.f.op(op).input(1).is_some_and(|c| self.f.vn(c).is_constant()) {
+                        return None;
+                    }
+                    // `if (outvn->isConstant() && (alttype->getMetatype() != TYPE_PTR)) newtype = alttype`
+                    return if self.f.vn(outvn).is_constant() { Some(alttype.clone()) } else { None };
                 }
                 // pointers must propagate input <-> output, and never output -> input
                 if (inslot != -1 && outslot != -1) || inslot == -1 {
