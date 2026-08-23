@@ -2151,10 +2151,20 @@ fn trim_op_output(f: &mut Funcdata, op: super::op::OpId) {
     let size = f.vn(vn).size;
     let pc = f.op(op).seqnum.pc;
     let uniq = f.num_ops() as u32;
+    // merge.cc:663-666: for an INDIRECT the COPY goes AFTER THE SOURCE OF THE INDIRECT (the
+    // call/store it is guarded by), not after the INDIRECT — which sits BEFORE that op. Placed
+    // after the INDIRECT, a global's post-store version was written before the STORE that must
+    // read the old one: WAR2 FUN_0002cca0 (a list push) printed `iRam = iVar1; *(param_1 + 8) =
+    // iRam;` where Ghidra prints `*(param_1 + 8) = iRam; iRam = iVar1;`.
+    let afterop = if f.op(op).code() == OpCode::Indirect {
+        f.op(op).guarded_op().filter(|&g| !f.op(g).is_dead()).unwrap_or(op)
+    } else {
+        op
+    };
     let tiny = f.new_output_unique(op, size); // output of op is now the stubby uniq…
     let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![tiny]);
     f.op_set_output(copyop, vn); // …and the original output is bumped forward slightly
-    f.op_insert_after(copyop, op);
+    f.op_insert_after(copyop, afterop);
 }
 
 /// `Merge::processCopyTrims` (merge.cc:1415), the body of `ActionDominantCopy`

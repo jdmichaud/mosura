@@ -1012,14 +1012,34 @@ impl Funcdata {
         }
     }
 
-    /// Splice `newop` into `prev`'s basic block immediately after it (Ghidra's `opInsertAfter`):
-    /// adopt `prev`'s parent block and insert just past it in the block's op list.
+    /// Splice `newop` into `prev`'s basic block immediately after it (Ghidra's `opInsertAfter`,
+    /// funcdata_op.cc:373): adopt `prev`'s parent block and insert just past it in the block's
+    /// op list. "After an INDIRECT" means after the STORE or CALL it is indirect for (:376-385):
+    /// the INDIRECT sits before that op, and an op placed between them precedes the effect it
+    /// follows — mosura's snip/trim COPYs used to land there (the snip fix, eccdac4, and
+    /// `trim_op_output`: WAR2 FUN_0002cca0 wrote a global before the STORE that reads its old
+    /// value). Every `opInsertAfter` caller gets the redirect, as in Ghidra.
     pub fn op_insert_after(&mut self, newop: OpId, prev: OpId) {
+        let prev = if self.ops[prev.0 as usize].opcode == OpCode::Indirect {
+            match self.ops[prev.0 as usize].guarded_op {
+                Some(targ) if !self.ops[targ.0 as usize].is_dead() => targ,
+                _ => prev,
+            }
+        } else {
+            prev
+        };
         let parent = self.ops[prev.0 as usize].parent;
         self.ops[newop.0 as usize].parent = parent;
         if let Some(b) = parent {
+            let new_is_phi = self.ops[newop.0 as usize].opcode == OpCode::Multiequal;
             let ops = &mut self.blocks[b.0 as usize].ops;
-            let pos = ops.iter().position(|&o| o == prev).map(|p| p + 1).unwrap_or(ops.len());
+            let mut pos = ops.iter().position(|&o| o == prev).map(|p| p + 1).unwrap_or(ops.len());
+            // :391-401 — there should not be a MULTIEQUAL immediately after a non-MULTIEQUAL op
+            if !new_is_phi {
+                while pos < ops.len() && self.ops[ops[pos].0 as usize].opcode == OpCode::Multiequal {
+                    pos += 1;
+                }
+            }
             ops.insert(pos, newop);
         }
     }
