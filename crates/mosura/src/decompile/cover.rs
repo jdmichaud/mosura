@@ -407,6 +407,26 @@ pub fn extended_cover(
     cov
 }
 
+/// Every varnode's cover as Ghidra's `Cover::rebuild` (cover.cc:477) leaves it once the
+/// explicit/implied classification is known: extended through every consumer whose output is
+/// IMPLIED, because an implied expression is evaluated where its consumer is, not where it was
+/// defined. This is the cover the merge tests (`Merge::intersection` → `HighVariable::getCover`)
+/// compare; the plain [`all_covers`] is the pre-classification view. `explicit[i]` is the
+/// decision for varnode `i`.
+pub fn all_covers_extended(f: &Funcdata, explicit: &[bool]) -> HashMap<VarnodeId, Cover> {
+    let pos = op_positions(f);
+    let is_implied = |x: VarnodeId| !explicit.get(x.0 as usize).copied().unwrap_or(true);
+    let mut out = HashMap::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        let c = extended_cover(f, v, &pos, &is_implied);
+        if !c.is_empty() {
+            out.insert(v, c);
+        }
+    }
+    out
+}
+
 pub fn all_covers(f: &Funcdata) -> HashMap<VarnodeId, Cover> {
     let pos = op_positions(f);
     let mut out = HashMap::new();

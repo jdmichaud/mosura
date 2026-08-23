@@ -22,7 +22,13 @@ fn main() {
     // .ldefs → .sla + .pspec context sets, laned registers attached) — the same honor-the-
     // declared-arch rule as `raw_funcdata_flow_image_arch`, extended to the SLEIGH tables so
     // an `x86:LE:32:*` fixture decodes 32-bit instead of through the old hardcoded x86-64 pair.
-    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    // `lang:endian:size:variant[:compiler]` — the compiler component names the cspec, not the
+    // SLEIGH language; strip it only when present (a four-part arch is already the language id).
+    let lang_id = if dt.arch.matches(':').count() >= 4 {
+        dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i])
+    } else {
+        dt.arch.as_str()
+    };
     let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("fixture language loads");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;

@@ -168,6 +168,11 @@ pub fn merge(f: &Funcdata) -> (HighVariables, VariablePieces) {
     // input would be fused back into the phi's HighVariable, the COPY would turn internal
     // (unprinted), and the input's def — implied at print time — would silently vanish.
     let explicit = mark_explicit(f, &mut h, &covers);
+    // From here the covers are Ghidra's post-classification covers (`Cover::rebuild` through
+    // implied consumers): a phi input defined BEFORE a call whose argument is an implied
+    // expression of the phi's own value must not merge into the phi (ground truth `fib`:
+    // `uVar2 = uVar2 - 2; fib(uVar2 - 1)` read the decremented value — wrong code).
+    let covers = super::cover::all_covers_extended(f, &explicit);
     merge_copy(f, &mut h, &pieces, &covers, &explicit);
     merge_adjacent(f, &mut h, &pieces, &covers, &explicit);
     merge_same_storage(f, &mut h, &pieces, &covers, &explicit);
@@ -671,7 +676,15 @@ fn check_implied_cover(
             return false;
         }
     }
-    implied_cover_ok(f, ih_of, ih_members, covers, v)
+    // Ghidra's `inflateTest(defvn, vn->getHigh())` reads the candidate's cover as `Cover::rebuild`
+    // leaves it (cover.cc:477): extended through every consumer already decided IMPLIED, because
+    // an implied expression is evaluated where its implied consumer is, not where it was defined.
+    // `sum_to` (ground truth): `EDX_next = EDX_phi + 1` feeds an implied compare whose CBRANCH
+    // sits at the block end, PAST the back-edge COPY into the phi's own variable; on the plain
+    // cover the redefinition was invisible, the add went implied, and the C read
+    // `iVar3 = iVar3 + 1; } while (n+1 != iVar3 + 1)` — a double increment, wrong code.
+    let ext = extended_cover(f, v, &ctx.pos, &|x| decision[x.0 as usize] == Some(false));
+    implied_cover_ok(f, ih_of, ih_members, covers, &ext, v)
 }
 
 /// `ActionMarkImplied::checkImpliedCover` (coreaction.cc:3376) input-cover arm, via `Merge::
@@ -690,10 +703,11 @@ fn implied_cover_ok(
     ih_of: &[u32],
     ih_members: &HashMap<u32, Vec<VarnodeId>>,
     covers: &HashMap<VarnodeId, Cover>,
+    vcov: &Cover,
     v: VarnodeId,
 ) -> bool {
     let vn = f.vn(v);
-    if let (Some(def), Some(vcov)) = (vn.def, covers.get(&v)) {
+    if let Some(def) = vn.def {
         for slot in 0..f.op(def).num_inputs() {
             let Some(defvn) = f.op(def).input(slot) else { continue };
             if f.vn(defvn).is_constant() {
@@ -2137,6 +2151,7 @@ fn process_copy_trims(f: &mut Funcdata) {
         let pieces = merge_addrtied(f, &mut h);
         merge_markers(f, &mut h, &pieces);
         let explicit = mark_explicit(f, &mut h, &covers);
+        let covers = super::cover::all_covers_extended(f, &explicit);
         merge_copy(f, &mut h, &pieces, &covers, &explicit);
         let of: Vec<u32> = (0..f.num_varnodes() as u32).map(|i| h.high(VarnodeId(i))).collect();
 

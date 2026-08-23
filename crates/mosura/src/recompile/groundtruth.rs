@@ -45,6 +45,8 @@ pub struct GtFunction {
     pub checked: Option<super::verify::Checked>,
     /// The emitted C (the whole translation unit).
     pub c: String,
+    /// The function's own C (what the decompiler printed, before TU assembly).
+    pub body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +55,8 @@ pub struct GtReport {
     pub functions: Vec<GtFunction>,
     /// Where the emitted TUs and objects were written.
     pub workdir: PathBuf,
+    /// Every function's original bytes `(symbol, va, bytes)` — for fixtures.
+    pub original_bytes: Vec<(String, u64, Vec<u8>)>,
     /// The functional check: every recompiled function linked into one program and RUN; the
     /// exit status is the program's result. `PASS` (same status as the original), `FAIL(o,n)`,
     /// `NOLINK` (an object failed or the link did), `NORUN` (the original could not be run).
@@ -444,6 +448,9 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         let f = decompile_function(&program, Address::new(ram, s.addr));
         let (c, self_name, sig, globals) = match f {
             Some(f) => {
+                if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
+                    eprint!("{}", f.print_raw());
+                }
                 let c = print_c(&f);
                 let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
                 let mut globals = BTreeMap::new();
@@ -485,6 +492,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 note: String::new(),
                 checked: None,
                 c: String::new(),
+                body: String::new(),
             });
             continue;
         };
@@ -748,6 +756,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 note,
                 checked: None,
                 c: std::fs::read_to_string(&c_path).unwrap_or_default(),
+                body: c.clone(),
             });
             continue;
         };
@@ -765,6 +774,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                     classes: diff.class_counts.iter().map(|(k, v)| (k.as_str().to_string(), *v)).collect(),
                     note,
                     c: tu_text,
+                    body: c.clone(),
                     checked: Some(checked),
                 });
             }
@@ -778,12 +788,15 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 note: format!("verify: {e}"),
                 checked: None,
                 c: tu_text,
+                body: c.clone(),
             }),
         }
     }
     let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
     let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names);
-    Ok(GtReport { program: program_name, functions, workdir: dir, functional })
+    let original_bytes: Vec<(String, u64, Vec<u8>)> =
+        decs.iter().map(|d| (d.sym.name.clone(), d.sym.addr, fn_bytes[&d.sym.addr].clone())).collect();
+    Ok(GtReport { program: program_name, functions, workdir: dir, functional, original_bytes })
 }
 
 /// Link every per-function object into one program and run it against the original: the
@@ -805,11 +818,14 @@ fn functional_check(
     // interposable; it supplies `_start` (whose `syscall` we cannot yet emit), the data, and the
     // source-named calls. Our objects come first and win every function we produced
     // (`--allow-multiple-definition`); our address-named globals map onto the original's data
-    // symbols with `--defsym`.
+    // symbols with `--defsym`. `-fno-ipa-ra`: the harness must treat every callee as clobbering
+    // the full call-clobbered set — with ipa-ra gcc keeps a value in a register ITS fib never
+    // touched, and our interposed fib (correct C, different allocation) clobbers it (recursion's
+    // false FAIL(7,55)).
     let harness = dir.join(format!("{program}.harness.o"));
     let h = Command::new("gcc")
         .args(GCC_FLAGS)
-        .args(["-Dstatic=", "-w", "-c", "-I"])
+        .args(["-Dstatic=", "-fno-ipa-ra", "-w", "-c", "-I"])
         .arg(src.parent().unwrap_or(Path::new(".")))
         .arg("-o")
         .arg(&harness)

@@ -13,7 +13,16 @@ fn main() {
         eprintln!("gcc is required (development-environment requirement)");
         std::process::exit(2);
     }
-    let wanted: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--fixture <dir>`: also write every function's original bytes as a datatest fixture
+    // (`gt_<program>_<symbol>.xml`, arch x86:LE:64:default) into <dir>, for the oracle recipe
+    // (`oracle/capture --c`, `dumpc`, `trace-diff.sh`) — Ghidra's reading of the same bytes.
+    let fixture_dir = args.iter().position(|a| a == "--fixture").map(|i| {
+        let d = args.get(i + 1).cloned().unwrap_or_default();
+        args.drain(i..=i + 1);
+        std::path::PathBuf::from(d)
+    });
+    let wanted: Vec<String> = args;
     let progs: Vec<_> = gcc_programs()
         .into_iter()
         .filter(|p| wanted.is_empty() || wanted.iter().any(|w| p.file_stem().is_some_and(|s| s == w.as_str())))
@@ -37,6 +46,16 @@ fn main() {
                 continue;
             }
         };
+        if let Some(dir) = &fixture_dir {
+            std::fs::create_dir_all(dir).ok();
+            for (sym, va, bytes) in &rep.original_bytes {
+                let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                let xml = format!(
+                    "<binaryimage arch=\"x86:LE:64:default:gcc\">\n  <bytechunk space=\"ram\" offset=\"{va:#x}\" readonly=\"true\">\n{hex}\n  </bytechunk>\n</binaryimage>\n"
+                );
+                std::fs::write(dir.join(format!("gt_{}_{}.xml", rep.program, sym.replace('.', "_"))), xml).ok();
+            }
+        }
         for f in &rep.functions {
             let classes: Vec<String> = f.classes.iter().map(|(k, v)| format!("{k}={v}")).collect();
             println!(
@@ -75,8 +94,7 @@ fn main() {
             three += "---- original source\n";
             three += &source_function(&source, &f.symbol).unwrap_or_else(|| "(not found by name)".into());
             three += "\n---- our C (the function only)\n";
-            let body_start = f.c.rfind("\nint").or_else(|| f.c.rfind("\nvoid")).or_else(|| f.c.rfind("\nuint")).or_else(|| f.c.rfind("\nxunknown")).map(|p| p + 1).unwrap_or(0);
-            three += &f.c[body_start..];
+            three += &f.body;
             three += "\n---- aligned instructions (original | ours | class)\n";
             if let Some(ch) = &f.checked {
                 for op in &ch.diff.ops {
