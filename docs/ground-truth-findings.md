@@ -92,3 +92,34 @@ each a decompiler bug with the source beside it. Its limits are also clear: gcc 
 interprocedural optimizations (`-fipa-ra`, static-call alignment) cap what per-function
 recompilation can match on this corpus regardless of the C, so its *similarity* is a weak
 signal here; its *functional* verdict is strong.
+
+## Update (2026-08-23, later): the bug-fix pass — 10 FAIL → 1 FAIL
+
+Working the ten wrong programs one decompiler bug at a time, each classified (mosura-only code vs
+a mis-port vs a harness artifact), grounded in Ghidra's source, and measured by the functional
+gate. Result: **19 PASS / 1 FAIL** (`varargs`). What each one was:
+
+| program(s) | class | mechanism | fix |
+|---|---|---|---|
+| `arith` (`sum_to`), `recursion` (`fib`) | mis-port | `Cover::rebuild` (cover.cc:477) extends a Varnode's cover through every consumer whose output is IMPLIED — the expression is evaluated at its consumer. mosura's `checkImpliedCover` inflate arm and the merge tests (`merge_copy`/`adjacent`/`same_storage`, `process_copy_trims`) compared PLAIN covers, so a phi input defined before a call whose argument was an implied expression of the phi's own value merged into the phi: `uVar2 = uVar2 - 2; fib(uVar2 - 1)`. | `all_covers_extended(f, explicit)` after `mark_explicit`; `check_implied_cover` tests the extended cover. |
+| `recursion`, `arith64`, `irreducible` | harness artifact | the harness (`-Dstatic=`) was built with gcc's `-fipa-ra`: `_start` kept `fact`'s result in `rdx` across a call to ITS `fib`, which never touches `rdx`; our interposed `fib` (correct C, different allocation) clobbers it. | harness compiled `-fno-ipa-ra`. |
+| `structval` | mosura-only (WAR2 heuristic misapplied) | the self-evidence prototype override in `analysis::decompiler` (a straight-line body that writes a convention-`<killedbycall>`/`<unaffected>` register replaces `proto_model.input/output` with the body's read ORDER and first-read WIDTHS) and the custom register-parameter append in `recover_input_params`. Both model Watcom's `#pragma aux` — a function declaring its own convention. Under SysV the ABI is fixed: `mk`'s parameters came out RSI-before-EDI, `dot`'s 8-byte inputs matched no 4-byte trial and printed as uninitialized locals. | `ProtoModel::custom_conventions` (`lang::per_function_conventions`: `watcom`, `highc`) gates both. WAR2 path unchanged. |
+| `floats` | harness artifact | Ghidra's `TypeFloat::printNameBase` is `f` at every width; the harness typed `fRam0000000000402000` (8 bytes, 0.5) as `float` and read its low half as `0.0f`. | width-aware: `float4`/`float8`/`float10` (x87 literals kept as image bytes). |
+| `ptrarith` | mis-port | `PrintC::pushConstant`'s TYPE_PTR arm falls through to the "Default printing" branch, which prints a pointer-typed constant WITH its type as a cast — `(int4 *)0x403040`. Without it the PTRADD arm's `base + index` was integer arithmetic: `0x403040 + n` for `grid + n`. | `render_var` prints `(T)0x…` for `Datatype::Pointer`; `Callind` keeps its own `(code *)` only for an untyped target (Ghidra's `pushPtrCodeConstant` fall-through). |
+| `strdata` (`checksum`) | mis-port | `PrintC::checkArrayDeref` takes the subscript/member form only when the address Varnode is IMPLIED; an explicit address is a named variable and prints `*name`. `render_mem` re-rendered the explicit PTRADD: `param_1 = param_1 + 1; uVar1 = param_1[1];`. | `render_mem` gated on `!is_explicit(addr)`. |
+| `strdata` (`slen`, `total`) | mosura-only | `explicit_trailing` had an arm "PTRADD/PTRSUB are implied even with multiple uses". `baseExplicit` (coreaction.cc:3007) has no such exemption — it only lifts the reference LIMIT for a PTRSUB of the spacebase — and `ActionMarkImplied::checkImpliedCover` still decides. `slen`'s address `param_1 + iVar3` is read at the loop's CBRANCH after the back-edge COPY redefines `iVar3`; Ghidra names it `pcVar1 = param_1 + iVar3;`, the shortcut read the incremented index. | arm retired in `explicit_trailing`/`is_mark_candidate`/`is_core_explicit`; `max_implied_ref(f, v)` carries the spacebase-PTRSUB lift. |
+| `fnptr` | harness artifact | an address-of reference (`ActionConstantPtr`'s `PTRSUB(#spacebase, #addr)`, printed `&xRam…`) has no Varnode at the address, so the TU declared it at the default width 8 and `&xRam402fe0 + (which & 3) * 8` strode by 64 (SIGSEGV). | the per-TU globals map records PTRSUB references at the pointee's width (`undefined *` → `xunknown1`). |
+| `varargs` | **unported subsystem** | Ghidra's `LoadGuard` / `discoverIndexedStackPointers` / `ValueSetSolver` (heritage.cc:700-1200, 1563-1600; rangeutil.cc:1503-2605, plus `CircleRange::pushForward*`): a LOAD through a computed stack pointer guards the range it may read (a COPY with `setAddrForce` before the LOAD), which is what keeps the register-save-area stores alive. mosura has none of it (Task #19, `guard_stores`' `usesSpacebasePtr` note), so `vsum`'s six saves are dead code and the overflow pointer is an uninitialized local. Sized at ~2,000 lines of faithful port; on WAR2 the class is small (3 TUs with a variable-indexed stack array, ~71 with stack address arithmetic, of 3,023). | open. |
+
+**WAR2 transfer, measured.** The merge-cover fix alone (zc35 vs zc34): **767 EXACT (+2: 2d6f8,
+3ef60)**, WGSS 0.4831 → 0.4820 (−138.5 weighted, 80 up / 77 down), one MISMATCH → COMPILE_FAIL.
+The downs are the same wrong-code class the control corpus exposed, now corrected on WAR2:
+FUN_0006b8f0 printed `param_1 = param_1 + 0xc; if (param_1 < param_1 + iVar1)` (the end
+pointer read the incremented base), FUN_0005bae4 `while (iVar1 = f(), iVar1 - (iVar1 + 0x7d) <
+0)` (the call result merged into the variable it is compared against). The wrong code compiled
+CLOSER to the original bytes because it used fewer registers; the similarity paid for by those
+lines was not ours to keep. The COMPILE_FAIL (FUN_0006cfd0) is Ghidra-faithful — Ghidra prints
+`iVar2 = (int8)iRam000a86a8; … (int4)(1000000 / iVar2)` — and an `int8` local is undeclarable on
+the 32-bit target, so the emitter gained the explicit half of the int8-divide arm
+(`narrow_wide_locals`: an explicit wide local that is only an int-width extension feeding the
+narrowed divide declares and assigns at int width). zc36 (this state) is measured next.
