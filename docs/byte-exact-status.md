@@ -2033,4 +2033,8 @@ emission arm that declares a guarded register-save area as one array. Measured o
   read preceded its def's cover point and the liveness walk wrapped the value across every
   predecessor; FUN_0006c6f0's `piRam + k` PTRADDs all failed `checkImpliedCover` (sweep
   0.678 → 0.807 after the fix, pre-session 0.769). Sweep cumulative vs the pre-session baseline:
-  up 332 / down 159, +406 weighted (mean 0.9036 → 0.9065). zc41 measures it on WAR2.
+  up 332 / down 159, +406 weighted (mean 0.9036 → 0.9065). zc41 on WAR2: byte-identical to zc40
+  (0 movers) — Watcom already folded the named `piVar = piRam + k` the same way.
+
+**Net, master 6dca533 vs zc33 (where the day started): 768 EXACT (+3), 5 flips all upward, 0
+verdict regressions, WGSS 0.4831 → 0.4840 (+98.2 weighted).**
