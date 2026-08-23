@@ -5835,17 +5835,21 @@ impl Rule for RuleIndirectCollapse {
                 if data.vn(out).is_indirect_creation() || data.op(op).no_indirect_collapse() {
                     return 0;
                 }
-            // `spacebase_ptr` is set by Ghidra's `discoverIndexedStackPointers`/`LoadGuard`
-            // subsystem (heritage.cc, via `Funcdata::opMarkSpacebasePtr` funcdata.hh:487), which
-            // mosura does not model (documented at heritage.rs:1392 and varmap.rs:447), so nothing
-            // ever sets it and this reads `false` everywhere.
+            // `spacebase_ptr` is set by `discoverIndexedStackPointers`/`LoadGuard`
+            // (`heritage::discover_indexed_stack_pointers`, Ghidra heritage.cc:909-1100).
             } else if data.op(indop).uses_spacebase_ptr() {
                 if data.op(indop).code() == OpCode::Store {
-                    // Ghidra consults the STORE's `LoadGuard` here and declines in both arms (a
-                    // guarded address, or a marked-but-unguarded STORE that should still become a
-                    // COPY). mosura records no load guards, so the unguarded arm is the one that
-                    // applies and it also declines — the two agree.
-                    return 0;
+                    // ruleaction.cc:3203-3214: the STORE's guard decides — a guarded address keeps
+                    // the INDIRECT; a marked STORE with no guard should eventually get converted
+                    // to a COPY, so the INDIRECT is kept until that happens.
+                    match super::heritage::get_store_guard(data, indop) {
+                        Some(guard) => {
+                            if guard.is_guarded(data.vn(out).loc) {
+                                return 0;
+                            }
+                        }
+                        None => return 0,
+                    }
                 }
             } else {
                 return 0;

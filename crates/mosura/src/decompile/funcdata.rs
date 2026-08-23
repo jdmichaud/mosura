@@ -208,6 +208,18 @@ pub struct Funcdata {
     /// (`AliasChecker::hasLocalAlias`, `offset >= aliasBoundary`). `None` ⇒ nothing escapes ⇒ no
     /// stack slot is guarded. Set from the alias probe before the real heritage.
     pub alias_boundary: Option<i64>,
+    /// Ghidra `Heritage::loadGuard` (heritage.hh:216): the indexed stack LOADs and the stack
+    /// ranges they may read — see [`super::heritage::LoadGuard`].
+    pub load_guard: Vec<super::heritage::LoadGuard>,
+    /// Ghidra `Heritage::storeGuard` (heritage.hh:217): the indexed stack STOREs, likewise.
+    pub store_guard: Vec<super::heritage::LoadGuard>,
+    /// Ghidra `Heritage::loadCopyOps` (heritage.hh:218): the COPY guards `guardLoads` placed this
+    /// pass, consumed by `handleNewLoadCopies`.
+    pub load_copy_ops: Vec<super::op::OpId>,
+    /// Ghidra `HeritageInfo::loadGuardSearch` (heritage.hh:86): the spaces whose indexed stack
+    /// pointers have been searched (mosura rebuilds the info list each pass, so the latch lives
+    /// here).
+    pub load_guard_search: std::collections::HashSet<super::space::SpaceId>,
     /// Set by [`super::directwrite::ActionDirectWrite`], consumed (and reset) by the next
     /// [`super::deadcode::dead_code`]: it does the `addrforce`-clear-for-`!directwrite` step
     /// (Ghidra `ActionDeadCode`, coreaction.cc:3944) only on the deadcode immediately following a
@@ -367,6 +379,10 @@ impl Funcdata {
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,
             alias_boundary: None,
+            load_guard: Vec::new(),
+            store_guard: Vec::new(),
+            load_copy_ops: Vec::new(),
+            load_guard_search: std::collections::HashSet::new(),
             directwrite_pending_clear: false,
             table_recovery_probe: false,
             classified_upto: None,

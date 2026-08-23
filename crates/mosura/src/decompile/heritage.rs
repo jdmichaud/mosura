@@ -618,6 +618,7 @@ pub fn heritage_complete(f: &Funcdata) -> bool {
 /// pointer, and mosura's x86-64 spec declares no `<nohighptr>` range, so every other space qualifies.
 fn guard_stores(f: &mut Funcdata, range: Loc) {
     let (spc, off, size) = range;
+    let container = f.spaces.get(spc).contain;
     // highPtrPossible: no pointer can target the internal (`unique`) space.
     if f.spaces.get(spc).kind == super::space::SpaceKind::Internal {
         return;
@@ -633,7 +634,11 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
             // STORE in(0) is a constant whose offset encodes the destination `SpaceId`
             // (built in `build.rs`, Ghidra's `AddrSpace*` encoded as a constant on LOAD/STORE in0).
             let Some(in0) = f.op(op).input(0) else { continue };
-            if SpaceId(f.vn(in0).loc.offset as u32) == spc {
+            let store_space = SpaceId(f.vn(in0).loc.offset as u32);
+            // heritage.cc:1549 — the range's own space, OR its CONTAINER (a stack range is a
+            // placeholder into ram) when the STORE is marked as going through a spacebase
+            // pointer (`discover_indexed_stack_pointers` / `protect_free_stores`).
+            if store_space == spc || (container == Some(store_space) && f.op(op).uses_spacebase_ptr()) {
                 stores.push(op);
             }
         }
@@ -649,6 +654,610 @@ fn guard_stores(f: &mut Funcdata, range: Loc) {
         let out = f.op(ind).output.expect("INDIRECT has an output");
         f.vn_mut(out).set_active_heritage();
     }
+}
+
+
+// ---- Indexed stack pointers: LoadGuard (Ghidra heritage.cc:600-1140, 1563-1600) ----------------
+
+/// Ghidra `LoadGuard` (heritage.hh:142): a LOAD (or STORE) through a computed stack pointer and
+/// the range of stack offsets it may reach. Born with the full stack (`set`), refined by value-set
+/// analysis once heritage has run (`establish_range` / `finalize_range`). While a LOAD's guard is
+/// live, every stack range it may read gets a COPY guard before it (`guard_loads`) so the stores
+/// that feed it stay alive, and `ScopeLocal` reads the guards as array hints.
+#[derive(Clone, Debug)]
+pub struct LoadGuard {
+    /// The LOAD (or STORE) op.
+    pub op: OpId,
+    /// The stack space being loaded from.
+    pub spc: SpaceId,
+    /// Base offset of the pointer.
+    pub pointer_base: u64,
+    /// Minimum offset of the LOAD.
+    pub minimum_offset: u64,
+    /// Maximum offset of the LOAD.
+    pub maximum_offset: u64,
+    /// Step of any access into this range (0 = unknown).
+    pub step: i32,
+    /// 0 = unanalyzed, 1 = analyzed (partial result), 2 = analyzed (full result).
+    pub analysis_state: i32,
+}
+
+impl LoadGuard {
+    /// Ghidra `LoadGuard::set` (heritage.hh:159).
+    fn set(f: &Funcdata, op: OpId, spc: SpaceId, off: u64) -> LoadGuard {
+        LoadGuard {
+            op,
+            spc,
+            pointer_base: off,
+            minimum_offset: 0,
+            maximum_offset: f.spaces.get(spc).highest(),
+            step: 0,
+            analysis_state: 0,
+        }
+    }
+
+    /// Ghidra `LoadGuard::establishRange` (heritage.cc:740): a guard range from the PARTIAL
+    /// value-set analysis (no widening).
+    fn establish_range(&mut self, f: &Funcdata, value_set: &super::valueset::ValueSetRead) {
+        let range = value_set.get_range();
+        let range_size = range.get_size();
+        let mut size: u64;
+        if range.is_empty() {
+            self.minimum_offset = self.pointer_base;
+            size = 0x1000;
+        } else if range.is_full() || range_size > 0xffffff {
+            self.minimum_offset = self.pointer_base;
+            size = 0x1000;
+            self.analysis_state = 1; // Don't bother doing more analysis
+        } else {
+            self.step = if range_size == 3 { range.get_step() } else { 0 }; // Check for consistent step
+            size = 0x1000;
+            if value_set.is_left_stable() {
+                self.minimum_offset = range.get_min();
+            } else if value_set.is_right_stable() {
+                if self.pointer_base < range.get_end() {
+                    self.minimum_offset = self.pointer_base;
+                    size = range.get_end() - self.pointer_base;
+                } else {
+                    self.minimum_offset = range.get_min();
+                    size = range_size.wrapping_mul(range.get_step() as u64);
+                }
+            } else {
+                self.minimum_offset = self.pointer_base;
+            }
+        }
+        let max = f.spaces.get(self.spc).highest();
+        if self.minimum_offset > max {
+            self.minimum_offset = max;
+            self.maximum_offset = self.minimum_offset; // Something is seriously wrong
+        } else {
+            let max_size = (max - self.minimum_offset).wrapping_add(1);
+            if max_size != 0 && size > max_size {
+                size = max_size;
+            }
+            self.maximum_offset = self.minimum_offset.wrapping_add(size).wrapping_sub(1);
+        }
+    }
+
+    /// Ghidra `LoadGuard::finalizeRange` (heritage.cc:787): the FULL (widened) analysis; the
+    /// settings determined here are final.
+    fn finalize_range(&mut self, f: &Funcdata, value_set: &super::valueset::ValueSetRead) {
+        self.analysis_state = 1; // In all cases the settings determined here are final
+        let range = value_set.get_range();
+        let mut range_size = range.get_size();
+        if range_size == 0x100 || range_size == 0x10000 {
+            // These sizes likely result from the storage size of the index
+            if self.step == 0 {
+                // If we didn't see signs of iteration
+                range_size = 0; // don't use this range
+            }
+        }
+        if range_size > 1 && range_size < 0xffffff {
+            // Did we converge to something reasonable
+            self.analysis_state = 2; // Mark that we got a definitive result
+            if range_size > 2 {
+                self.step = range.get_step();
+            }
+            self.minimum_offset = range.get_min();
+            self.maximum_offset = range.get_end().wrapping_sub(1) & range.get_mask(); // NOTE: Don't subtract a whole step
+            if self.maximum_offset < self.minimum_offset {
+                // Values extend into what is usually stack parameters
+                self.maximum_offset = f.spaces.get(self.spc).highest();
+                self.analysis_state = 1; // Remove the lock as we have likely overflowed
+            }
+        }
+        let highest = f.spaces.get(self.spc).highest();
+        if self.minimum_offset > highest {
+            self.minimum_offset = highest;
+        }
+        if self.maximum_offset > highest {
+            self.maximum_offset = highest;
+        }
+    }
+
+    /// Ghidra `LoadGuard::isGuarded` (heritage.cc:818).
+    pub fn is_guarded(&self, addr: Address) -> bool {
+        addr.space == self.spc && addr.offset >= self.minimum_offset && addr.offset <= self.maximum_offset
+    }
+
+    /// Ghidra `LoadGuard::isRangeLocked` (heritage.hh:168).
+    pub fn is_range_locked(&self) -> bool {
+        self.analysis_state == 2
+    }
+
+    /// Ghidra `LoadGuard::isValid` (heritage.hh:169): does the record still describe an active op?
+    pub fn is_valid(&self, f: &Funcdata, opc: OpCode) -> bool {
+        !f.op(self.op).is_dead() && f.op(self.op).code() == opc
+    }
+}
+
+/// Ghidra `Funcdata::getStoreGuard` (heritage.cc:2762): the guard record for a STORE, if any.
+pub fn get_store_guard(f: &Funcdata, op: OpId) -> Option<&LoadGuard> {
+    f.store_guard.iter().find(|g| g.op == op)
+}
+
+/// Ghidra `StackNode` (heritage.hh:128): one element of the path from the stack pointer.
+struct StackNode {
+    vn: VarnodeId,
+    offset: u64,
+    traversals: u32,
+    iter: usize,
+}
+
+const STACK_NONCONSTANT_INDEX: u32 = 1;
+const STACK_MULTIEQUAL: u32 = 2;
+
+/// Ghidra `Heritage::generateLoadGuard` (heritage.cc:909).
+fn generate_load_guard(f: &mut Funcdata, node_offset: u64, op: OpId, spc: SpaceId) {
+    if !f.op(op).uses_spacebase_ptr() {
+        let g = LoadGuard::set(f, op, spc, node_offset);
+        f.load_guard.push(g);
+        f.op_mut(op).set_spacebase_ptr();
+    }
+}
+
+/// Ghidra `Heritage::generateStoreGuard` (heritage.cc:926).
+fn generate_store_guard(f: &mut Funcdata, node_offset: u64, op: OpId, spc: SpaceId) {
+    if !f.op(op).uses_spacebase_ptr() {
+        let g = LoadGuard::set(f, op, spc, node_offset);
+        f.store_guard.push(g);
+        f.op_mut(op).set_spacebase_ptr();
+    }
+}
+
+/// Ghidra `Heritage::protectFreeStores` (heritage.cc:944): collect and mark the STOREs whose
+/// pointer is a FREE Varnode of the stack space — their data-flow must be guarded (with an
+/// INDIRECT) to be safe. Returns whether any new STORE needs the guard.
+fn protect_free_stores(f: &mut Funcdata, spc: SpaceId, free_stores: &mut Vec<OpId>) -> bool {
+    let mut has_new = false;
+    let stores: Vec<OpId> =
+        f.op_ids().filter(|&op| !f.op(op).is_dead() && f.op(op).code() == OpCode::Store).collect();
+    for op in stores {
+        let Some(mut vn) = f.op(op).input(1) else { continue };
+        while f.vn(vn).is_written() {
+            let def_op = f.vn(vn).def.expect("written varnode has a def");
+            match f.op(def_op).code() {
+                OpCode::Copy => vn = f.op(def_op).input(0).expect("COPY input"),
+                OpCode::IntAdd if f.op(def_op).input(1).is_some_and(|c| f.vn(c).is_constant()) => {
+                    vn = f.op(def_op).input(0).expect("INT_ADD input")
+                }
+                _ => break,
+            }
+        }
+        if f.vn(vn).is_free() && f.vn(vn).loc.space == spc {
+            f.op_mut(op).set_spacebase_ptr(); // Mark op as spacebase STORE, even though we're not sure
+            free_stores.push(op);
+            has_new = true;
+        }
+    }
+    has_new
+}
+
+/// Ghidra `Heritage::discoverIndexedStackPointers` (heritage.cc:986): trace the input stack
+/// pointer to any indexed LOAD/STORE — expressions `*(SP(i) + vn + #c)` with a non-constant
+/// index (or a MULTIEQUAL) on the path — and record guards for them. Returns whether there are
+/// incomplete (free-pointer) STOREs needing follow-up, passing them back in `free_stores`.
+fn discover_indexed_stack_pointers(
+    f: &mut Funcdata,
+    spc: SpaceId,
+    free_stores: &mut Vec<OpId>,
+    check_free_stores: bool,
+) -> bool {
+    // We need to be careful of exponential ladders, so we mark Varnodes independently of
+    // the depth first path we are traversing.
+    let mut marked_vn: Vec<VarnodeId> = Vec::new();
+    let mut path: Vec<StackNode> = Vec::new();
+    let mut unknown_stack_storage = false;
+    let spacebases = f.spaces.get(spc).spacebase.clone();
+    for (sp_addr, sp_size) in spacebases {
+        let Some(sp_input) = find_varnode_input(f, sp_size, sp_addr) else { continue };
+        path.push(StackNode { vn: sp_input, offset: 0, traversals: 0, iter: 0 });
+        while let Some(cur) = path.last_mut() {
+            let descend = &f.vn(cur.vn).descend;
+            if cur.iter >= descend.len() {
+                path.pop();
+                continue;
+            }
+            let op = descend[cur.iter];
+            cur.iter += 1;
+            let (cur_vn, cur_offset, cur_traversals) = (cur.vn, cur.offset, cur.traversals);
+            let out_vn = f.op(op).output;
+            if out_vn.is_some_and(|o| f.vn(o).is_mark()) {
+                continue; // Don't revisit Varnodes
+            }
+            // Push the next node (marking it) when its Varnode has readers; otherwise note an
+            // unknown stack storage when the Varnode lands in the spacebase space.
+            let mut push_next = |f: &mut Funcdata, path: &mut Vec<StackNode>, marked: &mut Vec<VarnodeId>, out: VarnodeId, offset: u64, traversals: u32, unknown: &mut bool| {
+                if !f.vn(out).descend.is_empty() {
+                    f.vn_mut(out).set_mark();
+                    path.push(StackNode { vn: out, offset, traversals, iter: 0 });
+                    marked.push(out);
+                } else if f.spaces.get(f.vn(out).loc.space).kind == super::space::SpaceKind::Spacebase {
+                    *unknown = true;
+                }
+            };
+            match f.op(op).code() {
+                OpCode::IntAdd => {
+                    let Some(out) = out_vn else { continue };
+                    let slot = if f.op(op).input(0) == Some(cur_vn) { 0 } else { 1 };
+                    let other = f.op(op).input(1 - slot).expect("INT_ADD has two inputs");
+                    if f.vn(other).is_constant() {
+                        let new_offset = f.spaces.get(spc).wrap_offset(cur_offset.wrapping_add(f.vn(other).constant_value()));
+                        push_next(f, &mut path, &mut marked_vn, out, new_offset, cur_traversals, &mut unknown_stack_storage);
+                    } else {
+                        push_next(f, &mut path, &mut marked_vn, out, cur_offset, cur_traversals | STACK_NONCONSTANT_INDEX, &mut unknown_stack_storage);
+                    }
+                }
+                OpCode::Segmentop => {
+                    if f.op(op).input(2) != Some(cur_vn) {
+                        continue; // Check that stackpointer comes in as inner pointer
+                    }
+                    // Treat output as having the same offset, fallthru to COPY
+                    let Some(out) = out_vn else { continue };
+                    push_next(f, &mut path, &mut marked_vn, out, cur_offset, cur_traversals, &mut unknown_stack_storage);
+                }
+                OpCode::Indirect | OpCode::Copy => {
+                    let Some(out) = out_vn else { continue };
+                    push_next(f, &mut path, &mut marked_vn, out, cur_offset, cur_traversals, &mut unknown_stack_storage);
+                }
+                OpCode::Multiequal => {
+                    let Some(out) = out_vn else { continue };
+                    push_next(f, &mut path, &mut marked_vn, out, cur_offset, cur_traversals | STACK_MULTIEQUAL, &mut unknown_stack_storage);
+                }
+                OpCode::Load => {
+                    // Note that if ANY path has one of the traversals (non-constant ADD or MULTIEQUAL), then
+                    // THIS path must have one of the traversals, because the only other acceptable path elements
+                    // (INDIRECT/COPY/constant ADD) have only one path through.
+                    if cur_traversals != 0 {
+                        generate_load_guard(f, cur_offset, op, spc);
+                    }
+                }
+                OpCode::Store => {
+                    if f.op(op).input(1) == Some(cur_vn) {
+                        // Make sure the STORE pointer comes from our path
+                        if cur_traversals != 0 {
+                            generate_store_guard(f, cur_offset, op, spc);
+                        } else {
+                            // If there were no traversals (of non-constant ADD or MULTIEQUAL) then the
+                            // pointer is equal to the stackpointer plus a constant (through an indirect is possible)
+                            // This will likely get resolved in the next heritage pass, but we leave the
+                            // spacebaseptr mark on, so the indirects don't get removed
+                            f.op_mut(op).set_spacebase_ptr();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for v in marked_vn {
+        f.vn_mut(v).clear_mark();
+    }
+    if unknown_stack_storage && check_free_stores {
+        return protect_free_stores(f, spc, free_stores);
+    }
+    false
+}
+
+/// Ghidra `Funcdata::findVarnodeInput` (funcdata_varnode.cc): the input Varnode of exactly this
+/// size and address, if any.
+fn find_varnode_input(f: &Funcdata, size: u32, addr: Address) -> Option<VarnodeId> {
+    (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| {
+        let vn = f.vn(v);
+        vn.is_input() && vn.loc == addr && vn.size == size
+    })
+}
+
+/// Ghidra `Funcdata::findSpacebaseInput` (funcdata_varnode.cc): the input stack-pointer Varnode.
+fn find_spacebase_input(f: &Funcdata, spc: SpaceId) -> Option<VarnodeId> {
+    let (addr, size) = *f.spaces.get(spc).spacebase.first()?;
+    find_varnode_input(f, size, addr)
+}
+
+/// Ghidra `Heritage::reprocessFreeStores` (heritage.cc:1113): revisit STOREs with free pointers
+/// now that a heritage pass has completed — regenerate STORE guards, and unmark (removing the
+/// INDIRECTs it caused) any STORE that turned out not to need one.
+fn reprocess_free_stores(f: &mut Funcdata, spc: SpaceId, free_stores: &mut Vec<OpId>) {
+    for &op in free_stores.iter() {
+        f.op_mut(op).clear_spacebase_ptr();
+    }
+    discover_indexed_stack_pointers(f, spc, free_stores, false);
+    for i in 0..free_stores.len() {
+        let op = free_stores[i];
+        // If the STORE now is marked as using a spacebase ptr, then it was appropriately
+        // marked to begin with, and we don't need to clean anything up
+        if f.op(op).uses_spacebase_ptr() {
+            continue;
+        }
+        // If not the STORE may have triggered INDIRECTs that are unnecessary
+        let mut ind_op = previous_op(f, op);
+        while let Some(ind) = ind_op {
+            if f.op(ind).code() != OpCode::Indirect {
+                break;
+            }
+            if f.op(ind).guarded_op() != Some(op) {
+                break;
+            }
+            let next_op = previous_op(f, ind);
+            let out = f.op(ind).output.expect("INDIRECT has an output");
+            if f.vn(out).loc.space == spc {
+                let in0 = f.op(ind).input(0).expect("INDIRECT has an input");
+                f.total_replace(out, in0);
+                f.op_destroy(ind); // Get rid of the INDIRECT
+            }
+            ind_op = next_op;
+        }
+    }
+}
+
+/// Ghidra `PcodeOp::previousOp` (op.cc): the op just before `op` in its basic block.
+fn previous_op(f: &Funcdata, op: OpId) -> Option<OpId> {
+    let b = f.op(op).parent?;
+    let ops = &f.blocks()[b.0 as usize].ops;
+    let pos = ops.iter().position(|&o| o == op)?;
+    if pos == 0 { None } else { Some(ops[pos - 1]) }
+}
+
+/// Ghidra `Heritage::analyzeNewLoadGuards` (heritage.cc:834): now that heritage has completed,
+/// run value-set analysis on the pointers of every new guard to conclude what range of stack
+/// values the LOAD/STORE might actually alias.
+fn analyze_new_load_guards(f: &mut Funcdata, dom: &Dominators) {
+    let mut nothing_to_do = true;
+    if f.load_guard.last().is_some_and(|g| g.analysis_state == 0) {
+        nothing_to_do = false; // Check if unanalyzed
+    }
+    if f.store_guard.last().is_some_and(|g| g.analysis_state == 0) {
+        nothing_to_do = false;
+    }
+    if nothing_to_do {
+        return;
+    }
+    let mut sinks: Vec<VarnodeId> = Vec::new();
+    let mut reads: Vec<OpId> = Vec::new();
+    // The trailing run of unanalyzed guards (Ghidra walks back from the end until an analyzed one).
+    let mut load_iter = f.load_guard.len();
+    while load_iter > 0 {
+        let g = &f.load_guard[load_iter - 1];
+        if g.analysis_state != 0 {
+            break;
+        }
+        load_iter -= 1;
+        reads.push(g.op);
+        sinks.push(f.op(g.op).input(1).expect("LOAD pointer")); // The CPUI_LOAD pointer
+    }
+    let mut store_iter = f.store_guard.len();
+    while store_iter > 0 {
+        let g = &f.store_guard[store_iter - 1];
+        if g.analysis_state != 0 {
+            break;
+        }
+        store_iter -= 1;
+        reads.push(g.op);
+        sinks.push(f.op(g.op).input(1).expect("STORE pointer")); // The CPUI_STORE pointer
+    }
+    let stack_reg = f
+        .spaces
+        .by_name("stack")
+        .filter(|&s| !f.spaces.get(s).spacebase.is_empty())
+        .and_then(|s| find_spacebase_input(f, s));
+    let mut solver = super::valueset::ValueSetSolver::new();
+    solver.establish_value_sets(f, dom, &sinks, &reads, stack_reg, false);
+    let widener = super::valueset::WidenerNone::default();
+    solver.solve(f, 10000, &widener);
+    let mut run_full_analysis = false;
+    for i in load_iter..f.load_guard.len() {
+        let op = f.load_guard[i].op;
+        if let Some(vsr) = solver.get_value_set_read(op) {
+            let mut g = f.load_guard[i].clone();
+            g.establish_range(f, vsr);
+            f.load_guard[i] = g;
+        }
+        if f.load_guard[i].analysis_state == 0 {
+            run_full_analysis = true;
+        }
+    }
+    for i in store_iter..f.store_guard.len() {
+        let op = f.store_guard[i].op;
+        if let Some(vsr) = solver.get_value_set_read(op) {
+            let mut g = f.store_guard[i].clone();
+            g.establish_range(f, vsr);
+            f.store_guard[i] = g;
+        }
+        if f.store_guard[i].analysis_state == 0 {
+            run_full_analysis = true;
+        }
+    }
+    if run_full_analysis {
+        let full = super::valueset::WidenerFull::default();
+        solver.solve(f, 10000, &full);
+        for i in load_iter..f.load_guard.len() {
+            let op = f.load_guard[i].op;
+            if let Some(vsr) = solver.get_value_set_read(op) {
+                let mut g = f.load_guard[i].clone();
+                g.finalize_range(f, vsr);
+                f.load_guard[i] = g;
+            }
+        }
+        for i in store_iter..f.store_guard.len() {
+            let op = f.store_guard[i].op;
+            if let Some(vsr) = solver.get_value_set_read(op) {
+                let mut g = f.store_guard[i].clone();
+                g.finalize_range(f, vsr);
+                f.store_guard[i] = g;
+            }
+        }
+    }
+    if std::env::var_os("MOSURA_LOADGUARD").is_some() {
+        for g in f.load_guard.iter().chain(f.store_guard.iter()) {
+            eprintln!(
+                "[loadguard] {:?}@{:#x} base={:#x} range=[{:#x},{:#x}] step={} state={}",
+                f.op(g.op).code(),
+                f.op(g.op).seqnum.pc.offset,
+                g.pointer_base,
+                g.minimum_offset,
+                g.maximum_offset,
+                g.step,
+                g.analysis_state
+            );
+        }
+    }
+}
+
+/// Ghidra `Heritage::guardLoads` (heritage.cc:1570): for a heritaged stack range that an
+/// indexed LOAD may pull values from, place a COPY guard (address-forced) right before the LOAD
+/// so the range's reaching value stays live.
+fn guard_loads(f: &mut Funcdata, fl_addrtied: bool, addr: Address, size: u32) {
+    if !fl_addrtied {
+        return; // If not address tied, don't consider for index alias
+    }
+    // Drop records that no longer describe an active LOAD (Ghidra erases them in place).
+    let mut i = 0;
+    while i < f.load_guard.len() {
+        if !f.load_guard[i].is_valid(f, OpCode::Load) {
+            f.load_guard.remove(i);
+            continue;
+        }
+        i += 1;
+    }
+    let guarded: Vec<OpId> = f
+        .load_guard
+        .iter()
+        .filter(|g| g.spc == addr.space && addr.offset >= g.minimum_offset && addr.offset <= g.maximum_offset)
+        .map(|g| g.op)
+        .collect();
+    for load in guarded {
+        let pc = f.op(load).seqnum.pc;
+        let uniq = f.num_ops() as u32;
+        let invn = f.new_varnode(size, addr);
+        f.vn_mut(invn).set_active_heritage();
+        let copyop = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![invn]);
+        let vn = f.new_output(copyop, size, addr);
+        f.vn_mut(vn).set_active_heritage();
+        f.vn_mut(vn).set_addr_force();
+        f.op_insert_before(copyop, load);
+        f.load_copy_ops.push(copyop);
+    }
+}
+
+/// Ghidra `Heritage::findAddressForces` (heritage.cc:618): from the COPY sinks, walk back
+/// through *artificial* COPY/MULTIEQUAL (all operands at the sink's address) and STORE-caused
+/// INDIRECTs to the last REAL writers of the address, which must be address-forced.
+fn find_address_forces(f: &Funcdata, copy_sinks: &mut Vec<OpId>, forces: &mut Vec<OpId>) {
+    let mut mark: HashSet<OpId> = copy_sinks.iter().copied().collect();
+    let mut pos = 0;
+    while pos < copy_sinks.len() {
+        let op = copy_sinks[pos];
+        let addr = f.vn(f.op(op).output.expect("sink has an output")).loc; // Address being flowed to
+        pos += 1;
+        for i in 0..f.op(op).num_inputs() {
+            let vn = f.op(op).input(i).expect("input in range");
+            if !f.vn(vn).is_written() {
+                continue;
+            }
+            if f.vn(vn).is_addr_force() {
+                continue; // Already marked address forced
+            }
+            let new_op = f.vn(vn).def.expect("written varnode has a def");
+            if !mark.insert(new_op) {
+                continue; // Already visited this op
+            }
+            let opc = f.op(new_op).code();
+            let mut is_artificial = false;
+            if opc == OpCode::Copy || opc == OpCode::Multiequal {
+                is_artificial = true;
+                for j in 0..f.op(new_op).num_inputs() {
+                    let in_vn = f.op(new_op).input(j).expect("input in range");
+                    if addr != f.vn(in_vn).loc {
+                        is_artificial = false;
+                        break;
+                    }
+                }
+            } else if opc == OpCode::Indirect && f.op(new_op).is_indirect_store() {
+                // An INDIRECT can be considered artificial if it is caused by a STORE
+                let in_vn = f.op(new_op).input(0).expect("INDIRECT input 0");
+                if addr == f.vn(in_vn).loc {
+                    is_artificial = true;
+                }
+            }
+            if is_artificial {
+                copy_sinks.push(new_op);
+            } else {
+                forces.push(new_op);
+            }
+        }
+    }
+}
+
+/// Ghidra `Heritage::propagateCopyAway` (heritage.cc:674): eliminate a COPY sink (a storage
+/// location copied to itself), propagating the earliest input version to its readers.
+fn propagate_copy_away(f: &mut Funcdata, op: OpId) {
+    let mut in_vn = f.op(op).input(0).expect("COPY input");
+    while f.vn(in_vn).is_written() {
+        // Follow any COPY chain to earliest input
+        let next_op = f.vn(in_vn).def.expect("written varnode has a def");
+        if f.op(next_op).code() != OpCode::Copy {
+            break;
+        }
+        let next_in = f.op(next_op).input(0).expect("COPY input");
+        if f.vn(next_in).loc != f.vn(in_vn).loc {
+            break;
+        }
+        in_vn = next_in;
+    }
+    let out = f.op(op).output.expect("COPY output");
+    f.total_replace(out, in_vn);
+    f.op_destroy(op);
+}
+
+/// Ghidra `Heritage::handleNewLoadCopies` (heritage.cc:696): after renaming, mark the boundary
+/// writers of the load-guard COPY sinks address-forced (within a guarded range) and then
+/// eliminate the artificial COPYs.
+fn handle_new_load_copies(f: &mut Funcdata) {
+    if f.load_copy_ops.is_empty() {
+        return;
+    }
+    let mut copy_sinks = std::mem::take(&mut f.load_copy_ops);
+    let copy_sink_size = copy_sinks.len();
+    let mut forces: Vec<OpId> = Vec::new();
+    find_address_forces(f, &mut copy_sinks, &mut forces);
+    if !forces.is_empty() {
+        let ranges: Vec<(SpaceId, u64, u64)> =
+            f.load_guard.iter().map(|g| (g.spc, g.minimum_offset, g.maximum_offset)).collect();
+        // Mark everything on the boundary as address forced to prevent dead-code removal
+        for op in forces {
+            let vn = f.op(op).output.expect("forcing op has an output");
+            let loc = f.vn(vn).loc;
+            if ranges.iter().any(|&(s, lo, hi)| s == loc.space && loc.offset >= lo && loc.offset <= hi) {
+                // If we are within one of the guarded ranges then consider the output address forced
+                f.vn_mut(vn).set_addr_force();
+            }
+        }
+    }
+    // Eliminate or propagate away original COPY sinks
+    for &op in copy_sinks.iter().take(copy_sink_size) {
+        propagate_copy_away(f, op); // Make sure load guard COPYs no longer exist
+    }
+    // (The remaining artificial COPYs were only marked; mosura's marks are local.)
 }
 
 /// Ghidra `Heritage::guardCalls` (heritage.cc:1443). For the heritaged range `(spc, off, size)`,
@@ -1653,8 +2262,30 @@ fn guard(
         let loc = range.loc();
         guard_calls(f, loc);
         guard_returns(f, loc);
+        // `highPtrPossible` (heritage.cc:1194): `guard_stores` carries its own internal-space
+        // test; `guard_loads` is gated the same way through its addrtied property — only a
+        // scoped (ram or local-frame) address has one.
         guard_stores(f, loc);
+        let addr = Address::new(loc.0, loc.1);
+        let fl_addrtied = scope_addrtied(f, addr, loc.2);
+        guard_loads(f, fl_addrtied, addr, loc.2);
     }
+}
+
+/// The `addrtied` bit of Ghidra's `ScopeLocal::queryProperties(addr, size, Address(), fl)`
+/// (database.cc:1265): an address inside a scope's range is `mapped | addrtied` — the global
+/// scope covers `ram`; `ScopeLocal` covers the function's `localrange` and `paramrange` of the
+/// stack space (`Scope::stackContainer` finds the scope whose range tree holds the address).
+/// Anything else (a register, a unique) carries only the symbol table's properties, never
+/// `addrtied`.
+fn scope_addrtied(f: &Funcdata, addr: Address, size: u32) -> bool {
+    if Some(addr.space) == f.spaces.by_name("ram") {
+        return true;
+    }
+    if Some(addr.space) == f.spaces.by_name("stack") {
+        return f.proto_model.localrange.in_range(addr, size) || f.proto_model.paramrange.in_range(addr, size);
+    }
+    false
 }
 
 /// Faithful port of `Heritage::concatPieces` (`heritage.cc:507`): PIECE a list of Varnodes (ordered
@@ -1936,6 +2567,25 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     {
         clear_stack_placeholders(f);
     }
+    // Ghidra heritage.cc:2691-2697: the first time a space is heritaged, trace its stack pointer
+    // to every indexed LOAD/STORE (`discoverIndexedStackPointers`) — the LoadGuard records the
+    // rest of this pass guards against. The search creates no Varnodes, so running it ahead of
+    // the `LocSet` build sees the graph Ghidra's per-space loop sees.
+    let mut free_stores: Vec<OpId> = Vec::new();
+    let mut reprocess_stack_count = 0;
+    let mut stack_space: Option<SpaceId> = None;
+    for (i, info) in infos.iter().enumerate() {
+        if !info.is_heritaged() || pass < info.delay {
+            continue;
+        }
+        let space = SpaceId(i as u32);
+        if f.load_guard_search.insert(space)
+            && discover_indexed_stack_pointers(f, space, &mut free_stores, true)
+        {
+            reprocess_stack_count += 1;
+            stack_space = Some(space);
+        }
+    }
     let t0 = std::time::Instant::now();
     let locset = LocSet::build(f);
     let mut disjoint = TaskList::default();
@@ -2009,14 +2659,25 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         super::action::perf::record("heritage", "build_disjoint", t0.elapsed());
     }
     f.heritage_pass += 1;
-    if disjoint.is_empty() {
-        return 0;
+    let n = if disjoint.is_empty() {
+        0
+    } else {
+        let t0 = std::time::Instant::now();
+        let n = place_multiequals(f, dom, &mut disjoint);
+        if super::action::perf::enabled() {
+            super::action::perf::record("heritage", "place_multiequals", t0.elapsed());
+        }
+        n
+    };
+    // heritage.cc:2749-2754: after renaming — revisit the free-pointer STOREs, analyze the new
+    // guards' ranges (value-set analysis), and retire the load-guard COPYs.
+    if reprocess_stack_count > 0 {
+        if let Some(spc) = stack_space {
+            reprocess_free_stores(f, spc, &mut free_stores);
+        }
     }
-    let t0 = std::time::Instant::now();
-    let n = place_multiequals(f, dom, &mut disjoint);
-    if super::action::perf::enabled() {
-        super::action::perf::record("heritage", "place_multiequals", t0.elapsed());
-    }
+    analyze_new_load_guards(f, dom);
+    handle_new_load_copies(f);
     n
 }
 

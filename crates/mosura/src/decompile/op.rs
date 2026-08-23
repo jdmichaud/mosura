@@ -62,9 +62,7 @@ pub mod flags {
 
     /// Ghidra `PcodeOp::spacebase_ptr` (op.hh:101) — a LOAD/STORE through a *dynamic* pointer into a
     /// spacebase, marked by `Funcdata::opMarkSpacebasePtr` (funcdata.hh:487) from the
-    /// `discoverIndexedStackPointers`/`LoadGuard` subsystem. mosura records no load guards (an
-    /// already-documented omission, `heritage.rs:1392`/`varmap.rs:447`), so nothing sets this and
-    /// `uses_spacebase_ptr` reads `false` — the same branch Ghidra takes with the flag unset.
+    /// `discoverIndexedStackPointers`/`LoadGuard` subsystem (`heritage::discover_indexed_stack_pointers`).
     pub const SPACEBASE_PTR: u32 = 0x800;
     /// Ghidra `PcodeOp::no_indirect_collapse` (op.hh:224) — an INDIRECT on the data-flow path from a
     /// constant to a switch variable, protected from collapse by
@@ -337,6 +335,14 @@ impl PcodeOp {
     /// Ghidra `PcodeOp::usesSpacebasePtr` (op.hh:228) — see [`flags::SPACEBASE_PTR`].
     pub fn uses_spacebase_ptr(&self) -> bool {
         self.flags & flags::SPACEBASE_PTR != 0
+    }
+    /// Ghidra `Funcdata::opMarkSpacebasePtr` (funcdata.hh:487).
+    pub fn set_spacebase_ptr(&mut self) {
+        self.flags |= flags::SPACEBASE_PTR;
+    }
+    /// Ghidra `Funcdata::opClearSpacebasePtr` (funcdata.hh:489).
+    pub fn clear_spacebase_ptr(&mut self) {
+        self.flags &= !flags::SPACEBASE_PTR;
     }
     /// Ghidra `PcodeOp::noIndirectCollapse` (op.hh:224) — see [`flags::NO_INDIRECT_COLLAPSE`].
     pub fn no_indirect_collapse(&self) -> bool {

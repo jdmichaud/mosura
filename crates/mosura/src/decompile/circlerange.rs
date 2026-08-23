@@ -44,6 +44,19 @@ fn sign_extend(inp: u64, sizein: i32, sizeout: i32) -> u64 {
 
 /// Ghidra `bit_transitions(uintb val,int4 sz)` (`address.cc:818`) — the number of 0->1 / 1->0
 /// transitions scanning the `sz`-byte value from bit 0. `<= 2` indicates a flag/mask/range shape.
+/// Ghidra `sign_extend(intb val,int4 bit)` (address.hh:543): sign-extend from bit position `bit`.
+fn sign_extend_bit(val: i64, bit: i32) -> i64 {
+    if bit >= 63 {
+        return val;
+    }
+    let mask: i64 = (!0i64) << bit;
+    if ((val >> bit) & 1) != 0 {
+        val | mask
+    } else {
+        val & !mask
+    }
+}
+
 fn bit_transitions(mut val: u64, sz: i32) -> i32 {
     let mut res = 0;
     let mut last = (val & 1) as i32;
@@ -1118,6 +1131,340 @@ impl CircleRange {
             // consider the pull-back successful.
         }
         Some(res)
+    }
+
+    /// Ghidra `CircleRange::pushForwardUnary` (`rangeutil.cc:1093`): push every value of `in1`
+    /// through a unary operator; `true` when the result is known and forms a range (then `self`
+    /// is that range).
+    pub fn push_forward_unary(&mut self, opc: OpCode, in1: &CircleRange, in_size: i32, out_size: i32) -> bool {
+        if in1.isempty {
+            self.isempty = true;
+            return true;
+        }
+        match opc {
+            OpCode::Cast | OpCode::Copy => {
+                *self = *in1;
+            }
+            OpCode::IntZext => {
+                self.isempty = false;
+                self.step = in1.step;
+                self.mask = calc_mask(out_size);
+                if in1.left == in1.right {
+                    self.left = in1.left % in1.step as u64;
+                    self.right = in1.mask.wrapping_add(1).wrapping_add(self.left);
+                } else {
+                    self.left = in1.left;
+                    self.right = in1.right.wrapping_sub(in1.step as u64) & in1.mask;
+                    if self.right < self.left {
+                        return false; // Extending causes 2 pieces
+                    }
+                    self.right = self.right.wrapping_add(self.step as u64); // Impossible for it to wrap with bigger mask
+                }
+            }
+            OpCode::IntSext => {
+                self.isempty = false;
+                self.step = in1.step;
+                self.mask = calc_mask(out_size);
+                if in1.left == in1.right {
+                    let rem = in1.left % in1.step as u64;
+                    self.right = calc_mask(in_size) >> 1;
+                    self.left = (calc_mask(out_size) ^ self.right).wrapping_add(rem);
+                    self.right = self.right.wrapping_add(1).wrapping_add(rem);
+                } else {
+                    self.left = sign_extend(in1.left, in_size, out_size);
+                    self.right = sign_extend(in1.right.wrapping_sub(in1.step as u64) & in1.mask, in_size, out_size);
+                    if (self.right as i64) < (self.left as i64) {
+                        return false; // Extending causes 2 pieces
+                    }
+                    self.right = self.right.wrapping_add(self.step as u64) & self.mask;
+                }
+            }
+            OpCode::Int2comp => {
+                self.isempty = false;
+                self.step = in1.step;
+                self.mask = in1.mask;
+                self.right = (!in1.left).wrapping_add(1).wrapping_add(self.step as u64) & self.mask;
+                self.left = (!in1.right).wrapping_add(1).wrapping_add(self.step as u64) & self.mask;
+                self.normalize();
+            }
+            OpCode::IntNegate => {
+                self.isempty = false;
+                self.step = in1.step;
+                self.mask = in1.mask;
+                self.left = (!in1.right).wrapping_add(self.step as u64) & self.mask;
+                self.right = (!in1.left).wrapping_add(self.step as u64) & self.mask;
+                self.normalize();
+            }
+            OpCode::BoolNegate | OpCode::FloatNan => {
+                self.isempty = false;
+                self.mask = 0xff;
+                self.step = 1;
+                self.left = 0;
+                self.right = 2;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Ghidra `CircleRange::pushForwardBinary` (`rangeutil.cc:1180`): push the two input ranges
+    /// through a binary operator; `max_step` bounds how far multiplication may grow the step.
+    pub fn push_forward_binary(
+        &mut self,
+        opc: OpCode,
+        in1: &CircleRange,
+        in2: &CircleRange,
+        in_size: i32,
+        out_size: i32,
+        max_step: i32,
+    ) -> bool {
+        if in1.isempty || in2.isempty {
+            self.isempty = true;
+            return true;
+        }
+        match opc {
+            OpCode::Ptrsub | OpCode::IntAdd => {
+                self.isempty = false;
+                self.mask = in1.mask | in2.mask;
+                if in1.left == in1.right || in2.left == in2.right {
+                    self.step = in1.step.min(in2.step); // Smaller step
+                    self.left = in1.left.wrapping_add(in2.left) % self.step as u64;
+                    self.right = self.left;
+                } else if in2.is_single() {
+                    self.step = in1.step;
+                    self.left = in1.left.wrapping_add(in2.left) & self.mask;
+                    self.right = in1.right.wrapping_add(in2.left) & self.mask;
+                } else if in1.is_single() {
+                    self.step = in2.step;
+                    self.left = in2.left.wrapping_add(in1.left) & self.mask;
+                    self.right = in2.right.wrapping_add(in1.left) & self.mask;
+                } else {
+                    self.step = in1.step.min(in2.step); // Smaller step
+                    let size1 = if in1.left < in1.right {
+                        in1.right - in1.left
+                    } else {
+                        in1.mask.wrapping_sub(in1.left - in1.right).wrapping_add(in1.step as u64)
+                    };
+                    self.left = in1.left.wrapping_add(in2.left) & self.mask;
+                    self.right = in1
+                        .right
+                        .wrapping_sub(in1.step as u64)
+                        .wrapping_add(in2.right)
+                        .wrapping_sub(in2.step as u64)
+                        .wrapping_add(self.step as u64)
+                        & self.mask;
+                    let sizenew = if self.left < self.right {
+                        self.right - self.left
+                    } else {
+                        self.mask.wrapping_sub(self.left - self.right).wrapping_add(self.step as u64)
+                    };
+                    if sizenew < size1 {
+                        self.right = self.left; // Over-flow, we covered everything
+                    }
+                    self.normalize();
+                }
+            }
+            OpCode::IntMult => {
+                self.isempty = false;
+                self.mask = in1.mask | in2.mask;
+                let const_val;
+                if in1.is_single() {
+                    const_val = in1.get_min();
+                    self.step = in2.step;
+                } else if in2.is_single() {
+                    const_val = in2.get_min();
+                    self.step = in1.step;
+                } else {
+                    return false;
+                }
+                let mut tmp = const_val as u32;
+                while self.step < max_step {
+                    if (tmp & 1) != 0 {
+                        break;
+                    }
+                    self.step <<= 1;
+                    tmp >>= 1;
+                }
+                let whole_size = 64 - count_leading_zeros(self.mask);
+                if in1.get_max_info() + in2.get_max_info() > whole_size {
+                    self.left = in1.left.wrapping_mul(in2.left) % self.step as u64;
+                    self.right = self.left; // Covered everything
+                    self.normalize();
+                    return true;
+                }
+                if (const_val & (self.mask ^ (self.mask >> 1))) != 0 {
+                    // Multiplying by negative number
+                    self.left = in1
+                        .right
+                        .wrapping_sub(in1.step as u64)
+                        .wrapping_mul(in2.right.wrapping_sub(in2.step as u64))
+                        & self.mask;
+                    self.right = in1.left.wrapping_mul(in2.left).wrapping_add(self.step as u64) & self.mask;
+                } else {
+                    self.left = in1.left.wrapping_mul(in2.left) & self.mask;
+                    self.right = in1
+                        .right
+                        .wrapping_sub(in1.step as u64)
+                        .wrapping_mul(in2.right.wrapping_sub(in2.step as u64))
+                        .wrapping_add(self.step as u64)
+                        & self.mask;
+                }
+            }
+            OpCode::IntLeft => {
+                if !in2.is_single() {
+                    return false;
+                }
+                self.isempty = false;
+                self.mask = in1.mask;
+                self.step = in1.step;
+                let sa = in2.get_min() as u32;
+                let mut tmp = sa;
+                while self.step < max_step && tmp > 0 {
+                    self.step <<= 1;
+                    tmp -= 1;
+                }
+                self.left = in1.left.checked_shl(sa).unwrap_or(0) & self.mask;
+                self.right = in1.right.checked_shl(sa).unwrap_or(0) & self.mask;
+                let whole_size = 64 - count_leading_zeros(self.mask);
+                if in1.get_max_info() + sa as i32 > whole_size {
+                    self.right = self.left; // Covered everything
+                    self.normalize();
+                    return true;
+                }
+            }
+            OpCode::Subpiece => {
+                if !in2.is_single() {
+                    return false;
+                }
+                self.isempty = false;
+                let sa = (in2.left as i32) * 8;
+                self.mask = calc_mask(out_size);
+                self.step = if sa == 0 { in1.step } else { 1 };
+                let range = if in1.left < in1.right { in1.right - in1.left } else { in1.left - in1.right };
+                let shifted = if sa >= 64 { 0 } else { range >> sa };
+                if range == 0 || shifted > self.mask {
+                    self.left = 0;
+                    self.right = 0; // We cover everything
+                } else {
+                    let sh = |v: u64| if sa >= 64 { 0 } else { v >> sa };
+                    self.left = sh(in1.left);
+                    self.right = sh(in1.right.wrapping_sub(in1.step as u64)).wrapping_add(self.step as u64);
+                    self.left &= self.mask;
+                    self.right &= self.mask;
+                    self.normalize();
+                }
+            }
+            OpCode::IntRight => {
+                if !in2.is_single() {
+                    return false;
+                }
+                self.isempty = false;
+                let sa = in2.left as u32;
+                self.mask = calc_mask(out_size);
+                self.step = 1; // Lose any step
+                let sh = |v: u64| v.checked_shr(sa).unwrap_or(0);
+                if in1.left < in1.right {
+                    self.left = sh(in1.left);
+                    self.right = sh(in1.right.wrapping_sub(in1.step as u64)).wrapping_add(1);
+                } else {
+                    self.left = 0;
+                    self.right = sh(in1.mask);
+                }
+                if self.left == self.right {
+                    // Don't truncate accidentally to everything
+                    self.right = self.left.wrapping_add(1) & self.mask;
+                }
+            }
+            OpCode::IntSright => {
+                if !in2.is_single() {
+                    return false;
+                }
+                self.isempty = false;
+                let sa = in2.left as u32;
+                self.mask = calc_mask(out_size);
+                self.step = 1; // Lose any step
+                let bit_pos = 8 * in_size - 1;
+                let mut val_left = sign_extend_bit(in1.left as i64, bit_pos);
+                let mut val_right = sign_extend_bit(in1.right as i64, bit_pos);
+                if val_left >= val_right {
+                    val_right = (self.mask >> 1) as i64; // Max positive
+                    val_left = val_right + 1; // Min negative
+                    val_left = sign_extend_bit(val_left, bit_pos);
+                }
+                let shr = |v: i64| v.checked_shr(sa).unwrap_or(if v < 0 { -1 } else { 0 });
+                self.left = (shr(val_left) as u64) & self.mask;
+                self.right = (shr(val_right.wrapping_sub(in1.step as i64)).wrapping_add(1) as u64) & self.mask;
+                if self.left == self.right {
+                    // Don't truncate accidentally to everything
+                    self.right = self.left.wrapping_add(1) & self.mask;
+                }
+            }
+            OpCode::IntEqual
+            | OpCode::IntNotequal
+            | OpCode::IntSless
+            | OpCode::IntSlessequal
+            | OpCode::IntLess
+            | OpCode::IntLessequal
+            | OpCode::IntCarry
+            | OpCode::IntScarry
+            | OpCode::IntSborrow
+            | OpCode::BoolXor
+            | OpCode::BoolAnd
+            | OpCode::BoolOr
+            | OpCode::FloatEqual
+            | OpCode::FloatNotequal
+            | OpCode::FloatLess
+            | OpCode::FloatLessequal => {
+                // Ops with boolean outcome. We don't try to eliminate outcomes here.
+                self.isempty = false;
+                self.mask = 0xff;
+                self.step = 1;
+                self.left = 0; // Both true and false are possible
+                self.right = 2;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Ghidra `CircleRange::pushForwardTrinary` (`rangeutil.cc:1381`): currently only PTRADD —
+    /// `in1 + in2 * in3`.
+    pub fn push_forward_trinary(
+        &mut self,
+        opc: OpCode,
+        in1: &CircleRange,
+        in2: &CircleRange,
+        in3: &CircleRange,
+        in_size: i32,
+        out_size: i32,
+        max_step: i32,
+    ) -> bool {
+        if opc != OpCode::Ptradd {
+            return false;
+        }
+        let mut tmp = CircleRange::default();
+        if !tmp.push_forward_binary(OpCode::IntMult, in2, in3, in_size, in_size, max_step) {
+            return false;
+        }
+        self.push_forward_binary(OpCode::IntAdd, in1, &tmp, in_size, out_size, max_step)
+    }
+
+    /// Ghidra `CircleRange::widen` (`rangeutil.cc:1396`): widen so at least one boundary matches
+    /// the containing range `op2`; `left_is_stable` selects matching the right boundary.
+    pub fn widen(&mut self, op2: &CircleRange, left_is_stable: bool) {
+        if left_is_stable {
+            let lmod = self.left % self.step as u64;
+            let m = op2.right % self.step as u64;
+            if m <= lmod {
+                self.right = op2.right.wrapping_add(lmod - m);
+            } else {
+                self.right = op2.right.wrapping_sub(m - lmod);
+            }
+            self.right &= self.mask;
+        } else {
+            self.left = op2.left & self.mask;
+        }
+        self.normalize();
     }
 
     /// Ghidra `CircleRange::translate2Op` (`rangeutil.cc:1093`): express this range as a single

@@ -560,9 +560,58 @@ impl<'a> MapState<'a> {
         }
     }
 
+    /// Ghidra `MapState::addGuard` (varmap.cc:1003): an \e open array hint from a LoadGuard with
+    /// a definitive step — the element is the pointer's pointee (or an unknown of the step's
+    /// width), the item count the locked range's, else the default 4.
+    fn add_guard(&mut self, f: &Funcdata, guard: &super::heritage::LoadGuard, opc: OpCode) {
+        if !guard.is_valid(f, opc) {
+            return;
+        }
+        let mut step = guard.step;
+        if step == 0 {
+            return; // No definitive sign of array access
+        }
+        let op = guard.op;
+        let ptr = f.op(op).input(1).expect("LOAD/STORE pointer");
+        let mut ct = f.vn(ptr).get_type();
+        if let Some(mut p) = ct.ptr_to().cloned() {
+            while let Datatype::Array(inner, _) = p {
+                p = *inner;
+            }
+            ct = p;
+        }
+        let out_size = if opc == OpCode::Store {
+            f.vn(f.op(op).input(2).expect("STORE value")).size as i32 // The Varnode being stored
+        } else {
+            f.vn(f.op(op).output.expect("LOAD output")).size as i32 // The Varnode being loaded
+        };
+        if out_size != step {
+            // LOAD size doesn't match step: field in array of structures or something more unusual
+            if out_size > step || (step % out_size) != 0 {
+                return;
+            }
+            // Since the LOAD size divides the step and we want to preserve the arrayness
+            // we pretend we have an array of LOAD's size
+            step = out_size;
+        }
+        if ct.align_size() as i32 != step {
+            // Make sure data-type matches our step size
+            if step > 8 {
+                return; // Don't manufacture primitives bigger than 8-bytes
+            }
+            ct = Datatype::Unknown(step as u32);
+        }
+        if guard.is_range_locked() {
+            let min_items = ((guard.maximum_offset.wrapping_sub(guard.minimum_offset)).wrapping_add(1) / step as u64) as i32;
+            self.add_range(guard.minimum_offset, Some(ct), 0, RangeType::Open, min_items - 1);
+        } else {
+            self.add_range(guard.minimum_offset, Some(ct), 0, RangeType::Open, 3);
+        }
+    }
+
     /// Ghidra `MapState::gatherOpen`: an \e open hint for every pointer into the stack space (its
-    /// object size is unknown), so contiguous indexed accesses recover as an array. The
-    /// `LoadGuard` array hints are faithfully omitted (mosura records no load guards).
+    /// object size is unknown), so contiguous indexed accesses recover as an array, plus the
+    /// `LoadGuard` array hints (`addGuard`, varmap.cc:1242-1248).
     fn gather_open(&mut self, f: &Funcdata) {
         for ab in super::alias::gather_additive_base(f) {
             let offset = super::alias::gather_offset(f, ab.base);
@@ -579,6 +628,12 @@ impl<'a> MapState<'a> {
             };
             let min_items = if ab.index.is_some() { 3 } else { -1 };
             self.add_range(offset, elem, 0, RangeType::Open, min_items);
+        }
+        for guard in &f.load_guard {
+            self.add_guard(f, guard, OpCode::Load);
+        }
+        for guard in &f.store_guard {
+            self.add_guard(f, guard, OpCode::Store);
         }
     }
 
