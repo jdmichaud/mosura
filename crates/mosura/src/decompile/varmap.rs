@@ -854,22 +854,33 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
 }
 
 /// EMISSION ARM, beyond Ghidra (recompilation): the frame region an indexed stack LOAD/STORE
-/// walks (`LoadGuard`: the pointer's base through the analysed maximum) must be ONE C object,
-/// or the pointer arithmetic the body performs across it is undefined and the recompiler is free
-/// to drop it. Ghidra's `MapState` keeps the per-slot symbols (its `addGuard` hint is `open` and
-/// the fixed slot hints win, so it prints `aiStack_30 [2]; xStack_28; xStack_20; …` for a
-/// register-save area) — faithful C whose layout only the original compiler guaranteed. Ground
-/// truth `vsum`: gcc folded `*(int4 *)((int8)aiStack_30 + uVar3)` to nothing.
+/// walks must be ONE C object, or the pointer arithmetic the body performs across it is
+/// undefined and the recompiler is free to drop it. Ghidra's `MapState` keeps the per-slot
+/// symbols (its `addGuard` hint is `open` and the fixed slot hints win, so it prints
+/// `aiStack_30 [2]; xStack_28; xStack_20; …` for a register-save area) — faithful C whose layout
+/// only the original compiler guaranteed. Ground truth `vsum`: gcc folded
+/// `*(int4 *)((int8)aiStack_30 + uVar3)` to nothing.
 ///
-/// For each valid guard: the region is `[pointer_base, maximum]` clipped to the local frame
-/// (below the parameter window); every Symbol it intersects is replaced by one array of the
-/// guard's step (else the guard op's access width) spanning from the lowest of the base and the
-/// intersected starts to the highest intersected end. The element type is the narrowest
-/// intersected scalar of that width, else an unknown of the width.
+/// The guard's analysed MAXIMUM is not a usable bound — unlocked guards clip to the frame top and
+/// the first cut of this arm swallowed whole frames (zc39: ten COMPILE_FAILs). What characterizes
+/// a save area is the SLOTS themselves: starting at the guard's pointer base, a contiguous run of
+/// Symbols of the element width (the guard's step, else the access width) that the body only
+/// WRITES or takes the address of — never reads by name (a slot read by name is a variable of its
+/// own and ends the run). Two or more such slots become one array of the element width.
 fn coalesce_guarded_regions(f: &Funcdata, state: &MapState, out: &mut Vec<StackSymbol>) {
     let Some(stack) = f.spaces.by_name("stack") else { return };
     let spc = f.spaces.get(stack);
     let bits = spc.addr_size.saturating_mul(8).saturating_sub(1);
+    // Frame offsets read by name: any stack Varnode with a reader.
+    let mut read_ranges: Vec<(i64, i64)> = Vec::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let vn = f.vn(VarnodeId(i));
+        if vn.loc.space == stack && !vn.descend.is_empty() {
+            let st = sign_extend(vn.loc.offset, bits);
+            read_ranges.push((st, st + vn.size as i64));
+        }
+    }
+    let read_by_name = |st: i64, end: i64| read_ranges.iter().any(|&(a, b)| a < end && b > st);
     let guards: Vec<(&super::heritage::LoadGuard, OpCode)> = f
         .load_guard
         .iter()
@@ -891,47 +902,50 @@ fn coalesce_guarded_regions(f: &Funcdata, state: &MapState, out: &mut Vec<StackS
             continue;
         }
         let base = sign_extend(g.pointer_base, bits);
-        let max = sign_extend(g.maximum_offset, bits);
-        // the local frame only: the region ends where the caller's frame (parameters) begins
         if base >= 0 {
+            continue; // the caller's frame is not ours to lay out
+        }
+        out.sort_by_key(|s| s.start);
+        let Some(first) = out.iter().position(|s| s.start == base) else { continue };
+        // The run: contiguous, element-width (or an array of it), never read by name.
+        let mut last = first;
+        let mut cursor = base;
+        for (i, sym) in out.iter().enumerate().skip(first) {
+            if sym.start != cursor {
+                break;
+            }
+            let unit = match &sym.ty {
+                Datatype::Array(e, _) => e.size(),
+                t => t.size(),
+            };
+            if unit != elem && sym.size != elem {
+                break;
+            }
+            if read_by_name(sym.start, sym.start + sym.size as i64) {
+                break;
+            }
+            last = i;
+            cursor = sym.start + sym.size as i64;
+        }
+        if last == first {
             continue;
         }
-        let max = max.min(-1);
-        if max < base {
-            continue;
-        }
-        // Symbols the region intersects (whole symbols: a partial overlap still joins).
-        let hit: Vec<usize> = out
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                let end = s.start + s.size as i64;
-                s.start <= max && end > base
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if hit.len() < 2 {
-            continue;
-        }
-        let lo = hit.iter().map(|&i| out[i].start).min().unwrap().min(base);
-        let hi = hit.iter().map(|&i| out[i].start + out[i].size as i64).max().unwrap();
-        let span = (hi - lo) as u32;
+        let span = (cursor - base) as u32;
         let count = span.div_ceil(elem);
-        let elem_ty = hit
+        let elem_ty = out[first..=last]
             .iter()
-            .map(|&i| match &out[i].ty {
+            .map(|s| match &s.ty {
                 Datatype::Array(e, _) => (**e).clone(),
                 t => t.clone(),
             })
             .find(|t| t.size() == elem && !matches!(t, Datatype::Unknown(_)))
             .unwrap_or(Datatype::Unknown(elem));
         let ty = Datatype::Array(Box::new(elem_ty), count as u64);
-        let raw = spc.wrap_offset(lo as u64);
+        let raw = spc.wrap_offset(base as u64);
         let name = build_variable_name(state.spaces, state.space, raw, &ty, state.localrange);
-        let mut keep: Vec<StackSymbol> = out.iter().enumerate().filter(|(i, _)| !hit.contains(i)).map(|(_, s)| s.clone()).collect();
-        keep.push(StackSymbol { start: lo, size: count * elem, ty, name });
-        keep.sort_by_key(|s| s.start);
-        *out = keep;
+        out.drain(first..=last);
+        out.push(StackSymbol { start: base, size: count * elem, ty, name });
+        out.sort_by_key(|s| s.start);
     }
 }
 
