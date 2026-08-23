@@ -475,20 +475,18 @@ pub(crate) fn explicit_trailing(
         }
         return !check_implied_cover(f, ih_of, ih_members, covers, ctx, decision, v);
     }
-    // Single use (`dn == 1`): inline unless the implied-cover test fails, or it feeds a marker
-    // standing for the same variable, in which case it materializes as an assignment.
-    if !check_implied_cover(f, ih_of, ih_members, covers, ctx, decision, v) {
+    // Single use (`dn == 1`): a MARKER reader makes the value explicit — Ghidra `baseExplicit`'s
+    // descendant loop, coreaction.cc:3073 `if (op->isMarker()) return -1`, for ANY marker. (A
+    // former mosura arm accepted an INDIRECT reader only when its output had the same storage;
+    // the trim COPY `Merge::trimOpInput` puts on a passthrough INDIRECT's input has a unique
+    // output, so `iVar1 = param_2;` before the call was never printed and `iVar1` read
+    // uninitialized — ground truth `globals`' `event`, the value carried across `note()`.)
+    // Otherwise inline unless the implied-cover test fails.
+    let user = vn.descend[0];
+    if f.op(user).is_marker() {
         return true;
     }
-    let user = vn.descend[0];
-    match f.op(user).code() {
-        OpCode::Multiequal => true,
-        OpCode::Indirect => f
-            .op(user)
-            .output
-            .is_some_and(|uout| f.vn(uout).loc == vn.loc && f.vn(uout).size == vn.size),
-        _ => false,
-    }
+    !check_implied_cover(f, ih_of, ih_members, covers, ctx, decision, v)
 }
 
 /// Ghidra `ActionMarkImplied::isPossibleAliasStep` (coreaction.cc:3279): if either pointer is

@@ -118,6 +118,13 @@ pub struct Funcdata {
     /// recomputed (`ActionRestructureVarnode`), which is exactly when Ghidra's Scope changes.
     pub stack_syms_cache: Option<Vec<super::varmap::StackSymbol>>,
     pub readonly_ranges: Vec<(u64, u64)>,
+    /// Loaded memory blocks WITHOUT file content (`.bss`, ELF `SHT_NOBITS`): part of the
+    /// program's memory map — Ghidra's global scope resolves a `DAT_` symbol anywhere inside a
+    /// memory block, initialized or not — but absent from `image`, which holds bytes. Consulted
+    /// by [`Self::is_loaded`] alongside `image` (`ActionConstantPtr`): without it a constant
+    /// address of a `.bss` global stayed an integer and the recompiled C wrote to the ORIGINAL's
+    /// address (ground truth `globals`: `log_kinds`/`scores`).
+    pub uninitialized_ranges: Vec<(u64, u64)>,
     /// Which Ghidra GLOBAL-SCOPE behavior this Funcdata models. Ghidra has two: the APPLICATION
     /// resolves a symbol for any address inside a loaded memory block (its program database
     /// auto-answers `queryContainer` — why `&DAT_...` exists for unnamed addresses), while the
@@ -369,6 +376,7 @@ impl Funcdata {
             reopened_inputs: Default::default(),
             blocks_unreachable: false,
             readonly_ranges: Vec::new(),
+            uninitialized_ranges: Vec::new(),
             global_scope_all_loaded: false,
             stack_syms_cache: None,
             output_storage_size: None,
@@ -534,6 +542,7 @@ impl Funcdata {
     /// is populated by both entry paths (the fixture loader and the analysis boundary).
     pub fn is_loaded(&self, addr: u64) -> bool {
         self.image.iter().any(|(s, b)| *s <= addr && addr < s + b.len() as u64)
+            || self.uninitialized_ranges.iter().any(|&(s, e)| s <= addr && addr < e)
     }
 
     /// The recovered stack symbols, computed once and cached (see [`Self::stack_syms_cache`]).
@@ -952,6 +961,9 @@ impl Funcdata {
     /// inputs' descendant lists are updated.
     pub fn new_op(&mut self, opcode: OpCode, seqnum: SeqNum, inputs: Vec<VarnodeId>) -> OpId {
         let id = OpId(self.ops.len() as u32);
+        // (Ghidra's `newOp` takes no inputs; they arrive through `opSetInput` and its constant
+        // rule — applied here to the inputs wired at creation.)
+        let inputs: Vec<VarnodeId> = inputs.into_iter().map(|v| self.unique_constant_for(v)).collect();
         for &v in &inputs {
             self.varnodes[v.0 as usize].descend.push(id);
         }
@@ -2091,6 +2103,7 @@ impl Funcdata {
 
     /// Append an input to `op` (Ghidra's `opInsertInput` at the end), wiring descendants.
     pub fn op_append_input(&mut self, op: OpId, vid: VarnodeId) {
+        let vid = self.unique_constant_for(vid);
         self.ops[op.0 as usize].inrefs.push(vid);
         self.varnodes[vid.0 as usize].descend.push(op);
     }
@@ -2105,6 +2118,7 @@ impl Funcdata {
             }
         }
         for &v in inputs {
+            let v = self.unique_constant_for(v);
             self.ops[op.0 as usize].inrefs.push(v);
             self.varnodes[v.0 as usize].descend.push(op);
         }
@@ -2316,6 +2330,25 @@ impl Funcdata {
         self.blocks[block.0 as usize].ops = ops;
     }
 
+    /// Ghidra `Funcdata::opSetInput`'s constant rule (funcdata_op.cc:108-115): "Constants should
+    /// have only one descendant" — a constant that already has a reader is CLONED (`newConstant`,
+    /// the symbol/type carried over) before it is wired into another op, unless it is a
+    /// spacebase. Every input-setting primitive below goes through this, as Ghidra's
+    /// `opInsertInput`/`opSetAllInput` go through `opSetInput`. It is load-bearing, not tidiness:
+    /// `ActionConstantPtr` considers only `loneDescend` constants, so a `.bss` address shared by
+    /// two INT_ADDs (`RulePropagateCopy` handed both the COPY's constant) stayed an integer and
+    /// the recompiled `tally` read the ORIGINAL's `scores` (ground truth `globals`).
+    fn unique_constant_for(&mut self, vid: VarnodeId) -> VarnodeId {
+        let v = &self.varnodes[vid.0 as usize];
+        if !v.is_constant() || v.descend.is_empty() || v.is_spacebase() {
+            return vid;
+        }
+        let (size, value, ty) = (v.size, v.loc.offset, v.ty.clone());
+        let cvn = self.new_const(size, value);
+        self.varnodes[cvn.0 as usize].ty = ty;
+        cvn
+    }
+
     /// Repoint input `slot` of `op` at varnode `vid`, maintaining descendant lists
     /// (Ghidra's `opSetInput`). Used by heritage renaming.
     pub fn op_set_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
@@ -2324,6 +2357,7 @@ impl Funcdata {
         if old == vid {
             return;
         }
+        let vid = self.unique_constant_for(vid);
         if let Some(pos) = self.varnodes[old.0 as usize].descend.iter().position(|&o| o == op) {
             self.varnodes[old.0 as usize].descend.remove(pos);
         }
@@ -2335,6 +2369,7 @@ impl Funcdata {
     /// shifting later inputs up and adding `op` to `vid`'s descendant list.
     pub fn op_insert_input(&mut self, op: OpId, slot: usize, vid: VarnodeId) {
         self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
+        let vid = self.unique_constant_for(vid);
         self.ops[op.0 as usize].inrefs.insert(slot, vid);
         self.varnodes[vid.0 as usize].descend.push(op);
     }
@@ -2630,7 +2665,9 @@ mod tests {
             let d = f.vn(r).def.expect("clone has a def");
             assert_eq!(f.op(d).code(), OpCode::IntAdd);
             assert_eq!(f.op(d).input(0), Some(input));
-            assert_eq!(f.op(d).input(1), Some(neg));
+            // the constant is cloned per reader (`opSetInput`'s constant rule) — same value
+            let c = f.op(d).input(1).expect("constant operand");
+            assert_eq!(f.vn(c).constant_value(), f.vn(neg).constant_value());
         }
     }
 

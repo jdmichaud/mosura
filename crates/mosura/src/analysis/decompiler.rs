@@ -106,6 +106,14 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.compiler_spec_id,
         );
         f.readonly_ranges = readonly_ranges.clone();
+        // The uninitialized blocks (`.bss`) are loaded memory too — a constant inside one is a
+        // data pointer (`ActionConstantPtr` → `&xRam…`), not an integer.
+        f.uninitialized_ranges = program
+            .memory
+            .blocks()
+            .filter(|b| b.bytes.is_none())
+            .map(|b| (b.start().offset, b.end().offset.wrapping_add(1)))
+            .collect();
         // Which Ghidra global-scope context this decompile models is the PROGRAM's property —
         // application (default) or standalone — see `Program::global_scope_all_loaded`.
         f.global_scope_all_loaded = program.global_scope_all_loaded;

@@ -436,6 +436,8 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
     let data_syms: BTreeMap<String, u64> =
         syms.iter().filter(|s| !s.is_func).map(|s| (s.name.clone(), s.addr)).collect();
     let data_sizes: BTreeMap<u64, u64> = syms.iter().filter(|s| !s.is_func).map(|s| (s.addr, s.size)).collect();
+    let syms_by_name_sizes: BTreeMap<String, u64> =
+        syms.iter().filter(|s| !s.is_func).map(|s| (s.name.clone(), s.size)).collect();
     let program = analysis::analyze_file(&bin_path).map_err(|e| format!("analyze: {e:?}"))?;
     let ram = program.default_space;
 
@@ -446,11 +448,13 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         self_name: String,
         sig: String,
         globals: BTreeMap<u64, (u32, Datatype)>,
+        /// Address-of references by emitted name (`&xRam…`), at the PTRSUB's pointee width.
+        addr_of: BTreeMap<String, (u32, Datatype)>,
     }
     let mut decs: Vec<Dec> = Vec::new();
     for s in syms.into_iter().filter(|s| s.is_func && fn_bytes.contains_key(&s.addr)) {
         let f = decompile_function(&program, Address::new(ram, s.addr));
-        let (c, self_name, sig, globals) = match f {
+        let (c, self_name, sig, globals, addr_of) = match f {
             Some(f) => {
                 if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
                     eprint!("{}", f.print_raw());
@@ -458,6 +462,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 let c = print_c(&f);
                 let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
                 let mut globals = BTreeMap::new();
+                let mut addr_of: BTreeMap<String, (u32, Datatype)> = BTreeMap::new();
                 for i in 0..f.num_varnodes() as u32 {
                     let v = f.vn(crate::decompile::varnode::VarnodeId(i));
                     if v.loc.space == ram && !v.is_constant() {
@@ -483,13 +488,19 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                     }
                     let pointee = f.vn(out).get_type().ptr_to().cloned().unwrap_or(Datatype::Unknown(1));
                     let addr = f.spaces.get(ram).wrap_offset(f.vn(a).constant_value());
+                    // Keyed by the NAME the printer emits: the same address reached as a 4-byte
+                    // `iRam…` value and as the byte-pointer base `&xRam…` of a PTRADD are two
+                    // declarations, each at its own width — one shared width made the byte
+                    // walk `&xRam403040 + n * 4` scale by 4 (ptrarith after the `.bss` fix).
+                    let name = crate::decompile::varmap::build_internal_variable_name(&f.spaces, ram, addr, &pointee);
+                    addr_of.entry(name).or_insert((pointee.size().max(1), pointee.clone()));
                     globals.entry(addr).or_insert((pointee.size().max(1), pointee));
                 }
-                (Some(c), n, sig, globals)
+                (Some(c), n, sig, globals, addr_of)
             }
-            None => (None, String::new(), String::new(), BTreeMap::new()),
+            None => (None, String::new(), String::new(), BTreeMap::new(), BTreeMap::new()),
         };
-        decs.push(Dec { sym: s, c, self_name, sig, globals });
+        decs.push(Dec { sym: s, c, self_name, sig, globals, addr_of });
     }
     let by_addr: BTreeMap<u64, usize> = decs.iter().enumerate().map(|(i, d)| (d.sym.addr, i)).collect();
     let sym_addrs: std::collections::BTreeSet<u64> = symmap.values().copied().collect();
@@ -585,9 +596,10 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                         }
                     }
                     let width = d
-                        .globals
-                        .get(&a)
+                        .addr_of
+                        .get(id)
                         .map(|(w, _)| *w as u64)
+                        .or_else(|| d.globals.get(&a).map(|(w, _)| *w as u64))
                         .or_else(|| data_sizes.get(&a).copied())
                         .filter(|w| matches!(w, 1 | 2 | 4 | 8))
                         .unwrap_or(8);
@@ -822,7 +834,8 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         }
     }
     let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
-    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names);
+    let data_name_sizes: BTreeMap<String, u64> = syms_by_name_sizes.clone();
+    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes);
     let original_bytes: Vec<(String, u64, Vec<u8>)> =
         decs.iter().map(|d| (d.sym.name.clone(), d.sym.addr, fn_bytes[&d.sym.addr].clone())).collect();
     Ok(GtReport { program: program_name, functions, workdir: dir, functional, original_bytes })
@@ -839,6 +852,7 @@ fn functional_check(
     original: &Path,
     functions: &[GtFunction],
     data_syms: &[(String, u64)],
+    data_sizes: &BTreeMap<String, u64>,
 ) -> String {
     if functions.iter().any(|f| f.verdict == "COMPILE_FAIL" || f.verdict == "DECOMPILE_FAIL") {
         return "NOLINK".into();
@@ -875,8 +889,25 @@ fn functional_check(
             if let Some(pos) = id.find("Ram") {
                 if pos <= 3 {
                     if let Some(a) = emitted_symbol_address(&id) {
-                        if let Some((sym, _)) = data_syms.iter().find(|(_, addr)| *addr == a) {
-                            let d = format!("-Wl,--defsym,{id}={sym}");
+                        // The symbol AT the address, else the data symbol CONTAINING it (a
+                        // normalized compare constant like `&iRam403041 <= …` is `grid + 1`).
+                        let hit = data_syms
+                            .iter()
+                            .find(|(_, addr)| *addr == a)
+                            .map(|(sym, addr)| (sym.clone(), a - addr))
+                            .or_else(|| {
+                                data_syms
+                                    .iter()
+                                    .filter(|(sym, addr)| *addr < a && a < addr + data_sizes.get(sym).copied().unwrap_or(0))
+                                    .max_by_key(|(_, addr)| *addr)
+                                    .map(|(sym, addr)| (sym.clone(), a - addr))
+                            });
+                        if let Some((sym, off)) = hit {
+                            let d = if off == 0 {
+                                format!("-Wl,--defsym,{id}={sym}")
+                            } else {
+                                format!("-Wl,--defsym,{id}={sym}+{off}")
+                            };
                             if !defsyms.contains(&d) {
                                 defsyms.push(d);
                             }

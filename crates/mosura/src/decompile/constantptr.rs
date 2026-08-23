@@ -222,6 +222,10 @@ impl super::action::Action for ActionConstantPtr {
                 continue;
             }
             if v.descend.len() != 1 {
+                if std::env::var_os("MOSURA_CONSTPTR_DEBUG").is_some() && v.descend.len() > 1 {
+                    let rd: Vec<String> = v.descend.iter().map(|&o| format!("{:?}@{:#x}", data.op(o).code(), data.op(o).seqnum.pc.offset)).collect();
+                    eprintln!("[constptr] pass{} #{:#x}/{} SHARED by {} readers [{}]", self.localcount, v.loc.offset, v.size, v.descend.len(), rd.join(" "));
+                }
                 continue; // loneDescend
             }
             let op = v.descend[0];
@@ -243,6 +247,13 @@ impl super::action::Action for ActionConstantPtr {
                 continue;
             }
             let hit = is_pointer(data, rspc, vn, op, slot);
+            if std::env::var_os("MOSURA_CONSTPTR_DEBUG").is_some() {
+                eprintln!(
+                    "[constptr] pass{} #{:#x}/{} at {:?}@{:#x} slot{} -> {:?} (loaded={} all_loaded={})",
+                    self.localcount, data.vn(vn).loc.offset, data.vn(vn).size, opc, data.op(op).seqnum.pc.offset, slot, hit,
+                    data.is_loaded(data.vn(vn).loc.offset), data.global_scope_all_loaded
+                );
+            }
             data.vn_mut(vn).set_ptr_check(); // AFTER the search, as Ghidra does
             if let Some(rampoint) = hit {
                 let (origval, origsize) = (data.vn(vn).loc.offset, data.vn(vn).size);

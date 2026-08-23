@@ -190,9 +190,11 @@ mod tests {
         let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
         let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
 
-        // Two predecessors each supplying a value...
-        let a = f.new_const(4, 1);
-        let b = f.new_const(4, 2);
+        // Two predecessors each supplying a value... (register inputs: a constant is never shared
+        // between two ops — `opSetInput` clones it — so two phis of "the same" constants are not
+        // the same value to `processBlock`'s identity marks, exactly as in Ghidra)
+        let a = f.new_input(4, Address::new(reg, 0x20));
+        let b = f.new_input(4, Address::new(reg, 0x28));
         let br0 = f.new_op(OpCode::Branch, s(0), vec![]);
         let br1 = f.new_op(OpCode::Branch, s(1), vec![]);
         // ...merged TWICE at the join, into two different outputs.

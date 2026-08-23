@@ -12658,7 +12658,10 @@ mod tests {
         let d1 = f.vn(i1).def.unwrap();
         assert_eq!(f.op(d0).code(), OpCode::IntAnd);
         assert_eq!(f.op(d1).code(), OpCode::IntAnd);
-        assert_eq!(f.op(d0).input(0), Some(a)); // A & C
+        // A & C — the constant A is re-wired through `opSetInput`, which clones a constant that
+        // already has a reader (funcdata_op.cc:108), so compare by value, not identity.
+        let a0 = f.op(d0).input(0).unwrap();
+        assert!(f.vn(a0).is_constant() && f.vn(a0).constant_value() == 0xff00);
         assert_eq!(f.op(d1).input(0), Some(b)); // B & C
     }
 
