@@ -3,19 +3,21 @@
 //! gcc, and each function's verdict/similarity is compared against a PER-MACHINE baseline
 //! (`build/gt-recompile/baseline.tsv`). gcc is a development-environment requirement; its version
 //! floats, so nothing here is compared against committed bytes — the first run on a machine writes
-//! the baseline, later runs fail on any verdict regression or a WGSS drop over 0.01, and
-//! `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
+//! the baseline, later runs fail on any verdict regression (per function, and the per-program
+//! FUNCTIONAL verdict: our functions linked into the program and run against the original) or a
+//! WGSS drop over 0.01, and `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
 use std::collections::BTreeMap;
 
 use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, GtReport};
 
 fn rank(v: &str) -> u8 {
     match v {
-        "EXACT" => 5,
+        "EXACT" | "PASS" => 5,
         "SAME_CODE" => 4,
         "SAME_SHAPE" => 3,
         "MISMATCH" => 2,
         "COMPILE_FAIL" => 1,
+        v if v.starts_with("FAIL") => 1,
         _ => 0,
     }
 }
@@ -35,6 +37,10 @@ fn decompile_recompile_does_not_regress_against_the_local_baseline() {
         for f in &r.functions {
             current.insert((r.program.clone(), f.symbol.clone()), (f.verdict.clone(), f.similarity, f.weight));
         }
+        // The functional verdict (the program linked from our functions, RUN against the
+        // original): a PASS that becomes a FAIL is wrong code, the regression that matters most.
+        let functional = r.functional.split('(').next().unwrap_or("").trim().to_string();
+        current.insert((r.program.clone(), "@functional".into()), (functional, 0.0, 0));
     }
     let wgss = |m: &BTreeMap<(String, String), (String, f64, usize)>| {
         let w: usize = m.values().map(|v| v.2).sum();

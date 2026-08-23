@@ -799,11 +799,23 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // flow across the call untouched, and the caller then recovers that pass-through as
             // its OWN return value — the regout MVE's `use_` turned from `void` into a
             // value-returning function on exactly this.
-            && !f
-                .proto_model
-                .output
-                .as_ref()
-                .is_some_and(|o| o.possible_param(addr, size))
+            && !{
+                // The protection is for the PRIMARY return register (the first output entry:
+                // EAX/RAX), always, and for every output register when the evidence is merely
+                // absent. SECONDARY return storage (RDX on SysV x86-64, EDX on Watcom — the
+                // high half of a double-width return) is released on POSITIVE evidence: a
+                // complete walk of the callee that never writes it means the callee cannot be
+                // returning a value there, while the caller's own value in it — a loop counter
+                // gcc's `-fipa-ra` kept in `EDX` across `square()` (ground-truth `sum_to`:
+                // the counter came back as `extraout_RDX` and the loop's increment was lost,
+                // wrong code) — is exactly what the downgrade exists to preserve.
+                let out = f.proto_model.output.as_ref();
+                let is_output = out.is_some_and(|o| o.possible_param(addr, size));
+                let is_primary = out.and_then(|o| o.entry.first()).is_some_and(|e| {
+                    e.space == reg && off >= e.addressbase && off < e.addressbase + e.size as u64
+                });
+                is_output && (is_primary || !never_written)
+            }
         {
             // The symmetric half of the upgrade above: a callee that demonstrably PRESERVES a
             // killedbycall register must not clobber the caller's value at this site.

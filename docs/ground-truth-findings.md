@@ -57,3 +57,38 @@ renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 funct
 - Return-width recovery from the callers' reads (mechanism 2).
 - Two or three era-style programs (no `volatile`, no `_start` shim in the scored set) so the
   size mix matches WAR2's; score `_start`/shim functions separately.
+
+## Update (2026-08-23): the functional oracle, and the first transfer test
+
+**Functional check.** The programs are freestanding and return their result through the exit
+status, so the instrument now links every recompiled function into one program and RUNS it
+against the original (`recompile::groundtruth::functional_check`: the original source compiled
+once more with `static` stripped is the harness — it supplies `_start`, the data and the
+source-named calls; our objects come first under `--allow-multiple-definition`; our address-named
+globals map onto the original's data symbols with `--defsym`; compiler-private constants with no
+symbol are DEFINED from the image bytes). Result on the 20 programs: **10 PASS, 10 FAIL** —
+`arith`, `arith64`, `floats`, `fnptr`, `irreducible`, `ptrarith`, `recursion`, `strdata`,
+`structval`, `varargs` compute a different result from the original. The gate now treats a
+PASS → FAIL as a regression. This is the oracle the similarity score cannot be: `sum_to` went
+from one wrong rendering (`extraout_RDX`) to another (an off-by-one: `iVar3 = iVar3 + 1` after
+the call and `!= iVar3 + 1` in the condition) while its similarity moved by a few rows.
+
+**Mechanism 1, acted on and measured.** `guard_calls` already downgrades a convention-killed
+register to preserved when a complete walk of the callee never writes it, but refused every
+register in the convention's OUTPUT list; on SysV x86-64 that is `RDX` (the high half of a
+128-bit return), so the evidence was ignored exactly where `-fipa-ra` had relied on it. The
+exception now holds for the PRIMARY return register always and for all return storage when the
+evidence is absent, and releases secondary return storage on a complete never-written walk.
+Control corpus: `cube` and `sum_to` regain their parameters (`return iVar1 * param_1`, the loop
+counter back in the loop); no function's functional verdict changed (the two are still FAIL for
+other reasons), and similarity fell slightly because gcc, recompiling our single-function TU,
+cannot know `square`'s clobbers and must now save `R12/RBP/RBX` around the call — mechanism 3.
+**WAR2 zc34 vs zc33: byte-identical, 0 movers** — Watcom's second return register was never
+gated in practice. A correctness fix at zero WAR2 cost; nothing to land on master from it yet.
+
+**Where this leaves the experiment.** Two things it has that WAR2 does not: a source to read
+each divergence against, and a yes/no correctness oracle. Its list is now ten wrong programs,
+each a decompiler bug with the source beside it. Its limits are also clear: gcc `-O2`'s
+interprocedural optimizations (`-fipa-ra`, static-call alignment) cap what per-function
+recompilation can match on this corpus regardless of the C, so its *similarity* is a weak
+signal here; its *functional* verdict is strong.

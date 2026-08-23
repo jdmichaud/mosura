@@ -53,6 +53,10 @@ pub struct GtReport {
     pub functions: Vec<GtFunction>,
     /// Where the emitted TUs and objects were written.
     pub workdir: PathBuf,
+    /// The functional check: every recompiled function linked into one program and RUN; the
+    /// exit status is the program's result. `PASS` (same status as the original), `FAIL(o,n)`,
+    /// `NOLINK` (an object failed or the link did), `NORUN` (the original could not be run).
+    pub functional: String,
 }
 
 impl GtReport {
@@ -70,7 +74,7 @@ impl GtReport {
     }
     pub fn summary(&self) -> String {
         format!(
-            "{}: {} fns, weight {}, WGSS {:.4}, EXACT {}, SAME_SHAPE {}, MISMATCH {}, COMPILE_FAIL {}, DECOMPILE_FAIL {}",
+            "{}: {} fns, weight {}, WGSS {:.4}, EXACT {}, SAME_SHAPE {}, MISMATCH {}, COMPILE_FAIL {}, DECOMPILE_FAIL {}, functional {}",
             self.program,
             self.functions.len(),
             self.functions.iter().map(|f| f.weight).sum::<usize>(),
@@ -80,6 +84,7 @@ impl GtReport {
             self.count("MISMATCH"),
             self.count("COMPILE_FAIL"),
             self.count("DECOMPILE_FAIL"),
+            self.functional,
         )
     }
 }
@@ -159,6 +164,13 @@ fn elf_symbols(bin: &[u8]) -> Result<(Vec<ElfSymbol>, BTreeMap<u64, Vec<u8>>), S
         }
     }
     Ok((syms, bytes))
+}
+
+/// `size` bytes of the original image at `addr`, when the image covers them.
+fn image_bytes(program: &crate::analysis::program::Program, addr: u64, size: u64) -> Option<Vec<u8>> {
+    let size = size.clamp(1, 64) as usize;
+    let b = program.memory.read_window(Address::new(program.default_space, addr), size);
+    if b.len() == size { Some(b) } else { None }
 }
 
 /// The C type name for a global of the given decompiler type (LP64 host).
@@ -451,6 +463,8 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         decs.push(Dec { sym: s, c, self_name, sig, globals });
     }
     let by_addr: BTreeMap<u64, usize> = decs.iter().enumerate().map(|(i, d)| (d.sym.addr, i)).collect();
+    let sym_addrs: std::collections::BTreeSet<u64> = symmap.values().copied().collect();
+    let symmap_has = move |a: &u64| sym_addrs.contains(a);
     let resolver = move |sym: &str| -> Option<u64> {
         symmap.get(sym).copied().or_else(|| emitted_symbol_address(sym))
     };
@@ -501,6 +515,38 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                     if id.contains("Ram") { emitted_symbol_address(id) } else { None }
                 });
                 if let Some(a) = addr {
+                    // A global with NO symbol at its address is a compiler-private constant
+                    // (a `.rodata` float literal, a string): `extern` cannot link it, so it is
+                    // DEFINED here from the original image's bytes, as the original did.
+                    let named = data_syms.values().any(|&x| x == a) || symmap_has(&a);
+                    if !named {
+                        if let Some(bytes) = image_bytes(&program, a, d.globals.get(&a).map(|(w, _)| *w as u64).unwrap_or(8)) {
+                            let width = bytes.len() as u64;
+                            let ty = match id.find("Ram") {
+                                Some(pos) if pos <= 3 => prefix_type(&id[..pos], width),
+                                _ => format!("uint{width}"),
+                            };
+                            let mut v = 0u64;
+                            for (i, b) in bytes.iter().enumerate().take(8) {
+                                v |= (*b as u64) << (8 * i);
+                            }
+                            let init = match ty.as_str() {
+                                "float" => format!("{:?}f", f32::from_bits(v as u32)),
+                                "double" => format!("{:?}", f64::from_bits(v)),
+                                t if t.ends_with("[]") => {
+                                    let items: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+                                    format!("{{{}}}", items.join(","))
+                                }
+                                _ => format!("{v:#x}"),
+                            };
+                            if let Some(elem) = ty.strip_suffix("[]") {
+                                tu += &format!("static const {elem} {id}[] = {init};\n");
+                            } else {
+                                tu += &format!("static const {ty} {id} = {init};\n");
+                            }
+                            continue;
+                        }
+                    }
                     let width = d
                         .globals
                         .get(&a)
@@ -548,6 +594,19 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 tu += &c[brace + 1..];
             } else {
                 tu += c;
+            }
+            // Callers name this function `func_0x<addr>`; the definition is named by the
+            // emitter (`FUN_<addr>`). An alias under the callers' name lets every per-function
+            // object link into one program for the functional check.
+            let callee_name = format!("func_0x{:08x}", d.sym.addr);
+            for alias in [callee_name.as_str(), d.sym.name.as_str()] {
+                if d.self_name != alias && d.self_name != "_start" && alias != "_start" && !alias.contains('.') {
+                    tu += &format!(
+                        "\n{} __attribute__((alias(\"{}\")));\n",
+                        d.sig.replacen(&d.self_name, alias, 1),
+                        d.self_name
+                    );
+                }
             }
             tu
         };
@@ -722,5 +781,93 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
             }),
         }
     }
-    Ok(GtReport { program: program_name, functions, workdir: dir })
+    let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
+    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names);
+    Ok(GtReport { program: program_name, functions, workdir: dir, functional })
+}
+
+/// Link every per-function object into one program and run it against the original: the
+/// correctness oracle the similarity score cannot be (`sum_to` went from wrong code to right
+/// code while its similarity DROPPED). The ground-truth programs are freestanding and report
+/// their result through the exit status.
+fn functional_check(
+    dir: &Path,
+    program: &str,
+    src: &Path,
+    original: &Path,
+    functions: &[GtFunction],
+    data_syms: &[(String, u64)],
+) -> String {
+    if functions.iter().any(|f| f.verdict == "COMPILE_FAIL" || f.verdict == "DECOMPILE_FAIL") {
+        return "NOLINK".into();
+    }
+    // The HARNESS: the original source compiled with `static` stripped, so its functions are
+    // interposable; it supplies `_start` (whose `syscall` we cannot yet emit), the data, and the
+    // source-named calls. Our objects come first and win every function we produced
+    // (`--allow-multiple-definition`); our address-named globals map onto the original's data
+    // symbols with `--defsym`.
+    let harness = dir.join(format!("{program}.harness.o"));
+    let h = Command::new("gcc")
+        .args(GCC_FLAGS)
+        .args(["-Dstatic=", "-w", "-c", "-I"])
+        .arg(src.parent().unwrap_or(Path::new(".")))
+        .arg("-o")
+        .arg(&harness)
+        .arg(src)
+        .output();
+    if !h.is_ok_and(|o| o.status.success()) {
+        return "NOLINK (harness)".into();
+    }
+    let objs: Vec<PathBuf> = functions
+        .iter()
+        .filter(|f| f.symbol != "_start")
+        .map(|f| dir.join(format!("{}.o", f.symbol)))
+        .collect();
+    // Every `<prefix>Ram<hex>` name our C used, mapped to the original symbol at that address.
+    let mut defsyms: Vec<String> = Vec::new();
+    for f in functions {
+        for id in identifiers(&f.c) {
+            if let Some(pos) = id.find("Ram") {
+                if pos <= 3 {
+                    if let Some(a) = emitted_symbol_address(&id) {
+                        if let Some((sym, _)) = data_syms.iter().find(|(_, addr)| *addr == a) {
+                            let d = format!("-Wl,--defsym,{id}={sym}");
+                            if !defsyms.contains(&d) {
+                                defsyms.push(d);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let ours = dir.join(format!("{program}.ours"));
+    let o = Command::new("gcc")
+        .args(GCC_FLAGS)
+        .arg("-Wl,--allow-multiple-definition")
+        .args(&defsyms)
+        .arg("-o")
+        .arg(&ours)
+        .args(&objs)
+        .arg(&harness)
+        .arg("-lgcc")
+        .output();
+    match o {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let first = err.lines().find(|l| l.contains("error") || l.contains("undefined")).unwrap_or("").trim();
+            return format!("NOLINK ({})", first.chars().take(80).collect::<String>());
+        }
+        Err(_) => return "NOLINK".into(),
+    }
+    let run = |p: &Path| -> Option<i32> {
+        Command::new("timeout").arg("5").arg(p).output().ok().map(|o| o.status.code().unwrap_or(-1))
+    };
+    let Some(orig_code) = run(original) else { return "NORUN".into() };
+    match run(&ours) {
+        Some(c) if c == orig_code => "PASS".into(),
+        Some(c) => format!("FAIL(orig={orig_code},ours={c})"),
+        None => "FAIL(no run)".into(),
+    }
 }
