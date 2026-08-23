@@ -932,6 +932,29 @@ impl<'a> PrintC<'a> {
     fn extension_implied_at(&self, _op: OpId, out: VarnodeId, read_op: OpId) -> bool {
         let ro = self.f.op(read_op);
         let metatype = meta_class(&self.type_of(out));
+        // EMISSION ARM (recompilation): at int width — C's own promotion width — a consumer
+        // whose result does not depend on signedness (add/sub/mult, the bitwise ops, equality,
+        // a PTRADD index) yields the identical value with or without the cast, so the cast is
+        // hidden regardless of Ghidra's metatype test. Measured: the faithful `(uint4)*(uint1 *)
+        // (p + 0x1f) * 4 + C` address arithmetic moved Watcom's codegen (zc44 −190 weighted)
+        // while being value-identical; narrower widths (the 16-bit `(uint2)byte * 2`, where the
+        // cast pins the computation width) and sign-sensitive consumers keep Ghidra's rule.
+        if self.f.vn(out).size == self.f.size_of_int()
+            && matches!(
+                ro.code(),
+                OpCode::IntAdd
+                    | OpCode::IntSub
+                    | OpCode::IntMult
+                    | OpCode::IntAnd
+                    | OpCode::IntOr
+                    | OpCode::IntXor
+                    | OpCode::IntEqual
+                    | OpCode::IntNotequal
+                    | OpCode::Ptradd
+            )
+        {
+            return true;
+        }
         match ro.code() {
             OpCode::Ptradd => true,
             OpCode::IntAdd
