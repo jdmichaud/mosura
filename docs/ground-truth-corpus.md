@@ -17,8 +17,28 @@ an **exact, Ghidra-independent** ground truth, and it directly serves the projec
 - **Analysis level (phase 1, implemented).** The known source + build gives exact function
   boundaries, switch/computed-jump locations, the call graph, and compiler identity. Validated
   by `tests/ground_truth_parity.rs`.
-- **Decompiler level (later).** *Recompilation equivalence* — decompile → recompile with the
-  **same** compiler → the **same** binary. The compiler is the objective judge (it ignores
+- **Decompiler level (phase 2, GATED 2026-08-22).** *Recompilation equivalence* — decompile →
+  recompile with the **same** compiler → the **same** binary. `recompile::groundtruth` runs it
+  for the host gcc column: each program is built with the LOCAL gcc (`GCC_FLAGS`), every
+  function decompiled, the emitted C assembled into a TU (LP64 prelude, callee prototypes from
+  the callees' own decompiled signatures, globals declared from their `<prefix>Ram<hex>` stem
+  at the varnode's width) and compiled with the same gcc, and `recompile::verify` attributes
+  the difference (the ELF-relocatable candidate loader in `candidate.rs`). gcc is a
+  development-environment requirement and its version floats, so
+  `tests/ground_truth_recompile.rs` gates against a PER-MACHINE baseline
+  (`build/gt-recompile/baseline.tsv`: first run writes it; later runs fail on a verdict
+  regression or a WGSS drop over 0.01; `MOSURA_GT_BASELINE=update` accepts a change).
+  `cargo run --release --example gt_recompile [prog…]` prints the per-function table and
+  writes `build/gt-recompile/report.tsv`; the TUs and objects stay in `build/gt-recompile/<prog>/`
+  for the three-way read (source / our C / divergence).
+  **First measurement (2026-08-22, gcc 14, -O2): 20 programs, 70 functions, 1,412 instructions,
+  WGSS 0.29, 17 EXACT — with the compiler known and fixed.** The divergence-class profile is
+  WAR2's (extra 25 % / selection 20 % / regalloc 15 % / missing 14 % / operand-form 11 %), which
+  settles the compiler question for WAR2: the gap is the decompiler's source shape. First
+  named finding: gcc's `-fipa-ra` keeps a caller's value in a register the callee is known not
+  to clobber (`cube` reads `extraout_EDX` after calling `square`) — the same callee-clobber
+  recovery the WAR2 survey does with recovered `modify` lists, needed here as a decompiler
+  feature. The compiler is the objective judge (it ignores
   names/structure); closeness (byte-identical → functionally-equivalent) is the quality metric.
   This is precisely where mosura can beat Ghidra, whose C usually won't even recompile. Measured
   (not yet gated) by `examples/gt_recompile_probe.rs`; see [Decompiler level](#decompiler-level).

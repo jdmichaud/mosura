@@ -215,6 +215,9 @@ pub fn load_object_function(
     base: u64,
     resolver: &dyn SymbolResolver,
 ) -> Result<Candidate, String> {
+    if data.starts_with(b"\x7fELF") {
+        return load_elf_object_function(data, name, base, resolver);
+    }
     let module = omf::parse_module(data);
     let (seg_idx, start) = locate(&module, name)?;
     let seg = module.segments.get(seg_idx - 1).ok_or("segment index out of range")?;
@@ -358,4 +361,109 @@ fn locate(module: &OmfModule, name: &str) -> Result<(usize, usize), String> {
         }
     }
     Err(format!("no public `{name}` and no code segment"))
+}
+
+/// Extract `name`'s code from an ELF relocatable object (`gcc -c`), positioned at `base`, its
+/// RELA relocations carried as fixups exactly as the OMF loader carries OMF fixups. This is the
+/// candidate side of the ground-truth recompile loop (`docs/ground-truth-corpus.md`, decompiler
+/// level): gcc is the one compiler the development environment requires, so the decompiler's
+/// recompilation quality is measured against it with the compiler held fixed.
+///
+/// ELF RELA semantics (System V psABI): the field holds nothing and the linked value is `S + A`
+/// for an absolute site or `S + A - P` for a PC-relative one (`P` = the field's address). In
+/// [`Candidate::relinked_bytes`]' terms an absolute site is `target + placeholder` with
+/// `placeholder = A`, and a self-relative site is `target - site_end`, so `target` carries
+/// `S + A + width` (`S + A + width - (P + width) = S + A - P`). A relocation against a SECTION
+/// symbol (a jump table or string in `.rodata`) is module-local data with no meaning at the
+/// original's addresses: recorded as `local_data`, left unresolved, and it diffs — the same
+/// treatment as an OMF module-local reference before `resolve_tables`.
+fn load_elf_object_function(
+    data: &[u8],
+    name: &str,
+    base: u64,
+    resolver: &dyn SymbolResolver,
+) -> Result<Candidate, String> {
+    use object::{Object, ObjectSection, ObjectSymbol, RelocationKind, RelocationTarget, SymbolKind};
+    let file = object::File::parse(data).map_err(|e| format!("ELF parse: {e}"))?;
+    let sym = file
+        .symbols()
+        .find(|s| s.name().is_ok_and(|n| n == name) && s.section_index().is_some())
+        .ok_or_else(|| format!("no symbol `{name}` in object"))?;
+    let sec_idx = sym.section_index().expect("filtered on Some");
+    let section = file.section_by_index(sec_idx).map_err(|e| format!("section: {e}"))?;
+    let sdata = section.data().map_err(|e| format!("section data: {e}"))?;
+    // ET_REL symbol values are section-relative.
+    let start = sym.address() as usize;
+    let end = if sym.size() > 0 {
+        start + sym.size() as usize
+    } else {
+        file.symbols()
+            .filter(|s| {
+                s.section_index() == Some(sec_idx)
+                    && (s.address() as usize) > start
+                    && !matches!(s.kind(), SymbolKind::Section | SymbolKind::File)
+            })
+            .map(|s| s.address() as usize)
+            .min()
+            .unwrap_or(sdata.len())
+    }
+    .min(sdata.len());
+    if start >= end {
+        return Err(format!("symbol `{name}` has no code"));
+    }
+    let bytes = sdata[start..end].to_vec();
+    let mut fixups = Vec::new();
+    let mut unresolved = Vec::new();
+    for (off, rel) in section.relocations() {
+        let off = off as usize;
+        let width = (rel.size() / 8) as usize;
+        if width == 0 || off < start || off + width > end {
+            continue;
+        }
+        let offset = off - start;
+        let self_relative = matches!(rel.kind(), RelocationKind::Relative | RelocationKind::PltRelative);
+        // x86-64 objects are RELA (explicit addend); a REL object carries it in the field.
+        let addend: i64 = if rel.has_implicit_addend() {
+            let mut v = 0u64;
+            for i in 0..width.min(8) {
+                v |= (bytes[offset + i] as u64) << (8 * i);
+            }
+            match width {
+                4 => v as u32 as i32 as i64,
+                _ => v as i64,
+            }
+        } else {
+            rel.addend()
+        };
+        let symbol: Option<String> = match rel.target() {
+            RelocationTarget::Symbol(i) => match file.symbol_by_index(i) {
+                Ok(s) if !matches!(s.kind(), SymbolKind::Section | SymbolKind::File) => {
+                    s.name().ok().filter(|n| !n.is_empty()).map(|n| n.to_string())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut local_data = None;
+        let resolved = match &symbol {
+            Some(s) => match resolver.address_of(s) {
+                Some(a) => Some(if self_relative {
+                    a.wrapping_add(addend as u64).wrapping_add(width as u64)
+                } else {
+                    a
+                }),
+                None => {
+                    unresolved.push(s.clone());
+                    None
+                }
+            },
+            None => {
+                local_data = Some(addend as u64);
+                None
+            }
+        };
+        let placeholder = if self_relative { 0 } else { addend as u64 };
+        fixups.push(CandFixup { offset, width, symbol, self_relative, resolved, placeholder, local_data });
+    }
+    Ok(Candidate { bytes, base, fixups, unresolved, tables: Vec::new() })
 }
