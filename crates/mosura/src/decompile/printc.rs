@@ -903,6 +903,13 @@ impl<'a> PrintC<'a> {
         Some((format!("{l} {sym} {r}"), 13))
     }
 
+    /// Can this target declare an integer wider than `int`? x86-32 Watcom 10.0a cannot (the
+    /// prelude makes `int8`/`uint8` incomplete structs on purpose); an 8-byte pointer target can
+    /// (`long`). Read off the stack pointer's width — the size the C `long` of the target has.
+    fn wide_int_declarable(&self) -> bool {
+        self.stack_space.is_some_and(|s| self.f.spaces.get(s).addr_size >= 8)
+    }
+
     /// Ghidra `CastStrategyC::isExtensionCastImplied` (cast.cc:249): C's integer promotion
     /// performs the extension `op` describes when its (implied) output feeds an arithmetic or
     /// comparison op whose other operand is a constant no wider than `int` or an explicit
@@ -1739,6 +1746,15 @@ impl<'a> PrintC<'a> {
             OpCode::IntZext => {
                 let in0 = a(0);
                 let out = o.output.unwrap();
+                // EMISSION ARM: on a target with no integer wider than `int` (Watcom 10.0a
+                // x86-32: `uint8` is the prelude's incomplete struct), an extension PAST int
+                // width prints as its bare operand — the int-width C that Watcom compiles back
+                // to the original's `mul`/`div` through EDX:EAX (`(uint8)x * 1000 / y` is
+                // Ghidra's faithful reading of that idiom and undeclarable there; zc43's eight
+                // COMPILE_FAILs). At or below int width the faithful cast stands.
+                if self.f.vn(out).size > self.f.size_of_int() && !self.wide_int_declarable() {
+                    return self.render_var(in0);
+                }
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 if is_zext_cast(&outty, &inty) {
                     if self.is_extension_cast_implied(op) {
@@ -1768,9 +1784,18 @@ impl<'a> PrintC<'a> {
                 // Gate: low-half extraction at int width, divide-family def at wider width,
                 // each operand a matching-signedness extension of an int-width value or a
                 // constant representable at int width under that signedness.
-                if off == 0 && self.f.vn(o.output.unwrap()).size == self.f.size_of_int() {
-                    if let Some(t) = self.narrow_divide(in0) {
-                        return t;
+                let outsz = self.f.vn(o.output.unwrap()).size;
+                if off == 0 && outsz <= self.f.size_of_int() {
+                    if let Some((t, prec)) = self.narrow_divide(in0) {
+                        if outsz == self.f.size_of_int() {
+                            return (t, prec);
+                        }
+                        // A narrower truncation (`(int2)(x / 0x4b)`): the int-width divide,
+                        // then the cast the SUBPIECE stands for. (The extension-cast port made
+                        // the 8-byte `(uint8)x` operand visible here — undeclarable on the
+                        // 32-bit target; zc43's COMPILE_FAILs.)
+                        let out_ty = self.type_of(o.output.unwrap());
+                        return (format!("({})({t})", out_ty.name()), 14);
                     }
                 }
                 let out_ty = self.type_of(o.output.unwrap());
@@ -1798,6 +1823,11 @@ impl<'a> PrintC<'a> {
                 let out = o.output.unwrap();
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 let n = self.f.vn(out).size;
+                // (the same target arm as IntZext: the pre-port `(int8)x` form, which the
+                // Subpiece arm's narrowed divide consumes)
+                if n > self.f.size_of_int() && !self.wide_int_declarable() {
+                    return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
+                }
                 if is_sext_cast(&outty, &inty) {
                     if self.is_extension_cast_implied(op) {
                         self.render_var(in0)
