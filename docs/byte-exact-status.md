@@ -2012,3 +2012,25 @@ read as regressions — wrong code can score better (memory: wrong-code-scores-b
 The control corpus stays as the WAR2-free functional gate (`cargo test --release --test
 ground_truth_recompile`, per-machine baseline). Its one remaining FAIL, `varargs`, is next: the
 overflow-area walk is a phi of the input stack pointer (Ghidra prints `register0x00000020`).
+
+### zc39–zc41 (2026-08-23): variadic recovery, two mis-ports found by measuring — 768 EXACT / 0.4840
+
+JD asked for the control corpus' last FAIL (`varargs`) to be worked. The result is
+`decompile/varargs.rs` (docs/ground-truth-findings.md "variadic recovery"): a post-pipeline
+un-push of `RulePushMulti`'s spacebase substitute, `va_start` recognition on the address of the
+first caller-frame slot past the named parameters, a per-target `va_start` in the prelude, and an
+emission arm that declares a guarded register-save area as one array. Measured on WAR2:
+
+- zc39 (first cut): ten MISMATCH → COMPILE_FAIL, −529.6 weighted — the array arm used an
+  unlocked guard's maximum (the frame top) and swallowed whole frames. Restricted to a contiguous
+  run of element-width slots from the guard base that the body only writes or takes the address of.
+- zc40 (restricted arm + `va_start` + the `RangeList::upper_bound` mis-port: Ghidra's
+  `Range::operator<` orders on `(space, first)` only, so an address on a range's first byte is
+  in range): **768 EXACT (+1, FUN_0004d058), FUN_00050434 — the `va_start` wrapper — MISMATCH →
+  SAME_SHAPE, 0 regressions, WGSS 0.4829 → 0.4840 (+130.8 weighted, 88 up / 49 down).**
+- The oracle sweep then named the next mis-port: an INDIRECT's snip COPY must be inserted after
+  the op CAUSING the effect (merge.cc:462), not after the INDIRECT — placed before the call, the
+  read preceded its def's cover point and the liveness walk wrapped the value across every
+  predecessor; FUN_0006c6f0's `piRam + k` PTRADDs all failed `checkImpliedCover` (sweep
+  0.678 → 0.807 after the fix, pre-session 0.769). Sweep cumulative vs the pre-session baseline:
+  up 332 / down 159, +406 weighted (mean 0.9036 → 0.9065). zc41 measures it on WAR2.
