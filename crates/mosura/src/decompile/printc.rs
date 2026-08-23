@@ -256,6 +256,10 @@ struct PrintC<'a> {
     f: &'a Funcdata,
     h: HighVariables,
     names: HashMap<u32, String>,
+    /// Variadic recovery (`varargs::recognize`): the `PTRSUB` ops whose definition renders
+    /// `va_start(<var>, param_N)` and the `N` of the anchor parameter.
+    va_start_ops: HashSet<OpId>,
+    va_last_named: u32,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -1992,6 +1996,11 @@ impl<'a> PrintC<'a> {
     fn render_assign(&mut self, op: OpId) -> String {
         let outv = self.f.op(op).output.unwrap();
         let lhs = self.lvalue_of(outv);
+        // Variadic recovery: the address of the first anonymous argument is `va_start`'s value
+        // (`varargs.rs`; the prelude's `va_start` assigns the target's raw pointer).
+        if self.va_start_ops.contains(&op) {
+            return format!("va_start({lhs}, param_{})", self.va_last_named);
+        }
         let rhs = self.assign_rhs(op, outv);
         format!("{lhs} = {rhs}")
     }
@@ -3387,9 +3396,7 @@ impl<'a> PrintC<'a> {
                                 self.high_of[outv.0 as usize] == self.high_of[inv.0 as usize]
                             });
                         if !hidden && self.is_explicit(outv) {
-                            let lhs = self.lvalue_of(outv);
-                            let rhs = self.assign_rhs(op, outv);
-                            stmt = Some(format!("{lhs} = {rhs}"));
+                            stmt = Some(self.render_assign(op));
                         }
                     }
                     stmt
@@ -4260,6 +4267,16 @@ fn print_c_inner(
         }
         sig_params.push((n, r.vn, r.size));
     }
+    // Variadic recovery (beyond Ghidra, `varargs.rs`): the unnamed filler parameters join the
+    // signature, `...` follows, and the `va_start` PTRSUBs render as `va_start(var, param_N)`.
+    let varargs = super::varargs::recognize(f, &rendered);
+    if let Some(va) = &varargs {
+        for &(addr, size) in &va.extra_params {
+            let n = sig_params.len() as u32 + 1;
+            param_index.insert(addr, n);
+            sig_params.push((n, None, size));
+        }
+    }
 
     // Stage 0 (ir-cast-model): the render-time type re-inference is retired — types are read from the
     // committed `Varnode::ty` (`type_of`), which the final in-pipeline `ActionInferTypes` pass makes
@@ -4343,6 +4360,8 @@ fn print_c_inner(
         f,
         h,
         names: HashMap::new(),
+        va_start_ops: HashSet::new(),
+        va_last_named: 0,
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -4398,6 +4417,15 @@ fn print_c_inner(
             .expect("printc requires the non-printing marks frozen by ActionCopyMarker; run pipeline::decompile"),
         comma_separate: false,
     };
+    if let Some(va) = &varargs {
+        p.va_last_named = va.last_named;
+        for &op in &va.va_start_ops {
+            p.va_start_ops.insert(op);
+            if let Some(out) = f.op(op).output {
+                p.force_explicit.insert(out); // its definition is the `va_start` statement
+            }
+        }
+    }
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
@@ -4841,7 +4869,10 @@ fn print_c_inner(
     let mut out = String::new();
     // An empty parameter list renders `(void)`, not `()` — Ghidra `PrintC::emitPrototypeInputs`
     // (printc.cc:2227): when `numParams() == 0` it prints the `void` keyword.
-    let params = if plist.is_empty() { "void".to_string() } else { plist.join(", ") };
+    let mut params = if plist.is_empty() { "void".to_string() } else { plist.join(", ") };
+    if varargs.is_some() {
+        params = if plist.is_empty() { "...".to_string() } else { format!("{params}, ...") };
+    }
     let _ = writeln!(out, "{ret_ty} {}({})", f.name, params);
     out.push_str("{\n");
     // Ghidra emits local declarations in storage-Address order (`emitScopeVarDecls`); for stack

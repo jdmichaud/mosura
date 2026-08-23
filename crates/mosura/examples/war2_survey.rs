@@ -75,6 +75,11 @@ typedef struct mosura_no_such_integer_width_on_this_target xunknown8;
    ESP-derived pointers; FUN_00060270). An incomplete struct keeps the pointer declarable
    and every cast legal while staying loud and greppable, like the xunknown widths above. */
 typedef struct mosura_spacebase spacebase;
+/* Variadic recovery (decompile/varargs.rs): `va_start(ap, last)` assigns the address of the
+   first anonymous argument — under Watcom's stack convention the slot after `last`, which is
+   exactly the `lea` the original executes. A raw-pointer `va_list`, so the value can be stored
+   and passed like the originals do (the `v*printf` wrappers keep it in a struct field). */
+#define va_start(ap, last) ((ap) = (void *)((char *)&(last) + ((sizeof(last) + 3) & ~3)))
 typedef struct mosura_no_such_integer_width_on_this_target xunknown6;
 typedef struct mosura_no_such_integer_width_on_this_target xunknown7;
 typedef struct mosura_no_such_integer_width_on_this_target undefined6;

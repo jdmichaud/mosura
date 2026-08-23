@@ -59,6 +59,7 @@ pub mod types;
 pub mod blockjoin;
 pub mod infertypes;
 pub mod valueset;
+pub mod varargs;
 pub mod varmap;
 pub mod varnode;
 pub mod varnodeprops;

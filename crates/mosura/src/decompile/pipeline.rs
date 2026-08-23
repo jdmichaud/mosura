@@ -1522,6 +1522,11 @@ pub fn universal_action() -> ActionGroup {
         // pool so it sees the mechanism-B-materialized conditions; opFlipInPlaceExecute rewrites the
         // comparison into normal form (via replace_lessequal), retiring the print-time if_else_flip.
         .then(super::structure::ActionPreferComplement)
+        // BEYOND GHIDRA (recompilation): restore the stack-slot address RulePushMulti's
+        // spacebase substitute destroyed, so variadic recovery can see `va_start`'s value
+        // (`varargs.rs`). Before the type/merge freezes so the new PTRSUB is typed and merged
+        // like any other.
+        .then(super::varargs::ActionVarargsRecovery)
         // Re-sync addrtied before the merge phase (Ghidra's ActionMappedLocalSync slot,
         // coreaction.cc:2298: the late syncVarnodesWithSymbols before merge). Creation marks every
         // pool-created ram/stack varnode addrtied (e.g. partialmerge's SubVariableFlow-narrowed

@@ -248,7 +248,8 @@ pub fn prelude() -> String {
          typedef float float4; typedef double float8; typedef long double float10; typedef long double float16;\n\
          typedef __int128 int16; typedef unsigned __int128 uint16; typedef unsigned __int128 xunknown16;\n\
          extern long syscall(void); extern long swi(int); extern unsigned long rdtsc(void); extern unsigned int cpuid(unsigned int);\n\
-         #define true 1\n#define false 0\n",
+         #define true 1\n#define false 0\n\
+         #define va_start(ap, last) ((ap) = (void *)__builtin_next_arg(last))\n",
     );
     let u = |n: u32| match n {
         1 => "unsigned char",

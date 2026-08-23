@@ -146,9 +146,13 @@ impl RangeList {
     /// `tree.upper_bound(Range(spc,off,off))` — the index of the first range ordering strictly after
     /// the probe. Ghidra probes with `last == first == off`, so a range starting at `off` with a
     /// larger `last` orders AFTER the probe and is not skipped.
+    /// Ghidra `std::set<Range>::upper_bound(Range(spc,off,off))` under `Range::operator<`
+    /// (address.hh): ranges order by `(space, first)` ONLY — `last` never takes part. The derived
+    /// `Ord` on [`Range`] (which also compares `last`) placed a probe `(spc, off, off)` BEFORE a
+    /// range starting at exactly `off`, so `in_range` denied an address sitting on a range's first
+    /// byte (`[0x8, 0x1fb]` did not contain `0x8`: the x86-64 parameter window's first slot).
     fn upper_bound(&self, spc: SpaceId, off: u64) -> usize {
-        let probe = Range { spc, first: off, last: off };
-        self.tree.partition_point(|r| *r <= probe)
+        self.tree.partition_point(|r| (r.spc, r.first) <= (spc, off))
     }
 
     /// Ghidra `RangeList::insertRange` (address.cc:383): add `[first,last]`, absorbing every range it

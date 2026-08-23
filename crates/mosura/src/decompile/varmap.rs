@@ -844,12 +844,95 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
     }
     let mut out = Vec::new();
     restructure(&mut state, &mut out);
+    coalesce_guarded_regions(f, &state, &mut out);
     if std::env::var_os("MOSURA_VARMAP").is_some() {
         for sym in &out {
             eprintln!("VARMAP[{}] sym start={} size={} name={}", f.name, sym.start, sym.size, sym.name);
         }
     }
     out
+}
+
+/// EMISSION ARM, beyond Ghidra (recompilation): the frame region an indexed stack LOAD/STORE
+/// walks (`LoadGuard`: the pointer's base through the analysed maximum) must be ONE C object,
+/// or the pointer arithmetic the body performs across it is undefined and the recompiler is free
+/// to drop it. Ghidra's `MapState` keeps the per-slot symbols (its `addGuard` hint is `open` and
+/// the fixed slot hints win, so it prints `aiStack_30 [2]; xStack_28; xStack_20; …` for a
+/// register-save area) — faithful C whose layout only the original compiler guaranteed. Ground
+/// truth `vsum`: gcc folded `*(int4 *)((int8)aiStack_30 + uVar3)` to nothing.
+///
+/// For each valid guard: the region is `[pointer_base, maximum]` clipped to the local frame
+/// (below the parameter window); every Symbol it intersects is replaced by one array of the
+/// guard's step (else the guard op's access width) spanning from the lowest of the base and the
+/// intersected starts to the highest intersected end. The element type is the narrowest
+/// intersected scalar of that width, else an unknown of the width.
+fn coalesce_guarded_regions(f: &Funcdata, state: &MapState, out: &mut Vec<StackSymbol>) {
+    let Some(stack) = f.spaces.by_name("stack") else { return };
+    let spc = f.spaces.get(stack);
+    let bits = spc.addr_size.saturating_mul(8).saturating_sub(1);
+    let guards: Vec<(&super::heritage::LoadGuard, OpCode)> = f
+        .load_guard
+        .iter()
+        .map(|g| (g, OpCode::Load))
+        .chain(f.store_guard.iter().map(|g| (g, OpCode::Store)))
+        .collect();
+    for (g, opc) in guards {
+        if !g.is_valid(f, opc) || g.spc != stack {
+            continue;
+        }
+        let op = g.op;
+        let width = if opc == OpCode::Store {
+            f.op(op).input(2).map_or(0, |v| f.vn(v).size)
+        } else {
+            f.op(op).output.map_or(0, |v| f.vn(v).size)
+        };
+        let elem = if g.step > 0 { g.step as u32 } else { width };
+        if elem == 0 {
+            continue;
+        }
+        let base = sign_extend(g.pointer_base, bits);
+        let max = sign_extend(g.maximum_offset, bits);
+        // the local frame only: the region ends where the caller's frame (parameters) begins
+        if base >= 0 {
+            continue;
+        }
+        let max = max.min(-1);
+        if max < base {
+            continue;
+        }
+        // Symbols the region intersects (whole symbols: a partial overlap still joins).
+        let hit: Vec<usize> = out
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let end = s.start + s.size as i64;
+                s.start <= max && end > base
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if hit.len() < 2 {
+            continue;
+        }
+        let lo = hit.iter().map(|&i| out[i].start).min().unwrap().min(base);
+        let hi = hit.iter().map(|&i| out[i].start + out[i].size as i64).max().unwrap();
+        let span = (hi - lo) as u32;
+        let count = span.div_ceil(elem);
+        let elem_ty = hit
+            .iter()
+            .map(|&i| match &out[i].ty {
+                Datatype::Array(e, _) => (**e).clone(),
+                t => t.clone(),
+            })
+            .find(|t| t.size() == elem && !matches!(t, Datatype::Unknown(_)))
+            .unwrap_or(Datatype::Unknown(elem));
+        let ty = Datatype::Array(Box::new(elem_ty), count as u64);
+        let raw = spc.wrap_offset(lo as u64);
+        let name = build_variable_name(state.spaces, state.space, raw, &ty, state.localrange);
+        let mut keep: Vec<StackSymbol> = out.iter().enumerate().filter(|(i, _)| !hit.contains(i)).map(|(_, s)| s.clone()).collect();
+        keep.push(StackSymbol { start: lo, size: count * elem, ty, name });
+        keep.sort_by_key(|s| s.start);
+        *out = keep;
+    }
 }
 
 #[cfg(test)]
