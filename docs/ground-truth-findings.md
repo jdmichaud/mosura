@@ -126,5 +126,9 @@ narrowed divide declares and assigns at int width). **zc36 vs zc33 (the master b
 EXACT (+2), 3 flips all upward (2d6f8 SAME_SHAPE→EXACT, 3ef60 MISMATCH→EXACT, 46e68
 MISMATCH→SAME_SHAPE), 0 verdict regressions, WGSS 0.4831 → 0.4827 (−59.2 weighted, 89 up / 90
 down).** zc37 (the checkArrayDeref gate + PTRADD explicitness) is byte-identical to zc36 on WAR2.
-Whether a −0.0005 WGSS that buys two EXACT and retires a wrong-code class lands on master is JD's
-call under the WGSS-first bar.
+**zc38 (the LoadGuard port) vs zc37: +26.6 weighted (WGSS +0.0002), 0 flips, 15 up / 14 down**;
+the largest down (FUN_00058d54, −8) is another correction — the old C passed two spurious stack
+arguments to a two-register-argument callee (`func_0x00058c48(param_3, &xStack_14, param_3,
+param_4)`; Ghidra and zc38 print two). **Cumulative, branch HEAD vs master zc33: 767 EXACT (+2),
+3 flips all upward, 0 verdict regressions, WGSS 0.4831 → 0.4829 (−32.6 weighted, −0.0003).**
+Whether that lands on master is JD's call under the WGSS-first bar.
