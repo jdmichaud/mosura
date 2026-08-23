@@ -1,0 +1,59 @@
+# Ground-truth recompile — findings (branch `gt-recompile`)
+
+*What decompiling our own binaries shows, read against the source. Instrument:
+`recompile::groundtruth` (`cargo run --release --example gt_recompile`), per-function three-way
+files under `build/gt-recompile/<program>/<function>.3way.txt` — original source, our C, aligned
+instructions. Numbers from the 2026-08-23 run: host gcc 14, `-O2`, 20 programs, 70 functions,
+937 original instructions, **WGSS 0.288**, 17 EXACT.*
+
+## What the instrument removes, and what it leaves
+
+With the compiler held fixed, the score measures the decompiler alone, and the class profile is
+WAR2's: selection 23 %, extra 21 %, missing 16 %, operand-form 13 %, regalloc 10 %. Three
+instrument artifacts were found and removed before reading anything (each would have looked like
+a decompiler defect): unprototyped callee declarations (gcc zeroes `EAX` before every
+unprototyped call — the first "extra `XOR R,R`" mass, 51 rows, was this), `extern long
+syscall();` in the prelude (same mechanism), and arity mismatches between a call site and the
+callee's recovered signature (now re-declared at the call site's arity, so the bytes show the
+defect's true cost instead of the fallback's). Two corpus-style artifacts remain and are excluded
+from the reading: the programs use `volatile` locals to defeat gcc's folding (a decompiler cannot
+know `volatile`; `tables/_start` reloads `[RSP+x]` where we pass constants), and every `_start`
+renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 functions — WAR2's
+`swi`/`int 21h` is the same class).
+
+## Mechanisms, read against source
+
+| # | mechanism | source | our C | bytes | reach here | WAR2 |
+|---|---|---|---|---|---|---|
+| 1 | **callee-clobber model.** gcc `-fipa-ra` keeps a caller's value in a register it *knows* the callee doesn't clobber; the convention says every call kills it. | `sum_to`: `for (i…) acc += square(i);` — `i` lives in `EDX` across the call | `while ((int4)uVar1 != (int4)extraout_RDX)` — the counter comes back as a call-produced value, the increment is lost: **wrong code** | the loop is gone; every caller of a small leaf is affected | `cube`, `sum_to`, `tables/_start`, … (the `extraout_*` reads) | the survey recovers per-callee `modify` lists for Watcom and it is what makes WAR2's calls come out right; this says callee-clobber recovery belongs in the decompiler (P2), not in the survey |
+| 2 | **return width over-widening.** The recovered return is the register's full width. | `static int l1(int x) { return l2(x) - 9; }` | `int8 FUN_…(void)` | `CDQE` after every result: 12 rows / 8 functions; `MOVSXD` at call sites 9 / 7 | all of `deepchain`, `arith` | WAR2's `return-width` family (EAX vs AL), already an axis there — the same defect one level up |
+| 3 | **whole-TU facts lost by per-function recompilation.** The originals are `static` and gcc elides the ABI stack re-alignment around their calls; our one-function-per-TU makes every function external. | `static … l1` | `FUN_…` (external) | `SUB/ADD RSP,8`: 21 rows / 9 functions; `PUSH/POP RBX` | `deepchain`, every small caller | a limit of the METHOD, not the decompiler: Watcom's TU-level effects (`-oe` inlining of statics, pooling order) are the P4 "TU grouping" question; per-function recompilation cannot reach them |
+| 4 | **signedness inference.** Bit operations on a parameter make it `uint`. | `classify(int x, int y)`: `y \| 256` | `uint4 param_2`: `param_2 \| 0x100` | `OR AH,1` (int) vs `OR EAX,0x100` (unsigned) | `classify` | WAR2's typing rows (operand-form / selection) |
+| 5 | **argument arity at call sites.** Leftover registers read as arguments, or a parameter the callee never reads. | `dense(a, c)` | `func_0x…(7, 5, extraout_RDX, xVar1)` | extra argument moves; with mechanism 1 it is the same root | 16 of 70 functions had a call site disagreeing with the callee's signature | WAR2's `extra`/`missing` interface mass (P2) |
+| 6 | **return-type disagreement.** A callee recovered as `void` whose caller uses its value. | `is_even` ↔ `is_odd` | `void FUN_…` vs `iVar = func_0x…()` | return setup missing | `recursion` | P2 |
+| 7 | **constant propagation past memory the compiler kept.** (corpus artifact: `volatile`) | `volatile int a = 7` | `func(7, …)` | missing stores / reloads | `tables/_start` and all `_start`s | real only for WAR2's volatile globals (sb95: five) |
+
+## What this says
+
+1. The three largest mechanisms (1, 2, 5) are **interface recovery** — prototypes, return widths,
+   callee clobbers — exactly the P2 class the architecture doc calls "the largest measured defect
+   class, and a correctness bug rather than a cosmetic one". On this corpus it is not cosmetic:
+   `sum_to` is wrong code.
+2. Mechanism 1 is the decisive one for gcc-built programs and it has a known answer in this
+   repo: the WAR2 survey's recovered `modify` lists. Moving callee-clobber recovery into the
+   decompiler (decompile callees first, record the registers they actually write, use that set
+   at the call site instead of the convention's `killedbycall`) fixes 1 and most of 5 at once,
+   for both gcc and Watcom — and is the first thing this branch should build, because the
+   instrument can then measure it against source immediately.
+3. Mechanism 3 bounds the method: a per-function recompile can never reproduce TU-level
+   decisions. For WAR2 that is a ceiling to *name* (how many functions show it), not to fix.
+4. The corpus must grow toward WAR2's loss band (20–200-instruction functions, structs, globals,
+   compare ladders, strings, no `volatile`) before its WGSS means anything in absolute terms; at
+   937 instructions it is a mechanism finder, not a score.
+
+## Next on this branch
+
+- Callee-clobber recovery as a decompiler feature (mechanism 1 + 5), measured here first.
+- Return-width recovery from the callers' reads (mechanism 2).
+- Two or three era-style programs (no `volatile`, no `_start` shim in the scored set) so the
+  size mix matches WAR2's; score `_start`/shim functions separately.

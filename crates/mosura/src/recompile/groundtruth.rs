@@ -41,6 +41,10 @@ pub struct GtFunction {
     pub classes: BTreeMap<String, usize>,
     /// The first compiler error, or a note on how the TU was made to compile.
     pub note: String,
+    /// The attributed comparison (aligned original/candidate streams), when one was made.
+    pub checked: Option<super::verify::Checked>,
+    /// The emitted C (the whole translation unit).
+    pub c: String,
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +228,7 @@ pub fn prelude() -> String {
          typedef int code(); typedef unsigned long pointer; typedef struct mosura_spacebase spacebase;\n\
          typedef float float4; typedef double float8; typedef long double float10; typedef long double float16;\n\
          typedef __int128 int16; typedef unsigned __int128 uint16; typedef unsigned __int128 xunknown16;\n\
-         extern long syscall(); extern long swi(int); extern unsigned long rdtsc(); extern unsigned int cpuid(unsigned int);\n\
+         extern long syscall(void); extern long swi(int); extern unsigned long rdtsc(void); extern unsigned int cpuid(unsigned int);\n\
          #define true 1\n#define false 0\n",
     );
     let u = |n: u32| match n {
@@ -275,6 +279,102 @@ pub fn prelude() -> String {
         let _ = sn;
     }
     p
+}
+
+/// The text of function `name` in a C source (from its signature line to the matching close
+/// brace) — the real source, for the three-way read beside our C and the divergence rows.
+pub fn source_function(src: &str, name: &str) -> Option<String> {
+    let mut start = None;
+    for (i, line) in src.lines().enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("//") || t.starts_with('#') || t.starts_with('*') {
+            continue;
+        }
+        if let Some(pos) = line.find(name) {
+            let after = &line[pos + name.len()..];
+            let before = &line[..pos];
+            let prev = before.chars().last();
+            if after.trim_start().starts_with('(')
+                && !before.contains('=')
+                && !before.trim_end().ends_with("return")
+                && prev.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                && !line.trim_end().ends_with(';')
+            {
+                start = Some(i);
+                break;
+            }
+        }
+    }
+    let start = start?;
+    let lines: Vec<&str> = src.lines().collect();
+    let mut depth = 0i32;
+    let mut seen = false;
+    let mut end = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            if ch == '{' {
+                depth += 1;
+                seen = true;
+            } else if ch == '}' {
+                depth -= 1;
+            }
+        }
+        if seen && depth <= 0 {
+            end = i;
+            break;
+        }
+    }
+    Some(lines[start..=end].join("\n"))
+}
+
+/// The largest argument count over the calls of `name` in `c` (top-level commas).
+fn call_site_arity(c: &str, name: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut search = 0;
+    while let Some(pos) = c[search..].find(name) {
+        let at = search + pos;
+        let before = c[..at].chars().last();
+        let after = &c[at + name.len()..];
+        if before.is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_')) && after.trim_start().starts_with('(') {
+            let open = at + name.len() + after.find('(')?;
+            let mut depth = 0i32;
+            let mut commas = 0usize;
+            let mut nonblank = false;
+            for (i, ch) in c[open..].char_indices() {
+                match ch {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let n = if nonblank { commas + 1 } else { 0 };
+                            best = Some(best.map_or(n, |b| b.max(n)));
+                            search = open + i + 1;
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 => commas += 1,
+                    ch if depth >= 1 && !ch.is_whitespace() => nonblank = true,
+                    _ => {}
+                }
+            }
+            if search <= at {
+                search = at + name.len();
+            }
+            continue;
+        }
+        search = at + name.len();
+    }
+    best
+}
+
+/// The parameter declarations of a signature line (`int4 f(int4 a, uint8 b)` → the two).
+fn signature_params(sig: &str) -> Vec<String> {
+    let Some(open) = sig.find('(') else { return Vec::new() };
+    let inner = sig[open + 1..].trim_end_matches(')').trim();
+    if inner.is_empty() || inner == "void" {
+        return Vec::new();
+    }
+    inner.split(',').map(|p| p.trim().to_string()).collect()
 }
 
 /// Identifiers of a C text, in order of first appearance.
@@ -369,13 +469,15 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 similarity: 0.0,
                 classes: BTreeMap::new(),
                 note: String::new(),
+                checked: None,
+                c: String::new(),
             });
             continue;
         };
         // Prototypes for every function the body names, under the name the body uses, with the
         // callee's decompiled signature; `kr = true` retries with unprototyped declarations.
         let ids = identifiers(c);
-        let make_tu = |kr: bool| -> String {
+        let make_tu = |kr: bool, fixed: &BTreeMap<String, String>| -> String {
             let mut tu = pre.clone();
             for id in &ids {
                 if *id == d.self_name {
@@ -385,7 +487,9 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 if let Some(callee) = callee {
                     // (A self-call spelled `func_0x<own address>` is declared too: the object
                     // then carries an undefined symbol the resolver maps back to the function.)
-                    if kr || callee.c.is_none() {
+                    if let Some(proto) = fixed.get(id) {
+                        tu += &format!("{proto};\n");
+                    } else if kr || callee.c.is_none() {
                         tu += &format!("extern int4 {id}();\n");
                     } else {
                         tu += &format!("{};\n", callee.sig.replacen(&callee.self_name, id, 1));
@@ -451,8 +555,17 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         let o_path = dir.join(format!("{}.o", d.sym.name));
         let mut note = String::new();
         let mut obj: Option<Vec<u8>> = None;
-        for kr in [false, true] {
-            let tu = make_tu(kr);
+        // Prototyped first; when a call site disagrees with the callee's recovered signature
+        // on ARITY (a real interface defect — leftover registers read as arguments, or a
+        // parameter the callee never reads), re-declare that callee at the call site's arity
+        // (the callee's parameter types padded with `uint8` / truncated) so the TU compiles
+        // without gcc's unprototyped-call convention (the varargs `XOR EAX,EAX`) masking the
+        // defect's true cost. Unprototyped declarations remain the last resort.
+        let mut fixed: BTreeMap<String, String> = BTreeMap::new();
+        let mut attempts: Vec<(bool, BTreeMap<String, String>)> = vec![(false, BTreeMap::new())];
+        let mut first_error = String::new();
+        while let Some((kr, fx)) = attempts.pop() {
+            let tu = make_tu(kr, &fx);
             std::fs::write(&c_path, &tu).map_err(|e| e.to_string())?;
             // gcc 14 promotes these to errors; they are diagnostics, not codegen, and the
             // emitted C's casts are the decompiler's business, not the instrument's.
@@ -473,12 +586,97 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
             if o.status.success() {
                 obj = std::fs::read(&o_path).ok();
                 if kr {
-                    note = "compiled with unprototyped callees".into();
+                    note = format!("unprototyped callees ({first_error})");
+                } else if !fx.is_empty() {
+                    note = format!("arity-adjusted callees: {} ({first_error})", fx.keys().cloned().collect::<Vec<_>>().join(","));
                 }
                 break;
             }
             let err = String::from_utf8_lossy(&o.stderr);
-            note = err.lines().find(|l| l.contains("error:")).unwrap_or("compile failed").trim().to_string();
+            note = err
+                .lines()
+                .find(|l| l.contains("error:"))
+                .unwrap_or("compile failed")
+                .trim()
+                .rsplit("error: ")
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if std::env::var_os("MOSURA_GT_DEBUG").is_some() {
+                eprintln!("[gt] {}: attempt kr={kr} fixed={:?} -> {note}", d.sym.name, fx.keys().collect::<Vec<_>>());
+            }
+            if first_error.is_empty() {
+                first_error = note.clone();
+            }
+            if kr {
+                break;
+            }
+            // `too many/few arguments to function ‘X’` → re-declare X at the call site's arity.
+            // `void value not ignored as it ought to be`: a callee whose recovered return is
+            // `void` while this caller uses its value — re-declare every void callee in the TU
+            // as returning `uint8` (the caller's read decides; a return-recovery defect).
+            if note.starts_with("void value not ignored") {
+                let mut any = false;
+                for id in &ids {
+                    if fixed.contains_key(id) {
+                        continue;
+                    }
+                    let Some(callee) = resolver(id).and_then(|a| by_addr.get(&a)).map(|&j| &decs[j]) else { continue };
+                    if callee.sig.trim_start().starts_with("void ") && callee.sym.addr != d.sym.addr {
+                        let proto = callee.sig.replacen(&callee.self_name, id, 1).replacen("void ", "uint8 ", 1);
+                        fixed.insert(id.clone(), proto);
+                        any = true;
+                    }
+                }
+                if any {
+                    attempts.push((false, fixed.clone()));
+                    continue;
+                }
+            }
+            let quoted = |r: &str| -> String {
+                let r = r.trim_start_matches(|ch: char| ch == '‘' || ch == '\'' || ch == '`');
+                r.split(|ch: char| ch == '’' || ch == '\'' || ch == '`' || ch == ';' || ch.is_whitespace())
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let adjusted = note
+                .strip_prefix("too many arguments to function ")
+                .or_else(|| note.strip_prefix("too few arguments to function "))
+                .map(quoted)
+                .and_then(|callee_name| {
+                    let callee_name = callee_name.as_str();
+                    let callee = resolver(callee_name).and_then(|a| by_addr.get(&a)).map(|&j| &decs[j])?;
+                    let arity = call_site_arity(c, callee_name)?;
+                    let params = signature_params(&callee.sig);
+                    let ret = callee.sig[..callee.sig.find(&callee.self_name)?].trim().to_string();
+                    let mut ps: Vec<String> = params.into_iter().take(arity).collect();
+                    while ps.len() < arity {
+                        ps.push(format!("uint8 pad_{}", ps.len()));
+                    }
+                    let proto = if ps.is_empty() {
+                        format!("{ret} {callee_name}(void)")
+                    } else {
+                        format!("{ret} {callee_name}({})", ps.join(", "))
+                    };
+                    Some((callee_name.to_string(), proto))
+                });
+            match adjusted {
+                Some((name, proto)) if !fixed.contains_key(&name) => {
+                    fixed.insert(name, proto);
+                    attempts.push((false, fixed.clone()));
+                }
+                // Already adjusted once and still wrong: this function calls the callee with
+                // DIFFERENT argument counts at different sites (leftover registers at one of
+                // them), so no one prototype fits. That callee alone goes unprototyped; its
+                // sites then carry gcc's unprototyped-call convention, the cost of the defect.
+                Some((name, _)) if !fixed.get(&name).is_some_and(|p| p.ends_with("()")) => {
+                    let ret = fixed.get(&name).and_then(|p| p.split_whitespace().next()).unwrap_or("int4").to_string();
+                    fixed.insert(name.clone(), format!("{ret} {name}()"));
+                    attempts.push((false, fixed.clone()));
+                }
+                _ => attempts.push((true, BTreeMap::new())),
+            }
         }
         let Some(obj) = obj else {
             functions.push(GtFunction {
@@ -489,13 +687,16 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 similarity: 0.0,
                 classes: BTreeMap::new(),
                 note,
+                checked: None,
+                c: std::fs::read_to_string(&c_path).unwrap_or_default(),
             });
             continue;
         };
         let subject = Subject { name: d.self_name.clone(), va: d.sym.addr, len: weight_bytes.len() };
+        let tu_text = std::fs::read_to_string(&c_path).unwrap_or_default();
         match verify(LANG, &weight_bytes, &subject, &obj, &resolver) {
             Ok(checked) => {
-                let diff = checked.diff;
+                let diff = &checked.diff;
                 functions.push(GtFunction {
                     symbol: d.sym.name.clone(),
                     va: d.sym.addr,
@@ -504,6 +705,8 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                     similarity: diff.similarity,
                     classes: diff.class_counts.iter().map(|(k, v)| (k.as_str().to_string(), *v)).collect(),
                     note,
+                    c: tu_text,
+                    checked: Some(checked),
                 });
             }
             Err(e) => functions.push(GtFunction {
@@ -514,6 +717,8 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 similarity: 0.0,
                 classes: BTreeMap::new(),
                 note: format!("verify: {e}"),
+                checked: None,
+                c: tu_text,
             }),
         }
     }
