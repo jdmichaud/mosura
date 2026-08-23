@@ -132,3 +132,38 @@ arguments to a two-register-argument callee (`func_0x00058c48(param_3, &xStack_1
 param_4)`; Ghidra and zc38 print two). **Cumulative, branch HEAD vs master zc33: 767 EXACT (+2),
 3 flips all upward, 0 verdict regressions, WGSS 0.4831 → 0.4829 (−32.6 weighted, −0.0003).**
 Whether that lands on master is JD's call under the WGSS-first bar.
+
+## Update (2026-08-23, evening): variadic recovery — 20 PASS / 0 FAIL
+
+JD: "we should work on that remaining fail." `varargs` needed three things, two of them beyond
+Ghidra and one a mis-port found on the way (b43ba63):
+
+1. **Ghidra's `RulePushMulti` substitute loses the stack-slot address.** The rule refuses a
+   spacebase phi INPUT (ruleaction.cc:1084-1085) but the substitute phi it manufactures for
+   `phi(SP + c, x + c)` is `phi(SP, x)` — the forbidden shape one level down — which is why
+   Ghidra's own C reads `register0x00000020 = (BADSPACEBASE *)(register0x00000020 + 8)`.
+   `ActionVarargsRecovery` (varargs.rs, after the cleanup pools) restores `phi(PTRSUB(SP, c),
+   x + c)`. Then `varargs::recognize` marks the function variadic when a live `PTRSUB(SP_in,
+   #off)` is USED as a value at a caller-frame offset past the parameter base with no stack
+   parameter at or beyond it; unclaimed slots below `off` become unnamed parameters (the
+   `printf_` format string); the printer appends `...`, prints the PTRSUB's definition as
+   `va_start(var, param_N)` and its uses as the variable. Each target's prelude defines
+   `va_start` as the raw address of the first anonymous argument — Watcom `(char *)&last +
+   sizeof(last)` rounded (the original's `lea`), gcc `__builtin_next_arg(last)`. WAR2's
+   `sprintf_`/`printf_`/FUN_00050434 wrappers, which took the address of a positive-offset
+   LOCAL (`&xStack0000000c`, wrong code), now read `va_start(pxStack_10, param_6);`.
+2. **`RangeList::upper_bound` mis-port** (space.rs): the probe was ordered by the derived
+   `(spc, first, last)`; Ghidra's `Range::operator<` compares `(space, first)` only, so
+   `in_range` denied an address on a range's FIRST byte — `[0x8, 0x1fb]` did not contain `0x8`,
+   the x86-64 parameter window's first slot. The stack pre-tests and `scope_addrtied` read it
+   too.
+3. **The register-save area as one object** (varmap.rs `coalesce_guarded_regions`, an emission
+   arm): the frame region a guarded indexed LOAD/STORE walks (`LoadGuard` base through the
+   analysed maximum, local frame only) is declared as ONE array. Ghidra keeps per-slot symbols
+   (`aiStack_30 [2]; xStack_28; …` — its `addGuard` hint is `open` and the fixed slot hints
+   win), which is layout only the original compiler guaranteed; gcc folded the cross-slot reads
+   to nothing and `vsum` returned 0. Now `xunknown8 axStack_30 [6]; axStack_30[1] = param_2; …`.
+
+`vsum` now reads as the hand-expanded `va_arg` it is — six parameters, the save array, the
+`gp_offset` walk, `va_start(piVar4, param_6)` for the overflow walk — and RUNS correctly for any
+argument count. **Functional: 20 PASS / 0 FAIL**, corpus WGSS 0.2784 → 0.2814.
