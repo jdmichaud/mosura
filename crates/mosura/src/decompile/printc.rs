@@ -381,6 +381,13 @@ struct PrintC<'a> {
     high_of: Vec<u32>,
     /// HighVariable representative → its member Varnodes (the frozen [`Self::high_of`] classes).
     high_members: HashMap<u32, Vec<VarnodeId>>,
+    /// EMISSION ARM (the explicit half of the int8-divide idiom, see the Subpiece arm): explicit
+    /// wide locals that are nothing but an int-width extension feeding narrowed divides, declared
+    /// and assigned at int width. Ghidra prints `iVar2 = (int8)iRam000a86a8; … (int4)(1000000 /
+    /// iVar2)` (WAR2 FUN_0006cfd0, the merge-cover landing's COMPILE_FAIL) and that int8 local is
+    /// undeclarable on the 32-bit target; `iVar2 = iRam000a86a8; … 1000000 / iVar2` compiles to
+    /// the IDIV the original executes. Members of a HighVariable qualify together.
+    narrow_wide_locals: HashSet<VarnodeId>,
     /// Ops marked non-printing by Ghidra's `ActionCopyMarker` (shadow assignments and redundant
     /// COPYs), frozen in-pipeline by [`super::merge::ActionCopyMarker`] at Ghidra's slot. Consumed,
     /// never re-derived — the marks and the Covers behind them are decided before any CAST exists.
@@ -760,7 +767,15 @@ impl<'a> PrintC<'a> {
         // a genuine local — declared at the body top (register/temp locals have no frame offset).
         // Under `local-width=storage` a width-gated narrow local declares at register width
         // (the name keeps the value type's prefix — Ghidra's naming is not part of the axis).
-        let declared = self.storage_widened_local(id, v).unwrap_or(ty);
+        let declared = if self.narrow_wide_locals.contains(&v) {
+            let int_size = self.f.size_of_int();
+            match vn.def.map(|d| self.f.op(d).code()) {
+                Some(OpCode::IntZext) => Datatype::Uint(int_size),
+                _ => Datatype::Int(int_size),
+            }
+        } else {
+            self.storage_widened_local(id, v).unwrap_or(ty)
+        };
         self.decls.push((n.clone(), declared, None));
         n
     }
@@ -873,6 +888,9 @@ impl<'a> PrintC<'a> {
                 OpCode::IntZext => !signed,
                 _ => false,
             };
+            if ext_ok && self.narrow_wide_locals.contains(&v) {
+                return Some(self.name_of(v));
+            }
             let src = self.f.op(dd).input(0)?;
             (ext_ok && self.f.vn(src).size == int_size).then(|| self.operand(src, 13, right))
         };
@@ -903,6 +921,16 @@ impl<'a> PrintC<'a> {
                 if let Some(s) = push_char_constant(vn.constant_value(), vn.size) {
                     return (s, 16);
                 }
+            }
+            // Ghidra `pushConstant`'s TYPE_PTR arm falls through to the "Default printing"
+            // (printc.cc:1790): a pointer-typed constant that is neither a string nor a resolvable
+            // function prints WITH its type as a cast, `(int4 *)0x403040`. The cast is not
+            // cosmetic — it is what makes the PTRADD arm's `base + index` scale by the element:
+            // ground truth `ptrarith` printed `0x403040 + (int8)param_1` for `grid + n`, integer
+            // arithmetic off by the element size, and both `walk` and `diag` computed wrong sums.
+            // (`Callind` prints its own `(code *)` when the target carries no pointer type.)
+            if matches!(dt, Datatype::Pointer(..)) {
+                return (format!("({}){}", dt.name(), render_const(vn.constant_value(), vn.size)), 14);
             }
             return (render_const(vn.constant_value(), vn.size), 16);
         }
@@ -1233,7 +1261,14 @@ impl<'a> PrintC<'a> {
     /// address when it is not already a pointer to a value of the right size (Ghidra's
     /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
     fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
-        if let Some(def) = self.f.vn(addr).def {
+        // Ghidra `PrintC::checkArrayDeref` (printc.cc): the subscript/member form absorbs the
+        // dereference only when the address varnode is IMPLIED (`if (!vn->isImplied()) return
+        // false`). An EXPLICIT address is a named variable and prints `*name` — re-rendering its
+        // defining PTRADD here read the pointer's OLD value after the variable had been assigned
+        // the new one (ground truth `checksum`: `param_1 = param_1 + 1; uVar1 = param_1[1];`
+        // for `*param_1` — wrong code).
+        let addr_explicit = self.is_explicit(addr);
+        if let Some(def) = self.f.vn(addr).def.filter(|_| !addr_explicit) {
             let o = self.f.op(def).clone();
             // A LOAD/STORE through a PTRADD/PTRSUB is array/field access (Ghidra `opLoad`/`opStore`
             // → `checkArrayDeref` → the subscript/member token absorbs the dereference) — but only
@@ -1670,6 +1705,12 @@ impl<'a> PrintC<'a> {
                     (format!("SUB{insize}{outsize}({},{off})", self.render_var(in0).0), 16)
                 }
             }
+            OpCode::IntSext | OpCode::IntZext
+                if self.narrow_wide_locals.contains(&o.output.unwrap()) =>
+            {
+                // `iVar2 = iRam000a86a8;` — the int-width value itself (`narrow_wide_locals`).
+                (self.cast_operand(op, 0, 14, false), 14)
+            }
             OpCode::IntSext => {
                 let n = self.f.vn(o.output.unwrap()).size;
                 // the widening renders `(int{n})`; the input itself may also need a `(int{m})`
@@ -1867,8 +1908,14 @@ impl<'a> PrintC<'a> {
                 let t0 = a(0);
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
                 if self.f.vn(t0).is_constant() {
-                    let tgt = self.operand(t0, 16, false);
-                    (format!("(*(code *){tgt})({})", args.join(", ")), 16)
+                    // A pointer-typed constant already renders with its cast (`render_var`).
+                    if matches!(self.type_of(t0), Datatype::Pointer(..)) {
+                        let tgt = self.operand(t0, 14, false);
+                        (format!("(*{tgt})({})", args.join(", ")), 16)
+                    } else {
+                        let tgt = self.operand(t0, 16, false);
+                        (format!("(*(code *){tgt})({})", args.join(", ")), 16)
+                    }
                 } else {
                     let tgt = self.operand(t0, 15, false);
                     (format!("(*{tgt})({})", args.join(", ")), 16)
@@ -3776,6 +3823,73 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
 }
 
 
+/// The explicit varnodes [`PrintC::narrow_wide_locals`] re-declares at int width: wider than the
+/// target's `int`, in register/temporary storage, defined by an INT_SEXT/INT_ZEXT of an int-width
+/// value, and read ONLY as operands of divide-family ops of matching signedness whose results are
+/// consumed only by a low-half SUBPIECE at int width — exactly the shape the Subpiece arm's
+/// `narrow_divide` already renders at int width when the operand is implied. Every member of the
+/// HighVariable must qualify, so the one declaration fits all of them.
+fn narrow_wide_locals(f: &Funcdata, high_of: &[u32]) -> HashSet<VarnodeId> {
+    let int_size = f.size_of_int();
+    let reg = f.spaces.by_name("register");
+    let uniq = f.spaces.by_name("unique");
+    let qualifies = |v: VarnodeId| -> bool {
+        let vn = f.vn(v);
+        if vn.size <= int_size || vn.is_constant() || vn.is_input() || vn.descend.is_empty() {
+            return false;
+        }
+        if Some(vn.loc.space) != reg && Some(vn.loc.space) != uniq {
+            return false;
+        }
+        let Some(d) = vn.def else { return false };
+        let signed = match f.op(d).code() {
+            OpCode::IntSext => true,
+            OpCode::IntZext => false,
+            _ => return false,
+        };
+        if f.op(d).input(0).is_none_or(|i| f.vn(i).size != int_size) {
+            return false;
+        }
+        vn.descend.iter().all(|&u| {
+            let uo = f.op(u);
+            let family = match uo.code() {
+                OpCode::IntSdiv | OpCode::IntSrem => signed,
+                OpCode::IntDiv | OpCode::IntRem => !signed,
+                _ => false,
+            };
+            family
+                && uo.output.is_some_and(|out| {
+                    !f.vn(out).descend.is_empty()
+                        && f.vn(out).descend.iter().all(|&s| {
+                            let so = f.op(s);
+                            so.code() == OpCode::Subpiece
+                                && so.input(1).is_some_and(|c| f.vn(c).is_constant() && f.vn(c).constant_value() == 0)
+                                && so.output.is_some_and(|o| f.vn(o).size == int_size)
+                        })
+                })
+        })
+    };
+    let mut by_high: HashMap<u32, Vec<VarnodeId>> = HashMap::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        if f.vn(v).is_explicit() && qualifies(v) {
+            by_high.entry(high_of[i as usize]).or_default().push(v);
+        }
+    }
+    let mut out = HashSet::new();
+    for (rep, members) in by_high {
+        // every member of the variable, not just the qualifying ones
+        let all: Vec<VarnodeId> = (0..f.num_varnodes() as u32)
+            .map(VarnodeId)
+            .filter(|&v| high_of[v.0 as usize] == rep && !f.vn(v).is_constant())
+            .collect();
+        if all.iter().all(|v| members.contains(v)) {
+            out.extend(members);
+        }
+    }
+    out
+}
+
 /// Widen a recovered type to the width of the storage the value actually occupies.
 ///
 /// The declared return type of a C function decides how wide a value the compiler leaves in the
@@ -4264,6 +4378,7 @@ fn print_c_inner(
         unmapped_stack_names: HashMap::new(),
         force_explicit: HashSet::new(),
         param_index,
+        narrow_wide_locals: narrow_wide_locals(f, &high_of),
         high_of: high_of.clone(),
         high_members: {
             let mut m: HashMap<u32, Vec<VarnodeId>> = HashMap::new();

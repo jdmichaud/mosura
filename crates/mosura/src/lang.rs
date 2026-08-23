@@ -109,6 +109,15 @@ pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
 }
 
 /// The filesystem walk behind [`resolve_cspec`] — Ghidra's one-time `.ldefs` read.
+/// Does the compiler behind `compiler_spec_id` let a function declare its OWN register convention?
+/// True for the mosura-authored specs — Watcom (`#pragma aux … parm [..] value [..] modify [..]`)
+/// and MetaWare High C — whose per-function conventions the decompiler recovers from the body's
+/// evidence (`ProtoModel::custom_conventions`). False for Ghidra's shipped specs (gcc/SysV, MSVC,
+/// …), where the ABI is fixed per platform and body evidence can only speak to CLOBBERS.
+pub fn per_function_conventions(compiler_spec_id: &str) -> bool {
+    matches!(compiler_spec_id, "watcom" | "highc")
+}
+
 fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
     // Mosura-authored (beyond-Ghidra) compiler specs first — conventions no Ghidra processor
     // ships: Watcom's `watcall` (`specs/x86-32-watcom.cspec`) and MetaWare High C 386's cdecl

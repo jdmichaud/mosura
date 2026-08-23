@@ -25,6 +25,19 @@ use super::varnode::VarnodeId;
 /// `2..=max_implied_ref` descendants is a `multlist` member whose explicitness the term-duplication
 /// machinery decides.
 const MAX_IMPLIED_REF: usize = 2;
+
+/// Ghidra `ActionMarkExplicit::baseExplicit`'s reference limit for `v` (coreaction.cc:3047): the
+/// architecture's `max_implied_ref`, lifted to 1000000 for a PTRSUB of the spacebase (a constant
+/// or input stack pointer) — "Should always be implicit, so remove limit on max references".
+fn max_implied_ref(f: &Funcdata, v: VarnodeId) -> usize {
+    match f.vn(v).def.filter(|&d| f.op(d).code() == OpCode::Ptrsub) {
+        Some(d) => match f.op(d).input(0) {
+            Some(b) if f.vn(b).is_spacebase() && (f.vn(b).is_constant() || f.vn(b).is_input()) => 1_000_000,
+            _ => MAX_IMPLIED_REF,
+        },
+        None => MAX_IMPLIED_REF,
+    }
+}
 /// Ghidra `max_term_duplication` (architecture.cc:1421) — a multi-use value whose expression has at
 /// most this many explicit terms stays *implied* and is duplicated at each use rather than named
 /// (`ActionMarkExplicit::processMultiplier`, coreaction.cc:3166).
@@ -417,11 +430,12 @@ pub(crate) fn explicit_trailing(
         ) {
             return true;
         }
-        // PTRADD/PTRSUB are address sub-expressions recomputed inline at every use — implied even
-        // with multiple uses, unless one of those uses is a phi.
-        if matches!(f.op(def).code(), OpCode::Ptradd | OpCode::Ptrsub) {
-            return vn.descend.iter().any(|&u| f.op(u).code() == OpCode::Multiequal);
-        }
+        // (A former mosura-only arm declared every PTRADD/PTRSUB implied outright. Ghidra has no
+        // such exemption: `baseExplicit` only lifts the reference LIMIT for a PTRSUB of the
+        // spacebase (`max_implied_ref`), and `ActionMarkImplied::checkImpliedCover` still decides —
+        // ground truth `slen`: the address `param_1 + iVar3` is read at the loop's CBRANCH, after
+        // the back-edge COPY redefines `iVar3`, so Ghidra names it `pcVar1 = param_1 + iVar3;`
+        // where the shortcut printed `while (param_1[iVar1] != '\0')` on the incremented index.)
         // The snapshot COPY of an address-tied persistent value read before its address is
         // overwritten stays cross-high and must render as an explicit `iVar = <snapshot>`.
         if f.op(def).code() == OpCode::Copy {
@@ -437,7 +451,7 @@ pub(crate) fn explicit_trailing(
     // Ghidra `ActionMarkExplicit::baseExplicit`'s descendant-count arms (coreaction.cc:3064/3078):
     // a value with no descendants, or more than `max_implied_ref` of them, is named.
     let dn = vn.descend.len();
-    if dn == 0 || dn > MAX_IMPLIED_REF {
+    if dn == 0 || dn > max_implied_ref(f, v) {
         return true;
     }
     if dn > 1 {
@@ -748,8 +762,7 @@ fn implied_cover_ok(
 /// descendant count in `2..=max_implied_ref` (coreaction.cc:3256, the varnodes `setMark`'d). Mirrors
 /// the leading arms of [`explicit_leading`]/[`explicit_trailing`]: not a constant/input/addrtied
 /// value, written by a non-marker/non-call/non-pointer op, with no marker descendant and
-/// `2..=max_implied_ref` descendants. (mosura folds Ghidra's spacebase-PTRSUB-always-implied special
-/// case, :3066-3072, into the pointer arm, so PTRADD/PTRSUB are never members here.)
+/// `2..=max_implied_ref` descendants (the limit lifted for a spacebase PTRSUB, `max_implied_ref`).
 fn is_mark_candidate(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
     if explicit_leading(f, v).is_some() {
         return false;
@@ -758,7 +771,6 @@ fn is_mark_candidate(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
     let Some(def) = vn.def.filter(|_| vn.is_written()) else { return false };
     match f.op(def).code() {
         OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind | OpCode::Callother => return false,
-        OpCode::Ptradd | OpCode::Ptrsub => return false,
         OpCode::Copy => {
             if let Some(inv) = f.op(def).input(0) {
                 if f.vn(inv).is_persist() && persist_of[v.0 as usize] != persist_of[inv.0 as usize] {
@@ -772,7 +784,7 @@ fn is_mark_candidate(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
         return false;
     }
     let dn = vn.descend.len();
-    dn > 1 && dn <= MAX_IMPLIED_REF
+    dn > 1 && dn <= max_implied_ref(f, v)
 }
 
 /// Whether `v` is already \e explicit as `processMultiplier` sees it — Ghidra's `Varnode::isExplicit`
@@ -787,9 +799,6 @@ fn is_core_explicit(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
     let Some(def) = vn.def.filter(|_| vn.is_written()) else { return true };
     match f.op(def).code() {
         OpCode::Multiequal | OpCode::Indirect | OpCode::Call | OpCode::Callind | OpCode::Callother => return true,
-        OpCode::Ptradd | OpCode::Ptrsub => {
-            return vn.descend.iter().any(|&u| f.op(u).code() == OpCode::Multiequal)
-        }
         OpCode::Copy => {
             if let Some(inv) = f.op(def).input(0) {
                 if f.vn(inv).is_persist() && persist_of[v.0 as usize] != persist_of[inv.0 as usize] {
@@ -803,7 +812,7 @@ fn is_core_explicit(f: &Funcdata, persist_of: &[u32], v: VarnodeId) -> bool {
         return true;
     }
     let dn = vn.descend.len();
-    if dn == 0 || dn > MAX_IMPLIED_REF {
+    if dn == 0 || dn > max_implied_ref(f, v) {
         return true;
     }
     // A single-use / `multlist` candidate is explicit only if `multipleInteraction` purged it.

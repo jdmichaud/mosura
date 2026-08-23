@@ -903,6 +903,17 @@ pub struct ProtoModel {
     /// x86-32-watcom and x86-64-gcc both do, so this is empty on both of mosura's targets; x86win,
     /// x86gcc, x86borland, x86delphi and x86-32-golang declare it.
     pub likelytrash: Vec<(Address, u32)>,
+    /// BEYOND GHIDRA. Does the compiler this model describes let a FUNCTION declare its own
+    /// register convention (Watcom's `#pragma aux <name> parm [..] value [..] modify [..]`, High
+    /// C's equivalent)? When it does, a body that reads or returns through registers the model
+    /// does not name is evidence of such a declaration, and mosura recovers it (the custom
+    /// register parameters in [`recover_input_params`], the self-evidence prototype in
+    /// `analysis::decompiler`). When it does not — gcc's SysV, where the ABI is fixed and only the
+    /// CLOBBER set varies (`-fipa-ra`) — those readings are wrong by construction: the ground-truth
+    /// corpus' `structval` read `mk`'s parameters in instruction order (RSI before EDI) and `dot`'s
+    /// 8-byte inputs at the width of their first 4-byte read, so neither matched a trial and both
+    /// became uninitialized locals. Set from the compiler spec id in `build::resolve_proto_model`.
+    pub custom_conventions: bool,
 }
 
 /// Ghidra `ProtoModel::extrapop_unknown` (fspec.hh:772).
@@ -1590,6 +1601,12 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // what it did. Ordered by register offset so the result is deterministic.
     let mut custom: Vec<ProtoSlot> = Vec::new();
     for i in 0..f.num_varnodes() as u32 {
+        // Only a compiler with per-function conventions can have put a parameter there
+        // (`ProtoModel::custom_conventions`). Under SysV the same read is the varargs `AL`
+        // count or a stale scratch register, never an argument.
+        if !f.proto_model.custom_conventions {
+            break;
+        }
         let vn = f.vn(VarnodeId(i));
         if !vn.is_input() || vn.loc.space != reg || vn.descend.is_empty() {
             continue;

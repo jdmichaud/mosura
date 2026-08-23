@@ -448,7 +448,16 @@ fn decode_default_proto_model(
         })
         .collect();
     likelytrash.sort_by_key(|&(a, sz)| (a.space.0, a.offset, sz));
-    Some(ProtoModel { input, output, effectlist, localrange, paramrange, extrapop, likelytrash })
+    Some(ProtoModel {
+        input,
+        output,
+        effectlist,
+        localrange,
+        paramrange,
+        extrapop,
+        likelytrash,
+        custom_conventions: crate::lang::per_function_conventions(compiler_spec_id),
+    })
 }
 
 /// Decode the `<range>` children of a `<localrange>`/`<paramrange>` element into `res` (Ghidra

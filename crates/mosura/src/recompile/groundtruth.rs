@@ -204,8 +204,11 @@ fn prefix_type(prefix: &str, width: u64) -> String {
             'u' => format!("uint{w}"),
             'c' => "char".into(),
             'b' => "uint1".into(),
-            'f' => "float".into(),
-            'd' => "double".into(),
+            // Ghidra's `TypeFloat::printNameBase` is `f` at EVERY width (float, double, long
+            // double); the width decides the type — `fRam0000000000402000` (8 bytes) is a double.
+            // Rendering it `float` read the low half of 0.5 as 0.0f (floats' favg/fpoly).
+            'f' => format!("float{w}"),
+            'd' => format!("float{w}"),
             _ => format!("xunknown{w}"),
         }
     };
@@ -539,8 +542,15 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                                 v |= (*b as u64) << (8 * i);
                             }
                             let init = match ty.as_str() {
-                                "float" => format!("{:?}f", f32::from_bits(v as u32)),
-                                "double" => format!("{:?}", f64::from_bits(v)),
+                                "float4" => format!("{:?}f", f32::from_bits(v as u32)),
+                                "float8" => format!("{:?}", f64::from_bits(v)),
+                                "float10" | "float16" => {
+                                    // An x87 extended literal: keep the image bytes verbatim.
+                                    let items: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+                                    tu += &format!("static const unsigned char {id}_bytes[] = {{{}}};\n", items.join(","));
+                                    tu += &format!("#define {id} (*(const {ty} *){id}_bytes)\n");
+                                    continue;
+                                }
                                 t if t.ends_with("[]") => {
                                     let items: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
                                     format!("{{{}}}", items.join(","))

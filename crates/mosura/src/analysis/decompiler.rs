@@ -157,7 +157,12 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // function, and the same for any saved ESI/EDI. A declaration built from that is not a
             // recovered contract, it is noise.
             f.own_saved = cfg.as_ref().map(|(_, r)| r.clone());
-            if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
+            // Only where the compiler can declare one (`ProtoModel::custom_conventions`): under a
+            // fixed ABI the convention's own lists are the prototype, and this override replaced
+            // them with the body's read ORDER and first-read WIDTHS (ground truth `structval`).
+            if !f.proto_model.custom_conventions {
+                // nothing to recover
+            } else if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
             {
                 if !writes.is_empty() {
                     f.proto_model.output =
