@@ -13,9 +13,9 @@
 //!
 //! Faithfully simplified for mosura's primitive lattice (and noted at each site): the `RangeList`
 //! mapped-window / parameter-range exclusion (`resetLocalWindow`/`markNotMapped`), the
-//! locked-Symbol and `TypePartialStruct`/`PartialUnion` hint paths (`addFixedType`), the
-//! `LoadGuard` array hints (`addGuard`), and the dynamic/name-recommendation bookkeeping — none of
-//! which is reached by the stripped x86-64 datatests.
+//! locked-Symbol and `TypePartialStruct`/`PartialUnion` hint paths (`addFixedType`), and the
+//! dynamic/name-recommendation bookkeeping — none of which is reached by the stripped x86-64
+//! datatests. (The `LoadGuard` array hints, `addGuard`, are ported.)
 
 use super::funcdata::Funcdata;
 use super::opcode::OpCode;

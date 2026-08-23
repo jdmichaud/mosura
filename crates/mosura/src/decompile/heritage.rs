@@ -607,12 +607,10 @@ pub fn heritage_complete(f: &Funcdata) -> bool {
 /// placement accounts for the possible modification.
 ///
 /// A STORE aliases the range when its destination space (its `in(0)` space-const, decoded like
-/// Ghidra's `getSpaceFromConst`) equals the range's space (`spc == storeSpace`). Ghidra's other
-/// disjunct — a store into the range space's *container* that `usesSpacebasePtr()` (a
-/// spacebase-relative store aliasing a stack range) — cannot fire here: that op flag is set only by
-/// the LoadGuard / `discoverIndexedStackPointers` subsystem (heritage.cc:915/932), which mosura
-/// lacks (Task #19). With no op ever marked spacebase-ptr, `usesSpacebasePtr()` is definitionally
-/// false, so the disjunct is a no-op; it re-enables faithfully once #19 lands.
+/// Ghidra's `getSpaceFromConst`) equals the range's space (`spc == storeSpace`), OR when it
+/// stores into the range space's *container* (a stack range is a placeholder into `ram`) and
+/// `usesSpacebasePtr()` — marked by `discover_indexed_stack_pointers` / `protect_free_stores`
+/// (heritage.cc:1549).
 ///
 /// Gated by `highPtrPossible` (heritage.cc:1194): the `unique`/internal space admits no high
 /// pointer, and mosura's x86-64 spec declares no `<nohighptr>` range, so every other space qualifies.
