@@ -320,11 +320,23 @@ fn snip_reads(f: &mut Funcdata, vn: VarnodeId, marked: &[OpId]) {
         op
     } else {
         let def = f.vn(vn).def.unwrap();
-        let pc = f.op(def).seqnum.pc;
+        // merge.cc:462-464: an INDIRECT's snip must come after the OP CAUSING THE EFFECT (the
+        // call/store it is indirect for), not after the INDIRECT itself — the INDIRECT sits
+        // BEFORE that op, and a read placed between them precedes its def's cover point
+        // (`getUIndex` maps an INDIRECT to its causing op), so the liveness walk wrapped the
+        // value across every predecessor. WAR2 FUN_0006c6f0: the global pointer's post-call
+        // instance read "live" through the whole loop, and every `piRam + k` PTRADD in it
+        // failed `checkImpliedCover` (named where Ghidra inlines `piRam[k]`).
+        let afterop = if f.op(def).code() == OpCode::Indirect {
+            f.op(def).guarded_op().filter(|&g| !f.op(g).is_dead()).unwrap_or(def)
+        } else {
+            def
+        };
+        let pc = f.op(afterop).seqnum.pc;
         let uniq = f.num_ops() as u32;
         let op = f.new_op(OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![vn]);
         f.new_output_unique(op, size);
-        f.op_insert_after(op, def);
+        f.op_insert_after(op, afterop);
         op
     };
     // `allocateCopyTrim` records every trim COPY (merge.cc:432) for ActionDominantCopy.

@@ -750,6 +750,26 @@ fn implied_cover_ok(
                     continue;
                 }
                 if covers.get(&b).is_some_and(|bc| bc.intersects(vcov)) {
+                    if std::env::var_os("MOSURA_IMPLIED_DEBUG").is_some() {
+                        let pc = |x: VarnodeId| f.vn(x).def.map_or(0, |d| f.op(d).seqnum.pc.offset);
+                        let blk = |x: VarnodeId| f.vn(x).def.and_then(|d| f.op(d).parent).map_or(9999, |b| b.0);
+                        let bc = covers.get(&b).unwrap();
+                        let shared: Vec<String> = (0..f.num_blocks()).filter_map(|blk_i| {
+                            let r1 = vcov.block_range(blk_i)?; let r2 = bc.block_range(blk_i)?;
+                            Some(format!("b{blk_i}:v{r1:?}/b{r2:?}"))
+                        }).collect();
+                        let readers: Vec<String> = f.vn(b).descend.iter().map(|&r| {
+                            let rb = f.op(r).parent.map_or(9999, |x| x.0);
+                            let ins: Vec<u32> = f.op(r).parent.map_or(vec![], |x| f.blocks()[x.0 as usize].in_edges.iter().map(|e| e.0).collect());
+                            let g = if f.op(r).code() == OpCode::Indirect { f.op(r).guarded_op().map(|g| format!("g={:?}@{:#x}/blk{}", f.op(g).code(), f.op(g).seqnum.pc.offset, f.op(g).parent.map_or(9999, |x| x.0))).unwrap_or_default() } else { String::new() };
+                            format!("{:?}@{:#x}/blk{}<-{:?} {}", f.op(r).code(), f.op(r).seqnum.pc.offset, rb, ins, g)
+                        }).collect();
+                        eprintln!(
+                            "[implied] v={:?}@{:#x} blk{} defvn={:?}@{:#x}/{:#x} intersects b={:?}@{:#x}/{:#x} blk{} ({}) readers=[{}] [{}]",
+                            f.op(def).code(), f.op(def).seqnum.pc.offset, blk(v), defvn, pc(defvn), f.vn(defvn).loc.offset, b, pc(b), f.vn(b).loc.offset, blk(b),
+                            f.vn(b).def.map_or("input".into(), |d| format!("{:?}", f.op(d).code())), readers.join(","), shared.join(" ")
+                        );
+                    }
                     return false;
                 }
             }
