@@ -167,3 +167,34 @@ Ghidra and one a mis-port found on the way (b43ba63):
 `vsum` now reads as the hand-expanded `va_arg` it is — six parameters, the save array, the
 `gp_offset` walk, `va_start(piVar4, param_6)` for the overflow walk — and RUNS correctly for any
 argument count. **Functional: 20 PASS / 0 FAIL**, corpus WGSS 0.2784 → 0.2814.
+
+## Update (2026-08-23, night): era-style programs — four decompiler defects from one program
+
+The corpus grew by seven era-style programs (`structs`, `strbuf`, `globals`, `ladder`,
+`linklist`, `bitops`, `fixed`: entity tables, byte strings, a global state machine, compare
+ladders, an intrusive list with a global head, bit manipulation, 16.16 fixed point; 20–80-insn
+functions). Six passed first time; `globals` failed, and its one FAIL carried four decompiler
+defects, every one also present on WAR2:
+
+1. **`Funcdata::opSetInput`'s constant rule** (funcdata_op.cc:108): a constant that already has a
+   reader is CLONED before being wired into another op. mosura shared constant Varnodes across
+   ops, and `ActionConstantPtr` considers only `loneDescend` constants — a `.bss` address read by
+   two INT_ADDs stayed an integer, and the recompiled `tally` read the ORIGINAL's `scores`.
+2. **`baseExplicit`'s marker-reader rule** (coreaction.cc:3073): ANY marker reader makes a value
+   explicit; mosura accepted an INDIRECT reader only at the same storage, so the trim COPY on a
+   passthrough INDIRECT's input (`iVar1 = param_2;` before the call) was never printed.
+3. **`.bss` is loaded memory**: Ghidra's global scope resolves a `DAT_` symbol anywhere inside a
+   memory block, initialized or not; mosura's `is_loaded` only knew byte-backed blocks.
+4. **`Funcdata::opInsertAfter` an INDIRECT** (funcdata_op.cc:376) means after the op it is
+   indirect for. The snip fix (eccdac4) had patched one caller; `Merge::trimOpOutput` was the
+   other — WAR2 FUN_0002cca0 (a list push) wrote the global head BEFORE the store that must read
+   the old one, `iRam = iVar1; *(param_1 + 8) = iRam;`. The redirect now lives in
+   `op_insert_after` itself.
+
+The constant-uniqueness fix then re-typed two WAR2 globals signed (as Ghidra does) and cost two
+EXACT (zc42: FUN_00019344/000207b8, the 16-bit `iRam = (uint2)byte * 2` losing its cast). The
+sweep named the gap and two more ports followed: `PrintC::opIntZext/opIntSext` with
+`CastStrategyC::isExtensionCastImplied` (mosura printed every ZEXT bare), and
+`TypeOpIntAdd::propagateType`'s INT/UINT-onto-a-constant clause (typeop.cc:1186), which is what
+makes the promotion cast implied on `uRam + 0x80248`. Sweep vs the pre-session baseline: **up
+1013 / down 216, +938 weighted (mean 0.9036 → 0.9115)**. Corpus: **27 programs, 27/27 PASS**.
