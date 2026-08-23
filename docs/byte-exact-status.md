@@ -2065,3 +2065,20 @@ defects (docs/ground-truth-findings.md, "era-style programs"): constant uniquene
 The `(uint2)byte + int2` vs `(uint2)byte * 2` split (the cast wins one 16-bit shape and loses
 the other) is an emission AXIS for the recovered-choices machinery (evidence from the original's
 own MOVZX/XOR forms), not a port question — logged for that design.
+
+### zc46–zc47 (2026-08-23, late): the extension-cast axis
+
+- zc46 (Ghidra's per-site `readOp` rule, the faithful form): −261.6 weighted vs zc42, six
+  EXACT → MISMATCH — byte PARAMETERS want the cast (`(uint4)param_1 * 0x12` was EXACT with it),
+  byte memory loads in address arithmetic do not; no printc rule lands on the right side of both.
+- `ext-cast` is now an `EmitChoices` axis: `ghidra` (default; the reference the sweep and the
+  datatests compare against) / `promotion` (bare zext, `(intN)` sext — zc42's rendering). The
+  Watcom-32 emitter (`war2_survey`'s default arm) selects `promotion`.
+- zc47 (that, with the `opInsertAfter` redirect and the INT_ADD constant propagation kept): 0
+  flips, −10 weighted vs zc42.
+
+**Day's net (master 1069a85 vs zc33): WGSS 0.4831 → 0.4840 (+100.2 weighted), 767 EXACT — four
+gained (2cca0, 2d6f8, 3ef60, 4d058), two lost (19344, 207b8: the 16-bit `(uint2)byte * 2`, which
+the Ghidra cast wins back and the promotion rendering loses), no other verdict regressions.**
+Open design: the per-site evidence rule for `ext-cast` (the original's own MOVZX/XOR forms
+decide where the cast goes) — the recovered-choices machinery's next axis.
