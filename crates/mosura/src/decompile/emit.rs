@@ -208,6 +208,21 @@ pub struct EmitChoices {
     pub compare_form: CompareForm,
     pub return_split: ReturnSplit,
     pub cond_form: CondForm,
+    pub ext_cast: ExtCast,
+}
+
+/// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
+/// rendered. `Ghidra` is `PrintC::opIntZext/opIntSext` with `isExtensionCastImplied` — the
+/// reference rendering (the oracle sweep and the datatests compare against it). `Promotion`
+/// prints the bare operand for a zero-extension and `(intN)x` for a sign-extension, leaving the
+/// widening to C's promotion: value-identical, and the rendering Watcom 10.0a compiles closest to
+/// WAR2's bytes (zc42 vs zc46: the Ghidra casts moved −262 weighted; each shape wants the cast
+/// on some sites and not others — the per-site evidence rule for the original's own
+/// MOVZX/XOR forms is the open design, see docs/byte-exact-status.md zc42–zc46).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtCast {
+    Ghidra,
+    Promotion,
 }
 
 impl Default for EmitChoices {
@@ -219,6 +234,7 @@ impl Default for EmitChoices {
             compare_form: CompareForm::Recovered,
             return_split: ReturnSplit::Recovered,
             cond_form: CondForm::Collapsed,
+            ext_cast: ExtCast::Ghidra,
         }
     }
 }
@@ -270,6 +286,12 @@ impl EmitChoices {
             doc: "render statement-carrying short-circuit clauses collapsed (comma form) or \
                   as nested ifs",
         },
+        Axis {
+            name: "ext-cast",
+            values: &["ghidra", "promotion"],
+            doc: "render integer extensions as Ghidra's implied-cast rule (opIntZext/opIntSext) \
+                  or leave the widening to C's promotion (bare zext, (intN) sext)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -304,6 +326,10 @@ impl EmitChoices {
             "cond-form" => Some(match self.cond_form {
                 CondForm::Collapsed => "collapsed",
                 CondForm::Nested => "nested",
+            }),
+            "ext-cast" => Some(match self.ext_cast {
+                ExtCast::Ghidra => "ghidra",
+                ExtCast::Promotion => "promotion",
             }),
             _ => None,
         }
@@ -354,6 +380,13 @@ impl EmitChoices {
                 self.cond_form = match value {
                     "collapsed" => CondForm::Collapsed,
                     "nested" => CondForm::Nested,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "ext-cast" => {
+                self.ext_cast = match value {
+                    "ghidra" => ExtCast::Ghidra,
+                    "promotion" => ExtCast::Promotion,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

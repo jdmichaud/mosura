@@ -263,6 +263,8 @@ struct PrintC<'a> {
     /// The ops currently being rendered, innermost last — the top is the op whose operand is
     /// being printed (Ghidra's `readOp` in `opIntZext`/`opIntSext`).
     render_stack: Vec<OpId>,
+    /// `EmitChoices::ext_cast == Promotion`: leave integer widening to C's promotion.
+    ext_cast_promotion: bool,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -1794,6 +1796,10 @@ impl<'a> PrintC<'a> {
                 if self.f.vn(out).size > self.f.size_of_int() && !self.wide_int_declarable() {
                     return self.render_var(in0);
                 }
+                // EmitChoices `ext-cast=promotion`: the bare operand, C's promotion widens it.
+                if self.ext_cast_promotion {
+                    return self.render_var(in0);
+                }
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 if is_zext_cast(&outty, &inty) {
                     if self.is_extension_cast_implied(op) {
@@ -1864,7 +1870,7 @@ impl<'a> PrintC<'a> {
                 let n = self.f.vn(out).size;
                 // (the same target arm as IntZext: the pre-port `(int8)x` form, which the
                 // Subpiece arm's narrowed divide consumes)
-                if n > self.f.size_of_int() && !self.wide_int_declarable() {
+                if (n > self.f.size_of_int() && !self.wide_int_declarable()) || self.ext_cast_promotion {
                     return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
                 }
                 if is_sext_cast(&outty, &inty) {
@@ -4546,6 +4552,7 @@ fn print_c_inner(
         va_start_ops: HashSet::new(),
         va_last_named: 0,
         render_stack: Vec::new(),
+        ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),

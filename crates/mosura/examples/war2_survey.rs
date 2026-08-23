@@ -632,7 +632,13 @@ fn main() {
                 .map(|t| EmitChoices::parse(t).unwrap_or_else(|e| panic!("--arms: {e}")))
                 .collect()
         })
-        .unwrap_or_else(|| vec![EmitChoices::default()]);
+        .unwrap_or_else(|| {
+            // The Watcom-32 emitter's own defaults: integer extensions left to C's promotion
+            // (`ext-cast=promotion`) — the measured rendering for this target (zc42 vs zc46).
+            let mut c = EmitChoices::default();
+            c.set("ext-cast", "promotion").expect("known axis");
+            vec![c]
+        });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
     // and the target's shift instructions perform the `& 0x1f` count mask themselves, so every
     // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in
