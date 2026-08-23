@@ -2038,3 +2038,30 @@ emission arm that declares a guarded register-save area as one array. Measured o
 
 **Net, master 6dca533 vs zc33 (where the day started): 768 EXACT (+3), 5 flips all upward, 0
 verdict regressions, WGSS 0.4831 → 0.4840 (+98.2 weighted).**
+
+### zc42–zc45 (2026-08-23, night): the era-style corpus round and the cast ports
+
+Seven era-style control programs (27/27 PASS now); `globals` alone exposed four WAR2-relevant
+defects (docs/ground-truth-findings.md, "era-style programs"): constant uniqueness
+(`opSetInput`), marker-reader explicitness (`baseExplicit`), `.bss` as loaded memory, and
+`opInsertAfter`-an-INDIRECT (the list push FUN_0002cca0 wrote the head before the store).
+
+- zc42 (the first three): +12 weighted, 2cca0 MISMATCH→EXACT, but constant uniqueness re-typed
+  two globals signed (as Ghidra does) and FUN_00019344/000207b8 lost EXACT — the 16-bit
+  `iRam = (uint2)byte * 2` had no cast.
+- The sweep then named the ports: `PrintC::opIntZext/opIntSext` with
+  `CastStrategyC::isExtensionCastImplied`, and `TypeOpIntAdd::propagateType`'s INT/UINT-onto-a-
+  constant clause (+460 weighted on the sweep; mean 0.9036 → 0.9115 cumulative).
+- zc43 (those, raw): eight MISMATCH→COMPILE_FAIL — Ghidra's faithful `(uint8)x * 1000 / y` is
+  undeclarable on the 32-bit target; the bare int-width form IS what Watcom compiles back to
+  the original's `mul`/`div` through EDX:EAX. Emitter arm: extensions past int width print bare
+  where no wide integer exists.
+- zc44 (+ that arm) vs zc42: −189.6 weighted, 110 up / 149 down; 19344/3e81c → EXACT, 5b664/
+  5b68c EXACT → SAME_SHAPE. The down class is `(uint4)*(uint1 *)(p + 0x1f) * 4 + C` —
+  value-identical with or without the cast, but Watcom's codegen moved.
+- Emitter arm: a sign-agnostic consumer at int width implies the extension (the 16-bit and
+  sign-sensitive cases keep Ghidra's rule). zc45 measures it.
+
+The `(uint2)byte + int2` vs `(uint2)byte * 2` split (the cast wins one 16-bit shape and loses
+the other) is an emission AXIS for the recovered-choices machinery (evidence from the original's
+own MOVZX/XOR forms), not a port question — logged for that design.
