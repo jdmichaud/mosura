@@ -466,6 +466,24 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                         }
                     }
                 }
+                // An ADDRESS-OF reference (`ActionConstantPtr`'s `PTRSUB(#spacebase, #addr)`,
+                // printed `&xRam…`) has no varnode at the address; its C width is the pointee
+                // the PTRSUB carries, because `&x + k` scales by sizeof(x): fnptr's `apply`
+                // indexes its table `&xRam402fe0 + (which & 3) * 8` through an `undefined *`,
+                // and an 8-byte default declaration made that stride 64 (SIGSEGV).
+                for op in f.op_ids() {
+                    let o = f.op(op);
+                    if o.is_dead() || o.code() != crate::decompile::opcode::OpCode::Ptrsub {
+                        continue;
+                    }
+                    let (Some(b), Some(a), Some(out)) = (o.input(0), o.input(1), o.output) else { continue };
+                    if !(f.vn(b).is_constant() && f.vn(b).is_spacebase() && f.vn(a).is_constant()) {
+                        continue;
+                    }
+                    let pointee = f.vn(out).get_type().ptr_to().cloned().unwrap_or(Datatype::Unknown(1));
+                    let addr = f.spaces.get(ram).wrap_offset(f.vn(a).constant_value());
+                    globals.entry(addr).or_insert((pointee.size().max(1), pointee));
+                }
                 (Some(c), n, sig, globals)
             }
             None => (None, String::new(), String::new(), BTreeMap::new()),
