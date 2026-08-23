@@ -1979,3 +1979,36 @@ Still open from the sweep: the return side still uses the flattened `is_realisti
 CALLIND class (mosura's loop counter survives a call Ghidra kills `EBX` at — `extraout_EBX`);
 `Varnode::incidental_copy`; and the sweep's remaining classes (FUN_0006c6f0, the if-condition
 comma-statement class, FUN_000686bc).
+
+### zc34–zc38 (2026-08-23): the ground-truth control corpus lands — 767 EXACT, WGSS 0.4829
+
+JD's question "would we do better if WAR2 had been compiled by 10.0a?" was answered with a
+WAR2-free control (`recompile::groundtruth`, docs/ground-truth-findings.md): our own gcc-built
+programs decompiled, recompiled with the same gcc, and RUN against the original. With the compiler
+known the similarity is no better than on WAR2 — the gap is ours — and the functional oracle
+named ten wrong programs. Fixing them one decompiler bug at a time (branch `gt-recompile`,
+fast-forwarded onto master as a2e3678) took the corpus 10 FAIL → 1 FAIL and, measured on WAR2:
+
+- zc34 (secondary-return downgrade): byte-identical.
+- zc35 (`Cover::rebuild` implied-extended covers in the merge tests): **+2 EXACT** (2d6f8,
+  3ef60), −138.5 weighted, one MISMATCH → COMPILE_FAIL. The downs are wrong-code corrections —
+  FUN_0006b8f0 `param_1 = param_1 + 0xc; if (param_1 < param_1 + iVar1)`, FUN_0005bae4
+  `while (iVar1 = f(), iVar1 - (iVar1 + 0x7d) < 0)` — that had compiled closer to the bytes
+  because they used fewer registers. The COMPILE_FAIL is Ghidra-faithful (an explicit `int8`
+  local, `iVar2 = (int8)iRam000a86a8;`) and got the emitter arm `narrow_wide_locals`.
+- zc36 (that arm + the pointer-constant cast `(int4 *)0x…` + the `custom_conventions` gate on the
+  Watcom self-evidence prototype): COMPILE_FAIL → MISMATCH, +79.3 weighted.
+- zc37 (`checkArrayDeref` implied-only subscript form; no PTRADD/PTRSUB explicitness exemption —
+  `checkImpliedCover` decides): byte-identical.
+- zc38 (the LoadGuard / `discoverIndexedStackPointers` / `ValueSetSolver` subsystem, Task #19,
+  `valueset.rs`): +26.6 weighted, 0 flips; its top down (FUN_00058d54) removed two spurious
+  stack arguments from a two-register-argument call (Ghidra agrees).
+
+**Net vs zc33: 767 EXACT (+2), 3 flips all upward (2d6f8 SAME_SHAPE→EXACT, 3ef60 MISMATCH→EXACT,
+46e68 MISMATCH→SAME_SHAPE), 0 verdict regressions, WGSS 0.4831 → 0.4829 (−32.6 weighted).**
+JD landed it. Lesson recorded: a faithful port's WGSS downs must be classified before they are
+read as regressions — wrong code can score better (memory: wrong-code-scores-better).
+
+The control corpus stays as the WAR2-free functional gate (`cargo test --release --test
+ground_truth_recompile`, per-machine baseline). Its one remaining FAIL, `varargs`, is next: the
+overflow-area walk is a phi of the input stack pointer (Ghidra prints `register0x00000020`).
