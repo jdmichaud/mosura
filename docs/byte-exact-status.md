@@ -2082,3 +2082,47 @@ gained (2cca0, 2d6f8, 3ef60, 4d058), two lost (19344, 207b8: the 16-bit `(uint2)
 the Ghidra cast wins back and the promotion rendering loses), no other verdict regressions.**
 Open design: the per-site evidence rule for `ext-cast` (the original's own MOVZX/XOR forms
 decide where the cast goes) — the recovered-choices machinery's next axis.
+
+### zc48 (2026-08-24): the wc2src work orders — D1 callee-save params + D2a scheduled cleanup — WGSS 0.4840 → 0.5014
+
+The reconciliation doc's two semantic defect classes, grounded and fixed in one round
+(emitted binary = a1263ea; the runtime stamp says d973853 because the survey stamps HEAD
+at emit time — D5 was committed mid-flight and is NOT in this measure):
+
+- **D1 (mis-port):** callee-save PUSHes read as parameters — 312 of 3023 zc47 TUs carried
+  the dead `xStack_N = param_M;` artifact. The mechanism was traced on 0x2a1b4 with
+  `capture_trace`: Ghidra's save slots become call-site stack-arg trials, activeparam
+  rejects them, and the INDIRECT web dies — for the EDX slot via `RuleIndirectCollapse`,
+  whose `nolocalalias` came from `ScopeLocal::markUnaliased`'s rule that an alias does NOT
+  propagate across an unmapped OWNERSHIP hole (the `ActionRestrictLocal` carve of the
+  saved-EBP slot disconnects the save area above it). mosura's boundary compare lacked the
+  hole rule; `varnodeprops::mark_addrtied` now ports the walk (ownership = localrange ∪
+  paramrange − `not_mapped`, full sorted alias list on `Funcdata::alias_offsets`, 0xffff
+  distance). Fixture test `callee_save_not_param.rs` pins Ghidra's own 1-param C.
+- **D2a (evidence):** the caller's `ADD ESP,n` may sit one scheduled instruction after the
+  CALL (`CALL sprintf ; MOV AH,[gbMultiPlayer] ; ADD ESP,0xc`); the one-instruction read
+  lost `parm caller []` for 0x5a824 and with it every argument at 41 sprintf sites — and,
+  by cascade, callers' own real parameters. `convention::caller_stack_cleanup_scan` walks
+  the fallthrough window, stopping at any flow op or other ESP use (unit-tested).
+- **D2b dissolved by D1**: 0x317bc's six-argument `app_fatal` over-collection was the
+  save-slot liveness; it now emits the source's `app_fatal(0x8ca84, i)` and
+  `map_read(&ck_hdr, 8)` with arity 2 (0.273 → 0.523).
+
+**vs zc47: WGSS 0.4840 → 0.5014 (+2120.1 weighted — the largest round move on record),
+771 EXACT (+4: 110b4, 47a4c, 57574, 6dd50), 26 flips ALL upward (22 → SAME_SHAPE incl.
+0x33ad0 sfile_make_name 0.303 → 0.818), zero verdict regressions.** 363 movers: 336 up
+(+2195.6w) / 27 down (−75.5w). Top downs (6c390 −17.2, 66100 −12.0, runtime area)
+classified old-vs-new: form-only — the nolocalalias change re-splits a genuinely spilled
+parameter into param + local copy where zc47 merged them (extra `uVar1 = param_2;`
+materializations); semantically identical, the merge-cover interaction is the refinement
+target. Specimens: 0x2a1b4 0.500 → 0.667 (probe ceiling EXACT needs the one-array struct
+local, D3c), 0x28d98 0.349 → 0.572, 0x2ca2c unchanged (its "duplicated tail" is the
+binary's own — Watcom duplicated it; Ghidra's C matches ours).
+
+**D2c/D2d residual named:** the argument wiring is correct end-to-end (whole-program
+proto records AI_attack(EAX,EDX); `locked_register_inputs` carries `#0x2c944` through
+commit — verified with the new `MOSURA_WATCH_CALL` arity watchpoints); the one-argument
+emission is the per-TU upgrade GATE STACK refusing the candidate — the closed
+missing-args frontier, whose relaxations measured as losses. New evidence for that
+ledger: the refusal is cross-TU wrong code (the callee's TU declares two register
+parameters; caller TUs pass one), not just missing bytes. Direction = JD's call.
