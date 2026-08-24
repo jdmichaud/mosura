@@ -2126,3 +2126,25 @@ emission is the per-TU upgrade GATE STACK refusing the candidate — the closed
 missing-args frontier, whose relaxations measured as losses. New evidence for that
 ledger: the refusal is cross-TU wrong code (the callee's TU declares two register
 parameters; caller TUs pass one), not just missing bytes. Direction = JD's call.
+
+### zc49 (2026-08-24): the D5 denominator + the params-split repair — 6 rows rejoin
+
+Two deltas vs zc48 (binary d107046): the INT3 declassification (D5) and the
+`ParamUnaliased` repair of zc48's one down class.
+
+- **Denominator**: the six INT3 rows join as `kind=user` — and score at once as MISMATCH
+  rather than COMPILE_FAIL (C89 implicit-int makes the bare `swi(3)` compile), sims
+  0.106–0.336; 0x2d7fc lands at 0.336, exactly the reconciliation doc's `--only` measure.
+  Weight 121731 → 122466, so the WGSS *mean* reads 0.5004 against zc48's 0.5014 — the
+  common-row comparison is the honest one: **+47.4 weighted, 22 up / 13 down, 0 flips.**
+- **Params repair** (d107046): an unaliased `paramrange` slot keeps `mapped|addrtied` but
+  records `nolocalalias` again, so its call-crossing INDIRECTs collapse and a stack
+  parameter reads as ONE variable (Ghidra's shape; fixture test
+  `stack_param_single_variable.rs`). The zc48 down class recovers: 0x6c390 0.361 → 0.522,
+  0x6aa00 0.425 → 0.675 (0x66100's down was the other, form-only mechanism and stays).
+- Smoke sentinel 0x3342c refreshed to SAME_SHAPE (it is one of zc48's D1 flips; the
+  "drift" the smoke reported was the improvement itself).
+
+Net since zc47 on common rows: WGSS 0.4840 → 0.5014-equivalent (+2167w), 771 EXACT,
+zero verdict regressions. zc50 measures the `swi=int3` arm (`#pragma aux __int3 = 0xcc`)
+that makes the six new rows' trap idiom compilable as the literal breakpoint byte.
