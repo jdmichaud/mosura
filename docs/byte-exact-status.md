@@ -2247,3 +2247,22 @@ Every trigger sits in live idiomatic context (`MOV DX,0x3c8 ; OUT DX,AL`, `MOV A
 0x21`) — none is trailing padding or a data run decoded as code, the two shapes that made
 the INT3 rows false. The denominator's exclusion list is now evidence-audited end to end:
 90 asm rows, each with a hand-assembly witness the flat-model compiler cannot emit.
+
+### zc56 (2026-08-24): D3b lands — 788 EXACT
+
+The arm-order recovered choice (two-arm constant joins print in the ORIGINAL's own layout;
+evidence = which constant materializes first past the conditional jump; compound conditions
+excluded by construction). **vs zc55: 788 EXACT (+3 — 11ad4, 190e4, 2c8e8, all
+SAME_SHAPE → EXACT), 22 up / 1 down (2ea18, −0.012), zero verdict regressions, WGSS
+0.5042.** The probe target sfile_make_name moved 0.818 → 0.909: the transposed string
+loads are fixed, and the residue is a NEW named defect, not arm order — the local buffer
+is declared `axStack_1c [28]` where the original's frame is `SUB ESP,0xc`: the local
+window still includes the (now-dead) callee-save area, so the array over-extends by 16
+bytes and every LEA is off by 0x10. That is the D3c-adjacent local-extent question
+(varmap's open range vs the carved save slots) — filed as sfile's last step to EXACT.
+Smoke sentinel 1fdbc refreshed to EXACT (it is zc55's consistency gain; the reported
+drift was the improvement).
+
+**Day's arc, final: zc47 → zc56 = WGSS 0.4840 → 0.5042, EXACT 767 → 788 (+21),
+SAME_SHAPE 68 → 88, denominator +6, one classified verdict down (0x2c160,
+correct-code/contract) across the entire chain.**
