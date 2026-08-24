@@ -177,8 +177,12 @@ impl RangeList {
             if r.spc != spc || r.first > offset {
                 break;
             }
-            sizeres += r.last + 1 - offset; // extends to the end of this range
-            offset = r.last + 1; // try to chain the next range
+            // Ghidra computes `(*iter).last + 1 - offset` and `(*iter).last + 1` in `uintb`
+            // (u64), which WRAPS silently — a range ending at the space's highest byte
+            // (u64::MAX on an 8-byte space) makes `last + 1` zero. The faithful port is wrapping
+            // arithmetic; plain `+` panics under debug overflow checks (the varmap-test red gate).
+            sizeres = sizeres.wrapping_add(r.last.wrapping_add(1).wrapping_sub(offset)); // to end of range
+            offset = r.last.wrapping_add(1); // try to chain the next range
             if sizeres >= maxsize {
                 break;
             }
