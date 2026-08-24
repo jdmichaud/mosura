@@ -414,3 +414,18 @@ already defines it. One grep would have settled it before a build.
   so a future consumer knows the inertness was conditional, not intrinsic.
 - **Pre-file the prediction that would prove a retirement COMPLETE**, and state what a miss would
   mean. "136 → near 0; if not, a second unmasked site exists" landed exactly.
+
+## §1. WGSS has ONE canonical computation
+
+**Canonical: `scripts/war2-verdicts.sh`'s census** — over the recompile TSV's user rows,
+`WGSS = 1 − Σ orig_insns·(1 − sim) / Σ orig_insns` (columns 9 and 7 of the
+`recompile_check --out` contract). Every number in docs/byte-exact-status.md,
+docs/plan-to-0.8.md and the campaign memories is this computation; quote no other.
+
+Non-canonical variant on record: the wc2src-reconciliation session's ad-hoc awk
+(`docs/wc2src-reconciliation.md` on the `wc2src-reconcile` branch, "WGSS 0.4687 by the
+documented formula" for the same zc47 files the census scores 0.4840). The two differ by a
+consistent ≈3.3% normalization — deltas agree, levels do not. The offset predates the
+2026-08-24 campaign; do not mix the series. If a future session needs the census outside
+the script, it is the one-liner above — not a re-derivation (the script exists precisely
+because ad-hoc column picks have burned rounds before; see its header).
