@@ -2311,9 +2311,11 @@ The wc2src-reconciliation-2 batch, measured and pruned:
   the printer already merged. Reverted; the store-order frontier needs the call-crossing
   restructure modelled first.
 
-**zc60 (A1 + A2ii + A5, A3 and A6 reverted) vs zc57: 826 EXACT (+26), +1429.3 weighted, 32
+**zc60/zc61 (A1 + A2ii + A5, A3 and A6 reverted) vs zc57: 826 EXACT (+26), +1429.3 weighted, 32
 flips, 289 up / 80 down, and only two verdict downs — both A1 reordering an if/else chain into
-the SOURCE's guard-clause layout (0x15d20 `if(x==0){..}else{big}` → `if(x!=0){if(x==1){..}`).** The two
+the SOURCE's guard-clause layout (0x15d20 `if(x==0){..}else{big}` → `if(x!=0){if(x==1){..}`).**
+zc60 emitted `1ddf027-dirty`; **zc61 is the clean round of record — re-emit at HEAD `c41a6d1`
+(gate fix included), reproducing 826 EXACT / +1429.3w / 2 benign downs identically.** The two
 residual SAME_SHAPE→MISMATCH labels (0x15d20 sim 0.429→0.476, 0x2d2dc 0.542→0.542) are the
 byte-checker's structural bucket flipping under a form change at equal-or-higher sim — not byte
 regressions (the wrong-code-scores-better pattern). Remaining round-2 tail: A5-2/3 (multi-use
