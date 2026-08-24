@@ -1710,6 +1710,43 @@ fn main() {
                                     && sig_stable_vs(&f3)
                                     && consts_witnessed(&f3) =>
                             {
+                                // The adoption's PURPOSE is the arguments; the pragma-relevant
+                                // spec fields stay the LANDED ones BY CONSTRUCTION — the same
+                                // invariant the network kernel enforces. Without it the scoped
+                                // callee's exactness re-derives under the injected arity and
+                                // flips its clause (`modify [eax]` → `modify exact [eax]`),
+                                // and one memset-class callee re-declared exact moved a caller
+                                // 0.900 → 0.320 (zc54's 0x1fdbc, −140w — the round's entire
+                                // down mass in one function).
+                                let mut f3 = f3;
+                                let landed: HashMap<u64, (Option<u32>, Option<Vec<u64>>, bool)> = fl
+                                    .call_specs
+                                    .iter()
+                                    .filter_map(|(&op, cs)| {
+                                        let t = fl.op(op).input(0)?;
+                                        let cva = fl.vn(t).loc.offset;
+                                        (cva != 0).then(|| {
+                                            (cva, (cs.caller_cleans, cs.cdecl_modify.clone(), cs.cdecl_exact))
+                                        })
+                                    })
+                                    .collect();
+                                let ops_callee: Vec<(mosura::decompile::op::OpId, u64)> = f3
+                                    .call_specs
+                                    .keys()
+                                    .filter_map(|&op| {
+                                        let t = f3.op(op).input(0)?;
+                                        let cva = f3.vn(t).loc.offset;
+                                        (cva != 0).then_some((op, cva))
+                                    })
+                                    .collect();
+                                for (op, cva) in ops_callee {
+                                    if let Some((cleans, modify, exact)) = landed.get(&cva) {
+                                        let cs = f3.call_specs.get_mut(&op).unwrap();
+                                        cs.caller_cleans = *cleans;
+                                        cs.cdecl_modify = modify.clone();
+                                        cs.cdecl_exact = *exact;
+                                    }
+                                }
                                 ok = true;
                                 consistency_forced = true;
                                 eprintln!(
