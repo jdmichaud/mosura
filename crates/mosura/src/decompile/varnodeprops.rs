@@ -97,6 +97,15 @@ pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
                     // escapes are discovered, so an aliased slot was never marked.
                     f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED;
                 }
+                StackClass::ParamUnaliased => {
+                    // Symbol flags survive (mapped|addrtied — addrforce untouched: "if addrtied
+                    // is cleared, so should addrforce" only applies when it IS cleared), and the
+                    // walk's verdict is recorded so the collapse consumer sees it.
+                    f.vn_mut(id).flags |= flags::MAPPED | flags::ADDRTIED;
+                    if unmapped_alias_check {
+                        f.vn_mut(id).flags |= flags::NOLOCALALIAS;
+                    }
+                }
                 StackClass::Unaliased if !unmapped_alias_check => {
                     // Pass 0: no alias analysis has run, so Ghidra's `fl = 0` — addrtied is cleared
                     // ("we can CLEAR but not SET"), but nolocalalias is NOT set.
@@ -122,10 +131,19 @@ pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
 /// The stack classification a varnode nets out to under the `markUnaliased` walk.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum StackClass {
-    /// Keep `mapped | addrtied` (aliased, or a parameter-area symbol).
+    /// Keep `mapped | addrtied` (aliased).
     Aliased,
     /// Clear `addrtied`/`addrforce`; at an `aliasyes` pass also record `nolocalalias`.
     Unaliased,
+    /// A `paramrange` slot the walk found unaliased. Ghidra's parameter SYMBOL keeps
+    /// `mapped | addrtied` through the sync — but `markUnaliased` still marks the symbol
+    /// `nolocalalias` ("this is primarily to reset aliasing between stack parameters and stack
+    /// locals", varmap.cc:1372) and `RuleIndirectCollapse` keys on THAT flag, so the slot's
+    /// call-crossing INDIRECTs still collapse and the parameter stays ONE variable. Keeping only
+    /// `addrtied` here (zc48) left the INDIRECTs standing and split every post-call read of a
+    /// stack parameter into a fresh local (`iVar1 = param_2;` — the 0x6c390 down class, 27
+    /// functions, −75.5w); Ghidra and the zc47 world both print the single variable.
+    ParamUnaliased,
 }
 
 /// The precomputed side of Ghidra `ScopeLocal::markUnaliased` (varmap.cc:1332): the scope's
@@ -191,8 +209,10 @@ impl StackAliasCtx {
 ///   Ghidra's not-inScope branch → `isUnmappedUnaliased` (varmap.cc:494): with no
 ///   parameter-area carve tracked (`maxParamOffset < minParamOffset`) that is *unaliased*;
 /// * inside `paramrange` — a parameter symbol; symbol flags (`mapped | addrtied`) survive the
-///   sync, so *aliased* here (the walk may add `nolocalalias` to the symbol, but the flags a
-///   varnode inherits keep `addrtied`, and mosura's net classification folds the two);
+///   sync, AND the walk still records `nolocalalias` when no alias reaches the slot
+///   (varmap.cc:1372's own note: "primarily to reset aliasing between stack parameters and
+///   stack locals") — that flag is what lets `RuleIndirectCollapse` fold the slot's
+///   call-crossing INDIRECTs so a stack parameter reads as ONE variable;
 /// * otherwise the walk itself: aliased iff the last alias offset at/below the varnode's end
 ///   (`while (alias[i] <= curoff) curalias = alias[i++]`) lies in the SAME contiguous owned run
 ///   (`rng.getFirst() > curalias → aliason = false` — "Aliases shouldn't go thru unmapped
@@ -205,9 +225,7 @@ fn classify_stack(ctx: &StackAliasCtx, off: u64, size: u32) -> StackClass {
     let Some(&(run_first, _)) = ctx.owned.iter().find(|&&(a, b)| a <= off && end <= b) else {
         return StackClass::Unaliased; // not inScope → isUnmappedUnaliased → no alias
     };
-    if ctx.params.iter().any(|&(a, b)| a <= off && end <= b) {
-        return StackClass::Aliased; // parameter symbols keep mapped|addrtied
-    }
+    let is_param = ctx.params.iter().any(|&(a, b)| a <= off && end <= b);
     let idx = ctx.alias.partition_point(|&a| a <= end);
     if idx > 0 {
         let curalias = ctx.alias[idx - 1];
@@ -215,7 +233,11 @@ fn classify_stack(ctx: &StackAliasCtx, off: u64, size: u32) -> StackClass {
             return StackClass::Aliased;
         }
     }
-    StackClass::Unaliased
+    if is_param {
+        StackClass::ParamUnaliased // symbol keeps mapped|addrtied; nolocalalias still recorded
+    } else {
+        StackClass::Unaliased
+    }
 }
 
 #[cfg(test)]
