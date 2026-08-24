@@ -693,6 +693,34 @@ flip into the condition ops at collapse time) or prove the XOR algebra and fix t
 inconsistent term. Audit afterwards: every && / || in the corpus emitted before the fix
 is suspect; the polarity-row census (branch-target+selection Jcc pairs) is the sweep.
 
+## Round-3 axes (2026-08-24, wc2src-reconciliation-3.md) — the N-axes are Watcom lotteries
+
+LANDED: **N3 array-index=spelled** (zc64, +57w, zero regressions) — a scaled-index access through
+a constant/global base, single-deref and non-shared-index only, renders `((T*)base)[i]`. The
+gates matter: the blanket form broke 2 EXACT (shared `param_1*4` / multi-deref pointer — the
+original keeps the address in a register and reuses it; the subscript recomputes).
+
+FILED (need a survey-side BYTE WITNESS — the axis exists, defaulted off):
+- **N1 join-width=consumer** (9a8b37d groundwork + CallSpec::param_widths): declare a constant-join
+  local at its consumer's param width. Blanket = lottery (MOV DL vs MOV EDX per function). Witness:
+  does the original materialize the constant in the sub-register?
+- **N3 blanket** (the multi-use/RMW cases the single-use gate drops): witness = does the original
+  use a scaled-index operand `[reg+i*4]` vs an explicit SHL/ADD + register load?
+
+REMAINING N-axes (probe-scale first, one per round, zero-EXACT-regression):
+- **N2 boolean-tail un-merge** (+0.17 on its specimen): print `bVar=cond;…if(bVar){tail}` as two
+  plain-return tails. Structural un-join — medium risk.
+- **N4 nested-guard un-merge** (+0.09): re-split a merged `||` into the source's nested early
+  return. Same address-witness as A1.
+- **N5 block placement** — the LARGEST structural residue AND the riskiest (the doc says so):
+  emit blocks in original address order (shared tails / early-return epilogues at their address).
+  Probe validate_target first; hold the zero-regression bar without mercy. Generalizes D3a.
+
+KEY FINDING (3rd confirmation after A3/A6): the doc's single-function probes are HAND-EDITED and
+hide that these axes are value-identical but Watcom-codegen lotteries. Measure the blanket at
+corpus scale, classify the EXACT losses, gate to the safe subset, and refile the lottery remainder
+as byte-witnessed.
+
 ## Round-2 form axes: the tail (2026-08-24, after zc60 — docs/byte-exact-status.md, wc2src-reconciliation-2.md)
 
 Landed this session (each a reference-defaulted axis, self-compiled-MVE tested): A2i frame
