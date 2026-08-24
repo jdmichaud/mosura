@@ -2289,12 +2289,20 @@ The wc2src-reconciliation-2 batch, measured and pruned:
 - **A1 (arm-order=address)**, **A2ii (struct-locals=coalesce)**, **A5 (narrow-tests=rewiden)**:
   recovered/emitter axes, each defaulting to the reference rendering, each self-compiled-MVE
   tested. These carry the round.
-- **A6 (over-call clamp): REFUTED (e2d8b49).** zc58 measured it net-harmful — it caused a
-  verdict regression (0x5fb24: clamped a `0` the original pushes at a callee that ignores its
-  3rd param) and regressed its own specimen check_attack 0.608→0.472 (the doc's probe was on a
-  stale baseline). At the IR level a placed-for-this-call constant and a swept-from-a-previous-call
-  constant are identical; only the bytes separate them, which the recover.rs clamp cannot see.
-  Refiled for the survey side.
+- **A6 (over-call clamp): REVERTED (e2d8b49), a MIXED result — not the one-sided regression an
+  earlier draft claimed.** CORRECTION: the clamp *improved* its specimen check_attack (zc57 0.472
+  → zc58 0.608 with the clamp, back to 0.472 reverted) — the earlier "regressed 0.608→0.472"
+  sentence had the direction backwards (a two-file grep misread). The real result: the clamp was
+  RIGHT where the extra argument is junk — six functions were EXACT only under it (the **acceptance
+  set**: 0x436a0 unit_set_curr_action, 0x43210, 0x16aac, 0x18e00 attack_dispatch_stand_attack,
+  0x39d24, 0x498a0 — each an over-collected `(param_1, 0)` → `(param_1)` the bytes confirm is
+  junk) — and WRONG where it is a real-but-ignored argument (the **must-not-drop set**: 0x5fb24
+  a genuinely pushed `0`, 0x16478, 0x19a5c, 0x1ea4c, 0x260c4, 0x26170 — real args at callees
+  that ignore their parameter, EXACT at zc57/zc60 and lost at zc58). At the IR level a
+  placed-for-this-call constant and a swept-from-a-previous-call one are identical; only the
+  original's bytes separate them, which `recover.rs` cannot see. Reverted meanwhile — AT A COST
+  OF THE SIX ACCEPTANCE-SET EXACT — and refiled for the survey side (where the const-evidence
+  pre-call window exists): keep the acceptance set, never drop the must-not-drop set.
 - **A3 (store order): REFUTED (git reverts of e26e03e, bd6b021).** zc59 showed a 4-function
   EXACT→SAME_SHAPE regression (0x165f4 + 3 siblings): a global store that CROSSES A CALL is
   re-materialized late by the persist-store restructure, A3's run collection cannot span the
