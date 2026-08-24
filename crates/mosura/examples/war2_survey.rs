@@ -766,8 +766,11 @@ fn main() {
             c.set("struct-locals", "coalesce").expect("known axis");
             // byte-of-word zero tests at the operand's width (A5).
             c.set("narrow-tests", "rewiden").expect("known axis");
-            // constant-join locals declared at their consuming call's param width (N1).
-            c.set("join-width", "consumer").expect("known axis");
+            // N1 (join-width=consumer) is NOT selected: zc62 measured the blanket form net-flat
+            // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
+            // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
+            // only the original's bytes separate them, so N1 needs a DL-vs-EDX byte witness
+            // (survey-side, like ext-cast). The axis + CallSpec::param_widths stay as groundwork.
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
