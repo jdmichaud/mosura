@@ -2129,7 +2129,7 @@ parameters; caller TUs pass one), not just missing bytes. Direction = JD's call.
 
 ### zc49 (2026-08-24): the D5 denominator + the params-split repair — 6 rows rejoin
 
-Two deltas vs zc48 (binary d107046): the INT3 declassification (D5) and the
+Two deltas vs zc48 (binary 0ffd13e): the INT3 declassification (D5) and the
 `ParamUnaliased` repair of zc48's one down class.
 
 - **Denominator**: the six INT3 rows join as `kind=user` — and score at once as MISMATCH
@@ -2137,7 +2137,7 @@ Two deltas vs zc48 (binary d107046): the INT3 declassification (D5) and the
   0.106–0.336; 0x2d7fc lands at 0.336, exactly the reconciliation doc's `--only` measure.
   Weight 121731 → 122466, so the WGSS *mean* reads 0.5004 against zc48's 0.5014 — the
   common-row comparison is the honest one: **+47.4 weighted, 22 up / 13 down, 0 flips.**
-- **Params repair** (d107046): an unaliased `paramrange` slot keeps `mapped|addrtied` but
+- **Params repair** (0ffd13e): an unaliased `paramrange` slot keeps `mapped|addrtied` but
   records `nolocalalias` again, so its call-crossing INDIRECTs collapse and a stack
   parameter reads as ONE variable (Ghidra's shape; fixture test
   `stack_param_single_variable.rs`). The zc48 down class recovers: 0x6c390 0.361 → 0.522,
@@ -2162,7 +2162,7 @@ form): 0x2a4f0 restored to MISMATCH 0.323, nothing else moved. The assert-trap r
 move (±0.002 — the byte itself is one instruction of many); the arm's value is app_fatal,
 0x721a5, and honest compilability.
 
-**Day's net (master 2a79119 → 50de111, zc47 → zc51): WGSS 0.4840 → 0.5004 — first crossing
+**Day's net (master 2a79119 → 2bd6ee4, zc47 → zc51): WGSS 0.4840 → 0.5004 — first crossing
 of 0.50 — with +2169 weighted on common rows; 771 EXACT (+4); 91 SAME_SHAPE (+23); the
 denominator honestly larger by six functions (+735w); zero verdict regressions across the
 chain (zc50's transient repaired in zc51).** The wc2src work orders: D1 fixed (the
