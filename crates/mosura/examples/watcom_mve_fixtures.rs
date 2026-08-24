@@ -78,14 +78,14 @@ void mve(unsigned short *p)
 }
 "#;
 
-/// A global table indexed by a parameter, read ONCE (single-deref, non-shared index — the
-/// gated N3 case). `gtbl` resolves to a data address; the access is `*(int *)(i*4 + &gtbl)`,
-/// which the array-index axis spells `((int *)&gtbl)[i]`.
+/// A global table indexed by a parameter, incremented in place — the scaled-index pointer-temp
+/// case N3 inlines. Watcom addresses the RMW with a scaled-index operand (`INC dword ptr
+/// [reg*4 + &gtbl]`), so the byte witness accepts it; the axis spells `((int *)&gtbl)[i]++`.
 const ARRAY_INDEX_SRC: &str = r#"
 extern int gtbl[];
-int mve(int i)
+void mve(int i)
 {
-    return gtbl[i];
+    gtbl[i]++;
 }
 "#;
 

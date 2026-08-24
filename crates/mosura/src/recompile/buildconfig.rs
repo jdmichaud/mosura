@@ -585,6 +585,29 @@ pub fn store_orders_from_evidence(
     out
 }
 
+/// N3 (wc2src-reconciliation-3): which scaled-index access sites the ORIGINAL addresses with a
+/// scaled-index (SIB) operand `[reg*sz + base]` — those are spelled as array subscripts; the rest
+/// (the original computed the address into a register with SHL/ADD) keep the pointer arithmetic.
+/// Per candidate `(access pc, element size)`: find the instruction at that pc and look for a
+/// `*0x<sz> +` / `*0x<sz>]` scaled-operand token in its disassembly (the same text-witness the
+/// store-order reader uses). count_remove's `DEC word ptr [EAX*0x2 + 0x8fa50]` matches; 0x19280's
+/// `CMP EBX,[EAX + 0x801c8]` (the *4 is a separate instruction) does not.
+pub fn array_index_sites_from_evidence(
+    cands: &[(u64, u32)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, sz) in cands {
+        let Some(insn) = insns.iter().find(|x| x.addr == pc) else { continue };
+        let scaled = format!("*0x{sz:x} ");
+        let scaled_end = format!("*0x{sz:x}]");
+        if insn.text.contains('[') && (insn.text.contains(&scaled) || insn.text.contains(&scaled_end)) {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the printed arm order of two-arm constant joins from the ORIGINAL's own layout
 /// (wc2src D3b). For each candidate `(branch pc, then k, else k)`: find the conditional jump
 /// at that address and scan forward a short window for the first instruction materializing

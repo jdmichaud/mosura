@@ -186,6 +186,10 @@ pub struct EmitReport {
     /// which constant it materializes first past the conditional jump — decides the printed
     /// arm order (wc2src D3b; the `.SAV`/`.NET` ternary of `sfile_make_name`).
     pub arm_swap_candidates: Vec<(u64, u64, u64)>,
+    /// N3 (array-index): scaled-index accesses through a constant/global base — `(deref pc,
+    /// element size)` per access. The witness (`buildconfig::array_index_sites_from_evidence`)
+    /// keeps only pcs where the ORIGINAL uses a scaled-index operand `[reg*sz + base]`.
+    pub array_index_candidates: Vec<(u64, u32)>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -236,6 +240,8 @@ pub struct RecoveredChoices {
     /// original materializes the else-arm's constant first (`arm_swap_candidates` evidence,
     /// `buildconfig::arm_swaps_from_evidence`).
     pub arm_swap_sites: std::collections::HashSet<u64>,
+    /// N3 access pcs to spell as subscripts — witnessed by the original's scaled-index operand.
+    pub array_index_sites: std::collections::HashSet<u64>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -1534,29 +1540,6 @@ impl<'a> PrintC<'a> {
                         let b = self.operand(base, 16, false);
                         let i = self.render_var(idx).0;
                         return (format!("{b}[{i}]"), 16);
-                    }
-                }
-                // N3 (wc2src-reconciliation-3): a scaled-index access through a CONSTANT or GLOBAL
-                // base that is not a recovered array — `owner*2 + 0x8fa50`, `gfpUnitMap + i*4`.
-                // Render `((T *)base)[i]` (value-identical) so Watcom uses a scaled-index operand.
-                // Either INT_ADD input may be the base; the other must be `idx * size`.
-                if self.array_index_spelled && size > 0 {
-                    for (b, o2) in [(base, off), (off, base)] {
-                        if !self.n3_base_ok(b) {
-                            continue;
-                        }
-                        // Skip a SHARED scaled index: if the `idx * size` term feeds more than
-                        // this one access, the original keeps it in a register and reuses it
-                        // (0x19280's `param_1*4` across three tables) — the subscript form, which
-                        // recomputes per access, breaks that (value-identical but byte-different).
-                        if self.f.vn(o2).descend.iter().filter(|&&u| !self.f.op(u).is_dead()).count() != 1 {
-                            continue;
-                        }
-                        if let Some(idx) = self.scaled_index(o2, size) {
-                            let bs = self.operand(b, 14, false);
-                            let i = self.render_var(idx).0;
-                            return (format!("(({} *){bs})[{i}]", vty.name()), 16);
-                        }
                     }
                 }
             }
@@ -5064,32 +5047,39 @@ fn print_c_inner(
                 None
             };
             let Some((base, idx)) = pick(a, b).or_else(|| pick(b, a)) else { continue };
-            // Skip a SHARED scaled index: the `idx * size` term (the INT_ADD's non-base input)
-            // must feed only this one address. 0x19280 multiplies `param_1 * 4` once and adds it
-            // to three different table bases; the original keeps `param_1*4` in a register and
-            // reuses it, which the per-access subscript form breaks. The scaled term is `a` or `b`
-            // — whichever is NOT the base.
-            let scaled = if base == a { b } else { a };
-            if f.vn(scaled).descend.iter().filter(|&&u| !f.op(u).is_dead()).count() != 1 {
-                continue;
-            }
-            // EXACTLY ONE deref use. A pointer temp the original keeps in a register and
-            // dereferences more than once (an RMW `*p = *p - 1`, or `if (x==*p) *p = 0` — 0x67950)
-            // is a Watcom-operand lottery: inlining recomputes the address at each use and can
-            // break a byte-exact function. One use has nothing to reuse, so it is safe.
+            let _ = idx;
+            // Every use must be a LOAD/STORE deref at width == elem, collecting the access pcs.
             let uses: Vec<OpId> = f.vn(out).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
-            if uses.len() != 1 {
+            if uses.is_empty() {
                 continue;
             }
+            let mut pcs: Vec<u64> = Vec::new();
             let all_deref = uses.iter().all(|&u| {
                 let uo = f.op(u);
-                match uo.code() {
+                let ok = match uo.code() {
                     OpCode::Load => uo.input(1) == Some(out) && uo.output.is_some_and(|v| f.vn(v).size == elem),
                     OpCode::Store => uo.input(1) == Some(out) && uo.input(2).is_some_and(|v| f.vn(v).size == elem),
                     _ => false,
+                };
+                if ok {
+                    pcs.push(uo.seqnum.pc.offset);
                 }
+                ok
             });
             if !all_deref {
+                continue;
+            }
+            // N3 WITNESS (wc2src-reconciliation-3, reviewer's steer — witnessed from the first
+            // round, not blanket-then-gate): the subscript form is value-identical to the pointer
+            // arithmetic but is a Watcom-codegen LOTTERY — the original either addresses the access
+            // with a scaled-index operand (`[reg*sz + base]` → spell the subscript) or keeps the
+            // address in a register (`SHL`/`ADD` then `[reg]` → keep the arithmetic). Record each
+            // access pc as a candidate; inline only when EVERY deref is witnessed (the recovered
+            // set is empty on the report pass, so this records there and applies on the final one).
+            for &pc in &pcs {
+                p.report.array_index_candidates.push((pc, elem));
+            }
+            if !pcs.iter().all(|pc| p.recovered.array_index_sites.contains(pc)) {
                 continue;
             }
             p.array_index_temps.insert(out, (base, idx, (*pointee).clone()));

@@ -2177,6 +2177,10 @@ fn main() {
                     &report.arm_swap_candidates,
                     &insns,
                 ),
+                array_index_sites: mosura::recompile::buildconfig::array_index_sites_from_evidence(
+                    &report.array_index_candidates,
+                    &insns,
+                ),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
                     &report.allones_cmp_candidates,
                     &insns,
