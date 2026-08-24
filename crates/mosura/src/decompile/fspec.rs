@@ -1169,6 +1169,11 @@ impl ParamTrial {
         self.flags |= trial_flags::DEFNOUSE | trial_flags::CHECKED;
         self.flags &= !trial_flags::ACTIVE;
     }
+    /// Withdraw a `used` verdict (the A6 over-call clamp): the trial stays checked, it just does
+    /// not become an argument.
+    pub fn mark_unused(&mut self) {
+        self.flags &= !trial_flags::USED;
+    }
     pub fn mark_used(&mut self) {
         self.flags |= trial_flags::USED;
     }
