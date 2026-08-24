@@ -555,22 +555,37 @@ pub fn store_orders_from_evidence(
     insns: &[NormInsn],
 ) -> std::collections::HashMap<crate::decompile::op::OpId, Vec<crate::decompile::op::OpId>> {
     let mut out = std::collections::HashMap::new();
+    // The ORIGINAL's stores to absolute addresses, in instruction order: every p-code STORE
+    // whose pointer is a constant — a plain `MOV [addr],reg` and the read-modify-write forms
+    // (`OR byte ptr [addr],0x40`, `INC dword ptr [addr]`) alike (A3: the fidget shape).
+    let store_code = crate::decompile::opcode::OpCode::Store as u32;
+    let mut writes: Vec<(usize, u64)> = Vec::new();
+    for (i, x) in insns.iter().enumerate() {
+        for sop in &x.sem {
+            if sop.opcode != store_code {
+                continue;
+            }
+            if let Some(SemArg::Const(a, _)) = sop.ins.get(1) {
+                writes.push((i, *a));
+            }
+        }
+    }
     for run in runs {
-        let mut order: Vec<(usize, crate::decompile::op::OpId)> = Vec::new();
+        // Unambiguous only: the function must write each address exactly as many times as the
+        // run stores it, and same-address stores pair by occurrence (their order never moves).
         let mut ok = true;
+        let mut order: Vec<(usize, crate::decompile::op::OpId)> = Vec::new();
+        let mut seen: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
         for &(op, addr, _sz) in run {
-            let dest = format!("[0x{addr:x}],");
-            let hits: Vec<usize> = insns
-                .iter()
-                .enumerate()
-                .filter(|(_, x)| x.text.starts_with("MOV ") && x.text.contains(&dest))
-                .map(|(i, _)| i)
-                .collect();
-            if hits.len() != 1 {
+            let hits: Vec<usize> = writes.iter().filter(|&&(_, a)| a == addr).map(|&(i, _)| i).collect();
+            let in_run = run.iter().filter(|r| r.1 == addr).count();
+            if hits.len() != in_run {
                 ok = false;
                 break;
             }
-            order.push((hits[0], op));
+            let k = seen.entry(addr).or_insert(0);
+            order.push((hits[*k], op));
+            *k += 1;
         }
         if !ok {
             continue;

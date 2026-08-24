@@ -5085,13 +5085,12 @@ fn print_c_inner(
             let bid = BlockId(bi);
             let mut run: Vec<(OpId, u64, u32)> = Vec::new();
             let flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
+                // A3 (wc2src-reconciliation-2): repeated addresses are allowed in a run —
+                // `seqFace++; seqFace &= 7;` are two stores to one global. The evidence
+                // readout matches same-address stores by occurrence, so their relative order
+                // is never changed; only INDEPENDENT stores move.
                 if run.len() >= 2 {
-                    let mut addrs: Vec<u64> = run.iter().map(|r| r.1).collect();
-                    addrs.sort_unstable();
-                    addrs.dedup();
-                    if addrs.len() == run.len() {
-                        rep.store_runs.push(run.clone());
-                    }
+                    rep.store_runs.push(run.clone());
                 }
                 run.clear();
             };
@@ -5115,14 +5114,23 @@ fn print_c_inner(
                 // renders without reading memory (recursive purity over the implied tree:
                 // constants, non-ram inputs/locals, and pure arithmetic; no loads, no
                 // calls).
-                fn pure_expr(f: &Funcdata, p: &PrintC, v: VarnodeId, depth: u32) -> bool {
+                fn pure_expr(
+                    f: &Funcdata,
+                    p: &PrintC,
+                    v: VarnodeId,
+                    depth: u32,
+                    self_dest: Option<(u64, u32)>,
+                ) -> bool {
                     let r = f.vn(v);
                     let ram = f.spaces.by_name("ram");
                     if r.is_constant() {
                         return true;
                     }
                     if Some(r.loc.space) == ram {
-                        return false;
+                        // A3: a read-modify-write of the store's OWN global (`x = x | c`,
+                        // `x = x + 1`) depends on no other store in the run, so it may move
+                        // past them; a read of any OTHER global still pins the statement.
+                        return self_dest == Some((r.loc.offset, r.size));
                     }
                     if r.is_input() || p.is_explicit(v) {
                         return true;
@@ -5147,7 +5155,7 @@ fn print_c_inner(
                             | OpCode::IntRight
                             | OpCode::Subpiece
                     ) && (0..o.num_inputs()).all(|i| {
-                        o.input(i).is_some_and(|x| pure_expr(f, p, x, depth - 1))
+                        o.input(i).is_some_and(|x| pure_expr(f, p, x, depth - 1, self_dest))
                     })
                 }
                 // The PRINTING op for a persist store is either the direct COPY to the
@@ -5170,7 +5178,7 @@ fn print_c_inner(
                         *p.high_ram_off.get(&p.high_of[out.0 as usize])?
                     };
                     let rhs = o.input(0)?;
-                    pure_expr(f, &p, rhs, 4).then_some((out, addr, vn.size))
+                    pure_expr(f, &p, rhs, 4, Some((addr, vn.size))).then_some((out, addr, vn.size))
                 })();
                 if std::env::var_os("MOSURA_STORE_DEBUG").is_some() {
                     let od = o.output.map(|v| {
