@@ -2281,3 +2281,32 @@ Self-compiled fixture in sfile's exact frame shape (`53 51 52 55 89e5 83ec0c`) p
 **vs zc56: 800 EXACT (+12 — every flip SAME_SHAPE → EXACT: 29af0, 2d360, 2d39c, 33ad0
 sfile_make_name, 360a0, 39e2c, 4801c, 4a4ac, 4f860, 4f8b0, 50434, 5115c), WGSS 0.5042 →
 0.5069 (+325.8w), 101 up / 6 down, zero verdict regressions.**
+
+### zc58–zc60 (2026-08-24): round-2 form axes measured — A1/A2ii/A5 land, A3 and A6 refuted
+
+The wc2src-reconciliation-2 batch, measured and pruned:
+
+- **A1 (arm-order=address)**, **A2ii (struct-locals=coalesce)**, **A5 (narrow-tests=rewiden)**:
+  recovered/emitter axes, each defaulting to the reference rendering, each self-compiled-MVE
+  tested. These carry the round.
+- **A6 (over-call clamp): REFUTED (e2d8b49).** zc58 measured it net-harmful — it caused a
+  verdict regression (0x5fb24: clamped a `0` the original pushes at a callee that ignores its
+  3rd param) and regressed its own specimen check_attack 0.608→0.472 (the doc's probe was on a
+  stale baseline). At the IR level a placed-for-this-call constant and a swept-from-a-previous-call
+  constant are identical; only the bytes separate them, which the recover.rs clamp cannot see.
+  Refiled for the survey side.
+- **A3 (store order): REFUTED (git reverts of e26e03e, bd6b021).** zc59 showed a 4-function
+  EXACT→SAME_SHAPE regression (0x165f4 + 3 siblings): a global store that CROSSES A CALL is
+  re-materialized late by the persist-store restructure, A3's run collection cannot span the
+  call, and its partial reorder put the stores in the wrong order where the natural order was
+  already EXACT. A3's only cited win (fidget) does not benefit — its two seqFace stores reach
+  the printer already merged. Reverted; the store-order frontier needs the call-crossing
+  restructure modelled first.
+
+**zc60 (A1 + A2ii + A5, A3 and A6 reverted) vs zc57: 826 EXACT (+26), +1429.3 weighted, 32
+flips, 289 up / 80 down, and only two verdict downs — both A1 reordering an if/else chain into
+the SOURCE's guard-clause layout (0x15d20 `if(x==0){..}else{big}` → `if(x!=0){if(x==1){..}`).** The two
+residual SAME_SHAPE→MISMATCH labels (0x15d20 sim 0.429→0.476, 0x2d2dc 0.542→0.542) are the
+byte-checker's structural bucket flipping under a form change at equal-or-higher sim — not byte
+regressions (the wrong-code-scores-better pattern). Remaining round-2 tail: A5-2/3 (multi-use
+narrow-temp inlining) and A4 (for-loop emission).
