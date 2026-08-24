@@ -2230,3 +2230,20 @@ axes the reconciliation doc names; restored with classification:
   14 near-frontier functions): the same C-promotion-vs-16-bit-context mechanism, probed to
   its SAME_SHAPE ceiling on 0x4cb60 and parked on the TEST-mem selection question. D3e adds
   chk_splash's `UWORD wSplashed` post-decrement as a further specimen, not a new axis.
+
+### D5 closed: the remaining 90 `kind=asm` rows audited (2026-08-24, evening)
+
+The INT3 class was the only false positive. The other 90 rows, trigger-by-trigger
+(the dumpkind probe prints each trigger with its two-instruction context):
+
+| class | rows | reading |
+| --- | --- | --- |
+| segment registers (`PUSH/POP ES/DS/FS/GS`, `MOV ES/DS,`) | 42 | flat-model compiled C never touches them; the blitter/handler openings |
+| `INT n` (0x10 / 0x21 / 0x31 …) | 22 | BIOS/DOS/DPMI calls — inline only via hand asm |
+| port I/O (`IN`/`OUT` — PIT 0x40–43, VGA 0x3c7–3c9, `DX`) | 18 | timer / palette / driver code |
+| flags image (`PUSHF/PUSHFD/POPFD`) | 8 | interrupt-context save around CLI/STI |
+
+Every trigger sits in live idiomatic context (`MOV DX,0x3c8 ; OUT DX,AL`, `MOV AH,n ; INT
+0x21`) — none is trailing padding or a data run decoded as code, the two shapes that made
+the INT3 rows false. The denominator's exclusion list is now evidence-audited end to end:
+90 asm rows, each with a hand-assembly witness the flat-model compiler cannot emit.
