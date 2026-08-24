@@ -20,6 +20,21 @@ int mve(unsigned n)
 }
 "#;
 
+/// sfile_make_name's frame shape: three killed-register saves (EBX/ECX/EDX, forced by an
+/// extern taking four register arguments) stacked ABOVE the EBP frame, and a 12-byte buffer
+/// whose address escapes. The saved-EBP slot is the ownership hole that must BOUND the
+/// buffer's open range (adjustFit); without it the buffer declares as the whole frame.
+const FRAME_EXTENT_SRC: &str = r#"
+extern int fmt4(char *dst, unsigned a, unsigned b, unsigned c);
+extern void use(char *s);
+void mve(unsigned n)
+{
+    char buf[12];
+    fmt4(buf, n, n + 1, n + 2);
+    use(buf);
+}
+"#;
+
 const STACK_PARAM_SRC: &str = r#"
 extern void hit(void);
 void __cdecl mve(int base, int idx)
@@ -56,6 +71,7 @@ fn main() {
     let units = [
         ("CSAVE", "mve_", CALLEE_SAVE_SRC, "x86_watcom_callee_save.xml", 0x1000u64),
         ("SPARM", "_mve", STACK_PARAM_SRC, "x86_watcom_stack_param_single_var.xml", 0x2000u64),
+        ("FRAME", "mve_", FRAME_EXTENT_SRC, "x86_watcom_frame_extent.xml", 0x3000u64),
     ];
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {
