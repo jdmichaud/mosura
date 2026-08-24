@@ -78,6 +78,17 @@ void mve(unsigned short *p)
 }
 "#;
 
+/// A global table indexed by a parameter, read ONCE (single-deref, non-shared index — the
+/// gated N3 case). `gtbl` resolves to a data address; the access is `*(int *)(i*4 + &gtbl)`,
+/// which the array-index axis spells `((int *)&gtbl)[i]`.
+const ARRAY_INDEX_SRC: &str = r#"
+extern int gtbl[];
+int mve(int i)
+{
+    return gtbl[i];
+}
+"#;
+
 const STACK_PARAM_SRC: &str = r#"
 extern void hit(void);
 void __cdecl mve(int base, int idx)
@@ -118,6 +129,7 @@ fn main() {
         ("GUARD", "mve_", GUARD_ORDER_SRC, "x86_watcom_guard_order.xml", 0x4000u64),
         ("SPLIT", "mve_", SPLIT_LOCAL_SRC, "x86_watcom_split_local.xml", 0x5000u64),
         ("NTEST", "mve_", NARROW_TEST_SRC, "x86_watcom_narrow_test.xml", 0x6000u64),
+        ("ARRIDX", "mve_", ARRAY_INDEX_SRC, "x86_watcom_array_index.xml", 0x7000u64),
     ];
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {
@@ -131,7 +143,7 @@ fn main() {
         // fixture decompiles to nothing.
         let stub = base + 0x1000;
         let data = base + 0x2000;
-        let resolver = move |sym: &str| Some(if sym.contains("gsum") || sym.contains("tbl") { data } else { stub });
+        let resolver = move |sym: &str| Some(if sym.contains("gsum") || sym.contains("tbl") || sym.contains("gtbl") { data } else { stub });
         let cand = load_object_function(&obj, sym, base, &resolver)
             .unwrap_or_else(|e| panic!("{key}: {e}\nlog:\n{}", outp.log));
         let hex: String = cand.relinked_bytes().iter().map(|b| format!("{b:02x}")).collect();

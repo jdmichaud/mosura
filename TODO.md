@@ -703,9 +703,14 @@ original keeps the address in a register and reuses it; the subscript recomputes
 FILED (need a survey-side BYTE WITNESS — the axis exists, defaulted off):
 - **N1 join-width=consumer** (9a8b37d groundwork + CallSpec::param_widths): declare a constant-join
   local at its consumer's param width. Blanket = lottery (MOV DL vs MOV EDX per function). Witness:
-  does the original materialize the constant in the sub-register?
+  does the original materialize the constant in the sub-register (an 8-bit `MOV r8,imm8`)? Accept:
+  0x2c920, 0x4a50c; must-not-drop: 0x2c9a8 (do_unit_comp_defend, `MOV EDX,0xc`/`MOV EDX,0x10`).
 - **N3 blanket** (the multi-use/RMW cases the single-use gate drops): witness = does the original
-  use a scaled-index operand `[reg+i*4]` vs an explicit SHL/ADD + register load?
+  use a scaled-index operand `[reg+i*4]` vs an explicit SHL/ADD + register load? Accept set (EXACT
+  under blanket zc63, dropped by the single-use gate): 0x38cf4, 0x4c6a0, plus count_remove 0x1fca4
+  (0.604 blanket → 0.520 gated). Must-not-drop (EXACT lottery losses the gate correctly avoids):
+  0x19280 (shared `param_1*4` across three tables), 0x67950 (pointer dereffed twice). The witness
+  must re-include the accept set without the must-not-drop set.
 
 REMAINING N-axes (probe-scale first, one per round, zero-EXACT-regression):
 - **N2 boolean-tail un-merge** (+0.17 on its specimen): print `bVar=cond;…if(bVar){tail}` as two
