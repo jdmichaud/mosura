@@ -703,7 +703,18 @@ Two axes REFUTED and reverted with their evidence — do not re-attempt without 
 named blocker:
 - **A6 over-call clamp**: dropping an extra register argument needs the ORIGINAL's bytes (was
   it pushed for THIS call?), which `recover::derive_input_map` cannot see. Refile on the
-  survey side, reusing the net-kernel's const-evidence pre-call window.
+  survey side, reusing the net-kernel's const-evidence pre-call window. The clamp was a MIXED
+  result, not one-sided (docs/byte-exact-status.md zc58-60): it earned EXACT at the ACCEPTANCE
+  set (junk args correctly dropped — 0x436a0, 0x43210, 0x16aac, 0x18e00, 0x39d24, 0x498a0) and
+  lost EXACT at the MUST-NOT-DROP set (real callee-ignored args — 0x5fb24, 0x16478, 0x19a5c,
+  0x1ea4c, 0x260c4, 0x26170). The refile's acceptance test: EXACT on the first set, no change
+  on the second. NOTE: `eb5d3a8`'s survey-side over-call detection is now INERT (the clamp it
+  fed is reverted) — either delete it or make it carry this byte-witnessed refile.
+- **D3a early-return / merged result variable** (round 1, still open): mosura renders
+  `xVar2 = 0; if (...) {...} return xVar2;` where the source early-returns through a shared
+  epilogue; the candidate grows `XOR AH,AH` + a join `MOV AL,AH`. The shared-return arm
+  (`return-split`, zc28) covers the tail-boolean case; this is the general early-return shape.
+  Related: duplicated shared tails (0x2ca2c-style).
 - **A3 store order**: the run collector cannot span a call, but the persist-store restructure
   re-materializes a global store AFTER the call it crosses. Model the call-crossing restructure
   (or read the order off pre-restructure IR) before retrying. fidget — the specimen — never
