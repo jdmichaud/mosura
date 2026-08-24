@@ -506,26 +506,45 @@ fn resolves_contradictions(
     true
 }
 
-/// No call may LOSE arguments relative to the landed decompile: "propagation removed an
-/// argument" was measured as a near-perfect regression predictor (the monotone rule), and the
-/// zc52 round reproduced it (0x11b9c's `func_0x00011a50(param_1, param_1)` → one argument).
-/// Calls are matched by instruction address; a landed call missing from the candidate fails.
-fn no_call_loses_args(
+/// Every call's SHAPE must be stable between the landed decompile and the surgical candidate —
+/// argument count, output presence, output width — except argument GROWTH at the contradicted
+/// callees (the adoption's whole purpose). Matched by instruction address, indirect calls
+/// included. This subsumes the monotone rule ("propagation removed an argument" was measured as
+/// a near-perfect regression predictor; zc52's 0x11b9c, and zc53's 0x2d360 where a CALLIND lost
+/// its buffer argument) and catches the collateral type ripple (zc53's 0x2247c: an unrelated
+/// call's return width drifted 1 → 4 and re-rendered with a cast).
+fn call_shapes_stable(
     fl: &mosura::decompile::funcdata::Funcdata,
     fx: &mosura::decompile::funcdata::Funcdata,
+    contradicted: &[(u64, usize)],
 ) -> bool {
-    let arity_at = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, usize> {
+    type Shape = (usize, Option<u32>, u64); // (args, output width, direct-callee va or 0)
+    let shapes = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, Shape> {
         let mut m = HashMap::new();
         for op in f.op_ids() {
             let o = f.op(op);
-            if o.code() == OpCode::Call && o.flags & (flags::DEAD | flags::MARKER) == 0 {
-                m.insert(o.seqnum.pc.offset, o.num_inputs() - 1);
+            if !matches!(o.code(), OpCode::Call | OpCode::Callind)
+                || o.flags & (flags::DEAD | flags::MARKER) != 0
+            {
+                continue;
             }
+            let callee = if o.code() == OpCode::Call {
+                o.input(0).map_or(0, |t| f.vn(t).loc.offset)
+            } else {
+                0
+            };
+            let outw = o.output.map(|v| f.vn(v).size);
+            m.insert(o.seqnum.pc.offset, (o.num_inputs() - 1, outw, callee));
         }
         m
     };
-    let (l, x) = (arity_at(fl), arity_at(fx));
-    l.iter().all(|(pc, &n)| x.get(pc).is_some_and(|&m| m >= n))
+    let (l, x) = (shapes(fl), shapes(fx));
+    l.iter().all(|(pc, &(n, outw, callee))| {
+        x.get(pc).is_some_and(|&(m, outw2, _)| {
+            let grows_ok = contradicted.iter().any(|&(c, _)| c == callee);
+            outw2 == outw && if grows_ok { m >= n } else { m == n }
+        })
+    })
 }
 
 fn nondefault_parm_regs(
@@ -1687,7 +1706,7 @@ fn main() {
                         match f3 {
                             Some(f3)
                                 if resolves_contradictions(&f3, &contradicted)
-                                    && no_call_loses_args(fl, &f3)
+                                    && call_shapes_stable(fl, &f3, &contradicted)
                                     && sig_stable_vs(&f3)
                                     && consts_witnessed(&f3) =>
                             {
@@ -1701,7 +1720,7 @@ fn main() {
                             }
                             _ => {
                                 eprintln!(
-                                    "[consistency] {name}: HELD (unbound/unwitnessed value, lost argument, or unstable signature) — callees [{}]",
+                                    "[consistency] {name}: HELD (unbound/unwitnessed value, call-shape drift, or unstable signature) — callees [{}]",
                                     list.join(" ")
                                 );
                             }
