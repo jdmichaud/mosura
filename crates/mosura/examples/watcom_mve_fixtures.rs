@@ -50,6 +50,22 @@ int mve(unsigned flags, unsigned t)
 }
 "#;
 
+/// check_attack / unit_set_target's shape: a 4-byte struct (two shorts) returned in a register
+/// and kept as a local, read by field. The restructure sees two 2-byte slots written as halves
+/// of one value; the source wrote one `GPOINT pt`.
+const SPLIT_LOCAL_SRC: &str = r#"
+typedef struct { short x, y; } GPOINT;
+extern GPOINT getp(void);
+extern int use(int x, int y, int k);
+int mve(void)
+{
+    GPOINT p = getp();
+    if (use(p.x, p.y, 1))
+        return 1;
+    return use(p.x, p.y, 2);
+}
+"#;
+
 const STACK_PARAM_SRC: &str = r#"
 extern void hit(void);
 void __cdecl mve(int base, int idx)
@@ -88,6 +104,7 @@ fn main() {
         ("SPARM", "_mve", STACK_PARAM_SRC, "x86_watcom_stack_param_single_var.xml", 0x2000u64),
         ("FRAME", "mve_", FRAME_EXTENT_SRC, "x86_watcom_frame_extent.xml", 0x3000u64),
         ("GUARD", "mve_", GUARD_ORDER_SRC, "x86_watcom_guard_order.xml", 0x4000u64),
+        ("SPLIT", "mve_", SPLIT_LOCAL_SRC, "x86_watcom_split_local.xml", 0x5000u64),
     ];
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {

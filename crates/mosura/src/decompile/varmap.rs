@@ -898,6 +898,95 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
     out
 }
 
+/// EMISSION ARM (`struct-locals=coalesce`, wc2src-reconciliation-2 A2ii): two adjacent 2-byte
+/// stack Symbols whose only writes are the two halves of ONE 4-byte value — `lo = SUBPIECE(v, 0)`
+/// and `hi = SUBPIECE(v >> 16, 0)` (or `SUBPIECE(v, 2)`) — become one 4-byte Symbol at the low
+/// offset. Ghidra's own restructure keeps the two slots (the reference), which is faithful C the
+/// original source never wrote: it declared one `GPOINT pt` and read `pt.x`/`pt.y`. The pair is
+/// returned so the printer can fuse the two half-stores into one assignment and read the halves
+/// through the local's address.
+pub fn coalesce_split_pairs(f: &Funcdata, out: &mut Vec<StackSymbol>) -> Vec<(i64, VarnodeId)> {
+    let Some(stack) = f.spaces.by_name("stack") else { return Vec::new() };
+    let spc = f.spaces.get(stack);
+    let bits = spc.addr_size.saturating_mul(8).saturating_sub(1);
+    // Every written stack varnode by (frame offset, size) → the 4-byte source it is a half of.
+    let half_source = |v: VarnodeId, hi: bool| -> Option<VarnodeId> {
+        let d = f.vn(v).def?;
+        let o = f.op(d);
+        if o.code() != OpCode::Subpiece {
+            return None;
+        }
+        let (src, k) = (o.input(0)?, o.input(1)?);
+        let k = f.vn(k).constant_value();
+        if f.vn(src).size != 4 && !(hi && k == 0) {
+            return None;
+        }
+        if !hi {
+            return (k == 0 && f.vn(src).size == 4).then_some(src);
+        }
+        if k == 2 && f.vn(src).size == 4 {
+            return Some(src);
+        }
+        // `SUBPIECE(v >> 16, 0)`
+        if k != 0 {
+            return None;
+        }
+        let sd = f.vn(src).def?;
+        let so = f.op(sd);
+        if so.code() != OpCode::IntRight {
+            return None;
+        }
+        let (a, sh) = (so.input(0)?, so.input(1)?);
+        (f.vn(sh).is_constant() && f.vn(sh).constant_value() == 16 && f.vn(a).size == 4).then_some(a)
+    };
+    let mut writes: std::collections::HashMap<(i64, u32), Vec<VarnodeId>> = std::collections::HashMap::new();
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        let vn = f.vn(v);
+        if vn.loc.space != stack || vn.is_free() || !vn.is_written() {
+            continue;
+        }
+        writes.entry((sign_extend(vn.loc.offset, bits), vn.size)).or_default().push(v);
+    }
+    let mut pairs: Vec<(i64, VarnodeId)> = Vec::new();
+    out.sort_by_key(|s| s.start);
+    let mut i = 0;
+    while i + 1 < out.len() {
+        let (lo, hi) = (&out[i], &out[i + 1]);
+        let ok = lo.size == 2
+            && hi.size == 2
+            && hi.start == lo.start + 2
+            && !matches!(lo.ty, Datatype::Array(..))
+            && !matches!(hi.ty, Datatype::Array(..));
+        if !ok {
+            i += 1;
+            continue;
+        }
+        let lo_w = writes.get(&(lo.start, 2)).cloned().unwrap_or_default();
+        let hi_w = writes.get(&(hi.start, 2)).cloned().unwrap_or_default();
+        let src = (|| {
+            let (&lw, &hw) = (lo_w.first()?, hi_w.first()?);
+            if lo_w.len() != 1 || hi_w.len() != 1 {
+                return None;
+            }
+            let a = half_source(lw, false)?;
+            let b = half_source(hw, true)?;
+            (a == b).then_some(a)
+        })();
+        let Some(src) = src else {
+            i += 1;
+            continue;
+        };
+        let ty = f.vn(src).get_type().clone();
+        let name = build_variable_name(&f.spaces, stack, spc.wrap_offset(lo.start as u64), &ty, &f.proto_model.localrange);
+        let merged = StackSymbol { start: lo.start, size: 4, ty, name };
+        out.splice(i..=i + 1, [merged]);
+        pairs.push((out[i].start, src));
+        i += 1;
+    }
+    pairs
+}
+
 /// EMISSION ARM, beyond Ghidra (recompilation): the frame region an indexed stack LOAD/STORE
 /// walks must be ONE C object, or the pointer arithmetic the body performs across it is
 /// undefined and the recompiler is free to drop it. Ghidra's `MapState` keeps the per-slot

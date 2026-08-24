@@ -764,6 +764,8 @@ fn main() {
             c.set("swi", "int3").expect("known axis");
             // if/else arms in the original's layout order (A1 — the address witness).
             c.set("arm-order", "address").expect("known axis");
+            // half-written 4-byte locals declared once (A2ii — the GPOINT shape).
+            c.set("struct-locals", "coalesce").expect("known axis");
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,

@@ -211,6 +211,7 @@ pub struct EmitChoices {
     pub ext_cast: ExtCast,
     pub swi: SwiForm,
     pub arm_order: ArmOrder,
+    pub struct_locals: StructLocals,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -252,6 +253,19 @@ pub enum ArmOrder {
     Address,
 }
 
+/// How a 4-byte stack local that the body writes as TWO 2-byte halves (`lo = (int2)v; hi =
+/// (int2)(v >> 16)`) and reads by half is declared. `Ghidra` keeps the two `int2` slots the
+/// restructure derives from the accesses (the reference rendering). `Coalesce` declares ONE
+/// 4-byte local, writes it once (`local = v`) and reads the halves through its address
+/// (`*((int2 *)&local + 1)`) — the source's `GPOINT pt = …; pt.x` shape, which Watcom compiles
+/// to the original's single `MOV dword ptr [EBP-x],EAX` and two `MOVSX` (wc2src-reconciliation-2
+/// A2ii: check_attack 0.571 → 0.957 in the probe).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructLocals {
+    Ghidra,
+    Coalesce,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -264,6 +278,7 @@ impl Default for EmitChoices {
             ext_cast: ExtCast::Ghidra,
             swi: SwiForm::Ghidra,
             arm_order: ArmOrder::Ghidra,
+            struct_locals: StructLocals::Ghidra,
         }
     }
 }
@@ -333,6 +348,12 @@ impl EmitChoices {
             doc: "print if/else arms in the structurer's canonical order, or in the original's \
                   layout order (the lower-address arm first, condition negated to match)",
         },
+        Axis {
+            name: "struct-locals",
+            values: &["ghidra", "coalesce"],
+            doc: "keep a half-written 4-byte stack local as two 2-byte slots, or declare it once \
+                  and read the halves through its address",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -379,6 +400,10 @@ impl EmitChoices {
             "arm-order" => Some(match self.arm_order {
                 ArmOrder::Ghidra => "ghidra",
                 ArmOrder::Address => "address",
+            }),
+            "struct-locals" => Some(match self.struct_locals {
+                StructLocals::Ghidra => "ghidra",
+                StructLocals::Coalesce => "coalesce",
             }),
             _ => None,
         }
@@ -450,6 +475,13 @@ impl EmitChoices {
                 self.arm_order = match value {
                     "ghidra" => ArmOrder::Ghidra,
                     "address" => ArmOrder::Address,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "struct-locals" => {
+                self.struct_locals = match value {
+                    "ghidra" => StructLocals::Ghidra,
+                    "coalesce" => StructLocals::Coalesce,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

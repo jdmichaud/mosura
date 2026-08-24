@@ -287,6 +287,12 @@ struct PrintC<'a> {
     /// `EmitChoices::arm_order == Address` (EMISSION ARM): two-arm ifs print the lower-address
     /// arm first — the original's own layout — with the condition negated to match.
     arm_order_address: bool,
+    /// `EmitChoices::struct_locals == Coalesce` (EMISSION ARM): symbol start → the 4-byte value
+    /// whose two halves the pair of 2-byte slots held (`varmap::coalesce_split_pairs`).
+    split_pairs: HashMap<i64, VarnodeId>,
+    /// The first of a fused half-store pair → the 4-byte value: renders `sym = value` once; the
+    /// second store is suppressed.
+    fused_store: HashMap<OpId, (i64, VarnodeId)>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -777,6 +783,19 @@ impl<'a> PrintC<'a> {
                     let elem_name = format!("{}[{index}]", sym.name);
                     self.names.insert(id, elem_name.clone());
                     return elem_name;
+                }
+                // A half of a coalesced pair (`struct-locals=coalesce`): read/written through
+                // the one declared local's address — `*((int2 *)&iStack_c + 1)`.
+                if self.split_pairs.contains_key(&sym.start) && (vn.size as i64) < sym.size as i64 {
+                    self.declare_stack(sym.start, &sym.name, sym.ty.clone());
+                    let k = (foff - sym.start) / vn.size as i64;
+                    let piece = if k == 0 {
+                        format!("*({} *)&{}", ty.name(), sym.name)
+                    } else {
+                        format!("*(({} *)&{} + {k})", ty.name(), sym.name)
+                    };
+                    self.names.insert(id, piece.clone());
+                    return piece;
                 }
             }
             let n = self.stack_slot_name(foff, &ty);
@@ -2183,6 +2202,14 @@ impl<'a> PrintC<'a> {
 
     /// Render an assignment statement body (`lhs = rhs`, no terminator) for an op.
     fn render_assign(&mut self, op: OpId) -> String {
+        if let Some(&(start, src)) = self.fused_store.get(&op) {
+            // `struct-locals=coalesce`: the two half-stores print as one whole-value assignment.
+            if let Some(sym) = self.spacebase_sym_at(start) {
+                self.declare_stack(sym.start, &sym.name, sym.ty.clone());
+                let rhs = self.render_var(src).0;
+                return format!("{} = {rhs}", sym.name);
+            }
+        }
         let outv = self.f.op(op).output.unwrap();
         let lhs = self.lvalue_of(outv);
         // Variadic recovery: the address of the first anonymous argument is `va_start`'s value
@@ -4714,6 +4741,8 @@ fn print_c_inner(
         ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
         swi_int3: HashSet::new(),
         arm_order_address: choices.arm_order == super::emit::ArmOrder::Address,
+        split_pairs: HashMap::new(),
+        fused_store: HashMap::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -4769,6 +4798,53 @@ fn print_c_inner(
             .expect("printc requires the non-printing marks frozen by ActionCopyMarker; run pipeline::decompile"),
         comma_separate: false,
     };
+    // `struct-locals=coalesce` (EMISSION ARM, wc2src-reconciliation-2 A2ii): a 4-byte local the
+    // body wrote as two 2-byte halves is one declared local; the two half-stores fuse into a
+    // single assignment where they are adjacent, and the halves read through its address.
+    if choices.struct_locals == super::emit::StructLocals::Coalesce {
+        let pairs = super::varmap::coalesce_split_pairs(f, &mut p.stack_syms);
+        for (start, src) in pairs {
+            p.split_pairs.insert(start, src);
+            // the two half-store ops: the written stack varnodes at start / start+2
+            let stack = p.stack_space;
+            let mut stores: Vec<(OpId, i64)> = Vec::new();
+            for i in 0..f.num_varnodes() as u32 {
+                let v = VarnodeId(i);
+                let vn = f.vn(v);
+                if Some(vn.loc.space) != stack || vn.is_free() || vn.size != 2 {
+                    continue;
+                }
+                let foff = p.frame_off(vn.loc.offset);
+                if foff != start && foff != start + 2 {
+                    continue;
+                }
+                if let Some(d) = vn.def {
+                    if !f.op(d).is_dead() && !f.op(d).is_marker() {
+                        stores.push((d, foff));
+                    }
+                }
+            }
+            if stores.len() != 2 || f.op(stores[0].0).parent != f.op(stores[1].0).parent {
+                continue; // halves written apart: the piece stores still compile, just unfused
+            }
+            let Some(bid) = f.op(stores[0].0).parent else { continue };
+            let ops = &f.block(bid).ops;
+            let pos = |o: OpId| ops.iter().position(|&x| x == o);
+            let (Some(p0), Some(p1)) = (pos(stores[0].0), pos(stores[1].0)) else { continue };
+            let (first, second) = if p0 < p1 { (stores[0].0, stores[1].0) } else { (stores[1].0, stores[0].0) };
+            // adjacent as STATEMENTS: only implied / non-printing ops between them
+            let (lo_i, hi_i) = (p0.min(p1), p0.max(p1));
+            let between_ok = ops[lo_i + 1..hi_i].iter().all(|&x| {
+                let o = f.op(x);
+                o.is_dead() || o.is_marker() || o.output.is_some_and(|v| !p.is_explicit(v))
+            });
+            if !between_ok {
+                continue;
+            }
+            p.fused_store.insert(first, (start, src));
+            p.suppressed.insert(second);
+        }
+    }
     if let Some(va) = &varargs {
         p.va_last_named = va.last_named;
         for &op in &va.va_start_ops {
