@@ -2266,3 +2266,18 @@ drift was the improvement).
 **Day's arc, final: zc47 → zc56 = WGSS 0.4840 → 0.5042, EXACT 767 → 788 (+21),
 SAME_SHAPE 68 → 88, denominator +6, one classified verdict down (0x2c160,
 correct-code/contract) across the entire chain.**
+
+### zc57 (2026-08-24): A2i — `adjustFit`, the open range stops at the callee-save hole — 800 EXACT
+
+wc2src-reconciliation-2's frame-extent axis turned out to be a MIS-PORT, not an emitter arm:
+Ghidra's own C declares sfile_make_name's buffer `[12]` and parse_argument's `[4]` where
+mosura printed `[28]` and `[24]`. Grounded with Ghidra's MapState debug stream (capture_trace
+now exposes it under `CAPTURE_VARMAP=1`, with a byte-by-byte `inScope` probe of the local
+scope): the final restructure holds only the open `&buf` hint and the terminator at the frame
+top — the clip comes from `ScopeLocal::adjustFit` (`RangeList::longestFit`), which our
+`restructure` never called. Both ported verbatim (`varmap::adjust_fit`, `RangeList::longest_fit`).
+Self-compiled fixture in sfile's exact frame shape (`53 51 52 55 89e5 83ec0c`) pins it.
+
+**vs zc56: 800 EXACT (+12 — every flip SAME_SHAPE → EXACT: 29af0, 2d360, 2d39c, 33ad0
+sfile_make_name, 360a0, 39e2c, 4801c, 4a4ac, 4f860, 4f8b0, 50434, 5115c), WGSS 0.5042 →
+0.5069 (+325.8w), 101 up / 6 down, zero verdict regressions.**
