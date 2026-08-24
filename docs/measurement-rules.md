@@ -415,7 +415,7 @@ already defines it. One grep would have settled it before a build.
 - **Pre-file the prediction that would prove a retirement COMPLETE**, and state what a miss would
   mean. "136 → near 0; if not, a second unmasked site exists" landed exactly.
 
-## §1. WGSS has ONE canonical computation
+## 9. WGSS has ONE canonical computation
 
 **Canonical: `scripts/war2-verdicts.sh`'s census** — over the recompile TSV's user rows,
 `WGSS = 1 − Σ orig_insns·(1 − sim) / Σ orig_insns` (columns 9 and 7 of the
