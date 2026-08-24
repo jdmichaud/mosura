@@ -516,7 +516,15 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
             || t.starts_with("CPUID")
             || t.starts_with("IN ")
             || t.starts_with("OUT ")
-            || t.starts_with("INT")
+            // `INT ` with the space: `INT 0x21` (a DOS call) is hand-assembly; a bare `INT3`
+            // is not — WAR2's compiled C carries it as the retail assert-trap idiom
+            // (`TEST EAX,EAX ; JNZ over ; INT3`: 0x2a4f0, 0x2d7fc, 0x592d8, 0x59344), as
+            // alignment padding after a jump-table dispatch (0x484b4), and as `app_fatal`'s
+            // own trap body (0x5cf88). All six audited rows emit clean C (no placeholder
+            // reaches the TU), so keeping the bare form here silently shrank the recompile
+            // denominator by six genuinely compiled functions (wc2src-reconciliation D5;
+            // 0x2d7fc is upacket_dispatch, source-matched, MISMATCH 0.336 via --only).
+            || t.starts_with("INT ")
             || (t.starts_with("CALL") && t.contains("CS:["))
             // segment-register saves/loads: flat-model compiled C never touches them (the
             // hand-optimized blitters open with PUSH ES — FUN_0007a5b0). EXACT matches:
