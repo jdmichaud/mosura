@@ -474,7 +474,18 @@ impl Action for ActionRestructureVarnode {
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let aliasyes = self.numpass != 0; // coreaction.cc:2279
         if aliasyes {
-            data.alias_boundary = super::alias::alias_boundary(data);
+            // One gather feeds both consumers: the boundary approximation (heritage's
+            // `guard_calls` holdind) and the full sorted alias-offset list that
+            // `mark_addrtied`'s `markUnaliased` walk needs (varmap.cc:1332).
+            let offsets = super::alias::aliased_stack_offsets(data);
+            data.alias_boundary = offsets.iter().min().copied();
+            let canonical: Option<Vec<u64>> = data.spaces.by_name("stack").map(|stack| {
+                let mut v: Vec<u64> =
+                    offsets.iter().map(|&o| data.spaces.get(stack).wrap_offset(o as u64)).collect();
+                v.sort_unstable();
+                v
+            });
+            data.alias_offsets = canonical;
         }
         super::varnodeprops::mark_addrtied(data, aliasyes);
         self.numpass += 1;

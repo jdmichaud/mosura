@@ -215,6 +215,13 @@ pub struct Funcdata {
     /// (`AliasChecker::hasLocalAlias`, `offset >= aliasBoundary`). `None` ⇒ nothing escapes ⇒ no
     /// stack slot is guarded. Set from the alias probe before the real heritage.
     pub alias_boundary: Option<i64>,
+    /// Ghidra `AliasChecker::getAlias` (varmap.cc:707): the FULL sorted list of escaped stack
+    /// offsets (canonical stack-space offsets, ascending unsigned — Ghidra's `sortAlias`), for
+    /// `ScopeLocal::markUnaliased`'s walk (varmap.cc:1332). `None` ⇒ the alias analysis has not
+    /// run at `aliasyes` strength yet (Ghidra "alias calculations are not reliable on the first
+    /// pass", coreaction.cc:2279) and [`super::varnodeprops::mark_addrtied`] falls back to the
+    /// boundary approximation. Set by `ActionRestructureVarnode` from pass 1 on.
+    pub alias_offsets: Option<Vec<u64>>,
     /// Ghidra `Heritage::loadGuard` (heritage.hh:216): the indexed stack LOADs and the stack
     /// ranges they may read — see [`super::heritage::LoadGuard`].
     pub load_guard: Vec<super::heritage::LoadGuard>,
@@ -387,6 +394,7 @@ impl Funcdata {
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,
             alias_boundary: None,
+            alias_offsets: None,
             load_guard: Vec::new(),
             store_guard: Vec::new(),
             load_copy_ops: Vec::new(),
