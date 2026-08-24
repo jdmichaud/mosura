@@ -69,6 +69,33 @@ pub fn caller_stack_cleanup(insn: &Instruction, sp: u64) -> Option<u32> {
     (n > 0 && n % 4 == 0 && n <= 500).then_some(n)
 }
 
+/// The CALLER-side cleanup for the call whose fallthrough begins `window` — [`caller_stack_cleanup`]
+/// with the scheduler accounted for. Watcom's -onatx hoists the next statement's loads across the
+/// `ADD ESP,n` (WAR2 0x33ad0: `CALL sprintf ; MOV AH,[0x8127a] ; ADD ESP,0xc`), so the cleanup is
+/// not always the first instruction after the call. Walk the window, skipping instructions that
+/// neither touch the stack pointer nor transfer control; stop — the evidence is absent, not merely
+/// displaced — at any flow op or any other stack-pointer use, so a cleanup is never claimed across
+/// a block boundary or a PUSH/POP.
+pub fn caller_stack_cleanup_scan(window: &[Instruction], sp: u64) -> Option<u32> {
+    use OpCode::*;
+    for insn in window {
+        if let Some(n) = caller_stack_cleanup(insn, sp) {
+            return Some(n);
+        }
+        let touches_sp_or_flow = insn.ops.iter().any(|o| {
+            matches!(
+                OpCode::from_u32(o.opcode),
+                Some(Return | Call | Callind | Branch | Cbranch | Branchind)
+            ) || o.out.as_ref().is_some_and(|v| is_reg(v, sp))
+                || o.ins.iter().any(|a| matches!(a, PArg::Var(v) if is_reg(v, sp)))
+        });
+        if touches_sp_or_flow {
+            return None;
+        }
+    }
+    None
+}
+
 /// The cleanup performed by one return instruction: how far it moves the stack pointer, less the
 /// slot it consumed for the return address.
 fn cleanup_of(ops: &[PcodeOp], sp: u64) -> Option<u32> {
@@ -195,5 +222,43 @@ mod tests {
         assert_eq!(callee_stack_cleanup(&lift("83c408c3"), esp()), Some(0));
         // add esp,8 ; ret 4
         assert_eq!(callee_stack_cleanup(&lift("83c408c20400"), esp()), Some(4));
+    }
+
+    /// The direct shape: the cleanup IS the first instruction of the window.
+    #[test]
+    fn scan_finds_the_immediate_cleanup() {
+        // add esp,0xc ; test ah,ah
+        assert_eq!(caller_stack_cleanup_scan(&lift("83c40c84e4"), esp()), Some(12));
+    }
+
+    /// The scheduler shape that lost sprintf's arguments (WAR2 0x33ad0): a load interleaved
+    /// between the call and its cleanup must be skipped, not treated as evidence-absent.
+    #[test]
+    fn scan_skips_a_scheduled_load_before_the_cleanup() {
+        // mov ah,[0x8127a] ; add esp,0xc ; test ah,ah
+        assert_eq!(caller_stack_cleanup_scan(&lift("8a257a12080083c40c84e4"), esp()), Some(12));
+    }
+
+    /// A PUSH between the call and a later ADD is another stack-pointer use: the window's stack
+    /// discipline is broken and no cleanup may be claimed.
+    #[test]
+    fn scan_stops_at_a_push() {
+        // push eax ; add esp,0xc
+        assert_eq!(caller_stack_cleanup_scan(&lift("5083c40c"), esp()), None);
+    }
+
+    /// A branch ends the basic block: a cleanup on the far side belongs to another path.
+    #[test]
+    fn scan_stops_at_a_branch() {
+        // jz +2 ; add esp,0xc
+        assert_eq!(caller_stack_cleanup_scan(&lift("740283c40c"), esp()), None);
+    }
+
+    /// A POP also adds to ESP, but popping a VALUE is indistinguishable from popping an
+    /// argument — it is an ESP use, so the scan stops rather than skipping it.
+    #[test]
+    fn scan_stops_at_a_pop() {
+        // pop ecx ; add esp,8
+        assert_eq!(caller_stack_cleanup_scan(&lift("5983c408"), esp()), None);
     }
 }
