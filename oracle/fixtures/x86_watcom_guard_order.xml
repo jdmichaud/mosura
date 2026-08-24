@@ -1,0 +1,21 @@
+<!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
+     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     Externs: code at 0x5000 (a RET stub), data at 0x6000.
+  extern unsigned char tbl[];
+  int mve(unsigned flags, unsigned t)
+  {
+      if (flags & 4)
+          return tbl[t] & 2;
+      if (t > 9)
+          return 0;
+      return tbl[t] & 1;
+  }
+-->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x4000" readonly="true">
+535589e589c389d0f6c304740a8a82006000002402eb1283fa09760531d05d5bc38a8200600000240125ff0000005d5bc3
+  </bytechunk>
+  <bytechunk space="ram" offset="0x5000" readonly="true">
+c3
+  </bytechunk>
+</binaryimage>

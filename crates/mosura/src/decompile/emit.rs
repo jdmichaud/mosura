@@ -210,6 +210,7 @@ pub struct EmitChoices {
     pub cond_form: CondForm,
     pub ext_cast: ExtCast,
     pub swi: SwiForm,
+    pub arm_order: ArmOrder,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -238,6 +239,19 @@ pub enum SwiForm {
     Int3,
 }
 
+/// Which arm of a two-arm `if/else` prints first. `Ghidra` is the structurer's canonical order
+/// (the reference rendering). `Address` prints the arm the ORIGINAL compiled first — the one at
+/// the lower address, which sits directly after the conditional jump — swapping the arms and
+/// negating the condition where they disagree (wc2src-reconciliation-2 A1: guard clauses and
+/// if/else chains laid out in source order are the dominant structural residue; attack_can_hit
+/// 0.800 → EXACT on this alone). Only single-block conditions qualify, so the negation is exact
+/// (the 01304 deferred-negation caveat never applies to compound clauses here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmOrder {
+    Ghidra,
+    Address,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -249,6 +263,7 @@ impl Default for EmitChoices {
             cond_form: CondForm::Collapsed,
             ext_cast: ExtCast::Ghidra,
             swi: SwiForm::Ghidra,
+            arm_order: ArmOrder::Ghidra,
         }
     }
 }
@@ -312,6 +327,12 @@ impl EmitChoices {
             doc: "render an INT3 software interrupt as Ghidra's swi(3) call pair, or as the \
                   target prelude's __int3() (#pragma aux = 0xcc, byte-exact breakpoint)",
         },
+        Axis {
+            name: "arm-order",
+            values: &["ghidra", "address"],
+            doc: "print if/else arms in the structurer's canonical order, or in the original's \
+                  layout order (the lower-address arm first, condition negated to match)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -354,6 +375,10 @@ impl EmitChoices {
             "swi" => Some(match self.swi {
                 SwiForm::Ghidra => "ghidra",
                 SwiForm::Int3 => "int3",
+            }),
+            "arm-order" => Some(match self.arm_order {
+                ArmOrder::Ghidra => "ghidra",
+                ArmOrder::Address => "address",
             }),
             _ => None,
         }
@@ -418,6 +443,13 @@ impl EmitChoices {
                 self.swi = match value {
                     "ghidra" => SwiForm::Ghidra,
                     "int3" => SwiForm::Int3,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "arm-order" => {
+                self.arm_order = match value {
+                    "ghidra" => ArmOrder::Ghidra,
+                    "address" => ArmOrder::Address,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

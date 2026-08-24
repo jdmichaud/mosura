@@ -755,6 +755,8 @@ fn main() {
             // INT3 as the prelude's `__int3()` (`#pragma aux = 0xcc`) — the D5 audit rows'
             // assert traps and `app_fatal`'s body are compiled C only under this form.
             c.set("swi", "int3").expect("known axis");
+            // if/else arms in the original's layout order (A1 — the address witness).
+            c.set("arm-order", "address").expect("known axis");
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,

@@ -278,6 +278,9 @@ struct PrintC<'a> {
     /// CALLOTHER — each prints as the prelude's `__int3()` and its CALLOTHER assign is
     /// suppressed, so the pair becomes the one statement Watcom inlines as the 0xCC byte.
     swi_int3: HashSet<OpId>,
+    /// `EmitChoices::arm_order == Address` (EMISSION ARM): two-arm ifs print the lower-address
+    /// arm first — the original's own layout — with the condition negated to match.
+    arm_order_address: bool,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -3363,6 +3366,29 @@ impl<'a> PrintC<'a> {
         found
     }
 
+    /// The lowest original instruction address in a structured node — the address the arm's
+    /// code starts at in the binary, i.e. where the compiler laid it out. `None` for an arm
+    /// with no live ops.
+    fn first_pc(&self, s: &Structured, idx: usize) -> Option<u64> {
+        let fb = &s.blocks[idx];
+        let mut best: Option<u64> = None;
+        if let FlowKind::Basic(bid) = fb.kind {
+            for &op in &self.f.block(bid).ops {
+                if self.f.op(op).is_dead() {
+                    continue;
+                }
+                let pc = self.f.op(op).seqnum.pc.offset;
+                best = Some(best.map_or(pc, |b| b.min(pc)));
+            }
+        }
+        for &c in &fb.components {
+            if let Some(pc) = self.first_pc(s, c) {
+                best = Some(best.map_or(pc, |b| b.min(pc)));
+            }
+        }
+        best
+    }
+
     fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
         let fb = &s.blocks[idx];
         let (mut comps, mut negated) = (fb.components.clone(), fb.negated);
@@ -3373,13 +3399,32 @@ impl<'a> PrintC<'a> {
         // compound short-circuit shapes never qualify); the swap applies only under a
         // recovered per-site decision, so the reference rendering is untouched.
         if has_else && comps.len() == 3 {
+            // The single-block-condition gate (`plain_if_branch_pc`) keeps every swap's negation
+            // exact: compound short-circuit clauses never qualify.
+            let site = self.plain_if_branch_pc(s, idx);
+            let mut swapped = false;
+            if self.arm_order_address && site.is_some() {
+                // A1 (wc2src-reconciliation-2): the ORIGINAL's layout is the witness — the arm at
+                // the lower address is the one the compiler placed right after the conditional
+                // jump, i.e. the arm the source wrote first. Print it first.
+                if let (Some(p1), Some(p2)) = (self.first_pc(s, comps[1]), self.first_pc(s, comps[2])) {
+                    if p2 < p1 {
+                        comps.swap(1, 2);
+                        negated = !negated;
+                        swapped = true;
+                    }
+                }
+            }
             if let (Some((h1, k1)), Some((h2, k2))) =
                 (self.single_const_assign(s, comps[1]), self.single_const_assign(s, comps[2]))
             {
                 if h1 == h2 && k1 != k2 {
-                    if let Some(pc) = self.plain_if_branch_pc(s, idx) {
+                    if let Some(pc) = site {
                         self.report.arm_swap_candidates.push((pc, k1, k2));
-                        if self.recovered.arm_swap_sites.contains(&pc) {
+                        // D3b's per-site recovered decision applies only when the address
+                        // arm has not already decided this site (the two witnesses agree
+                        // where both exist; applying both would undo the swap).
+                        if !swapped && !self.arm_order_address && self.recovered.arm_swap_sites.contains(&pc) {
                             comps.swap(1, 2);
                             negated = !negated;
                         }
@@ -4625,6 +4670,7 @@ fn print_c_inner(
         render_stack: Vec::new(),
         ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
         swi_int3: HashSet::new(),
+        arm_order_address: choices.arm_order == super::emit::ArmOrder::Address,
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),

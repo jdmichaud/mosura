@@ -35,6 +35,21 @@ void mve(unsigned n)
 }
 "#;
 
+/// attack_can_hit's shape: a guard clause returning early, written FIRST in the source, then
+/// the general case. Ghidra's canonical arm order prints the guard as the trailing `else`;
+/// the original lays the guard's return directly after the conditional jump.
+const GUARD_ORDER_SRC: &str = r#"
+extern unsigned char tbl[];
+int mve(unsigned flags, unsigned t)
+{
+    if (flags & 4)
+        return tbl[t] & 2;
+    if (t > 9)
+        return 0;
+    return tbl[t] & 1;
+}
+"#;
+
 const STACK_PARAM_SRC: &str = r#"
 extern void hit(void);
 void __cdecl mve(int base, int idx)
@@ -72,6 +87,7 @@ fn main() {
         ("CSAVE", "mve_", CALLEE_SAVE_SRC, "x86_watcom_callee_save.xml", 0x1000u64),
         ("SPARM", "_mve", STACK_PARAM_SRC, "x86_watcom_stack_param_single_var.xml", 0x2000u64),
         ("FRAME", "mve_", FRAME_EXTENT_SRC, "x86_watcom_frame_extent.xml", 0x3000u64),
+        ("GUARD", "mve_", GUARD_ORDER_SRC, "x86_watcom_guard_order.xml", 0x4000u64),
     ];
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {
@@ -85,7 +101,7 @@ fn main() {
         // fixture decompiles to nothing.
         let stub = base + 0x1000;
         let data = base + 0x2000;
-        let resolver = move |sym: &str| Some(if sym.contains("gsum") { data } else { stub });
+        let resolver = move |sym: &str| Some(if sym.contains("gsum") || sym.contains("tbl") { data } else { stub });
         let cand = load_object_function(&obj, sym, base, &resolver)
             .unwrap_or_else(|e| panic!("{key}: {e}\nlog:\n{}", outp.log));
         let hex: String = cand.relinked_bytes().iter().map(|b| format!("{b:02x}")).collect();
