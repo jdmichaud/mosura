@@ -290,6 +290,9 @@ struct PrintC<'a> {
     /// `EmitChoices::narrow_tests == Rewiden` (EMISSION ARM): a `(x >> 8k) & m` zero test
     /// prints as `x & (m << 8k)`.
     narrow_tests_rewiden: bool,
+    /// `EmitChoices::join_width == Consumer` (EMISSION ARM): declare a constant-join local at
+    /// the narrower width of the call parameter it feeds.
+    join_width_consumer: bool,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -820,11 +823,83 @@ impl<'a> PrintC<'a> {
                 Some(OpCode::IntZext) => Datatype::Uint(int_size),
                 _ => Datatype::Int(int_size),
             }
+        } else if let Some(w) = self.join_width_consumer.then(|| self.narrowed_join_width(v)).flatten() {
+            // N1: a constant-join local declared at its consuming call's parameter width, keeping
+            // the value type's metatype (a `xunknown4` join → `xunknown1`, an int → int).
+            match ty {
+                Datatype::Int(_) => Datatype::Int(w),
+                Datatype::Uint(_) => Datatype::Uint(w),
+                _ => Datatype::Unknown(w),
+            }
         } else {
             self.storage_widened_local(id, v).unwrap_or(ty)
         };
         self.decls.push((n.clone(), declared, None));
         n
+    }
+
+    /// N1 (wc2src-reconciliation-3): the narrower declaration width for a CONSTANT-JOIN local
+    /// `v` — a HighVariable every member of which is a constant, a COPY of a constant, or a
+    /// MULTIEQUAL of such — that is passed as an argument to a call whose RECOVERED prototype
+    /// (`CallSpec::reads`) declares a narrower parameter at that slot. `None` when the local is
+    /// not an all-constant join, no consuming call has a narrower recovered param, or a constant
+    /// does not fit the narrow width. Value-identical: the constants fit, so a byte declaration
+    /// truncates nothing and C's promotion restores the value at any wider use.
+    fn narrowed_join_width(&self, v: VarnodeId) -> Option<u32> {
+        let cur = self.type_of(v).size();
+        let members = self.high_members.get(&self.high_of[v.0 as usize])?;
+        // Gate 1: every member is constant-fed.
+        let mut consts: Vec<u64> = Vec::new();
+        for &m in members {
+            let mv = self.f.vn(m);
+            if mv.is_constant() {
+                consts.push(mv.loc.offset);
+                continue;
+            }
+            let Some(d) = mv.def else { return None };
+            match self.f.op(d).code() {
+                OpCode::Copy => {
+                    let in0 = self.f.op(d).input(0)?;
+                    if self.f.vn(in0).is_constant() {
+                        consts.push(self.f.vn(in0).loc.offset);
+                    } else {
+                        return None;
+                    }
+                }
+                OpCode::Multiequal => {} // its inputs are other members of the same join
+                _ => return None,
+            }
+        }
+        if consts.is_empty() {
+            return None;
+        }
+        // Gate 2: a consuming call whose recovered param at this arg slot is narrower.
+        let mut target: Option<u32> = None;
+        for &m in members {
+            for &op in &self.f.vn(m).descend {
+                let o = self.f.op(op);
+                if !matches!(o.code(), OpCode::Call | OpCode::Callind) {
+                    continue;
+                }
+                let Some(slot) = (0..o.num_inputs()).find(|&i| o.input(i) == Some(m)) else { continue };
+                if slot == 0 {
+                    continue; // the call target, not an argument
+                }
+                // The callee's ACTUAL read width (un-widened), not `reads`' register-entry width.
+                let w = self.f.call_specs.get(&op).and_then(|cs| cs.param_widths.as_ref()).and_then(|pw| pw.get(slot - 1)).copied();
+                let Some(w) = w else { continue };
+                if w == 0 || w >= cur {
+                    continue;
+                }
+                // every joined constant must fit the narrow width
+                let mask = if w >= 8 { u64::MAX } else { (1u64 << (w * 8)) - 1 };
+                if consts.iter().any(|&c| c & !mask != 0) {
+                    continue;
+                }
+                target = Some(target.map_or(w, |t| t.min(w)));
+            }
+        }
+        target
     }
 
     /// The widened declaration type for local `v` under [`EmitChoices::local_width`] ==
@@ -4759,6 +4834,7 @@ fn print_c_inner(
         split_pairs: HashMap::new(),
         fused_store: HashMap::new(),
         narrow_tests_rewiden: choices.narrow_tests == super::emit::NarrowTests::Rewiden,
+        join_width_consumer: choices.join_width == super::emit::JoinWidth::Consumer,
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),

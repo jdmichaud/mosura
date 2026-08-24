@@ -766,6 +766,8 @@ fn main() {
             c.set("struct-locals", "coalesce").expect("known axis");
             // byte-of-word zero tests at the operand's width (A5).
             c.set("narrow-tests", "rewiden").expect("known axis");
+            // constant-join locals declared at their consuming call's param width (N1).
+            c.set("join-width", "consumer").expect("known axis");
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,

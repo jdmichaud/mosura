@@ -630,6 +630,7 @@ fn record_callee_effects(
                 })
                 .collect();
             let cs = f.call_specs.entry(call).or_default();
+            cs.param_widths = Some(proto.params.iter().map(|p| p.size).collect());
             cs.reads = Some(slots);
             cs.reads_recovered = true;
             if let Some((regs, _)) = eff {

@@ -1303,6 +1303,11 @@ pub struct CallSpec {
     /// outside it is not an argument however live it looks at the call site, which is what stops
     /// every caller-live register in the convention's parameter set becoming a spurious argument.
     pub reads: Option<Vec<(Address, u32)>>,
+    /// The callee's ACTUAL read widths per recovered parameter (`FuncProto::params[i].size`),
+    /// PARALLEL to `reads` but UN-widened: `reads` rounds a register param up to the entry width
+    /// (the caller writes the whole register), while this keeps the byte/word the callee's own TU
+    /// declares. Consumed by printc's N1 (declare a constant-join local at its consumer's width).
+    pub param_widths: Option<Vec<u32>>,
 }
 
 impl CallSpec {

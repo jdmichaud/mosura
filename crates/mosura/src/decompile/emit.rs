@@ -213,6 +213,7 @@ pub struct EmitChoices {
     pub arm_order: ArmOrder,
     pub struct_locals: StructLocals,
     pub narrow_tests: NarrowTests,
+    pub join_width: JoinWidth,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -279,6 +280,19 @@ pub enum NarrowTests {
     Rewiden,
 }
 
+/// How a constant-join local (a temporary fed only by constants, merged at a phi) is DECLARED
+/// when it is passed to a call whose recovered prototype declares a NARROWER parameter. `Ghidra`
+/// keeps the join's own width (the reference — Ghidra types it before the recovered prototype is
+/// consulted). `Consumer` declares it at the callee's parameter width: value-identical (the
+/// constants fit), and it makes Watcom load the sub-register the original does (`MOV DL,9` for the
+/// declared byte, not `MOV EDX,9`) — wc2src-reconciliation-3 N1: 0x2c920 0.615 → EXACT on the
+/// declaration alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinWidth {
+    Ghidra,
+    Consumer,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -293,6 +307,7 @@ impl Default for EmitChoices {
             arm_order: ArmOrder::Ghidra,
             struct_locals: StructLocals::Ghidra,
             narrow_tests: NarrowTests::Ghidra,
+            join_width: JoinWidth::Ghidra,
         }
     }
 }
@@ -374,6 +389,12 @@ impl EmitChoices {
             doc: "render a shifted byte-of-word zero test as the lifter's shift-and-mask, or at the \
                   operand's own width with the mask shifted up (x & 0x200)",
         },
+        Axis {
+            name: "join-width",
+            values: &["ghidra", "consumer"],
+            doc: "declare a constant-join local at its own width, or at the narrower width of the \
+                  call parameter it feeds (value-identical; the sub-register load)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -428,6 +449,10 @@ impl EmitChoices {
             "narrow-tests" => Some(match self.narrow_tests {
                 NarrowTests::Ghidra => "ghidra",
                 NarrowTests::Rewiden => "rewiden",
+            }),
+            "join-width" => Some(match self.join_width {
+                JoinWidth::Ghidra => "ghidra",
+                JoinWidth::Consumer => "consumer",
             }),
             _ => None,
         }
@@ -513,6 +538,13 @@ impl EmitChoices {
                 self.narrow_tests = match value {
                     "ghidra" => NarrowTests::Ghidra,
                     "rewiden" => NarrowTests::Rewiden,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "join-width" => {
+                self.join_width = match value {
+                    "ghidra" => JoinWidth::Ghidra,
+                    "consumer" => JoinWidth::Consumer,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
