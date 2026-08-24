@@ -2325,11 +2325,12 @@ narrow-temp inlining) and A4 (for-loop emission).
 
 wc2src-reconciliation-3's ranked axes, one per round with the zero-EXACT-regression bar:
 
-- **N1 (join-width=consumer): FILED (9a8b37d), a Watcom-codegen lottery.** zc62 measured the
-  blanket form net-flat (+0.7w) with an EXACT regression (0x2c9a8): a constant-join whose bytes
-  load the FULL register (`MOV EDX,k`) not the sub-register (`MOV DL,k`). The two are IR-identical
-  — only the original's bytes separate them — so N1 needs a DL-vs-EDX byte witness. The axis +
-  `CallSpec::param_widths` remain as groundwork.
+- **N1 (join-width=consumer): FILED then LANDED WITNESSED.** zc62's blanket was net-flat (+0.7w) +
+  an EXACT regression (0x2c9a8 loads the FULL register `MOV EDX,k`; 0x2c920 the sub-register
+  `MOV DL,k` — IR-identical, only the bytes separate them). Witnessed (join_narrow_sites_from_
+  evidence: a p-code op writing a 1-byte register from a constant): narrow the declaration only
+  where the original uses the 8-bit load. **zc66 vs zc65 = 828 EXACT (+2, incl. 0x2c920), +15.3w,
+  3 up / 0 down, ZERO regressions.** The blanket refutation became a clean landing via the witness.
 - **N3 (array-index=spelled): LANDED (zc64), single-use gated.** The doc's "pure spelling" hid two
   things: the corpus materializes a pointer temp first (so N3 must INLINE it, not just re-spell),
   and the subscript is a Watcom-codegen LOTTERY where the address is REUSED. zc63 (blanket inline)
@@ -2345,3 +2346,8 @@ wc2src-reconciliation-3's ranked axes, one per round with the zero-EXACT-regress
   regressions, 826 EXACT held.** Self-compiled RMW fixture runs the witness on its own bytes.
   Finding (3rd after A3/A6): the doc's hand-edited probes hide that every N-axis is a Watcom-codegen
   lottery — witness from the first round, do not blanket-then-gate.
+
+**Round-3 arc (zc61 → zc66): EXACT 826 → 828, WGSS 0.5185 → 0.5196; both N-axes (N1, N3) landed
+WITNESS-FIRST with zero EXACT/verdict regressions. The reviewer's four items closed: both byte
+witnesses built (+ unit-tested), N3 self-compiled fixture added, accept/must-not-drop sets in
+TODO, witness-first adopted as the standard for N2/N4/N5. Day's total: EXACT 767 → 828.**
