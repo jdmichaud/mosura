@@ -585,6 +585,32 @@ pub fn store_orders_from_evidence(
     out
 }
 
+/// Decide the printed arm order of two-arm constant joins from the ORIGINAL's own layout
+/// (wc2src D3b). For each candidate `(branch pc, then k, else k)`: find the conditional jump
+/// at that address and scan forward a short window for the first instruction materializing
+/// either constant. The compiler lays the arm it compiles FIRST directly after the jump, so
+/// the else constant appearing first means the original's true-arm is our else-arm — swap.
+/// No decision without the witness: an absent or ambiguous readout leaves the site alone.
+pub fn arm_swaps_from_evidence(
+    cands: &[(u64, u64, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, then_k, else_k) in cands {
+        let Some(j) = insns.iter().position(|x| x.addr == pc && x.is_branch) else { continue };
+        let first = insns[j + 1..]
+            .iter()
+            .take(8)
+            .take_while(|x| !x.is_call)
+            .flat_map(|x| x.consts.iter())
+            .find(|&&k| k == then_k || k == else_k);
+        if first == Some(&else_k) && then_k != else_k {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// One ORIGINAL call site's argument-register setup window.
 ///
 /// For each direct CALL, the LAST write to each watcall argument register before the call,

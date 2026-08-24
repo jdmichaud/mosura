@@ -2155,6 +2155,10 @@ fn main() {
                     &insns,
                 ),
                 call_arg_orders,
+                arm_swap_sites: mosura::recompile::buildconfig::arm_swaps_from_evidence(
+                    &report.arm_swap_candidates,
+                    &insns,
+                ),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
                     &report.allones_cmp_candidates,
                     &insns,

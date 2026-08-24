@@ -181,6 +181,11 @@ pub struct EmitReport {
     /// their shuffle and ripples the allocation through the whole function (three
     /// SAME_SHAPE siblings fell to MISMATCH as pure regalloc cascades).
     pub call_order_candidates: Vec<(u64, u64, Vec<bool>)>,
+    /// Two-arm constant joins (`if/else` whose arms each assign one CONSTANT to the same
+    /// variable): `(branch pc, then constant, else constant)`. The original's own layout —
+    /// which constant it materializes first past the conditional jump — decides the printed
+    /// arm order (wc2src D3b; the `.SAV`/`.NET` ternary of `sfile_make_name`).
+    pub arm_swap_candidates: Vec<(u64, u64, u64)>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -227,6 +232,10 @@ pub struct RecoveredChoices {
     /// Value-identical only together with a matching `#pragma aux ... parm [..]` in the same
     /// TU (the caller emits both from one per-callee decision — `call_order_candidates`).
     pub call_arg_orders: std::collections::HashMap<u64, Vec<usize>>,
+    /// Two-arm constant joins to print with the arms SWAPPED (condition negated): the
+    /// original materializes the else-arm's constant first (`arm_swap_candidates` evidence,
+    /// `buildconfig::arm_swaps_from_evidence`).
+    pub arm_swap_sites: std::collections::HashSet<u64>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -3320,10 +3329,64 @@ impl<'a> PrintC<'a> {
         true
     }
 
+    /// The component is a basic block whose ONLY printable statement assigns one CONSTANT to
+    /// a variable: `Some((high representative, constant))`. The safe class for the arm-order
+    /// evidence — swapping anything richer risks the deferred-negation caveat (01304).
+    fn single_const_assign(&self, s: &Structured, comp: usize) -> Option<(u32, u64)> {
+        let FlowKind::Basic(bid) = s.blocks[comp].kind else { return None };
+        if !s.blocks[comp].components.is_empty() {
+            return None;
+        }
+        let mut found: Option<(u32, u64)> = None;
+        for &op in &self.f.block(bid).ops {
+            let o = self.f.op(op);
+            if o.is_dead() || self.suppressed.contains(&op) || self.nonprinting.contains(&op) {
+                continue;
+            }
+            let stmt = o.output.is_some_and(|v| self.is_explicit(v))
+                || matches!(
+                    o.code(),
+                    OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother | OpCode::Return
+                );
+            if !stmt {
+                continue;
+            }
+            if found.is_some() || o.code() != OpCode::Copy {
+                return None; // a second statement, or not a plain assign
+            }
+            let (out, inp) = (o.output?, o.input(0)?);
+            if !self.f.vn(inp).is_constant() {
+                return None;
+            }
+            found = Some((self.high_of[out.0 as usize], self.f.vn(inp).constant_value()));
+        }
+        found
+    }
+
     fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
         let fb = &s.blocks[idx];
-        let (comps, negated) = (fb.components.clone(), fb.negated);
+        let (mut comps, mut negated) = (fb.components.clone(), fb.negated);
         let has_else = matches!(fb.kind, FlowKind::IfElse);
+        // D3b arm order (wc2src): a two-arm CONSTANT join prints its arms in the ORIGINAL's
+        // own layout. Candidacy is recorded on every print (both constants named, keyed by
+        // the branch pc — `plain_if_branch_pc` also enforces the single-block condition, so
+        // compound short-circuit shapes never qualify); the swap applies only under a
+        // recovered per-site decision, so the reference rendering is untouched.
+        if has_else && comps.len() == 3 {
+            if let (Some((h1, k1)), Some((h2, k2))) =
+                (self.single_const_assign(s, comps[1]), self.single_const_assign(s, comps[2]))
+            {
+                if h1 == h2 && k1 != k2 {
+                    if let Some(pc) = self.plain_if_branch_pc(s, idx) {
+                        self.report.arm_swap_candidates.push((pc, k1, k2));
+                        if self.recovered.arm_swap_sites.contains(&pc) {
+                            comps.swap(1, 2);
+                            negated = !negated;
+                        }
+                    }
+                }
+            }
+        }
         if !else_if && !has_else && self.try_emit_if_nested(s, idx, indent, out) {
             return;
         }
