@@ -2213,3 +2213,20 @@ value, passed explicitly; correct code, small allocation reshuffle.
 **Day's full arc (zc47 → zc55): WGSS 0.4840 → 0.5038, EXACT 767 → 785 (+18), SAME_SHAPE
 68 → 91 (+23), the denominator honestly larger by six functions, and ONE verdict loss all
 day — the classified correct-code case above.**
+
+### Tracking correction (2026-08-24, evening): D3d and D3e restored to the ledger
+
+The remaining-D3 list above (arm-order, struct-local coalescing, rep-movsd) dropped two
+axes the reconciliation doc names; restored with classification:
+
+- **D3d (loop rendering) — OPEN, untracked until now.** Source `for(;;)` nests emit as
+  `do { while(true){ if(...) break; ... } } while(true)` with different head/tail placement;
+  the signature is the branch-target/layout-shift row mass on 0x18750 (chk_splash, post-D1
+  0.312→…) and 0x317bc (RIFF_find_chunk, 0.523 at zc48). The srcform probes closed those
+  rows by writing the loops in source shape, so the payoff is real; no design yet — it wants
+  either a loop-form emission axis or a structurer-side form recovery.
+- **D3e (narrow-local widening: `CMP CX,-1` vs `MOVSX ECX,SI; CMP ECX,-1`) — RECLASSIFIED
+  as a member of family F4** (byte-exact-families.md, "the MOVSX / narrow-compare family",
+  14 near-frontier functions): the same C-promotion-vs-16-bit-context mechanism, probed to
+  its SAME_SHAPE ceiling on 0x4cb60 and parked on the TEST-mem selection question. D3e adds
+  chk_splash's `UWORD wSplashed` post-decrement as a further specimen, not a new axis.
