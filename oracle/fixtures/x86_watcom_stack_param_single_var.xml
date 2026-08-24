@@ -1,0 +1,28 @@
+<!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
+     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     Externs: code at 0x3000 (a RET stub), data at 0x4000.
+  extern void hit(void);
+  void __cdecl mve(int base, int idx)
+  {
+      if (*(int *)(base + idx * 4 + 0x294) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0xd4) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x154) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x214) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x1d4) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x254) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x354) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x394) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x3d4) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x414) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x454) != -1) hit();
+      if (*(int *)(base + idx * 4 + 0x494) != -1) hit();
+  }
+-->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x2000" readonly="true">
+5589e58b5d088b550c83bc9394020000ff7405e8e80f000083bc93d4000000ff7405e8d90f000083bc9354010000ff7405e8ca0f000083bc9314020000ff7405e8bb0f000083bc93d4010000ff7405e8ac0f000083bc9354020000ff7405e89d0f000083bc9354030000ff7405e88e0f000083bc9394030000ff7405e87f0f000083bc93d4030000ff7405e8700f000083bc9314040000ff7405e8610f000083bc9354040000ff7405e8520f000083bc9394040000ff7405e8430f00005dc3
+  </bytechunk>
+  <bytechunk space="ram" offset="0x3000" readonly="true">
+c3
+  </bytechunk>
+</binaryimage>
