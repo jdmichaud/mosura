@@ -693,6 +693,31 @@ flip into the condition ops at collapse time) or prove the XOR algebra and fix t
 inconsistent term. Audit afterwards: every && / || in the corpus emitted before the fix
 is suspect; the polarity-row census (branch-target+selection Jcc pairs) is the sweep.
 
+## Round-2 form axes: the tail (2026-08-24, after zc60 — docs/byte-exact-status.md, wc2src-reconciliation-2.md)
+
+Landed this session (each a reference-defaulted axis, self-compiled-MVE tested): A2i frame
+extent (adjustFit port — a MIS-PORT, not an arm), A1 arm-order=address, A2ii
+struct-locals=coalesce, A5-1 narrow-tests=rewiden. zc47→zc60: EXACT 767→826.
+
+Two axes REFUTED and reverted with their evidence — do not re-attempt without addressing the
+named blocker:
+- **A6 over-call clamp**: dropping an extra register argument needs the ORIGINAL's bytes (was
+  it pushed for THIS call?), which `recover::derive_input_map` cannot see. Refile on the
+  survey side, reusing the net-kernel's const-evidence pre-call window.
+- **A3 store order**: the run collector cannot span a call, but the persist-store restructure
+  re-materializes a global store AFTER the call it crosses. Model the call-crossing restructure
+  (or read the order off pre-restructure IR) before retrying. fidget — the specimen — never
+  benefited (its stores merge before printing).
+
+Remaining, low-value/high-risk, filed not stacked (two refutations in one batch = probe harder
+first):
+- **A4 for-loop emission**: structurer's `do{while(true){if(!c)break;...}}` → `for(init;c;step)`
+  when head-test + single increment are recognizable. +0.107 on chk_splash in the probe, which
+  stays MISMATCH. Structural, so regression-prone — probe-scale on chk_splash/RIFF first.
+- **A5-2/3 narrow-value inlining**: prefer the 4-byte local for a high-half read; inline a
+  multi-use pure narrow LOAD at each use under the ported implied-cover test. Touches merge
+  logic — the highest-risk remaining item.
+
 ## The live D2 frontier — cross-TU consistency (2026-08-24, the doctrine round zc55)
 
 The consistency doctrine (memory `consistency-over-score`; docs/byte-exact-status.md
