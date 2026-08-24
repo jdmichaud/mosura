@@ -1152,14 +1152,30 @@ pub fn init_active_input(f: &mut Funcdata) {
 /// A prototype naming STACK storage keeps the plain trial path (whose stack handling is measured
 /// and fixed — the anchored placeholder); porting the `opStackLoad` arm is the follow-on.
 fn locked_register_inputs(f: &mut Funcdata, call: OpId) -> bool {
-    let Some(cs) = f.call_specs.get(&call) else { return false };
+    let dbg = std::env::var_os("MOSURA_ARG_DEBUG").is_some();
+    let pc = f.op(call).seqnum.pc.offset;
+    let Some(cs) = f.call_specs.get(&call) else {
+        if dbg {
+            eprintln!("[locked] call@{pc:#x} no call_spec");
+        }
+        return false;
+    };
     if !cs.reads_recovered {
+        if dbg {
+            eprintln!("[locked] call@{pc:#x} reads_recovered=false");
+        }
         return false;
     }
     let Some(reads) = cs.reads.clone() else { return false };
     let Some(reg) = f.spaces.by_name("register") else { return false };
     if reads.is_empty() || !reads.iter().all(|(a, _)| a.space == reg) {
+        if dbg {
+            eprintln!("[locked] call@{pc:#x} reads empty or non-register");
+        }
         return false;
+    }
+    if dbg {
+        eprintln!("[locked] call@{pc:#x} locking {} register params", reads.len());
     }
     for (addr, sz) in reads {
         let ti = {

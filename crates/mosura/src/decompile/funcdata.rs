@@ -2138,6 +2138,22 @@ impl Funcdata {
 
     /// Replace `op`'s entire input list (Ghidra's `opSetAllInput`), fixing descendants.
     pub fn op_set_all_input(&mut self, op: OpId, inputs: &[VarnodeId]) {
+        // INSTRUMENT (`MOSURA_WATCH_CALL`): see `op_remove_input`.
+        if let Ok(w) = std::env::var("MOSURA_WATCH_CALL") {
+            if matches!(self.op(op).code(), super::opcode::OpCode::Call)
+                && u64::from_str_radix(w.trim_start_matches("0x"), 16).ok()
+                    == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
+                && inputs.len() != self.op(op).num_inputs()
+            {
+                eprintln!(
+                    "[watchcall] set_all_input op@{:#x} {} -> {} inputs\n{}",
+                    self.op(op).seqnum.pc.offset,
+                    self.op(op).num_inputs(),
+                    inputs.len(),
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+        }
         self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let old = std::mem::take(&mut self.ops[op.0 as usize].inrefs);
         for v in old {
@@ -2154,6 +2170,21 @@ impl Funcdata {
 
     /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
     pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
+        // INSTRUMENT (`MOSURA_WATCH_CALL=<hex-target-va>`): name the caller that changes a CALL's
+        // arity — the probe for silently vanishing arguments.
+        if let Ok(w) = std::env::var("MOSURA_WATCH_CALL") {
+            if matches!(self.op(op).code(), super::opcode::OpCode::Call)
+                && u64::from_str_radix(w.trim_start_matches("0x"), 16).ok()
+                    == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
+            {
+                eprintln!(
+                    "[watchcall] remove_input op@{:#x} slot={slot} now {} inputs\n{}",
+                    self.op(op).seqnum.pc.offset,
+                    self.op(op).num_inputs() - 1,
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+        }
         self.debug_mod_check(op); // Ghidra OPACTION_DEBUG site (funcdata_op.cc)
         let vid = self.ops[op.0 as usize].inrefs.remove(slot);
         if let Some(pos) = self.varnodes[vid.0 as usize].descend.iter().position(|&o| o == op) {
