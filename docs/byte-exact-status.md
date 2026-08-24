@@ -2320,3 +2320,22 @@ residual SAME_SHAPE→MISMATCH labels (0x15d20 sim 0.429→0.476, 0x2d2dc 0.542�
 byte-checker's structural bucket flipping under a form change at equal-or-higher sim — not byte
 regressions (the wrong-code-scores-better pattern). Remaining round-2 tail: A5-2/3 (multi-use
 narrow-temp inlining) and A4 (for-loop emission).
+
+### zc62–zc64 (2026-08-24): round-3 begins — N1 filed (lottery), N3 lands gated
+
+wc2src-reconciliation-3's ranked axes, one per round with the zero-EXACT-regression bar:
+
+- **N1 (join-width=consumer): FILED (9a8b37d), a Watcom-codegen lottery.** zc62 measured the
+  blanket form net-flat (+0.7w) with an EXACT regression (0x2c9a8): a constant-join whose bytes
+  load the FULL register (`MOV EDX,k`) not the sub-register (`MOV DL,k`). The two are IR-identical
+  — only the original's bytes separate them — so N1 needs a DL-vs-EDX byte witness. The axis +
+  `CallSpec::param_widths` remain as groundwork.
+- **N3 (array-index=spelled): LANDED (zc64), single-use gated.** The doc's "pure spelling" hid two
+  things: the corpus materializes a pointer temp first (so N3 must INLINE it, not just re-spell),
+  and the subscript is a Watcom-codegen LOTTERY where the address is REUSED. zc63 (blanket inline)
+  was +140w but broke 2 EXACT (0x19280 shares `param_1*4` across three tables; 0x67950 derefs its
+  pointer twice — both recompute what the original keeps in a register). Gated to non-shared scaled
+  index + single-deref temp: **zc64 vs zc61 = +57.1w, 17 up / 2 down (both within-MISMATCH), ZERO
+  EXACT/verdict regressions, 826 EXACT held.** The blanket forms of both N1 and N3 are refiled as
+  needing survey-side byte witnesses (does the original use the sub-register / the scaled operand?)
+  — the same finding as the A3/A6 refutations: the doc's hand-edited probes hide these lotteries.
