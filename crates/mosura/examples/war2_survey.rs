@@ -2161,17 +2161,10 @@ fn main() {
                     &report.testmem_candidates,
                     &insns,
                 ),
-                store_orders: {
-                    let mut m = mosura::recompile::buildconfig::store_orders_from_evidence(
-                        &report.store_runs,
-                        &insns,
-                    );
-                    m.extend(mosura::recompile::buildconfig::ptr_store_orders_from_evidence(
-                        &report.ptr_store_runs,
-                        &insns,
-                    ));
-                    m
-                },
+                store_orders: mosura::recompile::buildconfig::store_orders_from_evidence(
+                    &report.store_runs,
+                    &insns,
+                ),
                 call_arg_orders,
                 arm_swap_sites: mosura::recompile::buildconfig::arm_swaps_from_evidence(
                     &report.arm_swap_candidates,
