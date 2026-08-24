@@ -693,6 +693,26 @@ flip into the condition ops at collapse time) or prove the XOR algebra and fix t
 inconsistent term. Audit afterwards: every && / || in the corpus emitted before the fix
 is suspect; the polarity-row census (branch-target+selection Jcc pairs) is the sweep.
 
+## The live D2 frontier — cross-TU consistency (2026-08-24, the doctrine round zc55)
+
+The consistency doctrine (memory `consistency-over-score`; docs/byte-exact-status.md
+zc52–zc55) forces argument agreement between a register-prototype callee's own TU and its
+call sites — 280 callers adopted. **Stated plainly: the emitted corpus is NOT yet
+self-consistent for the 284 HELD callers.** Each hold is a named bug, not a policy choice —
+the surgical candidate failed one of the four gates (unbound value / unwitnessed constant /
+call-shape drift / unstable own-signature), which means for those callees we cannot yet
+PROVE the right argument value, and their TUs still contradict the callee declarations the
+same way D2c did. The backlog decomposes by gate (grep `[consistency] .*HELD` in the emit
+log); the value-binding half is the old call-output-vs-input ordering thread (open thread
+1), the witness half wants the evidence window generalized past constants.
+
+Companion refinement, filed from the day's one EXACT loss (0x2c160): a Watcom function may
+PRESERVE a register it also consumes as a parameter (`52 55 89e5` then passes EDX through);
+as a recovered parameter the register becomes caller-owned and the recompile drops the
+save. Expressing "preserves a consumed parameter register" is an own-contract pragma
+refinement (`modify exact []`-shape on the function's OWN aux) — the evidence is the
+original's save/restore pair around a register the prototype claims.
+
 ## Open defects found during the near-frontier argument session (2026-08-18)
 
 - **E1010 regression specimen `02583`/`FUN_00066100`** (sb53, MISMATCH → COMPILE_FAIL):
