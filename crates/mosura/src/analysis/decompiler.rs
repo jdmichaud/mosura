@@ -463,6 +463,9 @@ fn record_callee_effects(
             let cl = *cleanup_cache
                 .entry(target)
                 .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
+            if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+                eprintln!("[cdecl-evd] callee {target:#x} callee_cleanup={cl:?}");
+            }
             if let Some(n) = cl {
                 f.call_specs.entry(call).or_default().extrapop = Some(4 + n as i32);
                 // SHADOW CENSUS (stack-args frontier): a callee popping its own stack
@@ -955,13 +958,48 @@ fn caller_cleanup_after(
     if call.bytes.is_empty() {
         return None;
     }
-    let next = pc + call.bytes.len() as u64;
-    let bytes = program.memory.read_window(Address::new(program.default_space, next), 16);
-    let insn = spec.disassemble_ctx(&bytes, next, ctx).into_iter().next()?;
-    if insn.bytes.is_empty() {
-        return None;
+    // The cleanup is not always the IMMEDIATELY-following instruction: Watcom's scheduler
+    // (-onatx) hoists the next statement's loads across it (0x33ad0's sprintf site:
+    // `CALL 0x5a824 ; MOV AH,[0x8127a] ; ADD ESP,0xc`), and one interleaved instruction was
+    // enough to lose the `parm caller []` fact — and with it every argument at every site of
+    // that callee. Scan forward within the basic block, skipping instructions that neither
+    // touch the stack pointer nor transfer control; stop (evidence absent, not merely
+    // displaced) at any flow op or any other stack-pointer use, so a cleanup can never be
+    // claimed across a block boundary or a PUSH/POP.
+    use crate::decompile::opcode::OpCode;
+    let mut at = pc + call.bytes.len() as u64;
+    for _ in 0..8 {
+        let bytes = program.memory.read_window(Address::new(program.default_space, at), 16);
+        let insn = spec.disassemble_ctx(&bytes, at, ctx).into_iter().next()?;
+        if insn.bytes.is_empty() {
+            return None;
+        }
+        if let Some(n) = crate::recompile::convention::caller_stack_cleanup(&insn, sp) {
+            return Some(n);
+        }
+        let touches_sp_or_flow = insn.ops.iter().any(|o| {
+            matches!(
+                OpCode::from_u32(o.opcode),
+                Some(
+                    OpCode::Return
+                        | OpCode::Call
+                        | OpCode::Callind
+                        | OpCode::Branch
+                        | OpCode::Cbranch
+                        | OpCode::Branchind
+                )
+            ) || o.out.as_ref().is_some_and(|v| v.space == "register" && v.offset == sp)
+                || o.ins.iter().any(|a| {
+                    matches!(a, crate::sleigh::pcode::PArg::Var(v)
+                        if v.space == "register" && v.offset == sp)
+                })
+        });
+        if touches_sp_or_flow {
+            return None;
+        }
+        at += insn.bytes.len() as u64;
     }
-    crate::recompile::convention::caller_stack_cleanup(&insn, sp)
+    None
 }
 
 /// One straight-line pass over a callee's body, recovering BOTH halves of its prototype: the
