@@ -2335,7 +2335,13 @@ wc2src-reconciliation-3's ranked axes, one per round with the zero-EXACT-regress
   and the subscript is a Watcom-codegen LOTTERY where the address is REUSED. zc63 (blanket inline)
   was +140w but broke 2 EXACT (0x19280 shares `param_1*4` across three tables; 0x67950 derefs its
   pointer twice — both recompute what the original keeps in a register). Gated to non-shared scaled
-  index + single-deref temp: **zc64 vs zc61 = +57.1w, 17 up / 2 down (both within-MISMATCH), ZERO
-  EXACT/verdict regressions, 826 EXACT held.** The blanket forms of both N1 and N3 are refiled as
-  needing survey-side byte witnesses (does the original use the sub-register / the scaled operand?)
-  — the same finding as the A3/A6 refutations: the doc's hand-edited probes hide these lotteries.
+  index + single-deref temp: zc64 = +57.1w, zero regressions. Then WITNESSED (the reviewer's
+  witness-first standard, replacing the heuristic gate): apply the subscript only where the
+  ORIGINAL uses a scaled-index operand `[reg*sz + base]` (`array_index_sites_from_evidence` reads
+  the disasm for a `*0x<sz>` token; printc records candidates on the report pass, inlines only
+  witnessed pcs on the final). Strictly better — count_remove's RMW `DEC [EAX*0x2 + 0x8fa50]`
+  rejoins (the single-use gate had dropped it), 0x19280/0x67950 (no SIB) stay rejected:
+  **zc65 vs zc61 = +112.8w (double the gate), 34 up / 6 down within-MISMATCH, ZERO EXACT/verdict
+  regressions, 826 EXACT held.** Self-compiled RMW fixture runs the witness on its own bytes.
+  Finding (3rd after A3/A6): the doc's hand-edited probes hide that every N-axis is a Watcom-codegen
+  lottery — witness from the first round, do not blanket-then-gate.
