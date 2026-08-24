@@ -2148,3 +2148,26 @@ Two deltas vs zc48 (binary d107046): the INT3 declassification (D5) and the
 Net since zc47 on common rows: WGSS 0.4840 → 0.5014-equivalent (+2167w), 771 EXACT,
 zero verdict regressions. zc50 measures the `swi=int3` arm (`#pragma aux __int3 = 0xcc`)
 that makes the six new rows' trap idiom compilable as the literal breakpoint byte.
+
+### zc50–zc51 (2026-08-24): the `swi=int3` arm — WGSS 0.5004, and the day's net
+
+The six D5 rows lift INT3 as Ghidra's `pcVar = swi(3); (*pcVar)();` pair — scoreable only
+through C89 implicit-int. The `swi` axis (default `ghidra` for the sweep/datatests; the
+Watcom-32 emitter selects `int3`) prints an output-less site as the prelude's `__int3()`
+(`#pragma aux __int3 = 0xcc parm [] modify exact []` — the literal breakpoint byte).
+zc50 measured the unrestricted arm: app_fatal 0.300 → 0.600, 0x721a5 → SAME_SHAPE, and ONE
+regression — 0x2a4f0's `xVar = __int3(); return xVar;` assigned from the void shim,
+COMPILE_FAIL. zc51 gates the arm to output-less sites (a valued use keeps the reference
+form): 0x2a4f0 restored to MISMATCH 0.323, nothing else moved. The assert-trap rows barely
+move (±0.002 — the byte itself is one instruction of many); the arm's value is app_fatal,
+0x721a5, and honest compilability.
+
+**Day's net (master 2a79119 → 50de111, zc47 → zc51): WGSS 0.4840 → 0.5004 — first crossing
+of 0.50 — with +2169 weighted on common rows; 771 EXACT (+4); 91 SAME_SHAPE (+23); the
+denominator honestly larger by six functions (+735w); zero verdict regressions across the
+chain (zc50's transient repaired in zc51).** The wc2src work orders: D1 fixed (the
+markUnaliased ownership-hole port — the single largest WGSS move on record, +2120w),
+D2a fixed (scheduler-aware cleanup scan), D2b dissolved by D1, D5 fixed (+ the swi arm),
+D2c/D2d wiring verified with the residual named as the adoption-gate frontier (JD's call),
+D3a's specimen refuted (the binary itself duplicates the tail), 0x2a1b4's remaining gap
+mapped to the queued merged-boolean general design (byte-exact-families).
