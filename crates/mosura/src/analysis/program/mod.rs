@@ -135,6 +135,13 @@ pub struct Program {
     /// treat absence as "no evidence" rather than as "no parameters" — an empty prototype is a
     /// claim, and the wrong one.
     pub recovered_protos: std::collections::HashMap<u64, crate::decompile::fspec::FuncProto>,
+    /// Restrict which entries of `recovered_protos` the analysis may CONSULT: `None` = all (the
+    /// normal prototype-informed world), `Some(set)` = only these callees — the surgical
+    /// injection the consistency doctrine uses (memory `consistency-over-score`): re-decompile
+    /// the landed world with ONLY the contradicted callees' prototypes visible, so the forced
+    /// adoption carries exactly the missing arguments and none of the pp world's other churn
+    /// (pragma drift, argument loss at unrelated calls — the zc52 bug-class losses).
+    pub proto_scope: Option<std::collections::HashSet<u64>>,
     /// Addresses flagged "No Return" (Ghidra `Function.setNoReturn(true)`) by the
     /// non-returning-function analyzer — the function entry itself and any PLT thunk that
     /// resolves to it. A direct call to one of these does not fall through (the disassembler
@@ -204,6 +211,7 @@ impl Program {
             comments: std::collections::BTreeMap::new(),
             indirect_branches: std::collections::HashSet::new(),
             recovered_protos: std::collections::HashMap::new(),
+            proto_scope: None,
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),
             flow_overrides: std::collections::HashMap::new(),

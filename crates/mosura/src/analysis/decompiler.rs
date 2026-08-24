@@ -395,7 +395,11 @@ fn record_callee_effects(
         for &c in &calls {
             if let Some(t) = f.op(c).input(0) {
                 let va = f.vn(t).loc.offset;
-                if let Some(p) = program.recovered_protos.get(&va) {
+                if let Some(p) = program
+                    .recovered_protos
+                    .get(&va)
+                    .filter(|_| program.proto_scope.as_ref().is_none_or(|s| s.contains(&va)))
+                {
                     let regspace = f.spaces.by_name("register");
                     let regs: Vec<u64> = p
                         .params
@@ -578,7 +582,11 @@ fn record_callee_effects(
         // A missing entry means the pass has not run, or the callee could not be decompiled, or the
         // target is indirect — never "this callee takes no arguments". Absence falls through to the
         // scan, which falls through to the default convention.
-        if let Some(proto) = program.recovered_protos.get(&target) {
+        if let Some(proto) = program
+            .recovered_protos
+            .get(&target)
+            .filter(|_| program.proto_scope.as_ref().is_none_or(|s| s.contains(&target)))
+        {
             if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
                 eprintln!(
                     "callee {target:08x} recovered proto: params={:?} out={:?}",

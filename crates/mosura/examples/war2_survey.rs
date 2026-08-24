@@ -493,12 +493,39 @@ fn resolves_contradictions(
         for i in 1..=arity {
             let Some(v) = o.input(i) else { return false };
             let vn = f2.vn(v);
+            // An INDIRECT-creation constant is a killedbycall zero manufactured by the
+            // decompiler, not a value the caller places — 12c58's `(0, 0)` by name.
+            if vn.is_constant() && vn.is_indirect_creation() {
+                return false;
+            }
             if !(vn.is_constant() || vn.is_written() || vn.is_input()) {
                 return false; // unbound (manufactured) value — the XOR-zero bug class
             }
         }
     }
     true
+}
+
+/// No call may LOSE arguments relative to the landed decompile: "propagation removed an
+/// argument" was measured as a near-perfect regression predictor (the monotone rule), and the
+/// zc52 round reproduced it (0x11b9c's `func_0x00011a50(param_1, param_1)` → one argument).
+/// Calls are matched by instruction address; a landed call missing from the candidate fails.
+fn no_call_loses_args(
+    fl: &mosura::decompile::funcdata::Funcdata,
+    fx: &mosura::decompile::funcdata::Funcdata,
+) -> bool {
+    let arity_at = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, usize> {
+        let mut m = HashMap::new();
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.code() == OpCode::Call && o.flags & (flags::DEAD | flags::MARKER) == 0 {
+                m.insert(o.seqnum.pc.offset, o.num_inputs() - 1);
+            }
+        }
+        m
+    };
+    let (l, x) = (arity_at(fl), arity_at(fx));
+    l.iter().all(|(pc, &n)| x.get(pc).is_some_and(|&m| m >= n))
 }
 
 fn nondefault_parm_regs(
@@ -917,6 +944,15 @@ fn main() {
         Some(base)
     };
     let prog = prog;
+    // The surgical-injection world (memory `consistency-over-score`): the LANDED program plus
+    // the recovered prototypes, consulted only through `proto_scope` — set per forced function
+    // to exactly its contradicted callees, cleared after each use.
+    let mut prog_cons: Option<analysis::program::Program> = prog_pp.as_ref().map(|pp| {
+        let mut c = prog.clone();
+        c.recovered_protos = pp.recovered_protos.clone();
+        c.proto_scope = Some(std::collections::HashSet::new()); // consult NOTHING until scoped
+        c
+    });
     let ram = prog.default_space;
     eprintln!("{} functions", prog.function_manager.function_count());
 
@@ -1242,19 +1278,20 @@ fn main() {
                 //      an injected callee arity manufactured phantom own-params from
                 //      entry-reaching register reads. Register growth on a stack-param
                 //      landed signature contradicts the recovered convention.
-                let sig_stable = {
+                let sig_stable_vs = |cand: &Funcdata| -> bool {
                     let lp = mosura::decompile::printc::rendered_param_slots(fl);
-                    let cp = mosura::decompile::printc::rendered_param_slots(&f2);
+                    let cp = mosura::decompile::printc::rendered_param_slots(cand);
                     let prefix_ok = cp.len() >= lp.len()
                         && lp.iter().zip(cp.iter()).all(|(a, b)| a.addr == b.addr && a.size == b.size);
-                    let reg_space = f2.spaces.by_name("register");
+                    let reg_space = cand.spaces.by_name("register");
                     let landed_has_stack = lp.iter().any(|sl| Some(sl.addr.space) != reg_space);
                     let grows_registers =
                         cp.len() > lp.len() && cp[lp.len()..].iter().any(|sl| Some(sl.addr.space) == reg_space);
-                    nondefault_parm_regs(&f2, &watreg) == nondefault_parm_regs(fl, &watreg)
+                    nondefault_parm_regs(cand, &watreg) == nondefault_parm_regs(fl, &watreg)
                         && prefix_ok
                         && !(landed_has_stack && grows_registers)
                 };
+                let sig_stable = sig_stable_vs(&f2);
                 // The parm-pragma network gate, PRESENCE FORM — deliberately blunt: any
                 // call into a NONDEFAULT-STORAGE callee refuses the upgrade. The precise
                 // form (refuse only on CHANGED ordered arg signatures at such callees) was
@@ -1567,17 +1604,107 @@ fn main() {
                 // bug class, not the lottery. Score losses from these adoptions are
                 // CLASSIFIED in the round report (lottery vs bug), not vetoed.
                 // MOSURA_CONSISTENCY=0 restores the pure gate stack for A/B measurement.
-                if !ok && sig_stable && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
+                let mut f_forced: Option<Funcdata> = None;
+                if !ok && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
                     let contradicted = under_called_register_callees(fl, pp);
                     if !contradicted.is_empty() {
                         let list: Vec<String> =
                             contradicted.iter().map(|&(c, n)| format!("{c:#x}/{n}")).collect();
-                        if resolves_contradictions(&f2, &contradicted) {
-                            ok = true;
-                            consistency_forced = true;
-                            eprintln!("[consistency] {name}: FORCED — under-called callees [{}]", list.join(" "));
-                        } else {
-                            eprintln!("[consistency] {name}: HELD (candidate unbound/unresolved) — callees [{}]", list.join(" "));
+                        // SURGICAL INJECTION (zc52's lesson): do NOT adopt the pp world's
+                        // decompile wholesale — its call_specs shift every pragma
+                        // (`modify` → `modify exact`, order pragmas lost) and its other
+                        // locked calls can LOSE arguments (0x11b9c), the measured bug-class
+                        // losses. Re-decompile the LANDED world with only the contradicted
+                        // callees' prototypes visible (`Program::proto_scope`), so the
+                        // adoption carries exactly the missing arguments.
+                        let f3 = prog_cons.as_mut().and_then(|pc| {
+                            pc.proto_scope =
+                                Some(contradicted.iter().map(|&(c, _)| c).collect());
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                decompile_function(pc, Address::new(ram, *va))
+                            }))
+                            .ok()
+                            .flatten();
+                            pc.proto_scope = Some(std::collections::HashSet::new());
+                            r
+                        });
+                        // BYTE EVIDENCE for constant arguments (the net-kernel's measured
+                        // gate, reused): a constant an injected call carries must have its
+                        // materializing write in the ORIGINAL's 12-instruction pre-call
+                        // window (`MOV reg,K`, or `XOR reg,reg` for 0). The indirect-zero
+                        // flag does not survive constant cloning and dead-iop collapse, so
+                        // 12c58's `(0, 0)` — zeros the original never places — arrives as
+                        // plain constants; the original's own instruction stream is the
+                        // reliable witness.
+                        let consts_witnessed = |f3: &Funcdata| -> bool {
+                            for op in f3.op_ids() {
+                                let o = f3.op(op);
+                                if o.code() != OpCode::Call
+                                    || o.flags & (flags::DEAD | flags::MARKER) != 0
+                                {
+                                    continue;
+                                }
+                                let Some(t) = o.input(0) else { continue };
+                                let callee = f3.vn(t).loc.offset;
+                                let Some(&(_, arity)) =
+                                    contradicted.iter().find(|&&(c, _)| c == callee)
+                                else {
+                                    continue;
+                                };
+                                for i in 1..=arity.min(o.num_inputs() - 1) {
+                                    let Some(v) = o.input(i) else { return false };
+                                    let vn = f3.vn(v);
+                                    if !vn.is_constant() {
+                                        continue;
+                                    }
+                                    let k = vn.loc.offset;
+                                    let Some(&r) = arg_reg_offs.get(i - 1) else { return false };
+                                    let witnessed = insns
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, x)| x.is_call && x.target == Some(callee))
+                                        .any(|(ci, _)| {
+                                            insns[..ci]
+                                                .iter()
+                                                .rev()
+                                                .take(12)
+                                                .take_while(|x| !x.is_call && !x.is_branch)
+                                                .any(|x| {
+                                                    x.sem.iter().any(|sop| {
+                                                        matches!(sop.out, Some(mosura::recompile::insn::SemArg::Reg(o2, _)) if o2 & !3 == r)
+                                                            && (sop.ins.iter().any(|ii| matches!(ii, mosura::recompile::insn::SemArg::Const(vv, _) if *vv == k))
+                                                                || (k == 0 && x.mnemonic == "XOR"))
+                                                    })
+                                                })
+                                        });
+                                    if !witnessed {
+                                        return false;
+                                    }
+                                }
+                            }
+                            true
+                        };
+                        match f3 {
+                            Some(f3)
+                                if resolves_contradictions(&f3, &contradicted)
+                                    && no_call_loses_args(fl, &f3)
+                                    && sig_stable_vs(&f3)
+                                    && consts_witnessed(&f3) =>
+                            {
+                                ok = true;
+                                consistency_forced = true;
+                                eprintln!(
+                                    "[consistency] {name}: FORCED — under-called callees [{}]",
+                                    list.join(" ")
+                                );
+                                f_forced = Some(f3);
+                            }
+                            _ => {
+                                eprintln!(
+                                    "[consistency] {name}: HELD (unbound/unwitnessed value, lost argument, or unstable signature) — callees [{}]",
+                                    list.join(" ")
+                                );
+                            }
                         }
                     }
                 }
@@ -1604,7 +1731,7 @@ fn main() {
                     eprintln!("[zapcheck] {name}: {reason}");
                 }
                 if ok {
-                    f = Some(f2);
+                    f = Some(f_forced.unwrap_or(f2));
                     f_from_pp = true;
                 }
             }
