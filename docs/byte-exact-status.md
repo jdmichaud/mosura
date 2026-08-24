@@ -2171,3 +2171,45 @@ D2a fixed (scheduler-aware cleanup scan), D2b dissolved by D1, D5 fixed (+ the s
 D2c/D2d wiring verified with the residual named as the adoption-gate frontier (JD's call),
 D3a's specimen refuted (the binary itself duplicates the tail), 0x2a1b4's remaining gap
 mapped to the queued merged-boolean general design (byte-exact-families).
+
+### zc52–zc55 (2026-08-24): the consistency doctrine — cross-TU agreement outranks the gates
+
+JD's call, made on the D2c evidence ("if it's a lottery, byte-exactness today is by pure
+luck and should not prevent us from doing the right thing"): a callee whose recovered
+register prototype declares N parameters gets N arguments at every call site — the emitted
+corpus must be self-consistent — and score losses are CLASSIFIED (lottery vs bug) instead
+of vetoing. Memory `consistency-over-score`; MOSURA_CONSISTENCY=0 restores the pure gates.
+
+The road there was four rounds, each loss class fixed rather than accepted:
+
+- **zc52** (coarse: adopt the pp decompile wholesale when it resolves a contradiction):
+  +447.6w, 784 EXACT (+13 net) — but the 7 EXACT losses classified as BUG CLASS, all three
+  predicted shapes: pragma churn (`modify` → `modify exact`, order pragmas lost — 12360),
+  argument LOSS at unrelated calls (11b9c), manufactured zeros (12c58's `(0,0)`, whose
+  indirect-creation flag does not survive constant cloning and dead-iop collapse).
+- **zc53** (surgical: `Program::proto_scope` — re-decompile the LANDED world with only the
+  contradicted callees' prototypes visible; hold-gates: bound values, monotone args,
+  sig-stable, byte-witnessed constants): +168.3w, 781 EXACT, bug-class gone except two
+  guard gaps — a CALLIND lost its buffer argument (2d360) and a width ripple re-rendered
+  an unrelated call (2247c).
+- **zc54** (`call_shapes_stable`: every call — indirect included — keeps arity, output
+  presence and width, except growth at the contradicted callees): +212.9w, 782 EXACT; the
+  one big down (1fdbc 0.900 → 0.320) was the scoped callee's exactness re-deriving under
+  the injected arity (`modify` → `modify exact` on a memset-class callee).
+- **zc55** (forced adoptions keep the landed pragma specs — the network kernel's own
+  invariant): **+417.3w vs zc51, 785 EXACT (15 gained, 1 lost), 91 SAME_SHAPE; 1fdbc goes
+  all the way to EXACT** (the three-argument memset call is byte-perfect). Census: 280
+  forced, 284 held (the held set = the value-binding/witness backlog, each a named bug).
+
+The one EXACT loss, classified CORRECT-CODE/CONTRACT: 0x2c160 passes both its inputs
+through to its callee (`52 55 89e5` — the original provably supplies them) and ALSO
+preserves EDX for its own caller; as a recovered parameter EDX becomes caller-owned and
+Watcom drops the save. Expressing "preserves a consumed parameter register" is an
+own-contract refinement (`modify exact []` shape) — filed, not fixed here. The 62 residual
+sim-downs (−127.4w against +544.7w up) are the accepted lottery class — e.g. 23c40's
+`func_0x0001c854(param_1)` → `(param_1, param_1)`: the declared argument is the same live
+value, passed explicitly; correct code, small allocation reshuffle.
+
+**Day's full arc (zc47 → zc55): WGSS 0.4840 → 0.5038, EXACT 767 → 785 (+18), SAME_SHAPE
+68 → 91 (+23), the denominator honestly larger by six functions, and ONE verdict loss all
+day — the classified correct-code case above.**
