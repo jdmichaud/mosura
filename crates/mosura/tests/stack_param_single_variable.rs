@@ -1,7 +1,8 @@
 //! A stack parameter reads as ONE variable across calls (the zc48 down class).
 //!
-//! WAR2 0x6c390 takes two stack parameters and re-reads them after every call in a long
-//! dispatch chain. The call-crossing INDIRECTs on the parameter slots must collapse
+//! The fixture is SELF-COMPILED (examples/watcom_mve_fixtures.rs: a `__cdecl` dispatch chain, wcc386
+//! 10.0a in-house, source embedded in the fixture) — no game bytes. Like WAR2's 0x6c390 it
+//! takes two stack parameters and re-reads them after every call in a long dispatch chain. The call-crossing INDIRECTs on the parameter slots must collapse
 //! (`RuleIndirectCollapse` on `nolocalalias`) so every read prints through the parameter —
 //! Ghidra's shape for the same fixture. When the classification kept the slots merely
 //! `mapped|addrtied` without recording the walk's unaliased verdict, the INDIRECTs survived
@@ -28,9 +29,9 @@ fn stack_params_do_not_split_across_calls() {
         !c.contains("= param_1;") && !c.contains("= param_2;"),
         "no parameter-copy split — the slot's INDIRECTs must collapse:\n{c}"
     );
-    let direct = c.matches("param_2 * 4 + param_1").count();
+    let direct = c.matches("param_2 * 4").count();
     assert!(
-        direct >= 10,
+        direct >= 10 && c.matches("param_1 + 0x").count() >= 10,
         "the dispatch chain reads the parameters directly at every site (got {direct}):\n{c}"
     );
 }

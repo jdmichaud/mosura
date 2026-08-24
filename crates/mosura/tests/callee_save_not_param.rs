@@ -1,10 +1,13 @@
 //! A Watcom callee-save PUSH is not a parameter (wc2src-reconciliation D1).
 //!
-//! WAR2's `maphdr_TYPE` (0x2a1b4) opens `PUSH EDX` — the callee preserving a register it is
-//! about to clobber — and closes `POP EDX` on both epilogues. mosura recovered that save as a
-//! second parameter plus a dead `xStack_4 = param_2;` store, because the alias classification
-//! treated every stack slot above the `&local` escape as aliased: the save-slot INDIRECTs
-//! stayed addrforce-live, the store survived, and `recover_input_params` saw a used EDX input.
+//! The fixture is SELF-COMPILED (examples/watcom_mve_fixtures.rs: wcc386 10.0a in-house, the profile's own
+//! flags with `-d1+` for WAR2's frame path; source embedded in the fixture) — no game bytes.
+//! It reproduces `maphdr_TYPE`'s exact opening, `52 55 89e5 83ec10`: PUSH EDX — the callee
+//! preserving a register it is about to clobber — before the frame. mosura recovered that save
+//! as a second parameter plus a dead `xStack_4 = param_2;` store, because the alias
+//! classification treated every stack slot above the `&local` escape as aliased: the save-slot
+//! INDIRECTs stayed addrforce-live, the store survived, and `recover_input_params` saw a used
+//! EDX input (verified: the pre-fix tree at 2a79119 prints exactly that on this fixture).
 //!
 //! Ghidra's own C for the same fixture is ONE parameter, through a chain the OPACTION trace
 //! named: `ActionRestrictLocal` carves the saved-EBP slot (unaffected), and
@@ -33,7 +36,7 @@ fn watcom_callee_save_push_is_not_a_parameter() {
     let sig = c.lines().find(|l| l.contains("func(")).unwrap_or_else(|| panic!("no signature in:\n{c}"));
     assert!(
         sig.contains("(xunknown4 param_1)"),
-        "one parameter — the EDX save is not an argument (Ghidra prints the same); got:\n{sig}\n\nfull:\n{c}"
+        "one parameter — the EDX save is not an argument; got:\n{sig}\n\nfull:\n{c}"
     );
     assert!(
         !c.contains("param_2"),
