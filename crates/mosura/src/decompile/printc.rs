@@ -293,6 +293,9 @@ struct PrintC<'a> {
     /// The first of a fused half-store pair → the 4-byte value: renders `sym = value` once; the
     /// second store is suppressed.
     fused_store: HashMap<OpId, (i64, VarnodeId)>,
+    /// `EmitChoices::narrow_tests == Rewiden` (EMISSION ARM): a `(x >> 8k) & m` zero test
+    /// prints as `x & (m << 8k)`.
+    narrow_tests_rewiden: bool,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -1713,9 +1716,64 @@ impl<'a> PrintC<'a> {
                 );
             }
         }
+        // A5 (`narrow-tests=rewiden`): `((x >> 8k) & m) sym 0` — the lifter's spelling of a
+        // byte-of-word test — prints as `(x & (m << 8k)) sym 0`. Value-identical for the boolean
+        // (the compared constant is 0, so the shift only relocates the tested bits), and the form
+        // this compiler turns back into the original's sub-register test.
+        if self.narrow_tests_rewiden {
+            if let Some((x, shifted_mask, x_slot)) = self.rewidened_zero_test(op) {
+                let xs = self.operand(x, 8, false);
+                let l = format!("({xs} & {shifted_mask:#x})");
+                return (if x_slot == 0 { format!("{l} {sym} 0") } else { format!("0 {sym} {l}") }, prec);
+            }
+        }
         let l = self.cast_operand(op, 0, prec, false);
         let r = self.cast_operand(op, 1, prec, true);
         (format!("{l} {sym} {r}"), prec)
+    }
+
+    /// The `(x, m << 8k, slot)` of a zero comparison whose tested operand is `(x >> 8k) & m` with
+    /// both intermediates single-use and the mask fitting below `x`'s width after the shift.
+    fn rewidened_zero_test(&self, op: super::op::OpId) -> Option<(VarnodeId, u64, usize)> {
+        let o = self.f.op(op);
+        let (a, b) = (o.input(0)?, o.input(1)?);
+        let (tested, slot) = if self.f.vn(b).is_constant() && self.f.vn(b).constant_value() == 0 {
+            (a, 0usize)
+        } else if self.f.vn(a).is_constant() && self.f.vn(a).constant_value() == 0 {
+            (b, 1usize)
+        } else {
+            return None;
+        };
+        if self.is_explicit(tested) || self.f.vn(tested).descend.len() != 1 {
+            return None;
+        }
+        let and = self.f.vn(tested).def?;
+        if self.f.op(and).code() != OpCode::IntAnd {
+            return None;
+        }
+        let (sh_out, m) = (self.f.op(and).input(0)?, self.f.op(and).input(1)?);
+        if !self.f.vn(m).is_constant() || self.is_explicit(sh_out) || self.f.vn(sh_out).descend.len() != 1 {
+            return None;
+        }
+        let sh = self.f.vn(sh_out).def?;
+        if self.f.op(sh).code() != OpCode::IntRight {
+            return None;
+        }
+        let (x, k) = (self.f.op(sh).input(0)?, self.f.op(sh).input(1)?);
+        if !self.f.vn(k).is_constant() {
+            return None;
+        }
+        let k = self.f.vn(k).constant_value();
+        let m = self.f.vn(m).constant_value();
+        if k == 0 || k % 8 != 0 || k >= 64 {
+            return None;
+        }
+        let width_bits = u64::from(self.f.vn(x).size) * 8;
+        let shifted = m.checked_shl(k as u32)?;
+        if width_bits < 64 && shifted >> width_bits != 0 {
+            return None; // the mask must stay inside x
+        }
+        Some((x, shifted, slot))
     }
 
     /// `(instruction address, our constant, complemented constant)` for a comparison the
@@ -4743,6 +4801,7 @@ fn print_c_inner(
         arm_order_address: choices.arm_order == super::emit::ArmOrder::Address,
         split_pairs: HashMap::new(),
         fused_store: HashMap::new(),
+        narrow_tests_rewiden: choices.narrow_tests == super::emit::NarrowTests::Rewiden,
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),

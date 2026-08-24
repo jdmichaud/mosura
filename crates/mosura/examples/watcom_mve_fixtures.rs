@@ -66,6 +66,18 @@ int mve(void)
 }
 "#;
 
+/// A byte-of-word test: the source reads `flags & 0x200` on a 16-bit field. The lifter
+/// spells the recovered predicate as `(flags >> 8 & 2) != 0` — the shift-and-mask form the
+/// `narrow-tests=rewiden` axis rewrites back to `flags & 0x200`.
+const NARROW_TEST_SRC: &str = r#"
+extern void act(void);
+void mve(unsigned short *p)
+{
+    if (*p & 0x200)
+        act();
+}
+"#;
+
 const STACK_PARAM_SRC: &str = r#"
 extern void hit(void);
 void __cdecl mve(int base, int idx)
@@ -105,6 +117,7 @@ fn main() {
         ("FRAME", "mve_", FRAME_EXTENT_SRC, "x86_watcom_frame_extent.xml", 0x3000u64),
         ("GUARD", "mve_", GUARD_ORDER_SRC, "x86_watcom_guard_order.xml", 0x4000u64),
         ("SPLIT", "mve_", SPLIT_LOCAL_SRC, "x86_watcom_split_local.xml", 0x5000u64),
+        ("NTEST", "mve_", NARROW_TEST_SRC, "x86_watcom_narrow_test.xml", 0x6000u64),
     ];
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {

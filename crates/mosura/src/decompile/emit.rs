@@ -212,6 +212,7 @@ pub struct EmitChoices {
     pub swi: SwiForm,
     pub arm_order: ArmOrder,
     pub struct_locals: StructLocals,
+    pub narrow_tests: NarrowTests,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -266,6 +267,18 @@ pub enum StructLocals {
     Coalesce,
 }
 
+/// How a byte-of-word test the lifter spelled as a shift and mask — `(x >> 8 & 2) != 0` for the
+/// source's `x & 0x200` — is rendered in a zero comparison. `Ghidra` keeps the shift form (the
+/// reference). `Rewiden` prints the test at the operand's own width with the mask shifted up:
+/// value-identical in the boolean, and the form Watcom compiles back to the original's
+/// sub-register `TEST AH,2` / memory-direct `TEST byte ptr` (wc2src-reconciliation-2 A5:
+/// 88 TUs carry the shift spelling; attack_dispatch_attack 0.548 → 0.589 in the probe).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowTests {
+    Ghidra,
+    Rewiden,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -279,6 +292,7 @@ impl Default for EmitChoices {
             swi: SwiForm::Ghidra,
             arm_order: ArmOrder::Ghidra,
             struct_locals: StructLocals::Ghidra,
+            narrow_tests: NarrowTests::Ghidra,
         }
     }
 }
@@ -354,6 +368,12 @@ impl EmitChoices {
             doc: "keep a half-written 4-byte stack local as two 2-byte slots, or declare it once \
                   and read the halves through its address",
         },
+        Axis {
+            name: "narrow-tests",
+            values: &["ghidra", "rewiden"],
+            doc: "render a shifted byte-of-word zero test as the lifter's shift-and-mask, or at the \
+                  operand's own width with the mask shifted up (x & 0x200)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -404,6 +424,10 @@ impl EmitChoices {
             "struct-locals" => Some(match self.struct_locals {
                 StructLocals::Ghidra => "ghidra",
                 StructLocals::Coalesce => "coalesce",
+            }),
+            "narrow-tests" => Some(match self.narrow_tests {
+                NarrowTests::Ghidra => "ghidra",
+                NarrowTests::Rewiden => "rewiden",
             }),
             _ => None,
         }
@@ -482,6 +506,13 @@ impl EmitChoices {
                 self.struct_locals = match value {
                     "ghidra" => StructLocals::Ghidra,
                     "coalesce" => StructLocals::Coalesce,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "narrow-tests" => {
+                self.narrow_tests = match value {
+                    "ghidra" => NarrowTests::Ghidra,
+                    "rewiden" => NarrowTests::Rewiden,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
