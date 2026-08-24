@@ -4642,6 +4642,13 @@ fn print_c_inner(
             if f.op(def).code() != OpCode::Callother || f.vn(t).descend.len() != 1 {
                 continue;
             }
+            // Output-less sites only: the shim is `void __int3(void)`, and a site that USES the
+            // call's value (`xVar = __int3(); return xVar;` — 0x2a4f0's tail) must keep the
+            // reference form, whose implicit-int `swi(3)` still compiles (zc50: the void shim
+            // there was the round's one COMPILE_FAIL).
+            if o.output.is_some() {
+                continue;
+            }
             let is_swi = f.op(def).input(0).is_some_and(|i| {
                 f.userops.get(&f.vn(i).constant_value()).is_some_and(|n| n == "swi")
             });
