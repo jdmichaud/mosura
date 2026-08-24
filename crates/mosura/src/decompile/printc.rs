@@ -1545,6 +1545,13 @@ impl<'a> PrintC<'a> {
                         if !self.n3_base_ok(b) {
                             continue;
                         }
+                        // Skip a SHARED scaled index: if the `idx * size` term feeds more than
+                        // this one access, the original keeps it in a register and reuses it
+                        // (0x19280's `param_1*4` across three tables) — the subscript form, which
+                        // recomputes per access, breaks that (value-identical but byte-different).
+                        if self.f.vn(o2).descend.iter().filter(|&&u| !self.f.op(u).is_dead()).count() != 1 {
+                            continue;
+                        }
                         if let Some(idx) = self.scaled_index(o2, size) {
                             let bs = self.operand(b, 14, false);
                             let i = self.render_var(idx).0;
@@ -5057,9 +5064,21 @@ fn print_c_inner(
                 None
             };
             let Some((base, idx)) = pick(a, b).or_else(|| pick(b, a)) else { continue };
-            // every use of the temp must be a LOAD/STORE POINTER (a deref), at width == elem
-            let uses = f.vn(out).descend.clone();
-            if uses.is_empty() {
+            // Skip a SHARED scaled index: the `idx * size` term (the INT_ADD's non-base input)
+            // must feed only this one address. 0x19280 multiplies `param_1 * 4` once and adds it
+            // to three different table bases; the original keeps `param_1*4` in a register and
+            // reuses it, which the per-access subscript form breaks. The scaled term is `a` or `b`
+            // — whichever is NOT the base.
+            let scaled = if base == a { b } else { a };
+            if f.vn(scaled).descend.iter().filter(|&&u| !f.op(u).is_dead()).count() != 1 {
+                continue;
+            }
+            // EXACTLY ONE deref use. A pointer temp the original keeps in a register and
+            // dereferences more than once (an RMW `*p = *p - 1`, or `if (x==*p) *p = 0` — 0x67950)
+            // is a Watcom-operand lottery: inlining recomputes the address at each use and can
+            // break a byte-exact function. One use has nothing to reuse, so it is safe.
+            let uses: Vec<OpId> = f.vn(out).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
+            if uses.len() != 1 {
                 continue;
             }
             let all_deref = uses.iter().all(|&u| {
