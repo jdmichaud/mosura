@@ -1020,6 +1020,29 @@ mod tests {
     /// BOTH encodings of `mov ebp,esp` are a frame setup. The script this replaces matched hex, and
     /// WAR2 contains both spellings — 261 functions use one and 84 the other.
     #[test]
+    /// N1 witness: `MOV DL,9` (8-bit) is a narrow site; `MOV EDX,9` (32-bit) is not.
+    #[test]
+    fn join_narrow_witness_reads_the_register_width() {
+        // b209 = MOV DL,9 (8-bit imm to sub-register); ba09000000 = MOV EDX,9 (32-bit)
+        let dl = lift("b209");   // one insn at 0x1000
+        let edx = lift("ba09000000");
+        assert_eq!(join_narrow_sites_from_evidence(&[0x1000], &dl), std::collections::HashSet::from([0x1000]));
+        assert!(join_narrow_sites_from_evidence(&[0x1000], &edx).is_empty());
+    }
+
+    /// N3 witness: a `*0x4` scaled-index operand is a subscript site; a plain `[reg + const]` is not.
+    #[test]
+    fn array_index_witness_reads_the_scaled_operand() {
+        // ff048500900000 = INC dword ptr [EAX*4 + 0x9000] (SIB, scale 4)
+        let sib = lift("ff048500900000");
+        assert_eq!(array_index_sites_from_evidence(&[(0x1000, 4)], &sib), std::collections::HashSet::from([0x1000]));
+        // wrong element size (2) does not match a *0x4 operand
+        assert!(array_index_sites_from_evidence(&[(0x1000, 2)], &sib).is_empty());
+        // ff80c8010800 = INC dword ptr [EAX + 0x801c8] (no scale)
+        let plain = lift("ff80c8010800");
+        assert!(array_index_sites_from_evidence(&[(0x1000, 4)], &plain).is_empty());
+    }
+
     fn a_frame_is_recognized_in_either_encoding() {
         for hex in ["5589e58b45085dc3", "558bec8b45085dc3"] {
             let ev = detect(&lift(hex), ESP, EBP);
