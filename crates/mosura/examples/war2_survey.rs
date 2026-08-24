@@ -436,6 +436,71 @@ fn watcom_reg_table() -> Vec<(u64, u32, &'static str)> {
 ///
 /// Only all-register prototypes are handled: a mixed register/stack prototype needs the overflow
 /// form and is left to the default, and an unmappable storage returns `None` rather than guessing.
+/// The callees this decompile UNDER-CALLS: a live CALL to a callee whose whole-program
+/// recovered prototype is REGISTER-ONLY with N parameters, passing fewer than N inputs.
+/// This is the cross-TU contradiction of the consistency doctrine (JD 2026-08-24): the
+/// callee's own TU declares those parameters, so a caller that omits them links into a
+/// program that reads garbage — invisible to per-function byte comparison by construction.
+fn under_called_register_callees(
+    f: &mosura::decompile::funcdata::Funcdata,
+    pp: &mosura::analysis::program::Program,
+) -> Vec<(u64, usize)> {
+    let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
+    let mut out: Vec<(u64, usize)> = Vec::new();
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.code() != OpCode::Call || o.flags & (flags::DEAD | flags::MARKER) != 0 {
+            continue;
+        }
+        let Some(t) = o.input(0) else { continue };
+        let callee = f.vn(t).loc.offset;
+        if callee == 0 {
+            continue;
+        }
+        let Some(proto) = pp.recovered_protos.get(&callee) else { continue };
+        // The register-only domain, mirroring `locked_register_inputs`: a prototype naming
+        // stack storage keeps the trial path and is not this contradiction class.
+        if proto.params.is_empty() || !proto.params.iter().all(|s| s.addr.space == reg) {
+            continue;
+        }
+        if o.num_inputs() - 1 < proto.params.len() && !out.iter().any(|&(c, _)| c == callee) {
+            out.push((callee, proto.params.len()));
+        }
+    }
+    out
+}
+
+/// Does the candidate decompile RESOLVE every named contradiction — each call to the callee
+/// carries at least the declared register arity, every declared-parameter input holding a
+/// REAL bound value (a constant, a written varnode, or a function input)? A manufactured
+/// free varnode — the historical `XOR reg,reg`-from-nowhere class — fails the test: that is
+/// a wrong program of a different kind, held as a bug rather than emitted.
+fn resolves_contradictions(
+    f2: &mosura::decompile::funcdata::Funcdata,
+    contradicted: &[(u64, usize)],
+) -> bool {
+    for op in f2.op_ids() {
+        let o = f2.op(op);
+        if o.code() != OpCode::Call || o.flags & (flags::DEAD | flags::MARKER) != 0 {
+            continue;
+        }
+        let Some(t) = o.input(0) else { continue };
+        let callee = f2.vn(t).loc.offset;
+        let Some(&(_, arity)) = contradicted.iter().find(|&&(c, _)| c == callee) else { continue };
+        if o.num_inputs() - 1 < arity {
+            return false; // the candidate still under-calls it
+        }
+        for i in 1..=arity {
+            let Some(v) = o.input(i) else { return false };
+            let vn = f2.vn(v);
+            if !(vn.is_constant() || vn.is_written() || vn.is_input()) {
+                return false; // unbound (manufactured) value — the XOR-zero bug class
+            }
+        }
+    }
+    true
+}
+
 fn nondefault_parm_regs(
     f: &mosura::decompile::funcdata::Funcdata,
     table: &[(u64, u32, &'static str)],
@@ -1274,6 +1339,7 @@ fn main() {
                     && !mosura::recompile::watsched::allocation_regressed(&insns, &cand);
                 let mut ok = other_ok && alloc_ok;
                 let mut passthrough = false;
+                let mut consistency_forced = false;
                 // DEFAULT-ON since the round-2 landing (targeted 299: 121/121 EXACT held,
                 // +5, zero losses). MOSURA_KERNEL_NET=0 restores the refusal.
                 let net_kernel = std::env::var("MOSURA_KERNEL_NET").as_deref() != Ok("0");
@@ -1490,8 +1556,35 @@ fn main() {
                         }
                     }
                 }
+                // CONSISTENCY OVERRIDE (JD 2026-08-24; memory consistency-over-score):
+                // cross-TU argument consistency outranks the byte-gates. When the LANDED
+                // decompile under-calls a register-prototype callee — the callee's own TU
+                // declares parameters these calls do not pass, so the linked program would
+                // read garbage — and the candidate resolves every such call with genuinely
+                // bound values, the candidate is adopted even where the scheduler/network/
+                // allocation gates refused. Own-signature instability (`sig_stable` false)
+                // still blocks: width coarsening and phantom own-params are the collateral
+                // bug class, not the lottery. Score losses from these adoptions are
+                // CLASSIFIED in the round report (lottery vs bug), not vetoed.
+                // MOSURA_CONSISTENCY=0 restores the pure gate stack for A/B measurement.
+                if !ok && sig_stable && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
+                    let contradicted = under_called_register_callees(fl, pp);
+                    if !contradicted.is_empty() {
+                        let list: Vec<String> =
+                            contradicted.iter().map(|&(c, n)| format!("{c:#x}/{n}")).collect();
+                        if resolves_contradictions(&f2, &contradicted) {
+                            ok = true;
+                            consistency_forced = true;
+                            eprintln!("[consistency] {name}: FORCED — under-called callees [{}]", list.join(" "));
+                        } else {
+                            eprintln!("[consistency] {name}: HELD (candidate unbound/unresolved) — callees [{}]", list.join(" "));
+                        }
+                    }
+                }
                 if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
-                    let reason = if passthrough {
+                    let reason = if consistency_forced {
+                        "adopted:consistency"
+                    } else if passthrough {
                         "adopted:passthrough"
                     } else if ok {
                         "adopted"
