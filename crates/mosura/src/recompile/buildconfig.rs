@@ -600,6 +600,75 @@ pub fn store_orders_from_evidence(
     out
 }
 
+/// The pointer-relative twin of [`store_orders_from_evidence`]: runs of STOREs through one base
+/// pointer at constant field offsets (`EmitReport::ptr_store_runs`), ordered by the original's
+/// `[reg+off]` stores. A store's offset is read from the p-code: a STORE whose pointer is the
+/// instruction's own `INT_ADD(register, constant)` temporary (or a bare register, offset 0).
+/// Same rules as the absolute form: unambiguous only (the function writes each offset exactly
+/// as often as the run stores it) and same-offset stores pair by occurrence.
+pub fn ptr_store_orders_from_evidence(
+    runs: &[Vec<(crate::decompile::op::OpId, u64, u32)>],
+    insns: &[NormInsn],
+) -> std::collections::HashMap<crate::decompile::op::OpId, Vec<crate::decompile::op::OpId>> {
+    let mut out = std::collections::HashMap::new();
+    let store_code = crate::decompile::opcode::OpCode::Store as u32;
+    let add_code = crate::decompile::opcode::OpCode::IntAdd as u32;
+    let mut writes: Vec<(usize, u64)> = Vec::new();
+    for (i, x) in insns.iter().enumerate() {
+        // temporaries that are `register + constant` within this instruction
+        let mut sums: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+        for sop in &x.sem {
+            if sop.opcode == add_code {
+                if let (Some(SemArg::Temp(t, _)), 2) = (&sop.out, sop.ins.len()) {
+                    match (&sop.ins[0], &sop.ins[1]) {
+                        (SemArg::Reg(_, _), SemArg::Const(k, _)) | (SemArg::Const(k, _), SemArg::Reg(_, _)) => {
+                            sums.insert(*t, *k);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if sop.opcode == store_code {
+                match sop.ins.get(1) {
+                    Some(SemArg::Temp(t, _)) => {
+                        if let Some(&k) = sums.get(t) {
+                            writes.push((i, k));
+                        }
+                    }
+                    Some(SemArg::Reg(_, _)) => writes.push((i, 0)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    for run in runs {
+        let mut ok = true;
+        let mut order: Vec<(usize, crate::decompile::op::OpId)> = Vec::new();
+        let mut seen: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        for &(op, off, _sz) in run {
+            let hits: Vec<usize> = writes.iter().filter(|&&(_, a)| a == off).map(|&(i, _)| i).collect();
+            let in_run = run.iter().filter(|r| r.1 == off).count();
+            if hits.len() != in_run {
+                ok = false;
+                break;
+            }
+            let k = seen.entry(off).or_insert(0);
+            order.push((hits[*k], op));
+            *k += 1;
+        }
+        if !ok {
+            continue;
+        }
+        order.sort_by_key(|&(i, _)| i);
+        let ops: Vec<_> = order.iter().map(|&(_, op)| op).collect();
+        let ours: Vec<_> = run.iter().map(|r| r.0).collect();
+        if ops != ours {
+            out.insert(ours[0], ops);
+        }
+    }
+    out
+}
+
 /// Decide the printed arm order of two-arm constant joins from the ORIGINAL's own layout
 /// (wc2src D3b). For each candidate `(branch pc, then k, else k)`: find the conditional jump
 /// at that address and scan forward a short window for the first instruction materializing
@@ -1113,5 +1182,44 @@ mod tests {
         assert!(f.contains(&"-4r".to_string()) && !f.contains(&"-5r".to_string()));
         let f2 = p.flags_for(&ev2);
         assert!(f2.contains(&"-5r".to_string()) && !f2.contains(&"-4r".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod ptr_store_tests {
+    use super::*;
+    use crate::decompile::op::OpId;
+    use crate::recompile::insn::{normalize, NoReloc};
+
+    fn lift(hex: &str) -> Vec<NormInsn> {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
+    }
+
+    /// `MOV byte ptr [EDX+0xa],CL ; OR byte ptr [EDX+6],0x20` — two field stores through one
+    /// base. A run that prints them the other way round is re-ordered to the bytes' order;
+    /// the RMW `OR` counts as a store at its offset like the plain MOV.
+    #[test]
+    fn pointer_field_stores_follow_the_original_order() {
+        let insns = lift("884a0a804a0620");
+        let (a, b) = (OpId(7), OpId(9));
+        // mosura's order: the +6 store first, the +0xa store second
+        let runs = vec![vec![(a, 0x6u64, 1u32), (b, 0xau64, 1u32)]];
+        let orders = ptr_store_orders_from_evidence(&runs, &insns);
+        assert_eq!(orders.get(&a), Some(&vec![b, a]), "the bytes store +0xa first: {orders:?}");
+        // already in the original's order: no entry
+        let runs2 = vec![vec![(b, 0xau64, 1u32), (a, 0x6u64, 1u32)]];
+        assert!(ptr_store_orders_from_evidence(&runs2, &insns).is_empty());
+    }
+
+    /// An offset the function writes twice while the run stores it once is ambiguous: no decision.
+    #[test]
+    fn ambiguous_offset_counts_decide_nothing() {
+        // MOV [EDX+6],AL ; MOV [EDX+0xa],CL ; MOV [EDX+6],BL
+        let insns = lift("884206884a0a885a06");
+        let runs = vec![vec![(OpId(1), 0xau64, 1u32), (OpId(2), 0x6u64, 1u32)]];
+        assert!(ptr_store_orders_from_evidence(&runs, &insns).is_empty());
     }
 }

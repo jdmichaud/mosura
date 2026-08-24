@@ -186,6 +186,12 @@ pub struct EmitReport {
     /// which constant it materializes first past the conditional jump — decides the printed
     /// arm order (wc2src D3b; the `.SAV`/`.NET` ternary of `sfile_make_name`).
     pub arm_swap_candidates: Vec<(u64, u64, u64)>,
+    /// Store runs through ONE pointer base at distinct/repeated constant offsets (struct-field
+    /// stores — fidget's `pUnit->seqFace++; pUnit->seqFace &= 7; pUnit->seqFlags |= DF_REDRAW`),
+    /// the pointer-relative twin of `store_runs`: per run `(op, field offset, size)`, matched to
+    /// the original's `[reg+off]` stores by offset and occurrence
+    /// (`buildconfig::ptr_store_orders_from_evidence`).
+    pub ptr_store_runs: Vec<Vec<(OpId, u64, u32)>>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -3332,6 +3338,46 @@ impl<'a> PrintC<'a> {
         true
     }
 
+    /// A pointer varnode of the form `base + constant` (PTRSUB / PTRADD with constant index /
+    /// INT_ADD with a constant): `(base, byte offset)`. The shape of a struct-field access.
+    fn base_plus_const(&self, ptr: VarnodeId) -> Option<(VarnodeId, u64)> {
+        let d = self.f.vn(ptr).def?;
+        let o = self.f.op(d);
+        match o.code() {
+            OpCode::Ptrsub | OpCode::IntAdd => {
+                let (a, b) = (o.input(0)?, o.input(1)?);
+                if self.f.vn(b).is_constant() && !self.f.vn(a).is_constant() {
+                    Some((a, self.f.vn(b).constant_value()))
+                } else if o.code() == OpCode::IntAdd && self.f.vn(a).is_constant() && !self.f.vn(b).is_constant() {
+                    Some((b, self.f.vn(a).constant_value()))
+                } else {
+                    None
+                }
+            }
+            OpCode::Ptradd => {
+                let (a, i, e) = (o.input(0)?, o.input(1)?, o.input(2)?);
+                if self.f.vn(i).is_constant() && self.f.vn(e).is_constant() && !self.f.vn(a).is_constant() {
+                    Some((a, self.f.vn(i).constant_value().wrapping_mul(self.f.vn(e).constant_value())))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The statement text of a STORE op — the `emit_basic` arm, shared with the recovered
+    /// store-order re-emission.
+    fn render_store_stmt(&mut self, op: OpId) -> String {
+        let o = self.f.op(op);
+        let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
+        let sz = self.f.vn(vv).size;
+        let vty = self.type_of(vv);
+        let lhs = self.render_mem(addr, sz, &vty).0;
+        let val = self.render_var(vv).0;
+        format!("{lhs} = {val}")
+    }
+
     /// The component is a basic block whose ONLY printable statement assigns one CONSTANT to
     /// a variable: `Some((high representative, constant))`. The safe class for the arm-order
     /// evidence — swapping anything richer risks the deferred-negation caveat (01304).
@@ -3564,7 +3610,11 @@ impl<'a> PrintC<'a> {
             if let Some(order) = self.recovered.store_orders.get(&op).cloned() {
                 for ro in order {
                     reordered.insert(ro);
-                    let stmtxt = self.render_assign(ro);
+                    let stmtxt = if self.f.op(ro).code() == OpCode::Store {
+                        self.render_store_stmt(ro)
+                    } else {
+                        self.render_assign(ro)
+                    };
                     if self.comma_separate {
                         if separator {
                             let _ = write!(out, ", ");
@@ -3616,14 +3666,7 @@ impl<'a> PrintC<'a> {
                     }
                     None => Some("return".to_string()),
                 },
-                OpCode::Store => {
-                    let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
-                    let sz = self.f.vn(vv).size;
-                    let vty = self.type_of(vv);
-                    let lhs = self.render_mem(addr, sz, &vty).0;
-                    let val = self.render_var(vv).0;
-                    Some(format!("{lhs} = {val}"))
-                }
+                OpCode::Store => Some(self.render_store_stmt(op)),
                 OpCode::Call | OpCode::Callind => {
                     // a call is a statement (it has a side effect). Its return value is always a
                     // named variable (Ghidra `baseExplicit`: a CALL output is explicit) — emit
@@ -5084,6 +5127,17 @@ fn print_c_inner(
         for bi in 0..f.num_blocks() as u32 {
             let bid = BlockId(bi);
             let mut run: Vec<(OpId, u64, u32)> = Vec::new();
+            // The pointer-relative twin: consecutive STOREs through ONE base pointer at constant
+            // offsets, each value pure except for a read-modify-write of its own field.
+            let mut prun: Vec<(OpId, u64, u32)> = Vec::new();
+            let mut pbase: Option<VarnodeId> = None;
+            let pflush = |prun: &mut Vec<(OpId, u64, u32)>, pbase: &mut Option<VarnodeId>, rep: &mut EmitReport| {
+                if prun.len() >= 2 {
+                    rep.ptr_store_runs.push(prun.clone());
+                }
+                prun.clear();
+                *pbase = None;
+            };
             let flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
                 // A3 (wc2src-reconciliation-2): repeated addresses are allowed in a run —
                 // `seqFace++; seqFace &= 7;` are two stores to one global. The evidence
@@ -5120,11 +5174,18 @@ fn print_c_inner(
                     v: VarnodeId,
                     depth: u32,
                     self_dest: Option<(u64, u32)>,
+                    self_ptr: Option<(VarnodeId, u64)>,
                 ) -> bool {
                     let r = f.vn(v);
                     let ram = f.spaces.by_name("ram");
                     if r.is_constant() {
                         return true;
+                    }
+                    // A3 (pointer form): the RMW self-read of the store's own field.
+                    if let (Some(d), Some((sb, so))) = (r.def, self_ptr) {
+                        if f.op(d).code() == OpCode::Load {
+                            return f.op(d).input(1).and_then(|pt| p.base_plus_const(pt)) == Some((sb, so));
+                        }
                     }
                     if Some(r.loc.space) == ram {
                         // A3: a read-modify-write of the store's OWN global (`x = x | c`,
@@ -5155,7 +5216,7 @@ fn print_c_inner(
                             | OpCode::IntRight
                             | OpCode::Subpiece
                     ) && (0..o.num_inputs()).all(|i| {
-                        o.input(i).is_some_and(|x| pure_expr(f, p, x, depth - 1, self_dest))
+                        o.input(i).is_some_and(|x| pure_expr(f, p, x, depth - 1, self_dest, self_ptr))
                     })
                 }
                 // The PRINTING op for a persist store is either the direct COPY to the
@@ -5178,7 +5239,7 @@ fn print_c_inner(
                         *p.high_ram_off.get(&p.high_of[out.0 as usize])?
                     };
                     let rhs = o.input(0)?;
-                    pure_expr(f, &p, rhs, 4, Some((addr, vn.size))).then_some((out, addr, vn.size))
+                    pure_expr(f, &p, rhs, 4, Some((addr, vn.size)), None).then_some((out, addr, vn.size))
                 })();
                 if std::env::var_os("MOSURA_STORE_DEBUG").is_some() {
                     let od = o.output.map(|v| {
@@ -5190,12 +5251,36 @@ fn print_c_inner(
                         op, o.seqnum.pc.offset, o.code(), od, pure_store
                     );
                 }
-                match pure_store {
-                    Some((_, addr, sz)) => run.push((op, addr, sz)),
-                    None => flush(&mut run, &mut p.report),
+                // pointer-relative store: `STORE (base + off) value`
+                let ptr_store = (|| {
+                    if o.code() != OpCode::Store {
+                        return None;
+                    }
+                    let (pt, vv) = (o.input(1)?, o.input(2)?);
+                    let (base, off) = p.base_plus_const(pt)?;
+                    pure_expr(f, &p, vv, 4, None, Some((base, off))).then_some((base, off, f.vn(vv).size))
+                })();
+                match (pure_store, ptr_store) {
+                    (Some((_, addr, sz)), _) => {
+                        pflush(&mut prun, &mut pbase, &mut p.report);
+                        run.push((op, addr, sz));
+                    }
+                    (None, Some((base, off, sz))) => {
+                        flush(&mut run, &mut p.report);
+                        if pbase.is_some_and(|b| b != base) {
+                            pflush(&mut prun, &mut pbase, &mut p.report);
+                        }
+                        pbase = Some(base);
+                        prun.push((op, off, sz));
+                    }
+                    (None, None) => {
+                        flush(&mut run, &mut p.report);
+                        pflush(&mut prun, &mut pbase, &mut p.report);
+                    }
                 }
             }
             flush(&mut run, &mut p.report);
+            pflush(&mut prun, &mut pbase, &mut p.report);
         }
     }
 
