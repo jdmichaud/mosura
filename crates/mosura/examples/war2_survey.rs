@@ -768,7 +768,9 @@ fn main() {
             c.set("narrow-tests", "rewiden").expect("known axis");
             // N3: scaled-index accesses through a constant/global base as array subscripts.
             c.set("array-index", "spelled").expect("known axis");
-            // N1 (join-width=consumer) is NOT selected: zc62 measured the blanket form net-flat
+            // N1 (join-width=consumer), now WITNESSED by the original's 8-bit constant load.
+            c.set("join-width", "consumer").expect("known axis");
+            // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
             // only the original's bytes separate them, so N1 needs a DL-vs-EDX byte witness
@@ -2179,6 +2181,10 @@ fn main() {
                 ),
                 array_index_sites: mosura::recompile::buildconfig::array_index_sites_from_evidence(
                     &report.array_index_candidates,
+                    &insns,
+                ),
+                join_narrow_sites: mosura::recompile::buildconfig::join_narrow_sites_from_evidence(
+                    &report.join_narrow_candidates,
                     &insns,
                 ),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(

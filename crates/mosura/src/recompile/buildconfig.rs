@@ -585,6 +585,29 @@ pub fn store_orders_from_evidence(
     out
 }
 
+/// N1 (wc2src-reconciliation-3): which constant-materialization pcs load the constant into an
+/// 8-bit sub-register (`MOV r8,imm8`) — the sites where declaring a constant-join local at its
+/// consumer's byte width matches the original (do_unit_move's `MOV DL,9`), vs a 32-bit `MOV
+/// EDX,9` where the wide declaration must stay (0x2c9a8). The witness: the instruction at the pc
+/// has a p-code op writing a 1-byte register from a constant.
+pub fn join_narrow_sites_from_evidence(
+    cands: &[u64],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &pc in cands {
+        let Some(insn) = insns.iter().find(|x| x.addr == pc) else { continue };
+        let byte_reg_const = insn.sem.iter().any(|op| {
+            matches!(op.out, Some(SemArg::Reg(_, 1)))
+                && op.ins.iter().any(|a| matches!(a, SemArg::Const(_, _)))
+        });
+        if byte_reg_const {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// N3 (wc2src-reconciliation-3): which scaled-index access sites the ORIGINAL addresses with a
 /// scaled-index (SIB) operand `[reg*sz + base]` — those are spelled as array subscripts; the rest
 /// (the original computed the address into a register with SHL/ADD) keep the pointer arithmetic.

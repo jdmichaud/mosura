@@ -190,6 +190,10 @@ pub struct EmitReport {
     /// element size)` per access. The witness (`buildconfig::array_index_sites_from_evidence`)
     /// keeps only pcs where the ORIGINAL uses a scaled-index operand `[reg*sz + base]`.
     pub array_index_candidates: Vec<(u64, u32)>,
+    /// N1 (join-width): the original pcs that materialize a constant-join local's constants —
+    /// the witness (`buildconfig::join_narrow_sites_from_evidence`) keeps only those loaded into
+    /// an 8-bit sub-register (`MOV r8,imm8`), the sites where narrowing the declaration is right.
+    pub join_narrow_candidates: Vec<u64>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -242,6 +246,8 @@ pub struct RecoveredChoices {
     pub arm_swap_sites: std::collections::HashSet<u64>,
     /// N3 access pcs to spell as subscripts — witnessed by the original's scaled-index operand.
     pub array_index_sites: std::collections::HashSet<u64>,
+    /// N1 constant-materialization pcs witnessed as 8-bit sub-register loads.
+    pub join_narrow_sites: std::collections::HashSet<u64>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -834,13 +840,23 @@ impl<'a> PrintC<'a> {
                 Some(OpCode::IntZext) => Datatype::Uint(int_size),
                 _ => Datatype::Int(int_size),
             }
-        } else if let Some(w) = self.join_width_consumer.then(|| self.narrowed_join_width(v)).flatten() {
-            // N1: a constant-join local declared at its consuming call's parameter width, keeping
-            // the value type's metatype (a `xunknown4` join → `xunknown1`, an int → int).
-            match ty {
-                Datatype::Int(_) => Datatype::Int(w),
-                Datatype::Uint(_) => Datatype::Uint(w),
-                _ => Datatype::Unknown(w),
+        } else if let Some((w, pcs)) = self.narrowed_join_width(v) {
+            // N1 (witnessed): record the constant-materialization pcs; narrow the declaration only
+            // where EVERY join constant is loaded into an 8-bit sub-register in the original
+            // (`MOV DL,k` not `MOV EDX,k` — do_unit_comp_defend 0x2c9a8 uses the full register and
+            // must stay wide). The recovered set is empty on the report pass (records only) and
+            // populated on the final pass.
+            for pc in &pcs {
+                self.report.join_narrow_candidates.push(*pc);
+            }
+            if self.join_width_consumer && pcs.iter().all(|pc| self.recovered.join_narrow_sites.contains(pc)) {
+                match ty {
+                    Datatype::Int(_) => Datatype::Int(w),
+                    Datatype::Uint(_) => Datatype::Uint(w),
+                    _ => Datatype::Unknown(w),
+                }
+            } else {
+                self.storage_widened_local(id, v).unwrap_or(ty)
             }
         } else {
             self.storage_widened_local(id, v).unwrap_or(ty)
@@ -856,8 +872,9 @@ impl<'a> PrintC<'a> {
     /// not an all-constant join, no consuming call has a narrower recovered param, or a constant
     /// does not fit the narrow width. Value-identical: the constants fit, so a byte declaration
     /// truncates nothing and C's promotion restores the value at any wider use.
-    fn narrowed_join_width(&self, v: VarnodeId) -> Option<u32> {
+    fn narrowed_join_width(&self, v: VarnodeId) -> Option<(u32, Vec<u64>)> {
         let cur = self.type_of(v).size();
+        let mut pcs: Vec<u64> = Vec::new();
         let members = self.high_members.get(&self.high_of[v.0 as usize])?;
         // Gate 1: every member is constant-fed.
         let mut consts: Vec<u64> = Vec::new();
@@ -873,6 +890,7 @@ impl<'a> PrintC<'a> {
                     let in0 = self.f.op(d).input(0)?;
                     if self.f.vn(in0).is_constant() {
                         consts.push(self.f.vn(in0).loc.offset);
+                        pcs.push(self.f.op(d).seqnum.pc.offset);
                     } else {
                         return None;
                     }
@@ -910,7 +928,7 @@ impl<'a> PrintC<'a> {
                 target = Some(target.map_or(w, |t| t.min(w)));
             }
         }
-        target
+        target.map(|w| (w, pcs))
     }
 
     /// The widened declaration type for local `v` under [`EmitChoices::local_width`] ==
