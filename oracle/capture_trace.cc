@@ -102,8 +102,29 @@ int main(int argc, char **argv) {
     conf->allacts.getCurrent()->reset(*fd);
     conf->setDebugStream(&cout);
     fd->debugEnable();
+    // CAPTURE_VARMAP=1: also stream ScopeLocal/MapState's own debug ("Add Range: <off>:<size>
+    // <type>" per RangeHint, varmap.cc:910) — the instrument for stack-frame layout questions,
+    // where the printed C only shows the third-order symptom (an array of the wrong length).
+    if (getenv("CAPTURE_VARMAP") != nullptr)
+      fd->getScopeLocal()->turnOnDebug();
     fd->debugSetRange(Address(), Address()); // invalid range + default unique = entire function
     conf->allacts.getCurrent()->perform(*fd);
+    if (getenv("CAPTURE_VARMAP") != nullptr) {
+      // Ownership of the local scope, probed byte by byte over the top of the frame
+      // (getRangeTree is protected; inScope is the public query the sync itself uses).
+      AddrSpace *stk = conf->getStackSpace();
+      cout << "VARMAP inScope (offset:owned) over [-48,+8]:";
+      for (int4 off = -48; off <= 8; off += 4) {
+        uintb o = stk->wrapOffset((uintb)(intb)off);
+        bool owned = fd->getScopeLocal()->inScope(Address(stk, o), 1, Address());
+        cout << " " << off << ":" << (owned ? 1 : 0);
+      }
+      cout << endl;
+      cout << "VARMAP localrange:" << endl;
+      fd->getFuncProto().getLocalRange().printBounds(cout);
+      cout << "VARMAP paramrange:" << endl;
+      fd->getFuncProto().getParamRange().printBounds(cout);
+    }
   } catch (LowlevelError &e) {
     cerr << "trace: " << e.explain << endl;
     delete conf;

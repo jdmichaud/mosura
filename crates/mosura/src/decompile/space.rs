@@ -155,6 +155,38 @@ impl RangeList {
         self.tree.partition_point(|r| (r.spc, r.first) <= (spc, off))
     }
 
+    /// Ghidra `RangeList::longestFit` (address.cc): the size of the biggest contiguous run of
+    /// addresses in this list that contains `off`, chaining directly adjacent ranges, and giving
+    /// up once the run is at least `maxsize`. Zero when `off` is not in the list at all.
+    pub fn longest_fit(&self, spc: SpaceId, off: u64, maxsize: u64) -> u64 {
+        if self.tree.is_empty() {
+            return 0;
+        }
+        let mut i = self.upper_bound(spc, off); // first range with first > off
+        if i == 0 {
+            return 0;
+        }
+        i -= 1; // last range with first <= off
+        if self.tree[i].spc != spc || self.tree[i].last < off {
+            return 0;
+        }
+        let mut offset = off;
+        let mut sizeres = 0u64;
+        while i < self.tree.len() {
+            let r = &self.tree[i];
+            if r.spc != spc || r.first > offset {
+                break;
+            }
+            sizeres += r.last + 1 - offset; // extends to the end of this range
+            offset = r.last + 1; // try to chain the next range
+            if sizeres >= maxsize {
+                break;
+            }
+            i += 1;
+        }
+        sizeres
+    }
+
     /// Ghidra `RangeList::insertRange` (address.cc:383): add `[first,last]`, absorbing every range it
     /// touches so the cover stays disjoint.
     pub fn insert_range(&mut self, spc: SpaceId, first: u64, last: u64) {

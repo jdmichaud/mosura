@@ -743,6 +743,51 @@ fn create_entry(state: &MapState, a: &RangeHint, out: &mut Vec<StackSymbol>) {
     out.push(StackSymbol { start: a.sstart, size: a.size as u32, ty, name });
 }
 
+/// Ghidra `ScopeLocal::adjustFit` (varmap.cc): shrink the hint so it fits the MAPPED region of
+/// the scope — `RangeList::longestFit` from its start, i.e. the open range stops at the first
+/// ownership hole — and so it does not overlap a Symbol already created; `false` when no valid
+/// shrink exists (nothing to fit, already entered, off the map, or shrunk below its own type).
+///
+/// This is the step that makes a `markNotMapped` carve BOUND an open range: the window's
+/// terminator only sits past the LAST range, so without it an open array runs straight through
+/// the callee-save hole to the frame top. Measured: sfile_make_name's 12-byte buffer declared
+/// `[28]` (frame `SUB ESP,0x1c` for the original's `0xc`), parse_argument's `[24]` for `[4]` —
+/// Ghidra's own C for the same fixtures has `[12]` and `[4]` (wc2src-reconciliation-2 A2i).
+fn adjust_fit(state: &MapState, a: &mut RangeHint, out: &[StackSymbol]) -> bool {
+    if a.size == 0 {
+        return false; // nothing to fit
+    }
+    if a.is_type_lock() {
+        return false; // already entered
+    }
+    let maxsize = state.range.longest_fit(state.space, a.start, a.size as u64);
+    if maxsize == 0 {
+        return false;
+    }
+    if maxsize < a.size as u64 {
+        // the suggested range doesn't fit
+        if maxsize < a.ty.size() as u64 {
+            return false; // can't shrink that much
+        }
+        a.size = maxsize as i32;
+    }
+    // ANY symbol that might be within this range
+    let (s, e) = (a.sstart, a.sstart + a.size as i64);
+    if let Some(entry) =
+        out.iter().filter(|sym| sym.start < e && sym.start + sym.size as i64 > s).min_by_key(|sym| sym.start)
+    {
+        if entry.start <= a.sstart {
+            return false;
+        }
+        let maxsize = (entry.start - a.sstart) as u64;
+        if maxsize < a.ty.size() as u64 {
+            return false; // can't shrink for this type
+        }
+        a.size = maxsize as i32;
+    }
+    true
+}
+
 /// Ghidra `ScopeLocal::restructure`: merge the gathered `RangeHint`s into a disjoint cover of
 /// Symbols. Overlapping hints are unioned; adjacent compatible hints extend an array.
 fn restructure(state: &mut MapState, out: &mut Vec<StackSymbol>) {
@@ -760,7 +805,7 @@ fn restructure(state: &mut MapState, out: &mut Vec<StackSymbol>) {
             if cur.range_type == RangeType::Open {
                 cur.size = (next.sstart - cur.sstart) as i32;
             }
-            if cur.size > 0 && !cur.is_type_lock() {
+            if adjust_fit(state, &mut cur, out) {
                 create_entry(state, &cur, out);
             }
             cur = next;
