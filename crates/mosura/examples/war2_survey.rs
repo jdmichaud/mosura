@@ -57,6 +57,10 @@ use mosura::decompile::space::Address;
 // `uint6` sites shift (`uStack_1e >> 0x10`), and shifting a double is `E1079: Expression must be
 // integral`. Every mapping here lies about width; this one at least lies compilably.
 const PRELUDE: &str = "\
+/* INT3 inlined as its literal byte (the `swi=int3` emission arm): the retail assert-trap
+   idiom and app_fatal's body. parm []/modify exact [] = touches nothing. */
+void __int3(void);
+#pragma aux __int3 = 0xcc parm [] modify exact [];
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef unsigned char byte;
 /* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).
@@ -637,6 +641,9 @@ fn main() {
             // (`ext-cast=promotion`) — the measured rendering for this target (zc42 vs zc46).
             let mut c = EmitChoices::default();
             c.set("ext-cast", "promotion").expect("known axis");
+            // INT3 as the prelude's `__int3()` (`#pragma aux = 0xcc`) — the D5 audit rows'
+            // assert traps and `app_fatal`'s body are compiled C only under this form.
+            c.set("swi", "int3").expect("known axis");
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,

@@ -265,6 +265,10 @@ struct PrintC<'a> {
     render_stack: Vec<OpId>,
     /// `EmitChoices::ext_cast == Promotion`: leave integer widening to C's promotion.
     ext_cast_promotion: bool,
+    /// `EmitChoices::swi == Int3` (EMISSION ARM): the CALLINDs whose target is the `swi(3)`
+    /// CALLOTHER — each prints as the prelude's `__int3()` and its CALLOTHER assign is
+    /// suppressed, so the pair becomes the one statement Watcom inlines as the 0xCC byte.
+    swi_int3: HashSet<OpId>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -2057,6 +2061,10 @@ impl<'a> PrintC<'a> {
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {
+                // The `swi=int3` arm (see the prep loop): this indirect call IS the INT3.
+                if self.swi_int3.contains(&op) {
+                    return ("__int3()".to_string(), 16);
+                }
                 // `PrintC::opCallind` (printc.cc) pushes `function_call`, then `dereference`, then
                 // the target — and NO cast. Any cast is the type system's, inserted by
                 // ActionSetCasts through the base `TypeOp::getInputCast` against the `code *`
@@ -4553,6 +4561,7 @@ fn print_c_inner(
         va_last_named: 0,
         render_stack: Vec::new(),
         ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
+        swi_int3: HashSet::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -4614,6 +4623,31 @@ fn print_c_inner(
             p.va_start_ops.insert(op);
             if let Some(out) = f.op(op).output {
                 p.force_explicit.insert(out); // its definition is the `va_start` statement
+            }
+        }
+    }
+    // The `swi` axis (EMISSION ARM, see `EmitChoices::swi`): an INT3 lifts as
+    // `out = CALLOTHER[swi](#3); CALLIND out` — Ghidra's reference C is that pair verbatim
+    // (`pcVar = swi(3); (*pcVar)();`), which is not compilable C. Under `swi=int3` the CALLIND
+    // prints as the target prelude's `__int3()` (`#pragma aux __int3 = 0xcc` — the literal
+    // breakpoint byte, WAR2's retail assert-trap idiom) and the CALLOTHER assign is suppressed.
+    if choices.swi == super::emit::SwiForm::Int3 {
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.is_dead() || o.code() != OpCode::Callind {
+                continue;
+            }
+            let Some(t) = o.input(0) else { continue };
+            let Some(def) = f.vn(t).def else { continue };
+            if f.op(def).code() != OpCode::Callother || f.vn(t).descend.len() != 1 {
+                continue;
+            }
+            let is_swi = f.op(def).input(0).is_some_and(|i| {
+                f.userops.get(&f.vn(i).constant_value()).is_some_and(|n| n == "swi")
+            });
+            if is_swi {
+                p.swi_int3.insert(op);
+                p.suppressed.insert(def);
             }
         }
     }

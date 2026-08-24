@@ -209,6 +209,7 @@ pub struct EmitChoices {
     pub return_split: ReturnSplit,
     pub cond_form: CondForm,
     pub ext_cast: ExtCast,
+    pub swi: SwiForm,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -225,6 +226,18 @@ pub enum ExtCast {
     Promotion,
 }
 
+/// How an INT3 software interrupt — Ghidra's `pcVar = swi(3); (*pcVar)();` CALLOTHER pair — is
+/// rendered. `Ghidra` is the reference form (the sweep and datatests compare against it); it is
+/// not C that compiles (`swi` is not a declarable function). `Int3` prints the pair as one
+/// `__int3();` statement, backed by the target prelude's `#pragma aux __int3 = 0xcc` so the
+/// recompile inlines the literal breakpoint byte — WAR2's compiled C carries INT3 as the retail
+/// assert-trap idiom (`TEST ; Jcc over ; INT3`) and as `app_fatal`'s body (the D5 audit rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwiForm {
+    Ghidra,
+    Int3,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -235,6 +248,7 @@ impl Default for EmitChoices {
             return_split: ReturnSplit::Recovered,
             cond_form: CondForm::Collapsed,
             ext_cast: ExtCast::Ghidra,
+            swi: SwiForm::Ghidra,
         }
     }
 }
@@ -292,6 +306,12 @@ impl EmitChoices {
             doc: "render integer extensions as Ghidra's implied-cast rule (opIntZext/opIntSext) \
                   or leave the widening to C's promotion (bare zext, (intN) sext)",
         },
+        Axis {
+            name: "swi",
+            values: &["ghidra", "int3"],
+            doc: "render an INT3 software interrupt as Ghidra's swi(3) call pair, or as the \
+                  target prelude's __int3() (#pragma aux = 0xcc, byte-exact breakpoint)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -330,6 +350,10 @@ impl EmitChoices {
             "ext-cast" => Some(match self.ext_cast {
                 ExtCast::Ghidra => "ghidra",
                 ExtCast::Promotion => "promotion",
+            }),
+            "swi" => Some(match self.swi {
+                SwiForm::Ghidra => "ghidra",
+                SwiForm::Int3 => "int3",
             }),
             _ => None,
         }
@@ -387,6 +411,13 @@ impl EmitChoices {
                 self.ext_cast = match value {
                     "ghidra" => ExtCast::Ghidra,
                     "promotion" => ExtCast::Promotion,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "swi" => {
+                self.swi = match value {
+                    "ghidra" => SwiForm::Ghidra,
+                    "int3" => SwiForm::Int3,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
