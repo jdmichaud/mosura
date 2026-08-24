@@ -214,6 +214,7 @@ pub struct EmitChoices {
     pub struct_locals: StructLocals,
     pub narrow_tests: NarrowTests,
     pub join_width: JoinWidth,
+    pub array_index: ArrayIndex,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -293,6 +294,18 @@ pub enum JoinWidth {
     Consumer,
 }
 
+/// How a scaled-index access through a CONSTANT or GLOBAL base is rendered. `Ghidra` prints the
+/// address arithmetic `*(T *)(base + idx * sizeof(T))` (the reference). `Spelled` prints the array
+/// subscript `((T *)base)[idx]` — value-identical, and the form Watcom compiles to the original's
+/// scaled-index operand (`MOV EDX,[EBX+EDX*4]`, `DEC word ptr [EAX*2+0x8fa50]`) instead of an
+/// explicit `SHL`/`ADD` and a load through a register (wc2src-reconciliation-3 N3: count_remove
+/// 0.520 → 0.622).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayIndex {
+    Ghidra,
+    Spelled,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -308,6 +321,7 @@ impl Default for EmitChoices {
             struct_locals: StructLocals::Ghidra,
             narrow_tests: NarrowTests::Ghidra,
             join_width: JoinWidth::Ghidra,
+            array_index: ArrayIndex::Ghidra,
         }
     }
 }
@@ -395,6 +409,12 @@ impl EmitChoices {
             doc: "declare a constant-join local at its own width, or at the narrower width of the \
                   call parameter it feeds (value-identical; the sub-register load)",
         },
+        Axis {
+            name: "array-index",
+            values: &["ghidra", "spelled"],
+            doc: "render a scaled-index access through a constant/global base as address \
+                  arithmetic *(T *)(base + i*sz), or as the array subscript ((T *)base)[i]",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -453,6 +473,10 @@ impl EmitChoices {
             "join-width" => Some(match self.join_width {
                 JoinWidth::Ghidra => "ghidra",
                 JoinWidth::Consumer => "consumer",
+            }),
+            "array-index" => Some(match self.array_index {
+                ArrayIndex::Ghidra => "ghidra",
+                ArrayIndex::Spelled => "spelled",
             }),
             _ => None,
         }
@@ -545,6 +569,13 @@ impl EmitChoices {
                 self.join_width = match value {
                     "ghidra" => JoinWidth::Ghidra,
                     "consumer" => JoinWidth::Consumer,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "array-index" => {
+                self.array_index = match value {
+                    "ghidra" => ArrayIndex::Ghidra,
+                    "spelled" => ArrayIndex::Spelled,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

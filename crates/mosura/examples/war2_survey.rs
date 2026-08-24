@@ -766,6 +766,8 @@ fn main() {
             c.set("struct-locals", "coalesce").expect("known axis");
             // byte-of-word zero tests at the operand's width (A5).
             c.set("narrow-tests", "rewiden").expect("known axis");
+            // N3: scaled-index accesses through a constant/global base as array subscripts.
+            c.set("array-index", "spelled").expect("known axis");
             // N1 (join-width=consumer) is NOT selected: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;

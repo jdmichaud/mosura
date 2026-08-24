@@ -293,6 +293,11 @@ struct PrintC<'a> {
     /// `EmitChoices::join_width == Consumer` (EMISSION ARM): declare a constant-join local at
     /// the narrower width of the call parameter it feeds.
     join_width_consumer: bool,
+    /// `EmitChoices::array_index == Spelled` (EMISSION ARM): scaled-index access through a
+    /// constant/global base prints as `((T *)base)[i]`.
+    array_index_spelled: bool,
+    /// N3 pointer temps to inline as `((T *)base)[idx]`: temp varnode → (base, index, pointee).
+    array_index_temps: HashMap<VarnodeId, (VarnodeId, VarnodeId, Datatype)>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -1405,6 +1410,17 @@ impl<'a> PrintC<'a> {
     }
 
     /// If `off` is `idx * size` (a scaled array index), return `idx`.
+    /// N3: is `v` a base an array-subscript may cast — a raw constant address, or a global
+    /// ram value (a table address or a pointer global's value)? Deliberately NOT a general
+    /// register/local (those are the `array_elem` recovered-array path or a genuine pointer that
+    /// already renders as a subscript). This keeps N3 to the source's global-table idiom.
+    fn n3_base_ok(&self, v: VarnodeId) -> bool {
+        let vn = self.f.vn(v);
+        vn.is_constant()
+            || (Some(vn.loc.space) == self.ram_space)
+            || self.high_ram_off.contains_key(&self.high_of[v.0 as usize])
+    }
+
     fn scaled_index(&self, off: VarnodeId, size: u32) -> Option<VarnodeId> {
         let def = self.f.vn(off).def?;
         let o = self.f.op(def);
@@ -1472,6 +1488,12 @@ impl<'a> PrintC<'a> {
     /// address when it is not already a pointer to a value of the right size (Ghidra's
     /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
     fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
+        // N3: an inlined scaled-index pointer temp renders as the array subscript at each deref.
+        if let Some((base, idx, pointee)) = self.array_index_temps.get(&addr).cloned() {
+            let bs = self.operand(base, 14, false);
+            let i = self.render_var(idx).0;
+            return (format!("(({} *){bs})[{i}]", pointee.name()), 16);
+        }
         // Ghidra `PrintC::checkArrayDeref` (printc.cc): the subscript/member form absorbs the
         // dereference only when the address varnode is IMPLIED (`if (!vn->isImplied()) return
         // false`). An EXPLICIT address is a named variable and prints `*name` — re-rendering its
@@ -1512,6 +1534,22 @@ impl<'a> PrintC<'a> {
                         let b = self.operand(base, 16, false);
                         let i = self.render_var(idx).0;
                         return (format!("{b}[{i}]"), 16);
+                    }
+                }
+                // N3 (wc2src-reconciliation-3): a scaled-index access through a CONSTANT or GLOBAL
+                // base that is not a recovered array — `owner*2 + 0x8fa50`, `gfpUnitMap + i*4`.
+                // Render `((T *)base)[i]` (value-identical) so Watcom uses a scaled-index operand.
+                // Either INT_ADD input may be the base; the other must be `idx * size`.
+                if self.array_index_spelled && size > 0 {
+                    for (b, o2) in [(base, off), (off, base)] {
+                        if !self.n3_base_ok(b) {
+                            continue;
+                        }
+                        if let Some(idx) = self.scaled_index(o2, size) {
+                            let bs = self.operand(b, 14, false);
+                            let i = self.render_var(idx).0;
+                            return (format!("(({} *){bs})[{i}]", vty.name()), 16);
+                        }
                     }
                 }
             }
@@ -4835,6 +4873,8 @@ fn print_c_inner(
         fused_store: HashMap::new(),
         narrow_tests_rewiden: choices.narrow_tests == super::emit::NarrowTests::Rewiden,
         join_width_consumer: choices.join_width == super::emit::JoinWidth::Consumer,
+        array_index_spelled: choices.array_index == super::emit::ArrayIndex::Spelled,
+        array_index_temps: HashMap::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -4976,6 +5016,65 @@ fn print_c_inner(
                 p.swi_int3.insert(op);
                 p.suppressed.insert(def);
             }
+        }
+    }
+    // N3 (array-index=spelled, wc2src-reconciliation-3): inline a scaled-index pointer temp
+    // `piVar = (T *)(idx*sizeof(T) + base)` (base a constant/global) whose only uses are derefs,
+    // rendering `((T *)base)[idx]` at each use so Watcom uses a scaled-index operand.
+    if choices.array_index == super::emit::ArrayIndex::Spelled {
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.is_dead() || !matches!(o.code(), OpCode::Cast | OpCode::Copy) {
+                continue;
+            }
+            let (Some(out), Some(inp)) = (o.output, o.input(0)) else { continue };
+            // the pointee type of the temp (the `(int2 *)` cast) and its size = the scale
+            let Datatype::Pointer(_, pointee) = f.vn(out).get_type() else { continue };
+            let elem = pointee.size();
+            if elem == 0 {
+                continue;
+            }
+            // input must be INT_ADD(scaled_index(elem), const/global base), either order
+            let Some(d) = f.vn(inp).def else { continue };
+            let add = f.op(d);
+            if add.code() != OpCode::IntAdd || add.num_inputs() != 2 {
+                continue;
+            }
+            let (a, b) = (add.input(0).unwrap(), add.input(1).unwrap());
+            let pick = |base: VarnodeId, off: VarnodeId| -> Option<(VarnodeId, VarnodeId)> {
+                let base_ok = f.vn(base).is_constant()
+                    || Some(f.vn(base).loc.space) == f.spaces.by_name("ram");
+                if !base_ok {
+                    return None;
+                }
+                let od = f.vn(off).def?;
+                let oo = f.op(od);
+                if oo.code() == OpCode::IntMult
+                    && oo.input(1).is_some_and(|c| f.vn(c).is_constant() && f.vn(c).constant_value() == elem as u64)
+                {
+                    return Some((base, oo.input(0)?));
+                }
+                None
+            };
+            let Some((base, idx)) = pick(a, b).or_else(|| pick(b, a)) else { continue };
+            // every use of the temp must be a LOAD/STORE POINTER (a deref), at width == elem
+            let uses = f.vn(out).descend.clone();
+            if uses.is_empty() {
+                continue;
+            }
+            let all_deref = uses.iter().all(|&u| {
+                let uo = f.op(u);
+                match uo.code() {
+                    OpCode::Load => uo.input(1) == Some(out) && uo.output.is_some_and(|v| f.vn(v).size == elem),
+                    OpCode::Store => uo.input(1) == Some(out) && uo.input(2).is_some_and(|v| f.vn(v).size == elem),
+                    _ => false,
+                }
+            });
+            if !all_deref {
+                continue;
+            }
+            p.array_index_temps.insert(out, (base, idx, (*pointee).clone()));
+            p.suppressed.insert(op); // the `piVar = (T *)(...)` assignment is inlined
         }
     }
     let t0 = std::time::Instant::now();
