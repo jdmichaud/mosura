@@ -1709,49 +1709,6 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
             }
         }
     }
-    // THE OVER-CALL CLAMP (wc2src-reconciliation-2 A6 — the consistency doctrine's other
-    // direction, memory consistency-over-score). A register callee with a recovered own arity
-    // N declares N parameters in its own TU; a site passing more contradicts it. The union rule
-    // above deliberately lets call-site evidence ADD arguments beyond a use-based prototype (a
-    // parameter the callee ignores still has to be placed by the caller — measured, 25
-    // functions), so the extra trial is kept only where that placement is VISIBLE: its value is
-    // defined in the call's own basic block. A live value that merely reaches the call —
-    // check_attack's `MOV EBX,0xc`, the third argument of the PREVIOUS call, preserved by that
-    // callee and read by nothing afterwards — is exactly what `ancestorOpUse` cannot tell from an
-    // argument (the constant's per-use copy has one reader), and it made
-    // `unit_set_next_action(pUnit, 2)` a five-argument call. Materialization in another block
-    // is the witness that the value was placed for something else.
-    if locked_register {
-        // Snapshot the trials first: the container's mutable borrow must end before `f` is read.
-        let snapshot: Vec<(usize, Address, u32, bool)> =
-            active.trial.iter().map(|t| (t.op_slot as usize, t.addr, t.size, t.is_used())).collect();
-        let call_block = f.op(call).parent;
-        let reads: Vec<(Address, u32)> =
-            f.call_specs.get(&call).and_then(|cs| cs.reads.clone()).unwrap_or_default();
-        let mut drop: Vec<usize> = Vec::new();
-        for (i, &(slot, addr, size, used)) in snapshot.iter().enumerate() {
-            if !used || reads.iter().any(|&(a, sz)| a == addr && sz == size) {
-                continue;
-            }
-            let placed_here = f.op(call).input(slot).is_some_and(|v| {
-                f.vn(v).def.is_some_and(|d| !f.op(d).is_marker() && f.op(d).parent == call_block)
-            });
-            if !placed_here {
-                if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                    eprintln!(
-                        "[clamp] call@{call_pc:#x} drops extra trial {}+{:#x}/{} (beyond the callee's {} params, not placed in this block)",
-                        f.spaces.get(addr.space).name, addr.offset, size, reads.len()
-                    );
-                }
-                drop.push(i);
-            }
-        }
-        if let Some(active) = f.active_inputs.get_mut(&call) {
-            for i in drop {
-                active.trial[i].mark_unused();
-            }
-        }
-    }
 }
 
 /// Ghidra `FuncCallSpecs::buildInputFromTrials` (fspec.cc:5685): rebuild the CALL's input list from

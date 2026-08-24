@@ -436,7 +436,7 @@ fn watcom_reg_table() -> Vec<(u64, u32, &'static str)> {
 ///
 /// Only all-register prototypes are handled: a mixed register/stack prototype needs the overflow
 /// form and is left to the default, and an unmappable storage returns `None` rather than guessing.
-/// The callees this decompile calls with an arity that CONTRADICTS the callee's own TU: a live CALL to a callee whose whole-program
+/// The callees this decompile UNDER-CALLS: a live CALL to a callee whose whole-program
 /// recovered prototype is REGISTER-ONLY with N parameters, passing fewer than N inputs.
 /// This is the cross-TU contradiction of the consistency doctrine (JD 2026-08-24): the
 /// callee's own TU declares those parameters, so a caller that omits them links into a
@@ -463,12 +463,12 @@ fn under_called_register_callees(
         if proto.params.is_empty() || !proto.params.iter().all(|s| s.addr.space == reg) {
             continue;
         }
-        // UNDER-called (the callee reads a register the caller never set) and, since the A6
-        // clamp, OVER-called (the recompile PUSHes swept live values the callee ignores): both
-        // contradict the callee's own TU. The surgical re-decompile with the callee's prototype
-        // visible fixes both directions — locked trials for the missing arguments, the clamp in
-        // `derive_input_map` for the extras not placed in the call's block.
-        if o.num_inputs() - 1 != proto.params.len() && !out.iter().any(|&(c, _)| c == callee) {
+        // UNDER-called only (the callee reads a register the caller never set). The over-call
+        // direction (A6) is reverted: its clamp dropped constant arguments the original genuinely
+        // pushes when the callee's use-based prototype under-states its arity (0x5fb24: the `0`
+        // at a callee that ignores its 3rd param), a wrong-code loss the byte-witness the clamp
+        // cannot see would prevent — refiled for the survey side where the bytes exist.
+        if o.num_inputs() - 1 < proto.params.len() && !out.iter().any(|&(c, _)| c == callee) {
             out.push((callee, proto.params.len()));
         }
     }
@@ -495,8 +495,6 @@ fn resolves_contradictions(
         if o.num_inputs() - 1 < arity {
             return false; // the candidate still under-calls it
         }
-        // (an over-call may legitimately keep extras the clamp found placed in the call's own
-        // block — the union rule's measured wins — so only the declared arguments are checked)
         for i in 1..=arity {
             let Some(v) = o.input(i) else { return false };
             let vn = f2.vn(v);
@@ -548,8 +546,8 @@ fn call_shapes_stable(
     let (l, x) = (shapes(fl), shapes(fx));
     l.iter().all(|(pc, &(n, outw, callee))| {
         x.get(pc).is_some_and(|&(m, outw2, _)| {
-            let contradicted_callee = contradicted.iter().any(|&(c, _)| c == callee);
-            outw2 == outw && (contradicted_callee || m == n)
+            let grows_ok = contradicted.iter().any(|&(c, _)| c == callee);
+            outw2 == outw && if grows_ok { m >= n } else { m == n }
         })
     })
 }
@@ -766,6 +764,8 @@ fn main() {
             c.set("arm-order", "address").expect("known axis");
             // half-written 4-byte locals declared once (A2ii — the GPOINT shape).
             c.set("struct-locals", "coalesce").expect("known axis");
+            // byte-of-word zero tests at the operand's width (A5).
+            c.set("narrow-tests", "rewiden").expect("known axis");
             vec![c]
         });
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
