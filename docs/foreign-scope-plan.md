@@ -1,0 +1,180 @@
+# Foreign-module scope classification — design & plan
+
+**Status:** hypotheses validated 2026-08-25 (POC); **engine implemented 2026-08-25** (Phases 1–5).
+This document fixes the design and the staged plan so the work does not drift.
+
+**Implementation:** `crates/mosura/src/analysis/scope.rs` (engine + 11 unit tests),
+`crates/mosura/examples/scope_propose.rs` (band proposer, Phase 1), and the opt-in `--scope <file>`
+flag on `recompile_check` (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
+is **reverse-engineering data about a proprietary binary — it lives with that binary's own artifacts,
+not in the repo.** Default-safe: with no confirmation the classification is exactly today's
+FID/loader set (verified on WAR2: 130 foreign, 0 held). Usage (`<scope-file>` is the out-of-repo
+confirmation file):
+
+```text
+# propose bands for review (read-only):
+cargo run --release --example scope_propose -- <binary> [--native]
+# preview the denominator with confirmed bands:
+cargo run --release --example scope_propose -- <binary> --confirm <scope-file>
+# score with foreign excluded (compare against a run without --scope = both numbers):
+recompile_check <binary> <manifest> <src> recover <watcom> --scope <scope-file>
+```
+
+On WAR2 the confirmed `war2.scope` (Miles/AIL + SciTech UVBE bands) takes foreign from 130→278
+(the two bands + their reachable-private helpers), in-scope denominator 2893→2745, 28 held.
+
+## 1. The one decision this serves
+
+The recompilation score (EXACT / WGSS) is a fraction whose denominator is "functions we intend to
+reproduce from C." A DOS/4GW game binary is not only the game: the Watcom linker concatenates the
+game's object modules with **foreign** modules it did not author — the C runtime (CRT), and
+licensed libraries (WAR2: Miles/AIL audio, SciTech/UVBE VESA). Foreign code is reproduced by
+*linking the library*, not by decompiling it; counting it measures the toolchain, not the port.
+
+mosura already excludes *some* foreign code. This plan is about closing the gap **generically** —
+a binary-agnostic engine, with every binary-specific fact held behind a data boundary — so it
+never mis-classifies another binary's own code as foreign.
+
+## 2. What is already built (do not reinvent)
+
+- **`Function::is_identified()`** (`program/function.rs`): a function with a non-default name
+  (from a **FID** signature match or a loader symbol) is "identified." The doc-comment there
+  already states this is "what decides whether a function belongs in a recompilation denominator."
+- **`kind_of` / `kind_of_insns`** (`examples/war2_survey.rs`): manifest `kind` = `library` when
+  identified, else `user`; a `user` function whose original insns trip
+  **`buildconfig::looks_hand_written`** (segment ops, `INT 0x21`, `CS:[…]`, `PUSHF`…) becomes
+  `asm`. The survey excludes `library` and `asm` from the denominator.
+- **FID** (`analysis/fid/*`): fingerprint matcher against packed `.fidb` / `.mfid.gz` databases.
+
+So today's foreign set = **FID-named ∪ hand-written-asm**. The gap: FID only knows libraries it
+has a database for.
+
+## 3. Validated findings (2026-08-25 POC)
+
+Method: `examples/dumpfacts.rs` (one analysis pass → per-function VA/size/prologue/call-graph +
+code→data reference string previews) and `scratchpad/analyze_facts.py`. Binaries: WAR2.EXE (deep),
+WRMS.EXE (Worms, degradation case), DESCENTR.EXE (overtraining case).
+
+| # | Hypothesis | Verdict | Evidence (WAR2 unless noted) |
+|---|---|---|---|
+| H1 | FID seeds known libraries, no game false-positives | **CONFIRMED** | 130 CRT named (memset/sprintf/…); **0% FID hits below the game/lib seam**; WRMS 107 |
+| H2 | Anchor strings seed foreign functions FID misses | **CONFIRMED** | 66 AIL funcs via self-naming `AIL_startup()` refs; **0 of them FID-known** |
+| H2b | Generic anchor regex over-captures game strings | **CONFIRMED** | 3 stray singletons: `Build.c`, `count.c` (game debug/trace strings that merely contain a `.c` token — WAR2 has no debug info), `UVBELib` (real SciTech, 1 anchor) |
+| H3 | Locality clustering isolates the module | **CONFIRMED — load-bearing** | AIL = one cluster of 63 anchors in `0x5191e..0x56815`; game strings stay singletons |
+| H4 | A foreign module is a contiguous VA band | **CONFIRMED** | band = 68 funcs, the 5 non-anchored ones are AIL JMP-thunks + a cdecl helper → 100% foreign |
+| H5 | Codegen fingerprint is bimodal (convention) | **CONFIRMED** | foreign leads `56 57`(save esi/edi, cdecl)=93% of band vs 6% of game; game = push ebx/ecx/edx + `89 e5` (__watcall param regs) |
+| H5b | Fingerprint alone is sufficient | **REFUTED** | 156 game funcs also lead esi/edi → fingerprint is *corroboration within a band*, not a standalone seed |
+| H6 | Reachability extends seeds and protects shared code | **CONFIRMED** | 66 seeds → closure 337; **202 reachable only-from-foreign** (private helpers) + **69 also called by game** (shared — must NOT drop) |
+| H7 | Modules are concatenated game-first, libs-last (master seam) | **CONFIRMED** | `0x10000..~0x50000`: 91–100% watcall, 0% FID, ~3% foreign-fp = game. `0x50000+`: FID 10–26%, foreign-fp 30–56%, watcall falls = library zone |
+| H8 | Degrades safely when signals are absent | **CONFIRMED** | WRMS (release, no traces): 0 anchors → falls back to FID's 107, invents nothing |
+| H9 | Does not overtrain: source-refs are not presumed foreign | **CONFIRMED** | Descent's *entire* anchor set (11 funcs) = its **own** modules `gamesave.c`/`game.c`/`piggy.c`/`fuelcen.c`/`ntmap.c`; auto-flagging would delete the game |
+| H10 | The dominant signal varies by binary | **CONFIRMED** | WAR2 = self-naming traces (AIL); Descent = FID+fingerprint (its libs don't self-name); WRMS = FID-only — only the composite generalizes |
+
+Load-bearing conclusions:
+- **No single signal is sufficient.** FID misses un-databased libs (AIL/SciTech); anchors are
+  absent in release builds and over-capture game strings; the fingerprint has a ~3–6% game
+  baseline; reachability depends on a complete call graph. The reliable classifier is the
+  **composite**, and the reliable clustering key is **address locality**, never a string prefix.
+- **The game zone is provably clean** (FID 0%, foreign-fp ~3%) — the safe core of the denominator.
+- **The tool must never decide foreign-vs-game by itself, and the human must not have to hunt.**
+  The proposer lists candidates; the developer confirms the ones they *recognize* as foreign and
+  ignores the rest — default-safe keeps every unconfirmed candidate in scope, so no `reject` and no
+  binary-scanning is required for stray matches (WAR2's `Build.c`/`count.c` are just game trace
+  strings that happen to contain `.c`; they need no action). `reject` is only for carving a known
+  game function out of a *confirmed* foreign span. Only a human — or the fingerprint within a
+  confirmed band — ever promotes a band to foreign.
+
+## 4. Design
+
+A **generic engine** consuming **binary-specific data behind a boundary**.
+
+### 4.1 Generic engine (no library names, no per-binary tuning)
+
+1. **Facts** — enumerate functions, extents, prologue bytes, the direct/indirect call graph, and
+   code→data references. (Prototype: `dumpfacts.rs`; to be promoted into an analysis pass.)
+2. **Seed signals** — each is *positive-only*:
+   - **S1 FID** — existing `is_identified` (known libraries + loader symbols).
+   - **S2 Anchor** — a function that references a *structurally* anchored string: self-naming
+     `^ident\(`, source-ref `\w+\.(c|cpp|asm)`, or banner (copyright/version). Structural shapes
+     only — the exact patterns live in data (§4.2), the *shape grammar* is generic.
+   - **S3 Fingerprint** — a prologue matching the foreign-convention signature (save esi/edi/ebp +
+     read args from stack, no __watcall param-register use). Used to *corroborate/extend within a
+     band*, never as a standalone seed (H5b).
+3. **Bands** — cluster seed functions by VA locality (gap threshold). A band is the human-facing
+   unit: address range, function count, dominant anchor class, representative string, fingerprint
+   agreement %.
+4. **Spread** — for a *confirmed* band: contiguity-fill between the seams + fingerprint check; then
+   **reachability** — from confirmed-foreign functions, the call-closure members whose callers are
+   *all* inside the closure are foreign; members also called by in-scope code are **shared** and
+   are held, never dropped.
+
+### 4.2 Data behind the boundary (per-binary / external — the only place specifics live)
+
+- FID databases (`.fidb` / `.mfid.gz`).
+- The anchor **shape** patterns (a small pattern list — structural, not library names).
+- The human's **string selections**: which anchor *strings* name a foreign module (and which name
+  the game's own — a `reject`). The human picks strings from the proposed bands; the engine derives
+  the functions and the address span. **Addresses are never hand-authored.** Default empty ⇒ no
+  exclusions beyond today's FID+asm.
+
+### 4.3 Invariants (the anti-drift guardrails)
+
+1. **Positive-evidence-only.** In-scope unless *positively* shown foreign. Absence never excludes.
+2. **Human-confirmed bands.** The tool proposes bands; a human ticks foreign vs in-scope. The
+   engine never presumes a source-ref/self-naming band is foreign (it may be the game's own).
+3. **Generic engine / data boundary.** Engine = structural shapes + graph algorithms only. All
+   binary knowledge is data. No `"AIL"`/`"SciTech"` literal ever enters the engine.
+4. **Non-invasive.** On a binary with no anchors it degrades to FID-only; on a non-Watcom binary
+   the fingerprint shapes simply don't fire. It never fabricates foreign bands.
+5. **Auditable.** Every excluded function records its evidence chain (FID:name / anchor:string /
+   band:confirmed / reachable-from:seed) so any exclusion can be challenged.
+
+## 5. Plan (staged; each phase is independently reviewable)
+
+- **Phase 0 — Instrumentation.** *(DONE, POC)* `dumpfacts.rs` + `analyze_facts.py` prove the
+  signals across three binaries. Findings in §3.
+- **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/scope_propose.rs` emits the
+  human-facing band report per binary (range, #funcs, anchor class, example, fingerprint
+  agreement) and a classification preview. Changes no denominator.
+- **Phase 2 — Confirmation format.** *(DONE)* `scope::Confirmation` line format
+  (`foreign|reject <string> <reason>`), passed by path to the tools. The file is per-binary RE data
+  kept out of the repo (with the binary's own artifacts). **The human names STRINGS, never
+  addresses** — a distinctive substring of a
+  proposed band's string (or a FID library name). The engine resolves each string to the functions
+  it anchors and derives the module span by locality clustering. Behind the data boundary; empty = safe.
+- **Phase 3 — Engine.** *(DONE)* `analysis::scope`: `extract_facts` → `propose_bands` →
+  `classify(facts, conf) → Classification { class, reason, held }`. Foreign = FID ∪ confirmed-band
+  ∪ reachability-private(corroborated) − rejects; uncorroborated reachables are **held**. `Asm`
+  stays with the survey's existing `kind_of_insns` (foreign detection is orthogonal).
+- **Phase 4 — Denominator wiring.** *(DONE)* `recompile_check --scope <file>` excludes scope-foreign
+  from the denominator exactly as `library`/`asm` are, and reports the count separately. Opt-in and
+  default-off, so a run **without** `--scope` reproduces today's number; comparing the two runs is
+  the honest "both numbers" (the same idiom as `--include-library`). *A full corpus round to
+  measure the WGSS/EXACT delta is a separate, JD-run activity.*
+- **Phase 5 — Generalization gate.** *(DONE)* Proposer run on WAR2 / Descent / WRMS / BLACK: sane
+  bands or none, no per-binary tuning, and **no game-module false exclusion** (Descent's own
+  `*.c` bands are proposed but never auto-foreign).
+
+### Guardrail tests (so we do not drift) — all in `scope.rs` unit tests
+
+- **Empty confirmation changes nothing** — `empty_confirmation_is_fid_only`,
+  `empty_confirmation_no_fid_reachability` (FID never drives reachability).
+- **Source-ref band not auto-foreign** — `source_ref_band_proposed_but_not_auto_foreign`.
+- **A shared helper (reachable from game) is never dropped** — `confirmed_band_and_reachability_and_shared`.
+- **Uncorroborated reachable is held, not dropped** — `reachable_uncorroborated_is_held_not_dropped`.
+- **Locality, not name, clusters** — `locality_splits_scattered_anchors_from_a_tight_band`.
+- Fingerprint shapes are measured from ground truth (§3), not hand-tuned — `fingerprint_bimodal`.
+
+## 6. Open risks & the decision that stays with JD
+
+- **Indirect calls (`CALLIND`).** Reachability from a partial call graph can over-claim
+  "only-from-foreign." Mitigation: reachability only demotes to foreign when contiguity *or*
+  fingerprint also agrees; otherwise the function is **held**, not dropped.
+- **Single-anchor libraries** (SciTech/UVBE = 1 banner). Expand from the lone seed by
+  contiguity+fingerprint+reachability; the human confirms the resulting band.
+- **Watcall-compiled library functions** in the mixed library zone look game-shaped; only the
+  composite (FID + locality + reachability) separates them. The clean case (AIL) is easy; the CRT
+  zone is the hard case.
+- **Policy is JD's.** Whether — and how aggressively — to exclude the library zone from the
+  denominator is a measurement-policy choice ("recompilation is the goal"). The engine *surfaces*
+  evidence and proposes bands; JD decides what the denominator counts.
