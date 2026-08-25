@@ -47,7 +47,9 @@ fn re_src() -> &'static Regex {
 }
 fn re_banner() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?i)copyright|all rights reserved|\(c\)|\bversion\b").unwrap())
+    // A bare `version` over-captures game diagnostics ("Invalid data file version." — AMERICA.C),
+    // so require a copyright/rights lexeme, `(c)`, or a *numbered* version ("Run-Time Version 2.5").
+    R.get_or_init(|| Regex::new(r"(?i)copyright|all rights reserved|\(c\)|version\s+[0-9]").unwrap())
 }
 
 /// Classify a string by structural shape, or `None` if it is ordinary data. Order mirrors the
@@ -369,6 +371,8 @@ pub struct Classification {
     pub class: HashMap<u64, Class>,
     pub reason: HashMap<u64, String>,
     pub held: Vec<(u64, String)>,
+    /// Non-fatal advisories to surface to the human (e.g. a pattern matched more than one band).
+    pub warnings: Vec<String>,
 }
 
 impl Classification {
@@ -418,8 +422,15 @@ pub fn classify(facts: &Facts, conf: &Confirmation) -> Classification {
     // of whose seed anchors matches a foreign pattern — marking the band's full derived SPAN foreign
     // (the human named a string; the engine derived the address span from the clustering).
     let bands = propose_bands(facts, BAND_GAP);
+    let band_matches = |sel: &Sel, b: &Band| {
+        b.seeds
+            .iter()
+            .filter_map(|va| facts.get(*va).and_then(|f| f.anchor.as_ref()))
+            .any(|a| a.text.contains(&sel.pattern))
+    };
     let mut band_derived: HashSet<u64> = HashSet::new();
     let mut confirmed_spans: Vec<(u64, u64)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for b in &bands {
         let label = b
             .seeds
@@ -433,6 +444,17 @@ pub fn classify(facts: &Facts, conf: &Confirmation) -> Classification {
                     reason.insert(f.va, format!("band:{label}"));
                 }
             }
+        }
+    }
+    // A pattern that matches seeds in more than one band is likely too broad — confirming it
+    // silently sweeps in every matching band. Surface it rather than deciding for the human.
+    for sel in &conf.foreign {
+        let n = bands.iter().filter(|b| band_matches(sel, b)).count();
+        if n > 1 {
+            warnings.push(format!(
+                "foreign pattern {:?} matches {n} bands (all confirmed foreign) — tighten it if unintended",
+                sel.pattern
+            ));
         }
     }
     let in_confirmed_span = |va: u64| confirmed_spans.iter().any(|(lo, hi)| va >= *lo && va <= *hi);
@@ -485,7 +507,7 @@ pub fn classify(facts: &Facts, conf: &Confirmation) -> Classification {
             if foreign.contains(&f.va) { Class::Foreign } else { Class::InScope },
         );
     }
-    Classification { class, reason, held }
+    Classification { class, reason, held, warnings }
 }
 
 #[cfg(test)]
@@ -498,7 +520,10 @@ mod tests {
         assert_eq!(anchor_class("Error reading int in gamesave.c"), Some(AnchorClass::SourceRef));
         assert_eq!(anchor_class("count.c (1): %d %d"), Some(AnchorClass::SourceRef));
         assert_eq!(anchor_class("DOS/4G  Copyright (C) Rational"), Some(AnchorClass::Banner));
+        assert_eq!(anchor_class("DOS/16M Protected Mode Run-Time     Version 2.5"), Some(AnchorClass::Banner));
         assert_eq!(anchor_class("just a normal message"), None);
+        // a bare "version" is NOT a banner — a game diagnostic, not a library tag
+        assert_eq!(anchor_class("Invalid data file version."), None);
         // a self-naming trace wins over an incidental banner word
         assert_eq!(anchor_class("AIL_set_preference(%d,%d)"), Some(AnchorClass::SelfNaming));
     }
@@ -664,5 +689,31 @@ mod tests {
         let conf = Confirmation::parse("reject memcpy actually the game's");
         let cls = classify(&facts, &conf);
         assert!(!cls.is_foreign(0x1000)); // reject wins over FID
+    }
+
+    #[test]
+    fn unanchored_span_member_gets_band_reason() {
+        // A confirmed band's span covers a silent module member with no anchor of its own; it must
+        // be marked foreign with a `band:` reason, not left in scope.
+        let facts = facts_of(vec![
+            mkfn_anchored(0x5000, AnchorClass::SelfNaming, "AIL_a()"),
+            mkfn(0x5040, false, false, vec![]), // unanchored, silent, inside the span
+            mkfn_anchored(0x5080, AnchorClass::SelfNaming, "AIL_b()"),
+        ]);
+        let cls = classify(&facts, &Confirmation::parse("foreign AIL_ Miles"));
+        assert!(cls.is_foreign(0x5040));
+        assert!(cls.reason.get(&0x5040).unwrap().starts_with("band:"));
+    }
+
+    #[test]
+    fn broad_pattern_matching_multiple_bands_warns() {
+        // "lib" matches anchors in two far-apart bands -> warning (both still confirmed).
+        let facts = facts_of(vec![
+            mkfn_anchored(0x2000, AnchorClass::SelfNaming, "libfoo_init()"),
+            mkfn_anchored(0x9000, AnchorClass::SelfNaming, "libbar_init()"),
+        ]);
+        let cls = classify(&facts, &Confirmation::parse("foreign lib both libs"));
+        assert!(cls.is_foreign(0x2000) && cls.is_foreign(0x9000));
+        assert!(cls.warnings.iter().any(|w| w.contains("2 bands")));
     }
 }

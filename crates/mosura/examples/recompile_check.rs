@@ -109,20 +109,36 @@ fn main() {
     // Foreign functions (confirmed bands + their reachable-private helpers, on top of FID) are
     // excluded from the denominator the same way `library`/`asm` already are; comparing a run with
     // and without `--exclude-foreign` is the honest "both numbers".
-    let foreign_vas: std::collections::HashSet<u64> = match &foreign_file {
-        Some(sf) => {
-            let sprog = analysis::analyze_le_file(Path::new(bin)).expect("analyze binary for the foreign scan");
-            let facts = mosura::analysis::foreign::extract_facts(&sprog);
-            let conf = mosura::analysis::foreign::Confirmation::load(Path::new(sf)).expect("confirmation file");
-            let cls = mosura::analysis::foreign::classify(&facts, &conf);
-            cls.class
-                .iter()
-                .filter(|(_, c)| **c == mosura::analysis::foreign::Class::Foreign)
-                .map(|(va, _)| *va)
-                .collect()
-        }
-        None => std::collections::HashSet::new(),
-    };
+    // The stamp (file basename + content hash) is written into the output TSV header so a census
+    // can tell a foreign-excluded series from a full one, and never silently mix the two.
+    let (foreign_vas, foreign_stamp): (std::collections::HashSet<u64>, Option<String>) =
+        match &foreign_file {
+            Some(sf) => {
+                let bytes = std::fs::read(sf).expect("read confirmation file");
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash_slice(&bytes, &mut h);
+                let stamp = format!(
+                    "{}@{:016x}",
+                    Path::new(sf).file_name().and_then(|s| s.to_str()).unwrap_or("foreign"),
+                    std::hash::Hasher::finish(&h)
+                );
+                let sprog = analysis::analyze_le_file(Path::new(bin)).expect("analyze binary for the foreign scan");
+                let facts = mosura::analysis::foreign::extract_facts(&sprog);
+                let conf = mosura::analysis::foreign::Confirmation::load(Path::new(sf)).expect("confirmation file");
+                let cls = mosura::analysis::foreign::classify(&facts, &conf);
+                for w in &cls.warnings {
+                    eprintln!("foreign-scope warning: {w}");
+                }
+                let vas = cls
+                    .class
+                    .iter()
+                    .filter(|(_, c)| **c == mosura::analysis::foreign::Class::Foreign)
+                    .map(|(va, _)| *va)
+                    .collect();
+                (vas, Some(stamp))
+            }
+            None => (std::collections::HashSet::new(), None),
+        };
     let is_foreign_fn = |va: u64| foreign_vas.contains(&va);
 
     let excluded: Vec<&Row> = rows
@@ -256,8 +272,12 @@ fn main() {
     // semantics diverge, so the verdicts stay the ground truth.
     let (mut agg_equal, mut agg_denom) = (0u64, 0u64);
     let (mut sim_sum, mut sim_n) = (0f64, 0usize);
-    let mut tsv =
-        String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\n");
+    // Header carries the foreign-scope stamp when excluding, so the series is self-identifying
+    // (the census skips the `idx` header row, so the extra field is safe).
+    let stamp_col = foreign_stamp.as_deref().map(|s| format!("\tEXCLUDE-FOREIGN={s}")).unwrap_or_default();
+    let mut tsv = format!(
+        "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses{stamp_col}\n"
+    );
     let mut divs = String::from(DIVERGENCE_HEADER);
     for (row, out) in kept.iter().zip(outs.iter()) {
         if !out.ok() {

@@ -58,6 +58,9 @@ cat -- "$1" > "$base" || { echo "unreadable: $1" >&2; exit 2; }
 
 census() { # $1 = file, $2 = display name
   echo "== census: $2"
+  # Announce a foreign-excluded series so a smaller denominator is never mistaken for a full one.
+  stamp=$(head -1 -- "$1" | grep -o 'EXCLUDE-FOREIGN=[^	]*' || true)
+  [ -n "$stamp" ] && echo "  !! FOREIGN-EXCLUDED SERIES ($stamp) — denominator is not comparable to a full run"
   awk -F'\t' 'FNR==1 && $1=="idx" {next} {n[$4]++; w+=$9; loss+=$9*(1-$7)}
     END {for (v in n) printf "  %5d %s\n", n[v], v
          if (w > 0) printf "  WGSS %.4f (insn-weighted, %d weight)\n", 1-loss/w, w}' "$1" | sort -k2

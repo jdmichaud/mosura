@@ -429,3 +429,15 @@ consistent ≈3.3% normalization — deltas agree, levels do not. The offset pre
 2026-08-24 campaign; do not mix the series. If a future session needs the census outside
 the script, it is the one-liner above — not a re-derivation (the script exists precisely
 because ad-hoc column picks have burned rounds before; see its header).
+
+### The denominator is part of the series — a foreign-excluded run is not comparable to a full one
+
+`recompile_check --exclude-foreign <file>` (foreign-module scope,
+`docs/foreign-scope-plan.md`) drops the named third-party libraries from the denominator, so
+its WGSS/EXACT are a **different series** from a full run — the same trap as the ad-hoc-awk
+offset above, but silent, because the TSV looks identical. Two guards make it visible: the
+output TSV's header carries an `EXCLUDE-FOREIGN=<file>@<hash>` stamp, and `war2-verdicts.sh`
+prints a `!! FOREIGN-EXCLUDED SERIES` line when it sees one. **The canonical WAR2 series is the
+FULL denominator (no `--exclude-foreign`)** until JD decides otherwise; a foreign-excluded number
+is only ever reported *next to* the full one (both-numbers), never as the headline. Do not compare
+a stamped TSV against an unstamped one.

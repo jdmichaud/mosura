@@ -51,9 +51,10 @@ has a database for.
 
 ## 3. Validated findings (2026-08-25 POC)
 
-Method: `examples/dumpfacts.rs` (one analysis pass → per-function VA/size/prologue/call-graph +
-code→data reference string previews) and `scratchpad/analyze_facts.py`. Binaries: WAR2.EXE (deep),
-WRMS.EXE (Worms, degradation case), DESCENTR.EXE (overtraining case).
+Method: `foreign_propose <binary> --facts` (one analysis pass → per-function TSV: VA, size,
+prologue, call-graph degrees, foreign-fingerprint, anchor) reduced by an ad-hoc script. Binaries:
+WAR2.EXE (deep), WRMS.EXE (Worms, degradation case), DESCENTR.EXE (overtraining case). The `--facts`
+dump is a kept tool, so the table below is reproducible.
 
 | # | Hypothesis | Verdict | Evidence (WAR2 unless noted) |
 |---|---|---|---|
@@ -91,7 +92,7 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 ### 4.1 Generic engine (no library names, no per-binary tuning)
 
 1. **Facts** — enumerate functions, extents, prologue bytes, the direct/indirect call graph, and
-   code→data references. (Prototype: `dumpfacts.rs`; to be promoted into an analysis pass.)
+   code→data references. (`foreign::extract_facts`; dump via `foreign_propose --facts`.)
 2. **Seed signals** — each is *positive-only*:
    - **S1 FID** — existing `is_identified` (known libraries + loader symbols).
    - **S2 Anchor** — a function that references a *structurally* anchored string: self-naming
@@ -103,10 +104,13 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 3. **Bands** — cluster seed functions by VA locality (gap threshold). A band is the human-facing
    unit: address range, function count, dominant anchor class, representative string, fingerprint
    agreement %.
-4. **Spread** — for a *confirmed* band: contiguity-fill between the seams + fingerprint check; then
-   **reachability** — from confirmed-foreign functions, the call-closure members whose callers are
-   *all* inside the closure are foreign; members also called by in-scope code are **shared** and
-   are held, never dropped.
+4. **Spread — IMPLEMENTED: reachability only.** From a confirmed band's members, call-closure
+   members whose callers are *all* foreign are foreign (corroborated by fingerprint or the band
+   span); members also called by in-scope code are **shared** and are held, never dropped.
+   **NOT yet implemented: contiguity-fill to the module seams.** A confirmed band today spans only
+   `[first seed VA, last seed VA]`, so the unanchored head/tail of a module (e.g. WAR2's 191 AIL-
+   tail functions past the last `AIL_` string) is reached only if reachability happens to walk into
+   it. Filling to the linker's alignment-padding seams would close that — see §6, deferred.
 
 ### 4.2 Data behind the boundary (per-binary / external — the only place specifics live)
 
@@ -131,8 +135,8 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 
 ## 5. Plan (staged; each phase is independently reviewable)
 
-- **Phase 0 — Instrumentation.** *(DONE, POC)* `dumpfacts.rs` + `analyze_facts.py` prove the
-  signals across three binaries. Findings in §3.
+- **Phase 0 — Instrumentation.** *(DONE)* `foreign_propose --facts` (the kept fact dump) + an
+  ad-hoc reducer prove the signals across three binaries. Findings in §3.
 - **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/foreign_propose.rs` emits the
   human-facing band report per binary (range, #funcs, anchor class, example, fingerprint
   agreement) and a classification preview. Changes no denominator.
@@ -165,16 +169,43 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 - **Locality, not name, clusters** — `locality_splits_scattered_anchors_from_a_tight_band`.
 - Fingerprint shapes are measured from ground truth (§3), not hand-tuned — `fingerprint_bimodal`.
 
-## 6. Open risks & the decision that stays with JD
+## 6. Coverage, open risks & the decision that stays with JD
 
+**Confirmed coverage is a LOWER BOUND — state it next to the 278.** On WAR2 the foreign-ish zones
+hold ~939 functions (AIL `0x5191e–0x5c000` ≈ 259; CRT/SciTech `0x5c000–0x7c520` ≈ 680, of which FID
+already names 128). The confirmed classification excludes **278** — roughly **a third** of the
+foreign code. What it misses: the 191 unanchored AIL-tail functions past the last `AIL_` string
+(no contiguity-fill, §4.1.4); the ~130 silent SciTech functions the single UVBE banner can't seed
+(they emit no string — see §3 H2/H10); and the ~470 CRT-zone functions above `0x5c000` that FID
+misses and no anchor covers. So the denominator decision JD is being asked to make is "exclude the
+278 we can prove," not "exclude all foreign" — the rest stays in scope, costing WGSS but never
+risking a game false-positive.
+
+**Three mechanisms would lift coverage without breaking the invariants (deferred, JD to greenlight):**
+- **(a) Module-seam fill.** The linker leaves alignment padding (runs of `≥4` zero bytes) between
+  object modules — extend a confirmed band to those seams (fingerprint-checked) so it reaches the
+  module's unanchored head/tail. This is the proper fix for §4.1.4. ⚠️ Verify first: the game/library
+  boundary here is *not* a large gap (max inter-function gap game→AIL is 1257 bytes; a naive gap-fill
+  engulfed the binary in testing), so the seam signal must be the *zero-padding runs*, not gap size.
+- **(b) FID-dense bands.** `Band` already carries `fid_in_span`, but bands only form from anchors, so
+  a seam-delimited run full of FID names (the CRT) is never proposed. Propose such a run as a band
+  labelled by its FID names and let the human confirm "CRT" — closes most of the ~470 CRT-zone miss.
+- **(c) Resolve `held`.** A held function has no anchor, and the grammar names strings only, so
+  nothing the human can write ever promotes it — AIL internals compiled watcall stay in forever. Add
+  a per-band opt-in (`foreign AIL_ … +held` = "inside this confirmed band, trust reachability") —
+  still no addresses, still opt-in.
+
+**Standing risks:**
 - **Indirect calls (`CALLIND`).** Reachability from a partial call graph can over-claim
-  "only-from-foreign." Mitigation: reachability only demotes to foreign when contiguity *or*
-  fingerprint also agrees; otherwise the function is **held**, not dropped.
-- **Single-anchor libraries** (SciTech/UVBE = 1 banner). Expand from the lone seed by
-  contiguity+fingerprint+reachability; the human confirms the resulting band.
+  "only-from-foreign." Mitigation: reachability only demotes when fingerprint or the band span also
+  agrees; otherwise the function is **held**, not dropped. Mechanism (c) above deliberately relaxes
+  this per-band, at the human's request.
 - **Watcall-compiled library functions** in the mixed library zone look game-shaped; only the
   composite (FID + locality + reachability) separates them. The clean case (AIL) is easy; the CRT
   zone is the hard case.
+- **Series hygiene.** A `--exclude-foreign` run is a different measurement series; its TSV is stamped
+  and the census announces it (`docs/measurement-rules.md`). The FULL denominator stays canonical
+  until JD decides.
 - **Policy is JD's.** Whether — and how aggressively — to exclude the library zone from the
   denominator is a measurement-policy choice ("recompilation is the goal"). The engine *surfaces*
   evidence and proposes bands; JD decides what the denominator counts.
