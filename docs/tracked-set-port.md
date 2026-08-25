@@ -82,10 +82,13 @@ rule mosura ports). If it does not collapse, the gap is in that fold rule, not t
 
 Inserts `DF = COPY 0` into **every** x86 function — inert and dead-code-removed where DF is unused;
 the stride cleanup fires only on rep-string functions (~137 WAR2 TUs). As a faithful Ghidra-parity
-fix it is authoritative and lands regardless of corpus direction, but run one WAR2 round and report
-EXACT/WGSS. Expectation: cleaner/correct C and small sim gains on the rep-string TUs; **byte-exactness
-does not change** here (a clean `+1` loop still compiles to a loop) — that is the separate
-rep-string→`memcpy` intrinsic emitter arm (layer 2, `docs/wc2src-wgss-lowsim.md`).
+fix it is authoritative and lands regardless of corpus direction.
+
+**Measured (WAR2 round `tracked` vs zc66, commit `a9d205b`):** WGSS **0.5196 → 0.5234** (+0.00383,
+weighted +468.5 insn-sim); **143 functions moved, 125 up / 18 down, 0 verdict flips**; EXACT held at
+**828**. As scoped, **byte-exactness does not change** here (a clean `+1` loop still compiles to a
+loop) — the rep-string TUs just lose the artifact, so their similarity rises. The byte-exact win is
+the separate rep-string→`memcpy` intrinsic emitter arm (layer 2, `docs/wc2src-wgss-lowsim.md`).
 
 ## Plan
 
