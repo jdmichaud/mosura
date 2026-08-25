@@ -1,4 +1,4 @@
-//! Foreign-module scope proposer (`docs/foreign-scope-plan.md`, Phase 1). Reads a binary, proposes
+//! Foreign-module proposer (`docs/foreign-scope-plan.md`, Phase 1). Reads a binary, proposes
 //! locality-clustered anchor **bands** for a human to confirm as foreign or in-scope, and — given a
 //! confirmation file — previews the resulting denominator.
 //!
@@ -6,9 +6,9 @@
 //! may be the game's own module); it proposes, the human confirms.
 //!
 //! ```text
-//! cargo run --release --example scope_propose -- <binary> [--native] [--confirm <file>]
+//! cargo run --release --example foreign_propose -- <binary> [--native] [--confirm <file>]
 //! ```
-use mosura::analysis::{self, scope};
+use mosura::analysis::{self, foreign};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -22,7 +22,7 @@ fn main() {
             _ => path = Some(a),
         }
     }
-    let path = path.expect("usage: scope_propose <binary> [--native] [--confirm <file>]");
+    let path = path.expect("usage: foreign_propose <binary> [--native] [--confirm <file>]");
     let p = std::path::Path::new(&path);
     let prog = if native {
         analysis::analyze_native_file(p).expect("analyze_native_file")
@@ -30,7 +30,7 @@ fn main() {
         analysis::analyze_le_file(p).expect("analyze_le_file")
     };
 
-    let facts = scope::extract_facts(&prog);
+    let facts = foreign::extract_facts(&prog);
     let n = facts.fns.len();
     let fid = facts.fns.iter().filter(|f| f.identified).count();
     let anchored = facts.fns.iter().filter(|f| f.anchor.is_some()).count();
@@ -38,7 +38,7 @@ fn main() {
     println!("   {n} functions   {fid} FID/loader-named   {anchored} anchored");
 
     // Phase 1: propose bands (gap 0x2000 = a page-plus, well above intra-module string spacing).
-    let bands = scope::propose_bands(&facts, 0x2000);
+    let bands = foreign::propose_bands(&facts, 0x2000);
     println!("\n-- proposed module bands (confirm foreign? or reject as game's own):");
     println!(
         "   {:<22} {:<11} {:>5} {:>5} {:>5}  {:<20} example",
@@ -59,10 +59,10 @@ fn main() {
 
     // Phase 3 preview: classify with the given (or empty) confirmation.
     let conf = match &confirm {
-        Some(f) => scope::Confirmation::load(std::path::Path::new(f)).expect("read confirm file"),
-        None => scope::Confirmation::default(),
+        Some(f) => foreign::Confirmation::load(std::path::Path::new(f)).expect("read confirm file"),
+        None => foreign::Confirmation::default(),
     };
-    let cls = scope::classify(&facts, &conf);
+    let cls = foreign::classify(&facts, &conf);
     let foreign = cls.foreign_count();
     let denom = n - foreign;
     println!(

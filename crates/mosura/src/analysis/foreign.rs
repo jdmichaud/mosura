@@ -1,4 +1,4 @@
-//! Foreign-module **scope classification** — decides which functions belong in the recompilation
+//! Foreign-module **foreign-module classification** — decides which functions belong in the recompilation
 //! denominator ("the port") and which are foreign code the linker pulled in (C runtime, licensed
 //! libraries like Miles/AIL or SciTech). Design & validation: `docs/foreign-scope-plan.md`.
 //!
@@ -354,9 +354,9 @@ impl Confirmation {
     }
 }
 
-/// The scope verdict for a function.
+/// The foreign/in-scope verdict for a function.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScopeClass {
+pub enum Class {
     InScope,
     Foreign,
 }
@@ -366,24 +366,24 @@ pub enum ScopeClass {
 /// surfaced rather than silently dropped (the CALLIND-incompleteness guard).
 #[derive(Clone, Debug, Default)]
 pub struct Classification {
-    pub class: HashMap<u64, ScopeClass>,
+    pub class: HashMap<u64, Class>,
     pub reason: HashMap<u64, String>,
     pub held: Vec<(u64, String)>,
 }
 
 impl Classification {
     pub fn is_foreign(&self, va: u64) -> bool {
-        matches!(self.class.get(&va), Some(ScopeClass::Foreign))
+        matches!(self.class.get(&va), Some(Class::Foreign))
     }
     pub fn foreign_count(&self) -> usize {
-        self.class.values().filter(|c| **c == ScopeClass::Foreign).count()
+        self.class.values().filter(|c| **c == Class::Foreign).count()
     }
 }
 
 /// The default locality gap for band clustering (a page-plus, above intra-module string spacing).
 pub const BAND_GAP: u64 = 0x2000;
 
-/// Compute the scope class of every function from facts + the human's STRING selections.
+/// Compute the class of every function from facts + the human's STRING selections.
 ///
 /// The human names anchor strings; the engine resolves each to a proposed locality band and marks
 /// that band's whole span foreign. Foreign = FID/loader-identified ∪ selected-band members ∪
@@ -482,7 +482,7 @@ pub fn classify(facts: &Facts, conf: &Confirmation) -> Classification {
     for f in &facts.fns {
         class.insert(
             f.va,
-            if foreign.contains(&f.va) { ScopeClass::Foreign } else { ScopeClass::InScope },
+            if foreign.contains(&f.va) { Class::Foreign } else { Class::InScope },
         );
     }
     Classification { class, reason, held }

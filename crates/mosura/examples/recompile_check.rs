@@ -33,7 +33,7 @@ fn main() {
     if a.len() < 5 {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
-             [--only ids] [--cache dir] [--verbose] [--include-library] [--scope <confirmations>] \
+             [--only ids] [--cache dir] [--verbose] [--include-library] [--exclude-foreign <confirmations>] \
              [--out tsv] [--divergences tsv]"
         );
         std::process::exit(2);
@@ -45,7 +45,7 @@ fn main() {
     let mut include_library = false;
     let mut out_path: Option<String> = None;
     let mut div_path: Option<String> = None;
-    let mut scope_file: Option<String> = None;
+    let mut foreign_file: Option<String> = None;
     let mut i = 5;
     while i < a.len() {
         match a[i].as_str() {
@@ -59,9 +59,9 @@ fn main() {
             }
             "--verbose" => verbose = true,
             "--include-library" => include_library = true,
-            "--scope" => {
+            "--exclude-foreign" => {
                 i += 1;
-                scope_file = Some(a[i].clone());
+                foreign_file = Some(a[i].clone());
             }
             "--out" => {
                 i += 1;
@@ -104,39 +104,39 @@ fn main() {
     //
     // An explicit `--only` overrides the exclusion: naming a function is a request for it, and
     // silently returning nothing would look like a broken filter.
-    // Optional foreign-module scope exclusion (docs/foreign-scope-plan.md, Phase 4). Opt-in via
-    // `--scope <confirmations>`: default-off, so a run without it reproduces today's number exactly.
+    // Optional foreign-module exclusion (docs/foreign-scope-plan.md, Phase 4). Opt-in via
+    // `--exclude-foreign <confirmations>`: default-off, so a run without it reproduces today's number exactly.
     // Foreign functions (confirmed bands + their reachable-private helpers, on top of FID) are
     // excluded from the denominator the same way `library`/`asm` already are; comparing a run with
-    // and without `--scope` is the honest "both numbers".
-    let scope_foreign: std::collections::HashSet<u64> = match &scope_file {
+    // and without `--exclude-foreign` is the honest "both numbers".
+    let foreign_vas: std::collections::HashSet<u64> = match &foreign_file {
         Some(sf) => {
-            let sprog = analysis::analyze_le_file(Path::new(bin)).expect("analyze binary for scope");
-            let facts = mosura::analysis::scope::extract_facts(&sprog);
-            let conf = mosura::analysis::scope::Confirmation::load(Path::new(sf)).expect("scope file");
-            let cls = mosura::analysis::scope::classify(&facts, &conf);
+            let sprog = analysis::analyze_le_file(Path::new(bin)).expect("analyze binary for the foreign scan");
+            let facts = mosura::analysis::foreign::extract_facts(&sprog);
+            let conf = mosura::analysis::foreign::Confirmation::load(Path::new(sf)).expect("confirmation file");
+            let cls = mosura::analysis::foreign::classify(&facts, &conf);
             cls.class
                 .iter()
-                .filter(|(_, c)| **c == mosura::analysis::scope::ScopeClass::Foreign)
+                .filter(|(_, c)| **c == mosura::analysis::foreign::Class::Foreign)
                 .map(|(va, _)| *va)
                 .collect()
         }
         None => std::collections::HashSet::new(),
     };
-    let scope_excl = |va: u64| scope_foreign.contains(&va);
+    let is_foreign_fn = |va: u64| foreign_vas.contains(&va);
 
     let excluded: Vec<&Row> = rows
         .iter()
         .filter(|r| {
             only.is_empty()
-                && ((!include_library && (r.kind == "library" || r.kind == "asm")) || scope_excl(r.va))
+                && ((!include_library && (r.kind == "library" || r.kind == "asm")) || is_foreign_fn(r.va))
         })
         .collect();
     let selected: Vec<&Row> = rows
         .iter()
         .filter(|r| {
             !only.is_empty()
-                || ((include_library || (r.kind != "library" && r.kind != "asm")) && !scope_excl(r.va))
+                || ((include_library || (r.kind != "library" && r.kind != "asm")) && !is_foreign_fn(r.va))
         })
         .filter(|r| {
             only.is_empty()
@@ -407,20 +407,20 @@ fn main() {
     eprintln!("{reloc_only:6}  identical outside relocation sites, but a site disagrees");
     eprintln!("{:6}  TOTAL byte-clean under the permissive reading", identical + reloc_only);
     if !excluded.is_empty() {
-        // library/asm is the classic kind-based exclusion; scope adds foreign functions that are
+        // library/asm is the classic kind-based exclusion; --exclude-foreign adds foreign functions that are
         // NOT already library/asm (confirmed bands + reachable-private), reported separately.
         let lib_n = excluded.iter().filter(|r| r.kind == "library" || r.kind == "asm").count();
-        let scope_n =
-            excluded.iter().filter(|r| scope_excl(r.va) && r.kind != "library" && r.kind != "asm").count();
+        let foreign_n =
+            excluded.iter().filter(|r| is_foreign_fn(r.va) && r.kind != "library" && r.kind != "asm").count();
         if lib_n > 0 {
             eprintln!(
                 "\n{lib_n:6}  library functions excluded (identified by signature matching; \
                  --include-library to measure them)"
             );
         }
-        if let Some(sf) = &scope_file {
+        if let Some(sf) = &foreign_file {
             eprintln!(
-                "{scope_n:6}  foreign functions excluded (scope: {sf}; confirmed bands + \
+                "{foreign_n:6}  foreign functions excluded (from {sf}; confirmed bands + \
                  reachable-private, beyond the FID library set)"
             );
         }

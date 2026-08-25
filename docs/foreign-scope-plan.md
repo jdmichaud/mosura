@@ -1,26 +1,26 @@
-# Foreign-module scope classification — design & plan
+# Foreign-module classification — design & plan
 
 **Status:** hypotheses validated 2026-08-25 (POC); **engine implemented 2026-08-25** (Phases 1–5).
 This document fixes the design and the staged plan so the work does not drift.
 
-**Implementation:** `crates/mosura/src/analysis/scope.rs` (engine + 11 unit tests),
-`crates/mosura/examples/scope_propose.rs` (band proposer, Phase 1), and the opt-in `--scope <file>`
+**Implementation:** `crates/mosura/src/analysis/foreign.rs` (engine + 10 unit tests),
+`crates/mosura/examples/foreign_propose.rs` (band proposer, Phase 1), and the opt-in `--exclude-foreign <file>`
 flag on `recompile_check` (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
 is **reverse-engineering data about a proprietary binary — it lives with that binary's own artifacts,
 not in the repo.** Default-safe: with no confirmation the classification is exactly today's
-FID/loader set (verified on WAR2: 130 foreign, 0 held). Usage (`<scope-file>` is the out-of-repo
+FID/loader set (verified on WAR2: 130 foreign, 0 held). Usage (`<foreign-file>` is the out-of-repo
 confirmation file):
 
 ```text
 # propose bands for review (read-only):
-cargo run --release --example scope_propose -- <binary> [--native]
+cargo run --release --example foreign_propose -- <binary> [--native]
 # preview the denominator with confirmed bands:
-cargo run --release --example scope_propose -- <binary> --confirm <scope-file>
-# score with foreign excluded (compare against a run without --scope = both numbers):
-recompile_check <binary> <manifest> <src> recover <watcom> --scope <scope-file>
+cargo run --release --example foreign_propose -- <binary> --confirm <foreign-file>
+# score with foreign excluded (compare against a run without --exclude-foreign = both numbers):
+recompile_check <binary> <manifest> <src> recover <watcom> --exclude-foreign <foreign-file>
 ```
 
-On WAR2 the confirmed `war2.scope` (Miles/AIL + SciTech UVBE bands) takes foreign from 130→278
+On WAR2 the confirmed `war2.foreign` (Miles/AIL + SciTech UVBE bands) takes foreign from 130→278
 (the two bands + their reachable-private helpers), in-scope denominator 2893→2745, 28 held.
 
 ## 1. The one decision this serves
@@ -133,29 +133,29 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 
 - **Phase 0 — Instrumentation.** *(DONE, POC)* `dumpfacts.rs` + `analyze_facts.py` prove the
   signals across three binaries. Findings in §3.
-- **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/scope_propose.rs` emits the
+- **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/foreign_propose.rs` emits the
   human-facing band report per binary (range, #funcs, anchor class, example, fingerprint
   agreement) and a classification preview. Changes no denominator.
-- **Phase 2 — Confirmation format.** *(DONE)* `scope::Confirmation` line format
+- **Phase 2 — Confirmation format.** *(DONE)* `foreign::Confirmation` line format
   (`foreign|reject <string> <reason>`), passed by path to the tools. The file is per-binary RE data
   kept out of the repo (with the binary's own artifacts). **The human names STRINGS, never
   addresses** — a distinctive substring of a
   proposed band's string (or a FID library name). The engine resolves each string to the functions
   it anchors and derives the module span by locality clustering. Behind the data boundary; empty = safe.
-- **Phase 3 — Engine.** *(DONE)* `analysis::scope`: `extract_facts` → `propose_bands` →
+- **Phase 3 — Engine.** *(DONE)* `analysis::foreign`: `extract_facts` → `propose_bands` →
   `classify(facts, conf) → Classification { class, reason, held }`. Foreign = FID ∪ confirmed-band
   ∪ reachability-private(corroborated) − rejects; uncorroborated reachables are **held**. `Asm`
   stays with the survey's existing `kind_of_insns` (foreign detection is orthogonal).
-- **Phase 4 — Denominator wiring.** *(DONE)* `recompile_check --scope <file>` excludes scope-foreign
+- **Phase 4 — Denominator wiring.** *(DONE)* `recompile_check --exclude-foreign <file>` excludes foreign
   from the denominator exactly as `library`/`asm` are, and reports the count separately. Opt-in and
-  default-off, so a run **without** `--scope` reproduces today's number; comparing the two runs is
+  default-off, so a run **without** `--exclude-foreign` reproduces today's number; comparing the two runs is
   the honest "both numbers" (the same idiom as `--include-library`). *A full corpus round to
   measure the WGSS/EXACT delta is a separate, JD-run activity.*
 - **Phase 5 — Generalization gate.** *(DONE)* Proposer run on WAR2 / Descent / WRMS / BLACK: sane
   bands or none, no per-binary tuning, and **no game-module false exclusion** (Descent's own
   `*.c` bands are proposed but never auto-foreign).
 
-### Guardrail tests (so we do not drift) — all in `scope.rs` unit tests
+### Guardrail tests (so we do not drift) — all in `foreign.rs` unit tests
 
 - **Empty confirmation changes nothing** — `empty_confirmation_is_fid_only`,
   `empty_confirmation_no_fid_reachability` (FID never drives reachability).
