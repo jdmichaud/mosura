@@ -182,11 +182,22 @@ misses and no anchor covers. So the denominator decision JD is being asked to ma
 risking a game false-positive.
 
 **Three mechanisms would lift coverage without breaking the invariants (deferred, JD to greenlight):**
-- **(a) Module-seam fill.** The linker leaves alignment padding (runs of `≥4` zero bytes) between
-  object modules — extend a confirmed band to those seams (fingerprint-checked) so it reaches the
-  module's unanchored head/tail. This is the proper fix for §4.1.4. ⚠️ Verify first: the game/library
-  boundary here is *not* a large gap (max inter-function gap game→AIL is 1257 bytes; a naive gap-fill
-  engulfed the binary in testing), so the seam signal must be the *zero-padding runs*, not gap size.
+- **(a) Module-seam fill — VERIFIED, NOT worth building as proposed (2026-08-25).** Extend a
+  confirmed band across the linker's zero-padding-run seams to reach a module's unanchored head/tail.
+  Measured on WAR2 (`dumpseams`, a throwaway probe): the seams are **real but weak** — 171 gaps have
+  a leading zero-run ≥4 bytes, 117 ≥8, but the **maximum run is 15 bytes; none ≥16**. So pure
+  seam-fill has a **threshold cliff**: at T≤8 it is bounded and clean (AIL band → `0x50b10..0x583c4`,
+  +57 tail funcs, 0 game-call FP), but at T≥16 nothing stops it and it engulfs the whole binary
+  (3023 funcs, 1125 FP). Two further findings: the **fingerprint guard actively defeats it** —
+  it collapses back to the 68-func anchor band, because AIL's watcall-compiled internals (the very
+  `held` functions we want) sit at the band edges; the guard that *does* work is a **calls-into-game
+  check** (a library never calls up into game logic, `0x10000–0x48000`), which is threshold-robust
+  (bounds even T=64) and catches +57–84 AIL-tail incl. the watcall internals, with 0 game source-refs
+  and boundary functions that decompile as AIL (some edge functions are misidentified/garbled, not
+  clean). **Verdict:** the padding runs are too weak to be a safe boundary; the real lever is the
+  call-direction guard, which is a *reachability refinement*, not a seam. The gain is modest and
+  **AIL-only** (nothing for the CRT/SciTech zones). If ever pursued, build it as a call-direction-
+  guarded band extension behind an explicit opt-in — not raw seam-fill. §4.1.4 stays reachability-only.
 - **(b) FID-dense bands.** `Band` already carries `fid_in_span`, but bands only form from anchors, so
   a seam-delimited run full of FID names (the CRT) is never proposed. Propose such a run as a band
   labelled by its FID names and let the human confirm "CRT" — closes most of the ~470 CRT-zone miss.
