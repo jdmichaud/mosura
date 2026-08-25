@@ -188,6 +188,37 @@ pub fn pspec_context_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
     Some(sets)
 }
 
+/// The `<tracked_set>` defaults from a `.pspec` (register name → tracked value), or `None` when the
+/// `.pspec` cannot be read. Distinct from [`pspec_context_sets`]: `<context_set>` is the disassembly
+/// context (`longMode`/`addrsize`), while `<tracked_set>` is the decompiler's default tracked
+/// register values (Ghidra's `ContextDatabase` default `TrackedSet`, decoded by
+/// `ContextDatabase::decodeTracked`, globalcontext.cc:91) — x86 declares `DF=0`. Applied at the
+/// entry block by the `ActionConstbase` port (`decompile::pipeline`). Empty `Vec` (not `None`) means
+/// "the spec declares no tracked register", legitimate on an arch that tracks none.
+pub fn pspec_tracked_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
+    let text = fs::read_to_string(pspec).ok()?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let sets = doc
+        .descendants()
+        .filter(|n| n.tag_name().name() == "tracked_set")
+        .flat_map(|cs| cs.children())
+        .filter(|n| n.tag_name().name() == "set")
+        .filter_map(|n| Some((n.attribute("name")?.to_string(), n.attribute("val")?.parse().ok()?)))
+        .collect();
+    Some(sets)
+}
+
+/// Resolve pspec `<tracked_set>` `(name, value)` pairs against a [`Spec`]'s register table into the
+/// `(offset, size, value)` triples [`Spec::tracked_context`] holds — dropping any name the register
+/// table does not know (Ghidra would error; mosura skips, so an unknown tracked register is inert
+/// rather than fatal).
+pub(crate) fn resolve_tracked(spec: &Spec, pairs: &[(String, u64)]) -> Vec<(u64, u32, u64)> {
+    pairs
+        .iter()
+        .filter_map(|(name, val)| Some((spec.register_offset(name)?, spec.register_size(name)?, *val)))
+        .collect()
+}
+
 /// Parse the `<register_data>` section of a `.pspec` into `(whole_register_size, lane_size_mask)`
 /// pairs, merged by size (Ghidra `Architecture::decodeRegisterData`, architecture.cc:929, which
 /// accumulates `maskList[size] |= mask`). Each `<register name=… vector_lane_sizes="1,2,4,8"/>`
@@ -279,6 +310,7 @@ fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     // The real-disassembly path attaches the laned (vector) registers, mirroring the cache
     // loader — see the reactivation note in `speccache::get`.
     spec.laned = pspec_laned_size_masks(&pspec, &spec)?;
+    spec.tracked_context = resolve_tracked(&spec, &pspec_tracked_sets(&pspec)?);
     let sets = pspec_context_sets(&pspec)?;
     let refs: Vec<(&str, u64)> = sets.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let ctx = spec.context_from_sets(&refs);
@@ -326,6 +358,21 @@ pub fn load_cached(lang_id: &str) -> Option<Language> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The x86 `.pspec` declares the direction flag as a tracked register at 0 (`<tracked_set>`),
+    /// and it resolves to `(DF offset, size 1, value 0)` against the sleigh register table.
+    /// Gated on the Ghidra tree being present.
+    #[test]
+    fn x86_tracked_set_carries_direction_flag() {
+        let Some((sla, pspec)) = resolve("x86:LE:32") else { return }; // tree absent → skip
+        let pairs = pspec_tracked_sets(&pspec).expect("readable pspec");
+        assert_eq!(pairs, vec![("DF".to_string(), 0)], "x86 tracks DF=0");
+        let Ok(bytes) = fs::read(&sla) else { return };
+        let Ok(spec) = Spec::from_sla(&bytes) else { return };
+        let resolved = resolve_tracked(&spec, &pairs);
+        let df_off = spec.register_offset("DF").expect("DF register");
+        assert_eq!(resolved, vec![(df_off, 1, 0)], "DF resolves to (offset, size 1, value 0)");
+    }
 
     /// The x86-64 `.pspec` carries `vector_lane_sizes="1,2,4,8"` on XMM/YMM/ZMM (x86-64.pspec:143/
     /// 111/79). Resolving each name→size via the sleigh register table yields size-keyed records

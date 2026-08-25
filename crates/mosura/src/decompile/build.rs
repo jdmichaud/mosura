@@ -170,6 +170,7 @@ fn build_from_instrs(
     base: u64,
     instrs: impl IntoIterator<Item = crate::sleigh::Instruction>,
     laned: &[(i32, u32)],
+    tracked: &[(u64, u32, u64)],
     cspec: CspecSettings,
     ram_addr_size: u32,
     big_endian: bool,
@@ -199,6 +200,9 @@ fn build_from_instrs(
     // The architecture's laned (vector) registers, wrapped for `ActionLaneDivide`. Sourced from the
     // processor spec's `vector_lane_sizes` via the loader ([`Spec::laned`]); empty ⇒ no lane splitting.
     f.laned = LanedRegisterSet::from_size_masks(laned.iter().copied());
+    // The pspec's default tracked register values (Ghidra's default `TrackedSet`; x86 = `DF=0`),
+    // applied at the entry block by the `ActionConstbase` port. Empty ⇒ no tracked register.
+    f.tracked_context = tracked.to_vec();
     // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
     // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
     f.proto_model = cspec.proto_model;
@@ -267,6 +271,7 @@ pub fn raw_funcdata(
         base,
         spec.disassemble_ctx(bytes, base, context),
         &spec.laned,
+        &spec.tracked_context,
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
         spec.big_endian,
@@ -329,6 +334,7 @@ pub fn raw_funcdata_flow(
         base,
         decoded.into_values(),
         &spec.laned,
+        &spec.tracked_context,
         CspecSettings::default_for(spec),
         default_ram_addr_size(spec),
         spec.big_endian,
@@ -519,6 +525,7 @@ pub fn raw_funcdata_flow_image_overrides(
                 entry,
                 decoded.values().cloned(),
                 &spec.laned,
+                &spec.tracked_context,
                 cspec.clone(),
                 ram_addr_size,
                 spec.big_endian,
@@ -591,6 +598,7 @@ pub fn raw_funcdata_flow_image_overrides(
             entry,
             ordered,
             &spec.laned,
+            &spec.tracked_context,
             cspec,
             ram_addr_size,
             spec.big_endian,

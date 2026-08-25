@@ -21,6 +21,12 @@ pub struct Funcdata {
     pub addr: Address,
     /// The architecture's address spaces.
     pub spaces: SpaceManager,
+    /// The pspec's default tracked register values as `(register offset, size, value)` in the
+    /// register space (Ghidra's default `TrackedSet`; x86 = `DF=0`). Copied from
+    /// [`crate::sleigh::engine::Spec::tracked_context`] by the spec-driven builder; empty on a
+    /// hand-built `Funcdata`. Applied at the entry block by the `ActionConstbase` port (Ghidra
+    /// `coreaction.cc:678`) in `pipeline`, so const-prop folds e.g. the direction flag.
+    pub tracked_context: Vec<(u64, u32, u64)>,
     /// The architecture's register names by `(offset, size)` — mosura's stand-in for Ghidra's
     /// `glb->translate->getRegisterName` (database.cc:2495), filled from the processor `.sla`
     /// by the spec-driven builder. Empty on a hand-built `Funcdata`, which then names
@@ -357,6 +363,7 @@ impl Funcdata {
             name: name.into(),
             addr,
             spaces,
+            tracked_context: Vec::new(),
             varnodes: Vec::new(),
             ops: Vec::new(),
             blocks: Vec::new(),

@@ -1,0 +1,9 @@
+<!-- rep-movsd memcpy probe for the tracked_set (direction-flag) port, docs/tracked-set-port.md.
+     push edi;push esi; edi=[esp+0xc] esi=[esp+0x10] ecx=[esp+0x14]; rep movsd; pop esi;pop edi;ret.
+     The Ghidra oracle resolves DF=0 and emits `p = p + 1`; before the port mosura read DF as an
+     uninitialized varnode and emitted `p = p + (uVar1 * -2 + 1)`. The test asserts the forward `+1`. -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+57568b7c240c8b7424108b4c2414f3a55e5fc3
+  </bytechunk>
+</binaryimage>

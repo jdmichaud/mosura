@@ -373,6 +373,13 @@ pub struct Spec {
     /// `build` wraps these in a `LanedRegisterSet` for `ActionLaneDivide`. Kept as primitives here so
     /// the `sleigh` layer needs no dependency on the `decompile` types.
     pub laned: Vec<(i32, u32)>,
+    /// The pspec's `<tracked_set>` default register values, resolved to `(register offset, size,
+    /// value)` in the register space (Ghidra's default `TrackedSet` from `<context_data>`). x86
+    /// carries `DF=0`. Filled by the loader ([`crate::speccache::get`] / [`crate::lang::load`]) from
+    /// the `.pspec`, not the `.sla`; empty for a bare [`Spec::from_sla`]. The decompiler's
+    /// `ActionConstbase`-equivalent (in `pipeline`) copies each as a `reg = COPY value` op at the
+    /// entry block, so constant propagation folds e.g. the direction flag into a `rep`-string stride.
+    pub tracked_context: Vec<(u64, u32, u64)>,
     /// User-defined p-code op (`define pcodeop`) index → name, from the `.sla` `<userop_head>`
     /// name + `<userop>` `index` (Ghidra `UserOpSymbol`, slghsymbol.cc:377). A `CPUI_CALLOTHER`'s
     /// input-0 constant is this index; the decompiler's `PrintC::opCallother` (printc.cc:673) renders
@@ -480,6 +487,7 @@ impl Spec {
             context_vars,
             context_words,
             laned: Vec::new(),
+            tracked_context: Vec::new(),
             userops,
         })
     }

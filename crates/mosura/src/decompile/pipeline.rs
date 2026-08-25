@@ -48,6 +48,13 @@ impl Action for ActionHeritage {
             // Build the CFG before stack recovery so recover_stack can propagate the stack pointer
             // over the control-flow graph (per-block entry = predecessor exit), not the flat op list.
             super::cfg::build_cfg(data);
+            // ActionConstbase (coreaction.cc:678, universalAction slot 5478 — right after
+            // ActionStart, before heritage): seed each pspec-tracked register with its default
+            // value as a `reg = COPY val` at the entry block, so constant propagation folds it.
+            // On x86 this is `DF = 0`, which collapses a `rep`-string stride `zext(DF)*-2+1` to
+            // `+1` (matching the Ghidra oracle; see docs/tracked-set-port.md). Ghidra's slot is
+            // before ExtraPopSetup; DF is independent of the stack, so the order does not interact.
+            apply_tracked_context(data);
             // ActionExtraPopSetup (coreaction.cc:1436, group `base`, universalAction slot 5477):
             // model each call's effect on the stack pointer. Ghidra's slot is right after
             // `ActionStart`, whose `startProcessing`/`followFlow` builds the p-code AND the basic
@@ -527,6 +534,28 @@ impl Action for ActionSpacebase {
 /// inserted BEFORE the call — the value afterwards is indeterminate, and saying "unchanged" would
 /// be a lie the stack recovery would then build on. WAR2's `__watcall` is the unknown case;
 /// x86-64-gcc's `__stdcall` is the known one (8).
+/// Ghidra `ActionConstbase::apply` (coreaction.cc:678), tracked-set half: for each register the
+/// pspec's `<tracked_set>` declares a default value for (x86 = `DF=0`), insert `reg = COPY val` at
+/// the START of the entry block. Heritage SSA-ifies it and constant propagation flows the value
+/// forward — collapsing e.g. a `rep`-string stride `size*(zext(DF)*-2+1)` to `size*(+1)`. The op
+/// idiom (`new_const` + `new_op(Copy)` + `new_output` + `op_insert_begin`) mirrors
+/// [`ActionExtraPopSetup`] below. Inert when the pspec tracks nothing (empty `tracked_context`).
+fn apply_tracked_context(data: &mut Funcdata) {
+    if data.tracked_context.is_empty() || data.num_blocks() == 0 {
+        return;
+    }
+    let Some(reg) = data.spaces.by_name("register") else { return };
+    let entry = super::block::BlockId(0);
+    let pc = data.addr; // the entry address (Ghidra `bb->getStart()`)
+    for (offset, size, val) in data.tracked_context.clone() {
+        let uniq = data.num_ops() as u32;
+        let cst = data.new_const(size, val);
+        let op = data.new_op(super::opcode::OpCode::Copy, super::op::SeqNum { pc, uniq }, vec![cst]);
+        data.new_output(op, size, super::space::Address::new(reg, offset));
+        data.op_insert_begin(op, entry);
+    }
+}
+
 pub struct ActionExtraPopSetup;
 
 impl Action for ActionExtraPopSetup {
