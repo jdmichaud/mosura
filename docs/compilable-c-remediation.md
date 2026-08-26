@@ -320,6 +320,33 @@ Ghidra's `(uint2 *)((int4)auStack_a8 + iVar3)`); game `memcpy/memset/memcmp` cou
 back.** The stride fix is form-neutral for the score because Watcom spells the ×16 index the same
 way from either C; the win is the corrected code.
 
+**Phase 9 — a switch case that exits after an if-with-return lost its `break` (wrong code, the
+C fell through into the next case): FIXED (2026-08-26, wc2src-reconciliation-4 W8).** The case
+terminator was a heuristic — "the case's exit basic block ends in a RETURN, so it is terminal" —
+which is false for a case whose body is `if (...) { ...; return; }`: the block after the `if` still
+has its fall-out edge to the switch tail (WAR2 0x2c00c case 13, original `JE 0x2c085`; also
+0x2191c ×3, 0x3ed74 ×2, 0x152e0, 0x3d534). Ghidra's rule (`PrintC::emitBlockSwitch`):
+`if (bl->isExit(i) && i != last) print "break;"`, where a case is an exit when its STRUCTURED block
+has exactly one out-edge (`BlockSwitch::addCase`: `isexit = bl->sizeOut()==1`) and the last case
+gets none. Ported as written on the structured `FlowBlock.out_edges` (the composite's edges, which
+`install` propagates from the collapsed sub-blocks) — the RETURN case has zero out-edges, so it
+still prints no `break`, and a legitimate fallthrough (0x3d2e8, `case 0: if (...) {...return;}`
+running into `case 1: return 0;`) keeps falling through: Ghidra's `newBlockGoto` removes the goto
+edge from the wrapper ("treat out edge as if it didn't exist", block.cc), so a fall-through case —
+a `BlockGoto` whose goto is not printed because its target is the next case (`gotoPrints`) — has
+`sizeOut()==0`; mosura's `rule_block_goto` consumes the `GOTO`-marked edge the same way
+(`remove_out_edge`, the block becomes terminal), so the count is zero there too. Fixture `x86_2c00c_switch.xml` = the specimen's bytes plus its 11-entry
+jump table relocated by the object base (raw image entries are pre-fixup); test
+`tests/switch_case_break.rs`.
+**Measured (round w8 vs w1e): WGSS 0.5430 → 0.5433 (+28.3 insn-sim); 840 EXACT held, 0
+verdict flips; 17 TUs changed, 4 up / 13 flat / 0 down; 15 `break;` added, 10 removed (last
+cases); the five value-wrong TUs gained exactly their breaks (0x2191c ×3, 0x3ed74 ×2, 0x2c00c,
+0x152e0, 0x3d534 ×3), the rest are the last-case removals.** One form note: 0x3d2e8's case 0 now
+prints `break;` too — its block has one out-edge, to the shared `return 0` block that is also
+case 1 — value-identical (the switch tail is `return 0` as well) and byte-identical (flat);
+Ghidra would chain that edge as a fallthrough in `ruleCaseFallthru`, which mosura's
+`rule_case_fallthru` did not mark here — a structuring item, not the printer's rule.
+
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the

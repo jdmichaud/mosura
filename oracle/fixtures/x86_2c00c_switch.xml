@@ -1,0 +1,59 @@
+<!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
+     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     Externs: code from 0xc000 (one RET stub per callee, 0x10 apart), data from 0xd000 (0x100 apart).
+  extern int b0(int n);
+  extern void a4(void);
+  extern void a1(void);
+  extern int t13(void);
+  extern void bfin(int r, int k);
+  extern void bfin2(int k, int r);
+  void mve(int k)
+  {
+      int r = 0;
+      switch (k) {
+      case 0: r = b0(1); break;
+      case 1: r = b0(2); break;
+      case 2: r = b0(3); break;
+      case 3: r = b0(4); break;
+      case 4: a4(); return;
+      case 5: r = b0(5); break;
+      case 6: r = b0(6); break;
+      case 7: r = b0(7); break;
+      case 8: r = b0(8); break;
+      case 9: r = b0(9); break;
+      case 10: r = b0(10); break;
+      case 11: r = b0(11); break;
+      case 12: r = b0(12); break;
+      case 13: if (t13()) { a1(); return; } r = b0(13); break;
+      case 14: r = b0(14); break;
+      }
+      bfin(r, k);
+      bfin2(k, r);
+  }
+-->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0xb000" readonly="true">
+5351525589e589c131db83f80e0f87980000002eff248d00b80000b801000000e97f000000b802000000e975000000b803000000e96b000000b804000000e961000000e8b80f00005d5a595bc3b805000000eb50b806000000eb49b807000000eb42b808000000eb3bb809000000eb34b80a000000eb2db80b000000eb26b80c000000eb1fe8860f000085c0740ae88d0f00005d5a595bc3b80d000000eb05b80e000000e8870f000089c389ca89d8e88c0f000089da89c8e8930f00005d5a595bc3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xb800" readonly="true">
+1bb0000025b000002fb0000039b0000043b000004db0000054b000005bb0000062b0000069b0000070b0000077b000007eb0000085b000009fb00000
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc000" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc010" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc020" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc030" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc040" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xc050" readonly="true">
+c3
+  </bytechunk>
+</binaryimage>

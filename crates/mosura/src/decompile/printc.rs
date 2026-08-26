@@ -3422,13 +3422,16 @@ impl<'a> PrintC<'a> {
                         }
                     }
                     self.emit_structured(s, case, indent + 1, out);
-                    // a case that breaks to the switch's merge ends with `break;`; one that
-                    // returns is already terminal
-                    let terminal = exit_basic(s, case)
-                        .and_then(|eb| self.f.block(eb).ops.last().map(|&o| self.f.op(o).code()))
-                        .map(|c| c == OpCode::Return)
-                        .unwrap_or(false);
-                    if !terminal {
+                    // Ghidra `PrintC::emitBlockSwitch` (printc.cc): `if (bl->isExit(i) && i != last)`
+                    // print `break;` — a case "formally exits the switch" when its STRUCTURED block
+                    // has exactly one out-edge (`BlockSwitch::addCase`, block.cc: `isexit =
+                    // bl->sizeOut()==1`), and the last case needs none. Not "its exit basic ends in
+                    // a RETURN": a case whose body is an if-with-return keeps its fall-out edge to
+                    // the switch tail (WAR2 0x2c00c case 13 — that heuristic dropped the break and
+                    // the C fell through into case 14, wrong code; fixture x86_2c00c_switch.xml).
+                    let is_exit = s.blocks[case].out_edges.len() == 1;
+                    let is_last = ci + 2 == comps.len() && exit_bound.is_empty() && default_cuts.is_empty();
+                    if is_exit && !is_last {
                         let _ = writeln!(out, "{}break;", "  ".repeat(indent + 1));
                     }
                 }
