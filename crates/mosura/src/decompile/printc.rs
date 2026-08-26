@@ -1338,6 +1338,22 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// Ghidra `Varnode::getHighTypeReadFacing(op)` for a constant: the type its (single) reading op
+    /// forces through an input cast, else the constant's own type — what `pushConstant` receives.
+    fn const_read_facing_type(&self, v: VarnodeId) -> Datatype {
+        let vn = self.f.vn(v);
+        let reader = vn.descend.iter().copied().find(|&u| !self.f.op(u).is_dead());
+        if let Some(op) = reader {
+            let o = self.f.op(op);
+            if let Some(slot) = (0..o.num_inputs()).find(|&i| o.input(i) == Some(v)) {
+                if let Some(dt) = self.get_input_cast(op, slot) {
+                    return dt;
+                }
+            }
+        }
+        self.type_of(v)
+    }
+
     /// Render a varnode as a C expression with its operator precedence (16 = atomic).
     fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
         if let Some(n) = self.snapshot_names.get(&v) {
@@ -1348,7 +1364,7 @@ impl<'a> PrintC<'a> {
             // A float-typed constant prints as a C float literal (Ghidra `pushConstant` →
             // `push_float`, printc.cc): `0.0`, `1.5`, `INFINITY`/`NAN` — not the raw integer bits.
             // Constant typing (ActionInferTypes now types constants) supplies the float type.
-            let dt = self.type_of(v);
+            let dt = self.const_read_facing_type(v);
             if let Datatype::Float(sz) = dt {
                 return (super::float::push_float(vn.constant_value(), sz), 16);
             }
@@ -1371,7 +1387,10 @@ impl<'a> PrintC<'a> {
             if matches!(dt, Datatype::Pointer(..)) {
                 return (format!("({}){}", dt.name(), render_const(vn.constant_value(), vn.size)), 14);
             }
-            return (render_const(vn.constant_value(), vn.size), 16);
+            // Ghidra `pushConstant`: `TYPE_INT` → `push_integer(…, sign=true)`; `TYPE_UINT` and
+            // `TYPE_UNKNOWN` (and anything else that falls to the integer print) → `sign=false`.
+            let sign = matches!(dt, Datatype::Int(_));
+            return (render_const_typed(vn.constant_value(), vn.size, sign), 16);
         }
         if self.is_explicit(v) {
             return (self.name_of(v), 16);
@@ -4495,24 +4514,34 @@ fn char_hex_escape(cp: u32) -> String {
 }
 
 fn render_const(val: u64, size: u32) -> String {
-    let signed = if size == 0 || size >= 8 {
-        val as i64
-    } else {
-        let sh = 64 - 8 * size;
-        ((val << sh) as i64) >> sh
-    };
-    if signed < 0 && signed > -0x10000 {
-        // Ghidra `push_integer` prints a signed negative as `-` + the *magnitude* rendered in its
-        // own most-natural base (printc.cc:1288: `print_negsign`, then the same ≤10-decimal /
-        // `mostNaturalBase` choice applied to the magnitude) — so `-0x10`, not `-16`.
-        let mag = signed.unsigned_abs();
-        return if mag <= 10 || most_natural_base(mag) == 10 {
-            format!("-{mag}")
+    render_const_typed(val, size, true)
+}
+
+/// Ghidra `PrintC::push_integer(val, sz, sign, …)` (printc.cc:1288) as `pushConstant` calls it:
+/// `sign` is true only for a `TYPE_INT` read-facing type (printc.cc `case TYPE_INT`); `TYPE_UINT`
+/// and `TYPE_UNKNOWN` print unsigned. Signed: a set high bit prints as `-` + the magnitude in its
+/// own most-natural base (`print_negsign`, `-0x10` not `-16`). Unsigned: the value as-is — ≤10
+/// decimal, else `mostNaturalBase`. A narrow unsigned operand compared against `0xfe` therefore
+/// prints `0xfe`, never `-2` (which C's integer promotion folds to always-false: wrong code).
+fn render_const_typed(val: u64, size: u32, sign: bool) -> String {
+    let masked = if size == 0 || size >= 8 { val } else { val & ((1u64 << (8 * size)) - 1) };
+    if sign {
+        let signed = if size == 0 || size >= 8 {
+            val as i64
         } else {
-            format!("-0x{mag:x}")
+            let sh = 64 - 8 * size;
+            ((val << sh) as i64) >> sh
         };
+        if signed < 0 && signed > -0x10000 {
+            let mag = signed.unsigned_abs();
+            return if mag <= 10 || most_natural_base(mag) == 10 {
+                format!("-{mag}")
+            } else {
+                format!("-0x{mag:x}")
+            };
+        }
     }
-    // Ghidra `push_integer`: small values (≤10) always decimal, otherwise the most natural base.
+    let val = if sign { val } else { masked };
     if val <= 10 || most_natural_base(val) == 10 {
         format!("{val}")
     } else {

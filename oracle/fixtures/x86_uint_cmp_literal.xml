@@ -1,0 +1,9 @@
+<!-- Narrow UNSIGNED compare against a high-bit literal: cmp al,0xfe ; jb L ; xor eax,eax ; ret ;
+     L: mov eax,1 ; ret. The 0xfe is read by an unsigned INT_LESS on a 1-byte operand, so it must print
+     as the unsigned constant 0xfe (Ghidra pushConstant: TYPE_UINT/UNKNOWN -> push_integer(sign=false)),
+     never as -2 (which C's integer promotion folds to always-false: wrong code). -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+3cfe720331c0c3b801000000c3
+  </bytechunk>
+</binaryimage>

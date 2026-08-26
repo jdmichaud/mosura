@@ -257,6 +257,20 @@ the contract column; the family folds into Phase 4.
 
 Suggested order: 1 → 3 → 2 → 4 → 5 → 6, correctness before compile count.
 
+**Phase 7 — narrow unsigned operand vs a negative literal: wrong code, FIXED (2026-08-26).**
+`uint1 uVar1; if (uVar1 < -2)` / `!= -1` on a 1- or 2-byte unsigned operand: after C's integer
+promotion the compare is folded to a constant (always false / always true), so the recompiled
+function silently never takes those cases (0x2d7fc's 0xfe/0xff message types; 60 sites in 20 zc66
+TUs, wc2src-reconcile). For 4-byte operands the same spelling is harmless (`-1` converts to
+`0xffffffff`). Root cause: `printc::render_const` was type-blind — every narrow constant with its
+high bit set printed as a signed negative — where Ghidra's `PrintC::pushConstant` prints signed
+**only** for a `TYPE_INT` read-facing type (`push_integer(…, sign=true)`, printc.cc:1288) and
+unsigned for `TYPE_UINT`/`TYPE_UNKNOWN`. Ported: `render_const_typed(val, size, sign)` with `sign =
+matches!(read-facing type, Int)`, the read-facing type being the reading op's input cast when one
+applies, else the constant's own (`Varnode::getHighTypeReadFacing`). Fixture
+`x86_uint_cmp_literal.xml` (`cmp al,0xfe ; jb`): `-3 < param_1` → `0xfd < param_1`, character-for-
+character what `oracle/capture --c` prints. Test `tests/uint_literal_sign.rs`.
+
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the
