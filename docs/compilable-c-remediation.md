@@ -281,6 +281,45 @@ where the old signed spelling (`& -0x80`) let Watcom use a sign-extended imm8 (`
 instead of an imm32 — value-identical bit patterns in those ops. Follow-up = an emitter arm
 (`const-form=imm8`, witnessed by the original's imm8 encoding, the N1/N3 pattern), not a port change.
 
+**Phase 8 — a byte offset added to a typed stack array (`&local + i*16` on a dword array): wrong
+code, FIXED (2026-08-26, wc2src-reconciliation-4 W1).** `*(uint4 *)(&xStack_1dc + iVar8)` with
+`iVar8 = i*0x10` on a `xunknown4` local: C scales by `sizeof`, so the recompile strides 64 bytes over
+a 16-byte-element array (0x38158, 33 sites; 96 sites across ~30 TUs). Named by the instruments,
+not guessed: the rule-trace diff shows both decompilers firing the same rules (RulePtrArith 2×,
+RulePtraddUndo 0×); the type-propagation diff shows the SAME `PTRSUB(ESP,-0x20)` edge typing the
+output `xunknown4 *` in Ghidra and `Pointer(undefined1)` in mosura. Root cause: the inferencer's
+spacebase sub-pointer lookup (`infertypes::spacebase_sub_pointer`, the port of
+`TypeSpacebase::downChain`/`getSubType`) took the pointer-width offset constant — `0xffffffe0` held
+zero-extended in a `u64` — as +4294967264 instead of −0x20, matched no frame symbol, and fell to the
+`Pointer(undefined1)` fallback; RulePtrArith then built a byte-element PTRADD over the dword array
+(the recovered scope itself was right on every pass). Ghidra wraps the constant to the stack
+space's address width (`resolveConstant` → `wrapOffset`) before the ScopeLocal lookup; with signed
+frame offsets, sign-extending from the pointer width is the same lookup. Invisible on the x86-64
+datatests (the constant fills the u64). Fixture `x86_local_byte_offset.xml` (dword store at
+`[ebp-0x1c]`, then `mov eax,[ebp+eax*16-0x1c]`): `axStack_20 + param_1 * 0x10` →
+`(axStack_20)[param_1 * 4]` = the oracle's form. Test `tests/spacebase_ptrsub_offset.rs`.
+Collateral caught by the round: typed stack pointers now carry `ActionSetCasts` CASTs between the
+phi and the LOAD/STORE, which the string-ops recognizer (COPY-only) could not see through — 0x32c00
+lost its `memcpy` (−0.364) and rendered a `memset(p, v, 0)` for the zero-count byte loop; fixed
+(CAST-tolerant resolution, no zero-length lone collapse). The `0x2a75c/7a0/7e4` family's dips
+(−0.093) are correct-code form drift: `iVar3 * 2` became `auStack_28 + iVar3` on the now-typed
+`uint2` array, Ghidra's own spelling. Two more recognizer facts the rounds taught: the loop-entry
+resolver may cross only *single-use* COPY/CAST links (crossing a local's own `pTemp = malloc(n)`
+COPY inlined the call into the memcpy — a second call, wrong code, 10 sites), and with correctly
+typed pointers Ghidra's cleanup `RuleExpandLoad` (ruleaction.cc:10909, a faithful port) widens a
+byte copy's LOAD to the pointee width — the recognizers read `SUBPIECE(LOAD:4, 0)` at the pc
+as the byte load. Fixtures `x86_memcpy_stackdst.xml`, `x86_32c00.xml` (the specimen, extracted).
+The typed-pointer compare variant (`x86_repe_cmpsb_typed.xml`, both operands widened) still
+renders `memcmp`. **Measured (round w1e vs uintlit2): WGSS 0.5428 → 0.5430 (+33.5 insn-sim);
+EXACT 839 → 840 (0x4db68 SAME_SHAPE → EXACT); 0 EXACT lost; 63 affected TUs, 11 up / 47 flat /
+5 down — every down is correct code replacing wrong code (the `uint2` triplet above; 0x38158
+−0.010 with its 33 stride sites now `(auStack_1dc)[iVar1 * 4]` in place of the ×64 mis-scale;
+0x65fa0 −0.010, a byte offset that had been double-scaled as `aiStack_a8 + iVar3` and now spells
+Ghidra's `(uint2 *)((int4)auStack_a8 + iVar3)`); game `memcpy/memset/memcmp` counts unchanged
+(78/0/20), zero `mem*(func_0x...` destinations; 0x32c00 and 0x3d85c (+0.075) have their memcpys
+back.** The stride fix is form-neutral for the score because Watcom spells the ×16 index the same
+way from either C; the win is the corrected code.
+
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the

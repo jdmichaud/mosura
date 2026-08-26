@@ -1,0 +1,10 @@
+<!-- W1 probe (wc2src-reconciliation-4): a DWORD stack local indexed by a scaled BYTE offset.
+     push ebp; mov ebp,esp; sub esp,0x20; mov dword [ebp-0x1c],0; shl eax,4; mov eax,[ebp+eax-0x1c];
+     mov esp,ebp; pop ebp; ret. The store types the slot as a 4-byte scalar; the indexed load then adds
+     a byte offset to its address. Ghidra prints the pointer operand of that non-PTRADD INT_ADD with an
+     integer cast, (int)address-of-local + i*0x10; dropping the cast lets C scale by sizeof = wrong code. -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+5589e583ec20c745e400000000c1e0048b4405e489ec5dc3
+  </bytechunk>
+</binaryimage>

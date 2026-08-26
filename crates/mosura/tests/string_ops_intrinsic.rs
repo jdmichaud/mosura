@@ -95,3 +95,80 @@ fn repe_cmpsb_renders_memcmp_result() {
     assert!(c.contains("= memcmp(param_1, param_2, param_3);"), "renders the result assignment:\n{c}");
     assert!(!c.contains("do {") && !c.contains("while") && !c.contains("bVar"), "loop, flags and the if-block are gone:\n{c}");
 }
+
+#[test]
+fn stack_array_dst_from_typed_param_pair() {
+    // 0x32c00's shape: copy from a register-param pointer into a stack dword array (typed by the
+    // dword copies), zero-count byte loop, array read back afterwards.
+    let path = paths::oracle_fixtures_dir().join("x86_memcpy_stackdst.xml");
+    let dt = datatest::parse_file(&path).unwrap();
+    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("x86 SLEIGH tables load");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
+    pipeline::decompile(&mut f);
+    let mut choices = EmitChoices::default();
+    choices.set("string-ops", "intrinsic").unwrap();
+    let (c0, report) = print_c_report(&f, &choices);
+    eprintln!("=== DEFAULT/REPORT C ===\n{c0}\ncandidates: {:?}", report.rep_movs_candidates);
+    let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let c = print_c_recovered(&f, &choices, &recovered);
+    eprintln!("=== INTRINSIC C ===\n{c}");
+    assert!(c.contains("memcpy("), "stack-array dst pair renders memcpy:\n{c}");
+    assert!(!c.contains("memset("), "no zero-length memset:\n{c}");
+}
+
+#[test]
+fn war2_32c00_pair_survives_expandload() {
+    // WAR2 0x32c00 extracted whole: the byte loop's LOAD is widened by Ghidra's cleanup
+    // RuleExpandLoad (`SUBPIECE(LOAD:4, 0)`), and the dst is a typed stack dword array behind CASTs.
+    let path = paths::oracle_fixtures_dir().join("x86_32c00.xml");
+    let dt = datatest::parse_file(&path).unwrap();
+    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("x86 SLEIGH tables load");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
+    pipeline::decompile(&mut f);
+    let mut choices = EmitChoices::default();
+    choices.set("string-ops", "intrinsic").unwrap();
+    let (_, report) = print_c_report(&f, &choices);
+    let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let c = print_c_recovered(&f, &choices, &recovered);
+    eprintln!("=== 32c00 C ===\n{c}");
+    assert!(c.contains("memcpy(axStack_40, param_1, 0x30)"), "the pair collapses to one memcpy:\n{c}");
+    assert!(!c.contains("memset(") && !c.contains("while"), "no residual loop or memset:\n{c}");
+}
+
+/// fable-b's typed-pointer variant: both pointers carry a pointee type (`int4 *`, from live dword
+/// reads before the loop), so Ghidra's cleanup `RuleExpandLoad` (ruleaction.cc:10909, a faithful
+/// port) widens the CMPS byte loads to `SUBPIECE(LOAD:4, 0)` on both operands; the recognizer
+/// reads them through `rep_load_at` and the compare still renders as `memcmp`.
+#[test]
+fn repe_cmpsb_typed_pointers_still_render_memcmp() {
+    let path = paths::oracle_fixtures_dir().join("x86_repe_cmpsb_typed.xml");
+    let dt = datatest::parse_file(&path).unwrap();
+    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("x86 SLEIGH tables load");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
+    pipeline::decompile(&mut f);
+    let mut choices = EmitChoices::default();
+    choices.set("string-ops", "intrinsic").unwrap();
+    let (_, report) = print_c_report(&f, &choices);
+    assert_eq!(report.rep_movs_candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.rep_movs_candidates);
+    let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    assert_eq!(sites.len(), 1, "F3 A6 is witnessed");
+    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let c = print_c_recovered(&f, &choices, &recovered);
+    eprintln!("=== MEMCMP C ===\n{c}");
+    assert!(c.contains("= memcmp(param_1, param_2, param_3);"), "renders the result assignment:\n{c}");
+    assert!(!c.contains("do {") && !c.contains("while") && !c.contains("bVar"), "loop, flags and the if-block are gone:\n{c}");
+}

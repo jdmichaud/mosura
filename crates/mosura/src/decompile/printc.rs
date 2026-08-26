@@ -311,11 +311,86 @@ struct RepLoop {
     count_entry: VarnodeId,
 }
 
-/// Follow `COPY` chains to the source varnode.
+/// From a phi's entry input, cross the materialization chain — COPYs/CASTs whose output feeds
+/// nothing live but the next link (or the phi) — to the value the printer names. A COPY whose
+/// output has other uses is a real local's assignment (`pTemp = malloc(n)` — also read later):
+/// crossing it rendered the call inline in the memcpy, a second call (measured, 0x33efc).
+fn phi_entry_source(f: &Funcdata, raw: VarnodeId, consumer: OpId) -> VarnodeId {
+    let mut v = raw;
+    let mut consumer = consumer;
+    for _ in 0..8 {
+        let Some(d) = f.vn(v).def else { break };
+        if !matches!(f.op(d).code(), OpCode::Copy | OpCode::Cast) {
+            break;
+        }
+        let only = f.vn(v).descend.iter().all(|&u| u == consumer || f.op(u).is_dead());
+        if !only {
+            break;
+        }
+        consumer = d;
+        v = f.op(d).input(0).unwrap_or(v);
+    }
+    v
+}
+
+/// The COPY/CAST ops between a phi's raw input and its named source (see [`phi_entry_source`]),
+/// for suppression once a collapsed call reads the source directly. Each op is listed only if its
+/// output feeds nothing live but the next op in the chain (or the phi).
+fn phi_entry_chain(f: &Funcdata, raw: VarnodeId, phi_op: OpId) -> Vec<OpId> {
+    let mut out = Vec::new();
+    let mut v = raw;
+    let mut consumer = phi_op;
+    let mut copies = 0;
+    for _ in 0..8 {
+        let Some(d) = f.vn(v).def else { break };
+        let code = f.op(d).code();
+        if !(code == OpCode::Cast || (code == OpCode::Copy && copies == 0)) {
+            break;
+        }
+        let only = f.vn(v).descend.iter().all(|&u| u == consumer || f.op(u).is_dead());
+        if !only {
+            break;
+        }
+        out.push(d);
+        if code == OpCode::Copy {
+            copies += 1;
+        }
+        consumer = d;
+        v = f.op(d).input(0).unwrap_or(v);
+    }
+    out
+}
+
+/// A value LOADed at `pc`: `v = LOAD ptr` at the pc, or — after Ghidra's cleanup `RuleExpandLoad`
+/// widened the load to the pointer's pointee — `v = SUBPIECE(LOAD ptr, 0)` at the pc. Returns the
+/// (COPY/CAST-stripped) pointer and the loaded value's size (the STORE's element size, not the
+/// widened load's).
+fn rep_load_at(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<(VarnodeId, u32)> {
+    let d = f.vn(v).def?;
+    let o = f.op(d);
+    if o.seqnum.pc.offset != pc {
+        return None;
+    }
+    match o.code() {
+        OpCode::Load => Some((strip_copies(f, o.input(1)?), f.vn(v).size)),
+        OpCode::Subpiece if o.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 0) => {
+            let inner = o.input(0)?;
+            let ld = f.vn(inner).def?;
+            let lo = f.op(ld);
+            (lo.code() == OpCode::Load && lo.seqnum.pc.offset == pc)
+                .then(|| Some((strip_copies(f, lo.input(1)?), f.vn(v).size)))
+                .flatten()
+        }
+        _ => None,
+    }
+}
+
+/// Follow `COPY`/`CAST` chains to the source varnode (`ActionSetCasts` inserts a `CAST` between a
+/// typed pointer phi and the LOAD/STORE that reads it; a rep-string loop's shape is the same).
 fn strip_copies(f: &Funcdata, mut v: VarnodeId) -> VarnodeId {
     for _ in 0..8 {
         match f.vn(v).def {
-            Some(d) if f.op(d).code() == OpCode::Copy => v = f.op(d).input(0).unwrap_or(v),
+            Some(d) if matches!(f.op(d).code(), OpCode::Copy | OpCode::Cast) => v = f.op(d).input(0).unwrap_or(v),
             _ => break,
         }
     }
@@ -339,11 +414,11 @@ fn rep_loop_entry(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<VarnodeId> {
         (false, true) => a,
         _ => return None,
     };
-    // follow a pre-loop COPY to its source (the initial register value: a parameter/stack slot)
-    match f.vn(entry).def {
-        Some(cd) if f.op(cd).code() == OpCode::Copy => f.op(cd).input(0),
-        _ => Some(entry),
-    }
+    // Follow the phi-materialization COPY (exactly one) and any CASTs to the value the printer names
+    // (a parameter, a stack slot, a local). Never cross a SECOND COPY: that is the local's own
+    // assignment (`pTemp = malloc(n)`), and crossing it rendered the call inline in the memcpy —
+    // a second call, with the local left unassigned (measured: 0x33efc).
+    Some(phi_entry_source(f, entry, d))
 }
 
 /// The count phi of the rep-string loop at `pc` (a `MULTIEQUAL` at `pc` whose back-edge input is
@@ -5429,20 +5504,15 @@ fn print_c_inner(
                 continue;
             }
             let pc = o.seqnum.pc.offset;
-            let (Some(dst_phi), Some(val)) = (o.input(1), o.input(2)) else { continue };
+            let (Some(dst_ptr), Some(val)) = (o.input(1), o.input(2)) else { continue };
+            let dst_phi = strip_copies(f, dst_ptr);
             let elem = f.vn(val).size;
             if elem == 0 || loops.iter().any(|l| l.pc == pc) {
                 continue;
             }
-            let (src_phi, set_val) = match f.vn(val).def {
-                Some(d)
-                    if f.op(d).code() == OpCode::Load
-                        && f.op(d).seqnum.pc.offset == pc
-                        && f.op(d).input(1).is_some() =>
-                {
-                    (f.op(d).input(1), None)
-                }
-                _ => (None, Some(val)),
+            let (src_phi, set_val) = match rep_load_at(f, val, pc) {
+                Some((ptr, _)) => (Some(ptr), None),
+                None => (None, Some(val)),
             };
             let Some(dst_entry) = rep_loop_entry(f, dst_phi, pc) else { continue };
             let src_entry = match src_phi {
@@ -5529,6 +5599,9 @@ fn print_c_inner(
                 },
             };
             // memset value: a pair's byte loop carries the byte; a lone STOSD needs a broadcast const.
+            if l2.is_none() && matches!(size, RepSize::Const(0)) {
+                continue; // a zero-count lone loop is a no-op; never `memset(p, v, 0)`
+            }
             let set_val = match (l1.set_val, l2) {
                 (Some(_), Some(l2)) => l2.set_val,
                 (Some(v), None) => Some(v),
@@ -5572,13 +5645,10 @@ fn print_c_inner(
             }
             for (phi, entry) in entries {
                 let Some(pd) = f.vn(phi).def else { continue };
-                let raw = f.op(pd).inrefs.iter().copied().find(|&i| strip_copies(f, i) == strip_copies(f, entry) || i == entry);
+                let raw = f.op(pd).inrefs.iter().copied().find(|&i| phi_entry_source(f, i, pd) == entry || i == entry);
                 let Some(raw) = raw else { continue };
-                if let Some(cd) = f.vn(raw).def {
-                    let only_phi = f.vn(raw).descend.iter().all(|&u| u == pd || f.op(u).is_dead());
-                    if f.op(cd).code() == OpCode::Copy && only_phi {
-                        p.suppressed.insert(cd);
-                    }
+                for cd in phi_entry_chain(f, raw, pd) {
+                    p.suppressed.insert(cd);
                 }
             }
         }
@@ -5594,11 +5664,7 @@ fn print_c_inner(
             }
             let pc = o.seqnum.pc.offset;
             let (Some(la), Some(lb), Some(zf)) = (o.input(0), o.input(1), o.output) else { continue };
-            let load_of = |v: VarnodeId| -> Option<(VarnodeId, u32)> {
-                let d = f.vn(v).def?;
-                let lo = f.op(d);
-                (lo.code() == OpCode::Load && lo.seqnum.pc.offset == pc).then(|| (lo.input(1).unwrap(), f.vn(v).size))
-            };
+            let load_of = |v: VarnodeId| -> Option<(VarnodeId, u32)> { rep_load_at(f, v, pc) };
             let (Some((a_phi, elem)), Some((b_phi, _))) = (load_of(la), load_of(lb)) else { continue };
             // the CF compare on the same two loads at this pc
             let cf = f.op_ids().find_map(|c| {
@@ -5695,13 +5761,10 @@ fn print_c_inner(
             }
             for (phi, entry) in entries {
                 let Some(pd) = f.vn(phi).def else { continue };
-                let raw = f.op(pd).inrefs.iter().copied().find(|&i| strip_copies(f, i) == strip_copies(f, entry) || i == entry);
+                let raw = f.op(pd).inrefs.iter().copied().find(|&i| phi_entry_source(f, i, pd) == entry || i == entry);
                 let Some(raw) = raw else { continue };
-                if let Some(cd) = f.vn(raw).def {
-                    let only_phi = f.vn(raw).descend.iter().all(|&u| u == pd || f.op(u).is_dead());
-                    if f.op(cd).code() == OpCode::Copy && only_phi {
-                        p.suppressed.insert(cd);
-                    }
+                for cd in phi_entry_chain(f, raw, pd) {
+                    p.suppressed.insert(cd);
                 }
             }
         }

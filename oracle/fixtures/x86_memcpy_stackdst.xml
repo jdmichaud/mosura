@@ -1,0 +1,9 @@
+<!-- 0x32c00 shape: memcpy from a register-param pointer into a STACK array (typed dword array by the
+     dword copies), then the array is read back. push esi;push edi; sub esp,0x30; mov esi,eax;
+     mov edi,esp; mov ecx,0xc; repne movsd; xor ecx,ecx; repne movsb; mov eax,[esp+4]; add esp,0x30;
+     pop edi;pop esi;ret -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+565783ec3089c689e7b90c000000f2a531c9f2a48b44240483c4305f5ec3
+  </bytechunk>
+</binaryimage>

@@ -602,7 +602,16 @@ impl<'a> TypeInfer<'a> {
     /// symbol. No mapped symbol ⇒ Ghidra's `getSubType` returns `TYPE_UNKNOWN`, so the result is
     /// `Pointer(undefined1)` (never the bare spacebase — matching Ghidra's `isSpacebase` final arm).
     fn spacebase_sub_pointer(&self, psize: u32, off: &mut u64) -> Datatype {
-        let soff = *off as i64; // the offset constant is pointer-width, so the cast sign-extends
+        // The PTRSUB offset is a pointer-WIDTH constant held zero-extended in a u64: on a 32-bit
+        // target `0xffffffe0` is +4294967264 as a bare `as i64`, not -0x20, and matched no frame
+        // symbol — every `PTRSUB(ESP, off)` output fell to `Pointer(undefined1)`, and RulePtrArith
+        // then built a byte-element PTRADD over a dword array (`axStack + i*0x10` = wrong code,
+        // wc2src-reconciliation-4 W1). Ghidra reaches the symbol by wrapping the constant to the
+        // stack space's address size (`resolveConstant` → `wrapOffset`) and keying the ScopeLocal by
+        // that address; with signed frame offsets, sign-extending from the pointer width is the
+        // same lookup. (Invisible on the x86-64 datatests, where the constant fills the u64.)
+        let bits = 8 * psize.min(8);
+        let soff = if bits >= 64 { *off as i64 } else { ((*off << (64 - bits)) as i64) >> (64 - bits) };
         for s in &self.sb_syms {
             if s.start <= soff && soff < s.start + s.size as i64 {
                 *off = (soff - s.start) as u64;

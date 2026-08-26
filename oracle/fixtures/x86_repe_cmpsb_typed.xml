@@ -1,0 +1,9 @@
+<!-- REPE CMPSB (memcmp template) between two pointers that are TYPED (int4 *) by live dword reads
+     before the loop: `mov eax,[esi]; add eax,[edi]; mov [0x8f000],eax`. With a typed pointee,
+     Ghidra's cleanup RuleExpandLoad (ruleaction.cc:10909) widens the byte loads of the CMPS loop
+     to SUBPIECE(LOAD:4, 0); the memcmp recognizer must still see the compare loop. -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+56578b74240c8b7c24108b4c24148b060307a300f0080031c0f3a6740519c083d8ff5f5ec3
+  </bytechunk>
+</binaryimage>
