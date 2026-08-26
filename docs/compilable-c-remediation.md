@@ -270,6 +270,16 @@ matches!(read-facing type, Int)`, the read-facing type being the reading op's in
 applies, else the constant's own (`Varnode::getHighTypeReadFacing`). Fixture
 `x86_uint_cmp_literal.xml` (`cmp al,0xfe ; jb`): `-3 < param_1` → `0xfd < param_1`, character-for-
 character what `oracle/capture --c` prints. Test `tests/uint_literal_sign.rs`.
+Measured correction (round `uintlit`): the first cut tested `Int` only and printed a non-printable
+`char` constant unsigned (`c + -1` → `c + 0xff`), costing 3 EXACT (`-1` is an imm8, `0xff` an
+imm32). In Ghidra `char` IS `TYPE_INT` (`TypeChar`: a signed integer with the char-print flag), so
+the sign predicate is `Int | Char`; fixture `x86_char_add_neg.xml` pins it against the oracle.
+Corrected round (`uintlit2` vs `stringops3`): EXACT 837 → 839, 0 downward verdict flips, WGSS
++0.0003; 13 small MISMATCH dips (max −0.077) are the **faithful-but-costs-bytes** residue: an
+unsigned/unknown read-facing constant now prints as Ghidra does (`x & 0x80`, `return 0x8000`)
+where the old signed spelling (`& -0x80`) let Watcom use a sign-extended imm8 (`83 /x ib`)
+instead of an imm32 — value-identical bit patterns in those ops. Follow-up = an emitter arm
+(`const-form=imm8`, witnessed by the original's imm8 encoding, the N1/N3 pattern), not a port change.
 
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 

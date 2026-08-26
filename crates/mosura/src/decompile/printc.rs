@@ -1389,7 +1389,10 @@ impl<'a> PrintC<'a> {
             }
             // Ghidra `pushConstant`: `TYPE_INT` → `push_integer(…, sign=true)`; `TYPE_UINT` and
             // `TYPE_UNKNOWN` (and anything else that falls to the integer print) → `sign=false`.
-            let sign = matches!(dt, Datatype::Int(_));
+            // `char` IS `TYPE_INT` in Ghidra (a `TypeChar` is a signed integer with the char-print
+            // flag), so a non-printable char constant still prints signed: `c + -1`, not `c + 0xff`
+            // (measured: `0xff` costs an imm32 where `-1` is an imm8 — 3 EXACT regressions).
+            let sign = matches!(dt, Datatype::Int(_) | Datatype::Char);
             return (render_const_typed(vn.constant_value(), vn.size, sign), 16);
         }
         if self.is_explicit(v) {

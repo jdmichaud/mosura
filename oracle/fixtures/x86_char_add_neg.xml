@@ -1,0 +1,7 @@
+<!-- A char constant is TYPE_INT in Ghidra: movsx eax,byte [eax+4]; dec eax; ret prints the -1 as a
+     signed literal (c + -1 / c - 1), never as 0xff. Watcom encodes -1 as an imm8 and 0xff as an imm32. -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+0fbe400448c3
+  </bytechunk>
+</binaryimage>
