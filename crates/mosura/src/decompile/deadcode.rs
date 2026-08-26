@@ -27,6 +27,21 @@ fn is_sink(code: OpCode) -> bool {
 
 /// Remove ops whose results are never consumed.
 pub fn dead_code(f: &mut Funcdata) {
+    // INSTRUMENT (`MOSURA_DEADCODE_DEBUG=1`): the flags dead-code decides on, per spacebase varnode,
+    // BEFORE this pass runs — which auto-live roots exist and whether the directwrite-driven
+    // addrforce clear is about to strip them (the W4 dropped-store investigation).
+    if std::env::var_os("MOSURA_DEADCODE_DEBUG").is_some() {
+        for i in 0..f.num_varnodes() as u32 {
+            let vn = f.vn(VarnodeId(i));
+            if f.spaces.get(vn.loc.space).kind == super::space::SpaceKind::Spacebase && vn.is_written() {
+                eprintln!(
+                    "[deadcode-in] s{:#x}:{} def={:?} addrforce={} directwrite={} autolive={} pending_clear={}",
+                    vn.loc.offset, vn.size, vn.def.map(|d| f.op(d).seqnum.pc.offset), vn.is_addr_force(),
+                    vn.is_direct_write(), vn.is_auto_live(), f.directwrite_pending_clear
+                );
+            }
+        }
+    }
     // Ghidra clears the `addrforce` attribute of any varnode that is not a direct write at the top
     // of every `ActionDeadCode::apply` (coreaction.cc:3944) — so a value forced into its storage
     // stays auto-live only if a legitimate input feeds it. mosura runs this only on the deadcode

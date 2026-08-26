@@ -362,11 +362,14 @@ impl Rule for RuleStoreVarnode {
             return 0;
         };
         let size = data.vn(valvn).size;
-        data.new_output(op, size, Address::new(space, off));
+        let out = data.new_output(op, size, Address::new(space, off));
         // COPY takes the stored value (STORE input 2) as its sole input.
         data.op_remove_input(op, 1);
         data.op_remove_input(op, 0);
         data.op_set_opcode(op, OpCode::Copy);
+        // Mark as originally coming from CPUI_STORE (ruleaction.cc:4333 `setStackStore`): the
+        // directwrite pass treats this COPY as a direct write when its source is a marker.
+        data.vn_mut(out).set_stack_store();
         1
     }
 }

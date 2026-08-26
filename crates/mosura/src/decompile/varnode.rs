@@ -78,6 +78,10 @@ pub mod addlflags {
     /// `Heritage::guardCalls` needs before it can express a stack range in the CALLEE's frame and
     /// register it as a parameter trial. Bit value matches Ghidra's.
     pub const SPACEBASE_PLACEHOLDER: u32 = 0x400;
+    /// Ghidra `Varnode::stack_store` (varnode.hh): this Varnode was originally written by a
+    /// `CPUI_STORE` that `RuleStoreVarnode` resolved to a stack COPY (ruleaction.cc:4333) —
+    /// `ActionDirectWrite` treats such a COPY as a direct write when its source is a marker.
+    pub const STACK_STORE: u32 = 0x800;
 }
 
 /// An SSA value. Created via [`Funcdata`](super::funcdata::Funcdata); never constructed
@@ -144,6 +148,14 @@ impl Varnode {
     /// by the Heritage algorithm — i.e. did `guard()` normalize it into the range being renamed?
     pub fn is_active_heritage(&self) -> bool {
         self.addlflags & addlflags::ACTIVEHERITAGE != 0
+    }
+    /// Ghidra `Varnode::isStackStore`.
+    pub fn is_stack_store(&self) -> bool {
+        self.addlflags & addlflags::STACK_STORE != 0
+    }
+    /// Ghidra `Varnode::setStackStore`.
+    pub fn set_stack_store(&mut self) {
+        self.addlflags |= addlflags::STACK_STORE;
     }
     /// Ghidra `Varnode::setActiveHeritage` (varnode.hh:301).
     pub fn set_active_heritage(&mut self) {

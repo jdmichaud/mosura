@@ -356,6 +356,48 @@ swallowed and the C ran case 4 after case 2; the old unconditional `break;` had 
 prints a case's goto after its body (`emitBlockGoto`, unless the target is the next printed case)
 — so the suppression is keyed by (node, target) over the head's node chain only.
 
+**Phase 10 — a store into an address-taken stack aggregate between two calls was dropped as dead
+(wrong code): FIXED (2026-08-27, wc2src-reconciliation-4 W4, the dead-store half).** WAR2 0x2dcd4
+builds a struct on the stack, stores the first call's result into it (`MOV [EBP+0x7c],AX` under
+a biased EBP) and passes the struct to a second call; mosura printed the struct without that
+field, Ghidra prints `xStack_cc = func_0x000422b8(param_3,1);` (oracle on the extracted fixture
+`x86_2dcd4_frame.xml`). Named by the instruments, in order: the rule-trace diff (Ghidra fires
+`heritage` at 0x2dcfd, mosura `RulePullsubIndirect` there and two extra `deadcode`s); the mosura
+trace (heritage pass 2 guards the second call with an INDIRECT fed by the write, the next deadcode
+deletes both); a deadcode-entry flag dump (`MOSURA_DEADCODE_DEBUG`: the INDIRECT outputs were
+addr-forced but `directwrite=false`, so the directwrite-driven addrforce clear stripped them).
+Three faithful pieces were missing or adapted:
+1. `Heritage::guardCalls`' `holdind` is `fl & addrtied` with `fl` from `Scope::queryProperties`
+   (database.cc:1263): a range with no symbol that a scope owns answers `mapped | addrtied` — the
+   local scope owns the whole stack space — so EVERY stack (and ram) range holds its passthrough
+   INDIRECT auto-live; the alias question is settled later by `RuleIndirectCollapse` on slots that
+   prove private. mosura gated `holdind` on its heritage-time alias probe, which at pass 2 had not
+   seen the `LEA EAX,[EBP+0x70]` escape that `ActionActiveParam` binds only afterwards.
+2. `Varnode::stack_store`: `RuleStoreVarnode` marks the COPY it makes of a STORE (ruleaction.cc:
+   4333) — mosura had no such flag.
+3. `ActionDirectWrite`'s COPY branch (coreaction.cc:1381-1393): a stack store whose source (through
+   one COPY) is written by a marker is a direct write — here the callee's `AX` indirect creation.
+   That keeps the addr-forced INDIRECT direct-written, the chain survives, and `ActionActiveReturn`
+   then finds the live `AX` creation and gives the call its output.
+Fixture-level result: mosura's C is now identical to the oracle's. **Measured (round w4a vs w3,
+2026-08-27):** WGSS 0.5479 -> 0.5479 (+1.3 insn-sim); 841 EXACT held, 0 flips; fable-b's 16 EXACT game TUs with stack locals all held; SAME_SHAPE 78 held; no COMPILE_FAIL change; 21 TUs moved, 12 up / 9 down, every down a correction or its consequence: 0x30270 / 0x2f8c4 / 0x30120 keep the store into the address-taken local before the call (`xStack_20 = xStack_24; func_0x0002f3a4(&xStack_20, ...)` — the callee had been reading an unwritten buffer), 0x50f54 / 0x50efc / 0x5a568 keep the global-to-frame field stores before their call (the byte loss there, -0.275/-0.214, is the split-locals layout the frame-fill half addresses), 0x22744 is the typing cascade of the now-live stores, three library TUs recovered stack parameters, 0x441ec / 0x289f8 are form. Both specimens (0x2dcd4, 0x2ded0) print `xStack_cc = func_0x000422b8(param_3, 1);`.
+
+**Phase 10b — the frame-fill half of W4 (design, 2026-08-27).** With the store restored, 0x2dcd4's
+residual is the frame: the original `SUB ESP,0xd0` (biased EBP) against 14 declared bytes, and
+Watcom allocates only what the C declares. fable-b's srcform12 probe is the byte-exact form: ONE
+aggregate sized to the frame, based at the lowest local, every field accessed at its byte offset —
+`xunknown1 axStack_d8 [0xd0]; *(xunknown2 *)(axStack_d8 + 8) = param_1; … axStack_d8[6] = 0x1f;
+func_0x000570e4(axStack_d8);` → EXACT, biased-EBP prologue included. Census (w3p tree, game
+functions with a `SUB ESP,n` in the rows: 335): 30 under-declared by ≥ 32 bytes — the 0xd0 family
+(0x12dc4 0x12e40 0x12e6c 0x12e9c 0x13014 0x2dc14 0x2dc40 0x2dc74 0x2dd4c 0x2dd74 0x2dda4 0x2ddcc
+0x2de94 0x2df14 0x2df4c 0x5761c 0x571c8 0x573e0 0x5794c …, 4–11 declared bytes each) plus 0x4f8e8
+(0x100 vs 0x15); 11 over-declared (0x16118: 0x64 vs 0xa3). Ghidra has no such mechanism (it
+declares the fields it sees), so this is an emitter arm: witness = the original prologue's
+`SUB ESP,n` with n ≥ declared + 32 and an escaping stack local (its address is a call argument);
+render = the frame's stack symbols as offsets into one `uint1` aggregate based at the lowest local
+and sized to n, `&local` as `base + delta`, arrays as `base + k`. The naming layer, not a rule.
+Not started; the dead-store half lands first.
+
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the

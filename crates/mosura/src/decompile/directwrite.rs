@@ -85,9 +85,29 @@ impl Action for ActionDirectWrite {
                         data.vn_mut(id).set_direct_write();
                         worklist.push(id);
                     } else if opc == OpCode::Copy {
-                        // For most COPYs, not a direct write. (The `isStackStore` branch — a COPY
-                        // that was really a STORE whose source traces to an INDIRECT — is a
-                        // documented gap; see the module docs.)
+                        // For most COPYs, not a direct write — but if the original operation was
+                        // really a CPUI_STORE (coreaction.cc:1382, `isStackStore`), trace the COPY
+                        // source through one more COPY; a source written by a marker (an INDIRECT —
+                        // the callee's return value as an indirect creation, or a passthrough) makes
+                        // this a direct write. WAR2 0x2dcd4: `xStack_cc = func(...)` is exactly a
+                        // stack store of the call's `AX` creation; without this the addr-forced
+                        // INDIRECT carrying it across the next call was never direct-written, the
+                        // deadcode clear stripped it, and the store vanished (W4).
+                        if vn.is_stack_store() {
+                            let mut invn = data.op(def).input(0);
+                            if let Some(i) = invn {
+                                if let Some(curop) = data.vn(i).def {
+                                    if data.op(curop).code() == OpCode::Copy {
+                                        invn = data.op(curop).input(0);
+                                    }
+                                }
+                            }
+                            let from_marker = invn.is_some_and(|i| data.vn(i).def.is_some_and(|d| data.op(d).is_marker()));
+                            if from_marker {
+                                data.vn_mut(id).set_direct_write();
+                                worklist.push(id);
+                            }
+                        }
                     } else if opc != OpCode::Piece && opc != OpCode::Subpiece {
                         // Anything writing a variable in a way that isn't some form of COPY.
                         data.vn_mut(id).set_direct_write();

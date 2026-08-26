@@ -1331,11 +1331,22 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     } else {
         return;
     };
-    // holdind = (fl & addrtied): a mapped (addr-tied) range keeps its passthrough INDIRECT auto-live
-    // via setAddrForce, so dead-code preserves the across-call chain and the write feeding it. Faithful
-    // to `queryProperties` (heritage.cc:1191) + [`super::varnodeprops::mark_addrtied`]: an unmapped ram
-    // global and an aliased stack slot are addr-tied; a register passthrough is not.
-    let holdind = Some(spc) == ram || aliased_stack;
+    // holdind = (fl & addrtied), heritage.cc:1450, with `fl` from `Scope::queryProperties`
+    // (database.cc:1263) on the LOCAL scope: a range with no symbol that a scope owns answers
+    // `mapped | addrtied` — and the local scope owns the whole stack space, the global scope ram —
+    // while a mapped local's SymbolEntry carries `addrtied` as well. So every stack or ram range
+    // holds its passthrough INDIRECT auto-live (`setAddrForce`), and the ALIAS question is settled
+    // afterwards: `RuleIndirectCollapse` collapses the INDIRECT of a slot that proves private
+    // (`nolocalalias`, from the restructure passes' alias boundary), after which its unread write
+    // dies normally; an aliased slot keeps the chain and the write feeding it. The adaptation this
+    // replaces gated `holdind` on the heritage-time alias probe (`aliased_stack`), which at a later
+    // pass has not yet seen an escape that `ActionActiveParam` binds only afterwards (WAR2 0x2dcd4:
+    // `LEA EAX,[EBP+0x70]` becomes the second call's argument after pass 2), so the INDIRECT of a
+    // slot written between two calls was never addr-forced, the next deadcode removed it and the
+    // store of the first call's result with it — `xStack_cc = func_0x000422b8(param_3, 1)` in
+    // Ghidra's output, absent in mosura's (wc2src-reconciliation-4 W4, trace-diff: heritage @0x2dcfd
+    // Ghidra-only, deadcode 2 vs 4). Registers and uniques are never addr-tied here.
+    let holdind = super::scope::is_memory_space(&f.spaces, spc);
 
     let calls: Vec<OpId> = (0..f.num_blocks() as u32)
         .flat_map(|b| f.block(super::block::BlockId(b)).ops.clone())
