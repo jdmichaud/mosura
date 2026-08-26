@@ -1190,3 +1190,22 @@ mod tests {
         assert!(f2.contains(&"-5r".to_string()) && !f2.contains(&"-4r".to_string()));
     }
 }
+
+/// `sdiv-pow2` (docs/sdiv-pow2-arm.md): keep the candidate shift pcs whose ORIGINAL instruction is
+/// `SAR r/m32, imm8` (`C1 /7 ib`; `D1 /7` for a count of 1) by the candidate's count, immediately
+/// preceded by an `SBB` (`1B /r` or `19 /r`) — Watcom 10.0a's signed power-of-two division
+/// template. A plain arithmetic shift in the source has no `SBB` before it.
+pub fn sdiv_pow2_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, n) in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let b = &insns[i].bytes;
+        let is_sar = (b.len() >= 3 && b[0] == 0xC1 && (b[1] & 0xF8) == 0xF8 && b[2] as u32 == n)
+            || (b.len() >= 2 && b[0] == 0xD1 && (b[1] & 0xF8) == 0xF8 && n == 1);
+        let prev_sbb = i > 0 && insns[i - 1].bytes.first().is_some_and(|&f| f == 0x1B || f == 0x19);
+        if is_sar && prev_sbb {
+            out.insert(pc);
+        }
+    }
+    out
+}

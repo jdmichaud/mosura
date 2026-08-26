@@ -780,6 +780,8 @@ fn main() {
             c.set("join-width", "consumer").expect("known axis");
             // Render a witnessed REP MOVS/STOS loop as memcpy/memset so Watcom's -oi re-inlines it.
             c.set("string-ops", "intrinsic").expect("known axis");
+            // Render a witnessed SBB power-of-two division as `x / 2^n` (docs/sdiv-pow2-arm.md).
+            c.set("sdiv-pow2", "div").expect("known axis");
             // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
@@ -2199,6 +2201,10 @@ fn main() {
                 ),
                 string_op_sites: mosura::recompile::buildconfig::string_ops_from_evidence(
                     &report.rep_movs_candidates,
+                    &insns,
+                ),
+                sdiv_pow2_sites: mosura::recompile::buildconfig::sdiv_pow2_from_evidence(
+                    &report.sdiv_pow2_candidates,
                     &insns,
                 ),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(

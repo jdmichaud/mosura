@@ -216,6 +216,7 @@ pub struct EmitChoices {
     pub join_width: JoinWidth,
     pub array_index: ArrayIndex,
     pub string_ops: StringOps,
+    pub sdiv_pow2: SdivPow2,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -317,6 +318,17 @@ pub enum StringOps {
     Intrinsic,
 }
 
+/// `sdiv-pow2`: Watcom 10.0a's signed power-of-two division template (`SAR EDX,0x1f; SHL EDX,n;
+/// SBB EAX,EDX; SAR EAX,n`), which Ghidra lifts to an add/mult/zext chain around the shift (or,
+/// for a provably non-negative dividend, folds to the bare shift). `div` renders a witnessed site
+/// as `x / 2^n`, which Watcom compiles back to the template (docs/sdiv-pow2-arm.md); `shift` is
+/// the reference rendering. Byte-witnessed on the original `SBB` + `SAR` at the shift's pc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdivPow2 {
+    Shift,
+    Div,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -334,6 +346,7 @@ impl Default for EmitChoices {
             join_width: JoinWidth::Ghidra,
             array_index: ArrayIndex::Ghidra,
             string_ops: StringOps::Loop,
+            sdiv_pow2: SdivPow2::Shift,
         }
     }
 }
@@ -433,6 +446,12 @@ impl EmitChoices {
             doc: "render a lifted REP MOVS/REP STOS as the Ghidra counted loop, or as the \
                   memcpy/memset intrinsic call the source used (witnessed on the original REP MOVS)",
         },
+        Axis {
+            name: "sdiv-pow2",
+            values: &["shift", "div"],
+            doc: "render Watcom's SBB template for a signed division by a power of two as the lifted \
+                  shift arithmetic, or as the `x / 2^n` the source wrote (witnessed on the original SBB+SAR)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -499,6 +518,10 @@ impl EmitChoices {
             "string-ops" => Some(match self.string_ops {
                 StringOps::Loop => "loop",
                 StringOps::Intrinsic => "intrinsic",
+            }),
+            "sdiv-pow2" => Some(match self.sdiv_pow2 {
+                SdivPow2::Shift => "shift",
+                SdivPow2::Div => "div",
             }),
             _ => None,
         }
@@ -605,6 +628,13 @@ impl EmitChoices {
                 self.string_ops = match value {
                     "loop" => StringOps::Loop,
                     "intrinsic" => StringOps::Intrinsic,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "sdiv-pow2" => {
+                self.sdiv_pow2 = match value {
+                    "shift" => SdivPow2::Shift,
+                    "div" => SdivPow2::Div,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
